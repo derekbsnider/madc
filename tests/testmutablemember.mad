@@ -1,0 +1,35 @@
+// #53 reducer: the `mutable` storage-class-specifier on a data member
+// ([dcl.stc]/9). libc++ __functional/function.h:484 is the motivating use:
+//	mutable char __small[sizeof(void*) * 2];
+// (inside union __policy_storage) — "Expecting type in struct definition".
+// Arms: mutable in a plain struct (with a WRITE from a const method — the
+// semantic half), mutable in a union (the libc++ shape), sizeof control.
+// The two probe() calls are SEQUENCED into locals — evaluation order inside
+// one argument list is unspecified and the canons genuinely differ (g++
+// right-to-left, clang left-to-right; the first draft printed 7 6 vs 6 7).
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	6 7 16
+#include <cstdio>
+
+struct S {
+	mutable int cnt;
+	int v;
+	int probe() const { cnt = cnt + 1; return v + cnt; }
+};
+
+union U {
+	mutable char small[16];
+	void *large;
+};
+
+int main()
+{
+	S s;
+	s.v = 5;
+	s.cnt = 0;
+	const S &cs = s;
+	int a = cs.probe();
+	int b = cs.probe();
+	printf("%d %d %d\n", a, b, (int)sizeof(U));
+	return 0;
+}

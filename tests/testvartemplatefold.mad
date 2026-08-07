@@ -1,0 +1,25 @@
+// Regression: parse_constant_primary's variable-template and concept arms
+// probed only the unqualified / current-namespace spellings, so the
+// std::-qualified spelling (`static_assert(std::is_trivially_copyable_v<T>)`,
+// tmp/r49) fell through to "Expecting integer constant expression" in BOTH
+// stdlib flavors while the unqualified spelling folded. A transactional
+// qualifier peel (classify_qualifier_before_scope + canonical_nested_namespace
+// — the same owners the scoped-enum arm uses) now rebinds the name to the
+// qualified registry key.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "vfold ok".
+#include <cstdio>
+#include <type_traits>
+
+template <class T> struct box { T v; };
+struct plain { int v; };
+struct virt { virtual ~virt() {} int v; };
+
+static_assert(std::is_trivially_copyable_v<plain>, "v1");
+static_assert(std::is_trivially_copyable_v<box<char>>, "v2");
+static_assert(!std::is_trivially_copyable_v<virt>, "nv");
+
+int main()
+{
+	printf("vfold ok\n");
+	return 0;
+}

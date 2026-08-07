@@ -1,0 +1,14 @@
+// std::numeric_limits values through the REAL headers — max()/is_signed/
+// digits for unsigned long must fold exactly ([numeric.limits]); the chain
+// exercises alias-base static reads, unsigned functional-cast folds, and
+// member-typedef cast spellings under BOTH stdlib flavors (the libc++ twin
+// carries -stdlib=libc++ via .flags).
+// Oracle: g++ 13 == clang++-18 print the three lines below.
+#include <cstdio>
+#include <limits>
+int main(){
+    printf("%lu\n", std::numeric_limits<unsigned long>::max());
+    printf("%d\n", (int)std::numeric_limits<unsigned long>::is_signed);
+    printf("%d\n", (int)std::numeric_limits<unsigned long>::digits);
+    return 0;
+}

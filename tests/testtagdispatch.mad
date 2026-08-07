@@ -1,0 +1,22 @@
+// Tag-dispatch call shape: an overloaded member called with an inline
+// template-id temporary whose argument list carries a TOP-LEVEL comma
+// (libc++'s __copy_assign_alloc(__str, integral_constant<bool, X>())).
+// The call-argument pre-count must not read the template-argument comma
+// as an argument separator.
+#include <cstdio>
+
+template <class T, int N> struct tagN { };
+
+struct S {
+    int base;
+    int add(int a, tagN<int, 3>) { return base + a + 3; }
+    int add(int a) { return add(a, tagN<int, 3>()); }
+};
+
+int main()
+{
+    S s;
+    s.base = 10;
+    printf("%d\n", s.add(4));
+    return 0;
+}

@@ -122,7 +122,8 @@ TEST_SUITE("class layout — MI non-virtual") {
         CHECK(mic->bases[0].offset == 0);
         CHECK(mic->bases[1].offset == 16);            // P2 with its own vptr
         CHECK(mic->secondary_vptr_owners.size() == 1);
-        CHECK(mic->secondary_vptr_owners[0] == p2);
+        CHECK(mic->secondary_vptr_owners[0].first == p2);
+        CHECK(mic->secondary_vptr_owners[0].second == 16);
         CHECK(mic->member_offsets[0] == 32);          // c after both bases
         CHECK(mic->size == 40);
     }

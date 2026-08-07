@@ -1,0 +1,28 @@
+#include <iostream>
+#include <string>
+using namespace std;
+// Declared-form multi-return with HETEROGENEOUS slot types, including a
+// class type: `(T0, T1) f(...)`. The signature populates return_types; the
+// transport struct carries one field per declared type. (This form was
+// previously uncallable: a hidden parser-injected param corrupted the
+// call-site arity check — "expected 3 got 2".)
+
+(int, string) lookup()
+{
+	string name = "echo";
+	return 42, name;
+}
+
+(double, const char *) info()
+{
+	return 2.5, "units";
+}
+
+int main()
+{
+	n, who := lookup();
+	cout << n << " " << who << endl;
+	scale, unit := info();
+	cout << scale << " " << unit << endl;
+	return 0;
+}

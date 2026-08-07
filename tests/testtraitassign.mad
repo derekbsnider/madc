@@ -1,0 +1,22 @@
+// __is_assignable with BAKED reference arguments: a SUBSTITUTED trait arg
+// arrives as ONE type token with the reference already in the DataDef
+// (DataDefREF) — no trailing &/&& tokens — and read as a non-class prvalue,
+// so is_move_assignable<int> silently folded FALSE and poisoned the whole
+// __and_fn/__conditional_t SFINAE chain (map<int,int>::operator[] became
+// untranslatable). Also gates the [temp.names] definition-context lookup:
+// __and_fn's return names __first_t (std::__detail) and __enable_if_t (std)
+// UNQUALIFIED, resolvable only in the candidate's own namespace context.
+// Oracle: g++ 13 == clang++-18 print "1 1 1 0".
+#include <type_traits>
+#include <cstdio>
+int main()
+{
+    printf("%d %d %d %d\n",
+	   (int)std::is_move_assignable<int>::value,
+	   (int)std::is_assignable<int&, int&&>::value,
+	   (int)std::__and_<std::is_move_assignable<int>,
+			    std::is_move_assignable<int>>::value,
+	   (int)std::__and_<std::is_move_assignable<int>,
+			    std::false_type>::value);
+    return 0;
+}

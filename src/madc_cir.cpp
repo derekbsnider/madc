@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <dlfcn.h>
+#include <limits.h>	// PATH_MAX (cross-build cover analysis: realpath buffer)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
@@ -35,6 +36,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
 #include "cir_emit_c.h"
@@ -122,6 +124,49 @@ static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host
 // host-callback registrations above — dlsym(RTLD_DEFAULT) can never find
 // these madc-synthesized names.
 static thread_local const std::map<std::string, void *> *cir_active_dl_syms = NULL;
+
+// The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
+//
+// A mangled-direct import names a symbol the selected stdlib really exports
+// (policy: mangled-direct only for real exports, HIDE_FROM_ABI compiles from
+// parsed headers). For the AOT lanes cir_native_link_env() turns the flavor's
+// link_libs into DT_NEEDED and the system loader supplies them. The JIT had no
+// equivalent: cir_import_resolver's dlsym(RTLD_DEFAULT) can only see what is
+// ALREADY loaded, which is whatever bin/madc itself was linked against. So a
+// -stdlib=libc++ compile resolved against libstdc++ and died on the first
+// symbol only libc++abi has — `std::bad_array_new_length::bad_array_new_length()`
+// (libstdc++ exports the dtors and what(), not the ctor), reached from libc++'s
+// inline __throw_bad_array_new_length() on <string>'s overflow path.
+//
+// dlopen with RTLD_GLOBAL is the JIT's DT_NEEDED. Purely ADDITIVE: the global
+// scope only gains libraries, so every symbol that resolved before still
+// resolves to the same address and the resolver itself is unchanged. When both
+// runtimes export a name (the std:: exception vocabulary, which is NOT inside
+// libc++'s __1 ABI namespace) the already-loaded one still wins — those are the
+// Itanium-ABI-shared types both implement identically, so either is correct. If
+// that ever stops being true the fix is to prefer the flavor's handle here, not
+// to special-case a symbol.
+//
+// Idempotent and unconditional — the default flavor's libs are already loaded,
+// so those dlopens are refcount bumps. A flavor whose runtime cannot be opened
+// is a warning, not a fatal: the imports that need it fail by exact name at
+// link, which is a better diagnostic than a load error naming a whole library.
+static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
+{
+    static std::set<std::string> opened;
+    if (!flavor)
+	flavor = &madc_stdlib_flavors[0];
+    if (!flavor->link_libs)
+	return;
+    for (int i = 0; flavor->link_libs[i]; i++) {
+	const char *lib = flavor->link_libs[i];
+	if (!opened.insert(lib).second)
+	    continue;
+	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
+		    flavor->name ? flavor->name : "?", lib, dlerror());
+    }
+}
 
 static void *cir_import_resolver(const char *name)
 {
@@ -407,6 +452,240 @@ static int cir_mir_cache_read_byte(MIR_context_t)
     return (*cir_mir_cache_read_src)[cir_mir_cache_read_pos++];
 }
 
+// --- AOT ledger pull (-static-libmadc, forest-carriers S5) ----------------
+//
+// Collect every import no loaded module defines. The caller's two uses are
+// selection (which ledger modules to pull) and the Tier-B refusal list.
+//
+// `extra` joins the module-level imports as further CANDIDATES filtered by the
+// same "no loaded module defines it" rule: the .o link lane's program is a set
+// of native relocatables, not MIR modules, so its unresolved references arrive
+// as the merged builder's UNDEF names. Selection must see them, and must stop
+// seeing them once a pulled ledger module defines them — which is exactly what
+// this filter does.
+static void cir_ctx_unresolved_imports(MIR_context_t ctx,
+				       std::vector<std::string> &out,
+				       const std::vector<std::string> *extra = NULL)
+{
+    std::set<std::string> defined, seen;
+    std::vector<std::string> imports;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
+	 m; m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item) {
+		if (it->u.import_id && seen.insert(it->u.import_id).second)
+		    imports.push_back(it->u.import_id);
+		continue;
+	    }
+	    if (it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		defined.insert(nm);
+	}
+    if (extra)
+	for (const std::string &e : *extra)
+	    if (seen.insert(e).second)
+		imports.push_back(e);
+    out.clear();
+    for (const std::string &imp : imports)
+	if (!defined.count(imp))
+	    out.push_back(imp);
+}
+
+// Was a ledger actually AVAILABLE for the last pull? Distinguishes "this madc
+// ships no ledger" from "this program needs Tier-B pieces" — two very
+// different user actions, so they must not share a diagnostic.
+static bool cir_ledger_available = false;
+
+// Read ONE ledger module's .bmir into `ctx` and load it. The MIR error
+// bracket lives in its own frame on purpose: a longjmp leaves automatic
+// variables MODIFIED since the setjmp indeterminate, so arming it inside the
+// caller's selection loop would corrupt that loop's state at -O2. Here the
+// only automatics are the unmodified parameter and `before`, both set before
+// the setjmp. False = nothing new was loaded.
+static bool cir_ledger_read_module(MIR_context_t ctx,
+				   const cir_ledger_module &m)
+{
+    MIR_module_t before = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	cir_mir_cache_read_src = NULL;
+	fprintf(stderr, "madc: ledger: %s: MIR_read failed: %s\n",
+		m.name.c_str(), cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    cir_mir_cache_read_src = &m.bytes;
+    cir_mir_cache_read_pos = 0;
+    MIR_read_with_func(ctx, cir_mir_cache_read_byte);
+    cir_mir_cache_read_src = NULL;
+    cir_mir_error_armed = false;
+    MIR_module_t got = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (!got || got == before) {
+	fprintf(stderr, "madc: ledger: %s: no module in the blob\n",
+		m.name.c_str());
+	return false;
+    }
+    MIR_load_module(ctx, got);
+    return true;
+}
+
+// Merge the ledger modules this program needs into `ctx`, BEFORE MIR_link, so
+// the eager object-mode gen puts their code in the capture and the emit-time
+// cover analysis sees the symbols defined. Transitive: a pulled module's own
+// unresolved imports select further ledger modules, to a fixpoint. Whole
+// modules are the granularity (gcc's .a-member model) — a module is pulled
+// once, in full.
+//
+// Silent when there is no carrier or no ledger: the emit-time verification
+// owns the diagnostic, because only it knows whether this program needed the
+// runtime at all (a runtime-free program must not be nagged about a missing
+// ledger).
+//
+// `seed` names references the program has that are NOT module imports — the .o
+// link lane's inputs (see cir_ledger_relocatable). Selection is otherwise
+// identical: one pull implementation, two shapes of program.
+static void cir_ledger_pull(MIR_context_t ctx, Program *prog,
+			    const std::vector<std::string> *seed = NULL)
+{
+    if (!madc_static_libmadc || !prog)
+	return;
+    CirFrozenForest *forest = prog->ensure_ledger_forest();
+    if (!forest)
+	return;
+    std::vector<cir_ledger_module> ledger;
+    if (!forest->ledger_modules(ledger))
+	return;
+    cir_ledger_available = true;
+    std::map<std::string, size_t> owner;	// symbol -> ledger module index
+    for (size_t i = 0; i < ledger.size(); i++)
+	for (const std::string &s : ledger[i].syms)
+	    owner.insert(std::make_pair(s, i));
+
+    std::vector<bool> pulled(ledger.size(), false);
+    for (;;) {
+	std::vector<std::string> undef;
+	cir_ctx_unresolved_imports(ctx, undef, seed);
+	size_t pulled_now = 0;
+	for (const std::string &nm : undef) {
+	    std::map<std::string, size_t>::const_iterator it = owner.find(nm);
+	    if (it == owner.end() || pulled[it->second])
+		continue;
+	    pulled[it->second] = true;	// once, whether or not the read works
+	    if (cir_ledger_read_module(ctx, ledger[it->second])) {
+		pulled_now++;
+		DBG(std::cout << "ledger: pulled " << ledger[it->second].name
+			      << " for '" << nm << "' ("
+			      << ledger[it->second].syms.size() << " symbols)"
+			      << std::endl);
+	    }
+	}
+	if (!pulled_now)
+	    break;	// fixpoint: nothing new selected this round
+    }
+}
+
+// --- AOT ledger as a RELOCATABLE (the .o link lane, -static-libmadc) -------
+//
+// The source lanes pull the ledger into the compile's own context, where the
+// object-mode gen drops the runtime straight into the capture next to the
+// program. The .o link lane has no compile: its program is a set of native
+// relocatables merged through MIR_object_read. So the runtime is generated in
+// a PRIVATE object-mode context and emitted as its own relocatable, which the
+// caller merges into the same builder as the inputs.
+//
+// Through a serialized .o rather than generating into the input builder
+// directly, because a builder's symbol table is append-only
+// (MIR_object_add_symbol never dedupes by name) — the unification that turns
+// the inputs' UNDEF entries into references to the runtime's definitions lives
+// in the MERGE. Going in through the merge reuses that one unification
+// implementation, and it rides the same read-back path the .o lane already
+// gates on both containers (ELF ET_REL and MH_OBJECT), so this adds no format
+// code at all.
+
+// Serialize the private capture. The buffer is malloc'd by the emitter.
+static bool cir_ledger_emit_blob(MIR_context_t ctx, std::vector<uint8_t> &blob)
+{
+    void *buf = NULL;
+    size_t size = 0;
+    if (MIR_gen_object_emit(ctx, &buf, &size) != 0 || !buf || size == 0) {
+	fprintf(stderr, "madc: -static-libmadc: AOT-ledger object emission"
+		" failed\n");
+	free(buf);
+	return false;
+    }
+    blob.assign((const uint8_t *)buf, (const uint8_t *)buf + size);
+    free(buf);
+    return true;
+}
+
+// Object mode + the selection pull. Its own MIR error frame: every module read
+// arms one of its own (cir_ledger_read_module), so a bracket established before
+// the pull is stale afterwards — hence the split from the link/emit frame.
+static bool cir_ledger_obj_pull(MIR_context_t ctx, Program *prog,
+				const std::vector<std::string> &seed)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: -static-libmadc: cannot prepare the AOT ledger:"
+		" %s\n", cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    MIR_gen_set_object_mode(ctx, 1);
+    cir_ledger_pull(ctx, prog, &seed);
+    cir_mir_error_armed = false;
+    return true;
+}
+
+// Link + generate + serialize, under a FRESH error frame (see above).
+static bool cir_ledger_obj_link_emit(MIR_context_t ctx,
+				     std::vector<uint8_t> &blob)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "madc: -static-libmadc: cannot link the AOT ledger"
+		" runtime: %s\n", cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    // Same resolver the source lanes use in object mode: an import stays an
+    // UNDEF symbol in the capture instead of binding to this process.
+    MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
+    bool ok = cir_ledger_emit_blob(ctx, blob);
+    cir_mir_error_armed = false;
+    return ok;
+}
+
+// `seed` = the merged input builder's UNDEF names (what the program still
+// needs). False = a real failure, already reported. An EMPTY blob is a
+// SUCCESS that selected nothing: whether that was enough is the emit-time
+// verification's question, exactly as in the source lanes.
+static bool cir_ledger_relocatable(Program *prog,
+				   const std::vector<std::string> &seed,
+				   std::vector<uint8_t> &blob)
+{
+    blob.clear();
+    MIR_context_t ctx = MIR_init();
+    if (!ctx) {
+	fprintf(stderr, "madc: -static-libmadc: MIR_init failed\n");
+	return false;
+    }
+    MIR_set_error_func(ctx, cir_mir_error);
+    MIR_gen_init(ctx);
+    MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+    bool ok = cir_ledger_obj_pull(ctx, prog, seed);
+    if (ok && DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx)) != NULL)
+	ok = cir_ledger_obj_link_emit(ctx, blob);
+    MIR_gen_finish(ctx);
+    MIR_finish(ctx);
+    return ok;
+}
+
 // -----------------------------------------------------------------------
 // JIT symbolization for the crash handler
 // -----------------------------------------------------------------------
@@ -492,6 +771,19 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    CirBuilder *&out_builder)
 {
     out_builder = NULL;
+    // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
+    // the builder's mangled-direct link tests (extern_symbol_can_link, the
+    // facet-id extern recording) probe dlsym at CIR time, and under
+    // -stdlib=libc++ the flavor library is not among bin/madc's own
+    // DT_NEEDED — probing before the dlopen answers "unlinkable" for
+    // symbols the link would in fact resolve, so the tree is SHAPED
+    // differently (unrecorded facet-id externs, undeclared
+    // _ZNSt3__15ctypeIcE2idE family). That bit the object lane first, then
+    // the freeze lane the same way — which is why the open lives HERE, on
+    // the one translate entry every lane (run, object, project, freeze)
+    // flows through, not per caller. Idempotent; the MIR-link call site
+    // keeps its open for lanes that skip translation entirely.
+    cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
     builder->set_tu_name(source_name);
@@ -554,6 +846,10 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // before building any (throwing calls stay outside the MIR bracket), so
     // by the time this TU builds, another Program's pools are active.
     prog->activate_token_pools();
+
+    // The flavor-runtime open (CIR-time dlsym probes shape the tree — object
+    // mode included) lives in cir_translate_guarded, the one translate entry
+    // every lane flows through.
 
     // CirBuilder (cir_node) is the sole backend. The builder owns its node
     // arena and must outlive cir_compile()/MIR_gen() — hence it is returned to
@@ -762,8 +1058,22 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     if (cache_mod)
 	cir_prebind_cache_traps(ctx, cache_mod, mod);
     mc_lap("cache traps");
+    // -static-libmadc: merge the AOT-ledger runtime modules this program
+    // needs BEFORE the link, so the eager object-mode gen puts their code in
+    // the capture. Object mode only — the JIT lane resolves the same symbols
+    // out of the live libmadc it is already running inside.
+    if (madc_object_mode)
+	cir_ledger_pull(ctx, prog);
+    mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
+    // Object mode never reads import addresses (cir_object_import_resolver),
+    // so it needs no runtime loaded — its DT_NEEDED comes from
+    // cir_native_link_env. prog == NULL is the frozen lane, which recreates
+    // its recorded link environment in build_frozen and falls back to the
+    // default flavor here.
+    if (!madc_object_mode)
+	cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     if (cache_mod) {
 	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
 	// link, which for the 4290-func cache module costs ~0.8s per compile.
@@ -996,6 +1306,14 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 	    return false;
 	}
 
+	// MADC_THAW_DUMP_TREE=<path>: dump the materialized tree AS THAWED —
+	// side B of the freeze/thaw round-trip diff (side A is
+	// MADC_FREEZE_DUMP_TREE in madc_cir_freeze).
+	if (const char *dp = getenv("MADC_THAW_DUMP_TREE")) {
+	    FILE *df = fopen(dp, "w");
+	    if (df) { c2mir_dump_tree(c2m, df, root->as_node()); fclose(df); }
+	}
+
 	// The same validity gate as a live build: never hand c2mir a tree
 	// containing error/incomplete nodes.
 	if (int nerr = cir_report_errors(stderr, root->as_node())) {
@@ -1162,6 +1480,15 @@ static bool cir_write_image_file(const char *out_path, void *buf, size_t size,
 // at emit, no post-link surgery).
 const char *madc_pack_forest_path = NULL;
 
+// -static-libmadc (S5): merge the AOT-ledger runtime into the emitted image
+// instead of depending on libmadc at run time. See madc_cir.h.
+bool madc_static_libmadc = false;
+
+// -fno-eval-shims: this artifact will never be host-called through the value
+// ABI, so the __madc_shim_* adapters (and their Tier-B madc_value_* imports)
+// are left out. See madc_cir.h.
+bool madc_no_eval_shims = false;
+
 // Load + validate the container with the production reader — an emitted
 // binary carrying an unopenable carrier would ship dead weight silently,
 // so a non-container file fails the emit loudly instead.
@@ -1262,9 +1589,64 @@ bool CirJitSession::emit_native_object(const char *out_path)
 // that does not resolve, or resolves outside every cover (including into the
 // madc runtime itself — statically linked into this executable, so dladdr
 // reports the self exe), is NOT covered.
+#ifdef MADC_CROSS_TARGET
+// Is `name` a symbol the MADC RUNTIME owns — i.e. one libmadc itself defines?
+// dladdr the process's definition and compare the defining image against this
+// madc's own (the shared libmadc, or the executable in the monolithic shape,
+// where a static libmadc IS the exe's text).
+static bool cir_symbol_from_madc_image(const char *name)
+{
+    void *addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr)
+	return false;
+    Dl_info info;
+    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+	return false;
+    char real[PATH_MAX];
+    std::string img = realpath(info.dli_fname, real) ? real : info.dli_fname;
+    return img == madc_self_lib_path() || img == madc_self_exe_path();
+}
+#endif
+
 static bool cir_import_covered(const char *name,
 			       const std::vector<std::string> &covers)
 {
+#ifdef MADC_CROSS_TARGET
+    // A CROSS build's target system libraries are not this host's: dlsym here
+    // sees the host's libc, so "does the target's libc provide __stderrp"
+    // (darwin's backing symbol for stderr) simply cannot be probed — it is
+    // absent from glibc, and the old answer, "uncovered", made every darwin
+    // program touching stderr look like it needed the madc runtime.
+    // The question that IS answerable, and the one the runtime-need analysis
+    // actually asks, is "does LIBMADC define this?" — libmadc is loaded in
+    // this very process. Anything it does not define belongs to the target
+    // system, exactly as with any cross compiler: a genuinely missing symbol
+    // surfaces at the target's loader, not as a bogus madc-runtime refusal.
+    (void)covers;
+    return !cir_symbol_from_madc_image(name);
+#else
+    // Ask each cover library DIRECTLY first: does IT define this symbol?
+    // dladdr answers "where does the process's winning definition live",
+    // which is the wrong question for a COPY-relocated libc data symbol —
+    // `stderr`/`stdout`/`environ` are copied into bin/madc's own .bss by the
+    // static linker, so dladdr reports the executable and the symbol looked
+    // uncovered (every AOT program touching stderr kept a needless
+    // libmadc.so.0 DT_NEEDED; under -static-libmadc it would refuse
+    // outright). RTLD_NOLOAD: these libraries are already mapped — we are
+    // interrogating them, never loading anything new.
+    for (const std::string &c : covers) {
+	if (c.find(".so") == std::string::npos
+	    && c.find(".dylib") == std::string::npos)
+	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
+			// prefix cover, handled by the dladdr pass below
+	void *h = dlopen(c.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+	if (!h)
+	    continue;
+	void *sym = dlsym(h, name);
+	dlclose(h);
+	if (sym)
+	    return true;
+    }
     void *addr = dlsym(RTLD_DEFAULT, name);
     if (!addr)
 	return false;
@@ -1281,49 +1663,97 @@ static bool cir_import_covered(const char *name,
 	    return true;
     }
     return false;
+#endif
 }
 
-// Does the image actually need the madc runtime? Walk every module in the
-// context, collect the names its items DEFINE, and classify each IMPORT that
-// no module defines (in --project the TUs satisfy each other's imports
-// in-context). If every external import is covered by the non-madc DT_NEEDED
+// Does the image actually need the madc runtime? Classify the program's
+// external references: if every one is covered by the non-madc DT_NEEDED
 // entries, the produced binary is runtime-free and libmadc.so.0 can be
-// dropped. Any uncovered import — a madc runtime symbol, or a symbol only
+// dropped. Any uncovered one — a madc runtime symbol, or a symbol only
 // reachable through libmadc's dependency closure — keeps the dependency
 // (conservative: false negatives cost one extra DT_NEEDED, false positives
 // break the binary at load).
-static bool cir_image_needs_madc_runtime(MIR_context_t ctx,
-					 const std::vector<std::string> &covers)
+//
+// The reference LIST is the parameter, not its source, because the two lanes
+// carry the program differently: from source it is the context's unresolved
+// module imports (in --project the TUs satisfy each other's in-context), and in
+// the .o link lane it is the merged builder's UNDEF symbols (unification
+// already netted out cross-object references). One classifier, both lanes.
+static void cir_filter_uncovered(const std::vector<std::string> &imports,
+				 const std::vector<std::string> &covers,
+				 std::vector<std::string> &out)
 {
-    std::set<std::string> defined;
-    std::vector<std::string> imports;
-    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
-	 m; m = DLIST_NEXT(MIR_module_t, m)) {
-	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
-	     it = DLIST_NEXT(MIR_item_t, it)) {
-	    if (it->item_type == MIR_import_item) {
-		imports.push_back(it->u.import_id);
-		continue;
-	    }
-	    if (it->item_type == MIR_export_item
-		|| it->item_type == MIR_forward_item
-		|| it->item_type == MIR_proto_item)
-		continue;
-	    const char *nm = MIR_item_name(ctx, it);
-	    if (nm && nm[0])
-		defined.insert(nm);
-	}
-    }
-    for (const std::string &imp : imports) {
-	if (defined.count(imp))
-	    continue;
+    out.clear();
+    for (const std::string &imp : imports)
 	if (!cir_import_covered(imp.c_str(), covers)) {
 	    DBG(std::cout << "native image needs madc runtime: import '"
 			  << imp << "' is not covered by base/user libs"
 			  << std::endl);
-	    return true;
+	    out.push_back(imp);
 	}
+}
+
+static bool cir_imports_need_madc_runtime(const std::vector<std::string> &imports,
+					  const std::vector<std::string> &covers)
+{
+    std::vector<std::string> uncovered;
+    cir_filter_uncovered(imports, covers, uncovered);
+    return !uncovered.empty();
+}
+
+// The merged builder's unresolved references — the .o link lane's answer to
+// "what does this program still import?".
+static void cir_object_undef_names(MIR_object_t obj,
+				   std::vector<std::string> &out)
+{
+    out.clear();
+    const char *nm;
+    for (size_t i = 0; (nm = MIR_object_undef_name(obj, i)) != NULL; i++)
+	out.push_back(nm);
+}
+
+// -static-libmadc verification (S5). The ledger pull already merged every
+// Tier-A piece this program selected, so anything still uncovered is Tier B —
+// the C++ script-lane runtime, which exists only as host-toolchain objects.
+// Refuse LOUDLY and name the symbols: the same contract the Apple cross lane
+// ships, and the only honest answer (silently keeping the dependency would
+// break the flag's whole promise). True = clear to emit.
+// `hint` is an extra, lane-specific line of "what to do about it" printed
+// after the symbol list — the .o link lane can name a concrete fix its inputs
+// were built without, which the source lanes have no equivalent of.
+static bool cir_static_libmadc_verify(const std::vector<std::string> &imports,
+				      const char *out_path,
+				      const std::vector<std::string> &covers,
+				      const char *hint = NULL)
+{
+    std::vector<std::string> uncovered;
+    cir_filter_uncovered(imports, covers, uncovered);
+    if (uncovered.empty())
+	return true;
+    if (!cir_ledger_available) {
+	// No ledger reached the pull at all: this madc's carrier chain found
+	// no container, or the container carries no ledger segment (packed
+	// without --freeze-ledger=, or --with-forest=none). A build problem, not a
+	// program one — say so instead of blaming the program's symbols.
+	fprintf(stderr, "madc: %s: -static-libmadc needs this madc's AOT"
+		" ledger, and no carrier provided one (%zu runtime symbol(s)"
+		" would be unresolved). A packed madc carries the ledger in"
+		" its forest container; point at one with --forest-bind=<file>"
+		" (or a madc.ini forest key) or use an installed/release"
+		" build.\n",
+		out_path, uncovered.size());
+	return false;
     }
+    fprintf(stderr, "madc: %s: -static-libmadc cannot cover %zu runtime"
+	    " symbol(s) — they are not on the AOT ledger (Tier B: the C++"
+	    " script-lane runtime, which exists only as host-toolchain"
+	    " objects):\n", out_path, uncovered.size());
+    for (const std::string &s : uncovered)
+	fprintf(stderr, "    %s\n", s.c_str());
+    if (hint)
+	fprintf(stderr, "%s", hint);
+    fprintf(stderr, "madc: link against libmadc instead (drop"
+	    " -static-libmadc), or keep the program on the C lane\n");
     return false;
 }
 
@@ -1378,7 +1808,17 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // libmadc.so.0 DT_NEEDED — it runs on hosts without madc installed.
     std::vector<std::string> other;
     bool have_madc = cir_split_needed(needed, other);
-    bool drop_madc = have_madc && !cir_image_needs_madc_runtime(ctx, other);
+    std::vector<std::string> imports;
+    cir_ctx_unresolved_imports(ctx, imports);
+    // -static-libmadc: the ledger pull ran before the link, so the runtime is
+    // IN the capture. Verify nothing madc-side is left over, then drop the
+    // dependency unconditionally — that is the flag's whole promise.
+    if (madc_static_libmadc
+	&& !cir_static_libmadc_verify(imports, out_path, other))
+	return false;
+    bool drop_madc = have_madc
+		     && (madc_static_libmadc
+			 || !cir_imports_need_madc_runtime(imports, other));
     DBG(std::cout << "native image DT_NEEDED: libmadc.so.0 "
 		  << (drop_madc ? "dropped (runtime-free)"
 				: (have_madc ? "kept" : "absent"))
@@ -1391,7 +1831,8 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // fail at emit, not at dyld.
     if (have_madc && !drop_madc) {
 	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-		" not exist for Mach-O targets (runtime-free programs only)\n",
+		" not exist as a library for Mach-O targets; build it into the"
+		" image with -static-libmadc (C-lane machinery only)\n",
 		out_path);
 	return false;
     }
@@ -1449,7 +1890,12 @@ static std::string cir_selfexe_libdir(void)
 // builtin exports, libz/libzstd, libpthread), the C++/C runtimes, and
 // the user's -l libraries ("-lfoo" → the same lib<foo>.so spelling the
 // JIT dlopen lane uses; a path form passes through verbatim).
-static void cir_native_link_env(const std::vector<std::string> &user_libs,
+// The C++ runtime set is the ACTIVE stdlib flavor's own (probed from its
+// toolchain at build time — madc_stdlib_flavor::link_libs), never a host
+// #ifdef: a -stdlib=libc++ emit from a libstdc++-built madc names
+// libc++.so.1. NULL flavor = the build default (table entry 0).
+static void cir_native_link_env(const madc_stdlib_flavor *flavor,
+				const std::vector<std::string> &user_libs,
 				std::vector<std::string> &needed,
 				std::string &runpath)
 {
@@ -1462,11 +1908,20 @@ static void cir_native_link_env(const std::vector<std::string> &user_libs,
     // Prefix-matched, so the bare stems cover every versioned dylib name.
     // (The Apple emit gate never turns these into load commands — the
     // emitter links implicit libSystem only.)
+    (void)flavor;
     needed.push_back("libc++");
     needed.push_back("libsystem_");
     needed.push_back("libSystem");
 #else
-    needed.push_back("libstdc++.so.6");
+    if (!flavor)
+	flavor = &madc_stdlib_flavors[0];
+    if (flavor->link_libs && flavor->link_libs[0])
+	for (int i = 0; flavor->link_libs[i]; i++)
+	    needed.push_back(flavor->link_libs[i]);
+    else
+	// No probed link set (no compiler at build time): the historical
+	// GNU default this binary was linked against itself.
+	needed.push_back("libstdc++.so.6");
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
@@ -1492,8 +1947,11 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // Standalone executables skip the __madc_shim_* eval adapters (Pass
     // 0.74): nothing can host-call them, and dropping their madc_value_*
     // imports keeps pure programs runtime-free. Objects and shared objects
-    // keep the shims — they are the embedding / run-objects eval contract.
-    prog->aot_skip_eval_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+    // keep the shims — they are the embedding / run-objects eval contract —
+    // unless the build says otherwise with -fno-eval-shims (a .o headed for a
+    // standalone -static-libmadc link).
+    prog->aot_skip_eval_shims = madc_no_eval_shims
+			     || kind == mnkExecutable || kind == mnkPieExecutable;
 #ifdef MADC_CROSS_TARGET
     // Emit-only cross build: .o's can never feed the (refused) in-process
     // eval lane, so only -shared keeps the embedding shims — they carry
@@ -1516,7 +1974,8 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
     // directly — no external toolchain.
     std::vector<std::string> needed;
     std::string runpath;
-    cir_native_link_env(user_libs, needed, runpath);
+    cir_native_link_env(prog->active_stdlib_flavor(), user_libs, needed,
+			runpath);
     return session.emit_native_executable(out_path, needed, runpath,
 					  kind) ? 0 : -1;
 }
@@ -1643,13 +2102,36 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
 
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
-			  const std::vector<std::string> &user_libs)
+			  const std::vector<std::string> &user_libs,
+			  Program *prog)
 {
     // No compile happens here — the inputs are already captures; the fork
     // does the whole link (read/merge + emit).
     MIR_object_t obj = cir_read_objects(paths);
     if (!obj)
 	return -1;
+    // -static-libmadc: the runtime pieces this program needs come in as one
+    // more relocatable, generated from the AOT ledger against the merged
+    // builder's own UNDEF names. -r never reaches here (the CLI requires a
+    // linked output), so the runtime is merged exactly once, at the link that
+    // produces the image — gcc's -static-libgcc placement.
+    if (madc_static_libmadc) {
+	std::vector<std::string> seed;
+	cir_object_undef_names(obj, seed);
+	std::vector<uint8_t> rt;
+	if (!cir_ledger_relocatable(prog, seed, rt)) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	char err[256];
+	if (!rt.empty()
+	    && MIR_object_read(obj, rt.data(), rt.size(), err, sizeof err) != 0) {
+	    fprintf(stderr, "madc: -static-libmadc: cannot merge the AOT-ledger"
+		    " runtime: %s\n", err);
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+    }
     bool ok = false;
     void *buf = NULL;
     size_t size = 0;
@@ -1662,23 +2144,34 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
     } else {
 	std::vector<std::string> needed;
 	std::string runpath;
-	cir_native_link_env(user_libs, needed, runpath);
+	cir_native_link_env(prog ? prog->active_stdlib_flavor() : NULL,
+			    user_libs, needed, runpath);
 	// Conditional libmadc.so.0, same policy as the source lanes; here
 	// the external imports are the merged builder's UNDEF names
-	// (unification already netted out cross-object references).
+	// (unification already netted out cross-object references, and the
+	// ledger merge above already satisfied every piece it carries).
 	std::vector<std::string> other;
 	bool have_madc = cir_split_needed(needed, other);
-	bool need_rt = false;
-	const char *imp;
-	for (size_t i = 0; !need_rt && (imp = MIR_object_undef_name(obj, i));
-	     i++)
-	    if (!cir_import_covered(imp, other)) {
-		DBG(std::cout << "linked image needs madc runtime: import '"
-			      << imp << "' is not covered by base/user libs"
-			      << std::endl);
-		need_rt = true;
-	    }
-	bool drop_madc = have_madc && !need_rt;
+	std::vector<std::string> imports;
+	cir_object_undef_names(obj, imports);
+	// -static-libmadc: same contract as the source lanes — anything still
+	// uncovered is Tier B, so refuse loudly rather than keep a dependency
+	// the flag promised to remove. The usual cause here is the inputs'
+	// host-call adapters: a `.o` carries them by default (it may feed an
+	// embedding host), and their value-ABI imports are Tier B — so name the
+	// compile-time flag that leaves them out.
+	if (madc_static_libmadc
+	    && !cir_static_libmadc_verify(imports, out_path, other,
+		    "madc: if these are madc_value_* accessors, the inputs carry"
+		    " the __madc_shim_* host-call adapters; recompile the"
+		    " objects with -fno-eval-shims for a standalone static"
+		    " link\n")) {
+	    MIR_object_destroy(obj);
+	    return -1;
+	}
+	bool drop_madc = have_madc
+			 && (madc_static_libmadc
+			     || !cir_imports_need_madc_runtime(imports, other));
 	DBG(std::cout << "linked image DT_NEEDED: libmadc.so.0 "
 		      << (drop_madc ? "dropped (runtime-free)"
 				    : (have_madc ? "kept" : "absent"))
@@ -1723,8 +2216,15 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 }
 
 int madc_cir_run_objects(const std::vector<std::string> &paths,
-			 int argc, char **argv)
+			 int argc, char **argv,
+			 const madc_stdlib_flavor *flavor)
 {
+    // The loader resolves through cir_import_resolver, the same dlsym(RTLD_DEFAULT)
+    // chain the JIT uses, so it needs the same link environment: a .o compiled
+    // -stdlib=libc++ carries mangled-direct imports only libc++/libc++abi export.
+    // Without this, `madc -stdlib=libc++ prog.o` failed with "unresolved symbol:
+    // _ZNSt20bad_array_new_lengthC1Ev" while the JIT lane on the same source ran.
+    cir_open_stdlib_runtime(flavor);
     if (paths.size() == 1)	// the R4b single-cache lane, load-direct
 	return madc_cir_run_object(paths[0].c_str(), argc, argv);
     MIR_object_t obj = cir_read_objects(paths);
@@ -1932,13 +2432,26 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 		return 0;
 	if (!(dd->is_integer() || dd->is_real()))
 		return 0;
+	// Emission is rawtype-driven, but the restored dd's NAME feeds identity
+	// formers (template-binding inst keys, substituted spellings). Flavor
+	// TWINS share a rawtype (dtINT == dtINT32: ddINT "int" at slot 5 shadows
+	// the canonical ddINT32 "int32_t" at slot 9), so "first match" restored
+	// the NON-canonical name and a bound consumer's fresh mints split from
+	// the pack's (the v0.68 release-lane freeze failure). Prefer the twin
+	// THE one builtin table maps to itself; a table-unknown primitive
+	// (int24) keeps the first-match pinning.
+	uint32_t first_match = 0;
 	for (uint32_t slot = 1; slot < MADC_TYPEID_PRIMITIVE_END; ++slot) {
 		DataDef *p = madc_primitive_for_slot(slot);
-		if (p && p->basetype() == BaseType::btSimple
-		      && p->rawtype() == dd->rawtype())
-			return slot;			// first (== canonical) match; emission is rawtype-driven
+		if (!(p && p->basetype() == BaseType::btSimple
+		      && p->rawtype() == dd->rawtype()))
+			continue;
+		if (Program::resolve_builtin_type_spelling(p->name) == p)
+			return slot;			// the canonical flavor
+		if (!first_match)
+			first_match = slot;
 	}
-	return 0;
+	return first_match;
 }
 
 // The typeid to SERIALIZE for a type reached as a member / operand / param /
@@ -2411,6 +2924,10 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
+	if (fd->noexcept_spec == FuncDef::NxTrue)
+		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
+	else if (fd->noexcept_spec == FuncDef::NxUnknown)
+		r.flags |= madc::dis::DF_NOEXCEPT_UNKNOWN;
 	if (fd->is_member_template || !fd->template_param_names.empty())
 		r.flags |= madc::dis::DF_IS_MEMBER_TEMPLATE;	// load skips it (the v6 rule)
 	// FuncDef-intrinsic method metadata available at parse time (emit_symbol / display name).
@@ -2452,6 +2969,20 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 		if (p < fd->param_default_tokens.size()
 		    && !fd->param_default_tokens[p].empty()) {
 			const std::vector<TokenBase *> &toks = fd->param_default_tokens[p];
+			// Env-gated probe (MADC_DEFARG_PROBE=<substr>): print every
+			// serialized default-arg run containing a matching identifier
+			// token — the cross-flavor capture diagnostic (which FuncDef
+			// froze whose substitution). Diagnostic only.
+			{
+				static const char *dap = ::getenv("MADC_DEFARG_PROBE");
+				if (dap && *dap)
+					for (TokenBase *t : toks)
+						if (t && t->type() == TokenType::ttIdentifier
+						    && strstr(((TokenIdent *)t)->spelling(), dap))
+							fprintf(stderr, "DEFARGPROBE fd=%s param=%zu tok=%s\n",
+								fd->name.c_str(), p,
+								((TokenIdent *)t)->spelling());
+			}
 			std::vector<uint8_t> bytes;
 			if (madc_pch::serialize_token_seq(toks, bytes) && !bytes.empty()) {
 				uint32_t cnt = 0;
@@ -2953,6 +3484,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.declaration_only ? 1u : 0u);
 		words.push_back(method.defaulted_or_deleted ? 1u : 0u);
 		words.push_back(method.is_deleted ? 1u : 0u);
+		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
 		words.push_back(method.is_const_method ? 1u : 0u);
 		words.push_back(method.is_member_template ? 1u : 0u);
@@ -2990,6 +3522,22 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		token_run(method.ctor_init_tokens);
 		token_run(method.member_template_decl);
 		token_run(method.member_template_return_tokens);
+		// v36: per-param default token runs ([temp.deduct]/8 SFINAE).
+		words.push_back((uint32_t)method.template_param_defaults.size());
+		for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
+		    token_run(method.template_param_defaults[p]);
+		// v38: per-param CONSTRAINT-type runs (gate the non-type
+		// default fill) — between defaults (v36) and the function-
+		// param type runs (v37), matching the reader's order.
+		words.push_back((uint32_t)method.template_param_constraints.size());
+		for ( size_t p = 0; p < method.template_param_constraints.size(); ++p )
+		    token_run(method.template_param_constraints[p]);
+		// v37: per FUNCTION-parameter TYPE token runs (the OTHER
+		// [temp.deduct]/8 half — SFINAE in a param type,
+		// `typename _Up::iterator_category* = nullptr`).
+		words.push_back((uint32_t)method.param_type_token_runs.size());
+		for ( size_t p = 0; p < method.param_type_token_runs.size(); ++p )
+		    token_run(method.param_type_token_runs[p]);
 	    }
 	    words.push_back((uint32_t)node.using_members.size());
 	    for ( size_t u = 0; u < node.using_members.size(); ++u )
@@ -3075,13 +3623,24 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	r.pattern_reason = (uint32_t)pattern_reason;
 	// v24: a pattern CAPTURED in the TU's root file (the program's own
 	// templates) is fenced from the bind restore. Provenance = the first
-	// body/decl token carrying a file.
+	// body/decl token carrying a file; a record with no body run (a
+	// decl-only member template's return range, a concept's constraint)
+	// derives it from the constraint run instead.
+	bool fenced_provenance = false;
 	for (TokenBase *t : body)
 		if (t && t->file) {
 			if (prog->forest_is_tu_root_file(t->file))
 				r.flags |= CIR_TMPLF_TU_ROOT;
+			fenced_provenance = true;
 			break;
 		}
+	if (!fenced_provenance)
+		for (TokenBase *t : constraint)
+			if (t && t->file) {
+				if (prog->forest_is_tu_root_file(t->file))
+					r.flags |= CIR_TMPLF_TU_ROOT;
+				break;
+			}
 	// Serialize every run's TOKEN BYTES before appending any payload words,
 	// then lay the params + run table down contiguously (resolve-first).
 	std::vector<cir_forest_token_run> runs;
@@ -3247,7 +3806,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -3257,7 +3817,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 fd.owner_class,
 		 fd.instance_method ? CIR_TMPLF_INSTANCE_METHOD : 0,
 		 fd.typeparams, fd.typeparam_is_type, fd.typeparam_is_pack,
-		 fd.typeparam_defaults, fd.decl, no_toks, no_multi, NULL,
+		 fd.typeparam_defaults, fd.decl, no_toks,
+		 fd.typeparam_constraints, NULL,
 		 Program::ClassParseReason::None);
 	return false;
     });
@@ -3285,23 +3846,50 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
     // registration over the restored tokens, so every derived field
     // (return-token range, spellings, static/instance, ctor-hood) reproduces
     // by the one production path. An owner not in the arena cleanly lacks.
+    // v34: DECL-ONLY member templates (the __do_common_type_impl::_S_test
+    // SFINAE shape) retain no decl tokens — only the dependent return-type
+    // range, which rides the record's otherwise-empty constraint-run slot;
+    // the flush stamps the restored placeholder's fields directly. Without
+    // the record a thawed decltype(_S_test<...>(0)) fell to the placeholder's
+    // implicit 64-bit return (LOADED != parsed, silent wrong answer).
     for (funcdef_map_iter fi = prog->funcdef_map.begin();
 	 fi != prog->funcdef_map.end(); ++fi) {
 	FuncDef *fd = fi->second;
-	if (!fd || !fd->is_member_template || fd->member_template_decl.empty())
+	if (!fd || !fd->is_member_template)
 	    continue;
+	bool body_bearing = !fd->member_template_decl.empty();
+	if (!body_bearing && fd->member_template_return_tokens.empty())
+	    continue;	// nothing restorable: no body, no return range
 	DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
 	if (!owner)
 	    continue;
 	DataDefPTR *p0 = fd->parameters.empty()
 		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
 	bool instance = p0 && p0->base_type == owner;
+	// v36 semantics on the UNCHANGED record layout: the per-param default
+	// runs (always in the layout, previously written empty here) now carry
+	// the member template's [temp.deduct]/8 SFINAE defaults
+	// (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
+	if (::getenv("MADC_XTEST_VRI_DEBUG")) {
+		size_t nd = 0;
+		for (size_t di = 0; di < fd->member_template_param_defaults.size(); ++di)
+			nd += fd->member_template_param_defaults[di].size();
+		fprintf(stderr, "[vriprobe] FREEZE member %s defaults=%zu toks=%zu\n",
+			fd->method_display_name.c_str(),
+			fd->member_template_param_defaults.size(), nd);
+	}
+	// v38: the per-param CONSTRAINT runs ride the record's spec slot —
+	// the same convention the FN lane adopted at v33 for its
+	// typeparam_constraints. A reader of an older record sees spec
+	// empty and degrades to clearing every non-type default.
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
 	     std::string(), std::string(), owner,
 	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
 	     fd->template_param_names, fd->template_param_is_type,
-	     fd->template_param_is_pack, no_multi,
-	     fd->member_template_decl, no_toks, no_multi, NULL,
+	     fd->template_param_is_pack, fd->member_template_param_defaults,
+	     fd->member_template_decl,
+	     body_bearing ? no_toks : fd->member_template_return_tokens,
+	     fd->member_template_param_constraints, NULL,
 	     Program::ClassParseReason::None);
     }
 
@@ -3659,20 +4247,62 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	}
 
 	// 5 (v25): USING-DECLARATION function imports — `namespace std {
-	// using ::abort; }` binds namespace_map["std"]["abort"] to the GLOBAL
-	// fn's Variable; that binding is the only record of the import. Reverse-
-	// walk namespace_map for fn entries that are NOT the defining
-	// registration (ns == namespace_name && name == display — the flush
-	// already reproduces those) and record (ns, name, funcdef key); a
-	// mirrored inline-ns entry records redundantly and rebinds the same
-	// Variable first-wins at flush (harmless). A TU-root target's record is
-	// fenced at restore, so its bind cleanly lacks.
+	// using ::abort; }` registers TWO surfaces ([namespace.udecl]): the
+	// namespace_map[ns][name] binding (first-wins) AND membership in
+	// ns::name's overload set. Both must round-trip: a bound consumer
+	// ranking a SMALLER set than the freezing parse resolves a different
+	// winner and mints a DIFFERENT instantiation identity (LOADED==parsed
+	// violation — the release pack's stl_vector.h:428 verify failure).
+	// 5a walks the overload sets for cross-home members (the using-arm is
+	// the only writer of those) and records them FLAGGED; 5b reverse-walks
+	// namespace_map for any remaining fn binding (an import that WON the
+	// map slot is already covered by 5a; a mirrored inline-ns entry
+	// records bind-only and rebinds the same Variable first-wins at flush
+	// — the live mirror grows no sets, so its record must not either). A
+	// TU-root target's record is fenced at restore, so its bind cleanly
+	// lacks.
 	{
 		std::map<FuncDef *, std::string> fd_keys;
 		for (funcdef_map_iter fit = prog->funcdef_map.begin();
 		     fit != prog->funcdef_map.end(); ++fit)
 			if (fit->second)
 				fd_keys[fit->second] = fit->first;
+		std::set<std::string> recorded;	// ns \x01 name \x01 key
+		// 5a: overload-set MEMBERSHIP (flagged records).
+		for (const auto &osi : prog->namespace_fn_overload_sets) {
+			size_t sep = osi.first.rfind("::");
+			if (sep == std::string::npos || sep == 0)
+				continue;	// global-scope key ("::name"): no ns to rebind
+			std::string ns   = osi.first.substr(0, sep);
+			std::string name = osi.first.substr(sep + 2);
+			for (size_t ei = 0; ei < osi.second.size(); ++ei) {
+				const Program::NamespaceFnOverload &e = osi.second[ei];
+				if (!e.var || !e.var->type
+				    || (!e.param_spelling.empty()
+					&& e.param_spelling[0] == '\x01'))
+					continue;	// the fn-template placeholder seed
+				FuncDef *fd = dynamic_cast<FuncDef *>(e.var->type);
+				if (!fd)
+					continue;
+				if (fd->namespace_name == ns
+				    && fd->function_display_name == name)
+					continue;	// home registration: funcs-flush reproduces it
+				std::map<FuncDef *, std::string>::const_iterator
+					ki = fd_keys.find(fd);
+				if (ki == fd_keys.end())
+					continue;
+				recorded.insert(ns + "\x01" + name + "\x01" + ki->second);
+				madc::dis::defrec r;
+				memset(&r, 0, sizeof(r));
+				r.kind    = madc::dis::DK_NSBIND;
+				r.flags   = madc::dis::DF_NSBIND_OVERLOAD_MEMBER;
+				r.ns_id   = a.strings.intern(ns.c_str());
+				r.name_id = a.strings.intern(name.c_str());
+				r.disp_id = a.strings.intern(ki->second.c_str());
+				a.set_def_at(next++, r);
+			}
+		}
+		// 5b: remaining map bindings (bind-only records).
 		for (namespace_map_t::iterator ni = prog->namespace_map.begin();
 		     ni != prog->namespace_map.end(); ++ni) {
 			if (ni->first.empty())
@@ -3692,6 +4322,9 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 					ki = fd_keys.find(fd);
 				if (ki == fd_keys.end())
 					continue;
+				if (recorded.count(ni->first + "\x01" + vi->first
+						   + "\x01" + ki->second))
+					continue;	// 5a already carries bind + join
 				madc::dis::defrec r;
 				memset(&r, 0, sizeof(r));
 				r.kind    = madc::dis::DK_NSBIND;
@@ -3996,6 +4629,12 @@ static void cir_forest_arena_refresh(Program *prog,
 			   : prog->forest_arena.strings.intern(
 				edd->canonical_cpp_spelling().c_str());
 		r.size    = (uint32_t)edd->size;
+		// A FIXED underlying base drives the enum's layout AND its
+		// lowered C type ([dcl.enum]p8, DataDefENUM::set_underlying);
+		// the restore must re-adopt both, so carry the base's type-id
+		// in ref0 (free for DK_ENUM; primitives are pinned ids).
+		r.ref0    = edd->underlying
+			  ? forest_serialize_type_id(edd->underlying) : 0u;
 		// Scoped enumerators: the pseudo-namespace key is the canonical
 		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
 		const std::string &pk = edd->canonical_cpp_spelling().empty()
@@ -4187,8 +4826,191 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
     return ok;
 }
 
+// Serialize one built module to .bmir bytes. Its own frame, for the same
+// reason as cir_ledger_read_module: a longjmp out of the MIR error bracket
+// must not leave the caller's loop variables indeterminate.
+static bool cir_ledger_write_module(MIR_context_t ctx, MIR_module_t mod,
+				    const char *name,
+				    std::vector<uint8_t> &out)
+{
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	cir_mir_cache_sink = NULL;
+	fprintf(stderr, "madc: ledger: %s: MIR error while serializing: %s\n",
+		name, cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    cir_mir_cache_sink = &out;
+    MIR_write_module_with_func(ctx, cir_mir_cache_write_byte, mod);
+    cir_mir_cache_sink = NULL;
+    cir_mir_error_armed = false;
+    return true;
+}
+
+// --- AOT ledger (forest-carriers S5) -------------------------------------
+//
+// Compile each C-lane runtime source through the SAME front end a user
+// program takes (engine -> Program -> tokenize -> parse -> build_tu_module)
+// and serialize the resulting MIR module. The module is target-correct by
+// construction: it is this madc, with this madc's target and headers, so a
+// cross madc packs a cross-target ledger from the identical sources.
+//
+// MADC_RT_TLS is defined EMPTY here: MIR has no thread-local storage, so the
+// ledger's copy of the exception state is process-global (see src/rt/rt_except.c).
+bool madc_cir_ledger_compile(MadcEngine &engine,
+			     const std::vector<std::string> &sources,
+			     std::vector<cir_ledger_module> &out,
+			     Program *restore)
+{
+    out.clear();
+    if (sources.empty())
+	return true;
+
+    // Parse every source before any MIR context exists — tokenize()/parse()
+    // can throw, and a throw inside the MIR bracket would leak the contexts
+    // (the project lane's ordering rule, project_parse_all).
+    std::vector<std::unique_ptr<Program> > parsed;
+    for (const std::string &src : sources) {
+	std::unique_ptr<Program> prog = engine.create_program();
+	prog->colors = true;
+	// A ledger source is madc's OWN runtime: never bind grove state into
+	// it (the container being packed is the one we would bind), and read
+	// it as the C dialect gcc uses for a .c file.
+	prog->registration_policy.enable_forest_bind = false;
+	// A ledger module is madc's own runtime, merged into a program's image
+	// — never host-called through the MadValue ABI. Without this every
+	// exported runtime function would carry a __madc_shim_<sym> adapter
+	// importing madc_value_*, which is exactly the libmadc dependency
+	// -static-libmadc exists to remove.
+	prog->aot_skip_eval_shims = true;
+	prog->add_cli_define("MADC_RT_TLS=");
+	prog->set_language_standard_option("--std=gnu17");
+	TokenProgram *tp = prog->tokenize(src.c_str());
+	if (!tp) {
+	    fprintf(stderr, "madc: ledger: %s: tokenize failed\n", src.c_str());
+	    return false;
+	}
+	if (!prog->parse(tp)) {
+	    fprintf(stderr, "madc: ledger: %s: parse failed\n", src.c_str());
+	    return false;
+	}
+	parsed.push_back(std::move(prog));
+    }
+
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    std::vector<CirBuilder *> builders;
+    bool ok = true;
+    if (!c2m) {
+	fprintf(stderr, "madc: ledger: cir_init failed\n");
+	ok = false;
+    }
+    for (size_t i = 0; ok && i < parsed.size(); i++) {
+	CirBuilder *builder = NULL;
+	bool stop = false;
+	MIR_module_t mod = build_tu_module(ctx, c2m, parsed[i].get(),
+					   sources[i].c_str(),
+					   false, false, false, builder, stop);
+	builders.push_back(builder);
+	if (!mod) {
+	    fprintf(stderr, "madc: ledger: %s: module build failed\n",
+		    sources[i].c_str());
+	    ok = false;
+	    break;
+	}
+	cir_ledger_module lm;
+	lm.name = sources[i];
+	// The DEFINED symbol set is the selection index: every func / data
+	// item the module owns. Imports, protos and forwards define nothing.
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type == MIR_import_item
+		|| it->item_type == MIR_export_item
+		|| it->item_type == MIR_forward_item
+		|| it->item_type == MIR_proto_item)
+		continue;
+	    const char *nm = MIR_item_name(ctx, it);
+	    if (nm && nm[0])
+		lm.syms.push_back(nm);
+	}
+	if (!cir_ledger_write_module(ctx, mod, sources[i].c_str(), lm.bytes)) {
+	    ok = false;
+	    break;
+	}
+	if (lm.bytes.empty() || lm.syms.empty()) {
+	    fprintf(stderr, "madc: ledger: %s: empty module (%zu symbols,"
+		    " %zu bytes)\n", sources[i].c_str(), lm.syms.size(),
+		    lm.bytes.size());
+	    ok = false;
+	    break;
+	}
+	DBG(std::cout << "ledger: " << lm.name << ": " << lm.syms.size()
+		      << " symbols, " << lm.bytes.size() << " bytes"
+		      << std::endl);
+	out.push_back(std::move(lm));
+    }
+    for (CirBuilder *b : builders) delete b;
+    if (c2m)
+	cir_finish(c2m);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    // build_tu_module made each ledger Program the ACTIVE owner of the
+    // process-global token/value/type pools; those Programs die when `parsed`
+    // unwinds, so leaving them active would hand the caller dangling pools
+    // (a freeze interning into freed memory — SIGSEGV, seen 2026-07-26).
+    // Restore whoever was active on entry: this is a side excursion, and it
+    // owns putting the statics back.
+    if (restore)
+	restore->activate_token_pools();
+    if (!ok)
+	out.clear();
+    return ok;
+}
+
+// Serialize the compiled ledger into its container segment payload:
+// header, directory, then the name / symbol / MIR blocks in the same order
+// (the read side is CirFrozenForest::ledger_modules).
+static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
+				 std::vector<uint8_t> &out)
+{
+    cir_forest_ledger_header lh;
+    memset(&lh, 0, sizeof lh);
+    lh.forest_version = CIR_FOREST_FORMAT_VERSION;
+    lh.mir_api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+    lh.module_count = (uint32_t)ledger.size();
+    out.assign((const uint8_t *)&lh, (const uint8_t *)&lh + sizeof lh);
+
+    std::vector<std::string> symblocks;
+    for (const cir_ledger_module &m : ledger) {
+	std::string syms;
+	for (const std::string &s : m.syms) {
+	    syms += s;
+	    syms += '\0';
+	}
+	symblocks.push_back(std::move(syms));
+    }
+    for (size_t i = 0; i < ledger.size(); i++) {
+	cir_forest_ledger_entry e;
+	memset(&e, 0, sizeof e);
+	e.name_bytes = (uint32_t)ledger[i].name.size();
+	e.sym_bytes = (uint32_t)symblocks[i].size();
+	e.mir_bytes = (uint32_t)ledger[i].bytes.size();
+	out.insert(out.end(), (const uint8_t *)&e,
+		   (const uint8_t *)&e + sizeof e);
+    }
+    for (size_t i = 0; i < ledger.size(); i++) {
+	out.insert(out.end(), ledger[i].name.begin(), ledger[i].name.end());
+	out.insert(out.end(), symblocks[i].begin(), symblocks[i].end());
+	out.insert(out.end(), ledger[i].bytes.begin(), ledger[i].bytes.end());
+    }
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append, bool mir_cache)
+		    const char *out_path, bool append, bool mir_cache,
+		    const std::vector<cir_ledger_module> *ledger)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -4225,6 +5047,14 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	    fprintf(stderr, "%s: pack drain: %zu deferred bodies evaluated, "
 		    "%zu left deferred\n", source_name,
 		    db_before > db_after ? db_before - db_after : 0, db_after);
+	// MADC_FREEZE_DUMP_TREE=<path>: dump the translated tree AS FROZEN —
+	// side A of the freeze/thaw round-trip diff (side B is
+	// MADC_THAW_DUMP_TREE in build_frozen).
+	if (tree)
+	    if (const char *dp = getenv("MADC_FREEZE_DUMP_TREE")) {
+		FILE *df = fopen(dp, "w");
+		if (df) { c2mir_dump_tree(c2m, df, tree); fclose(df); }
+	    }
 	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
 	// Rung 1, layer 4 — pack-side c2mir check gate. The drain evaluates
 	// bodies live never compiles, so a defective drained lowering would
@@ -4298,6 +5128,25 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
+		// The flavor runtime the freezing process opened
+		// (cir_open_stdlib_runtime, before the tree build) is part of
+		// the link environment the thaw must recreate: under a
+		// non-default flavor its exports (std::__1::cout, the facet
+		// ids) are not among bin/madc's DT_NEEDED, so a thaw that
+		// reopens only the #load/-l libs leaves every flavor-library
+		// import unresolved (trap-bound). Sonames, so the container
+		// stays machine-portable; dlopen of an already-loaded soname
+		// is a no-op for the default flavor.
+		{
+		    const madc_stdlib_flavor *flavor = prog->active_stdlib_flavor();
+		    if (!flavor)
+			flavor = &madc_stdlib_flavors[0];
+		    if (flavor->link_libs)
+			for (int li = 0; flavor->link_libs[li]; li++)
+			    if (std::find(f.libs.begin(), f.libs.end(),
+					  flavor->link_libs[li]) == f.libs.end())
+				f.libs.push_back(flavor->link_libs[li]);
+		}
 		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
 		f.defines_hash = madc_forest_defines_hash(prog);
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
@@ -4370,6 +5219,31 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 			else
 			    fprintf(stderr, "%s: mir cache: %zu-byte module "
 				    "blob packed\n", source_name, mblob.size());
+		    }
+		}
+		// AOT ledger (--freeze-ledger=): the C-lane runtime as MIR
+		// modules, so -static-libmadc programs carry it inside their
+		// own image. Unlike the mir cache this is NOT best-effort — the
+		// caller asked for a ledger, and a container that silently
+		// lacks one turns every later -static-libmadc into a
+		// Tier-B-looking refusal.
+		if (staged && ledger && !ledger->empty()) {
+		    std::vector<uint8_t> lblob;
+		    cir_ledger_serialize(*ledger, lblob);
+		    if (!w.add_segment(CIR_FOREST_SEG_LEDGER,
+				       SNAP_KIND_CIR_LEDGER,
+				       lblob.data(), lblob.size(), codec,
+				       append ? 15 : 0)) {
+			fprintf(stderr, "%s: ledger: segment add failed\n",
+				source_name);
+			staged = false;
+		    } else {
+			size_t nsym = 0;
+			for (const cir_ledger_module &m : *ledger)
+			    nsym += m.syms.size();
+			fprintf(stderr, "%s: ledger: %zu module(s), %zu symbols,"
+				" %zu bytes packed\n", source_name, ledger->size(),
+				nsym, lblob.size());
 		    }
 		}
 		if (!staged) {
@@ -4484,6 +5358,24 @@ int madc_cir_dump_forest(const char *container_path)
 	if (forest.mir_module_bytes(mblob))
 	    printf("mircache\tbytes=%zu\n", mblob.size());
     }
+    {
+	// AOT ledger (S5): the C-lane runtime this container carries. One
+	// summary line plus one per module — the surface the ledger gate
+	// asserts against, and the answer to "can this madc -static-libmadc?".
+	std::vector<cir_ledger_module> ledger;
+	if (forest.ledger_modules(ledger)) {
+	    size_t nsym = 0, nbytes = 0;
+	    for (const cir_ledger_module &m : ledger) {
+		nsym += m.syms.size();
+		nbytes += m.bytes.size();
+	    }
+	    printf("ledger\tmodules=%zu\tsymbols=%zu\tbytes=%zu\n",
+		   ledger.size(), nsym, nbytes);
+	    for (const cir_ledger_module &m : ledger)
+		printf("ledgermod\t%s\tsymbols=%zu\tbytes=%zu\n",
+		       m.name.c_str(), m.syms.size(), m.bytes.size());
+	}
+    }
     for (size_t i = 0; i < forest.libs().size(); ++i)
 	printf("lib\t%s\n", forest.libs()[i].c_str());
     const std::vector<uint32_t> &canon = forest.canon_order();
@@ -4581,13 +5473,20 @@ static bool project_parse_all(MadcEngine &engine,
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()
 		// falls through to live parse when no container is present.
-		prog->forest_bind_enabled = forest_bind;
+		prog->registration_policy.enable_forest_bind = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
 		prog->class_pattern_live_capture = class_pattern_live_capture;
 		for (const std::string &inc : tu.include_dirs)
 			prog->add_include_dir(inc);
 		for (const std::string &d : tu.defines)
 			prog->add_cli_define(d);
+		if (!tu.stdlib_option.empty()
+		 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+			fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
+				tu.file.c_str(), tu.stdlib_option.c_str(),
+				prog->stdlib_flavor_names().c_str());
+			return false;
+		}
 		if (!tu.std_option.empty())
 			prog->set_language_standard_option("--std=" + tu.std_option);
 		else if (is_c_source_file(tu.file))
@@ -4685,6 +5584,12 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
+	// Same link environment the single-TU JIT builds: the active flavor's
+	// C++ runtime must be loaded before imports are resolved. A project's
+	// TUs share one flavor (the manifest's stdlib_option), so any TU's
+	// Program answers for all of them.
+	if (!parsed.empty() && parsed[0].prog)
+		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
@@ -4753,7 +5658,8 @@ int madc_project_emit_native(MadcEngine &engine,
 	// emit-only cross build — skip the __madc_shim_* eval adapters (see
 	// madc_cir_emit_native); stamped per TU before the CIR builds run.
 	{
-		bool skip_shims = (kind == mnkExecutable || kind == mnkPieExecutable);
+		bool skip_shims = madc_no_eval_shims
+			       || kind == mnkExecutable || kind == mnkPieExecutable;
 #ifdef MADC_CROSS_TARGET
 		skip_shims = skip_shims || kind != mnkShared;
 #endif
@@ -4836,6 +5742,13 @@ int madc_project_emit_native(MadcEngine &engine,
 
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
+	// -static-libmadc: the whole-program capture pulls its AOT-ledger
+	// runtime here, once for the program (not once per TU) — the imports
+	// the TUs satisfy for each other are already netted out by the loads
+	// above. Any TU's Program answers for the carrier; they share one
+	// installation.
+	if (!parsed.empty())
+		cir_ledger_pull(ctx, parsed[0].prog.get());
 	MIR_link(ctx, MIR_set_gen_interface, cir_object_import_resolver);
 	if (madc_debug_info)
 		c2mir_object_attach_debug(ctx);   // R5: whole-program DWARF
@@ -4855,7 +5768,17 @@ int madc_project_emit_native(MadcEngine &engine,
 	else {
 		std::vector<std::string> needed;
 		std::string runpath;
-		cir_native_link_env(user_libs, needed, runpath);
+		// The link's stdlib flavor comes from the manifest: the
+		// first TU that names one (a mixed-flavor project is
+		// already ill-formed). None named = the build default.
+		const madc_stdlib_flavor *flavor = NULL;
+		for (const ProjectTU &tu : manifest.tus)
+			if (!tu.stdlib_option.empty()) {
+				flavor = madc_stdlib_flavor_lookup(
+						tu.stdlib_option);
+				break;
+			}
+		cir_native_link_env(flavor, user_libs, needed, runpath);
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
 					    kind);
 	}

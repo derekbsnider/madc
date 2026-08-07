@@ -1,0 +1,37 @@
+// COLLATERAL definitions of a dependent pattern-body parse survive
+// (task #88). Parsing Tree::construct's body as a parse-once PATTERN
+// eagerly instantiates the CONCRETE class UPtr<Node, Del> (its args name
+// no template parameter); the class and its registrations outlive the
+// pattern build, and the later tsubst body calls its constructor.
+// build_dependent_pattern used to remove the pattern recipe from
+// pending_funcs with a blanket resize that ALSO discarded the ctor's
+// just-parsed definition — the class kept its methods while every body
+// vanished, and tsubst bailed "tsubst body calls un-emittable symbol"
+// (libc++'s __compressed_pair_elem under `cout << string` is the same
+// shape one context deeper). Only the recipe leaves pending_funcs now.
+// The dependent qualified param (DepRef<D,true>::type) keeps the ctor on
+// the exact frontier the libc++ chain exercises.
+// Oracle: g++ and clang++ both print "42".
+#include <cstdio>
+
+template <class D, bool B> struct DepRef { typedef D&& type; };
+struct Node { int v; };
+struct Del { int tag; Del(int t) : tag(t) {} };
+
+template <class P, class D>
+struct UPtr {
+    P* p_;
+    D d_;
+    UPtr(P* p, typename DepRef<D, true>::type d)
+	: p_(p), d_(static_cast<D&&>(d)) {}
+};
+
+template <class T> struct Tree {
+    template <class A> int construct(A a) {
+	Node n; n.v = a;
+	UPtr<Node, Del> h(&n, Del(a));
+	return h.p_->v + h.d_.tag;
+    }
+};
+
+int main() { Tree<int> t; printf("%d\n", t.construct(21)); return 0; }

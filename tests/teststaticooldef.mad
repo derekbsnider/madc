@@ -1,0 +1,23 @@
+// A STATIC member of a class template declared in-class, defined
+// out-of-line (where `static` cannot be repeated — [class.static.mfct]):
+// the deferred body re-parse must NOT default to instance-ness, or the
+// hidden __this shifts every parameter one slot and the LAST is lost
+// ("use of undeclared identifier '__loc'" in libc++'s
+// __num_put<char>::__widen_and_group_int, locale:1051).
+// Oracle: g++ 13 and clang++-18 print "4".
+#include <cstdio>
+template <class T> struct wg {
+	static void f(char *a, T *b, long d);
+	int pad;
+};
+template <class T>
+void wg<T>::f(char *a, T *b, long d) {
+	printf("%d\n", (int)(a[0] - 'a') + (int)d + (int)(b != 0));
+}
+int main()
+{
+	char buf[2] = "b";
+	int arr[2];
+	wg<int>::f(buf, arr, 2L);
+	return 0;
+}

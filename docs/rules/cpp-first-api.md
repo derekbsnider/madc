@@ -19,8 +19,8 @@ internal model gets flattened too early:
 - every future improvement has to preserve an ABI-shaped mistake
 
 madc is already a C++ codebase with object lifetimes, stream abstractions,
-RAII-friendly state, asmjit runtime objects, and parser/compiler ownership
-that are naturally expressed as classes. The clean design path is:
+RAII-friendly state, and parser/compiler ownership that are naturally
+expressed as classes. The clean design path is:
 
 1. shape the real API as C++ classes
 2. make the CLI use that same C++ surface

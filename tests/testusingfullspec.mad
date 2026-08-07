@@ -1,0 +1,28 @@
+// #64 root: `using O = ops<P>;` inside an instantiated fn-template body,
+// where ops' PRIMARY is declared-only and the arg selects a FULL
+// specialization — libc++ __reverse's `using _Ops = _IterOps<_AlgPolicy>`
+// (_IterOps<_ClassicAlgPolicy> is the full spec; primary has no body).
+// Oracle: g++/clang++ print "4"
+#include <cstdio>
+
+namespace lib {
+
+struct pol {};
+template <class P> struct ops;
+template <> struct ops<pol> {
+	static int f(int x) { return x + 1; }
+};
+
+template <class P, class It> int rev(It a, It b) {
+	using O = ops<P>;
+	return O::f((int)(b - a));
+}
+
+}
+
+int main()
+{
+	char buf[4];
+	printf("%d\n", lib::rev<lib::pol>(buf, buf + 3));
+	return 0;
+}

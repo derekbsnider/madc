@@ -1,0 +1,18 @@
+#include <iostream>
+using namespace std;
+// Multi-return with pointer values: receivers are typed by the declared
+// return type (const char*), so the strings print — the old int64-receiver
+// default printed the pointer BITS.
+
+const char *labels()
+{
+	return "alpha", "beta";
+}
+
+int main()
+{
+	x, y := labels();
+	cout << x << endl;
+	cout << y << endl;
+	return 0;
+}

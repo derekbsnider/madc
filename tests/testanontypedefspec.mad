@@ -1,0 +1,28 @@
+// Gate: ONE instantiation key for a template argument spelled through a
+// typedef of an ANONYMOUS aggregate (`typedef struct { ... } astate;`).
+// The parse lane spells the arg "astate"; every DataDef-driven lane (the
+// ClassPattern replay, base-clause substitution) spells the resolved
+// synthetic tag (__anon_N). canonical_arg_key_fragment must map both to the
+// resolved DataDef's registered name, or the explicit specialization goes
+// invisible and the PRIMARY answers — a SILENT wrong value (0 instead of 7,
+// exit 0). The libc++ shape: codecvt<char, char, mbstate_t>'s explicit spec
+// vs the codecvt_byname pattern's base resolve under --freeze-run.
+#include <cstdio>
+
+typedef struct { int x; } astate;
+
+template <class A, class B> struct conv { int tag() { return 0; } };
+template <> struct conv<char, astate> { int tag() { return 7; } };
+
+template <class A, class B> struct derived : conv<A, B> {
+	int t() { return this->tag(); }
+};
+
+int main()
+{
+	derived<char, astate> d;
+	printf("%d\n", d.t());
+	conv<char, astate> c;
+	printf("%d\n", c.tag());
+	return 0;
+}

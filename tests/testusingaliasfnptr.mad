@@ -1,0 +1,21 @@
+// Reducer for Gap{using_alias_function_pointer_type}: a using-alias to a
+// FUNCTION-POINTER type. libc++ __exception/operations.h:29:
+//   using terminate_handler = void (*)();
+// madc: "Expecting ';' after using alias" — the alias arm hand-rolls only
+// `[cv] TYPE * &`; typedef Form 2 owns the (*)(params) machinery.
+#include <stdio.h>
+
+using H = void (*)();
+using G = int (*)(int, int);
+
+void hello() { printf("h\n"); }
+int add(int a, int b) { return a + b; }
+
+int main()
+{
+	H h = hello;
+	G g = add;
+	h();
+	printf("%d\n", g(2, 3));
+	return 0;
+}

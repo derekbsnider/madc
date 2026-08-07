@@ -79,6 +79,45 @@ esac
 WITH_FOREST="$with_forest"
 AC_SUBST([WITH_FOREST])
 
+# Link shape (forest-carriers plan S4, configure axis 1): monolithic (default)
+# links libmadc statically into the CLI — the single-binary, no-installation
+# shape. --enable-shared links the CLI against the shared libmadc instead (the
+# "thin CLI" of a packaged install): one libmadc image serves the CLI and every
+# embedding host, and in the embedded forest carrier the container rides that
+# LIBRARY image, so hosts get the groves for free. libmadc.so is built either
+# way; this axis decides what the CLI links against.
+AC_ARG_ENABLE([shared],
+    [AS_HELP_STRING([--enable-shared],
+        [link the madc CLI against the shared libmadc (thin CLI) instead of linking libmadc statically (default: no)])],
+    [enable_shared_cli="$enableval"],
+    [enable_shared_cli=no])
+case "$enable_shared_cli" in
+    yes) ENABLE_SHARED_CLI=1 ;;
+    no)  ENABLE_SHARED_CLI=0 ;;
+    *) AC_MSG_ERROR([bad value '$enable_shared_cli' for --enable-shared (use yes or no)]) ;;
+esac
+AC_SUBST([ENABLE_SHARED_CLI])
+
+# Config file (forest-carriers plan S6, configure axis 3): may the CLI read a
+# madc.ini? Enabled by default — the standalone developer CLI is the shape that
+# wants one. Turning it OFF removes the file-reading path from the binary
+# entirely (--config= then refuses loudly), which is what an embedding-host
+# build wants: a config file that can redirect where the compiler loads frozen
+# state from is an attack surface for a sandboxed madc. Note that libmadc never
+# reads a config file either way; this axis is about the surface EXISTING, not
+# about who consults it.
+AC_ARG_ENABLE([config-file],
+    [AS_HELP_STRING([--disable-config-file],
+        [build without madc.ini support (embedding-host / sandboxed builds; default: enabled)])],
+    [enable_config_file="$enableval"],
+    [enable_config_file=yes])
+case "$enable_config_file" in
+    yes) ENABLE_CONFIG_FILE=1 ;;
+    no)  ENABLE_CONFIG_FILE=0 ;;
+    *) AC_MSG_ERROR([bad value '$enable_config_file' for --enable-config-file (use yes or no)]) ;;
+esac
+AC_SUBST([ENABLE_CONFIG_FILE])
+
 AC_ARG_ENABLE([madcdat],
     [AS_HELP_STRING([--enable-madcdat], [build madcdat storage/federation support @<:@default=yes@:>@])],
     [enable_madcdat="$enableval"],

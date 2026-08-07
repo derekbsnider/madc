@@ -1,0 +1,42 @@
+// [expr.sizeof]/2 and [expr.alignof]: applied to a REFERENCE, both yield the
+// REFERENT's measure. madc stores a reference as a pointer, so
+// query_datadef_measure — the single point both sizeof and alignof reach —
+// reported 8 for `sizeof(ri)` where `int &ri` binds an int.
+//
+// This stayed invisible while reference-typed results could not be produced in
+// the paths that ask for their size; it surfaced the moment
+// resolve_type_token_range began resolving `T&` correctly (the member-template
+// reference-return fix), because a decltype alias could finally NAME a
+// reference type.
+//
+// Both spellings are asserted: a reference VARIABLE and a reference reached
+// through a decltype alias, over a scalar and over a 40-byte class, so a
+// pointer-sized answer (8) cannot pass by coincidence for either.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	4 40 4 40 4 8
+#include <cstdio>
+
+struct big { char b[40]; };
+
+static int gi = 7;
+static big gb;
+
+using IntRef = decltype(gi);		// int  (decltype of an lvalue NAME is int)
+using BigRef = decltype(gb);		// big
+
+int main()
+{
+	int i = 0;
+	int &ri = i;
+	big g;
+	big &rg = g;
+	printf("%zu %zu %zu %zu %zu %zu\n",
+	       sizeof(ri),		// reference to int   -> 4, not 8
+	       sizeof(rg),		// reference to big   -> 40, not 8
+	       sizeof(IntRef),		// through an alias   -> 4
+	       sizeof(BigRef),		// through an alias   -> 40
+	       sizeof(i),		// the plain controls
+	       sizeof(&i));
+	return 0;
+}

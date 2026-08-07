@@ -1,0 +1,17 @@
+#!../bin/madc
+// [class]p2 injected-class-name inside a plain struct body: `node *left`
+// without the `struct` keyword, plus the elaborated control and a walk.
+// g++/clang: "7 8 8".
+#include <cstdio>
+struct node {
+    int v;
+    node *left;
+    struct node *right;
+};
+int main() {
+    node a, b;
+    a.v = 7; b.v = 8;
+    a.left = &b; a.right = &b; b.left = 0; b.right = 0;
+    printf("%d %d %d\n", a.v, a.left->v, a.right->v);
+    return 0;
+}

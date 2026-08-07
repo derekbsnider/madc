@@ -1,0 +1,7 @@
+// [temp.param]p10: defaults accumulate across redeclarations REGARDLESS of
+// order — libc++ defines istreambuf_iterator before <iosfwd> declares its
+// traits default. Oracle (clang++-18): 7
+template <class A, class B> class X { public: B v; };
+template <class A, class B = int> class X;
+#include <cstdio>
+int main(){ X<char> x; x.v = 7; printf("%d\n", x.v); return 0; }

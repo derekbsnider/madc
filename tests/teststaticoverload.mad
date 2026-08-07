@@ -1,0 +1,39 @@
+// Regression: a NON-template static-member overload set differing only by
+// parameter type was bound by the ARITY pick (first registered) and never
+// re-ranked once the arguments were known — libc++ promote.h's
+// `__numeric_type::__test(float/double/long double)` answered its
+// first-registered overload for every argument, so
+// `__promote<double>::type` came out long double (sizeof 16 vs the
+// g++/clang++ 8 — a SILENT wrong value behind every <math.h> promotion).
+// reselect_static_member_overload now ranks non-template sets through
+// findMethodOverload (concrete, fully-typed args only — a dependent
+// pattern-time argument keeps the arity pick), and score_arg_to_param
+// collapses a reference-typed ARGUMENT to its referent ([expr]/5).
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output
+// "8 4 8 1 2 3 ok".
+#include <cstdio>
+
+struct pick {
+	static void t(...);
+	static float t(float);
+	static double t(char);
+	static double t(int);
+	static double t(double);
+	static long double t(long double);
+};
+
+struct sel {
+	static int f(double)      { return 1; }
+	static int f(float)       { return 2; }
+	static int f(long double) { return 3; }
+};
+
+int main()
+{
+	printf("%d %d %d %d %d %d ok\n",
+	       (int)sizeof(decltype(pick::t(2.5))),
+	       (int)sizeof(decltype(pick::t(1.5f))),
+	       (int)sizeof(decltype(pick::t(7))),
+	       sel::f(2.5), sel::f(2.5f), sel::f((long double)2.5));
+	return 0;
+}

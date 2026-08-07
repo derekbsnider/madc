@@ -1,0 +1,33 @@
+// Gate: SFINAE member-call viability rejects an unrelated pointer argument.
+// [conv.ptr]: the only object-pointer conversions are identity (cv-widening
+// included), derived-to-base, and to/from void*. score_arg_to_param's
+// both-non-class-pointee arm scored ANY pointer viable against ANY pointer
+// parameter (rawtype ? 5 : 4), so detection idioms folded TRUE on members
+// that cannot take the argument: __has_destroy<allocator<Node>, pair*>
+// selected allocator_traits::destroy's __a.destroy arm and every
+// map<K,V> died at the __tree:890 tsubst bail under libc++.
+// Oracle: g++-13 == clang++-18 print "1 0".
+#include <cstdio>
+
+struct A { int x; };
+struct B { int y; };
+
+struct Alloc {
+  void destroy(A* p) {}
+};
+
+template <class T> T&& declv();
+
+template <class T, class P, class = void>
+struct has_destroy { static const int value = 0; };
+template <class T, class P>
+struct has_destroy<T, P, decltype((void)declv<T>().destroy(declv<P>()))> {
+  static const int value = 1;
+};
+
+int main() {
+  printf("%d %d\n",
+    has_destroy<Alloc, A*>::value,
+    has_destroy<Alloc, B*>::value);
+  return 0;
+}

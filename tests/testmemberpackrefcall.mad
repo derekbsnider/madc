@@ -1,0 +1,36 @@
+// A member call with a reference-pack expansion has a hidden receiver before
+// the pack slot. Each expanded value must bind to the concrete winner's
+// reference formal. GCC and Clang pass the original addresses and print 34.
+#include <stdio.h>
+
+int combine(int a, int b)
+{
+	return a * 10 + b;
+}
+
+struct Relay {
+	int result;
+
+	template<class... Values>
+	void consume(Values&... values)
+	{
+		result = combine(values...);
+	}
+
+	template<class... Args>
+	void relay(Args&... args)
+	{
+		consume(args...);
+	}
+};
+
+int main()
+{
+	int a = 3;
+	int b = 4;
+	Relay relay;
+	relay.result = 0;
+	relay.relay(a, b);
+	printf("%d\n", relay.result);
+	return 0;
+}

@@ -41,6 +41,14 @@ extern thread_local bool madc_class_pattern_capture_active;
 // _NSGetExecutablePath on macOS.
 std::string madc_self_exe_path();
 
+// Resolved absolute path of the IMAGE that contains libmadc's own code: the
+// shared library when the CLI/host links libmadc dynamically, the executable
+// itself in the monolithic shape (static libmadc). dladdr on a libmadc-resident
+// symbol; empty when unresolvable. The one self-library discovery point — the
+// forest discovery chain's library-image arm compares it against
+// madc_self_exe_path() to know whether a distinct library carrier exists.
+std::string madc_self_lib_path();
+
 // Host shared-library suffix for dlopen soname synthesis (-l<name>) and
 // native shared-artifact naming.
 #ifdef __APPLE__
@@ -147,6 +155,15 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // including TU defines it — the CIR backend
 			                        // emits a linkonce data binding (STB_WEAK) so
 			                        // per-TU copies merge at a multi-.o link
+			  vfINSTPRODUCT=1048576, // minted while a template was being
+			                        // instantiated (_inst_depth > 0). A DERIVED
+			                        // entity: bind time re-mints it from the
+			                        // pattern, so it is never a header export
+			                        // and never a lookup surface. Same rule
+			                        // pack_tap_name applies to the decl index —
+			                        // this is how the two stay consistent.
+			                        // (Fresh bit: 65536 is RETIRED, and reusing
+			                        // it would misread older serialized flags.)
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
@@ -210,21 +227,30 @@ public:
     // lazy-stamped into the active project table by madc_type_id_for()
     // (Program::type_id_for binds its own table and delegates).
     uint32_t	 type_id;
+    // The underlying type this dd is a NAMESPACE-SCOPE SCALAR TYPEDEF alias
+    // of (std::streamsize -> long's dd), set ONLY by that typedef arm.
+    // [temp.type]: template-argument identity is the canonical type, so the
+    // arg-spelling former desugars through this chain. NULL everywhere else
+    // — in particular for class-scope aliases minted inside templates,
+    // whose DataType is not a reliable identity (a DataType-based desugar
+    // crossed basic_string<char>'s chain with vector<int>'s).
+    DataDef	*scalar_alias_of;
     // Intrinsic provenance for temporary semantic objects born while an
     // isolated class-pattern production parse is active.
     bool	 speculative_class_capture;
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
-	  canonical_swept(false), type_id(0),
+	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(std::string n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
-	  canonical_swept(false), type_id(0),
+	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(const DataDef &other)
 	: _type(other._type), name(other.name), size(other.size),
 	  canonical_cpp_spelling_(other.canonical_cpp_spelling_),
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
+	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
 	      || madc_class_pattern_capture_active) {}
     DataDef &operator=(const DataDef &other)
@@ -237,6 +263,7 @@ public:
 	    canonical_cpp_spelling_ = other.canonical_cpp_spelling_;
 	    canonical_swept = other.canonical_swept;
 	    type_id = other.type_id;
+	    scalar_alias_of = other.scalar_alias_of;
 	}
 	return *this;
     }
@@ -498,6 +525,14 @@ public:
     size_t max_align;	// largest member alignment (for finalizing struct size)
     size_t tag_explicit_align;	// __attribute__((aligned(N))) on the struct TAG (0 = none)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    // `struct X final { }` / `class X final { }` ([class.pre]/4): may not be a
+    // base. Lives HERE, not on DataDefCLASS, because `final` applies to every
+    // class type and a struct is only PROMOTED to DataDefCLASS when it earns it
+    // (object member / NSDMI / nested type) — `struct X final { int x; };` stays
+    // a plain DataDefSTRUCT. Same reasoning as trait_is_class casting to
+    // DataDefSTRUCT. The class head's `final` is consumed so the body parses;
+    // this records it so __is_final can answer.
+    bool struct_is_final = false;
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
@@ -760,10 +795,18 @@ public:
 	    anonymous_aggregates.push_back(AnonymousAggregateInfo(
 		first_member, agg.members.size(), &agg, base_offset));
     }
-    // round struct size up to its overall alignment (for arrays of structs)
-    void finalize()
+    // Round struct size up to its overall alignment (for arrays of structs).
+    // cpp_min_object_size: under C++ semantics ([class]/4, presents_as_cpp())
+    // a completed aggregate with NO members still has sizeof 1 — distinct
+    // objects need distinct addresses. Gated on members.empty() so a GNU
+    // zero-length-array struct (`char x[0];`) keeps size 0 exactly like
+    // g++/clang++ in C++ mode; pure-C callers keep the GNU empty-struct-0
+    // extension by default.
+    void finalize(bool cpp_min_object_size = false)
     {
 	endBitFieldRun();
+	if ( cpp_min_object_size && size == 0 && members.empty() )
+	    size = 1;
 	size = align_up(size, max_align);
     }
     // Apply __attribute__((aligned(N))) to the most recently added member.
@@ -923,6 +966,16 @@ public:
     // defaulted/deleted special member). Record the fact so __is_assignable can
     // report the class as NOT copy-assignable (a wrong "true" would corrupt SFINAE).
     bool has_deleted_copy_assign = false;
+    // Same recording for the dropped SPECIAL-MEMBER CONSTRUCTORS, consumed by
+    // __is_constructible: a deleted default/copy(move) ctor makes the class not
+    // so-constructible; an explicitly-defaulted default ctor keeps the class
+    // default-constructible even beside other user ctors ([class.default.ctor]).
+    bool has_deleted_default_ctor = false;
+    bool has_deleted_copy_ctor = false;
+    bool has_defaulted_default_ctor = false;
+    // And for the dropped DESTRUCTOR, consumed by __is_destructible: a class
+    // whose `~X() = delete` never registers must still answer 0.
+    bool has_deleted_dtor = false;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
     std::vector<std::string> friend_class_names; // class names granted friend access
@@ -950,11 +1003,14 @@ public:
     // Multiple/virtual inheritance (Itanium layout). `bases` lists direct bases;
     // compute_layout() fills each BaseSpec.offset/is_primary, vbase_offset (each
     // shared virtual base -> its offset, appended once at the end),
-    // secondary_vptr_owners (non-primary polymorphic direct bases), and nvsize
-    // (size of the non-virtual portion, where virtual bases begin).
+    // secondary_vptr_owners (every polymorphic base SUBOBJECT off the primary
+    // chain, with its offset in THIS class — direct non-primary bases AND the
+    // interior secondaries of every direct base, transitively; each needs its
+    // own vtable group + ctor vptr stamp), and nvsize (size of the non-virtual
+    // portion, where virtual bases begin).
     std::vector<BaseSpec> bases;
     std::map<DataDefCLASS *, size_t> vbase_offset;
-    std::vector<DataDefCLASS *> secondary_vptr_owners;
+    std::vector<std::pair<DataDefCLASS *, size_t> > secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
     size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed
@@ -1076,8 +1132,13 @@ public:
     // argument type). Returns NULL when no same-name method exists; falls back
     // to the first by-name match when none scores strictly better (e.g. a
     // single, non-overloaded method — same result as findMethod).
+    // obj_cv is the cv-qualification of the implicit object argument
+    // ([over.match.funcs]/4): 1 = const (a non-const member is NOT viable),
+    // 0 = non-const (cv-match breaks score ties), -1 = unknown (the implicit
+    // object parameter does not discriminate — legacy behavior).
     Variable *findMethodOverload(const std::string &name,
-				 const std::vector<const DataDef *> &argtypes);
+				 const std::vector<const DataDef *> &argtypes,
+				 int obj_cv = -1);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.
@@ -1101,6 +1162,11 @@ public:
 };
 
 typedef DataDefCLASS DDClass;
+
+// Canonical [meta.unary.prop] empty-class predicate. The parser uses it for
+// __is_empty and EBO layout; CIR uses the same semantic answer when lowering
+// implicit copies so the C carrier's synthetic one-byte pad is never copied.
+bool trait_is_empty(DataDef *dd);
 
 // data definitions of default base types
 class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void", 0,     DataType::dtVOID) {} };
@@ -1127,6 +1193,13 @@ class DataDefUINT128:   public DataDef { public:
 	virtual size_t alignment() const { return 16; } };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
+// x86-64 SysV: the x87 80-bit extended type, 10 significant bytes but sizeof 16
+// and 16-byte aligned — which is what both canons report and what the generated
+// macro table (__LDBL_MAX__ 1.189e+4932) has always advertised. `long double`
+// used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
+// off the varargs stack and printed nan, and the mangler emitted Itanium `e`
+// for a value passed as a double.
+class DataDefLDOUBLE:   public DataDef { public: DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {} };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1296,9 +1369,37 @@ class DataDefENUM : public DataDef
 {
 public:
     std::string enum_name;
+    // The enumeration's underlying type ([dcl.enum]): the declared fixed
+    // base (`enum E : short`) when present, else computed from the
+    // enumerator range at the definition's close (the canon g++/clang
+    // rule: non-negative -> unsigned int, negatives -> int, wider values
+    // -> the 64-bit twin; scoped unfixed -> int). NULL only for an opaque
+    // declaration — readers fall back to int. Serves __underlying_type,
+    // which both libstdc++'s and libc++'s std::underlying_type are built
+    // on. A FIXED base also drives the enum's LAYOUT via set_underlying
+    // below; the computed base is recorded by direct assignment and keeps
+    // madc's historical int layout (gcc without -fshort-enums: unfixed
+    // enums are int-sized).
+    DataDef *underlying = NULL;
 
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
+
+    // [dcl.enum]p8: sizeof(E) == sizeof(its underlying type). Adopting the
+    // FIXED base's size AND raw type makes struct layout, bit-field
+    // windows, sizeof, and the CIR lowering (append_type_specs' rawtype
+    // switch) all follow with no per-consumer special case — libc++
+    // __format's `enum class : uint8_t` members inside
+    // __parsed_specifications' union assert sizeof == 16.
+    void set_underlying(DataDef *u)
+    {
+	underlying = u;
+	if ( u && u->size )
+	{
+	    size = u->size;
+	    _type = (uint32_t)u->rawtype();
+	}
+    }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT
@@ -1414,6 +1515,7 @@ extern DataDefINT128 ddINT128;
 extern DataDefUINT128 ddUINT128;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
+extern DataDefLDOUBLE ddLDOUBLE;
 extern DataDefSTRUCT ddMAX_ALIGN_T;
 extern DataDefLPSTR ddLPSTR;
 

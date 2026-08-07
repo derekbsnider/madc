@@ -1,0 +1,31 @@
+// #64 root A: a FRIEND function template declared in a class template,
+// defined at namespace scope, accessing the private member from its
+// INSTANTIATED body — libc++ __pad_and_output reads ostreambuf_iterator's
+// private __sbuf_ under the friend grant (ostreambuf_iterator.h:66).
+// Oracle: g++/clang++ print "7"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> class box;
+template <class T> int peek(const box<T> &b);
+
+template <class T> class box {
+	T v;
+	template <class U> friend int peek(const box<U> &b);
+public:
+	box(T x) : v(x) {}
+};
+
+template <class T> int peek(const box<T> &b) {
+	return (int)b.v;
+}
+
+}
+
+int main()
+{
+	lib::box<long> b(7);
+	printf("%d\n", lib::peek(b));
+	return 0;
+}

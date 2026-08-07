@@ -1,0 +1,19 @@
+// operator~ and operator, in ONE namespace must register under DISTINCT
+// keys. They previously both keyed as __ns_N_operator_, so the second
+// declaration re-parsed its parameters into the FIRST one%s shared FuncDef
+// and both bodies emitted under one symbol.
+// (Unary-~/comma ADL DISPATCH on class operands is a separate, still-open
+// feature; this pins registration.) oracle: g++ accepts the declarations.
+#include <cstdio>
+
+namespace N {
+	struct V { int x; };
+	V operator~(V a) { V r; r.x = -a.x - 1; return r; }
+	V operator,(V a, V b) { V r; r.x = a.x * 100 + b.x; return r; }
+}
+
+int main()
+{
+	printf("ok\n");
+	return 0;
+}

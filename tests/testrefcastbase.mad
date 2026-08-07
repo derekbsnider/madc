@@ -1,0 +1,25 @@
+// static_cast<Base&>(derived) selects the BASE SUBOBJECT ([expr.static.cast]p3
+// + [conv.ptr]): the lowering must adjust to the base's static offset and
+// carry the base's type — a secondary base sits at a nonzero offset, so an
+// unadjusted pass-through reads the wrong storage; an unadjusted TYPE made
+// the method receiver a derived-typed pointer (c2mir warning). Member access
+// on the cast result exercises the receiver path (libc++ __compressed_pair's
+// accessor shape, layers 1-3 of task #17).
+// Oracle: g++ 13 == clang++-18 print "42" then "11 22".
+#include <cstdio>
+struct Base { int v; int& get() { return v; } };
+struct Der : private Base {
+public:
+  int& first() { return static_cast<Base&>(*this).get(); }
+};
+struct B1 { long a; long fa() { return a; } };
+struct B2 { long b; long fb() { return b; } };
+struct D : B1, B2 {};
+int main()
+{
+    Der d0; d0.first() = 42;
+    printf("%d\n", d0.first());
+    D d; d.a = 11; d.b = 22;
+    printf("%ld %ld\n", static_cast<B1&>(d).fa(), static_cast<B2&>(d).fb());
+    return 0;
+}

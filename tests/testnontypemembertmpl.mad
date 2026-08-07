@@ -1,0 +1,30 @@
+// A member function template with a NON-TYPE parameter, called with an
+// explicit value argument. The in-class registration recorded typeparams and
+// pack-ness but never TYPE-ness, so every param looked like `typename` and the
+// instantiation failed against the explicit value — leaving the call bound to
+// the declaration-only placeholder (undefined W____align_it MIR import).
+// The value argument here is itself a folded constant expression (the libc++
+// basic_string::__recommend shape). Oracle: g++ and clang++ print "11 32".
+#include <cstdio>
+
+struct W {
+	template <unsigned long __a>
+	static unsigned long __align_it(unsigned long __s)
+	{
+		return (__s + (__a - 1)) & ~(__a - 1);
+	}
+	enum { __alignment = 8 };
+	static unsigned long __recommend(unsigned long __s)
+	{
+		unsigned long __guess =
+		    __align_it < sizeof(int) < __alignment ? __alignment / sizeof(int) : 1 > (__s + 1) - 1;
+		return __guess;
+	}
+	static unsigned long round16(unsigned long __s) { return __align_it<16>(__s); }
+};
+
+int main()
+{
+	printf("%lu %lu\n", W::__recommend(10), W::round16(20));
+	return 0;
+}

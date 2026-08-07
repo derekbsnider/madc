@@ -1,3 +1,4 @@
+#include <string>
 // madc embedded <ns_madc> — script-level runtime eval + expression eval.
 // Declaration-only: the madc:: publics below resolve mangled-direct
 // (Itanium symbols) to the real namespace madc implementations in the

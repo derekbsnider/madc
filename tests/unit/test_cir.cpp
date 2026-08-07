@@ -2297,6 +2297,34 @@ TEST_CASE("CIR: tsubst fans out direct reference-pack call arguments") {
     CHECK(got == 34);
 }
 
+// A member call whose syntactic argument is a reference-pack expansion has a
+// hidden receiver before that slot. The concrete winner has one pointer formal
+// per pack element, so CALL-level replay must pair each expanded Tree-1 value
+// with its formal instead of copying the dereferenced values wholesale.
+TEST_CASE("CIR: tsubst adapts member reference-pack call arguments") {
+    const char *source =
+	"int combine(int a, int b) { return a * 10 + b; }\n"
+	"struct Relay {\n"
+	"    int result;\n"
+	"    template<class... Values> void consume(Values&... values) { result = combine(values...); }\n"
+	"    template<class... Args> void relay(Args&... args) { consume(args...); }\n"
+	"};\n"
+	"int main() { Relay r; int a = 3; int b = 4; r.result = 0; r.relay(a, b); return r.result; }\n";
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source,
+	"<member-pack-ref-call-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 2);
+    CHECK(prog->_tsubst_body_fallbacks == 0);
+    CHECK(prog->_tsubst_body_fallback_profile.empty());
+    CHECK(got == 34);
+}
+
 // Two-tree pack expansion: pointer parameter packs use the same declaration
 // fan-out as references, but the declarator suffix must stay attached to every
 // generated parameter (`Args*... ps` -> `T0* ps__0, T1* ps__1`).

@@ -1,0 +1,17 @@
+// Multi-return loud-reject gate: a multi-return call has no single value —
+// using it anywhere but an N-receiver ':=' is a compile error (the old
+// machinery emitted an ABI-mismatched call).
+#include <iostream>
+using namespace std;
+
+int divide(int a, int b)
+{
+	int q = a / b;
+	return q, a - q * b;
+}
+
+int main()
+{
+	cout << divide(17, 5) << endl;
+	return 0;
+}

@@ -1,0 +1,15 @@
+// #59 root probe: does a CONST-qualified partial specialization match a
+// PLAIN (unqualified) argument? libc++ is_const<long> selected the
+// <_Tp const> true_type spec for plain long inside make_unsigned's chain.
+// Oracle: g++/clang++ print "0 1 0 1"
+#include <cstdio>
+template <class T> struct isc { enum { value = 0 }; };
+template <class T> struct isc<T const> { enum { value = 1 }; };
+template <class T> struct isv { enum { value = 0 }; };
+template <class T> struct isv<T volatile> { enum { value = 1 }; };
+int main()
+{
+	printf("%d %d %d %d\n", (int)isc<long>::value, (int)isc<const long>::value,
+	       (int)isv<long>::value, (int)isv<volatile long>::value);
+	return 0;
+}

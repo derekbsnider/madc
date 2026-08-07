@@ -1,0 +1,31 @@
+// Braced aggregate init of a struct WITH METHODS (class-promoted since the
+// v0.54 struct-earns-class-hood promotion). C++ [dcl.init.aggr]: methods do
+// not disqualify aggregate-ness (no user ctor, no bases, no virtuals), so
+// `SV s = { "hi", 7 };` memberwise-initializes. madc silently DROPPED the
+// initializer for such classes (the class lane deferred to a constructor
+// call that an aggregate never emits) — garbage member reads. Covers a
+// local, a plain-struct control, and a file-scope global.
+// Oracle: g++ 13 and clang++-18 print "h 7 h 7 g 3".
+#include <cstdio>
+
+struct SV {
+    const char *d_;
+    int n_;
+    int probe() const { return 0; }
+};
+
+struct P {
+    const char *d_;
+    int n_;
+};
+
+SV gs = { "gg", 3 };
+
+int main()
+{
+    SV s = { "hi", 7 };
+    P p = { "hi", 7 };
+    printf("%c %d %c %d %c %d\n", s.d_[0], s.n_, p.d_[0], p.n_,
+	   gs.d_[0], gs.n_);
+    return 0;
+}

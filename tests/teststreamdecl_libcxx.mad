@@ -1,0 +1,17 @@
+// istringstream through the <iosfwd> typedef must be a COMPLETE type:
+// the bodyless forward instantiation minted at the typedef (definition
+// arrives with <sstream>) completes on demand, so sizeof measures the
+// real object (was 0 — silent) and a declaration routes to the ctor
+// branch, not the function-declaration parse. The equality form keeps
+// the gate stable across libc++ versions (the invariant, not the bytes).
+// Oracle: clang++ -stdlib=libc++ prints 1.
+#include <sstream>
+#include <cstdio>
+using namespace std;
+
+int main()
+{
+	printf("%d\n", (int)(sizeof(istringstream) == sizeof(basic_istringstream<char>)
+			  && sizeof(istringstream) > 0));
+	return 0;
+}

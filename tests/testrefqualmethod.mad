@@ -1,0 +1,23 @@
+#!../bin/madc
+// Ref-qualified member functions ([dcl.fct]p6): `T& f() & noexcept`,
+// `const T& f() const&` — libc++ __optional_storage_base::__get's shape.
+// Pattern bodies parse only at lazy instantiation, so the missing
+// qualifier arm threw "Expecting brace after function declaration" there
+// (map<K,V> via its node-handle optional).
+#include <cstdio>
+template <class T> struct isref { static const bool value = false; };
+template <class T> struct destruct_base { T v; destruct_base() : v() {} };
+template <class T, bool = isref<T>::value>
+struct storage : destruct_base<T> {
+    T &get2() & noexcept { return this->v; }
+    const T &get2() const & noexcept { return this->v; }
+    bool has() const { return false; }
+};
+template <class T> struct opt { storage<T> s; };
+int main()
+{
+    opt<int> o;
+    o.s.v = 5;
+    printf("%d %d\n", o.s.has() ? 1 : 0, o.s.get2());
+    return 0;
+}

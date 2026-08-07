@@ -1,0 +1,11 @@
+// Auto-include's C++ arm: `string` pulls <string>, `cout`/`endl` pull
+// <iostream> — served through the LITERAL include owner (forest bind / PCH /
+// embedded / filesystem walk). The old injector had a private serving copy
+// covering only PCH/embedded named providers, so retiring the embedded
+// <string>/<sstream> twins broke this arm SILENTLY while the C-header gate
+// (testautoincludestdheaders) stayed green. Bare `endl` additionally proves
+// the madc-dialect DEFAULT namespace preference (c, std, php, ...): endl is
+// a function template, reachable unqualified only through the preference
+// walk. Zero ceremony below is the point — no #include, no using.
+string s = "zero-ceremony";
+cout << s << endl;

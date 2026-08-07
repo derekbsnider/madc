@@ -1,0 +1,38 @@
+// [temp.deduct.type]/5: a template parameter appearing ONLY in the
+// nested-name-specifier of a qualified-id parameter type is in a NON-DEDUCED
+// CONTEXT. Deduction must not be attempted from it, and leaving it unbound is
+// not a failure — it comes from an explicit argument or from its own DEFAULT
+// ([temp.arg.explicit], [temp.deduct]/8).
+//
+// Before the fix madc fed such a parameter to its structural deducers, which
+// failed the candidate: `take<Del>(...)` left the call on its declaration-only
+// placeholder and MIR reported `undefined MIR import: take`. This is libc++'s
+// unique_ptr(pointer, deleter) shape (`_LValRefType<_Dummy>`).
+//
+// Oracle: g++ and clang++ both print "21 21 7".
+#include <cstdio>
+
+template <class D, bool B> struct DepRef { typedef D&& type; };
+template <class T> struct Nested { typedef T type; };
+
+struct Del { int tag; Del(int t) : tag(t) {} };
+
+// The non-type parameter is deducible from NOTHING — only its default binds it.
+template <class D, bool _Dummy = true>
+int take(typename DepRef<D, _Dummy>::type d) { return d.tag; }
+
+// Explicit argument for the same parameter: the pre-existing path, must stay green.
+template <class D, bool _Dummy = true>
+int take_x(typename DepRef<D, _Dummy>::type d) { return d.tag; }
+
+// A `::` NESTED inside a template-id is not the parameter's own
+// nested-name-specifier — the outer template-id still deduces normally.
+template <class T>
+int outer(Nested<typename Nested<T>::type> n, T v) { return (int)sizeof(n) + v; }
+
+int main()
+{
+	printf("%d %d %d\n", take<Del>(Del(21)), take_x<Del, true>(Del(21)),
+	       outer<int>(Nested<int>(), 6));
+	return 0;
+}

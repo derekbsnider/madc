@@ -1,0 +1,44 @@
+// A nested alias expansion may expand an inner type pack fully for each
+// element of an outer non-type pack. Empty and one-element packs both matter.
+// GCC and Clang print 0 1 0 1.
+#include <stdio.h>
+#include <stddef.h>
+
+template<class... Ts>
+struct Types {
+	static const int count = 9;
+};
+
+template<>
+struct Types<> {
+	static const int count = 0;
+};
+
+template<class T>
+struct Types<T> {
+	static const int count = 1;
+};
+
+template<size_t... Is>
+struct Indices {};
+
+template<class TypeList, class IndexList>
+struct Flat;
+
+template<class... Ts, size_t... Is>
+struct Flat<Types<Ts...>, Indices<Is...>> {
+	template<size_t>
+	using element = char;
+
+	template<class Qual>
+	using apply = Types<element<Is>...>;
+};
+
+int main()
+{
+	typename Flat<Types<int>, Indices<>>::template apply<int> empty;
+	typename Flat<Types<int>, Indices<0>>::template apply<int> one;
+	printf("%d %d %d %d\n", Types<>::count, Types<char>::count,
+		empty.count, one.count);
+	return 0;
+}

@@ -1,3 +1,4 @@
+#include <string>
 extern "C" {
     std::string *__js_btoa(std::string *, const char *);
     std::string *__js_atob(std::string *, const char *);

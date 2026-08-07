@@ -1,15 +1,18 @@
 # Class Methods
 
-Classes can have methods that access member variables through a hidden `this` pointer.
+Classes have methods that access member variables through a hidden `this`
+pointer. Members of a `class` default **private** (a `struct`'s default
+public), exactly as in C++ — access control is enforced.
 
 ## Syntax
 
-```c
+```text
 class ClassName {
-    type member;
+    type member;                  // private by default
 
+public:
     rettype method(params) {
-        // body can access member variables directly
+        // the body reads/writes members directly
     }
 };
 ```
@@ -18,55 +21,80 @@ class ClassName {
 
 ```c
 class Counter {
-    int count;
+	int count;
 
-    void inc()
-    {
-        count = count + 1;
-    }
+public:
+	Counter() : count(0) {}
 
-    int get()
-    {
-        return count;
-    }
+	void inc()
+	{
+		count = count + 1;
+	}
+
+	int get()
+	{
+		return count;
+	}
 };
 
 int main()
 {
-    Counter c;
-    c.count = 0;
-    c.inc();
-    c.inc();
-    c.inc();
-    int n = c.get();
-    cout << n << endl;   // output: 3
-    return 0;
+	Counter c;
+	c.inc();
+	c.inc();
+	c.inc();
+	cout << c.get() << endl;
+	return 0;
 }
 ```
 
-## How It Works
-
-**Hidden `__this` parameter:** Each method receives a hidden first argument (`void* __this`) that points to the object instance. Member variable references inside the method body resolve through `__this` plus the member's offset within the struct layout.
-
-**Name mangling:** Method names are mangled as `ClassName__methodName` to avoid collisions with free functions. For the example above, `inc` becomes `Counter__inc` and `get` becomes `Counter__get`.
-
-**Method calls:** `obj.method(args)` compiles to a call to the mangled function with the object's address prepended as the first argument. For stack-allocated objects, LEA is used to compute the address.
+Output: `3`
 
 ## Multiple Instances
 
-Each instance operates on its own data -- the `__this` pointer distinguishes them:
+Each instance operates on its own data — the `this` pointer distinguishes
+them:
 
 ```c
-Counter c;
-Counter d;
-c.count = 0;
-d.count = 10;
-c.inc();           // c.count -> 1
-d.inc();           // d.count -> 11
+class Tally {
+	int n;
+public:
+	Tally(int start) : n(start) {}
+	void inc() { n = n + 1; }
+	int get() { return n; }
+};
+
+int main()
+{
+	Tally a(0);
+	Tally b(10);
+	a.inc();
+	b.inc();
+	cout << a.get() << " " << b.get() << endl;
+	return 0;
+}
 ```
+
+Output: `1 11`
+
+## How It Works
+
+- **Hidden `__this` parameter:** each method receives a hidden first
+  argument pointing at the object; member references in the body resolve
+  as offsets from it.
+- **Symbol naming:** madc-defined methods emit as `ClassName__methodName`;
+  methods of classes that come from real C++ headers (`std::string`, the
+  containers) bind mangled-direct to the real library's Itanium symbols
+  instead.
+- **Calls:** `obj.method(args)` passes the object's address as the hidden
+  first argument. Virtual methods dispatch through the Itanium vtable —
+  see [supported C++ features](cpp-features.md) for inheritance, virtual
+  dispatch, and construction/destruction.
 
 ## Files
 
-- `src/parser.cpp` -- class/method parsing, `__this` parameter injection
-- `src/compiler.cpp` -- method compilation, member resolution through `__this`
-- `include/madc.h` -- class/struct data structures
+- `src/parser.cpp` — class/method parsing, access control, `__this`
+  parameter injection
+- `src/cir_builder.cpp` — method lowering, member resolution through
+  `__this`, vtables
+- `include/madc.h`, `include/datadef.h` — class/struct data structures

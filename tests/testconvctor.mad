@@ -1,0 +1,34 @@
+#!../bin/madc
+// A TEMPLATED CONVERTING CONSTRUCTOR joins the ctor candidate set: the
+// self-name template-id in its parameter (`const alloc9<U> &`) keeps its
+// spelled form through the legacy token-injection lane so the construction
+// KIND can deduce U from the argument's class. Collapsed to the current
+// instantiation it read `alloc9_B(const alloc9_B&)` — a copy-ctor signature
+// — and `alloc9<B> b(a)` threw "no matching constructor". poke()'s eager
+// body (user-file) makes alloc9 pattern-INELIGIBLE, forcing the legacy
+// lane — the libc++ `allocator<__tree_node<...>>(const allocator<pair<
+// const K,V>>&)` shape (__node_handle:84). The mem-init reads o.v so the
+// output proves the converting ctor actually RAN against the source
+// object; the non-const variant guards the plain-ref spelling too.
+#include <cstdio>
+template <class T> struct alloc9 {
+    int v;
+    alloc9() : v(7) {}
+    template <class U> alloc9(const alloc9<U> &o) : v(o.v + 1) {}
+    int poke() { return 1; }
+};
+template <class T> struct alloc8 {
+    int v;
+    alloc8() : v(20) {}
+    template <class U> alloc8(alloc8<U> &o) : v(o.v + 2) {}
+    int poke() { return 1; }
+};
+struct A {}; struct B {};
+int main() {
+    alloc9<A> a;
+    alloc9<B> b(a);
+    alloc8<A> c;
+    alloc8<B> d(c);
+    printf("%d %d %d %d\n", a.v, b.v, c.v, d.v);
+    return 0;
+}

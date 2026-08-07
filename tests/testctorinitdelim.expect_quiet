@@ -1,0 +1,1 @@
+JIT stderr must stay empty — a mis-scanned mem-init list warns before it fails.

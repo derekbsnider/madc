@@ -1009,16 +1009,22 @@ public:
 class TokenReal: public TokenBase
 {
 protected:
-    double _val;
+    // Widest real madc has, so an L-suffixed literal keeps every bit it was
+    // written with. Storing a double here truncated `1.0L` at lex time, before
+    // any type could matter, and no later stage could recover the lost bits.
+    long double _val;
 public:
     std::string source_text;   // original literal text (suffixes like i, iF, f, L)
-    TokenReal() : TokenBase()         { _val = 0; _datatype = &ddDOUBLE; }
-    TokenReal(double v) : TokenBase() { _val = v; _datatype = &ddDOUBLE; }
+    TokenReal() : TokenBase()              { _val = 0; _datatype = &ddDOUBLE; }
+    TokenReal(long double v) : TokenBase() { _val = v; _datatype = &ddDOUBLE; }
     virtual int64_t ival() const override      { return (int64_t)_val; }
-    virtual double dval() const override       { return _val;      }
+    virtual double dval() const override       { return (double)_val; }
+    // Full stored precision — dval() narrows, so a long-double literal must be
+    // read through this on the paths that care (CIR emission, constant folding).
+    long double ldval() const                  { return _val;      }
     virtual TokenType type() const override    { return TokenType::ttReal; }
     virtual TokenID   id()   const override    { return TokenID::tkReal;   }
-    virtual TokenBase *clone() override        { auto *c = new TokenReal(_val); c->source_text = source_text; return c; }
+    virtual TokenBase *clone() override        { auto *c = new TokenReal(_val); c->source_text = source_text; c->_datatype = _datatype; return c; }
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
     virtual void setDataType(DataDef *d) override { if (d && (d->is_real() || d->is_complex())) _datatype = d; }

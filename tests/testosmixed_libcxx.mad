@@ -1,0 +1,19 @@
+// Mixed-type cout chain with a CHAR resolved FIRST, under -stdlib=libc++
+// (bucket-A Root A of the 59-set re-bucket). libc++'s 18 std::operator<<
+// overloads share one fn_template_map key; the instantiation memo keyed on
+// name + bound tparams only, so operator<<(ostream&, char) — both bind
+// <char, char_traits<char>> — claimed the const char* call too: a string
+// literal passed to the char body printed one garbage byte (and the char
+// passed to a char* body SIGSEGVed in the mirror order). The memo now
+// folds the candidate's declaration spelling in as the overload
+// discriminator. Oracle: clang++ -stdlib=libc++ and g++ print x / lit / 42.
+#include <iostream>
+using namespace std;
+int main()
+{
+    char c = 'x';
+    cout << c << "\n";
+    cout << "lit" << "\n";
+    cout << 42 << "\n";
+    return 0;
+}

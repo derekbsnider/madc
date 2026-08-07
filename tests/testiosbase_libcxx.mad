@@ -1,0 +1,14 @@
+// iosbase1.cpp — ios_base layout probe: sizeof + live width/precision/fill
+// reads off the real cout. Oracle (clang++ -stdlib=libc++): see run.
+#include <iostream>
+using namespace std;
+
+int main()
+{
+	cout << sizeof(std::ios_base) << " " << sizeof(std::basic_ios<char>) << "\n";
+	long w = cout.width();
+	long p = cout.precision();
+	int f = (int)cout.fill();
+	cout << w << " " << p << " " << f << "\n";
+	return 0;
+}

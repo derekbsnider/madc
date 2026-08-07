@@ -36,6 +36,7 @@ extern thread_local bool madc_verbose;
 #include "tokens.h"
 #include "datatokens.h"	// Variable (Phase 6 3d: reconstruct method Variables on load)
 #include "madc.h"		// FuncDef (Phase 6 3d: reconstruct method FuncDefs on load)
+#include "madc_sys_includes.h"	// stdlib flavor table (v34 config-word: flavor is config identity)
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
@@ -100,14 +101,30 @@ uint64_t madc_cir_context_hash()
 }
 
 // v27 producer-config gate: the ONE derivation shared by freeze (stamp) and
-// bind (compare). A container parsed under one language standard / -D set
-// must never bind into a compile under another — header CONTENT differs (C
-// vs C++ surface, __STRICT_ANSI__, feature macros). Per-compile state, so it
-// cannot ride the process-invariant context hash above.
+// bind (compare). A container parsed under one language standard / -D set /
+// stdlib FLAVOR must never bind into a compile under another — header
+// CONTENT differs (C vs C++ surface, __STRICT_ANSI__, feature macros; a
+// libstdc++-parsed corpus bound into a -stdlib=libc++ compile served the
+// wrong <stddef.h> and tripped libc++'s <cstddef> #error). Per-compile
+// state, so it cannot ride the process-invariant context hash above.
 uint32_t madc_forest_config_word(const Program *prog)
 {
-	return (uint32_t)prog->language_std
-	     | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
+	uint32_t word = (uint32_t)prog->language_std
+		      | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
+	// The EFFECTIVE flavor name, not the CLI spelling: an explicit
+	// -stdlib=<build default> is the same config as no flag at all.
+	const char *flavor = prog->stdlib_flavor && prog->stdlib_flavor->name
+			   ? prog->stdlib_flavor->name
+			   : madc_default_stdlib_flavor;
+	if (flavor) {
+		uint32_t h = 2166136261u;	// FNV-1a, folded into bits 17..31
+		for (const char *c = flavor; *c; ++c) {
+			h ^= (uint8_t)*c;
+			h *= 16777619u;
+		}
+		word ^= ((h ^ (h >> 15)) & 0x7fffu) << 17;
+	}
+	return word;
 }
 
 uint32_t madc_forest_defines_hash(const Program *prog)
@@ -1470,6 +1487,75 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 	return true;
 }
 
+// AOT ledger read-back (S5). Layout: header, module_count directory entries,
+// then the name / symbol / MIR blocks in directory order. Every length is
+// bounds-checked against the remaining payload — a truncated segment is a
+// loud refusal, never a partial ledger (a half-read ledger would look like a
+// Tier-B program and refuse for the wrong reason).
+bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
+{
+	out.clear();
+	const madc::dis::snapshot_segment *s =
+		_reader.find(CIR_FOREST_SEG_LEDGER);
+	if (!s || s->kind != SNAP_KIND_CIR_LEDGER
+	    || s->raw_size < sizeof(cir_forest_ledger_header))
+		return false;	// no ledger segment: the normal case
+	std::vector<uint8_t> payload;
+	if (!_reader.read_segment(*s, payload)
+	    || payload.size() < sizeof(cir_forest_ledger_header)) {
+		fprintf(stderr, "madc: ledger: malformed segment\n");
+		return false;
+	}
+	cir_forest_ledger_header lh;
+	memcpy(&lh, payload.data(), sizeof(lh));
+	uint32_t api_x100 = (uint32_t)(_MIR_get_api_version() * 100.0 + 0.5);
+	if (lh.forest_version != CIR_FOREST_FORMAT_VERSION
+	    || lh.mir_api_x100 != api_x100) {
+		fprintf(stderr, "madc: ledger: stamp mismatch (forest v%u vs v%u,"
+			" MIR api %u vs %u) — ledger ignored\n",
+			lh.forest_version, (unsigned)CIR_FOREST_FORMAT_VERSION,
+			lh.mir_api_x100, api_x100);
+		return false;
+	}
+	size_t pos = sizeof(lh);
+	size_t dir_bytes = (size_t)lh.module_count * sizeof(cir_forest_ledger_entry);
+	if (lh.module_count == 0 || payload.size() < pos + dir_bytes) {
+		fprintf(stderr, "madc: ledger: truncated directory (%u module(s))\n",
+			lh.module_count);
+		return false;
+	}
+	std::vector<cir_forest_ledger_entry> dir(lh.module_count);
+	memcpy(dir.data(), payload.data() + pos, dir_bytes);
+	pos += dir_bytes;
+	for (const cir_forest_ledger_entry &e : dir) {
+		size_t need = (size_t)e.name_bytes + e.sym_bytes + e.mir_bytes;
+		if (payload.size() - pos < need) {
+			fprintf(stderr, "madc: ledger: truncated payload\n");
+			out.clear();
+			return false;
+		}
+		cir_ledger_module m;
+		m.name.assign((const char *)payload.data() + pos, e.name_bytes);
+		pos += e.name_bytes;
+		// NUL-separated symbol names (a trailing NUL per name, so the
+		// final entry ends the block cleanly).
+		for (size_t i = 0, start = 0; i < e.sym_bytes; i++)
+			if (payload[pos + i] == '\0') {
+				if (i > start)
+					m.syms.push_back(std::string(
+						(const char *)payload.data() + pos + start,
+						i - start));
+				start = i + 1;
+			}
+		pos += e.sym_bytes;
+		m.bytes.assign(payload.begin() + pos,
+			       payload.begin() + pos + e.mir_bytes);
+		pos += e.mir_bytes;
+		out.push_back(std::move(m));
+	}
+	return true;
+}
+
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {
@@ -2158,6 +2244,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		DataDefENUM *edd = new DataDefENUM(std::string(nm));
 		if (r.size)
 			edd->size = r.size;
+		// v27: re-adopt the FIXED underlying base (ref0, a pinned
+		// primitive id) — set_underlying restores size AND raw type
+		// so the restored enum lowers to the same C type the live
+		// parse emitted ([dcl.enum]p8; libc++ `enum class : uint8_t`).
+		if (r.ref0)
+			if (DataDef *u = arena_swizzle(r.ref0, by_id))
+				edd->set_underlying(u);
 		if (r.canon_id)
 			if (const char *cn = a.c_str(r.canon_id))
 				edd->set_canonical_spelling(cn);
@@ -2274,8 +2367,22 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		uint32_t      func_id;
 		std::string   disp;
 		uint32_t      mflags;
+		uint32_t      rec_index;	// methodrec position — order parity
 	};
 	std::vector<PendingMethodImport> pending_method_imports;
+	// Live ORDER parity for using-decl imports: `using _Base_type::construct;`
+	// precedes the class's OWN same-name overloads in the header, so live's
+	// methods vector and first-wins method_map slot hold the IMPORT first.
+	// The restore stages imports for a post-pass (the definer may build
+	// later), which appended them AFTER the own overloads — resolution then
+	// tried the own overload first (LOADED != PARSED; the __alloc_traits
+	// custom-pointer construct shadowing the imported allocator_traits one —
+	// the v0.68 release-lane undefined `__alloc_traits...__construct`).
+	// Track each restored method's methodrec index so the post-pass can
+	// re-insert the import at its recorded position.
+	std::map<DataDefCLASS *, std::vector<uint32_t> > method_rec_indices;
+	std::map<std::pair<DataDefCLASS *, std::string>, uint32_t>
+		method_disp_first_rec;
 
 	// Pass 2: fill each aggregate VERBATIM (offsets / counts / access /
 	// origin / bitfields as stored, no finalize, no re-derivation) — then
@@ -2473,10 +2580,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					    && strncmp(mnm0, (cdd->name + "__").c_str(),
 						       cdd->name.size() + 2) != 0) {
 						PendingMethodImport pi;
-						pi.cdd     = cdd;
-						pi.func_id = md.func_id;
-						pi.disp    = dispkey ? dispkey : "";
-						pi.mflags  = md.flags;
+						pi.cdd       = cdd;
+						pi.func_id   = md.func_id;
+						pi.disp      = dispkey ? dispkey : "";
+						pi.mflags    = md.flags;
+						pi.rec_index = mi;
 						pending_method_imports.push_back(pi);
 						continue;
 					}
@@ -2569,6 +2677,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
+				fd->noexcept_spec =
+					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
+					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
+					: FuncDef::NxNone;
 				fd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				fd->is_void_params =
@@ -2672,7 +2784,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				}
 				_mat_vars.push_back(mv);
 				cdd->methods.push_back(mv);
+				method_rec_indices[cdd].push_back(mi);
 				method_by_func_id[md.func_id] = mv;
+				if (!dispname.empty()
+				    && cdd->method_map.find(dispname)
+				       == cdd->method_map.end())
+					method_disp_first_rec[std::make_pair(
+						cdd, dispname)] = mi;
 				if (!dispname.empty())
 					cdd->method_map[dispname] = mv;
 				if (is_ctor)
@@ -2778,11 +2896,38 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		bool present = false;
 		for (size_t j = 0; j < pi.cdd->methods.size(); ++j)
 			if (pi.cdd->methods[j] == mv) { present = true; break; }
-		if (!present)
-			pi.cdd->methods.push_back(mv);
-		if (!pi.disp.empty()
-		    && pi.cdd->method_map.find(pi.disp) == pi.cdd->method_map.end())
-			pi.cdd->method_map[pi.disp] = mv;
+		if (!present) {
+			// Order parity: insert at the import's methodrec position
+			// among this class's restored methods, exactly where the
+			// live class-body parse placed it (using-decl first).
+			std::vector<uint32_t> &recs = method_rec_indices[pi.cdd];
+			size_t pos = 0;
+			while (pos < recs.size() && recs[pos] < pi.rec_index)
+				++pos;
+			if (pos > pi.cdd->methods.size())
+				pos = pi.cdd->methods.size();
+			pi.cdd->methods.insert(pi.cdd->methods.begin() + pos, mv);
+			recs.insert(recs.begin() + pos, pi.rec_index);
+		}
+		if (!pi.disp.empty()) {
+			std::map<std::pair<DataDefCLASS *, std::string>,
+				 uint32_t>::iterator fr =
+				method_disp_first_rec.find(
+					std::make_pair(pi.cdd, pi.disp));
+			// First-wins parity: the import owns the method_map slot
+			// when its methodrec precedes every own claimant's (live:
+			// the using-decl came first in the class body).
+			if (pi.cdd->method_map.find(pi.disp)
+			    == pi.cdd->method_map.end()
+			    || (fr != method_disp_first_rec.end()
+				&& pi.rec_index < fr->second)
+			    || fr == method_disp_first_rec.end())
+				pi.cdd->method_map[pi.disp] = mv;
+			if (fr == method_disp_first_rec.end()
+			    || pi.rec_index < fr->second)
+				method_disp_first_rec[std::make_pair(
+					pi.cdd, pi.disp)] = pi.rec_index;
+		}
 		if (pi.mflags & madc::dis::MF_CTOR)
 			pi.cdd->ctors.push_back(mv);
 	}
@@ -2834,6 +2979,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			b.ns   = r.ns_id ? a.c_str(r.ns_id) : NULL;
 			b.name = r.name_id ? a.c_str(r.name_id) : NULL;
 			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
+			b.ov_member =
+				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
 				_restored_nsbinds.push_back(b);
 		} else if (r.kind == madc::dis::DK_DEFBODY) {
@@ -2998,6 +3145,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+		fd->noexcept_spec    = (r.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
+				     : (r.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
+				     : FuncDef::NxNone;
 		// v21: the free-function source identity + FuncDef-intrinsic
 		// template state the live registration sets. On a DF_IS_FREE_FUNC
 		// record disp_id carries function_display_name; ns_id carries

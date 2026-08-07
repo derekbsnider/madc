@@ -96,7 +96,12 @@ re-signer anyway).
    - *none*: live-parse fallback only (dev shape; what unpacked
      `bin/madc` is today).
 3. **Config file** — `--enable-config-file`: `madc.ini` lookup
-   (see below). OFF by default in embedding-host builds.
+   (see below). Default **yes** — the sandboxing rule is met by WHO
+   reads the file, not by the default: `libmadc` never reads one, so an
+   embedding host is unaffected by the axis and the standalone CLI gets
+   its config file. `--disable-config-file` removes the file-reading
+   path from the binary for builds that want the surface ABSENT rather
+   than merely unused (S6).
 
 The runtime probe chain accepts any carrier it finds regardless of the
 configured default — configure sets what the BUILD produces and what
@@ -121,10 +126,20 @@ the binary EXPECTS, not an artificial restriction on discovery.
   Windows) → user config dir → system config dir; first hit wins.
 - Initial keys: forest sidecar path, include-path additions, default
   `--std=`, resource-limit overrides (liberal-defaults rule applies).
-- **Sandboxing rule:** OFF by default for embedding-host builds — a
-  config file that can redirect where the compiler loads frozen state
-  from is an attack surface for sandboxed madc (`fork`+`rlimit`+
-  `seccomp` hosts). The standalone CLI enables it freely.
+- **Sandboxing rule:** a config file that can redirect where the
+  compiler loads frozen state from is an attack surface for sandboxed
+  madc (`fork`+`rlimit`+`seccomp` hosts). **As shipped (S6):** the
+  reader is a CLI-shape feature — `libmadc` never consults a config
+  file, so a host is safe by construction rather than by a build
+  default; the forest key rides `enable_external_forest` with the
+  sidecar/env arms, so a sandboxed host that turned those off also
+  turns arm 5 off; and `--disable-config-file` removes the code path
+  entirely for deployments that want the surface gone.
+- **As shipped (S6):** relative paths in the file resolve against the
+  FILE's directory, a leading `~/` expands, and the parser is STRICT —
+  an unknown key or malformed line is a hard error naming file:line,
+  never a warning that half-applies. `--config=<file>` names one file
+  (and must load); `--no-config` skips the search.
 
 ## `-static-libmadc` — madc-emitted binaries with zero madc-library dependency
 
@@ -249,8 +264,8 @@ product path.
    **S3 COMPLETE (2026-07-25): gate GREEN — full shape × platform
    matrix.** `ensure_bind_forest` now walks the ordered chain (first
    usable container wins): 1. self-image, 2. (S4 slot) library image,
-   3. `<exe>.forest` sidecar, 4. `$MADC_FOREST`, 5. (S6 slot)
-   `madc.ini`/baked default — every arm validated identically
+   3. `<exe>.forest` sidecar, 4. `$MADC_FOREST`, 5. (S6 slot) the
+   `madc.ini` forest key — every arm validated identically
    (footer + context hash + version pin + v27 config gate); explicit
    `--forest-bind=` bypasses the chain and is now a LOUD fall-through
    when it fails to open. Failure policy rides `RegistrationPolicy`:
@@ -290,13 +305,348 @@ product path.
 4. **S4 — Shared shape:** forest-in-library arm; `madc.dylib` /
    versioned `.so` packaging alignment (libmadc track already has the
    `.so`); thin CLI. Gate: embedding-host smoke + CLI parity.
+   **S4 COMPLETE (2026-07-26): gate GREEN.** The chain gained its
+   library arms — arm 2 is the **libmadc image** itself
+   (`madc_self_lib_path()`: `dladdr` on a libmadc-resident symbol →
+   the same per-format probe; skipped when that path IS the executable,
+   i.e. the monolithic shape arm 1 already covered), and the sidecar
+   arm gained **`<lib>.forest`** after `<exe>.forest`. The IMAGE arms
+   are deliberately NOT gated by `enable_external_forest` — the library
+   is the installation the host already loaded, not an external
+   redirection — so a sandboxed strict host still binds its groves;
+   that asymmetry is the slice's central semantic. New
+   **`--enable-shared`** configure axis (axis 1 of this plan) links the
+   CLI against the shared libmadc; in that shape `make release` packs
+   `lib/libmadc.so` (`forest_pack.sh --image`, strip-before-pack) and
+   `make install` ships the packed library without re-stripping it.
+   The public embedding API grew the knob family
+   (`madc::compile_options::enable_forest_bind` / `forest_missing` /
+   `enable_external_forest`, `security_policy::allow_external_forest`,
+   clamped off under `system_locked`), and
+   `Program::forest_bind_enabled` moved into `RegistrationPolicy` so
+   ONE owner flows engine → program → child → host. Evidence:
+   permanent `scripts/forest_library_gate.sh` in fulltest — 9 legs over
+   a staged `bin/` + `lib/` install (thin-CLI live parity;
+   library-image bind with `-v` arm naming + output parity; arm order:
+   library image beats a present `<exe>.forest` AND a junk
+   `MADC_FOREST`; `<lib>.forest` bind; and the host legs with no CLI
+   knob — strict+sandboxed binding through the library image, the
+   `enable_external_forest=false` refusal S3 owed (same env, knob
+   flipped, opposite outcome, chain-empty message never a config
+   mismatch), strict-on-empty, silent library default) — plus
+   `tests/libmadc_forest_smoke.cpp` (public-API host) and a unit case
+   pinning monolithic image identity. Suites: fulltest 756/0/0/9,
+   `--exe` 740/0, **thin-CLI parity 756/0/0/9**, and the PRODUCT
+   `--enable-shared` shape (release packs the library) arbiter
+   756/0/0/9 + an installed-tree run binding through the library image.
+   Two real bugs fixed en route: a bare `make -C src` had been building
+   nothing but the forest-shape stamp since v0.48.0 (the stamp rule
+   sits above `all:` and GNU make takes the first rule as the default
+   goal — now `.DEFAULT_GOAL := all`), and a runtime-eval CHILD program
+   reverted both forest knobs to the liberal defaults instead of
+   inheriting them.
+   **NOT in this slice (stated boundary):** the darwin **dylib**
+   packaging shape (`-dynamiclib` + `@rpath` install_name for the
+   hosted MODEs, its `-sectcreate` carrier, and the Mac hardware legs).
+   The hosted darwin build produces no shared library today; the
+   discovery code is platform-neutral (the Mach-O file probe already
+   reads dylibs), so this is packaging + hardware validation, and it
+   rides the darwin packaging work with the Windows/PE arms.
 5. **S5 — `-static-libmadc` Tier A:** ledger modules built by c2mir at
    madc build time, carried per-target; cover-analysis selection +
    merge at emit; loud Tier-B refusal. Gate: a try/catch-using C-lane
    program emits `-static-libmadc` and runs with zero madc library on
    a clean machine (Linux + Mac).
+   **S5 COMPLETE (2026-07-26): Linux gate GREEN.** The C-lane runtime
+   became **dual-build C11 sources** under `src/rt/`
+   (`rt_except.c` = the whole SJLJ try/throw/catch + cleanup runtime,
+   `rt_vla.c` = VLA scope exit): the host build compiles them into
+   libmadc (`$(CXX) -x c -std=c11`, so every MODE's target/sysroot
+   flags apply unchanged) and **madc compiles the very same sources
+   through c2mir at pack time** into MIR ledger modules. ONE
+   implementation, two consumers; `scripts/ledger_sources.txt` is the
+   single owner of the list, read by `src/Makefile`,
+   `scripts/forest_pack.sh` and `scripts/forest_pack_darwin.sh`.
+   `src/exception_runtime.cpp` is deleted, its `__atomic_*` wrappers
+   moved to `va_helpers.cpp` beside the other builtin shims — where
+   they belong and where they must stay: madc lowers `__builtin_x` to
+   `__madc_x`, so a builtin shim compiled BY madc would call straight
+   back into itself. That is the real Tier-A boundary, sharper than
+   "C-compilable": **strict C11, no compiler builtins.**
+   *Carrier:* a new OPTIONAL container segment (`CIR_FOREST_SEG_LEDGER`,
+   header + directory + per-module symbol index and `.bmir` bytes), so
+   the ledger rides every carrier the forest already rides — self-image,
+   library image, sidecars, `$MADC_FOREST` — for free. It is read
+   INDEPENDENTLY of the grove bind: the discovery chain was factored
+   into one walker (`Program::probe_forest_chain`) that both consumers
+   share, with the v27 producer-config gate applied to the grove bind
+   only. The ledger is target-specific but dialect-agnostic, so a
+   `--std=c99` compile that cannot bind the groves still links the
+   runtime. `--dump-forest` reports `ledger`/`ledgermod` lines.
+   *Emit:* `-static-libmadc` (+ `-static` alias) pulls ledger modules
+   into the compile context BEFORE `MIR_link` — transitively, to a
+   fixpoint, whole modules at a time (gcc's .a-member granularity) —
+   so the eager object-mode gen puts their code in the capture; at emit
+   the existing cover analysis verifies nothing madc-side is left and
+   the `libmadc.so.0` DT_NEEDED is dropped unconditionally. Two
+   diagnostics, deliberately distinct: **no ledger reached the pull** is
+   a BUILD-side message (this madc ships none — use a packed/installed
+   build or `--forest-bind=`), while leftover symbols are the **Tier-B
+   refusal**, listing them. Evidence: permanent
+   `scripts/forest_ledger_gate.sh` in fulltest — 13 checks (ledger
+   packs + `--dump-forest` reports it; baseline WITHOUT the flag keeps
+   `libmadc.so.0`, so the next leg proves the flag and not an accident;
+   try/catch emits with no madc library, no `__madc_*` imports, output
+   identical to the JIT run, and runs under an empty library path; VLA
+   likewise; Tier-B refusal names symbols; no-ledger carrier gets the
+   build-side message and never blames Tier B; `-c` and the .o link
+   lane refuse at their own layers).
+   Three real bugs fixed en route, each at its own layer: (a) the
+   ledger compile activated its own Programs' token/value/type pools
+   and then destroyed them, leaving the caller's freeze interning into
+   freed memory (SIGSEGV) — the side excursion now restores the
+   previously-active Program; (b) every ledger function was getting a
+   `__madc_shim_<sym>` MadValue adapter, importing `madc_value_*` —
+   precisely the libmadc dependency the flag exists to remove — fixed
+   with the existing `aot_skip_eval_shims` knob (a ledger module is
+   never host-called through the value ABI); (c) **the cover analysis
+   mis-classified COPY-RELOCATED libc data**: `dlsym`+`dladdr` answers
+   "where does the process's winning definition live", and `stderr` is
+   copied into `bin/madc`'s own `.bss`, so it looked uncovered and
+   EVERY AOT program touching stderr kept a needless `libmadc.so.0`
+   DT_NEEDED. The cover libraries are now asked directly
+   (`dlopen(soname, RTLD_NOLOAD)` + `dlsym`) before falling back to
+   dladdr — a fix that improves the default lane too.
+   **DARWIN, up to the hardware line.** `forest_pack_darwin.sh` packs
+   the ledger with the cross madc (so the modules carry darwin-target
+   MIR) and FAILS the pack if the container ends up without one — there
+   is no dylib to fall back to on Mach-O, so a hosted madc with no
+   ledger could never emit a try/catch program at all. Verified on both
+   arches from Linux: the cross-freeze carries the ledger (2 modules /
+   22 symbols), the SAME program that still refuses without the flag
+   ("program needs the madc runtime, which does not exist as a library
+   for Mach-O targets; build it into the image with -static-libmadc")
+   now emits a valid `Mach-O 64-bit arm64 / x86_64 executable
+   (NOUNDEFS|DYLDLINK|TWOLEVEL|PIE)` with the ledger pulled, ZERO
+   strings naming libmadc and ZERO undefined `__madc_*` symbols.
+   That exposed the LAST bug of the slice, the cross form of the
+   copy-relocation one: **cover analysis on a cross build was probing
+   the HOST's symbol universe.** darwin's `stderr` is `__stderrp`,
+   absent from glibc, so `dlsym` said "uncovered" and the emit refused.
+   A cross build cannot answer "does the target's libc provide this" by
+   probing — but it CAN answer the question the analysis actually asks,
+   "does LIBMADC define this", because libmadc is loaded in this very
+   process. Under `MADC_CROSS_TARGET` the check is now exactly that;
+   anything libmadc does not define belongs to the target system, and a
+   genuinely missing symbol surfaces at the target's loader instead of
+   as a bogus madc-runtime refusal — the ordinary cross-compiler
+   contract. (Native builds are untouched: the branch is
+   preprocessor-excluded.)
+   **STATED BOUNDARIES:** (i) **running** an emitted Mach-O binary
+   still needs the owner's Mac, like every S1–S3 darwin leg — the
+   emit side is proven, the AMFI/run leg is not. (ii) the **.o link
+   lane** (`madc -static-libmadc -o prog a.o`)
+   refuses loudly: the ledger is carried as MIR modules, which merge
+   into a compile CONTEXT, while that lane merges native relocatables
+   through `MIR_object_read` — bridging them needs the MH_OBJECT `.o`
+   flavor the fork still lacks (task #4). (iii) a `-static-libmadc`
+   image carries **process-global** exception state, not per-thread:
+   MIR has no TLS (a Tier-3 floor gap), so the ledger build defines
+   `MADC_RT_TLS` empty. Documented in the man page; single-threaded
+   programs are unaffected. (iv) Tier-A breadth is the exception +
+   VLA runtime; the builtin-shim family (`__madc_popcount`,
+   `__madc_bswap*`, the overflow helpers) stays Tier B until madc
+   lowers those builtins to native MIR ops instead of calls.
 6. **S6 — `madc.ini`** (configure-gated, smallest slice, anytime after
    S3).
+   **S6 COMPLETE (2026-07-26): gate GREEN — the carriers track is done.**
+   `madc.ini` is a small hand-written reader (`src/madc_config.cpp`,
+   `include/madc_config.h`) with a single-owner key table, and the
+   precedence rule it completes — **CLI > environment > madc.ini > baked
+   defaults** — is enforced in ONE visible place (`main()`, after the
+   argument loop) rather than spread across the consumers:
+   a `--std=` on the command line wins via `cli_set_std`; `-I` dirs are
+   already in front of the ini's `include` dirs because the loop ran
+   first (gcc searches configured dirs last); the environment wins by
+   being read at each use site *before* the ini value
+   (`MADC_FOREST` is discovery arm 4, the `forest` key is **arm 5**;
+   `install_resource_guards` checks `MADC_*_LIMIT` before `cpu-limit` /
+   `mem-limit`). Keys: `std`, `forest`, `include` (repeatable),
+   `cpu-limit`, `mem-limit`. Lookup: `./madc.ini` →
+   `$XDG_CONFIG_HOME/madc/madc.ini` (or `~/.config/…`) →
+   `<sysconfdir>/madc.ini`, and the first EXISTING file wins outright —
+   configs are never merged, because a merged chain makes "why is this
+   setting on?" unanswerable. Relative paths resolve against the config
+   FILE's directory (a system-wide `/etc/madc.ini` naming
+   `forest = groves.msnap` cannot sensibly mean something in whatever
+   directory madc was started from) and a leading `~/` expands.
+   *Layering (owner-directed, 3R credo): the reader is SCHEMA-BLIND and
+   shared.* `madc::cfg::config_file` (`include/madc_config_file.h`,
+   `src/madc_config_file.cpp`) owns the FORMAT — the lookup chain, the
+   grammar, path resolution, the strict diagnostics — and the consumer
+   registers the keys it accepts (`accept_text` / `accept_text_list` /
+   `accept_path` / `accept_path_list` / `accept_count` / `accept_flag`).
+   It is the same split `madcdis/snapshot.h` makes for the pool
+   container: that container is CONTENT-blind with consumer-defined
+   `kind`s, this reader is SCHEMA-blind with consumer-registered keys, so
+   madcdat and any madcdis-based tool get one lookup rule, one set of
+   path semantics and one diagnostic style instead of a copied parser
+   each. Construct it with the application name and everything
+   app-specific follows: `config_file("madcdat")` reads `madcdat.ini`,
+   searches madcdat's config dir, accepts a `[madcdat]` section, and its
+   unknown-key diagnostic lists ITS keys — nothing in the reader knows a
+   madc key spelling. `src/madc_config.cpp` is now only madc's schema
+   (five `accept_*` calls) plus the CLI application. The header is
+   deliberately PRIVATE (uninstalled): `include/madcdis/*.h` is installed
+   wholesale, so putting it there would freeze a first-draft interface
+   into shipped headers, and in-tree consumers need no such promise —
+   promote it once a second consumer has exercised the interface.
+   Two things fell out of writing the second consumer's test, which is
+   why that test exists: `accept_text_list` (peer NAMES are not paths, so
+   a verbatim repeatable list is a real kind madc happens not to use) and
+   a diagnostic-only `units` noun on `accept_count`, so a key can read
+   "needs a whole number of megabytes" without the reader knowing what it
+   means.
+   *Two deliberate design calls.* **STRICT, not tolerant:** an unknown
+   key, a foreign section, a missing `=`, an empty value, or a
+   non-numeric limit is a hard error naming file:line and the accepted
+   keys — a config file is the user's own file, and half-applying it is
+   exactly the silent degradation this project refuses (`mem-limit = 8G`
+   must say so, not arm an 8 MB guard). **No TOML dependency** (the
+   question was raised and answered): the grammar is `key = value` for
+   five flat scalars, this code reads a file an attacker may influence
+   in a sandboxed deployment so it is sized to be auditable, and a
+   template-heavy header library would raise the self-hosting bar for
+   every file under `src/`. The reader is one class behind a
+   parse-to-value-object seam, so swapping the format later touches one
+   file.
+   *Where it lives:* the config file is a **CLI-shape feature**.
+   `libmadc` never reads one — a file that can redirect where the
+   compiler loads frozen state from is an attack surface for a sandboxed
+   host — so the CLI parses it and hands the forest path down through
+   `RegistrationPolicy::forest_config_path` (on the POLICY, not a plain
+   Program field, so `--project` TUs and runtime-eval children inherit it
+   through the one propagation point, exactly like `enable_forest_bind`).
+   Arm 5 sits inside the `enable_external_forest` gate with the
+   sidecar/env arms. A host that wants ini semantics calls the reader
+   itself. The `--enable-config-file` configure axis (default **yes**)
+   removes the file-reading path entirely for builds that want the
+   surface ABSENT rather than merely unused; `--config=` then refuses
+   loudly, naming the configure option. New flags: `--config=<file>`
+   (the whole search, and it MUST load — a named file that gets ignored
+   is the same failure as a named forest container that gets ignored) and
+   `--no-config` (skip the search; the two together are a contradiction
+   and refuse). The failure diagnostics gained ONE owner for the probed-
+   arm list (`Program::forest_probed_arms`), so the loud notice and the
+   strict error can no longer drift from the real chain.
+   *Hermeticity:* `scripts/run_tests.sh` now passes `--no-config` on
+   every madc invocation (including the AOT compile legs, which
+   deliberately take no `$BACKEND_FLAG`) — an ambient `madc.ini` in the
+   repo root, the developer's config dir, or the system config dir would
+   otherwise silently change every test's dialect or include path. A
+   local `madc.ini` is gitignored.
+   *Evidence:* permanent `scripts/forest_config_gate.sh` in fulltest —
+   39 checks over 18 legs, each settings leg PAIRED with a baseline that proves the
+   assertion would fail without the config file (the dialect baseline is
+   the ABSENCE of `__STDC_VERSION__`, so `std = c99` → `199901L` cannot
+   pass by accident; the include fixture is unreachable without the ini;
+   `mem-limit = 24` trips the guard and the message names the ini value,
+   then `MADC_MEM_LIMIT=4096` overrides it). Arm 5 gets the S3 ordering
+   treatment: a valid `$MADC_FOREST` must bind with NO not-a-container
+   notice (proving arm 5 was never probed), while the same junk ini path
+   with an empty environment IS reached and IS loud. Plus
+   `tests/unit/test_config_file.cpp` (19 cases / 86 assertions: the
+   strict diagnostics, `[madc]`-only sections, case-insensitive keys,
+   quoted values, last-wins scalars, relative/`~` resolution, the
+   "explicit 0 is a value, not an absence" distinction the `has_*` flags
+   exist for, the search-chain order — and a **schema-blind reader reuse**
+   suite driving the reader as `"madcdat"` with madcdat's own keys, the
+   only test that proves reusability rather than generic SHAPE, and the
+   guard that fails if anyone re-welds madc's schema into it).
+   Suites: fulltest **756/0/0/9** with `forest_config_gate: OK`; `--exe`
+   **740/0** and the packed arbiter **756/0/0/9** were measured at the
+   feature commit (`3edccef2`) — the layering re-cut after it touches no
+   codegen, no emit path, no forest format and no pack script, and was
+   covered by a grouped fulltest plus the gate and unit suites (test
+   scoping by blast radius: owner directive 2026-07-26 — do not run the
+   whole battery for every change; run it for a GROUP of changes).
+   The **axis-OFF shape** was validated
+   directly (a gate cannot reconfigure the tree): rebuilt with
+   `ENABLE_CONFIG_FILE=0`, an ambient `./madc.ini` is not read,
+   `--config=` refuses naming `enable-config-file`, `--no-config` stays a
+   no-op, the unit tests agree with the axis, and the axis-ON restore
+   re-reads the file.
+
+## S5 boundary lift: `-static-libmadc` in the `.o` LINK lane (2026-07-26)
+
+S5 shipped the ledger for the SOURCE lanes and refused loudly in the
+multi-object link lane, for a stated reason: the ledger is carried as
+MIR modules, which merge into a compile *context*, while that lane
+merges native relocatables through `MIR_object_read` — and turning
+ledger modules into relocatables needed the MH_OBJECT `.o` flavor the
+fork lacked for Mach-O. Mach-O axis B step 4 (v0.52.0) removed that
+prerequisite, so the lane is now wired:
+
+- **The runtime enters as one more relocatable.** The pieces the program
+  needs are pulled into a PRIVATE object-mode context, generated, and
+  emitted with `MIR_gen_object_emit`; the caller merges that blob into
+  the same builder as the inputs. Not straight into the input builder,
+  because a builder's symbol table is append-only
+  (`MIR_object_add_symbol` never dedupes by name) — the unification that
+  turns the inputs' UNDEF entries into references to the runtime's
+  definitions lives in the MERGE. Going in through the merge reuses that
+  one unification implementation, and it rides the same read-back path
+  the `.o` lane already gates on BOTH containers, so the slice added no
+  format code and no fork change at all.
+- **Selection is seeded, not re-implemented.** `cir_ledger_pull` grew an
+  `extra` candidate list: the merged builder's UNDEF names join the
+  module-level imports under the same "no loaded module defines it"
+  filter, so one pull serves both shapes of program (a set of MIR
+  modules, or a set of native relocatables) and still fixpoints over the
+  pulled modules' own imports.
+- **The cover analysis is now list-driven.** `cir_filter_uncovered` /
+  `cir_static_libmadc_verify` take the reference LIST, not its source:
+  the source lanes pass the context's unresolved imports, the `.o` lane
+  passes `MIR_object_undef_name`. Same classifier, same two diagnostics
+  (no-carrier vs Tier-B), both lanes.
+- **The carrier opens header-only.** The ledger is a container-GLOBAL
+  segment, so `ensure_ledger_forest` now stops at the directory:
+  `complete_open` binds the frozen string pool and arena into LIVE parse
+  state, and a lane that links precompiled objects has no lexer and no
+  pool. Before this, the ledger probe died with "forest thaw requires a
+  live string pool" — a layer confusion the source lanes hid by always
+  having a pool.
+
+**What the lane actually ran into — the host-call shims.** Every `.o`
+carries a `__madc_shim_<sym>` adapter per host-callable function (the
+value-ABI surface a libmadc host calls a compiled function through), and
+those adapters import 12 `madc_value_*` accessors, which are **Tier B**.
+An executable emit from source skips the adapters (nothing can call in);
+a `.o` cannot know, so it keeps them. Whether an artifact is
+host-callable is a property of the BUILD, so the build now says it:
+**`-fno-eval-shims`** omits the adapters — the shape `-fPIC` has (the
+object's intended use, stated at compile time). Objects compiled with it
+link runtime-free under `-static-libmadc`; objects that kept their
+adapters refuse, naming both the symbols and the flag.
+
+Note this is NOT a `.o`-lane defect: `madc -static-libmadc -shared` from
+source hits the identical refusal, because `-shared` keeps its adapters
+by design. The real fix — the value-ABI accessor family and its cell
+allocator as Tier-A C11 in `src/rt/` (dual-build, so libmadc keeps ONE
+implementation) — is tracked as its own task, and it makes a
+self-contained *host-callable* plugin possible. Until then
+`-fno-eval-shims` is the answer for standalone links.
+
+*Evidence:* `scripts/forest_ledger_gate.sh` leg 9 (in fulltest) — two
+`-c` objects, one needing try/catch and one needing VLA scope exit, so a
+per-object merge or a missed one cannot pass: the baseline link is
+proved runtime-needing first, the `-static-libmadc` link has no madc
+library and no `__madc_*` imports, its output matches the
+libmadc-linked baseline byte for byte (the baseline IS the oracle — same
+objects, same link, only the runtime's origin differs), it runs with an
+empty library path, shim-carrying objects refuse with both the symbols
+and the flag named, and `-static-libmadc -r` still refuses at the CLI so
+the runtime rides the final link only.
 
 Windows arms (overlay carrier, `.madc` section, `madc.dll`) ride the
 Windows/PE track when it starts — the probe-chain design above is

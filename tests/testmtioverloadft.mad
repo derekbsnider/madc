@@ -1,0 +1,36 @@
+// #62 root 2 reducer: a member-template OVERLOAD SET gated by mutually
+// exclusive enable_if constraints — the FIRST candidate's substitution
+// fails ([temp.deduct]/8) and the SECOND must be tried. libc++'s
+// allocator_traits::select_on_container_copy_construction (the HAS-gated
+// overload + its !HAS sibling); the call was silently left on the
+// varargs placeholder (implicit int-returning call in the emitted C —
+// string:709 "incompatible types in assignment to struct/union").
+// Namespace + ALIAS-template spelling per the testmeminitnsdflt lesson.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "7"
+#include <cstdio>
+
+namespace lib {
+
+template <bool, class R = void> struct en_if {};
+template <class R> struct en_if<true, R> { typedef R type; };
+template <bool B, class R = void> using en_if_t = typename en_if<B, R>::type;
+template <class T> struct has_pick { enum { value = 0 }; };
+
+struct A { int v; };
+
+template <class X> struct traits {
+	template <class Xp = X, class = en_if_t<has_pick<Xp>::value> >
+	static int pick(const X &x) { return x.v + 100; }
+	template <class Xp = X, class V = void, class = en_if_t<!has_pick<Xp>::value> >
+	static int pick(const X &x) { return x.v; }
+};
+
+}
+
+int main()
+{
+	lib::A a;
+	a.v = 7;
+	printf("%d\n", lib::traits<lib::A>::pick(a));
+	return 0;
+}

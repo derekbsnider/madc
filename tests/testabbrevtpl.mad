@@ -1,0 +1,32 @@
+// C++20 abbreviated function templates ([dcl.fct]/18), member form: an
+// `auto` parameter placeholder makes the member a TEMPLATE with one
+// invented type parameter per placeholder (g++'s synthesized-parameter
+// model). madc desugars at the token level — invented names under a
+// synthesized template<...> head — so the member-template machinery owns
+// capture and instantiation. The pack ctor is libc++'s
+// __ranges/dangling.h:29 `constexpr dangling(auto&&...) noexcept {}` shape
+// under --std=c++20. Oracle (g++ -std=c++20 and clang++ -std=c++20
+// -stdlib=libc++): "41 ok".
+// NOT covered yet: free/namespace-scope abbreviated functions (statement
+// surface not wired), and an `auto` inside a default-argument lambda's own
+// parameter list (documented mis-trigger edge in the desugar).
+#include <cstdio>
+
+struct D {
+	D() = default;
+	constexpr D(auto&&...) noexcept {}
+};
+
+struct E {
+	int v;
+	E(auto x) { v = (int)x; }
+};
+
+int main()
+{
+	D d0;
+	D d2(1, 2.5);
+	E e(41.0);
+	printf("%d ok\n", e.v);
+	return 0;
+}

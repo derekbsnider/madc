@@ -1,0 +1,37 @@
+// Throwing a class object that has no string form must not lower to
+// __madc_throw_cstr with the raw STRUCT as the argument — c2mir rejects that
+// ("incompatible argument type for pointer type parameter"), which is what
+// libc++'s `__throw_length_error` (`throw length_error(__msg)`) hit. The object
+// form passes the object's ADDRESS to __madc_throw_object instead.
+//
+// Locked here (matches g++ and clang++): a thrown class object reaches
+// catch(...), and a mismatched scalar clause (catch(int)) is correctly skipped
+// rather than matching it.
+//
+// NOT asserted, deliberately — two known gaps in madc's exception model:
+//   - per-TYPE class dispatch (catch (boom&) selecting boom) needs RTTI; madc
+//     keeps class clauses unmatchable rather than matching the wrong type;
+//   - [except.throw]/3 copy-initializes the exception object, so g++/clang++
+//     run the destructor TWICE for a thrown object with a dtor (original +
+//     exception copy) where madc throws by address and runs it once.
+// A reducer with a destructor would bake that divergence into the suite.
+#include <cstdio>
+
+struct boom {
+	int code;
+	boom(int c) : code(c) {}
+};
+
+int main()
+{
+	try {
+		boom b(7);
+		throw b;
+	} catch (int n) {
+		printf("int %d\n", n);
+	} catch (...) {
+		printf("any\n");
+	}
+	printf("done\n");
+	return 0;
+}

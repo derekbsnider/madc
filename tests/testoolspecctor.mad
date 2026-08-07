@@ -1,0 +1,53 @@
+// An out-of-line SPECIAL MEMBER of an explicit (full) specialization is
+// defined with a TEMPLATE-ID-qualified name and NO template<> prefix
+// ([temp.expl.spec]/5):
+//	template <> struct bs<0, 0> { ... bs(); ... };
+//	inline bs<0, 0>::bs() { v = 2; }
+// madc's statement router keyed the qualified-member machinery on `Type ::`
+// and never `Type<args> ::`, so the template-id head fell to the declaration
+// path: the member chain answered `bs<0,0>::bs` with the INJECTED-CLASS-NAME
+// (X::X names X as a type), leaving `(` where a declarator identifier was
+// expected — "Expecting identifier after type".
+//
+// libc++ hits this at bitset:598:
+//	inline _LIBCPP_CONSTEXPR __bitset<0, 0>::__bitset() _NOEXCEPT {}
+// — the <iostream> frontier under -stdlib=libc++ after the __bit_reference
+// chain cleared.
+//
+// Controls: the PRIMARY pattern's out-of-line ctor and method (the
+// template-prefixed lane, separate machinery — must keep working), the full
+// spec's out-of-line non-ctor METHOD (the parseDeclaration declarator lane,
+// which already handled a template-id head), and the spec's out-of-line DTOR
+// spelling.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	1 5 2 7
+#include <cstdio>
+
+template <int N, int M> struct bs {
+	int v;
+	bs();
+	int get() const;
+};
+
+template <int N, int M> bs<N, M>::bs() { v = 1; }
+template <int N, int M> int bs<N, M>::get() const { return 5; }
+
+template <> struct bs<0, 0> {
+	int v;
+	bs();
+	~bs();
+	int get() const;
+};
+
+inline bs<0, 0>::bs() { v = 2; }		// the failing shape (ctor)
+inline bs<0, 0>::~bs() { }			// dtor spelling of the same shape
+inline int bs<0, 0>::get() const { return 7; }	// declarator-lane control
+
+int main()
+{
+	bs<1, 1> a;
+	bs<0, 0> b;
+	printf("%d %d %d %d\n", a.v, a.get(), b.v, b.get());	// 1 5 2 7
+	return 0;
+}

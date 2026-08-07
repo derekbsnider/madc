@@ -1,0 +1,31 @@
+// A static-const member initializer reading a decltype-qualified static member
+// (`static const bool value = decltype(__test<_Tp>(0))::value;` — the libc++
+// detection idiom) folds at INSTANTIATION with the substituted operand:
+//  - the runtime-access pre-gate must not veto the unevaluated decltype operand
+//  - fold_constant_qualified_member resolves the decltype-specifier as the scope
+//  - [temp.deduct]/8: a candidate whose FUNCTION-param type fails substitution
+//    (`typename int::cat*`) is NOT viable — overload resolution falls to the
+//    variadic catch-all, so the FALSE branch reads 0, not the arity-preferred 1
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "1 0".
+#include <cstdio>
+
+struct TT { static const bool value = true; };
+struct FT { static const bool value = false; };
+
+struct traits { typedef int cat; };
+
+template <class _Tp>
+struct has_cat {
+private:
+	template <class _Up> static FT __test(...);
+	template <class _Up> static TT __test(typename _Up::cat * = 0);
+
+public:
+	static const bool value = decltype(__test<_Tp>(0))::value;
+};
+
+int main()
+{
+	printf("%d %d\n", (int)has_cat<traits>::value, (int)has_cat<int>::value);
+	return 0;
+}

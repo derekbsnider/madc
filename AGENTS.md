@@ -61,6 +61,22 @@ repo is the historical gap analysis that drove madc's Phase A–F.
 These are the rules that cause the most damage when violated. Every
 agent must follow them without exception.
 
+**They are GATED — assertion is not enough, you must show the work.**
+Every commit touching `src/` or `include/` carries four trailers, and
+`scripts/check-rule-trailers.sh` (in `fulltest`) fails without them:
+
+```
+Hypothesis: <what you believed was wrong, written BEFORE editing>      (#3)
+Layer:      <the layer chain, and why the one you edited is deepest>   (#2,#5)
+Searched:   <the grep you ran, the CONCEPT, and what came back>        (#4)
+Oracle:     <what gcc/clang did on a reducer, and what madc did>       (#1)
+```
+
+`n/a — <reason>` is allowed; silence is not. If you cannot write
+`Layer:` — the chain, and why yours is the deepest — **you are shimming;
+stop and go lower.** A true principle is not a substitute for the
+deepest layer. See `.claude/rules/rule-trailers.md`.
+
 1. **GCC is canon.** Before fixing any codegen or runtime bug, run
    `gcc -S -fverbose-asm -O0` and study the output. madc must match
    GCC's behavior. No exceptions. (`gcc-parity.md`, `gcc-methodology.md`)
@@ -80,7 +96,13 @@ agent must follow them without exception.
    helper, or handling path is missing — search first. The codebase
    is large; something that looks absent is often already there under
    a different name or in a different file. Reinventing existing
-   machinery creates duplication and divergence.
+   machinery creates duplication and divergence. **State the search and
+   its result before introducing any new named helper** — the grep you
+   ran, the *concept* you searched for, and what came back. A search
+   leaves no trace when skipped, which is why it fails silently.
+   Standing instances: balanced-delimiter scanning is `DelimDepth`
+   (`delimiter-tracking.md`); path canonicalization for comparison is
+   `canonical_path_for_compare()`.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -161,11 +183,12 @@ and each madc release that ships fork changes cuts the matching annotated
 | Parser      | `src/parser.cpp`         | Builds AST; struct/class/namespace resolution                  |
 | CIR builder | `src/cir_builder.cpp`    | Lowers the AST to a `cir_node` tree (c2mir-friendly C11 AST), the IR fed to c2mir → MIR |
 | php::     | `src/ns_php.cpp`           | 36 PHP-style string + array functions                          |
-| perl::    | `src/ns_perl.cpp`          | 21 Perl-style functions (chop, grep, glob, split)              |
-| python::  | `src/ns_python.cpp`        | 16 Python-style functions (title, center, zfill, format)       |
+| perl::    | `src/ns_perl.cpp`          | 20 Perl-style functions (chop, grep, glob, split)              |
+| python::  | `src/ns_python.cpp`        | 15 Python-style functions (title, center, zfill, format)       |
 | ruby::    | `src/ns_ruby.cpp`          | 12 Ruby-style functions (squeeze, tr, chars, rotate)           |
 | js::      | `src/ns_js.cpp`            | 6 JS-style functions (base64, URL encoding, JSON)              |
-| STL       | `src/ns_stl.cpp`           | STL container helpers: `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` |
+| rust::    | `src/ns_rust.cpp`          | 18 Rust-style string + array helpers (plus `rust::match`)      |
+| madc::    | `src/ns_madc.cpp`          | Runtime eval API (`eval_*`, contexts) + the `madc::sys` object |
 | Headers   | `include/madc.h`, `include/tokens.h`, `include/datadef.h`, `include/datatokens.h` | Core data structures |
 
 Execution flow: `madc.cpp` → lexer → parser → CIR builder (`cir_node`)
@@ -193,6 +216,22 @@ instructions.
 
 Skip `tests/include_helper.mad` when running by hand; it is included
 by `testinclude.mad`, not a standalone test.
+
+## Duplication audit
+
+`/dupaudit` (`.claude/commands/dupaudit.md`) is a **recon** pass for *semantic*
+duplication — N sites implementing one rule where at least one differs. That
+divergence is the bug; the redundancy is only the cost. It is not a clone
+detector: the case that hurts here shares no text (six angle-bracket scanners,
+one guarded, a sixth unguarded copy written two days *after* the fix landed in
+the first).
+
+Run it **before merging a feature branch, scoped to the subsystem the feature
+touched** — that is where new copies are born. Findings are recorded as
+`DupFamily` nodes in `madc-knowledge` so later sweeps re-check instead of
+rediscovering, and every family that gets consolidated leaves a gate in
+`fulltest` so it cannot regrow. Non-Claude tools: read the command file and
+follow its steps directly.
 
 ## Session hand-off
 
@@ -259,6 +298,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
 | [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
+| [rule-trailers.md](.claude/rules/rule-trailers.md) |    28 | **Show the Top 5 work, don't assert it.** Every `src/`/`include/` commit carries `Hypothesis:` / `Layer:` / `Searched:` / `Oracle:`; gated by `check-rule-trailers.sh`. Can't write `Layer:`? You're shimming |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -274,6 +314,7 @@ no matter how small.
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
+| [fix-what-you-find.md](.claude/rules/fix-what-you-find.md) |   21 | A defect you DISCOVER is yours to fix — "pre-existing" is not a disposition; silent wrong answers jump the queue; the fix ships a reducer |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
@@ -299,6 +340,7 @@ editing — don't try to memorize all of them.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [mc11-ir.md](.claude/rules/mc11-ir.md)           |    26 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
+| [delimiter-tracking.md](.claude/rules/delimiter-tracking.md) | 23 | **ONE tracker for `(` `[` `{` `<`.** Never hand-roll `++paren_depth` / `--angle_depth` / `>>`-splitting — use `DelimDepth` + `delim_scan_step()` / `delimStepStream()`. Gated by `check-one-delim-tracker.sh` |
 | [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
 | [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
@@ -311,10 +353,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **28 rules, 775 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~358 lines** — loaded by Claude via
+- **31 rules, 854 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1146 lines.**
+- **Grand total loaded by Claude Code per turn: ~1268 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
@@ -347,6 +389,8 @@ sibling `docs/rules/` reasoning file. Refresh these counts by running
 
 ## When in doubt
 
+- A bug you find is a bug you own. There is no other maintainer — see
+  `fix-what-you-find.md`. Do not stop at proving it predates your change.
 - Trace what's broken first. Don't rapid-cycle fixes — when a bug is
   hard, stop and form a hypothesis before editing.
 - Prefer small, self-contained commits that each fix one thing.

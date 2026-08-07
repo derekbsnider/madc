@@ -1,0 +1,23 @@
+// Reducer for Gap{nullopt_secret_tag_nested_construction}: a NESTED class
+// named through its enclosing class, constructed with braced-init in
+// expression position — libc++ <optional>:280:
+//   inline constexpr nullopt_t nullopt{nullopt_t::__secret_tag{}, ...};
+// madc: "'__secret_tag' is not a static member of 'nullopt_t'".
+#include <stdio.h>
+
+struct outer_t {
+    struct tag { explicit tag() = default; };
+    explicit outer_t(tag, tag) { }
+    int nine() { return 9; }
+};
+
+outer_t val{outer_t::tag{}, outer_t::tag{}};
+
+int main()
+{
+	outer_t::tag t{};       // declaration position (control)
+	outer_t v2{outer_t::tag{}, outer_t::tag{}};   // local, expression position
+	(void)t;
+	printf("%d %d\n", val.nine(), v2.nine());
+	return 0;
+}

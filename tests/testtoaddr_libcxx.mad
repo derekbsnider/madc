@@ -1,0 +1,16 @@
+// vecta1.cpp — std::__to_address at the DOUBLED reverse_iterator, called from
+// main so the fn-template instantiation diagnostics are NOT muted (inside
+// __allocator_destroy's body parse they are SFINAE-quiet).
+// Oracle (clang++-18 -std=c++11 -stdlib=libc++): 8
+#include <iterator>
+#include <cstdio>
+
+int main()
+{
+	int a[2] = {7, 8};
+	std::reverse_iterator<int *> r(a + 1);
+	std::reverse_iterator<std::reverse_iterator<int *> > rr(r);
+	int *p = std::__to_address(rr);
+	printf("%d\n", *p);
+	return 0;
+}

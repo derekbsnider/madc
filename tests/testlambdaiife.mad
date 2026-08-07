@@ -1,0 +1,86 @@
+// Immediately-invoked lambdas, and aggregate list-init of a member.
+//
+// A lambda-expression is a primary-expression ([expr.prim.lambda]), so the
+// postfix chain runs through it and it can be called on the spot. madc failed
+// this three different ways depending on position, one of them SILENTLY:
+//
+//   argument position   compiled, exit 0, evaluated to the lambda's ARGUMENT
+//   assignment / decl   "use of undeclared identifier 'x'" — the body was
+//                       parsed in the enclosing scope, because `[` after an
+//                       operand-on-the-stack was taken as a subscript
+//   auto declaration    compiled to garbage — the fn-ptr initializer path
+//                       took the lambda and dropped the call
+//
+// The aggregate cases below share the theme: `Foo() : p{1,2}` on a plain
+// struct member used to leave the member uninitialized with no diagnostic.
+
+#include <stdio.h>
+
+struct P { int a, b; };
+struct Q { P p; int n; };
+
+static int apply(int (*fp)(int)) { return fp(2); }
+
+struct Rel
+{
+    int viife, vrel;
+    // An IIFE as a mem-initializer argument — the silent case — with a
+    // relational '<' inside it for good measure.
+    Rel(int a)
+	: viife([](int x){ return x < 3 ? 100 : 200; }(a)),
+	  vrel(a < 3 ? 7 : 8)
+    { }
+};
+
+struct Agg
+{
+    P p;
+    Q q;
+    int n;
+    // Aggregate list-init of a plain-struct member, flat and nested. The
+    // nested form must flatten exactly as `Q q = { {1,2}, 3 };` does.
+    Agg() : p{1,2}, q{ {3,4}, 5 }, n{6} { }
+};
+
+int main()
+{
+    // argument position — was silently 1
+    printf("arg %d\n", [](int x){ return x + 99; }(1));
+
+    // declaration initializer — was "undeclared identifier 'x'"
+    int d = [](int x){ return x + 99; }(2);
+    printf("decl %d\n", d);
+
+    // plain assignment — was "undeclared identifier 'x'"
+    int s = 0;
+    s = [](int x){ return x + 99; }(3);
+    printf("assign %d\n", s);
+
+    // auto declaration — was garbage
+    auto au = [](int x){ return x + 99; }(4);
+    printf("auto %d\n", au);
+
+    // parenthesized lambda, then called
+    int pr = ([](int x){ return x + 99; })(5);
+    printf("paren %d\n", pr);
+
+    // the forms that already worked must keep working: a lambda VALUE bound
+    // to auto, and a lambda passed as an argument
+    auto fn = [](int x){ return x + 99; };
+    printf("value %d\n", fn(6));
+    printf("passed %d\n", apply([](int x){ return x + 99; }));
+
+    // a real subscript must still be a subscript, not a lambda
+    int arr[3];
+    arr[0] = 10; arr[1] = 20; arr[2] = 30;
+    int i = 1;
+    printf("subscript %d %d\n", arr[2], arr[i]);
+
+    Rel r(1);
+    printf("meminit %d %d\n", r.viife, r.vrel);
+
+    Agg g;
+    printf("agg %d %d %d %d %d %d\n",
+	   g.p.a, g.p.b, g.q.p.a, g.q.p.b, g.q.n, g.n);
+    return 0;
+}

@@ -1,3 +1,4 @@
+#include <string>
 extern "C" {
     long __rust_contains(const char *, const char *);
     long __rust_starts_with(const char *, const char *);

@@ -1,0 +1,13 @@
+// ittraits4.cpp — the _If alias with a trait-class ::value condition, at TOP
+// LEVEL (the in-class twin is reverse_iterator's iterator_category, still
+// opaque per MTIPROBE). Oracle (clang++-18 -std=c++11 -stdlib=libc++): 4
+#include <iterator>
+#include <cstdio>
+
+int main()
+{
+	typedef std::_If<std::__has_random_access_iterator_category<int *>::value,
+			 int, char> P;
+	printf("%d\n", (int)sizeof(P));
+	return 0;
+}

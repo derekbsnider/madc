@@ -1,0 +1,20 @@
+// The DEFAULT-flavor twin of tests/teststring_libcxx.mad. std::string's layout
+// is a property of the standard library, not of the compiler: libstdc++'s
+// basic_string is 32 bytes (pointer + size + a 16-byte SSO union), libc++'s is 24
+// (a 3-word union, with the allocator compressed into an empty BASE).
+//
+// Asserting BOTH is the point. A single number could be right by accident — one
+// flavor's size hardcoded, or a layout that happens to agree. Two tests that
+// disagree with each other and each agree with their own reference compiler show
+// the flavor switch is really re-deriving the layout from the parsed headers.
+//
+// Oracle: g++ -std=c++11 prints "32 5 hello".
+#include <string>
+#include <cstdio>
+
+int main()
+{
+	std::string s = "hello";
+	printf("%zu %zu %s\n", sizeof(std::string), s.size(), s.c_str());
+	return 0;
+}

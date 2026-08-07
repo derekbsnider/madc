@@ -1,0 +1,27 @@
+// Member-template-id calls with explicit non-type args ([temp.names]):
+// unqualified in a member body, through this->, through a dot receiver,
+// inside a class template with the member template declared after its user.
+#include <cstdio>
+
+struct S {
+    template <bool B> int pick(int a, int b) { return B ? a : b; }
+    int viaUnqualified(int a, int b) { return pick<true>(a, b) * 10 + pick<false>(a, b); }
+    int viaThis(int a, int b) { return this->pick<true>(a, b) * 10 + this->pick<false>(a, b); }
+};
+
+template <class T>
+struct W {
+    T get(T a, T b) { return pick<true>(a, b) * 10 + pick<false>(a, b); }
+    template <bool B> T pick(T a, T b) { return B ? a : b; }
+};
+
+int main()
+{
+    S s;
+    W<int> w;
+    printf("%d\n", s.viaUnqualified(3, 4));
+    printf("%d\n", s.viaThis(5, 6));
+    printf("%d\n", s.pick<true>(7, 8) * 10 + s.pick<false>(7, 8));
+    printf("%d\n", w.get(1, 2));
+    return 0;
+}

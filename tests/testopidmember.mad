@@ -1,0 +1,27 @@
+#include <cstdio>
+
+struct It {
+    int v;
+    int *operator->() { return &v; }
+    int operator*() const { return v + 1; }
+    int operator[](int i) const { return v + i; }
+};
+
+struct Wrap {
+    It it;
+    // method-body context: unqualified receiver, explicit operator-id call
+    int deref() { return *it.operator->(); }
+};
+
+// file-scope context (the libc++ _HasArrow shape): explicit operator-id
+// call on a receiver inside a free function
+int freeform(It &r, It *p) { return r.operator*() + p->operator[](2); }
+
+int main()
+{
+    Wrap w;
+    w.it.v = 41;
+    It *q = &w.it;
+    printf("%d %d\n", w.deref(), freeform(w.it, q));
+    return 0;
+}

@@ -1,0 +1,38 @@
+// tagpair1.cpp — libc++ __compressed_pair tag-dispatch shape: a member-template
+// forwarding ctor whose two args are DIFFERENT empty tag types; the elem ctor
+// overload chosen decides whether the value member is zeroed ([dcl.init]/8
+// value-init) or left alone. Mirrors basic_string() : __r_(__value_init_tag(),
+// __default_init_tag()).
+// Oracle (clang++ -stdlib=libc++): "0 7"
+#include <cstdio>
+
+struct __default_init_tag {};
+struct __value_init_tag {};
+
+template <class _Tp>
+struct Elem {
+	_Tp __value_;
+	Elem(__default_init_tag) {}
+	Elem(__value_init_tag) : __value_() {}
+};
+
+template <class _T1, class _T2>
+struct CPair : Elem<_T1> {
+	_T2 second_;
+	template <class _U1, class _U2>
+	CPair(_U1 &&__t1, _U2 &&__t2)
+	    : Elem<_T1>(static_cast<_U1 &&>(__t1)), second_() {}
+};
+
+struct Holder {
+	CPair<long, int> __r_;
+	Holder() : __r_(__value_init_tag(), __default_init_tag()) {}
+};
+
+int main()
+{
+	Holder h;
+	h.__r_.second_ = 7;
+	printf("%ld %d\n", h.__r_.__value_, h.__r_.second_);
+	return 0;
+}

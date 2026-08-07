@@ -18,17 +18,18 @@ Problems:
   `std::string::find()` calls per invocation. In the emitter's cout
   chain, this runs per-expression per-value. An enum comparison is
   one integer compare.
-- **Gecko AST node names are already strings.** Converting them to
-  enums at the boundary (one `strcmp` per node) and dispatching on
-  the enum internally is strictly faster than doing `strcmp` at every
-  use site.
+- **External ASTs and tool outputs name nodes with C strings** (the
+  removed Gecko parser experiment was the motivating case). Converting
+  them to enums at the boundary (one `strcmp` per node) and dispatching
+  on the enum internally is strictly faster than doing `strcmp` at
+  every use site.
 
 ## The rule
 
 Use enums for any classification that appears in more than one place.
 Convert string-based discriminators to enums at system boundaries
-(lexer output, Gecko AST nodes, user input) and never pass the string
-deeper.
+(lexer output, external-tool ASTs, user input) and never pass the
+string deeper.
 
 ## When strings are OK
 

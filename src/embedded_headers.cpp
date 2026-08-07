@@ -73,7 +73,8 @@ static std::map<std::string, std::string> embedded_headers = {
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
-    {"ns_js", R"EMBED(extern "C" {
+    {"ns_js", R"EMBED(#include <string>
+extern "C" {
     std::string *__js_btoa(std::string *, const char *);
     std::string *__js_atob(std::string *, const char *);
     std::string *__js_encodeURIComponent(std::string *, const char *);
@@ -122,7 +123,8 @@ inline std::string &stringify(std::string &result, madc::value &values) { return
 
 #endif
 )EMBED"},
-    {"ns_madc", R"EMBED(// madc embedded <ns_madc> — script-level runtime eval + expression eval.
+    {"ns_madc", R"EMBED(#include <string>
+// madc embedded <ns_madc> — script-level runtime eval + expression eval.
 // Declaration-only: the madc:: publics below resolve mangled-direct
 // (Itanium symbols) to the real namespace madc implementations in the
 // host, src/ns_madc.cpp (cpp-first-api.md — script namespace publics are
@@ -200,7 +202,8 @@ namespace madc {
     extern SysInfo sys;
 }
 )EMBED"},
-    {"ns_perl", R"EMBED(extern "C" {
+    {"ns_perl", R"EMBED(#include <string>
+extern "C" {
     long __perl_chop(std::string *);
     long __perl_chomp(std::string *);
     void __perl_grep(array *, const char *, array *);
@@ -305,7 +308,8 @@ inline std::string &substr(std::string &result, const char *text, int64_t offset
 
 #endif
 )EMBED"},
-    {"ns_php", R"EMBED(extern "C" {
+    {"ns_php", R"EMBED(#include <string>
+extern "C" {
     std::string *__php_trim(std::string *);
     std::string *__php_ltrim(std::string *);
     std::string *__php_rtrim(std::string *);
@@ -476,7 +480,8 @@ inline void array_column(madc::value &dest, madc::value &src, int64_t column_ind
 
 #endif
 )EMBED"},
-    {"ns_python", R"EMBED(extern "C" {
+    {"ns_python", R"EMBED(#include <string>
+extern "C" {
     std::string *__py_title(std::string *);
     std::string *__py_swapcase(std::string *);
     std::string *__py_center(std::string *, long, const char *);
@@ -561,7 +566,8 @@ inline std::string &format(std::string &result, const char *fmt, madc::value &ar
 
 #endif
 )EMBED"},
-    {"ns_ruby", R"EMBED(extern "C" {
+    {"ns_ruby", R"EMBED(#include <string>
+extern "C" {
     std::string *__rb_squeeze(std::string *);
     std::string *__rb_tr(std::string *, const char *, const char *);
     void __rb_chars(array *, const char *);
@@ -634,7 +640,8 @@ inline void flatten(madc::value &values, const char *text) { __rb_flatten(&value
 
 #endif
 )EMBED"},
-    {"ns_rust", R"EMBED(extern "C" {
+    {"ns_rust", R"EMBED(#include <string>
+extern "C" {
     long __rust_contains(const char *, const char *);
     long __rust_starts_with(const char *, const char *);
     long __rust_ends_with(const char *, const char *);

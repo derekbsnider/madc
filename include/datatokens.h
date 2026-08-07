@@ -17,6 +17,12 @@ public:
     // pool. Kept here (like TokenKeyword); spelling() overrides the pool path.
     std::string str;
     DataDef &definition;
+    // True for the base datatypes madc pre-registers itself (Program::
+    // add_datatypes marks the whole map). A real header may legitimately
+    // typedef one of these names — gcc's <stddef.h> defines max_align_t,
+    // which madc also pre-registers — so a redefinition check must be able
+    // to tell madc's own registration apart from a user declaration.
+    bool builtin = false;
     TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
@@ -122,6 +128,18 @@ public:
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
+    // The parse-time VALUE-SLOT width of a scalar variable's `data` block.
+    // madc's `int` carries 64-bit values in these slots — set()/equals()/
+    // increment()/decrement() access ddINT data as *(int64_t*) (see the
+    // WEAR_NONE note in set()) — while ddINT.size stays 4 as the C ABI /
+    // layout truth. Every SCALAR `data` allocation must use THIS width,
+    // not type->size, or set() writes 4 bytes past the block (a heap
+    // overflow valgrind caught on every enum-constant parse). Array
+    // allocations keep type->size elements (C layout).
+    static size_t slot_size(const DataDef &d)
+    {
+	return (&d == &ddINT && d.size < 8) ? 8 : d.size;
+    }
     bool set(int64_t c)
     {
 	if ( !data ) { return false; }

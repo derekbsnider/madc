@@ -1,0 +1,69 @@
+// [basic.scope.pdecl]/7: an elaborated-type-specifier (`struct X`) whose name
+// lookup finds nothing FIRST-DECLARES the class as an incomplete type in the
+// smallest enclosing scope. madc's resolve_declared_type_token elaborated arm
+// resolved a pre-declared name fine but returned NULL on the miss, so any
+// template argument spelled `struct X` with X undeclared threw "Expecting a
+// type argument to ...<>".
+//
+// libc++ relies on the first-declaration form pervasively through _If (its
+// conditional, __type_traits/conditional.h):
+//	operator=(const _If<_IsConst, struct __private_nat, __bit_iterator>&)
+// (__bit_reference:883) — __private_nat is declared nowhere else. That made
+// this the <iostream> frontier under -stdlib=libc++ ("Expecting a type
+// argument to _Select<>" at __bit_reference:837).
+//
+// Arms:
+//   D — first-declared elaborated arg to a PLAIN class template, file scope
+//       (the minimal failing shape; was rc=1)
+//   B — same, as an argument to a dependent MEMBER ALIAS TEMPLATE invoked via
+//       ::template inside a class template pattern (the libc++ shape; was an
+//       error swallowed into rc=0 with wrong output — the worse failure)
+//   E — pre-declared name spelled with the elaborated keyword (must KEEP
+//       working; this always passed)
+//   U — the union spelling of the first-declaration form
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	8 4 1 4 8
+#include <cstdio>
+
+template <bool> struct impl;
+template <> struct impl<true>  { template <class A, class B> using sel = A; };
+template <> struct impl<false> { template <class A, class B> using sel = B; };
+template <bool C, class A, class B> using pick = typename impl<C>::template sel<A, B>;
+
+template <class T> struct wa { T t; };
+template <class T> struct wp { T *p; };
+
+wp<struct natD> d;			// D: first declaration of natD
+
+struct natE;				// E: pre-declared
+
+template <class T, bool IC>
+struct iter {
+	T v;
+	// B: libc++'s __bit_reference:883 shape (first declaration of natB)
+	int take(const pick<IC, struct natB, iter>& o) { return (int)sizeof(o); }
+	// E: pre-declared elaborated arg
+	int give(const pick<IC, struct natE, wa<T> >& o) { return (int)sizeof(o); }
+};
+
+wp<union natU> u;			// U: union spelling
+
+int main()
+{
+	iter<int, false> x;
+	iter<int, false> y;
+	x.v = 1;
+	y.v = 2;
+	iter<char, true> z;		// B's param = struct natB: decl-only
+	z.v = 'a';
+	wa<int> w;
+	w.t = 3;
+	printf("%d %d %d %d %d\n",
+	       (int)sizeof(d),		// 8: wp<struct natD> holds one pointer
+	       x.take(y),		// 4: sizeof(iter<int,false>)
+	       (int)sizeof(z),		// 1: iter<char,true>
+	       x.give(w),		// 4: wa<int>
+	       (int)sizeof(u));		// 8: wp<union natU>
+	return 0;
+}

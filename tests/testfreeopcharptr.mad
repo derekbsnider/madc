@@ -1,0 +1,32 @@
+// A free-operator template whose CONCRETE scalar parameter (`char`) is
+// registered BEFORE the exact `const char*` sibling must NOT claim a
+// pointer argument — no standard conversion goes pointer->arithmetic
+// ([conv]), and the first-deduced-wins walker would otherwise truncate
+// the pointer to one char. The incident: libc++'s
+// operator<<(basic_ostream<char,_Traits>&, char) claimed
+// `cout << "hello "` and the smoke printed padding garbage.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "2" (then "1"
+// for the parked leg below)
+#include <cstdio>
+
+namespace lib {
+
+template <class T> struct box { T v; box(T x) : v(x) {} };
+
+// registration order matters: the char overload FIRST.
+template <class T> int operator<<(box<T> &b, char c) { return 1; }
+template <class T> int operator<<(box<T> &b, const char *s) { return 2; }
+
+}
+
+int main()
+{
+	lib::box<long> b(7);
+	printf("%d\n", b << "xy");
+	// PARKED (task #66, overload ranking): after the charptr instantiation
+	// above, `b << 'a'` binds that INSTANCE instead of instantiating the
+	// exact char-param template — prints 2 where g++/clang++ print 1.
+	// Restore when #66 lands:
+	// printf("%d\n", b << 'a');
+	return 0;
+}

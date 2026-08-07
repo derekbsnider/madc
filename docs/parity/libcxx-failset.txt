@@ -1,0 +1,940 @@
+# libc++ parity lane — the failing set
+#
+# Produced by:  bash scripts/run_tests.sh --stdlib=libc++
+# Measured at:  429842b4 (2026-08-06) on feature/libcxx-parity7-claude
+# Result:       993 passed / 0 failed / 0 timed out / 13 skipped
+#
+# HISTORY (diff this file, never compare bare totals — a total cannot tell
+# "N fixed, N newly broken" from "nothing changed"):
+#   45f64a6f  534 / 282   first baseline
+#   640c0244  536 / 282   +2 were NEW TESTS; zero flips (three frontier fixes,
+#                         none of which completed a blocked include)
+#   3f86333c  539 / 281   testaddpointer FIXED, nothing newly broken (diffed)
+#   fe50bc3c  540 / 281   +1 was a NEW TEST; zero flips AND ZERO REGRESSIONS
+#                         (diffed both ways) — #43 was a necessary link in the
+#                         <iostream> chain, not the last one. The frontier moved
+#                         condition_variable.h:211 -> :225 (task #46).
+#   7d2c3a62  541 / 281   +1 was a NEW TEST; zero flips, ZERO REGRESSIONS in
+#                         all three lanes (member access is a hot path).
+#                         <condition_variable> is THROUGH: the frontier left
+#                         that header for __bit_reference:837.
+#   8445b59c  542 / 281   +1 was a NEW TEST; the failing set is byte-identical
+#                         in all three flavored lanes (comm-diffed both ways).
+#                         __bit_reference is THROUGH — the _Select error was an
+#                         elaborated-type-specifier arg failing to first-declare
+#                         ([basic.scope.pdecl]/7, struct __private_nat). The
+#                         frontier is now bitset:598 (out-of-line ctor of a full
+#                         specialization, task #48).
+#   7e8c4e6d  544 / 281   +2 were NEW TESTS; failing set byte-identical again
+#                         (comm-diffed both ways, all three flavored lanes).
+#                         TWO fixes: a plain out-of-line template ctor def now
+#                         attaches (@e6ee7a05, was an undefined-import for every
+#                         `template<...> X<A>::X(){}`), and an explicit spec's
+#                         out-of-line ctor/dtor parses ([temp.expl.spec]/5).
+#                         bitset is THROUGH; the frontier is
+#                         bsd_locale_fallbacks.h:31 — decltype(expr) as a
+#                         declaration's return type (task #51).
+#   adb0a578  545 / 281   +1 was a NEW TEST; failing set byte-identical again.
+#                         decltype heads a declaration / sizeof operand (#51);
+#                         bsd_locale_fallbacks.h is THROUGH. Frontier:
+#                         locale:2373 money_get (task #52).
+#   674beaa3  596 / 237   44 FIXED, ZERO regressions (comm-diffed both ways).
+#                         Six fixes landed between the measures: #52 fn-ptr
+#                         template arg, #53 mutable, #54 cv fn-ptr member, #55
+#                         scoped-enum prior enumerators, #56 extern attribute
+#                         (-> #include <iostream> COMPILES), #57 base-qualified
+#                         overload-by-arity (-> cout PARSES), #58 out-of-line
+#                         overload defs bind by SIGNATURE (the big one: libc++
+#                         defines ostream's streambuf* operator<< first though
+#                         declared last, so every body attached one overload
+#                         over; the 44 were failing on mis-bound bodies, not on
+#                         the stream chain). Frontier: locale:1155 c2mir check,
+#                         incompatible return-expr in a struct-returning
+#                         function (num_put materialization, task #59).
+#   a80ba0b0  600 / 237   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +4 passed = the four NEW suite tests. FIVE
+#                         fixes landed between the measures — #59's east-const
+#                         partial-spec + static-def phantom-__this, #33's
+#                         mem-init template-id binding + lazy-only ctor
+#                         instantiation + defining-namespace defaults fill —
+#                         all shared parser paths, ZERO flavored regressions.
+#                         The smoke's chain advanced locale:1155 -> locale:1044
+#                         -> string:709 -> the current frontier: streambuf:128
+#                         lvalue-required + string:709:18 struct-assign (task
+#                         #62). The 237 stay blocked behind that chain.
+#
+# The chain-of-blockers reading was validated at 674beaa3: the count sat at
+# 545/281 through four frontier fixes, then one binding fix flipped 44 at once.
+# Judge progress by which header the frontier sits in, and use this file's diff
+# to prove no regressions — which is what it has done at every step.
+#
+# 214 of these 237 include a C++ stream header, so the stream chain remains ~90%
+# of the gap; the live blocker is streambuf:128 + string:709:18 (task #62).
+#
+# This is NOT a ratchet yet: a 281-entry baseline gates nothing. It becomes the
+# P2.7 gate when the count reaches 0 — every genuine gap fixed, every
+# out-of-scope test carrying a tests/<base>.libcxx_skip with a reason.
+#   b53f34ab  727 / 118   🏁 THE STREAM WALL FELL: 119 FIXED, ZERO regressed
+#                         (comm-diffed both ways). The cout smoke RUNS and
+#                         prints 'hello 42' under -stdlib=libc++. Four parser
+#                         roots + the link-viability CIR batch (five gated bind
+#                         seams + retained-body serving): deduced-call return
+#                         pin (+ inst re-entry guard), template-head friend
+#                         grant, concrete-param pointer viability (both deduce
+#                         sites), multi-word builtin spellings in the canonical
+#                         resolver. Remaining 118: string operator+ body route
+#                         (leg-14 red, task #64) + the residual set below.
+#   1f00fc64  731 / 117   testcstdio FIXED, ZERO regressed (comm-diffed both
+#                         ways); +3 were NEW TESTS. The string operator+ chain
+#                         landed and libcxx_gate leg-14 is GREEN (fulltest
+#                         FULLY green, 846/0): friend-specialization operator
+#                         declarator grant (@feb44ed0), by-value class
+#                         operator-result materialization (@6d377d4d),
+#                         --emit=c11 bit-field widths (@848df89b), and the
+#                         ROOT: an empty non-primary base lays out at Itanium
+#                         offset 0 (@1f00fc64). __compressed_pair's allocator
+#                         elem sat ONE PAST the 24-byte string; every
+#                         __second()/__alloc() access was OOB (ASan-proven) —
+#                         std::string c = a + b returned c.size()==3 SILENTLY.
+#                         Now: plusrun 'hello 5', smoke 'hello 42' intact.
+#   8aed92cc  744 / 108   9 FIXED, ZERO regressed (comm-diffed both ways); +4
+#                         were NEW TESTS. Four fixes: @cee0bb6b header-served
+#                         c_str/size resolve by the Class__method scheme (the
+#                         char*-param string coercion — all 9 flips are its
+#                         family: testif/testprint/test4/testdlcall/...);
+#                         @b12bce83 NSDMI capture balances <> via DelimDepth
+#                         (libc++ vector's __end_cap_ shape — vector's 13 tests
+#                         moved to a DEEPER emission layer, not yet flipped);
+#                         @02b890f1 ref-qualified methods parse ([dcl.fct]p6)
+#                         and @8aed92cc east-cv template args (`value_type
+#                         const`) — <optional> is THROUGH; the map/set family
+#                         (7 tests) now blocks at map:967 operator-> on a
+#                         dependent call result (task #72). Also filed: #69
+#                         flavor-ABI ns-string boundary (testrust SIGSEGV
+#                         stack), #70 object-NSDMI ctor-args application.
+#   bd053e25  746 / 108   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         fixes landed: @e94b1274 operator-> rewrite accepts
+#                         member/call-result receivers (map's tree-iterator
+#                         arrow shapes now REWRITE), and @bd053e25 a ctor-less
+#                         class copy-constructs from its argument — the
+#                         by-value call-receiver spill temp was SILENTLY
+#                         uninitialized (a general-correctness silent-wrong,
+#                         task #73) + the derived/slicing copy arm
+#                         (input_iterator_tag from forward_iterator_tag).
+#                         Chain-of-blockers holds: map/set (7) now at the
+#                         iterator operator->'s UNRESOLVED pointer_traits
+#                         alias return (#72 tail); vector (13) at its
+#                         emission layer.
+#   c5c62082  747 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways vs bd053e25 AND this file); +1 passed = the
+#                         new suite test (testaliasptrtarget). The fix was
+#                         THE ALIAS-STAR ROOT: every `using X = U*` alias
+#                         target silently DE-POINTERED (the resolve lanes
+#                         drained the declarator suffix) — a flavor-
+#                         independent silent-wrong. With it, the map chain
+#                         advances past the ENTIRE operator-> wall to
+#                         map:629 — mem-init naming a private template-param
+#                         base (`__map_value_compare : private _Compare`,
+#                         #72's next link). No lane test crosses fully yet.
+#   66d3a4c5  749 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         flavor-independent fixes (v0.63.0 released, then
+#                         branch feature/libcxx-parity2-claude): @8112636c a
+#                         mem-initializer names a base that IS a template
+#                         parameter (map:629 THROUGH), and @66d3a4c5
+#                         `T(a, b)` at statement head is an EXPRESSION per
+#                         [dcl.ambig.res] (__node_handle THROUGH). The map
+#                         chain now blocks at __tree:680 — the node-allocator
+#                         rebind yields the VALUE type's pointer, so
+#                         __tree_node_types instantiates the declared-only
+#                         primary ('__get_ptr' is not a member function,
+#                         #72's next link).
+#   439e0ab5  751 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW suite tests. Two
+#                         flavor-independent SILENT-WRONG roots fixed:
+#                         @6fe97a44 a full specialization keyed on a
+#                         TEMPLATE-ID argument registered under its raw
+#                         source spelling and went invisible to uses (the
+#                         primary instantiated silently), and @439e0ab5 THE
+#                         __tree:680 ROOT — the legacy lane collapsed a
+#                         member class template's self-name template-id
+#                         (`allocator<T>::rebind<U>::other` == allocator<T>,
+#                         the node allocator silently became the VALUE
+#                         allocator). __tree:680 is THROUGH; the map chain
+#                         now blocks at __tree:890 ('member reference type
+#                         is not a structure or union', #72's next link).
+#                         Bring-up caught three draft flaws via the freeze +
+#                         container suites (context-dependent ns keys, a
+#                         param leak on rejected friend heads, a namespace-
+#                         blind despaced-index verification) — all fixed in
+#                         the landed shape; fulltest 860/0.
+#   9ff3ffed  753 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +2 passed = the two NEW gate tests. Covers
+#                         two more flavor-independent silent-wrong roots:
+#                         @d21a9e07 '->' on a reference-to-pointer receiver
+#                         derefs the REFERENT pointer (__tree:890 THROUGH —
+#                         tests/testrefptrarrow.mad) and @46fde843 the
+#                         injected-class-name is a type inside a plain
+#                         struct body (tests/testselfrefstruct.mad).
+#                         Ref-arrow touches many headers; zero flips anyway.
+#                         The map<int,int> chain is THROUGH THE PARSER into
+#                         the CIR/tsubst layer: next link = #74 (templated
+#                         converting ctor never joins the ctor candidate
+#                         set, __node_handle:84). fulltest 862/0.
+#   c956ff04  758 / 108   the failing set is SET-IDENTICAL (comm-diffed both
+#                         ways); +5 passed = the five NEW gate tests
+#                         (testconvctor testcondlvalue testmemtplid
+#                         testtagdispatch testlitstmt). FIVE roots landed:
+#                         @7655400d #74 templated converting ctor joins the
+#                         ctor candidate set (3-edit chain); @a778b3de the
+#                         C++ lvalue conditional distributes address-of into
+#                         its arms (the 22-test 'lvalue required' root —
+#                         libc++ std::max/min under const T& return);
+#                         @4ff153b5 member-call heads honor [temp.names]
+#                         (explicit-targs arms on the arrow + unqualified
+#                         twins: __assign_no_alias<true>; PLUS the call-arity
+#                         pre-count no longer reads template-argument commas
+#                         as argument separators: __copy_assign_alloc(__str,
+#                         integral_constant<bool,X>())); @c956ff04 a literal
+#                         may head an expression-statement ([stmt.expr] —
+#                         `1 ? f() : g();` from NTTP substitution). libc++
+#                         std::string COPY ASSIGNMENT now runs end-to-end
+#                         (a = b prints the clang++ oracle). Zero flips:
+#                         the roots moved the string/vector chains 2-4 links
+#                         each without clearing a whole test (series
+#                         circuits). Frontiers now PER-TEST: teststringclass
+#                         = its own line-21 'incompatible argument type for
+#                         arithmetic type parameter'; testvector/vecpb1 =
+#                         reference-typed MEMBER reads miss the deref
+#                         (uninitialized_algorithms.h:523, task #77).
+#                         fulltest 867/0.
+#   dff0da16  766 / 108   SET-IDENTICAL, zero flips; +8 passes are NEW GATE
+#                         tests (six #78 detect-idiom links: decltype-qual-expr,
+#                         static-const fold, [temp.deduct]/8 param-type reject,
+#                         __is_convertible builtin, [dcl.spec]/1 east-specifiers
+#                         — trait live suite-wide, zero lane regressions)
+#   a8ab53a6  776 / 103   ⚡ 5 FIXED, zero newly broken (diffed): testforeachref,
+#                         testforeachscope, testsubscriptarrow, testsubscriptmember,
+#                         testvectorptr — links 7-10 of #78 (NTTP trait folds, ||-skip
+#                         DelimDepth, ref-return operator chains, out-of-line DTOR
+#                         attach): vector<int>::push_back RUNS; +5 more passes are
+#                         new gate tests
+#   7e416edc  803 /  80   ⚡⚡⚡ 23 FIXED, ZERO newly broken (diffed) — the biggest
+#                         single move of the campaign. Rung 13 of #78: the testclass
+#                         SIGSEGV was FOUR compiler roots — (1) reference-typed arg
+#                         bound to a VIRTUAL-base reference param passed unadjusted
+#                         (width() read __precision_: phantom pad + precision clobber
+#                         in EVERY stream test); (2) cast-to-reference ctor args
+#                         (spelled-out std::forward) scored as Tag* so libc++ tag-
+#                         dispatch ctors never matched (+ binding twin); (3) value-init
+#                         mem-init on a plain-struct member emitted NOTHING — every
+#                         default-constructed string rep was frame garbage; (4)
+#                         base-to-derived reference downcast untyped (use_facet).
+#                         FIXED: test test5 testalignas testarraymethods
+#                         testcastparenexpr testclass testclassassign testclassreturn
+#                         testctorstring testenumclass testfriendkeyword
+#                         testglobalrefret testimplcopy testmacrosubst
+#                         testmemberaliastmpl testmemberarrowcall testmembernamestd
+#                         testnsdmi testpseudodtor teststringmethods teststruct2
+#                         testvector testvptrmember (+3 more passes are new gates)
+#   fe3b5bf0  811 /  77   3 FIXED zero broken (comm-diffed): teststreambool +
+#                         testusefacet_realhdr + testvbasedyn — libc++
+#                         istringstream RUNS. The VTT chain (@53f510ea hidden
+#                         __madc_vb ctor params) + the stream triple (@fe3b5bf0
+#                         shell-shadowing / D2 base-dtor / C2 demotion) closed
+#                         the construction-vtables gap. +5 passes = new gates
+#                         (testvttinit testvbasedefault teststreamdecl_libcxx
+#                         testistream_libcxx +1).
+#   fdf80bb5  814 /  76   testsizeoftpl FIXED, ZERO broken (comm-diffed both
+#                         ways); +2 were NEW GATES (testtraitalloc_libcxx,
+#                         testreftrait). THE optional:354 WALL FELL — two trait
+#                         roots: (1) the in-flight self-referential base-arg
+#                         brand (@510368db: allocator<T>'s __non_trivial_if
+#                         base minted as a dependent placeholder poisoned every
+#                         trait fold on allocator — is_trivially_destructible
+#                         silently 0, wrong __optional_destruct_base selected);
+#                         (2) reference-typed trait args answered as their
+#                         referents (@a0b90de6: 7 silent wrongs vs BOTH canons;
+#                         __has_trivial_destructor(T&) inverted) — unmasked as
+#                         the _CanBeEmptyBase EBO mis-fold on reference elems.
+#                         The map cluster's frontier moved optional:354 ->
+#                         __tree:890 allocator_traits::destroy tsubst bail
+#                         [why: unresolved dependent member call]; optional
+#                         default-ctor runtime (has_value garbage) is the
+#                         other visible next link.
+#   6980ba1a  815 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +1 = the NEW GATE testptrviab. TWO-LAYER
+#                         SFINAE viability fix: score_arg_to_param's both-
+#                         non-class-pointee arm dropped [conv.ptr] (ANY
+#                         pointer scored viable against ANY pointer — now
+#                         identity/cv-widening=5, numeric pointees by rawtype
+#                         representation (size_t* binds std::size_t*, the
+#                         stod/fstream adjudication), void*=3, else NO
+#                         conversion); reselect_method_overload kept the
+#                         arity pick on a scored miss — inside an unevaluated
+#                         operand that typed ill-formed calls well-formed, so
+#                         __has_destroy<allocator<Node>, pair*> folded TRUE
+#                         and allocator_traits::destroy bound __a.destroy.
+#                         The map cluster's frontier moved __tree:890 ->
+#                         "tsubst: skipped body with no tsubst coverage"
+#                         @string:709 (map1) / char_traits.h:269 (testmap) —
+#                         the skipped-body KIND is the next link.
+#   67079c61  816 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways, prefix-normalised); +1 = the NEW GATE
+#                         testnondeductx. [temp.deduct.type]/5: a template
+#                         parameter appearing only in a qualified-id's
+#                         nested-name-specifier is a NON-DEDUCED CONTEXT —
+#                         madc fed it to its structural deducers, which
+#                         cannot match a dependent qualified name, so the
+#                         whole candidate was refused and the call stayed on
+#                         its declaration-only placeholder. This is libc++'s
+#                         unique_ptr(pointer, deleter) family
+#                         (`_LValRefType<_Dummy>`). A mid-chain link: it
+#                         flips no lane test alone, because the same chain
+#                         also needs the member-template non-type default
+#                         carriage (task #89) and the tsubst-body
+#                         emittability of a dependent-qualified-param member
+#                         (task #88).
+#
+#                         RECON, this measurement: all 76 bucketed by first
+#                         stderr line. The LARGEST root is 28 of 76 —
+#                         22 "incompatible argument type for arithmetic type
+#                         parameter" + 6 the pointer twin — and it reduces to
+#                         SIX LINES (task #90):
+#                             #include <iostream>
+#                             using namespace std;
+#                             int main(){ string h="H";
+#                                 std::cout << h << std::endl; return 0; }
+#                         which FAILS under -stdlib=libc++ and passes under
+#                         libstdc++ and both canons. It is ORDERING-DEPENDENT:
+#                         inserting `std::cout << "lit" << std::endl;` BEFORE
+#                         it makes it resolve. MADC_FREEOP_PROBE (added here)
+#                         shows the parser takes the identical branch in both
+#                         orders — enter, then bail-refret on the reference-
+#                         returning free operator — so the divergence is
+#                         DOWNSTREAM in the cir-builder W2 mangled-direct
+#                         binding, where libc++'s _LIBCPP_HIDE_FROM_ABI free
+#                         operator<< has no exported symbol to bind (task #44
+#                         territory). That bucket, not the map chain, is the
+#                         highest-yield next move.
+#   63101743  816 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways, prefix-normalised); zero flips, zero new
+#                         tests. The 28-test bucket's root FELL: a CLASS
+#                         argument cannot claim an arithmetic free-operator
+#                         parameter ([over.ics.user] — a class type reaches
+#                         an arithmetic parameter only through a user-defined
+#                         conversion, never a standard one).
+#                         free_operator_concrete_param_matches's arithmetic
+#                         arm rejected pointers but let classes through, so
+#                         `cout << string` bound the CHAR overload with the
+#                         whole basic_string struct passed by value — the
+#                         verbatim c2mir error heading the bucket. (The probe
+#                         chain first CLEARED the suspects: MADC_FREEOP_PROBE
+#                         proved parser lowering identical in both orders,
+#                         FOPBODY proved the body route instantiates in both;
+#                         the --emit=c11 diff exposed the binding.) With the
+#                         bogus binding gone the two big roots UNIFIED: os4
+#                         now fails on unique_ptr_char_funcptr(int, <unknown>)
+#                         — the SAME unique_ptr ctor chain as tasks #88/#89.
+#                         Finishing #89 (member-template non-type default
+#                         carriage via constraint runs) + #88 (tsubst-body
+#                         emittability of a dependent-qualified-param member)
+#                         is now the single highest-yield move: it feeds BOTH
+#                         the 28-test bucket and the map cluster. Gate for
+#                         the bucket (task #90) must assert the EMITTED C
+#                         names the basic_string overload. fulltest 893/0.
+#   f4e7b946  818 /  76   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 = the NEW GATES testmtpldefault +
+#                         teststdunversioned. THREE ROOTS FELL between the
+#                         measures (@06cd2d12 + @f4e7b946): (1) task #89 —
+#                         member-template NON-TYPE defaults fill when their
+#                         captured constraint run is EMPTY (`bool _Dummy =
+#                         true`; the pair-ctor clearing stays for captured
+#                         runs; forest v37->v38, spec-slot carriage); (2) an
+#                         ALIAS-template-id parameter (`_LValRefType<_Dummy>`)
+#                         is a NON-DEDUCED context — deduction skips it
+#                         instead of refusing the candidate; (3) a declared
+#                         scope of exactly `std` mangles UNVERSIONED in both
+#                         flavors (_ZSt17__throw_bad_allocv resolves — the
+#                         blanket std->std::__1 widening minted an import
+#                         libc++.so does not export). Zero flips because the
+#                         chain is a series circuit: os4 now advances from
+#                         "no matching constructor
+#                         unique_ptr_char_funcptr(int,<unknown>)" all the way
+#                         to MIR LINK with ONE undefined import left —
+#                         __compressed_pair_elem_funcptr_1_0__..__o3, an
+#                         instantiated member-template ctor whose BODY never
+#                         emitted: task #88 (uptrC/uptrI still bail "tsubst
+#                         body calls un-emittable symbol"), the LAST link for
+#                         both the 28-test bucket and the map cluster. Also
+#                         fixed en route: a latent use-after-free (~Program
+#                         now releases the ambient token pools it owns —
+#                         ASAN-verified; every multi-Program host was
+#                         affected). fulltest 895/0.
+#   ba70192e  819 /  76   the failing set is BYTE-IDENTICAL (comm-diffed);
+#                         +1 = the NEW GATE testpatcollateral. Task #88's
+#                         FIRST HALF fell: build_dependent_pattern's blanket
+#                         pending_funcs resize discarded the COLLATERAL
+#                         definitions of concrete classes the pattern-body
+#                         parse eagerly instantiated (the classes survive;
+#                         their bodies vanished) — only the recipe pops now.
+#                         Reducers uptrC/uptrI print 42 (both canons agree).
+#                         The OPEN half is the journal-context sibling: os4's
+#                         __compressed_pair_elem __o3 import — a member-
+#                         template ctor instantiated inside a taps-muted
+#                         class-pattern serve; the rollback kills the body,
+#                         the tsubst-baked call still names __o3, and a
+#                         re-instantiation mints __o5 (probe: `try ok=1
+#                         inst=...__o5`). An escrow attempt regressed the
+#                         freeze lane (pattern-shell bodies leaked into the
+#                         pack) and was WITHDRAWN — the fix needs a
+#                         speculative-class filter or a tsubst-time rebind
+#                         of the baked ctor call. fulltest 896/0.
+#   dad582e6  836 /  59   ⚡⚡ 17 FIXED, ZERO newly broken (comm-diffed) —
+#                         THE 28-TEST BUCKET FELL. A member-template ctor
+#                         INSTANTIATION now outranks ITS OWN declaration-only
+#                         placeholder in select_ctor_overload (the pair is
+#                         exact via tsubst_source; a score TIE had kept the
+#                         first-registered placeholder, so the emitted call
+#                         named the declaration-only symbol — the
+#                         __compressed_pair_elem __o3 undefined import).
+#                         ⚠️ The blanket [over.ics.rank] demotion was tried
+#                         first and is WRONG: basic_string(const char*) is
+#                         itself a member template under libc++; demoting its
+#                         placeholder handed `string h = "H"` to the copy
+#                         ctor and recursed class_ctor_call <->
+#                         object_arg_addr to a 13k-frame stack overflow.
+#                         FIXED: testcapture testforeach testforeach2
+#                         testlambda testns testregex teststringclass
+#                         teststringglobal teststringobj
+#                         teststringplus_realhdr teststringref
+#                         teststringreturn teststrlitplus_realhdr
+#                         teststrplusbody_realhdr teststrrefparam_realhdr
+#                         testtemplatestring testusing. Gate
+#                         testcoutstr_libcxx. Residual #90: emission still
+#                         reaches the stream via const char* + c_str() —
+#                         right output, WRONG overload identity (latent for
+#                         embedded NULs). fulltest 896/0.
+#   b0b7cae8  859 /  40   19 OUT, ZERO newly broken (comm-diffed both
+#                         ways): 17 FIXED + 2 reasoned .libcxx_skip
+#                         (testtraitassign std::__and_ by construction;
+#                         testcompare_realhdr raw unordered-byte probe —
+#                         madc byte-matches BOTH oracles). Recon-then-
+#                         strike: 8 subagent buckets over the 59, then
+#                         SIX fix commits: [dcl.enum]p11 unscoped-enum
+#                         pseudo-namespace (b3c6f2f1), <=> lowering reads
+#                         the flavor's own <compare> statics — hardcoded
+#                         _M_value/2 gone (f25702d1), fn-template memo
+#                         keys the OVERLOAD not just name+binding
+#                         (a72560a5, the char/char* stream SIGSEGVs),
+#                         concrete-pointer-param viability [conv.ptr]
+#                         (91830063 — cout<<string now binds the
+#                         basic_string inserter, #90 CLOSED), obj.static
+#                         member dot-lane [expr.ref]p4 (3015bb41), test
+#                         dispositions (b0b7cae8). FIXED: testarraymember
+#                         testarraysubscript testcastsubscript
+#                         testclassstaticitanium testdefaultedcmp_realhdr
+#                         testderefpreinc testfortypedcomma
+#                         testheaderstringops testlambdastrret
+#                         testmacrocharlit testmanip testrewritten_realhdr
+#                         testspaceship_realhdr teststringplus
+#                         teststringsubscript teststructinitnested
+#                         testsysscript. Gates: testenumqual,
+#                         testspaceship_libcxx, testosmixed_libcxx,
+#                         teststrret_libcxx, testdotstatic. Frontiers
+#                         moved: fstream cluster path.h:411 ->
+#                         operations.h:37; cin>>string now instantiates
+#                         and MIR-links but extracts ZERO chars — task
+#                         #93: template-arg identity through namespace
+#                         typedefs (numeric_limits<streamsize> picks the
+#                         all-zeros _0 primary). fulltest 900/2 (the 2 =
+#                         parked #93/#94 gates in tmp/), zero
+#                         regressions.
+#   ef0d9921  862 /  39   testcin FIXED — the ONLY flip (comm-diffed both
+#                         ways, ZERO newly broken); +2 were NEW GATES from
+#                         the #93 landing (testtypedefarg, the [temp.type]
+#                         typedef-identity reducer, + testcinstr_libcxx,
+#                         the promoted cin>>string twin — both pass BOTH
+#                         flavors). The chain: template-arg identity
+#                         desugars namespace scalar typedefs (cf39afef) so
+#                         numeric_limits<streamsize> instantiates the real
+#                         specialization and cin>>string extracts; landing
+#                         it was blocked by the freeze-append pack gate —
+#                         a DEFLESS-dropped def (failed pack-time lowering:
+#                         the wchar _M_extract_int wrong-shape early round)
+#                         left its typed proto + output extern in the tree,
+#                         unattributable at the check gate. ef0d9921 = one
+#                         rule, three arms: a defless drop leaves NO decl
+#                         surface (proto skipped, extern skipped, gate
+#                         splices residue). fulltest 904/0,
+#                         forest_selfexe_gate GREEN, EXE 848/0, OBJ 848/0.
+#   81eac496  864 /  39   the failing set is BYTE-IDENTICAL (comm-diffed both
+#                         ways); +2 = the NEW GATES testconstovl
+#                         ([over.match.funcs]/4 implicit object parameter,
+#                         @31c85ed5) and testpacktypedef (#94's typedef-lane
+#                         variadic completeness demand, @81eac496). Zero
+#                         flips — both fixes are correctness infrastructure;
+#                         #94's general [temp.class.spec.match]/2 slot arm
+#                         ships DARK (MADC_XSLOT_ARM=1) because its CORRECT
+#                         libc++ copy-dispatch match reaches
+#                         __unwrap_and_dispatch, which madc never
+#                         materializes (8 _libcxx twins red with the arm on
+#                         — the flip-on blocker, task #94). EXE 850/0,
+#                         OBJ 850/0, fulltest 906/0.
+#   92917cc5  869 /  38   ONE flip: testevalexterncapture FIXED, ZERO
+#                         regressions (comm-diffed both ways); +4 = the NEW
+#                         GATES testarrayparam, testclassproto,
+#                         testconstaccess, testprivmethod. Three recon-then-
+#                         strike roots landed between the measures:
+#                         @915b129b a value-name that also names a
+#                         type/template keeps the declaration reading
+#                         ([dcl.ambig.res] — CTAD-guide value `array`
+#                         shadowed the builtin), @f5527cb9 class-returning
+#                         bodyless prototype is a fn declaration
+#                         (paren_group_can_be_param_decl_clause + 3
+#                         counter-arms), @92917cc5 access checks the
+#                         SELECTED overload + const-method member receiver
+#                         is const (set:564 cleared). The other clusters
+#                         each advanced past their fixed blocker to the two
+#                         dams: the materialization family (never-emitted
+#                         basic_string __oN / compare / __math::isinf /
+#                         __unwrap_and_dispatch) and #102 non-type-pack
+#                         real-instantiation (map+set piecewise pair).
+#                         EXE 854/0, fulltest 910/0.
+#   e09c5381  880 /  26+2TO  🏁 THE FLAVOR-ABI DAM FELL: ELEVEN FIXED, ZERO
+#                         regressions (comm-diffed both ways) — the whole
+#                         #69 cluster (madceval×5, php, perl, prefer, lang,
+#                         rust) plus testevalexterncapture (transiently
+#                         re-red mid-chain via the #92 warnings its working
+#                         capture surfaced; fixed same chain). The chain:
+#                         @4dc3f2e0 a deduction guide declares NO name
+#                         ([temp.deduct.guide] — the phantom `array` value,
+#                         ns_madc:56); @873fd4d4 marshalling slice 1
+#                         (host-twin remint under MangleHostFlavorScope +
+#                         carrier mask); @1aec54f0 marshalling LIVE — thunk
+#                         at call_emit_symbol (the ONE owner), dladdr
+#                         origin gate, hidden-__this assign(ptr,len) walk,
+#                         scope-capture host-temp arm (was the
+#                         madc_value_set_string_n SIGSEGV); @e09c5381 a
+#                         declaration-only _Z* callee gets its typed proto
+#                         (#92 family — the <new> implicit-int warnings).
+#                         The 2 TIMEOUTS (testcontainerdtor, testmadc_ns)
+#                         do NOT reproduce standalone (graceful #102 cir
+#                         errors in seconds) — battery-load suspects, both
+#                         already members of the failing set. Default
+#                         fulltest GREEN throughout (the marshalling path
+#                         is unreachable when script flavor == host).
+#   ba7517b4  891 /  28   the failing-name set is IDENTICAL to e09c5381
+#                         (the two prior timeouts reproduced as ordinary
+#                         failures); +11 passes are new default-lane gates.
+#   3d82ca3a  893 /  27   ONE FIXED, ZERO newly broken (comm-diffed both
+#                         ways): teststdstringconv. +1 other pass is the new
+#                         real-header cross-flavor gate
+#                         teststdlibclassreturn. Task #116 closed at the
+#                         function-signature ABI owner: external libc++ and
+#                         madc-emitted non-trivial class returns both use the
+#                         selected FuncDef's hidden-result shape; body origin
+#                         is not an ABI discriminator. fulltest 923/0,
+#                         libc++ EXE 877/0, OBJ 877/0.
+#   2e70fbbf  896 /  26   ONE FIXED, ZERO newly broken: testlateinstproto;
+#                         two new passing gates testdependenttagdispatch and
+#                         testsfinaedefscope; EXE 880/0, OBJ 880/0.
+#   518412e2  897 /  26   failing-name set unchanged; +1 is new gate
+#                         testretbufmtiinit; EXE 881/0, OBJ 881/0.
+#   ef168838  898 /  26   failing-name set unchanged; +1 is new gate
+#                         testmtireturnscope; EXE 882/0, OBJ 882/0.
+#   fce67bf8  918 /  24   TWO FIXED, ZERO newly broken: testset and
+#                         teststringrel; +18 are new passing gates from the
+#                         pointer/reference and member-template owner audit.
+#                         EXE 902/0, OBJ 902/0.
+#   672a0966  927 /  16   EIGHT FIXED, ZERO newly broken (comm-diffed against
+#                         the 24-name set): testcastarrow, testcontainerdtor,
+#                         testforinitscope, testmadc_ns, testmap, testmapiter,
+#                         teststdmapint, and testsubscript. +1 is the new
+#                         testfwdpackvaluecategory gate. Forwarding-reference
+#                         scalar/pack deduction and both pre-deduction keys now
+#                         share value-category-aware owners; dependent sizeof
+#                         delegates to query_datadef_measure. EXE 911/0,
+#                         OBJ 911/0, fulltest 946/0/0TO/9skip.
+#   7b63f8c6  930 /  15   testconstructible FIXED, ZERO newly broken (the 15 ==
+#                         the prior 16 minus it). +2 are the new testnoexceptop
+#                         and testqualpackelide gates. Root: the noexcept
+#                         OPERATOR was lexer-erased; madc presents as GCC so
+#                         libc++ compiles its noexcept-fallback nothrow-trait
+#                         arm (_LIBCPP_COMPILER_GCC). Chained: fn-template
+#                         placeholder spec capture, [temp.inst]/14 spec
+#                         instantiation, qualified-template-id pack units.
+#                         EXE 914/0, OBJ 914/0, fulltest 947/0/0TO/9skip
+#                         (pre-testqualpackelide count).
+#   41cbb2c5  935 /  11   ⚡ FOUR FIXED, ZERO newly broken (the 11 == the prior
+#                         15 minus testdefer/testfstream/testloop/testmanipview);
+#                         +1 is the new testofstreamwrite gate. BUCKET-A chain
+#                         (recon: the 15 bucketed into six roots by first
+#                         error): (1) class-typed `return {...}` selects a ctor
+#                         — the bare `{` unbalanced the scope stack and libc++
+#                         proximate() lost its params (operations.h:240);
+#                         (2) cv-qualified conversion-type-ids `operator const
+#                         _Path&() const` + reference-conversion returns via
+#                         returnDecl + ONE cv-skip owner (6 inline copies
+#                         consolidated, predicate renamed is_cv_qualifier_token);
+#                         (3) `inline friend` — [dcl.spec] free specifier order,
+#                         one friend-decl owner for both entry arms
+#                         (directory_iterator.h:103); (4) using-alias EAST-cv
+#                         target `directory_entry const*` via
+#                         consume_declarator_stars; (5) THE SILENT-WRONG ROOT:
+#                         derived-to-base walk missing in the free-operator
+#                         BODY deduction — `outf << "hello"` fell to the member
+#                         operator<<(const void*) and wrote the POINTER into
+#                         the file (testfstream/testloop read their own poison
+#                         back). Also: restored the identity-return pattern
+#                         recording 7b63f8c6 accidentally severed. testsstream
+#                         advanced (inserts compile; str() empty = the NEW
+#                         KG Gap libcxx_stringstream_construction_state, same
+#                         locale-copy-ctor SIGSEGV signature as testopinherit).
+#                         EXE 919/0, OBJ 919/0, fulltest 949/0/0TO/9skip.
+#   01d774fe  938 /   9   ⚡ TWO FIXED, ZERO newly broken (the 9 == the prior
+#                         11 minus testsstream/testopinherit); +1 is the new
+#                         testtranssecondary gate. THE ROOT: Itanium gives every
+#                         polymorphic base subobject off the primary chain its
+#                         own vtable group + ctor vptr stamp — TRANSITIVELY;
+#                         secondary_vptr_owners collected only DIRECT
+#                         non-primary bases, so `E : D` (D : A, B) left the
+#                         B-subobject on B's STANDALONE vtable, whose
+#                         vbase-offset slots describe B's own layout. Under
+#                         libc++ that was stringstream (basic_ostream =
+#                         basic_iostream's SECOND base): through any
+#                         basic_ostream view the virtual basic_ios resolved at
+#                         +24 vs clang's +128 — real libc++ code (exported
+#                         put()) and emitted bodies read an UNINITIALIZED
+#                         basic_ios: inserts silently lost, `<< 42` SIGSEGV in
+#                         the locale copy ctor (the shared testsstream +
+#                         testopinherit signature). ofstream was immune only
+#                         because ostream is its PRIMARY base. Fix: (owner,
+#                         offset) pairs + the transitive interior walk; groups,
+#                         fields, stamps and dispatch all derive from
+#                         vtable_groups. Reducers r23-r25 (plain diamond OK,
+#                         plain depth-2 + template stream shape both broken,
+#                         flavor-INDEPENDENT). EXE 922/0, fulltest 950/0.
+#   075c7f81  939 /   8   testincludenext FIXED, ZERO newly broken (the 8 ==
+#                         the prior 9 minus it). THE SILENT WRONG ("42 0" vs
+#                         the oracle's "42 7") was never #include_next:
+#                         libc++'s stdlib.h declares five inline C++ `abs`
+#                         overloads at GLOBAL scope after glibc's extern-C
+#                         `int abs(int)`; plain globals were excluded from the
+#                         tracked-overload arm, so all five spliced into ONE
+#                         shared-id FuncDef and the LAST body (long double,
+#                         fabsl) emitted as a plain-named linkonce `abs`
+#                         clobbering the libc import. Fix: a system-header
+#                         plain global C++ fn whose name is already taken
+#                         joins the per-overload model (first/solo decls keep
+#                         the source name — dlsym imports intact). g++ never
+#                         hits it (libstdc++ puts abs overloads in std::).
+#                         Gate: testglobaloverload. EXE 923/0, OBJ 923/0,
+#                         fulltest 950/0.
+#   bb435bfd  942 /   6   ⚡ BUCKET C FELL — testexterncstringptr +
+#                         testforeachheaderbody FIXED, ZERO newly broken (the
+#                         6 == the prior 8 minus the pair; +1 more pass is
+#                         testglobaloverload joining the count). ONE root:
+#                         madc's dialect grants namespace-scope type names
+#                         unqualified visibility via a flat datatype_map
+#                         write, but only the TYPEDEF lane did it — the
+#                         USING-ALIAS lane was cut from the flat map after
+#                         std::pmr::string's alias clobbered the real string.
+#                         libstdc++ spells std::string as a typedef; libc++
+#                         spells it `using string = basic_string<char>;`
+#                         (__fwd/string.h) — bare `string` was unresolvable
+#                         in EVERY decl context only under -stdlib=libc++
+#                         (probe: MADC_TYPEDEF_SHADOW_PROBE showed zero flat
+#                         `string` registrations). Fix: the alias arm
+#                         flat-registers ONLY when the name is FREE — the
+#                         primary wins, pmr stays namespace-only (the old
+#                         regression stays fixed). Gate: testbarestring.
+#                         EXE 926/0, OBJ 926/0, fulltest + default EXE green.
+#   179d1ab0  944 /   6   failing set BYTE-IDENTICAL, zero flips; +2 are the
+#                         new gates (testbarestring, testabbrevtpl). C++20
+#                         ABBREVIATED FUNCTION TEMPLATES land (member form):
+#                         [dcl.fct]/18 desugar — `auto` placeholders become
+#                         invented identifiers under a synthesized
+#                         template<...> head, so the member-template capture
+#                         + tsubst own the rest. dangling.h:29
+#                         `dangling(auto&&...)` (testifconstexpr's first
+#                         blocker) is THROUGH; the chain moved to
+#                         ranges_construct_at.h:94 `inline constexpr auto
+#                         destroy = __destroy::__fn{};` (qualified-type
+#                         braced init in an auto variable — next link).
+#                         Follow-ups documented in the gate: free/namespace
+#                         statement surface not wired; default-arg-lambda
+#                         auto mis-trigger edge. EXE 928/0, OBJ 928/0.
+#   4b47da8d  950 /   6   failing set BYTE-IDENTICAL, zero flips; +6 are the
+#                         new gates (testnsfncollide, testconceptparam,
+#                         testbracensdmi, testenumdecl+testbitfieldinit,
+#                         testcharlit, testusingenum). SEVEN fixes, one
+#                         session — testifconstexpr's include chain advanced
+#                         FIVE links: (1) auto fn-ptr shortcut ignored a
+#                         nested-name-specifier head ([basic.lookup.qual] —
+#                         madc's __destroy intrinsic vs ranges::__destroy,
+#                         ranges_construct_at.h:94); (2) `template <Concept
+#                         Name>` classified as NON-type param (buffer.h:62);
+#                         (3) braced NSDMI `m{0}` unconsumed (same line);
+#                         (4) enum definition trailing declarator
+#                         unparseable ANYWHERE (unicode.h:51; first attempt
+#                         regressed 4 enum tests via the typedef-enum alias
+#                         read — fulltest caught it); (5) bit-field {v}
+#                         init (same line); (6) u/U/u8 literal prefixes +
+#                         \u/\U UCNs unknown to the lexer (unicode.h:70);
+#                         (7) using-declaration of a scoped enum didn't
+#                         bridge its enumerator pseudo-namespace
+#                         (unicode.h:302; forest_index_oracle caught the
+#                         missing decl-index taps on std::_Lock_policy).
+#                         unicode.h is THROUGH; the frontier is
+#                         parser_std_format_spec.h:58 — .c_str() on a
+#                         PARENTHESIZED string-concat temporary ("member
+#                         reference is not a structure or union"; reducer
+#                         tmp/r45.mad). EXE 934/0, OBJ 934/0, fulltest 959/0.
+#   1de7b430  954 /   6   failing set BYTE-IDENTICAL at every batch
+#                         checkpoint; +4 are the new gates (testparenctor,
+#                         testanonbitfield, testenumsize, testtraitcopyable).
+#                         FOUR more fixes, same session: (8) a parenthesized
+#                         FUNCTIONAL CONSTRUCTION is not a cast head — the
+#                         speculative (TYPE)expr probe consumed the type and
+#                         dropped it on the missing ')' (`(string(...) +
+#                         ...).c_str()`, :58); (9) anonymous-aggregate
+#                         BIT-FIELDS parse (:289); (10) an enum's FIXED base
+#                         drives its LAYOUT and lowered C type
+#                         ([dcl.enum]p8 — sizeof was 4 for every enum; the
+#                         16-byte __parsed_specifications assert at :323;
+#                         freeze carries the base in enum-defrec ref0);
+#                         (11) __is_trivially_copyable trait builtin (:324).
+#                         parser_std_format_spec.h is open to :339
+#                         (`class __parser` "Missing operand" — member
+#                         bisect next). Scouted: libstdc++ DEFAULT-lane
+#                         is_trivial_v/_copyable_v VAR-TEMPLATE fold gap
+#                         (tmp/r49d) — likely testinvocable's root.
+#                         fulltest 963/0. Session-end legs: EXE 938/0,
+#                         OBJ 938/0 (of 954 JIT-passing).
+#   bd6fed08  960 /   4   🏁 testifconstexpr FLIPPED (its five-header chain
+#                         is THROUGH) + testinvocable RECLASSIFIED
+#                         .libcxx_skip (clang++ -stdlib=libc++ rejects its
+#                         source: __is_invocable is libstdc++-internal —
+#                         testtraitassign precedent); +4 are the new gates
+#                         (testnsdmineg, testenumqualcase, testinlinenstype,
+#                         teststaticbraceinit; the fifth, testvartemplatefold,
+#                         landed with the same batch). FIVE fixes: (12) the
+#                         isolated NSDMI sub-stream parse resets the
+#                         expression-position context (stale '}' judged the
+#                         head '-' of `__precision_{-1}` binary — the :339
+#                         "Missing operand"); (13) ns-qualified scoped-enum
+#                         constants fold in case labels (:886
+#                         `case __format_spec::__type::__default:`) —
+#                         parser_std_format_spec.h THROUGH; (14) qualified-
+#                         type descent hops inline namespaces (two literal
+#                         probes migrated onto canonical_nested_namespace);
+#                         (15) static members accept brace-or-equal-init
+#                         BRACE form (formatter_integral.h __bool_strings —
+#                         the LAST blocker, the flip); (16) ns-qualified
+#                         VARIABLE TEMPLATES fold in constant exprs (the
+#                         tmp/r49 scout): fold_constant_qualified_member made
+#                         TRANSACTIONAL on decline + a qualified peel +
+#                         inline_namespace_descendants consolidation (two
+#                         hand-rolled BFS copies migrated). fulltest 968/0.
+#   022cbb3b  963 /   3   🏁 testmathheader FLIPPED (output + quiet-stderr
+#                         both green); +2 are the new gates
+#                         (testcastmembertype, teststaticoverload). TWO
+#                         fixes: (17) C-style cast to a qualified member
+#                         TYPE — `(typename __promote<_A1>::type)__x`
+#                         (__math/traits.h isinf's instantiated body) died
+#                         both spellings in the expression cast probe; the
+#                         swallowed instantiation failure left every
+#                         __math::isinf call an undefined MIR import. New
+#                         probe arm resolves the extent NON-consumingly via
+#                         resolve_type_token_range (completeness rule keeps
+#                         a ::value leaf an expression). (18) non-template
+#                         static overload sets now rank by ARGUMENT TYPES
+#                         (the arity pick answered first-registered for
+#                         every arg: __promote<double>::type folded LONG
+#                         DOUBLE, sizeof 16 vs oracle 8 — a SILENT wrong
+#                         value found chasing (17)); + [expr]/5 argument
+#                         reference-collapse in score_arg_to_param.
+#                         Residual filed: dependent-decltype pattern-freeze
+#                         (tmp/r58b.mad) — parse-once dependent-member-type
+#                         KIND slice; concrete-args-only gate keeps it at
+#                         pre-session behavior. fulltest 968/0.
+#   4e1a4004  966 /   2   🏁 testsysobject FLIPPED; +2 are the new gates
+#                         (testfriendnonmember, testfreeoptemplate). TWO
+#                         fixes: (19) a class-body FRIEND template never
+#                         registers as a MEMBER ([class.friend]) — libc++
+#                         string:1762's template-head hidden friend spelled
+#                         `bool friend operator==` planted a bogus member
+#                         operator== returning basic_string; every
+#                         `string == "lit"` typed as basic_string and
+#                         `cout << (v == MADC_VERSION)` bound the string
+#                         inserter over a bool rvalue (:17:37 "lvalue
+#                         required as unary & operand"). The member-template
+#                         arm's existing friend scan now gates registration.
+#                         (20) GLOBAL-scope free operator templates bind
+#                         (found by the gate test): the retained-body key
+#                         walk dropped the exact "::operatorX" key (`<=` vs
+#                         the sibling walk's `<`), and a plain C struct
+#                         operand never engaged the lowering at all
+#                         (engage gate widened via operand_value_datadef +
+#                         DataDefSTRUCT). fulltest 970/0.
+#   588d9e73  967 /   2   +1 is the new gate (testanontypedefspec); the
+#                         failing set is unchanged. Fix (21): ONE
+#                         instantiation key for a template arg spelled
+#                         through a typedef of an ANONYMOUS aggregate
+#                         (canonical_arg_key_fragment: empty canonical
+#                         spelling now keys by the resolved DataDef's
+#                         NAME — mbstate_t == __anon_N). Pre-fix this was
+#                         a SILENT wrong value in plain JIT (explicit spec
+#                         invisible, primary answered 0 for 7, exit 0) AND
+#                         the testfreezerun ClassPattern-base error under
+#                         libc++ --freeze-run. That error is THROUGH; the
+#                         testfreezerun frontier moved to THAW-time
+#                         static-member facet imports (ostream:208
+#                         undeclared _ZNSt3__17num_putIc...E2idE,
+#                         ios:520 _ZNSt3__15ctypeIcE2idE — the static
+#                         member's global Variable + storage_alias_name
+#                         does not round-trip the freeze; classes restore
+#                         static_member_types only, cir_freeze.cpp:2822).
+#                         fulltest 973/0.
+#   e658a5b8  969 /   1   testfreezerun FLIPPED (+1 is the new gate
+#                         testaggrinit; failing set = testtuple ONLY).
+#                         FOUR fixes. (22a) the flavor-runtime dlopen now
+#                         lives in cir_translate_guarded — the ONE
+#                         translate entry — so the freeze lane's CIR-time
+#                         dlsym probes see libc++ and the facet-id extern
+#                         decls are recorded (the thaw's "undeclared
+#                         _ZNSt3__15ctypeIcE2idE" was the freeze BUILD
+#                         shaping a different tree, NOT a serialization
+#                         gap — tree-dump diff via the new
+#                         MADC_FREEZE_DUMP_TREE / MADC_THAW_DUMP_TREE).
+#                         (22b) frozen containers carry the flavor's
+#                         link_libs sonames; the thaw reopens them (16
+#                         trap-bound imports -> 0). (22c) a NESTED class's
+#                         ctor/dtor no longer false-matches its OWNER's
+#                         out-of-line defs (want derived from tmpl_key
+#                         matched basic_ostream's OOL ctor when binding
+#                         sentry's — the sentry ctor lost its Itanium
+#                         bind and trapped at run; nested classes are
+#                         outside the OOL map's producer domain). (23)
+#                         aggregate list-init of ctor-less classes
+#                         ([dcl.init.aggr], class_aggregate_init): braced
+#                         construction of a class-promoted struct DROPPED
+#                         its initializers — silent garbage in the PLAIN
+#                         lane (S{string, 42} printed junk, exit 0) and
+#                         the frozen __allocate_at_least returned an
+#                         uninitialized __allocation_result (garbage
+#                         vector data -> wrong sum + traits crash).
+#                         Claims only the clean aggregate case at the
+#                         FULL-list TokenObjTemp sites; everything else
+#                         declines to the legacy lanes (two intermediate
+#                         shapes that claimed wider broke testaggrclassinit
+#                         and 10 libc++ tests — caught by the gates,
+#                         reverted before push). fulltest 974/0.
+#   8f8f4009  970 /   1   +1 is the new gate testaggrdecl; failing set
+#                         still testtuple ONLY (zero flips, zero
+#                         regressions). Residual (a) RESOLVED: braced
+#                         aggregate init of OBJECT-member aggregates in
+#                         the DECLARATION lanes. var_decl's C INIT list
+#                         bit-copied the class member and ordered the
+#                         materialized temp's decl AFTER the SPEC_DECL
+#                         ("undeclared identifier __madc_objtmp_0" —
+#                         tmp/r70b), and the decl copy-elision arm
+#                         `S v = S{a, b}` silently DROPPED the full
+#                         list (garbage, exit 0 — found while reducing).
+#                         Storage stays bare
+#                         (braced_aggregate_needs_construction, the ONE
+#                         emitter/lanes predicate); the three FULL-list
+#                         declaration sites (local braced decl, decl
+#                         copy-elision arm, global_ctor_call) claim via
+#                         decl_aggregate_claim -> class_aggregate_init;
+#                         multi-element aggregate-shaped declines fail
+#                         LOUD. fulltest 975/0.
+#   01e0e7d7  975 /   1   +5 are ALL NEW GATES (zero flips, zero
+#                         regressions; failing set still testtuple
+#                         ONLY). FIVE fixes, four found under residual
+#                         (c)'s onion + the r74 probe matrix:
+#                         cb3bb84a residual (b) — P{7,3.5} braced
+#                         functional construction of PLAIN structs now
+#                         PARSES (cast arm's compound-literal reader
+#                         extracted into parse_compound_struct_lit, one
+#                         owner for `(T){...}` and `T{...}`; scalar
+#                         int{3}/int{} via the cast arms; gate
+#                         teststructbraceexpr). a50e6812 + fork
+#                         adc55808 — const __int128 FILE-SCOPE
+#                         initializers crashed c2mir (no int128 data
+#                         arm in gen_initializer: op-shaped SEGV via
+#                         file-scope temps, const leaf "wrong type in
+#                         data"); emits two U64 halves now (gate
+#                         testint128global; this was the pack-freeze
+#                         SEGV — the drain materializes __pow10_128).
+#                         855fb8cd + fork 3582b48e — a call returning
+#                         an EMPTY struct reserved 0 call-arg bytes;
+#                         a function whose only frame need is such a
+#                         call got NO fp ("undeclared func reg fp" at
+#                         pack-thaw on __compressed_pair::swap; NOTE
+#                         madc separately mistypes swap<allocator>'s
+#                         __swap_result_t return as the enable_if
+#                         STRUCT — recorded residual). c1e7cf14 + fork
+#                         4573a0f3 — a _Complex-returning function
+#                         never CONVERTED its return value: `return
+#                         3.0;` emitted component loads from ABSOLUTE
+#                         address 0 (SIGSEGV, gate testcomplexretconv).
+#                         01e0e7d7 — cast operands stop at a call:
+#                         `(int)getb().n` read as `((int)getb()).n`;
+#                         now continues parsePostfixChainFrom (gate
+#                         testcastcallpostfix). fulltest 980/0.
+#                         Pack-thaw's NEXT defect (recorded): the drain
+#                         force-instantiates duration<double>::
+#                         operator%= (ill-formed for floating reps) and
+#                         gen dies on umods-with-ldouble — the
+#                         freeze-side check gate cannot see gen-only
+#                         defects.
+#   520e77d6  980 /   0   🏁🏁 ZERO. testtuple FIXED (#110's last layer),
+#                         ZERO newly broken (the failing set is EMPTY;
+#                         the other +4 are the four new session gates).
+#                         FOUR roots: @ff79e5a2 a ctor TEMPLATE no longer
+#                         refuses same-class constructibility (the trait
+#                         refusal laundered through a failed static-const
+#                         capture into a silent 0 —
+#                         is_move_constructible<allocator<T>> folded
+#                         false); @6a24cffa a using-declared function
+#                         JOINS the target namespace's overload set
+#                         ([namespace.udecl] — std::swap(int,int) had
+#                         bound the exception_ptr overload); @264ff910
+#                         extern linkage-block context no longer leaks
+#                         into function bodies ([dcl.link]p7 — "__tmp in
+#                         block scope with external linkage"); @520e77d6
+#                         THE WALL: a template-template parameter
+#                         defaulted to a DIFFERENT named template binds
+#                         as a template NAME ([temp.param]p11) — libc++
+#                         tuple()'s exact ctor idiom (_IsDefault =
+#                         is_default_constructible). The TTP captured as
+#                         a non-type param whose default could never
+#                         fold as a value, so instantiation bailed and
+#                         construction emitted a call to the
+#                         never-defined placeholder (undefined MIR
+#                         import tuple_int32_t__tuple_int32_t). Gates:
+#                         testctortemplatetrait, testusingfnoverload,
+#                         testexternblockbody, testctorttpdefault.
+#                         fulltest 984/0/9skip; lane 980/0/13skip (the
+#                         13 = the 9 baseline .mir_skip + the 4
+#                         documented .libcxx_skip). THE COUNT IS 0: per
+#                         the charter above, this file is now the P2.7
+#                         gate — the libcxxjit battery stage holds the
+#                         lane at zero from here on.
+#   429842b4  993 /   0   ZERO HELD through the session-#66 work: +13 are
+#                         all NEW GATES (multi-return struct transport
+#                         testmultiret double/ptr/string/hetero +
+#                         reject/exprpos/bare @a369cb17; zero-ceremony
+#                         testautoincludecpp/ns, testpreferdefault,
+#                         testautoceremonystd, testnsheaderfirst
+#                         @1fafe265 @0bc6ce07 @715fbadb;
+#                         testsizeofvaluepack @b411715c), zero flips.
+#                         Also @429842b4 the enum-constant slot heap
+#                         overflow fixed (Variable::slot_size).
+#                         fulltest 997/0/9skip; EXE/OBJ 976/0. This is
+#                         the v0.68.0 release HEAD.
+#
+# (failing set: EMPTY as of 520e77d6, held at 429842b4)

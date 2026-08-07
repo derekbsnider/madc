@@ -1,0 +1,25 @@
+// #18 gate: top-level `:=` joins the synthesized script-mode main.
+// Receivers are main-locals (block-top declared, class receivers get
+// ctor/dtor through the normal local machinery); regression was
+// "MIR error: import of undefined item q". Also covers the top-level
+// SINGLE `x := 42;` form, which shared the broken shape.
+#include <string>
+
+(int, int) divide(int a, int b)
+{
+    return a / b, a - (a / b) * b;
+}
+
+(std::string, std::string) labels()
+{
+    return std::string("alpha"), std::string("beta");
+}
+
+q, r := divide(17, 5);
+__builtin_printf("%d %d\n", q, r);
+
+s, t := labels();
+__builtin_printf("%s %s\n", s.c_str(), t.c_str());
+
+x := 42;
+__builtin_printf("%d\n", x);

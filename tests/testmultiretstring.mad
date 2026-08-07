@@ -1,0 +1,25 @@
+#include <iostream>
+#include <string>
+using namespace std;
+// Multi-return with CLASS values (std::string): the transport struct is a
+// class (object slots), so the callee copy-constructs the slots into the
+// caller's raw temp (__retbuf ABI), the receivers deep-copy via the class's
+// real operator=, and the temp's cleanup dtor destroys the slots. No buffer
+// aliasing, no double-free (valgrind-clean vs the plain-string control).
+
+string labels()
+{
+	string a = "alpha";
+	string b = "beta";
+	return a, b;
+}
+
+int main()
+{
+	x, y := labels();
+	cout << x << endl;
+	cout << y << endl;
+	x = x + "!";
+	cout << x.size() << endl;
+	return 0;
+}

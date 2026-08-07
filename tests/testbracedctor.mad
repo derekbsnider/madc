@@ -1,0 +1,20 @@
+// Direct-list-initialization of a class WITH constructors ranks the braced
+// list's elements against the ctor overload set ([dcl.init.list]/3) — the
+// same selection the paren form gets. Routing it to the aggregate `= {...}`
+// machinery field-filled the object and dropped every argument after the
+// first ("no matching constructor for call to 'a_t(int)'").
+#include <stdio.h>
+
+struct a_t { int s; a_t(int x, int y) { s = x + y; } };
+struct b_t { int s; explicit b_t(int x, int y) { s = x * y; } };
+
+a_t g1{1, 2};
+
+int main()
+{
+	a_t l1{3, 4};
+	b_t l2{5, 6};
+	a_t p1(7, 8);      // paren form stays identical (control)
+	printf("%d %d %d %d\n", g1.s, l1.s, l2.s, p1.s);
+	return 0;
+}

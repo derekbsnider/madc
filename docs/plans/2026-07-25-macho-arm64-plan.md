@@ -411,14 +411,202 @@ MODEs).  All Linux-side gates green the same day the axis started:
    table, global data refs, internal calls, recursion, printf import;
    expected `madc Mach-O: one three 174 fib(10)=55`, exit 28).
 
-Remaining in axis B: **MH_OBJECT `.o` flavor** (+ ld64.lld as the
-independent reloc validator) — the `-c` artifacts are ELF-container
-dev vehicles until then (madc's own read-back/link consumes them
-fine, as proven above); **front-end long double** stayed untouched by
+Remaining in axis B: ~~**MH_OBJECT `.o` flavor**~~ **LANDED
+2026-07-26 — see "Axis B step 4" below** (the `-c` artifacts were
+ELF-container dev vehicles until then; they are real `MH_OBJECT`s
+now, linkable by `ld64` as well as by madc); **front-end long double**
+stayed untouched by
 design (madc models `long double` as the double-spelling; c2mir owns
 target layout via the axis-A `mir_ldouble` fix — LD-in-struct layout
 is a target-independent audit item, not a Mach-O blocker);
 **Gate B-final** = the owner's Macs.
+
+## Axis B step 4 — MH_OBJECT `.o` flavor (design, 2026-07-26)
+
+The last axis-B piece, and the lift for an S5 stated boundary: the
+`.o` link lane (`madc -static-libmadc -o prog a.o`) refuses today
+because the ledger merges into a compile CONTEXT while that lane
+merges native relocatables through `MIR_object_read`.
+
+**Measured starting state** (container, `bin/madc-arm64-macos` @ v0.51.0):
+`madc -c` for a darwin target writes an **ELF ET_REL** — `.text`,
+`.data`, `.bss`, `.mir.addrpool`, a `.lc1` local for the literal,
+`main` global, `printf` undefined; text relocs are
+`R_AARCH64_ADR_PREL_PG_HI21` + `LDST64_ABS_LO12_NC` against the
+`.mir.addrpool` SECTION symbol with addends, pool relocs are `ABS64`
+against `.lc1` and `printf`.  This is the documented interim ("the
+`-c` artifacts are ELF-container dev vehicles until then"), not a
+newly found defect: madc's own reader/link lane consumes them.
+
+**The reloc universe is small and fully enumerated** (every
+`MIR_object_add_reloc` call site): `.text` carries ONLY internal
+references to the addrpool — `PC32` on x86-64, the `ADR_PG_HI21` +
+`LDST64_LO12`/`ADD_LO12` pair on aarch64 — always against the pool
+SECTION symbol with an addend; `.mir.addrpool` and `.data` carry
+`ABS64` against named symbols (imports, functions, locals) or the
+`.text` section symbol; `.init_array` carries `ABS64` against
+function symbols.  No branch/GOT relocations exist: MIR routes calls
+through pool slots and internal calls stay inside one section.
+
+### Decisions
+
+- **D1 — the darwin `.o` is a real `MH_OBJECT`,** not a MIR-native
+  container.  The ELF `.o` is real ELF and externally linkable, so
+  `-c` must mean the same thing on every target; `file`/`nm`/`otool`
+  must tell the truth about a madc artifact; a second container
+  format would be a parallel implementation of one concern; and the
+  MH_OBJECT symtab/reloc machinery is the prerequisite for any later
+  dylib work.
+- **D2 — the `_` prefix lives in the writer/reader,** not in the
+  builder: builder symbol names stay plain C names (the executable
+  writer already prefixes only at emit).  One rule, one place.
+- **D3 — ONE merge implementation.**  A format-neutral input view
+  (section bodies + alignments, symbols, relocations, debug) is
+  filled by an ELF front or a Mach-O front; the merge core and the
+  in-process loader consume the view.  The two fronts are
+  compile-time exclusive (one target per compiled stack), but the
+  merge/load cores are single implementations — no Mach-O copy of the
+  symbol-unification and rebasing logic.
+- **D4 — only the kinds the capture emits** get Mach-O mappings
+  (x86-64 `UNSIGNED`/`SIGNED`; arm64 `UNSIGNED`/`PAGE21`/`PAGEOFF12`
+  + `ADDEND`), with the same "not a general reader/writer" scope the
+  ELF side states.
+- **D5 — extern relocations only.**  Section-relative targets get a
+  local `ltmp_*` label at the section start (the Mach-O analogue of
+  the ELF section symbol, created on demand exactly like
+  `MIR_object_section_symbol`), so every relocation is
+  `r_extern = 1` against a symtab entry and the reader is symmetric.
+  Verified against the clang-18 oracle: `l_str` (a local) IS a valid
+  extern-reloc target.
+- **D6 — no `MH_SUBSECTIONS_VIA_SYMBOLS`.**  MIR's pool references
+  address section-relative offsets, so one-atom-per-section is the
+  model the layout already assumes; with subsections on, ld64 would
+  reject addends that reach past a symbol's atom.  No dead-strip
+  surprises either.
+- **D7 — addend encoding, one rule per form:** `UNSIGNED` folds the
+  addend into the section body bytes (Mach-O has no explicit addend
+  field); `SIGNED` (pcrel) stores `A + 4` in the field, because ld64
+  computes `S + A' − (P + 4)` while ELF computes `S + A − P` (the
+  reader subtracts the 4 back); arm64 instruction-field relocs carry
+  the addend in a preceding `ARM64_RELOC_ADDEND` entry, adjacent and
+  first, as the clang oracle emits it.
+- **D8 — the `.o` uses the same section names as the executable
+  writer** (`__TEXT,__text` · `__DATA,__data` · `__DATA,__bss`
+  (S_ZEROFILL, last) · `__DATA_CONST,__mir_addrpool` ·
+  `__DATA_CONST,__mod_init_func` (S_MOD_INIT_FUNC_POINTERS)), so a
+  link by ld64 and a link by MIR's own emitter place things
+  identically.
+- **D9 — `-g` refuses loudly** for a Mach-O `.o` (no `__DWARF`
+  sections in this slice) instead of silently dropping debug info —
+  the exec writer's silent drop is a separate audit item.
+
+### Steps (each with its own gate)
+
+1. **The view seam** (fork, refactor-only): extract the neutral input
+   view, convert `MIR_object_read` + `MIR_object_load` onto it.
+   Gate: `.o` bytes byte-identical for a fixed input (the writer is
+   untouched), Linux obj/link/load lanes green.
+2. **The MH_OBJECT writer** (`mir-macho.c`): `macho_emit_object`
+   behind `MIR_object_emit`.  Gate: `llvm-otool`/`llvm-nm`/
+   `llvm-objdump --macho -r` parse it; **`ld64.lld-18` links it**
+   against the SDK, alone and mixed with a clang-compiled `.o` (the
+   independent reloc validator this step always planned to use);
+   symtab/reloc shape matches the clang oracle.
+3. **The Mach-O front**: one parser feeding the merge reader and the
+   loader.  Gate: `-c` ×2 → madc link → valid Mach-O executable whose
+   `nm`/disassembly match the from-source emit; `-r` merge round-trip
+   stays ld64-linkable.
+4. **madc side**: `-static-libmadc` in the `.o` link lane (the S5
+   boundary lift) + `-g`/darwin honesty.  Gate: full battery — this
+   touches shared codegen/emit paths.
+
+**Known follow-on, NOT this slice:** the in-process `.o` loader on
+Apple Silicon needs `MAP_JIT` + `pthread_jit_write_protect_np` (the
+loader maps text with a plain anon `mmap` + `mprotect`, while MIR's
+own code allocator already uses `MAP_JIT` on `__APPLE__ && __aarch64__`)
+— so that lane cannot work on an A64 Mac today regardless of container
+format.  Step 3 keeps the x86-64-macOS in-process lane working; the
+A64 arm is a separate task with a hardware RUN leg.
+
+### STEP 4 COMPLETE (2026-07-26) — axis B is done
+
+Fork `feature/macho-object-claude`; madc `feature/aot-macho-obj-claude`.
+`madc -c` for a Mach-O target now writes a real `MH_OBJECT`, and
+`MIR_object_read` reads one back, so every `.o` lane madc has on ELF
+works on darwin too.  Landed as designed above, with two deviations
+worth recording:
+
+- **The view came out as ONE merge, as planned, and the loader did
+  not.**  Converting `MIR_object_read` onto the neutral view was
+  mechanical (the merge already worked off a `base[]` array and a
+  symbol map — only the accessors changed).  `MIR_object_load` still
+  reads ELF directly and now REFUSES loudly on an Apple build, naming
+  the reason: its ELF shape cannot read `MH_OBJECT`, *and* mapping
+  text would need `MAP_JIT` anyway.  That lane was never on a gate
+  and cannot work on Apple Silicon today, so a loud refusal beats
+  half a lane.
+- **`-g` is answered at the CLI, not in the writer.**  `madc -g` for
+  a Mach-O target now prints one notice and continues without debug
+  info.  The `.o` writer still refuses an attached debug builder, so
+  the two agree, but the user hears it from the layer they typed `-g`
+  at — and the executable writer's older silent drop is gone.
+
+**Gate: `scripts/macho_obj_gate.sh`, `make -C src machogate`** (the
+target rebuilds both cross madcs first so the gate can never validate
+a stale binary; it is NOT in fulltest, where its cross madcs / llvm-18
+/ SDK prerequisites would make it silently skip).  **30 assertions, 15
+per arch, all green on arm64 AND x86_64:**
+
+1. `-c` writes an `MH_OBJECT` `llvm-otool` parses, carrying
+   `__text` / `__mir_addrpool` / `__data`.
+2. **`ld64.lld-18` links it** against the macOS SDK — Apple's own
+   linker model accepts the object.
+3. The relocations ld64 applied land where they must: pool slots
+   resolve inside `__text` (a switch table) and `__bss` (`counter`),
+   and the import slot became a real dyld bind for `_printf`.
+4. **Mixed link**: a clang-18-compiled TU calls into the
+   madc-compiled one through a `bl _madc_side` ld64 resolved — genuine
+   two-way interop, not just "a linker didn't complain".
+5. **Round trip**: `-c` then madc-link disassembles IDENTICALLY to the
+   direct `-o` emit, pool contents included (full-file `cmp` differs
+   only in the code-signature identifier, which is the output
+   basename).
+6. Two-TU merge through `MIR_object_read`: `_helper` / `_a_tag` /
+   `_shared_counter` unify across objects.
+7. `-r` merge: two `.o` → one `.o` that BOTH linkers still accept, and
+   whose image matches the direct two-TU link.
+8. A global constructor's init entry rides `__mod_init_func`, and both
+   linkers keep the section — ld64 has to accept
+   `S_MOD_INIT_FUNC_POINTERS` from us or dyld would never run the
+   initializer. (A C file-scope initializer is constant by definition,
+   so a C++ ctor is the only fixture that produces the section: it was
+   the one relocation target the first cut of the gate missed.)
+
+Linux regression: the ELF path went through the view refactor, so the
+full battery ran — `fulltest` (unit tests included, `test_object_load`
+among them), `run_tests.sh --exe`, and `run_tests.sh --obj` (the ELF
+`.o` lane itself).
+
+**The round-trip leg earned its place immediately:** it caught a real
+read-back bug that no structural check would have.  Mach-O has ONE
+`ARM64_RELOC_PAGEOFF12` where ELF has two kinds (`LDST64_LO12` vs
+`ADD_LO12`), so the reader recovers the kind from the instruction's
+opcode — and the first mask dropped bit 31 (`sf`), which made every
+`add Xd, Xn, #imm12` read back as a scaled load: the immediate came
+out `#0x1` where the direct emit had `#0x8` (8 >> 3). Structurally
+valid, silently wrong arithmetic — exactly the class of defect a
+"does it link?" gate passes over.
+
+**Still the owner's Mac:** running any emitted Mach-O binary. The
+emit and link sides are proven on Linux by two independent
+authorities; the RUN leg is hardware, as in every darwin slice.
+
+**What this unblocks:** `-static-libmadc` in the `.o` link lane (the
+S5 stated boundary) now has its fork prerequisite. The remaining work
+is madc-side and NOT trivial: the ledger pull decides which runtime
+modules to merge from a compile context's imports, while that lane's
+imports are the merged builder's UNDEF list — a different input to the
+same cover analysis.
 
 ## The larger goal — madc-release ON macOS (owner, 2026-07-25 post-Gate-B-final)
 

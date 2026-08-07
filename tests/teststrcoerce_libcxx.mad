@@ -1,0 +1,17 @@
+#!../bin/madc
+// The char*-parameter auto-coercion of a std::string object (printstr's
+// documented convention) must work when the string's c_str/size are
+// HEADER-SERVED (libc++ hides them from the ABI; libstdc++ exports them,
+// which masked the bare-name symbol-scheme gap this test pins).
+#include <iostream>
+using namespace std;
+
+string test = "coerce ok";
+
+int main()
+{
+    printstr(test);
+    if ( !test.empty() )
+	printstr("not empty");
+    return 0;
+}

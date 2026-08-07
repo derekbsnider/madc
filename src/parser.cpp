@@ -48,6 +48,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "spelling_delim.h"
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
@@ -1041,7 +1042,10 @@ static bool is_restrict_token(TokenBase *tb)
     return tb && tb->type() == TokenType::ttKeyword && tb->id() == TokenID::tkRESTRICT;
 }
 
-static bool is_post_pointer_qualifier_token(TokenBase *tb)
+// The ONE cv-qualifier predicate (const/volatile/restrict) — serves both the
+// post-pointer position (`char *const p`) and the leading/interstitial
+// positions (`operator const T&()`, `char const *p`).
+static bool is_cv_qualifier_token(TokenBase *tb)
 {
     return tb && tb->type() == TokenType::ttKeyword
         && (tb->id() == TokenID::tkRESTRICT
@@ -1058,7 +1062,7 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
     bool fnptr_base = (dynamic_cast<DataDefFPTR *>(dd) != NULL);
     bool const_after = false;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
-			 || is_post_pointer_qualifier_token(peekToken())) )
+			 || is_cv_qualifier_token(peekToken())) )
     {
 	if ( peekToken()->id() == TokenID::tkMul )
 	{
@@ -1078,6 +1082,26 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
     if ( out_const_after_star )
 	*out_const_after_star = const_after;
     return stars;
+}
+
+// Shared cv-qualifier consumers — the one owner of "drop a run of
+// const/volatile/restrict in a committed type read" (madc does not model
+// cv-qualification beyond top-level const baking). Replaces the copy-pasted
+// `while (tkCONST || tkVOLATILE || tkRESTRICT) nextToken()` loops.
+// Held form: `held` was already taken from the stream; returns the first
+// non-qualifier token (consumed from the stream when `held` qualified).
+TokenBase *Program::skip_cv_qualifier_tokens(TokenBase *held)
+{
+    while ( held && is_cv_qualifier_token(held) )
+	held = nextToken();
+    return held;
+}
+
+// Peek form: consumes the qualifier run, leaves the following token unread.
+void Program::skip_cv_qualifier_tokens()
+{
+    while ( peekToken() && is_cv_qualifier_token(peekToken()) )
+	nextToken();
 }
 
 static bool is_type_qualifier_token(TokenBase *tb)
@@ -1614,6 +1638,53 @@ static bool reverse_scalar_storage_requested(const std::string &order_name)
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 static void copy_token_location(TokenBase *dst, TokenBase *src);
+// [expr.sizeof]/5 — `sizeof...(P)` yields the pack's ARITY, not a type size.
+// Program::evaluate_type_query parses the sizeof/alignof OPERAND and implements
+// no `...` arm, so the operator can only be honoured by FOLDING it during
+// substitution. That makes every substitution path responsible for recognising
+// the same seven-token shape by hand. ONE owner for the shape; each caller
+// resolves the COUNT from its own binding state (the maps differ per path).
+//
+// A path that forgets produces NO diagnostic. `sizeof` is soft-reserved — a
+// TokenCppKeyword (tkCPPKEYWORD, cpp_reserved @lexer.cpp, STD_CPP98) that
+// is_contextual_identifier_token deliberately ADMITS, so identifier-position
+// code keeps working while the staged hard-reservation lands. An unfolded
+// `sizeof` therefore degrades to a VARIABLE lookup rather than a syntax error:
+// the instantiation throws, the placeholder is kept silently, and the program
+// dies much later as an undefined MIR import naming the template.
+//
+// This helper is a WORKAROUND, not the end state. The folds exist only because
+// the operator is unimplemented; teaching evaluate_type_query a `...` arm (which
+// needs the pack binding reachable at parse time) would retire all of them.
+static bool sizeof_pack_operand_name(const std::vector<TokenBase *> &toks,
+				     size_t i, std::string &pack_name)
+{
+    if ( i + 6 >= toks.size() )
+	return false;
+    if ( !toks[i] || !is_contextual_identifier_token(toks[i])
+      || contextual_identifier_name(toks[i]) != "sizeof" )
+	return false;
+    if ( !toks[i+1] || toks[i+1]->id() != TokenID::tkDot
+      || !toks[i+2] || toks[i+2]->id() != TokenID::tkDot
+      || !toks[i+3] || toks[i+3]->id() != TokenID::tkDot
+      || !toks[i+4] || toks[i+4]->id() != TokenID::tkOpBrk
+      || !toks[i+5] || toks[i+5]->type() != TokenType::ttIdentifier
+      || !toks[i+6] || toks[i+6]->id() != TokenID::tkClBrk )
+	return false;
+    pack_name = ((TokenIdent *)toks[i+5])->spelling();
+    return true;
+}
+
+template <class TokenContainer>
+static bool token_is_ellipsis_at(const TokenContainer &toks,
+				 size_t i, size_t end)
+{
+    return i + 2 < end
+	&& toks[i] && toks[i]->id() == TokenID::tkDot
+	&& toks[i + 1] && toks[i + 1]->id() == TokenID::tkDot
+	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
+}
+
 static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 {
     if ( !tb || !tb->file )
@@ -1626,6 +1697,29 @@ static bool is_typeof_identifier(const std::string &name)
 {
     return name == "typeof" || name == "typeof_unqual"
 	|| name == "__typeof" || name == "__typeof__";
+}
+
+// The name position of a typedef declarator accepts more than a plain
+// identifier. A real system header may re-typedef a name madc already
+// registers as a base datatype — gcc's <stddef.h> carries
+// `typedef struct {...} max_align_t;`, and madc pre-registers max_align_t
+// (it holds a stable value-ABI type id) — and C++ keywords that are valid C
+// identifiers arrive here the same way from C headers. TokenDataType and
+// TokenKeyword both derive from TokenIdent, so one cast reaches the virtual
+// spelling(). Returns NULL when the token cannot name a typedef alias.
+static const char *typedef_alias_spelling(TokenBase *tb)
+{
+    if ( !tb )
+	return NULL;
+    switch ( tb->type() )
+    {
+	case TokenType::ttIdentifier:
+	case TokenType::ttDataType:
+	case TokenType::ttKeyword:
+	    return ((TokenIdent *)tb)->spelling();
+	default:
+	    return NULL;
+    }
 }
 
 static bool is_decltype_identifier(const std::string &name)
@@ -1663,12 +1757,27 @@ static bool is_bool_literal_identifier(const std::string &name, bool &value)
     return false;
 }
 
+// The dot-path reference normalizer (a reference head denotes its referent
+// for member access). Defined later in this file.
+static DataDef *referent_if_reference(DataDef *dd);
+
 DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 {
     if ( !tb )
 	return NULL;
 
     DataDef *dd = tb->datadef();
+    // A REFERENCE head denotes its referent ([expr.ref]) — collapse it
+    // BEFORE the pointer test when the referent is itself a pointer: a
+    // reference-to-pointer receiver (`node*& begin_node();
+    // begin_node()->v`) must expose the REFERENT pointer, or the single
+    // arrow deref lands on the pointer type itself and the member check
+    // rejects it (libc++ __tree:890, '__left_' on the __iter_pointer&
+    // returned by __begin_node()). A reference-to-CLASS head keeps
+    // today's ref-as-pointer behavior.
+    if ( DataDef *ref = referent_if_reference(dd) )
+	if ( ref->is_pointer() )
+	    dd = ref;
     if ( dd && dd->is_pointer() )
 	return dd;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
@@ -1706,26 +1815,69 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 {
     // type()-gated, not dynamic_cast alone: TokenMember/TokenCallMethod
-    // IS-A TokenVar, and their .var is the member/method Variable — the
-    // rewrite only applies to a BARE object variable receiver.
-    if ( !lhs || lhs->type() != TokenType::ttVariable )
+    // IS-A TokenVar, and their .var is the member/method Variable. A BARE
+    // object variable is the receiver identity itself; a MEMBER or
+    // CALL-RESULT receiver (`r.first->m`, `t.emplace().first->m` — libc++
+    // map::operator[]'s tree-iterator shape) rides parent_expr so the CIR
+    // side (class_this_arg's parent lane) addresses the full expression —
+    // the chained-receiver precedent of the arrow method-call arm.
+    if ( !lhs )
 	return NULL;
     TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
-    if ( !otv || !otv->var.type || !otv->var.type->is_object()
-      || otv->var.type->is_pointer() )
+    if ( !otv )
 	return NULL;
-    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(otv->var.type);
+    DataDef *rdd = NULL;
+    bool parent_backed = false;
+    // A FIXED-ARRAY receiver decays to a pointer ([expr.ref] applies the
+    // built-in arrow to arr[0]) — never an operator-> rewrite, even when
+    // the ELEMENT class declares one (var.type names the element type, so
+    // the object test alone would mis-fire).
+    if ( otv->var.is_fixed_array() )
+	return NULL;
+    if ( lhs->type() == TokenType::ttVariable )
+	rdd = otv->var.type;
+    else if ( lhs->type() == TokenType::ttMember
+	   || lhs->type() == TokenType::ttCallMethod
+	   || lhs->type() == TokenType::ttCallFunc )
+    {
+	if ( TokenMember *mtm = dynamic_cast<TokenMember *>(lhs) )
+	    if ( mtm->is_fixed_array_member() )
+		return NULL;
+	rdd = lhs->datadef();
+	parent_backed = true;
+    }
+    else
+	return NULL;
+    // A reference-returning receiver (a call yielding `it&`) denotes its
+    // referent ([expr.ref]) — same normalizer the dot arm uses.
+    rdd = referent_if_reference(rdd);
+    if ( !rdd || !rdd->is_object() || rdd->is_pointer() )
+	return NULL;
+    DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(rdd);
     std::string arrow_name("operator->");
     Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
     if ( !arrow_m )
 	return NULL;
     TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
+    if ( parent_backed )
+	opcall->parent_expr = lhs;
     opcall->file = loc_tb->file;
     opcall->line = loc_tb->line;
     opcall->column = loc_tb->column;
     DataDef *ret = opcall->datadef();
     if ( !ret || !ret->is_pointer() )
+    {
+	// Env-gated probe (MADC_ARROW_PROBE): the receiver class and the
+	// unresolved return DataDef at the failing rewrite.
+	static const char *ap = ::getenv("MADC_ARROW_PROBE");
+	if ( ap )
+	    fprintf(stderr, "[arrow] recv=%s ret=%s obj=%d ref=%d\n",
+		    ocls ? ocls->name.c_str() : "?",
+		    ret ? ret->name.c_str() : "(null)",
+		    ret ? (int)ret->is_object() : -1,
+		    ret ? (int)ret->is_reference() : -1);
 	Throw(loc_tb) << "operator-> must return a pointer" << flush;
+    }
     return opcall;
 }
 
@@ -1943,6 +2095,15 @@ bool Program::function_local_class_identity(DataDefCLASS *cdd,
 static std::string namespace_function_symbol(const std::string &ns_name,
 					     const std::string &member_name)
 {
+    // GLOBAL scope has nothing to qualify with, and the invented `__ns__name`
+    // was findable by nobody: the registration stored the Variable under it
+    // while every unqualified call site looks up the PLAIN name, so
+    // `ident(7)` reported "use of undeclared identifier 'ident'" even after
+    // the template registered (confirmed with -v: "Added new function
+    // declaration name: __ns__ident" followed by "findVariable(ident) not
+    // found"). An unqualified name at global scope IS its own key.
+    if ( ns_name.empty() )
+	return member_name;
     std::string sym = "__ns_";
     for ( size_t i = 0; i < ns_name.size(); ++i )
     {
@@ -1975,6 +2136,13 @@ static std::string namespace_function_symbol(const std::string &ns_name,
 	    case ']': break;
 	    case '(': sym += "_cl"; break;
 	    case ')': break;
+	    // ~ and , previously fell to the bare-underscore default, so
+	    // operator~ and operator, in ONE namespace produced an IDENTICAL
+	    // key — the second declaration found the first via findVariable
+	    // and re-parsed its parameters into the SHARED FuncDef (silent
+	    // overload collapse). Mnemonics follow operator_code (co, cm).
+	    case '~': sym += "_co"; break;
+	    case ',': sym += "_cm"; break;
 	    default:  sym += (isalnum((unsigned char)c) || c == '_') ? c : '_'; break;
 	    }
 	}
@@ -2057,9 +2225,16 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
+// `carrier_param_mask` (task #69): positions whose spelling must be
+// re-derived as the ACTIVE flavor's text carrier (std_string_type()) instead
+// of the stored spelling. The stored spellings are flavor-baked at parse
+// time, so a host-flavor remint has to swap them — the mask is computed by
+// the caller BEFORE switching mangler state, because marshals_value_text()
+// itself reads the active state.
 static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 						 const std::string &member_name,
-						 FuncDef *fd)
+						 FuncDef *fd,
+						 const std::vector<char> *carrier_param_mask = NULL)
 {
     std::vector<std::string> params;
     if ( fd )
@@ -2078,6 +2253,15 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 		bool refp = fd->is_ref_param(i);
 		spelling = cpp_spelling_for_mangle(fd->parameters[i], refp);
 	    }
+	    if ( carrier_param_mask && i < carrier_param_mask->size()
+	      && (*carrier_param_mask)[i] )
+	    {
+		bool refp = fd->is_ref_param(i);
+		bool ptrp = !refp
+		    && dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		spelling = std_string_type()
+			 + (refp ? "&" : ptrp ? "*" : "");
+	    }
 	    params.push_back(spelling);
 	}
     }
@@ -2090,6 +2274,34 @@ static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
 {
     return itanium_mangle_nested_var(namespace_qualifiers(ns_name),
 				    member_name);
+}
+
+// task #69 (flavor-ABI marshalling): the HOST-flavor twin of a namespace
+// public's Itanium symbol. A host-implemented public (php::trim,
+// madc::eval_int_ctx) exports only the symbol mangled under the stdlib madc
+// itself was built against; when the SCRIPT flavor differs, the marshalling
+// boundary needs that twin to bind (and dlsym-verify) the real host entry.
+// The remint reuses the one mint (namespace_cpp_function_symbol) under a
+// scoped host-flavor mangler state — never string surgery on the script
+// symbol (Itanium substitution compression makes fragment swaps wrong).
+std::string Program::host_flavor_fn_symbol(const std::string &ns_name,
+					   const std::string &member_name,
+					   FuncDef *fd)
+{
+    // Which params are the flavor string — decided under the SCRIPT state
+    // (marshals_value_text reads the active mangler state; inside the host
+    // scope below it would compare against the HOST carrier and never fire).
+    std::vector<char> mask;
+    if ( fd )
+	for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	{
+	    DataDef *p = fd->parameters[i];
+	    if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+		p = pp->base_type ? pp->base_type : p;
+	    mask.push_back(p && p->marshals_value_text() ? 1 : 0);
+	}
+    MangleHostFlavorScope host_state;
+    return namespace_cpp_function_symbol(ns_name, member_name, fd, &mask);
 }
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
@@ -2286,6 +2498,22 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
 {
     if ( alias.empty() || !dd || !user_typedef_names.count(alias) )
 	return false;
+    // A spelling that IS a BUILTIN dd's own name is the NAME, not an alias. A
+    // thawed token rebuilt from a restored dd spells its name ("int32_t" for
+    // the canonical ddINT32), and the restored typedef registry contains it —
+    // recording it as a param/cast typedef made the emitter render
+    // `int32_t *__p` in a module that never emits that typedef (c2mir
+    // "unknown type int32_t"; defect P). Live never records these: its tokens
+    // spell the keyword ("int"), and the emitter renders the C keyword from
+    // the DataDef alone. That equivalence holds ONLY for builtins: a
+    // CONSTRUCTED typedef type (glibc's `typedef struct __jmp_buf_tag
+    // jmp_buf[1]`) registers a dd NAMED BY the typedef, so the name-equal
+    // spelling IS the load-bearing alias — rejecting it dropped the member's
+    // ID("jmp_buf") emission, c2mir sized MadcTryContext without the 200-byte
+    // array, and the ledger try/catch setjmp wrote through garbage
+    // (forest_ledger_gate SIGSEGV).
+    if ( alias == dd->name && resolve_builtin_type_spelling(alias) == dd )
+	return false;
     if ( resolve_named_datadef(alias) == dd )
 	return true;
 
@@ -2322,6 +2550,25 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
 	return resolve_class_type_alias(cls->base_class, name);
     if ( cls->enclosing_class )
 	return resolve_class_type_alias(cls->enclosing_class, name);
+    return NULL;
+}
+
+// Resolve an UNQUALIFIED type name through the enclosing class scopes, innermost
+// first. [basic.scope.class]/1 + [basic.lookup.unqual]: inside a member — its
+// return type, its body, AND its PARAMETER LIST, whether declared in-class or
+// defined out of line — a nested type of the class is nameable without
+// qualification. class_scope_stack exists for precisely this ("active C++ class
+// scopes for nested type lookup", madc.h). Class scopes WIN over the global
+// tables, which is why callers consult this before resolve_named_datadef.
+static DataDef *resolve_type_in_class_scopes(Program &pgm,
+					    const std::string &name)
+{
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+		pgm.class_scope_stack.rbegin();
+	  it != pgm.class_scope_stack.rend(); ++it )
+	if ( *it )
+	    if ( DataDef *dd = resolve_class_type_alias(*it, name) )
+		return dd;
     return NULL;
 }
 
@@ -2514,6 +2761,137 @@ static bool resolve_class_static_member_const_value(DataDefCLASS *cls,
     return false;
 }
 
+// `Class::member` where member is a STATIC DATA MEMBER — resolve it to a value
+// token. Two kinds of static live behind one syntax and they resolve
+// differently, which is the whole reason this is a shared helper:
+//
+//   static const int n = 5;   an in-class integral constant -> fold to its value
+//   static int n;  int S::n;  STORAGE -> the `Class__member` global that its
+//                             out-of-class definition declared (parseDeclaration
+//                             folds the `::` in `int S::n = 5;` to `S__n`)
+//
+// Getting that choice wrong is not a diagnostic-quality issue: folding a
+// storage-backed member to its (absent) constant yields a silent 0 on every
+// read and "lvalue required" on every write. A class-TYPED static is always an
+// object, so it checks storage first and never folds.
+//
+// Returns NULL when `member` is not a static data member of `scope` at all,
+// leaving the caller's own not-found path in charge.
+// The global name an out-of-class definition of `C::m` registers — parseDeclaration
+// folds the `::` into `__`. Written once because two callers need DIFFERENT answers
+// about the same name: a VALUE may fold to an in-class constant, while an ADDRESS
+// must be of real storage (there is nothing to point at otherwise).
+static std::string class_static_member_storage_name(DataDefCLASS *scope,
+						    const std::string &member)
+{
+    return scope->name + "__" + member;
+}
+
+// The REAL Itanium symbol for `Class::member` when the class is library-owned.
+//
+// Rule #1: g++ names a static data member by the Itanium ABI, so madc must too.
+// The name above is a madc invention (`scope->name` is the INTERNAL TAG —
+// `numpunct_char`, not the C++ spelling `numpunct<char>`), which is fine only
+// while madc emits both the storage and every reference. For a class declared
+// in a system header the storage lives in the LIBRARY: libstdc++ exports 51
+// facet `id` objects and libc++ 32, and `std::use_facet<F>` odr-uses `F::id`.
+// Emitting `numpunct_char__id` against those is a reference to a name nothing
+// defines, while `_ZNSt10numpunctIcE2idE` is sitting right there.
+//
+// This is the integration point every OTHER entity category already had and
+// static data members did not — ctors/dtors/methods/operators bind via
+// bind_declared_cpp_symbol, namespace functions via namespace_cpp_function_symbol,
+// namespace variables via namespace_cpp_variable_symbol. Returns "" when the
+// class is madc's own, which keeps the invented name for the case where it is
+// harmless (madc emits the definition too).
+static std::string class_static_member_itanium_symbol(DataDefCLASS *scope,
+						      const std::string &member)
+{
+    if ( !scope || !scope->from_system_header )
+	return std::string();
+    const std::string &cls = scope->canonical_cpp_spelling();
+    if ( cls.empty() )
+	return std::string();
+    // split_scope_spelling() owns `::`-splitting that must not cut inside a
+    // template argument list (`map<int,string>::x`) — never hand-rolled here,
+    // that family is consolidated and ratchet-gated (spelling_delim.h).
+    std::vector<std::string> quals = split_scope_spelling(cls);
+    if ( quals.empty() )
+	return std::string();
+    return itanium_mangle_nested_var(quals, member);
+}
+
+static TokenBase *resolve_class_static_member_value(Program &pgm,
+						    DataDefCLASS *scope,
+						    const std::string &member,
+						    TokenBase *at)
+{
+    DataDef *static_dd = resolve_class_static_member_type(scope, member);
+    if ( !static_dd )
+	return NULL;
+
+    const std::string storage_name = class_static_member_storage_name(scope, member);
+    int64_t cv = 0;
+    const bool have_const =
+	resolve_class_static_member_const_value(scope, member, cv);
+    // Objects never fold; scalars prefer a real in-class constant and fall back
+    // to storage. `static const int n = 5;` with a later `const int S::n;`
+    // still reads 5, which is what both canons do.
+    const bool storage_first = dynamic_cast<DataDefCLASS *>(static_dd) != NULL;
+    if ( storage_first || !have_const )
+    {
+	if ( Variable *svar = pgm.findVariable(storage_name) )
+	{
+	    TokenVar *tv = new TokenVar(*svar);
+	    copy_token_location(tv, at);
+	    return tv;
+	}
+    }
+    // No storage: an in-class constant, or a declared-but-never-defined static
+    // (unchanged behaviour — cv stays 0).
+    TokenInt *ti = new TokenInt(cv);
+    ti->setDataType(static_dd);
+    copy_token_location(ti, at);
+    return ti;
+}
+
+// Public seam for the CIR lowering (declared on Program): the resolution
+// itself is the file-static above — storage-backed TokenVar for object-typed
+// statics, folded in-class constant for scalars.
+TokenBase *Program::class_static_member_value_token(DataDefCLASS *scope,
+						    const std::string &member,
+						    TokenBase *at)
+{
+    return resolve_class_static_member_value(*this, scope, member, at);
+}
+
+// `Tmpl<args>::member` once the template-id has already been instantiated to a
+// concrete type: resolve the trailing `::member` static data member to a value.
+//
+// Consumes the `::` and the member name ONLY when it can resolve them, so a
+// caller that speculatively instantiated a template-id can fall through with the
+// token stream intact. Shared by the unqualified (`Box<int>::value`) and
+// namespace-qualified (`std::is_same<A,B>::value`) operand arms, which differ
+// only in how they reach the instantiation.
+static TokenBase *resolve_template_id_static_member(Program &pgm,
+						    TokenDataType *inst)
+{
+    if ( !inst || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return NULL;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(&inst->definition);
+    if ( !cls )
+	return NULL;
+    TokenBase *probe = pgm.tokens.size() > 1 ? pgm.tokens[1] : NULL;
+    if ( !probe || !is_contextual_identifier_token(probe) )
+	return NULL;
+    const std::string member = contextual_identifier_name(probe);
+    if ( !resolve_class_static_member_type(cls, member) )
+	return NULL;
+    pgm.nextToken();				// consume '::'
+    TokenBase *member_tb = pgm.nextToken();	// consume the member name
+    return resolve_class_static_member_value(pgm, cls, member, member_tb);
+}
+
 // get-or-create the placeholder DataDef for template parameter `name` at 0-based
 // `index`. Pooled by (name, index) and owned by template_param_pool for the
 // Program's lifetime (same never-freed convention as ptr_type_cache), so a Tree-1
@@ -2554,6 +2932,15 @@ DataDef *Program::resolve_current_class_type_alias(const std::string &name)
     // until 2a pushes a TemplateParamScope.
     if ( DataDef *tp = resolve_template_param(name) )
 	return tp;
+    // A callee template's DEFAULT/constraint is resolved in its DEFINITION
+    // class, even when that work was triggered from inside another method.
+    // The ambient method owner deliberately wins over ordinary class scopes
+    // below, so an explicit definition-context scope needs its own priority.
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_type_lookup_override_stack.rbegin();
+	  it != class_type_lookup_override_stack.rend(); ++it )
+	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
+	    return dd;
     // The CURRENT METHOD's owner class is the innermost class scope while its
     // body parses ([class.mfct]: member-function lookup reaches the class
     // scope before any enclosing/ambient one), so it must SHADOW the
@@ -2635,6 +3022,33 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
     return dynamic_cast<DataDefCLASS *>(dd);
 }
 
+// THE one classify policy for "what does this qualifier name before `::` in
+// an expression". Three arms (postfix chain, address-of, identifier arm)
+// each hand-rolled a slice of it and diverged three ways: one checked class
+// before namespace while two checked namespace first, one skipped alias
+// resolution entirely, and only one consulted namespace_datatype_map. The
+// populations are disjoint today, so the order disagreements were latent
+// coin-flips — and a name that genuinely resolves BOTH ways is diagnosed
+// loudly (both canons reject the ambiguity; picking a winner silently is
+// how the arms would drift apart again).
+Program::QualifierScope Program::classify_qualifier_before_scope(
+	const std::string &name, TokenBase *at)
+{
+    QualifierScope r;
+    r.cls = resolve_expression_class_scope(name);
+    r.ns_name = name;
+    std::string resolved = resolve_namespace_name_in_scope(name);
+    if ( !resolved.empty() )
+	r.ns_name = resolved;
+    r.has_variable_ns = namespace_map.find(r.ns_name) != namespace_map.end();
+    r.has_datatype_ns =
+	namespace_datatype_map.find(r.ns_name) != namespace_datatype_map.end();
+    if ( r.cls && r.is_namespace() )
+	Throw(at) << "'" << name
+		  << "' names both a class and a namespace in this scope" << flush;
+    return r;
+}
+
 static TokenDataType *make_alias_type_token(const std::string &name,
 					    DataDef *dd, TokenBase *at)
 {
@@ -2667,15 +3081,17 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     // Extend through nested qualifiers (`a::b::member`): tokens[0] is the '::'
     // after tb; each ident+'::' pair deepens the namespace while the deeper
     // path names a known namespace. tokens[j] ends as the member candidate.
+    // canonical_nested_namespace owns the descent — the literal dual-map
+    // probe this loop used could not hop an inline namespace
+    // (`outer::inner::ty` registered as `outer::v1::inner`).
     size_t j = 1;
     while ( j + 1 < tokens.size()
 	 && tokens[j] && is_contextual_identifier_token(tokens[j])
 	 && tokens[j + 1] && tokens[j + 1]->id() == TokenID::tkNS )
     {
-	std::string deeper = ns_name + "::"
-			   + contextual_identifier_name(tokens[j]);
-	if ( namespace_datatype_map.find(deeper) == namespace_datatype_map.end()
-	  && namespace_map.find(deeper) == namespace_map.end() )
+	std::string deeper = canonical_nested_namespace(ns_name,
+			contextual_identifier_name(tokens[j]));
+	if ( deeper.empty() )
 	    break;
 	ns_name = deeper;
 	j += 2;
@@ -2756,6 +3172,55 @@ static bool token_is_operator_id_start(TokenBase *t)
 // [+ closing )/] for operator()/operator[]]), or 0 if toks[i] is not an
 // operator-id start. For index-based scanners that walk a captured token
 // sequence (templated so it serves both std::vector and the std::deque queue).
+// A conversion-function-id names a TYPE where every other operator-id names a
+// symbol: `operator _Tp()`, `operator const char *()` [class.conv.fct]. Its
+// conversion-type-id runs to the `(` of the parameter list.
+static bool token_starts_conversion_type_id(TokenBase *t)
+{
+    if ( !t )
+	return false;
+    if ( t->id() == TokenID::tkNEW || t->id() == TokenID::tkDELETE )
+	return false;                   // operator new / operator delete
+    return is_contextual_identifier_token(t)
+	|| t->type() == TokenType::ttDataType
+	|| t->type() == TokenType::ttKeyword;
+}
+
+// How many tokens FOLLOW the `operator` keyword. ONE decision, shared by the
+// index form below and the stream form (Program::delimStepStream) — the two
+// must never disagree about how far an operator-id reaches.
+template<typename Seq>
+static size_t operator_id_tail_span(const Seq &toks, size_t sym_idx)
+{
+    if ( sym_idx >= toks.size() )
+	return 0;
+    TokenBase *sym = toks[sym_idx];
+    TokenBase *next = sym_idx + 1 < toks.size() ? toks[sym_idx + 1] : NULL;
+    if ( !sym )
+	return 1;
+    if ( sym->type() == TokenType::ttString && next
+      && is_contextual_identifier_token(next) )
+	return 2;   // user-defined literal: operator "" suffix
+    if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr) && next )
+	return 2;   // operator() / operator[]
+    if ( sym->id() == TokenID::tkNEW || sym->id() == TokenID::tkDELETE )
+	return 1;   // a trailing `[]` balances under ordinary delimiter tracking
+    if ( token_starts_conversion_type_id(sym) )
+    {
+	// Multi-token conversion-type-id: `const char *`, `unsigned long`,
+	// `std::size_t`. Runs to the parameter list's `(`.
+	size_t n = 0;
+	while ( sym_idx + n < toks.size()
+	     && toks[sym_idx + n]
+	     && toks[sym_idx + n]->id() != TokenID::tkOpBrk )
+	    ++n;
+	// No `(` in view (truncated / malformed): fall back to one token rather
+	// than swallowing the rest of the sequence.
+	return (n && sym_idx + n < toks.size()) ? n : 1;
+    }
+    return 1;       // operator + single symbol token (<, <<, <=, >, >>, …)
+}
+
 template<typename Seq>
 static size_t operator_id_token_span(const Seq &toks, size_t i)
 {
@@ -2763,14 +3228,7 @@ static size_t operator_id_token_span(const Seq &toks, size_t i)
 	return 0;
     if ( i + 1 >= toks.size() )
 	return 1;
-    TokenBase *sym = toks[i + 1];
-    if ( sym->type() == TokenType::ttString && i + 2 < toks.size()
-      && is_contextual_identifier_token(toks[i + 2]) )
-	return 3;   // user-defined literal: operator "" suffix
-    if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr)
-      && i + 2 < toks.size() )
-	return 3;   // operator() / operator[]
-    return 2;       // operator + single symbol token (<, <<, <=, >, >>, …)
+    return 1 + operator_id_tail_span(toks, i + 1);
 }
 
 // Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
@@ -2812,8 +3270,21 @@ struct DelimDepth {
 	    case TokenID::tkClSqr: if ( square > 0 ) --square; break;
 	    case TokenID::tkOpBrc: ++brace; break;
 	    case TokenID::tkClBrc: if ( brace > 0 )  --brace;  break;
+	    // Two independent tests, and BOTH are required — each catches a
+	    // shape the other misses:
+	    //   angle_open_context : `declval<T>() < declval<U>()` — prev is
+	    //                        `)`, so this `<` cannot begin a template-id.
+	    //   !paren && !square  : `decltype(a < b)` — prev IS an identifier,
+	    //                        so the context test passes and only the
+	    //                        nesting test rejects it. Without this the
+	    //                        angle opened here never closes (its `>` is
+	    //                        inside the parens too), the depth stays
+	    //                        stuck past the `)`, and a scan looking for
+	    //                        a top-level `;` or body `{` runs to EOF.
+	    // Inside `(...)`/`[...]` the paren balancing alone locates the
+	    // enclosing construct, so angles there are simply not tracked.
 	    case TokenID::tkLT:
-		if ( angle_open_context(prev) )
+		if ( !paren && !square && angle_open_context(prev) )
 		{
 		    ++angle;
 		    angle_paren.push_back(paren);
@@ -3040,6 +3511,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_bool(method.declaration_only);
 	    hash.add_bool(method.defaulted_or_deleted);
 	    hash.add_bool(method.is_deleted);
+	    hash.add_u64(method.noexcept_spec);
 	    hash.add_bool(method.pure_virtual);
 	    hash.add_bool(method.is_const_method);
 	    hash.add_bool(method.is_member_template);
@@ -3076,6 +3548,15 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    add_tokens(method.ctor_init_tokens);
 	    add_tokens(method.member_template_decl);
 	    add_tokens(method.member_template_return_tokens);
+	    hash.add_u64(method.template_param_defaults.size());
+	    for ( size_t p = 0; p < method.template_param_defaults.size(); ++p )
+		add_tokens(method.template_param_defaults[p]);
+	    hash.add_u64(method.template_param_constraints.size());
+	    for ( size_t p = 0; p < method.template_param_constraints.size(); ++p )
+		add_tokens(method.template_param_constraints[p]);
+	    hash.add_u64(method.param_type_token_runs.size());
+	    for ( size_t p = 0; p < method.param_type_token_runs.size(); ++p )
+		add_tokens(method.param_type_token_runs[p]);
 	}
 	hash.add_u64(node.using_members.size());
 	for ( size_t u = 0; u < node.using_members.size(); ++u )
@@ -3166,8 +3647,64 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 		return cv_spelling
 		     + (rs.empty() ? r->base_type->name : rs) + "&";
 	    }
+    // [temp.type]: template-argument identity is the CANONICAL type. A
+    // NAMESPACE-scope scalar typedef mints a distinct alias dd whose
+    // canonical spelling is the ALIAS ("std::streamsize", @0f97958b's
+    // despaced-canonical index) — keying an instantiation on it makes an
+    // explicit specialization keyed on the underlying builtin invisible,
+    // so the PRIMARY instantiates silently (libc++'s
+    // __libcpp_is_integral<long> never matched streamsize;
+    // numeric_limits<streamsize> picked the all-zeros non-arithmetic
+    // primary and `cin >> string` extracted NOTHING). Desugar through the
+    // alias chain the typedef arm records. ONLY through that explicit
+    // link: a DataType-based desugar (mangle_scalar_spelling) also fired
+    // on class-scope aliases minted inside templates, whose DataType is
+    // not a reliable identity — it crossed basic_string<char>'s chain
+    // with vector<int>'s (reverse_iterator_char_typeP / basic_string
+    // <int32_t> in the emitted C).
+    {
+	DataDef *ud = adt->definition.scalar_alias_of;
+	while ( ud && ud->scalar_alias_of )
+	    ud = ud->scalar_alias_of;
+	if ( ud )
+	{
+	    const std::string &us = ud->canonical_cpp_spelling();
+	    return cv_spelling + (us.empty() ? ud->name : us);
+	}
+    }
     const std::string &cs = adt->definition.canonical_cpp_spelling();
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
+}
+
+// [temp.type]: ONE canonical DataDef per fundamental type in a template-
+// argument BINDING — the dd-level twin of template_type_arg_spelling's
+// spelling rule above. Deduction hands back whatever dd the argument
+// expression carried: the non-canonical builtin flavor twin (an integer
+// literal types as ddINT "int"; the declared-type path emits the lexer's
+// canonical ddINT32 "int32_t" — resolve_builtin_type_spelling is the one
+// table), or a namespace-scope scalar typedef alias dd (std::streamsize).
+// Every identity former downstream spells the binding dd's NAME (inst_key,
+// the substituted parameter spelling, overload_spelling_symbol_suffix), so
+// two flavors of one type mint TWO identities for one instantiation — and a
+// frozen corpus' drained products then disagree with a bound consumer's
+// fresh mints (the v0.68 release-lane freeze split: __check_constructible /
+// _Construct spelled int32_t* by the pack, int* by the consumer, stl_vector
+// 428 "conversion of non-scalar value"). Map plain scalars through THE
+// canonical table BY THEIR OWN NAME only. Deliberately NO scalar_alias_of
+// chain walk: a block-scope typedef inside a template body ("typedef ...
+// value_type _ValueType2") mints an alias dd carrying ONE instantiation's
+// resolution — walking it here collapsed a dependent name into a concrete
+// type and crossed instantiations (the same hazard template_type_arg_spelling
+// documents for DataType-based desugar). Alias dds, enums, classes,
+// pointers, references, function types, and value-constant dds keep their
+// own identity (the table returns NULL for their names).
+static DataDef *canonical_template_binding_dd(DataDef *dd)
+{
+    if ( !dd || dd->basetype() != BaseType::btSimple || dd->is_pointer()
+      || dynamic_cast<DataDefENUM *>(dd) )
+	return dd;
+    DataDef *canon = Program::resolve_builtin_type_spelling(dd->name);
+    return canon ? canon : dd;
 }
 
 static std::string sanitize_template_fragment(const std::string &s)
@@ -3177,6 +3714,40 @@ static std::string sanitize_template_fragment(const std::string &s)
     {
 	unsigned char c = (unsigned char)s[i];
 	out += (isalnum(c) || c == '_') ? (char)c : '_';
+    }
+    return out.empty() ? std::string("_") : out;
+}
+
+// Template-ARGUMENT fragment sanitizer: like sanitize_template_fragment, but
+// '*' -> 'P' and '&' -> 'R' instead of '_'. Declarator suffixes are
+// type-identity-bearing in a template argument — `X<int*>` and `X<int&>` are
+// distinct instantiations — and the blanket '_' collapsed both fragments to
+// one key, so whichever registered first served the other's lookups
+// (std::move<int*>'s `remove_reference<int*>::type` read the earlier
+// `remove_reference<int&>`'s int32_t: one pointer level lost in the return).
+// Same letters as overload_spelling_symbol_suffix's readable head.
+static std::string sanitize_template_arg_fragment(const std::string &s)
+{
+    // Env-gated trap (MADC_RRTRAP=<exact spelling>): abort at the moment a
+    // specific template-arg spelling is flattened, so a gdb backtrace names
+    // the route that built it (the #103 RR-shell hunt). Diagnostic only.
+    {
+	static const char *rrt = ::getenv("MADC_RRTRAP");
+	if ( rrt && *rrt && s == rrt )
+	    abort();
+    }
+    std::string out;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	if ( isalnum(c) || c == '_' )
+	    out += (char)c;
+	else if ( c == '*' )
+	    out += 'P';
+	else if ( c == '&' )
+	    out += 'R';
+	else
+	    out += '_';
     }
     return out.empty() ? std::string("_") : out;
 }
@@ -3207,17 +3778,15 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 						     std::string &spelling,
 						     std::vector<TokenBase *> *tokens_out)
 {
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     TokenBase *t = first;
     while ( t )
     {
-	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	if ( d.angle == 0 && d.paren == 0 && d.square == 0
 	  && (t->id() == TokenID::tkComma || t->id() == TokenID::tkGT
 	   || t->id() == TokenID::tkBSR) )
 	    return t;
-	if ( t->id() == TokenID::tkBSR && angle_depth == 1 )
+	if ( t->id() == TokenID::tkBSR && d.angle == 1 )
 	{
 	    spelling += ">";
 	    if ( tokens_out )
@@ -3266,20 +3835,7 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	}
 	if ( tokens_out )
 	    tokens_out->push_back(t->clone());
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
+	d.update(t);
 	t = nextToken();
     }
     Throw(first) << "Unexpected end of input in template argument list" << flush;
@@ -3516,7 +4072,9 @@ static bool template_base_clause_has_template_id(const Program::TemplateDef &td)
 // member must evaluate. Other variadic shapes (non-type packs, body-less) stay on the
 // opaque path. The actual concreteness of the args is decided AFTER parsing them (a
 // dependent arg falls back to the opaque shell), so this predicate only gates SHAPE.
-static bool template_pack_real_instantiable(const Program::TemplateDef &td)
+static bool template_pack_real_instantiable(const Program::TemplateDef &td,
+					    bool allow_valuepack,
+					    bool nontype_fixed_ok = false)
 {
     if ( td.body.empty() )
 	return false;
@@ -3526,21 +4084,32 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td)
     size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     if ( pack_index != n - 1 )
 	return false;	// no pack, or pack is not the LAST parameter
-    // EVERY parameter must be a TYPE parameter — the arg loop only absorbs type args
-    // into pack_subst, and a genuine non-type / template-template param needs the
-    // opaque path. (td.has_non_type_params is a misnomer — it is set true even for a
-    // pure TYPE pack — so test typeparam_is_type directly.)
+    // Every FIXED parameter must be a TYPE parameter — the arg loop binds them
+    // into subst. The trailing pack itself may be a TYPE pack (the SFINAE
+    // helper shape) OR — only under the value-pack demand flag (task #102) —
+    // a NON-TYPE pack (libc++ __integer_sequence's `_IdxType... _Values`):
+    // value elements accumulate into token_pack_subst and the legacy body
+    // clone splices / replicates them. (td.has_non_type_params is a misnomer —
+    // it is set true even for a pure TYPE pack — so test typeparam_is_type
+    // directly.)
+    // EXCEPTION (`nontype_fixed_ok`, the WON-partial-spec path): a spec's
+    // non-type FIXED param (`tuple_element<_Ip, tuple<_Types...>>`'s _Ip)
+    // is already bound via token_subst by the spec-win wiring — the arg
+    // loop's subst limitation does not apply there.
     if ( n > td.typeparam_is_type.size() )
 	return false;
-    for ( size_t i = 0; i < n; ++i )
-	if ( !td.typeparam_is_type[i] )
+    for ( size_t i = 0; i + 1 < n; ++i )
+	if ( !td.typeparam_is_type[i] && !nontype_fixed_ok )
 	    return false;
+    if ( !td.typeparam_is_type[n - 1] )
+	return allow_valuepack;	// NON-TYPE pack: demand-keyed (see madc.h)
     return true;
 }
 
 static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	const std::vector<TokenBase *> &src,
-	const std::map<std::string, TokenDataType *> &subst)
+	const std::map<std::string, TokenDataType *> &subst,
+	const std::map<std::string, std::vector<TokenBase *> > *token_subst = NULL)
 {
     std::vector<TokenBase *> out;
     for ( TokenBase *bt : src )
@@ -3554,6 +4123,17 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	    {
 		out.push_back(si->second->clone());
 		continue;
+	    }
+	    if ( token_subst )
+	    {
+		std::map<std::string, std::vector<TokenBase *> >::const_iterator
+		    ti = token_subst->find(s);
+		if ( ti != token_subst->end() )
+		{
+		    for ( TokenBase *st : ti->second )
+			out.push_back(st ? st->clone() : NULL);
+		    continue;
+		}
 	    }
 	}
 	out.push_back(bt ? bt->clone() : NULL);
@@ -3644,8 +4224,9 @@ static std::string template_tokens_spelling(
     return spelling;
 }
 
+template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
 static size_t template_id_suffix_end(
-	const std::vector<TokenBase *> &tokens, size_t lt_index,
+	const Seq &tokens, size_t lt_index,
 	bool *split_gt = NULL)
 {
     // *split_gt (when provided): set true if the closing token was a `>>`
@@ -3760,14 +4341,165 @@ static bool self_template_id_keep_distinct(
     }
     if ( is_current )
 	return false;   // current instantiation -> collapse to injected-class-name
-    // (b) Every identifier among the args must be a class template parameter, so
-    // substitution yields a concrete, instantiable type.
+    // (b) Every BARE identifier among the args must be a class template
+    // parameter, so substitution yields a concrete, instantiable type. An
+    // identifier that HEADS a template-id (`__tuple_types<_Tp...>` in
+    // tuple_element's pack-spec body, libc++ sfinae_helpers.h:99) is a
+    // TEMPLATE-NAME reference resolved at injection, not a dependent bare
+    // name — this loop still walks its own arguments. Requiring param-hood
+    // of the template NAME collapsed `tuple_element<_Ip,
+    // __tuple_types<_Tp...>>` to the injected-class-name — a
+    // SELF-REFERENTIAL typedef, where [temp.dep.type] makes it a DISTINCT
+    // specialization (task #103's map:967 wall). A kept id that turns out
+    // to denote the current instantiation anyway is unified by its concrete
+    // key (the in-flight re-entry arm serves it) — collapse is an identity
+    // shortcut, never the authority.
     for ( const std::vector<TokenBase *> &slot : slots )
-	for ( TokenBase *t : slot )
-	    if ( is_contextual_identifier_token(t)
-	      && !params.count(contextual_identifier_name(t)) )
-		return false;   // references an outer/dependent name -> collapse
+	for ( size_t ti = 0; ti < slot.size(); ++ti )
+	{
+	    TokenBase *t = slot[ti];
+	    if ( !is_contextual_identifier_token(t)
+	      || params.count(contextual_identifier_name(t)) )
+		continue;
+	    if ( ti + 1 < slot.size() && slot[ti + 1]
+	      && slot[ti + 1]->id() == TokenID::tkLT )
+		continue;   // heads a template-id -> resolvable template name
+	    return false;   // a bare outer/dependent name -> collapse
+	}
     return true;
+}
+
+static bool member_template_param_intro(TokenBase *t);   // defined with the class parser
+// Defined with the tsubst machinery; include_dependent_class=false narrows the
+// test to raw template-PARAMETER placeholders (const/ptr walked), excluding
+// dependent-placeholder CLASSES (laundered opaques keep their existing routes).
+static bool datadef_involves_placeholder(DataDef *dd,
+					 bool include_dependent_class = true);
+
+// A member `template <...>` head inside an instantiated class's body: collect
+// the member template's own type-param names, return the index one past its
+// declaration extent, and set `keep_from` to the first index where a kept
+// self template-id is resolution-safe — or return 0 when the head is not one
+// this rule covers. Member CLASS templates arm the whole extent (to the
+// top-level `;`): a nested TemplateDef's body is captured RAW at the re-parse
+// and resolved no earlier than its own instantiation. Member FUNCTION
+// templates (a converting ctor `template<class U> alloc9(const alloc9<U>&)`
+// is the libc++ __node_handle:84 shape) arm only AFTER the head's closing
+// `>`: the head's SFINAE defaults are eagerly re-parsed at registration
+// (`_UseOtherCtor<_Tuple, tuple<_Up>>` — see self_template_id_keep_distinct's
+// collapse guard), while the declarator and body are registration-inert
+// (declarator-name scan + fabricated placeholder params only) and resolve at
+// the member's own instantiation with its params bound. A member ALIAS
+// template's TARGET is examined during the class re-parse itself (libstdc++
+// allocator_traits' partial spec carries `using rebind_traits =
+// allocator_traits<rebind_alloc<_Up>>;` — kept spelled, the unresolvable _Up
+// detonated the <string> freeze and ate every member after it), a FRIEND
+// declaration is eagerly hoisted, and a member VARIABLE template (no
+// declarator `(`) has its initializer examined eagerly — those stay on the
+// collapse arm.
+static size_t member_class_template_extent(
+	const std::vector<TokenBase *> &tokens, size_t template_index,
+	std::set<std::string> &param_names, size_t &keep_from)
+{
+    size_t i = template_index + 1;
+    if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkLT )
+	return 0;
+    DelimDepth d;
+    i += delim_scan_step(tokens, i, d);   // the opening `<` (NULL prev: opens)
+    bool name_position = false;           // depth-1 token right after class/typename
+    // Collect LOCALLY; publish only on success — a rejected head (a friend /
+    // variable template) must not leave stale params armed with no extent, or
+    // the next self template-id in an eagerly-parsed friend DECLARATION keeps
+    // spelled and detonates the re-parse (__new_allocator's operator== ate
+    // max_size and everything after it in the <string> freeze).
+    std::set<std::string> collected;
+    while ( i < tokens.size() && d.angle > 0 )
+    {
+	TokenBase *t = tokens[i];
+	if ( d.angle == 1 && name_position && t
+	  && is_contextual_identifier_token(t) )
+	    collected.insert(contextual_identifier_name(t));
+	name_position = d.angle == 1 && member_template_param_intro(t);
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( d.angle > 0 || i >= tokens.size() || !tokens[i] )
+	return 0;   // unbalanced head: leave the collapse arm untouched
+    size_t head_end = i;   // first token after the head's closing `>`
+    if ( tokens[i]->id() == TokenID::tkSTRUCT
+      || tokens[i]->id() == TokenID::tkCLASS
+      || tokens[i]->id() == TokenID::tkUNION )
+    {
+	while ( i < tokens.size() )
+	{
+	    if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi && d.top() )
+	    {
+		param_names.swap(collected);
+		keep_from = template_index;
+		return i + 1;
+	    }
+	    i += delim_scan_step(tokens, i, d);
+	}
+	return 0;
+    }
+    // Member FUNCTION template arm: require a top-level declarator `(` before
+    // any top-level `=`/`;`/`{` (rejects alias, variable templates), and no
+    // `using`/`friend` specifier before it. Extent ends at the top-level `;`
+    // (declaration / `= default;`) or one past the matched body `}`.
+    bool seen_lparen = false;
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && d.top() )
+	{
+	    TokenID id = t->id();
+	    if ( !seen_lparen )
+	    {
+		if ( id == TokenID::tkUSING || id == TokenID::tkFRIEND
+		  || id == TokenID::tkAssign || id == TokenID::tkSemi
+		  || id == TokenID::tkOpBrc )
+		    return 0;   // alias / friend / variable template: collapse
+		if ( id == TokenID::tkOpBrk )
+		    seen_lparen = true;
+	    }
+	    else if ( id == TokenID::tkSemi )
+	    {
+		param_names.swap(collected);
+		keep_from = head_end;
+		return i + 1;
+	    }
+	}
+	bool was_body_close = seen_lparen && t
+	    && t->id() == TokenID::tkClBrc;
+	i += delim_scan_step(tokens, i, d);
+	if ( was_body_close && d.top() )
+	{
+	    param_names.swap(collected);
+	    keep_from = head_end;
+	    return i;   // one past the definition's closing `}`
+	}
+    }
+    return 0;
+}
+
+// Do the arguments of the template-id opening at tokens[lt_index] (a tkLT)
+// reference any of `names`?
+static bool template_id_args_reference_names(
+	const std::vector<TokenBase *> &tokens, size_t lt_index,
+	const std::set<std::string> &names)
+{
+    if ( names.empty() || lt_index >= tokens.size()
+      || !tokens[lt_index] || tokens[lt_index]->id() != TokenID::tkLT )
+	return false;
+    DelimDepth d;
+    size_t i = lt_index + delim_scan_step(tokens, lt_index, d);
+    while ( i < tokens.size() && d.angle > 0 )
+    {
+	if ( tokens[i] && is_contextual_identifier_token(tokens[i])
+	  && names.count(contextual_identifier_name(tokens[i])) )
+	    return true;
+	i += delim_scan_step(tokens, i, d);
+    }
+    return false;
 }
 
 TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
@@ -3784,6 +4516,25 @@ TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
 	tb = nextToken();
     }
     return tb;
+}
+
+// EAST-cv twin of the owner above: qualifiers written AFTER the base type
+// (`T const` — libc++ optional's `add_pointer_t<value_type const>`), consumed
+// from the stream between the resolved type and any `*`/`&` declarator
+// suffixes, folded into the SAME leading spelling so east and west args spell
+// (and key) identically.
+void Program::consume_trailing_type_arg_qualifiers(std::string &spelling)
+{
+    while ( peekToken() && is_type_qualifier_token(peekToken()) )
+    {
+	TokenBase *q = nextToken();
+	if ( q->id() == TokenID::tkCONST )
+	    spelling += "const ";
+	else if ( q->id() == TokenID::tkVOLATILE )
+	    spelling += "volatile ";
+	else if ( q->id() == TokenID::tkRESTRICT )
+	    spelling += "restrict ";
+    }
 }
 
 // GCC's __integer_pack(N) builtin — the libstdc++-13 GCC-path index-sequence
@@ -3902,10 +4653,119 @@ void Program::expand_integer_pack_template_args()
     }
 }
 
+// clang's __make_integer_seq builtin template (BuiltinTemplateDecl
+// BTK__make_integer_seq) — the libc++ index-sequence primitive:
+// __utility/integer_sequence.h's __make_indices_imp / <utility>'s
+// make_integer_sequence take this branch when __has_builtin says yes (the
+// fallback branch is the __repeat/__parity log-time recursion whose
+// `K * sizeof...(_Np) + _Np...` patterns are outside the value-pack splice
+// arms). `__make_integer_seq<S, T, N>` (N a concrete non-negative constant)
+// IS `S<T, 0, 1, ..., N-1>`. The head identifier is already consumed by the
+// caller; the live stream holds `< S , T , N >`. This rewrites the stream IN
+// PLACE to `< T , 0 , 1 , ..., N-1 >` (the expand_integer_pack_template_args
+// model) and delegates instantiation to S. A dependent or non-constant N
+// returns NULL — the ordinary lookup path then handles the use (dependent
+// shell), exactly like any other template-id.
+TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
+						     const std::string &ns_hint)
+{
+    if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
+	return NULL;
+    // Bound the argument region with the shared tracker: three top-level args
+    // separated by depth-1 commas, closed by the depth-1 `>`. A BSR (`>>`)
+    // close would mean N ends in a nested template-id sharing the outer
+    // close — not the libc++ shape; leave that to the ordinary path.
+    DelimDepth d;
+    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
+    size_t arg_start = i;
+    size_t close_idx = 0;
+    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
+	{
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		argr.push_back(std::make_pair(arg_start, i));
+		arg_start = i + 1;
+	    }
+	    else if ( t->id() == TokenID::tkGT )
+	    {
+		close_idx = i;
+		break;
+	    }
+	    else if ( t->id() == TokenID::tkBSR )
+		return NULL;
+	}
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( !close_idx || argr.size() != 2 )
+	return NULL;
+    argr.push_back(std::make_pair(arg_start, close_idx));
+    for ( size_t a = 0; a < 3; ++a )
+	if ( argr[a].first >= argr[a].second )
+	    return NULL;
+    // S: the target template's bare name — the LAST identifier in the arg
+    // (`__integer_sequence`, `integer_sequence`, possibly ns-qualified).
+    std::string sname;
+    for ( size_t k = argr[0].first; k < argr[0].second; ++k )
+	if ( tokens[k] && tokens[k]->type() == TokenType::ttIdentifier )
+	    sname = ((TokenIdent *)tokens[k])->spelling();
+    if ( sname.empty() )
+	return NULL;
+    // N must fold to a concrete non-negative constant NOW. The cap bounds the
+    // minted argument tokens; a genuine sequence this long is user error.
+    std::vector<TokenBase *> nexpr;
+    for ( size_t k = argr[2].first; k < argr[2].second; ++k )
+	if ( tokens[k] )
+	    nexpr.push_back(tokens[k]);
+    int64_t n = -1;
+    if ( !fold_nontype_arg_constant(nexpr, n) || n < 0 || n > (1 << 20) )
+	return NULL;
+    // Rebuild the front as `< T , 0 , 1 , ..., N-1 >`. Carried originals move
+    // into `out`; everything else in the region is freed here (splice_front
+    // only removes the deque slots).
+    std::vector<TokenBase *> out;
+    out.push_back(tokens[0]);				// `<`
+    for ( size_t k = argr[1].first; k < argr[1].second; ++k )
+	if ( tokens[k] )
+	    out.push_back(tokens[k]);
+    for ( int64_t v = 0; v < n; ++v )
+    {
+	out.push_back(new TokenComma());
+	out.push_back(new TokenInt(v));
+    }
+    out.push_back(tokens[close_idx]);			// `>`
+    for ( size_t k = 1; k < close_idx; ++k )
+	if ( tokens[k] && (k < argr[1].first || k >= argr[1].second) )
+	    delete tokens[k];
+    tokens.splice_front(close_idx + 1, out);
+    // The builtin minted every pack element as a literal, so the delegated
+    // instantiation IS the value-pack real-inst demand site: the two-route
+    // identity hazard (see allow_valuepack_real_inst in madc.h) cannot arise
+    // when the demanded spelling is itself the folded form. Save/set/restore —
+    // instantiate entry consumes and clears both flags.
+    bool saved_vri = allow_variadic_real_inst;
+    bool saved_vpk = allow_valuepack_real_inst;
+    allow_variadic_real_inst = true;
+    allow_valuepack_real_inst = true;
+    // S is a namespace-level template (`__integer_sequence`,
+    // `integer_sequence`) — no owner hint: the builtin never names a member.
+    TokenDataType *inst = instantiate_template_id(sname, tb, ns_hint, NULL);
+    allow_variadic_real_inst = saved_vri;
+    allow_valuepack_real_inst = saved_vpk;
+    return inst;
+}
+
 // Defined below (near the partial-spec unifiers); used here to resolve a
 // deduced pack element's spelling to its instantiated type token.
 static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling);
+static std::string trim_spelling(const std::string &s);
+static bool parse_simple_template_non_type_value(const std::string &spelling,
+						 int64_t &out);
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
+
 
 static bool opaque_template_args_select_concrete_partial_spec(
 	Program &pgm, const Program::TemplateDef &td, const std::string &tname,
@@ -3967,6 +4827,53 @@ static bool opaque_template_args_select_concrete_partial_spec(
     return spec && !spec->body.empty();
 }
 
+// Env-gated probe (MADC_ARITY_PROBE=<substr>|*): which arity/default-fill
+// site is about to reject a template-id, with the TemplateDef's defaults
+// state — the throw message alone cannot distinguish the six sites, and the
+// dev build carries no -g for a line breakpoint.
+template <typename TD>
+static void arity_probe(const char *site, const std::string &tname,
+			const TD &td, size_t got)
+{
+	static const char *ap = ::getenv("MADC_ARITY_PROBE");
+	if ( !ap || !*ap )
+		return;
+	if ( strcmp(ap, "*") && tname.find(ap) == std::string::npos )
+		return;
+	std::string dstate;
+	for ( size_t k = 0; k < td.typeparam_defaults.size(); ++k )
+		dstate += td.typeparam_defaults[k].empty() ? '0' : '1';
+	fprintf(stderr, "[ARITY] site=%s tname=%s params=%zu defaults=%s "
+		"got=%zu ns=%s owner=%s\n",
+		site, tname.c_str(), td.typeparams.size(), dstate.c_str(),
+		got, td.defining_namespace.c_str(),
+		td.owner_class ? td.owner_class->name.c_str() : "-");
+}
+
+// A dependent template-id is replayable only while its STRUCTURAL origin is
+// attached to the shell.  Both template-use lanes mint and can later reuse the
+// same DataDefCLASS, so record at their shared semantic boundary and preserve
+// the first origin on a cache hit.
+static void record_dependent_shell_origin(
+	Program &pgm, DataDefCLASS *shell, const Program::TemplateDef &td,
+	const std::string &tname, const std::vector<std::string> &arg_spellings,
+	const std::vector<std::vector<TokenBase *> > &raw_arg_tokens)
+{
+    if ( !shell || pgm.dependent_shell_origin.find(shell)
+		  != pgm.dependent_shell_origin.end() )
+	return;
+    Program::DependentShellOrigin &org = pgm.dependent_shell_origin[shell];
+    org.tname = tname;
+    org.registry_name_id = td.registry_name_id;
+    org.defining_namespace = td.defining_namespace;
+    org.owner_class = td.owner_class;
+    org.arg_spellings = arg_spellings;
+    org.raw_arg_tokens.resize(raw_arg_tokens.size());
+    for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
+	for ( TokenBase *t : raw_arg_tokens[ai] )
+	    org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
+}
+
 TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td,
 						      const std::string &tname,
 						      TokenBase *tb)
@@ -3976,6 +4883,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     expand_integer_pack_template_args();
     std::vector<std::string> args;
     std::vector<std::vector<TokenBase *> > raw_arg_tokens;
+    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     if ( peekToken() && (peekToken()->id() == TokenID::tkGT
       || peekToken()->id() == TokenID::tkBSR) )
     {
@@ -3992,6 +4900,31 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    std::vector<TokenBase *> arg_tokens;
 	    TokenBase *sep = collect_template_argument_spelling(at, spelling,
 								&arg_tokens);
+	    // Substitution-time non-type fold, PARENTHESIZED-EXPRESSION form
+	    // only: a substituted value-pack alias target arrives spelled
+	    // `(0 + 0)` (the replicate arm's `(_Values + _Sp)...` with both
+	    // sides now literal) and must key as `0` — `__tuple_indices<(0 +
+	    // 0)>` and `__tuple_indices<0>` are ONE type ([temp.type]). The
+	    // fold is deliberately NARROWER than the real lane's: a bare
+	    // spelling (`true`, `__v`, `sizeof(_Tp)`) keeps its raw form
+	    // because the opaque lane's partial-spec selection compares
+	    // SPELLINGS — folding `true` to `1` broke every
+	    // `selector<_Tp, true>`-shaped match (libstdc++
+	    // __make_unsigned_selector, the rb102 default-lane regression).
+	    if ( !spelling.empty() && spelling[0] == '('
+	      && pack_index < td.typeparams.size()
+	      && args.size() >= pack_index
+	      && pack_index < td.typeparam_is_type.size()
+	      && !td.typeparam_is_type[pack_index] )
+	    {
+		int64_t folded_nt = 0;
+		if ( fold_nontype_arg_constant(arg_tokens, folded_nt) )
+		{
+		    arg_tokens.clear();
+		    arg_tokens.push_back(new TokenInt(folded_nt));
+		    spelling = std::to_string(folded_nt);
+		}
+	    }
 	    args.push_back(spelling);
 	    raw_arg_tokens.push_back(arg_tokens);
 	    if ( sep->id() == TokenID::tkComma )
@@ -4001,19 +4934,24 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
 	}
     }
-    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     bool has_pack = pack_index < td.typeparams.size();
     if ( !has_pack && args.size() > td.typeparams.size() )
+    {
+	arity_probe("opq-over", tname, td, args.size());
 	Throw(tb) << tname << "<> expects " << td.typeparams.size()
 		      << " argument(s), got " << args.size() << flush;
+    }
     size_t required_args = has_pack ? pack_index : td.typeparams.size();
     while ( args.size() < required_args )
     {
 	size_t ai = args.size();
 	if ( ai >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[ai].empty() )
+	{
+	    arity_probe("opq-fill", tname, td, args.size());
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " argument(s), got " << args.size() << flush;
+	}
 	std::string spelling;
 	std::vector<TokenBase *> arg_tokens;
 	for ( TokenBase *dt : td.typeparam_defaults[ai] )
@@ -4101,7 +5039,15 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	}
     }
     if ( have != datatype_map.end() )
-	return use_site_type_token((TokenDataType *)(*have), tb);
+    {
+	TokenDataType *cached = (TokenDataType *)(*have);
+	DataDefCLASS *cached_class =
+	    dynamic_cast<DataDefCLASS *>(&cached->definition);
+	if ( cached_class && cached_class->is_dependent_placeholder )
+	    record_dependent_shell_origin(*this, cached_class, td, tname,
+					  args, raw_arg_tokens);
+	return use_site_type_token(cached, tb);
+    }
 
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
@@ -4111,18 +5057,8 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
     // can rebuild the concrete instantiation from a binding later — the shell's
     // name/spelling alone is unresolvable (see Program::DependentShellOrigin).
-    {
-	DependentShellOrigin &org = dependent_shell_origin[fwd];
-	org.tname = tname;
-	org.registry_name_id = td.registry_name_id;
-	org.defining_namespace = td.defining_namespace;
-	org.owner_class = td.owner_class;
-	org.arg_spellings = args;
-	org.raw_arg_tokens.resize(raw_arg_tokens.size());
-	for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
-	    for ( TokenBase *t : raw_arg_tokens[ai] )
-		org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
-    }
+    record_dependent_shell_origin(*this, fwd, td, tname, args,
+				  raw_arg_tokens);
     TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
     datatype_map[mangled] = tdt;
     if ( !td.defining_namespace.empty() )
@@ -4203,6 +5139,42 @@ static bool is_incomplete_template_class_type(TokenDataType *tdt)
     return tdt && is_incomplete_class_datadef(&tdt->definition);
 }
 
+DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
+{
+    if ( !cls || !is_incomplete_class_datadef(cls) )
+	return NULL;
+    std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
+	dependent_shell_origin.find(cls);
+    if ( oi == dependent_shell_origin.end()
+      || oi->second.raw_arg_tokens.empty() )
+	return NULL;
+    // SILENT SFINAE discipline (the constraint evaluator's pattern): a replay
+    // that cannot re-enter cleanly — a still-dependent shell, a
+    // spelling-matched-spec template — must leave no stderr noise and no
+    // diagnostic behind, because the caller's opaque path is still valid.
+    struct ShellNullBuf : std::streambuf
+    { int overflow(int c) { return c; } };
+    static ShellNullBuf shell_null_buf;
+    size_t sd = diagnostics.size();
+    Program::ErrorInfo se = last_error;
+    std::streambuf *sc = std::cerr.rdbuf(&shell_null_buf);
+    TokenDataType *real = NULL;
+    try
+    {
+	real = instantiate_shell_origin_replay(oi->second,
+					       oi->second.raw_arg_tokens);
+    }
+    catch ( ... ) { real = NULL; }
+    std::cerr.rdbuf(sc);
+    DataDefCLASS *rc = real
+	? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
+    if ( rc && !is_incomplete_class_datadef(rc) )
+	return rc;
+    diagnostics.resize(sd);
+    last_error = se;
+    return NULL;
+}
+
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
 
 static bool class_has_dependent_base(DataDefCLASS *cls,
@@ -4262,6 +5234,46 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
     return false;
 }
 
+// Names WHICH node makes datadef_has_unresolved_dependent_surface() true, so
+// a refusal on a spelled-concrete type (a base shell minted opaque mid-flight
+// and never re-derived) is diagnosable from the error alone. Walks the same
+// chain as the predicate; returns "" when the type has no dependent surface.
+static std::string dependent_surface_reason(DataDef *dd,
+					    std::set<DataDefCLASS *> *seen = NULL)
+{
+    if ( !dd )
+	return std::string();
+    if ( dd->is_template_param() )
+	return dd->name + " is a template parameter";
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return dependent_surface_reason(ptr->base_type, seen);
+    if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+	return dependent_surface_reason(arr->element_type, seen);
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls )
+	return std::string();
+    if ( cls->is_dependent_placeholder )
+	return cls->name + " is a dependent placeholder";
+    if ( cls->has_dependent_surface )
+	return cls->name + " carries a dependent surface";
+    std::set<DataDefCLASS *> local_seen;
+    if ( !seen )
+	seen = &local_seen;
+    if ( seen->count(cls) )
+	return std::string();
+    seen->insert(cls);
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+    {
+	std::string r = dependent_surface_reason(cls->bases[i].base, seen);
+	if ( !r.empty() )
+	    return cls->name + ": base " + r;
+    }
+    std::string r = dependent_surface_reason(cls->base_class, seen);
+    if ( !r.empty() )
+	return cls->name + ": base " + r;
+    return std::string();
+}
+
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 						       const std::string &member_name)
 {
@@ -4285,8 +5297,23 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
     std::string owner_spelling = owner->canonical_cpp_spelling().empty()
 			       ? owner->name : owner->canonical_cpp_spelling();
     dep->set_canonical_spelling(owner_spelling + "::" + member_name);
-    struct_map.set(dep_name, dep);
-    datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    // An INCOMPLETE owner with a PENDING lazy completion heals later
+    // ([temp.inst] — the pending-record arm): caching this member
+    // placeholder under its flat name would OUTLIVE the healing and serve
+    // the stale shell to every later resolution (rbA's
+    // tuple_element<0,tuple<int&>>::type — the first walk poisoned the
+    // cache, the second walk found the healed owner but this stale member;
+    // task #103). Mint EPHEMERAL: usable by this resolution, re-derived
+    // against the healed owner next time.
+    bool ephemeral = false;
+    if ( DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(owner) )
+	ephemeral = is_incomplete_class_datadef(ocls)
+		 && has_pending_template_instantiation(ocls->name);
+    if ( !ephemeral )
+    {
+	struct_map.set(dep_name, dep);
+	datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    }
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque
     // dependent-member synthesis for a matching owner — the laundered-opaque
     // diagnostic (which resolution path lands here, live vs bound).
@@ -4639,17 +5666,18 @@ static Program::ClassParseReason class_pattern_eligibility_note(
 static bool class_body_friend_needs_parse(
 	const std::vector<TokenBase *> &body, size_t i)
 {
-    int parens = 0;
+    DelimDepth d;
     for ( size_t j = i + 1; j < body.size(); ++j )
     {
 	TokenBase *t = body[j];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++parens;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --parens;
-	else if ( parens == 0 )
+	if ( t->id() == TokenID::tkOpBrk || t->id() == TokenID::tkClBrk )
+	{
+	    d.update(t);
+	    continue;
+	}
+	if ( !d.paren )
 	{
 	    if ( t->id() == TokenID::tkOpBrc )
 		return true;	// definition body
@@ -4666,6 +5694,7 @@ static bool class_body_friend_needs_parse(
     }
     return true;	// unterminated — needs the parse lane
 }
+
 
 static Program::ClassParseReason basic_class_pattern_eligibility(
 	Program &pgm, const BasicClassPatternBinding &binding,
@@ -5174,6 +6203,35 @@ class BasicClassPatternResolver
 		replay.push_back(new TokenDataType(
 		    carg->base_type->name.c_str(), *carg->base_type));
 	    }
+	    else if ( memo_arguments[i]->is_pointer()
+		   && !memo_arguments[i]->is_reference() )
+	    {
+		// A POINTER argument re-enters the parse lane the way source
+		// spells it too: pointee type + `*` tokens
+		// (fold_template_arg_declarator owns it from there), so
+		// PARTIAL-SPEC selection can deduce against the pointee.
+		// One opaque DataDefPTR token matched only the primary:
+		// libc++'s pointer_traits<node_pointer>::element_type
+		// resolved on the EMPTY primary and map<K,V>'s tree-iterator
+		// chain minted placeholder args (task #72).
+		DataDef *core = memo_arguments[i];
+		int stars = 0;
+		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) )
+		{
+		    if ( !p->base_type || p->is_reference() )
+			break;
+		    core = p->base_type;
+		    ++stars;
+		}
+		if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(core) )
+		{
+		    replay.push_back(new TokenCONST());
+		    core = pc->base_type ? pc->base_type : core;
+		}
+		replay.push_back(new TokenDataType(core->name.c_str(), *core));
+		for ( int s = 0; s < stars; ++s )
+		    replay.push_back(new TokenMul());
+	    }
 	    else
 		replay.push_back(new TokenDataType(
 		    memo_arguments[i]->name.c_str(), *memo_arguments[i]));
@@ -5336,7 +6394,8 @@ public:
 		<< "internal: basic ClassPattern could not resolve type "
 		<< id << " kind=" << (unsigned)type.kind
 		<< " name='" << type.name << "' operand=" << type.operand
-		<< " in '" << binding.pattern.class_name << "'"
+		<< " owner='" << (memo_owner ? memo_owner->name : "(null)")
+		<< "' in '" << binding.pattern.class_name << "'"
 		<< flush;
 	    return NULL;
 	}
@@ -5465,6 +6524,10 @@ static void basic_class_pattern_canonicalize_type_tokens(
 	    }
 }
 
+static std::vector<std::vector<TokenBase *> >
+basic_class_pattern_substitute_token_runs(
+	Program &pgm, const BasicClassPatternBinding &binding,
+	const std::vector<std::vector<TokenBase *> > &runs);
 static std::vector<TokenBase *> basic_class_pattern_substitute_tokens(
 	Program &pgm, const BasicClassPatternBinding &binding,
 	const std::vector<TokenBase *> &tokens)
@@ -5636,6 +6699,28 @@ static void register_basic_class_pattern_method(
 	    pgm.last_skipped_template_typeparam_is_pack;
 	pgm.last_skipped_template_typeparam_is_pack =
 	    pattern.template_param_is_pack;
+	// TYPE-ness rides the same global (the pattern's non-type params must
+	// re-register as non-type for each owner binding).
+	std::vector<bool> saved_is_type_state =
+	    pgm.last_skipped_template_typeparam_is_type;
+	pgm.last_skipped_template_typeparam_is_type =
+	    pattern.template_param_is_type;
+	// Per-param DEFAULT runs ride the same global (the [temp.deduct]/8
+	// SFINAE payload) — substituted for the owner binding like the decl
+	// tokens themselves (`declval<_Tp1&>().~_Tp1()` may name the OWNER's
+	// params too; the member's own params substitute at the call).
+	std::vector<std::vector<TokenBase *> > saved_defaults_state =
+	    pgm.last_skipped_template_typeparam_defaults;
+	pgm.last_skipped_template_typeparam_defaults =
+	    basic_class_pattern_substitute_token_runs(pgm, binding,
+		pattern.template_param_defaults);
+	// The CONSTRAINT runs ride identically (they may name the OWNER's
+	// params too — `enable_if<is_same<_Tp, ...>::value, bool>::type`).
+	std::vector<std::vector<TokenBase *> > saved_constraints_state =
+	    pgm.last_skipped_template_typeparam_constraints;
+	pgm.last_skipped_template_typeparam_constraints =
+	    basic_class_pattern_substitute_token_runs(pgm, binding,
+		pattern.template_param_constraints);
 	// The registration return-type scan re-parses the declaration tokens
 	// (`pair<iterator, bool> emplace(...)`); member aliases like
 	// `iterator` resolve through class_scope_stack. The parse lane runs
@@ -5656,12 +6741,18 @@ static void register_basic_class_pattern_method(
 	      && pgm.class_scope_stack.back() == owner )
 		pgm.class_scope_stack.pop_back();
 	    pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	    pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
+	    pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
+	    pgm.last_skipped_template_typeparam_constraints = saved_constraints_state;
 	    throw;
 	}
 	if ( owner && !pgm.class_scope_stack.empty()
 	  && pgm.class_scope_stack.back() == owner )
 	    pgm.class_scope_stack.pop_back();
 	pgm.last_skipped_template_typeparam_is_pack = saved_pack_state;
+	pgm.last_skipped_template_typeparam_is_type = saved_is_type_state;
+	pgm.last_skipped_template_typeparam_defaults = saved_defaults_state;
+	pgm.last_skipped_template_typeparam_constraints = saved_constraints_state;
 	return;
     }
 
@@ -5683,6 +6774,7 @@ static void register_basic_class_pattern_method(
     fd->declaration_only = pattern.declaration_only;
     fd->defaulted_or_deleted = pattern.defaulted_or_deleted;
     fd->is_deleted = pattern.is_deleted;
+    fd->noexcept_spec = pattern.noexcept_spec;
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
@@ -5696,8 +6788,19 @@ static void register_basic_class_pattern_method(
 	binding, pattern.member_template_decl);
     fd->member_template_return_tokens = basic_class_pattern_substitute_tokens(pgm,
 	binding, pattern.member_template_return_tokens);
+    fd->member_template_param_type_tokens =
+	basic_class_pattern_substitute_token_runs(pgm, binding,
+	    pattern.param_type_token_runs);
     if ( pattern.is_member_template )
+	{
+	    fd->member_template_param_defaults =
+		basic_class_pattern_substitute_token_runs(pgm, binding,
+		    pattern.template_param_defaults);
+	    fd->member_template_param_constraints =
+		basic_class_pattern_substitute_token_runs(pgm, binding,
+		    pattern.template_param_constraints);
 	fd->member_template_owner = owner;
+	}
     for ( size_t i = 0; i < pattern.parameters.size(); ++i )
     {
 	const Program::ClassMethodParamPattern &param = pattern.parameters[i];
@@ -6282,12 +7385,150 @@ static TokenDataType *instantiate_basic_class_pattern(
 }
 }
 
+// RAII in-flight marker for a class instantiation, shared by BOTH lanes
+// (pattern serve and legacy body re-parse). While a key is in flight, a
+// re-entering instantiation of the SAME specialization returns the
+// early-registered incomplete shell (instantiate_template_use's cache-hit
+// branch) instead of recursing — the bound for cyclic dependency webs and
+// for a base clause naming the template's own specialization as a template
+// ARGUMENT (libc++'s allocator : __non_trivial_if<..., allocator<_Tp>>).
+struct ClassInstInFlightGuard {
+    std::set<std::string> &set;
+    std::string key;
+    bool inserted;
+    ClassInstInFlightGuard(std::set<std::string> &s, const std::string &k)
+	: set(s), key(k), inserted(s.insert(k).second) {}
+    ~ClassInstInFlightGuard() { if ( inserted ) set.erase(key); }
+};
+
+// Env-gated diagnostics for the variadic real-instantiation routing and the
+// [temp.deduct]/8 alias-arg validation (MADC_XTEST_VRI_DEBUG=1): prints the
+// entry flags per class-template instantiation, the base-clause arming, the
+// per-alias-use skip decision, and the classifier's dependence verdicts.
+static bool vri_debug_enabled()
+{
+    static const char *e = ::getenv("MADC_XTEST_VRI_DEBUG");
+    return e != NULL;
+}
+
+// clang's __type_pack_element builtin template (BuiltinTemplateDecl
+// BTK__type_pack_element): `__type_pack_element<I, T0, ..., Tn>` IS the I-th
+// type argument. libc++'s tuple_element takes this branch when __has_builtin
+// says yes; the fallback branch is a decltype-indexer whose resolution minted
+// an opaque dependent shell (tuple_element<0,tuple<int&>>::type — get<0>'s
+// return, the mem-init instantiation-demand deferral; task #103). The head
+// identifier is already consumed by the caller; the live stream holds
+// `< I , T0 , ... >`. A CONCRETE I selects its type argument directly — the
+// region is consumed and the resolved type returned (nothing instantiates:
+// the result is one of the given args). A dependent / non-constant /
+// out-of-range I returns NULL with the stream untouched — the ordinary
+// lookup path then serves the use (dependent shell), like any template-id.
+TokenDataType *Program::instantiate_type_pack_element(TokenBase *tb,
+						      const std::string &ns_hint)
+{
+    (void)ns_hint;
+    if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
+	return NULL;
+    DelimDepth d;
+    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
+    size_t arg_start = i;
+    size_t close_idx = 0;
+    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
+	{
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		argr.push_back(std::make_pair(arg_start, i));
+		arg_start = i + 1;
+	    }
+	    else if ( t->id() == TokenID::tkGT )
+	    {
+		close_idx = i;
+		break;
+	    }
+	    else if ( t->id() == TokenID::tkBSR )
+		return NULL;	// nested-template shared close: ordinary path
+	}
+	i += delim_scan_step(tokens, i, d);
+    }
+    if ( !close_idx || argr.empty() )
+	return NULL;
+    argr.push_back(std::make_pair(arg_start, close_idx));
+    for ( size_t a = 0; a < argr.size(); ++a )
+	if ( argr[a].first >= argr[a].second )
+	    return NULL;
+    // I must fold to a concrete in-range constant NOW.
+    std::vector<TokenBase *> iexpr;
+    for ( size_t k = argr[0].first; k < argr[0].second; ++k )
+	if ( tokens[k] )
+	    iexpr.push_back(tokens[k]);
+    int64_t sel = -1;
+    if ( !fold_nontype_arg_constant(iexpr, sel )
+      || sel < 0 || (size_t)sel + 1 >= argr.size() )
+	return NULL;
+    // Resolve the selected type run BEFORE consuming anything — a resolution
+    // miss leaves the stream untouched for the ordinary path.
+    const size_t ss = argr[(size_t)sel + 1].first;
+    const size_t se = argr[(size_t)sel + 1].second;
+    std::vector<TokenBase *> sel_toks;
+    for ( size_t k = ss; k < se; ++k )
+	if ( tokens[k] )
+	    sel_toks.push_back(tokens[k]);
+    DataDef *dd = resolve_type_token_range(sel_toks, 0, sel_toks.size());
+    if ( !dd )
+	return NULL;
+    // A REFERENCE result spells `T&` in C++ spelling space (the bind_spelling
+    // rule) — its C-lowered NAME is the pointer.
+    std::string sp = dd->is_reference() ? basic_class_datadef_spelling(dd)
+					: std::string(dd->name);
+    for ( size_t k = 0; k <= close_idx; ++k )
+	if ( tokens[k] )
+	    delete tokens[k];
+    std::vector<TokenBase *> none;
+    tokens.splice_front(close_idx + 1, none);
+    TokenDataType *tdt = new TokenDataType(sp.c_str(), *dd);
+    if ( tb )
+    {
+	tdt->file = tb->file;
+	tdt->line = tb->line;
+	tdt->column = tb->column;
+    }
+    return tdt;
+}
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
 					       DataDefCLASS *owner_hint)
 {
     InstTimer _it(*this, _inst_class_count);	// --show-stats
+    // Builtin templates are compiler vocabulary, not user names (the
+    // __integer_pack precedent): resolved natively ahead of the registry,
+    // which has no definition to offer for them. NEVER under an owner-scoped
+    // lookup: a builtin is a namespace-level entity, and the member-chain
+    // walkers probe every enclosing class SPECULATIVELY (expecting a miss to
+    // be non-destructive) — the native arm rewrites the live stream, so it
+    // must fire only for the one lookup that can actually consume the use.
+    if ( !owner_hint && tname.compare("__make_integer_seq") == 0
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
+	if ( TokenDataType *bi =
+		instantiate_make_integer_seq(tb, ns_hint) )
+	    return bi;
+    // UNLIKE the sibling above, this arm runs under owner-scoped lookups
+    // too: the fold is ATOMIC (the stream is consumed ONLY on success —
+    // every bail leaves it untouched, so a speculative member probe's miss
+    // stays non-destructive), and a class-body typedef parse
+    // (`typedef __type_pack_element<_Ip, _Tp...> type;` — the tuple_element
+    // spec body) carries owner_hint, which is exactly where libc++ needs
+    // the builtin. The name is compiler vocabulary — never a member.
+    if ( tname.compare("__type_pack_element") == 0
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
+	if ( TokenDataType *bi =
+		instantiate_type_pack_element(tb, ns_hint) )
+	    return bi;
     const uint32_t tname_id = template_name_pool.intern(tname);
     const Program::TemplateDef *tdp = find_template(
 	tname_id, ns_hint, owner_hint);
@@ -6321,7 +7562,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // through a dependent-member-base forwarding chain (`__invoke_result` ->
     // `__result_of_impl`), bounded by variadic_inst_in_progress (set below).
     bool pack_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
-		       && template_pack_real_instantiable(td);
+		       && template_pack_real_instantiable(td,
+						allow_valuepack_real_inst);
+    if ( vri_debug_enabled() && pack_real_inst
+      && !td.typeparam_is_type[td.typeparams.size() - 1] )
+	fprintf(stderr, "[vriprobe] ntpack-real %s\n", tname.c_str());
     // While resolving a member-TYPE chain (allow/sticky), a PRIMARY with non-type
     // params (`__result_of_impl<bool,bool,typename,typename...>`) is itself opaque
     // (template_pack_real_instantiable rejects non-type params), but a PARTIAL SPEC
@@ -6334,7 +7579,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	partial_spec_map.find_readonly(tname_id);
     bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 			   && partial_entry && partial_entry->find(td.owner_class);
+    if ( vri_debug_enabled() )
+	fprintf(stderr, "[vriprobe] inst %s vri=%d sticky=%d dep=%d cap=%d\n",
+		tname.c_str(), (int)allow_variadic_real_inst,
+		(int)variadic_real_inst_sticky,
+		(int)dependent_parse_in_progress,
+		(int)class_pattern_capture_in_progress);
     allow_variadic_real_inst = false;
+    allow_valuepack_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
     // resolution during its re-parse so the whole forwarding trait chain folds.
@@ -6347,7 +7599,23 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
 	}
-    if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst )
+    // A body-less PRIMARY whose registered PARTIAL SPECS carry the bodies
+    // (libc++'s `__underlying_type_impl<_Tp, bool>` — declared only, both
+    // bodies in the <_Tp,false>/<_Tp,true> specs) must reach the
+    // partial-spec match below even without the member-chain
+    // real-instantiation flags — the spec swap is what materializes
+    // `::type`. No matching spec still falls back to the opaque
+    // placeholder downstream. Scope: only OUTSIDE a class body and outside
+    // a dependent pattern parse — inside those, the args can reference the
+    // enclosing template's parameters (`__select<sizeof(_Tp), _UInts>` in
+    // libstdc++'s __make_unsigned_selector) and the real lane's eager arg
+    // resolution desyncs where the opaque lane tolerated the tokens; those
+    // uses keep the opaque route exactly as before.
+    bool spec_may_serve = partial_entry && partial_entry->find(td.owner_class)
+		       && class_scope_stack.empty()
+		       && !dependent_parse_in_progress;
+    if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst
+      && !spec_may_serve )
 	{
 	++_class_inst_opaque;
 	return instantiate_opaque_template_use(td, tname, tb);
@@ -6376,6 +7644,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // in __replace_first_arg): name -> the pack's element type tokens (empty for an
     // empty pack). Expanded in the body loop where `_Types...` appears.
     std::map<std::string, std::vector<TokenDataType *> > pack_subst;
+    // A trailing NON-TYPE pack's elements (task #102): pack name -> one token
+    // run per element (each typically a single folded TokenInt). The legacy
+    // body clone splices `_Values...` and replicates `( _Values + X )...`
+    // patterns from this map.
+    std::map<std::string, std::vector<std::vector<TokenBase *> > > token_pack_subst;
     // A trailing TYPE pack absorbs every arg from its position onward (see
     // template_pack_real_instantiable): once `pi` reaches `pack_index`, extra args
     // keep binding to it via this clamp, accumulating into pack_subst rather than
@@ -6451,7 +7724,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    arg_tokens.push_back(new TokenInt(folded_nt));
 		    spelling = std::to_string(folded_nt);
 		}
-		token_subst[td.typeparams[pi]] = arg_tokens;
+		if ( bind_is_pack )
+		    token_pack_subst[td.typeparams[bind_pi]].push_back(arg_tokens);
+		else
+		    token_subst[td.typeparams[bind_pi]] = arg_tokens;
 		arg_types_by_slot.push_back(NULL);
 		arg_tokens_by_slot.push_back(arg_tokens);
 		arg_spellings.push_back(spelling);
@@ -6476,11 +7752,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    break;
 	if ( pi >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[pi].empty() )
+	{
+	    arity_probe("pat-fill", tname, td, pi);
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " argument(s), got " << pi << flush;
+	}
 	std::vector<TokenBase *> default_tokens =
 	    clone_template_tokens_with_type_subst(td.typeparam_defaults[pi],
-						 subst);
+						 subst, &token_subst);
 	if ( template_param_expects_type(td.typeparam_is_type, pi) )
 	{
 	    std::vector<TokenBase *> inj = default_tokens;
@@ -6580,11 +7859,66 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	canon += arg_spellings[i];
     }
     canon += ">";
+    // Env-gated trap (MADC_CANONTRAP=<exact canon spelling>): abort at the
+    // moment a class-template instantiation composes this canonical spelling,
+    // so a gdb backtrace names WHO instantiated it. Diagnostic only.
+    {
+	static const char *ctr = ::getenv("MADC_CANONTRAP");
+	if ( ctr && *ctr && canon == ctr )
+	    abort();
+    }
+
+    // The real class-template lane resolves TYPE arguments immediately and
+    // intentionally leaves their arg_tokens_by_slot entry empty (non-type
+    // slots keep raw token runs). Provenance needs one STRUCTURAL run per
+    // slot: carry the resolved TokenDataType for an empty type slot so tsubst
+    // can substitute its DataDef graph later.
+    std::vector<std::vector<TokenBase *> > shell_origin_arg_tokens =
+	arg_tokens_by_slot;
+    for ( size_t i = 0; i < shell_origin_arg_tokens.size()
+			 && i < arg_types_by_slot.size(); ++i )
+	if ( shell_origin_arg_tokens[i].empty() && arg_types_by_slot[i] )
+	    shell_origin_arg_tokens[i].push_back(arg_types_by_slot[i]);
 
     bool dependent_surface = false;
+    // [temp.dep.type]: an argument that IS (or const/ptr-wraps) a raw
+    // template-parameter placeholder makes the template-id a DEPENDENT type in
+    // any context — a pattern parse resolving `allocator<_Tp1>` (a member fn
+    // template's kept self-name param) must yield a dependent shell
+    // re-resolved at tsubst, never inject a class body substituted with the
+    // placeholder. Injection minted allocator__Tp1 / __new_allocator__Tp1
+    // garbage classes — silent at parse, loud when the freeze drain translated
+    // them ("unsubstituted template parameter '_Tp1' reached type lowering").
+    // Dependent-placeholder CLASS args (laundered opaques) keep their existing
+    // real-instantiation route — only the raw-param test gates here.
+    bool placeholder_arg = false;
     for ( size_t i = 0; i < type_args.size(); ++i )
+    {
 	if ( datadef_has_unresolved_dependent_surface(&type_args[i]->definition) )
-	    dependent_surface = true;
+	{
+	    // NARROW carve-out ([temp.dep.type]), LOCAL to this gate: a
+	    // dependent-PLACEHOLDER class stamped opaque_concrete_tag was
+	    // minted OUTSIDE any dependent parse — its spelling is fully
+	    // concrete (a pack-class use whose real instantiation simply
+	    // had not been demanded yet: tuple<int&> before
+	    // forward_as_tuple realizes it). Such an arg does not make THIS
+	    // template-id dependent; counting it deferred
+	    // tuple_element<0,tuple<int&>> forever — the first ::type hop
+	    // then baked a stale member shell into get<0>'s return and the
+	    // mem-init forward demand (task #103). The shared predicate
+	    // keeps its meaning — only this gate carves.
+	    DataDefCLASS *acls =
+		dynamic_cast<DataDefCLASS *>(&type_args[i]->definition);
+	    if ( !(acls && acls->is_dependent_placeholder
+		   && acls->opaque_concrete_tag
+		   && !acls->has_dependent_surface
+		   && !class_has_dependent_base(acls)) )
+		dependent_surface = true;
+	}
+	if ( datadef_involves_placeholder(&type_args[i]->definition,
+					  /*include_dependent_class=*/false) )
+	    placeholder_arg = true;
+    }
 
     std::string registered_mangled = td.owner_class
 	? td.owner_class->name + "__" + mangled : mangled;
@@ -6649,24 +7983,65 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			repl.push_back(t->clone());
 		token_subst[n->first] = repl;
 	    }
-	    // A deduced trailing pack (`_Types...`) binds to the absorbed concrete
-	    // args; resolve each element spelling to its type token for body
-	    // expansion. The real allocator rebind leaves it empty (`allocator<_Tp>`
-	    // has no extra args), so an empty pack — and its `...`/comma elision —
-	    // is the common path.
+	    // A deduced pack binds to absorbed concrete args. Route type elements
+	    // through pack_subst and non-type elements through token_pack_subst;
+	    // the unifier's spelling vector carries both kinds.
 	    pack_subst.clear();
+	    token_pack_subst.clear();
 	    for ( std::map<std::string, std::vector<std::string> >::iterator p =
 		      spec_pack_subst.begin(); p != spec_pack_subst.end(); ++p )
 	    {
+		bool is_type_pack = true;
+		for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
+		    if ( td.typeparams[tp] == p->first )
+		    {
+			is_type_pack = tp >= td.typeparam_is_type.size()
+				    || td.typeparam_is_type[tp];
+			break;
+		    }
+		if ( !is_type_pack )
+		{
+		    std::vector<std::vector<TokenBase *> > elems;
+		    for ( size_t ei = 0; ei < p->second.size(); ++ei )
+		    {
+			if ( trim_spelling(p->second[ei]).empty() )
+			    continue;
+			int64_t value = 0;
+			if ( !parse_simple_template_non_type_value(p->second[ei],
+							 value) )
+			    Throw(tb) << "Could not materialize non-type pack element '"
+				      << p->second[ei] << "' for " << p->first << flush;
+			std::vector<TokenBase *> run;
+			run.push_back(new TokenInt(value));
+			elems.push_back(run);
+		    }
+		    token_pack_subst[p->first] = elems;
+		    continue;
+		}
 		std::vector<TokenDataType *> elems;
 		for ( size_t ei = 0; ei < p->second.size(); ++ei )
 		{
 		    DataDef *edd = resolve_arg_spelling_datadef(*this, p->second[ei]);
 		    if ( edd )
-			elems.push_back(new TokenDataType(edd->name.c_str(), *edd));
+		    {
+			std::string esp = edd->is_reference()
+			    ? basic_class_datadef_spelling(edd) : edd->name;
+			elems.push_back(new TokenDataType(esp.c_str(), *edd));
+		    }
 		}
 		pack_subst[p->first] = elems;
 	    }
+	    // The SPEC's shape replaces the primary's — recompute the pack
+	    // real-instantiation admittance against it. The stale value
+	    // (computed on the pack-less declaration-only primary at entry)
+	    // left the clone loop's pack arms OFF for a pack-pattern spec,
+	    // so its body instantiated EMPTY (tuple_element<0, tuple<int>>
+	    // — the map:967 chain's ::type shell). A WON spec with concrete
+	    // args IS the demand (the match consumed them); its non-type
+	    // FIXED params (_Ip) are bound via token_subst above.
+	    if ( td.is_partial_specialization )
+		pack_real_inst = template_pack_real_instantiable(
+		    td, /*allow_valuepack=*/true, /*nontype_fixed_ok=*/true);
 	}
     }
 
@@ -6687,6 +8062,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( have != datatype_map.end() )
     {
 	TokenDataType *cached = (TokenDataType *)(*have);
+	DataDefCLASS *cached_class =
+	    dynamic_cast<DataDefCLASS *>(&cached->definition);
+	if ( cached_class && cached_class->is_dependent_placeholder )
+	    record_dependent_shell_origin(*this, cached_class, td, tname,
+					  arg_spellings,
+					  shell_origin_arg_tokens);
 	if ( td.body.empty() )
 	{
 	    ++_class_inst_opaque;
@@ -6697,12 +8078,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
-	if ( class_pattern_inst_in_progress.count(registered_mangled) )
+	if ( class_inst_in_progress.count(registered_mangled) )
 	{
-	    // This specialization is being pattern-instantiated up-stack; its
-	    // shell is registered but incomplete. Returning the shell is the
-	    // parse lane's self-reference semantics; re-instantiating here
-	    // recurses forever through cyclic dependency webs.
+	    // This specialization is being instantiated up-stack (pattern
+	    // serve OR legacy body re-parse); its shell is registered but
+	    // incomplete. Returning the shell is the parse lane's
+	    // self-reference semantics; re-instantiating here recurses
+	    // forever — cyclic dependency webs, and a base clause naming the
+	    // template's own specialization as a template ARGUMENT
+	    // (allocator : __non_trivial_if<..., allocator<_Tp>>).
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
@@ -6713,16 +8097,53 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Only a fully concrete-arg variadic template proceeds to body parse below.
     // Re-entering the SAME mangled instantiation while sticky forwarding is active is a
     // self-referential trait loop → fall to the opaque placeholder to bound recursion.
-    bool recursive_opaque = want_sticky
-	&& variadic_inst_in_progress.count(registered_mangled);
+    // Likewise a re-entry of an instantiation ALREADY IN FLIGHT that has not yet
+    // registered a shell (a base clause naming the template's own specialization
+    // as a template ARGUMENT, resolved BEFORE TokenCLASS::parse registers the
+    // name): the cache-hit branch above cannot serve it, so bound it here with
+    // the same opaque placeholder — pending completion recognizes the shell.
+    bool recursive_sticky = want_sticky
+	&& variadic_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_inflight = class_inst_in_progress.count(registered_mangled) != 0;
+    bool recursive_opaque = recursive_sticky || recursive_inflight;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || recursive_opaque )
+      || placeholder_arg || recursive_opaque )
     {
 	++_class_inst_opaque;
+	{
+	    static const char *ojp = ::getenv("MADC_INJ_PROBE");
+	    if ( ojp && *ojp
+	      && registered_mangled.find(ojp) != std::string::npos )
+	    {
+		fprintf(stderr, "[inj-opaque] %s body=%zu pri=%d dep=%d ph=%d"
+			" rec=%d\n", registered_mangled.c_str(),
+			td.body.size(), (int)pack_real_inst,
+			(int)dependent_surface, (int)placeholder_arg,
+			(int)recursive_opaque);
+		for ( size_t ai = 0; ai < type_args.size(); ++ai )
+		    if ( type_args[ai] )
+			fprintf(stderr, "[inj-opaque]   arg[%zu] %s: %s\n", ai,
+				type_args[ai]->definition.name.c_str(),
+				dependent_surface_reason(
+				    &type_args[ai]->definition).c_str());
+	    }
+	}
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	// A bodyless declaration with concrete arguments is incomplete, not
 	// dependent; pending completion still recognizes it by its empty shell.
-	bool unresolved_surface = dependent_surface || recursive_opaque;
+	// The same holds for a pre-registration re-entry of an instantiation in
+	// flight up-stack (a base clause naming the enclosing specialization as
+	// a template ARGUMENT): its key is fully concrete and the enclosing
+	// parse completes this very object (register_class_shell reuses it), so
+	// it is incomplete, NOT dependent — the cache-hit twin branch above
+	// already serves the post-registration ordering with a clean shell.
+	// Branding it outlives the transient: the completed class re-stamps its
+	// own flags, but anything instantiated AGAINST the branded shell keeps
+	// has_dependent_surface forever (libc++ allocator<int>'s
+	// __non_trivial_if base — every trait fold on allocator then refused,
+	// and is_trivially_destructible silently answered 0).
+	bool unresolved_surface = dependent_surface || placeholder_arg
+				|| recursive_sticky;
 	fwd->set_canonical_spelling(canon);
 	fwd->is_dependent_placeholder = unresolved_surface;
 	stamp_opaque_mint_context(fwd);
@@ -6732,6 +8153,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
 	    namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
+	if ( unresolved_surface )
+	    record_dependent_shell_origin(*this, fwd, td, tname,
+					  arg_spellings,
+					  shell_origin_arg_tokens);
 	record_pending_template_instantiation(*this, tname, registered_mangled, canon, type_args);
 	return use_site_type_token(tdt, tb);
     }
@@ -6837,6 +8262,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     if ( !selected_pattern )
 	legacy_reason = legacy_reason == ClassParseReason::None
 	    ? ClassParseReason::PatternNotCaptured : legacy_reason;
+    // An ABSENT trailing NON-TYPE pack (`__integer_sequence<uint64_t>`, the
+    // __make_integer_seq N=0 delegation) is an EMPTY pack, not an unbound
+    // name: seed the empty entry so the body clone's value-pack arms ELIDE
+    // `(_Values + _Sp)...` instead of cloning it raw into the member alias
+    // (the absent-TYPE-pack rule's twin — see absent_pack_elems below).
+    // Real path only: token_pack_subst drives nothing elsewhere.
+    if ( pack_real_inst && pack_index < td.typeparams.size()
+      && pack_index < td.typeparam_is_type.size()
+      && !td.typeparam_is_type[pack_index]
+      && !token_pack_subst.count(td.typeparams[pack_index]) )
+	token_pack_subst[td.typeparams[pack_index]];
     if ( selected_pattern && legacy_reason == ClassParseReason::None )
     {
 	BasicClassPatternBinding binding = {
@@ -6845,7 +8281,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	};
 	legacy_reason = basic_class_pattern_eligibility(
 	    *this, binding, token_subst, pack_subst);
-	if ( legacy_reason == ClassParseReason::None && !force_legacy )
+	// A VALUE-pack instantiation (task #102) takes the legacy body clone:
+	// the pattern lane has no value-pack support, and these templates were
+	// opaque until now so no pattern was ever captured for them.
+	if ( legacy_reason == ClassParseReason::None && !force_legacy
+	  && token_pack_subst.empty() )
 	{
 	    ++_class_inst_pattern;
 	    {
@@ -6859,14 +8299,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    TokenDataType *served;
 	    {
-		struct InFlightGuard {
-		    std::set<std::string> &set;
-		    const std::string &key;
-		    bool inserted;
-		    InFlightGuard(std::set<std::string> &s, const std::string &k)
-			: set(s), key(k), inserted(s.insert(k).second) {}
-		    ~InFlightGuard() { if ( inserted ) set.erase(key); }
-		} in_flight(class_pattern_inst_in_progress, registered_mangled);
+		ClassInstInFlightGuard in_flight(class_inst_in_progress,
+						 registered_mangled);
 		NamespaceScope namespace_scope(*this, td.defining_namespace);
 		served = instantiate_basic_class_pattern(*this, binding);
 	    }
@@ -6923,11 +8357,416 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // ctor body / mem-init (`_Inherited(__tail...)`) must also vanish, else the
     // elided name is "undeclared". Recorded by the empty-param-pack elision.
     std::set<std::string> empty_value_pack_names;
+    // A NON-empty function parameter pack (`Hs... hs`) expands to one parameter
+    // PER ELEMENT, and each needs its own name — splicing only the types leaves
+    // `int, long hs`, a single name on the LAST parameter, and every later read
+    // of `hs` takes that one. Maps the source name to the generated per-element
+    // names so the expansions below bind element-for-element.
+    std::map<std::string, std::vector<std::string> > param_pack_element_names;
+    // Member CLASS/FUNCTION template extent (member_class_template_extent):
+    // while bi is inside one (past member_tpl_keep_begin — a function
+    // template's head defaults stay on the collapse arm), a self template-id
+    // whose args reference the MEMBER's own params keeps its spelled form
+    // instead of collapsing.
+    std::set<std::string> member_tpl_params;
+    size_t member_tpl_extent_end = 0;
+    size_t member_tpl_keep_begin = 0;
+    // [expr.sizeof]/5 — publish THIS instantiation's pack arities so the parser's
+    // `sizeof...` arm can evaluate the operator in the cloned body (which now
+    // carries it verbatim rather than pre-folded). Class twin of the publication
+    // in instantiate_fn_template_binding; the scope outlives the clone loop and
+    // covers the parse of the tokens it produces.
+    Program::PackArityScope _cls_pack_arity_scope(*this);
+    for ( std::map<std::string, std::vector<TokenDataType *> >::const_iterator
+	    pi = pack_subst.begin(); pi != pack_subst.end(); ++pi )
+	publish_pack_arity(pi->first, pi->second.size());
+    for ( std::map<std::string, std::vector<std::vector<TokenBase *> > >
+	    ::const_iterator vi = token_pack_subst.begin();
+	    vi != token_pack_subst.end(); ++vi )
+	if ( pack_subst.find(vi->first) == pack_subst.end() )
+	    publish_pack_arity(vi->first, vi->second.size());
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
 	    continue;
 	TokenBase *bt = td.body[bi];
+	if ( member_tpl_extent_end && bi >= member_tpl_extent_end )
+	{
+	    member_tpl_params.clear();
+	    member_tpl_extent_end = 0;
+	    member_tpl_keep_begin = 0;
+	}
+	// [temp.variadic] sizeof...(PACK) folds when THIS class substitution
+	// owns PACK. A nested member template's own pack (`_Up`) is absent from
+	// these maps and stays raw until that member is instantiated. Keeping an
+	// enclosing pack raw past this scope loses its arity when a member-template
+	// constraint is retained for later substitution (libc++ tuple's
+	// `sizeof...(_Tp) == sizeof...(_Up)` constructor constraint).
+	std::string sop_pn_cls;
+	if ( sizeof_pack_operand_name(td.body, bi, sop_pn_cls) )
+	{
+	    size_t arity = 0;
+	    bool enclosing_pack = false;
+	    std::map<std::string, std::vector<TokenDataType *> >::const_iterator
+		psi = pack_subst.find(sop_pn_cls);
+	    if ( psi != pack_subst.end() )
+	    {
+		arity = psi->second.size();
+		enclosing_pack = true;
+	    }
+	    else
+	    {
+		std::map<std::string, std::vector<std::vector<TokenBase *> > >
+		    ::const_iterator vsi = token_pack_subst.find(sop_pn_cls);
+		if ( vsi != token_pack_subst.end() )
+		{
+		    arity = vsi->second.size();
+		    enclosing_pack = true;
+		}
+	    }
+	    if ( enclosing_pack )
+	    {
+		TokenInt *folded = new TokenInt((int64_t)arity);
+		folded->file = bt->file;
+		folded->line = bt->line;
+		folded->column = bt->column;
+		inj.push_back(folded);
+	    }
+	    else
+		for ( size_t k = 0; k < 7; ++k )
+		    inj.push_back(td.body[bi+k]->clone());
+	    bi += 6;
+	    continue;
+	}
+	// VALUE-pack expansions (task #102, libc++ __integer_sequence):
+	// (a) a parenthesized PATTERN `( ... _Values ... )...` replicates the
+	//     whole group once per element, the pack identifier swapped for
+	//     that element's tokens ([temp.variadic] — `(_Values + _Sp)...`);
+	// (b) a bare `_Values...` splices the element runs comma-separated.
+	// An EMPTY pack drops the construct and balances one separating comma,
+	// mirroring the empty TYPE-pack elision above.
+	//
+	// The guard admits EITHER pack kind, because the TEMPLATE-ID lane below
+	// serves both and a `class... Ts` pack populates only pack_subst. Gating
+	// this block on token_pack_subst alone made that lane UNREACHABLE for a
+	// pure type pack — `struct impl : leaf<0, Ts>...` fell through to the
+	// bare splice and produced the one wrong-arity base `leaf<0,A,B>` this
+	// file's own comment warns about. It went unnoticed because both gates
+	// were arity 1, where splice and replicate emit the same tokens.
+	// Lanes (a) and (b) filter on token_pack_subst themselves, so widening
+	// the guard leaves them unchanged.
+	if ( bt && (!token_pack_subst.empty() || !pack_subst.empty()) )
+	{
+	    if ( bt->id() == TokenID::tkOpBrk )
+	    {
+		DelimDepth vdd;
+		size_t after = bi;
+		after += delim_scan_step(td.body, after, vdd);
+		while ( after < td.body.size() && !vdd.top() )
+		    after += delim_scan_step(td.body, after, vdd);
+		bool has_dots = after + 2 < td.body.size()
+		    && td.body[after] && td.body[after]->id() == TokenID::tkDot
+		    && td.body[after+1] && td.body[after+1]->id() == TokenID::tkDot
+		    && td.body[after+2] && td.body[after+2]->id() == TokenID::tkDot;
+		const std::string *vpname = NULL;
+		if ( has_dots )
+		    for ( size_t k = bi + 1; k + 1 < after && !vpname; ++k )
+			if ( td.body[k]
+			  && td.body[k]->type() == TokenType::ttIdentifier )
+			{
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator pit = token_pack_subst.find(
+				    ((TokenIdent *)td.body[k])->spelling());
+			    if ( pit != token_pack_subst.end() )
+				vpname = &pit->first;
+			}
+		if ( vpname )
+		{
+		    const std::vector<std::vector<TokenBase *> > &elems =
+			token_pack_subst[*vpname];
+		    for ( size_t e = 0; e < elems.size(); ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( size_t k = bi; k < after; ++k )
+			{
+			    TokenBase *pt2 = td.body[k];
+			    if ( !pt2 )
+				continue;
+			    if ( pt2->type() == TokenType::ttIdentifier
+			      && ((TokenIdent *)pt2)->spelling() == *vpname )
+			    {
+				for ( TokenBase *et : elems[e] )
+				    if ( et )
+					inj.push_back(et->clone());
+			    }
+			    else
+				inj.push_back(pt2->clone());
+			}
+		    }
+		    if ( elems.empty() && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi = after + 2;	// consume through the three dots
+		    continue;
+		}
+	    }
+	    // TEMPLATE-ID pattern expansion `Base<… Ts …>...` — the same rule as the
+	    // parenthesized case above over a different delimiter. [temp.variadic]/5
+	    // makes a base-specifier-list an expansion context (and a mem-initializer
+	    // list with it), so libc++'s
+	    //   __tuple_impl<__tuple_indices<_Indx...>, _Tp...> : __tuple_leaf<_Indx,_Tp>...
+	    // must replicate the WHOLE template-id per element:
+	    //   `leaf<0,Ts>...` -> `leaf<0,A>, leaf<0,B>`
+	    // and NOT `leaf<0, A, B>`, which is what the bare pack-name splice below
+	    // produces when the pack is nested inside a template-argument list — one
+	    // base of the wrong arity, silently.
+	    // Every pack named anywhere in the pattern binds in LOCKSTEP at the same
+	    // index (rbREF3's `leaf<I, Ts>` walks a non-type index pack and a type
+	    // pack together); a disagreement in their sizes is an arity violation, and
+	    // this lane declines rather than mis-expanding — the pattern then reaches
+	    // the ordinary path and fails loudly there.
+	    {
+		static const char *gate_probe = ::getenv("MADC_TPLPAT_GATE");
+		if ( gate_probe && bt && bi + 1 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkLT )
+		    fprintf(stderr, "[tplgate] tok=%s type=%d ident=%d"
+			    " packs=%zu/%zu\n",
+			    template_token_fragment(bt).c_str(),
+			    (int)bt->type(),
+			    (int)(bt->type() == TokenType::ttIdentifier),
+			    pack_subst.size(), token_pack_subst.size());
+	    }
+	    // The expansion unit may be a QUALIFIED template-id
+	    // (`std::declval<_Args>()...` — libc++'s
+	    // __libcpp_is_nothrow_constructible base spells exactly this): the
+	    // unit INCLUDES the leading `ns::` chain, keyed on the chain TAIL
+	    // being a template-id head. Firing at the tail identifier instead
+	    // orphans the qualifier — an EMPTY pack elides `declval<_Args>()...`
+	    // but leaves the already-emitted `std ::` behind (`Quiet(std::)`, a
+	    // malformed base argument that escaped as a silent 0), and a pack
+	    // of two would drop `std::` from every element after the first.
+	    size_t tid_qtail = bi;
+	    if ( bt && bt->type() == TokenType::ttIdentifier
+	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+		while ( tid_qtail + 2 < td.body.size()
+		  && td.body[tid_qtail+1]
+		  && td.body[tid_qtail+1]->id() == TokenID::tkNS
+		  && td.body[tid_qtail+2]
+		  && td.body[tid_qtail+2]->type() == TokenType::ttIdentifier )
+		    tid_qtail += 2;
+	    if ( bt && bt->type() == TokenType::ttIdentifier
+	      && tid_qtail + 1 < td.body.size() && td.body[tid_qtail+1]
+	      && td.body[tid_qtail+1]->id() == TokenID::tkLT
+	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+	    {
+		// ONE tracker for the extent (delimiter-tracking.md): step the
+		// template-id HEAD first so DelimDepth sees a template-id context
+		// and reads the `<` as an argument list rather than less-than.
+		DelimDepth tdd;
+		size_t after = tid_qtail;
+		after += delim_scan_step(td.body, after, tdd);
+		if ( after < td.body.size() && td.body[after]
+		  && td.body[after]->id() == TokenID::tkLT )
+		{
+		    after += delim_scan_step(td.body, after, tdd);
+		    while ( after < td.body.size() && !tdd.top() )
+			after += delim_scan_step(td.body, after, tdd);
+		}
+		// A MEM-INITIALIZER's pattern is `Base<…>( args )...` — the
+		// argument list belongs to the pattern, since [temp.variadic]/5
+		// makes the whole mem-initializer the expansion. Stopping at the
+		// `>` finds no dots, declines, and hands the pack to the splice,
+		// which puts it inside the TEMPLATE-ARGUMENT list instead:
+		// `leaf<0,A,B>(hs)`. Same tracker, one more balanced group.
+		// Correct ONLY because the parameter pack now expands to one
+		// NAMED parameter per element (param_pack_element_names) and the
+		// element loop below reads element e's name: without that, both
+		// copies read the last parameter and the object is silently built
+		// from the last argument twice.
+		if ( after < td.body.size() && td.body[after]
+		  && td.body[after]->id() == TokenID::tkOpBrk )
+		{
+		    after += delim_scan_step(td.body, after, tdd);
+		    while ( after < td.body.size() && !tdd.top() )
+			after += delim_scan_step(td.body, after, tdd);
+		}
+		bool has_dots = after + 2 < td.body.size()
+		    && td.body[after] && td.body[after]->id() == TokenID::tkDot
+		    && td.body[after+1] && td.body[after+1]->id() == TokenID::tkDot
+		    && td.body[after+2] && td.body[after+2]->id() == TokenID::tkDot;
+		size_t arity = 0;
+		bool have_arity = false;
+		bool lockstep_ok = true;
+		if ( has_dots )
+		    for ( size_t k = bi; k < after; ++k )
+		    {
+			if ( !td.body[k]
+			  || td.body[k]->type() != TokenType::ttIdentifier )
+			    continue;
+			const std::string sp =
+			    ((TokenIdent *)td.body[k])->spelling();
+			if ( token_is_ellipsis_at(td.body, k + 1, after) )
+			    continue;	// consumed by a nested pack expansion
+			size_t n = 0;
+			bool is_pack = false;
+			std::map<std::string, std::vector<TokenDataType *> >
+			    ::const_iterator tpk = pack_subst.find(sp);
+			if ( tpk != pack_subst.end() )
+			{ n = tpk->second.size(); is_pack = true; }
+			else
+			{
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator vpk = token_pack_subst.find(sp);
+			    if ( vpk != token_pack_subst.end() )
+			    { n = vpk->second.size(); is_pack = true; }
+			}
+			if ( !is_pack )
+			    continue;
+			if ( have_arity && n != arity )
+			    lockstep_ok = false;
+			arity = n;
+			have_arity = true;
+		    }
+		{
+		    static const char *pat_probe = ::getenv("MADC_TPLPAT_PROBE");
+		    if ( pat_probe && bt )
+			fprintf(stderr, "[tplpat] head=%s dots=%d arity=%zu"
+				" have=%d lockstep=%d extent=%zu -> %s\n",
+				template_token_fragment(bt).c_str(),
+				(int)has_dots, arity, (int)have_arity,
+				(int)lockstep_ok, after - bi,
+				(has_dots && have_arity && lockstep_ok)
+				    ? "REPLICATE" : "decline");
+		}
+		if ( has_dots && have_arity && lockstep_ok )
+		{
+		    for ( size_t e = 0; e < arity; ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( size_t k = bi; k < after; ++k )
+			{
+			    TokenBase *pt2 = td.body[k];
+			    if ( !pt2 )
+				continue;
+			    const std::string sp =
+				pt2->type() == TokenType::ttIdentifier
+				    ? ((TokenIdent *)pt2)->spelling()
+				    : std::string();
+			    std::map<std::string, std::vector<TokenDataType *> >
+				::const_iterator tpk = sp.empty()
+				    ? pack_subst.end() : pack_subst.find(sp);
+			    if ( tpk != pack_subst.end() )
+			    {
+				if ( token_is_ellipsis_at(td.body, k + 1, after) )
+				{
+				    for ( size_t ne = 0; ne < tpk->second.size(); ++ne )
+				    {
+					if ( ne ) inj.push_back(new TokenComma());
+					if ( tpk->second[ne] )
+					    inj.push_back(tpk->second[ne]->clone());
+				    }
+				    if ( tpk->second.empty() && !inj.empty()
+				      && inj.back()->id() == TokenID::tkComma )
+				    { delete inj.back(); inj.pop_back(); }
+				    k += 3;
+				}
+				else if ( e < tpk->second.size() && tpk->second[e] )
+				    inj.push_back(tpk->second[e]->clone());
+				continue;
+			    }
+			    std::map<std::string,
+				     std::vector<std::vector<TokenBase *> > >
+				::const_iterator vpk = sp.empty()
+				    ? token_pack_subst.end()
+				    : token_pack_subst.find(sp);
+			    if ( vpk != token_pack_subst.end() )
+			    {
+				if ( token_is_ellipsis_at(td.body, k + 1, after) )
+				{
+				    for ( size_t ne = 0; ne < vpk->second.size(); ++ne )
+				    {
+					if ( ne ) inj.push_back(new TokenComma());
+					for ( TokenBase *et : vpk->second[ne] )
+					    if ( et ) inj.push_back(et->clone());
+				    }
+				    if ( vpk->second.empty() && !inj.empty()
+				      && inj.back()->id() == TokenID::tkComma )
+				    { delete inj.back(); inj.pop_back(); }
+				    k += 3;
+				}
+				else if ( e < vpk->second.size() )
+				    for ( TokenBase *et : vpk->second[e] )
+					if ( et ) inj.push_back(et->clone());
+				continue;
+			    }
+			    // The ctor's expanded PARAMETER pack: element e of
+			    // `leaf<0,Hs>(hs)...` must read parameter e, not the
+			    // one source name shared by every copy.
+			    std::map<std::string, std::vector<std::string> >
+				::const_iterator ppk = sp.empty()
+				    ? param_pack_element_names.end()
+				    : param_pack_element_names.find(sp);
+			    if ( ppk != param_pack_element_names.end()
+			      && e < ppk->second.size() )
+			    {
+				TokenIdent *ei2 =
+				    new TokenIdent(ppk->second[e].c_str());
+				ei2->file   = pt2->file;
+				ei2->line   = pt2->line;
+				ei2->column = pt2->column;
+				inj.push_back(ei2);
+				continue;
+			    }
+			    inj.push_back(pt2->clone());
+			}
+		    }
+		    // An EMPTY pack drops the construct and balances one separating
+		    // comma, mirroring the elisions above (`: A, B<Ts>...` with an
+		    // empty Ts is `: A`, never `: A,`).
+		    if ( arity == 0 && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi = after + 2;	// consume through the three dots
+		    continue;
+		}
+	    }
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		std::map<std::string,
+			 std::vector<std::vector<TokenBase *> > >
+		    ::const_iterator vit = token_pack_subst.find(
+			((TokenIdent *)bt)->spelling());
+		if ( vit != token_pack_subst.end()
+		  && bi + 3 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+		  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+		  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot )
+		{
+		    for ( size_t e = 0; e < vit->second.size(); ++e )
+		    {
+			if ( e )
+			    inj.push_back(new TokenComma());
+			for ( TokenBase *et : vit->second[e] )
+			    if ( et )
+				inj.push_back(et->clone());
+		    }
+		    if ( vit->second.empty() && !inj.empty()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    bi += 3;
+		    continue;
+		}
+	    }
+	}
+	if ( !member_tpl_extent_end && bi > body_brace_index
+	  && bt && bt->id() == TokenID::tkTEMPLATE )
+	    member_tpl_extent_end =
+		member_class_template_extent(td.body, bi, member_tpl_params,
+					     member_tpl_keep_begin);
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->spelling();
@@ -6952,6 +8791,36 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    ++bi;  // consume a following comma instead
 		continue;
 	    }
+	    // The twin of the elision above for a NON-empty parameter pack: the
+	    // declaration expanded to one NAMED parameter per element, so a bare
+	    // value expansion `ts...` (`_Inherited(__tail...)`,
+	    // `impl<Ts...>(ts...)`) must splice those generated names. Without
+	    // this the use site still says `ts`, which no longer exists —
+	    // "use of undeclared identifier 'ts'".
+	    {
+		std::map<std::string, std::vector<std::string> >::const_iterator
+		    ppn = param_pack_element_names.find(s);
+		if ( ppn != param_pack_element_names.end()
+		  && bi + 3 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+		  && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+		  && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot )
+		{
+		    for ( size_t gi = 0; gi < ppn->second.size(); ++gi )
+		    {
+			if ( gi )
+			    inj.push_back(new TokenComma());
+			TokenIdent *gn =
+			    new TokenIdent(ppn->second[gi].c_str());
+			gn->file   = bt->file;
+			gn->line   = bt->line;
+			gn->column = bt->column;
+			inj.push_back(gn);
+		    }
+		    bi += 3;   // consume the name (current) + the three dots
+		    continue;
+		}
+	    }
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
 	    std::map<std::string, std::vector<TokenBase *> >::iterator nti =
@@ -6964,14 +8833,32 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
 		pack_subst.find(s);
-	    if ( pki != pack_subst.end() )
+	    // An ABSENT trailing pack (`C<int>` against `C<T, A...>`) records
+	    // NO pack_subst entry at all (the arg loop's "leave pack_subst
+	    // without an entry" case) — route it through the SAME empty-pack
+	    // elision as a present-but-empty entry, or the raw `A ...` tokens
+	    // survive into the clone (`__is_constructible(T, A...)` became
+	    // `__is_constructible(int, A...)` and the trait Threw).
+	    static const std::vector<TokenDataType *> absent_pack_elems;
+	    const std::vector<TokenDataType *> *pack_elems_p =
+		pki != pack_subst.end() ? &pki->second : NULL;
+	    if ( !pack_elems_p )
+		for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
+		    if ( td.typeparams[tp] == s
+		      && tp < td.typeparam_is_pack.size()
+		      && td.typeparam_is_pack[tp] )
+		    {
+			pack_elems_p = &absent_pack_elems;
+			break;
+		    }
+	    if ( pack_elems_p )
 	    {
 		// Pack expansion `_Types...`: emit the absorbed element types
 		// comma-separated. An EMPTY pack (the common allocator-rebind
 		// case) must drop the immediately-preceding `,` already emitted
 		// (so `C<_Up, _Types...>` -> `C<_Up>`, never `C<_Up,>`). The
 		// trailing `...` (three tkDot) in the body is then consumed.
-		const std::vector<TokenDataType *> &elems = pki->second;
+		const std::vector<TokenDataType *> &elems = *pack_elems_p;
 		// EMPTY function-PARAMETER pack with a declarator suffix
 		// (`const _Tail&... __tail`): the pack name is followed by cv/ref/ptr
 		// tokens THEN `...`. The whole parameter — leading cv already in
@@ -7036,6 +8923,67 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		{
 		    delete inj.back();
 		    inj.pop_back();
+		}
+		// NON-EMPTY function PARAMETER pack (`Hs... hs`, `const Hs&... hs`):
+		// a pack expansion in a parameter-declaration is N DECLARATIONS, so
+		// each element needs its OWN name. Splicing only the types yields
+		// `int, long hs` — one name, on the LAST parameter — and both
+		// replicated mem-initializers then read that single parameter, so the
+		// object is built from the last argument twice (measured a=9 b=9 where
+		// both oracles say a=7 b=9). The declaration shape is the same one the
+		// EMPTY arm above detects: pack name, optional cv/ref/ptr suffix, the
+		// three dots, then an IDENTIFIER (a template-ARGUMENT list has `>` or
+		// `,` there instead, which is why this cannot fire on `X<Hs...>`).
+		{
+		    size_t sj = bi + 1;
+		    while ( sj < td.body.size() && td.body[sj]
+		      && (td.body[sj]->id() == TokenID::tkBand
+		       || td.body[sj]->id() == TokenID::tkLand
+		       || td.body[sj]->id() == TokenID::tkMul
+		       || td.body[sj]->id() == TokenID::tkCONST
+		       || td.body[sj]->id() == TokenID::tkVOLATILE) )
+			++sj;
+		    if ( !elems.empty() && sj + 3 < td.body.size()
+		      && td.body[sj] && td.body[sj]->id() == TokenID::tkDot
+		      && td.body[sj+1] && td.body[sj+1]->id() == TokenID::tkDot
+		      && td.body[sj+2] && td.body[sj+2]->id() == TokenID::tkDot
+		      && td.body[sj+3]
+		      && is_contextual_identifier_token(td.body[sj+3]) )
+		    {
+			const std::string pname =
+			    contextual_identifier_name(td.body[sj+3]);
+			std::vector<std::string> &gen =
+			    param_pack_element_names[pname];
+			gen.clear();
+			for ( size_t ei = 0; ei < elems.size(); ++ei )
+			{
+			    if ( ei )
+				inj.push_back(new TokenComma());
+			    inj.push_back(elems[ei]->clone());
+			    for ( size_t sk = bi + 1; sk < sj; ++sk )
+				if ( td.body[sk] )
+				    inj.push_back(td.body[sk]->clone());
+			    // A ONE-element pack keeps the SOURCE name, so
+			    // every arity-1 expansion stays byte-identical to
+			    // what it was before per-element naming existed —
+			    // the rename is only needed where there is more
+			    // than one parameter to tell apart, and any use
+			    // site this walker does not rewrite (a declining
+			    // pattern, an unhandled expansion shape) then still
+			    // resolves instead of reading "undeclared 'ts'".
+			    std::string en = elems.size() == 1
+				? pname
+				: pname + "__" + std::to_string(ei);
+			    gen.push_back(en);
+			    TokenIdent *ni = new TokenIdent(en.c_str());
+			    ni->file   = td.body[sj+3]->file;
+			    ni->line   = td.body[sj+3]->line;
+			    ni->column = td.body[sj+3]->column;
+			    inj.push_back(ni);
+			}
+			bi = sj + 3;   // loop ++bi resumes after the param name
+			continue;
+		    }
 		}
 		for ( size_t ei = 0; ei < elems.size(); ++ei )
 		{
@@ -7133,7 +9081,44 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    bool self_template_body_distinct =
 			!self_template_base && self_as_template
 			&& self_template_id_keep_distinct(td, td.body, bi + 1);
-		    if ( self_template_base || self_template_body_distinct )
+		    // A self template-id whose args reference the enclosing
+		    // member CLASS/FUNCTION template's OWN params (`alloc9<U>`
+		    // in `template<class U> struct rebind`, or in a converting
+		    // ctor `template<class U> alloc9(const alloc9<U>&)`) names
+		    // a specialization that exists only once the MEMBER
+		    // instantiates — keep the name and its `<...>` spelled so
+		    // the member's own substitution resolves it then.
+		    // Collapsing it bound libc++'s
+		    // `allocator<T>::rebind<U>::other` to the CURRENT
+		    // instantiation (tests/testmemtplrebind.mad), and turned
+		    // the converting ctor into a copy-ctor signature the
+		    // construction KIND could never deduce against
+		    // (tests/testconvctor.mad). keep_begin excludes a function
+		    // template's HEAD (its SFINAE defaults re-parse eagerly at
+		    // registration — the tuple<_Up> collapse guard).
+		    bool self_template_member_distinct =
+			!self_template_base && self_as_template
+			&& bi >= member_tpl_keep_begin
+			&& template_id_args_reference_names(td.body, bi + 1,
+							    member_tpl_params);
+		    if ( self_template_member_distinct )
+		    {
+			static const char *mdp = ::getenv("MADC_MEMDIST_PROBE");
+			if ( mdp )
+			{
+			    std::cerr << "[memdist] " << td.class_name
+				<< " keeps self template-id at bi=" << bi
+				<< " params={";
+			    for ( std::set<std::string>::const_iterator pi =
+				    member_tpl_params.begin();
+				  pi != member_tpl_params.end(); ++pi )
+				std::cerr << (pi == member_tpl_params.begin()
+					      ? "" : ",") << *pi;
+			    std::cerr << "}" << std::endl;
+			}
+		    }
+		    if ( self_template_base || self_template_body_distinct
+		      || self_template_member_distinct )
 		    {
 			inj.push_back(bt->clone());   // keep class_name; args substitute below
 			continue;
@@ -7177,6 +9162,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     DBG(std::cout << "instantiate_template_use(): injecting " << inj.size()
 	<< " tokens for " << mangled << std::endl);
+    // Env-gated probe (MADC_INJ_PROBE=<substr of the mangled key>): the FULL
+    // injected token sequence — the unbalanced-body / over-consumption
+    // diagnostic (a desync here eats the caller's declarator).
+    {
+	static const char *ijp = ::getenv("MADC_INJ_PROBE");
+	if ( ijp && *ijp && mangled.find(ijp) != std::string::npos )
+	{
+	    fprintf(stderr, "[inj] %s n=%zu:", mangled.c_str(), inj.size());
+	    for ( size_t ii = 0; ii < inj.size(); ++ii )
+		fprintf(stderr, " %s",
+			inj[ii] ? template_token_fragment(inj[ii]).c_str() : "?");
+	    fprintf(stderr, "\n");
+	}
+    }
 
     // Inject to the FRONT of the parse deque (push_front in reverse so they
     // dequeue in order), then re-parse the class definition via its keyword token.
@@ -7258,6 +9257,28 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	}
     } sticky_guard(*this, registered_mangled, want_sticky);
+
+    // [temp.inst]: the instantiation itself is never an unevaluated operand —
+    // member bodies re-parsed here are real program code, so calls inside them
+    // must instantiate normally even when this class was first NAMED inside a
+    // decltype/sizeof operand (`typedef decltype(H<It>::call(...))` left
+    // H<It>'s body calls uninstantiated: raw MIR imports + placeholder-typed
+    // returns). The fn-template binding twin zeroes the depth the same way
+    // around its body parse. RAII — restores on the catch path too.
+    struct UnevalZeroGuard {
+	Program &p; int saved;
+	UnevalZeroGuard(Program &pp)
+	    : p(pp), saved(pp.unevaluated_operand_depth)
+	{ p.unevaluated_operand_depth = 0; }
+	~UnevalZeroGuard() { p.unevaluated_operand_depth = saved; }
+    } uneval_zero_guard(*this);
+
+    // The re-parse below is an instantiation in flight exactly like a pattern
+    // serve: mark it so a self-referential re-entry (base clause naming this
+    // very specialization as a template argument) is served the incomplete
+    // shell by the cache-hit branch instead of re-instantiating forever.
+    ClassInstInFlightGuard reparse_in_flight(class_inst_in_progress,
+					     registered_mangled);
 
     ClassParseCensusScope class_parse_scope(*this, class_profile_identity,
 	legacy_reason, canon);
@@ -7398,6 +9419,91 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
     return all_concrete;
 }
 
+TokenDataType *Program::namespace_chain_datatype(const std::string &nm)
+{
+    std::string scope = current_namespace();
+    while ( !scope.empty() )
+    {
+	namespace_datatype_map_t::iterator nti =
+	    namespace_datatype_map.find(scope);
+	if ( nti != namespace_datatype_map.end() )
+	{
+	    datatype_map_iter ndmi = nti->find(nm);
+	    if ( ndmi != nti->end() )
+		return ndmi->second;
+	}
+	size_t sp = scope.rfind("::");
+	scope = sp == std::string::npos ? std::string() : scope.substr(0, sp);
+    }
+    return NULL;
+}
+
+bool Program::alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks)
+{
+    TokenBase *prev = NULL;
+    for ( TokenBase *t : toks )
+    {
+	if ( !t )
+	    continue;
+	// A MEMBER name (`__not_<...>::value`) is looked up in its owner, not
+	// in scope — its unresolvability here says nothing about dependence
+	// (every trait's `::value` would otherwise classify dependent and
+	// silently skip the [temp.deduct]/8 validation in dependent parses).
+	// The OWNER name before the `::` still classifies normally.
+	bool after_scope_op = prev && prev->id() == TokenID::tkNS;
+	prev = t;
+	// The `typename` DISAMBIGUATOR ([temp.res]) marks the following
+	// qualified-id as a type — it is not a name to look up, and its
+	// presence says nothing about dependence once the surrounding tokens
+	// are substituted concrete (`_If<..., typename iterator_traits<_Iter>::
+	// iterator_category>` at _Iter=int*). Classifying it "unresolvable"
+	// poisoned every alias arg spelled with it (libc++ iterator_traits web).
+	if ( is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "typename" )
+	    continue;
+	if ( !after_scope_op && is_contextual_identifier_token(t) )
+	{
+	    const std::string nm = contextual_identifier_name(t);
+	    if ( resolve_template_param(nm) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] argdep: tparam %s\n", nm.c_str());
+		return true;
+	    }
+	    // An identifier that resolves to NOTHING in scope — not a type,
+	    // value, or template — names a template parameter whose frame is
+	    // not active (a member alias template's OWN param `_Iter` inside
+	    // its declaration: `__enable_if_t<is_convertible<_Iter,...>>`).
+	    // That is DEPENDENT, not a substitution failure; a genuine SFINAE
+	    // miss (enable_if<false,T>::type) has every name resolvable and
+	    // still fails composition.
+	    const uint32_t nm_id = template_name_pool.intern(nm);
+	    if ( datatype_map.find(nm) == datatype_map.end()
+	      && !namespace_chain_datatype(nm)
+	      && !findVariable(nm)
+	      && !find_template(nm_id, std::string(), NULL)
+	      && !find_template_alias(nm_id, std::string(), NULL)
+	      && !namespace_map.count(nm)
+	      && !resolve_builtin_type_spelling(nm) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] argdep: unresolvable %s\n", nm.c_str());
+		return true;
+	    }
+	}
+	if ( t->type() == TokenType::ttDataType
+	  && datadef_has_unresolved_dependent_surface(
+		&((TokenDataType *)t)->definition) )
+	{
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] argdep: dep-surface type %s\n",
+			((TokenDataType *)t)->definition.name.c_str());
+	    return true;
+	}
+    }
+    return false;
+}
+
 TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     TokenBase *tb,
 						     const std::string &ns_hint,
@@ -7527,12 +9633,23 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	{
 	    std::map<std::string, const std::vector<TokenBase *> *> tok_subst;
 	    std::set<std::string> pack_param_names;
+	    std::set<std::string> used_params;
 	    for ( size_t i = 0; i < td.typeparams.size() && i < arg_tokens.size(); ++i )
 	    {
 		tok_subst[td.typeparams[i]] = &arg_tokens[i];
 		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
 		    pack_param_names.insert(td.typeparams[i]);
 	    }
+	    // ALL declared pack params — an ABSENT trailing pack (the alias
+	    // used with fewer args: `__is_constructible_impl<_Tp>`) has no
+	    // arg slot and thus no tok_subst entry; its body mention must be
+	    // ELIDED (with its `...` and a preceding comma), or the raw name
+	    // survives into the substituted body and the whole alias falls to
+	    // the opaque placeholder (silent wrong trait values).
+	    std::set<std::string> declared_packs;
+	    for ( size_t i = 0; i < td.typeparams.size(); ++i )
+		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
+		    declared_packs.insert(td.typeparams[i]);
 	    std::vector<TokenBase *> body;
 	    for ( size_t bi = 0; bi < td.target.size(); ++bi )
 	    {
@@ -7542,8 +9659,24 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    const std::string &nm = ((TokenIdent *)bt)->spelling();
 		    std::map<std::string, const std::vector<TokenBase *> *>::iterator si =
 			tok_subst.find(nm);
+		    if ( si == tok_subst.end() && declared_packs.count(nm) )
+		    {
+			if ( !body.empty() && body.back()
+			  && body.back()->id() == TokenID::tkComma )
+			{
+			    delete body.back();
+			    body.pop_back();
+			}
+			if ( bi + 3 < td.target.size()
+			  && td.target[bi+1] && td.target[bi+1]->id() == TokenID::tkDot
+			  && td.target[bi+2] && td.target[bi+2]->id() == TokenID::tkDot
+			  && td.target[bi+3] && td.target[bi+3]->id() == TokenID::tkDot )
+			    bi += 3;
+			continue;
+		    }
 		    if ( si != tok_subst.end() )
 		    {
+			used_params.insert(nm);
 			for ( TokenBase *rt : *si->second )
 			    body.push_back(rt->clone());
 			// A PACK param (`_Args`) in the alias body is followed by a
@@ -7564,6 +9697,32 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    }
 	    body.push_back(new TokenSemi());
 
+	    // Env-gated probe (MADC_ANU_PROBE=<alias-name substr>): the isolated
+	    // resolve below reports only resolved/(fail) — print the substituted
+	    // body it attempts and, on failure, the token the resolve stopped at
+	    // (the MTB/MCT probe precedent one lane over).
+	    static const char *anu_probe = ::getenv("MADC_ANU_PROBE");
+	    const bool anu_on = anu_probe && *anu_probe
+			     && tname.find(anu_probe) != std::string::npos;
+	    if ( anu_on )
+	    {
+		fprintf(stderr, "ANUPROBE %s body:", tname.c_str());
+		for ( TokenBase *pt : body )
+		{
+		    if ( !pt )
+			continue;
+		    std::string nm = contextual_identifier_name(pt);
+		    if ( !nm.empty() )
+			fprintf(stderr, " %s", nm.c_str());
+		    else if ( pt->type() == TokenType::ttDataType )
+			fprintf(stderr, " [T]%s",
+				((TokenDataType *)pt)->definition.name.c_str());
+		    else
+			fprintf(stderr, " #%d", (int)pt->id());
+		}
+		fprintf(stderr, "\n");
+	    }
+
 	    size_t saved_diag_count = diagnostics.size();
 	    Program::ErrorInfo saved_error = last_error;
 	    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
@@ -7580,8 +9739,37 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    {
 		TokenBase *head = nextToken();
 		resolved = resolve_declared_type_token(head, true, true);
+		// Declarator suffix (`= U *`) folds BEFORE the
+		// leftover-strictness check, so a pointer-target alias
+		// passes it legitimately (same owner as the arg loop).
+		if ( resolved )
+		    resolved = fold_template_arg_declarator(resolved, head);
+		// The substituted body IS the type spelling: tokens left
+		// before the `;` sentinel mean the resolution did not cover
+		// it — a FAILURE, not a success (#27's require_full_parse
+		// rule). The leak: `enable_if<false,void>::type` — the
+		// member-miss probe declines without consuming, the chain
+		// tolerance hands back the CLASS, and the dangling `::type`
+		// silently passed, so enable_if_t<false> "resolved" and
+		// defeated SFINAE (__or_/__and_'s catch-all never won —
+		// std::is_destructible read wrong through the whole family).
+		if ( resolved && peekToken()
+		  && peekToken()->id() != TokenID::tkSemi
+		  && !dependent_parse_in_progress
+		  && !class_pattern_capture_in_progress )
+		    resolved = NULL;
 	    }
 	    catch ( ... ) { resolved = NULL; }
+	    if ( anu_on && !resolved )
+	    {
+		TokenBase *stop = peekToken();
+		std::string nm = stop ? contextual_identifier_name(stop)
+				      : std::string();
+		fprintf(stderr, "ANUPROBE %s FAIL stopped-at %s(#%d)\n",
+			tname.c_str(),
+			nm.empty() ? "?" : nm.c_str(),
+			stop ? (int)stop->id() : -1);
+	    }
 
 	    if ( pushed_owner_scope
 	      && !class_scope_stack.empty()
@@ -7589,6 +9777,15 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		class_scope_stack.pop_back();
 
 	    tokens.swap_back(std::move(saved_tokens));
+	    DBG({
+		std::string aj;
+		for ( size_t i = 0; i < args.size(); ++i )
+		    aj += (i ? "," : "") + args[i];
+		std::cout << "alias_nontype_use: " << tname << "<" << aj
+			  << "> resolved="
+			  << (resolved ? resolved->definition.name : "(fail)")
+			  << std::endl;
+	    });
 	    if ( !resolved )
 	    {
 		diagnostics.resize(saved_diag_count);
@@ -7610,7 +9807,108 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    return NULL;
 	    }
 	    else
-		return use_site_type_token(resolved, tb);
+	    {
+		// [temp.deduct]/8: EVERY template argument must be valid in
+		// the immediate context — INCLUDING args the alias target
+		// never names. gcc 13's whole __or_fn/__and_fn design hangs
+		// on exactly this: `__first_t<false_type,
+		// __enable_if_t<!bool(_Bn::value)>...>` succeeds or SFINAE-
+		// fails on the UNUSED pack args. Validate each arg the
+		// substitution did not splice into the body: a failing
+		// concrete arg is a substitution failure (NULL); a DEPENDENT
+		// arg (names a live template parameter / dependent surface)
+		// keeps the opaque placeholder below, as before.
+		// A capture parse skips the validation entirely. A DEPENDENT
+		// parse skips it only when the use itself is dependent — an
+		// arg naming a live/unbound template parameter (`__enable_if_t
+		// <is_convertible<_Iter,_Iterator>::value>` inside
+		// __normal_iterator's member alias template is legitimately
+		// unresolvable now). A NON-dependent use validates even inside
+		// a dependent parse: `__first_t<true_type, __enable_if_t<
+		// bool(...)>...>` with concrete args inside _M_realloc_insert's
+		// materialization must SFINAE-fail, or __and_ folds the wrong
+		// branch (the vecbind move/copy lane divergence). The
+		// discriminator is DEPENDENCE, not concreteness: a genuine
+		// SFINAE miss (enable_if<false,T>::type) has every name
+		// resolvable — not dependent — and must still fail here.
+		bool alias_use_dependent = false;
+		for ( size_t i = 0; !alias_use_dependent && i < arg_tokens.size(); ++i )
+		    alias_use_dependent = alias_arg_tokens_dependent(arg_tokens[i]);
+		const bool skip_validation = class_pattern_capture_in_progress
+					  || (dependent_parse_in_progress
+					      && alias_use_dependent);
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] alias-validate %s skip=%d dep=%d cap=%d argdep=%d\n",
+			    tname.c_str(), (int)skip_validation,
+			    (int)dependent_parse_in_progress,
+			    (int)class_pattern_capture_in_progress,
+			    (int)alias_use_dependent);
+		bool unused_failed = false, unused_dependent = false;
+		for ( size_t i = 0; !skip_validation && i < arg_tokens.size()
+			     && !unused_failed && !unused_dependent; ++i )
+		{
+		    // An EMPTY arg slot (`__void_t<>` — an empty pack) is not
+		    // an argument at all; nothing to validate.
+		    if ( arg_tokens[i].empty() )
+			continue;
+		    const std::string &pname =
+			i < td.typeparams.size() ? td.typeparams[i]
+			: (!td.typeparams.empty() ? td.typeparams.back()
+						  : std::string());
+		    if ( used_params.count(pname) )
+			continue;
+		    bool arg_is_type = i < td.typeparam_is_type.size()
+				     ? td.typeparam_is_type[i] : true;
+		    if ( !arg_is_type )
+		    {
+			int64_t v = 0;
+			if ( !fold_nontype_arg_constant(arg_tokens[i], v) )
+			{
+			    if ( alias_arg_tokens_dependent(arg_tokens[i]) )
+				unused_dependent = true;
+			    else
+				unused_failed = true;
+			}
+			continue;
+		    }
+		    std::vector<TokenBase *> probe;
+		    for ( TokenBase *t : arg_tokens[i] )
+			if ( t )
+			    probe.push_back(t->clone());
+		    probe.push_back(new TokenSemi());
+		    size_t sdc = diagnostics.size();
+		    Program::ErrorInfo se = last_error;
+		    TokenStream::State st = tokens.swap_in(std::move(probe));
+		    TokenDataType *art = NULL;
+		    try
+		    {
+			art = resolve_declared_type_token(nextToken(), true, true);
+			if ( art && peekToken()
+			  && peekToken()->id() != TokenID::tkSemi )
+			    art = NULL;	// leftover before the sentinel = fail
+		    }
+		    catch ( ... ) { art = NULL; }
+		    tokens.swap_back(std::move(st));
+		    diagnostics.resize(sdc);
+		    last_error = se;
+		    if ( !art )
+		    {
+			if ( alias_arg_tokens_dependent(arg_tokens[i]) )
+			    unused_dependent = true;
+			else
+			    unused_failed = true;
+		    }
+		    else if ( datadef_has_unresolved_dependent_surface(
+				&art->definition) )
+			unused_dependent = true;
+		}
+		if ( unused_failed )
+		    return NULL;
+		if ( !unused_dependent )
+		    return use_site_type_token(resolved, tb);
+		// a dependent unused arg: the whole alias-id is dependent —
+		// fall through to the opaque placeholder below.
+	    }
 	}
 
 	std::string mangled = tname;
@@ -7656,6 +9954,10 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	    if ( !adt )
 		Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
+	// East-cv between the base type and any declarator suffix
+	// (`value_type const`, optional:790) — same owner-pair as the leading
+	// consume above; without it the separator read the `const` and threw.
+	consume_trailing_type_arg_qualifiers(cv_spelling);
 	adt = fold_template_arg_declarator(adt, at);
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
@@ -7667,8 +9969,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
     }
     if ( args.size() > td.typeparams.size() )
+    {
+	arity_probe("nest-over", tname, td, args.size());
 	Throw(tb) << tname << "<> expects " << td.typeparams.size()
 		      << " type argument(s), got " << args.size() << flush;
+    }
     for ( size_t i = 0; i < args.size(); ++i )
 	subst[td.typeparams[i]] = args[i];
     while ( args.size() < td.typeparams.size() )
@@ -7676,8 +9981,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	size_t ai = args.size();
 	if ( ai >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[ai].empty() )
+	{
+	    arity_probe("nest-fill", tname, td, args.size());
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " type argument(s), got " << args.size() << flush;
+	}
 	std::vector<TokenBase *> inj;
 	for ( TokenBase *bt : td.typeparam_defaults[ai] )
 	{
@@ -7706,6 +10014,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    Throw(dtok ? dtok : tb) << "Could not resolve default template argument for "
 					<< td.typeparams[ai] << " in "
 					<< tname << "<>" << flush;
+	// A defaulted param's declarator suffix (`class V = U*`) folds too.
+	adt = fold_template_arg_declarator(adt, dtok);
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
 	args.push_back(adt);
@@ -7743,6 +10053,14 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
     TokenBase *head = nextToken();
     TokenDataType *resolved = resolve_declared_type_token(head, true, true);
+    // Alias-target DECLARATOR suffix (`using rebind = U *;` — libc++
+    // pointer_traits): fold `*`/`&`/fn-ptr onto the resolved base via the
+    // one owner. The sentinel drain below silently DISCARDED the suffix,
+    // so every pointer-target alias yielded its POINTEE (`up<int>` == int
+    // — map's tree-iterator chain instantiated with de-pointered args and
+    // its operator-> return degraded to a placeholder, task #72).
+    if ( resolved )
+	resolved = fold_template_arg_declarator(resolved, head);
     bool have_sentinel = false;
     for ( size_t si = 0; si < tokens.size(); ++si )
 	if ( tokens[si] == alias_sentinel )
@@ -7805,7 +10123,12 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	namespace_stack.push_back(td.defining_namespace);
 
 	TokenBase *head2 = nextToken();
-	try { resolved = resolve_declared_type_token(head2, true, true); }
+	try
+	{
+	    resolved = resolve_declared_type_token(head2, true, true);
+	    if ( resolved )   // same declarator-suffix fold as the main lane
+		resolved = fold_template_arg_declarator(resolved, head2);
+	}
 	catch ( ... ) { resolved = NULL; }
 
 	if ( !namespace_stack.empty()
@@ -7900,6 +10223,17 @@ void Program::complete_pending_template_instantiations(const std::string &class_
     }
 }
 
+bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+{
+    for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::const_iterator pi =
+	      pending_template_instantiations.begin();
+	  pi != pending_template_instantiations.end(); ++pi )
+	for ( size_t i = 0; i < pi->second.size(); ++i )
+	    if ( pi->second[i].mangled_name == mangled_name )
+		return true;
+    return false;
+}
+
 bool Program::request_template_instantiation_completion(const std::string &mangled_name)
 {
     template_completion_requested.insert(mangled_name);
@@ -7916,6 +10250,27 @@ bool Program::request_template_instantiation_completion(const std::string &mangl
 	}
     }
     return false;
+}
+
+// Demand-completion for a class type reaching a context that REQUIRES a
+// COMPLETE type ([basic.def]p5 by-value declaration, [expr.sizeof]p1): a
+// bodyless forward instantiation minted before its template's definition
+// (libc++ <iosfwd>'s stream typedefs — the definitions arrive with
+// <sstream>) completes IN PLACE when the definition has since registered.
+// A no-op for anything else: a complete class, a non-class, a genuinely
+// dependent shell (no pending record exists for those). Returns the
+// possibly-refreshed type; in-place completion means the original pointer
+// heals too — the refresh covers a replaced map entry.
+DataDef *Program::complete_class_type_on_demand(DataDef *dd)
+{
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls || !is_incomplete_class_datadef(cls) )
+	return dd;
+    request_template_instantiation_completion(cls->name);
+    flat_datatype_map_iter refreshed = datatype_map.find(cls->name);
+    if ( refreshed != datatype_map.end() )
+	return &(*refreshed)->definition;
+    return dd;
 }
 
 static std::vector<std::vector<TokenBase *> >
@@ -8009,10 +10364,25 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     bool tnp_on = tnp && *tnp && is_contextual_identifier_token(first)
 	       && contextual_identifier_name(first).find(tnp) != std::string::npos;
     if ( tnp_on )
-	fprintf(stderr, "TNPROBE head %s -> %s incomplete=%d\n",
-		contextual_identifier_name(first).c_str(),
+    {
+	const std::string fname = contextual_identifier_name(first);
+	DataDef *cur = resolve_current_class_type_alias(fname);
+	fprintf(stderr,
+		"TNPROBE head %s -> %s incomplete=%d [flat=%d curalias=%s "
+		"stack=%s method=%s]\n",
+		fname.c_str(),
 		owner ? owner->name.c_str() : param_owner->name.c_str(),
-		(int)(owner && is_incomplete_class_datadef(owner)));
+		(int)(owner && is_incomplete_class_datadef(owner)),
+		(int)(datatype_map.find(fname) != datatype_map.end()),
+		cur ? cur->name.c_str() : "-",
+		class_scope_stack.empty() ? "-"
+			: class_scope_stack.back()->name.c_str(),
+		(!compounds.empty() && compounds.top()
+		 && compounds.top()->method
+		 && compounds.top()->method->owner_class)
+			? compounds.top()->method->owner_class->name.c_str()
+			: "-");
+    }
     if ( owner && is_incomplete_class_datadef(owner) )
     {
 	request_template_instantiation_completion(owner->name);
@@ -8079,6 +10449,34 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	    fprintf(stderr, "TNPROBE alias %s::%s -> %s\n",
 		    owner ? owner->name.c_str() : param_owner->name.c_str(),
 		    member_name.c_str(), alias_dd ? alias_dd->name.c_str() : "(null)");
+	// A member-alias MISS on an INCOMPLETE owner: the owner was minted
+	// DURING a dependent parse and cached, but by now its recorded args may
+	// be fully CONCRETE (tuple_element<0, tuple<int&>> from get<0>'s
+	// instantiation — the map:967 chain). complete_shell_class_type() owns
+	// the replay and its silence; a shell that stays opaque returns NULL and
+	// falls through to the opaque materialization exactly as before.
+	if ( !alias_dd && owner && is_incomplete_class_datadef(owner) )
+	{
+	    if ( tnp_on )
+	    {
+		std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
+		    dependent_shell_origin.find(owner);
+		fprintf(stderr, "TNPROBE replay-gate %s org=%d runs=%zu\n",
+			owner->name.c_str(),
+			(int)(oi != dependent_shell_origin.end()),
+			oi != dependent_shell_origin.end()
+			    ? oi->second.raw_arg_tokens.size() : (size_t)0);
+	    }
+	    if ( DataDefCLASS *rc = complete_shell_class_type(owner) )
+	    {
+		owner = rc;
+		alias_dd = resolve_class_type_alias(owner, member_name);
+		if ( tnp_on )
+		    fprintf(stderr, "TNPROBE shell-replay -> %s alias=%s\n",
+			    owner->name.c_str(),
+			    alias_dd ? alias_dd->name.c_str() : "(null)");
+	    }
+	}
 	if ( !alias_dd && (owner ? class_allows_opaque_member_type(owner)
 				 : true) )
 	{
@@ -8261,10 +10659,65 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    Throw(name_tb ? name_tb : tb)
 		<< "Expecting type name after elaborated type specifier" << flush;
 	}
+	// Bareness must be judged BEFORE the recursion: a qualified
+	// (`struct A::B`) or template-id (`struct V<T>`) form consumes
+	// stream tokens on its way to failing, so a post-failure peek
+	// would be looking at the wrong token.
+	bool bare_name = !(peekToken()
+			&& (peekToken()->id() == TokenID::tkNS
+			 || peekToken()->id() == TokenID::tkLT));
 	if ( TokenDataType *tdt = resolve_declared_type_token(name_tb,
 		consume_ns_tokens, allow_lazy_types) )
 	    return tdt;
+	// [basic.scope.pdecl]/7: an elaborated-type-specifier whose bare
+	// unqualified name finds no prior declaration FIRST-DECLARES the
+	// class in the smallest enclosing scope — libc++ relies on it with
+	// `operator=(const _If<_IsConst, struct __private_nat, ...>&)`
+	// (__bit_reference:883), where __private_nat is declared nowhere
+	// else. A qualified or template-id form that failed stays NULL.
+	if ( bare_name )
+	{
+	    std::string ename = contextual_identifier_name(name_tb);
+	    DataDefSTRUCT *sdd = mint_incomplete_struct_tag(ename,
+		    tb->id() == TokenID::tkUNION);
+	    flat_datatype_map_iter mi = datatype_map.find(ename);
+	    if ( mi != datatype_map.end()
+	      && &(*mi)->definition == static_cast<DataDef *>(sdd) )
+		return *mi;
+	    // C mode: the bare name is deliberately NOT a type name — hand
+	    // back a detached type token carrying the minted incomplete tag.
+	    TokenDataType *tdt = new TokenDataType(ename.c_str(), *sdd);
+	    tdt->file = name_tb->file;
+	    tdt->line = name_tb->line;
+	    tdt->column = name_tb->column;
+	    return tdt;
+	}
 	return NULL;
+    }
+    // Leading `::` — the global-scope qualifier ([namespace.qual]):
+    // `typedef ::timespec t;` / `using A = ::T;` / `::wrap w;` resolve the
+    // name against the GLOBAL scope only (libc++ __threading_support:54 is
+    // the motivating use). Global types register in the flat datatype_map
+    // under their bare name (namespace members key mangled), so the direct
+    // probe IS the global-only lookup; template-ids and member chains then
+    // continue exactly as for a bare global name. A `::ns::T` chain (global-
+    // qualified NAMESPACE) stays unhandled here and returns NULL as before.
+    if ( tb->id() == TokenID::tkNS )
+    {
+	TokenBase *gt = peekToken();
+	if ( !gt || !is_contextual_identifier_token(gt) )
+	    return NULL;
+	std::string gname = contextual_identifier_name(gt);
+	flat_datatype_map_iter gi = datatype_map.find(gname);
+	if ( gi == datatype_map.end() )
+	    return NULL;
+	nextToken();	// consume the global name
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	    if ( TokenDataType *inst = instantiate_template_id(gname, gt) )
+		return resolve_member_chain_or_type(inst, gt,
+						    consume_class_member_chain);
+	return resolve_member_chain_or_type((TokenDataType *)(*gi), gt,
+					    consume_class_member_chain);
     }
     if ( !is_contextual_identifier_token(tb) )
 	return NULL;
@@ -8295,18 +10748,112 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( !close || close->id() != TokenID::tkClBrk )
 	    Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
 	DataDef *dd = expr ? expr->datadef() : NULL;
+	if ( getenv("MADC_DT_PROBE") )
+	    fprintf(stderr, "[dtprobe] decltype operand -> '%s' (expr id=%d type=%d)\n",
+		    dd ? dd->name.c_str() : "(null)",
+		    expr ? (int)expr->id() : -1,
+		    expr ? (int)expr->type() : -1);
 	if ( !dd )
 	    Throw(tb) << "Could not resolve decltype(...) operand type" << flush;
 	TokenDataType *tdt = new TokenDataType(dd->name.c_str(), *dd);
 	tdt->file = tb->file;
 	tdt->line = tb->line;
 	tdt->column = tb->column;
-	return tdt;
+	// [dcl.type.simple]: a decltype-specifier can head a qualified name —
+	// `decltype(_S_test<A,B>(0))::type` (the file-scope common_type
+	// idiom). Continue the member chain exactly as the named-type arms do.
+	return resolve_member_chain_or_type(tdt, tb, consume_class_member_chain);
+    }
+    // `__underlying_type(E)` — the type-yielding intrinsic BOTH standard
+    // libraries build std::underlying_type on (libstdc++'s typedef and
+    // libc++'s __underlying_type_impl<_Tp, true>). Answered from the
+    // DataDefENUM's recorded underlying type (declared fixed base, or the
+    // canon range rule computed at the definition's close).
+    if ( tname == "__underlying_type" )
+    {
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	    return NULL;
+	nextToken(); // consume '('
+	TokenBase *op_tb = nextToken();
+	if ( !op_tb )
+	    Throw(tb) << "Expecting a type in __underlying_type(...)" << flush;
+	TokenDataType *op = resolve_declared_type_token(op_tb, true,
+							allow_lazy_types);
+	TokenBase *close = nextToken();
+	if ( !close || close->id() != TokenID::tkClBrk )
+	    Throw(close ? close : tb)
+		<< "Expecting ')' after __underlying_type(...)" << flush;
+	if ( !op )
+	    Throw(tb) << "Could not resolve the __underlying_type(...) operand"
+		      << flush;
+	DataDef *odd = &op->definition;
+	if ( DataDefENUM *edd = dynamic_cast<DataDefENUM *>(odd) )
+	{
+	    DataDef *u = edd->underlying ? edd->underlying
+					 : static_cast<DataDef *>(&ddINT32);
+	    TokenDataType *tdt = new TokenDataType(u->name.c_str(), *u);
+	    tdt->file = tb->file;
+	    tdt->line = tb->line;
+	    tdt->column = tb->column;
+	    return tdt;
+	}
+	// A still-DEPENDENT operand (an opaque dependent-surface shell):
+	// defer by returning the operand — the concrete instantiation's
+	// re-parse resolves it against the real enum. A concrete non-enum
+	// is an error, as both canons report.
+	if ( odd->type() == DataType::dtRESERVED )
+	    return op;
+	Throw(tb) << "__underlying_type applied to non-enumeration type '"
+		  << odd->name << "'" << flush;
     }
 
+    // Statement-scope completeness demand: a declared-type use reading a
+    // MEMBER of a concrete-arg template-id (`typedef Tmpl<...>::type A;`)
+    // requires the instance's members to exist, and the opaque variadic
+    // shell is memberless (the conjunction<...,false_type> mis-fold, task
+    // #94). Outside a class body and outside a dependent pattern parse the
+    // args cannot name an enclosing template's parameters, so a variadic
+    // primary may really instantiate — the same per-demand-site arming as
+    // the expression twin (`Tmpl<args>::member` read) and spec_may_serve.
+    // The `::` follow is REQUIRED: a bare declared use (`map<K,V> m;`)
+    // keeps the lazy opaque route (arming it real-instantiated container
+    // internals eagerly and broke their lowering — the new_allocator
+    // address() regression).
+    bool stmt_scope_demand = !dependent_parse_in_progress
+			  && class_scope_stack.empty()
+			  && !class_pattern_capture_in_progress;
+    if ( stmt_scope_demand )
+    {
+	bool member_follows = false;
+	if ( !tokens.empty() && tokens[0]
+	  && tokens[0]->id() == TokenID::tkLT )
+	{
+	    DelimDepth d;
+	    // The deque starts AT the '<'; seed the tracker's context with
+	    // the template-name token so the opener is recognized.
+	    d.prev = tb;
+	    size_t qi = 0;
+	    size_t guard = 0;
+	    while ( qi < tokens.size() && ++guard < 4096 )
+	    {
+		size_t n = delim_scan_step(tokens, qi, d);
+		qi += n ? n : 1;
+		if ( qi > 0 && !d.angle )
+		    break;
+	    }
+	    member_follows = qi < tokens.size() && tokens[qi]
+			  && tokens[qi]->id() == TokenID::tkNS;
+	}
+	stmt_scope_demand = member_follows;
+    }
     if ( peekToken() && peekToken()->id() == TokenID::tkLT )
     {
-	if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
+	bool saved_vri = allow_variadic_real_inst;
+	if ( stmt_scope_demand )
+	    allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(tname, tb);
+	allow_variadic_real_inst = saved_vri;
+	if ( inst )
 	    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
 	// Nested class template OR member ALIAS template used UNQUALIFIED inside
@@ -8335,33 +10882,30 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	}
     }
 
-    // Unqualified type lookup inside a namespace: C++ searches the enclosing
-    // namespace chain (std::pmr -> std) BEFORE the global scope. Namespace-
-    // scope aliases live ONLY in namespace_datatype_map (not flat-leaked), so
-    // a header class inside namespace std deriving from bare `true_type`
-    // resolves here.
+    // [basic.scope.class]: inside a class, its OWN member type aliases (and
+    // active template parameters) shadow namespace-scope and global names —
+    // BEFORE the namespace chain and the flat map. libc++ declares a real
+    // class template `std::__1::__function::__base`, whose flat tag entry
+    // otherwise shadowed every class's local `typedef ... __base;`
+    // (numeric_limits' entire value surface reads through that alias).
+    if ( DataDef *class_alias = resolve_current_class_type_alias(tname) )
     {
-	std::string scope = current_namespace();
-	while ( !scope.empty() )
-	{
-	    namespace_datatype_map_t::iterator nti =
-		namespace_datatype_map.find(scope);
-	    if ( nti != namespace_datatype_map.end() )
-	    {
-		datatype_map_iter ndmi = nti->find(tname);
-		if ( ndmi != nti->end() )
-		{
-		    TokenDataType *use = (TokenDataType *)ndmi->second->clone();
-		    use->file   = tb->file;
-		    use->line   = tb->line;
-		    use->column = tb->column;
-		    return resolve_member_chain_or_type(use, tb,
-							consume_class_member_chain);
-		}
-	    }
-	    size_t sp = scope.rfind("::");
-	    scope = sp == std::string::npos ? std::string() : scope.substr(0, sp);
-	}
+	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
+	return resolve_member_chain_or_type(alias_tok, tb,
+					    consume_class_member_chain);
+    }
+
+    // Unqualified type lookup inside a namespace: C++ searches the enclosing
+    // namespace chain (std::pmr -> std) BEFORE the global scope
+    // (namespace_chain_datatype owns the walk).
+    if ( TokenDataType *proto = namespace_chain_datatype(tname) )
+    {
+	TokenDataType *use = (TokenDataType *)proto->clone();
+	use->file   = tb->file;
+	use->line   = tb->line;
+	use->column = tb->column;
+	return resolve_member_chain_or_type(use, tb,
+					    consume_class_member_chain);
     }
 
     flat_datatype_map_iter dmi = datatype_map.find(tname);
@@ -8379,18 +10923,19 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return resolve_member_chain_or_type(use, tb, consume_class_member_chain);
     }
 
-    if ( DataDef *class_alias = resolve_current_class_type_alias(tname) )
-    {
-	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
-	return resolve_member_chain_or_type(alias_tok, tb,
-					    consume_class_member_chain);
-    }
-
     // `Name<ConcreteType>` where Name is a captured (alias or class) template:
     // instantiate (or reuse) the concrete type and return it. Guarded on a
     // following '<', so non-template identifiers are unaffected.
-    if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
-	return resolve_member_chain_or_type(inst, tb, consume_class_member_chain);
+    {
+	bool saved_vri2 = allow_variadic_real_inst;
+	if ( stmt_scope_demand )
+	    allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(tname, tb);
+	allow_variadic_real_inst = saved_vri2;
+	if ( inst )
+	    return resolve_member_chain_or_type(inst, tb,
+						consume_class_member_chain);
+    }
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. The maps are
     // keyed by bare name but declarations are namespace-qualified variants, so
@@ -8423,7 +10968,15 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    }
 	    if ( tokens[j+1]->id() == TokenID::tkNS )
 	    {
-		ns_name += "::" + member_name;
+		// canonical_nested_namespace first (inline-namespace hop:
+		// `outer::inner` registered as `outer::v1::inner`); keep the
+		// literal append as the fallback — this walk builds a HINT and
+		// also steps over qualifiers that are not registered
+		// namespaces.
+		std::string deeper =
+		    canonical_nested_namespace(ns_name, member_name);
+		ns_name = deeper.empty() ? ns_name + "::" + member_name
+					 : deeper;
 		j += 2;                            // skip a namespace qualifier
 	    }
 	    else
@@ -8468,8 +11021,52 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     try
     {
 	TokenDataType *rt = resolve_declared_type_token(nextToken(), true, true);
-	if ( rt )
+	// A trailing DECLARATOR (`T&`, `T&&`, `T*`, `T const&`) is part of the
+	// type spelling, but resolve_declared_type_token stops at the type NAME
+	// and leaves it on the stream — so the completeness check below read a
+	// perfectly good reference type as a substitution failure. Every
+	// reference-returning member template therefore failed to resolve its
+	// return, and the caller
+	// (resolve_member_template_call_return_type) fell back to enumerating
+	// same-named candidates and SILENTLY answered with a sibling overload's
+	// return type: libc++'s __libcpp_is_referenceable, whose `_Tp& __test(int)`
+	// lost to its own `false_type __test(...)`, so add_pointer<int>::type
+	// came out as `int`.
+	// Same folding rule as skipped_template_function_return_type's
+	// ref_wraps/star_wraps: stars innermost, one reference outermost
+	// (references never nest).
+	size_t star_wraps = 0, ref_wraps = 0;
+	while ( rt && peekToken() )
+	{
+	    TokenID did = peekToken()->id();
+	    if ( did == TokenID::tkBand || did == TokenID::tkLand )
+	    { ++ref_wraps; nextToken(); continue; }
+	    if ( did == TokenID::tkMul )
+	    { ++star_wraps; nextToken(); continue; }
+	    if ( did == TokenID::tkCONST || did == TokenID::tkVOLATILE )
+	    { nextToken(); continue; }
+	    break;
+	}
+	// The range IS the type spelling: anything left before the sentinel
+	// means the resolution did not cover it — a SUBSTITUTION FAILURE, not
+	// a success (the #27 require_full_parse rule). The motivating leak:
+	// `enable_if<false,void>::type` — the member-miss probe declines
+	// without consuming, the tolerance hands back the CLASS, and the
+	// dangling `::type` silently passed, so enable_if_t<false> "resolved"
+	// and defeated SFINAE (__or_/__and_'s catch-all never won).
+	// A DEPENDENT parse (pattern registration / capture) legitimately
+	// leaves dependent tails unconsumed — enforce completeness only in
+	// concrete contexts, where leftovers mean substitution failure.
+	if ( rt && (dependent_parse_in_progress
+		 || class_pattern_capture_in_progress
+		 || (peekToken() && peekToken()->id() == TokenID::tkSemi)) )
+	{
 	    result = &rt->definition;
+	    for ( size_t s = 0; result && s < star_wraps; ++s )
+		result = getPointerType(result);
+	    if ( result && ref_wraps )
+		result = getReferenceType(result);
+	}
     }
     catch ( ... )
     {
@@ -8535,6 +11132,116 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 	return false;
 }
 
+// The one brace-list reader for compound-literal-shaped initializers in
+// expression position: the C99 cast arm `(T){...}` and the C++ functional
+// list form `T{...}` on a plain struct both delegate here. Consumes from
+// the opening '{' through its '}'.
+TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
+						    TokenBase *origin)
+{
+	    nextToken(); // consume '{'
+	    TokenStructLit *slit = new TokenStructLit();
+	    while ( true )
+	    {
+		TokenBase *look = peekToken();
+		if ( !look )
+		    Throw(origin) << "Unexpected end of data in compound literal" << flush;
+		if ( look->id() == TokenID::tkClBrc )
+		{
+		    nextToken();
+		    break;
+		}
+		if ( look->id() == TokenID::tkOpBrc )
+		{
+		    DataDefSTRUCT *elem_sdd = NULL;
+		    if ( current_sdd )
+		    {
+			size_t idx = slit->inits.size();
+			if ( idx < current_sdd->members.size() )
+			    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
+		    }
+		    slit->inits.push_back(parse_compound_struct_lit(elem_sdd,
+								    origin));
+		}
+		else
+		{
+		TokenBase *elem = nextToken();
+		if ( elem->id() == TokenID::tkDot
+		  || (current_sdd && is_contextual_identifier_token(elem)
+		   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
+		{
+		    std::vector<std::string> field_path;
+		    TokenBase *field_tok = elem;
+		    if ( elem->id() == TokenID::tkDot )
+		    {
+			field_tok = nextToken();
+			if ( !is_contextual_identifier_token(field_tok) )
+			    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
+			field_path.push_back(contextual_identifier_name(field_tok));
+			while ( peekToken() && peekToken()->id() == TokenID::tkDot )
+			{
+			    nextToken();
+			    TokenBase *nested_field = nextToken();
+			    if ( !is_contextual_identifier_token(nested_field) )
+				Throw(nested_field) << "Expecting field name in compound literal designator" << flush;
+			    field_path.push_back(contextual_identifier_name(nested_field));
+			}
+			TokenBase *eq = nextToken();
+			if ( !eq || eq->id() != TokenID::tkAssign )
+			    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
+		    }
+		    else
+		    {
+			field_path.push_back(contextual_identifier_name(field_tok));
+			nextToken(); // consume ':'
+		    }
+		    TokenBase *value_tok = nextToken();
+		    std::vector<TokenBase *> *target_inits = &slit->inits;
+		    DataDefSTRUCT *target_sdd = current_sdd;
+			size_t field_index = 0;
+			for ( size_t pi = 0; pi < field_path.size(); ++pi )
+			{
+			    const std::string &field_name = field_path[pi];
+			    field_index = find_struct_member_index(target_sdd, field_name);
+			    if ( !target_sdd || field_index >= target_sdd->members.size() )
+				Throw(field_tok) << "Unknown field '" << field_name << "' in compound literal designator" << flush;
+			    if ( target_inits->size() <= field_index )
+				target_inits->resize(field_index + 1, NULL);
+			    if ( pi + 1 == field_path.size() )
+				break;
+			    DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
+			    if ( !nested_sdd )
+				Throw(field_tok) << "Field '" << field_name << "' is not a struct in compound literal designator" << flush;
+			    TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
+			    if ( !nested_lit )
+			    {
+				nested_lit = new TokenStructLit();
+				(*target_inits)[field_index] = nested_lit;
+			    }
+			    target_inits = &nested_lit->inits;
+			    target_sdd = nested_sdd;
+			}
+			if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
+			{
+			    pushToken(value_tok);
+			    DataDefSTRUCT *nested_sdd = target_sdd
+				? dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second)
+				: NULL;
+			    (*target_inits)[field_index] =
+				parse_compound_struct_lit(nested_sdd, origin);
+			}
+			else
+			    (*target_inits)[field_index] = parseExpression(value_tok);
+		    }
+		    else
+			slit->inits.push_back(parseExpression(elem));
+		}
+		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+		    nextToken();
+	    }
+	    return slit;
+}
+
 TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 {
 	std::string name = contextual_identifier_name(name_tb);
@@ -8596,7 +11303,26 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     const char *close_spelling = open_id == TokenID::tkOpBrc ? "}" : ")";
     if ( open_id == TokenID::tkOpBrc
       && dynamic_cast<DataDefCLASS *>(type_dd) == NULL )
-	return NULL;
+    {
+	// [expr.type.conv] list form on a PLAIN struct (`P{7, 3.5}`): an
+	// aggregate prvalue — exactly the C99 compound literal `(P){7, 3.5}`,
+	// so it delegates to the one brace-list reader the cast arm uses
+	// (parse_compound_struct_lit consumes from '{' through '}').
+	if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(type_dd) )
+	{
+	    TokenStructLit *slit = parse_compound_struct_lit(sdd, type_tb);
+	    slit->setDataType(type_dd);
+	    if ( typedef_alias_matches_datadef(
+		    contextual_identifier_name(type_tb), type_dd) )
+		slit->typedef_name = contextual_identifier_name(type_tb);
+	    slit->file = type_tb->file;
+	    slit->line = type_tb->line;
+	    slit->column = type_tb->column;
+	    return slit;
+	}
+	// A scalar/pointer takes the value-init and single-expression arms
+	// below (`int{}`, `int{3}`), which close on close_id either way.
+    }
     nextToken(); // consume '(' or '{'
     if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(type_dd) )
     {
@@ -8610,9 +11336,9 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     }
 
     TokenBase *expr = NULL;
-    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+    if ( peekToken() && peekToken()->id() == close_id )
     {
-	nextToken(); // value-initialization: T()
+	nextToken(); // value-initialization: T() / T{}
 	if ( type_dd->is_pointer() )
 	{
 	    TokenNullptr *np = new TokenNullptr();
@@ -8638,9 +11364,10 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 	if ( !expr_head )
 	    Throw(type_tb) << "Expecting expression in functional cast" << flush;
 	expr = parseExpression(expr_head, true, false, false, 0, true);
-	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-	    Throw(type_tb) << "Expected ')' after functional cast expression" << flush;
-	nextToken(); // consume ')'
+	if ( !peekToken() || peekToken()->id() != close_id )
+	    Throw(type_tb) << "Expected '" << close_spelling
+			   << "' after functional cast expression" << flush;
+	nextToken(); // consume ')' or '}'
     }
 
     TokenCast *tc = new TokenCast(type_dd, expr);
@@ -8665,10 +11392,18 @@ static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
     return t;
 }
 
-static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
+size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
 {
     if ( !dd )
 	return 0;
+    // [expr.sizeof]/2 and [expr.alignof]: applied to a REFERENCE type, both
+    // yield the REFERENT's measure — `sizeof(int&)` is 4, not the 8 bytes madc
+    // stores a reference in. referent_if_reference is the one owner of that
+    // unwrap; this is the single measurement point both sizeof and alignof
+    // reach, so it belongs here rather than at either call site.
+    if ( DataDef *ref = referent_if_reference(const_cast<DataDef *>(dd)) )
+	if ( ref != dd )
+	    dd = ref;
     return want_alignof ? dd->alignment() : dd->size;
 }
 
@@ -8908,6 +11643,11 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 	    // shadowed by a local.
 	    TokenCpnd *code = stmt_callee_namespace.empty() && !compounds.empty()
 			    ? compounds.top() : NULL;
+	    // Script mode: a file-scope script statement's locals live on the
+	    // synthesized main — they shadow namespace members exactly like a
+	    // written main's locals (same qualifier exemption as above).
+	    if ( !code && stmt_callee_namespace.empty() )
+		code = script_lookup_scope();
 	    if ( code )
 		var = code->findVariableLocal(strpool, ident_tb->spelling());
 	    if ( !var )
@@ -9028,28 +11768,53 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
     else
 	return false;
     // Scoped-enum constant in a constant expression: `Tag::Value` (e.g. a
-    // `case Color::Green:` label). The enumerators live in the tag's
-    // pseudo-namespace (see TokenENUM::parse), so resolve through it. Keep this
-    // probe transactional: `ns::Tmpl<...>::member` also starts with a namespace
-    // name, and the qualified-member constant folder below must see the intact
-    // token chain when this narrow enum lookup does not resolve.
+    // `case Color::Green:` label) or its namespace-qualified spelling
+    // `ns::Tag::Value` — a case label referenced from inside the declaring
+    // namespace spells the qualifier to bypass a shadowing parameter (libc++
+    // parser_std_format_spec.h `case __format_spec::__type::__default:`).
+    // classify_qualifier_before_scope owns alias resolution (scope-relative,
+    // inline-namespace canonical) and canonical_nested_namespace owns the
+    // qualifier descent — the same owners the cast-operand arm adopted. Keep
+    // this probe transactional: `ns::Tmpl<...>::member` also starts with a
+    // namespace name, and the qualified-member constant folder below must see
+    // the intact token chain when this narrow enum lookup does not resolve.
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	TokenStream::Pos saved_tokens = tokens.savepos();
-	TokenBase *saved_cur = _cur_token;
-	TokenBase *saved_prv = _prv_token;
-	namespace_map_t::iterator nsi = namespace_map.find(name);
-	if ( nsi != namespace_map.end() )
+	QualifierScope qscope = classify_qualifier_before_scope(name, tb);
+	if ( qscope.is_namespace() )
 	{
+	    TokenStream::Pos saved_tokens = tokens.savepos();
+	    TokenBase *saved_cur = _cur_token;
+	    TokenBase *saved_prv = _prv_token;
+	    std::string ns_name = qscope.ns_name;
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
 	    if ( member_tb && is_contextual_identifier_token(member_tb) )
 	    {
 		std::string member = contextual_identifier_name(member_tb);
-		variable_map_iter vmi = nsi->second.find(member);
-		if ( vmi != nsi->second.end()
-		  && read_constant_integer(vmi->second, out) )
-		    return true;
+		while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    std::string deeper =
+			canonical_nested_namespace(ns_name, member);
+		    if ( deeper.empty() )
+			break;
+		    nextToken(); // consume '::'
+		    member_tb = nextToken();
+		    if ( !member_tb
+		      || !is_contextual_identifier_token(member_tb) )
+		    {
+			member_tb = NULL; // malformed — restore below
+			break;
+		    }
+		    ns_name = deeper;
+		    member = contextual_identifier_name(member_tb);
+		}
+		if ( member_tb )
+		{
+		    Variable *nsv = find_namespace_member(ns_name, member);
+		    if ( nsv && read_constant_integer(nsv, out) )
+			return true;
+		}
 	    }
 	    tokens = saved_tokens;
 	    _cur_token = saved_cur;
@@ -9064,12 +11829,24 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 	}
 	return false;
     }
+    // Unqualified PRIOR ENUMERATOR inside the scoped-enum body being defined
+    // ([dcl.enum]/5): enumerators are usable in the enum's own body right
+    // after their own definition — `general = fixed | scientific` (libc++
+    // __charconv/chars_format.h:24). They live only in the tag's
+    // pseudo-namespace; TokenENUM::parse points here for the body's duration.
+    if ( active_scoped_enum_ns )
+    {
+	variable_map_iter ei = active_scoped_enum_ns->find(name);
+	if ( ei != active_scoped_enum_ns->end()
+	  && read_constant_integer(ei->second, out) )
+	    return true;
+    }
     Variable *var = findVariable(name);
     return read_constant_integer(var, out);
 }
 
 static bool is_named_cpp_cast(const std::string &name);
-static bool datadef_involves_placeholder(DataDef *dd);
+static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class);
 
 static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int val,
 					      bool force_unsigned = false)
@@ -9084,11 +11861,16 @@ static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int va
 	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
     if ( sz == 4 )
 	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
-    // 8-byte cast truncates the wide carrier to 64 bits SIGN-CARRIED (even for
-    // unsigned long): identical bits and identical fold results to the
-    // historical int64 evaluator; `(long)((__int128)1 << 64)` folds to 0.
+    // 8-byte cast truncates the wide carrier to 64 bits. UNSIGNED
+    // zero-extends back into the carrier — `(unsigned long)(-1)` is 2^64-1,
+    // so `T(-1) < T(0)` with unsigned T folds FALSE (libc++
+    // __libcpp_numeric_limits' is_signed; the old sign-carried-always arm
+    // folded it TRUE and every dependent value downstream was off by one).
+    // SIGNED keeps the sign-carried truncation: `(long)((__int128)1 << 64)`
+    // still folds to 0.
     if ( sz == 8 )
-	return (madc_wide_int)(int64_t)val;
+	return is_unsigned ? (madc_wide_int)(uint64_t)val
+			   : (madc_wide_int)(int64_t)val;
     // 16-byte cast is the identity on the carrier: (__int128)x re-signs a
     // 64-bit value correctly (already sign-carried); (unsigned __int128)x has
     // the same 128-bit pattern.
@@ -9102,12 +11884,8 @@ madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
 
-    TokenBase *type_tb = nextToken();
+    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
     bool force_unsigned = false;
-    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-	   || type_tb->id() == TokenID::tkVOLATILE
-	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = nextToken();
     if ( type_tb && type_tb->type() == TokenType::ttIdentifier
       && ((TokenIdent *)type_tb)->spelling_is("unsigned") )
 	force_unsigned = true;
@@ -9167,7 +11945,21 @@ bool Program::try_parse_constant_functional_cast(TokenBase *type_tb,
 	if ( !cast_dd )
 	    cast_dd = resolve_named_datadef(name);
     }
+    if ( ::getenv("MADC_STATCONST_PROBE") && type_tb
+      && is_contextual_identifier_token(type_tb) )
+	fprintf(stderr, "[statconst] fncast head %s -> %s%s\n",
+		contextual_identifier_name(type_tb).c_str(),
+		cast_dd ? cast_dd->name.c_str() : "(null)",
+		cast_dd && cast_dd->is_template_param() ? " [param]" : "");
     if ( !cast_dd )
+	return false;
+    // A functional cast on a TEMPLATE-PARAM placeholder (`_Tp(-1) < _Tp(0)`
+    // during a pattern CAPTURE) is dependent: folding under the placeholder
+    // would bake the placeholder's signedness into the pattern's constant
+    // (the [traitfold] rule's functional-cast twin). Refuse — the capture
+    // skips the initializer and the instantiation re-folds it under the
+    // concrete binding.
+    if ( cast_dd->is_template_param() )
 	return false;
 
     nextToken(); // consume '('
@@ -9258,6 +12050,21 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	dd = resolve_current_class_type_alias(tname);
 	if ( dd )
 	    return dd;
+    }
+
+    if ( !is_c_mode() && is_contextual_identifier_token(type_tb)
+      && is_decltype_identifier(contextual_identifier_name(type_tb))
+      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	// sizeof(decltype(expr)) / alignof(decltype(expr)) — `decltype` is a
+	// reserved tkCPPKEYWORD in C++ modes, so it reaches neither the
+	// identifier nor the datatype arm below. Route through the one
+	// declared-type resolver, which owns the decltype arm (libc++
+	// bsd_locale_fallbacks.h family; the statement-head route is the
+	// sibling in parseStatement's keyword arm).
+	if ( TokenDataType *tdt =
+		resolve_declared_type_token(type_tb, true, true) )
+	    return &tdt->definition;
     }
 
     if ( type_tb->type() == TokenType::ttDataType )
@@ -9408,9 +12215,58 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     return dd;
 }
 
+bool Program::lookup_pack_arity(const std::string &n, size_t &out) const
+{
+    for ( size_t i = pack_arity_scopes.size(); i-- > 0; )
+    {
+	std::map<std::string, size_t>::const_iterator it =
+	    pack_arity_scopes[i].find(n);
+	if ( it != pack_arity_scopes[i].end() )
+	    { out = it->second; return true; }
+    }
+    return false;
+}
+
 size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name)
 {
     bool want_alignof = is_alignof_identifier(op_name);
+
+    // [expr.sizeof]/5 — `sizeof ... ( identifier )`. That IS the whole production:
+    // the operand must be an identifier naming a parameter pack, never a type-id or
+    // an expression, so no lookahead beyond the fixed shape is needed. A `.` can
+    // follow `sizeof` in no other construct, which makes the first dot an
+    // unambiguous commit point — everything after it is diagnosed, not backtracked.
+    // `alignof...` does not exist.
+    if ( !want_alignof && peekToken() && peekToken()->id() == TokenID::tkDot )
+    {
+	nextToken();				// first '.'
+	TokenBase *d2 = nextToken();
+	TokenBase *d3 = nextToken();
+	if ( !d2 || d2->id() != TokenID::tkDot
+	  || !d3 || d3->id() != TokenID::tkDot )
+	    Throw(op_tb) << "Expecting '...' after " << op_name << flush;
+	TokenBase *ob = nextToken();
+	if ( !ob || ob->id() != TokenID::tkOpBrk )
+	    Throw(ob ? ob : op_tb) << "Expecting '(' after " << op_name << "..." << flush;
+	TokenBase *id_tb = nextToken();
+	if ( !id_tb || !is_contextual_identifier_token(id_tb) )
+	    Throw(id_tb ? id_tb : op_tb)
+		<< op_name << "...: expecting a parameter-pack name" << flush;
+	const std::string pn = contextual_identifier_name(id_tb);
+	TokenBase *cb = nextToken();
+	if ( !cb || cb->id() != TokenID::tkClBrk )
+	    Throw(cb ? cb : op_tb)
+		<< "Expecting ')' after " << op_name << "...(" << pn << flush;
+	size_t arity = 0;
+	if ( !lookup_pack_arity(pn, arity) )
+	    // LOUD. The predecessor folds left an unresolved sizeof... to decay into
+	    // a variable lookup (`sizeof` is a soft-reserved TokenCppKeyword that
+	    // identifier-position code admits), which surfaced as an undefined MIR
+	    // import naming the enclosing template — three layers from the cause.
+	    Throw(id_tb) << op_name << "...: '" << pn
+			 << "' does not name a parameter pack in scope" << flush;
+	return arity;
+    }
 
     if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
@@ -9458,6 +12314,12 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     bool have_value = false;
 
     dd = resolve_type_query_datadef(type_tb, op_name, have_value, value);
+    // [expr.sizeof]p1 / [expr.alignof]: the operand type must be COMPLETE.
+    // A bodyless forward instantiation (libc++ <iosfwd>'s stream typedefs)
+    // measured 0 here silently; complete it on demand now that the
+    // definition may have registered.
+    if ( dd )
+	dd = complete_class_type_on_demand(dd);
     // Fallback: sizeof(expression) — parse as expression, use its type
     bool expr_fallback_consumed_paren = false;
     if ( !have_value && !dd )
@@ -9559,20 +12421,34 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 // Implement EXACTLY the gcc-13 trait builtins that madc can answer faithfully —
 // no more: providing a builtin gcc lacks (e.g. __is_pointer/__is_void, which gcc
 // implements in libstdc++, not the compiler) could shadow a library identifier.
+static const int TRAIT_ARITY_VARIADIC = -2;   // one-or-more type arguments
+
 static int type_trait_arity(const std::string &name)
 {
     if ( name == "__is_same" || name == "__is_base_of"
       || name == "__is_assignable" )
 	return 2;
+    // Ungated with the [dcl.spec]/1 east-specifier fix: folding
+    // __has_*_iterator_category flips libc++'s copy dispatch onto
+    // __copy<_ClassicAlgPolicy,...>, whose `pair<...> inline constexpr`
+    // declaration head now parses (the guard's motivating regression).
+    if ( name == "__is_convertible_to" || name == "__is_convertible" )
+	return 2;
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
       || name == "__is_empty" || name == "__is_standard_layout"
-      || name == "__is_pod" )
+      || name == "__is_pod" || name == "__is_destructible"
+      || name == "__is_final" || name == "__is_trivially_copyable" )
 	return 1;
+    if ( name == "__is_constructible" || name == "__is_nothrow_constructible" )
+	return TRAIT_ARITY_VARIADIC;
     return 0;   // not a supported trait
 }
 
-static bool is_type_trait_builtin(const std::string &name)
+// Declared in madc.h: __has_builtin answers from this same registry, so a
+// library guarding a trait with `#if __has_builtin(__has_trivial_destructor)`
+// learns what madc really implements.
+bool is_type_trait_builtin(const std::string &name)
 {
     return type_trait_arity(name) != 0;
 }
@@ -9594,12 +12470,32 @@ static bool trait_is_union(DataDef *dd)
     DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
     return s && s->union_layout;
 }
+// __is_final(T) ([class.pre]/4): T is a class declared with the `final`
+// class-virt-specifier, so it can never be a base. A non-class type is not final
+// (is_final<int> = false), matching both canons. The flag is recorded from the
+// class head.
+//
+// libc++ cannot lay out __compressed_pair without this: its empty-base
+// specialization is selected by
+//   bool _CanBeEmptyBase = is_empty<_Tp>::value && !__libcpp_is_final<_Tp>::value
+// and __libcpp_is_final is integral_constant<bool, __is_final(_Tp)> with NO
+// __has_builtin guard. Missing the intrinsic left that whole default unfoldable,
+// so the member-holding primary won and an empty allocator cost a byte inside
+// every compressed pair — the basic_string size came out 8 bytes over the clang
+// oracle. Gate: tests/teststring_libcxx.mad asserts the size per flavor.
+static bool trait_is_final(DataDef *dd)
+{
+    // DataDefSTRUCT, not DataDefCLASS: `struct X final { int x; };` never earns
+    // promotion to a class, and a union is a class type too ([class.union]).
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    return s && s->struct_is_final;
+}
 // __is_empty(T) ([meta.unary.prop]): T is a non-union class with NO non-static
 // data members, no virtual functions, no virtual bases, and every base class is
 // itself empty. A non-class type is not empty (is_empty<int> = false). libstdc++
 // instantiates is_empty<allocator<T>> for its allocator EBO compression, which
 // <memory>'s allocator_traits chain drags into the vector reallocation path.
-static bool trait_is_empty(DataDef *dd)
+bool trait_is_empty(DataDef *dd)
 {
     // A non-class/union type is not empty (is_empty<int> = false). `members`
     // lives on the DataDefSTRUCT base, so a bare empty struct (DataDefSTRUCT not
@@ -9670,6 +12566,35 @@ static bool trait_is_trivial(DataDef *dd)
 	    return false;
     for ( size_t i = 0; i < c->members.size(); ++i )
 	if ( c->members[i].second && !trait_is_trivial(c->members[i].second) )
+	    return false;
+    return true;
+}
+// __is_trivially_copyable(T) ([class.prop]/1, [basic.types.general]/9 — libc++
+// asserts it on __parsed_specifications, parser_std_format_spec.h:324): a
+// scalar/pointer/enum is trivially copyable; a class is iff it has no virtual
+// functions, a trivial destructor, no deleted/non-trivial copy machinery, and
+// every base and class-type member is itself trivially copyable. Conservative
+// on ANY user-declared constructor (canon: a user DEFAULT ctor does not
+// disturb copyability, but madc does not yet distinguish ctor kinds here) —
+// the same documented conservatism as trait_is_trivial: a false negative
+// fails an assert LOUDLY or disables an optimization, never miscompiles.
+static bool trait_is_trivially_copyable(DataDef *dd)
+{
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !c )
+	return true;
+    if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic()
+      || c->has_deleted_copy_assign )
+	return false;
+    if ( c->base_class && !trait_is_trivially_copyable(c->base_class) )
+	return false;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base
+	  && !trait_is_trivially_copyable(c->bases[i].base) )
+	    return false;
+    for ( size_t i = 0; i < c->members.size(); ++i )
+	if ( c->members[i].second
+	  && !trait_is_trivially_copyable(c->members[i].second) )
 	    return false;
     return true;
 }
@@ -9774,6 +12699,50 @@ struct TraitTypeArg
     }
 };
 
+// A SUBSTITUTED trait argument arrives as ONE type token with the reference
+// already baked into the DataDef (`_Tp` bound to `int&` substitutes a
+// DataDefREF; `const T&` a REF wrapping a CONST) — there are no trailing
+// `&`/`&&`/`const` tokens for the arg parsers to set the flags from. Un-unwrapped,
+// the REF read as a non-class prvalue — never assignable-to — so
+// is_move_assignable<int> silently folded FALSE through the whole
+// __and_fn/__conditional_t chain; a baked REF also never same_as-matched the
+// spelled form of the same type. Normalize to the referent+flags shape the
+// spelled form produces. madc's IR keeps ONE reference kind post-resolution,
+// so a baked reference reads as the LVALUE form (trait uses that need the
+// rvalue distinction spell it with trailing `&&` tokens, which win above).
+static void unwrap_baked_trait_arg(TraitTypeArg &a)
+{
+    if ( a.is_lref || a.is_rref )
+	return;
+    if ( DataDefREF *rdd = dynamic_cast<DataDefREF *>(a.dd) )
+    {
+	a.is_lref = true;
+	a.dd = rdd->base_type;
+    }
+    if ( DataDefCONST *cdd = dynamic_cast<DataDefCONST *>(a.dd) )
+    {
+	a.referent_const = true;
+	a.dd = cdd->base_type;
+    }
+}
+
+// A REFERENCE type is never a class/union/enum, never empty, final, trivial,
+// standard-layout or POD, and never relates via __is_base_of — the class-family
+// trait predicates only see the REFERENT DataDef and would answer for T instead
+// of T&. The one family member that flips the other way:
+// __has_trivial_destructor(T&) is TRUE regardless of the referent's dtor
+// (destroying a reference is a no-op). Oracle (g++-13 == clang++-18,
+// tmp/reftrait1.cpp + tmp/reftrait2.cpp): __is_empty(E&)=0 __is_class(E&)=0
+// __is_trivial(int&)=0 __has_trivial_destructor(int&)=1 __is_final(F&)=0
+// __is_standard_layout(int&)=0 __is_pod(int&)=0 __has_trivial_destructor(NT&)=1
+// __is_base_of(B&,D&)=0. Both dispatch sites (evaluate_type_trait and
+// eval_local_type_trait — the recorded trait_builtin_dispatch_twins family)
+// gate through this ONE helper.
+static bool trait_arg_is_reference(const TraitTypeArg &a)
+{
+    return a.is_lref || a.is_rref;
+}
+
 // Tri-state: 1 = yes, 0 = no, -1 = madc cannot determine faithfully (the caller
 // raises a clear error rather than emit a WRONG bool — a wrong trait result would
 // silently corrupt SFINAE; see the correctness-first note on type_trait_arity).
@@ -9856,6 +12825,102 @@ static int trait_scalar_assignable_from(DataDef *to, DataDef *from)
 
 // __is_assignable(To, From): is `declval<To>() = declval<From>()` well-formed?
 // (The gcc/clang intrinsic; libstdc++'s std::is_assignable wraps it.)
+// A class is destructible iff it has an accessible, non-deleted destructor.
+// A USER-DECLARED destructor decides directly: method_map's '~' entries (own
+// or inherited from a base — a deleted/inaccessible base destructor deletes
+// the derived implicit one, and a derived user destructor over a deleted base
+// destructor would be ill-formed, so any bad '~' entry means 0 and any good
+// set means 1). With no user destructor anywhere, the IMPLICIT destructor
+// walks bases and members ([class.dtor]p7). -1 = cannot answer faithfully.
+static int trait_class_destructible(DataDefCLASS *c, int depth,
+				    bool check_access)
+{
+    if ( !c )
+	return -1;
+    if ( depth > 32 )
+	return -1;                   // pathological nesting — refuse, don't hang
+    if ( c->has_deleted_dtor )
+	return 0;                    // dropped `~X() = delete` (recorded)
+    bool saw_user_dtor = false;
+    for ( std::map<std::string, Variable *>::const_iterator it =
+	    c->method_map.begin(); it != c->method_map.end(); ++it )
+    {
+	if ( it->first.empty() || it->first[0] != '~' || !it->second )
+	    continue;
+	saw_user_dtor = true;
+	FuncDef *fd = dynamic_cast<FuncDef *>(it->second->type);
+	if ( fd && fd->is_deleted )
+	    return 0;
+	// Access matters only for the TRAIT's external-context answer; an
+	// explicit destructor CALL is checked per its own context by the
+	// caller (a private destructor is callable from the class's members).
+	if ( check_access
+	  && (it->second->flags & (vfPRIVATE | vfPROTECTED)) )
+	    return 0;
+    }
+    if ( saw_user_dtor )
+	return 1;
+    std::vector<DataDefCLASS *> parents;
+    if ( c->base_class )
+	parents.push_back(c->base_class);
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && c->bases[i].base != c->base_class )
+	    parents.push_back(c->bases[i].base);
+    for ( size_t i = 0; i < parents.size(); ++i )
+    {
+	int s = trait_class_destructible(parents[i], depth + 1, check_access);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->members.size(); ++i )
+    {
+	DataDef *m = c->members[i].second;
+	if ( !m )
+	    continue;
+	while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(m) )
+	{
+	    if ( !arr->element_type )
+		return -1;
+	    m = arr->element_type;   // element-wise: the element type decides
+	}
+	if ( DataDefCLASS *mc = dynamic_cast<DataDefCLASS *>(m) )
+	{
+	    int s = trait_class_destructible(mc, depth + 1, check_access);
+	    if ( s != 1 )
+		return s;
+	}
+    }
+    return 1;
+}
+
+// __is_destructible(T) ([meta.unary.prop]): reference types are destructible;
+// void / function / unbounded-array types are not; an array is destructible
+// iff its element type is; a class needs an accessible non-deleted destructor
+// (trait_class_destructible above); scalars/enums/pointers are. -1 = refuse.
+static int trait_is_destructible(const TraitTypeArg &t)
+{
+    if ( t.is_lref || t.is_rref )
+	return 1;
+    DataDef *dd = t.dd;
+    if ( !dd )
+	return -1;
+    if ( dynamic_cast<DataDefVOID *>(dd) )
+	return 0;
+    if ( dynamic_cast<FuncDef *>(dd) )
+	return 0;
+    while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	if ( !arr->element_type )
+	    return -1;
+	if ( arr->count == 0 )
+	    return 0;                // array of unknown bound
+	dd = arr->element_type;
+    }
+    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd) )
+	return trait_class_destructible(c, 0, true);
+    return 1;
+}
+
 static int trait_is_assignable(const TraitTypeArg &to, const TraitTypeArg &from)
 {
     DataDefCLASS *to_class = dynamic_cast<DataDefCLASS *>(to.dd);
@@ -9870,6 +12935,443 @@ static int trait_is_assignable(const TraitTypeArg &to, const TraitTypeArg &from)
     if ( !to_class )
 	return trait_scalar_assignable_from(to.dd, from.dd);
     return trait_class_assignable(to_class);
+}
+
+// Is `from` implicitly convertible to the scalar (arithmetic / enum / pointer)
+// type `to` by copy-initialization? The same conversion core the assignable
+// trait models, plus the enum asymmetry: nothing converts TO an enum but the
+// enum itself ([dcl.init] — no implicit arithmetic->enum), while enum->
+// arithmetic depends on scoped-ness madc does not record (-1).
+static int trait_scalar_convertible_from(DataDef *to, const TraitTypeArg &from)
+{
+    if ( !to || !from.dd )
+	return -1;
+    if ( dynamic_cast<DataDefENUM *>(to) )
+	return (to == from.dd || to->name == from.dd->name) ? 1 : 0;
+    if ( dynamic_cast<DataDefENUM *>(from.dd) )
+	return -1;
+    return trait_scalar_assignable_from(to, from.dd);
+}
+
+// A user CONVERSION FUNCTION on the class ([class.conv.fct]) — registered with
+// the `operator <type>` display-name prefix (the same marker the pattern
+// normalizer's Conversion kind keys on).
+static bool trait_class_has_conversion_op(DataDefCLASS *c)
+{
+    if ( !c )
+	return false;
+    for ( variable_vec_iter vvi = c->methods.begin(); vvi != c->methods.end();
+	  ++vvi )
+    {
+	FuncDef *fd = *vvi ? dynamic_cast<FuncDef *>((*vvi)->type) : NULL;
+	if ( fd && fd->method_display_name.compare(0, 9, "operator ") == 0 )
+	    return true;
+    }
+    if ( c->base_class && trait_class_has_conversion_op(c->base_class) )
+	return true;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( trait_class_has_conversion_op(c->bases[i].base) )
+	    return true;
+    return false;
+}
+
+// __is_convertible_to(From, To) ([meta.rel] is_convertible — libc++ spells
+// its entire is_convertible through this builtin). Conservative tri-state:
+// the shapes the iterator-category detection chain folds exactly (same
+// class, derived tag -> base tag, ctor-less unrelated tags -> 0, scalar
+// pairs); anything needing user conversion machinery stays undetermined
+// (-1 = not constant-foldable) rather than guessing a canon answer.
+static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
+					       const TraitTypeArg &to);
+
+// Env-gated probe (MADC_ISCONV_PROBE=1): every __is_convertible fold with its
+// verdict — the overload-flip diagnostic when a newly-foldable trait changes
+// a library SFINAE selection.
+static int trait_is_convertible(const TraitTypeArg &from, const TraitTypeArg &to)
+{
+    int r = trait_is_convertible_uninstrumented(from, to);
+    static const char *icp = ::getenv("MADC_ISCONV_PROBE");
+    if ( icp )
+	fprintf(stderr, "[isconv] from=%s%s to=%s%s -> %d\n",
+		from.dd ? from.dd->name.c_str() : "?",
+		from.is_lref ? "&" : (from.is_rref ? "&&" : ""),
+		to.dd ? to.dd->name.c_str() : "?",
+		to.is_lref ? "&" : (to.is_rref ? "&&" : ""), r);
+    return r;
+}
+
+static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
+					       const TraitTypeArg &to)
+{
+    if ( !from.dd || !to.dd )
+	return -1;
+    // Class-NESS by struct-hood (trait_is_class's own test): a plain
+    // `struct B {}` stays DataDefSTRUCT — class-only state (ctors,
+    // conversion ops) is read through the CLASS cast when present.
+    bool to_cls = trait_is_class(to.dd) || trait_is_union(to.dd);
+    bool from_cls = trait_is_class(from.dd) || trait_is_union(from.dd);
+    if ( to_cls && from_cls )
+    {
+	if ( to.dd == from.dd || to.dd->name == from.dd->name )
+	    return 1;			// copy-initialization from the same type
+	if ( trait_is_base_of(to.dd, from.dd) )
+	    return 1;			// derived -> base ([conv.ptr]/[dcl.init])
+	// Unrelated classes with NO user constructors on the target and NO
+	// conversion functions on the source (the iterator TAG shape): there
+	// is no conversion path at all — a definite 0, which is what the
+	// negative branches of __has_iterator_category_convertible_to need.
+	// A never-promoted plain struct has neither.
+	DataDefCLASS *toc = dynamic_cast<DataDefCLASS *>(to.dd);
+	DataDefCLASS *fromc = dynamic_cast<DataDefCLASS *>(from.dd);
+	if ( (!toc || toc->ctors.empty())
+	  && (!fromc || !trait_class_has_conversion_op(fromc)) )
+	    return 0;
+	return -1;			// user machinery — undetermined
+    }
+    if ( to_cls || from_cls )
+	return -1;			// class <-> scalar: user machinery
+    return trait_scalar_convertible_from(to.dd, from);
+}
+
+static int trait_is_constructible(const TraitTypeArg &to,
+				  const std::vector<TraitTypeArg> &args,
+				  bool need_nothrow, int depth);
+
+// The IMPLICITLY-declared default/copy/move constructor: available iff every
+// base and every data member is itself so constructible ([class.default.ctor],
+// [class.copy.ctor]); for the nothrow question the same walk ANDs the members'
+// nothrow-ness (the implicit ctor's noexcept is exactly that conjunction,
+// [except.spec]p7). copy_form distinguishes the memberwise-copy walk from the
+// default-init walk.
+static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
+					bool need_nothrow, int depth)
+{
+    std::vector<DataDefCLASS *> parents;
+    if ( c->base_class )
+	parents.push_back(c->base_class);
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && c->bases[i].base != c->base_class )
+	    parents.push_back(c->bases[i].base);
+    for ( size_t i = 0; i < parents.size(); ++i )
+    {
+	TraitTypeArg to;
+	to.dd = parents[i];
+	std::vector<TraitTypeArg> pargs;
+	if ( copy_form )
+	{
+	    TraitTypeArg a;
+	    a.dd = parents[i];
+	    a.is_lref = true;
+	    a.referent_const = true;
+	    pargs.push_back(a);
+	}
+	int s = trait_is_constructible(to, pargs, need_nothrow, depth + 1);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->members.size(); ++i )
+    {
+	DataDef *m = c->members[i].second;
+	if ( !m )
+	    continue;
+	if ( dynamic_cast<DataDefREF *>(m) )
+	{
+	    if ( copy_form )
+		continue;            // copying a bound reference member is fine
+	    return -1;               // default-init needs an NSDMI madc does not
+				     // surface here — refuse, don't guess
+	}
+	while ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(m) )
+	{
+	    if ( !arr->element_type )
+		return -1;
+	    m = arr->element_type;   // element-wise: the element type decides
+	}
+	if ( DataDefCLASS *mc = dynamic_cast<DataDefCLASS *>(m) )
+	{
+	    TraitTypeArg to;
+	    to.dd = mc;
+	    std::vector<TraitTypeArg> margs;
+	    if ( copy_form )
+	    {
+		TraitTypeArg a;
+		a.dd = mc;
+		a.is_lref = true;
+		a.referent_const = true;
+		margs.push_back(a);
+	    }
+	    int s = trait_is_constructible(to, margs, need_nothrow, depth + 1);
+	    if ( s != 1 )
+		return s;
+	}
+	// scalar / pointer / enum / plain-struct member: default-init and
+	// memberwise copy are both well-formed and non-throwing
+    }
+    return 1;
+}
+
+// __is_constructible(T, Args...) for a class T: does ONE non-deleted
+// constructor accept the argument list, at the fidelity madc models —
+// exact/derived class matches and scalar conversions per parameter. A
+// candidate needing unmodeled machinery (a constructor TEMPLATE's SFINAE
+// constraints, a class-type conversion) makes a NO answer undeterminable
+// (-1); a positive match from a plain candidate stays decisive.
+static int trait_class_constructible(DataDefCLASS *c,
+				     const std::vector<TraitTypeArg> &args,
+				     bool need_nothrow, int depth)
+{
+    bool same_class_arg = args.size() == 1 && args[0].dd
+	&& (args[0].dd == c || args[0].dd->name == c->name);
+    // Deleted special members are dropped from `ctors` at class parse; the
+    // recorded class flags are their only trace ([class.copy.ctor]: a deleted
+    // selected ctor makes the initialization ill-formed).
+    if ( args.empty() && c->has_deleted_default_ctor )
+	return 0;
+    if ( same_class_arg && c->has_deleted_copy_ctor )
+	return 0;
+    bool saw_unmodelable = false;
+    bool saw_user_ctor = false;
+    bool matched_deleted = false;
+    bool defaulted_default = c->has_defaulted_default_ctor;
+    int matched = 0;
+    int matched_nothrow = -1;     // agreed nothrow answer of the matches
+    int movelike_nx = -2;         // nothrow of the T&/T&& (non-const) candidate
+    int copylike_nx = -2;         // nothrow of the const T& candidate
+    for ( size_t ci = 0; ci < c->ctors.size(); ++ci )
+    {
+	FuncDef *fd = c->ctors[ci]
+	    ? dynamic_cast<FuncDef *>(c->ctors[ci]->type) : NULL;
+	if ( !fd )
+	    continue;
+	if ( fd->is_member_template )
+	{
+	    saw_unmodelable = true;   // a ctor template can accept nearly anything
+	    continue;
+	}
+	saw_user_ctor = true;
+	// A `= default` special member behaves as the implicit one — the
+	// memberwise walk below owns it (its noexcept is the conjunction).
+	// An explicitly-defaulted DEFAULT ctor must keep the class default-
+	// constructible even beside other user ctors ([class.default.ctor]:
+	// the suppression rule counts user-DECLARED ctors, and this one is
+	// the default ctor itself).
+	//
+	// It arrives here WITHOUT defaulted_or_deleted: madc parses `= default`
+	// on the default ctor as an empty body, so it is an ordinary nullary
+	// FuncDef by the time the trait sees it, carrying no noexcept spec.
+	// Reading that absent spec as "unknown" refused the whole trait
+	// (-1) for every such class — which is what `std::mutex` is. The class
+	// flag is the only thing distinguishing it from `X() {}`, whose
+	// noexcept madc genuinely cannot know.
+	bool is_defaulted_default = fd->defaulted_or_deleted
+	    ? !fd->is_deleted
+	    : (c->has_defaulted_default_ctor && fd->parameters.size() <= 1);
+	if ( is_defaulted_default )
+	{
+	    if ( args.empty() && fd->parameters.size() <= 1 )
+		defaulted_default = true;
+	    continue;
+	}
+	size_t nparams = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
+	size_t ndefaults = 0;
+	for ( size_t i = fd->param_defaults.size(); i-- > 1; )
+	{
+	    bool has_def = fd->param_defaults[i]
+		|| (i < fd->param_default_tokens.size()
+		    && !fd->param_default_tokens[i].empty());
+	    if ( !has_def )
+		break;
+	    ++ndefaults;
+	}
+	if ( args.size() > nparams || args.size() + ndefaults < nparams )
+	    continue;                 // arity mismatch — not viable
+	bool viable = true;
+	bool unmodelable = false;
+	for ( size_t i = 0; i < args.size() && viable; ++i )
+	{
+	    DataDef *pdd = fd->parameters[i + 1];
+	    DataDef *pref = pdd;
+	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(pref) )
+		if ( pr->is_reference() && pr->base_type )
+		    pref = pr->base_type;
+	    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(pref) )
+		pref = pc->base_type ? pc->base_type : pref;
+	    const TraitTypeArg &a = args[i];
+	    if ( !pref || !a.dd )
+	    { unmodelable = true; viable = false; break; }
+	    if ( DataDefCLASS *pcl = dynamic_cast<DataDefCLASS *>(pref) )
+	    {
+		if ( a.dd == pcl || a.dd->name == pcl->name )
+		    continue;
+		if ( dynamic_cast<DataDefCLASS *>(a.dd)
+		  && trait_is_base_of(pcl, a.dd) )
+		    continue;
+		unmodelable = true;   // would need a conversion madc can't rank
+		viable = false;
+		break;
+	    }
+	    int s = trait_scalar_convertible_from(pref, a);
+	    if ( s == 1 )
+		continue;
+	    if ( s < 0 )
+		unmodelable = true;
+	    viable = false;
+	}
+	if ( unmodelable )
+	{ saw_unmodelable = true; continue; }
+	if ( !viable )
+	    continue;
+	if ( fd->is_deleted )
+	{ matched_deleted = true; continue; }
+	// NxNone IS decisive since the lexer stopped erasing `noexcept` in C++
+	// modes ([except.spec]: a constructor declared with no specifier — or
+	// with a false condition — is potentially throwing). A conditional
+	// spec whose condition did not fold records NxUnknown, which stays an
+	// honest refusal rather than a guess.
+	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1
+	       : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	if ( matched && matched_nothrow != nx )
+	    matched_nothrow = -1;     // ambiguous selection — refuse the nothrow claim
+	else
+	    matched_nothrow = nx;
+	// Classify a same-class single-arg candidate by its parameter's
+	// const-ness (madc's one post-resolution reference kind: the MOVE
+	// ctor's param is the non-const reference, the COPY ctor's the const
+	// one) for the value-category preference below.
+	if ( same_class_arg && nparams >= 1 )
+	{
+	    bool p_const = 1 < fd->const_params.size() && fd->const_params[1];
+	    DataDef *p1 = fd->parameters[1];
+	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p1) )
+		if ( pr->is_reference() && pr->base_type )
+		{
+		    if ( dynamic_cast<DataDefCONST *>(pr->base_type) )
+			p_const = true;
+		    if ( p_const )
+			copylike_nx = nx;
+		    else
+			movelike_nx = nx;
+		}
+	}
+	++matched;
+    }
+    if ( matched )
+    {
+	if ( !need_nothrow )
+	    return 1;
+	if ( matched == 1 || matched_nothrow != -1 )
+	    return matched_nothrow;
+	// Disagreeing matches: the reduced [over.ics.rank] preference — an
+	// RVALUE same-class argument selects the T&&/T& (non-const) overload
+	// over const T&; an lvalue (or const) argument the const T& one.
+	if ( same_class_arg )
+	{
+	    int pick = (args[0].is_rref && !args[0].referent_const)
+		     ? movelike_nx : copylike_nx;
+	    if ( pick != -2 )
+		return pick;
+	}
+	return -1;
+    }
+    if ( matched_deleted )
+	return 0;
+    // A SAME-CLASS argument is decided by the copy/move ctor. A ctor
+    // TEMPLATE is never a copy/move ctor ([class.copy.ctor]p2), and against
+    // a same-class argument the implicit/user copy/move is an exact match a
+    // template candidate cannot outrank ([over.match.best]p2 — non-template
+    // wins the tie). So an unmodelable template must not refuse this shape:
+    // with no explicit candidate matched (and the deleted trace gated at
+    // entry), the implicit memberwise walk is decisive. This is libc++'s
+    // std::allocator (ctor template `allocator(const allocator<_Up>&)`) —
+    // the refusal fell through capture-fail to a 0-placeholder `::value`,
+    // so is_move_constructible<allocator<T>> read FALSE and swap's
+    // __swap_result_t collapsed to an opaque struct return (wrong ABI).
+    if ( same_class_arg )
+	return trait_class_memberwise_ctor(c, true, need_nothrow, depth);
+    // VALUE-INIT with a DEFAULTED default ctor: the `= default` member is
+    // selected over any 0-arg-viable ctor template by the same non-template
+    // preference, so unmodelable templates cannot change this answer either.
+    if ( args.empty() && defaulted_default )
+	return trait_class_memberwise_ctor(c, false, need_nothrow, depth);
+    if ( saw_unmodelable )
+	return -1;
+    // No explicit candidate: the implicit/defaulted special members remain.
+    // Any user-declared ctor suppresses the implicit DEFAULT ctor
+    // ([class.default.ctor]p1); the implicit copy/move survives.
+    if ( args.empty() )
+	return saw_user_ctor
+	     ? 0 : trait_class_memberwise_ctor(c, false, need_nothrow, depth);
+    return 0;                        // no converting ctor takes these args
+}
+
+// __is_constructible(T, Args...) / __is_nothrow_constructible(T, Args...):
+// is the variable definition `T t(declval<Args>()...)` well-formed (and,
+// for the nothrow form, known non-throwing)? Tri-state like the assignable
+// trait: -1 = madc cannot answer faithfully (the caller raises a clear
+// error / declines the fold rather than emit a wrong bool).
+static int trait_is_constructible(const TraitTypeArg &to,
+				  const std::vector<TraitTypeArg> &args,
+				  bool need_nothrow, int depth)
+{
+    if ( !to.dd )
+	return -1;
+    if ( depth > 32 )
+	return -1;                   // pathological nesting — refuse, don't hang
+    if ( to.is_lref || to.is_rref )
+    {
+	// [dcl.init.ref] at this fidelity: same-type (or derived-to-base
+	// class) sources bind per value category; const-lvalue/rvalue refs
+	// also bind a convertible scalar temporary. Reference binding never
+	// throws, so the nothrow answer is the same.
+	if ( args.size() != 1 )
+	    return 0;
+	const TraitTypeArg &a = args[0];
+	if ( !a.dd )
+	    return -1;
+	bool related = a.dd == to.dd || a.dd->name == to.dd->name;
+	if ( !related && dynamic_cast<DataDefCLASS *>(to.dd)
+	  && dynamic_cast<DataDefCLASS *>(a.dd) )
+	    related = trait_is_base_of(to.dd, a.dd);
+	if ( related )
+	{
+	    if ( to.is_rref )
+		return a.is_lref ? 0 : 1;      // T&& never binds an lvalue
+	    if ( to.referent_const )
+		return 1;                       // const T& binds everything
+	    return a.is_lref ? 1 : 0;           // plain T& needs an lvalue
+	}
+	if ( !dynamic_cast<DataDefCLASS *>(to.dd)
+	  && (to.referent_const || to.is_rref) )
+	    return trait_scalar_convertible_from(to.dd, a);  // temp materializes
+	return 0;
+    }
+    if ( dynamic_cast<DataDefVOID *>(to.dd) )
+	return 0;
+    if ( dynamic_cast<DataDefCArray *>(to.dd) )
+	return args.empty() ? -1 : 0;    // array-of-T constructibility: not modeled
+    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(to.dd) )
+	return trait_class_constructible(c, args, need_nothrow, depth);
+    if ( dynamic_cast<DataDefSTRUCT *>(to.dd)
+      && !dynamic_cast<DataDefCOMPLEX *>(to.dd) )
+    {
+	// A plain C aggregate: value-init (0 args) and trivial copy from the
+	// same struct are well-formed and non-throwing; paren-init from other
+	// values is not a thing before C++20's P0960 (madc's dialect level).
+	if ( args.empty() )
+	    return 1;
+	if ( args.size() == 1 && args[0].dd
+	  && (args[0].dd == to.dd || args[0].dd->name == to.dd->name) )
+	    return 1;
+	return 0;
+    }
+    // Scalar target (arithmetic / enum / pointer): value-init, or one
+    // converting argument; scalar initialization never throws, so the
+    // nothrow answer equals the constructible one.
+    if ( args.empty() )
+	return 1;
+    if ( args.size() == 1 )
+	return trait_scalar_convertible_from(to.dd, args[0]);
+    return 0;
 }
 
 TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &name)
@@ -9904,6 +13406,16 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	{ nextToken(); a.is_lref = true; }
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
 	{ nextToken(); a.is_rref = true; }
+	unwrap_baked_trait_arg(a);
+	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
+	// member-type placeholder) is unanswerable: any 0/1 answered here
+	// bakes a wrong constant into whatever context asked. Refuse — a
+	// speculative/SFINAE caller catches this like any other decline.
+	if ( datadef_has_unresolved_dependent_surface(a.dd) )
+	    Throw(op_tb) << name << "(...) on a dependent type argument ("
+			 << (a.dd ? a.dd->name : std::string("?"))
+			 << ") cannot fold ["
+			 << dependent_surface_reason(a.dd) << "]" << flush;
 	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
@@ -9913,37 +13425,85 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	Throw(sep ? sep : op_tb) << "Expecting ',' or ')' in " << name << "(...)" << flush;
     }
 
-    if ( (int)args.size() != arity )
-	Throw(op_tb) << name << " expects " << arity << " type argument(s), got "
-		     << args.size() << flush;
+    if ( arity == TRAIT_ARITY_VARIADIC ? args.empty()
+				       : (int)args.size() != arity )
+	Throw(op_tb) << name << " expects "
+		     << (arity == TRAIT_ARITY_VARIADIC ? 1 : arity)
+		     << (arity == TRAIT_ARITY_VARIADIC ? " or more" : "")
+		     << " type argument(s), got " << args.size() << flush;
 
     bool result = false;
     if ( name == "__is_same" )
 	result = args[0].same_as(args[1]);
     else if ( name == "__is_enum" )
-	result = trait_is_enum(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_enum(args[0].dd);
     else if ( name == "__is_class" )
-	result = trait_is_class(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_class(args[0].dd);
     else if ( name == "__is_union" )
-	result = trait_is_union(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_union(args[0].dd);
     else if ( name == "__is_empty" )
-	result = trait_is_empty(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_empty(args[0].dd);
+    else if ( name == "__is_final" )
+	result = !trait_arg_is_reference(args[0]) && trait_is_final(args[0].dd);
     else if ( name == "__is_base_of" )
-	result = trait_is_base_of(args[0].dd, args[1].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && !trait_arg_is_reference(args[1])
+	      && trait_is_base_of(args[0].dd, args[1].dd);
     else if ( name == "__has_trivial_destructor" )
-	result = trait_has_trivial_destructor(args[0].dd);
+	result = trait_arg_is_reference(args[0])
+	      || trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
-	result = trait_is_trivial(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_trivial(args[0].dd);
+    else if ( name == "__is_trivially_copyable" )
+	result = !trait_arg_is_reference(args[0])
+	      && trait_is_trivially_copyable(args[0].dd);
     else if ( name == "__is_standard_layout" )
-	result = trait_is_standard_layout(args[0].dd);
+	result = !trait_arg_is_reference(args[0])
+	      && trait_is_standard_layout(args[0].dd);
     else if ( name == "__is_pod" )
-	result = trait_is_pod(args[0].dd);
+	result = !trait_arg_is_reference(args[0]) && trait_is_pod(args[0].dd);
+    else if ( name == "__is_destructible" )
+    {
+	int s = trait_is_destructible(args[0]);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate __is_destructible(...) "
+			 << "for this operand type" << flush;
+	result = s != 0;
+    }
     else if ( name == "__is_assignable" )
     {
 	int s = trait_is_assignable(args[0], args[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] LIVE __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n",
+		    args[0].dd ? args[0].dd->name.c_str() : "?",
+		    (int)args[0].is_lref, (int)args[0].is_rref,
+		    (int)args[0].referent_const,
+		    args[1].dd ? args[1].dd->name.c_str() : "?",
+		    (int)args[1].is_lref, (int)args[1].is_rref,
+		    (int)args[1].referent_const, s);
 	if ( s < 0 )
 	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
 			 << "these operand types" << flush;
+	result = s != 0;
+    }
+    else if ( name == "__is_constructible"
+	   || name == "__is_nothrow_constructible" )
+    {
+	std::vector<TraitTypeArg> ctor_args(args.begin() + 1, args.end());
+	int s = trait_is_constructible(args[0], ctor_args,
+				       name == "__is_nothrow_constructible", 0);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate " << name
+			 << "(...) for these operand types" << flush;
+	result = s != 0;
+    }
+    else if ( name == "__is_convertible_to" || name == "__is_convertible" )
+    {
+	int s = trait_is_convertible(args[0], args[1]);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate " << name
+			 << "(...) for these operand types" << flush;
 	result = s != 0;
     }
 
@@ -9953,6 +13513,155 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
     ti->line = op_tb->line;
     ti->column = op_tb->column;
     return ti;
+}
+
+// --- noexcept operator ([expr.unary.noexcept]) --------------------------------
+// `noexcept ( expression )` folds to a bool constant: 1 when madc can prove the
+// operand cannot throw, 0 when a reached callee is potentially throwing, and a
+// REFUSAL (never a guessed bool) when a node's throwing-ness is not modeled.
+// Tri-state conjunction: a definite may-throw (0) dominates an unknown (-1).
+static int noexcept_conjoin(int a, int b)
+{
+    if ( a == 0 || b == 0 )
+	return 0;
+    if ( a < 0 || b < 0 )
+	return -1;
+    return 1;
+}
+
+// Walk the PARSED operand tree (the operand was parsed unevaluated, so no call
+// body was instantiated and nothing was ODR-used):
+// - TokenObjTemp (class temporary `T(args)`): constructor selection is not
+//   recorded on the parse node (it happens at construction assembly), and
+//   trait_is_constructible's class arm IS the owner of "which constructor
+//   would be selected and is it nothrow" — delegate, then conjoin the
+//   arguments' own walk.
+// - TokenCallFunc / TokenCallMethod: the resolved callee's noexcept spec
+//   (resolved_call_funcdef is the one parse-side callee resolver), plus the
+//   arguments. A fn-pointer callee has no tracked exception spec: canon
+//   (g++/clang) answers `noexcept(p())` false, so 0.
+// - Builtin operators recurse; an operator RESOLVED onto a class overload
+//   types by resolved_type but does not name its method here — refuse.
+// - TokenCast recurses (scalar conversions do not throw; a throwing
+//   dynamic_cast<T&> is not distinguishable post-parse and is accepted — no
+//   real-header noexcept condition spells one).
+// - Leaves (variables, literals, nullptr, string literals) cannot throw.
+// - Any other node kind: refuse — never a silently wrong bool.
+static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
+{
+    if ( !tb )
+	return 1;
+    if ( depth > 64 )
+	return -1;
+    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb) )
+    {
+	TraitTypeArg to;
+	to.dd = ot->obj_class;
+	std::vector<TraitTypeArg> cargs;
+	int r = 1;
+	for ( TokenBase *a : ot->ctor_args )
+	{
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, a, depth + 1));
+	    TraitTypeArg ta;
+	    ta.dd = a ? a->datadef() : NULL;
+	    if ( !ta.dd )
+		return -1;
+	    unwrap_baked_trait_arg(ta);
+	    cargs.push_back(ta);
+	}
+	if ( r == 0 )
+	    return 0;
+	return noexcept_conjoin(r, trait_is_constructible(to, cargs, true,
+							  depth + 1));
+    }
+    if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	int r = 1;
+	for ( TokenBase *a : tc->parameters )
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, a, depth + 1));
+	if ( tc->src_node )
+	    r = noexcept_conjoin(r,
+				 noexcept_eval_expr(pgm, tc->src_node, depth + 1));
+	// TokenMember also models plain data access; only a function-typed
+	// callee is a call.
+	if ( !tc->var.type || !tc->var.type->is_function() )
+	    return r;
+	if ( dynamic_cast<DataDefFPTR *>(tc->var.type) )
+	    return 0;
+	FuncDef *fd = pgm.resolved_call_funcdef(tc);
+	if ( fd && fd->noexcept_spec == FuncDef::NxUnknown )
+	{
+	    // [temp.inst]/14: an exception specification is instantiated when
+	    // NEEDED — this operator needs it. The unevaluated operand parse
+	    // deliberately skipped call-site instantiation (declval's body
+	    // must never instantiate), but declval's spec is unconditional
+	    // (NxTrue at registration) and never reaches here; a callee whose
+	    // spec stayed CONDITIONAL (NxUnknown — libstdc++'s __relocate_a
+	    // family) can only answer through its instantiated declarator,
+	    // where the substituted condition folds. Instantiate this call's
+	    // binding and re-read.
+	    pgm.instantiate_namespace_fn_template_for_call(tc);
+	    fd = pgm.resolved_call_funcdef(tc);
+	}
+	if ( !fd )
+	    return -1;
+	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1
+	       : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	return noexcept_conjoin(r, nx);
+    }
+    if ( TokenCast *tcst = dynamic_cast<TokenCast *>(tb) )
+	return noexcept_eval_expr(pgm, tcst->expr, depth + 1);
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb) )
+    {
+	int r = noexcept_eval_expr(pgm, ts->index, depth + 1);
+	for ( TokenBase *e : ts->extra_indices )
+	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, e, depth + 1));
+	return r;
+    }
+    if ( tb->is_operator() )
+    {
+	TokenOperator *to = static_cast<TokenOperator *>(tb);
+	if ( to->resolved_type )
+	    return -1;
+	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
+				noexcept_eval_expr(pgm, to->right, depth + 1));
+    }
+    if ( dynamic_cast<TokenInt *>(tb)		// TokenNullptr included
+      || dynamic_cast<TokenReal *>(tb)
+      || dynamic_cast<TokenStr *>(tb) )
+	return 1;
+    if ( tb->type() == TokenType::ttVariable
+      || tb->type() == TokenType::ttIdentifier )
+	return 1;
+    return -1;
+}
+
+size_t Program::evaluate_noexcept_operator(TokenBase *op_tb)
+{
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(op_tb) << "Expecting '(' after noexcept" << flush;
+    nextToken();	// consume '('
+    TokenBase *expr_head = nextToken();
+    if ( !expr_head )
+	Throw(op_tb) << "Expecting expression in noexcept(...)" << flush;
+    // The operand is UNEVALUATED (decltype's twin at the type-token resolver):
+    // entities it names are not ODR-used, so template-call bodies must not be
+    // instantiated (declval's "must not be used!" body). RAII-restore so an
+    // exception mid-parse cannot leave the depth raised.
+    ++unevaluated_operand_depth;
+    TokenBase *expr = NULL;
+    try { expr = parseExpression(expr_head, true); }
+    catch ( ... ) { --unevaluated_operand_depth; throw; }
+    --unevaluated_operand_depth;
+    TokenBase *close = nextToken();
+    if ( !close || close->id() != TokenID::tkClBrk )
+	Throw(close ? close : op_tb)
+	    << "Expecting ')' after noexcept(...)" << flush;
+    int s = noexcept_eval_expr(*this, expr, 0);
+    if ( s < 0 )
+	Throw(op_tb) << "cannot faithfully evaluate noexcept(...) for this "
+		     << "operand" << flush;
+    return s == 1 ? 1 : 0;
 }
 
 static bool is_runtime_sized_type(DataDef *dd)
@@ -10910,6 +14619,19 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 	    return fail();
 	base_dd = resolve_named_datadef(contextual_identifier_name(tag_tb));
     }
+    else if ( peekToken() && peekToken()->id() == TokenID::tkLT
+	   && (is_contextual_identifier_token(type_tb)
+	    || type_tb->type() == TokenType::ttDataType) )
+    {
+	// A TEMPLATE-ID type argument — `offsetof(_FirstPaddingByte<>,
+	// __first_padding_byte_)`, libc++ __libcpp_datasizeof's value, with
+	// EMPTY angles filling from the default (`bool = __libcpp_is_final<
+	// _Tp>::value || !is_class<_Tp>::value`). The one declared-type
+	// resolver instantiates it and consumes the `<...>`; the bare-name
+	// lookup below cannot (a template is not a type).
+	if ( TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true) )
+	    base_dd = &tdt->definition;
+    }
     else if ( type_tb->type() == TokenType::ttDataType )
 	base_dd = &static_cast<TokenDataType *>(type_tb)->definition;
     else if ( is_contextual_identifier_token(type_tb) )
@@ -10987,10 +14709,32 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 // `ns::Tmpl<...>::member`. Reuses instantiate_template_id (for template-id
 // segments) and resolve_class_static_member_const_value (for the final member).
 // `first` is the already-consumed leading token (a type or a namespace name).
-// Consumes the `::`-chain on success; returns false (without guaranteeing the
-// stream position) only when the leading token can't begin such a chain — the
-// callers below gate on that so non-qualified atoms are untouched.
+// Consumes the `::`-chain on success. TRANSACTIONAL on failure: the wrapper
+// below restores the stream, so every later constant arm sees the intact
+// qualifier chain — a namespace-headed chain whose member is NOT a class
+// member (`std::is_trivially_copyable_v<T>`, a variable template) used to be
+// half-consumed here and could never reach the qualified var-template peel.
 bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &out)
+{
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    if ( fold_constant_qualified_member_walk(first, out) )
+	return true;
+    tokens = saved_tokens;
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
+    if ( _cur_token )
+    {
+	TokenBase::_parse_file = _cur_token->file;
+	TokenBase::_parse_line = _cur_token->line;
+	TokenBase::_parse_column = _cur_token->column;
+    }
+    return false;
+}
+
+bool Program::fold_constant_qualified_member_walk(TokenBase *first,
+						  madc_wide_int &out)
 {
     if ( !first )
 	return false;
@@ -11004,6 +14748,24 @@ bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &ou
 	// bare identifier (not yet resolved to ttDataType).
 	std::string nm = contextual_identifier_name(first);
 	const uint32_t nm_id = template_name_pool.intern(nm);
+	// A decltype-specifier as the qualifier ([expr.prim.id.qual]) — the
+	// libc++ detection idiom's `static const bool value =
+	// decltype(__test<_Tp>(0))::value;`. The one declared-type resolver
+	// owns the decltype arm (it consumes `decltype( expr )` and any
+	// member-TYPE chain, leaving a non-type `::value` unconsumed); its
+	// resolved class is the scope for the member walk below. At PATTERN
+	// parse the operand is dependent and resolves to a placeholder (not a
+	// class) -> return false; the capture's savepos discipline restores the
+	// stream and falls to the structural skip. The INSTANTIATION re-runs
+	// this capture with concrete tokens and folds the real value.
+	if ( !is_c_mode() && is_decltype_identifier(nm)
+	  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    if ( TokenDataType *dt = resolve_declared_type_token(first, true, true) )
+		scope = dynamic_cast<DataDefCLASS *>(&dt->definition);
+	    if ( !scope )
+		return false;
+	}
 	// Template-id leading segment `Name<...>::...`: instantiate to a scope.
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT
 	  && (find_template(nm_id, std::string(), NULL)
@@ -11026,6 +14788,15 @@ bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &ou
 	    if ( di != datatype_map.end() )
 		scope = dynamic_cast<DataDefCLASS *>(&(*di)->definition);
 	}
+	// A class-scope TYPEDEF ALIAS as the qualifier: `typedef impl<T>
+	// __base;` then `static const bool v = __base::ok;` — libc++
+	// numeric_limits' ENTIRE value surface reads through this shape.
+	// The alias lives on the enclosing class (set_class_type_alias),
+	// not in the flat maps; resolve_current_class_type_alias is the
+	// one owner (method-owner shadow + class-scope stack).
+	if ( !scope )
+	    scope = dynamic_cast<DataDefCLASS *>(
+			resolve_current_class_type_alias(nm));
 	if ( !scope && (namespace_map.count(nm) || namespace_datatype_map.count(nm)) )
 	    pending_ns = nm;
 	if ( !scope && pending_ns.empty() )
@@ -11153,6 +14924,12 @@ madc_wide_int Program::parse_constant_primary()
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
 	    return (madc_wide_int)evaluate_type_query(tb, name);
+	// noexcept(expr) — [expr.unary.noexcept] in constant context: the
+	// integral_constant base of libc++'s __libcpp_is_nothrow_constructible
+	// fallback (madc presents as GCC, so libc++ compiles its non-builtin
+	// arm) and any user noexcept(expr) non-type template argument.
+	if ( name == "noexcept" )
+	    return (madc_wide_int)evaluate_noexcept_operator(tb);
 	// Type-trait builtins in constant context — the std::integral_constant
 	// initializer shape `static const bool value = __is_class(T);` and non-type
 	// template args. Args are concrete (madc monomorphizes); fold to 0/1.
@@ -11178,6 +14955,92 @@ madc_wide_int Program::parse_constant_primary()
 	// consumed (it is `tb`); evaluate the requirement-seq's well-formedness.
 	if ( name == "requires" )
 	    return evaluate_requires_expression_constant();
+	// Namespace-QUALIFIED variable template / concept:
+	// `std::is_trivially_copyable_v<T>` in a static_assert. Peel the
+	// qualifier chain (classify_qualifier_before_scope +
+	// canonical_nested_namespace — the same owners the enum arm uses) and
+	// rebind `name` to the qualified registry key, so the var-template and
+	// concept arms below fold it exactly like the unqualified spelling.
+	// Transactional: an unknown qualified name restores the stream for the
+	// throw below.
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    QualifierScope qscope = classify_qualifier_before_scope(name, tb);
+	    if ( qscope.is_namespace() )
+	    {
+		TokenStream::Pos saved_tokens = tokens.savepos();
+		TokenBase *saved_cur = _cur_token;
+		TokenBase *saved_prv = _prv_token;
+		std::string ns_name = qscope.ns_name;
+		nextToken(); // consume '::'
+		TokenBase *member_tb = nextToken();
+		std::string member;
+		if ( member_tb && is_contextual_identifier_token(member_tb) )
+		{
+		    member = contextual_identifier_name(member_tb);
+		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		    {
+			std::string deeper =
+			    canonical_nested_namespace(ns_name, member);
+			if ( deeper.empty() )
+			    break;
+			nextToken(); // consume '::'
+			member_tb = nextToken();
+			if ( !member_tb
+			  || !is_contextual_identifier_token(member_tb) )
+			{
+			    member_tb = NULL;
+			    break;
+			}
+			ns_name = deeper;
+			member = contextual_identifier_name(member_tb);
+		    }
+		}
+		// [namespace.qual] member lookup: the registry key may live in
+		// an inline descendant (`std::is_trivially_copyable_v` is
+		// registered as std::__1::... under libc++) —
+		// inline_namespace_descendants owns that walk.
+		std::string qkey = ns_name + "::" + member;
+		bool qhit = var_template_map.find(qkey) != var_template_map.end()
+			 || concept_map.find(qkey) != concept_map.end();
+		if ( !qhit )
+		{
+		    std::vector<std::string> descendants =
+			inline_namespace_descendants(ns_name);
+		    for ( size_t di = 0; di < descendants.size(); ++di )
+		    {
+			std::string cand = descendants[di] + "::" + member;
+			if ( var_template_map.find(cand)
+				!= var_template_map.end()
+			  || concept_map.find(cand) != concept_map.end() )
+			{
+			    qkey = cand;
+			    qhit = true;
+			    break;
+			}
+		    }
+		}
+		DBG(std::cout << "constant qualified peel: qkey " << qkey
+		    << " lt=" << (peekToken()
+				  && peekToken()->id() == TokenID::tkLT)
+		    << " hit=" << qhit << std::endl);
+		if ( member_tb && qhit && peekToken()
+		  && peekToken()->id() == TokenID::tkLT )
+		    name = qkey;   // fall through to the arms below
+		else
+		{
+		    tokens = saved_tokens;
+		    _cur_token = saved_cur;
+		    _prv_token = saved_prv;
+		    if ( _cur_token )
+		    {
+			TokenBase::_parse_file = _cur_token->file;
+			TokenBase::_parse_line = _cur_token->line;
+			TokenBase::_parse_column = _cur_token->column;
+		    }
+		}
+	    }
+	}
 	// C++14 VARIABLE TEMPLATE in a constant expression: `is_floating_point_v
 	// <double>` (a non-type bool arg — e.g. enable_if's condition in
 	// std::numbers). Substitute the type args into the initializer tokens and
@@ -11451,11 +15314,18 @@ madc_wide_int Program::parse_constant_eq()
 // its `;` sentinel and the whole fold failed.)
 void Program::skip_const_logical_operand(bool stop_at_and)
 {
-    int depth = 0;
+    // DelimDepth (the one balanced-delimiter owner): the skipped operand can
+    // carry a TEMPLATE-ID (`1 || is_convertible<int, char>::value` — libc++'s
+    // __iterator_traits_impl bool argument), whose commas are template-argument
+    // separators, not expression boundaries. The old paren/square/brace-only
+    // counter returned at that comma, left the operand's tail unconsumed, and
+    // the caller's sentinel check aborted the WHOLE fold (the _If alias then
+    // instantiated an opaque zero-sized placeholder).
+    DelimDepth d;
     while ( TokenBase *t = peekToken() )
     {
 	TokenID id = (TokenID)t->id();
-	if ( depth == 0 )
+	if ( d.top() )
 	{
 	    if ( id == TokenID::tkSemi || id == TokenID::tkComma
 	      || id == TokenID::tkClBrk || id == TokenID::tkClSqr
@@ -11465,13 +15335,7 @@ void Program::skip_const_logical_operand(bool stop_at_and)
 	    if ( stop_at_and && id == TokenID::tkLand )
 		return;
 	}
-	if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-	  || id == TokenID::tkOpBrc )
-	    ++depth;
-	else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-	       || id == TokenID::tkClBrc )
-	{ if ( depth > 0 ) --depth; }
-	nextToken();
+	delimStepStream(nextToken(), d);
     }
 }
 
@@ -11675,62 +15539,121 @@ void Program::skip_discarded_statement()
 
 static bool constant_initializer_has_runtime_access(Program &pgm)
 {
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
+    // Explicit paren/square/brace, NOT d.top(): this scan never tracked angle
+    // brackets, and top() also demands angle == 0 — `a < b;` would open one and
+    // silently stop the `;` from terminating the scan.
+    DelimDepth d;
     for ( size_t i = 0; i < pgm.tokens.size(); ++i )
     {
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkSemi
-	  && paren_depth == 0 && square_depth == 0 && brace_depth == 0 )
+	  && d.paren == 0 && d.square == 0 && d.brace == 0 )
 	    break;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
+	d.update(t);
 	if ( t->id() == TokenID::tkDot || t->id() == TokenID::tkDeRef )
-	    return true;
+	{
+	    // The offsetof idiom `((T*)0)->member` (madc's own stddef.h
+	    // spelling; libc++ __libcpp_datasizeof::value is exactly this) is
+	    // an ADDRESS COMPUTATION, not runtime access — recognize the
+	    // null-pointer-deref shape and let the fold's dedicated parser
+	    // (try_parse_constant_offsetof_address) decide.
+	    bool nullptr_deref = t->id() == TokenID::tkDeRef && i >= 2
+		&& pgm.tokens[i-1] && pgm.tokens[i-1]->id() == TokenID::tkClBrk
+		&& pgm.tokens[i-2]
+		&& pgm.tokens[i-2]->type() == TokenType::ttInteger
+		&& pgm.tokens[i-2]->ival() == 0;
+	    if ( !nullptr_deref )
+		return true;
+	}
 	if ( !is_contextual_identifier_token(t) )
 	    continue;
 	TokenBase *next = (i + 1 < pgm.tokens.size()) ? pgm.tokens[i + 1] : NULL;
 	if ( next && (next->id() == TokenID::tkDot || next->id() == TokenID::tkDeRef) )
 	    return true;
 	std::string name = contextual_identifier_name(t);
+	// A decltype-specifier's operand is UNEVALUATED ([dcl.type.decltype]):
+	// nothing inside it is runtime access, and member/call shapes there
+	// (`decltype(__test<_Tp>(0))::value` — the libc++ detection idiom)
+	// must not veto the fold. Skip the balanced operand extent (DelimDepth
+	// owns balanced-delimiter scanning); the group nets zero on `d`.
+	if ( is_decltype_identifier(name)
+	  && i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
+	  && pgm.tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{
+	    DelimDepth skipd;
+	    size_t j = i + 1;
+	    while ( j < pgm.tokens.size() )
+	    {
+		j += delim_scan_step(pgm.tokens, j, skipd);
+		if ( skipd.paren == 0 )
+		    break;
+	    }
+	    i = j - 1;		// the loop's ++i resumes past the ')'
+	    continue;
+	}
 	bool bool_value = false;
 	bool constant_callable = name == "sizeof"
 			      || is_alignof_identifier(name)
 			      || is_type_trait_builtin(name)
 			      || is_bool_literal_identifier(name, bool_value)
 			      || is_nullptr_identifier(name);
+	// A TYPE name heading `(...)` is a functional CAST, not a runtime
+	// call — `type(-1) < type(0)` through the class's own member typedef
+	// is libc++ __libcpp_numeric_limits' entire is_signed/digits chain.
+	// Same resolution order the fold itself uses (flat map, then the
+	// class-scope alias owner; a template-param alias resolves too — the
+	// fold then declines it under a placeholder, which is the correct
+	// capture-time outcome).
+	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable
+	  && (pgm.datatype_map.find(name) != pgm.datatype_map.end()
+	   || pgm.resolve_current_class_type_alias(name)) )
+	    constant_callable = true;
 	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable )
 	    return true;
     }
     return false;
 }
 
-// Speculatively fold a static-data-member initializer (caller has already consumed
-// the '=') to a constant integer, expecting a terminating ';'. On success the
-// initializer is CONSUMED (stream left at ';') and the value returned via `out`; on
-// any failure the stream/diagnostics are restored and false returned, so the caller
-// falls back to skipping a non-constant initializer. Same save/try/restore idiom as
-// bracket_dim_constant_expression_parses.
-bool Program::capture_constant_initializer_value(int64_t &out)
+// Speculatively fold a static-data-member initializer to a constant integer,
+// expecting a terminating ';'. '=' form: the caller has already consumed the
+// '='. Brace form (brace_form=true): the '{' is still in the stream — this
+// function consumes the whole `{...}` group so a failed capture restores the
+// INTACT group for the caller's structural skip. On success the initializer is
+// CONSUMED (stream left at ';') and the value returned via `out`; on any
+// failure the stream/diagnostics are restored and false returned, so the
+// caller falls back to skipping a non-constant initializer. Same
+// save/try/restore idiom as bracket_dim_constant_expression_parses.
+bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 {
     if ( constant_initializer_has_runtime_access(*this) )
 	return false;
     auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
+    // Brace-or-equal-init, brace spelling (`static constexpr int n{7};`):
+    // this function owns the '{' so a failed capture restores the INTACT
+    // group for the caller's structural skip. `{}` is value-init — 0 for an
+    // integral ([dcl.init]/8). Success leaves the stream at the ';' exactly
+    // like the '=' form.
+    if ( brace_form )
+    {
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrc )
+	    return false;
+	nextToken();                 // consume '{'
+	if ( peekToken() && peekToken()->id() == TokenID::tkClBrc )
+	{
+	    nextToken();             // consume '}'
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    {
+		out = 0;
+		return true;
+	    }
+	    tokens = saved_tokens;
+	    return false;
+	}
+    }
     // A non-constant / still-dependent initializer (a dependent `static constexpr`
     // member like libstdc++'s `value = static_cast<...>(...)`) makes
     // parse_constant_integer_expression Throw, and throwbuf::sync() prints to stderr
@@ -11746,7 +15669,18 @@ bool Program::capture_constant_initializer_value(int64_t &out)
     try
     {
 	v = parse_constant_integer_expression();
-	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	if ( brace_form )
+	{
+	    // The expression must stop at the group's '}'; consume it and
+	    // land on the ';' the '=' form's contract promises.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrc )
+	    {
+		nextToken();
+		if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		    ok = true;
+	    }
+	}
+	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    ok = true;
     }
     catch ( ... ) { ok = false; }
@@ -11926,6 +15860,7 @@ DataDefINT128 ddINT128;
 DataDefUINT128 ddUINT128;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
+DataDefLDOUBLE ddLDOUBLE;
 DataDefSTRUCT ddMAX_ALIGN_T("max_align_t", 0);
 DataDefARRAY ddARRAY;
 // Out-of-line (ddCHAR is declared above; DataDefLPSTR IS-A DataDefPTR now). Keep
@@ -11987,9 +15922,11 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
       && ((type->basetype() != BaseType::btFunct && type->size > 0)
 	|| dynamic_cast<DataDefFPTR *>(type) != NULL) )
     {
-	data = calloc(count, d.size);
+	// Scalar slot: slot_size, not d.size — ddINT slots are read and
+	// written 64-bit (see Variable::slot_size).
+	data = calloc(count, slot_size(d));
 	flags |= vfALLOC;
-	DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << d.size << ") for " << n << std::endl);
+	DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << slot_size(d) << ") for " << n << std::endl);
 	DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
     }
 }
@@ -12159,12 +16096,55 @@ static bool template_pattern_mentions_param(const std::string &pattern,
     return false;
 }
 
+static int fn_template_deduce_param(const std::string &spelling,
+				    const std::vector<std::string> &typeparams,
+				    DataDef *arg_dd,
+				    std::string &tp_out, DataDef *&dd_out,
+				    Program *pgm = NULL,
+				    TokenBase *arg_expr = NULL);
+
+// A retained member-template placeholder carries only source parameter
+// spellings; its synthetic varargs signature is not an overload signature.
+// Rank the simple T/cv/ref/pointer shapes through the same deduction owner used
+// for instantiation. Complex dependent shapes stay conservatively viable until
+// substitution, preserving the existing fallback without erasing pointer or
+// reference layers for the shapes the owner understands.
+static int score_retained_member_template_param(
+	FuncDef *fd, const std::string &pattern, const DataDef *arg,
+	std::map<std::string, std::string> &bindings)
+{
+    bool dependent = template_pattern_mentions_param(
+	pattern, fd->template_param_names);
+    std::string tp;
+    DataDef *deduced = NULL;
+    int result = fn_template_deduce_param(pattern,
+	fd->template_param_names, const_cast<DataDef *>(arg), tp, deduced);
+    if ( result == 1 )
+    {
+	std::string spelling = cpp_spelling_for_mangle(
+	    deduced, deduced && deduced->is_reference());
+	std::map<std::string, std::string>::iterator found = bindings.find(tp);
+	if ( found != bindings.end() && found->second != spelling )
+	    return -1;
+	bindings[tp] = spelling;
+	return 5;	// deduction formed an exact parameter type
+    }
+    if ( dependent )
+	return 1;	// unsupported dependent shape: defer to substitution
+
+    std::string actual = cpp_spelling_for_mangle(
+	const_cast<DataDef *>(arg), false);
+    return norm_cpp_type_for_overload(pattern)
+	== norm_cpp_type_for_overload(actual) ? 5 : -1;
+}
+
 // [temp.func.order] tiebreak for member function templates (defined below, after
 // the partial-ordering primitives it reuses).
 static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
 
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
-					  const std::vector<const DataDef *> &argtypes)
+					  const std::vector<const DataDef *> &argtypes,
+					  int obj_cv)
 {
     Variable *best = NULL;
     int best_score = -1;
@@ -12193,29 +16173,49 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		  ? fd->parameters.size() - hidden : 0;
 	bool varargs = fd->is_varargs && pn > 0;
 	size_t fixed = varargs ? pn - 1 : pn;
+	// Env-gated probe (MADC_OVL_PROBE=<name substring>). Placed BEFORE the
+	// arity gate and before the viability `continue`s below, because a probe
+	// downstream of them prints nothing for a REJECTED candidate — and that
+	// silence reads as "the candidate does not exist", which is exactly the
+	// wrong conclusion to draw about a selection that picked a sibling.
+	{
+	    static const char *_ovl = ::getenv("MADC_OVL_PROBE");
+	    if ( _ovl && *_ovl && name.find(_ovl) != std::string::npos )
+		fprintf(stderr, "OVLCAND %s cand=%s disp=%s ret=%s parms=%zu "
+			"hidden=%zu pn=%zu varargs=%d fixed=%zu mt=%d "
+			"spellings=%zu sp0=%s argc=%zu arity_ok=%d\n",
+			name.c_str(), mv->name.c_str(),
+			fd->method_display_name.c_str(), fd->returns.name.c_str(),
+			fd->parameters.size(), hidden, pn, (int)varargs, fixed,
+			(int)fd->is_member_template,
+			fd->template_param_spellings.size(),
+			fd->template_param_spellings.empty()
+			    ? "-" : fd->template_param_spellings[0].c_str(),
+			argtypes.size(),
+			(int)!((!varargs && pn != argtypes.size())
+			    || (varargs && argtypes.size() < fixed)));
+	}
 	if ( (!varargs && pn != argtypes.size())
 	  || (varargs && argtypes.size() < fixed) )
 	    continue;
+	// [over.match.funcs]/4: a non-static member's implicit object param
+	// carries the member's cv, and a CONST object argument cannot
+	// initialize a non-const implicit object param ([over.match.viable]).
+	// Dtors stay callable on const objects.
+	if ( obj_cv == 1 && hidden && !fd->is_const_method && name[0] != '~' )
+	    continue;
 	int total = 0;
 	bool ok = true;
+	bool retained_member_template = fd->is_member_template
+	    && fd->template_param_spellings.size() == argtypes.size();
+	std::map<std::string, std::string> template_bindings;
 	for ( size_t i = 0; i < fixed; i++ )
 	{
 	    int s = -1;
-	    if ( fd->is_member_template
-	      && fd->template_param_spellings.size() == argtypes.size() )
-	    {
-		const std::string &pat = fd->template_param_spellings[i];
-		if ( template_pattern_mentions_param(pat,
-						     fd->template_param_names) )
-		    s = 1;
-		else
-		{
-		    std::string actual = cpp_spelling_for_mangle(
-			const_cast<DataDef *>(argtypes[i]), false);
-		    s = (norm_cpp_type_for_overload(pat)
-		      == norm_cpp_type_for_overload(actual)) ? 8 : -1;
-		}
-	    }
+	    if ( retained_member_template )
+		s = score_retained_member_template_param(
+		    fd, fd->template_param_spellings[i], argtypes[i],
+		    template_bindings);
 	    else
 	    {
 		size_t pi = i + hidden;
@@ -12228,32 +16228,54 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	}
 	if ( ok && varargs )
 	{
-	    if ( fd->is_member_template
-	      && fd->template_param_spellings.size() == argtypes.size() )
+	    if ( retained_member_template )
 	    {
 		for ( size_t i = fixed; i < argtypes.size(); ++i )
 		{
-		    const std::string &pat = fd->template_param_spellings[i];
-		    if ( template_pattern_mentions_param(
-			     pat, fd->template_param_names) )
-		    {
-			total += 1;
-			continue;
-		    }
-		    std::string actual = cpp_spelling_for_mangle(
-			const_cast<DataDef *>(argtypes[i]), false);
-		    if ( norm_cpp_type_for_overload(pat)
-		      != norm_cpp_type_for_overload(actual) )
+		    int s = score_retained_member_template_param(
+			fd, fd->template_param_spellings[i], argtypes[i],
+			template_bindings);
+		    if ( s < 0 )
 		    {
 			ok = false;
 			break;
 		    }
-		    total += 8;
+		    total += s;
 		}
 		if ( !ok )
 		    continue;
 	    }
-	    total += 1;
+	    else
+		total += 1;
+	}
+	// Env-gated probe (MADC_OVL_PROBE=<name substring>): every candidate's
+	// viability inputs and score, for diagnosing a selection that picks the
+	// wrong overload. Prints even for rejected candidates (ok=0), which is
+	// the case a score-only dump cannot explain.
+	{
+	    static const char *_ovl = ::getenv("MADC_OVL_PROBE");
+	    if ( _ovl && *_ovl && name.find(_ovl) != std::string::npos )
+	    {
+		std::string ats;
+		for ( size_t ai = 0; ai < argtypes.size(); ++ai )
+		{
+		    if ( ai )
+			ats += ',';
+		    ats += argtypes[ai] ? argtypes[ai]->name : "(null)";
+		}
+		fprintf(stderr, "OVLPROBE %s cand=%s disp=%s ret=%s ok=%d "
+			"total=%d parms=%zu hidden=%zu pn=%zu varargs=%d "
+			"fixed=%zu mt=%d spellings=%zu sp0=%s argc=%zu args=%s\n",
+			name.c_str(), mv->name.c_str(),
+			fd->method_display_name.c_str(),
+			fd->returns.name.c_str(), (int)ok, total,
+			fd->parameters.size(), hidden, pn, (int)varargs, fixed,
+			(int)fd->is_member_template,
+			fd->template_param_spellings.size(),
+			fd->template_param_spellings.empty()
+			    ? "-" : fd->template_param_spellings[0].c_str(),
+			argtypes.size(), ats.c_str());
+	    }
 	}
 	if ( ok && total > best_score )
 	{
@@ -12262,11 +16284,28 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	}
 	else if ( ok && total == best_score && best )
 	{
+	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
+	    // Score tie between const/non-const siblings: the implicit object
+	    // parameter is the discriminator ([over.match.best] — a non-const
+	    // object's exact cv-match beats the qualification conversion).
+	    if ( obj_cv >= 0 && best_fd
+	      && best_fd->is_const_method != fd->is_const_method )
+	    {
+		if ( fd->is_const_method == (obj_cv == 1) )
+		    best = mv;
+	    }
+	    // Equal conversion sequences prefer a non-template function over a
+	    // function-template specialization ([over.match.best.general]).
+	    else if ( best_fd
+	      && best_fd->is_member_template != fd->is_member_template )
+	    {
+		if ( !fd->is_member_template )
+		    best = mv;
+	    }
 	    // Viability tie: prefer the more-specialized member template
 	    // ([temp.func.order]). Without this the first-registered candidate
 	    // wins arbitrarily — `take(P)` could shadow the exact `take(U*)`.
-	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
-	    if ( best_fd && best_fd->is_member_template && fd->is_member_template
+	    else if ( best_fd && best_fd->is_member_template && fd->is_member_template
 	      && member_tmpl_more_specialized(fd, best_fd) )
 		best = mv;
 	}
@@ -12280,7 +16319,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	return NULL;
     }
     if ( base_class )
-	return base_class->findMethodOverload(name, argtypes);
+	return base_class->findMethodOverload(name, argtypes, obj_cv);
     return NULL;
 }
 
@@ -12782,9 +16821,30 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	return NULL;
     DataDefCLASS *lc = operand_object_class(to->left);
     DataDefCLASS *rc = operand_object_class(to->right);
-    if ( !lc && !rc )
+    // A plain C struct (not class-promoted, so operand_object_class is NULL)
+    // is still a valid operand of a user-written free operator template
+    // ([over.match.oper] — `box == 7`). Engage the free/retained lanes below;
+    // the member arms stay lc-gated and no-op for it. DataDefCLASS derives
+    // from DataDefSTRUCT, so this only widens, never re-routes, class operands.
+    if ( !lc && !rc
+      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->left))
+      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->right)) )
 	return NULL;
     std::string opname = std::string("operator") + opsym;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>): which arm of this
+    // lowering claimed the expression. A bail here hands the pair back to the
+    // member operator, and when every same-name member takes a scalar that
+    // surfaces far away as c2mir's "incompatible argument type for arithmetic
+    // type parameter" — with nothing naming the operator that lost.
+    {
+	static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+	if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+	    fprintf(stderr, "FREEOP enter %s lc=%s rc=%s member_ret=%d"
+		    " ovset=%zu\n", opname.c_str(),
+		    lc ? lc->name.c_str() : "-", rc ? rc->name.c_str() : "-",
+		    (int)(lc && lc->binary_operator_return_type(opname) != NULL),
+		    free_operator_overloads.size());
+    }
     if ( lc && lc->binary_operator_return_type(opname) )
     {
 	// A named member operator normally owns the expression. The ONE exception:
@@ -12806,7 +16866,13 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	for ( const FreeOperatorOverload &ov : free_operator_overloads )
 	    if ( ov.opname == opname && !ov.return_spelling.empty()
 	      && ov.return_spelling.back() == '&' )
+	    {
+		static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+		if ( _fop && *_fop && opname.find(_fop) != std::string::npos )
+		    fprintf(stderr, "FREEOP bail-refret %s ov.ret=%s\n",
+			    opname.c_str(), ov.return_spelling.c_str());
 		return NULL;
+	    }
 	Variable *nv_callee = NULL;
 	if ( instantiate_free_operator_template(opname, to->left, to->right,
 						&nv_callee) && nv_callee )
@@ -13358,6 +17424,59 @@ DataDef *Program::free_operator_arg_datadef(TokenBase *operand)
     return operand->datadef();
 }
 
+int Program::implicit_object_constness(Variable &recv)
+{
+    if ( recv.name == "__this" )
+    {
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	if ( code && code->method )
+	    if ( FuncDef *efd = dynamic_cast<FuncDef *>(
+			 code->method->returns.type) )
+		return efd->is_const_method ? 1 : 0;
+	return -1;
+    }
+    if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
+	return 1;
+    // A MEMBER receiver read through the implicit `this` joins the implicit
+    // object's cv ([expr.ref]): inside a const method a data member is a
+    // const object — libc++ set::size() const reads __tree_.size() and must
+    // select __tree's PUBLIC const size() overload, never its PRIVATE
+    // non-const twin (the cv tiebreak below in findMethodOverload needs
+    // obj_cv=1 to do that). A LOCAL that shadows a member keeps its own cv:
+    // the compound-chain identity walk exempts block locals.
+    {
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	Method *m = code ? code->method : NULL;
+	DataDefCLASS *owner = m ? m->owner_class : NULL;
+	FuncDef *mfd = m ? dynamic_cast<FuncDef *>(m->returns.type) : NULL;
+	if ( owner && mfd && mfd->is_const_method )
+	{
+	    std::string nm = recv.name;
+	    if ( owner->m_offset(nm) != -1 )
+	    {
+		bool is_block_local = false;
+		for ( TokenCpnd *c = code; c && !is_block_local; c = c->parent )
+		    for ( size_t i = 0; i < c->variables.size(); ++i )
+			if ( c->variables[i] == &recv )
+			{
+			    is_block_local = true;
+			    break;
+			}
+		if ( !is_block_local )
+		    return 1;
+	    }
+	}
+    }
+    DataDef *dd = recv.type;
+    // Reference transparency: a reference receiver denotes its referent.
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	    dd = rp->base_type;
+    if ( dd && dd->is_const() )
+	return 1;
+    return 0;
+}
+
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 		Variable &recv, DataDefCLASS *cls, const std::string &id)
 {
@@ -13372,8 +17491,28 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     // a pointer overload instead of the class-object overload.
     for ( TokenBase *p : tc->parameters )
 	at.push_back(p ? operand_value_datadef(p) : NULL);
-    Variable *ov = cls->findMethodOverload(id, at);
+    Variable *ov = cls->findMethodOverload(id, at,
+					   implicit_object_constness(recv));
     TokenCallMethod *selected = tc;
+    if ( !ov && unevaluated_operand_depth > 0 )
+    {
+	// In an unevaluated operand (a decltype/SFINAE probe) a scored MISS —
+	// same-name candidates exist (tc->var is the arity pick) but none is
+	// viable for these argument types — is [over.match.viable] failure:
+	// the call is ill-formed and the probe must SFINAE-reject. Keeping
+	// the arity pick typed `declval<Alloc>().destroy(declval<B*>())` as
+	// well-formed, so __has_destroy folded TRUE for an argument the
+	// member cannot take, and allocator_traits::destroy bound the
+	// __a.destroy arm — the __tree:890 tsubst bail (gate testptrviab).
+	// An unknown argument shape (a NULL DataDef) keeps the lenient
+	// fall-through — reject only what scored as PROVEN non-viable.
+	bool all_args_known = true;
+	for ( const DataDef *a : at )
+	    if ( !a ) { all_args_known = false; break; }
+	if ( all_args_known )
+	    Throw(tc) << "no viable overload of '" << id << "' in "
+		      << cls->name << " for these argument types" << flush;
+    }
     if ( ov && ov != &tc->var )
     {
 	selected = new TokenCallMethod(recv, *ov);
@@ -13430,50 +17569,23 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     return selected;
 }
 
-DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
-		const std::vector<DataDef *> &explicit_targs)
+// Substitute a retained dependent return-type token range with a positional
+// binding + trailing-pack elements (the clang SubstDecl model, return-type
+// only — no body instantiation). A pack-expansion `pattern...` naming the
+// pack (`declval<_ArgTypes>()...`, `__enable_if_t<!bool(_Bn::value)>...`) is
+// repeated once per pack element with the pack name substituted per element;
+// the pack name itself is left raw in the forward pass so the just-appended
+// pattern still carries it, then lifted out and re-emitted on the `...`.
+// The ONE implementation, shared by the member-template resolver
+// (resolve_member_template_call_return_type) and the namespace fn-template
+// by-key resolver (resolve_fn_template_return_by_key).
+static std::vector<TokenBase *> substitute_return_range_tokens(
+	const std::vector<TokenBase *> &rtoks,
+	const std::map<std::string, DataDef *> &binding,
+	const std::string &pack_name,
+	const std::vector<DataDef *> &pack_elems)
 {
-    if ( !fd || fd->member_template_return_tokens.empty()
-      || fd->template_param_names.empty() )
-	return NULL;
-    // Bind type parameters from the EXPLICIT template args (the common library
-    // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
-    // the call argument types is a follow-up (sub-wall (c)). The trailing
-    // parameter may be a PACK (`typename... _Args`): explicit args beyond the
-    // leading fixed params all belong to it — bind the fixed params singly and
-    // collect the pack's elements (the `__invoke_result`/`__result_of` keystone
-    // `_S_test<_Functor, _ArgTypes...>(0)` where _ArgTypes is multi-element).
-    std::map<std::string, DataDef *> binding;
-    std::string pack_name;
-    size_t nfixed = fd->template_param_names.size();
-    if ( fd->template_param_is_pack.size() == fd->template_param_names.size()
-      && !fd->template_param_is_pack.empty()
-      && fd->template_param_is_pack.back() )
-    {
-	pack_name = fd->template_param_names.back();
-	nfixed = fd->template_param_names.size() - 1;
-    }
-    std::vector<DataDef *> pack_elems;
-    for ( size_t i = 0; i < explicit_targs.size(); ++i )
-    {
-	if ( !explicit_targs[i] )
-	    continue;
-	if ( i < nfixed )
-	    binding[fd->template_param_names[i]] = explicit_targs[i];
-	else if ( !pack_name.empty() )
-	    pack_elems.push_back(explicit_targs[i]);
-    }
-    if ( binding.empty() && pack_elems.empty() )
-	return NULL;
-    // Substitute: clone the dependent return-type tokens, replacing each
-    // type-parameter name with the bound type (the clang SubstDecl model,
-    // return-type only — no body instantiation). A pack-expansion `pattern...`
-    // naming the pack (`declval<_ArgTypes>()...`) is repeated once per pack
-    // element with the pack name substituted per element; the pack name itself
-    // is left raw in the forward pass so the just-appended pattern still carries
-    // it, then lifted out and re-emitted on the `...`.
     std::vector<TokenBase *> sub;
-    const std::vector<TokenBase *> &rtoks = fd->member_template_return_tokens;
     for ( size_t i = 0; i < rtoks.size(); ++i )
     {
 	TokenBase *t = rtoks[i];
@@ -13528,7 +17640,7 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 		sub.push_back(t->clone());
 		continue;
 	    }
-	    std::map<std::string, DataDef *>::iterator bi = binding.find(tn);
+	    std::map<std::string, DataDef *>::const_iterator bi = binding.find(tn);
 	    if ( bi != binding.end() && bi->second )
 	    {
 		sub.push_back(new TokenDataType(bi->second->name.c_str(),
@@ -13538,19 +17650,188 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 	}
 	sub.push_back(t ? t->clone() : NULL);
     }
+    return sub;
+}
+
+DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
+		const std::vector<DataDef *> &explicit_targs)
+{
+    if ( vri_debug_enabled() && fd )
+	fprintf(stderr, "[vriprobe] MTRT enter %s ret=%zu defs=%zu\n",
+		fd->method_display_name.c_str(),
+		fd->member_template_return_tokens.size(),
+		fd->member_template_param_defaults.size());
+    if ( !fd || fd->member_template_return_tokens.empty()
+      || fd->template_param_names.empty() )
+	return NULL;
+    // Bind type parameters from the EXPLICIT template args (the common library
+    // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
+    // the call argument types is a follow-up (sub-wall (c)). The trailing
+    // parameter may be a PACK (`typename... _Args`): explicit args beyond the
+    // leading fixed params all belong to it — bind the fixed params singly and
+    // collect the pack's elements (the `__invoke_result`/`__result_of` keystone
+    // `_S_test<_Functor, _ArgTypes...>(0)` where _ArgTypes is multi-element).
+    std::map<std::string, DataDef *> binding;
+    std::string pack_name;
+    size_t nfixed = fd->template_param_names.size();
+    if ( fd->template_param_is_pack.size() == fd->template_param_names.size()
+      && !fd->template_param_is_pack.empty()
+      && fd->template_param_is_pack.back() )
+    {
+	pack_name = fd->template_param_names.back();
+	nfixed = fd->template_param_names.size() - 1;
+    }
+    std::vector<DataDef *> pack_elems;
+    for ( size_t i = 0; i < explicit_targs.size(); ++i )
+    {
+	if ( !explicit_targs[i] )
+	    continue;
+	if ( i < nfixed )
+	    binding[fd->template_param_names[i]] = explicit_targs[i];
+	else if ( !pack_name.empty() )
+	    pack_elems.push_back(explicit_targs[i]);
+    }
+    if ( binding.empty() && pack_elems.empty() )
+	return NULL;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+    // [temp.deduct]/8 for DEFAULTED type params: an unbound parameter with a
+    // captured default must substitute-and-resolve under the binding, or the
+    // candidate is NOT viable — gcc13's __is_destructible_impl::__test
+    // carries its whole SFINAE in `typename = decltype(declval<_Tp1&>().
+    // ~_Tp1())` (plain true_type return). resolve_template_param_default_type
+    // is the SFINAE-clean resolver (isolated stream, muted cerr, NULL on
+    // failure); a resolved default JOINS the binding so a return naming the
+    // defaulted param still substitutes.
+    // Enforce only under a CONCRETE binding: during a capture/dependent parse
+    // the bound args still name unresolved surfaces and every default would
+    // "fail" — rejecting the candidate the capture itself needs (the header's
+    // is_destructible chain then never registered). A dependent use keeps the
+    // old permissive resolution; the concrete instantiation re-runs here.
+    bool binding_concrete = !class_pattern_capture_in_progress
+			 && !::getenv("MADC_XTEST_NODEFFILL");
+    for ( std::map<std::string, DataDef *>::const_iterator bi = binding.begin();
+	  binding_concrete && bi != binding.end(); ++bi )
+	if ( !bi->second || datadef_has_unresolved_dependent_surface(bi->second) )
+	    binding_concrete = false;
+    // [temp.names]: the default's unqualified names (`declval`) bind in the
+    // member template's DEFINITION context. The owner's canonical spelling
+    // carries that namespace (`std::__do_is_destructible_impl` -> `std`);
+    // split before any template args so a nested `::` in an argument list
+    // cannot fool the scan. Empty -> global scope, no push.
+    std::string def_ns;
+    if ( owner )
+    {
+	std::string ocs = owner->canonical_cpp_spelling().empty()
+			? owner->name : owner->canonical_cpp_spelling();
+	size_t lt = ocs.find('<');
+	if ( lt != std::string::npos )
+	    ocs = ocs.substr(0, lt);
+	size_t sep = ocs.rfind("::");
+	if ( sep != std::string::npos )
+	    def_ns = ocs.substr(0, sep);
+    }
+    Program::NamespaceScope dns_scope(*this, def_ns);
+    if ( vri_debug_enabled() && binding_concrete
+      && !fd->member_template_param_defaults.empty() )
+	fprintf(stderr, "[vriprobe] MT deffill ctx owner=%s canon=%s ns=%s\n",
+		owner ? owner->name.c_str() : "(null)",
+		owner ? owner->canonical_cpp_spelling().c_str() : "-",
+		def_ns.c_str());
+    if ( binding_concrete )
+	for ( size_t i = 0; i < fd->template_param_names.size()
+		    && i < fd->member_template_param_defaults.size(); ++i )
+	{
+	    if ( binding.count(fd->template_param_names[i])
+	      || fd->member_template_param_defaults[i].empty() )
+		continue;
+	    if ( !pack_name.empty() && fd->template_param_names[i] == pack_name )
+		continue;
+	    DataDef *rd = resolve_template_param_default_type(
+		fd->member_template_param_defaults[i], binding, owner);
+	    if ( !rd )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] MT deffill REJECT %s param=%s b0=%s\n",
+			    fd->method_display_name.c_str(),
+			    fd->template_param_names[i].c_str(),
+			    binding.empty() ? "-" : binding.begin()->second->name.c_str());
+		return NULL;         // substitution failure — not viable
+	    }
+	    binding[fd->template_param_names[i]] = rd;
+	}
+    // [temp.deduct]/8 for the FUNCTION parameters: a parameter TYPE that
+    // names a bound template param must substitute-and-resolve under the
+    // binding, or the candidate is not viable — libc++'s
+    // __has_iterator_category __test pair carries its SFINAE in
+    // `typename _Up::iterator_category* = nullptr` (a param TYPE, not a
+    // defaulted type-param), and without this check the arity-preferred
+    // candidate wrongly survived at _Up=int and every false-branch detect
+    // read 1. Only runs MENTIONING a bound name are checked (others need no
+    // substitution and cannot fail under this binding); the same SFINAE-clean
+    // resolver as the deffill above (isolated stream, NULL on failure, a
+    // trailing param NAME is a tolerated leftover).
+    if ( binding_concrete )
+	for ( size_t i = 0; i < fd->member_template_param_type_tokens.size(); ++i )
+	{
+	    const std::vector<TokenBase *> &run =
+		fd->member_template_param_type_tokens[i];
+	    if ( run.empty() )
+		continue;
+	    bool names_bound = false;
+	    for ( TokenBase *t : run )
+		if ( t && is_contextual_identifier_token(t)
+		  && binding.count(contextual_identifier_name(t)) )
+		{ names_bound = true; break; }
+	    if ( !names_bound )
+		continue;
+	    if ( !resolve_template_param_default_type(run, binding, owner) )
+	    {
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] MT param-subst REJECT %s param[%zu]\n",
+			    fd->method_display_name.c_str(), i);
+		return NULL;             // substitution failure — not viable
+	    }
+	}
+    // Substitute — the ONE shared implementation (see
+    // substitute_return_range_tokens).
+    std::vector<TokenBase *> sub = substitute_return_range_tokens(
+	fd->member_template_return_tokens, binding, pack_name, pack_elems);
     // Resolve in the owner's class scope (so an owner-scope typedef / member
     // type in the return resolves). resolve_type_token_range carries its own
     // SFINAE trap (returns NULL on substitution failure — a non-viable
     // candidate, not a hard error).
-    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     bool pushed_owner = false;
     if ( owner ) { class_scope_stack.push_back(owner); pushed_owner = true; }
+    ClassTypeLookupScope return_definition_scope(*this, owner);
     DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
     if ( pushed_owner && !class_scope_stack.empty()
       && class_scope_stack.back() == owner )
 	class_scope_stack.pop_back();
     for ( TokenBase *t : sub )
 	delete t;
+    // A CAPTURE parse resolving through an UNENFORCEABLE defaulted-param
+    // SFINAE — the binding still names placeholders, so the default can
+    // neither pass nor fail — must not BAKE a CONSTANT return into the
+    // pattern: `decltype(__test<_Tp>(0))` would freeze true_type and every
+    // bound is_destructible<X> would answer 1 (the alias-node twin of the
+    // [traitfold] baked false_type). A DEPENDENT result stays a
+    // re-derivable pattern node (the common_type `_S_test` shape) and
+    // captures fine; a concrete one poisons the capture, and the class
+    // stays on the legacy re-parse lane, which re-resolves per
+    // instantiation in BOTH the live and the forest-bound consumers.
+    if ( rt && !binding_concrete && class_pattern_capture_in_progress
+      && !datadef_has_unresolved_dependent_surface(rt) )
+	for ( size_t i = 0; i < fd->template_param_names.size()
+		    && i < fd->member_template_param_defaults.size(); ++i )
+	    if ( !fd->member_template_param_defaults[i].empty()
+	      && !binding.count(fd->template_param_names[i]) )
+	    {
+		dependent_parse_poisoned = true;
+		Throw << "class-pattern capture cannot bake the constant "
+		      << "return of '" << fd->method_display_name
+		      << "' past its unenforceable defaulted-param SFINAE"
+		      << flush;
+	    }
     return rt;
 }
 
@@ -13560,12 +17841,51 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     if ( !tc || !owner || member.empty() )
 	return tc;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    // Only member TEMPLATES need the post-arg reselection: a non-template static
-    // overload set is already disambiguated by find_method_by_callable_arity at
-    // resolution time. Narrowing here keeps the change surgical (the part-18
-    // partial-ordering lesson: touch selection only on a genuine relationship).
-    if ( !fd || !fd->is_member_template )
+    if ( !fd )
 	return tc;
+    if ( !fd->is_member_template )
+    {
+	// A NON-template same-arity static overload set is disambiguated by
+	// parameter TYPES, which the resolution-time arity pick cannot see:
+	// libc++ promote.h's `__numeric_type::__test(float/double/...)` — the
+	// arity pick answered the first-registered overload for EVERY argument
+	// and decltype read the wrong return type (__promote<double>::type came
+	// out long double; sizeof 16 vs g++/clang++ 8 — a silent wrong value).
+	// Rank through the one owner and rebind; an unscorable set keeps the
+	// arity pick (the old behavior).
+	std::vector<const DataDef *> at;
+	bool all_args_known = true;
+	for ( TokenBase *p : tc->parameters )
+	{
+	    const DataDef *ad = p ? operand_value_datadef(p) : NULL;
+	    if ( !ad || datadef_involves_placeholder(
+			    const_cast<DataDef *>(ad), true) )
+		all_args_known = false;
+	    at.push_back(ad);
+	}
+	// An UNKNOWN argument shape scores neutral in findMethodOverload, which
+	// would let a varargs catch-all outrank real candidates — and a
+	// DEPENDENT (template-param) argument at pattern-parse time must not
+	// concretize a selection at all (the dependent decltype defers to
+	// instantiation; reducer tmp/r58b.mad documents the pattern-freeze gap
+	// that stays with the arity pick). Rebind only on a fully-typed,
+	// concrete argument list.
+	if ( !all_args_known )
+	    return tc;
+	Variable *ov = owner->findMethodOverload(member, at);
+	if ( ov && (ov->flags & vfSTATIC) && ov != &tc->var )
+	{
+	    TokenCallFunc *sel = new TokenCallFunc(*ov);
+	    sel->parameters = tc->parameters;
+	    sel->explicit_template_args = tc->explicit_template_args;
+	    sel->auto_scope_context = tc->auto_scope_context;
+	    sel->file = tc->file;
+	    sel->line = tc->line;
+	    sel->column = tc->column;
+	    return sel;
+	}
+	return tc;
+    }
     std::vector<const DataDef *> at;
     for ( TokenBase *p : tc->parameters )
 	at.push_back(p ? p->datadef() : NULL);
@@ -13638,14 +17958,97 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	// emission. NULL (substitution failure / no targs) leaves the placeholder.
 	if ( DataDef *rt = resolve_member_template_call_return_type(sfd,
 		sel->explicit_template_args) )
+	{
 	    if ( rt != &ddAUTO )
 		sel->return_override = rt;
+	}
+	else
+	{
+	    // [temp.deduct]/8: the SELECTED candidate's substitution failed
+	    // (a defaulted-param SFINAE probe — gcc13's `__test(int)` with
+	    // `typename = decltype(declval<_Tp1&>().~_Tp1())`). Overload
+	    // resolution falls to the NEXT viable same-name member template —
+	    // the ellipsis catch-all `__test(...)` whose return (false_type)
+	    // resolves unconditionally. Registration order preserves the
+	    // header's declaration order, so the catch-all is tried last.
+	    // The overload set lives on the class that REGISTERED the member
+	    // templates (`__do_is_destructible_impl` — a BASE of the class
+	    // this call resolved through, whose own `methods` is empty for
+	    // inherited members). sfd carries it.
+	    DataDefCLASS *reg_owner =
+		dynamic_cast<DataDefCLASS *>(sfd->member_template_owner);
+	    if ( !reg_owner )
+		reg_owner = owner;
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] MT fallback member=%s methods=%zu\n",
+			member.c_str(), reg_owner->methods.size());
+	    for ( Variable *mv : reg_owner->methods )
+	    {
+		if ( !mv )
+		    continue;
+		FuncDef *fd2 = dynamic_cast<FuncDef *>(mv->type);
+		if ( vri_debug_enabled() && fd2 && fd2->is_member_template )
+		    fprintf(stderr, "[vriprobe] MT cand disp=%s same=%d\n",
+			    fd2->method_display_name.c_str(),
+			    (int)(fd2 == sfd));
+		if ( !fd2 || fd2 == sfd || !fd2->is_member_template
+		  || fd2->method_display_name != member )
+		    continue;
+		if ( DataDef *rt2 = resolve_member_template_call_return_type(
+			fd2, sel->explicit_template_args) )
+		{
+		    if ( rt2 != &ddAUTO )
+		    {
+			TokenCallFunc *tc4 = new TokenCallFunc(*mv);
+			tc4->parameters = sel->parameters;
+			tc4->explicit_template_args = sel->explicit_template_args;
+			tc4->auto_scope_context = sel->auto_scope_context;
+			tc4->file = sel->file;
+			tc4->line = sel->line;
+			tc4->column = sel->column;
+			tc4->return_override = rt2;
+			return tc4;
+		    }
+		    break;
+		}
+	    }
+	}
     }
     return sel;
 }
 
 // Round `sz` up to alignment `a` (a is a power of two).
 static inline size_t mi_align_up(size_t sz, size_t a) { return (sz + a - 1) & ~(a - 1); }
+
+// Collect `base`'s interior polymorphic subobjects that are off the primary
+// chain, at offsets composed from `base_off` (base's own offset in the class
+// being laid out). Walks both the BaseSpec list and the legacy single
+// base_class chain (the collect_self_and_base_spellings idiom), deduping on
+// (class, offset) since the two can overlap. Feeds secondary_vptr_owners so
+// build_vtable_groups and the ctor stamps cover TRANSITIVE secondaries.
+static void collect_interior_secondary_vptrs(DataDefCLASS *base, size_t base_off,
+	std::vector<std::pair<DataDefCLASS *, size_t> > &out)
+{
+    if ( !base )
+	return;
+    for ( auto &bs : base->bases )
+    {
+	if ( bs.is_virtual || !bs.base )
+	    continue;
+	size_t off = base_off + bs.offset;
+	if ( !bs.is_primary && bs.base->has_vptr_slot )
+	{
+	    bool dup = false;
+	    for ( auto &e : out )
+		if ( e.first == bs.base && e.second == off ) { dup = true; break; }
+	    if ( !dup )
+		out.push_back({bs.base, off});
+	}
+	collect_interior_secondary_vptrs(bs.base, off, out);
+    }
+    if ( base->base_class )
+	collect_interior_secondary_vptrs(base->base_class, base_off, out);
+}
 
 // Itanium-faithful record layout. See
 // docs/superpowers/specs/2026-06-03-multiple-inheritance-design.md §2.
@@ -13704,18 +18107,57 @@ void DataDefCLASS::compute_layout()
 	// its strongest member, matching gcc/clang.
 	size_t balign = bs.base->alignment();
 	if ( !balign ) balign = 1;
+	// Itanium empty-base allocation: an EMPTY non-primary base occupies no
+	// storage and is PLACED AT OFFSET 0 (dsize contributes nothing), bumped
+	// only past a SAME-TYPE empty sibling ([intro.object] distinct-address
+	// rule). The old code parked it at the running offset — for libc++'s
+	// __compressed_pair<rep, allocator> that put the allocator elem at 24
+	// == ONE PAST the 24-byte object, so every __second()/__alloc()
+	// accessor read/wrote out of bounds (ASan: get_allocator overflows the
+	// string local; under the JIT the writes clobbered ADJACENT locals —
+	// the string-concat size corruption).
+	if ( empty_base && !bs.is_primary )
+	{
+	    size_t eoff = 0;
+	    for ( auto &prev : bases )
+	    {
+		if ( &prev == &bs ) break;
+		if ( !prev.is_virtual && prev.base == bs.base
+		  && prev.offset == eoff )
+		    ++eoff;
+	    }
+	    bs.offset = eoff;
+	    if ( bs.base->has_vptr_slot )
+		secondary_vptr_owners.push_back({bs.base, bs.offset});
+	    if ( balign > maxalign ) maxalign = balign;
+	    continue;
+	}
 	cur = mi_align_up(cur, balign);
 	bs.offset = bs.is_primary ? 0 : cur;
 	if ( bs.is_primary )
 	    cur = empty_base ? cur : bs.base->nvsize; // shares vptr@0; empty bases use EBO
 	else
 	{
-	    if ( bs.base->has_vptr_slot ) secondary_vptr_owners.push_back(bs.base);
+	    if ( bs.base->has_vptr_slot )
+		secondary_vptr_owners.push_back({bs.base, bs.offset});
 	    if ( !empty_base )
 		cur += bs.base->nvsize;
 	}
 	if ( balign > maxalign ) maxalign = balign;
     }
+
+    // Itanium: EVERY polymorphic base subobject off the primary chain gets its
+    // own vtable group + ctor vptr stamp — including the INTERIOR secondaries
+    // of a direct base, transitively at composed offsets. Without the walk,
+    // `E : D` (D : A, B — B secondary at +16) left E's B-subobject vptr on B's
+    // STANDALONE vtable, whose vbase-offset slots are wrong for E's layout: a
+    // vbase read through the B view landed mid-object (libc++ stringstream —
+    // basic_ostream is basic_iostream's second base; every insert was silently
+    // lost and `<< int` crashed in the locale copy ctor).
+    for ( auto &bs : bases )
+	if ( !bs.is_virtual && bs.base )
+	    collect_interior_secondary_vptrs(bs.base, bs.offset,
+					     secondary_vptr_owners);
 
     // 3. own data members begin after the non-virtual bases. Record the boundary
     //    only; apply_member_layout() does the member_offsets rewrite (it knows each
@@ -13811,8 +18253,8 @@ void DataDefCLASS::build_vtable_groups()
     DataDefCLASS *prim = NULL;
     for ( auto &b : bases ) if ( b.is_primary ) { prim = b.base; break; }
     std::set<std::string> secondary_slots;
-    for ( DataDefCLASS *o : secondary_vptr_owners )
-	for ( auto &s : o->vtable_slots ) secondary_slots.insert(s);
+    for ( auto &o : secondary_vptr_owners )
+	for ( auto &s : o.first->vtable_slots ) secondary_slots.insert(s);
 
     VtableGroup primary{this, 0, std::vector<std::string>(), 0};
     if ( prim ) primary.slots = prim->vtable_slots;
@@ -13826,12 +18268,9 @@ void DataDefCLASS::build_vtable_groups()
     }
     vtable_groups.push_back(primary);
 
-    for ( DataDefCLASS *o : secondary_vptr_owners )
-    {
-	size_t off = 0;
-	for ( auto &b : bases ) if ( b.base == o ) { off = b.offset; break; }
-	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
-    }
+    for ( auto &o : secondary_vptr_owners )
+	vtable_groups.push_back(VtableGroup{o.first, o.second,
+					    o.first->vtable_slots, 0});
 
     // Itanium: the complete-object vtable also carries one group per
     // POLYMORPHIC virtual base — the vbase subobject has its own vptr at its
@@ -14227,14 +18666,6 @@ int64_t madc_system(void *cmd)
     return (int64_t)system((const char *)cmd);
 }
 
-void *madc_getenv(void *result, void *name)
-{
-    std::string &out = *(std::string *)result;
-    const char *value = getenv((const char *)name);
-    out = value ? value : "";
-    return result;
-}
-
 const char *madc_get_argv(void *argv_ptr, int64_t index)
 {
     char **argv = (char **)argv_ptr;
@@ -14249,21 +18680,6 @@ const char *madc_get_argv(void *argv_ptr, int64_t index)
 extern "C" const char *get_argv(void *argv_ptr, int64_t index)
 {
     return madc_get_argv(argv_ptr, index);
-}
-
-extern "C" void *__madc_getenv(void *result, void *name)
-{
-    return madc_getenv(result, name);
-}
-
-void madc_setenv(void *name, void *value)
-{
-    setenv((const char *)name, (const char *)value, 1);
-}
-
-void madc_unsetenv(void *name)
-{
-    unsetenv((const char *)name);
 }
 
 static void register_std_namespace_spec(Program &pgm)
@@ -15334,10 +19750,18 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
-    builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)__madc_getenv);
+    // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
+    // bound to real libc. The old madc conveniences (getenv's 2-param
+    // std::string result-buffer __madc_getenv, setenv's 2-param overwrite=1
+    // wrapper) were a private dialect the C headers know nothing about: any
+    // include chain reaching real <stdlib.h> re-declares these names, the
+    // prototype replaces the builtin (gcc canon), and the two conventions
+    // cannot coexist on one name. madc is C under the hood — one shape, C's.
+    // `string s = getenv("HOME")` ingests the char* via string's real ctor.
+    builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_setenv);
-    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR), DataType::dtINT32}, (fVOIDFUNC)::setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)::unsetenv);
     // errno accessor: the host libc's errno macro expands to a call on this
     // symbol (glibc: (*__errno_location()); darwin: (*__error())). Register
     // the host's own accessor under the host's own name so real <errno.h>
@@ -15348,9 +19772,15 @@ void Program::populate_builtin_registry()
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
 #endif
 
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
-    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
+    // Declared with the real POSIX pointer types (handles and dlsym's return
+    // are void*) — the wrappers already cast internally, and the old dtINT64
+    // declarations survived a real <dlfcn.h> re-declaration half-applied
+    // (return refreshed, params kept), emitting `void *dlsym(long, char *)` —
+    // a hybrid prototype nothing anywhere declares, and a c2mir pointer/int
+    // warning on every dlsym(RTLD_DEFAULT, ...) call.
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose);
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
     builtin_registry.defaults_loaded = true;
@@ -15377,7 +19807,7 @@ void Program::add_core_functions()
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.core_functions.begin();
 	  it != builtin_registry.core_functions.end(); ++it )
     {
-	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
+	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method, true);
 	if ( var && it->id == "__builtin_va_start" )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
@@ -15399,18 +19829,7 @@ void Program::add_process_functions()
     // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.process_functions.begin();
 	  it != builtin_registry.process_functions.end(); ++it )
-    {
-	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
-	if ( var && it->id == "getenv" )
-	{
-	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
-	    if ( fd )
-	    {
-		fd->local_emit_name = "__madc_getenv";
-		funcdef_map["__madc_getenv"] = fd;
-	    }
-	}
-    }
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
 }
 
 void Program::add_dlfcn_functions()
@@ -15420,7 +19839,7 @@ void Program::add_dlfcn_functions()
     {
 	if ( !is_dynamic_symbol_allowed(it->id) )
 	    continue;
-	addFunction(it->id, it->params, it->extfunc, it->is_method);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
     }
 }
 
@@ -15679,6 +20098,7 @@ class ClassPatternPayloadReader
 	out.declaration_only = boolean();
 	out.defaulted_or_deleted = boolean();
 	out.is_deleted = boolean();
+	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
 	out.is_const_method = boolean();
 	out.is_member_template = boolean();
@@ -15705,6 +20125,29 @@ class ClassPatternPayloadReader
 	tokens(out.ctor_init_tokens);
 	tokens(out.member_template_decl);
 	tokens(out.member_template_return_tokens);
+	// v36: per-param default token runs ([temp.deduct]/8 SFINAE).
+	uint32_t ndefaults = count();
+	for ( uint32_t i = 0; valid && i < ndefaults; ++i )
+	{
+	    out.template_param_defaults.push_back(std::vector<TokenBase *>());
+	    tokens(out.template_param_defaults.back());
+	}
+	// v38: per-param CONSTRAINT-type runs (a non-type param's declared
+	// compound type — gates which non-type defaults are fillable).
+	uint32_t nconstraints = count();
+	for ( uint32_t i = 0; valid && i < nconstraints; ++i )
+	{
+	    out.template_param_constraints.push_back(std::vector<TokenBase *>());
+	    tokens(out.template_param_constraints.back());
+	}
+	// v37: per FUNCTION-parameter TYPE token runs (the OTHER
+	// [temp.deduct]/8 half — SFINAE in a param type).
+	uint32_t nptypes = count();
+	for ( uint32_t i = 0; valid && i < nptypes; ++i )
+	{
+	    out.param_type_token_runs.push_back(std::vector<TokenBase *>());
+	    tokens(out.param_type_token_runs.back());
+	}
 	return out;
     }
 
@@ -16119,6 +20562,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		const char *nm = forest.pool_str(ents[e].name_id);
 		if ( !nm || !*nm )
 		    continue;
+		// Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
+		// declared-name index entries with their unit + bound verdict.
+		{
+		    static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
+		    if ( dip && *dip && strstr(nm, dip) )
+			fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
+				nm, upath ? upath : "?", (int)bound);
+		}
 		std::unordered_map<std::string, bool>::iterator di =
 		    forest_declared_bound.find(nm);
 		if ( di == forest_declared_bound.end() )
@@ -16221,7 +20672,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // declaring template, which IS indexed. Judge the product by that head so
     // <iostream>'s pre-instantiated stream products don't leak into a
     // stdio-only TU (their secondary derivations — method default-args —
-    // reference names only their own closure declares).
+    // reference names only their own closure declares). The complement — an
+    // ADMITTED record whose default-arg run names a type this gate dropped
+    // (pmr _Alloc_hider's `= _Alloc()` naming polymorphic_allocator_char) —
+    // is handled where the run re-derives: the flush's default re-parse is
+    // best-effort and skips a default whose referents the closure dropped.
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
 	if ( !forest_closure_filter || !dd
 	  || dd->canonical_cpp_spelling().empty() )
@@ -16700,6 +21155,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		if ( p < rt.defaults.size() )
 		    restore_run(rt.defaults[p], fd.typeparam_defaults.back());
 	    }
+	    // v33: per-param constraint-TYPE runs ride the record's spec slot
+	    // (empty for a class-partial-style use — FN records never carried
+	    // spec patterns before v33).
+	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
+	    {
+		fd.typeparam_constraints.push_back(std::vector<TokenBase *>());
+		restore_run(rt.spec[sp], fd.typeparam_constraints.back());
+	    }
 	    restore_run(rt.body, fd.decl);
 	    if ( rt.kind == CIR_TMPLK_FN )
 		fn_template_map[key].push_back(fd);
@@ -16768,13 +21231,17 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	case CIR_TMPLK_MEMBER:
 	{
-	    // A body-bearing member function template of a restored class.
-	    // Stage the restored tokens + params keyed by the placeholder's
-	    // funcdef_map symbol (the record key); the post-tkProgram flush
-	    // hydrates the verbatim-restored placeholder with the pattern
-	    // fields — or falls back to the full live registration
-	    // (register_skipped_class_template_function) when the placeholder
-	    // did not restore. An owner the load dropped cleanly lacks.
+	    // A member function template of a restored class. Body-bearing:
+	    // the decl+body token run. Decl-only (v34): no decl tokens exist —
+	    // the record carries the dependent return-type range in the
+	    // (otherwise empty) constraint-run slot instead. Stage the tokens
+	    // + params keyed by the placeholder's funcdef_map symbol (the
+	    // record key); the post-tkProgram flush hydrates the
+	    // verbatim-restored placeholder with the pattern fields — or, for
+	    // a body-bearing record whose placeholder did not restore, falls
+	    // back to the full live registration
+	    // (register_skipped_class_template_function). An owner the load
+	    // dropped cleanly lacks.
 	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
 	    if ( !owner )
 		break;
@@ -16783,13 +21250,34 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    pm.key   = rt.key  ? rt.key  : "";
 	    pm.disp  = rt.name ? rt.name : "";
 	    restore_run(rt.body, pm.tokens);
-	    if ( pm.tokens.empty() )
+	    restore_run(rt.constraint, pm.ret_tokens);
+	    if ( pm.tokens.empty() && pm.ret_tokens.empty() )
 		break;
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
 	    {
 		pm.typeparams.push_back(rt.params[p].first);
 		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+		pm.is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+		// v36 semantics: the per-param default runs (always in the
+		// record layout, empty until now) carry the member template's
+		// [temp.deduct]/8 SFINAE defaults.
+		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
+		if ( p < rt.defaults.size() )
+		    restore_run(rt.defaults[p], pm.typeparam_defaults.back());
+		// v38: the per-param CONSTRAINT runs ride the record's spec
+		// slot (the FN lane's v33 convention). An older record has
+		// rt.spec empty — cleared below so the size mismatch
+		// downstream degrades to clearing every non-type default,
+		// the pre-v38 behavior (no info ≠ all-unconstrained).
+		pm.typeparam_constraints.push_back(std::vector<TokenBase *>());
+		if ( p < rt.spec.size() )
+		    restore_run(rt.spec[p], pm.typeparam_constraints.back());
+		if ( vri_debug_enabled() )
+		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
+			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
 	    }
+	    if ( rt.spec.empty() )
+		pm.typeparam_constraints.clear();
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
 	}
@@ -16809,7 +21297,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name);
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints);
+static void stamp_member_template_pattern_decl_only(
+	DataDefCLASS *owner, FuncDef *fd,
+	const std::vector<TokenBase *> &ret_tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -16970,27 +21469,51 @@ void Program::flush_forest_pending_globals()
     for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
     {
 	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
-	if ( !pm.owner || pm.tokens.empty() )
+	if ( !pm.owner || (pm.tokens.empty() && pm.ret_tokens.empty()) )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
 					      : funcdef_map.find(pm.key);
 	if ( fit != funcdef_map.end() && fit->second
 	  && fit->second->is_member_template )
 	{
-	    stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					  pm.typeparams, pm.is_pack, pm.disp);
+	    if ( !pm.tokens.empty() )
+		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
+					      pm.typeparams, pm.is_pack,
+					      pm.is_type, pm.disp,
+					      pm.typeparam_defaults,
+					      pm.typeparam_constraints);
+	    else
+		// v34 decl-only record: no decl tokens to derive from — stamp
+		// the restored return-type range + params directly.
+		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
+		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.is_type,
+		    pm.disp, pm.typeparam_defaults, pm.typeparam_constraints);
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
 		<< pm.owner->name << " hydrated placeholder " << pm.key
 		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens, decl="
+		<< pm.tokens.size() << " tokens, "
+		<< pm.ret_tokens.size() << " ret tokens, decl="
 		<< fit->second->member_template_decl.size() << ", owner="
 		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
 		<< (void *)fit->second << ", cls=" << (void *)pm.owner
 		<< ")" << std::endl);
 	    continue;
 	}
+	// A DECL-ONLY record cannot fall back to the live registration — there
+	// are no declaration tokens to re-run it over; the placeholder either
+	// restored (hydrated above) or the member stays a bare method.
+	if ( pm.tokens.empty() )
+	    continue;
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	std::vector<bool> saved_is_type = last_skipped_template_typeparam_is_type;
+	last_skipped_template_typeparam_is_type = pm.is_type;
+	std::vector<std::vector<TokenBase *> > saved_defaults =
+	    last_skipped_template_typeparam_defaults;
+	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
+	std::vector<std::vector<TokenBase *> > saved_constraints =
+	    last_skipped_template_typeparam_constraints;
+	last_skipped_template_typeparam_constraints = pm.typeparam_constraints;
 	// Live ran this registration INSIDE the owner's class body — the
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
@@ -17000,6 +21523,9 @@ void Program::flush_forest_pending_globals()
 						 pm.typeparams, 0, std::string());
 	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
+	last_skipped_template_typeparam_is_type = saved_is_type;
+	last_skipped_template_typeparam_defaults = saved_defaults;
+	last_skipped_template_typeparam_constraints = saved_constraints;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
 	    << pm.owner->name << " (" << pm.typeparams.size()
 	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
@@ -17217,6 +21743,31 @@ void Program::flush_forest_pending_globals()
 		DBG(std::cout << "flush_forest_pending_globals: ns import "
 		    << b.ns << "::" << b.name << " -> " << b.key << std::endl);
 	    }
+	    // [namespace.udecl] twin of the live using-arm (TokenUSING::parse):
+	    // a FLAGGED record's import ALSO joins the target's overload set —
+	    // the SAME two registrations a declaration written in that
+	    // namespace gets, join unconditional even when the map binding
+	    // already exists. Without it a bound consumer ranks against a
+	    // SMALLER set than the freezing parse and mints a DIFFERENT
+	    // instantiation identity (LOADED == parsed violation;
+	    // stl_vector.h:428 "conversion of non-scalar value requested" in
+	    // the release pack's verify). Bind-only records (the inline-ns
+	    // mirror's redundant entries) must NOT join: the live mirror
+	    // grows no sets.
+	    if ( !b.ov_member )
+		continue;
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[std::string(b.ns) + "::" + b.name];
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == v )
+		    known = true;
+	    if ( !known )
+	    {
+		NamespaceFnOverload e;
+		e.var = v;
+		ovset.push_back(e);
+	    }
 	}
 	// Inline-namespace links: restore inline_namespace_children VERBATIM,
 	// then RE-RUN the one live derivation (mirror_inline_namespace_into_
@@ -17388,6 +21939,7 @@ void Program::flush_forest_pending_globals()
 		Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
 		Method temp_method(temp_fn);
 		temp_method.owner_class = rd.owner;
+		size_t saved_css = class_scope_stack.size();
 		pushCompound();
 		TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
 		if ( pscope )
@@ -17396,16 +21948,41 @@ void Program::flush_forest_pending_globals()
 		    class_scope_stack.push_back(rd.owner);
 		// Live also parsed inside `namespace NS {}` — unqualified names
 		// (io_errc) resolve through the namespace chain.
-		TokenBase *expr;
-		if ( rd.ns && *rd.ns )
+		// BEST-EFFORT: a default whose referents the closure filter
+		// dropped must not re-derive — same live-parity principle as
+		// the owner gate above, one reference deeper. The registration
+		// gates judge by NAME/HEAD verdicts, but a run's tokens spell
+		// referents by NAME (pmr _Alloc_hider's `= _Alloc()` names
+		// polymorphic_allocator_char — a product the head gate
+		// dropped), so the mismatch surfaces only here. Skip leaves
+		// the param defaultless: a later call that genuinely demands
+		// it fails LOUD on arity — never a silent wrong value.
+		TokenBase *expr = NULL;
+		try
 		{
-		    NamespaceScope nsg(*this, rd.ns);
-		    expr = parseExpression(nextToken(), true);
+		    if ( rd.ns && *rd.ns )
+		    {
+			NamespaceScope nsg(*this, rd.ns);
+			expr = parseExpression(nextToken(), true);
+		    }
+		    else
+			expr = parseExpression(nextToken(), true);
 		}
-		else
-		    expr = parseExpression(nextToken(), true);
-		if ( rd.owner )
+		catch ( ... )
+		{
+		    expr = NULL;
+		    DBG(std::cout << "flush_forest_pending_globals: default arg "
+			<< (rd.owner ? rd.owner->name + "::" : std::string())
+			<< rd.fd->name << " param " << pidx
+			<< " SKIPPED (referent outside the bound closure)"
+			<< std::endl);
+		}
+		// Unwind to the saved marks: a mid-parse throw can leave extra
+		// compound / class-scope frames behind.
+		while ( class_scope_stack.size() > saved_css )
 		    class_scope_stack.pop_back();
+		while ( pscope && !compounds.empty() && compounds.top() != pscope )
+		    popCompound();
 		if ( pscope && !compounds.empty() && compounds.top() == pscope )
 		    popCompound();
 		_cur_token = saved_cur;
@@ -17517,6 +22094,25 @@ void Program::activate_token_pools()
     madc_active_project_types = &project_types;	// B1: cir_node datadef_id resolves via typeids
 }
 
+// The ambient pools activate_token_pools() binds must NOT outlive their
+// owning Program: a TokenIdent constructed after this Program dies would
+// intern into the FREED strpool (heap-use-after-free — ASAN caught it in
+// test_datadef's journal case, where a token minted after an earlier case's
+// Program died read that Program's pool; latent for every multi-Program
+// host, libmadc embeddings included — the single-Program CLI never sees it).
+// Release only what THIS Program owns: a second live Program that has since
+// activated its own pools stays bound; the token ctor/spelling() guards
+// already handle the no-pool state (spelling_id 0 / "").
+Program::~Program()
+{
+    if ( TokenBase::_active_strpool == &strpool )
+	TokenBase::_active_strpool = NULL;
+    if ( TokenBase::_active_valpool == &valpool )
+	TokenBase::_active_valpool = NULL;
+    if ( madc_active_project_types == &project_types )
+	madc_active_project_types = NULL;
+}
+
 void Program::_parser_init()
 {
     activate_token_pools();
@@ -17529,6 +22125,59 @@ void Program::_parser_init()
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
     register_namespace_specs();
+    // clang's __make_integer_seq builtin template: a marker registration so
+    // every template-id head lookup (type AND expression lanes) recognizes
+    // the name and funnels to instantiate_template_use, whose native arm
+    // (instantiate_make_integer_seq) resolves it ahead of the registry.
+    // Empty body + non-type params = the opaque dependent shell serves any
+    // use the native arm declines (a dependent N), like any other template.
+    {
+	const uint32_t nid = template_name_pool.intern("__make_integer_seq");
+	std::vector<TemplateDef> &vars =
+	    class_template_variants_for_write(nid, NULL, false);
+	if ( vars.empty() )
+	{
+	    TemplateDef td;
+	    td.class_name = "__make_integer_seq";
+	    td.registry_name_id = nid;
+	    td.typeparams.push_back("_Sq");
+	    td.typeparams.push_back("_Tp");
+	    td.typeparams.push_back("_Np");
+	    td.typeparam_defaults.resize(3);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_type.push_back(true);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_pack.assign(3, false);
+	    td.has_non_type_params = true;
+	    vars.push_back(td);
+	}
+    }
+    // clang's __type_pack_element builtin template — the same marker scheme.
+    // The native arm at instantiate_template_use folds a CONCRETE use to its
+    // I-th type argument (the result IS one of the args — no instantiation);
+    // libc++'s tuple_element takes this branch instead of the
+    // decltype-indexer fallback, whose resolution minted an opaque dependent
+    // shell (get<0>'s return, the mem-init demand deferral — task #103).
+    {
+	const uint32_t nid = template_name_pool.intern("__type_pack_element");
+	std::vector<TemplateDef> &vars =
+	    class_template_variants_for_write(nid, NULL, false);
+	if ( vars.empty() )
+	{
+	    TemplateDef td;
+	    td.class_name = "__type_pack_element";
+	    td.registry_name_id = nid;
+	    td.typeparams.push_back("_Ip");
+	    td.typeparams.push_back("_Types");
+	    td.typeparam_defaults.resize(2);
+	    td.typeparam_is_type.push_back(false);
+	    td.typeparam_is_type.push_back(true);
+	    td.typeparam_is_pack.push_back(false);
+	    td.typeparam_is_pack.push_back(true);
+	    td.has_non_type_params = true;
+	    vars.push_back(td);
+	}
+    }
     _braces = 0;
 }
 
@@ -17580,11 +22229,7 @@ bool Program::is_runtime_eval_expression_scope_access_enabled() const
 //   - no real twin (ns_php/__madc__ internals) -> madc-own (keep embedded).
 bool Program::embedded_header_is_system_library_shim(const std::string &name) const
 {
-    extern const char *madc_sys_include_paths[];
-    extern const char *madc_compiler_owned_include_dir;
-    const std::string owned =
-	(madc_compiler_owned_include_dir && *madc_compiler_owned_include_dir)
-	? madc_compiler_owned_include_dir : std::string();
+    const std::string owned = compiler_owned_include_dir();
     // Freestanding (bucket 1/2): if the compiler supplies it, madc owns it.
     if ( !owned.empty() )
     {
@@ -17592,12 +22237,7 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
 	if ( probe.good() )
 	    return false;
     }
-    static const char *fallback_paths[] = {
-	"/usr/local/include/", "/usr/include/", "/usr/include/x86_64-linux-gnu/",
-	(const char *)0
-    };
-    const char **paths = (madc_sys_include_paths[0] != NULL)
-			 ? madc_sys_include_paths : fallback_paths;
+    const char *const *paths = sys_include_paths();
     for ( int i = 0; paths[i]; ++i )
     {
 	if ( !owned.empty() && owned == paths[i] )
@@ -17607,6 +22247,60 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
 	    return true;   // glibc/libstdc++ provides it -> system-library shim
     }
     return false;          // no real twin -> madc-own -> keep embedded
+}
+
+// Header partition, second question (libc++ flavor P2.2b): does a search
+// directory that OUTRANKS madc's embedded set supply <name>?
+//
+// The sibling predicate above asks "is this embedded header a redundant twin of
+// a C-library header?". This one asks where the embedded copy sits in the SEARCH
+// ORDER, which is a different question with a different answer: gcc's own
+// stddef.h lives in the compiler-owned dir, so the classifier above correctly
+// says "keep embedded" — yet a C++ standard library on the path must still win.
+//
+// madc's embedded freestanding headers ARE its compiler resource dir, so they
+// belong at the slot the generated table records as the flavor's
+// compiler_owned_include_dir(). Both canon compilers search
+//
+//     C++ stdlib (c++/v1, c++/NN) -> compiler resource dir -> C library
+//
+// so directories BEFORE that slot outrank the embedded copy, and directories
+// after it lose to it. -I dirs precede the compiler's whole list and so outrank
+// it unconditionally, matching gcc's precedence for -I over its own resource dir.
+//
+// This is what lets libc++'s <stddef.h> / <stdint.h> / <float.h> / <stdbool.h>
+// wrappers win when libc++ is on the path — they #include_next the C library's
+// copy afterwards, so shadowing them makes libc++ detect the bypass and #error.
+// A name no earlier directory supplies still resolves from the embedded copy,
+// which is the header-less-Mac promise (nothing on the path -> madc serves it).
+//
+// Position is derived from the generated table, never a name list (Rule #7):
+// madc's own ns_*/__madc__ headers need no exception because no real directory
+// ships those names.
+bool Program::embedded_header_outranked(const std::string &name) const
+{
+    for ( std::size_t i = 0; i < include_paths.size(); ++i )
+    {
+	std::ifstream probe((include_paths[i] + name).c_str());
+	if ( probe.good() )
+	    return true;
+    }
+    const std::string owned = compiler_owned_include_dir();
+    // No slot recorded (no compiler at build time, or the fallback list is in
+    // use): the embedded set keeps its historical unconditional precedence
+    // over the system dirs rather than guessing a position.
+    if ( owned.empty() )
+	return false;
+    const char *const *paths = sys_include_paths();
+    for ( int i = 0; paths[i]; ++i )
+    {
+	if ( owned == paths[i] )
+	    return false;   // reached the slot — everything after it loses
+	std::ifstream probe((std::string(paths[i]) + name).c_str());
+	if ( probe.good() )
+	    return true;
+    }
+    return false;          // slot not in the list — preserve the old order
 }
 
 bool Program::is_embedded_header_allowed(const std::string &name) const
@@ -17771,6 +22465,13 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
     // capturable.
     if ( var->is_constant() && !(var->flags & vfCONSTDECL) )
 	return false;
+    // A DECLARATION never completed by a definition (vfEXTERN) is excluded by
+    // the same rule, but NOT here: whether a definition arrives is a
+    // whole-TU property, and this predicate runs at the eval call site, where
+    // the rest of the file is still unparsed. `extern int g;` before the call
+    // with `int g = 5;` after it is capturable, and rejecting it here would
+    // drop it. The test lives in the CIR scope-context lowering instead,
+    // beside the pointer/unsupported-type skips, where the flag is final.
 
     DataType raw = var->type->rawtype();
     return raw == DataType::dtBOOL
@@ -17832,6 +22533,13 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
     // global) without re-hashing the std::string per level (C2).
     uint32_t qsid = strpool.intern(id);
 
+    // Script mode: while a file-scope script statement is being parsed, the
+    // scope IS the synthesized main — its locals (`:=` receivers) resolve
+    // and shadow globals exactly as inside a written main. Mirrors
+    // script_param_lookup (argc/argv), which stays for the pre-main case.
+    if ( !code )
+	code = script_lookup_scope();
+
     if ( code )
     {
 	if ( (var=code->findVariable(strpool, qsid, id)) )
@@ -17872,25 +22580,10 @@ Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
 
 Variable *Program::findVariable(const std::string &s)
 {
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    variable_map_iter vmi;
-    Variable *var;
-
-    if ( code /*&& code->type() != TokenType::ttProgram*/ )
-	return findVariable(code, s);
-
-    if ( !(var=tkProgram->findVariable(strpool, s)) )
-    {
-	// Script mode: see the (code, id) overload above.
-	if ( (var = script_param_lookup(s)) )
-	    return var;
-	DBG(std::cout << "Program::findVariable(" << s << ") not found" << std::endl);
-	return NULL;
-    }
-
-    DBG(std::cout << "Program::findVariable(" << s << ") found ptr: " << var << std::endl);
-
-    return var;
+    // Delegate to the (code, id) overload — ONE lookup chain (it owns the
+    // script-mode synthesized-main scope, the tkProgram probe, and the
+    // script-param fallback; a NULL code just skips the local probe).
+    return findVariable(compounds.empty() ? NULL : compounds.top(), s);
 }
 
 bool Program::is_known_namespace(const std::string &name) const
@@ -17910,59 +22603,166 @@ void Program::set_namespace_preference(const std::vector<std::string> &order, To
     namespace_preference = order;
 }
 
+// [namespace.qual]: NS's transitive inline-namespace descendants
+// (std -> std::__1 -> ...), in BFS order; empty when NS has no inline
+// children. The ONE owner of the inline-set walk — callers probe NS itself
+// first (their miss-free hot path), then each descendant.
+std::vector<std::string> Program::inline_namespace_descendants(
+					const std::string &ns) const
+{
+    std::vector<std::string> pending;
+    std::map<std::string, std::vector<std::string>>::const_iterator ci =
+	inline_namespace_children.find(ns);
+    if ( ci == inline_namespace_children.end() )
+	return pending;
+    pending = ci->second;
+    for ( size_t pi = 0; pi < pending.size(); ++pi )
+    {
+	ci = inline_namespace_children.find(pending[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t i = 0; i < ci->second.size(); ++i )
+		pending.push_back(ci->second[i]);
+    }
+    return pending;
+}
+
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
 {
+    // [namespace.qual]: the members of N include the members of N's inline
+    // namespace set, TRANSITIVELY — and they are visible while the inline
+    // namespace block is still OPEN, not only after
+    // mirror_inline_namespace_into_parent() copies them up at its close.
+    // libc++'s entire body is `std::X` calls inside a still-open
+    // `namespace std { inline namespace __1 {` block, so a flat probe of
+    // N's own map fails every one of them (<cwchar>:202).
     namespace_map_t::const_iterator nsi = namespace_map.find(ns_name);
-    if ( nsi == namespace_map.end() )
-	return NULL;
-    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
-    return vmi == nsi->second.end() ? NULL : vmi->second;
+    if ( nsi != namespace_map.end() )
+    {
+	variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+	if ( vmi != nsi->second.end() )
+	    return vmi->second;
+    }
+    // Children only exist for a handful of namespaces (std, std::ranges, …);
+    // the descendant vector is not on the miss-free hot path above.
+    std::vector<std::string> descendants = inline_namespace_descendants(ns_name);
+    for ( size_t pi = 0; pi < descendants.size(); ++pi )
+    {
+	nsi = namespace_map.find(descendants[pi]);
+	if ( nsi != namespace_map.end() )
+	{
+	    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+	    if ( vmi != nsi->second.end() )
+		return vmi->second;
+	}
+    }
+    return NULL;
+}
+
+std::string Program::canonical_nested_namespace(const std::string &parent,
+						const std::string &comp)
+{
+    // [namespace.qual] applied to NAMESPACE names: PARENT::COMP may name a
+    // namespace declared in PARENT's inline namespace set (libc++ registers
+    // __math as std::__1::__math while its headers say std::__math).
+    // Returns the canonical registered name, or empty. Scoped-enum
+    // pseudo-namespaces live in namespace_datatype_map, so both maps count
+    // as "exists" — same dual probe the descent loops always used.
+    std::string cand = parent.empty() ? comp : parent + "::" + comp;
+    if ( namespace_map.find(cand) != namespace_map.end()
+      || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+	return cand;
+    std::vector<std::string> descendants = inline_namespace_descendants(parent);
+    for ( size_t pi = 0; pi < descendants.size(); ++pi )
+    {
+	cand = descendants[pi] + "::" + comp;
+	if ( namespace_map.find(cand) != namespace_map.end()
+	  || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
+	    return cand;
+    }
+    return std::string();
+}
+
+std::string Program::canonical_namespace_path(const std::string &base,
+					      const std::string &dotted)
+{
+    // Fold each `::` component of DOTTED through canonical_nested_namespace
+    // starting at BASE ("" = global): ("", "std::__math") resolves to
+    // "std::__1::__math". Empty = some component names no namespace.
+    std::string cur = base;
+    size_t pos = 0;
+    for (;;)
+    {
+	size_t next = dotted.find("::", pos);
+	std::string comp = next == std::string::npos
+			 ? dotted.substr(pos) : dotted.substr(pos, next - pos);
+	if ( comp.empty() )
+	    return std::string();
+	cur = canonical_nested_namespace(cur, comp);
+	if ( cur.empty() )
+	    return std::string();
+	if ( next == std::string::npos )
+	    break;
+	pos = next + 2;
+    }
+    return cur;
+}
+
+// Char-level sibling of DelimDepth: the SAME [temp.names] rule applied to a
+// canonical C++ type SPELLING instead of a token stream. A `<` opens a
+// template-argument list only where one can begin — after a name character and
+// outside any (), [] or {} — so a spelling like
+// `vt<decltype(declval<T>()<declval<U>())>::type` does not desync and hand back
+// the wrong `::`. Two encodings of one rule; keep them in step.
+// See .claude/rules/delimiter-tracking.md.
+// ONE walk over a spelling, shared by the two readers below: the last
+// top-level `::` and the last top-level template-id `<`.
+// NOTE both are the LAST, not the first — `A<B>::C<D>` must yield scope `A<B>`
+// and primary name `C`. A helper returning the FIRST `<` silently breaks that.
+struct CppSpellingSplit
+{
+    size_t last_scope;		// index of the last top-level "::", or npos
+    size_t last_template_id;	// index of the last top-level '<', or npos
+};
+
+static CppSpellingSplit scan_cpp_spelling(const std::string &s)
+{
+    CppSpellingSplit out = { std::string::npos, std::string::npos };
+    SpellingDelimDepth d;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	char c = s[i];
+	if ( c == ':' && i + 1 < s.size() && s[i + 1] == ':' && d.angle == 0 )
+	{
+	    out.last_scope = i;
+	    d.update(c);
+	    d.update(c);
+	    ++i;
+	    continue;
+	}
+	int before = d.angle;
+	d.update(c);
+	// Record only a genuine top-level template-id open, so a `<` that the
+	// rule classified as less-than never moves the name boundary.
+	if ( c == '<' && before == 0 && d.angle == 1 )
+	    out.last_template_id = i;
+    }
+    return out;
 }
 
 static std::string namespace_scope_from_cpp_spelling(const std::string &spelling)
 {
-    int angle_depth = 0;
-    size_t last_ns = std::string::npos;
-    for ( size_t i = 0; i + 1 < spelling.size(); ++i )
-    {
-	char c = spelling[i];
-	if ( c == '<' )
-	    ++angle_depth;
-	else if ( c == '>' && angle_depth > 0 )
-	    --angle_depth;
-	else if ( c == ':' && spelling[i + 1] == ':' && angle_depth == 0 )
-	{
-	    last_ns = i;
-	    ++i;
-	}
-    }
+    size_t last_ns = scan_cpp_spelling(spelling).last_scope;
     return last_ns == std::string::npos ? std::string()
 					: spelling.substr(0, last_ns);
 }
 
 static std::string primary_name_from_cpp_spelling(const std::string &spelling)
 {
-    int angle_depth = 0;
-    size_t name_start = 0;
-    size_t name_end = spelling.size();
-    for ( size_t i = 0; i < spelling.size(); ++i )
-    {
-	char c = spelling[i];
-	if ( c == '<' )
-	{
-	    if ( angle_depth == 0 )
-		name_end = i;
-	    ++angle_depth;
-	}
-	else if ( c == '>' && angle_depth > 0 )
-	    --angle_depth;
-	else if ( c == ':' && i + 1 < spelling.size()
-	       && spelling[i + 1] == ':' && angle_depth == 0 )
-	{
-	    name_start = i + 2;
-	    ++i;
-	}
-    }
+    CppSpellingSplit sp = scan_cpp_spelling(spelling);
+    size_t name_start = sp.last_scope == std::string::npos
+		      ? 0 : sp.last_scope + 2;
+    size_t name_end = sp.last_template_id == std::string::npos
+		    ? spelling.size() : sp.last_template_id;
     if ( name_end < name_start )
 	name_end = spelling.size();
     return spelling.substr(name_start, name_end - name_start);
@@ -17972,25 +22772,13 @@ Variable *Program::find_namespace_member_in_scope_chain(
 						      const std::string &ns_name,
 						      const std::string &member_name)
 {
+    // find_namespace_member() owns the inline-namespace-set walk; this
+    // adds only the outward walk over the enclosing namespace chain.
     std::string cur = ns_name;
-    std::set<std::string> seen;
     while ( !cur.empty() )
     {
-	std::vector<std::string> pending;
-	pending.push_back(cur);
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &scope = pending[pi];
-	    if ( !seen.insert(scope).second )
-		continue;
-	    if ( Variable *var = find_namespace_member(scope, member_name) )
-		return var;
-	    std::map<std::string, std::vector<std::string>>::iterator ci =
-		inline_namespace_children.find(scope);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t i = 0; i < ci->second.size(); ++i )
-		    pending.push_back(ci->second[i]);
-	}
+	if ( Variable *var = find_namespace_member(cur, member_name) )
+	    return var;
 	size_t pos = cur.rfind("::");
 	if ( pos == std::string::npos )
 	    break;
@@ -18004,14 +22792,16 @@ std::string Program::resolve_namespace_name_in_scope(
 {
     if ( name.empty() )
 	return std::string();
+    // Candidates resolve through canonical_namespace_path so a component
+    // declared in an inline namespace canonicalizes
+    // ("std::__math" -> "std::__1::__math"), per [namespace.qual].
     if ( !current_namespace().empty() )
     {
 	std::string cur = current_namespace();
 	for (;;)
 	{
-	    std::string candidate = cur + "::" + name;
-	    if ( namespace_map.find(candidate) != namespace_map.end()
-	      || namespace_datatype_map.find(candidate) != namespace_datatype_map.end() )
+	    std::string candidate = canonical_namespace_path(cur, name);
+	    if ( !candidate.empty() )
 		return candidate;
 	    size_t pos = cur.rfind("::");
 	    if ( pos == std::string::npos )
@@ -18019,10 +22809,7 @@ std::string Program::resolve_namespace_name_in_scope(
 	    cur = cur.substr(0, pos);
 	}
     }
-    if ( namespace_map.find(name) != namespace_map.end()
-      || namespace_datatype_map.find(name) != namespace_datatype_map.end() )
-	return name;
-    return std::string();
+    return canonical_namespace_path("", name);
 }
 
 std::string Program::active_cpp_lookup_namespace()
@@ -18064,24 +22851,21 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
 	return var;
     for ( size_t n = 0; n < active_using_namespaces.size(); ++n )
     {
-	namespace_map_t::iterator nsi =
-	    namespace_map.find(active_using_namespaces[n]);
-	if ( nsi == namespace_map.end() )
+	Variable *nsv = find_namespace_member(active_using_namespaces[n],
+					      var->name);
+	if ( !nsv || nsv == var )
 	    continue;
-	variable_map_iter vmi = nsi->second.find(var->name);
-	if ( vmi == nsi->second.end() || !vmi->second || vmi->second == var )
-	    continue;
-	FuncDef *nfd = dynamic_cast<FuncDef *>(vmi->second->type);
+	FuncDef *nfd = dynamic_cast<FuncDef *>(nsv->type);
 	if ( !nfd )
 	    continue;
 	if ( nfd->parameters.empty() && !nfd->is_void_params )
-	    return vmi->second;   // placeholder/K&R: accepts any count
+	    return nsv;   // placeholder/K&R: accepts any count
 	size_t npn = nfd->parameters.size() - (nfd->is_varargs ? 1 : 0);
 	bool nacc = nfd->is_varargs
 		  ? argc >= npn
 		  : (argc >= nfd->required_param_count() && argc <= npn);
 	if ( nacc )
-	    return vmi->second;
+	    return nsv;
     }
     return var;
 }
@@ -18119,12 +22903,27 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
 	}
     }
 
-    if ( namespace_preference.empty() )
+    // The madc dialect ships a DEFAULT preference so unqualified names fall
+    // through to the standard library and the included utility namespaces in
+    // a documented canonical order — "c" first, so every previously
+    // resolvable C name resolves exactly as before. An explicit `prefer`
+    // REPLACES the default wholly (set_namespace_preference). Standards
+    // modes (--std=c*/c++*) get no default: full ceremony applies. Only
+    // namespaces actually in namespace_map (i.e. whose header is included)
+    // can ever match, so the default is a ranking, not an import.
+    static const std::vector<std::string> madc_default_preference = {
+	"c", "std", "php", "perl", "python", "ruby", "js", "rust", "madc"
+    };
+    const std::vector<std::string> &pref_order =
+	!namespace_preference.empty() ? namespace_preference
+	: auto_includes_enabled()     ? madc_default_preference
+				      : namespace_preference;
+    if ( pref_order.empty() )
 	return resolve_c_identifier(ident_tb, expression_head);
 
-    for ( size_t i = 0; i < namespace_preference.size(); ++i )
+    for ( size_t i = 0; i < pref_order.size(); ++i )
     {
-	const std::string &pref = namespace_preference[i];
+	const std::string &pref = pref_order[i];
 	if ( pref == "c" )
 	{
 	    Variable *var = resolve_c_identifier(ident_tb, expression_head);
@@ -18392,6 +23191,13 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     // above and leaves its storage class untouched.
     if ( parsing_extern_decl )
 	var->flags |= vfEXTERN;
+    // Minted while instantiating a template — a derived entity, re-created from
+    // the pattern at bind time. pack_tap_name refuses these for the decl index
+    // on the same `_inst_depth > 0` test; recording it on the Variable is what
+    // lets dump_registered_names apply the identical rule after the parse, when
+    // the depth counter is long back to zero.
+    if ( _inst_depth > 0 )
+	var->flags |= vfINSTPRODUCT;
     if ( !current_namespace().empty() && parsing_extern_decl
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
@@ -18539,11 +23345,40 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 	}
 	adt = next;
     }
+    // The ABSTRACT function-pointer declarator as a template argument:
+    // `unique_ptr<char_type, void (*)(void*)>` — libc++ <locale>'s buffer
+    // deleters, used pervasively (first at locale:286). Same parseFnPtrParams
+    // owner as typedef Form 2 and the using-alias arm; gated on the exact
+    // `( * )` prefix so a non-type argument expression never loses its '('.
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+      && tokens.size() >= 3 && tokens[1] && tokens[2]
+      && tokens[1]->id() == TokenID::tkMul
+      && tokens[2]->id() == TokenID::tkClBrk )
+    {
+	nextToken();	// consume '('
+	nextToken();	// consume '*'
+	nextToken();	// consume ')'
+	TokenBase *open = nextToken();
+	if ( !open || open->id() != TokenID::tkOpBrk )
+	    Throw(open ? open : origin)
+		<< "Expecting '(' for function pointer parameter list" << flush;
+	FuncDef *func = parseFnPtrParams(adt->definition);
+	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = true;	// explicit `(*)` — pointer argument
+	TokenDataType *next = new TokenDataType(fptr->name.c_str(), *fptr);
+	if ( origin )
+	{
+	    next->file = origin->file;
+	    next->line = origin->line;
+	    next->column = origin->column;
+	}
+	adt = next;
+    }
     return adt;
 }
 
 // add a function definition
-Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod)
+Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -18583,6 +23418,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtARRAY:   return &ddARRAY;
 	    case DataType::dtFLOAT:   return &ddFLOAT;
 	    case DataType::dtDOUBLE:  return &ddDOUBLE;
+	    case DataType::dtLDOUBLE: return &ddLDOUBLE;
 	}
     };
 
@@ -18616,6 +23452,14 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     dd = resolve_data_type(params[0]);
 
     func = new FuncDef(*dd);
+    // Builtin-style provenance is the CALLER's declaration of intent (the
+    // builtin_registry loops pass true): an explicit source re-declaration
+    // then replaces this entry wholesale (gcc canon: an explicit prototype
+    // replaces a builtin). addFunction's other mints (namespace fn-template
+    // placeholders, member-template instantiation registrations, __dl_
+    // dynamic symbols) stay false — a source declaration of those ids is a
+    // definition, not a builtin override.
+    func->builtin_registration = builtin_registration;
     if ( !isMethod )
     {
 	pack_tap_name(id, pdkFunction);	// B4a: decl-index tap
@@ -18842,6 +23686,18 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    break;
 	default:
 	    DBG(cerr << "popOperator() throwing opStack.top()" << endl);
+	    // Env-gated probe (MADC_POPOP_PROBE=1): the offending token's
+	    // identity — "unexpected token type N" alone names neither the
+	    // token nor the source position when the throw is swallowed by a
+	    // SFINAE-quiet instantiation (the __copy body-parse diagnosis).
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+	    {
+		TokenBase *bad = opStack.top();
+		fprintf(stderr, "[popop] type=%d id=%d spelling='%s' at %s:%d:%d\n",
+			(int)bad->type(), (int)bad->id(),
+			overload_token_spelling(bad).c_str(),
+			bad->file ? bad->file : "?", bad->line, bad->column);
+	    }
 	    Throw(opStack.top()) << "unexpected token type " << (int)opStack.top()->type() << flush;
     } // end switch
     DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
@@ -18982,6 +23838,34 @@ size_t Program::count_queued_call_arguments()
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	// [temp.names]: a `<` after a name that REFERS TO A TEMPLATE begins a
+	// template-argument list, and its commas separate TEMPLATE arguments.
+	// DelimDepth deliberately leaves angles untracked inside parens (a
+	// paren-nested `<` is usually less-than), so libc++'s inline tag
+	// temporaries — `__copy_assign_alloc(__str, integral_constant<bool,
+	// X>())` — counted one call argument per template-argument comma; the
+	// miscounted arity then failed find_method_by_callable_arity and the
+	// call reported its own name "undeclared". Gate on an ACTUAL
+	// template-name lookup and delegate the span to the one template-id
+	// extent owner.
+	if ( i + 1 < tokens.size() && tokens[i+1]
+	  && tokens[i+1]->id() == TokenID::tkLT
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
+	{
+	    std::string tmpl_name = t->type() == TokenType::ttIdentifier
+		? static_cast<TokenIdent *>(t)->spelling()
+		: static_cast<TokenDataType *>(t)->spelling();
+	    if ( find_template(tmpl_name) )
+	    {
+		size_t close = template_id_suffix_end(tokens, i + 1);
+		if ( close > i + 1 )
+		{
+		    i = close;	// the loop's ++i resumes past the `>`/`>>`
+		    continue;
+		}
+	    }
+	}
 	// top-level comma at the call's argument level → next argument
 	if ( t->id() == TokenID::tkComma
 	  && d.paren == 1 && d.square == 0 && d.brace == 0 && d.angle == 0 )
@@ -18997,18 +23881,32 @@ size_t Program::count_queued_call_arguments()
     return argc;
 }
 
-static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
+static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
+							Variable *recv,
 							TokenBase *parent_expr,
 							const std::string &opname)
 {
     if ( !recv && !parent_expr )
 	return NULL;
     DataDef *recv_dd = parent_expr ? parent_expr->datadef() : recv->type;
+    // C++ reference transparency (free_operator_arg_datadef's rule): an
+    // operator's REFERENCE return denotes its referent object — `*--__tmp`
+    // (reverse_iterator::operator*'s body) chains operator* onto
+    // operator--'s `_Iter&` return, which models as a DataDefPTR and
+    // otherwise fails the class cast below.
+    if ( recv_dd && recv_dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(recv_dd) )
+	    recv_dd = rp->base_type;
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(recv_dd);
     if ( !cls )
 	return NULL;
     std::vector<const DataDef *> no_args;
-    Variable *mvar = cls->findMethodOverload(opname, no_args);
+    // Implicit object cv ([over.match.funcs]/4): derivable only from a named
+    // receiver — a parent EXPRESSION's cv is not modeled here (and a const-
+    // typed recv_dd cannot reach this line: the class cast above rejects it).
+    int obj_cv = (!parent_expr && recv)
+	       ? pgm.implicit_object_constness(*recv) : -1;
+    Variable *mvar = cls->findMethodOverload(opname, no_args, obj_cv);
     if ( !mvar )
 	return NULL;
     if ( !recv )
@@ -19021,25 +23919,10 @@ static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
 TokenBase *Program::consume_unresolved_dependent_call(TokenBase *open)
 {
     TokenBase *t = open;
-    int paren_depth = 1;
-    int square_depth = 0;
-    int brace_depth = 0;
-    while ( paren_depth > 0 && peekToken() )
-    {
-	t = nextToken();
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-    }
+    DelimDepth d;
+    d.update(open);            // `open` is the '(' — seeds paren depth at 1
+    while ( d.paren > 0 && peekToken() )
+	d.update(t = nextToken());
     return t;
 }
 
@@ -19214,7 +24097,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // return (clang's deduction-forms-the-function-TYPE-without-a-body model),
     // so `decltype(f<T>())` is correct in an unevaluated context instead of the
     // ddINT64 placeholder. Only when nothing already pinned the return.
-    if ( !tc->return_override && !tc->explicit_template_args.empty() )
+    // A DEDUCED call in an UNEVALUATED operand takes the same lane with the
+    // binding deduced from its argument types (`decltype(std::__to_address(p))`
+    // — instantiation is suppressed above, so nothing else forms the type);
+    // the resolver gates that case on unevaluated_operand_depth itself.
+    if ( !tc->return_override
+      && (!tc->explicit_template_args.empty()
+       || (unevaluated_operand_depth > 0 && !tc->parameters.empty())) )
     {
 	bool tr_ref = false;
 	if ( DataDef *rt = resolve_namespace_fn_template_call_return_type(tc, &tr_ref) )
@@ -19369,6 +24258,25 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 	take();
 	return "operator[]";
     }
+    // Conversion-function-id [class.conv.fct]: `operator conversion-type-id`.
+    // The "symbol" is a TYPE, not an operator — `operator _Tp() const` in
+    // libstdc++ bits/max_size_type.h:75, `operator const char *()`. The
+    // type-id runs to the `(` of the parameter list; the same extent rule the
+    // scanners use lives in operator_id_tail_span(), so read it from there
+    // rather than re-deciding it here.
+    if ( token_starts_conversion_type_id(op_tok) )
+    {
+	std::string name = "operator " + template_token_fragment(op_tok);
+	// tail_span counted from the type-id's FIRST token, which is already
+	// consumed as op_tok — so the remainder is one fewer.
+	size_t remaining = operator_id_tail_span(tokens, 0);
+	if ( remaining > 0 && !tokens.empty()
+	  && tokens[0]->id() != TokenID::tkOpBrk )
+	    for ( size_t k = 0; k < remaining && peekToken()
+			     && peekToken()->id() != TokenID::tkOpBrk; ++k )
+		name += template_token_fragment(take());
+	return name;
+    }
     char sym = (char)op_tok->get();
     if ( !sym )
 	Throw(op_tok) << "Unrecognized operator symbol" << flush;
@@ -19383,12 +24291,21 @@ bool Program::isOperatorIdStart(TokenBase *t)
 void Program::delimStepStream(TokenBase *t, DelimDepth &d,
 			      std::vector<TokenBase *> *extra)
 {
-    if ( isOperatorIdStart(t) )
+    if ( !isOperatorIdStart(t) )
     {
-	parseOperatorId(t, extra);
+	d.update(t);
 	return;
     }
-    d.update(t);
+    // Consume the operator-function-id opaquely, using the SAME extent rule as
+    // the index form and as parseOperatorId's conversion branch. A scanner only
+    // needs to know how far the name reaches, never whether it is well-formed.
+    size_t tail = operator_id_tail_span(tokens, 0);
+    for ( size_t k = 0; k < tail && peekToken(); ++k )
+    {
+	TokenBase *sym = nextToken();
+	if ( extra && sym )
+	    extra->push_back(sym);
+    }
 }
 
 static bool is_named_cpp_cast(const std::string &name)
@@ -19407,11 +24324,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
     nextToken();
     skip_expression_whitespace();
 
-    TokenBase *type_tb = nextToken();
-    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-	   || type_tb->id() == TokenID::tkVOLATILE
-	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = nextToken();
+    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
 
     TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
@@ -19549,7 +24462,12 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	  : (tc->argc()+1 != fd->parameters.size())) )
     {
 	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
-	Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc()+1 << flush;
+	// Name the callee like the sibling arity diagnostics do — an anonymous
+	// "expected N got M" from a lazily-materialized member body is
+	// unattributable (the position points at the class head, not the call).
+	Throw(tc) << "Incorrect number of parameters for '" << tc->var.name
+		  << "': expected " << fd->parameters.size()
+		  << " got " << tc->argc()+1 << flush;
     }
 
     return tb;
@@ -19565,6 +24483,21 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 // that token remains consumable by the caller on the next nextToken().
 // Used by unary `*` to avoid parseExpression's greedy consumption of
 // trailing binary operators such as `== '$'`.
+// THE resolver for a CLASS qualifier before `::` in an expression — defined
+// below, declared here because the postfix-operand path needs it too. Either
+// it pushes a finished expression (PushedExpression) or it hands back the
+// static member FUNCTION for the caller to call (ResolvedFunction).
+enum class QualifiedClassExprAction {
+    PushedExpression,
+    ResolvedFunction
+};
+
+static QualifiedClassExprAction resolve_class_qualified_expression(
+	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	Variable **var_out, TokenBase **tb_out,
+	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL);
+
 static Variable *postfix_expr_variable(TokenBase *result)
 {
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
@@ -19585,18 +24518,41 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	return NULL;
 
     std::string name = contextual_identifier_name(head);
+    // Unqualified template-id `Tmpl<args>::member` (`(int)is_same<A,B>::value`
+    // with the trait in scope). The qualified spelling is handled inside the
+    // `::` block below; this is the same shape without a namespace in front, so
+    // it has to be checked BEFORE it, where the next token is `<` and not `::`.
+    // Guarded on the template registry rather than probing with
+    // instantiate_template_id, whose token-stream behaviour on a non-template is
+    // not part of its contract — a speculative call could eat the `<`.
+    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+      && find_template(name) )
+    {
+	// An expression reading `Tmpl<args>::member` is a COMPLETENESS demand
+	// (the member must exist to be read), so a concrete-arg VARIADIC
+	// template must really instantiate here — the opaque dependent shell
+	// is memberless and the read fell through to "undeclared identifier"
+	// (`orr<A,B>::value`, the __or_ trait shape). Same per-demand-site
+	// scoping as the statement-declaration site.
+	bool saved_vri = allow_variadic_real_inst;
+	allow_variadic_real_inst = true;
+	TokenDataType *inst = instantiate_template_id(name, head);
+	allow_variadic_real_inst = saved_vri;
+	if ( inst )
+	    if ( TokenBase *sval = resolve_template_id_static_member(*this, inst) )
+		return parsePostfixChainFrom(sval, postfix_expr_variable(sval));
+    }
     // Scoped-enum value `Tag::Value` (e.g. inside a cast `(int)Size::Large`).
     // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse)
     // — QUALIFIED by the declaring namespace, so resolve scope-relatively and
     // walk nested qualifiers (`std::__cmp_cat::_Ord::less`).
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	std::string ns_name = name;
-	std::string resolved_ns = resolve_namespace_name_in_scope(ns_name);
-	if ( !resolved_ns.empty() )
-	    ns_name = resolved_ns;
-	if ( namespace_map.find(ns_name) != namespace_map.end()
-	  || namespace_datatype_map.find(ns_name) != namespace_datatype_map.end() )
+	// One classify policy — classify_qualifier_before_scope owns alias
+	// resolution, the dual-registry probe, and the collision diagnosis.
+	QualifierScope qscope = classify_qualifier_before_scope(name, head);
+	std::string ns_name = qscope.ns_name;
+	if ( qscope.is_namespace() )
 	{
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
@@ -19605,9 +24561,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    std::string member = contextual_identifier_name(member_tb);
 	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	    {
-		std::string deeper = ns_name + "::" + member;
-		if ( namespace_map.find(deeper) == namespace_map.end()
-		  && namespace_datatype_map.find(deeper) == namespace_datatype_map.end() )
+		std::string deeper = canonical_nested_namespace(ns_name, member);
+		if ( deeper.empty() )
 		    break;
 		nextToken(); // consume '::'
 		member_tb = nextToken();
@@ -19616,16 +24571,104 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		ns_name = deeper;
 		member = contextual_identifier_name(member_tb);
 	    }
-	    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
-	    variable_map_iter vmi;
-	    if ( nsi == namespace_map.end()
-	      || (vmi = nsi->second.find(member)) == nsi->second.end() )
+	    // `ns::Tmpl<args>::member` — a TEMPLATE-ID between the namespace and
+	    // the member, which is how every trait is spelled
+	    // (`std::is_same<A,B>::value`). The shunting-yard arm already
+	    // resolves this shape, so the bare expression evaluates correctly;
+	    // only the operand path reached here and reported the misleading
+	    // "'is_same' is not a member of 'std'". Same instantiation entry
+	    // point as that arm — this is a second CALLER, not a second
+	    // implementation.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+	      && template_declared_in_namespace(member, ns_name) )
+	    {
+		// Same completeness demand as the unqualified arm above:
+		// `ns::Tmpl<args>::member` must really instantiate a
+		// concrete-arg variadic template (opaque shells are
+		// memberless).
+		bool saved_vri = allow_variadic_real_inst;
+		allow_variadic_real_inst = true;
+		TokenDataType *inst =
+			instantiate_template_id(member, member_tb, ns_name);
+		allow_variadic_real_inst = saved_vri;
+		if ( inst )
+		    if ( TokenBase *sval =
+			    resolve_template_id_static_member(*this, inst) )
+			return parsePostfixChainFrom(sval,
+						     postfix_expr_variable(sval));
+	    }
+	    Variable *nsv = find_namespace_member(ns_name, member);
+	    if ( !nsv )
 		Throw(member_tb) << "'" << member << "' is not a member of '" << ns_name << "'" << flush;
-	    TokenBase *r = new TokenVar(*vmi->second);
+	    TokenBase *r = new TokenVar(*nsv);
 	    r->file = head->file;
 	    r->line = head->line;
 	    r->column = head->column;
-	    return r;
+	    // A qualified name is only the HEAD of a postfix-expression. Bare,
+	    // it dropped every `(`, `[`, `.` and `->` that followed, and the
+	    // caller re-read them as a fresh expression: `(int)N::f(x)` became
+	    // `(int)(x)` SILENTLY, and `(int)N::arr[1]` reached the lambda-
+	    // introducer dispatch and reported "Expecting ] in lambda
+	    // expression". Same tail as the unqualified path below.
+	    return parsePostfixChainFrom(r, postfix_expr_variable(r));
+	}
+	// Same syntax, CLASS qualifier: `S::n`. This is the path a postfix or
+	// cast operand takes (`(int)S::n`), and it knew only about namespaces
+	// and scoped-enum tags — so a class qualifier fell through to
+	// findVariable("S") and reported "undeclared identifier 'S'", while the
+	// identical expression parsed fine standing on its own. A cast is the
+	// usual spelling for trait use (`(int)is_same<A,B>::value`), so the gap
+	// sat in front of a great deal of ordinary C++.
+	//
+	// The shared resolver owns this. A narrow copy here used to probe for a
+	// static DATA member and decline everything else, which left a static
+	// member FUNCTION — `(size_t)char_traits<char>::length(p)`, the shape
+	// every string header is built from — falling through to
+	// findVariable("S") and the same wrong diagnostic. One rule, one
+	// implementation: the resolver handles nested scopes, operator-ids,
+	// explicit template args, access control and dependent surfaces, and
+	// reaches the identical resolve_class_static_member_value for the case
+	// the copy did cover.
+	if ( DataDefCLASS *class_scope = qscope.cls )
+	{
+	    std::stack<TokenBase *> qstack;
+	    Variable *qvar = NULL;
+	    TokenBase *qtb = NULL;
+	    DataDefCLASS *qowner = NULL;
+	    std::string qmember;
+	    TokenBase *value = NULL;
+	    if ( resolve_class_qualified_expression(*this, class_scope, name,
+			head, qstack, &qvar, &qtb, &qowner, &qmember)
+		 == QualifiedClassExprAction::PushedExpression )
+	    {
+		if ( !qstack.empty() )
+		    value = qstack.top();
+	    }
+	    else if ( qvar )
+	    {
+		// ResolvedFunction leaves the `(` for the caller — the same
+		// contract the main expression loop honours — so that the
+		// overload can be RESELECTED once the argument types are
+		// known ([over.match]). That is why the call is built here
+		// rather than by the chain's generic `(` arm.
+		TokenCallFunc *tc = new TokenCallFunc(*qvar);
+		if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		    tc->explicit_template_args = capture_call_template_args();
+		TokenBase *open = nextToken();
+		if ( !open || open->id() != TokenID::tkOpBrk )
+		    Throw(open ? open : head)
+			<< "expected '(' in call to '" << name << "::"
+			<< qmember << "'" << flush;
+		tc->file = open->file;
+		tc->line = open->line;
+		tc->column = open->column;
+		parseCallFunc(tc);
+		if ( qowner )
+		    tc = reselect_static_member_overload(tc, qowner, qmember);
+		value = tc;
+	    }
+	    if ( value )
+		return parsePostfixChainFrom(value, postfix_expr_variable(value));
 	}
     }
     Variable *var = findVariable(name);
@@ -19652,15 +24695,15 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	if ( code && code->method && code->method->owner_class )
 	{
 	    DataDefCLASS *cls = code->method->owner_class;
-	    if ( DataDef *static_dd = resolve_class_static_member_type(cls, name) )
-	    {
-		int64_t cv = 0;
-		resolve_class_static_member_const_value(cls, name, cv);
-		TokenInt *ti = new TokenInt(cv);
-		ti->setDataType(static_dd);
-		copy_token_location(ti, head);
-		result = ti;
-	    }
+	    // The shared resolver owns the constant-vs-storage choice — see the
+	    // comment on resolve_class_static_member_value. This site folded
+	    // unconditionally, so a storage-backed `static int n;` read as a
+	    // SILENT 0 from inside the class's own body no matter what the
+	    // out-of-class definition set it to, and every write reported
+	    // "lvalue required as left operand of assignment".
+	    if ( TokenBase *sval =
+		    resolve_class_static_member_value(*this, cls, name, head) )
+		result = sval;
 	    else
 	    {
 		ssize_t ofs = cls->m_offset(name);
@@ -19696,9 +24739,29 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	return NULL;
 
     TokenBase *chain_head = result;
+    // Explicit template arguments captured from a `<...>` seen just before the
+    // call's `(`, held until the call arm below builds the TokenCallFunc.
+    std::vector<DataDef *> pending_targs;
     while ( peekToken() )
     {
 	TokenID pid = peekToken()->id();
+	if ( pid == TokenID::tkLT )
+	{
+	    // `N::f<int>(x)` — an explicit template-argument list is part of the
+	    // postfix-expression's head, not something the caller can re-read.
+	    // The CLASS arm already captured these (`S::make<int>(7)` works);
+	    // the namespace arm handed its head straight here, so in an operand
+	    // position `(int)nn::ident<int>(7)` the `<` fell out of the chain and
+	    // was re-read as a declarator, reporting "Expecting identifier".
+	    // Without the cast it parses (a different path), which is what
+	    // identified this as the same operand-path family as the `(`/`[`/`.`
+	    // arms rather than a template defect.
+	    Variable *tcallee = postfix_expr_variable(result);
+	    if ( !tcallee || !tcallee->type || !tcallee->type->is_function() )
+		break;			// a less-than, not a template-id
+	    pending_targs = capture_call_template_args();
+	    continue;
+	}
 	if ( pid == TokenID::tkDeRef || pid == TokenID::tkDot )
 	{
 	    bool is_arrow = (pid == TokenID::tkDeRef);
@@ -19708,6 +24771,12 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		Throw(mtb ? mtb : op_tb) << "expected member name after '"
 		    << (is_arrow ? "->" : ".") << "'" << flush;
 	    std::string mname = contextual_identifier_name(mtb);
+	    // An `operator` member name is an operator-function-id
+	    // ([expr.ref]/2 — `*it.operator->()` routes here via the unary-`*`
+	    // operand path): consume the full id, same as the identifier-arm
+	    // head. C++-gated so a C struct field named `operator` still works.
+	    if ( mname == "operator" && presents_as_cpp() )
+		mname = parseOperatorId(mtb);
 	    TokenIdent member_ident(mname);
 	    copy_token_location(&member_ident, mtb);
 
@@ -19735,6 +24804,12 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 				   || rp->base_type->is_object()) )
 				    obj_type = rp->base_type;
 			    }
+			// A head EXPRESSION of reference type — a cast to
+			// reference (`static_cast<_Base1&>(*this).__get()`,
+			// libc++ __compressed_pair's accessor shape) — denotes
+			// its referent ([expr.static.cast]p3): same owner the
+			// main dot arm uses for call/operator/subscript heads.
+			obj_type = referent_if_reference(obj_type);
 		    }
 		    if ( is_arrow )
 		    {
@@ -19764,7 +24839,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		}
 		    }
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
-			Throw(mtb) << "member reference type is not a structure or union" << flush;
+			Throw(mtb) << "member reference type "
+			    << (obj_type ? "'" + obj_type->name + "' " : "")
+			    << "is not a structure or union (member '"
+			    << mname << "' via '" << (is_arrow ? "->" : ".")
+			    << "')" << flush;
 		    if ( obj_type->is_object()
 		      && peekToken()
 		      && (peekToken()->id() == TokenID::tkOpBrk
@@ -19916,6 +24995,37 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
+	    continue;
+	}
+	if ( pid == TokenID::tkOpBrk )
+	{
+	    // `(` is a postfix operator too ([expr.post]) — a call on a
+	    // function-typed head. Only the QUALIFIED operand paths reach it:
+	    // an unqualified `f(x)` cast operand is claimed earlier by
+	    // parse_cast_function_call_operand, so the chain never needed this
+	    // arm until `(int)N::f(x)` was traced. Without it the `(x)` was
+	    // left in the stream and re-read as a parenthesized expression,
+	    // whose value silently replaced the call.
+	    Variable *callee = postfix_expr_variable(result);
+	    if ( !callee || !callee->type || !callee->type->is_function() )
+		break;			// a grouping paren, not a call
+	    TokenBase *open = nextToken();
+	    TokenCallFunc *tc = new TokenCallFunc(*callee);
+	    tc->file = open->file;
+	    tc->line = open->line;
+	    tc->column = open->column;
+	    if ( !pending_targs.empty() )
+	    {
+		tc->explicit_template_args = pending_targs;
+		pending_targs.clear();
+	    }
+	    parseCallFunc(tc);
+	    result = tc;
+	    // A call result is not a named variable: the member arms must
+	    // synthesize their proxy from the result TYPE (the callee var is
+	    // function-typed, which mis-selects `.` vs `->`). Same rule as
+	    // the arrow_operator_call arm above.
+	    var = NULL;
 	    continue;
 	}
 	break;
@@ -20071,7 +25181,17 @@ TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
     tc->line = open->line;
     tc->column = open->column;
     parseCallFunc(tc);
-    return tc;
+    // Postfix binds tighter than the cast ([expr.post] vs [expr.cast]):
+    // `(int)getb().n` casts the MEMBER, not the call. Continue the postfix
+    // chain (`.` `->` `[` chained calls) from the call result — stopping
+    // here applied the cast to the call and the trailing `.n` dereferenced
+    // an int ("member reference is not a structure or union"). The
+    // qualified operand paths already flow through this same owner.
+    // var = NULL: a call result is not a named variable — the chain must
+    // synthesize its member proxy from the result TYPE (passing the callee's
+    // function-typed var made the arrow arm's proxy non-pointer, emitting
+    // N_FIELD on a pointer value).
+    return parsePostfixChainFrom(tc, NULL);
 }
 
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
@@ -20191,10 +25311,21 @@ static bool is_addressable_expression(TokenBase *expr)
 	return tcp->expr && tcp->expr->datadef() && tcp->expr->datadef()->is_complex();
     if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
     {
-	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
-	if ( fd && fd->returns_reference() )
+	// Both sources of call reference-ness (declared return OR the
+	// token's substituted return) — the one TokenCallFunc owner.
+	if ( tcf->call_returns_reference() )
 	    return true;
     }
+    // [expr.cond]/4: a C++ conditional is an LVALUE when both arms are
+    // lvalues (a plain variable arm counts). The CIR lowering distributes
+    // the address into the arms (CirBuilder::node1's N_ADDR-over-N_COND
+    // rewrite), so accepting it here yields valid emitted C.
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(expr) )
+	return tq->true_expr && tq->false_expr
+	    && (is_addressable_expression(tq->true_expr)
+		|| dynamic_cast<TokenVar *>(tq->true_expr))
+	    && (is_addressable_expression(tq->false_expr)
+		|| dynamic_cast<TokenVar *>(tq->false_expr));
     return dynamic_cast<TokenMember *>(expr)
 	|| dynamic_cast<TokenDeref *>(expr)
 	|| dynamic_cast<TokenSubscript *>(expr)
@@ -20229,6 +25360,15 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, true, 1);
 	if ( is_addressable_expression(addr_expr) )
 	{
+	    // Lvalue-conditional arms that are plain variables escape their
+	    // address through the select — mark them like the direct &var arm.
+	    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(addr_expr) )
+	    {
+		if ( TokenVar *tv = dynamic_cast<TokenVar *>(tq->true_expr) )
+		    tv->var.flags |= vfADDRTAKEN;
+		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
+		    fv->var.flags |= vfADDRTAKEN;
+	    }
 	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
@@ -20303,44 +25443,109 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     std::string aname = contextual_identifier_name(addr_tb);
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	namespace_map_t::iterator nsi = namespace_map.find(aname);
-	if ( nsi == namespace_map.end() )
-	    Throw(addr_tb) << "Unknown namespace '" << aname << "'" << flush;
+	// A qualifier before `::` is a namespace OR a class — `&S::n` for a static
+	// data member is as ordinary as `&N::m`. Resolving only namespaces here made
+	// a class qualifier report "Unknown namespace 'S'", which named the wrong
+	// thing entirely. Symmetric with the arm parsePostfixChain gained for the
+	// value side; both end up in the same tail below.
+	// One classify policy — classify_qualifier_before_scope. This arm
+	// GAINS alias resolution (a namespace alias in `&A::x` previously
+	// threw "Unknown namespace"); its member lookup still serves the
+	// VARIABLE namespace registry only, exactly as before.
+	QualifierScope qscope = classify_qualifier_before_scope(aname, addr_tb);
+	namespace_map_t::iterator nsi = qscope.has_variable_ns
+				      ? namespace_map.find(qscope.ns_name)
+				      : namespace_map.end();
+	DataDefCLASS *aclass = qscope.cls;
+	if ( nsi == namespace_map.end() && !aclass )
+	    Throw(addr_tb) << "Unknown namespace or class '" << aname << "'" << flush;
 	nextToken(); // consume ::
 	TokenBase *member_tb = nextToken();
 	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
 	    Throw(member_tb ? member_tb : addr_tb)
 		<< "Expecting identifier after '" << aname << "::'" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
+	// `&ns::Tmpl<args>::member` — a TEMPLATE-ID between the namespace and the
+	// member, which is how a facet's id is spelled (`&std::numpunct<char>::id`).
+	// The value side already resolves this shape (parsePostfixChain's `::`
+	// block); the address side took the identifier after `::` as the MEMBER,
+	// so `numpunct` became the member name and `<char>::id` was never looked
+	// at — reporting "use of undeclared identifier 'id'", which names the
+	// wrong thing entirely. Same instantiation entry point as that arm: a
+	// second CALLER, not a second implementation. The instantiated class then
+	// falls into the class-qualifier branch below UNCHANGED, so the storage
+	// lookup and the "declared but never defined" diagnostic stay in one place.
+	if ( !aclass && peekToken() && peekToken()->id() == TokenID::tkLT
+	  && template_declared_in_namespace(member_name, aname) )
+	{
+	    if ( TokenDataType *inst =
+		    instantiate_template_id(member_name, member_tb, aname) )
+		if ( DataDefCLASS *icls =
+			dynamic_cast<DataDefCLASS *>(&inst->definition) )
+		{
+		    // instantiate_template_id consumes through the closing `>`
+		    // (the value-side arm relies on the same contract), so `::`
+		    // is next.
+		    TokenBase *ns_tok = nextToken();
+		    if ( !ns_tok || ns_tok->id() != TokenID::tkNS )
+			Throw(ns_tok ? ns_tok : member_tb)
+			    << "Expecting '::' after '" << aname << "::"
+			    << member_name << "<...>'" << flush;
+		    member_tb = nextToken();
+		    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+			Throw(member_tb ? member_tb : ns_tok)
+			    << "Expecting identifier after '" << aname << "::"
+			    << member_name << "<...>::'" << flush;
+		    member_name = contextual_identifier_name(member_tb);
+		    aclass = icls;
+		}
+	}
 	Variable *ns_var = NULL;
-	variable_map_iter vmi = nsi->second.find(member_name);
-	if ( vmi != nsi->second.end() )
-	    ns_var = vmi->second;
+	if ( aclass )
+	{
+	    // Deliberately NOT resolve_class_static_member_value(): that prefers a
+	    // folded in-class constant, and a constant has no address. An address is
+	    // the address of the STORAGE its out-of-class definition created.
+	    if ( !resolve_class_static_member_type(aclass, member_name) )
+		Throw(member_tb) << "'" << member_name
+				 << "' is not a static data member of '"
+				 << aname << "'" << flush;
+	    ns_var = findVariable(
+		class_static_member_storage_name(aclass, member_name));
+	    if ( !ns_var )
+		Throw(member_tb) << "cannot take the address of '" << aname << "::"
+				 << member_name
+				 << "': it is declared but never defined" << flush;
+	}
 	else
 	{
-	    std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
-	    if ( dli != dlopen_map.end() )
+	    ns_var = find_namespace_member(aname, member_name);
+	    if ( !ns_var )
 	    {
-		if ( !is_dynamic_symbol_fallback_enabled() )
-		    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-		if ( !is_dynamic_symbol_allowed(member_name) )
-		    Throw(member_tb) << "dynamic symbol '" << member_name
-				     << "' is not allowed by registration policy" << flush;
-		void *sym = dlsym(dli->second, member_name.c_str());
-		if ( sym )
+		std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
+		if ( dli != dlopen_map.end() )
 		{
-		    std::string func_id = "__dl_" + aname + "_" + member_name;
-		    ns_var = addFunction(func_id,
-			datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-		    dl_symbol_map[func_id] = sym;
-		    namespace_variables_for_write(aname)[member_name] = ns_var;
+		    if ( !is_dynamic_symbol_fallback_enabled() )
+			Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+		    if ( !is_dynamic_symbol_allowed(member_name) )
+			Throw(member_tb) << "dynamic symbol '" << member_name
+					 << "' is not allowed by registration policy" << flush;
+		    void *sym = dlsym(dli->second, member_name.c_str());
+		    if ( sym )
+		    {
+			std::string func_id = "__dl_" + aname + "_" + member_name;
+			ns_var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+			dl_symbol_map[func_id] = sym;
+			namespace_variables_for_write(aname)[member_name] = ns_var;
+		    }
 		}
 	    }
+	    if ( !ns_var )
+		Throw(member_tb) << "'" << member_name
+				 << "' is not a member of namespace '"
+				 << aname << "'" << flush;
 	}
-	if ( !ns_var )
-	    Throw(member_tb) << "'" << member_name
-			     << "' is not a member of namespace '"
-			     << aname << "'" << flush;
 	if ( ns_var->type && ns_var->type->is_function()
 	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();
@@ -20460,15 +25665,34 @@ static bool class_or_enclosing_is_friend_of(DataDefCLASS *cls,
     return false;
 }
 
+// Defined with the method-definition matcher (fe50bc3c); the friend grant
+// below strips instantiation/overload suffixes with it.
+static std::string strip_overload_suffix(const std::string &tail);
+
 // A FREE function granted friendship by name (friend_function_names — the
 // hidden-friend operator grant; same name-based model as friend_class_names).
+// The body being checked may be an INSTANTIATION of the befriended template:
+// its display name is namespace-qualified ("std::__1::__pad_and_output") and
+// its registered symbol carries __mti/__oN suffixes, while the grant recorded
+// the SOURCE name ("__pad_and_output" — ostreambuf_iterator.h:66's friend).
+// Compare the bare last scope part with suffixes stripped too, or the friend's
+// own instantiated body cannot read the member it was befriended for.
 static bool function_is_friend_of(const std::string &fname,
 				  DataDefCLASS *owner_cls)
 {
     if ( fname.empty() || !owner_cls )
 	return false;
+    std::string bare = fname;
+    size_t sc = bare.rfind("::");
+    if ( sc != std::string::npos )
+	bare = bare.substr(sc + 2);
+    size_t mti = bare.find("__mti");
+    if ( mti != std::string::npos )
+	bare = bare.substr(0, mti);
+    bare = strip_overload_suffix(bare);
     for ( size_t i = 0; i < owner_cls->friend_function_names.size(); ++i )
-	if ( owner_cls->friend_function_names[i] == fname )
+	if ( owner_cls->friend_function_names[i] == fname
+	  || owner_cls->friend_function_names[i] == bare )
 	    return true;
     return false;
 }
@@ -20559,16 +25783,46 @@ static std::string method_access_violation(DataDef *owner_type,
 				 display_name, cur_class, cur_function);
 }
 
-enum class QualifiedClassExprAction {
-    PushedExpression,
-    ResolvedFunction
-};
+// A nested TYPE of `scope` named in EXPRESSION position and followed by a braced
+// or parenthesized initializer is a temporary CONSTRUCTION, not a member access:
+// `nullopt_t::__secret_tag{}` (libc++ <optional>:280) and
+// `ios_base::failure(__msg)` (libc++ <ios>:441, a nested class declared inside
+// ios_base and defined out of line).
+//
+// ONE owner, consulted from the two places the two spellings arrive:
+//   `(` looks like a call, so it enters the method arm first and reaches this
+//       only when the class has no method of that name;
+//   `{` never enters the method arm at all, so it reaches the call below it.
+// Both must defer to a real method of the same name, which is why neither call
+// site runs before the method lookup.
+//
+// Resolution uses the same alias walker the DECLARATION path uses and the same
+// functional-cast machinery the namespace-qualified arm uses — this is their
+// expression twin, not a third implementation. parse_functional_type_expression
+// is itself gated on `{`/`(`, so a bare type-id still falls through.
+static bool try_nested_type_construction(Program &pgm, DataDefCLASS *scope,
+					 const std::string &member_name,
+					 TokenBase *member_tb,
+					 std::stack<TokenBase *> &exStack,
+					 TokenBase **tb_out)
+{
+    DataDef *nested_dd = resolve_class_type_alias(scope, member_name);
+    if ( !nested_dd )
+	return false;
+    TokenBase *ctor_expr = pgm.parse_functional_type_expression(member_tb,
+								nested_dd);
+    if ( !ctor_expr )
+	return false;
+    exStack.push(ctor_expr);
+    *tb_out = member_tb;
+    return true;
+}
 
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
 	Variable **var_out, TokenBase **tb_out,
-	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL)
+	DataDefCLASS **owner_out /* = NULL */, std::string *member_out /* = NULL */)
 {
     TokenBase *member_tb = NULL;
     std::string member_name;
@@ -20635,10 +25889,31 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	  && ( pgm.peekToken()->id() == TokenID::tkOpBrk
 	    || ( pgm.peekToken()->id() == TokenID::tkLT && member_is_static_fn ) ) )
 	{
+	    // A base-qualified call INSIDE a member function of `scope` (or of
+	    // a class derived from it) is an implicit-this INSTANCE call
+	    // ([class.mfct.non-static]) — libc++ basic_ios::rdbuf() wraps
+	    // ios_base::rdbuf() exactly so, and requiring static here made the
+	    // arity picker decline both overloads and fall back to
+	    // findMethod's arbitrary one (the setter, "expected 2 got 1").
+	    // Walk the compound chain to the enclosing method; only a call
+	    // from OUTSIDE such a context must be static.
+	    bool qualified_instance_ok = false;
+	    for ( TokenCpnd *cur = pgm.compounds.empty()
+			? NULL : pgm.compounds.top();
+		  cur; cur = cur->parent )
+	    {
+		if ( !cur->method )
+		    continue;
+		DataDefCLASS *cur_cls = cur->method->owner_class;
+		qualified_instance_ok =
+		    cur_cls && cur_cls->is_or_derives_from(scope);
+		break;
+	    }
 	    Variable *mvar = scope->findMethod(member_name);
 	    if ( Variable *arity_mvar =
 		    find_method_by_callable_arity(scope, member_name,
-			pgm.count_queued_call_arguments(), true) )
+			pgm.count_queued_call_arguments(),
+			!qualified_instance_ok) )
 		mvar = arity_mvar;
 	    if ( !mvar )
 	    {
@@ -20661,6 +25936,17 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		    *tb_out = end;
 		    return QualifiedClassExprAction::PushedExpression;
 		}
+		// No method by that name, but the name may be a nested TYPE, in
+		// which case `Scope::Name(args)` is a temporary CONSTRUCTION and
+		// not a call at all. The arm that owns that (just below) is
+		// deliberately placed AFTER this one so a real method wins the
+		// name — but this arm THREW, so it never got the chance.
+		// libc++ <ios>:441 is exactly this: `throw ios_base::failure(__msg)`
+		// where `failure` is a nested class of ios_base, declared inside it
+		// and defined out of line.
+		if ( try_nested_type_construction(pgm, scope, member_name,
+						 member_tb, exStack, tb_out) )
+		    return QualifiedClassExprAction::PushedExpression;
 		pgm.Throw(member_tb) << "'" << member_name
 				     << "' is not a member function of '"
 				     << scope->name << "'" << flush;
@@ -20700,35 +25986,26 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    return QualifiedClassExprAction::ResolvedFunction;
 	}
 
-	if ( DataDef *static_dd = resolve_class_static_member_type(scope, member_name) )
+	// Nested TYPE of the class in EXPRESSION position followed by a braced
+	// or parenthesized initializer — a temporary construction. Reached for
+	// the BRACED spelling (`nullopt_t::__secret_tag{}`, libc++
+	// <optional>:280), which never enters the method arm above at all; the
+	// PARENTHESIZED spelling reaches the same owner from that arm's
+	// no-such-method path. Placed AFTER the method arm so
+	// `Class::method(args)` keeps the name.
+	if ( try_nested_type_construction(pgm, scope, member_name, member_tb,
+					 exStack, tb_out) )
+	    return QualifiedClassExprAction::PushedExpression;
+
+	// Static data member: the shared resolver owns the constant-vs-storage
+	// choice. That choice used to be made here and only for CLASS-typed
+	// members, so a scalar `static int n;` fell into the integral fold and
+	// read a silent 0 no matter what its out-of-class definition had
+	// initialized it to.
+	if ( TokenBase *sval =
+		resolve_class_static_member_value(pgm, scope, member_name, member_tb) )
 	{
-	    // A CLASS-typed static data member is an OBJECT: resolve to its
-	    // storage (the Class__member global its out-of-class definition
-	    // declared — `inline constexpr partial_ordering
-	    // partial_ordering::less(...)`), never to the integral-constant
-	    // fold below (which silently zeroes every use).
-	    if ( dynamic_cast<DataDefCLASS *>(static_dd) )
-	    {
-		std::string storage_name = scope->name + "__" + member_name;
-		if ( Variable *svar = pgm.findVariable(storage_name) )
-		{
-		    TokenVar *tv = new TokenVar(*svar);
-		    tv->file = member_tb->file;
-		    tv->line = member_tb->line;
-		    tv->column = member_tb->column;
-		    exStack.push(tv);
-		    *tb_out = member_tb;
-		    return QualifiedClassExprAction::PushedExpression;
-		}
-	    }
-	    int64_t cv = 0;
-	    resolve_class_static_member_const_value(scope, member_name, cv);
-	    TokenInt *ti = new TokenInt(cv);
-	    ti->setDataType(static_dd);
-	    ti->file = member_tb->file;
-	    ti->line = member_tb->line;
-	    ti->column = member_tb->column;
-	    exStack.push(ti);
+	    exStack.push(sval);
 	    *tb_out = member_tb;
 	    return QualifiedClassExprAction::PushedExpression;
 	}
@@ -20764,6 +26041,23 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
     }
 }
 
+// The inline-namespace closure of `parent`, parent first, then every inline
+// descendant in BFS order — the one enumeration behind the qualified variant
+// scans below and StructRegistry::find_despaced's namespace filter.
+void Program::namespace_inline_closure(const std::string &parent,
+				       std::vector<std::string> &out)
+{
+    out.push_back(parent);
+    for ( size_t pi = 0; pi < out.size(); ++pi )
+    {
+	std::map<std::string, std::vector<std::string>>::iterator ci =
+	    inline_namespace_children.find(out[pi]);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t k = 0; k < ci->second.size(); ++k )
+		out.push_back(ci->second[k]);
+    }
+}
+
 Program::TemplateDef *Program::find_template(const std::string &name,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
@@ -20789,27 +26083,15 @@ Program::TemplateDef *Program::find_template(uint32_t name_id,
     {
 	// Exact namespace match only — used both as a declared-in check and to
 	// instantiate the correct same-named template under a qualified use.
-	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint
-	      && variants[i].owner_class == owner_hint )
-		return &variants[i];
-	std::map<std::string, std::vector<std::string>>::iterator ci =
-	    inline_namespace_children.find(ns_hint);
-	std::vector<std::string> pending =
-	    ci == inline_namespace_children.end()
-	    ? std::vector<std::string>() : ci->second;
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &child = pending[pi];
+	// The hint's inline descendants (std -> std::__cxx11) match too,
+	// parent first.
+	std::vector<std::string> closure;
+	namespace_inline_closure(ns_hint, closure);
+	for ( size_t ci = 0; ci < closure.size(); ++ci )
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child
+		if ( variants[i].defining_namespace == closure[ci]
 		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
-	    ci = inline_namespace_children.find(child);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t k = 0; k < ci->second.size(); ++k )
-		    pending.push_back(ci->second[k]);
-	}
 	return NULL;
     }
 
@@ -20821,12 +26103,37 @@ Program::TemplateDef *Program::find_template(uint32_t name_id,
     // allocation and does not need to filter the variants a second time.
     if ( variants.size() == 1 )
 	return &variants[0];
+    // Env-gated probe (MADC_TMPL_CHOOSE=<name substr>): print every
+    // multi-variant unqualified choice — the route (curns/global/first),
+    // the active namespace, and the variant list. Diagnostic only.
+    static const char *tcp = ::getenv("MADC_TMPL_CHOOSE");
+    const char *tcp_name = NULL;
+    if ( tcp && *tcp )
+    {
+	const char *nm = template_name_pool.c_str(name_id);
+	if ( strstr(nm, tcp) )
+	    tcp_name = nm;
+    }
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].defining_namespace == current_namespace() )
+	{
+	    if ( tcp_name )
+		fprintf(stderr, "[tmplchoose] %s curns='%s' -> curns variant\n",
+			tcp_name, current_namespace().c_str());
 	    return &variants[i];
+	}
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].defining_namespace.empty() )
+	{
+	    if ( tcp_name )
+		fprintf(stderr, "[tmplchoose] %s curns='%s' -> global variant\n",
+			tcp_name, current_namespace().c_str());
 	    return &variants[i];
+	}
+    if ( tcp_name )
+	fprintf(stderr, "[tmplchoose] %s curns='%s' -> first variant ns='%s'\n",
+		tcp_name, current_namespace().c_str(),
+		variants[0].defining_namespace.c_str());
     return &variants[0];
 }
 
@@ -20846,8 +26153,30 @@ Program::TemplateAliasDef *Program::find_template_alias(
 {
     const template_alias_registry_entry_t *entry =
 	template_alias_map.find_readonly(name_id);
+    if ( !entry )
+	return NULL;
+    // [basic.lookup.unqual] in a member context: an unqualified alias-template
+    // name resolves against the active class scopes (including bases and
+    // enclosing classes) BEFORE namespace scope — a member alias shadows a
+    // namespace-level alias of the same name. This is how the return-type range
+    // of a member template reaches a member alias of its owner (__cond_t inside
+    // __do_common_type_impl, the std::common_type keystone): the owner is on
+    // class_scope_stack, but only the free bucket was searched. owner_hint or a
+    // non-empty ns_hint means a qualified lookup — skip the walk; the tree walk
+    // re-enters this function WITH an owner_hint, so it cannot recurse.
+    if ( !owner_hint && ns_hint.empty() )
+	for ( std::vector<DataDefCLASS *>::reverse_iterator ci =
+		  class_scope_stack.rbegin();
+	      ci != class_scope_stack.rend(); ++ci )
+	{
+	    DataDefCLASS *matched = NULL;
+	    if ( const Program::TemplateAliasDef *member_found =
+		    find_template_alias_in_class_tree(*this, name_id, *ci,
+						      &matched) )
+		return const_cast<Program::TemplateAliasDef *>(member_found);
+	}
     const std::vector<Program::TemplateAliasDef> *found =
-	entry ? entry->find(owner_hint) : NULL;
+	entry->find(owner_hint);
     std::vector<Program::TemplateAliasDef> *g = const_cast<
 	std::vector<Program::TemplateAliasDef> *>(found);
     if ( !g || g->empty() )
@@ -20856,27 +26185,15 @@ Program::TemplateAliasDef *Program::find_template_alias(
 
     if ( !ns_hint.empty() )
     {
-	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint
-	      && variants[i].owner_class == owner_hint )
-		return &variants[i];
-	std::map<std::string, std::vector<std::string>>::iterator ci =
-	    inline_namespace_children.find(ns_hint);
-	std::vector<std::string> pending =
-	    ci == inline_namespace_children.end()
-	    ? std::vector<std::string>() : ci->second;
-	for ( size_t pi = 0; pi < pending.size(); ++pi )
-	{
-	    const std::string &child = pending[pi];
+	// Same qualified scan as find_template: the hint and its inline
+	// descendants, parent first, via the one closure enumeration.
+	std::vector<std::string> closure;
+	namespace_inline_closure(ns_hint, closure);
+	for ( size_t ci = 0; ci < closure.size(); ++ci )
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child
+		if ( variants[i].defining_namespace == closure[ci]
 		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
-	    ci = inline_namespace_children.find(child);
-	    if ( ci != inline_namespace_children.end() )
-		for ( size_t k = 0; k < ci->second.size(); ++k )
-		    pending.push_back(ci->second[k]);
-	}
 	return NULL;
     }
 
@@ -20952,7 +26269,23 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 	  || variants[i].owner_class != td.owner_class )
 	    continue;
 	if ( only_if_absent )
-	    return;                       // first declaration in this ns wins
+	{
+	    // First declaration in this ns wins the BODY/pattern — but
+	    // template-default arguments ACCUMULATE across redeclarations
+	    // regardless of order ([temp.param]p10): a forward declaration
+	    // carrying defaults may FOLLOW the definition that omitted them
+	    // (libc++ declares istreambuf_iterator's traits default ONLY in
+	    // <iosfwd>; the definition header omits it — dropping it here
+	    // left num_get<char>'s default fill with no traits argument).
+	    Program::TemplateDef &prev = variants[i];
+	    if ( prev.typeparam_defaults.size() < td.typeparam_defaults.size() )
+		prev.typeparam_defaults.resize(td.typeparam_defaults.size());
+	    for ( size_t k = 0; k < td.typeparam_defaults.size(); ++k )
+		if ( prev.typeparam_defaults[k].empty()
+		  && !td.typeparam_defaults[k].empty() )
+		    prev.typeparam_defaults[k] = td.typeparam_defaults[k];
+	    return;
+	}
 	// Carry forward template-default arguments the prior declaration of this
 	// same template (same namespace) supplied but this one omitted.
 	Program::TemplateDef merged = td;
@@ -21054,33 +26387,29 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 
     size_t i = 0;
     int cv = 0;
-    std::string required_leading_cv;
+    std::string required_cv;
     while ( i < pat.size() && is_type_qualifier_token(pat[i]) )
     {
 	bool counted_cv = false;
 	if ( pat[i]->id() == TokenID::tkCONST )
 	{
-	    required_leading_cv += "const ";
+	    required_cv += "const ";
 	    counted_cv = true;
 	}
 	else if ( pat[i]->id() == TokenID::tkVOLATILE )
 	{
-	    required_leading_cv += "volatile ";
+	    required_cv += "volatile ";
 	    counted_cv = true;
 	}
 	else if ( pat[i]->id() == TokenID::tkRESTRICT )
 	{
-	    required_leading_cv += "restrict ";
+	    required_cv += "restrict ";
 	    counted_cv = true;
 	}
 	if ( counted_cv )
 	    ++cv;
 	++i;
     }
-    if ( !required_leading_cv.empty()
-      && concrete_spelling.compare(0, required_leading_cv.size(),
-				   required_leading_cv) != 0 )
-	return false;
     bool simple = ( i < pat.size() && is_contextual_identifier_token(pat[i]) );
     std::string core;
     int ptr = 0;
@@ -21097,10 +26426,33 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 	    // count just records that the slot is a reference pattern (`_Tp&`).
 	    else if ( pat[i]->id() == TokenID::tkBand
 		   || pat[i]->id() == TokenID::tkLand ) { ref = 1; ++i; }
-	    else if ( is_type_qualifier_token(pat[i]) ) { ++i; }
+	    else if ( is_type_qualifier_token(pat[i]) )
+	    {
+		// EAST cv on the CORE (`_Tp const` — libc++'s is_const/is_volatile/
+		// remove_const spelling) is the SAME requirement as leading cv
+		// ([dcl.type.cv]: order is immaterial): the concrete arg must carry
+		// the qualifier. Skipping it silently made `is_const<_Tp const>`
+		// match PLAIN long — a silent wrong `true` that poisoned every
+		// make_unsigned<_Integral> in libc++'s num_put. A qualifier after a
+		// declarator token (`_Tp* const`) qualifies the POINTER level, which
+		// the flat model does not track — skipped as before.
+		if ( ptr == 0 && ref == 0 )
+		{
+		    if ( pat[i]->id() == TokenID::tkCONST )
+		    { required_cv += "const "; ++cv; }
+		    else if ( pat[i]->id() == TokenID::tkVOLATILE )
+		    { required_cv += "volatile "; ++cv; }
+		    else if ( pat[i]->id() == TokenID::tkRESTRICT )
+		    { required_cv += "restrict "; ++cv; }
+		}
+		++i;
+	    }
 	    else { simple = false; break; }   // leftover token => not the simple shape
 	}
     }
+    if ( !required_cv.empty()
+      && concrete_spelling.compare(0, required_cv.size(), required_cv) != 0 )
+	return false;
     bool is_param = false;
     if ( simple )
 	for ( size_t k = 0; k < spec_params.size(); ++k )
@@ -21158,6 +26510,30 @@ static std::string strip_type_namespace(const std::string &s)
     return s.substr(last + 2);
 }
 
+// Twin of strip_type_namespace: the namespace qualifier it strips — everything
+// before the last "::" that precedes the first '<' (empty if unqualified).
+// "std::allocator<char>" -> "std", "std::__cxx11::basic_string<...>" ->
+// "std::__cxx11". A cv-prefixed spelling ("const std::X<y>") keeps only the
+// word after the last space, and an explicit global qualifier ("::X<y>")
+// reduces to the empty (global) namespace — both mirroring what
+// strip_type_namespace leaves in its tail.
+static std::string type_namespace_of(const std::string &s)
+{
+    size_t lt = s.find('<');
+    size_t scan_end = (lt == std::string::npos) ? s.size() : lt;
+    size_t last = std::string::npos;
+    for ( size_t i = 0; i + 1 < scan_end; ++i )
+	if ( s[i] == ':' && s[i + 1] == ':' ) last = i;
+    if ( last == std::string::npos ) return std::string();
+    std::string ns = s.substr(0, last);
+    size_t sp = ns.rfind(' ');
+    if ( sp != std::string::npos )
+	ns = ns.substr(sp + 1);
+    if ( ns.compare(0, 2, "::") == 0 )
+	ns.erase(0, 2);
+    return ns;
+}
+
 static std::string trim_spelling(const std::string &s)
 {
     size_t a = 0, b = s.size();
@@ -21172,24 +26548,12 @@ static std::string trim_spelling(const std::string &s)
 static bool split_template_id_spelling(const std::string &s, std::string &outer,
 				       std::vector<std::string> &args)
 {
-    std::string b = strip_type_namespace(trim_spelling(s));
-    size_t lt = b.find('<');
-    if ( lt == std::string::npos || b.empty() || b[b.size() - 1] != '>' )
-	return false;
-    outer = trim_spelling(b.substr(0, lt));
-    std::string inner = b.substr(lt + 1, b.size() - lt - 2);
-    int depth = 0;
-    std::string cur;
-    for ( size_t i = 0; i < inner.size(); ++i )
-    {
-	char c = inner[i];
-	if ( c == '<' ) { ++depth; cur += c; }
-	else if ( c == '>' ) { --depth; cur += c; }
-	else if ( c == ',' && depth == 0 ) { args.push_back(trim_spelling(cur)); cur.clear(); }
-	else cur += c;
-    }
-    args.push_back(trim_spelling(cur));
-    return true;
+    // Depth tracking is the shared rule (include/spelling_delim.h). Reject, not
+    // Ignore: this reader's original "the spelling must END in '>'" test exists
+    // precisely so a qualified name whose primary template-id is a LATER one
+    // (`A<B>::C<D>`) is not mistaken for the template-id `A<B>`.
+    return split_template_id_parts(strip_type_namespace(trim_spelling(s)),
+				   outer, args, SpellingTail::Reject);
 }
 
 // Drop every space from a spelling so two renderings of the same type compare
@@ -22310,15 +27674,19 @@ class ClassPatternNormalizer
 	if ( !base )
 	{
 	    size_t member_sep = tokens.size();
-	    int angle = 0;
-	    for ( size_t i = 0; i < tokens.size(); ++i )
+	    // This was the campaign's original defect shape, still live: a bare
+	    // `++angle` on every tkLT, with no template-id head-context test and
+	    // no paren guard, so `A<(x > y)>::t` or a relational `<` desynced the
+	    // scan and the LAST top-level `::` came back wrong. DelimDepth has
+	    // both guards. Same axis as before — angle only.
+	    DelimDepth d;
+	    for ( size_t i = 0; i < tokens.size(); )
 	    {
-		if ( tokens[i]->id() == TokenID::tkLT )
-		    ++angle;
-		else if ( tokens[i]->id() == TokenID::tkGT && angle > 0 )
-		    --angle;
-		else if ( tokens[i]->id() == TokenID::tkNS && angle == 0 )
+		if ( !tokens[i] ) { ++i; continue; }
+		if ( !d.angle && tokens[i]->id() == TokenID::tkNS )
 		    member_sep = i;
+		size_t n = delim_scan_step(tokens, i, d);
+		i += n ? n : 1;
 	    }
 	    if ( member_sep < tokens.size() && member_sep > 0
 	      && member_sep + 1 < tokens.size() )
@@ -22350,31 +27718,79 @@ class ClassPatternNormalizer
 	    pattern.types[base].kind = Program::ClassTypePatternKind::TemplateId;
 	    std::vector<TokenBase *> head(tokens.begin(), tokens.begin() + open);
 	    pattern.types[base].name = class_pattern_tokens_spelling(head);
-	    std::vector<TokenBase *> arg;
-		int depth = 0;
-		for ( size_t i = open + 1; i < tokens.size(); ++i )
+	    // Structural representability gate: a bare TemplateId replays at
+	    // materialization with owner=NULL under a DIFFERENT class stack, so
+	    // a head that resolves only as a MEMBER alias of some class (cond2
+	    // inside doer — the __cond_t shape) is capture-time context the
+	    // resolver cannot reproduce. Reject the pattern; the token-parser
+	    // lane owns member-alias lookup ([basic.lookup.unqual], layer 1).
+	    if ( pattern.types[base].name.find("::") == std::string::npos )
+	    {
+		const Program::TemplateAliasDef *head_alias =
+		    pgm.find_template_alias(pattern.types[base].name,
+					    std::string(), NULL);
+		bool member_alias_head = head_alias && head_alias->owner_class;
+		bool free_head = (head_alias && !head_alias->owner_class)
+		    || pgm.find_template(pattern.types[base].name,
+					 std::string(), NULL);
+		if ( member_alias_head || !free_head )
 		{
-		    TokenID id = tokens[i]->id();
-		    bool close = id == TokenID::tkGT && depth == 0;
-		if ( close || (id == TokenID::tkComma && depth == 0) )
+		    fail(Program::ClassParseReason::UnnormalizableType);
+		    return base;
+		}
+	    }
+	    // Argument split on the shared tracker (delimiter-tracking.md).
+	    // The hand-rolled ++depth/--depth walk this replaces treated the
+	    // merged '>>' token (tkBSR closes TWO angle levels) as an ordinary
+	    // token: it was pushed INTO the pending argument, the head's close
+	    // was never seen, and `decay2<cond2<T1,T2>>` captured with ZERO
+	    // arguments — the resolver then replayed `decay2<>`. When one of
+	    // tkBSR's closes belongs to a nested argument list, the swallowed
+	    // '>' is materialized back so the recursive normalize sees a
+	    // balanced argument.
+	    DelimDepth ad;
+	    delim_scan_step(tokens, open, ad);	// the head's '<' — ad.angle == 1
+	    std::vector<TokenBase *> arg;
+	    for ( size_t i = open + 1; i < tokens.size(); )
+	    {
+		TokenBase *t = tokens[i];
+		size_t before_angle = ad.angle;
+		size_t n = delim_scan_step(tokens, i, ad);
+		if ( !n )
+		    n = 1;
+		if ( !ad.angle )		// this step closed the head's list
+		{
+		    if ( t->id() == TokenID::tkBSR && before_angle >= 2 )
+			arg.push_back(new TokenGT());
+		    if ( !arg.empty() )
+		    {
+			// normalize_token_type recurses into append_type() and
+			// can REALLOCATE pattern.types — resolve it into a
+			// local BEFORE indexing types[base] (C++11 leaves the
+			// order of the index and the call unspecified).
+			Program::ClassTypePatternId argument =
+			    normalize_token_type(arg);
+			pattern.types[base].arguments.push_back(argument);
+		    }
+		    break;
+		}
+		if ( t->id() == TokenID::tkComma && ad.angle == 1
+		  && !ad.paren && !ad.square && !ad.brace )
 		{
 		    if ( !arg.empty() )
 		    {
 			Program::ClassTypePatternId argument =
 			    normalize_token_type(arg);
 			pattern.types[base].arguments.push_back(argument);
-		    }
 			arg.clear();
-			if ( close )
-			    break;
-			continue;
 		    }
-		    if ( id == TokenID::tkLT )
-			++depth;
-		    else if ( id == TokenID::tkGT && depth > 0 )
-			--depth;
-		    arg.push_back(tokens[i]);
+		    i += n;
+		    continue;
 		}
+		for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
+		    arg.push_back(tokens[i + k]);
+		i += n;
+	    }
 	    }
 	}
 
@@ -22786,6 +28202,7 @@ class ClassPatternNormalizer
 	out.declaration_only = fd->declaration_only;
 	out.defaulted_or_deleted = fd->defaulted_or_deleted;
 	out.is_deleted = fd->is_deleted;
+	out.noexcept_spec = fd->noexcept_spec;
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
 	out.is_member_template = fd->is_member_template;
@@ -22797,6 +28214,15 @@ class ClassPatternNormalizer
 	out.member_template_decl = class_pattern_clone_tokens(fd->member_template_decl);
 	out.member_template_return_tokens =
 	    class_pattern_clone_tokens(fd->member_template_return_tokens);
+	for ( size_t i = 0; i < fd->member_template_param_defaults.size(); ++i )
+	    out.template_param_defaults.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_defaults[i]));
+	for ( size_t i = 0; i < fd->member_template_param_constraints.size(); ++i )
+	    out.template_param_constraints.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_constraints[i]));
+	for ( size_t i = 0; i < fd->member_template_param_type_tokens.size(); ++i )
+	    out.param_type_token_runs.push_back(
+		class_pattern_clone_tokens(fd->member_template_param_type_tokens[i]));
 	out.parameters.reserve(fd->parameters.size());
 
 	for ( size_t i = 0; i < owner->ctors.size(); ++i )
@@ -23248,6 +28674,12 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	last_skipped_template_typeparams;
     std::vector<bool> saved_skipped_template_packs =
 	last_skipped_template_typeparam_is_pack;
+    std::vector<bool> saved_skipped_template_is_type =
+	last_skipped_template_typeparam_is_type;
+    std::vector<std::vector<TokenBase *> > saved_skipped_template_defaults =
+	last_skipped_template_typeparam_defaults;
+    std::vector<std::vector<TokenBase *> > saved_skipped_template_constraints =
+	last_skipped_template_typeparam_constraints;
     std::string saved_stmt_callee_namespace = stmt_callee_namespace;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> > *saved_decl_capture =
 	class_pattern_decl_capture;
@@ -23297,6 +28729,9 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.clear();
     last_skipped_template_typeparams.clear();
     last_skipped_template_typeparam_is_pack.clear();
+    last_skipped_template_typeparam_is_type.clear();
+    last_skipped_template_typeparam_defaults.clear();
+    last_skipped_template_typeparam_constraints.clear();
     stmt_callee_namespace.clear();
 
     bool parsed = false;
@@ -23387,6 +28822,9 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_decl.swap(saved_skipped_template_decl);
     last_skipped_template_typeparams.swap(saved_skipped_template_typeparams);
     last_skipped_template_typeparam_is_pack.swap(saved_skipped_template_packs);
+    last_skipped_template_typeparam_is_type.swap(saved_skipped_template_is_type);
+    last_skipped_template_typeparam_defaults.swap(saved_skipped_template_defaults);
+    last_skipped_template_typeparam_constraints.swap(saved_skipped_template_constraints);
     stmt_callee_namespace = saved_stmt_callee_namespace;
     tokens = saved_tokens;
     _prv_token = saved_prv;
@@ -23491,9 +28929,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     return td.class_pattern_id;
 }
 
-DataDef *StructRegistry::find_despaced(const std::string &want)
+void StructRegistry::topup_index_()
 {
-    ++probe_lookups_;
     if ( gen_stamp_ != DataDef::canonical_spelling_gen )
     {
 	index_.clear();
@@ -23502,35 +28939,81 @@ DataDef *StructRegistry::find_despaced(const std::string &want)
 	gen_stamp_ = DataDef::canonical_spelling_gen;
 	++probe_rebuilds_;
     }
-    if ( map_.size() != size_stamp_ )
+    if ( map_.size() == size_stamp_ )
+	return;
+    size_stamp_ = map_.size();
+    for ( datadef_map_citer it = map_.begin(); it != map_.end(); ++it )
     {
-	size_stamp_ = map_.size();
-	for ( datadef_map_citer it = map_.begin(); it != map_.end(); ++it )
-	{
-	    if ( !seen_.insert(&it->first).second )
-		continue;
-	    ++probe_swept_;
-	    DataDef *dd = it->second;
-	    if ( !dd )
-		continue;
-	    dd->canonical_swept = true;	// its rewrites must bump the gen from now on
-	    if ( dd->canonical_cpp_spelling().empty() )
-		continue;
-	    std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
-	    std::pair<std::unordered_map<std::string, Hit>::iterator, bool> ins =
-		index_.emplace(d, Hit{ &it->first, dd });
-	    // Keep the smallest map key per despaced spelling: a top-up can visit
-	    // a later-inserted node whose key sorts BEFORE the current winner, and
-	    // the linear scan this replaces answered in key order.
-	    if ( !ins.second && it->first < *ins.first->second.key )
-	    {
-		ins.first->second.key = &it->first;
-		ins.first->second.dd = dd;
-	    }
-	}
+	if ( !seen_.insert(&it->first).second )
+	    continue;
+	++probe_swept_;
+	DataDef *dd = it->second;
+	if ( !dd )
+	    continue;
+	dd->canonical_swept = true;	// its rewrites must bump the gen from now on
+	if ( dd->canonical_cpp_spelling().empty() )
+	    continue;
+	std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
+	std::vector<Hit> &hits = index_[d];
+	// Keep map-key order within a despaced key: a top-up can visit a
+	// later-inserted node whose key sorts BEFORE the current entries, and
+	// the linear scan this index replaces answered in key order (the
+	// bare lookup serves hits[0]). Collisions are rare; hits stay tiny.
+	size_t pos = 0;
+	while ( pos < hits.size() && *hits[pos].key < it->first )
+	    ++pos;
+	hits.insert(hits.begin() + pos, Hit{ &it->first, dd });
     }
-    std::unordered_map<std::string, Hit>::iterator hit = index_.find(want);
-    return hit == index_.end() ? NULL : hit->second.dd;
+}
+
+DataDef *StructRegistry::find_despaced(const std::string &want)
+{
+    ++probe_lookups_;
+    topup_index_();
+    std::unordered_map<std::string, std::vector<Hit>>::iterator hit =
+	index_.find(want);
+    return hit == index_.end() || hit->second.empty()
+	 ? NULL : hit->second[0].dd;
+}
+
+DataDef *StructRegistry::find_despaced(const std::string &want,
+				       const std::string &want_ns,
+				       Program &pgm)
+{
+    if ( want_ns.empty() )
+	return find_despaced(want);
+    ++probe_lookups_;
+    topup_index_();
+    std::unordered_map<std::string, std::vector<Hit>>::iterator hi =
+	index_.find(want);
+    if ( hi == index_.end() )
+	return NULL;
+    // Honor the query's namespace qualifier: two same-named templates in
+    // different namespaces despace to ONE index key (std::char_traits<char>
+    // vs __gnu_cxx::char_traits<char>), and map-key order must never decide
+    // between namespaces the query distinguishes. `std` matches a canonical
+    // `std::__cxx11::…` through the inline-namespace closure — and the
+    // reverse, for a query derived from an inline-qualified spelling.
+    std::vector<std::string> closure;
+    pgm.namespace_inline_closure(want_ns, closure);
+    for ( size_t i = 0; i < hi->second.size(); ++i )
+    {
+	const std::string hit_ns =
+	    type_namespace_of(hi->second[i].dd->canonical_cpp_spelling());
+	bool ok = false;
+	for ( size_t c = 0; !ok && c < closure.size(); ++c )
+	    ok = hit_ns == closure[c];
+	if ( !ok && !hit_ns.empty() )
+	{
+	    std::vector<std::string> rev;
+	    pgm.namespace_inline_closure(hit_ns, rev);
+	    for ( size_t c = 0; !ok && c < rev.size(); ++c )
+		ok = want_ns == rev[c];
+	}
+	if ( ok )
+	    return hi->second[i].dd;
+    }
+    return NULL;
 }
 
 // Resolve a type-argument SPELLING to its DataDef. resolve_named_datadef handles
@@ -23544,6 +29027,37 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 {
     if ( DataDef *dd = pgm.resolve_named_datadef(spelling) )
 	return dd;
+    // A qualified simple name can be a namespace alias (`std::string`, or a
+    // user `ns::value_type`).  The flat resolver intentionally does not read
+    // namespace_datatype_map, but pack deduction stores canonical/source C++
+    // spellings and must round-trip them before re-applying `&`/`*` below.
+    {
+	std::string qualified = trim_spelling(spelling);
+	bool global_qualified = qualified.compare(0, 2, "::") == 0;
+	if ( global_qualified )
+	    qualified.erase(0, 2);
+	size_t scope = qualified.rfind("::");
+	if ( scope != std::string::npos
+	  && qualified.find('<') == std::string::npos )
+	{
+	    std::string ns_name = qualified.substr(0, scope);
+	    const std::string member_name = qualified.substr(scope + 2);
+	    if ( !global_qualified )
+	    {
+		std::string resolved = pgm.resolve_namespace_name_in_scope(ns_name);
+		if ( !resolved.empty() )
+		    ns_name = resolved;
+	    }
+	    namespace_datatype_map_t::iterator nti =
+		pgm.namespace_datatype_map.find(ns_name);
+	    if ( nti != pgm.namespace_datatype_map.end() )
+	    {
+		datatype_map_iter dti = nti->find(member_name);
+		if ( dti != nti->end() )
+		    return &dti->second->definition;
+	    }
+	}
+    }
     // Peel trailing declarator suffixes (`int32_t*`, `_Tp&`, `_Tp&&`) and leading
     // cv-qualifiers, resolve the CORE type, then re-apply pointer/reference.
     // resolve_named_datadef matches only a bare type name; a pack element absorbed
@@ -23604,8 +29118,22 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     }
     if ( spelling.find('<') == std::string::npos )
 	return NULL;
-    std::string want = despace_spelling(strip_type_namespace(trim_spelling(spelling)));
-    return pgm.struct_map.find_despaced(want);
+    std::string trimmed = trim_spelling(spelling);
+    std::string want_ns = type_namespace_of(trimmed);
+    std::string want = despace_spelling(strip_type_namespace(trimmed));
+    // A qualified template-id query resolves namespace-faithfully; only a
+    // genuinely bare spelling falls back to the key-order winner.
+    DataDef *hit = want_ns.empty()
+		 ? pgm.struct_map.find_despaced(want)
+		 : pgm.struct_map.find_despaced(want, want_ns, pgm);
+    // Env-gated probe (MADC_ARGSPELL=<substr>): print every despaced-index
+    // resolution whose query matches. Diagnostic only.
+    static const char *asp = ::getenv("MADC_ARGSPELL");
+    if ( asp && *asp && want.find(asp) != std::string::npos )
+	fprintf(stderr, "[argspell] q='%s' ns='%s' want='%s' -> '%s'\n",
+		spelling.c_str(), want_ns.c_str(), want.c_str(),
+		hit ? hit->canonical_cpp_spelling().c_str() : "(null)");
+    return hit;
 }
 
 // [temp.deduct.call]/4 derived-to-base: when a template-id PARAMETER pattern
@@ -23656,6 +29184,38 @@ static std::string base_spelling_for_template(DataDefCLASS *cls,
 // `allocator_traits<allocator<_Tp>>` partial spec be selected for
 // `allocator_traits<allocator<char>>` instead of falling to the primary template (the
 // `__detected_or_t<…>` machinery), which madc cannot reduce.
+// Outer-name equality for template-id unification. The pattern spells the
+// name as WRITTEN at its definition site — usually unqualified (`box<T>` in
+// lib, `ostreambuf_iterator<_CharT,_Traits>` in std::__1) — while the
+// concrete side is the argument's CANONICAL spelling, namespace-qualified
+// (`lib::box<long>`). A bare != therefore declined every cross-namespace
+// unify and fn-template deduction silently bailed ("undefined MIR import
+// __ns_lib_peek" with no FAILED line). An unqualified name matches a
+// qualified one whose LAST scope part is the same name — the
+// class_matches_friend_name suffix rule, applied symmetrically; leading cv
+// on the pattern's core is spelling, not name.
+static bool template_outer_names_match(std::string pouter,
+				       const std::string &couter)
+{
+    if ( pouter.compare(0, 6, "const ") == 0 )
+	pouter.erase(0, 6);
+    if ( pouter.compare(0, 9, "volatile ") == 0 )
+	pouter.erase(0, 9);
+    if ( pouter == couter )
+	return true;
+    if ( couter.size() > pouter.size()
+      && couter.compare(couter.size() - pouter.size(), pouter.size(),
+			pouter) == 0
+      && couter[couter.size() - pouter.size() - 1] == ':' )
+	return true;
+    if ( pouter.size() > couter.size()
+      && pouter.compare(pouter.size() - couter.size(), couter.size(),
+			couter) == 0
+      && pouter[pouter.size() - couter.size() - 1] == ':' )
+	return true;
+    return false;
+}
+
 bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
@@ -23669,6 +29229,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	return false;
     if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
 	return false;
+    bool outer_match = template_outer_names_match(pouter, couter);
     // [temp.deduct.call]/4 derived-to-base: the pattern names a concrete template
     // (`_Tuple_impl`) the argument's class (`tuple<int*>`) doesn't directly
     // specialize, but DERIVES from a specialization of (tuple inherits
@@ -23676,8 +29237,8 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
     // derived template and its base have different arity (tuple<T> has 1 arg, its
     // base _Tuple_impl<0,T> has 2). The template-template-PARAMETER case (pouter is
     // a spec param, out_tmpl set — the allocator-rebind keystone) keeps same-arity
-    // matching and is handled in the `pouter != couter` block further down.
-    if ( pouter != couter )
+    // matching and is handled in the outer-mismatch block further down.
+    if ( !outer_match )
     {
 	bool pouter_is_param = false;
 	for ( size_t k = 0; k < spec_params.size(); ++k )
@@ -23709,7 +29270,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
     }
     else if ( pargs.size() != cargs.size() )
 	return false;
-    if ( pouter != couter )
+    if ( !outer_match )
     {
 	// The pattern's outer name may be a TEMPLATE-TEMPLATE PARAMETER of the
 	// spec (`__replace_first_arg<_Template<_Up>, _Tp>` matching the concrete
@@ -23842,21 +29403,10 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 	size_t gt = seg.rfind('>');
 	std::string inner = ( gt != std::string::npos && gt > lt )
 			  ? seg.substr(lt + 1, gt - lt - 1) : std::string();
-	std::vector<std::string> iargs;
-	{
-	    int d = 0; std::string cur;
-	    for ( size_t j = 0; j < inner.size(); ++j )
-	    {
-		char c = inner[j];
-		if ( c == '<' ) { ++d; cur += c; }
-		else if ( c == '>' ) { --d; cur += c; }
-		else if ( c == ',' && d == 0 )
-		{ iargs.push_back(trim_spelling(cur)); cur.clear(); }
-		else cur += c;
-	    }
-	    if ( !trim_spelling(cur).empty() || !iargs.empty() )
-		iargs.push_back(trim_spelling(cur));
-	}
+	// Top-level comma split is the shared rule (include/spelling_delim.h) —
+	// this block hand-rolled it with only angle depth (no paren/brace guard)
+	// and predated the consolidation sweep that owns it.
+	std::vector<std::string> iargs = split_template_args_spelling(inner);
 	for ( size_t a = 0; a < iargs.size(); ++a )
 	{
 	    if ( a ) seq.push_back(new TokenComma());
@@ -23902,15 +29452,77 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 
 bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string &concrete_spelling,
-	const std::map<std::string, DataDef *> &ded, int &score)
+	const std::map<std::string, DataDef *> &ded, int &score,
+	const std::vector<TokenBase *> *slot_tokens,
+	DataDef *concrete_dd)
 {
-    // The pattern slot must itself be a `__void_t<...>`.
+    size_t decltype_probe_index = 0;
+    // A BARE `decltype( EXPR )` slot — the SAME detection idiom without a
+    // void_t wrapper, which is how libc++ spells it:
+    //
+    //	template <class _Alloc, class = void> struct __has_max_size : false_type {};
+    //	template <class _Alloc>
+    //	struct __has_max_size<_Alloc, decltype((void)declval<_Alloc&>().max_size())>
+    //	    : true_type {};
+    //
+    // libstdc++ writes `__void_t<decltype(EXPR)>` and this evaluator was keyed on
+    // that ONE spelling, so every libc++ detector answered with the primary —
+    // silently FALSE, no diagnostic. __has_max_size<allocator<char>> reading false
+    // is what made allocator_traits<A>::max_size unresolvable on the <string> path.
+    //
+    // Handled before split_template_id_spelling because a bare decltype is not a
+    // template-id: `decltype((void)0)` has no angle brackets at all, and
+    // `decltype(declval<A&>().max_size())` has them in the WRONG place (inside the
+    // expression), which that splitter would happily mis-decompose.
+    //
+    // The wrapper form only needs WELL-FORMEDNESS — void_t forces void — but a bare
+    // decltype contributes its own type, so this must also compare: `decltype(EXPR)`
+    // yielding `unsigned long` matches a concrete `unsigned long` and must NOT match
+    // a concrete `void`. Type identity is name equality, the same test __is_same
+    // uses (TraitTypeArg::same_as).
+    {
+	std::string bare = trim_spelling(slot_spelling);
+	size_t dtl = 8;                                 // strlen("decltype")
+	if ( bare.compare(0, dtl, "decltype") == 0 )
+	{
+	    // Require the delimiter, so an identifier merely BEGINNING with
+	    // "decltype" (a legal name) is not mistaken for the operator.
+	    size_t p = dtl;
+	    while ( p < bare.size() && bare[p] == ' ' ) ++p;
+	    if ( p < bare.size() && bare[p] == '(' )
+	    {
+		DataDef *probe = NULL;
+		if ( !slot_tokens
+		  || !eval_decltype_probe_tokens(*slot_tokens, 0, ded, &probe)
+		  || !probe || !concrete_dd )
+		    return false;              // ill-formed EXPR -> SFINAE reject
+		if ( probe->name != concrete_dd->name )
+		    return false;              // well-formed but a different type
+		score += 30;                   // detection succeeded -> select this spec
+		return true;
+	    }
+	}
+    }
+    // Otherwise the pattern slot must itself be a `__void_t<...>` — anything
+    // else falls to the general substituted-slot resolution arm
+    // ([temp.class.spec.match]/2, the [meta.logical] __enable_if_t idiom).
+    // DARK until the consequences are absorbable: the arm's CORRECT match of
+    // libc++'s `__enable_if_t<is_copy_constructible<_InIter>::value && ...>`
+    // copy-dispatch spec routes string copies into __unwrap_and_dispatch,
+    // whose fn-template body madc does not yet materialize (undefined MIR
+    // imports in 8 _libcxx twins). Enable via MADC_XSLOT_ARM=1 to reproduce;
+    // task #94 tracks the flip-on once __unwrap_and_dispatch materializes.
     std::string pouter;
     std::vector<std::string> pargs;
-    if ( !split_template_id_spelling(slot_spelling, pouter, pargs) )
+    if ( !split_template_id_spelling(slot_spelling, pouter, pargs)
+      || (pouter != "__void_t" && pouter != "void_t") )
+    {
+	static const char *xarm = ::getenv("MADC_XSLOT_ARM");
+	if ( xarm && *xarm )
+	    return eval_substituted_slot_type(slot_tokens, ded, concrete_dd,
+					      score);
 	return false;
-    if ( pouter != "__void_t" && pouter != "void_t" )
-	return false;
+    }
     // The concrete slot must reduce to void: literally `void`, or another
     // `__void_t<...>` (the materialized primary default `__void_t<>` is void).
     std::string cbare = strip_type_namespace(trim_spelling(concrete_spelling));
@@ -23937,21 +29549,27 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string tn = "typename";
 	if ( a.compare(0, tn.size(), tn) == 0 )
 	    a = trim_spelling(a.substr(tn.size()));
-	// Split into `PARAM :: member :: member...` at top-level `::`.
-	std::vector<std::string> segs;
+	// `__void_t<decltype( EXPR )>` — an EXPRESSION well-formedness probe
+	// (libc++ __common_type2_imp: `decltype(true ? declval<_Tp>() :
+	// declval<_Up>())`). Substitute the deduced params into the decltype
+	// token run and resolve it through the real decltype machinery
+	// (resolve_type_token_range carries the SFINAE trap). Resolves ->
+	// this Arg is well-formed; fails -> the spec is SFINAE-rejected.
+	if ( a.compare(0, 8, "decltype") == 0 )
 	{
-	    int depth = 0; std::string cur;
-	    for ( size_t j = 0; j < a.size(); ++j )
-	    {
-		char c = a[j];
-		if ( c == '<' ) { ++depth; cur += c; }
-		else if ( c == '>' ) { --depth; cur += c; }
-		else if ( c == ':' && j + 1 < a.size() && a[j + 1] == ':' && depth == 0 )
-		{ segs.push_back(trim_spelling(cur)); cur.clear(); ++j; }
-		else cur += c;
-	    }
-	    segs.push_back(trim_spelling(cur));
+	    if ( !slot_tokens
+	      || !eval_decltype_probe_tokens(*slot_tokens,
+					     decltype_probe_index++, ded) )
+		return false;
+	    continue;
 	}
+	// Split into `PARAM :: member :: member...` at top-level `::` — the
+	// shared rule (include/spelling_delim.h). This block hand-rolled it
+	// with only angle depth and predated the consolidation sweep. The
+	// owner returns raw components; trimming stays a caller concern.
+	std::vector<std::string> segs = split_scope_spelling(a);
+	for ( size_t si = 0; si < segs.size(); ++si )
+	    segs[si] = trim_spelling(segs[si]);
 	if ( segs.size() < 2 )
 	{
 	    // A bare `PARAM` carrying only declarator suffixes (`_Tp*`, `_Tp&`,
@@ -24006,6 +29624,177 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
     return true;
 }
 
+bool Program::eval_substituted_slot_type(
+	const std::vector<TokenBase *> *slot_tokens,
+	const std::map<std::string, DataDef *> &ded,
+	DataDef *concrete_dd, int &score)
+{
+    if ( !slot_tokens || slot_tokens->empty() || !concrete_dd )
+	return false;
+    // Only slots that MENTION a deduced param take this arm — a concrete
+    // literal slot keeps the literal matchers' verdict.
+    bool mentions_ded = false;
+    for ( TokenBase *t : *slot_tokens )
+	if ( t && t->type() == TokenType::ttIdentifier
+	  && ded.count(((TokenIdent *)t)->spelling()) )
+	{ mentions_ded = true; break; }
+    if ( !mentions_ded )
+	return false;
+    // Clone the run substituting deduced params; skip a leading `typename`
+    // disambiguator.
+    size_t b0 = 0;
+    if ( (*slot_tokens)[0] && is_contextual_identifier_token((*slot_tokens)[0])
+      && contextual_identifier_name((*slot_tokens)[0]) == "typename" )
+	b0 = 1;
+    std::vector<TokenBase *> body;
+    for ( size_t k = b0; k < slot_tokens->size(); ++k )
+    {
+	TokenBase *t = (*slot_tokens)[k];
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &nm = ((TokenIdent *)t)->spelling();
+	    std::map<std::string, DataDef *>::const_iterator di = ded.find(nm);
+	    if ( di != ded.end() && di->second )
+	    {
+		body.push_back(new TokenDataType(di->second->name.c_str(),
+						 *di->second));
+		continue;
+	    }
+	}
+	body.push_back(t ? t->clone() : NULL);
+    }
+    // Resolve under the same muted SFINAE trap as the decltype probe: a
+    // resolution failure IS the answer (the spec is rejected), never a
+    // narrated error.
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    DataDef *rt = NULL;
+    try
+    {
+	rt = resolve_type_token_range(body, 0, body.size());
+    }
+    catch ( ... ) { rt = NULL; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    for ( TokenBase *t : body )
+	delete t;
+    if ( !rt )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+	return false;
+    }
+    if ( rt->name != concrete_dd->name )
+	return false;
+    // Env-gated probe (MADC_SLOTARM_PROBE=1): every spec selected through
+    // the general substituted-slot arm — the newly-matching-spec diagnostic.
+    {
+	static const char *sap = ::getenv("MADC_SLOTARM_PROBE");
+	if ( sap && *sap )
+	{
+	    std::string sp;
+	    for ( TokenBase *t : *slot_tokens )
+		if ( t ) sp += overload_token_spelling(t);
+	    fprintf(stderr, "SLOTARM match slot=%s -> %s\n",
+		    sp.c_str(), rt->name.c_str());
+	}
+    }
+    score += 30;
+    return true;
+}
+
+bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_tokens,
+	size_t nth, const std::map<std::string, DataDef *> &ded,
+	DataDef **out_type)
+{
+    if ( out_type )
+	*out_type = NULL;
+    // Locate the nth `decltype` in the slot's token run (Args are visited in
+    // order, so the nth spelled probe is the nth token occurrence).
+    size_t start = slot_tokens.size();
+    size_t seen = 0;
+    for ( size_t i = 0; i < slot_tokens.size(); ++i )
+    {
+	TokenBase *t = slot_tokens[i];
+	if ( t && is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "decltype" )
+	    if ( seen++ == nth )
+	    { start = i; break; }
+    }
+    if ( start >= slot_tokens.size()
+      || start + 1 >= slot_tokens.size()
+      || !slot_tokens[start + 1]
+      || slot_tokens[start + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    // Span the balanced `( ... )` on the shared tracker.
+    DelimDepth d;
+    size_t end = start + 1;
+    while ( end < slot_tokens.size() )
+    {
+	size_t n = delim_scan_step(slot_tokens, end, d);
+	end += n ? n : 1;
+	if ( end > start + 1 && !d.paren )
+	    break;
+    }
+    if ( d.paren )
+	return false;
+    // Clone [start, end) substituting deduced params (name -> bound type).
+    std::vector<TokenBase *> body;
+    for ( size_t k = start; k < end; ++k )
+    {
+	TokenBase *t = slot_tokens[k];
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &nm = ((TokenIdent *)t)->spelling();
+	    std::map<std::string, DataDef *>::const_iterator di = ded.find(nm);
+	    if ( di != ded.end() && di->second )
+	    {
+		body.push_back(new TokenDataType(di->second->name.c_str(),
+						 *di->second));
+		continue;
+	    }
+	}
+	body.push_back(t ? t->clone() : NULL);
+    }
+    // A failing probe IS the SFINAE answer, not an error. Rewinding the
+    // diagnostics watermark is not enough on its own: throwbuf::sync prints to
+    // cerr BEFORE the exception is caught, so the miss must also be muted through
+    // g_madc_null_streambuf — the same pairing fold_nontype_arg_constant and the
+    // discarded-condition folder use. Without it, answering "no, const nope has no
+    // max_size()" — the CORRECT answer — printed `error: no member named
+    // 'max_size'`, and every libc++ detector would narrate each negative arm it
+    // evaluates on the way to a right answer.
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    DataDef *rt = NULL;
+    try
+    {
+	rt = resolve_type_token_range(body, 0, body.size());
+    }
+    catch ( ... ) { rt = NULL; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    for ( TokenBase *t : body )
+	delete t;
+    if ( !rt )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+    }
+    // A `__void_t<decltype(EXPR)>` wrapper only needs well-formedness, but a BARE
+    // decltype slot must also compare its resolved type against the concrete arg
+    // — hand it back rather than resolve the same tokens twice.
+    if ( out_type )
+	*out_type = rt;
+    return rt != NULL;
+}
+
 static bool parse_simple_template_non_type_value(const std::string &spelling,
 						 int64_t &out)
 {
@@ -24020,7 +29809,7 @@ static bool parse_simple_template_non_type_value(const std::string &spelling,
     char *end = NULL;
     errno = 0;
     long long iv = strtoll(s.c_str(), &end, 0);
-    if ( end && *end == '\0' && errno == 0 )
+    if ( end && end != s.c_str() && *end == '\0' && errno == 0 )
     {
 	out = iv;
 	return true;
@@ -24119,6 +29908,15 @@ static bool read_local_type_arg(Program &pgm,
     { out.is_lref = true; ++i; }
     else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
     { out.is_rref = true; ++i; }
+    unwrap_baked_trait_arg(out);
+    // A DEPENDENT argument is unanswerable here: the CAPTURE parse of
+    // gcc13's is_assignable folded `__is_assignable(_Tp, _Up)` with UNBOUND
+    // params to 0 and froze `__bool_constant<0>` (false_type) as the
+    // pattern's base — every packed-lane is_assignable<To,From> then read
+    // ::value == 0 regardless of its args (testtraitassign, packed leg).
+    // Refusing keeps the fold deferred to instantiation, where args are real.
+    if ( datadef_has_unresolved_dependent_surface(out.dd) )
+	return false;
     return true;
 }
 
@@ -24151,22 +29949,70 @@ static bool eval_local_type_trait(Program &pgm,
 	{ ++j; break; }
 	return false;
     }
-    if ( (int)targs.size() != arity )
+    if ( arity == TRAIT_ARITY_VARIADIC ? targs.empty()
+				       : (int)targs.size() != arity )
 	return false;
     bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
-    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0].dd);
-    else if ( nm == "__is_standard_layout" ) r = trait_is_standard_layout(targs[0].dd);
-    else if ( nm == "__is_pod" )            r = trait_is_pod(targs[0].dd);
-    else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
-    else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
-    else if ( nm == "__is_empty" )          r = trait_is_empty(targs[0].dd);
-    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
+    if ( nm == "__has_trivial_destructor" ) r = trait_arg_is_reference(targs[0])
+					     || trait_has_trivial_destructor(targs[0].dd);
+    else if ( nm == "__is_trivial" )        r = !trait_arg_is_reference(targs[0])
+					     && trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_trivially_copyable" )
+					    r = !trait_arg_is_reference(targs[0])
+					     && trait_is_trivially_copyable(targs[0].dd);
+    else if ( nm == "__is_standard_layout" ) r = !trait_arg_is_reference(targs[0])
+					      && trait_is_standard_layout(targs[0].dd);
+    else if ( nm == "__is_pod" )            r = !trait_arg_is_reference(targs[0])
+					     && trait_is_pod(targs[0].dd);
+    else if ( nm == "__is_class" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_class(targs[0].dd);
+    else if ( nm == "__is_union" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_union(targs[0].dd);
+    else if ( nm == "__is_empty" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_empty(targs[0].dd);
+    else if ( nm == "__is_final" )          r = !trait_arg_is_reference(targs[0])
+					     && trait_is_final(targs[0].dd);
+    else if ( nm == "__is_enum" )           r = !trait_arg_is_reference(targs[0])
+					     && trait_is_enum(targs[0].dd);
     else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
-    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_base_of" )        r = !trait_arg_is_reference(targs[0])
+					     && !trait_arg_is_reference(targs[1])
+					     && trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_destructible" )
+    {
+	int s = trait_is_destructible(targs[0]);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
     else if ( nm == "__is_assignable" )
     {
 	int s = trait_is_assignable(targs[0], targs[1]);
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] LOCAL __is_assignable to=%s l%d r%d c%d "
+		    "from=%s l%d r%d c%d -> %d\n",
+		    targs[0].dd ? targs[0].dd->name.c_str() : "?",
+		    (int)targs[0].is_lref, (int)targs[0].is_rref,
+		    (int)targs[0].referent_const,
+		    targs[1].dd ? targs[1].dd->name.c_str() : "?",
+		    (int)targs[1].is_lref, (int)targs[1].is_rref,
+		    (int)targs[1].referent_const, s);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
+    else if ( nm == "__is_constructible" || nm == "__is_nothrow_constructible" )
+    {
+	std::vector<TraitTypeArg> ctor_args(targs.begin() + 1, targs.end());
+	int s = trait_is_constructible(targs[0], ctor_args,
+				       nm == "__is_nothrow_constructible", 0);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
+    else if ( nm == "__is_convertible_to" || nm == "__is_convertible" )
+    {
+	int s = trait_is_convertible(targs[0], targs[1]);
 	if ( s < 0 )
 	    return false;   // undetermined -> not a constant-foldable trait here
 	r = s != 0;
@@ -24188,6 +30034,38 @@ bool Program::fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
     // cursor. Must consume the WHOLE arg (no trailing tokens) to count.
     size_t i = 0;
     if ( eval_local_type_trait(*this, argtoks, i, out) && i == argtoks.size() )
+	return true;
+    // A qualified VALUE read (`__has_random_access_iterator_category<T>::value`
+    // — libc++'s _If/_IfImpl conditions are spelled exactly so) folds through
+    // the FULL isolated-stream constant parser (fold_nontype_arg_constant —
+    // safe mid-collection by design; fold_constant_qualified_member walks the
+    // trait's base chain). Without this the key kept the raw spelling and the
+    // instantiation minted an opaque _IfImpl<...> whose _Select poisoned
+    // reverse_iterator's iterator_category (sizeof(_If<...>) read 0). Gated
+    // to the `...::name` shape so plain TYPE arguments — the common case on
+    // this key-formation hot path — never pay the speculative parse.
+    TokenBase *last = NULL;
+    bool saw_ns = false;
+    for ( TokenBase *t : argtoks )
+    {
+	if ( !t )
+	    continue;
+	last = t;
+	if ( t->id() == TokenID::tkNS )
+	    saw_ns = true;
+    }
+    // A leading noexcept OPERATOR (`BC<noexcept(T())>` — libc++'s
+    // __libcpp_is_nothrow_constructible integral_constant base) is a foldable
+    // constant expression that carries no `::` and ends in `)`, so it needs
+    // its own admission beside the `...::name` shape.
+    bool leading_noexcept = !argtoks.empty() && argtoks[0]
+	&& argtoks[0]->id() == TokenID::tkCPPKEYWORD
+	&& contextual_identifier_name(argtoks[0]) == "noexcept";
+    if ( ((saw_ns && last
+	   && (last->type() == TokenType::ttIdentifier
+	    || is_contextual_identifier_token(last)))
+	  || leading_noexcept)
+      && fold_nontype_arg_constant(argtoks, out) )
 	return true;
     return false;
 }
@@ -24567,6 +30445,138 @@ int64_t Program::evaluate_requires_expression_constant()
     return satisfied ? 1 : 0;
 }
 
+// One-key rule, template-id arm (see canonical_arg_key_fragment): canonicalize
+// a template-argument SPELLING to the form a USE site produces for the RESOLVED
+// type — template_type_arg_spelling reads the type's canonical_cpp_spelling(),
+// so builtins take their canonical DataDef name (`int` -> `int32_t`), a single
+// user name takes its class's canonical spelling, and a template-id
+// canonicalizes its inner args RECURSIVELY, preferring the instantiated class's
+// own canonical spelling when one already exists (it carries the defining
+// namespace) and qualifying the outer name from the template registry when it
+// does not. cv-qualifiers and declarator suffixes peel off and re-apply
+// textually — a reference suffix must stay `&` (a DataDefREF's own spelling is
+// the ref-as-pointer `*` form, which loses the reference identity; see
+// template_type_arg_spelling).
+//
+// STRICT on failure: returns EMPTY unless the outer is a registered class
+// template and EVERY inner arg resolves concretely (builtin / registered type /
+// integer literal / nested success). A key must be a pure function of the
+// spelling — a DEPENDENT name (`char_traits<_CharT>`) must never rewrite from
+// whatever the parse context happens to resolve (char_traits is multi-namespace;
+// keying it off current_namespace() shattered the <string> freeze identities),
+// so anything unresolvable or ambiguous keeps the raw fragment via the caller's
+// fallback, exactly as before.
+std::string Program::canonical_template_arg_spelling(const std::string &spelling)
+{
+    std::string core = trim_spelling(spelling), sfx;
+    for (;;)
+    {
+	while ( !core.empty() && core[core.size()-1] == ' ' )
+	    core.erase(core.size() - 1);
+	if ( !core.empty()
+	  && (core[core.size()-1] == '*' || core[core.size()-1] == '&') )
+	{
+	    sfx = std::string(1, core[core.size()-1]) + sfx;
+	    core.erase(core.size() - 1);
+	    continue;
+	}
+	break;
+    }
+    std::string cv;
+    for ( bool peeled = true; peeled; )
+    {
+	peeled = false;
+	if ( core.compare(0, 6, "const ") == 0 )
+	{ cv += "const "; core = trim_spelling(core.substr(6)); peeled = true; }
+	else if ( core.compare(0, 9, "volatile ") == 0 )
+	{ cv += "volatile "; core = trim_spelling(core.substr(9)); peeled = true; }
+    }
+    if ( core.empty() )
+	return std::string();
+    // Distinct C++ argument spellings that share integer storage keep their
+    // source spelling — the template_type_arg_spelling carve-out.
+    if ( core == "wchar_t" || core == "char16_t" || core == "char32_t" )
+	return spelling;
+    if ( core.find('<') == std::string::npos )
+    {
+	if ( DataDef *dd = resolve_builtin_type_spelling(core) )
+	{
+	    const std::string &cs = dd->canonical_cpp_spelling();
+	    return cv + (cs.empty() ? dd->name : cs) + sfx;
+	}
+	// A pure integer literal (a non-type arg) is already canonical.
+	{
+	    size_t d0 = core[0] == '-' ? 1 : 0;
+	    bool all_digits = d0 < core.size();
+	    for ( size_t i = d0; all_digits && i < core.size(); ++i )
+		all_digits = isdigit((unsigned char)core[i]) != 0;
+	    if ( all_digits )
+		return cv + core + sfx;
+	}
+	if ( DataDef *cdd = resolve_named_datadef(core) )
+	{
+	    const std::string &cs = cdd->canonical_cpp_spelling();
+	    return cv + (cs.empty() ? cdd->name : cs) + sfx;
+	}
+	return std::string();   // unresolvable (dependent) name
+    }
+    std::string outer;
+    std::vector<std::string> inner;
+    if ( !split_template_id_spelling(core, outer, inner) )
+	return std::string();
+    // Rebuild with the original outer TEXT — qualifier preserved.
+    // split_template_id_spelling strips the namespace, and re-resolving a
+    // multi-namespace name without its qualifier matched the WRONG instance
+    // (std::char_traits<char> verified against __gnu_cxx::char_traits<char>
+    // through the namespace-blind despaced index, corrupting the pair
+    // fragment and splitting _Rb_tree_node's identity in two).
+    std::string outer_text = trim_spelling(core.substr(0, core.find('<')));
+    bool outer_qualified = outer_text.find("::") != std::string::npos;
+    std::string qual = outer_qualified
+	? outer_text.substr(0, outer_text.rfind("::") + 2) : std::string();
+    std::string rebuilt = outer_text + "<";
+    for ( size_t i = 0; i < inner.size(); ++i )
+    {
+	std::string ic = canonical_template_arg_spelling(inner[i]);
+	if ( ic.empty() )
+	    return std::string();
+	if ( i )
+	    rebuilt += ",";
+	rebuilt += ic;
+    }
+    rebuilt += ">";
+    // Is the outer name registered in exactly ONE namespace?
+    const template_registry_entry_t *entry =
+	template_map.find_readonly(template_name_pool.intern(outer));
+    const std::vector<TemplateDef> *g = entry ? entry->find(NULL) : NULL;
+    bool single_ns = g && !g->empty();
+    std::string reg_ns = single_ns ? (*g)[0].defining_namespace : std::string();
+    for ( size_t i = 1; single_ns && i < g->size(); ++i )
+	if ( (*g)[i].defining_namespace != reg_ns )
+	    single_ns = false;
+    if ( DataDef *idd = resolve_arg_spelling_datadef(*this, rebuilt) )
+    {
+	const std::string &cs = idd->canonical_cpp_spelling();
+	// The despaced index is namespace-BLIND: accept the instance only
+	// when the original qualifier prefixes its canonical spelling
+	// (inline namespaces like std::__cxx11 absorb into the prefix), or
+	// the name is unambiguous registry-wide.
+	if ( !cs.empty()
+	  && (outer_qualified
+	      ? despace_spelling(cs).compare(0, despace_spelling(qual).size(),
+					     despace_spelling(qual)) == 0
+	      : single_ns) )
+	    return cv + cs + sfx;
+    }
+    if ( outer_qualified )
+	return cv + rebuilt + sfx;   // qualifier kept; inners canonicalized
+    if ( !single_ns || !g )
+	return std::string();   // ambiguous or unregistered: keep the raw fragment
+    if ( !reg_ns.empty() )
+	rebuilt = reg_ns + "::" + rebuilt;
+    return cv + rebuilt + sfx;
+}
+
 std::string Program::canonical_arg_key_fragment(
 		const std::vector<TokenBase *> &argtoks, const std::string &spelling)
 {
@@ -24587,12 +30597,70 @@ std::string Program::canonical_arg_key_fragment(
     // (they share integer storage but are distinct template-argument types).
     if ( spelling != "wchar_t" && spelling != "char16_t"
       && spelling != "char32_t" )
+    {
 	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
 	{
 	    const std::string &cs = dd->canonical_cpp_spelling();
-	    return sanitize_template_fragment(cs.empty() ? dd->name : cs);
+	    return sanitize_template_arg_fragment(cs.empty() ? dd->name : cs);
 	}
-    return sanitize_template_fragment(spelling);
+	// A USER-type argument follows the same one-key rule: the fragment
+	// comes from the RESOLVED type's canonical spelling, not the source
+	// text. A specialization written inside its own namespace spells the
+	// arg UNQUALIFIED (`_IterOps<_ClassicAlgPolicy>` in std::__1; the
+	// reducer's `ops<pol>` in lib), while a use site's binding spells it
+	// qualified ("lib::pol") — raw spellings form DIFFERENT keys, the
+	// spec goes invisible, and the declared-only PRIMARY instantiates
+	// empty ("'f' is not a member function"). A trailing declarator
+	// suffix survives into the fragment; only a clean single-name core
+	// resolves — anything else keeps the raw spelling exactly as before.
+	std::string core = spelling, sfx;
+	while ( !core.empty()
+	     && (core[core.size()-1] == '*' || core[core.size()-1] == '&'
+	      || core[core.size()-1] == ' ') )
+	{
+	    if ( core[core.size()-1] != ' ' )
+		sfx = std::string(1, core[core.size()-1]) + sfx;
+	    core.erase(core.size() - 1);
+	}
+	if ( !core.empty() && core.find('<') == std::string::npos )
+	    if ( DataDef *cdd = resolve_named_datadef(core) )
+	    {
+		const std::string &cs = cdd->canonical_cpp_spelling();
+		if ( !cs.empty() && cs != core )
+		    return sanitize_template_arg_fragment(cs + sfx);
+		// No canonical C++ spelling: the resolved DataDef's registered
+		// NAME is the identity. A typedef of an ANONYMOUS aggregate
+		// (`typedef struct {...} mbstate_t` -> __anon_N) otherwise
+		// keeps the raw typedef here while every DataDef-driven lane
+		// (the ClassPattern replay) spells the same argument by name —
+		// one type split across two keys, so the
+		// codecvt<char,char,mbstate_t> explicit spec went invisible to
+		// the pattern materializer's base resolve under --freeze-run.
+		if ( cs.empty() && !cdd->name.empty() && cdd->name != core )
+		    return sanitize_template_arg_fragment(cdd->name + sfx);
+	    }
+	// A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
+	// a use site spells the RESOLVED type canonically
+	// (`alloc9<int32_t>`, namespace-qualified), so an explicit
+	// specialization registered from the raw source spelling forms a
+	// DIFFERENT key, goes invisible to its uses, and the primary
+	// instantiates silently in its place (tests/testspectemplid.mad).
+	// Canonicalize recursively; an unresolvable spelling keeps the raw
+	// fragment exactly as before.
+	if ( !core.empty() && core.find('<') != std::string::npos )
+	{
+	    std::string cs = canonical_template_arg_spelling(spelling);
+	    if ( !cs.empty() && cs != spelling )
+	    {
+		static const char *cfp = ::getenv("MADC_ARGFRAG_PROBE");
+		if ( cfp )
+		    std::cerr << "[argfrag] '" << spelling << "' -> '" << cs
+			<< "'" << std::endl;
+		return sanitize_template_arg_fragment(cs);
+	    }
+	}
+    }
+    return sanitize_template_arg_fragment(spelling);
 }
 
 Program::TemplateDef *Program::match_partial_specialization(
@@ -24614,6 +30682,12 @@ Program::TemplateDef *Program::match_partial_specialization(
     const std::vector<TemplateDef> *found =
 	entry ? entry->find(owner_hint) : NULL;
     std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(found);
+    static const char *smp = ::getenv("MADC_SPECMATCH_PROBE");
+    const bool smp_on = smp && *smp && name.find(smp) != std::string::npos;
+    if ( smp_on )
+	fprintf(stderr, "[specmatch] %s nspecs=%zu nargs=%zu ns='%s'\n",
+		name.c_str(), it ? it->size() : (size_t)0,
+		arg_spellings.size(), ns_hint.c_str());
     if ( !it )
 	return NULL;
     if ( arg_types_by_slot.size() != arg_spellings.size()
@@ -24630,7 +30704,12 @@ Program::TemplateDef *Program::match_partial_specialization(
     {
 	TemplateDef &spec = (*it)[s];
 	if ( spec.defining_namespace != ns_hint )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] SKIP ns '%s'\n",
+			s, spec.defining_namespace.c_str());
 	    continue;
+	}
 	// A trailing parameter-pack slot (`_Types...` as the LAST pattern arg, naming a
 	// declared pack typeparam) absorbs 0+ trailing concrete args into one slot, so
 	// the fixed (non-pack) slot count is one less and the arg arity need only be >=
@@ -24658,11 +30737,18 @@ Program::TemplateDef *Program::match_partial_specialization(
 	if ( trailing_pack_name.empty()
 		 ? spec.spec_pattern.size() != arg_spellings.size()
 		 : arg_spellings.size() < fixed_slots )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] SKIP arity pat=%zu"
+			" fixed=%zu pack='%s'\n", s, spec.spec_pattern.size(),
+			fixed_slots, trailing_pack_name.c_str());
 	    continue;                                  // arity (pack absorbs the tail)
+	}
 	std::map<std::string, DataDef *> ded;
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
 	std::map<std::string, std::vector<std::string> > pack_ded; // trailing-pack deductions
 	std::map<std::string, std::vector<TokenBase *> > nontype_ded; // non-type-param deductions
+	std::vector<size_t> detect_slots;   // non-deduced slots, evaluated after the loop
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < fixed_slots; ++i )
@@ -24697,10 +30783,23 @@ Program::TemplateDef *Program::match_partial_specialization(
 		if ( !non_type_partial_spec_arg_matches(*this,
 			    spec.spec_pattern[i], arg_tokens_by_slot[i],
 			    pattern_spelling, arg_spellings[i], score) )
-		{ ok = false; break; }
+		{
+		    if ( smp_on )
+			fprintf(stderr, "[specmatch]   spec[%zu] slot[%zu] NONTYPE"
+				" pat='%s' arg='%s'\n", s, i,
+				pattern_spelling.c_str(), arg_spellings[i].c_str());
+		    ok = false; break;
+		}
 		continue;
 	    }
-	    if ( !arg_types_by_slot[i] ) { ok = false; break; }
+	    if ( !arg_types_by_slot[i] )
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] slot[%zu]"
+			    " NULL-ARGTYPE pat='%s'\n", s, i,
+			    template_tokens_spelling(spec.spec_pattern[i]).c_str());
+		ok = false; break;
+	    }
 	    // Flat shapes (`[cv] PARAM [*]*`, concrete literal) first; on rejection,
 	    // try nested-template-id unification (`allocator<_Tp>` vs the concrete
 	    // `std::allocator<char>`); finally the `__void_t<...>` detection idiom
@@ -24721,11 +30820,38 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !unify_nested_spec_pattern_arg(
 					 pattern_spelling,
 					 spec.typeparams, nested_concrete, ded, score,
-					 &tmpl_ded, &pack_ded)
-	      && !eval_void_t_detection_slot(
-					 pattern_spelling,
-					 arg_spellings[i], ded, score) )
-	    { ok = false; break; }
+					 &tmpl_ded, &pack_ded) )
+		// A non-deducing DETECTION slot (__void_t / decltype /
+		// substituted-slot resolution) READS deductions, but a
+		// SFINAE'd slot may PRECEDE the slots that deduce its params
+		// — [meta.logical] __conjunction_impl's
+		// `__enable_if_t<bool(_B1::value)>` is slot 0, _B1 deduces
+		// from slot 1. Defer until `ded` is complete.
+		detect_slots.push_back(i);
+	}
+	if ( !ok )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] FAIL slot (fixed=%zu)\n",
+			s, fixed_slots);
+	    continue;
+	}
+	for ( size_t di = 0; di < detect_slots.size(); ++di )
+	{
+	    size_t i = detect_slots[di];
+	    if ( !eval_void_t_detection_slot(
+			template_tokens_spelling(spec.spec_pattern[i]),
+			arg_spellings[i], ded, score,
+			&spec.spec_pattern[i],
+			arg_types_by_slot[i]
+			    ? &arg_types_by_slot[i]->definition : NULL) )
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL detect slot[%zu]"
+			    " pat='%s'\n", s, i,
+			    template_tokens_spelling(spec.spec_pattern[i]).c_str());
+		ok = false; break;
+	    }
 	}
 	if ( !ok )
 	    continue;
@@ -24749,7 +30875,11 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !pack_ded.count(spec.typeparams[k])
 	      && !nontype_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
+	{
+	    if ( smp_on )
+		fprintf(stderr, "[specmatch]   spec[%zu] FAIL undeduced param\n", s);
 	    continue;
+	}
 	// C++20: a CONSTRAINED partial spec applies only if its requires-clause is
 	// SATISFIED for the deduced args. Substitute the deductions into the clause
 	// and fold it as a constant (concept-ids resolve via the concept evaluator,
@@ -24792,10 +30922,24 @@ Program::TemplateDef *Program::match_partial_specialization(
 		{ diagnostics.resize(sd); last_error = se; }
 	    }
 	    if ( !satisfied )
+	    {
+		if ( smp_on )
+		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL constraint\n", s);
 		continue;   // constraint unsatisfied -> this spec does not apply
+	    }
 	}
 	if ( score > best_score )
 	{
+	    if ( smp_on )
+	    {
+		fprintf(stderr, "[specmatch]   spec[%zu] WIN score=%d body=%zu"
+			" defer=%d pat:", s, score, spec.body.size(),
+			(int)spec.class_pattern_capture_deferred);
+		for ( size_t pi = 0; pi < spec.spec_pattern.size(); ++pi )
+		    fprintf(stderr, " '%s'",
+			    template_tokens_spelling(spec.spec_pattern[pi]).c_str());
+		fprintf(stderr, "\n");
+	    }
 	    best = &spec;
 	    best_score = score;
 	    best_ded = ded;
@@ -24826,6 +30970,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 {
     TokenDataType *bt = (TokenDataType *)tb;
     Variable *var = NULL;
+    DBG(cout << "parseExpr_dataTypeArm(" << bt->spelling() << ") peek id="
+	     << (peekToken() ? (int)peekToken()->id() : -1) << endl);
     // If the previous token is '.' or '->', the type name is a
     // struct member name (e.g. `a.array[1]` where `array` is
     // both a madc keyword and a union member).  Re-inject as
@@ -25111,9 +31257,26 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		bool expression_head = exStack.empty() && opStack.empty();
 		bool parsed_operator_name = false;
 		std::string member_lookup_name = ident_tb->spelling();
+		// An `operator` head names an operator-function-id when the
+		// unqualified lookup can land on the enclosing class, OR in
+		// member-access position (`__p.operator->()`, [expr.ref]/2 —
+		// the id-expression after `.`/`->` may be an
+		// operator-function-id; C++ reserves the keyword so no member
+		// can be NAMED `operator`, hence the presents_as_cpp() gate
+		// keeps a C struct field of that name working).
+		// parseOperatorId consumes the symbol tokens, advancing
+		// prevToken() past the `.`/`->` — so the access operator must
+		// be remembered HERE for the dot/arrow arms' entry tests.
+		bool operator_id_after_dot = false;
+		bool operator_id_after_arrow = false;
 		if ( ident_tb->spelling_is("operator")
-		  && code && code->method && code->method->owner_class )
+		  && ((code && code->method && code->method->owner_class)
+		   || (presents_as_cpp() && isMemberAccessPosition())) )
 		{
+		    operator_id_after_dot = prevToken()
+			&& prevToken()->id() == TokenID::tkDot;
+		    operator_id_after_arrow = prevToken()
+			&& prevToken()->id() == TokenID::tkDeRef;
 		    member_lookup_name = parseOperatorId(tb);
 		    parsed_operator_name = true;
 		}
@@ -25161,8 +31324,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  && is_dynamic_symbol_allowed(ident_tb->spelling())
 		  && dlsym(RTLD_DEFAULT, ident_tb->spelling()) )
 		    ordinary_call_name = true;
-		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		  && !ordinary_call_name )
+		// A name in MEMBER-ACCESS position is a member, never a type
+		// ([basic.lookup.classref]/1: the class's scope is searched
+		// first) — so `recv.name(...)` must not be read as functional
+		// construction even when `name` also names a class. libc++'s
+		// unique_lock accessor is literally `mutex_type *mutex() const`,
+		// i.e. a method named for class `mutex`, and taking it as a type
+		// yielded an object where `->` needed a pointer
+		// (condition_variable.h:225). A member VARIABLE of a type's name
+		// already resolved correctly; only the `name (` and `name {`
+		// forms are caught, because those are what this arm keys on.
+		// The brace form ([expr.type.conv] list-init, `P{7, 3.5}`) is
+		// unambiguous — a declaration always has a declarator name
+		// before its brace — and covers plain structs via
+		// parse_functional_type_expression's compound-literal arm.
+		if ( peekToken() && (peekToken()->id() == TokenID::tkOpBrk
+				  || peekToken()->id() == TokenID::tkOpBrc)
+		  && !ordinary_call_name && !isMemberAccessPosition() )
 		{
 		    if ( TokenDataType *resolved_type =
 			    resolve_declared_type_token(tb, false, true) )
@@ -25173,6 +31351,58 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    exStack.push(type_expr);
 			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			// [expr.prim.id.qual]: the resolver consumed a COMPOUND
+			// type-specifier (`decltype(__test<_Tp>(0))` — the parens
+			// ARE the specifier — or a member-TYPE chain) and the next
+			// token is `::`: this is a QUALIFIED-ID on that type in
+			// expression position (the libc++ detection idiom's
+			// `... = decltype(__test<_Tp>(0))::value`). Route into the
+			// one class-qualified-expression owner and continue exactly
+			// as the datatype arm's tkNS continuation does — falling
+			// through here DISCARDED the resolved type and left the
+			// consumed-parens stream to misparse as "Unknown namespace
+			// or class 'decltype'".
+			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			{
+			    if ( DataDefCLASS *dcls = dynamic_cast<DataDefCLASS *>(
+					&resolved_type->definition) )
+			    {
+				DataDefCLASS *resolved_owner = NULL;
+				std::string resolved_member;
+				QualifiedClassExprAction action =
+				    resolve_class_qualified_expression(*this, dcls,
+					resolved_type->spelling(), tb, exStack,
+					&var, &tb, &resolved_owner,
+					&resolved_member);
+				if ( action == QualifiedClassExprAction::ResolvedFunction )
+				{
+				    if ( var && var->type && var->type->is_function()
+				      && peekToken()
+				      && peekToken()->id() == TokenID::tkLT )
+					skip_template_id_suffix();
+				    if ( var && var->type && var->type->is_function()
+				      && peekToken()
+				      && peekToken()->id() == TokenID::tkOpBrk )
+				    {
+					TokenCallFunc *tc = new TokenCallFunc(*var);
+					tb = nextToken();
+					tc->line = tb->line;
+					tc->column = tb->column;
+					tb = parseCallFunc(tc);
+					tc = reselect_static_member_overload(tc,
+						resolved_owner, resolved_member);
+					var = &tc->var;
+					opStack.push(tc);
+					if ( tb->id() == TokenID::tkSemi )
+					    return ExprStep::Done;
+				    }
+				    else if ( var )
+					exStack.push(new TokenVar(*var));
+				    return ExprStep::Break;
+				}
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 			}
 		    }
 		    if ( TokenObjTemp *ot = try_parse_functional_ctor(tb) )
@@ -25193,6 +31423,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		if ( is_type_trait_builtin(ident_tb->spelling()) )
 		{
 		    exStack.push(evaluate_type_trait(tb, ident_tb->spelling()));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// noexcept(expr) ([expr.unary.noexcept]) — folds to a bool
+		// constant at parse time, like sizeof/alignof below.
+		if ( ident_tb->spelling_is("noexcept") )
+		{
+		    TokenInt *ti = new TokenInt(
+			(int64_t)evaluate_noexcept_operator(tb));
+		    ti->setDataType(&ddBOOL);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
@@ -25455,7 +31698,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-		if ( prevToken() && prevToken()->id() == TokenID::tkDot )
+		if ( operator_id_after_dot
+		  || (prevToken() && prevToken()->id() == TokenID::tkDot) )
 		{
 #if 0
 		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->spelling() << endl);
@@ -25663,7 +31907,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    var = NULL;
-		    string id = ident_tb->spelling();
+		    // member_lookup_name, not the raw spelling: an
+		    // operator-function-id member (`__p.operator->()`) was
+		    // already consumed into it by the arm head.
+		    string id = member_lookup_name;
 		    DataDefCLASS *method_cls =
 			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
 		    if ( method_cls )
@@ -25684,18 +31931,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    if ( var )
 		    {
-			// Access control (P2.5c): reject a private/protected METHOD
-			// call from outside the (derived) class. Same context + rule
-			// as the data-member check.
-			{
-			    DataDefCLASS *cur_class =
-				(code && code->method) ? code->method->owner_class : NULL;
-			    std::string av =
-				method_access_violation(struct_type, var, id, cur_class,
-				    current_function_friend_name(code));
-			    if ( !av.empty() )
-				Throw(tb) << av << flush;
-			}
+			// Access control (P2.5c) runs AFTER the overload the call
+			// actually selects is known — see the checks on the
+			// reselect/rebind results below. Checking the arity
+			// pre-pick here rejected legal calls: libc++ __tree
+			// declares `size_type& size()` PRIVATE before its PUBLIC
+			// const twin, both zero-arg, and the cv-blind pre-pick
+			// chose the private one — set::size() died ([class.access]
+			// judges the function selected by overload resolution).
 			if ( var->flags & vfSTATIC )
 			{
 			    TokenCallFunc *tc = new TokenCallFunc(*var);
@@ -25723,6 +31966,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    tc = tc2;
 				}
 			    var = &tc->var;
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(struct_type, var, id, cur_class,
+					current_function_friend_name(code));
+				if ( !av.empty() )
+				    Throw(tc) << av << flush;
+			    }
 			    exStack.pop();
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 				opStack.pop();
@@ -25780,6 +32032,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// first by-name match).
 			tc = reselect_method_overload(tc, *tv_var, method_cls, id);
 			var = &tc->var;
+			// Access control on the SELECTED overload ([class.access]).
+			{
+			    DataDefCLASS *cur_class =
+				(code && code->method) ? code->method->owner_class : NULL;
+			    std::string av =
+				method_access_violation(struct_type, var, id, cur_class,
+				    current_function_friend_name(code));
+			    if ( !av.empty() )
+				Throw(tc) << av << flush;
+			}
 			// remove object TokenVar from exStack
 			exStack.pop();
 			// remove TokenDot from opStack
@@ -25813,6 +32075,28 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 		    {
+			// [expr.ref]p4: `obj.member` naming a STATIC data member /
+			// in-class constant (possibly inherited) designates the
+			// static member; the object expression is discarded. This
+			// object-dot lane was the one consumer NOT routed to the
+			// shared resolver (the qualified, postfix-chain, and
+			// unqualified-in-method lanes already are) — libc++'s
+			// string extractor does `__ct.is(__ct.space, __ch)`:
+			// ctype_base::space through the facet reference.
+			if ( DataDefCLASS *scls =
+				dynamic_cast<DataDefCLASS *>(struct_type) )
+			    if ( TokenBase *sval = resolve_class_static_member_value(
+					*this, scls, id, tb) )
+			    {
+				exStack.pop();	// object expression discarded
+				if ( !opStack.empty()
+				  && opStack.top()->id() == TokenID::tkDot )
+				    opStack.pop();
+				exStack.push(sval);
+				if ( tb && tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }
@@ -25883,7 +32167,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// -> pointer member access: ptr->member
-		if ( prevToken() && prevToken()->id() == TokenID::tkDeRef )
+		if ( operator_id_after_arrow
+		  || (prevToken() && prevToken()->id() == TokenID::tkDeRef) )
 		{
 		    if ( exStack.empty() )
 			Throw(tb) << "expected expression before '->'" << flush;
@@ -25896,23 +32181,28 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    bool expr_backed_lhs = false;
 		    bool fixed_array_arrow = false;
 		    bool arrow_via_op = false;
+		    // A reference-to-pointer receiver was collapsed to its
+		    // referent: the access needs the parent_expr TokenMember
+		    // form so codegen loads the reference (yielding the
+		    // pointer) before the arrow deref.
+		    bool ref_collapsed_lhs = false;
 		    // P2.1b gap 2 — operator->: when the LHS is a class OBJECT (not a
 		    // pointer) whose class declares operator->, C++ canon rewrites
 		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
 		    // returns a pointer), then apply the real `->` to that result.
 		    // Reuses the class-method dispatch — no parallel codegen (I6).
-		    if ( lhs->type() == TokenType::ttVariable )
+		    // arrow_operator_call self-gates by shape: bare object
+		    // variables AND member/call-result receivers (`r.first->m`,
+		    // `t.emplace().first->m` — the map tree-iterator shape).
+		    if ( TokenCallMethod *opcall = arrow_operator_call(lhs, tb) )
 		    {
-			if ( TokenCallMethod *opcall = arrow_operator_call(lhs, tb) )
-			{
-			    exStack.pop();
-			    exStack.push(opcall);
-			    lhs = opcall;
-			    obj_type = opcall->datadef();
-			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
-			    expr_backed_lhs = true;
-			    arrow_via_op = true;
-			}
+			exStack.pop();
+			exStack.push(opcall);
+			lhs = opcall;
+			obj_type = opcall->datadef();
+			obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
+			expr_backed_lhs = true;
+			arrow_via_op = true;
 		    }
 		    if ( arrow_via_op )
 			; // LHS already resolved to operator-> call result above
@@ -25922,6 +32212,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			obj_var = &tv_lhs->var;
 			obj_type = obj_var->type;
 			fixed_array_arrow = obj_var->is_fixed_array();
+			// A reference-to-POINTER receiver (`node*& rr; rr->v`)
+			// denotes its referent ([expr.ref]) — collapse so the
+			// arrow deref below lands on the pointee class, not
+			// the pointer type (effective_pointer_type_for_
+			// member_access applies the same rule to expression
+			// heads).
+			if ( DataDef *ref = referent_if_reference(obj_type) )
+			    if ( ref->is_pointer() )
+			    {
+				obj_type = ref;
+				ref_collapsed_lhs = true;
+			    }
 		    }
 		    else if ( lhs->type() == TokenType::ttMember )
 		    {
@@ -25935,6 +32237,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    obj_var = &tm->var;
 			    obj_type = tm->var.type;
+			    // Same reference-to-pointer collapse as the
+			    // variable arm above ([expr.ref]).
+			    if ( DataDef *ref = referent_if_reference(obj_type) )
+				if ( ref->is_pointer() )
+				{
+				    obj_type = ref;
+				    ref_collapsed_lhs = true;
+				}
 			}
 			else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
 			{
@@ -25969,9 +32279,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			base = ptr_type->base_type;
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
-			Throw(tb) << "member reference type is not a structure or union" << flush;
+			Throw(tb) << "member reference type '" << base->name
+			    << "' is not a structure or union (member '"
+			    << ident_tb->spelling() << "')" << flush;
 
-		    string id = ident_tb->spelling();
+		    // member_lookup_name, not the raw spelling: an
+		    // operator-function-id member (`p->operator*()`) was
+		    // already consumed into it by the arm head.
+		    string id = member_lookup_name;
 
 		    // get member offset and type — or method
 		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
@@ -25979,35 +32294,41 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			// Check if it's a method call on a class pointer
 			DataDefCLASS *method_cls = (DataDefCLASS *)base;
+			// `p->f<targs>(args)` ([temp.names]): the dot arm's
+			// explicit-template-argument handling, mirrored. The arity
+			// counter cannot see past the `<...>`, so the targs form
+			// selects by name and reselects after the arguments parse.
+			bool explicit_targs_follow = peekToken()
+			    && peekToken()->id() == TokenID::tkLT;
 			bool call_follows = peekToken()
-			    && peekToken()->id() == TokenID::tkOpBrk;
+			    && (peekToken()->id() == TokenID::tkOpBrk
+			     || explicit_targs_follow);
 			var = call_follows
-			    ? find_method_by_callable_arity(method_cls, id,
+			    ? (explicit_targs_follow ? NULL
+			       : find_method_by_callable_arity(method_cls, id,
 				count_queued_call_arguments(), false)
+			      )
 			    : method_cls->findMethod(id);
 			if ( !var && call_follows )
 			    var = method_cls->findMethod(id);
 			if ( var )
 			{
-			    // Access control (P2.5c): reject a private/protected
-			    // METHOD call via `->` from outside the (derived) class.
-			    {
-				DataDefCLASS *cur_class =
-				    (code && code->method) ? code->method->owner_class : NULL;
-				std::string av =
-				    method_access_violation(base, var, id, cur_class,
-					current_function_friend_name(code));
-				if ( !av.empty() )
-				    Throw(tb) << av << flush;
-			    }
+			    // Access control (P2.5c) runs AFTER the overload the
+			    // call actually selects is known — see the checks on
+			    // the reselect/rebind results below (the dot arm's
+			    // private-before-public-const rationale, mirrored).
 			    if ( var->flags & vfSTATIC )
 			    {
 				TokenCallFunc *tc = new TokenCallFunc(*var);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
 				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
 				if ( tb->id() == TokenID::tkOpBrk )
 				    tb = parseCallFunc(tc);
+				else if ( !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				std::vector<const DataDef *> at;
 				for ( TokenBase *p : tc->parameters )
 				    at.push_back(p ? p->datadef() : NULL);
@@ -26016,12 +32337,22 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    {
 					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
 					tc2->parameters = tc->parameters;
+					tc2->explicit_template_args = tc->explicit_template_args;
 					tc2->file = tc->file;
 					tc2->line = tc->line;
 					tc2->column = tc->column;
 					tc = tc2;
 				    }
 				var = &tc->var;
+				{
+				    DataDefCLASS *cur_class =
+					(code && code->method) ? code->method->owner_class : NULL;
+				    std::string av =
+					method_access_violation(base, var, id, cur_class,
+					    current_function_friend_name(code));
+				    if ( !av.empty() )
+					Throw(tc) << av << flush;
+				}
 				exStack.pop();
 				if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 				    opStack.pop();
@@ -26066,15 +32397,29 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				tc->explicit_template_args = capture_call_template_args();
 			    tb = nextToken();
 			    tc->line = tb->line;
 			    tc->column = tb->column;
 			    if ( tb->id() == TokenID::tkOpBrk )
 				tb = parseCallMethod(tc);
+			    else if ( !tc->explicit_template_args.empty() )
+				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    // Re-bind to the overload the argument types select.
 			    tc = reselect_method_overload(tc, *obj_var,
 				    method_cls, id);
 			    var = &tc->var;
+			    // Access control on the SELECTED overload ([class.access]).
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(base, var, id, cur_class,
+					current_function_friend_name(code));
+				if ( !av.empty() )
+				    Throw(tc) << av << flush;
+			    }
 			    exStack.pop();
 			    // remove TokenDeRef from opStack
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
@@ -26117,7 +32462,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.pop();
 		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
 		    // operand() can compile the intermediate pointer at codegen time
-		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
+		    // (a collapsed reference-to-pointer receiver rides the same lane:
+		    // compiling the ref expression yields the referent pointer)
+		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs
+		      || ref_collapsed_lhs )
 			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
 		    else
 			exStack.push(new TokenMember(*obj_var, *var, ofs));
@@ -26130,8 +32478,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
 		    std::string ns_name = ident_tb->spelling();
-		    if ( DataDefCLASS *class_scope =
-			    resolve_expression_class_scope(ns_name) )
+		    // One classify policy — classify_qualifier_before_scope
+		    // (this arm previously checked class BEFORE namespace while
+		    // its two siblings checked namespace first; the shared
+		    // classifier diagnoses a genuine collision instead).
+		    QualifierScope qscope =
+			classify_qualifier_before_scope(ns_name, tb);
+		    if ( DataDefCLASS *class_scope = qscope.cls )
 		    {
 			QualifiedClassExprAction action =
 			    resolve_class_qualified_expression(*this, class_scope,
@@ -26141,10 +32494,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    goto ns_resolved;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    std::string resolved_ns_name =
-			resolve_namespace_name_in_scope(ns_name);
-		    if ( !resolved_ns_name.empty() )
-			ns_name = resolved_ns_name;
+		    ns_name = qscope.ns_name;
 		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 		    if ( nsi == namespace_map.end() )
 		    {
@@ -26162,7 +32512,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    instantiating_canonical_spelling.c_str(), up.c_str());
 			}
 #endif
-			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+			// Truthful text: this arm tried the class registry too
+			// (the classifier's cls probe above).
+			Throw(tb) << "Unknown namespace or class '" << ns_name << "'" << flush;
 		    }
 		    nextToken(); // consume '::'
 		    TokenBase *member_tb = nextToken(); // consume member identifier
@@ -26178,11 +32530,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
-			std::string nested_ns_name = ns_name + "::" + member_name;
-			bool nested_exists =
-			    namespace_map.find(nested_ns_name) != namespace_map.end()
-			    || namespace_datatype_map.find(nested_ns_name) != namespace_datatype_map.end();
-			if ( !nested_exists )
+			std::string nested_ns_name =
+			    canonical_nested_namespace(ns_name, member_name);
+			if ( nested_ns_name.empty() )
 			    break;
 			nextToken(); // consume '::'
 			ns_name = nested_ns_name;
@@ -26316,8 +32666,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
-		    variable_map_iter vmi = nsi->second.find(member_name);
-		    if ( vmi == nsi->second.end() )
+		    Variable *ns_member = find_namespace_member(ns_name,
+								 member_name);
+		    if ( !ns_member )
 		    {
 			// try dlsym fallback if this namespace was loaded via #load
 			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
@@ -26345,7 +32696,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
 		    }
 		    else
-			var = vmi->second;
+			var = ns_member;
 		// Cross-namespace seed clash: namespace_map[ns][name] can hold a
 		// placeholder seed from a DIFFERENT namespace (observed: qualified
 		// std::get resolving to the std::ranges::get niebloid seed). When the
@@ -26469,16 +32820,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    DataDefCLASS *cls = code->method->owner_class;
 		    std::string mname = member_lookup_name;
-		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
+		    // Second copy of the same fold — the twin of the one in
+		    // parsePostfixChain, with the identical silent-0 read and
+		    // "lvalue required" write. Both now defer to the shared
+		    // resolver, which prefers real storage and folds only a
+		    // genuine in-class constant.
+		    if ( TokenBase *sval =
+			    resolve_class_static_member_value(*this, cls, mname, tb) )
 		    {
-			int64_t cv = 0;
-			resolve_class_static_member_const_value(cls, mname, cv);
-			TokenInt *ti = new TokenInt(cv);
-			ti->setDataType(static_dd);
-			ti->file = tb->file;
-			ti->line = tb->line;
-			ti->column = tb->column;
-			exStack.push(ti);
+			exStack.push(sval);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    ssize_t ofs = cls->m_offset(mname);
@@ -26495,22 +32845,39 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
-		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    // `f<targs>(args)` unqualified in a member body is
+		    // `(*this).f<targs>(args)` ([class.mfct.non.static],
+		    // [temp.names]) — the dot arm's explicit-template-argument
+		    // handling, mirrored. Only a name that IS a method of the
+		    // enclosing class takes this arm (everything else already
+		    // failed lookup and falls through to the usual diagnostic),
+		    // so a genuine less-than never reaches the capture.
 		    {
-			Variable *mvar =
-			    find_method_by_callable_arity(cls, mname,
+		    bool explicit_targs_follow = peekToken()
+			&& peekToken()->id() == TokenID::tkLT;
+		    if ( peekToken()
+		      && (peekToken()->id() == TokenID::tkOpBrk
+		       || explicit_targs_follow) )
+		    {
+			Variable *mvar = explicit_targs_follow
+			    ? cls->findMethod(mname)
+			    : find_method_by_callable_arity(cls, mname,
 				count_queued_call_arguments(), false);
 			if ( mvar )
 			{
 			    if ( mvar->flags & vfSTATIC )
 			    {
-				tb = nextToken();
 				TokenCallFunc *tc = new TokenCallFunc(*mvar);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
+				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
 				opStack.push(tc);
 				if ( tb->id() == TokenID::tkOpBrk )
 				    tb = parseCallFunc(tc);
+				else if ( !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				if ( tb->id() == TokenID::tkSemi )
 				    done = true;
 				return done ? ExprStep::Done : ExprStep::Break;
@@ -26520,9 +32887,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( thisvar )
 			    {
 				TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+				if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				    tc->explicit_template_args = capture_call_template_args();
 				tb = nextToken();
 				tc->line = tb->line;
 				tc->column = tb->column;
+				if ( tb->id() != TokenID::tkOpBrk
+				  && !tc->explicit_template_args.empty() )
+				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				tb = parseCallMethod(tc);
 				tc = reselect_method_overload(tc, *thisvar, cls, mname);
 				opStack.push(tc);
@@ -26531,6 +32903,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			}
+		    }
 		    }
 		}
 		if ( parsed_operator_name )
@@ -26903,6 +33276,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkDot
 		      && consume_ellipsis() )
 		    {
+			// Env-gated probe (MADC_ELLIPSIS_PROBE=<substr of the
+			// callee>) — see the twin at the operand-position arm,
+			// which is where a template-argument pack is lost.
+			static const char *ep = ::getenv("MADC_ELLIPSIS_PROBE");
+			if ( ep && *ep
+			  && tc->var.name.find(ep) != std::string::npos )
+			    fprintf(stderr, "ELLIPSIS call-arm call=%s dep=%d"
+				    " nexpl=%zu -> %s\n",
+				    tc->var.name.c_str(),
+				    (int)dependent_parse_in_progress,
+				    tc->explicit_template_args.size(),
+				    dependent_parse_in_progress
+					? "EXPANSION" : "BARE(dropped)");
 			if ( dependent_parse_in_progress )
 			    exStack.push(make_pack_expansion_pattern(tc, tb));
 			else
@@ -27009,6 +33395,17 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// member can never be named `~...`, so this never shadows ordinary
 		// member access). The lhs object/pointer is already on exStack; consume
 		// `~ type-name ( )` and synthesize a void-valued TokenExplicitDtor.
+		// A CALL-RESULT receiver (`declval<T&>().~T()` — libstdc++'s
+		// whole is_destructible SFINAE) rides opStack, not exStack
+		// (calls are staged there, see the identifier arm's
+		// `opStack.push(tc)`): flush it down so the recognition below
+		// sees one receiver shape.
+		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
+		  && exStack.empty() && !opStack.empty()
+		  && (opStack.top()->type() == TokenType::ttCallFunc
+		   || opStack.top()->type() == TokenType::ttCallMethod)
+		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
+		    popOperator(opStack, exStack);
 		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
 		  && !exStack.empty()
 		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
@@ -27062,6 +33459,28 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    ? named->name : named->canonical_cpp_spelling())
 				<< "'" << flush;
 		    }
+		    // A DELETED destructor — its own `= delete`, or implicitly
+		    // deleted through a base/member — makes the call ill-formed
+		    // in EVERY context ([dcl.fct.def.delete]); inside a SFINAE
+		    // decltype this Throw IS the substitution failure that
+		    // makes is_destructible<X> false through libstdc++'s
+		    // declval chain. Access is deliberately NOT checked here
+		    // (a private destructor is callable from the class's own
+		    // members; the trait models the external answer itself).
+		    if ( vri_debug_enabled() )
+			fprintf(stderr, "[vriprobe] expl-dtor dcls=%s dep=%d surf=%d walk=%d\n",
+				dcls ? dcls->name.c_str() : "(null)",
+				dcls ? (int)dcls->is_dependent_placeholder : -1,
+				dcls ? (int)dcls->has_dependent_surface : -1,
+				dcls ? trait_class_destructible(dcls, 0, false) : -9);
+		    if ( dcls && !dcls->is_dependent_placeholder
+		      && !dcls->has_dependent_surface
+		      && trait_class_destructible(dcls, 0, false) == 0 )
+			Throw(tyt ? tyt : tb)
+			    << "use of deleted destructor '~"
+			    << (dcls->canonical_cpp_spelling().empty()
+				? dcls->name : dcls->canonical_cpp_spelling())
+			    << "()'" << flush;
 		    TokenBase *opbrk = nextToken();
 		    if ( !opbrk || opbrk->id() != TokenID::tkOpBrk )
 			Throw(opbrk ? opbrk : tb) << "Expected '(' in explicit destructor call" << flush;
@@ -27098,6 +33517,17 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    // `[` is the SUBSCRIPT operator only in postfix position —
+		    // immediately after a complete operand. Everywhere else it
+		    // opens a lambda-introducer. A NON-EMPTY exStack is not that
+		    // test: in `v = [](int x){ ... }(1)` the `v` sits on exStack
+		    // with the `=` still pending on opStack, so the branches
+		    // below took the introducer as a subscript on `v`, parsed
+		    // the lambda body in the ENCLOSING scope, and reported
+		    // "use of undeclared identifier 'x'" — pointing inside a
+		    // lambda it had already decided was not a lambda.
+		    if ( !isPostfixPosition() )
+			return parseLambdaExprStep(exStack, opStack, done);
 		    if ( !opStack.empty()
 		      && (opStack.top()->type() == TokenType::ttCallFunc
 		       || opStack.top()->type() == TokenType::ttCallMethod) )
@@ -27325,9 +33755,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 		    }
 		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
-		    TokenBase *lambda = parseLambda();
-		    exStack.push(lambda);
-		    return done ? ExprStep::Done : ExprStep::Break;
+		    return parseLambdaExprStep(exStack, opStack, done);
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
@@ -27420,6 +33848,104 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					cast_dd = &tdt->definition;
 				    else
 					pushToken(head);
+				}
+			    }
+			}
+			// Qualified member-TYPE cast target:
+			// `(typename __promote<_A1>::type)__x` (libc++
+			// __math/traits.h isinf — the instantiated body's cast)
+			// and the bare `(Tmpl<args>::type)x` spelling. Extent =
+			// optional `typename`, the name, an optional balanced
+			// <...> (DelimDepth owns the scan), then (:: name)+ —
+			// resolved NON-consumingly through
+			// resolve_type_token_range, whose completeness rule
+			// rejects a VALUE-member leaf
+			// (`(is_same<A,B>::value)` stays an expression).
+			// Consumption rides the cast_qualified_extra_tokens
+			// tail below, so the fix-#8 functional-construction
+			// decline still sees the un-consumed head.
+			if ( !cast_dd && cpp_keyword_active(Program::STD_CPP98)
+			  && (peek1->type() == TokenType::ttDataType
+			   || peek1->type() == TokenType::ttIdentifier) )
+			{
+			    size_t idx = 0;
+			    bool typename_head =
+				peek1->type() == TokenType::ttIdentifier
+				&& ((TokenIdent *)peek1)->spelling_is("typename");
+			    if ( typename_head )
+				idx = 1;
+			    size_t j = 0;
+			    bool saw_tid = false;
+			    if ( tokens.size() > idx && tokens[idx]
+			      && (is_contextual_identifier_token(tokens[idx])
+			       || tokens[idx]->type() == TokenType::ttDataType) )
+			    {
+				j = idx + 1;
+				if ( tokens.size() > j && tokens[j]
+				  && tokens[j]->id() == TokenID::tkLT )
+				{
+				    DelimDepth d;
+				    size_t k = j;
+				    while ( k < tokens.size() )
+				    {
+					k += delim_scan_step(tokens, k, d);
+					if ( d.angle == 0 )
+					{
+					    saw_tid = true;
+					    break;
+					}
+				    }
+				    j = saw_tid ? k : 0;
+				}
+			    }
+			    size_t chain = 0;
+			    while ( j && tokens.size() > j + 1 && tokens[j]
+			      && tokens[j]->id() == TokenID::tkNS
+			      && tokens[j + 1]
+			      && (is_contextual_identifier_token(tokens[j + 1])
+			       || tokens[j + 1]->type() == TokenType::ttDataType) )
+			    {
+				j += 2;
+				++chain;
+			    }
+			    bool shape_ok = j > 0;
+			    if ( shape_ok && !typename_head )
+			    {
+				// Bare spelling: only a registered template's
+				// id + a member chain — plain names stay with
+				// the sibling arms (and a non-template `<` is
+				// less-than, never scanned as a list).
+				std::string tid_name =
+				    peek1->type() == TokenType::ttDataType
+					? ((TokenDataType *)peek1)->spelling()
+					: ((TokenIdent *)peek1)->spelling();
+				shape_ok = saw_tid && chain > 0
+				    && (find_template(tid_name)
+				     || find_template_alias(tid_name));
+			    }
+			    if ( shape_ok )
+				shape_ok = tokens.size() > j && tokens[j]
+				    && (tokens[j]->id() == TokenID::tkClBrk
+				     || tokens[j]->id() == TokenID::tkMul);
+			    if ( shape_ok )
+			    {
+				std::vector<TokenBase *> slice;
+				for ( size_t si = 0; si < j; ++si )
+				    slice.push_back(tokens[si]);
+				if ( DataDef *qdd = resolve_type_token_range(
+						slice, 0, slice.size()) )
+				{
+				    cast_dd = qdd;
+				    cast_qualified_extra_tokens = j - 1;
+				    TokenBase *leaf_tb = tokens[j - 1];
+				    std::string leaf;
+				    if ( leaf_tb->type() == TokenType::ttDataType )
+					leaf = ((TokenDataType *)leaf_tb)->spelling();
+				    else if ( is_contextual_identifier_token(leaf_tb) )
+					leaf = contextual_identifier_name(leaf_tb);
+				    if ( !leaf.empty()
+				      && typedef_alias_matches_datadef(leaf, cast_dd) )
+					cast_typedef_name = leaf;
 				}
 			    }
 			}
@@ -27553,6 +34079,40 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    cast_typedef_name = tname;
 			    }
 			}
+		    }
+		    // C++ functional construction inside grouping parens —
+		    // `(C(41)).m()`, `(C{...})` — shares its head with the
+		    // speculative `(TYPE)expr` cast: TYPE followed by '(' or
+		    // '{'. The template-id shape already declines above
+		    // (template_ctor_grouping); the PLAIN type name slipped
+		    // into the cast route, which consumed the type and then
+		    // fell through to grouping WITHOUT restoring it ("not a
+		    // cast after all"), leaving the member access a bare
+		    // scalar (libc++ parser_std_format_spec.h:58
+		    // `(string(...) + ...).c_str()`). Decline the cast BEFORE
+		    // consuming — the type re-dispatches to the dataTypeArm,
+		    // whose parse_functional_type_expression owns
+		    // construction. The function-pointer cast head
+		    // `(RET (*)(...))expr` keeps the cast route: its inner
+		    // group is exactly `(*)`. peek1 pointer-equality gates to
+		    // the NON-consuming detection branches only.
+		    if ( cast_dd && peekToken() == peek1
+		      && cpp_keyword_active(Program::STD_CPP98) )
+		    {
+			size_t after = 1 + cast_qualified_extra_tokens;
+			TokenBase *t1 = tokens.size() > after
+			    ? tokens[after] : NULL;
+			TokenBase *t2 = tokens.size() > after + 1
+			    ? tokens[after + 1] : NULL;
+			TokenBase *t3 = tokens.size() > after + 2
+			    ? tokens[after + 2] : NULL;
+			bool fnptr_cast_head = t1 && t1->id() == TokenID::tkOpBrk
+			    && t2 && t2->id() == TokenID::tkMul
+			    && t3 && t3->id() == TokenID::tkClBrk;
+			if ( !fnptr_cast_head && t1
+			  && (t1->id() == TokenID::tkOpBrk
+			   || t1->id() == TokenID::tkOpBrc) )
+			    cast_dd = NULL;
 		    }
 		    if ( !cast_dd && cast_qualifier )
 			pushToken(cast_qualifier);
@@ -27688,109 +34248,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // struct/array initialization rather than a cast.
 				    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
 				    {
-					std::function<TokenStructLit *(DataDefSTRUCT *)> read_compound_struct_lit;
-					read_compound_struct_lit = [&](DataDefSTRUCT *current_sdd) -> TokenStructLit * {
-					    nextToken(); // consume '{'
-					    TokenStructLit *slit = new TokenStructLit();
-					    while ( true )
-					    {
-						TokenBase *look = peekToken();
-						if ( !look )
-						    Throw(tb) << "Unexpected end of data in compound literal" << flush;
-						if ( look->id() == TokenID::tkClBrc )
-						{
-						    nextToken();
-						    break;
-						}
-						if ( look->id() == TokenID::tkOpBrc )
-						{
-						    DataDefSTRUCT *elem_sdd = NULL;
-						    if ( current_sdd )
-						    {
-							size_t idx = slit->inits.size();
-							if ( idx < current_sdd->members.size() )
-							    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
-						    }
-						    slit->inits.push_back(read_compound_struct_lit(elem_sdd));
-						}
-						else
-						{
-						TokenBase *elem = nextToken();
-						if ( elem->id() == TokenID::tkDot
-						  || (current_sdd && is_contextual_identifier_token(elem)
-						   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
-						{
-						    std::vector<std::string> field_path;
-						    TokenBase *field_tok = elem;
-						    if ( elem->id() == TokenID::tkDot )
-						    {
-							field_tok = nextToken();
-							if ( !is_contextual_identifier_token(field_tok) )
-							    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
-							field_path.push_back(contextual_identifier_name(field_tok));
-							while ( peekToken() && peekToken()->id() == TokenID::tkDot )
-							{
-							    nextToken();
-							    TokenBase *nested_field = nextToken();
-							    if ( !is_contextual_identifier_token(nested_field) )
-								Throw(nested_field) << "Expecting field name in compound literal designator" << flush;
-							    field_path.push_back(contextual_identifier_name(nested_field));
-							}
-							TokenBase *eq = nextToken();
-							if ( !eq || eq->id() != TokenID::tkAssign )
-							    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
-						    }
-						    else
-						    {
-							field_path.push_back(contextual_identifier_name(field_tok));
-							nextToken(); // consume ':'
-						    }
-						    TokenBase *value_tok = nextToken();
-						    std::vector<TokenBase *> *target_inits = &slit->inits;
-						    DataDefSTRUCT *target_sdd = current_sdd;
-							size_t field_index = 0;
-							for ( size_t pi = 0; pi < field_path.size(); ++pi )
-							{
-							    const std::string &field_name = field_path[pi];
-							    field_index = find_struct_member_index(target_sdd, field_name);
-							    if ( !target_sdd || field_index >= target_sdd->members.size() )
-								Throw(field_tok) << "Unknown field '" << field_name << "' in compound literal designator" << flush;
-							    if ( target_inits->size() <= field_index )
-								target_inits->resize(field_index + 1, NULL);
-							    if ( pi + 1 == field_path.size() )
-								break;
-							    DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
-							    if ( !nested_sdd )
-								Throw(field_tok) << "Field '" << field_name << "' is not a struct in compound literal designator" << flush;
-							    TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
-							    if ( !nested_lit )
-							    {
-								nested_lit = new TokenStructLit();
-								(*target_inits)[field_index] = nested_lit;
-							    }
-							    target_inits = &nested_lit->inits;
-							    target_sdd = nested_sdd;
-							}
-							if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
-							{
-							    pushToken(value_tok);
-							    DataDefSTRUCT *nested_sdd = target_sdd
-								? dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second)
-								: NULL;
-							    (*target_inits)[field_index] = read_compound_struct_lit(nested_sdd);
-							}
-							else
-							    (*target_inits)[field_index] = parseExpression(value_tok);
-						    }
-						    else
-							slit->inits.push_back(parseExpression(elem));
-						}
-						if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-						    nextToken();
-					    }
-					    return slit;
-					};
-					TokenStructLit *slit = read_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd));
+					TokenStructLit *slit = parse_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd), tb);
 					slit->setDataType(cast_dd);
 					if ( !array_elem_dd )
 					    slit->typedef_name = cast_typedef_name;
@@ -28671,7 +35129,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			    if ( TokenCallMethod *opcall =
-				    make_unary_object_operator_call(NULL,
+				    make_unary_object_operator_call(*this, NULL,
 					deref_expr, "operator*") )
 			    {
 				exStack.push(opcall);
@@ -28758,7 +35216,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						// `*_M_current` on __normal_iterator).
 						if ( TokenCallMethod *opcall =
 							make_unary_object_operator_call(
-							    NULL, tm, "operator*") )
+							    *this, NULL, tm, "operator*") )
 						{
 						    exStack.push(opcall);
 						    return done ? ExprStep::Done
@@ -28783,6 +35241,31 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						    { debug_deref_fail(*this, 15808, deref_tb, NULL);
 						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 						    }
+						// Postfix ++/-- binds tighter than the
+						// unary `*` ([expr.post]): `*p++ = c`
+						// post-steps the MEMBER pointer, then
+						// dereferences — the member twin of the
+						// variable arm's TokenDerefStep and the
+						// parenthesized arm's step-wrap. Without
+						// it the `++` stayed on the stream and
+						// applied to the DEREF result
+						// ((*p)++ = c, "lvalue required" —
+						// basic_streambuf::sputc's *__nout_++).
+						if ( peekToken()
+						  && (peekToken()->id() == TokenID::tkInc
+						   || peekToken()->id() == TokenID::tkDec) )
+						{
+						    TokenBase *step_tb = nextToken();
+						    TokenOperator *step;
+						    if ( step_tb->id() == TokenID::tkInc )
+							step = new TokenInc();
+						    else
+							step = new TokenDec();
+						    step->left = tm;
+						    step->right = NULL;
+						    exStack.push(new TokenDerefExpr(step, base));
+						    return done ? ExprStep::Done : ExprStep::Break;
+						}
 						exStack.push(new TokenDerefExpr(tm, base));
 						return done ? ExprStep::Done : ExprStep::Break;
 					    }
@@ -28806,8 +35289,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(dvar, NULL,
-						"operator*") )
+					    make_unary_object_operator_call(*this, dvar,
+						NULL, "operator*") )
 				    {
 					exStack.push(opcall);
 					return done ? ExprStep::Done : ExprStep::Break;
@@ -29092,9 +35575,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					std::string step_op = deref_tb->id() == TokenID::tkInc
 							    ? "operator++" : "operator--";
 					TokenCallMethod *step_call =
-					    make_unary_object_operator_call(id_var, NULL, step_op);
+					    make_unary_object_operator_call(*this, id_var, NULL, step_op);
 					TokenCallMethod *deref_call = step_call
-					    ? make_unary_object_operator_call(id_var, step_call,
+					    ? make_unary_object_operator_call(*this, id_var, step_call,
 						"operator*") : NULL;
 					if ( deref_call )
 					{
@@ -29145,7 +35628,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    if ( !inner_dtype || !inner_dtype->is_pointer() )
 				    {
 					if ( TokenCallMethod *opcall =
-						make_unary_object_operator_call(NULL,
+						make_unary_object_operator_call(*this, NULL,
 						    inner_expr, "operator*") )
 					{
 					    exStack.push(opcall);
@@ -29228,7 +35711,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					}
 				    }
 				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(NULL,
+					    make_unary_object_operator_call(*this, NULL,
 						deref_expr, "operator*") )
 				    {
 					exStack.push(opcall);
@@ -29290,12 +35773,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(member_tb ? member_tb : name_tb)
 				<< "Expecting identifier after namespace '::'" << flush;
 			std::string member_name = contextual_identifier_name(member_tb);
-			variable_map_iter vmi = nsi->second.find(member_name);
-			if ( vmi == nsi->second.end() )
+			var = find_namespace_member(gname, member_name);
+			if ( !var )
 			    Throw(member_tb) << "'" << member_name
 					     << "' is not a member of namespace '"
 					     << gname << "'" << flush;
-			var = vmi->second;
 			tb = member_tb;
 		    }
 		    else
@@ -29529,10 +36011,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		break;
 	    default:
 		DBG(std::cerr << "parseExpression() primary switch throwing token" << std::endl);
+		// Env-gated probe (MADC_POPOP_PROBE=1): the offending token —
+		// the thrown message reports opStack.top()'s TYPE (historical),
+		// not the token the switch actually rejected.
+		if ( ::getenv("MADC_POPOP_PROBE") )
+		    fprintf(stderr, "[popop] primary-switch tb type=%d id=%d "
+			    "spelling='%s' at %s:%d:%d (stack-top type=%d)\n",
+			    (int)tb->type(), (int)tb->id(),
+			    overload_token_spelling(tb).c_str(),
+			    tb->file ? tb->file : "?", tb->line, tb->column,
+			    opStack.empty() ? -1 : (int)opStack.top()->type());
 		Throw(tb) << "unexpected token type " << (int)opStack.top()->type() << flush;
 	}
 	if ( done ) { break; /* prevent eating next token */ }
 	tb = peekToken();
+	// A sub-scan that mis-consumed to end-of-stream must be a LOUD error
+	// here, never a nil-deref (the pre-fix __recommend SIGSEGV shape).
+	if ( !tb )
+	    Throw(curToken()) << "unexpected end of input in expression" << flush;
 	// A pack-expansion ellipsis `...` (three consecutive dots) following a
 	// complete operand is the expansion marker, NOT a member access (a single
 	// `.`): `_Inherited(std::forward<_UElements>(__elements)...)`, `f(args...)`.
@@ -29543,6 +36039,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// dots and end the expression.
 	if ( tb->id() == TokenID::tkDot && consume_ellipsis() )
 	{
+	    // Env-gated probe (MADC_ELLIPSIS_PROBE=<substr of the operand's
+	    // callee>): the NON-DEPENDENT arm below keeps the operand verbatim on
+	    // the strength of the comment above — "the deduced pack is already
+	    // materialized as concrete parameter(s)". That holds for a pack in
+	    // VALUE position (`f(args...)`); it does NOT hold for a pack named in
+	    // an explicit TEMPLATE-ARGUMENT list (`std::forward<_Args1>(...)...`),
+	    // where the parameter name is still literally in the token stream and
+	    // nothing substitutes it. `expl_tparam=1` below is that leak.
+	    {
+		static const char *ep = ::getenv("MADC_ELLIPSIS_PROBE");
+		TokenCallFunc *otc = exStack.empty()
+		    ? NULL : dynamic_cast<TokenCallFunc *>(exStack.top());
+		if ( ep && *ep && otc
+		  && otc->var.name.find(ep) != std::string::npos )
+		{
+		    bool expl_tparam = false;
+		    for ( size_t ei = 0;
+			  ei < otc->explicit_template_args.size(); ++ei )
+			if ( datadef_involves_placeholder(
+				 otc->explicit_template_args[ei], false) )
+			    expl_tparam = true;
+		    fprintf(stderr, "ELLIPSIS operand-arm call=%s dep=%d"
+			    " nexpl=%zu expl_tparam=%d -> %s\n",
+			    otc->var.name.c_str(),
+			    (int)dependent_parse_in_progress,
+			    otc->explicit_template_args.size(),
+			    (int)expl_tparam,
+			    dependent_parse_in_progress
+				? "EXPANSION" : "VERBATIM(dots dropped)");
+		}
+	    }
 	    if ( dependent_parse_in_progress && !exStack.empty() )
 	    {
 		TokenBase *pat = exStack.top();
@@ -29844,11 +36371,6 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	pgm.pack_tap_type(name);	// B4a: decl-index tap (using-import)
 	pgm.datatype_map[name] = src;
     };
-    auto namespace_exists = [&](const std::string &name) -> bool
-    {
-	return pgm.namespace_map.find(name) != pgm.namespace_map.end()
-	    || pgm.namespace_datatype_map.find(name) != pgm.namespace_datatype_map.end();
-    };
     auto resolve_source_namespace = [&](const std::string &name) -> std::string
     {
 	// C++ unqualified namespace lookup walks OUTWARD through ENCLOSING
@@ -29859,11 +36381,14 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	// `std::ranges` and `using ranges::get;` (ranges_util.h:780) throws
 	// "'get' is not a member of namespace 'ranges'" though std::ranges has it.
 	// (Also handles `ranges::__detail` from inside `std::__detail`.)
+	// Each candidate resolves through canonical_namespace_path, so a
+	// component declared in an inline namespace canonicalizes
+	// ("std::__math" -> "std::__1::__math", math.h:414).
 	std::string scope = pgm.current_namespace();
 	while ( !scope.empty() )
 	{
-	    std::string cand = scope + "::" + name;
-	    if ( namespace_exists(cand) )
+	    std::string cand = pgm.canonical_namespace_path(scope, name);
+	    if ( !cand.empty() )
 		return cand;
 	    size_t pos = scope.rfind("::");
 	    if ( pos == std::string::npos )
@@ -29871,9 +36396,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    scope = scope.substr(0, pos);
 	}
 	// Global / already-fully-qualified fallback.
-	if ( namespace_exists(name) )
-	    return name;
-	return "";
+	return pgm.canonical_namespace_path("", name);
     };
     auto using_declaration_name = [&](TokenBase *tok) -> std::string
     {
@@ -29975,13 +36498,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    namespace_map_t::iterator nsi = pgm.namespace_map.find(source_ns);
-	    if ( nsi != pgm.namespace_map.end() )
-	    {
-		variable_map_iter vmi = nsi->second.find(name);
-		if ( vmi != nsi->second.end() )
-		    v = vmi->second;
-	    }
+	    v = pgm.find_namespace_member(source_ns, name);
 	    nti = pgm.namespace_datatype_map.find(source_ns);
 	    if ( nti != pgm.namespace_datatype_map.end() )
 		ns_dti = nti->find(name);
@@ -30046,19 +36563,40 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	{
 	    std::string alias_name = using_declaration_name(tn);
 	    pgm.nextToken(); // consume '='
-	    TokenBase *type_tb = pgm.nextToken();
-	    while ( type_tb && (type_tb->id() == TokenID::tkCONST
-		   || type_tb->id() == TokenID::tkVOLATILE
-		   || type_tb->id() == TokenID::tkRESTRICT) )
-		type_tb = pgm.nextToken();
+	    TokenBase *type_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	    TokenDataType *target = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
 	    DataDef *alias_dd = &target->definition;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    // Stars + interstitial/east cv (`directory_entry const*`, libc++
+	    // recursive_directory_iterator.h:44): the shared declarator
+	    // consumer owns both. A bare `while (tkMul)` loop never saw the
+	    // east `const` and the arm threw "Expecting ';' after using alias".
+	    pgm.consume_declarator_stars(alias_dd);
+	    // Function-pointer alias: using NAME = RET (*)(params);
+	    // The ABSTRACT twin of typedef Form 2 (typedef RET (*NAME)(params);)
+	    // — same parseFnPtrParams owner, the alias name came before '='.
+	    // libc++: `using terminate_handler = void (*)();`
+	    // (__exception/operations.h:29), new_handler, and friends.
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 	    {
-		pgm.nextToken();
-		alias_dd = pgm.getPointerType(alias_dd);
+		pgm.nextToken(); // consume '('
+		TokenBase *star = pgm.nextToken();
+		if ( !star || star->id() != TokenID::tkMul )
+		    pgm.Throw(star ? star : tn)
+			<< "Expecting '*' in function pointer alias" << flush;
+		TokenBase *rbrk = pgm.nextToken();
+		if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
+		    pgm.Throw(rbrk ? rbrk : tn)
+			<< "Expecting ')' in function pointer alias" << flush;
+		TokenBase *open = pgm.nextToken();
+		if ( !open || open->id() != TokenID::tkOpBrk )
+		    pgm.Throw(open ? open : tn)
+			<< "Expecting '(' for parameter list" << flush;
+		FuncDef *func = pgm.parseFnPtrParams(*alias_dd);
+		DataDefFPTR *fptr = new DataDefFPTR(func);
+		fptr->ptr_syntax = true;   // explicit `(*)` — pointer alias
+		alias_dd = fptr;
 	    }
 	    if ( pgm.peekToken()
 	      && (pgm.peekToken()->id() == TokenID::tkBand
@@ -30094,13 +36632,23 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    else
 	    {
 		pgm.user_typedef_names.insert(alias_name);
-		// A NAMESPACE-scope alias is visible only in its namespace
-		// (qualified use / using-directive import). Writing it into the
-		// flat global map here CLOBBERED the global name: parsing
-		// <string>'s `namespace pmr { using string = ...; }` replaced
+		// A NAMESPACE-scope alias gets the dialect's unqualified
+		// visibility (the same flat registration the TYPEDEF lane
+		// gives `namespace std { typedef basic_string<char> string; }`)
+		// ONLY when the flat name is still FREE. The no-clobber guard
+		// is load-bearing: an unconditional flat write let parsing
+		// <string>'s `namespace pmr { using string = ...; }` replace
 		// flat `string`, and the later `using namespace std` import
 		// skipped it as already-present — unqualified `string` became
-		// std::pmr::string (wrong allocator, wrong overloads).
+		// std::pmr::string (wrong allocator, wrong overloads). With
+		// the guard, the PRIMARY registers first and pmr's later
+		// same-name alias stays namespace-only. The flavored twin is
+		// why the free case must register at all: libc++ spells
+		// std::string as `using string = basic_string<char>;`
+		// (__fwd/string.h) where libstdc++ spells a typedef, so the
+		// alias lane's old never-flat rule left bare `string`
+		// unresolvable ONLY under -stdlib=libc++ (the
+		// testexterncstringptr/testforeachheaderbody pair).
 		// A BLOCK-scope alias (inside a function body — compounds
 		// non-empty) is a local typedef ([dcl.typedef]): register it
 		// flat exactly as TokenTYPEDEF does, even when the body parses
@@ -30109,7 +36657,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		// __alloc_on_swap declares `using __pocs = ...;` locally and
 		// then constructs `__pocs()` in expression position).
 		// Scoped registration: the flat entry is restored at block exit.
-		if ( pgm.current_namespace().empty() || !pgm.compounds.empty() )
+		if ( pgm.current_namespace().empty() || !pgm.compounds.empty()
+		  || pgm.datatype_map.find(alias_name) == pgm.datatype_map.end() )
 		    pgm.register_scoped_typedef(alias_name, alias_tdt);
 	    }
 	    // Namespace visibility is for NAMESPACE-scope aliases only — a
@@ -30159,14 +36708,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	std::string ns_name = resolve_source_namespace(requested_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << requested_ns_name << "'" << flush;
-	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	variable_map_iter vmi;
-	bool have_var = false;
-	if ( nsi != pgm.namespace_map.end() )
-	{
-	    vmi = nsi->second.find(member_name);
-	    have_var = vmi != nsi->second.end();
-	}
+	Variable *use_var = pgm.find_namespace_member(ns_name, member_name);
+	bool have_var = use_var != NULL;
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
 	datatype_map_iter dti;
 	bool have_type = false;
@@ -30196,8 +36739,39 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
-		pgm.namespace_variables_for_write(
-		    pgm.current_namespace())[name] = vmi->second;
+		variable_map_t &dst_map = pgm.namespace_variables_for_write(
+		    pgm.current_namespace());
+		FuncDef *use_fd = use_var->type
+		    ? dynamic_cast<FuncDef *>(use_var->type) : NULL;
+		if ( use_fd )
+		{
+		    // [namespace.udecl]: an imported FUNCTION becomes a member
+		    // of the target namespace's OVERLOAD SET — the same two
+		    // registrations a declaration written in this namespace
+		    // gets. It must NOT clobber an existing name binding: the
+		    // map entry is first-wins (the fn-template placeholder is
+		    // the qualified-call resolution chokepoint; libstdc++'s
+		    // `using __exception_ptr::swap;` overwrote it and every
+		    // `std::swap(a, b)` bound the exception_ptr overload —
+		    // 'no matching constructor for exception_ptr(int32_t)').
+		    if ( dst_map.find(name) == dst_map.end() )
+			dst_map[name] = use_var;
+		    std::vector<Program::NamespaceFnOverload> &ovset =
+			pgm.namespace_fn_overload_sets[
+			    pgm.current_namespace() + "::" + name];
+		    bool known = false;
+		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+			if ( ovset[oi].var == use_var )
+			    known = true;
+		    if ( !known )
+		    {
+			Program::NamespaceFnOverload e;
+			e.var = use_var;
+			ovset.push_back(e);
+		    }
+		}
+		else
+		    dst_map[name] = use_var;
 	    }
 	    if ( have_type )
 	    {
@@ -30208,9 +36782,43 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	else
 	{
 	    if ( have_var && !pgm.findVariable(name) )
-		import_namespace_member(name, vmi->second);
+		import_namespace_member(name, use_var);
 	    if ( have_type )
 		import_namespace_type(name, dti->second);
+	}
+	// A scoped/tagged enum's enumerators live in its PSEUDO-namespace
+	// (`ns::Tag::Value` — TokenENUM::parse's [dcl.enum]p11 model).
+	// Importing the TYPE must also make `Tag::Value` resolvable from the
+	// importing scope: bridge the pseudo-namespace under this scope's
+	// key. libc++ unicode.h: a function-body
+	// `using __extended_grapheme_custer_property_boundary::__property;`
+	// followed by `__property::__Extended_Pictographic`. The Variable
+	// POINTERS are shared and an enum's member set is complete at its
+	// definition, so the copied map cannot go stale.
+	if ( have_type )
+	{
+	    namespace_map_t::iterator pni =
+		pgm.namespace_map.find(ns_name + "::" + member_name);
+	    if ( pni != pgm.namespace_map.end() )
+	    {
+		std::string dst_pseudo = pgm.current_namespace().empty()
+		    ? member_name
+		    : pgm.current_namespace() + "::" + member_name;
+		if ( pgm.namespace_map.find(dst_pseudo)
+			== pgm.namespace_map.end() )
+		{
+		    // B4a: every bridged registration needs its decl-index
+		    // tap, same as the enumerator registrations it mirrors
+		    // (forest_index_oracle gates this — libstdc++'s
+		    // `using __gnu_cxx::_Lock_policy;` inside std).
+		    for ( variable_map_t::const_iterator mi =
+				pni->second.begin();
+			  mi != pni->second.end(); ++mi )
+			pgm.pack_tap_name(dst_pseudo + "::" + mi->first,
+					  Program::pdkVariable);
+		    pgm.namespace_map[dst_pseudo] = pni->second;
+		}
+	    }
 	}
 	// expect semicolon
 	tn = pgm.nextToken();
@@ -30486,71 +37094,235 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
     return false;
 }
 
+// Parse captured NSDMI initializer tokens into an expression in an ISOLATED
+// token stream (so the member-body parse does not desync) and record it under
+// member name `mname`. A scalar/pointer initializer is applied at default
+// construction as `recv.member = expr`; an expression that does not parse (a
+// dependent object value-init in a system header) is left unstored — object
+// members then take the existing value-init construction. Shared tail of the
+// `=` and brace forms in capture_member_default_init.
+static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
+	const std::string &mname, const std::vector<TokenBase *> &init_toks)
+{
+    if ( init_toks.empty() )
+	return;
+    std::vector<TokenBase *> seq;
+    for ( TokenBase *t : init_toks )
+	seq.push_back(t->clone());
+    seq.push_back(new TokenSemi());
+    TokenStream::State saved_stream = pgm.tokens.swap_in(std::move(seq));
+    // Fresh expression-position context: the live parse's last consumed token
+    // (the captured group's '}' / ';') is NOT this expression's previous
+    // token — without the reset a leading '-'/'&' judged postfix-binary
+    // (`int32_t __precision_{-1};` → TokenNeg→TokenSub → "Missing operand").
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    pgm.setTokenContext(NULL, NULL);
+    TokenBase *parsed = NULL;
+    try { parsed = pgm.parseExpression(pgm.nextToken(), true); }
+    catch ( ... ) { parsed = NULL; }
+    pgm.setTokenContext(saved_cur, saved_prv);
+    pgm.tokens.swap_back(std::move(saved_stream));
+    if ( parsed )
+	dds->member_default_inits[mname] = parsed;
+}
+
 // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`, or
-// brace-init `T m{...}`. `tn` is the token following a data-member declarator.
-// If it begins an initializer, capture the balanced init tokens, parse them in
-// an ISOLATED token stream (so the member-body parse does not desync), and record
-// the parsed expression under member name `mname` on `dds` (name-keyed, applied at
-// default construction as `recv.member = expr` for a scalar/pointer member). A
-// brace initializer, or an expression that does not parse (a dependent object
-// value-init in a system header), is left unstored — object members then take the
-// existing value-init construction. Returns the token following the initializer
-// (the `,`/`;`); returns `tn` unchanged when there is no initializer. Shared by
-// TokenSTRUCT::parse and TokenCLASS::parse.
+// brace-init `T m{...}` / `T m{}`. `tn` is the token following a data-member
+// declarator. If it begins an initializer, capture the balanced init tokens
+// and record the parsed expression via store_member_default_init above.
+// Returns the token following the initializer (the `,`/`;`); returns `tn`
+// unchanged when there is no initializer. Shared by TokenSTRUCT::parse and
+// TokenCLASS::parse.
 TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
 						const std::string &mname)
 {
     if ( !tn || !dds )
 	return tn;
-    // Only equal-init (`= expr`) is captured. Brace-or-equal-init (`m{...}`) is
-    // NOT consumed here: faithfully applying it needs aggregate/value-init
-    // semantics this slice does not model, and silently dropping it would turn a
-    // scalar member into garbage. Leaving `tn` as `{` lets the caller raise the
-    // existing clean parse error rather than mis-initialize — see the brace-init
-    // follow-up noted in the NSDMI handoff.
-    if ( tn->id() != TokenID::tkAssign )
+    // Brace form (`m{expr}` / `m{}` — [class.mem] brace-or-equal-init,
+    // direct-list-init): the single-expression and empty lists map onto the
+    // same `recv.member = expr` application the `=` form uses ({expr} = the
+    // expression; {} = value-init, 0 for the scalar/pointer application —
+    // object members are SKIPPED at emit by emit_member_default_inits and
+    // keep their value-init construction, so the stored 0 is inert for them).
+    // A multi-element list ({a, b} — aggregate/ctor-arg init) has no faithful
+    // scalar application; throw rather than silently mis-initialize.
+    // libc++ shape that demanded this: __format/buffer.h `size_t __size_{0};`.
+    bool brace_form = tn->id() == TokenID::tkOpBrc;
+    if ( tn->id() != TokenID::tkAssign && !brace_form )
 	return tn;
-    // `= expr` up to the top-level ',' or ';' (nested (), [], {} are balanced so a
-    // braced/parenthesized initializer with commas is captured whole).
+    if ( brace_form )
+    {
+	std::vector<TokenBase *> binit_toks;
+	DelimDepth bd;
+	bool bangle_comma = false;
+	{
+	    std::vector<TokenBase *> bopen_tail;
+	    delimStepStream(tn, bd, &bopen_tail); // step the opening '{'
+	}
+	for (;;)
+	{
+	    tn = nextToken();
+	    if ( !tn )
+		Throw << "Unexpected end in member initializer" << flush;
+	    TokenID id = tn->id();
+	    bool at_list_level = bd.brace == 1 && !bd.paren && !bd.square;
+	    if ( at_list_level && id == TokenID::tkClBrc )
+		break;                       // matching close — not recorded
+	    if ( at_list_level && id == TokenID::tkComma )
+	    {
+		if ( bd.angle == 0 )
+		    Throw(tn) << "Unsupported multi-element braced member"
+				 " initializer" << flush;
+		bangle_comma = true;         // maybe a template-arg comma —
+	    }				     // resolved at the close below
+	    std::vector<TokenBase *> optail;
+	    delimStepStream(tn, bd, &optail);
+	    binit_toks.push_back(tn->clone());
+	    for ( TokenBase *ot : optail )
+		if ( ot )
+		    binit_toks.push_back(ot->clone());
+	}
+	if ( bd.angle > 0 && bangle_comma )
+	    Throw(tn) << "Ambiguous '<' in braced member default initializer"
+		      << flush;
+	if ( binit_toks.empty() )
+	    binit_toks.push_back(new TokenInt(0)); // `m{}` — value-init
+	store_member_default_init(*this, dds, mname, binit_toks);
+	tn = nextToken();                    // the ','/';' after the group
+	return tn;
+    }
+    // `= expr` up to the top-level ',' or ';'. Balanced (), [], {} AND <> via
+    // the shared DelimDepth scanner (delimiter-tracking.md) — the old
+    // paren/square/brace-only counter split `pair2<ptr, alloc>(...)` at the
+    // template-argument comma, truncating the capture to `pair2<ptr` (libc++
+    // vector's __end_cap_ NSDMI shape). Two-rule terminator:
+    //  - ',' breaks only at FULL top() — a template-argument comma never splits;
+    //  - ';' breaks at ()/[]/{}-top even with an angle still open, because a
+    //    ';' cannot appear inside a template-argument-list ([temp.names]) — an
+    //    open angle there is a PHANTOM from the less-than ambiguity
+    //    (`int x = a < b;` — '<' after an identifier reads as a template-id
+    //    head; braces protect lambda-body semicolons either way).
+    // If a phantom-angle capture also swallowed a ()/[]/{}-top comma, the
+    // comma-shared-declarator split is genuinely ambiguous: throw rather than
+    // silently consuming the next declarator.
     std::vector<TokenBase *> init_toks;
-    int pd = 0, sd = 0, bd = 0;
+    DelimDepth d;
+    bool angle_comma = false;
     for (;;)
     {
 	tn = nextToken();
 	if ( !tn )
 	    Throw << "Unexpected end in member initializer" << flush;
 	TokenID id = tn->id();
-	if ( id == TokenID::tkOpBrk ) ++pd;
-	else if ( id == TokenID::tkClBrk ) --pd;
-	else if ( id == TokenID::tkOpSqr ) ++sd;
-	else if ( id == TokenID::tkClSqr ) --sd;
-	else if ( id == TokenID::tkOpBrc ) ++bd;
-	else if ( id == TokenID::tkClBrc ) --bd;
-	else if ( pd == 0 && sd == 0 && bd == 0
-	       && ( id == TokenID::tkComma || id == TokenID::tkSemi ) )
+	bool shallow = !d.paren && !d.square && !d.brace;
+	if ( shallow && id == TokenID::tkSemi )
 	    break;
+	if ( d.top() && id == TokenID::tkComma )
+	    break;
+	if ( shallow && id == TokenID::tkComma )
+	    angle_comma = true;
+	std::vector<TokenBase *> optail;
+	delimStepStream(tn, d, &optail);
 	init_toks.push_back(tn->clone());
+	for ( TokenBase *ot : optail )
+	    if ( ot )
+		init_toks.push_back(ot->clone());
     }
-    if ( !init_toks.empty() )
-    {
-	// Parse the captured tokens into an expression in an ISOLATED stream so the
-	// member-body parse does not desync. A scalar/pointer initializer is stored
-	// and applied as `recv.member = expr`; an object value-init (`= T()`) that
-	// does not yield a usable scalar expression is left unstored — object members
-	// take the existing value-init construction.
-	std::vector<TokenBase *> seq;
-	for ( TokenBase *t : init_toks )
-	    seq.push_back(t->clone());
-	seq.push_back(new TokenSemi());
-	TokenStream::State saved_stream = tokens.swap_in(std::move(seq));
-	TokenBase *parsed = NULL;
-	try { parsed = parseExpression(nextToken(), true); }
-	catch ( ... ) { parsed = NULL; }
-	tokens.swap_back(std::move(saved_stream));
-	if ( parsed )
-	    dds->member_default_inits[mname] = parsed;
-    }
+    if ( d.angle > 0 && angle_comma )
+	Throw(tn) << "Ambiguous '<' in member default initializer with"
+		     " comma-shared declarators" << flush;
+    store_member_default_init(*this, dds, mname, init_toks);
     return tn;
+}
+
+// A data-only aggregate nested directly in a C++ class owns its tag from the
+// FIRST declaration, just as TokenCLASS does for a nested class.  Function-local
+// aggregates are deliberately excluded: their compound identity wins below.
+DataDefCLASS *Program::nested_aggregate_owner() const
+{
+    if ( is_c_mode() || class_pattern_capture_in_progress
+      || !compounds.empty() || class_scope_stack.empty() )
+	return NULL;
+    return class_scope_stack.back();
+}
+
+// A struct tag declared inside a function body is keyed function-scoped so it
+// cannot collide with (or shadow) a file-scope tag of the same name.  A direct
+// class member is keyed by its owner for the same reason.
+std::string Program::scoped_struct_tag(const std::string &name)
+{
+    TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
+    if ( scope && scope != tkProgram && !cur_func_name.empty() )
+	return cur_func_name + "::" + name;
+    if ( DataDefCLASS *owner = nested_aggregate_owner() )
+	return owner->name + "::" + name;
+    return name;
+}
+
+// C++ only: an aggregate's tag IS a type name.  A nested aggregate registers
+// its emitted identity globally and its source spelling only in the owner;
+// ordinary aggregates retain the flat bare-name registration.
+TokenDataType *Program::register_cpp_aggregate_name(const std::string &name,
+						    DataDefSTRUCT *sdd)
+{
+    if ( !sdd || is_c_mode() )
+	return NULL;
+    DataDefCLASS *owner = nested_aggregate_owner();
+    if ( sdd->canonical_cpp_spelling().empty() )
+    {
+	// An owner-nested aggregate has its own canonical identity.  This must
+	// outrank the ambient instantiation spelling: otherwise basic_string's
+	// first `__long` is stamped as basic_string itself and wins later
+	// canonical lookup in place of its owner.
+	if ( owner )
+	{
+	    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
+		? owner->name : owner->canonical_cpp_spelling();
+	    sdd->set_canonical_spelling(owner_spelling + "::" + name);
+	}
+	// An instantiated STRUCT template (`myalloc<int>`) must carry its
+	// bracketed canonical spelling just like an instantiated class
+	// (mirrors the TokenCLASS path), so partial-spec matching can later
+	// decompose it (e.g. template-template-param deduction of
+	// `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
+	// namespace::name for an ordinary (non-instantiated) C++ struct.
+	else if ( instantiating_spelling_applies_here() )
+	    sdd->set_canonical_spelling(instantiating_canonical_spelling);
+	else if ( !current_namespace().empty() )
+	    sdd->set_canonical_spelling(current_namespace() + "::" + name);
+    }
+    std::string registered_name = owner ? sdd->name : name;
+    pack_tap_type(registered_name);	// B4a: decl-index tap (C++ aggregate name)
+    TokenDataType *tdt_ = NULL;
+    flat_datatype_map_iter existing = datatype_map.find(registered_name);
+    if ( existing != datatype_map.end()
+      && &(*existing)->definition == sdd )
+	tdt_ = (*existing);
+    else
+    {
+	tdt_ = new TokenDataType(registered_name.c_str(), *sdd);
+	datatype_map[registered_name] = tdt_;
+    }
+    if ( owner )
+	set_class_type_alias(owner, name, sdd);
+    if ( !current_namespace().empty() )
+	namespace_datatype_map[current_namespace()][registered_name] = tdt_;
+    return tdt_;
+}
+
+DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
+						   bool is_union)
+{
+    DataDefCLASS *owner = nested_aggregate_owner();
+    std::string emitted_name = owner ? owner->name + "__" + name : name;
+    DataDefSTRUCT *fwd = new DataDefSTRUCT(emitted_name, 0);
+    fwd->union_layout = is_union;
+    std::string store_key = scoped_struct_tag(name);
+    pack_tap_struct(store_key);	// B4a tap
+    struct_map.set(store_key, fwd);
+    register_cpp_aggregate_name(name, fwd);
+    return fwd;
 }
 
 TokenBase *TokenSTRUCT::parse(Program &pgm)
@@ -30569,16 +37341,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
-    auto scoped_struct_tag = [&](const std::string &name) -> std::string
-    {
-	TokenCpnd *scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
-	if ( scope && scope != pgm.tkProgram && !pgm.cur_func_name.empty() )
-	    return pgm.cur_func_name + "::" + name;
-	return name;
-    };
     auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_citer
     {
-	std::string scoped = scoped_struct_tag(name);
+	std::string scoped = pgm.scoped_struct_tag(name);
 	if ( scoped != name )
 	{
 	    datadef_map_citer scoped_it = pgm.struct_map.find(scoped);
@@ -30631,35 +37396,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto register_cpp_aggregate_name = [&](const std::string &name,
 					   DataDefSTRUCT *sdd) -> TokenDataType *
     {
-	if ( !sdd || pgm.is_c_mode() )
-	    return NULL;
-	if ( sdd->canonical_cpp_spelling().empty() )
-	{
-	    // An instantiated STRUCT template (`myalloc<int>`) must carry its
-	    // bracketed canonical spelling just like an instantiated class
-	    // (mirrors the TokenCLASS path), so partial-spec matching can later
-	    // decompose it (e.g. template-template-param deduction of
-	    // `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
-	    // namespace::name for an ordinary (non-instantiated) C++ struct.
-	    if ( pgm.instantiating_spelling_applies_here() )
-		sdd->set_canonical_spelling(pgm.instantiating_canonical_spelling);
-	    else if ( !pgm.current_namespace().empty() )
-		sdd->set_canonical_spelling(pgm.current_namespace() + "::" + name);
-	}
-	pgm.pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
-	TokenDataType *tdt_ = NULL;
-	flat_datatype_map_iter existing = pgm.datatype_map.find(name);
-	if ( existing != pgm.datatype_map.end()
-	  && &(*existing)->definition == sdd )
-	    tdt_ = (*existing);
-	else
-	{
-	    tdt_ = new TokenDataType(name.c_str(), *sdd);
-	    pgm.datatype_map[name] = tdt_;
-	}
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][name] = tdt_;
-	return tdt_;
+	return pgm.register_cpp_aggregate_name(name, sdd);
     };
 
     // check for __attribute__((packed)) before or after tag
@@ -30767,6 +37504,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // `final` (not `{`/`:`), declines to delegate, and the body mis-parses
     // (libstdc++ `struct _Decay_copy final`). `final` is contextual; only
     // consumed in this class-head position.
+    bool struct_head_final = false;
     if ( tn && is_contextual_identifier_token(tn)
       && contextual_identifier_name(tn) == "final"
       && pgm.tokens.size() >= 2 && pgm.tokens[1]
@@ -30774,6 +37512,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
        || pgm.tokens[1]->id() == TokenID::tkColon) )
     {
 	pgm.nextToken();           // consume 'final'
+	// Consuming it made the body parse; `final` is ALSO an answerable
+	// property ([class.pre]/4) that __is_final has to report, and this
+	// parser is about to hand the class off, so carry it across.
+	struct_head_final = true;
 	tn = pgm.peekToken();
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
@@ -30792,8 +37534,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	pgm.pushToken(class_tag);
 	bool saved_cpp_struct_class = pgm.parsing_cpp_struct_class;
 	bool saved_cpp_union_class = pgm.parsing_cpp_union_class;
+	bool saved_cpp_final_class = pgm.parsing_cpp_final_class;
 	pgm.parsing_cpp_struct_class = true;
 	pgm.parsing_cpp_union_class = is_union;
+	pgm.parsing_cpp_final_class = struct_head_final;
 	TokenCLASS class_parser;
 	TokenBase *result = NULL;
 	try
@@ -30804,10 +37548,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
 	    pgm.parsing_cpp_union_class = saved_cpp_union_class;
+	    pgm.parsing_cpp_final_class = saved_cpp_final_class;
 	    throw;
 	}
 	pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
 	pgm.parsing_cpp_union_class = saved_cpp_union_class;
+	pgm.parsing_cpp_final_class = saved_cpp_final_class;
 	return result;
     }
 
@@ -30824,15 +37570,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
-	    {
-		fwd = new DataDefSTRUCT(tag->spelling(), 0);
-		fwd->union_layout = is_union;
-		pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-		pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
-	    }
+		fwd = pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    else
+	    {
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
-	    register_cpp_aggregate_name(tag->spelling(), fwd);
+		register_cpp_aggregate_name(tag->spelling(), fwd);
+	    }
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	    // Do NOT record a pure forward declaration into top_decls: an
@@ -30851,11 +37594,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
-	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->spelling(), 0);
-	    fwd->union_layout = is_union;
-	    pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
-	    pgm.struct_map.set(scoped_struct_tag(tag->spelling()), fwd);
-	    register_cpp_aggregate_name(tag->spelling(), fwd);
+	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
@@ -30914,38 +37653,56 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = tag ? new DataDefSTRUCT(tag->spelling(), 0) : new_anon_struct();
+    // `struct X final { int x; }` never earns promotion to DataDefCLASS and so
+    // never reaches the class parser's recording arm — record it here, on the
+    // non-delegating path, or __is_final answers 0 for it.
+    if ( struct_head_final )
+	dds->struct_is_final = true;
     dds->definition_origin = aggregate_definition_origin(
 	pgm, tag ? tag->file : file);
     std::string tag_store_key = tag ? tag->spelling() : "";
     if ( tag )
     {
-	std::string scoped = scoped_struct_tag(tag->spelling());
-	if ( scoped != tag->spelling() && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
-	    tag_store_key = scoped;
-	// A nested struct defined inside a CLASS body whose bare tag already
-	// exists: qualify by the ENCLOSING CLASS so two instantiations of the
-	// same class template don't collide on a nested tag. libstdc++'s
-	// __aligned_membuf<_Tp> nests `struct _Tp2 { _Tp _M_t; };` purely for an
-	// `alignas(__alignof__(_Tp2::_M_t))` trick; monomorphizing it for both a
-	// set<string> node and a map<string,string> node re-defined `_Tp2` →
-	// "Struct '_Tp2' already defined". The enclosing class is uniquely
-	// (mangle-)named per instantiation, so this disambiguates. (cur_func_name
-	// scoping above handles the function-local case; this is its class twin.)
-	else if ( tag_store_key == tag->spelling()
-	       && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end()
-	       && !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
+	DataDefCLASS *owner = pgm.nested_aggregate_owner();
+	if ( owner )
 	{
-	    tag_store_key = pgm.class_scope_stack.back()->name + "::" + tag->spelling();
-	    // The EMITTED identity (struct tag + the `<name>___dtor` cleanup
-	    // symbol) derives from dds->name, NOT the store key. Qualifying only
-	    // the store key leaves both instantiations' nested struct named the
-	    // bare tag, so both emit the SAME `_Tp2___dtor` -> "MIR fatal error:
-	    // Repeated item declaration _Tp2___dtor" (set<string> + map<string,
-	    // string> in one TU). Rename the emitted identity too, with a C-valid
-	    // enclosing-qualified name (the store key's `::` is not a legal C
-	    // identifier). Parse-time `_Tp2::_M_t` resolution uses the store key,
-	    // not dds->name, so the rename is transparent to lookups.
-	    dds->name = pgm.class_scope_stack.back()->name + "__" + tag->spelling();
+	    tag_store_key = owner->name + "::" + tag->spelling();
+	    dds->name = owner->name + "__" + tag->spelling();
+	    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
+		? owner->name : owner->canonical_cpp_spelling();
+	    dds->set_canonical_spelling(owner_spelling + "::" + tag->spelling());
+	}
+	else
+	{
+	    std::string scoped = pgm.scoped_struct_tag(tag->spelling());
+	    if ( scoped != tag->spelling()
+	      && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
+		tag_store_key = scoped;
+	    // Sibling-NAMESPACE same-tag definitions (namespace A { struct S{}; }
+	    // namespace B { struct S{}; }): the bare tag names a COMPLETE struct
+	    // from a DIFFERENT scope — qualify the store key by the namespace and
+	    // rename the emitted identity. Qualified lookup is served per-namespace
+	    // by register_cpp_aggregate_name; an incomplete existing entry is this
+	    // scope's own forward declaration and completes in place as before.
+	    if ( tag_store_key == tag->spelling()
+	      && !pgm.current_namespace().empty() )
+	    {
+		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+		std::string here_spelling =
+		    pgm.current_namespace() + "::" + tag->spelling();
+		if ( prior_sd && prior_sd->is_complete
+		  && prior_sd->canonical_cpp_spelling() != here_spelling )
+		{
+		    tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
+		    std::string ns_flat = pgm.current_namespace();
+		    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
+			if ( ns_flat[fi] == ':' )
+			    ns_flat[fi] = '_';
+		    dds->name = ns_flat + "__" + tag->spelling();
+		}
+	    }
 	}
     }
     dds->union_layout = is_union;
@@ -30960,6 +37717,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( explicit_align > dds->tag_explicit_align )
 	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
+
+    // Nested TYPE declarations seen in this body. A nested type makes the
+    // enclosing aggregate a SCOPE, and only a DataDefCLASS can be one
+    // (type_aliases / enclosing_class live there) — so it joins the object
+    // member and the NSDMI as a feature a struct EARNS class-hood from, on
+    // exactly the principle stated at the promotion site: the keyword does not
+    // decide struct-vs-class, the contents do. Registered as scope entries
+    // AFTER promotion, since that is when the object that persists exists.
+    // Without this, `struct Outer { struct Inner {...}; };` parsed fine and
+    // then `Outer::Inner` — as a type OR as a `::` qualifier — reported
+    // "Unknown namespace 'Outer'", while the identical body spelled `class`
+    // worked.
+    std::vector<std::pair<std::string, DataDef *> > nested_type_decls;
 
     // Thin forwarder to the shared Program::parse_bitfield_width (also used by
     // the class body parser). Storage size is a pure function of the member
@@ -30993,7 +37763,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE) )
+	            || tn->id() == TokenID::tkVOLATILE
+	            // `mutable` storage-class-specifier on a member
+	            // ([dcl.stc]/9) — a reserved tkCPPKEYWORD in C++ modes
+	            // (never matches a C identifier spelled "mutable"). The
+	            // class-body member loop already consumes it; this is the
+	            // struct/union twin (libc++ __functional/function.h:484:
+	            // `mutable char __small[sizeof(void*) * 2];`).
+	            || (tn->id() == TokenID::tkCPPKEYWORD
+	             && contextual_identifier_name(tn) == "mutable")) )
 	{
 	    pgm.nextToken(); // consume qualifier
 	    tn = pgm.peekToken();
@@ -31023,6 +37801,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			// resolver searches all of these; NULL still errors here.
 			pgm.nextToken(); // consume the leading identifier
 			mtype = pgm.resolve_declared_type_token(tn, true, true);
+			// [class]p2 injected-class-name: inside `struct node
+			// { ... }` the struct's OWN name is a type in C++
+			// without the `struct` keyword — the same in-progress
+			// type the pre-registered tag serves for the
+			// elaborated `struct node *next;` spelling below. C
+			// has no injected name and keeps requiring the
+			// keyword.
+			if ( !mtype && !pgm.is_c_mode() && tag
+			  && tname == tag->spelling() )
+			    mtype = new TokenDataType(dds->name.c_str(), *dds);
 			if ( !mtype )
 			    pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
 		    }
@@ -31076,10 +37864,25 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			std::string tname = ((TokenIdent *)tn)->spelling();
 			flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-			if ( tdmi == pgm.datatype_map.end() )
-			    pgm.Throw(tn) << "Expecting type in anonymous struct definition, got '" << tname << "'" << flush;
-			pgm.nextToken();
-			inner_type = (*tdmi);
+			if ( tdmi != pgm.datatype_map.end() )
+			{
+			    pgm.nextToken();
+			    inner_type = (*tdmi);
+			}
+			else
+			{
+			    // Same fall-through as the named-member arm above:
+			    // the one shared resolver handles ENCLOSING-class
+			    // aliases ([basic.scope.class] — libc++
+			    // basic_string's __rep wraps `__long`/`__short` in
+			    // an anonymous union whose members spell the
+			    // enclosing template's `size_type`), qualified
+			    // types, and template-ids. NULL still errors here.
+			    pgm.nextToken();
+			    inner_type = pgm.resolve_declared_type_token(tn, true, true);
+			    if ( !inner_type )
+				pgm.Throw(tn) << "Expecting type in anonymous struct definition, got '" << tname << "'" << flush;
+			}
 		    }
 		    else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 		    {
@@ -31103,7 +37906,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( !inner_tag || inner_tag->type() != TokenType::ttIdentifier )
 				pgm.Throw(inner_tag ? inner_tag : tn) << "Expecting struct name" << flush;
 			    std::string sname = ((TokenIdent *)inner_tag)->spelling();
-			    datadef_map_citer sdmi = pgm.struct_map.find(sname);
+			    datadef_map_citer sdmi = find_visible_struct_tag(sname);
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 			    {
 				DataDefSTRUCT *nested = NULL;
@@ -31322,7 +38125,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.Throw(tn ? tn : loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		pgm.nextToken(); // consume '}'
 		inner->is_complete = true; // a `{ ... }` body was parsed
-		inner->finalize();
+		inner->finalize(pgm.presents_as_cpp());
 		// B3 arena write-through: a nested DATA-ONLY aggregate (named
 		// `struct T {...} t;` or anonymous-typed `struct {...} m;`) completes
 		// HERE and never reaches the TokenSTRUCT/TokenCLASS registration hooks
@@ -31349,7 +38152,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( stag->type() != TokenType::ttIdentifier )
 		    pgm.Throw(stag) << "Expecting struct name" << flush;
 		std::string sname = ((TokenIdent *)stag)->spelling();
-		datadef_map_citer sdmi = pgm.struct_map.find(sname);
+		datadef_map_citer sdmi = find_visible_struct_tag(sname);
 		// A method-bearing nested struct (C++ `struct Inner { void f(){} } m;`)
 		// must be parsed by the one class-body parser, not the data-only
 		// nested-aggregate parser. Delegate the DEFINITION to TokenCLASS in
@@ -31390,6 +38193,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			pgm.Throw(stag) << "Nested class '" << sname
 			    << "' not registered by class parser" << flush;
 		    mtype = new TokenDataType(sname.c_str(), *ndmi->second);
+		    nested_type_decls.push_back(
+			std::make_pair(sname, ndmi->second));
 		}
 		else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 		{
@@ -31419,6 +38224,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // so it is emitted first.
 		    record_struct(inner, stag);
 		    mtype = new TokenDataType(sname.c_str(), *inner);
+		    nested_type_decls.push_back(std::make_pair(sname, inner));
 		}
 		else
 		{
@@ -31455,10 +38261,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    member_typedef_alias = mtype->spelling();
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
-		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
-			|| pgm.peekToken()->id() == TokenID::tkVOLATILE
-			|| pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-		    pgm.nextToken();
+		pgm.skip_cv_qualifier_tokens();
 		// consume __attribute__((...)) after type — extract aligned(N)
 		// for struct member alignment (e.g. `int __attribute__((aligned(8))) a;`)
 		size_t member_align = 0;
@@ -31483,10 +38286,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 
 		    // skip trailing const/restrict qualifiers (e.g. `char const *p;`)
-		    while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
-			    || pgm.peekToken()->id() == TokenID::tkVOLATILE
-			    || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-			pgm.nextToken();
+		    pgm.skip_cv_qualifier_tokens();
 
 		    // expect member name
 		    tn = pgm.nextToken();
@@ -31703,7 +38503,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( explicit_align > dds->tag_explicit_align )
 	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
-    dds->finalize(); // round up size to struct alignment
+    dds->finalize(pgm.presents_as_cpp()); // round up size; C++ empty aggregate => 1
 
     // A struct that contains an OBJECT member by value is — per C++ — a
     // NON-TRIVIAL class: those members must be
@@ -31728,7 +38528,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// structs that actually carry an `= init`), so it keeps trivial C structs
 	// untouched.
 	bool has_default_init = !dds->member_default_inits.empty();
-	if ( ( has_object_member || has_default_init ) && !dynamic_cast<DataDefCLASS *>(dds) ) {
+	// A nested TYPE is the third such feature. It makes the aggregate a
+	// SCOPE, and a scope is a DataDefCLASS thing — type_aliases and
+	// enclosing_class have no DataDefSTRUCT equivalent, and
+	// resolve_expression_class_scope ends in a dynamic_cast<DataDefCLASS *>.
+	// A struct with no nested type is untouched, so trivial C structs stay
+	// plain DataDefSTRUCTs exactly as before.
+	bool has_nested_type = !nested_type_decls.empty();
+	if ( ( has_object_member || has_default_init || has_nested_type )
+	  && !dynamic_cast<DataDefCLASS *>(dds) ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
 	    if ( was_pre_registered && tag )
@@ -31739,6 +38547,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // refers to the class for the rest of this function (registration/typedef/return).
 	    dds = ddc;
 	}
+	// Now that `dds` is final, publish the nested types as scope members
+	// ([class.nest]). Done here rather than at each nested declaration
+	// because the enclosing object only becomes a DataDefCLASS above.
+	if ( DataDefCLASS *scope = dynamic_cast<DataDefCLASS *>(dds) )
+	    for ( size_t i = 0; i < nested_type_decls.size(); ++i )
+	    {
+		if ( !nested_type_decls[i].second )
+		    continue;
+		pgm.set_class_type_alias(scope, nested_type_decls[i].first,
+					 nested_type_decls[i].second);
+		if ( DataDefCLASS *nested =
+			dynamic_cast<DataDefCLASS *>(nested_type_decls[i].second) )
+		    if ( !nested->enclosing_class )
+			nested->enclosing_class = scope;
+	    }
     }
 
     // register the struct type
@@ -31833,14 +38656,26 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		alias_dd = pgm.getPointerType(alias_dd);
 	    }
 	    tn = pgm.nextToken();
-		if ( !tn || tn->type() != TokenType::ttIdentifier )
+		// The alias position accepts more than a plain identifier: a real
+		// header may re-typedef a name madc already registers as a base
+		// datatype (gcc's <stddef.h>: `typedef struct {...} max_align_t;`).
+		// The general typedef path already accepts ttDataType / ttKeyword
+		// here, so this path must agree — otherwise valid C fails only
+		// because the body happens to be a struct. All three token kinds
+		// derive from TokenIdent, so the cast still reaches spelling().
+		if ( !typedef_alias_spelling(tn) )
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
 		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias->spelling(), tn);
 		pgm.consume_typedef_gnu_attributes();
 		bmi = pgm.datatype_map.find(alias->spelling());
+	    // A name madc pre-registered itself is not a user declaration, so a
+	    // real header's typedef of it (gcc's <stddef.h> -> max_align_t) is a
+	    // re-registration, not a conflict. A user-vs-user redefinition still
+	    // throws, which is what this check was written to catch.
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
-	      && &(*bmi)->definition != alias_dd )
+	      && &(*bmi)->definition != alias_dd
+	      && !(*bmi)->builtin )
 		pgm.Throw(tn) << "Identifier '" << alias->spelling() << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->spelling(), *alias_dd);
 	    pgm.register_scoped_typedef(alias->spelling(), tdt);
@@ -31907,8 +38742,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkEXTERN )
 	{
 	    pgm.nextToken(); // consume extern before declarator
+	    // Scoped to THIS declaration — an unrestored set here leaked
+	    // extern-ness onto every later declaration in the TU.
+	    bool saved_extern = pgm.parsing_extern_decl;
 	    pgm.parsing_extern_decl = true;
-	    return pgm.parseDeclaration(tdt);
+	    TokenBase *decl;
+	    try { decl = pgm.parseDeclaration(tdt); }
+	    catch ( ... ) { pgm.parsing_extern_decl = saved_extern; throw; }
+	    pgm.parsing_extern_decl = saved_extern;
+	    return decl;
 	}
 	return pgm.parseDeclaration(tdt);
     }
@@ -32042,6 +38884,22 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		}
 		Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
 	    }
+	    // Unnamed bit-field padding (`int : 3;`) in the anonymous
+	    // aggregate: width only, no member name. Same dispatch tail.
+	    if ( tn && tn->id() == TokenID::tkColon )
+	    {
+		size_t pad_width = parse_bitfield_width(tn, member_dd, false, *agg);
+		agg->addBitField(std::string(), *member_dd, pad_width);
+		tn = nextToken();
+		if ( !tn )
+		    Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+		if ( tn->id() == TokenID::tkComma )
+		    continue;
+		if ( tn->id() != TokenID::tkSemi )
+		    Throw(tn) << "Expecting ';' after anonymous class aggregate member" << flush;
+		done_members = true;
+		continue;
+	    }
 	    if ( !tn || !is_contextual_identifier_token(tn) )
 		Throw(tn ? tn : loc)
 		    << "Expecting member name in anonymous class aggregate" << flush;
@@ -32076,8 +38934,20 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		}
 		member_count *= (size_t)n;
 	    }
-	    agg->addMember(member_name, *member_dd, member_count, NULL,
-		member_is_array, member_is_array ? &member_dims : NULL);
+	    // C++ bit-field member (`__alignment __alignment_ : 3;` — the
+	    // libc++ parser_std_format_spec.h anonymous union): width via the
+	    // shared parse_bitfield_width + addBitField; the ','/';' dispatch
+	    // below is common. A bit-field is never an array.
+	    if ( !member_is_array && peekToken()
+	      && peekToken()->id() == TokenID::tkColon )
+	    {
+		nextToken(); // consume ':'
+		size_t bf_width = parse_bitfield_width(tn, member_dd, true, *agg);
+		agg->addBitField(member_name, *member_dd, bf_width);
+	    }
+	    else
+		agg->addMember(member_name, *member_dd, member_count, NULL,
+		    member_is_array, member_is_array ? &member_dims : NULL);
 
 	    tn = nextToken();
 	    if ( !tn )
@@ -32109,7 +38979,7 @@ DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
     if ( !close || close->id() != TokenID::tkClBrc )
 	Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
     agg->is_complete = true;
-    agg->finalize();
+    agg->finalize(presents_as_cpp());
     return agg;
 }
 
@@ -32139,15 +39009,43 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 {
     if ( !ddc || !mvar )
 	return;
+    // MADC_BIND_PROBE also reports DECLINES: "no bind event" alone cannot
+    // separate "never called" from "early-out fired" (task #62's frozen
+    // sentry hunt).
+    static const char *bind_probe = ::getenv("MADC_BIND_PROBE");
+    bool probe_this = bind_probe && *bind_probe
+	&& ddc->name.find(bind_probe) != std::string::npos;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling().empty() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: %s\n", ddc->name.c_str(),
+		    mname.c_str(),
+		    !fd ? "no-fd" : !fd->declaration_only
+			? "not-declaration-only" : "no-canonical-spelling");
 	return;
+    }
     if ( fd->defaulted_or_deleted )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: defaulted-or-deleted\n",
+		    ddc->name.c_str(), mname.c_str());
 	return;
+    }
     if ( fd->pure_virtual )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: pure-virtual\n",
+		    ddc->name.c_str(), mname.c_str());
 	return;
+    }
     if ( !fd->emit_symbol.empty() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: already-bound %s\n",
+		    ddc->name.c_str(), mname.c_str(), fd->emit_symbol.c_str());
 	return;
+    }
     // A member madc will INSTANTIATE from a captured out-of-line definition
     // (`Class<T>::member(...) {...}` in the header — e.g. _Rb_tree::_M_lower_bound,
     // defined out-of-line in stl_tree.h) must NOT bind to the external Itanium
@@ -32158,7 +39056,16 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     // for a class madc instantiates itself — a genuinely library-provided class
     // (extern-template-declared, or vtable-owned externally-defined) keeps the
     // Itanium binding so it links against libstdc++.
-    if ( !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
+    // The map's domain is DIRECT members of a registered class TEMPLATE (the
+    // producer requires find_template(cls)); a NESTED class's members are never
+    // recorded there, and deriving the ctor/dtor probe name from tmpl_key made a
+    // nested class's ctor match its OWNER's out-of-line ctor entry
+    // (basic_ostream<...>::sentry's ctor vs basic_ostream's own — the frozen
+    // libc++ sentry trap), suppressing an Itanium bind the library genuinely
+    // exports ([temp.explicit] covers member classes). A nested class
+    // (enclosing_class set) skips the check.
+    if ( !ddc->enclosing_class
+      && !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
     {
 	size_t lt = ddc->canonical_cpp_spelling().find('<');
 	std::string tmpl_key = lt == std::string::npos
@@ -32167,15 +39074,48 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 	std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator oit =
 	    out_of_line_member_defs.find(tmpl_key);
 	if ( oit != out_of_line_member_defs.end() )
+	{
+	    // A ctor/dtor's registration name carries the INSTANCE's flat
+	    // name (`__split_buffer_int32_t_..._R`, `~__split_buffer_...`),
+	    // while the captured out-of-line definition records the
+	    // TEMPLATE's own name (`__split_buffer`, `~__split_buffer`) —
+	    // methods matched, ctors/dtors never did, so every template
+	    // instance's ctor/dtor bound the external Itanium symbol that
+	    // nothing exports (vecpb1's undefined
+	    // _ZNSt3__114__split_bufferIiRNS_9allocatorIiEEED1Ev). Compare
+	    // in the template's spelling for those kinds.
+	    std::string want = mname;
+	    if ( kind == CppSymKind::Ctor || kind == CppSymKind::Dtor )
+	    {
+		size_t sep = tmpl_key.rfind("::");
+		std::string src = sep == std::string::npos
+		    ? tmpl_key : tmpl_key.substr(sep + 2);
+		want = (kind == CppSymKind::Dtor ? "~" + src : src);
+	    }
 	    for ( size_t oi = 0; oi < oit->second.size(); ++oi )
-		if ( oit->second[oi].member_name == mname )
+		if ( oit->second[oi].member_name == want )
+		{
+		    if ( probe_this )
+			fprintf(stderr, "[bind] MISS %s::%s: ool-match key='%s'"
+				" want='%s' entries=%zu\n",
+				ddc->name.c_str(), mname.c_str(),
+				tmpl_key.c_str(), want.c_str(),
+				oit->second.size());
 		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
+		}
+	}
     }
     // A signature whose spelling array is absent or misaligned (a restore or
     // serve gap) must not mangle: the fabricated name drops parameters and can
     // collide with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
     if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: spelling-misalign %zu/%zu\n",
+		    ddc->name.c_str(), mname.c_str(),
+		    fd->param_cpp_spellings.size(), fd->parameters.size());
 	return;
+    }
     // Parameter spellings, captured at parse time, excluding slot 0 only when
     // it is the hidden __this. A static method has no hidden slot, so all of its
     // parameters participate in the ABI name.
@@ -32202,6 +39142,192 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     }
     DBG(std::cout << "bind_declared_cpp_symbol(): " << cls << "::" << mname
 	<< " -> " << fd->emit_symbol << std::endl);
+    // Env-gated probe (MADC_BIND_PROBE=<substr>): every Itanium bind whose
+    // class matches — the mangled-direct vs compile-from-headers diagnostic
+    // (task #44's __split_buffer dtor hunt).
+    {
+	static const char *bp = ::getenv("MADC_BIND_PROBE");
+	if ( bp && *bp && ddc->name.find(bp) != std::string::npos )
+	{
+	    fprintf(stderr, "[bind] %s::%s -> %s (kind=%d declonly=%d"
+		    " extern_tmpl=%d ext_def=%d)\n",
+		    ddc->name.c_str(), mname.c_str(), fd->emit_symbol.c_str(),
+		    (int)kind, (int)fd->declaration_only,
+		    (int)ddc->is_extern_template_instantiated,
+		    (int)ddc->is_externally_defined());
+	    size_t lt2 = ddc->canonical_cpp_spelling().find('<');
+	    std::string k2 = lt2 == std::string::npos
+		? ddc->canonical_cpp_spelling()
+		: ddc->canonical_cpp_spelling().substr(0, lt2);
+	    std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator
+		o2 = out_of_line_member_defs.find(k2);
+	    fprintf(stderr, "[bind]   ool key='%s' found=%d", k2.c_str(),
+		    o2 != out_of_line_member_defs.end());
+	    if ( o2 != out_of_line_member_defs.end() )
+		for ( size_t oi = 0; oi < o2->second.size() && oi < 8; ++oi )
+		    fprintf(stderr, " '%s'", o2->second[oi].member_name.c_str());
+	    fprintf(stderr, "\n");
+	}
+    }
+}
+
+// C++20 abbreviated function template ([dcl.fct]/18): an `auto` placeholder
+// in a parameter-declaration makes the declaration a function TEMPLATE with
+// one INVENTED type parameter per placeholder, in order of appearance —
+// g++'s own synthesized-parameter model. Desugared at the TOKEN level: the
+// unconsumed declaration's placeholders are rewritten to invented
+// identifiers and a synthesized `template<class[...] __madc_iparamN, ...>`
+// head is pushed back, so the EXISTING template machinery (member-template
+// capture, namespace fn-template retention, tsubst instantiation) owns
+// everything downstream — no parallel abbreviated lane (parse-once rule).
+// An `auto` at parameter depth triggers; a `decltype(auto)` operand does
+// not. The motivating shape is libc++'s __ranges/dangling.h:29
+// `constexpr dangling(auto&&...) noexcept {}` under --std=c++20.
+// KNOWN non-covered edge: an `auto` inside a default-argument LAMBDA's own
+// parameter list belongs to the lambda and would mis-trigger here.
+// Returns true when it desugared — the stream head is then tkTEMPLATE.
+bool Program::desugar_abbreviated_fn_template()
+{
+    if ( !cpp_keyword_active(STD_CPP20) )
+	return false;
+    // A placeholder token spells `auto` — the lexer hands it over either as
+    // the registered datatype or as a bare identifier/keyword; all three
+    // derive TokenIdent, so one spelling probe covers them.
+    auto spells_auto = [](TokenBase *t) {
+	return t
+	    && (t->type() == TokenType::ttDataType
+	     || t->type() == TokenType::ttIdentifier
+	     || t->type() == TokenType::ttKeyword)
+	    && ((TokenIdent *)t)->spelling_is("auto");
+    };
+    // Pre-scan (indices only, nothing consumed): walk the upcoming
+    // declaration to its top-level terminator (`;`, or the body/aggregate
+    // `{`, or a stray `}`); remember whether an `auto` placeholder sits at
+    // parameter depth. The common no-placeholder case bails here for the
+    // cost of one bounded walk.
+    DelimDepth d;
+    size_t i = 0, guard = 0;
+    size_t end = tokens.size();
+    bool found = false;
+    while ( i < tokens.size() && ++guard < 4096 )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    return false;
+	if ( d.top() && (t->id() == TokenID::tkSemi
+		      || t->id() == TokenID::tkOpBrc
+		      || t->id() == TokenID::tkClBrc) )
+	{
+	    end = i;
+	    break;
+	}
+	if ( d.paren >= 1 && spells_auto(t) )
+	{
+	    bool decltype_operand = i >= 2 && tokens[i-1] && tokens[i-2]
+		&& tokens[i-1]->id() == TokenID::tkOpBrk
+		&& is_contextual_identifier_token(tokens[i-2])
+		&& is_decltype_identifier(
+			contextual_identifier_name(tokens[i-2]));
+	    if ( !decltype_operand )
+		found = true;
+	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+    }
+    if ( !found || end >= tokens.size() )
+	return false;
+    // Consume the declaration head [0, end] (terminator included; a `{`
+    // body stays in the stream) and rewrite each placeholder to an invented
+    // identifier, recording per-placeholder PACK-ness: [dcl.fct]/18 spells a
+    // pack as `auto...` / `auto&&...` — the ellipsis after the placeholder's
+    // ptr/ref/cv ops marks the invented parameter a pack, and the ellipsis
+    // itself STAYS (it is the pack-expansion spelling of the rewritten
+    // parameter-declaration).
+    std::vector<TokenBase *> decl;
+    decl.reserve(end + 1);
+    for ( size_t k = 0; k <= end && !tokens.empty(); ++k )
+	decl.push_back(nextToken());
+    struct Invented { std::string name; bool pack; };
+    std::vector<Invented> invented;
+    DelimDepth rd;
+    for ( size_t k = 0; k < decl.size(); )
+    {
+	TokenBase *t = decl[k];
+	if ( rd.paren >= 1 && spells_auto(t) )
+	{
+	    bool decltype_operand = k >= 2 && decl[k-1] && decl[k-2]
+		&& decl[k-1]->id() == TokenID::tkOpBrk
+		&& is_contextual_identifier_token(decl[k-2])
+		&& is_decltype_identifier(
+			contextual_identifier_name(decl[k-2]));
+	    if ( !decltype_operand )
+	    {
+		Invented inv;
+		inv.name = "__madc_iparam"
+			 + std::to_string(invented.size() + 1);
+		size_t j = k + 1;
+		while ( j < decl.size() && decl[j]
+		     && (decl[j]->id() == TokenID::tkMul
+		      || decl[j]->id() == TokenID::tkBand
+		      || decl[j]->id() == TokenID::tkLand
+		      || decl[j]->id() == TokenID::tkCONST
+		      || decl[j]->id() == TokenID::tkVOLATILE) )
+		    ++j;
+		inv.pack = j + 2 < decl.size()
+		    && decl[j]   && decl[j]->id()   == TokenID::tkDot
+		    && decl[j+1] && decl[j+1]->id() == TokenID::tkDot
+		    && decl[j+2] && decl[j+2]->id() == TokenID::tkDot;
+		TokenIdent *rep = new TokenIdent(inv.name);
+		rep->file = t->file;
+		rep->line = t->line;
+		rep->column = t->column;
+		decl[k] = rep;
+		invented.push_back(inv);
+	    }
+	}
+	size_t n = delim_scan_step(decl, k, rd);
+	k += n ? n : 1;
+    }
+    if ( invented.empty() )
+    {
+	// Pre-scan and rewrite disagreed (guarded operand only) — restore
+	// the stream untouched.
+	for ( size_t k = decl.size(); k-- > 0; )
+	    pushToken(decl[k]);
+	return false;
+    }
+    // Push back LIFO: the rewritten declaration first (reverse), then the
+    // synthesized head (reverse), so the stream reads
+    // `template < class[...] __madc_iparam1, ... > <declaration...>`.
+    for ( size_t k = decl.size(); k-- > 0; )
+	pushToken(decl[k]);
+    std::vector<TokenBase *> head;
+    TokenBase *site = decl[0];
+    auto stamp = [&](TokenBase *nt2) {
+	nt2->file = site->file;
+	nt2->line = site->line;
+	nt2->column = site->column;
+	head.push_back(nt2);
+    };
+    stamp(new TokenTEMPLATE());
+    stamp(new TokenLT());
+    for ( size_t p = 0; p < invented.size(); ++p )
+    {
+	if ( p )
+	    stamp(new TokenComma());
+	stamp(new TokenCLASS());
+	if ( invented[p].pack )
+	{
+	    stamp(new TokenDot());
+	    stamp(new TokenDot());
+	    stamp(new TokenDot());
+	}
+	stamp(new TokenIdent(invented[p].name));
+    }
+    stamp(new TokenGT());
+    for ( size_t k = head.size(); k-- > 0; )
+	pushToken(head[k]);
+    return true;
 }
 
 // Make an overload-unique internal symbol for a member/ctor: the canonical
@@ -32269,6 +39395,27 @@ void Program::enqueue_deferred_function_body(Variable *var,
     deferred_function_body_sink->push_back(body);
 }
 
+// Consume a braced-init-list from the stream and append its SCALARS to `args`,
+// flattening nested braces. `Q q = { {1,2}, 3 }` and `: q{ {1,2}, 3 }` must
+// produce the same argument sequence — the declaration path already flattens,
+// and the field-wise filler in the CIR builder consumes one flat sequence.
+void Program::collect_braced_init_args(std::vector<TokenBase *> &args)
+{
+    nextToken();				// the '{'
+    while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
+    {
+	if ( peekToken()->id() == TokenID::tkOpBrc )
+	    collect_braced_init_args(args);
+	else
+	    args.push_back(parseExpression(nextToken(), true));
+	if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    nextToken();
+    }
+    if ( !peekToken() )
+	Throw << "Unexpected end of input in braced initializer" << flush;
+    nextToken();				// the '}'
+}
+
 // Parse a constructor mem-initializer-list from the token stream (positioned
 // after the ':') into func->ctor_initializers, consuming through the body '{'.
 // Returns the '{' token. Called eagerly for out-of-class ctor definitions and
@@ -32283,21 +39430,53 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	TokenBase *name_tb = nextToken();
 	if ( !name_tb )
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
-	if ( !is_contextual_identifier_token(name_tb) )
-	    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
 	FuncDef::CtorInitializer init;
-	init.name = contextual_identifier_name(name_tb);
+	if ( name_tb->type() == TokenType::ttDataType )
+	    // A mem-initializer-id may designate a BASE CLASS
+	    // ([class.base.init]), and a base named by a template parameter
+	    // arrives from the instantiation replay as a TYPE token — the
+	    // substitution replaced the param-name identifier
+	    // (`vcomp : private C { vcomp(C c) : C(c) {} }`, libc++'s
+	    // __map_value_compare : private _Compare). Store the type's name;
+	    // member-or-base validation stays downstream, exactly as it is
+	    // for the identifier arm.
+	    init.name = ((TokenDataType *)name_tb)->definition.name;
+	else if ( !is_contextual_identifier_token(name_tb) )
+	    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
+	else
+	    init.name = contextual_identifier_name(name_tb);
+	std::vector<TokenBase *> id_toks;
+	id_toks.push_back(name_tb->clone());
 	while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
-	    nextToken();
+	    id_toks.push_back(nextToken()->clone());
 	    TokenBase *part = nextToken();
 	    if ( !part || !is_contextual_identifier_token(part) )
 		Throw(part ? part : name_tb)
 		    << "Expecting qualified initializer name after '::'" << flush;
 	    init.name += "::" + contextual_identifier_name(part);
+	    id_toks.push_back(part->clone());
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
-	    skip_template_id_suffix();
+	{
+	    // A TEMPLATE-ID initializer name: `elem<T1, 0>(t1)`. Discarding the
+	    // suffix stored the same BARE name for every same-template base, so
+	    // find_base_initializer handed the FIRST entry's args to EVERY such
+	    // base — libc++'s __compressed_pair ctor mem-inits BOTH its
+	    // __compressed_pair_elem bases, and the second was constructed from
+	    // __t1 (silently, or "no matching constructor" when the types
+	    // disagree). Resolve the full template-id to its concrete class and
+	    // store THAT name (ctor_initializer_names_class matches it exactly,
+	    // and only against the right base). A DEPENDENT parse keeps the bare
+	    // name — the pattern's initializers are re-derived per
+	    // instantiation, where the substituted spelling resolves.
+	    skip_template_id_suffix(&id_toks);
+	    if ( !dependent_parse_in_progress && !class_pattern_capture_in_progress )
+		if ( DataDef *dd = resolve_type_token_range(id_toks, 0,
+							    id_toks.size()) )
+		    if ( dynamic_cast<DataDefCLASS *>(dd) )
+			init.name = dd->name;
+	}
 	TokenBase *open = nextToken();
 	if ( !open || (open->id() != TokenID::tkOpBrk
 		    && open->id() != TokenID::tkOpBrc) )
@@ -32305,16 +39484,67 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 		<< "Expecting '(' or '{' in constructor initializer" << flush;
 	TokenID close_id = open->id() == TokenID::tkOpBrk
 	    ? TokenID::tkClBrk : TokenID::tkClBrc;
+	init.braced = open->id() == TokenID::tkOpBrc;
 	while ( peekToken() && peekToken()->id() != close_id )
 	{
+	    // A nested braced-init-list ARGUMENT — `q{ {1,2}, 3 }`. The
+	    // declaration path flattens `Q q = { {1,2}, 3 };` to the scalar
+	    // sequence 1,2,3 and fills fields in declaration order; flatten the
+	    // same way here so a member initializer and a declaration of the
+	    // same aggregate agree. Previously parseExpression was handed the
+	    // inner `{`, which it does not parse, and the list fell apart into
+	    // "Expecting member or base name".
+	    if ( peekToken()->id() == TokenID::tkOpBrc )
+	    {
+		collect_braced_init_args(init.args);
+		TokenBase *bsep = peekToken();
+		if ( bsep && bsep->id() == TokenID::tkComma )
+		{
+		    nextToken();
+		    continue;
+		}
+		if ( !bsep || bsep->id() == close_id )
+		    break;
+		Throw(bsep) << "Expecting ',' or '"
+			    << (close_id == TokenID::tkClBrk ? ")" : "}")
+			    << "' in constructor initializer for '" << init.name
+			    << "'" << flush;
+	    }
 	    init.args.push_back(parseExpression(nextToken(), true));
-	    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    TokenBase *sep = peekToken();
+	    if ( sep && sep->id() == TokenID::tkComma )
+	    {
 		nextToken();
+		continue;
+	    }
+	    if ( !sep || sep->id() == close_id )
+		break;
+	    // Neither a separator nor the close: parseExpression stopped part
+	    // way through this argument. Looping again would take the
+	    // remainder as a SEPARATE argument and initialize the member from
+	    // the wrong one — silently, exit 0. Every other comma-separated
+	    // list in this file validates its separator the same way
+	    // ("Expecting ',' or '>' in T<...>"); this one did not, which is
+	    // what made an under-consumption invisible instead of loud.
+	    Throw(sep) << "Expecting ',' or '"
+		       << (close_id == TokenID::tkClBrk ? ")" : "}")
+		       << "' in constructor initializer for '" << init.name
+		       << "'" << flush;
 	}
 	if ( !peekToken() || peekToken()->id() != close_id )
 	    Throw(open) << "Unexpected end of constructor initializer arguments" << flush;
 	nextToken();
 	func->ctor_initializers.push_back(init);
+	// [temp.variadic]/5: a mem-initializer may carry a pack-expansion `...`,
+	// the twin of the base-specifier case in TokenCLASS::parse(). The expansion
+	// itself has already happened at the token level
+	// (instantiate_template_use replicates the template-id once per element), so
+	// what arrives here is one real initializer per element with the dots as
+	// residue. Without this the list dies on "Expecting ',' or function body
+	// after constructor initializer" — libc++'s
+	// `__tuple_impl(...) : __tuple_leaf<_Indx,_Tp>(...)...` is this shape.
+	if ( peekToken() && peekToken()->id() == TokenID::tkDot )
+	    consume_ellipsis();
 	nt = nextToken();
 	if ( !nt )
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
@@ -32324,20 +39554,18 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    break;
 	Throw(nt) << "Expecting ',' or function body after constructor initializer" << flush;
     }
-    // A delegating / base-class initializer `Name(args)` constructs an object of
-    // type Name. If Name is a class with a member-template constructor — e.g.
-    // std::pair's piecewise ctor delegating to its private INDEXED ctor
-    // `: pair(__first, __second, _Build_index_tuple<...>::__type(), ...)` — that
-    // ctor must be INSTANTIATED now, at parse time, exactly like the placement-new
-    // construction path (TokenNEW). Without it the delegating call resolves to no
-    // ctor at CIR time ("no matching constructor"). A member initializer's name is
-    // not a class, so resolve_named_datadef yields a non-class and it is skipped;
-    // instantiate_member_ctor_template_for_construction is idempotent and a fast
-    // no-op for a class with no member-template ctor (map<int,int> W2).
-    for ( const FuncDef::CtorInitializer &ci : func->ctor_initializers )
-	if ( DataDef *dd = resolve_named_datadef(ci.name) )
-	    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
-		instantiate_member_ctor_template_for_construction(cls, ci.args);
+    // A delegating / base-class initializer `Name(args)` may need Name's
+    // member-template ctor instantiated — but NOT eagerly here: overload
+    // resolution runs FIRST ([over.match.best] — a matching non-template
+    // ctor beats the template on tie-break), and only the SELECTED ctor's
+    // body instantiates ([temp.inst]). Eager instantiation materialized the
+    // LOSING candidate's body for args the template was never chosen for
+    // (elem<int,0> from a tag type: `val = *u` int <- struct, a c2mir check
+    // error in a body g++ never creates). select_or_instantiate_ctor (the
+    // CIR-side owner, slice-4b) already instantiates lazily when NO concrete
+    // ctor matches — the delegating pair-piecewise case this loop was added
+    // for is covered there; keeping both was a parallel implementation with
+    // the wrong semantics in this one.
     return nt;
 }
 
@@ -32662,8 +39890,18 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    // FuncDef), so a non-void out-of-line member (`iterator insert(...)`)
 	    // would have its return silently rewritten to void. A ctor's funcdef
 	    // returns ddVOID, so the defaulted-ctor caller is unchanged.
+	    // And with the member's REAL static-ness ([class.static.mfct] — the
+	    // out-of-line def cannot repeat `static`, so it must come from the
+	    // in-class declaration's vfSTATIC): defaulting to instance prepends a
+	    // hidden `__this`, shifting every parameter one slot and dropping the
+	    // LAST one — libc++'s __num_put<char>::__widen_and_group_int lost
+	    // `const locale& __loc` ("use of undeclared identifier '__loc'").
+	    // The member-template lane already derives this (45458's
+	    // static_member_method); this is the plain-deferred twin.
 	    FuncDef *mfd = dynamic_cast<FuncDef *>(body.var->type);
-	    parseFunction(mfd ? mfd->return_value_type() : (DataDef &)ddVOID, parse_id, owner);
+	    parseFunction(mfd ? mfd->return_value_type() : (DataDef &)ddVOID, parse_id, owner,
+			  NULL, false, std::string(),
+			  (body.var->flags & vfSTATIC) != 0);
 	}
 	catch(...)
 	{
@@ -33031,15 +40269,6 @@ static bool member_template_param_intro(TokenBase *t)
     return n == "typename" || n == "class";
 }
 
-static bool token_is_ellipsis_at(const TokenStream &toks,
-				 size_t i, size_t end)
-{
-    return i + 2 < end
-	&& toks[i] && toks[i]->id() == TokenID::tkDot
-	&& toks[i + 1] && toks[i + 1]->id() == TokenID::tkDot
-	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
-}
-
 static bool template_list_close_index(const TokenStream &toks,
 				      size_t lt_idx, size_t &close_idx)
 {
@@ -33079,31 +40308,17 @@ static bool template_list_close_index(const TokenStream &toks,
 static bool template_param_slice_has_default(
 	const TokenStream &toks, size_t begin, size_t end)
 {
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
-    for ( size_t i = begin; i < end; ++i )
+    DelimDepth d;
+    for ( size_t i = begin; i < end; )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkAssign
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	if ( t->id() == TokenID::tkAssign
+	  && !d.angle && !d.paren && !d.square )
 	    return true;
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return false;
 }
@@ -33128,35 +40343,20 @@ static std::string template_param_name_from_slice(
 	return std::string();
     }
 
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
+    DelimDepth d;
     std::string last_name;
-    for ( size_t i = begin; i < end; ++i )
+    for ( size_t i = begin; i < end; )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkAssign
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	bool outside = !d.angle && !d.paren && !d.square;
+	if ( outside && t->id() == TokenID::tkAssign )
 	    break;
-	else if ( angle == 0 && paren == 0 && square == 0
-	       && is_contextual_identifier_token(t) )
+	if ( outside && is_contextual_identifier_token(t) )
 	    last_name = contextual_identifier_name(t);
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return last_name;
 }
@@ -33166,9 +40366,7 @@ static bool collect_defaulted_template_param_names(
 	std::set<std::string> &names)
 {
     size_t param_begin = begin;
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
+    DelimDepth d;
     for ( size_t i = begin; i <= end; ++i )
     {
 	bool at_end = i == end;
@@ -33176,23 +40374,11 @@ static bool collect_defaulted_template_param_names(
 	bool split = at_end;
 	if ( t )
 	{
-	    if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-		++angle;
-	    else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-		--angle;
-	    else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-		angle = angle > 1 ? angle - 2 : 0;
-	    else if ( t->id() == TokenID::tkOpBrk )
-		++paren;
-	    else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-		--paren;
-	    else if ( t->id() == TokenID::tkOpSqr )
-		++square;
-	    else if ( t->id() == TokenID::tkClSqr && square > 0 )
-		--square;
-	    else if ( t->id() == TokenID::tkComma
-		   && angle == 0 && paren == 0 && square == 0 )
+	    if ( t->id() == TokenID::tkComma
+	      && !d.angle && !d.paren && !d.square )
 		split = true;
+	    else
+		d.update(t);
 	}
 	if ( !split )
 	    continue;
@@ -33212,46 +40398,32 @@ static bool collect_defaulted_template_param_names(
 static size_t member_template_decl_end(const TokenStream &toks,
 				       size_t start)
 {
-    int angle = 0;
-    int paren = 0;
-    int square = 0;
-    for ( size_t i = start; i < toks.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = start; i < toks.size(); )
     {
 	TokenBase *t = toks[i];
 	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
-	    ++angle;
-	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
-	    --angle;
-	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
-	    --paren;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 )
-	    --square;
-	else if ( t->id() == TokenID::tkSemi
-	       && angle == 0 && paren == 0 && square == 0 )
+	    { ++i; continue; }
+	bool outside = !d.angle && !d.paren && !d.square;
+	if ( outside && t->id() == TokenID::tkSemi )
 	    return i;
-	else if ( t->id() == TokenID::tkOpBrc
-	       && angle == 0 && paren == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkOpBrc )
 	{
-	    int braces = 1;
-	    for ( size_t j = i + 1; j < toks.size(); ++j )
+	    // The body: run to its matching '}' on the shared tracker.
+	    DelimDepth b;
+	    for ( size_t j = i; j < toks.size(); )
 	    {
 		if ( !toks[j] )
-		    continue;
-		if ( toks[j]->id() == TokenID::tkOpBrc )
-		    ++braces;
-		else if ( toks[j]->id() == TokenID::tkClBrc && --braces == 0 )
-		    return j;
+		    { ++j; continue; }
+		size_t bn = delim_scan_step(toks, j, b);
+		j += bn ? bn : 1;
+		if ( !b.brace )
+		    return j - 1;
 	    }
 	    return toks.size();
 	}
+	size_t n = delim_scan_step(toks, i, d);
+	i += n ? n : 1;
     }
     return toks.size();
 }
@@ -33449,7 +40621,15 @@ TokenDataType *Program::register_class_shell(DataDefCLASS *ddc,
     if ( owner )
 	set_class_type_alias(owner, source_name, ddc);
     if ( !current_namespace().empty() )
+    {
 	namespace_datatype_map[current_namespace()][registered_name] = tdt;
+	// A namespace-collision re-key (registered_name = ns__source) must
+	// still serve qualified lookup under the SOURCE name (B::C finds the
+	// re-keyed class). Owner-nested classes are excluded: aliasing a
+	// nested Owner::C to ns::C would bind the wrong scope.
+	if ( registered_name != source_name && !owner )
+	    namespace_datatype_map[current_namespace()][source_name] = tdt;
+    }
     if ( register_source_alias )
 	register_scoped_typedef(source_name, tdt);
     set_class_type_alias(ddc, source_name, ddc);
@@ -33546,6 +40726,16 @@ void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
 {
     if ( !ddc || !mvar )
 	return;
+    // MADC_BIND_PROBE also traces registration ENTRY: whether a member ever
+    // reaches this registrar, and with which bind_cpp_symbol, is the question
+    // a silent downstream "no bind event" cannot answer.
+    {
+	static const char *bp = ::getenv("MADC_BIND_PROBE");
+	if ( bp && *bp && ddc->name.find(bp) != std::string::npos )
+	    fprintf(stderr, "[reg] %s::%s kind=%d bind=%d\n",
+		    ddc->name.c_str(), spec.display_name.c_str(),
+		    (int)spec.kind, (int)spec.bind_cpp_symbol);
+    }
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( fd )
 	fd->method_display_name = spec.display_name;
@@ -33624,6 +40814,36 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
 	forest_arena_record_aggregate(ddc);
 }
 
+// A defaulted/deleted special-member CONSTRUCTOR is dropped from the class's
+// ctor overload set at parse (like every `= default`/`= delete` member) —
+// record what was dropped so __is_constructible answers faithfully: a deleted
+// default/copy ctor makes the class not so-constructible; an explicitly
+// defaulted default ctor keeps it default-constructible beside other user
+// ctors ([class.default.ctor]). The has_deleted_copy_assign twin for ctors.
+static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
+{
+    if ( !ddc || !fd || !fd->defaulted_or_deleted )
+	return;
+    if ( fd->parameters.size() <= 1 )	// param 0 is the hidden __this
+    {
+	if ( fd->is_deleted )
+	    ddc->has_deleted_default_ctor = true;
+	else
+	    ddc->has_defaulted_default_ctor = true;
+	return;
+    }
+    if ( !fd->is_deleted || fd->parameters.size() != 2 )
+	return;
+    DataDef *p = fd->parameters[1];
+    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p) )
+	if ( pr->is_reference() && pr->base_type )
+	    p = pr->base_type;
+    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(p) )
+	p = pc->base_type ? pc->base_type : p;
+    if ( p == ddc || (p && p->name == ddc->name) )
+	ddc->has_deleted_copy_ctor = true;
+}
+
 // forms:
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
@@ -33644,6 +40864,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // to THIS class only (consume it so nested members don't inherit it).
     bool union_class = pgm.parsing_cpp_union_class;
     pgm.parsing_cpp_union_class = false;
+    // Same one-class-only handoff for `final` (TokenSTRUCT::parse had to consume
+    // the token to decide to delegate). The class parser's OWN class-head arm
+    // below ORs into this for the `class X final` spelling, which arrives here
+    // with the token still on the stream.
+    bool head_final = pgm.parsing_cpp_final_class;
+    pgm.parsing_cpp_final_class = false;
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     flat_datatype_map_iter bmi;
@@ -33763,6 +40989,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
        || pgm.tokens[1]->id() == TokenID::tkColon) )
     {
 	pgm.nextToken();           // consume 'final'
+	head_final = true;         // answerable property, not just syntax
 	tn = pgm.peekToken();
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
@@ -33817,7 +41044,28 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    bool template_base_syntax =
 		pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT;
 	    DataDefCLASS *bcls = NULL;
-	    if ( TokenDataType *bdt = pgm.resolve_declared_type_token(bn, true, true) )
+	    // A base-specifier of a class DEFINITION is a committed type context:
+	    // a concrete-arg variadic template-id here (`__move_if_noexcept_cond
+	    // : __and_<...>::type`, gcc13 move.h) must really instantiate — an
+	    // opaque member-less shell leaves `::value` unfoldable (the vecbind
+	    // live/bind lane divergence). Scoped to the base-name resolution
+	    // only (never the class body — a class-wide sticky leaked into
+	    // nested member-alias parses and broke the c++20 legs), and OFF
+	    // during a pattern-capture parse, whose dependent-surface bases
+	    // must keep their opaque routing (see the chain note below).
+	    bool base_vri = !pgm.class_pattern_capture_in_progress;
+	    bool saved_vri = pgm.allow_variadic_real_inst;
+	    if ( vri_debug_enabled() )
+		fprintf(stderr, "[vriprobe] base-clause class=%s base=%s arm=%d dep=%d cap=%d\n",
+			tag ? tag->spelling() : "?",
+			source_base_name.c_str(), (int)base_vri,
+			(int)pgm.dependent_parse_in_progress,
+			(int)pgm.class_pattern_capture_in_progress);
+	    if ( base_vri )
+		pgm.allow_variadic_real_inst = true;
+	    TokenDataType *base_bdt = pgm.resolve_declared_type_token(bn, true, true);
+	    pgm.allow_variadic_real_inst = saved_vri;
+	    if ( TokenDataType *bdt = base_bdt )
 	    {
 		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
 		// Adopt the RESOLVED type's name BEFORE promoting. `base_name`
@@ -33857,8 +41105,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
 	      && class_allows_opaque_member_type(bcls) )
 	    {
-		if ( TokenDataType *chained =
-			pgm.resolve_class_member_type_chain(bcls, bn, true) )
+		if ( base_vri )
+		    pgm.allow_variadic_real_inst = true;
+		TokenDataType *chained_dt =
+		    pgm.resolve_class_member_type_chain(bcls, bn, true);
+		pgm.allow_variadic_real_inst = saved_vri;
+		if ( TokenDataType *chained = chained_dt )
 		    if ( DataDefCLASS *chained_cls =
 			    dynamic_cast<DataDefCLASS *>(&chained->definition) )
 		    {
@@ -33925,6 +41177,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
 	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
 	    pgm.note_class_base_spec();
+	    // [temp.variadic]/5: a base-specifier may carry a pack-expansion `...`.
+	    // By the time a base-clause is PARSED the expansion has already been
+	    // performed at the token level (instantiate_template_use replicates the
+	    // template-id once per pack element), so what reaches here is one real
+	    // base per element and the trailing dots are residue to consume. Without
+	    // this the loop below sees `.` where it wants `,` or `{` and the whole
+	    // class dies on "Expecting identifier after type" — which is how
+	    // libc++'s __tuple_impl was being lost.
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
+		pgm.consume_ellipsis();
 	    DBG(cout << "TokenCLASS::parse() inherits from " << base_name
 		<< (bvirtual ? " (virtual)" : "") << endl);
 	} while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma
@@ -34052,6 +41314,36 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     pgm.nextToken(); // consume '{'
 
+    // Sibling-SCOPE same-name class definitions (namespace A { class C {...}; }
+    // namespace B { class C {...}; } — the shape libc++'s variant header uses
+    // in its two sibling detail namespaces): the bare tag already
+    // names a COMPLETE aggregate from a DIFFERENT scope (its canonical
+    // spelling disagrees), and this definition is namespace-scoped. Re-key
+    // THIS class by the namespace — the nested-owner precedent above (the
+    // emitted identity must be C-valid and unique per scope);
+    // class_source_name keeps the source, and register_class_shell's
+    // per-namespace SOURCE alias serves qualified lookup. A same-scope
+    // complete entry falls through to the redefinition throw; an incomplete
+    // entry is this scope's own forward decl and completes in place.
+    if ( !pgm.current_namespace().empty() && !nested_owner_class
+      && !has_local_class_identity )
+    {
+	datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+	DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+	    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+	std::string here_spelling =
+	    pgm.current_namespace() + "::" + class_source_name;
+	if ( prior_sd && prior_sd->is_complete
+	  && prior_sd->canonical_cpp_spelling() != here_spelling )
+	{
+	    std::string ns_flat = pgm.current_namespace();
+	    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
+		if ( ns_flat[fi] == ':' )
+		    ns_flat[fi] = '_';
+	    pgm.set_token_spelling(tag, ns_flat + "__" + class_source_name);
+	}
+    }
+
     // Redefinition guard: reject a second definition unless the existing entry
     // is the incomplete class created for `class Name;`.
     bool completing_forward_decl = false;
@@ -34123,6 +41415,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+    // Only ever SET it: completing a forward declaration reuses the incomplete
+    // class object, and a re-entered definition must not un-final it.
+    if ( head_final )
+	ddc->struct_is_final = true;
     ddc->definition_origin = aggregate_definition_origin(pgm, tag->file);
     if ( has_local_class_identity )
 	pgm.function_local_class_identities[ddc] = local_class_identity;
@@ -34219,6 +41515,57 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
     };
 
+    // The ONE friend-declaration owner ([class.friend]): record the
+    // befriended type / function name, queue hidden-friend operator
+    // DEFINITIONS for hoisting at class completion and DEFAULTED friend
+    // comparisons for member-list synthesis. `friend_tok` is the
+    // already-consumed tkFRIEND token. Reached from the friend-first arm AND
+    // from the member-specifier loop — [dcl.spec] leaves specifier order
+    // free, and libc++ spells `inline _LIBCPP_HIDE_FROM_ABI friend bool
+    // operator==(...)` (directory_iterator.h:103).
+    auto parse_friend_member_decl = [&](TokenBase *friend_tok)
+    {
+	TokenBase *first = pgm.nextToken();
+	if ( !first )
+	    pgm.Throw(friend_tok) << "Unexpected end of input after friend" << flush;
+	std::vector<TokenBase *> skipped_decl;
+	skipped_decl.push_back(friend_tok);
+	pgm.skip_template_nonclass_declaration(first, &skipped_decl);
+	register_skipped_friend_type(ddc, skipped_decl);
+	std::string friend_opname;
+	if ( skipped_friend_operator_definition(skipped_decl,
+					&friend_opname) )
+	{
+	    hoisted_friend_operator_defs.push_back(skipped_decl);
+	    ddc->friend_function_names.push_back(friend_opname);
+	    pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
+	}
+	else if ( skipped_friend_defaulted_comparison(skipped_decl,
+						      &friend_opname) )
+	{
+	    defaulted_comparison_ops.push_back(friend_opname);
+	    ddc->friend_function_names.push_back(friend_opname);
+	    pgm.note_class_decl(Program::ClassDeclKind::DefaultedComparison);
+	}
+	else
+	{
+	    // An ordinary friend function DECLARATION
+	    // (`friend int peek(const C&);`) grants friendship by name. A
+	    // friend class/struct/union declaration has no function
+	    // declarator, so the extractor yields nothing and only the
+	    // befriended TYPE (register_skipped_friend_type, above) is recorded.
+	    std::string friend_fname =
+		skipped_template_function_declarator_name(skipped_decl);
+	    if ( !friend_fname.empty() )
+	    {
+		ddc->friend_function_names.push_back(friend_fname);
+		pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
+	    }
+	    else
+		pgm.note_class_decl(Program::ClassDeclKind::FriendType);
+	}
+    };
+
     // Exception hygiene: deferred_function_body_sink points at the STACK-LOCAL
     // deferred_method_bodies above, and class_scope_stack holds ddc until the
     // '}' — a Throw anywhere in the body parse must unwind BOTH, or the next
@@ -34258,6 +41605,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    continue;
 	}
 
+	// --- C++20 abbreviated function template ([dcl.fct]/18): an `auto`
+	// parameter placeholder makes the member a TEMPLATE with invented
+	// type parameters. Desugared at the token level (invented names +
+	// a synthesized template<...> head pushed back), so the member-
+	// template arm below owns the capture — no parallel lane.
+	if ( pgm.desugar_abbreviated_fn_template() )
+	    tn = pgm.peekToken();
+
 	// --- member template declaration: template<...> ...; ---
 	if ( tn->id() == TokenID::tkTEMPLATE )
 	{
@@ -34271,6 +41626,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    size_t method_count_before = ddc->methods.size();
 	    std::vector<TokenBase *> skipped_decl;
 	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    // Env-gated probe (MADC_REG_PROBE=<class substring>): why an in-class
+	    // member-template declaration did or did not reach registration. Both
+	    // gate inputs are printed, because a silent skip here leaves the
+	    // overload simply absent — with no diagnostic anywhere downstream.
+	    {
+		static const char *_rp = ::getenv("MADC_REG_PROBE");
+		if ( _rp && *_rp && ddc->name.find(_rp) != std::string::npos )
+		    fprintf(stderr, "REGPROBE %s line=%d before=%zu after=%zu "
+			    "skipped_decl=%zu -> %s\n",
+			    ddc->name.c_str(), tn ? (int)tn->line : -1,
+			    method_count_before, ddc->methods.size(),
+			    pgm.last_skipped_template_decl.size(),
+			    (ddc->methods.size() == method_count_before
+			     && !pgm.last_skipped_template_decl.empty())
+				? "REGISTER" : "SKIP");
+	    }
 	    if ( ddc->methods.size() == method_count_before
 	      && !pgm.last_skipped_template_decl.empty() )
 	    {
@@ -34278,12 +41649,55 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( skipped_template_decl_is_friend_type(skipped_decl) )
 		    register_skipped_friend_type(ddc, skipped_decl);
 		else
-		    register_skipped_class_template_function(
-			pgm, ddc, skipped_decl,
-			pgm.last_skipped_template_typeparams, access_flags,
-			constructor_source_name);
+		{
+		    // A TEMPLATE-HEAD FRIEND function declaration ([temp.friend])
+		    // — `template<class U> friend box<U> peek(const box<U>&);` —
+		    // grants friendship by NAME exactly like the friend-first arm
+		    // below (the template head was consumed by parseKeyword, so
+		    // `friend` leads this decl). libc++'s __pad_and_output is
+		    // this shape (ostreambuf_iterator.h:66); without the grant
+		    // its instantiated body cannot read the private member it
+		    // was befriended for. The `friend` specifier precedes the
+		    // declarator (decl-specifiers commute, so it may follow the
+		    // return type — libc++ string's `bool friend operator==`),
+		    // and the scan stops at the parameter list.
+		    bool is_friend_decl = false;
+		    for ( size_t fi = 0; fi < skipped_decl.size(); ++fi )
+		    {
+			if ( !skipped_decl[fi] )
+			    continue;
+			if ( skipped_decl[fi]->id() == TokenID::tkOpBrk )
+			    break;
+			if ( skipped_decl[fi]->id() != TokenID::tkFRIEND )
+			    continue;
+			is_friend_decl = true;
+			std::string friend_fname =
+			    skipped_template_function_declarator_name(skipped_decl);
+			if ( !friend_fname.empty() )
+			{
+			    ddc->friend_function_names.push_back(friend_fname);
+			    pgm.note_class_decl(
+				Program::ClassDeclKind::FriendFunction);
+			}
+			break;
+		    }
+		    // A friend never declares a member ([class.friend]): the
+		    // grant is the whole effect here. Registering it as a member
+		    // template plants a bogus entry in method_map — a friend
+		    // `operator==` then poisons binary_operator_return_type and
+		    // every `obj == x` expression types as the member's fake
+		    // return (libc++ `string == "lit"` became basic_string and
+		    // bound the string inserter over a bool rvalue).
+		    if ( !is_friend_decl )
+			register_skipped_class_template_function(
+			    pgm, ddc, skipped_decl,
+			    pgm.last_skipped_template_typeparams, access_flags,
+			    constructor_source_name);
+		}
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
+		pgm.last_skipped_template_typeparam_defaults.clear();
+		pgm.last_skipped_template_typeparam_constraints.clear();
 	    }
 	    pgm.note_class_decl(Program::ClassDeclKind::MemberTemplate);
 	    continue;
@@ -34312,58 +41726,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkFRIEND )
 	{
 	    pgm.nextToken();
-	    TokenBase *first = pgm.nextToken();
-	    if ( !first )
-		pgm.Throw(tn) << "Unexpected end of input after friend" << flush;
-	    std::vector<TokenBase *> skipped_decl;
-	    skipped_decl.push_back(tn);
-	    pgm.skip_template_nonclass_declaration(first, &skipped_decl);
-	    register_skipped_friend_type(ddc, skipped_decl);
-	    // A hidden-friend operator DEFINITION is a namespace-scope
-	    // function ([class.friend]) — queue it for hoisting once the
-	    // class completes (parse_hoisted_friend_operator), and grant it
-	    // friendship by function name. A DEFAULTED friend comparison is
-	    // queued for member-list synthesis instead.
-	    std::string friend_opname;
-	    if ( skipped_friend_operator_definition(skipped_decl,
-					    &friend_opname) )
-	    {
-		hoisted_friend_operator_defs.push_back(skipped_decl);
-		ddc->friend_function_names.push_back(friend_opname);
-		pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
-	    }
-	    else if ( skipped_friend_defaulted_comparison(skipped_decl,
-							  &friend_opname) )
-	    {
-		defaulted_comparison_ops.push_back(friend_opname);
-		ddc->friend_function_names.push_back(friend_opname);
-		pgm.note_class_decl(Program::ClassDeclKind::DefaultedComparison);
-	    }
-	    else
-	    {
-		// An ordinary friend function DECLARATION
-		// (`friend int peek(const C&);`) grants friendship by name. A
-		// friend class/struct/union declaration has no function
-		// declarator, so the extractor yields nothing and only the
-		// befriended TYPE (register_skipped_friend_type, above) is recorded.
-		std::string friend_fname =
-		    skipped_template_function_declarator_name(skipped_decl);
-		if ( !friend_fname.empty() )
-		{
-		    ddc->friend_function_names.push_back(friend_fname);
-		    pgm.note_class_decl(Program::ClassDeclKind::FriendFunction);
-		}
-		else
-		    pgm.note_class_decl(Program::ClassDeclKind::FriendType);
-	    }
+	    parse_friend_member_decl(tn);
 	    continue;
 	}
 
 	// --- C++ member declaration specifiers ---
 	bool is_virtual = false;
 	bool is_static_member = false;
+	bool member_is_friend = false;
 	for (;;)
 	{
+	    // [dcl.spec] leaves specifier order free: `inline friend bool
+	    // operator==(...)` reaches here with `friend` AFTER the consumed
+	    // specifiers. Friend decides the declaration kind — route to the
+	    // one owner (the leading specifiers add nothing madc records).
+	    if ( tn->id() == TokenID::tkFRIEND )
+	    {
+		pgm.nextToken();
+		parse_friend_member_decl(tn);
+		member_is_friend = true;
+		break;
+	    }
 	    if ( tn->id() == TokenID::tkSTATIC )
 	    {
 		pgm.nextToken();
@@ -34416,6 +41799,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( !tn )
 		pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 	}
+	if ( member_is_friend )
+	    continue;
 
 	// --- destructor: ~ClassName() { ... } ---
 	if ( tn->id() == TokenID::tkBnot )
@@ -34451,6 +41836,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.register_class_method_signature(ddc, mvar, spec);
 		    registered_dtor = true;
 		}
+		else if ( dfd->is_deleted )
+		    // A dropped `~X() = delete` still decides destructibility
+		    // (the same recording rule as the dropped special ctors).
+		    ddc->has_deleted_dtor = true;
 	    }
 	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
 	    // destructor's declaration position. Markers are class-name-INDEPENDENT
@@ -34498,6 +41887,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 		{
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
+		    if ( cfd )
+			record_dropped_special_ctor(ddc, cfd);
 		    if ( !cfd || !cfd->defaulted_or_deleted )
 		    {
 			Program::ClassMethodRegistration spec;
@@ -34520,26 +41911,31 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 
-	// --- conversion operator: operator T() [cv] { ... } ---
+	// --- conversion operator: operator [cv] T() [cv] { ... } ---
 	if ( tn->id() == TokenID::tkOPEROVER )
 	{
 	    pgm.nextToken(); // consume operator
-	    TokenBase *conv_tb = pgm.nextToken();
+	    // The conversion-type-id may lead with cv-qualifiers:
+	    // `operator const _Path&()` (libc++ directory_entry.h:92).
+	    TokenBase *conv_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	    TokenDataType *conv_type = pgm.resolve_declared_type_token(conv_tb, true, true);
 	    if ( !conv_type )
 		pgm.Throw(conv_tb ? conv_tb : tn) << "Expecting conversion type after operator" << flush;
 	    DataDef *conv_ret = &conv_type->definition;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	    {
-		pgm.nextToken();
-		conv_ret = pgm.getPointerType(conv_ret);
-	    }
+	    // Stars + interstitial/east cv-qualifiers (`operator _Path const&()`,
+	    // `operator T* const()`): the shared declarator consumer owns both.
+	    pgm.consume_declarator_stars(conv_ret);
+	    // A reference conversion (`operator const T&()`) is a REFERENCE
+	    // return: hand the bare referent + return_ref to parseFunction so
+	    // returnDecl builds the DataDefREF (the pointer-wrap shortcut left
+	    // the body's `return member;` un-addressed — a check error).
+	    bool conv_ret_ref = false;
 	    if ( pgm.peekToken()
 	      && (pgm.peekToken()->id() == TokenID::tkBand
 	       || pgm.peekToken()->id() == TokenID::tkLand) )
 	    {
 		pgm.nextToken();
-		conv_ret = pgm.getPointerType(conv_ret);
+		conv_ret_ref = true;
 	    }
 	    TokenBase *open = pgm.peekToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
@@ -34547,7 +41943,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.nextToken();
 	    std::string mname = std::string("operator ") + conv_type->spelling();
 	    std::string mangled = pgm.unique_overload_symbol(std::string(tag->spelling()) + "__operator_conv");
-	    pgm.parseFunction(*conv_ret, mangled, ddc);
+	    pgm.parseFunction(*conv_ret, mangled, ddc, NULL, conv_ret_ref);
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
@@ -34569,13 +41965,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Optional leading cv-qualifiers on a data member / method return type:
 	// `const char *m;`, `volatile int v;`. madc does not enforce member
 	// const-correctness, so consume them (a const data member is an ordinary
-	// member). const/volatile/restrict are dedicated token ids, not identifiers
-	// (see the same idiom at parser.cpp:15942).
-	while ( pgm.peekToken()
-	     && ( pgm.peekToken()->id() == TokenID::tkCONST
-	       || pgm.peekToken()->id() == TokenID::tkVOLATILE
-	       || pgm.peekToken()->id() == TokenID::tkRESTRICT ) )
-	    pgm.nextToken();
+	// member).
+	pgm.skip_cv_qualifier_tokens();
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -34767,7 +42158,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    continue;
 		}
 		TokenBase *type_head = pgm.nextToken();
+		// A class MEMBER declaration is a STORAGE/object context, the
+		// exact twin of parseStatement's local/global declaration arms:
+		// [class.mem] requires a non-static data member's type to be
+		// COMPLETE, so a concrete-arg variadic template named here
+		// (`impl<tag,int> base_;`, libc++'s `_BaseT __base_;`) must
+		// really instantiate instead of staying an opaque memberless
+		// shell. Without this the member's type is an EMPTY struct: its
+		// bases, members and constructor all vanish, `m.f()` folds to the
+		// literal 0, and nothing diagnoses it. Same per-demand-site
+		// arming as those two sites — resolve_declared_type_token's own
+		// stmt_scope_demand cannot cover this one, it requires
+		// class_scope_stack to be EMPTY.
+		// Not while a dependent pattern is being parsed or captured:
+		// there the arguments still name the enclosing template's
+		// parameters, and the shell is the correct answer.
+		bool saved_member_vri = pgm.allow_variadic_real_inst;
+		if ( !pgm.dependent_parse_in_progress
+		  && !pgm.class_pattern_capture_in_progress )
+		    pgm.allow_variadic_real_inst = true;
 		TokenDataType *mtype = pgm.resolve_declared_type_token(type_head, true, true);
+		pgm.allow_variadic_real_inst = saved_member_vri;
 		if ( !mtype
 		  && (class_allows_opaque_member_type(ddc)
 		   || pgm.is_system_header_path(TokenBase::_parse_file))
@@ -34780,6 +42191,24 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( !mtype )
 		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
+		// Second half of the same completeness demand, for the type
+		// that arrived through an ALIAS: `typedef impl<tag,T> B; B m;`
+		// resolved its template-id back when the TYPEDEF was parsed —
+		// where there is no demand, because a typedef of an incomplete
+		// type is legal — so the arming above never saw a template-id
+		// and `m` still names the shell. COMPLETE it from the shell's
+		// recorded origin; this is libc++'s tuple shape (`_BaseT
+		// __base_;` over __tuple_impl<__tuple_indices<...>, _Tp...>).
+		// Silent: a shell that cannot replay stays opaque, exactly as
+		// before.
+		if ( mtype && !pgm.dependent_parse_in_progress
+		  && !pgm.class_pattern_capture_in_progress )
+		    if ( DataDefCLASS *mcls =
+			    dynamic_cast<DataDefCLASS *>(&mtype->definition) )
+			if ( DataDefCLASS *real =
+				pgm.complete_shell_class_type(mcls) )
+			    mtype = make_alias_type_token(real->name, real,
+							  type_head);
 
 	// East-const / -volatile on the base type (`char const *`, `int const x`):
 	// the cv-qualifier trails the type and precedes the declarator. madc tracks
@@ -34834,18 +42263,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    TokenBase *inner = pgm.nextToken();
 	    if ( inner && inner->id() == TokenID::tkStar )
 	    {
-		tn = pgm.nextToken();
-		if ( !is_contextual_identifier_token(tn) )
-		    pgm.Throw(tn) << "Expecting member name in function pointer class declarator" << flush;
-		std::string mname = contextual_identifier_name(tn);
-		tn = pgm.nextToken();
-		if ( !tn || tn->id() != TokenID::tkClBrk )
-		    pgm.Throw(tn ? tn : inner) << "Expected ')' after function pointer member name" << flush;
-		tn = pgm.nextToken();
-		if ( !tn || tn->id() != TokenID::tkOpBrk )
-		    pgm.Throw(tn ? tn : inner) << "Expected '(' after function pointer member name" << flush;
-		FuncDef *func = pgm.parseFnPtrParams(*cmember_dd);
-		cmember_dd = new DataDefFPTR(func);
+		// Same tail as the struct lanes — the ONE owner
+		// (parse_fnptr_member_tail) also consumes the pointer's own
+		// cv-qualifiers (`(*const __clone)`, function.h:500).
+		std::string mname;
+		cmember_dd = pgm.parse_fnptr_member_tail(*cmember_dd, mname,
+							 inner);
 
 		ddc->addMember(mname, *cmember_dd, 1);
 		if ( access_flags && !ddc->member_access.empty() )
@@ -34977,6 +42400,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( mfd->is_deleted && is_operator_method
 		      && mname == "operator=" && mfd->parameters.size() >= 2 )
 			ddc->has_deleted_copy_assign = true;
+		    // Same recording for dropped special-member CONSTRUCTORS,
+		    // consumed by __is_constructible (a wrong "true" from the
+		    // memberwise walk would corrupt SFINAE the same way).
+		    if ( tag && mname == tag->spelling() )
+			record_dropped_special_ctor(ddc, mfd);
 		    // A DEFAULTED member comparison synthesizes its
 		    // namespace-scope definition from the member list at
 		    // class completion ([class.compare.default]); a defaulted
@@ -35028,24 +42456,31 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // validates the integer type and width.
 	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 	    {
-		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`):
-		// skip `= <init>` to the next top-level ',' or ';' (madc does not
-		// apply it). Returns the delimiter token. Used after each width.
+		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`
+		// or the brace form `m:1 {v}` — [class.mem] brace-or-equal-init,
+		// libc++ unicode.h's `__status : 1 {__ok}`): skip to the next
+		// top-level ',' or ';' (madc does not apply it). Returns the
+		// delimiter token. Used after each width. Balanced tracking via
+		// the shared DelimDepth scanner (delimiter-tracking.md); the
+		// same two-rule terminator as capture_member_default_init:
+		// ',' only at FULL top() (a template-argument comma never
+		// splits), ';' at ()/[]/{}-top even with a phantom angle open.
 		auto skip_bitfield_default_init = [&](TokenBase *cur) -> TokenBase * {
-		    if ( !cur || cur->id() != TokenID::tkAssign )
+		    if ( !cur || (cur->id() != TokenID::tkAssign
+			       && cur->id() != TokenID::tkOpBrc) )
 			return cur;
-		    int d = 0;
+		    DelimDepth d;
+		    pgm.delimStepStream(cur, d, NULL);
 		    TokenBase *t;
 		    while ( (t = pgm.nextToken()) )
 		    {
 			TokenID id = t->id();
-			if ( d == 0 && (id == TokenID::tkSemi
-				     || id == TokenID::tkComma) )
+			bool shallow = !d.paren && !d.square && !d.brace;
+			if ( shallow && id == TokenID::tkSemi )
 			    return t;
-			if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-			  || id == TokenID::tkOpBrc ) ++d;
-			else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-			       || id == TokenID::tkClBrc ) { if ( d > 0 ) --d; }
+			if ( d.top() && id == TokenID::tkComma )
+			    return t;
+			pgm.delimStepStream(t, d, NULL);
 		    }
 		    return t;
 		};
@@ -35117,9 +42552,90 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( is_static_member )
 	    {
 		ddc->static_member_types[mname] = cmember_dd;
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+		// The DECLARATION introduces the entity, exactly as g++'s
+		// finish_static_data_member_decl does while parsing the class
+		// body: it creates the VAR_DECL, marks it DECL_IN_AGGR_P
+		// ("declared, not yet defined"), and the out-of-class definition
+		// COMPLETES THAT SAME DECL rather than creating a second one.
+		// madc's DECL_IN_AGGR_P is vfEXTERN, and addVariable's
+		// existing-symbol branch already implements the completion — it
+		// adopts the definition's type and count and clears the flag.
+		//
+		// Registering it only at the definition made a member-function
+		// body parsed HERE, before that definition exists, find no
+		// storage: resolve_class_static_member_value then fell to its
+		// constant branch and BAKED IN a 0. `static int n;` read from
+		// inside its own class body gave 0 where g++ gave 42 — silently,
+		// exit 0 — and every write reported "lvalue required as left
+		// operand of assignment". Out of line, or from outside the class,
+		// the same member was always correct, which is what identified
+		// the cause as parse ORDER rather than the fold itself.
+		//
+		// ONLY for a member with NO in-class initializer — g++'s own
+		// distinction (DECL_INITIAL present or not, the same one
+		// decl_constant_value folds on). A member written `= <init>` is
+		// a constant as far as madc is concerned, and giving it storage
+		// instead produced a reference to a symbol that nothing in the
+		// translation unit ever defines: `basic_string<...>::npos` and
+		// `memory_resource::_S_max_align` are declared with initializers
+		// madc cannot capture as integers (`static_cast<size_type>(-1)`,
+		// `alignof(max_align_t)`) and have no out-of-class definition
+		// here, so the emitted C failed with "undeclared identifier".
+		bool has_inclass_init = pgm.peekToken()
+		    && pgm.peekToken()->id() == TokenID::tkAssign;
+		// There is deliberately no "...and only for a class WE compile"
+		// test here. A system header's class static was briefly skipped,
+		// because giving std::locale::_S_once storage made the emitted C
+		// fail with "undeclared identifier locale___S_once". That guard was
+		// a placeholder for a defect one layer down, and it is gone: the
+		// runtime-eval scope collector was capturing every visible global BY
+		// NAME, including declarations with no definition in this TU, which
+		// is a failure a plain `extern int g;` reproduces with no class
+		// anywhere in it. The rule now lives in
+		// is_runtime_eval_scope_supported_variable, beside the identical one
+		// it already stated for parse-time constants. g++ creates the decl
+		// for EVERY static data member while parsing the class body; so does
+		// madc, with no origin-keyed exception.
+		if ( cmember_dd && pgm.tkProgram && !has_inclass_init )
 		{
-		    pgm.nextToken(); // consume '='
+		    const std::string storage =
+			class_static_member_storage_name(ddc, mname);
+		    if ( !pgm.tkProgram->findVariable(pgm.strpool, storage) )
+		    {
+			uint32_t scount = member_count ? (uint32_t)member_count : 1;
+			if ( Variable *sv = pgm.addVariable(NULL, *cmember_dd,
+						storage, scount, NULL, true) )
+			{
+			    sv->flags |= vfEXTERN;
+			    // Library-owned class: bind the storage to its REAL
+			    // Itanium symbol. var_emit_name() is the single place
+			    // that maps a Variable to its emitted name and already
+			    // consults storage_alias_name, so nothing downstream
+			    // needs to know.
+			    sv->storage_alias_name =
+				class_static_member_itanium_symbol(ddc, mname);
+			    if ( member_is_array )
+			    {
+				sv->flags |= vfFIXEDARRAY;
+				sv->dims = member_dims;
+			    }
+			}
+		    }
+		}
+		bool static_brace_init = pgm.peekToken()
+		    && pgm.peekToken()->id() == TokenID::tkOpBrc;
+		if ( static_brace_init
+		  || (pgm.peekToken()
+		      && pgm.peekToken()->id() == TokenID::tkAssign) )
+		{
+		    // Brace-or-equal-init ([class.mem]): '=' is consumed here;
+		    // the brace form's '{' stays in the stream — the capture
+		    // owns it transactionally, and a failed capture leaves the
+		    // intact group for the structural skip below (libc++
+		    // formatter_integral.h __bool_strings' brace-initialized
+		    // statics).
+		    if ( !static_brace_init )
+			pgm.nextToken(); // consume '='
 		    // Capture an integral constant initializer (std::integral_constant's
 		    // "static const T value = c;") so X::value reads the real value, not
 		    // a 0 placeholder. Non-integral / non-constant initializers fall
@@ -35127,37 +42643,36 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    int64_t const_val = 0;
 		    if ( cmember_dd && cmember_dd->is_integer()
 		      && !cmember_dd->is_pointer()
-		      && pgm.capture_constant_initializer_value(const_val) )
+		      && pgm.capture_constant_initializer_value(const_val,
+							static_brace_init) )
 		    {
 			ddc->static_member_const_values[mname] = const_val;
 			pgm.nextToken(); // consume the ';' the capture stopped at
+			if ( ::getenv("MADC_STATCONST_PROBE") )
+			    fprintf(stderr, "[statconst] %s::%s = %lld\n",
+				    ddc->name.c_str(), mname.c_str(),
+				    (long long)const_val);
 		    }
 		    else
 		    {
-			    int paren_depth = 0;
-			    int square_depth = 0;
-			    int brace_depth = 0;
-			    while ( (tn = pgm.nextToken()) )
-			    {
-				if ( tn->id() == TokenID::tkSemi
-				  && paren_depth == 0 && square_depth == 0
-				  && brace_depth == 0 )
-				    break;
-				if ( tn->id() == TokenID::tkOpBrk )
-				    ++paren_depth;
-				else if ( tn->id() == TokenID::tkClBrk && paren_depth > 0 )
-				    --paren_depth;
-			else if ( tn->id() == TokenID::tkOpSqr )
-			    ++square_depth;
-			else if ( tn->id() == TokenID::tkClSqr && square_depth > 0 )
-			    --square_depth;
-			else if ( tn->id() == TokenID::tkOpBrc )
-				    ++brace_depth;
-				else if ( tn->id() == TokenID::tkClBrc && brace_depth > 0 )
-				    --brace_depth;
-			    }
-		    if ( !tn )
-			pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
+			if ( ::getenv("MADC_STATCONST_PROBE") && cmember_dd
+			  && cmember_dd->is_integer() && !cmember_dd->is_pointer() )
+			    fprintf(stderr, "[statconst] %s::%s CAPTURE-FAIL\n",
+				    ddc->name.c_str(), mname.c_str());
+			// Explicit paren/square/brace, NOT d.top(): this scan
+			// never tracked angle brackets, and top() also demands
+			// angle == 0 — `a < b;` would open one and swallow the ';'.
+			DelimDepth d;
+			while ( (tn = pgm.nextToken()) )
+			{
+			    if ( tn->id() == TokenID::tkSemi
+			      && d.paren == 0 && d.square == 0
+			      && d.brace == 0 )
+				break;
+			    d.update(tn);
+			}
+			if ( !tn )
+			    pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
 		    }
 		}
 		else
@@ -35297,8 +42812,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// class's ctor/dtor (`__stoa`'s _Save_errno) is referenced by the
 	// surrounding body/cleanup machinery, which never triggers the
 	// lazy-on-call path.
+	// The eager-at-depth exception exists for function-LOCAL classes only
+	// (their ctor/dtor is referenced by the surrounding body's cleanup
+	// machinery, which never triggers the lazy-on-call path). A NAMESPACE-
+	// scope system class instantiated at depth>0 (move_iterator<int*> born
+	// inside __make_move_if_noexcept_iterator's candidate attempt) must
+	// still stash LAZILY: its eager bodies land in the speculative frame
+	// and never reach emission (undefined move_iterator__base imports on
+	// the realloc lane), while the lazy stash materializes on real ODR-use.
+	HoistedDeclIdentity _lazy_hid;
+	bool body_owner_fn_local = b.method && b.method->owner_class
+	    && pgm.function_local_class_identity(b.method->owner_class,
+						 _lazy_hid);
 	if ( b.var && b.file && pgm.is_system_header_path(b.file)
-	  && pgm.fn_template_instantiation_depth == 0 )
+	  && (pgm.fn_template_instantiation_depth == 0
+	      || !body_owner_fn_local) )
 	{
 	    // Env-gated probe (MADC_MTI_PROBE=<substr>): deferred-body enqueue.
 	    static const char *_mti_probe = ::getenv("MADC_MTI_PROBE");
@@ -35465,6 +42993,60 @@ TokenBase *TokenGOTO::parse(Program &pgm)
     return this;
 }
 
+// Multi-return transport struct: the synthesized `struct { T0 v0; ... }` a
+// multi-return function's values travel through — its C-level return type.
+// The values ride the ONE class/struct-return path (native c2mir struct
+// return when trivially copyable, the __retbuf copy-construct/dtor ABI when
+// any slot is an object) instead of a parallel slot ABI. Memoized per
+// slot-type vector so every same-signature function shares one struct.
+// Validates the slot types and throws at `where` on an unsupportable slot.
+DataDefSTRUCT *Program::multi_return_transport_struct(
+	const std::vector<DataDef *> &types, TokenBase *where)
+{
+    for ( DataDef *t : types )
+    {
+	if ( !t || t->rawtype() == DataType::dtVOID )
+	    Throw(where) << "multi-return values cannot be 'void'" << flush;
+	if ( t->is_reference() )
+	    Throw(where) << "multi-return cannot carry reference values ('"
+			 << t->name << "')" << flush;
+	if ( dynamic_cast<FuncDef *>(t) )
+	    Throw(where) << "multi-return cannot carry a function type ('"
+			 << t->name << "')" << flush;
+    }
+    auto hit = multi_ret_transport_map.find(types);
+    if ( hit != multi_ret_transport_map.end() )
+	return hit->second;
+
+    bool has_object_slot = false;
+    for ( DataDef *t : types )
+	if ( !t->is_pointer() && t->is_object() )
+	    has_object_slot = true;
+    char sname[48];
+    snprintf(sname, sizeof sname, "__madc_mret_s%zu",
+	     multi_ret_transport_counter++);
+    // An object slot makes the transport a non-trivial CLASS (its members
+    // must be constructed/destructed) — same criterion by which a parsed
+    // struct earns class-hood from an object member. All-scalar transports
+    // stay plain structs (trivially copyable => native c2mir struct return).
+    DataDefSTRUCT *s = has_object_slot
+	? new DataDefCLASS(sname, 0, DataType::dtRESERVED)
+	: new DataDefSTRUCT(sname, 0, DataType::dtRESERVED);
+    for ( size_t i = 0; i < types.size(); ++i )
+    {
+	char mname[16];
+	snprintf(mname, sizeof mname, "v%zu", i);
+	s->addMember(mname, *types[i], 1);
+    }
+    s->is_complete = true;
+    s->finalize(presents_as_cpp());
+    struct_map.set(sname, s);
+    multi_ret_transport_map[types] = s;
+    DBG(std::cout << "multi_return_transport_struct() synthesized " << sname
+	<< " with " << types.size() << " slots" << std::endl);
+    return s;
+}
+
 TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -35475,6 +43057,58 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // return with no value
     if ( tn->id() == TokenID::tkSemi )
 	return this;
+
+    // A BRACED-INIT-LIST return ([stmt.return]/2: the return object is
+    // copy-list-initialized from the list) — `return {a, b};`, libc++'s
+    // __allocate_at_least returning `{__alloc.allocate(__n), __n}`. Without
+    // this the `{` fell straight into parseExpression, which read `a`, and the
+    // [expr.comma] loop below then chained `a , b` — a COMMA expression whose
+    // value is `b`, silently discarding the aggregate (c2mir: "incompatible
+    // return-expr type in function returning a struct/union").
+    //
+    // Reuse, do not re-implement: the brace reader that builds a TokenStructLit
+    // against a target type already exists on the compound-literal path
+    // (`(T){...}` in parseExpression). Re-spell the stream as that form —
+    // `( T ) { ... }` — so the ONE reader runs. pushToken is push_front, so the
+    // pieces go on in reverse. For a CLASS type the list selects a CONSTRUCTOR
+    // ([dcl.init.list]/3), which the compound-literal reader does not model —
+    // that shape re-spells to the functional form `T { ... }` instead, so the
+    // ONE expression owner (parse_functional_type_expression's TokenObjTemp
+    // arm) runs. A bare `{` must never reach parseExpression: it has no
+    // brace-head reading, and the stray braces unbalance the scope stack (the
+    // statement after `return {};` lost the FUNCTION PARAMETERS — libc++
+    // proximate(), operations.h:240 "use of undeclared identifier '__base'").
+    if ( tn->id() == TokenID::tkOpBrc )
+    {
+	TokenCpnd *rcode = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	FuncDef *rfd = rcode && rcode->method
+		     ? dynamic_cast<FuncDef *>(rcode->method->returns.type) : NULL;
+	DataDef *rdd = rfd ? &rfd->return_value_type() : NULL;
+	DataDefSTRUCT *ragg = dynamic_cast<DataDefSTRUCT *>(rdd);
+	// `return {};` (an EMPTY list — value-initialization) is spelled with an
+	// explicit zero: C11 has no `(T){}`, and `(T){0}` is the C idiom that
+	// zero-initializes the whole object, which is what value-init means here.
+	bool empty_list = pgm.peekToken()
+		       && pgm.peekToken()->id() == TokenID::tkClBrc;
+	if ( ragg && !dynamic_cast<DataDefCLASS *>(rdd) && !rdd->is_complex() )
+	{
+	    // push_front, so these go on in REVERSE reading order: the
+	    // synthesized `0` must precede the `{` push to land after it.
+	    if ( empty_list )
+		pgm.pushToken(new TokenInt(0));
+	    pgm.pushToken(tn);				// '{' back on the stream
+	    pgm.pushToken(new TokenClBrk());
+	    pgm.pushToken(new TokenDataType(ragg->name.c_str(), *ragg));
+	    pgm.pushToken(new TokenOpBrk());
+	    tn = pgm.nextToken();			// now the synthetic '('
+	}
+	else if ( DataDefCLASS *rcls = dynamic_cast<DataDefCLASS *>(rdd) )
+	{
+	    pgm.pushToken(tn);				// '{' back on the stream
+	    pgm.pushToken(new TokenDataType(rcls->name.c_str(), *rcls));
+	    tn = pgm.nextToken();			// now the synthetic type head
+	}
+    }
 
     // parse first return expression
     returns = pgm.parseExpression(tn);
@@ -35500,6 +43134,43 @@ TokenBase *TokenRETURN::parse(Program &pgm)
 	if ( p->type() == TokenType::ttDataType ) return false;
 	return true;
     };
+    // C/C++ [expr.comma]: `return a, b;` evaluates a for side effects and
+    // returns b. libc++'s hardening asserts expand to exactly this shape as a
+    // constexpr-friendly single statement
+    // (`return _LIBCPP_ASSERT_...(...), __data_[__pos];` —
+    // basic_string_view::operator[]). Multi-return is madc DIALECT syntax: it
+    // applies only in STD_MADC mode AND only to USER code — a SYSTEM HEADER
+    // is real C/C++ whatever mode the program compiles under (madc-mode
+    // programs #include real libstdc++/libc++). Letting the dialect hijack a
+    // header's comma operator flipped such a method onto the multi-return
+    // `long *__retbuf` ABI against its direct-return call proto
+    // ("incompatible types of ... declarations"). Chain TokenComma — the
+    // parseExprStmt comma-operator node (left for side effects, right's
+    // value/type). Unlike looks_like_second_return (a HEURISTIC for the
+    // dialect), a consumed comma is unambiguous here: [expr.comma] requires
+    // an expression next, which may legitimately start with a type name
+    // (`_Traits::length(__s)` instantiates to a ttDataType head) or a symbol
+    // (`(b)`).
+    if ( pgm.language_std != Program::STD_MADC
+      || (file && pgm.is_system_header_path(file)) )
+    {
+	while ( pgm.curToken() && pgm.curToken()->id() == TokenID::tkComma
+	     && pgm.peekToken() )
+	{
+	    tn = pgm.nextToken();
+	    TokenBase *right = pgm.parseExpression(tn);
+	    if ( !right )
+		break;
+	    TokenComma *seq = new TokenComma();
+	    seq->left   = returns;
+	    seq->right  = right;
+	    seq->file   = returns ? returns->file : file;
+	    seq->line   = returns ? returns->line : line;
+	    seq->column = returns ? returns->column : column;
+	    returns = seq;
+	}
+	return this;
+    }
     if ( looks_like_second_return() )
     {
 	return_exprs.push_back(returns);
@@ -35512,16 +43183,35 @@ TokenBase *TokenRETURN::parse(Program &pgm)
 	}
 	returns = NULL; // multi-return uses return_exprs instead
 
-	// mark the enclosing function as multi-return so it gets __retbuf at compile time
+	// Mark the enclosing function as multi-return. Every slot carries the
+	// function's DECLARED return type (C semantics: a return expression
+	// coerces to the declared type — applied per slot); the values travel
+	// through the synthesized transport struct. A `(T0, T1) f(...)`
+	// declaration already populated heterogeneous return_types at the
+	// signature — this statement must then match its arity.
 	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	if ( code && code->method )
 	{
 	    FuncDef *fdef = (FuncDef *)code->method->returns.type;
-	    if ( fdef && fdef->return_types.empty() )
+	    if ( fdef )
 	    {
-		// populate return_types with int64 for each value (inferred)
-		for ( size_t i = 0; i < return_exprs.size(); ++i )
-		    fdef->return_types.push_back(&ddINT64);
+		if ( code->method->owner_class )
+		    pgm.Throw(this) << "multi-return is not supported in class"
+			" methods" << flush;
+		if ( fdef->return_types.empty() )
+		{
+		    DataDef *rdd = &fdef->return_value_type();
+		    for ( size_t i = 0; i < return_exprs.size(); ++i )
+			fdef->return_types.push_back(rdd);
+		}
+		else if ( fdef->return_types.size() != return_exprs.size() )
+		    pgm.Throw(this) << "function returns "
+			<< fdef->return_types.size() << " values; this return"
+			" statement has " << return_exprs.size() << flush;
+		if ( !fdef->multi_ret_struct )
+		    fdef->multi_ret_struct =
+			pgm.multi_return_transport_struct(fdef->return_types,
+							  this);
 	    }
 	}
 	DBG(std::cout << "TokenRETURN::parse() multi-return with " << return_exprs.size() << " values" << std::endl);
@@ -35702,7 +43392,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	 && (pgm.tokens[i]->id() == TokenID::tkMul
 	  || pgm.tokens[i]->id() == TokenID::tkBand
 	  || pgm.tokens[i]->id() == TokenID::tkLand
-	  || is_post_pointer_qualifier_token(pgm.tokens[i])) )
+	  || is_cv_qualifier_token(pgm.tokens[i])) )
 	    ++i;
 	return i < pgm.tokens.size() && pgm.tokens[i]
 	    && is_contextual_identifier_token(pgm.tokens[i]);
@@ -36150,6 +43840,11 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 	    delete tn;
 	    return this;
 	default:
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=multiop-scan tok type=%d id=%d "
+			"at %s:%d:%d\n",
+			(int)tn->type(), (int)tn->id(),
+			tn->file ? tn->file : "?", tn->line, tn->column);
 	    pgm.Throw(tn) << "unexpected token type " << (int)tn->type() << flush;
     }
     return this;
@@ -36318,6 +44013,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 			  << " type=" << (int)dd->type() << std::endl;
 #endif
 	    pgm.set_class_type_alias(pgm.class_scope_stack.back(), alias, dd);
+	    if ( ::getenv("MADC_STATCONST_PROBE") )
+		fprintf(stderr, "[typedef] %s::%s = %s (kind %s)\n",
+			pgm.class_scope_stack.back()->name.c_str(),
+			alias.c_str(), dd ? dd->name.c_str() : "(null)",
+			dd ? typeid(*dd).name() : "-");
 	    return new TokenTypedefDecl(alias, dd);
 	}
 	// Namespace visibility is for NAMESPACE-scope typedefs only — a
@@ -36378,6 +44078,14 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	{
 	    TokenENUM tenum;
 	    tenum.parse(pgm);
+	    // TokenENUM::parse re-feeds the enum's type token when the body
+	    // is followed by a declarator; THIS arm reads the ALIAS name
+	    // itself (the branches below even accept an alias spelled like
+	    // an existing type) — drop the re-fed type so the alias read
+	    // sees the real name, not "int".
+	    if ( pgm.peekToken()
+	      && pgm.peekToken()->type() == TokenType::ttDataType )
+		pgm.nextToken();
 	}
 
 	tn = pgm.nextToken();
@@ -36422,9 +44130,15 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    base_source_spelling =
 		template_type_arg_spelling((TokenDataType *)tn, "");
     }
-    else if ( is_contextual_identifier_token(tn) )
+    else if ( is_contextual_identifier_token(tn)
+	   || tn->id() == TokenID::tkNS )
     {
-	std::string tname = contextual_identifier_name(tn);
+	// A leading `::` (global-scope qualifier, `typedef ::timespec t;`)
+	// carries no name of its own: the empty spelling misses the map and
+	// the qualified-type arm below hands the token to the resolver,
+	// whose global-scope arm owns it.
+	std::string tname = tn->id() == TokenID::tkNS
+			  ? std::string() : contextual_identifier_name(tn);
 	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
@@ -36481,7 +44195,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // the qualifier/star loop in parseDeclaration.
     while ( pgm.peekToken()
 	 && (pgm.peekToken()->id() == TokenID::tkMul
-	  || is_post_pointer_qualifier_token(pgm.peekToken())) )
+	  || is_cv_qualifier_token(pgm.peekToken())) )
     {
 	if ( pgm.peekToken()->id() == TokenID::tkMul )
 	    base_dd = pgm.getPointerType(base_dd);
@@ -36542,12 +44256,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     tn = pgm.nextToken();
     TokenBase *alias_tok = tn;   // per-occurrence alias token (CIR origin)
     std::string alias;
-    if ( tn->type() == TokenType::ttIdentifier )
-	alias = ((TokenIdent *)tn)->spelling();
-    else if ( tn->type() == TokenType::ttDataType )
-	alias = ((TokenDataType *)tn)->spelling();
-    else if ( tn->type() == TokenType::ttKeyword )
-	alias = ((TokenKeyword *)tn)->spelling();
+    if ( const char *alias_sp = typedef_alias_spelling(tn) )
+	alias = alias_sp;
     else if ( tn && tn->id() == TokenID::tkSemi
 	   && pgm.is_system_header_path(TokenBase::_parse_file) )
     {
@@ -36670,6 +44380,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
 	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
+	// [temp.type]: the alias carries its underlying so template-argument
+	// identity can desugar (std::streamsize must select the spec keyed
+	// on long) — see template_type_arg_spelling.
+	alias_dd->scalar_alias_of = base_dd;
 	base_dd = alias_dd;
     }
     if ( base_dd && is_incomplete_class_datadef(base_dd) )
@@ -36757,6 +44471,13 @@ DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
 					      std::string &mname,
 					      TokenBase *open_tok)
 {
+    // `(*const name)` / `(*volatile name)` — cv-qualifiers on the POINTER
+    // itself ([dcl.ptr]/1) sit between the '*' and the declarator name.
+    // madc does not model member-pointer constness; consume them. libc++
+    // __functional/function.h:500: `void* (*const __clone)(const void*);`
+    while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+			 || peekToken()->id() == TokenID::tkVOLATILE) )
+	nextToken();
     TokenBase *tn = nextToken();
     if ( !is_contextual_identifier_token(tn) )
 	Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;
@@ -36999,14 +44720,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.nextToken(); // consume tag name
     }
 
-    // optional underlying type: `enum class Tag : int { ... }`. We lower a
-    // scoped enum to a plain C enum / int (I2), so the underlying type only
-    // affects storage width; parse and discard the type tokens here.
+    // optional underlying type: `enum class Tag : int { ... }`. The enum's
+    // storage still lowers to a plain C enum / int (I2); the base is
+    // RESOLVED and RECORDED so __underlying_type / std::underlying_type
+    // answer the declared type (libc++ __atomic/memory_order.h pins
+    // `enum class memory_order : __memory_order_underlying_t` on it).
+    DataDef *fixed_base = NULL;
     tn = pgm.peekToken();
     if ( tn && tn->id() == TokenID::tkTerC )
     {
 	pgm.nextToken(); // consume ':'
-	// skip the underlying-type tokens up to '{'
+	TokenBase *base_tb = pgm.nextToken();
+	TokenDataType *base_tdt = base_tb
+	    ? pgm.resolve_declared_type_token(base_tb, true, true) : NULL;
+	if ( base_tdt )
+	    fixed_base = &base_tdt->definition;
+	// tolerate anything the resolver left (multi-token spellings the
+	// resolver consumed already; this only drains stragglers)
 	while ( (tn = pgm.peekToken())
 	     && tn->id() != TokenID::tkOpBrc
 	     && tn->id() != TokenID::tkSemi )
@@ -37026,7 +44756,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    if ( pgm.datatype_map.find(enum_tag) == pgm.datatype_map.end() )
 	    {
-		DataDef *enum_dd = new DataDefENUM(enum_tag);
+		DataDefENUM *opaque_enum_dd = new DataDefENUM(enum_tag);
+		opaque_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
+		DataDef *enum_dd = opaque_enum_dd;
 		if ( !pgm.class_scope_stack.empty() )
 		{
 		    DataDefCLASS *owner = pgm.class_scope_stack.back();
@@ -37077,7 +44809,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
     DataDef *enum_dd = NULL;
     if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
-	enum_dd = new DataDefENUM(enum_tag);
+	DataDefENUM *def_enum_dd = new DataDefENUM(enum_tag);
+	def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
+	enum_dd = def_enum_dd;
 	if ( !pgm.class_scope_stack.empty() )
 	{
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
@@ -37106,13 +44840,33 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // (`ns::Tag::Value`) finds the chain, and scope-relative `Tag::Value`
     // resolves via resolve_namespace_name_in_scope.
     std::string scoped_ns_key = enum_tag;
-    if ( scoped && !pgm.current_namespace().empty()
+    if ( !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
-    variable_map_t *scope_ns = scoped
+    // [dcl.enum]p11: `Tag::enumerator` names an enumerator of an UNSCOPED
+    // enum too (C++11), so every TAGGED C++ enum gets the pseudo-namespace.
+    // Scoped enumerators live ONLY here (no bare-name leak); unscoped ones
+    // ALSO keep their bare registrations below. C mode has no `::`.
+    variable_map_t *scope_ns = !enum_tag.empty()
+			     && (scoped || !pgm.is_c_mode())
 	? &pgm.namespace_variables_for_write(scoped_ns_key) : NULL;
 
+    // [dcl.enum]/5: enumerators already registered are usable in the REST of
+    // this enum's own body (`general = fixed | scientific`). Scoped
+    // enumerators live only in the pseudo-namespace, so point the constant
+    // folder at it for the duration of the body parse. RAII-restored so a
+    // Throw mid-body cannot leave the pointer dangling.
+    struct ScopedEnumNsGuard {
+	Program &p;
+	variable_map_t *saved;
+	ScopedEnumNsGuard(Program &pgm_, variable_map_t *ns)
+	    : p(pgm_), saved(pgm_.active_scoped_enum_ns)
+	{ if ( ns ) p.active_scoped_enum_ns = ns; }
+	~ScopedEnumNsGuard() { p.active_scoped_enum_ns = saved; }
+    } scoped_enum_ns_guard(pgm, scope_ns);
+
     int64_t val = 0;
+    int64_t enum_min_val = 0, enum_max_val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
@@ -37150,8 +44904,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // `enum { __value = N };`. Not a global leak — the correct C++
 	    // semantic (the bare name does not resolve outside the class).
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
-	    owner->static_member_types[name] = &ddINT;
+	    // A TAGGED enum's enumerator carries the enum type (so it can
+	    // bind an enum-typed parameter); anonymous stays int — the
+	    // libstdc++ `enum { __value = N };` trait idiom depends on it.
+	    owner->static_member_types[name] = enum_dd ? enum_dd : &ddINT;
 	    owner->static_member_const_values[name] = val;
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling (`format::auto_format`) —
+		// the pseudo-namespace twin of the class-member registration.
+		Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
+					      1, NULL, true);
+		evar->set(val);
+		evar->makeconstant();
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
+	    }
 	    DBG(std::cout << "TokenENUM::parse() " << owner->name << "::"
 		<< name << " = " << val << std::endl);
 	}
@@ -37172,8 +44941,20 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		    << name << " (" << (ntok && ntok->file ? ntok->file : "?")
 		    << ")" << std::endl);
 	    }
+	    if ( scope_ns )
+	    {
+		// [dcl.enum]p11 qualified spelling — the SAME Variable,
+		// indexed a second time under the tag's pseudo-namespace.
+		pgm.pack_tap_name(scoped_ns_key + "::" + name,
+				  Program::pdkVariable);	// B4a tap
+		(*scope_ns)[name] = evar;
+	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
+	if ( val < enum_min_val )
+	    enum_min_val = val;
+	if ( val > enum_max_val )
+	    enum_max_val = val;
 	val++;
     }
 
@@ -37181,9 +44962,64 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.Throw << "Unterminated enum" << flush;
     pgm.nextToken(); // consume '}'
 
+    // [dcl.enum] underlying type for an UNFIXED enum, the canon g++/clang
+    // rule (verified against both, 2026-07-28): scoped -> int; unscoped with
+    // a negative enumerator -> int (long if it does not fit); all
+    // non-negative -> unsigned int (unsigned long if it does not fit).
+    if ( DataDefENUM *under_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+	if ( !under_edd->underlying )
+	{
+	    if ( scoped )
+		under_edd->underlying = &ddINT32;
+	    else if ( enum_min_val < 0 )
+		under_edd->underlying =
+		    (enum_min_val >= INT32_MIN && enum_max_val <= INT32_MAX)
+		    ? static_cast<DataDef *>(&ddINT32)
+		    : static_cast<DataDef *>(&ddINT64);
+	    else
+		under_edd->underlying =
+		    (enum_max_val <= (int64_t)UINT32_MAX)
+		    ? static_cast<DataDef *>(&ddUINT32)
+		    : static_cast<DataDef *>(&ddUINT64);
+	}
+
     // consume optional semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
+    else if ( pgm.peekToken() )
+    {
+	// Trailing declarator on the definition (`enum [Tag] {...} e;`, the
+	// bit-field member `enum : char32_t {...} __status : 1 {__ok};` —
+	// libc++ __format/unicode.h): re-feed the just-defined enum as a bare
+	// type token so the CALLER parses `EnumType declarator...` — the same
+	// model the forward-reference path above and the class walk's
+	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
+	// its variable's type is the fixed underlying when declared, int
+	// otherwise (the C model madc's enums lower to). Re-feed ONLY when
+	// the next token can actually START a declarator — a '}' (enum as
+	// the last construct of an enclosing body) or other closer must not
+	// receive a dangling type token. The typedef-enum arm reads its
+	// ALIAS name itself and drops the re-fed type token.
+	TokenBase *after_body = pgm.peekToken();
+	bool declarator_follows =
+	       after_body->type() == TokenType::ttIdentifier
+	    || after_body->type() == TokenType::ttDataType
+	    || after_body->id() == TokenID::tkMul
+	    || after_body->id() == TokenID::tkBand
+	    || after_body->id() == TokenID::tkOpBrk;
+	if ( declarator_follows )
+	{
+	    DataDef *refeed_dd = enum_dd;
+	    if ( !refeed_dd )
+		refeed_dd = fixed_base ? fixed_base : &ddINT;
+	    TokenDataType *refeed =
+		new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
+	    refeed->file = tn->file;
+	    refeed->line = tn->line;
+	    refeed->column = tn->column;
+	    pgm.pushToken(refeed);
+	}
+    }
 
     return NULL;
 }
@@ -37303,6 +45139,19 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
     bool handled = false;
     try
     {
+	// `extern __attribute__((visibility("default"))) istream cin;` —
+	// libc++ spells _LIBCPP_EXPORTED_FROM_ABI as a GNU attribute between
+	// `extern` and the type (<iostream>:54). Attributes appertain to the
+	// declaration; consume them with the shared helper.
+	while ( is_attribute_identifier_token(tn) )
+	{
+	    TokenBase *next = pgm.consume_gnu_attributes(pgm.nextToken());
+	    if ( next )
+		pgm.pushToken(next);
+	    tn = pgm.peekToken();
+	    if ( !tn )
+		pgm.Throw << "Unexpected end of input after 'extern'" << flush;
+	}
 	if ( tn->type() == TokenType::ttString )
 	{
 	    TokenStr *linkage = static_cast<TokenStr *>(pgm.nextToken());
@@ -37389,6 +45238,27 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 		TokenBase *type_tb = pgm.nextToken();
 		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi));
+	    }
+	    else
+	    {
+		// Not in the flat map: a NAMESPACE-SCOPED typedef used
+		// unqualified inside its still-open namespace block — libc++
+		// <iostream>:54 `extern ... istream cin;` parses inside
+		// `namespace std { inline namespace __1 {`, and its istream
+		// typedef registers under the namespace key. The one
+		// declared-type resolver searches the namespace chains;
+		// restore the stream when it declines so the throw below
+		// still points at the extern's head.
+		TokenStream::Pos esaved = pgm.tokens.savepos();
+		TokenBase *type_tb = pgm.nextToken();
+		if ( TokenDataType *dt =
+			pgm.resolve_declared_type_token(type_tb, true, true) )
+		{
+		    handled = true;
+		    result = pgm.parseDeclaration(dt);
+		}
+		else
+		    pgm.tokens = esaved;
 	    }
 	    }
 	}
@@ -37478,7 +45348,10 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenDEFER::parse()" << std::endl);
 
-    TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    // File-scope in script mode: the defer registers on the synthesized
+    // main's compound (script_statement_scope) — scope exit is the end of
+    // the synthesized main. Standards modes keep the loud reject.
+    TokenCpnd *code = pgm.script_statement_scope(this);
     if ( !code )
 	pgm.Throw(this) << "'defer' must be inside a function or block" << flush;
 
@@ -37596,8 +45469,11 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    else if ( dt == DataType::dtINT || dt == DataType::dtINT32
 	      || dt == DataType::dtINT64 )
 		tag = 1; // MADC_EXCEPT_INT
-	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT )
-		tag = 2; // MADC_EXCEPT_DOUBLE
+	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT
+	           || dt == DataType::dtLDOUBLE )
+		tag = 2; // MADC_EXCEPT_DOUBLE (long double narrows here, as it
+			 // did when it WAS a double — the exception runtime
+			 // carries one real payload width)
 	    else if ( dt == DataType::dtCHAR )
 		tag = 3; // MADC_EXCEPT_CSTR (char* conceptually)
 	    catch_types.push_back(tag);
@@ -38120,99 +45996,90 @@ bool Program::consume_ellipsis()
 std::vector<TokenBase *> Program::collect_template_default_argument()
 {
     std::vector<TokenBase *> out;
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     while ( peekToken() )
     {
 	TokenBase *pt = peekToken();
-	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	if ( d.angle == 0 && d.paren == 0 && d.square == 0
 	  && is_template_param_separator(pt) )
 	    return out;
 	TokenBase *t = nextToken();
-	if ( t->id() == TokenID::tkLT )
+	// `>>` is the only token this scan REWRITES: when it closes template
+	// argument lists it must reach `out` as separate `>` tokens. Ask
+	// DelimDepth how many levels it actually closed rather than assuming —
+	// inside parens opened within the list (`A<(x >> y)>`) it closes NONE
+	// and the shift must survive verbatim.
+	if ( t->id() == TokenID::tkBSR )
 	{
-	    out.push_back(t->clone());
-	    ++angle_depth;
-	}
-	else if ( t->id() == TokenID::tkGT )
-	{
-	    out.push_back(t->clone());
-	    if ( angle_depth > 0 )
-		--angle_depth;
-	}
-	else if ( t->id() == TokenID::tkBSR )
-	{
-	    if ( angle_depth > 1 )
+	    int before = d.angle;
+	    d.update(t);
+	    int closed = before - d.angle;
+	    if ( closed == 0 )
+		out.push_back(t->clone());
+	    else if ( closed > 1 )
 	    {
 		out.push_back(new TokenGT());
 		out.push_back(new TokenGT());
-		angle_depth -= 2;
-	    }
-	    else if ( angle_depth > 0 )
-	    {
-		out.push_back(new TokenGT());
-		angle_depth = 0;
-		pushToken(new TokenGT());
 	    }
 	    else
-		out.push_back(t->clone());
+	    {
+		// Only one list was open; the second `>` belongs to the
+		// enclosing context, so hand it back to the stream.
+		out.push_back(new TokenGT());
+		pushToken(new TokenGT());
+	    }
+	    continue;
 	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	{
-	    out.push_back(t->clone());
-	    ++paren_depth;
-	}
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	{
-	    out.push_back(t->clone());
-	    --paren_depth;
-	}
-	else if ( t->id() == TokenID::tkOpSqr )
-	{
-	    out.push_back(t->clone());
-	    ++square_depth;
-	}
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	{
-	    out.push_back(t->clone());
-	    --square_depth;
-	}
-	else
-	    out.push_back(t->clone());
+	out.push_back(t->clone());
+	d.update(t);
     }
     return out;
 }
 
-void Program::skip_template_id_suffix()
+void Program::skip_template_id_suffix(std::vector<TokenBase *> *out)
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return;
-    nextToken(); // consume '<'
-    int depth = 1;
-    while ( depth > 0 && peekToken() )
+    // DelimDepth owns the whole rule: the `<` only opens in a template-id head
+    // context, a `>` inside parens opened within the list is greater-than, and
+    // an operator-function-id (`operator<`, `operator>>`) is consumed opaquely
+    // as part of a NAME — so `__void_t<decltype(operator<(a,b))>` balances.
+    // With `out`, the consumed suffix is also CAPTURED (clones) — the
+    // mem-initializer name resolver reads it; a NULL out skips as before.
+    DelimDepth d;
+    do
     {
 	TokenBase *t = nextToken();
-	// operator-function-id (`operator<`, `operator>>`, …): the operator
-	// symbol is part of a NAME, never an angle bracket — consume it opaquely
-	// so e.g. `__void_t<decltype(operator<(a,b))>` balances correctly.
-	if ( isOperatorIdStart(t) )
+	int before = d.angle;
+	delimStepStream(t, d);
+	// A merged `>>` (tkBSR) closes TWO levels. Arriving with only ONE of
+	// ours open (`enable_if_t<..., int>>` flush against the ENCLOSING
+	// list's close — libc++ uses_allocator_construction.h:186), the
+	// second `>` belongs to the enclosing context: hand it back
+	// (collect_template_default_argument's rule). Inside parens opened
+	// within the list the BSR closed nothing (d.angle unchanged) and
+	// stays a shift — no pushback.
+	if ( t->id() == TokenID::tkBSR && before == 1 && d.angle == 0 )
 	{
-	    parseOperatorId(t);
-	    continue;
+	    if ( out )
+		out->push_back(new TokenGT());
+	    pushToken(new TokenGT());
 	}
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT )
-	    --depth;
-	else if ( t->id() == TokenID::tkBSR )
+	else if ( out )
 	{
-	    if ( depth > 1 )
-		depth -= 2;
+	    // Capture what the CONSUMED token contributed: a BSR that closed
+	    // two of our levels reads back as two `>`s; one that closed none
+	    // (inside parens within the list) stays a shift, verbatim.
+	    if ( t->id() == TokenID::tkBSR && before - d.angle == 2 )
+	    {
+		out->push_back(new TokenGT());
+		out->push_back(new TokenGT());
+	    }
 	    else
-		depth = 0;
+		out->push_back(t->clone());
 	}
     }
+    while ( d.angle > 0 && peekToken() );
 }
 
 std::vector<DataDef *> Program::capture_call_template_args()
@@ -38221,25 +46088,15 @@ std::vector<DataDef *> Program::capture_call_template_args()
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return out;
     nextToken(); // consume '<'
-    // Opaque-bail: consume the remainder of the list (depth already 1, as in
-    // skip_template_id_suffix after its '<') and report no captured args.
+    // Opaque-bail: rewind the list to a fresh '<' and let the ONE owner walk
+    // it (skip_template_id_suffix / DelimDepth). The hand-rolled ++depth this
+    // replaces counted `sizeof(value_type) < __alignment` as a nested open —
+    // a `<` after `)` is the less-than OPERATOR — and ran the token stream
+    // dry across the rest of the file (libc++ basic_string::__recommend).
+    // Reports no captured args.
     auto bail = [&]() -> std::vector<DataDef *> {
-	int depth = 1;
-	while ( depth > 0 && peekToken() )
-	{
-	    TokenBase *t = nextToken();
-	    if ( isOperatorIdStart(t) )
-	    {
-		parseOperatorId(t);
-		continue;
-	    }
-	    if ( t->id() == TokenID::tkLT )
-		++depth;
-	    else if ( t->id() == TokenID::tkGT )
-		--depth;
-	    else if ( t->id() == TokenID::tkBSR )
-		depth = depth > 1 ? depth - 2 : 0;
-	}
+	pushToken(new TokenLT());
+	skip_template_id_suffix();
 	return std::vector<DataDef *>();
     };
     for (;;)
@@ -38261,14 +46118,32 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    dd = &adt->definition;
 	else
 	{
-	    // NON-TYPE template argument (`addN<5>`, `get<0>`): not a type, so fold
-	    // it to an integer constant and carry the value as a DataDef whose NAME
-	    // is the decimal spelling. The fn-template binding/substitution path
-	    // detects non-type-ness via the template's typeparam_is_type and emits a
-	    // TokenInt for it. Single-token literal/foldable arg only (a multi-token
-	    // non-type expression remains an opaque bail — future extension).
+	    // NON-TYPE template argument (`addN<5>`, `get<0>`, or a constant
+	    // EXPRESSION — libc++ basic_string::__recommend's
+	    // `__align_it < sizeof(value_type) < __alignment ? ... : 1 >`):
+	    // collect the argument's balanced token run up to the top-level
+	    // `,` / list close (DelimDepth owns the "`<` after `)` is
+	    // less-than" rule), fold it to an integer constant, and carry the
+	    // value as a DataDef whose NAME is the decimal spelling. The
+	    // fn-template binding/substitution path detects non-type-ness via
+	    // the template's typeparam_is_type and emits a TokenInt for it.
+	    std::vector<TokenBase *> ntoks;
+	    ntoks.push_back(at);
+	    DelimDepth d;
+	    d.update(at);
+	    while ( peekToken() )
+	    {
+		TokenBase *pk = peekToken();
+		if ( d.top()
+		  && (pk->id() == TokenID::tkComma
+		   || pk->id() == TokenID::tkGT
+		   || pk->id() == TokenID::tkBSR) )
+		    break;
+		TokenBase *t2 = nextToken();
+		ntoks.push_back(t2);
+		delimStepStream(t2, d, &ntoks);
+	    }
 	    int64_t ntv = 0;
-	    std::vector<TokenBase *> ntoks; ntoks.push_back(at);
 	    if ( !fold_nontype_arg_constant(ntoks, ntv) )
 		return bail();
 	    dd = new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
@@ -38339,6 +46214,17 @@ bool Program::consume_template_parameter_type_suffix()
 	    Throw(member) << "Expecting name after '::' in template parameter type" << flush;
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();
+	consumed = true;
+    }
+    // Pointer / reference declarator suffix on a non-type parameter's type
+    // (`void* = nullptr`, `__enable_if_t<...>* = nullptr`, `T* p`): part of
+    // the parameter's TYPE, so the caller sees the optional parameter name /
+    // '=' / separator next.
+    while ( peekToken() && (peekToken()->id() == TokenID::tkMul
+			 || peekToken()->id() == TokenID::tkBand
+			 || peekToken()->id() == TokenID::tkLand) )
+    {
+	nextToken();
 	consumed = true;
     }
     return consumed;
@@ -38478,57 +46364,26 @@ void Program::skip_constraint_expression()
 void Program::skip_template_nonclass_declaration(TokenBase *first,
 					       std::vector<TokenBase *> *seen)
 {
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
-    bool consume_operator_spelling = false;
-    int operator_paren_depth = 0;
-    int operator_square_depth = 0;
+    // DelimDepth owns the NESTING rule (its `<` guard is the union of this
+    // function's old paren test and the template-id-head test), and
+    // delimStepStream() consumes an operator-function-id opaquely — including a
+    // conversion-function-id, which the parser's strict reader rejects. The
+    // operator's own symbol tokens are appended to `seen` so signature
+    // extraction still sees the full operator-id.
+    DelimDepth d;
     TokenBase *t = first;
     while ( t )
     {
 	if ( seen )
 	    seen->push_back(t);
-	if ( operator_paren_depth > 0 )
-	{
-	    if ( t->id() == TokenID::tkOpBrk )
-		++operator_paren_depth;
-	    else if ( t->id() == TokenID::tkClBrk )
-		--operator_paren_depth;
-	    t = nextToken();
-	    continue;
-	}
-	if ( operator_square_depth > 0 )
-	{
-	    if ( t->id() == TokenID::tkOpSqr )
-		++operator_square_depth;
-	    else if ( t->id() == TokenID::tkClSqr )
-		--operator_square_depth;
-	    t = nextToken();
-	    continue;
-	}
-	if ( consume_operator_spelling )
-	{
-	    consume_operator_spelling = false;
-	    if ( t->id() == TokenID::tkOpBrk )
-		operator_paren_depth = 1;
-	    else if ( t->id() == TokenID::tkOpSqr )
-		operator_square_depth = 1;
-	    t = nextToken();
-	    continue;
-	}
-	if ( t->id() == TokenID::tkOPEROVER )
-	    consume_operator_spelling = true;
 	// A TRAILING requires-clause (between the declarator and the function
 	// body: `... noexcept(...) requires requires { ... } { body }`): the
 	// constraint is consumed as a unit so a requires-expression's braces
 	// are never mistaken for the body brace below. Constraint tokens are
 	// deliberately not appended to `seen` (signature extraction must not
 	// see them).
-	else if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
-	       && brace_depth == 0 && is_contextual_identifier_token(t)
-	       && contextual_identifier_name(t) == "requires" )
+	if ( d.top() && is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "requires" )
 	{
 	    if ( seen && !seen->empty() && seen->back() == t )
 		seen->pop_back();
@@ -38536,41 +46391,13 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	    t = nextToken();
 	    continue;
 	}
-	// Track template angle brackets ONLY outside parens/subscripts. Inside
-	// `(...)` or `[...]` a `<`/`>` is a comparison/shift operator, not a
-	// template bracket — e.g. a trailing return `-> decltype(a < b)` or
-	// `decltype(forward<_Tp>(t) < forward<_Up>(u))`. Without this guard a lone
-	// `<` bumped angle_depth with no matching `>`, so the body `{` was treated
-	// as nested (the angle_depth!=0 check below) and the declaration was
-	// consumed to EOF ("Unexpected end of data"). Inside parens the `()`
-	// balancing alone locates the body brace.
-	else if ( t->id() == TokenID::tkLT && paren_depth == 0 && square_depth == 0 )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0
-		&& paren_depth == 0 && square_depth == 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0
-		&& paren_depth == 0 && square_depth == 0 )
+	if ( t->id() == TokenID::tkOpBrc )
 	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	{
-	    if ( paren_depth != 0 || square_depth != 0 || angle_depth != 0
-	      || brace_depth != 0 )
+	    // Decided BEFORE the depth update: a `{` at top level is the body,
+	    // anything deeper is nested.
+	    if ( !d.top() )
 	    {
-		++brace_depth;
+		d.update(t);
 		t = nextToken();
 		continue;
 	    }
@@ -38588,12 +46415,9 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 		nextToken();
 	    return;
 	}
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-	else if ( t->id() == TokenID::tkSemi
-	       && angle_depth == 0 && paren_depth == 0 && square_depth == 0
-	       && brace_depth == 0 )
+	if ( t->id() == TokenID::tkSemi && d.top() )
 	    return;
+	delimStepStream(t, d, seen);
 	t = nextToken();
     }
 }
@@ -38714,9 +46538,13 @@ static std::string skipped_template_function_name(TokenBase *tb)
 
 static bool ignored_template_declarator_call_name(const std::string &name)
 {
+    // "explicit" covers C++20 conditional explicit ([dcl.fct.spec]p2):
+    // `explicit ( const-expr ) Ctor ( params )` — libc++ ships it under
+    // -std=c++17 (tuple's variadic ctors), and reading `explicit (` as the
+    // declarator name silently dropped those ctors from registration.
     return name == "decltype" || name == "noexcept" || name == "sizeof"
 	|| name == "alignof" || name == "typeid" || name == "__attribute__"
-	|| name == "__attribute";
+	|| name == "__attribute" || name == "explicit";
 }
 
 static DataDef *skipped_template_function_return_type(
@@ -38745,18 +46573,31 @@ static size_t skipped_template_function_declarator_name_index(
 	if ( d.top() && token_is_operator_id_start(t) )
 	{
 	    size_t span = operator_id_token_span(tokens, i);
-	    if ( span && i + span < tokens.size() && tokens[i + span]
-	      && tokens[i + span]->id() == TokenID::tkOpBrk )
+	    if ( span )
 	    {
-		if ( name_out )
+		size_t after = i + span;
+		// A friend TEMPLATE-SPECIALIZATION declarator carries a
+		// template-id suffix between the operator-id and the parameter
+		// list ([temp.friend]): libc++ basic_string's
+		// `friend basic_string operator+ <>(const basic_string&, ...)`.
+		// Skip the balanced <...> run; the declarator NAME is still the
+		// operator-id (the suffix only pins the specialization).
+		if ( after < tokens.size() && tokens[after]
+		  && tokens[after]->id() == TokenID::tkLT )
+		    after = template_id_suffix_end(tokens, after) + 1;
+		if ( after < tokens.size() && tokens[after]
+		  && tokens[after]->id() == TokenID::tkOpBrk )
 		{
-		    std::string nm("operator");
-		    for ( size_t k = i + 1; k < i + span; ++k )
-			if ( tokens[k] )
-			    nm += template_token_fragment(tokens[k]);
-		    *name_out = nm;
+		    if ( name_out )
+		    {
+			std::string nm("operator");
+			for ( size_t k = i + 1; k < i + span; ++k )
+			    if ( tokens[k] )
+				nm += template_token_fragment(tokens[k]);
+			*name_out = nm;
+		    }
+		    return i;
 		}
-		return i;
 	    }
 	}
 	// function declarator: a top-level '(' preceded by a name token marks
@@ -38857,14 +46698,226 @@ static bool skipped_template_variable(
     return true;
 }
 
-// Extract the MEMBER (inner) template-parameter names + pack-ness from the inner
-// `template<...>` head of an out-of-line member-template definition (the leading
-// `template < ... >` of `template<class U> RET S<T>::f(U){body}`). Used to set the
-// monomorphized member's template_param_names/is_pack consistently with the
-// attached member_template_decl. Handles `class U` / `typename U` / `...` packs /
-// `= default`; an unnamed param is skipped (rare in member templates).
+struct ParsedTemplateParameterList {
+    std::vector<std::string> names;
+    std::vector<std::vector<TokenBase *> > defaults;
+    std::vector<std::vector<TokenBase *> > constraints;
+    std::vector<bool> is_type;
+    std::vector<bool> is_pack;
+    bool has_non_type_params;
+
+    ParsedTemplateParameterList() : has_non_type_params(false) {}
+};
+
+// `template <Concept Name>` — a type-constraint head ([temp.param]/4): the
+// parameter is a constrained TYPE parameter, though the token shape matches a
+// non-type parameter (`size_t _Np`). The head naming a registered concept is
+// the discriminator. madc does not evaluate the constraint — the param
+// classifies exactly like `class Name` (the same inert-placeholder model as
+// the concept-definition arm in TokenTEMPLATE::parse).
+static bool template_param_head_is_concept(Program &pgm, TokenBase *token)
+{
+    std::string head;
+    if ( token->type() == TokenType::ttDataType )
+	head = ((TokenDataType *)token)->definition.name;
+    else
+	head = contextual_identifier_name(token);
+    if ( head.empty() )
+	return false;
+    if ( pgm.concept_map.count(head) )
+	return true;
+    return !pgm.current_namespace().empty()
+	&& pgm.concept_map.count(pgm.current_namespace() + "::" + head);
+}
+
+// Parse one template-parameter-list after its opening '<'. This is the single
+// owner for ordinary template declarations and the retained inner head of an
+// out-of-line member-template definition.
+static void parse_template_parameter_list(
+	Program &pgm, ParsedTemplateParameterList &out)
+{
+    auto add_parameter = [&](const std::string &name, bool is_type,
+			      bool is_pack = false)
+    {
+	out.names.push_back(name);
+	out.is_type.push_back(is_type);
+	out.is_pack.push_back(is_pack);
+    };
+    auto capture_type_suffix = [&pgm](TokenBase *head,
+				      std::vector<TokenBase *> &run) -> bool
+    {
+	TokenStream::Pos before = pgm.tokens.savepos();
+	size_t before_size = pgm.tokens.size();
+	bool consumed_any = pgm.consume_template_parameter_type_suffix();
+	size_t consumed = before_size > pgm.tokens.size()
+		? before_size - pgm.tokens.size() : 0;
+	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
+	if ( consumed_any && head && popped.size() == consumed )
+	{
+	    run.push_back(head->clone());
+	    for ( TokenBase *p : popped )
+		if ( p )
+		    run.push_back(p->clone());
+	}
+	return consumed_any;
+    };
+
+    size_t anonymous_index = 0;
+    for (;;)
+    {
+	std::vector<TokenBase *> constraint;
+	TokenBase *token = pgm.nextToken();
+	if ( pgm.consume_template_close(token) )
+	    break;
+	if ( token->id() == TokenID::tkTEMPLATE )
+	{
+	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+		pgm.Throw(token) << "Expecting '<' after template parameter template" << flush;
+	    pgm.skip_template_id_suffix();
+	    TokenBase *intro = pgm.nextToken();
+	    if ( !is_template_type_param_intro(intro) )
+		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_template_parameter_decl_name(pgm.peekToken()) )
+		    add_parameter(template_parameter_decl_name(
+			pgm.nextToken()), false, true);
+		else
+		    add_parameter("__anon_ttpack"
+			+ std::to_string(anonymous_index++), false, true);
+	    }
+	    else if ( pgm.peekToken()
+		   && (is_template_param_separator(pgm.peekToken())
+		    || pgm.peekToken()->id() == TokenID::tkAssign) )
+		add_parameter("__anon_ttparam"
+		    + std::to_string(anonymous_index++), false);
+	    else
+	    {
+		token = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(token) )
+		    pgm.Throw(token) << "Expecting template-template parameter name" << flush;
+		add_parameter(template_parameter_decl_name(token), false);
+	    }
+	    out.has_non_type_params = true;
+	}
+	else if ( is_template_type_param_intro(token) )
+	{
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_parameter(contextual_identifier_name(
+			pgm.nextToken()), true, true);
+		else
+		    add_parameter("__anon_tpack"
+			+ std::to_string(anonymous_index++), true, true);
+		out.has_non_type_params = true;
+	    }
+	    else if ( pgm.peekToken()
+		   && is_template_param_separator(pgm.peekToken()) )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
+	    else if ( pgm.peekToken()
+		   && pgm.peekToken()->id() == TokenID::tkAssign )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
+	    else
+	    {
+		token = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(token) )
+		    pgm.Throw(token) << "Expecting type-parameter name in template<>" << flush;
+		if ( pgm.peekToken()
+		  && (pgm.peekToken()->id() == TokenID::tkLT
+		   || pgm.peekToken()->id() == TokenID::tkNS) )
+		{
+		    capture_type_suffix(token, constraint);
+		    if ( pgm.peekToken()
+		      && is_template_parameter_decl_name(pgm.peekToken()) )
+			pgm.nextToken();
+		    add_parameter("__anon_ntparam"
+			+ std::to_string(anonymous_index++), false);
+		    out.has_non_type_params = true;
+		}
+		else
+		    add_parameter(template_parameter_decl_name(token), true);
+	    }
+	}
+	else if ( token->type() == TokenType::ttIdentifier
+	       || token->type() == TokenType::ttDataType )
+	{
+	    // A concept head declares a constrained TYPE parameter — classify
+	    // like `class Name`, with an EMPTY constraint run (runs carry a
+	    // NON-type param's declared-type SFINAE; consumers must not read a
+	    // concept head as a declared type). libc++'s
+	    // `template <__fmt_char_type _CharT> class __output_buffer` broke
+	    // here: _CharT classified non-type wrecked the member parse.
+	    bool head_is_concept = template_param_head_is_concept(pgm, token);
+	    bool qualified_type = capture_type_suffix(token, constraint);
+	    if ( head_is_concept )
+		constraint.clear();
+	    TokenBase *parameter_name = pgm.peekToken();
+	    if ( pgm.consume_ellipsis() )
+	    {
+		if ( pgm.peekToken()
+		  && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_parameter(contextual_identifier_name(
+			pgm.nextToken()), head_is_concept, true);
+		else
+		    add_parameter((head_is_concept ? "__anon_tpack"
+						   : "__anon_ntpack")
+			+ std::to_string(anonymous_index++),
+			head_is_concept, true);
+		out.has_non_type_params = true;
+	    }
+	    else if ( parameter_name
+		   && is_contextual_identifier_token(parameter_name) )
+	    {
+		pgm.nextToken();
+		add_parameter(contextual_identifier_name(parameter_name),
+			      head_is_concept);
+		if ( !head_is_concept )
+		    out.has_non_type_params = true;
+	    }
+	    else if ( head_is_concept )
+		add_parameter("__anon_tparam"
+		    + std::to_string(anonymous_index++), true);
+	    else if ( qualified_type )
+	    {
+		add_parameter("__anon_ntparam"
+		    + std::to_string(anonymous_index++), false);
+		out.has_non_type_params = true;
+	    }
+	    else if ( token->type() == TokenType::ttIdentifier )
+		add_parameter(static_cast<TokenIdent *>(token)->spelling(), true);
+	    else
+	    {
+		add_parameter("__anon_ntparam"
+		    + std::to_string(anonymous_index++), false);
+		out.has_non_type_params = true;
+	    }
+	}
+	else
+	    pgm.Throw(token) << "Expecting type-parameter name in template<>" << flush;
+
+	out.defaults.push_back(std::vector<TokenBase *>());
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+	{
+	    pgm.nextToken();
+	    out.defaults.back() = pgm.collect_template_default_argument();
+	}
+	out.constraints.push_back(constraint);
+	token = pgm.nextToken();
+	if ( token->id() == TokenID::tkComma )
+	    continue;
+	if ( pgm.consume_template_close(token) )
+	    break;
+	pgm.Throw(token) << "Expecting ',' or '>' in template parameter list" << flush;
+    }
+}
+
 static void extract_inner_template_typeparams(
-	const std::vector<TokenBase *> &decl,
+	Program &pgm, const std::vector<TokenBase *> &decl,
 	std::vector<std::string> &names, std::vector<bool> &is_pack,
 	std::vector<bool> &is_type)
 {
@@ -38872,39 +46925,32 @@ static void extract_inner_template_typeparams(
       || !decl[1] || decl[1]->id() != TokenID::tkLT )
 	return;
     size_t close = template_id_suffix_end(decl, 1);
-    int depth = 0;
-    bool before_eq = true, saw_dots = false, saw_typename = false;
-    std::string last;
-    auto flush = [&]() {
-	if ( !last.empty() )
-	{
-	    names.push_back(last);
-	    is_pack.push_back(saw_dots);
-	    // A param introduced by `typename`/`class` is a TYPE param; one
-	    // introduced by a type-name (`size_t`, `int`, …) is a NON-TYPE param.
-	    is_type.push_back(saw_typename);
-	}
-	last.clear(); before_eq = true; saw_dots = false; saw_typename = false;
-    };
-    for ( size_t i = 2; i < close; ++i )
+    if ( close >= decl.size() )
+	return;
+    std::vector<TokenBase *> head;
+    for ( size_t i = 2; i <= close; ++i )
+	head.push_back(decl[i] ? decl[i]->clone() : NULL);
+
+    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(head));
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    pgm.setTokenContext(NULL, NULL);
+    ParsedTemplateParameterList parsed;
+    try
     {
-	TokenBase *t = decl[i];
-	if ( !t ) continue;
-	if ( t->id() == TokenID::tkLT ) { ++depth; continue; }
-	if ( t->id() == TokenID::tkGT ) { --depth; continue; }
-	if ( depth > 0 ) continue;
-	if ( t->id() == TokenID::tkComma ) { flush(); continue; }
-	if ( t->id() == TokenID::tkAssign ) { before_eq = false; continue; }
-	if ( !before_eq ) continue;
-	if ( t->id() == TokenID::tkDot ) { saw_dots = true; continue; }
-	if ( is_contextual_identifier_token(t) )
-	{
-	    std::string s = contextual_identifier_name(t);
-	    if ( s == "class" || s == "typename" ) { saw_typename = true; continue; }
-	    last = s;
-	}
+	parse_template_parameter_list(pgm, parsed);
     }
-    flush();
+    catch ( ... )
+    {
+	pgm.setTokenContext(saved_cur, saved_prv);
+	pgm.tokens = saved_tokens;
+	throw;
+    }
+    pgm.setTokenContext(saved_cur, saved_prv);
+    pgm.tokens = saved_tokens;
+    names.swap(parsed.names);
+    is_pack.swap(parsed.is_pack);
+    is_type.swap(parsed.is_type);
 }
 
 // An OUT-OF-LINE member DEFINITION of a class template:
@@ -38931,6 +46977,20 @@ static bool skipped_template_outofline_member(
     size_t ni = skipped_template_function_declarator_name_index(tokens, &member);
     if ( ni == tokens.size() || ni < 2 || member.empty() )
 	return false;
+    // An out-of-line DTOR definition (`Class<_Tp,_A>::~Class() {...}` —
+    // __split_buffer's is exactly so): the `~` sits between the `::` and the
+    // declarator name. Record the member as `~Class` so the attach matcher
+    // and the Itanium-bind skip both see the dtor's own name; without this
+    // the recognizer declined and the instance's dtor bound an external
+    // Itanium symbol nothing exports.
+    if ( tokens[ni - 1] && tokens[ni - 1]->id() == TokenID::tkBnot )
+    {
+	if ( ni < 3 || !tokens[ni - 2]
+	  || tokens[ni - 2]->id() != TokenID::tkNS )
+	    return false;
+	member = "~" + member;
+	--ni;			// the walk below starts left of the `::`
+    }
     if ( !tokens[ni - 1] || tokens[ni - 1]->id() != TokenID::tkNS )
 	return false;   // member name not preceded by `::` -> not qualified
     size_t j = ni - 2;
@@ -38973,6 +47033,117 @@ static bool skipped_template_outofline_member(
     member_name_out = member;
     return true;
 }
+
+// Top-level parameter token REGIONS of an out-of-line member def's declarator
+// `(...)`. `()` and `(void)` both yield zero regions. Returns false when no
+// declarator parameter list is found. One walk owns the declarator param
+// list: the arity wrapper below (the plain-ctor attach arm) and the
+// overload-signature gate in register_outofline_member_instantiations both
+// read it.
+static bool outofline_declarator_param_regions(
+	const std::vector<TokenBase *> &decl,
+	std::vector<std::vector<TokenBase *> > &params,
+	size_t *close_out = NULL)
+{
+    if ( close_out )
+	*close_out = decl.size();
+    size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+    if ( ni >= decl.size() )
+	return false;
+    size_t op = ni + 1;
+    while ( op < decl.size()
+	 && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
+	++op;
+    if ( op >= decl.size() )
+	return false;
+    // Scan INSIDE the '(' with the declarator's own paren NOT counted,
+    // exactly like the stream twin (split_upcoming_function_params).
+    // DelimDepth deliberately does not track angles inside parens (see
+    // angle_open_context), so a walk that counted the declarator's '('
+    // would read the comma in `buf<char_type, traits_type>` as a parameter
+    // separator and truncate the first region to `buf < char_type`.
+    DelimDepth d;
+    size_t i = op + 1;
+    std::vector<TokenBase *> cur;
+    while ( i < decl.size() )
+    {
+	TokenBase *t = decl[i];
+	if ( t && d.top() )
+	{
+	    if ( t->id() == TokenID::tkClBrk )
+	    {
+		if ( close_out )
+		    *close_out = i;
+		break;					// the declarator's own ')'
+	    }
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		params.push_back(cur);
+		cur.clear();
+		++i;
+		continue;
+	    }
+	}
+	size_t n = delim_scan_step(decl, i, d);
+	for ( size_t k = 0; k < n && i + k < decl.size(); ++k )
+	    if ( decl[i + k] )
+		cur.push_back(decl[i + k]);
+	i += n;
+    }
+    if ( !cur.empty() )
+	params.push_back(cur);
+    if ( params.size() == 1 && params[0].size() == 1 && params[0][0]
+      && params[0][0]->type() == TokenType::ttDataType
+      && ((TokenDataType *)params[0][0])->definition.rawtype()
+	 == DataType::dtVOID )
+	params.clear();
+    return true;
+}
+
+// The `const` qualifier belongs to the function declarator, after its own
+// parameter list. Captured declarations use this shared token-range query;
+// later exception specifications and attributes may contain more parentheses.
+static bool function_declarator_is_const_member(
+	const std::vector<TokenBase *> &decl)
+{
+    std::vector<std::vector<TokenBase *> > ignored;
+    size_t param_close = decl.size();
+    if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
+      || param_close == decl.size() )
+	return false;
+    for ( size_t i = param_close + 1; i < decl.size(); ++i )
+    {
+	TokenBase *t = decl[i];
+	if ( !t ) continue;
+	if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
+	    break;
+	if ( t->id() == TokenID::tkCONST )
+	    return true;
+    }
+    return false;
+}
+
+// User-parameter ARITY of an out-of-line member def's declarator. Returns
+// (size_t)-1 when no declarator parameter list is found. The plain-ctor
+// attach arm uses it to pick the right ctor overload — the same depth of
+// disambiguation the member-template arm gets from its template-param count;
+// same-arity ctor overloads differing only by type are not separated here.
+static size_t outofline_declarator_param_arity(
+	const std::vector<TokenBase *> &decl)
+{
+    std::vector<std::vector<TokenBase *> > params;
+    if ( !outofline_declarator_param_regions(decl, params) )
+	return (size_t)-1;
+    return params.size();
+}
+
+// Defined with the parse-time method-definition matcher (fe50bc3c); the
+// instantiation-side attach below adopts the same comparator.
+static bool function_explicit_params_match(FuncDef *fd,
+					   const std::vector<ParsedParamSig> &sigs);
+// Defined with the method-definition matcher; the member-template call lane's
+// overload fall-through uses it to gather same-name sibling candidates.
+static std::string strip_overload_suffix(const std::string &tail);
 
 // `template<...> class Owner<T>::Nested { ... };` — an out-of-line NESTED-CLASS
 // definition ([class.nest] + [temp]), shaped [class|struct, Owner, <...>, ::,
@@ -39061,6 +47232,9 @@ static bool template_class_head_is_qualified(Program &pgm)
 // body materializes only on ODR-use (parse_deferred_lazy_body), so unused
 // out-of-line members never instantiate ([temp.inst]p2) — the same lazy model
 // in-class member bodies use.
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle);
+
 void Program::attach_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
@@ -39096,6 +47270,17 @@ void Program::register_outofline_member_instantiations(
 	return;
     std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator it =
 	out_of_line_member_defs.find(defining_namespace + "::" + class_name);
+    // Env-gated probe (MADC_OOL_PROBE=<substr>): every out-of-line attach
+    // request whose class matches — registry key, hit/miss, def count.
+    {
+	static const char *olp = ::getenv("MADC_OOL_PROBE");
+	if ( olp && *olp && class_name.find(olp) != std::string::npos )
+	    fprintf(stderr, "OOLPROBE attach cls=%s::%s reg=%s defs=%d\n",
+		    defining_namespace.c_str(), class_name.c_str(),
+		    registered_mangled.c_str(),
+		    it == out_of_line_member_defs.end()
+			? -1 : (int)it->second.size());
+    }
 #if MADC_DEBUG_FNTPL
     bool dbg_mconstruct_ool = false;
     {
@@ -39131,29 +47316,6 @@ void Program::register_outofline_member_instantiations(
 #endif
     if ( it == out_of_line_member_defs.end() )
 	return;
-    // True if the out-of-line declarator is a `const` member (`...) const {`):
-    // the `const` qualifier sits at paren-depth 0 after the LAST param-list `)`
-    // and before the body `{`. Disambiguates const vs non-const overloads of the
-    // same member (std::_Rb_tree::_M_lower_bound has both).
-    auto def_is_const_member = [](const std::vector<TokenBase *> &decl) -> bool {
-	int depth = 0; size_t last_close = decl.size();
-	for ( size_t i = 0; i < decl.size(); ++i )
-	{
-	    TokenBase *t = decl[i]; if ( !t ) continue;
-	    TokenID id = t->id();
-	    if ( id == TokenID::tkOpBrk ) ++depth;
-	    else if ( id == TokenID::tkClBrk ) { if ( depth > 0 ) { --depth; if ( depth == 0 ) last_close = i; } }
-	    else if ( depth == 0 && id == TokenID::tkOpBrc ) break;
-	}
-	if ( last_close == decl.size() ) return false;
-	for ( size_t i = last_close + 1; i < decl.size(); ++i )
-	{
-	    TokenBase *t = decl[i]; if ( !t ) continue;
-	    if ( t->id() == TokenID::tkOpBrc ) break;
-	    if ( t->id() == TokenID::tkCONST ) return true;
-	}
-	return false;
-    };
 #ifdef MADC_DEBUG_CTORTMPL
     bool dbg_ool = getenv("MADC_DEBUG_CTORTMPL") && class_name.find("pair") != std::string::npos;
     if ( dbg_ool ) fprintf(stderr, "[ool] class=%s::%s ndefs=%zu\n",
@@ -39186,7 +47348,7 @@ void Program::register_outofline_member_instantiations(
 	// other an undefined import. Pick the overload whose const-ness matches THIS
 	// def (and that has no body yet); fall back to findMethod for the common
 	// non-overloaded member.
-	bool def_const = def_is_const_member(def.decl);
+	bool def_const = function_declarator_is_const_member(def.decl);
 	// A CONSTRUCTOR out-of-line def names the class (`pair<T1,T2>::pair`), so
 	// def.member_name is the SOURCE class spelling (== class_name). The in-class
 	// registered member-template ctor's method_display_name is the FULL mangled
@@ -39195,59 +47357,15 @@ void Program::register_outofline_member_instantiations(
 	// by ctor-ness instead, and disambiguate sibling ctor overloads (pair's
 	// piecewise 2-pack vs the private indexed 4-param ctor) by template-param count.
 	bool def_is_ctor = (def.member_name == class_name);
-	Variable *mvar = NULL;
-	for ( Variable *cand : ddc->methods )
-	{
-	    if ( !cand || !cand->data ) continue;
-	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
-	    if ( !cfd ) continue;
-#if MADC_DEBUG_FNTPL
-	    if ( dbg_def )
-		std::cerr << "FNTPL ool-cand var=" << cand->name
-			  << " disp=" << cfd->method_display_name
-			  << " mt=" << (int)cfd->is_member_template
-			  << " decl=" << cfd->member_template_decl.size()
-			  << " const=" << (int)cfd->is_const_method
-			  << " tparams=" << cfd->template_param_names.size()
-			  << std::endl;
-#endif
-	    if ( def_is_ctor )
-	    {
-		if ( !cfd->is_member_template
-		  || cfd->method_display_name != ddc->name
-		  || cfd->template_param_names.size() != def.inner_typeparams.size()
-		  || !cfd->member_template_decl.empty() )
-		    continue;
-	    }
-	    else
-	    {
-		if ( cfd->method_display_name != def.member_name ) continue;
-		if ( cfd->is_const_method != def_const ) continue;
-		if ( def.is_member_template && !cfd->member_template_decl.empty() )
-		    continue;
-	    }
-	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
-	    mvar = cand; break;
-	}
-	if ( !mvar && !def_is_ctor )
-	    mvar = ddc->findMethod(def.member_name);
-#if MADC_DEBUG_FNTPL
-	if ( dbg_def )
-	    std::cerr << "FNTPL ool-pick member=" << def.member_name
-		      << " mvar=" << (mvar ? mvar->name : "(none)")
-		      << std::endl;
-#endif
-#ifdef MADC_DEBUG_TUPLE
-	if ( getenv("MADC_DEBUG_TUPLE") && def.member_name.find("lower_bound") != std::string::npos )
-	    fprintf(stderr, "[OOL] member=%s mvar=%d data=%d already_deferred=%d\n",
-		    def.member_name.c_str(), (int)(mvar != NULL),
-		    (int)(mvar && mvar->data), (int)(mvar && deferred_lazy_bodies.count(mvar->name)));
-#endif
-	if ( !mvar || !mvar->data )
-	    continue;	// no in-class declaration to attach the body to
-	// Already materialized (a re-instantiation, or an overload already bound)?
-	if ( deferred_lazy_bodies.count(mvar->name) )
-	    continue;
+	// A DESTRUCTOR out-of-line def (`__split_buffer<_Tp,_A>::~__split_buffer()`)
+	// records `~` + the SOURCE class spelling; the instance's registered dtor
+	// display-name carries the FLAT instance name — match by dtor-ness (a
+	// class has exactly one destructor).
+	bool def_is_dtor = (def.member_name == "~" + class_name);
+	// The plain-ctor arm below disambiguates sibling ctor overloads by
+	// user-parameter arity; compute it once per def.
+	size_t def_arity = (def_is_ctor && !def.is_member_template)
+	    ? outofline_declarator_param_arity(def.decl) : (size_t)-1;
 
 	std::map<std::string, TokenDataType *> tsubst;
 	std::map<std::string, std::vector<TokenBase *> > toksubst;
@@ -39295,6 +47413,174 @@ void Program::register_outofline_member_instantiations(
 	    sub.push_back(bt->clone());
 	}
 
+	// Signature gate for OVERLOADED non-ctor members: the name+constness
+	// match below cannot separate same-name overloads, and defs are NOT
+	// guaranteed to appear in declaration order (libc++ <ostream> declares
+	// operator<< seventeen times and DEFINES the streambuf* overload
+	// FIRST), so first-available binding attaches every body one overload
+	// over — `cout << 42` then materializes the streambuf* body with an
+	// int32_t parameter. Resolve THIS def's declarator signature from the
+	// SUBSTITUTED tokens, in the instantiated class's scope
+	// ([basic.scope.class]/1 — a parameter may name a nested typedef), and
+	// bind the overload whose signature the def repeats — the same rule
+	// the parse-time matcher (find_method_definition_target) applies. An
+	// unresolved signature keeps the established first-available order.
+	std::vector<ParsedParamSig> def_sigs;
+	bool def_sigs_ok = false;
+	if ( !def_is_ctor && !def.is_member_template )
+	{
+	    size_t same_name = 0;
+	    for ( Variable *cand : ddc->methods )
+	    {
+		FuncDef *cfd = cand && cand->data
+		    ? dynamic_cast<FuncDef *>(cand->type) : NULL;
+		if ( cfd && cfd->method_display_name == def.member_name )
+		    ++same_name;
+	    }
+	    std::vector<std::vector<TokenBase *> > pregions;
+	    if ( same_name > 1
+	      && outofline_declarator_param_regions(sub, pregions) )
+	    {
+		static const char *oolsig = ::getenv("MADC_XTEST_OOLSIG");
+		class_scope_stack.push_back(ddc);
+		def_sigs_ok = true;
+		for ( size_t pi = 0; pi < pregions.size() && def_sigs_ok; ++pi )
+		{
+		    if ( oolsig && *oolsig )
+		    {
+			std::string sp;
+			for ( size_t xi = 0; xi < pregions[pi].size(); ++xi )
+			    { sp += overload_token_spelling(pregions[pi][xi]); sp += ' '; }
+			fprintf(stderr, "[OOLSIG] cls=%s member=%s region[%zu]= %s\n",
+				ddc->name.c_str(), def.member_name.c_str(), pi, sp.c_str());
+		    }
+		    ParsedParamSig sig;
+		    if ( parse_param_sig_from_tokens(pregions[pi], sig) )
+			def_sigs.push_back(sig);
+		    else
+			def_sigs_ok = false;
+		    if ( oolsig && *oolsig )
+			fprintf(stderr, "[OOLSIG]   -> ok=%d base=%s ptr=%d ref=%d const=%d\n",
+				(int)def_sigs_ok,
+				def_sigs_ok && def_sigs.back().base
+				    ? def_sigs.back().base->name.c_str() : "-",
+				def_sigs_ok ? def_sigs.back().pointer_depth : 0,
+				def_sigs_ok ? (int)def_sigs.back().is_ref : -1,
+				def_sigs_ok ? (int)def_sigs.back().is_const : -1);
+		}
+		if ( !class_scope_stack.empty()
+		  && class_scope_stack.back() == ddc )
+		    class_scope_stack.pop_back();
+	    }
+	}
+
+	Variable *mvar = NULL;
+	for ( Variable *cand : ddc->methods )
+	{
+	    if ( !cand || !cand->data ) continue;
+	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
+	    if ( !cfd ) continue;
+#if MADC_DEBUG_FNTPL
+	    if ( dbg_def )
+		std::cerr << "FNTPL ool-cand var=" << cand->name
+			  << " disp=" << cfd->method_display_name
+			  << " mt=" << (int)cfd->is_member_template
+			  << " decl=" << cfd->member_template_decl.size()
+			  << " const=" << (int)cfd->is_const_method
+			  << " tparams=" << cfd->template_param_names.size()
+			  << std::endl;
+#endif
+	    if ( def_is_dtor )
+	    {
+		// The dtor twin of the plain-ctor arm below: match by
+		// dtor-ness (one dtor per class) — the display names cannot
+		// match by string (source spelling vs flat instance name).
+		if ( cfd->is_member_template )
+		    continue;
+		if ( cfd->method_display_name.empty()
+		  || cfd->method_display_name[0] != '~' )
+		    continue;
+	    }
+	    else if ( def_is_ctor && !def.is_member_template )
+	    {
+		// A PLAIN out-of-line ctor definition (`template<...>
+		// bs<N,M>::bs(...) {...}` — libc++ bitset's __bitset chain):
+		// the member-template arm below can never match it, so the
+		// instantiated ctor stayed declaration-only and bound to an
+		// external Itanium import nothing defines. Match a plain
+		// in-class-declared ctor by ctor-ness plus user-parameter
+		// arity; same-arity overloads differing only by type keep
+		// first-candidate-wins (the member-template arm has the same
+		// depth limit via its template-param count).
+		if ( cfd->is_member_template )
+		    continue;
+		if ( !vector_contains_variable(ddc->ctors, cand) )
+		    continue;
+		size_t cand_params = cfd->parameters.empty()
+		    ? 0 : cfd->parameters.size() - 1;
+		if ( def_arity != (size_t)-1 && cand_params != def_arity )
+		    continue;
+	    }
+	    else if ( def_is_ctor )
+	    {
+		if ( !cfd->is_member_template
+		  || cfd->method_display_name != ddc->name
+		  || cfd->template_param_names.size() != def.inner_typeparams.size()
+		  || !cfd->member_template_decl.empty() )
+		    continue;
+	    }
+	    else
+	    {
+		if ( cfd->method_display_name != def.member_name ) continue;
+		if ( cfd->is_const_method != def_const ) continue;
+		if ( cfd->is_member_template != def.is_member_template )
+		    continue;
+		if ( def.is_member_template
+		  && cfd->template_param_names.size()
+		     != def.inner_typeparams.size() )
+		    continue;
+		if ( def.is_member_template && !cfd->member_template_decl.empty() )
+		    continue;
+		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
+		    continue;
+	    }
+	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
+	    mvar = cand; break;
+	}
+	// When the def's signature RESOLVED and matched no overload, DECLINE:
+	// findMethod would hand back an arbitrary same-name overload this loop
+	// just rejected, and binding the body to it is a silent wrong answer —
+	// strictly worse than the attributable undefined-import this leaves.
+	if ( !mvar && !def_is_ctor && !def_sigs_ok )
+	    mvar = ddc->findMethod(def.member_name);
+#if MADC_DEBUG_FNTPL
+	if ( dbg_def )
+	    std::cerr << "FNTPL ool-pick member=" << def.member_name
+		      << " mvar=" << (mvar ? mvar->name : "(none)")
+		      << std::endl;
+#endif
+#ifdef MADC_DEBUG_TUPLE
+	if ( getenv("MADC_DEBUG_TUPLE") && def.member_name.find("lower_bound") != std::string::npos )
+	    fprintf(stderr, "[OOL] member=%s mvar=%d data=%d already_deferred=%d\n",
+		    def.member_name.c_str(), (int)(mvar != NULL),
+		    (int)(mvar && mvar->data), (int)(mvar && deferred_lazy_bodies.count(mvar->name)));
+#endif
+	// Env-gated probe (MADC_OOL_PROBE): the overload this def bound to.
+	{
+	    static const char *olp = ::getenv("MADC_OOL_PROBE");
+	    if ( olp && *olp && class_name.find(olp) != std::string::npos )
+		fprintf(stderr, "OOLPROBE   def=%s mvar=%s%s\n",
+			def.member_name.c_str(),
+			mvar ? mvar->name.c_str() : "(none)",
+			(mvar && deferred_lazy_bodies.count(mvar->name))
+			    ? " (already-deferred)" : "");
+	}
+	if ( !mvar || !mvar->data )
+	    continue;	// no in-class declaration to attach the body to
+	// Already materialized (a re-instantiation, or an overload already bound)?
+	if ( deferred_lazy_bodies.count(mvar->name) )
+	    continue;
+
 	// An out-of-line member TEMPLATE (two-level head): attach its body to the
 	// monomorphized member's member_template_decl so the sub-gap-5 per-call path
 	// (instantiate_member_fn_template_for_call) instantiates it per inner-arg
@@ -39320,15 +47606,38 @@ void Program::register_outofline_member_instantiations(
 	    if ( qni >= 2 && decl2[qni - 1]
 	      && decl2[qni - 1]->id() == TokenID::tkNS )
 		decl2.erase(decl2.begin() + (qni - 2), decl2.begin() + qni);
-	    mfd->is_member_template = true;
-	    mfd->member_template_owner = ddc;
-	    mfd->member_template_decl = decl2;
-	    if ( !def.inner_typeparams.empty() )
+	    // The in-class declaration owns deduction/default/constraint identity.
+	    // An out-of-line definition may rename its parameters (`U` -> `V`), so
+	    // translate the retained body tokens positionally instead of replacing
+	    // that declaration metadata with a second parse's names.
+	    if ( mfd->template_param_names.empty() )
 	    {
 		mfd->template_param_names = def.inner_typeparams;
 		mfd->template_param_is_pack = def.inner_is_pack;
 		mfd->template_param_is_type = def.inner_is_type;
 	    }
+	    else if ( def.inner_typeparams.size()
+		   == mfd->template_param_names.size() )
+	    {
+		std::map<std::string, std::string> renames;
+		for ( size_t i = 0; i < def.inner_typeparams.size(); ++i )
+		    if ( def.inner_typeparams[i] != mfd->template_param_names[i] )
+			renames[def.inner_typeparams[i]] =
+			    mfd->template_param_names[i];
+		for ( size_t i = 0; i < decl2.size() && !renames.empty(); ++i )
+		{
+		    std::string source_name =
+			template_parameter_decl_name(decl2[i]);
+		    std::map<std::string, std::string>::const_iterator ri =
+			renames.find(source_name);
+		    if ( ri != renames.end() )
+			decl2[i] = basic_class_pattern_token_at_source(
+			    new TokenIdent(ri->second.c_str()), decl2[i]);
+		}
+	    }
+	    mfd->is_member_template = true;
+	    mfd->member_template_owner = ddc;
+	    mfd->member_template_decl = decl2;
 #if MADC_DEBUG_FNTPL
 	    if ( dbg_def )
 		std::cerr << "FNTPL ool-attach member=" << def.member_name
@@ -39359,6 +47668,14 @@ void Program::register_outofline_member_instantiations(
 	    body.definition_tokens.push_back(sub[i]);
 	if ( body.definition_tokens.empty() )
 	    continue;
+	// Env-gated probe (MADC_OOL_PROBE): a deferred body was created.
+	{
+	    static const char *olp = ::getenv("MADC_OOL_PROBE");
+	    if ( olp && *olp && class_name.find(olp) != std::string::npos )
+		fprintf(stderr, "OOLPROBE   def=%s -> deferred body %s (%zu toks)\n",
+			def.member_name.c_str(), mvar->name.c_str(),
+			body.definition_tokens.size());
+	}
 	body.full_definition = true;
 	body.file = def.decl.empty() || !def.decl[0] ? NULL : def.decl[0]->file;
 	body.line = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->line;
@@ -39758,7 +48075,6 @@ static bool extract_free_signature(
     // (...), dropping a trailing parameter NAME. Angle tracking keeps a comma
     // inside `<...>` template args from splitting a parameter.
     std::vector<std::string> params;
-    int depth = 0, angle = 0, square = 0;
     size_t pstart = lparen + 1;
     auto flush_param = [&](size_t pend) {
 	size_t real_end = pend;
@@ -39769,30 +48085,23 @@ static bool extract_free_signature(
 	if ( !sp.empty() && sp != "void" )   // `f(void)` == zero params
 	    params.push_back(sp);
     };
-    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
     {
 	TokenBase *t = tokens[i];
-	if ( !t ) continue;
-	TokenID id = (TokenID)t->id();
-	if ( id == TokenID::tkOpBrk ) ++depth;
-	else if ( id == TokenID::tkClBrk )
-	{
-	    if ( depth == 0 && angle == 0 && square == 0 )
+	if ( !t ) { ++i; continue; }
+	// The scan starts INSIDE the parameter list, so "top" here is the
+	// list's own level: no braces were tracked by the original.
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    { flush_param(i); break; }
-	    if ( depth > 0 ) --depth;
-	}
-	else if ( id == TokenID::tkOpSqr ) ++square;
-	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
-	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-	    --angle;
-	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkComma )
 	{
 	    flush_param(i);
 	    pstart = i + 1;
 	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
     }
     // A zero-parameter function template (resolved entirely by explicit
     // template arguments — e.g. libstdc++ `__check_constructible<V,T>()`) is
@@ -39826,26 +48135,23 @@ static bool skipped_template_function_signature_spellings(
 
     auto param_type_end = [&](size_t begin, size_t end) -> size_t {
 	size_t real_end = end;
-	int depth = 0, angle = 0, square = 0;
-	for ( size_t i = begin; i < end && i < tokens.size(); ++i )
+	// Its OWN tracker. This lambda used to mutate the enclosing scan's
+	// depth counters by reference — it is called from flush_param, i.e.
+	// from inside that loop, so every default-argument scan corrupted the
+	// outer parameter walk's idea of where it was.
+	DelimDepth pd;
+	for ( size_t i = begin; i < end && i < tokens.size(); )
 	{
 	    TokenBase *t = tokens[i];
-	    if ( !t ) continue;
-	    TokenID id = (TokenID)t->id();
-	    if ( id == TokenID::tkOpBrk ) ++depth;
-	    else if ( id == TokenID::tkClBrk && depth > 0 ) --depth;
-	    else if ( id == TokenID::tkOpSqr ) ++square;
-	    else if ( id == TokenID::tkClSqr && square > 0 ) --square;
-	    else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	    else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-		--angle;
-	    else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-		angle = angle > 1 ? angle - 2 : 0;
-	    else if ( id == TokenID::tkAssign && depth == 0 && angle == 0 && square == 0 )
+	    if ( !t ) { ++i; continue; }
+	    if ( t->id() == TokenID::tkAssign
+	      && !pd.paren && !pd.angle && !pd.square )
 	    {
 		real_end = i;
 		break;
 	    }
+	    size_t n = delim_scan_step(tokens, i, pd);
+	    i += n ? n : 1;
 	}
 	size_t last = real_end;
 	while ( last > begin && !tokens[last - 1] )
@@ -39864,7 +48170,6 @@ static bool skipped_template_function_signature_spellings(
     };
 
     param_spellings.clear();
-    int depth = 0, angle = 0, square = 0;
     size_t pstart = lparen + 1;
     auto flush_param = [&](size_t pend) {
 	size_t real_end = param_type_end(pstart, pend);
@@ -39872,30 +48177,23 @@ static bool skipped_template_function_signature_spellings(
 	if ( !sp.empty() && sp != "void" )
 	    param_spellings.push_back(sp);
     };
-    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
     {
 	TokenBase *t = tokens[i];
-	if ( !t ) continue;
-	TokenID id = (TokenID)t->id();
-	if ( id == TokenID::tkOpBrk ) ++depth;
-	else if ( id == TokenID::tkClBrk )
-	{
-	    if ( depth == 0 && angle == 0 && square == 0 )
+	if ( !t ) { ++i; continue; }
+	// The scan starts INSIDE the parameter list, so "top" here is the
+	// list's own level: no braces were tracked by the original.
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    { flush_param(i); break; }
-	    if ( depth > 0 ) --depth;
-	}
-	else if ( id == TokenID::tkOpSqr ) ++square;
-	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
-	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-	    --angle;
-	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	if ( outside && t->id() == TokenID::tkComma )
 	{
 	    flush_param(i);
 	    pstart = i + 1;
 	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
     }
     return true;
 }
@@ -40026,13 +48324,10 @@ static bool skipped_template_body_returns_inline_addressof(
 	std::string ns_name = pgm.current_namespace();
 	if ( parts.size() > 1 )
 	    ns_name = join_scope_parts(parts, parts.size() - 1);
-	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	if ( nsi == pgm.namespace_map.end() )
+	Variable *cv = pgm.find_namespace_member(ns_name, callee);
+	if ( !cv )
 	    continue;
-	variable_map_iter vi = nsi->second.find(callee);
-	if ( vi == nsi->second.end() || !vi->second )
-	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(vi->second->type);
+	FuncDef *fd = dynamic_cast<FuncDef *>(cv->type);
 	if ( fd && fd->inline_builtin_kind == "addressof" )
 	    return true;
     }
@@ -40195,7 +48490,8 @@ static bool retain_namespace_fn_template_body(
 	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
 	const std::vector<bool> *typeparam_is_type,
 	const std::vector<bool> *typeparam_is_pack,
-	const std::string &name)
+	const std::string &name,
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints = NULL)
 {
     if ( name.empty() || typeparams.empty() )
 	return false;
@@ -40206,6 +48502,7 @@ static bool retain_namespace_fn_template_body(
     Program::FnTemplateDef ft;
     ft.typeparams = typeparams;
     if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
+    if ( typeparam_constraints ) ft.typeparam_constraints = *typeparam_constraints;
     if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
     if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
     ft.decl = tokens;
@@ -40230,15 +48527,165 @@ static bool retain_namespace_fn_template_body(
     return true;
 }
 
+// [temp.deduct.guide]: `explicit(opt) template-name ( params ) -> template-name<...>;`
+// A deduction guide is NOT a function and declares NO name — it only feeds
+// class-template argument deduction, which madc does not implement yet.
+// Registering it as a skipped function template minted a phantom namespace
+// VALUE named after the class template (libc++ ships guides for array /
+// vector / pair / basic_string); under `using namespace std` that value
+// shadowed the TYPE reading of the same name in every value-lookup lane —
+// `void f(array &ctx, ...)` in a namespace prototype read `array & ctx` as
+// an expression (the ns_madc:56 eval family). The shape is unambiguous:
+// with no decl-specifier a `name(...)` declaration cannot be a function,
+// and the trailing simple-template-id must name the SAME template
+// ([temp.deduct.guide]/3).
+static bool skipped_template_decl_is_deduction_guide(
+	const std::vector<TokenBase *> &tokens)
+{
+    size_t i = 0;
+    // optional explicit-specifier (`explicit` lexes as a plain identifier)
+    if ( i < tokens.size() && tokens[i]
+      && skipped_template_function_name(tokens[i]) == "explicit" )
+	++i;
+    if ( i + 1 >= tokens.size() || !tokens[i] || !tokens[i + 1] )
+	return false;
+    if ( !is_skipped_template_function_name(tokens[i]) )
+	return false;
+    if ( tokens[i + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    std::string head = skipped_template_function_name(tokens[i]);
+    if ( head.empty() )
+	return false;
+    DelimDepth d;
+    size_t j = i + 1;
+    j += delim_scan_step(tokens, j, d);	// the parameter-list '('
+    while ( j < tokens.size() && !d.top() )
+	j += delim_scan_step(tokens, j, d);
+    if ( j >= tokens.size() || !tokens[j]
+      || tokens[j]->id() != TokenID::tkDeRef )
+	return false;
+    TokenBase *trail = j + 1 < tokens.size() ? tokens[j + 1] : NULL;
+    if ( !is_skipped_template_function_name(trail)
+      || skipped_template_function_name(trail) != head )
+	return false;
+    TokenBase *lt = j + 2 < tokens.size() ? tokens[j + 2] : NULL;
+    return lt && lt->id() == TokenID::tkLT;
+}
+
+// The trailing exception specification at tokens[ix] inside a captured
+// declaration run ([except.spec], [dcl.fct] order: cv-quals, ref-qual, then
+// the spec): classify `throw ( ... )` / `noexcept` / `noexcept ( cond )` into
+// FuncDef::NoexceptSpec. A manifest true/false condition classifies
+// NxTrue/NxNone; a dependent condition records NxUnknown — honest, it folds
+// at instantiation when the substituted declarator re-parses. `end_out`
+// (when non-NULL) receives the index just past the specification, for
+// callers that skip rather than record.
+template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
+static uint8_t declarator_exception_spec_at(Program &pgm,
+	const Seq &tokens, size_t ix, size_t *end_out)
+{
+    while ( ix < tokens.size() && tokens[ix]
+	 && (tokens[ix]->id() == TokenID::tkCONST
+	  || tokens[ix]->id() == TokenID::tkVOLATILE
+	  || tokens[ix]->id() == TokenID::tkBand
+	  || tokens[ix]->id() == TokenID::tkLand) )
+	++ix;
+    if ( end_out )
+	*end_out = ix;
+    if ( ix >= tokens.size() || !tokens[ix] )
+	return FuncDef::NxNone;
+    bool is_throw_spec = tokens[ix]->id() == TokenID::tkTHROW
+	&& ix + 1 < tokens.size() && tokens[ix + 1]
+	&& tokens[ix + 1]->id() == TokenID::tkOpBrk;
+    bool is_noexcept = tokens[ix]->id() == TokenID::tkCPPKEYWORD
+	&& contextual_identifier_name(tokens[ix]) == "noexcept";
+    if ( !is_throw_spec && !is_noexcept )
+	return FuncDef::NxNone;
+    if ( is_noexcept
+      && (ix + 1 >= tokens.size() || !tokens[ix + 1]
+	  || tokens[ix + 1]->id() != TokenID::tkOpBrk) )
+    {
+	if ( end_out )
+	    *end_out = ix + 1;
+	return FuncDef::NxTrue;	// bare `noexcept`
+    }
+    // Collect the balanced ( ... ) group with the shared tracker.
+    std::vector<TokenBase *> cond;
+    DelimDepth d;
+    size_t i = ix + 1;
+    i += delim_scan_step(tokens, i, d);		// the opening '('
+    while ( i < tokens.size() && !d.top() )
+    {
+	size_t n = delim_scan_step(tokens, i, d);
+	if ( d.top() )
+	{
+	    i += n;
+	    break;				// the matching ')'
+	}
+	for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
+	    cond.push_back(tokens[i + k]);
+	i += n;
+    }
+    if ( end_out )
+	*end_out = i;
+    if ( is_throw_spec )
+	// `throw()` is the pre-C++11 non-throwing spelling; a non-empty list
+	// still permits throwing the listed types.
+	return cond.empty() ? FuncDef::NxTrue : FuncDef::NxNone;
+    int64_t cv = 0;
+    if ( pgm.fold_nontype_template_arg(cond, template_tokens_spelling(cond), cv) )
+	return cv ? FuncDef::NxTrue : FuncDef::NxNone;
+    return FuncDef::NxUnknown;
+}
+
+// The exception spec of a skipped-template FUNCTION declaration's declarator:
+// locate `name` immediately before its parameter list (the
+// capture_free_function_overload shape), skip the balanced parameter list,
+// classify what follows. NxNone when the declarator is not found.
+static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
+	const std::vector<TokenBase *> &tokens, const std::string &name)
+{
+    size_t lparen = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
+	  && skipped_template_function_name(tokens[i]) == name
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{ lparen = i + 1; break; }
+    }
+    if ( lparen >= tokens.size() )
+	return FuncDef::NxNone;
+    DelimDepth d;
+    size_t i = lparen;
+    i += delim_scan_step(tokens, i, d);		// the opening '('
+    while ( i < tokens.size() && !d.top() )
+	i += delim_scan_step(tokens, i, d);
+    return declarator_exception_spec_at(pgm, tokens, i, NULL);
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
 	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
 	const std::vector<bool> *typeparam_is_type,
-	const std::vector<bool> *typeparam_is_pack)
+	const std::vector<bool> *typeparam_is_pack,
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints = NULL)
 {
-    if ( pgm.current_namespace().empty() )
+    // NO empty-namespace bail. A function template at GLOBAL scope is an
+    // ordinary function template — [temp] does not require a namespace — and
+    // skipping registration made `ident(7)` report "use of undeclared
+    // identifier" while the IDENTICAL template inside `namespace nn` worked.
+    // A CTAD deduction guide arrives here shaped like a bodyless
+    // function-template declaration; it declares NOTHING resolvable
+    // ([temp.deduct.guide]) — skip before any surface records a phantom.
+    if ( skipped_template_decl_is_deduction_guide(tokens) )
+    {
+	DBG(std::cout << "register_skipped_namespace_template_function: "
+		      << "deduction guide skipped in ns '"
+		      << pgm.current_namespace() << "'" << std::endl);
 	return;
+    }
 #ifdef MADC_DEBUG_GETREG
     if ( getenv("MADC_DEBUG_GETREG") )
     {
@@ -40258,7 +48705,8 @@ static void register_skipped_namespace_template_function(
 	// matching operand shape for a retained free operator template.
 	retain_namespace_fn_template_body(pgm, tokens, typeparams,
 					  typeparam_defaults, typeparam_is_type,
-					  typeparam_is_pack, captured_opname);
+					  typeparam_is_pack, captured_opname,
+					  typeparam_constraints);
 	return;
     }
     // W2: also record stream manipulators (endl/flush/ends) for `os << endl`
@@ -40276,7 +48724,7 @@ static void register_skipped_namespace_template_function(
     // std::__detail::__to_chars_10_impl inside stoi/to_string).
     bool retained_body = retain_namespace_fn_template_body(pgm, tokens,
 	typeparams, typeparam_defaults, typeparam_is_type, typeparam_is_pack,
-	name);
+	name, typeparam_constraints);
     variable_map_t &ns = pgm.namespace_variables_for_write(
 	pgm.current_namespace());
     Variable *var = NULL;
@@ -40303,7 +48751,18 @@ static void register_skipped_namespace_template_function(
 	    fd->declaration_only = true;
 	    fd->function_display_name = name;
 	    fd->namespace_name = pgm.current_namespace();
+	    // The identity-return deduce pattern (std::move/forward/declval —
+	    // apply_template_call_return_inference's writer). The noexcept
+	    // slice accidentally REPLACED this call with the spec mint below,
+	    // silently disabling the inference; both belong here.
 	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
+	    // The declaration's exception spec ([except.spec]) — what the
+	    // noexcept operator reads for an UNEVALUATED call that binds this
+	    // placeholder (declval's `T&& declval() noexcept;` never
+	    // instantiates). First declaration wins: later overloads skip this
+	    // mint, so a mixed-spec overload set keeps the first spec.
+	    fd->noexcept_spec =
+		skipped_template_function_noexcept_spec(pgm, tokens, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
 		fd->inline_builtin_kind = "addressof";
 	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
@@ -40351,6 +48810,10 @@ static void recapture_free_overload_surfaces(Program &pgm,
 {
     if ( ns.empty() || tokens.empty() )
 	return;
+    // Lockstep with register_skipped_namespace_template_function: a restored
+    // deduction-guide pattern records no overload surface either.
+    if ( skipped_template_decl_is_deduction_guide(tokens) )
+	return;
     Program::NamespaceScope guard(pgm, ns);
     if ( capture_free_operator_overload(pgm, tokens, typeparams) )
 	return;
@@ -40362,12 +48825,12 @@ static void recapture_free_overload_surfaces(Program &pgm,
 
 // Deduce which template parameter a parameter SPELLING names, and what the
 // argument's DataDef binds it to. Supported shapes: bare `Tp` with optional
-// cv-qualifiers, one trailing '&', and trailing '*'s (each '*' unwraps one
-// pointer level of the argument's type). Returns 0 when the param involves no
-// template parameter (a concrete slot — callers ignore it), 1 when bound
-// (tp_out / dd_out set), -1 when a template parameter appears in a shape this
-// deducer can't handle (template-id, function pointer, '&&', defaulted expr) —
-// the variant is then not instantiable from this call.
+// cv-qualifiers, trailing pointer/reference layers, and an optional direct-pack
+// ellipsis. Returns 0 when the param involves no template parameter (a concrete
+// slot — callers ignore it), 1 when bound (tp_out / dd_out set), -1 when a
+// template parameter appears in a shape this deducer can't handle (template-id,
+// function pointer, defaulted expr) — the variant is then not instantiable from
+// this call.
 static void fn_template_split_words(const std::string &spelling,
 				    std::vector<std::string> &words)
 {
@@ -40391,68 +48854,102 @@ static bool fn_template_word_is_cv(const std::string &w)
 	|| w == "typename" || w == "struct" || w == "class";
 }
 
-// True when a parameter SPELLING is a direct parameter-pack expansion of `pack`
-// (`_Base...`, `_Base&...`, `_Base*...`, optionally cv-qualified).
-static bool fn_template_param_pack_shape(const std::string &spelling,
-					 const std::string &pack,
-					 size_t *stars_out)
+struct FnTemplateParamShape
 {
-    if ( pack.empty() )
-	return false;
+    std::string core;
+    size_t stars;
+    size_t amps;
+    size_t dots;
+    bool cv;
+
+    FnTemplateParamShape() : stars(0), amps(0), dots(0), cv(false) {}
+};
+
+// Parse the simple type-parameter shapes handled by the call deducer. This is
+// the one structural owner for scalar (`T`, `T*`, `T&&`) and direct-pack
+// (`T...`, `T*...`, `T&&...`) parameters; callers decide whether an ellipsis
+// is required for their context.
+static bool fn_template_param_shape(const std::string &spelling,
+				    FnTemplateParamShape &shape)
+{
     std::vector<std::string> words;
     fn_template_split_words(spelling, words);
-    std::string core;
-    size_t dots = 0;
-    size_t stars = 0;
     for ( size_t i = 0; i < words.size(); ++i )
     {
 	const std::string &w = words[i];
 	if ( fn_template_word_is_cv(w) )
+	{
+	    shape.cv = true;
 	    continue;
-	if ( w == "." ) { ++dots; continue; }
-	if ( w == "*" ) { ++stars; continue; }
-	// A reference-qualified pack (`_Args&... __a`, forwarding-ref
-	// `_Args&&... __a`) is still a pack of `_Args`; the bound element type
-	// strips the reference at the binding site (pd->is_reference()).
-	if ( w == "&" )
-	    continue;
-	if ( !core.empty() )
+	}
+	if ( w == "." ) { ++shape.dots; continue; }
+	if ( w == "*" ) { ++shape.stars; continue; }
+	if ( w == "&" ) { ++shape.amps; continue; }
+	if ( !shape.core.empty() )
 	    return false;
-	core = w;
+	shape.core = w;
     }
-    if ( dots != 3 || core != pack )
-	return false;
-    if ( stars_out )
-	*stars_out = stars;
-    return true;
+    return !shape.core.empty() && shape.amps <= 2
+	&& (shape.dots == 0 || shape.dots == 3);
 }
 
 static bool fn_template_param_is_pack(const std::string &spelling,
 				      const std::string &pack)
 {
-    return fn_template_param_pack_shape(spelling, pack, NULL);
+    if ( pack.empty() )
+	return false;
+    FnTemplateParamShape shape;
+    return fn_template_param_shape(spelling, shape)
+	&& shape.dots == 3 && shape.core == pack;
 }
 
-static DataDef *fn_template_pack_arg_element(const std::string &spelling,
-					     const std::string &pack,
-					     DataDef *arg_dd)
+// [temp.deduct.type]/5: a template parameter appearing ONLY in the
+// nested-name-specifier of a type written as a qualified-id is in a
+// NON-DEDUCED CONTEXT. No deduction is attempted from such a parameter, and
+// leaving it unbound is NOT a deduction failure — it is supplied by an
+// explicit template argument ([temp.arg.explicit]) or by its own DEFAULT
+// ([temp.deduct]/8). libc++'s unique_ptr(pointer, deleter) family is the
+// shape: `template <bool _Dummy = true, ...> unique_ptr(pointer,
+// _LValRefType<_Dummy>)` where the deleter parameter's type is spelled
+// `typename __dependent_type<..., _Dummy>::type`.
+//
+// Answers whether every STILL-UNBOUND parameter this spelling names sits
+// there, so the caller can skip structural deduction for the parameter
+// instead of failing the whole candidate.
+//
+// Splitting the qualified spelling is the shared rule
+// (include/spelling_delim.h's split_scope_spelling) — top-level `::` only, so
+// in `vector<typename X<T>::type>` the NESTED `::` does not split and the
+// OUTER template-id still deduces normally.
+static bool fn_template_param_unbound_only_nondeduced(
+	const std::string &spelling,
+	const std::vector<std::string> &typeparams,
+	const std::map<std::string, DataDef *> &binding)
 {
-    if ( !arg_dd )
-	return NULL;
-    size_t stars = 0;
-    if ( !fn_template_param_pack_shape(spelling, pack, &stars) )
-	return NULL;
-    DataDef *dd = arg_dd;
-    if ( dd->is_reference() )
-	dd = static_cast<DataDefPTR *>(dd)->base_type;
-    for ( size_t i = 0; i < stars; ++i )
+    // Every component but the last is the nested-name-specifier.
+    std::vector<std::string> parts = split_scope_spelling(spelling);
+    if ( parts.size() < 2 )
+	return false;			// not a qualified-id: nothing non-deduced
+    std::vector<std::string> qual, rest;
+    for ( size_t p = 0; p + 1 < parts.size(); ++p )
+	fn_template_split_words(parts[p], qual);
+    fn_template_split_words(parts.back(), rest);
+    bool any_unbound_in_qual = false;
+    for ( size_t tj = 0; tj < typeparams.size(); ++tj )
     {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
-	if ( !p || !p->base_type )
-	    return NULL;
-	dd = p->base_type;
+	if ( binding.count(typeparams[tj]) )
+	    continue;
+	bool in_qual = false, in_rest = false;
+	for ( size_t w = 0; w < qual.size(); ++w )
+	    if ( qual[w] == typeparams[tj] ) { in_qual = true; break; }
+	for ( size_t w = 0; w < rest.size(); ++w )
+	    if ( rest[w] == typeparams[tj] ) { in_rest = true; break; }
+	if ( in_rest )
+	    return false;	// unbound param OUTSIDE the specifier: still deducible
+	if ( in_qual )
+	    any_unbound_in_qual = true;
     }
-    return dd;
+    return any_unbound_in_qual;
 }
 
 // The VALUE view of a call operand's type for template-argument deduction
@@ -40545,10 +49042,59 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
     return dd;
 }
 
+// [temp.deduct.call]/3 needs the argument expression's value category for a
+// forwarding reference. TokenCallFunc and TokenCallMethod inherit TokenVar, so
+// test real calls before the named-variable arm: a value-returning call is a
+// prvalue, while a reference-returning call denotes its referent. The type
+// model does not yet distinguish T& from T&& returns; that broader rvalue-ref
+// identity remains the documented value-category follow-up.
+static bool fn_template_call_arg_is_lvalue(TokenBase *expr)
+{
+    if ( !expr )
+	return false;
+    if ( expr->type() == TokenType::ttCallFunc
+      || expr->type() == TokenType::ttCallMethod )
+    {
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(expr);
+	return call && call->call_returns_reference();
+    }
+    if ( dynamic_cast<TokenVar *>(expr) )
+	return true;
+    return is_addressable_expression(expr);
+}
+
+// The pre-deduction call shape used by member-template recursion and instance
+// lookup. Type alone is insufficient for a forwarding reference: `f(x)` and
+// `f(make_x())` can share the same value type but deduce T as `A&` and `A`.
+// Keep this an over-discriminating dispatch key; instantiate_fn_template_binding
+// remains the canonical (template, deduced-binding) identity and deduplicates
+// call shapes that ultimately name the same specialization.
+static std::string fn_template_call_shape_suffix(TokenCallFunc *tc)
+{
+    std::string shape = "(";
+    if ( tc )
+    {
+	for ( size_t i = 0; i < tc->parameters.size(); ++i )
+	{
+	    TokenBase *arg = tc->parameters[i];
+	    DataDef *dd = arg ? arg->datadef() : NULL;
+	    shape += dd ? dd->name : std::string("?");
+	    shape += fn_template_call_arg_is_lvalue(arg) ? "@L," : "@R,";
+	}
+	shape += ")";
+	for ( DataDef *ea : tc->explicit_template_args )
+	    shape += "<" + (ea ? ea->name : std::string("?")) + ">";
+    }
+    else
+	shape += ")";
+    return shape;
+}
+
 static int fn_template_deduce_param(const std::string &spelling,
 				    const std::vector<std::string> &typeparams,
 				    DataDef *arg_dd,
-				    std::string &tp_out, DataDef *&dd_out)
+				    std::string &tp_out, DataDef *&dd_out,
+				    Program *pgm, TokenBase *arg_expr)
 {
     std::vector<std::string> words;
     fn_template_split_words(spelling, words);
@@ -40559,43 +49105,52 @@ static int fn_template_deduce_param(const std::string &spelling,
 		involves_tp = true;
     if ( !involves_tp )
 	return 0;
-    size_t stars = 0, amps = 0;
-    std::string core;
-    for ( size_t i = 0; i < words.size(); ++i )
-    {
-	const std::string &w = words[i];
-	if ( fn_template_word_is_cv(w) )
-	    continue;
-	if ( w == "*" ) { ++stars; continue; }
-	if ( w == "&" ) { ++amps; continue; }
-	if ( !core.empty() )
-	    return -1;
-	core = w;
-    }
-    // amps==1: lvalue reference (`_Tp&`). amps==2: rvalue/forwarding
-    // reference (`_Tp&&` — std::move/forward and the libstdc++ move-ctor
-    // chains); both deduce the parameter from the argument's VALUE type
-    // (reference collapsing leaves _Tp = T for madc's value model).
-    if ( core.empty() || amps > 2 )
+    FnTemplateParamShape shape;
+    if ( !fn_template_param_shape(spelling, shape) )
 	return -1;
+    // amps==1: lvalue reference (`_Tp&`) — binds the argument's VALUE type
+    // (the parameter's own `&` re-wraps it). amps==2: rvalue/FORWARDING
+    // reference (`_Tp&&`): [temp.deduct.call]/3 — a reference-typed
+    // (lvalue) argument deduces _Tp = A& so `_Tp&&` collapses back to A&
+    // AND a template-id built from _Tp keys the collapsed type
+    // (`tuple<_Tp&&...>` in forward_as_tuple must be tuple<int&>, never a
+    // `tuple<int32_t&&>` spelling shell — the map:967 return-type
+    // mismatch). A non-reference (rvalue/value) argument still binds the
+    // value type, as before.
     bool is_tp = false;
     for ( size_t j = 0; j < typeparams.size(); ++j )
-	if ( core == typeparams[j] )
+	if ( shape.core == typeparams[j] )
 	    is_tp = true;
     if ( !is_tp || !arg_dd )
 	return -1;
-    DataDef *dd = arg_dd;
+    // Canonicalize BEFORE the reference wrap so a deduced `_Tp = A&` keys the
+    // canonical base, and again after the star/ref peel below — the peeled
+    // pointee is a declared type but the direct scalar arm sees the raw
+    // expression dd (integer literals carry the ddINT flavor twin).
+    DataDef *dd = canonical_template_binding_dd(arg_dd);
+    if ( pgm && arg_expr && shape.amps == 2 && shape.stars == 0
+      && !shape.cv && !dd->is_reference()
+      && fn_template_call_arg_is_lvalue(arg_expr) )
+	dd = pgm->getReferenceType(dd);
     if ( dd->is_reference() )
+    {
+	if ( shape.amps == 2 && shape.stars == 0 )
+	{
+	    tp_out = shape.core;
+	    dd_out = dd;
+	    return 1;
+	}
 	dd = static_cast<DataDefPTR *>(dd)->base_type;
-    for ( size_t i = 0; i < stars; ++i )
+    }
+    for ( size_t i = 0; i < shape.stars; ++i )
     {
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if ( !p || !p->base_type )
 	    return -1;
 	dd = p->base_type;
     }
-    tp_out = core;
-    dd_out = dd;
+    tp_out = shape.core;
+    dd_out = canonical_template_binding_dd(dd);
     return 1;
 }
 
@@ -40695,6 +49250,36 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
     return fd->parameters.size() == subs.size();
 }
 
+static bool tsubst_pack_decl_suffix_token(TokenBase *t);
+
+// The declarator's VALUE-pack name: scan `decl` for the pack's TYPE name
+// followed by optional declarator-suffix tokens, the `...` ellipsis, and an
+// identifier — `_Args [suffix] ... __args` -> "__args"; empty when the pack
+// never takes value position. ONE owner for the shape: the pack-arity
+// publication and the N>=2 monomorphization both read it.
+static std::string fn_template_value_pack_name(
+	const std::vector<TokenBase *> &decl, const std::string &pack_param)
+{
+    for ( size_t i = 0; i + 1 < decl.size(); ++i )
+    {
+	if ( !decl[i] || decl[i]->type() != TokenType::ttIdentifier
+	  || ((TokenIdent *)decl[i])->spelling() != pack_param )
+	    continue;
+	size_t k = i + 1;
+	while ( k < decl.size() && decl[k]
+	     && tsubst_pack_decl_suffix_token(decl[k]) )
+	    ++k;
+	if ( k + 3 < decl.size()
+	  && decl[k] && decl[k]->id() == TokenID::tkDot
+	  && decl[k+1] && decl[k+1]->id() == TokenID::tkDot
+	  && decl[k+2] && decl[k+2]->id() == TokenID::tkDot
+	  && decl[k+3]
+	  && decl[k+3]->type() == TokenType::ttIdentifier )
+	    return ((TokenIdent *)decl[k+3])->spelling();
+    }
+    return std::string();
+}
+
 // Instantiate one retained namespace function template for a call: deduce the
 // type parameters from the call's argument types, substitute them into a clone
 // of the retained declaration tokens, and re-parse the result as a concrete
@@ -40709,8 +49294,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>(),
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs
+	std::vector<DataDef *> pack_elems = std::vector<DataDef *>(),
+	std::map<std::string, std::vector<DataDef *> > tid_packs
 	    = std::map<std::string, std::vector<DataDef *> >(),
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings
 	    = std::map<std::string, std::vector<std::string> >(),
@@ -40833,12 +49418,13 @@ fail:
 // body instantiates fn templates keyed on the opaque type (a bogus
 // `_Construct<_ForwardIterator__deref>` product that pollutes the overload set
 // and the inst memo).
-static bool datadef_involves_placeholder(DataDef *dd)
+static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class)
 {
     for ( int guard = 0; dd && guard < 8; ++guard )
     {
 	if ( dd->is_template_param() )
 	    return true;
+	if ( include_dependent_class )
 	{
 	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
 	    if ( cls && cls->is_dependent_placeholder )
@@ -40862,6 +49448,24 @@ static bool datadef_involves_placeholder(DataDef *dd)
 // is dependent iff ANY argument is (recursively) or its own result type is. This
 // is the spine both the parse-time defer decision and (later, step 3) the tsubst
 // resolver re-entry consult, so the per-construct token scans retire onto it.
+// [temp.arg]/1 + [temp.dep.expr]/3: an EXPLICIT template-argument list that
+// still names a template parameter is dependent. A parameter is never a valid
+// ARGUMENT — `std::forward<_Args1>(x)` with `_Args1` unsubstituted has nothing
+// to instantiate to, however concrete `x` is. Split out because the argument
+// list is a dependence axis of its own: pt.cc:30357 reaches it through
+// any_dependent_template_arguments_p, and both the parse-time defer decision
+// and the tsubst re-entry consult it here.
+static bool call_template_args_dependent(TokenCallFunc *tc)
+{
+	if ( !tc )
+		return false;
+	for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
+		if ( datadef_involves_placeholder(tc->explicit_template_args[i],
+						  false) )
+			return true;
+	return false;
+}
+
 static bool is_type_dependent(TokenBase *expr)
 {
 	if ( !expr )
@@ -40869,9 +49473,13 @@ static bool is_type_dependent(TokenBase *expr)
 	if ( TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(expr) )
 		return pe->pattern ? is_type_dependent(pe->pattern) : true;
 	if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(expr) )
+	{
+		if ( call_template_args_dependent(tc) )
+			return true;
 		for ( size_t i = 0; i < tc->parameters.size(); ++i )
 			if ( is_type_dependent(tc->parameters[i]) )
 				return true;
+	}
 	// General fall-through (pt.cc:30357): the node's own type is dependent.
 	return datadef_involves_placeholder(expr->datadef());
 }
@@ -40884,6 +49492,9 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 {
 	return is_type_dependent(tc);
 }
+
+static bool free_operator_concrete_param_matches(Program &pgm,
+		const std::string &sp, DataDef *arg_core);
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
@@ -40922,13 +49533,50 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #endif
     if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return false;
+    // …and UNCONDITIONALLY when the explicit template-argument list is itself
+    // still dependent. The gate above is scoped to a dependent parse because a
+    // concrete-argument call inside a template body instantiates eagerly; a
+    // template PARAMETER standing in an argument list is different in kind —
+    // there is no type to instantiate to, in any context. tsubst's body-copy
+    // lane (cir_builder resolve_copied_dependent_call) re-resolves a
+    // pack-expansion pattern with no per-element binding in scope, so
+    // `std::forward<_Args1>(std::get<_I1>(x))` arrives here with _Args1 still a
+    // DataDefTemplateParam and dependent_parse_in_progress already false.
+    // Binding it produced a placeholder instance on the SHARED parse-once node
+    // and overwrote the good one the expanding lane had already made.
+    if ( call_template_args_dependent(tc) )
+	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
-#ifdef MADC_DEBUG_CTORTMPL
-    if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("::get") != std::string::npos )
-	fprintf(stderr, "[getinst] try_inst key=%s nargs=%zu nexpl=%zu ntparams=%zu\n",
-	    key.c_str(), tc->parameters.size(), tc->explicit_template_args.size(),
-	    ft.typeparams.size());
-#endif
+    // Env-gated probe (MADC_FNTPL_PROBE=<substr of the template key>): entry
+    // state for a namespace fn-template instantiation request — arity plus the
+    // SPELLING of every explicit template argument. A still-placeholder
+    // explicit arg here is the diagnostic: the call was substituted without its
+    // template-argument list being substituted with it.
+    {
+	static const char *ftp = ::getenv("MADC_FNTPL_PROBE");
+	if ( ftp && *ftp && key.find(ftp) != std::string::npos )
+	{
+	    fprintf(stderr, "FNTPLPROBE try_inst key=%s nargs=%zu nexpl=%zu"
+		    " ntparams=%zu dep_parse=%d dep_call=%d in=%s\n",
+		    key.c_str(), tc->parameters.size(),
+		    tc->explicit_template_args.size(), ft.typeparams.size(),
+		    (int)pgm.dependent_parse_in_progress,
+		    (int)call_involves_placeholder(tc),
+		    pgm.cur_func_name.c_str());
+	    for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
+	    {
+		DataDef *ea = tc->explicit_template_args[i];
+		DataDefCLASS *ec = dynamic_cast<DataDefCLASS *>(ea);
+		fprintf(stderr, "FNTPLPROBE   expl[%zu]='%s' placeholder=%d"
+			" ref=%d ptr=%d tparam=%d\n", i,
+			ea ? ea->name.c_str() : "(null)",
+			ec ? (int)ec->is_dependent_placeholder : -1,
+			ea ? (int)ea->is_reference() : -1,
+			ea ? (int)ea->is_pointer() : -1,
+			dynamic_cast<DataDefTemplateParam *>(ea) ? 1 : 0);
+	    }
+	}
+    }
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
@@ -41073,10 +49721,31 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    for ( size_t a = i; a < tc->parameters.size(); ++a )
 	    {
 		DataDef *adp = pgm.operand_value_datadef(tc->parameters[a]);
-		adp = fn_template_pack_arg_element(sp, pack_param, adp);
-		if ( !adp )
+#ifdef MADC_DBG_PACK
+		{
+		    TokenBase *pt_ = tc->parameters[a];
+		    TokenCallFunc *cf_ = dynamic_cast<TokenCallFunc *>(pt_);
+		    TokenVar *tv_ = dynamic_cast<TokenVar *>(pt_);
+		    DBG_PACK("  absorb[%zu] tok=%p cls=%s id=%d callee=%s var=%s@%p ovr=%s raw=%s dd=%s\n",
+			     a, (void *)pt_,
+			     pt_ ? typeid(*pt_).name() : "null",
+			     pt_ ? (int)pt_->id() : -1,
+			     cf_ ? cf_->var.name.c_str() : "-",
+			     tv_ ? tv_->var.name.c_str() : "-",
+			     tv_ ? (void *)&tv_->var : NULL,
+			     cf_ && cf_->return_override
+				 ? cf_->return_override->name.c_str() : "-",
+			     pt_ && pt_->datadef() ? pt_->datadef()->name.c_str() : "-",
+			     adp ? adp->name.c_str() : "(null)");
+		}
+#endif
+		std::string elem_tp;
+		DataDef *elem_dd = NULL;
+		if ( fn_template_deduce_param(sp, ft.typeparams, adp,
+			elem_tp, elem_dd, &pgm, tc->parameters[a]) != 1
+		  || elem_tp != pack_param || !elem_dd )
 		    return false;
-		pack_elems.push_back(adp);
+		pack_elems.push_back(elem_dd);
 	    }
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
 		binding[pack_param] = pack_elems[0];
@@ -41102,6 +49771,17 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			    unbound = true;
 		    }
 	    if ( names_tp && !unbound )
+		continue;
+	    // ...and the same for a parameter whose unbound names all sit in a
+	    // NON-DEDUCED CONTEXT ([temp.deduct.type]/5) — a qualified-id's
+	    // nested-name-specifier. Deduction is not attempted there, so
+	    // feeding the spelling to the structural deducers below would fail
+	    // the candidate over a parameter the standard says to leave to an
+	    // explicit argument or its DEFAULT. The default fill in
+	    // instantiate_fn_template_binding then binds it, and a parameter
+	    // with neither is refused there — the correct layer for that.
+	    if ( fn_template_param_unbound_only_nondeduced(sp, ft.typeparams,
+							   binding) )
 		continue;
 	}
 	// Function-pointer parameter shape: structural match against the
@@ -41150,8 +49830,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		std::map<std::string, DataDef *> binding_pre = binding;
 		bool uok = !concrete.empty()
 		  && pgm.unify_nested_spec_pattern_arg(core, ft.typeparams,
-						       concrete, binding, sc,
-						       NULL, &outpk);
+					       concrete, binding, sc,
+					       NULL, &outpk);
 		// [temp.deduct.call]: a template-id parameter P also deduces
 		// from a BASE of the argument's class ("class derived from
 		// P"). `_Alloc_traits::construct(this->_M_impl, ...)` is the
@@ -41266,6 +49946,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    }
 		    continue;
 		}
+		// An ALIAS-template-id parameter (`_LValRefType<_Dummy>`,
+		// unique_ptr's member alias for `typename
+		// __dependent_type<...>::type&`) has no structural class
+		// shape for the unifier: alias templates are TRANSPARENT
+		// ([temp.alias] — the param type IS the substituted target,
+		// here a qualified-id and thus a NON-DEDUCED context,
+		// [temp.deduct.type]/5). Hard-failing the candidate refused
+		// the standard's answer (leave the param to its default /
+		// explicit argument). SKIP deduction instead: an unbound
+		// param falls to the defaults fill in
+		// instantiate_fn_template_binding, and a skipped deduction
+		// can only cost a binding the defaults must then supply —
+		// never produce a wrong one. (Full alias transparency —
+		// substitute, THEN deduce — is the precise rule; this is
+		// its conservative half.)
+		if ( pgm.find_template_alias(pouter, ft.ns,
+			dynamic_cast<DataDefCLASS *>(ft.owner_class)) )
+		    continue;
 		return false;	// template-id param the argument can't match
 	    }
 	}
@@ -41288,11 +49986,23 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
 	std::string tp;
 	DataDef *dd = NULL;
-	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd);
+	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd,
+					 &pgm, tc->parameters[i]);
 	if ( r < 0 )
 	    return false;
 	if ( r == 0 )
+	{
+	    // Concrete parameter (names no template param): the candidate is
+	    // viable only when the argument can actually BE that type — the
+	    // same rule the free-operator walker applies (one owner:
+	    // free_operator_concrete_param_matches). Without it libc++'s
+	    // operator<<(basic_ostream<char,_Traits>&, char) — registered
+	    // before the const char* sibling — claimed `cout << "hello "`
+	    // through this lane and truncated the pointer to one char.
+	    if ( !free_operator_concrete_param_matches(pgm, sp, deduce_dd) )
+		return false;
 	    continue;
+	}
 	if ( binding.find(tp) == binding.end() )
 	    binding[tp] = dd;
     }
@@ -41314,10 +50024,56 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	fprintf(stderr, "\n");
     }
 #endif
-    return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, var_out, pack_elems, tid_packs,
+    bool inst_ok = instantiate_fn_template_binding(pgm, ft, key, binding,
+					    pack_param, pack_empty, var_out,
+					    pack_elems, tid_packs,
 					    tid_pack_spellings, tid_packs_nontype,
 					    type_args_out, type_arg_packs_out);
+    // Pin a SOURCE-EXPLICIT call to the specialization just chosen: extend
+    // its explicit template args to the FULL ordered binding (defaults
+    // included), so rank_fn_overload_candidates discriminates
+    // same-param-list specializations that differ only in a non-type value
+    // (g<int,3> vs g<int,7>, both `int g(int)` — the explicit prefix
+    // ["int"] matched BOTH). Ranking compares NAMES; the binding holds the
+    // canonical decimal-named value-DataDefs.
+    // ONLY when the call already carries CONCRETE explicit args: tc is a
+    // parse-tree node shared across enclosing-template instantiations
+    // (parse-once), so the extension must be idempotent — a concrete
+    // explicit prefix determines the full binding every run. Pinning a
+    // DEDUCED call bakes the first instantiation's types into the shared
+    // node and poisons the next deduction (vector's _Construct chain died
+    // as a placeholder import). Pack shapes rank apart already; a
+    // placeholder arg means a dependent context — never pin.
+    if ( inst_ok && tc && !tc->explicit_template_args.empty()
+      && tc->explicit_template_args.size() < ft.typeparams.size() )
+    {
+	bool concrete = true;
+	for ( DataDef *ea : tc->explicit_template_args )
+	{
+	    DataDefCLASS *ec = dynamic_cast<DataDefCLASS *>(ea);
+	    if ( !ea || (ec && ec->is_dependent_placeholder) )
+	    { concrete = false; break; }
+	}
+	std::vector<DataDef *> full;
+	for ( size_t i = 0; concrete && i < ft.typeparams.size(); ++i )
+	{
+	    std::map<std::string, DataDef *>::const_iterator bi =
+		binding.find(ft.typeparams[i]);
+	    if ( bi != binding.end() && bi->second )
+		full.push_back(bi->second);
+	    else
+		concrete = false;
+	}
+	if ( concrete )
+	    tc->explicit_template_args = full;
+    }
+    {
+	static const char *ftp = ::getenv("MADC_FNTPL_PROBE");
+	if ( ftp && *ftp && key.find(ftp) != std::string::npos )
+	    fprintf(stderr, "FNTPLPROBE  end key=%s ok=%d bound=%s\n",
+		    key.c_str(), (int)inst_ok, tc->var.name.c_str());
+    }
+    return inst_ok;
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -41333,17 +50089,29 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 DataDef *Program::resolve_template_param_default_type(
 		const std::vector<TokenBase *> &default_tokens,
 		const std::map<std::string, DataDef *> &binding,
-		DataDefCLASS *owner)
+		DataDefCLASS *owner, bool require_full_parse)
 {
     if ( default_tokens.empty() )
 	return NULL;
     std::vector<TokenBase *> body;
-    for ( TokenBase *bt : default_tokens )
+    for ( size_t i = 0; i < default_tokens.size(); ++i )
     {
-	if ( bt && bt->type() == TokenType::ttIdentifier )
+	TokenBase *bt = default_tokens[i];
+	std::string pack_name;
+	if ( sizeof_pack_operand_name(default_tokens, i, pack_name) )
+	{
+	    // The pack name is an operand, not a type occurrence. Keep it
+	    // spelled so evaluate_type_query can find its published arity.
+	    for ( size_t j = i; j <= i + 6; ++j )
+		body.push_back(default_tokens[j]->clone());
+	    i += 6;
+	    continue;
+	}
+	std::string binding_name = template_parameter_decl_name(bt);
+	if ( !binding_name.empty() )
 	{
 	    std::map<std::string, DataDef *>::const_iterator bi =
-		binding.find(((TokenIdent *)bt)->spelling());
+		binding.find(binding_name);
 	    if ( bi != binding.end() && bi->second )
 	    {
 		body.push_back(new TokenDataType(bi->second->name.c_str(),
@@ -41355,6 +50123,18 @@ DataDef *Program::resolve_template_param_default_type(
     }
     body.push_back(new TokenSemi());
 
+    std::string substituted_debug;
+    if ( vri_debug_enabled() )
+    {
+	for ( size_t i = 0; i + 1 < body.size() && i < 16; ++i )
+	{
+	    if ( !substituted_debug.empty() )
+		substituted_debug += " ";
+	    substituted_debug += body[i]
+		? template_token_fragment(body[i]) : "(null)";
+	}
+    }
+
     TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
@@ -41363,7 +50143,16 @@ DataDef *Program::resolve_template_param_default_type(
     bool pushed_owner = false;
     if ( owner )
     { class_scope_stack.push_back(owner); pushed_owner = true; }
+    ClassTypeLookupScope definition_scope(*this, owner);
 
+    // Mute std::cerr for the speculative resolve: a Throw inside it prints
+    // via throwbuf::sync() BEFORE the exception is caught (the same hazard
+    // fold_nontype_arg_constant documents), and a resolution MISS here is an
+    // expected event (an unsatisfied SFINAE constraint per rejected overload,
+    // an unresolvable default), not an error to surface.
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
     TokenDataType *resolved = NULL;
     try
     {
@@ -41384,6 +50173,17 @@ DataDef *Program::resolve_template_param_default_type(
 	}
     }
     catch ( ... ) { resolved = NULL; }
+    // A SFINAE constraint must resolve AS A WHOLE: leftover tokens before the
+    // sentinel mean a member-type-chain miss that resolve_member_chain_or_type
+    // tolerated by returning the class itself (`enable_if<false,bool>::type`
+    // -> the class, `::type` unconsumed) — for constraint evaluation that IS
+    // the substitution failure. Off for the defaults-fill callers (their
+    // established contract accepts a resolved base).
+    if ( resolved && require_full_parse
+      && peekToken() && peekToken()->id() != TokenID::tkSemi )
+	resolved = NULL;
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
 
     if ( pushed_owner && !class_scope_stack.empty()
       && class_scope_stack.back() == owner )
@@ -41392,6 +50192,13 @@ DataDef *Program::resolve_template_param_default_type(
     tokens = saved_tokens;
     if ( !resolved )
     {
+	if ( vri_debug_enabled() )
+	{
+	    fprintf(stderr, "[vriprobe] deftype MISS: %s (%s:%d) toks[%zu]: %s\n",
+		    last_error.message.c_str(), last_error.file.c_str(),
+		    last_error.line, default_tokens.size(),
+		    substituted_debug.c_str());
+	}
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	return NULL;
@@ -41430,17 +50237,182 @@ static bool instantiated_template_var_has_pending_body(Program &pgm,
     return false;
 }
 
+// EMPTY-pack pattern elision over a RAW fn-template decl ([temp.variadic]:
+// an expansion whose pack is empty contributes NOTHING). Runs BEFORE the
+// injection loop — the loop consumes every `...` triple itself, so a
+// post-pass never sees the anchors. Walks each `...`'s pattern unit back
+// (a `)`-balanced call plus its callee chain, a `>`-balanced template-id,
+// or one identifier, over declarator punctuation) and elides units naming
+// the pack or a recorded VALUE name (a plain identifier directly after an
+// elided param unit is the pack's value name — `_Tp&&... __t` kills the
+// later `std::forward<_Tp>(__t)...`). Without this the zero-arg instance
+// (libc++ forward_as_tuple()) kept its raw `_Tp&&` pattern and the call
+// fell to the plain extern (an undefined MIR import — task #103).
+static std::vector<TokenBase *> tsubst_elide_empty_pack_expansions(
+	const std::vector<TokenBase *> &decl, const std::string &pack_param)
+{
+    std::set<std::string> dead_names;
+    dead_names.insert(pack_param);
+    std::vector<TokenBase *> ej;
+    ej.reserve(decl.size());
+    for ( size_t i = 0; i < decl.size(); ++i )
+    {
+	TokenBase *t = decl[i];
+	bool dots = t && t->id() == TokenID::tkDot
+		 && i + 2 < decl.size()
+		 && decl[i+1] && decl[i+1]->id() == TokenID::tkDot
+		 && decl[i+2] && decl[i+2]->id() == TokenID::tkDot;
+	if ( !dots )
+	{ ej.push_back(t); continue; }
+	size_t k = ej.size();
+	while ( k > 0 && ej[k-1]
+	     && (ej[k-1]->id() == TokenID::tkBand
+		 || ej[k-1]->id() == TokenID::tkLand
+		 || ej[k-1]->id() == TokenID::tkMul) )
+	    --k;
+	size_t unit = ej.size();	// empty unit = keep the dots
+	if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkClBrk )
+	{
+	    int d = 0; size_t j = k;
+	    while ( j > 0 )
+	    {
+		TokenBase *u = ej[--j];
+		if ( !u ) continue;
+		if ( u->id() == TokenID::tkClBrk ) ++d;
+		else if ( u->id() == TokenID::tkOpBrk && --d == 0 )
+		    break;
+	    }
+	    while ( j > 0 && ej[j-1]
+		 && (ej[j-1]->type() == TokenType::ttIdentifier
+		     || ej[j-1]->type() == TokenType::ttDataType
+		     || ej[j-1]->id() == TokenID::tkNS
+		     || ej[j-1]->id() == TokenID::tkGT
+		     || ej[j-1]->id() == TokenID::tkLT) )
+		--j;
+	    unit = j;
+	}
+	else if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkGT )
+	{
+	    int d = 0; size_t j = k;
+	    while ( j > 0 )
+	    {
+		TokenBase *u = ej[--j];
+		if ( !u ) continue;
+		if ( u->id() == TokenID::tkGT ) ++d;
+		else if ( u->id() == TokenID::tkBSR ) d += 2;
+		else if ( u->id() == TokenID::tkLT && --d == 0 )
+		{ unit = j > 0 ? j - 1 : 0; break; }
+	    }
+	}
+	else if ( k > 0 && ej[k-1]
+	       && (ej[k-1]->type() == TokenType::ttIdentifier
+		   || ej[k-1]->type() == TokenType::ttDataType) )
+	    unit = k - 1;
+	bool hit = false;
+	for ( size_t j = unit; j < ej.size() && !hit; ++j )
+	    if ( ej[j] && is_contextual_identifier_token(ej[j])
+	      && dead_names.count(contextual_identifier_name(ej[j])) )
+		hit = true;
+	if ( !hit )
+	{ ej.push_back(t); continue; }
+	ej.resize(unit);		// elide the unit
+	if ( !ej.empty() && ej.back()
+	  && ej.back()->id() == TokenID::tkComma )
+	    ej.pop_back();		// balance a separating comma
+	i += 2;				// consume the three dots
+	if ( i + 1 < decl.size() && decl[i+1]
+	  && decl[i+1]->type() == TokenType::ttIdentifier )
+	{
+	    dead_names.insert(((TokenIdent *)decl[i+1])->spelling());
+	    ++i;
+	}
+    }
+    return ej;
+}
+
+// Clone a token run substituting TEMPLATE-TEMPLATE parameter names with their
+// bound template names — the fn-template twin of the class-partial-spec
+// lane's tmpl_ded -> token_subst routing (match_partial_specialization's
+// consumer). A TTP binds to a TEMPLATE NAME, not a type, so its occurrences
+// (`_IsDefault<_Tp>` in a head constraint) rewrite to the bound name and
+// re-resolve as a template-id. Caller frees the returned clones.
+static std::vector<TokenBase *> clone_run_with_template_names(
+	const std::vector<TokenBase *> &toks,
+	const std::map<std::string, std::string> &tmpl_names)
+{
+    std::vector<TokenBase *> out;
+    out.reserve(toks.size());
+    for ( TokenBase *t : toks )
+    {
+	if ( t && t->type() == TokenType::ttIdentifier )
+	{
+	    std::map<std::string, std::string>::const_iterator mi =
+		tmpl_names.find(((TokenIdent *)t)->spelling());
+	    if ( mi != tmpl_names.end() )
+	    {
+		TokenBase *rn = new TokenIdent(mi->second.c_str());
+		rn->file = t->file;
+		rn->line = t->line;
+		rn->column = t->column;
+		out.push_back(rn);
+		continue;
+	    }
+	}
+	out.push_back(t ? t->clone() : NULL);
+    }
+    return out;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
-	Program::FnTemplateDef &ft, const std::string &key,
+	Program::FnTemplateDef &ft_in, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems,
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	std::vector<DataDef *> pack_elems,
+	std::map<std::string, std::vector<DataDef *> > tid_packs,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings,
 	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    // [temp.type] identity canonicalization at THE choke point every binding
+    // route passes through (deduced, explicit, unified, text): the values in
+    // these containers become the instantiation's identity (inst_key, the
+    // substituted spelling, the memo, the overload symbol) — fold flavor
+    // twins and scalar typedef aliases to the one canonical dd before any of
+    // that mints. See canonical_template_binding_dd.
+    for ( std::map<std::string, DataDef *>::iterator
+	    cb = binding.begin(); cb != binding.end(); ++cb )
+	cb->second = canonical_template_binding_dd(cb->second);
+    for ( size_t ce = 0; ce < pack_elems.size(); ++ce )
+	pack_elems[ce] = canonical_template_binding_dd(pack_elems[ce]);
+    for ( std::map<std::string, std::vector<DataDef *> >::iterator
+	    ct = tid_packs.begin(); ct != tid_packs.end(); ++ct )
+	for ( size_t ce = 0; ce < ct->second.size(); ++ce )
+	    ct->second[ce] = canonical_template_binding_dd(ct->second[ce]);
+    // [temp.variadic] empty-pack elision on the RAW decl (dots intact) —
+    // see tsubst_elide_empty_pack_expansions. A LOCAL copy: the shared
+    // fn_template_map pattern must keep its dots for later non-empty
+    // instantiations.
+    Program::FnTemplateDef ft_elided;
+    const bool elide_empty = pack_empty && !pack_param.empty();
+    if ( elide_empty )
+    {
+	ft_elided = ft_in;
+	ft_elided.decl = tsubst_elide_empty_pack_expansions(ft_in.decl,
+							    pack_param);
+    }
+    Program::FnTemplateDef &ft = elide_empty ? ft_elided : ft_in;
+    // Env-gated probe (MADC_MTB_PROBE=<key substring>): this function's many
+    // FAIL-CLEANLY bails are invisible — the caller sees only ok=0 and the
+    // call falls to its placeholder. Print the entry state and, in the
+    // defaults-fill / constraint loops below, WHICH parameter refused and why
+    // (the MCT/FREEOP probes' precedent one layer deeper).
+    static const char *_mtb = ::getenv("MADC_MTB_PROBE");
+    const bool mtb_on = _mtb && *_mtb
+			&& key.find(_mtb) != std::string::npos;
+    if ( mtb_on )
+	fprintf(stderr, "MTBPROBE enter %s tparams=%zu bound=%zu\n",
+		key.c_str(), ft.typeparams.size(), binding.size());
     // Template-id parameter packs (deduced from `tuple<_Args1...>` args — std::get's
     // `_Elements`, std::pair's piecewise `_Args1`/`_Args2`). Supported for the 0- and
     // 1-element cases (map uses tuple<const key&> and tuple<>; std::get<0> on a
@@ -41484,6 +50456,76 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	else
 	    nontype_tidpack_one[t->first] = t->second[0];
     }
+    // Constraints and defaults may contain sizeof...(PACK), so publish arity
+    // before either is resolved. The scope remains live through the body parse.
+    Program::PackArityScope _pack_arity_scope(pgm);
+    {
+	const size_t pack_arity =
+	    pack_empty ? 0 : (pack_elems.empty() ? 1 : pack_elems.size());
+	// Publish every pack the TEMPLATE HEAD declares, not just the
+	// call-detected pack_param: a ZERO-ARGUMENT call never sets
+	// pack_param (detection keys off matching arguments), yet the body's
+	// sizeof...(P) still needs its arity — 0. [expr.sizeof]/5 also
+	// admits the FUNCTION parameter pack's name (`Ts... vals` —
+	// sizeof...(vals)); the declarator's value-pack name publishes at
+	// the same arity. A miss on either name left the operator unfolded
+	// and the instantiation silently kept its placeholder (undefined
+	// MIR import; found by the cpp-features.md doc example).
+	for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	{
+	    if ( i >= ft.typeparam_is_pack.size() || !ft.typeparam_is_pack[i] )
+		continue;
+	    const std::string &head_pack = ft.typeparams[i];
+	    const size_t arity = head_pack == pack_param ? pack_arity : 0;
+	    pgm.publish_pack_arity(head_pack, arity);
+	    const std::string vpn =
+		fn_template_value_pack_name(ft.decl, head_pack);
+	    if ( !vpn.empty() )
+		pgm.publish_pack_arity(vpn, arity);
+	    if ( mtb_on )
+	    {
+		fprintf(stderr,
+			"MTBPROBE packpub %s head=%s arity=%zu vpn=%s decl=%zu:",
+			key.c_str(), head_pack.c_str(), arity,
+			vpn.empty() ? "<none>" : vpn.c_str(), ft.decl.size());
+		for ( size_t d = 0; d < ft.decl.size() && d < 16; ++d )
+		    fprintf(stderr, " %s",
+			    ft.decl[d] && ft.decl[d]->type() == TokenType::ttIdentifier
+				? ((TokenIdent *)ft.decl[d])->spelling()
+				: ft.decl[d] ? "·" : "0");
+		fprintf(stderr, "\n");
+	    }
+	}
+	if ( !pack_param.empty() )
+	{
+	    pgm.publish_pack_arity(pack_param, pack_arity);
+	    const std::string vpn =
+		fn_template_value_pack_name(ft.decl, pack_param);
+	    if ( !vpn.empty() )
+		pgm.publish_pack_arity(vpn, pack_arity);
+	}
+	// PRE-ELIDED declarators: the empty-pack path strips `P... name`
+	// from its decl clone BEFORE binding, so the value-pack name scan
+	// above cannot see the declarator — but the body still spells
+	// sizeof...(name). Any sizeof-pack operand in the decl names one of
+	// THIS template's packs (the capture validated it), so an
+	// unpublished operand folds at the pack arity — 0 on the only path
+	// that pre-elides.
+	{
+	    std::string sop;
+	    size_t have;
+	    for ( size_t i = 0; i < ft.decl.size(); ++i )
+		if ( sizeof_pack_operand_name(ft.decl, i, sop)
+		  && !pgm.lookup_pack_arity(sop, have) )
+		    pgm.publish_pack_arity(sop, pack_arity);
+	}
+    }
+    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
+	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
+	pgm.publish_pack_arity(tp->first, tp->second.size());
+    for ( std::map<std::string, std::vector<int64_t> >::const_iterator
+	    np = tid_packs_nontype.begin(); np != tid_packs_nontype.end(); ++np )
+	pgm.publish_pack_arity(np->first, np->second.size());
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
     // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
@@ -41496,6 +50538,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // import (e.g. __make_move_if_noexcept_iterator's iterator return).
     // A trait-expression default (`__conditional_t<...>`) has no resolvable
     // single base token -> still bails (the layer-(b) follow-on).
+    // TEMPLATE-TEMPLATE parameter bindings: param name -> bound template NAME
+    // (never a type). Applied to constraint/default resolution and the body
+    // substitution loops below (the class lane's tmpl_ded precedent).
+    std::map<std::string, std::string> tmpl_name_subst;
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
 	if ( binding.count(ft.typeparams[i]) )
@@ -41517,6 +50563,78 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( i < ft.typeparam_defaults.size()
 	  && !ft.typeparam_defaults[i].empty() )
 	{
+	    // NON-TYPE parameter default (`int N = 3`, `bool = true`,
+	    // `enable_if_t<...>* = nullptr` — TokenNullptr IS a TokenInt):
+	    // fold the run to a VALUE and bind the same decimal-named DataDef
+	    // shape the explicit-arg path mints (capture_call_template_args),
+	    // so substitution emits a TokenInt for it. A default that does not
+	    // fold (references another parameter's value) bails as before.
+	    if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	    {
+		int64_t ntv = 0;
+		if ( pgm.fold_nontype_arg_constant(ft.typeparam_defaults[i], ntv) )
+		{
+		    if ( mtb_on )
+			fprintf(stderr, "MTBPROBE fill %s nontype %s = %lld\n",
+				key.c_str(), ft.typeparams[i].c_str(),
+				(long long)ntv);
+		    binding[ft.typeparams[i]] =
+			new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
+		    continue;
+		}
+		// An IDENTITY-defaulted TEMPLATE-TEMPLATE parameter
+		// (`template<class...> class _And = _And` — libc++ tuple's
+		// ctor idiom) captures as a non-type param whose sole default
+		// token is its own name. It needs NO binding: unsubstituted
+		// occurrences (`_And<...>` in the constraint) resolve to the
+		// real template in the defining namespace ([temp.param]p11:
+		// the default IS the template itself). Folding it as a value
+		// can never work.
+		if ( ft.typeparam_defaults[i].size() == 1
+		  && ft.typeparam_defaults[i][0]
+		  && contextual_identifier_name(ft.typeparam_defaults[i][0])
+		     == ft.typeparams[i] )
+		{
+		    if ( mtb_on )
+			fprintf(stderr, "MTBPROBE fill %s tpl-tpl %s = identity"
+				" (unbound)\n",
+				key.c_str(), ft.typeparams[i].c_str());
+		    continue;
+		}
+		// A TEMPLATE-TEMPLATE parameter defaulted to a DIFFERENT named
+		// template (`template<class...> class _IsDefault =
+		// is_default_constructible` — libc++ tuple's ctor idiom,
+		// [temp.param]p11: the default IS the template). It captures
+		// as a non-type param and can never fold as a value; bind it
+		// as a NAME substitution so its occurrences (`_IsDefault<_Tp>`
+		// in the head constraint) rewrite to the real template and
+		// resolve. The default names its neighbor unqualified in the
+		// DEFINING namespace, same rule as the constraint block below.
+		if ( ft.typeparam_defaults[i].size() == 1
+		  && ft.typeparam_defaults[i][0] )
+		{
+		    const std::string dn = contextual_identifier_name(
+			ft.typeparam_defaults[i][0]);
+		    const uint32_t dn_id = dn.empty()
+			? 0 : pgm.template_name_pool.intern(dn);
+		    if ( !dn.empty()
+		      && (pgm.find_template(dn_id, ft.ns, NULL)
+		       || pgm.find_template_alias(dn_id, ft.ns, NULL)) )
+		    {
+			if ( mtb_on )
+			    fprintf(stderr, "MTBPROBE fill %s tpl-tpl %s = %s\n",
+				    key.c_str(), ft.typeparams[i].c_str(),
+				    dn.c_str());
+			tmpl_name_subst[ft.typeparams[i]] = dn;
+			continue;
+		    }
+		}
+		if ( mtb_on )
+		    fprintf(stderr, "MTBPROBE FAIL %s nontype %s: default"
+			    " does not fold\n",
+			    key.c_str(), ft.typeparams[i].c_str());
+		return false;
+	    }
 	    const std::vector<TokenBase *> &dtoks = ft.typeparam_defaults[i];
 	    DataDef *base = NULL;
 	    bool ok = true;
@@ -41552,12 +50670,88 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // `enable_if_t<...>`): substitute the bound params and resolve the full
 	    // type in an isolated stream. This is the layer-(b) case behind
 	    // __make_move_if_noexcept_iterator's conditional_t-defaulted iterator
-	    // return type in the std::vector chain.
-	    if ( DataDef *rd = pgm.resolve_template_param_default_type(
-		    ft.typeparam_defaults[i], binding, ft.owner_class) )
+	    // return type in the std::vector chain. Resolution runs in the
+	    // template's DEFINING namespace when one is known — the same rule the
+	    // constraints block below applies: the default names its neighbors
+	    // unqualified (`__enable_if_t` in std::__1). Empty-ns callers keep the
+	    // ambient context they always had.
+	    DataDef *rd = NULL;
+	    {
+		// A default naming a bound TEMPLATE-TEMPLATE param rewrites to
+		// the bound template name first (same map the body loops use).
+		std::vector<TokenBase *> mapped;
+		const std::vector<TokenBase *> *dt = &ft.typeparam_defaults[i];
+		if ( !tmpl_name_subst.empty() )
+		{
+		    mapped = clone_run_with_template_names(*dt, tmpl_name_subst);
+		    dt = &mapped;
+		}
+		if ( !ft.ns.empty() )
+		{
+		    Program::NamespaceScope ns_scope(pgm, ft.ns);
+		    rd = pgm.resolve_template_param_default_type(
+			    *dt, binding, ft.owner_class);
+		}
+		else
+		    rd = pgm.resolve_template_param_default_type(
+			    *dt, binding, ft.owner_class);
+		for ( TokenBase *mt2 : mapped )
+		    delete mt2;
+	    }
+	    if ( rd )
 	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
+	if ( mtb_on )
+	    fprintf(stderr, "MTBPROBE FAIL %s param %s: unbound, %s\n",
+		    key.c_str(), ft.typeparams[i].c_str(),
+		    (i < ft.typeparam_defaults.size()
+		     && !ft.typeparam_defaults[i].empty())
+			? "default did not resolve" : "no default");
 	return false;
+    }
+
+    // SFINAE overload selection: a parameter whose TYPE was captured as a
+    // constraint run (`__enable_if_t<cond>*`, `enable_if<C,bool>::type`) must
+    // RESOLVE under the completed binding; a substitution failure removes the
+    // candidate ([temp.deduct]/8), so the caller's specialization-ordered loop
+    // tries the next overload. resolve_template_param_default_type is the
+    // SFINAE-clean resolver (isolated stream, rewound diagnostics, NULL on
+    // failure). Resolution runs in the template's DEFINING namespace — the
+    // constraint names its neighbors unqualified (`__enable_if_t` in
+    // std::__1), and the call site's namespace is unrelated ([temp.point]).
+    if ( !ft.typeparam_constraints.empty() )
+    {
+	Program::NamespaceScope ns_scope(pgm, ft.ns);
+	for ( size_t i = 0; i < ft.typeparam_constraints.size()
+			    && i < ft.typeparams.size(); ++i )
+	{
+	    if ( ft.typeparam_constraints[i].empty() )
+		continue;
+	    // A constraint naming a bound TEMPLATE-TEMPLATE param
+	    // (`_And<_IsDefault<_Tp>...>` — libc++ tuple's ctor head)
+	    // rewrites to the bound template name before resolving.
+	    std::vector<TokenBase *> mapped;
+	    const std::vector<TokenBase *> *ct = &ft.typeparam_constraints[i];
+	    if ( !tmpl_name_subst.empty() )
+	    {
+		mapped = clone_run_with_template_names(*ct, tmpl_name_subst);
+		ct = &mapped;
+	    }
+	    DataDef *crd = pgm.resolve_template_param_default_type(
+		    *ct, binding, ft.owner_class,
+		    /*require_full_parse=*/true);
+	    for ( TokenBase *mt2 : mapped )
+		delete mt2;
+	    if ( !crd )
+	    {
+		if ( mtb_on )
+		    fprintf(stderr, "MTBPROBE FAIL %s constraint[%zu] %s:"
+			    " did not resolve\n", key.c_str(), i,
+			    i < ft.typeparams.size()
+				? ft.typeparams[i].c_str() : "?");
+		return false;
+	    }
+	}
     }
 
     // Memo identity: a member-template instantiation's registration key is a
@@ -41568,7 +50762,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			   + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
-		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
+		     ? binding[ft.typeparams[i]]->name
+		     : tmpl_name_subst.count(ft.typeparams[i])
+		       ? tmpl_name_subst[ft.typeparams[i]] : std::string()) + ",";
     // A multi-element pack contributes no `binding[pack_param]` entry, so fold its
     // element types into the key — distinct packs (`<int,int>` vs `<int,char>`)
     // must NOT collide on the same instantiation.
@@ -41584,6 +50780,71 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
     inst_key += ">";
+    // fn_template_map[key] holds EVERY overload sharing the name; two
+    // overloads with the SAME tparam binding (libc++ operator<<(ostream&,
+    // _CharT) vs (ostream&, const _CharT*) — both bind <char,char_traits>)
+    // must not share a memo slot: first-instantiated was claiming every
+    // later call shape (a char argument passed to a char* body SIGSEGVs).
+    // Fold the candidate's own DECLARATION spelling in as the overload
+    // discriminator (FNV-1a; stable across runs — same header text).
+    {
+	uint64_t sig = 1469598103934665603ULL;
+	// Skip the declarator NAME span: an overload is discriminated by its
+	// parameter-type-list ([over.load]), never by its name — and the
+	// member-template path has ALREADY renamed this token to the
+	// per-request unique __mti/__oN symbol, so hashing it poisons the memo
+	// key with the request identity and no request can ever memo-hit a
+	// prior instantiation of the same overload+binding (the vecbind
+	// producer froze DUPLICATE instances of one binding under shifted
+	// names, breaking bind-vs-live item-set identity).
+	size_t name_idx =
+	    skipped_template_function_declarator_name_index(ft.decl, NULL);
+	size_t name_span = 1;
+	if ( name_idx < ft.decl.size()
+	  && token_is_operator_id_start(ft.decl[name_idx]) )
+	{
+	    size_t s = operator_id_token_span(ft.decl, name_idx);
+	    if ( s )
+		name_span = s;
+	}
+	for ( size_t i = 0; i < ft.decl.size(); ++i )
+	{
+	    if ( i >= name_idx && i < name_idx + name_span )
+		continue;
+	    const std::string sp = overload_token_spelling(ft.decl[i]);
+	    for ( size_t c = 0; c < sp.size(); ++c )
+	    { sig ^= (unsigned char)sp[c]; sig *= 1099511628211ULL; }
+	    sig ^= 0x1f; sig *= 1099511628211ULL;
+	}
+	char sigbuf[20];
+	snprintf(sigbuf, sizeof(sigbuf), "|%016llx", (unsigned long long)sig);
+	inst_key += sigbuf;
+    }
+    {
+	// Env-gated probe (MADC_DEBUG_INTSPLIT=1): report any binding arg whose
+	// dd NAME is the non-canonical bare "int" (canonical 4-byte signed int
+	// is ddINT32/"int32_t" — resolve_builtin_type_spelling), with the dd
+	// address vs &ddINT and its dynamic kind. Guards the invariant
+	// canonical_template_binding_dd establishes; a hit names the producer
+	// route that leaked a flavor twin into an instantiation identity.
+	static const char *isplit = ::getenv("MADC_DEBUG_INTSPLIT");
+	if ( isplit )
+	{
+	    for ( std::map<std::string, DataDef *>::const_iterator
+		    b = binding.begin(); b != binding.end(); ++b )
+		if ( b->second && b->second->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s param=%s dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), b->first.c_str(), (void*)b->second,
+			    (void*)&ddINT, typeid(*b->second).name(),
+			    b->second->canonical_cpp_spelling().c_str());
+	    for ( size_t e = 0; e < pack_elems.size(); ++e )
+		if ( pack_elems[e] && pack_elems[e]->name == "int" )
+		    fprintf(stderr, "[INTSPLIT] %s pack[%zu] dd=%p ddINT=%p kind=%s canon='%s'\n",
+			    inst_key.c_str(), e, (void*)pack_elems[e],
+			    (void*)&ddINT, typeid(*pack_elems[e]).name(),
+			    pack_elems[e]->canonical_cpp_spelling().c_str());
+	}
+    }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
 	     (int)pgm.fn_template_instantiated.count(inst_key),
 	     (int)(pgm.fn_template_instantiated_vars.find(inst_key)
@@ -41593,9 +50854,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	Variable **vi =
 	    pgm.fn_template_instantiated_vars.find(inst_key);
-	bool missing_var_memo = var_out
+	// A memo hit while THIS key's own body parse is live on the stack (a
+	// self-referencing body, e.g. a loop-shaped math template) has no var
+	// recorded YET — that is not a stale memo. Erasing it here re-enters
+	// the instantiation from inside itself, unboundedly (SIGSEGV at the
+	// guard page). Treat it as memoized-done; the placeholder call
+	// aliases to the instance at CIR time like any recursive call.
+	bool inst_live = pgm.fn_template_inst_in_progress.count(inst_key) != 0;
+	bool missing_var_memo = var_out && !inst_live
 	    && vi == pgm.fn_template_instantiated_vars.end();
-	bool stale_body_memo = vi != pgm.fn_template_instantiated_vars.end()
+	bool stale_body_memo = !inst_live
+	    && vi != pgm.fn_template_instantiated_vars.end()
 	    && !instantiated_template_var_has_pending_body(pgm, *vi);
 	if ( missing_var_memo || stale_body_memo )
 	{
@@ -41625,6 +50894,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	}
     }
     pgm.fn_template_instantiated.insert(inst_key);
+    // Mark the body parse LIVE for this key (RAII — Throw-safe) so a nested
+    // memo hit on the same key never mistakes the not-yet-recorded var for a
+    // stale memo (see the memo check above).
+    struct InstLiveGuard {
+	Program &p;
+	const std::string &k;
+	InstLiveGuard(Program &p_, const std::string &k_) : p(p_), k(k_)
+	{ p.fn_template_inst_in_progress.insert(k); }
+	~InstLiveGuard() { p.fn_template_inst_in_progress.erase(k); }
+    } _inst_live_guard(pgm, inst_key);
     size_t pre_ovset = 0;
     size_t pre_pending = pgm.pending_funcs.size();
     {
@@ -41643,13 +50922,25 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    nontype_names.insert(ft.typeparams[i]);
     std::map<std::string, int64_t> nontype_subst;
     std::map<std::string, TokenDataType *> subst;
+    // A bound type enters C++ SPELLING space here. A REFERENCE binding
+    // ([temp.deduct.call]/3) must spell `T&`, never its C-lowered pointer
+    // NAME (`T*` by DataDefREF construction): the name fed the opaque-lane
+    // spelling collector / __i symbol suffix / key fragments a POINTER
+    // spelling, splitting one entity into two struct identities
+    // (tuple_int32_tP shell vs the signature route's tuple_int32_tR —
+    // map:967). basic_class_datadef_spelling is the reference-aware owner.
+    auto bind_spelling = [](DataDef *dd) {
+	return dd && dd->is_reference() ? basic_class_datadef_spelling(dd)
+					: std::string(dd ? dd->name : "");
+    };
     for ( std::map<std::string, DataDef *>::iterator b = binding.begin();
 	  b != binding.end(); ++b )
     {
 	if ( nontype_names.count(b->first) )
 	    nontype_subst[b->first] = b->second ? strtoll(b->second->name.c_str(), NULL, 10) : 0;
 	else
-	    subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
+	    subst[b->first] = new TokenDataType(bind_spelling(b->second).c_str(),
+						*b->second);
     }
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
@@ -41663,28 +50954,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
     if ( pack_elems.size() >= 2 )
     {
 	const size_t N = pack_elems.size();
-	// Discover the value-pack name: `_Args [decl-suffix] ... __args`.
-	std::string value_pack_name;
-	for ( size_t i = 0; i + 1 < ft.decl.size(); ++i )
-	{
-	    if ( !ft.decl[i] || ft.decl[i]->type() != TokenType::ttIdentifier
-	      || ((TokenIdent *)ft.decl[i])->spelling() != pack_param )
-		continue;
-	    size_t k = i + 1;
-	    while ( k < ft.decl.size() && ft.decl[k]
-		 && tsubst_pack_decl_suffix_token(ft.decl[k]) )
-		++k;
-	    if ( k + 3 < ft.decl.size()
-	      && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
-	      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
-	      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot
-	      && ft.decl[k+3]
-	      && ft.decl[k+3]->type() == TokenType::ttIdentifier )
-	    {
-		value_pack_name = ((TokenIdent *)ft.decl[k+3])->spelling();
-		break;
-	    }
-	}
+	// Discover the value-pack name: `_Args [decl-suffix] ... __args`
+	// (the ONE owner also feeds the pack-arity publication above).
+	std::string value_pack_name =
+	    fn_template_value_pack_name(ft.decl, pack_param);
 	// Per-element value name `__args__k`.
 	auto elem_value_name = [&](size_t e) {
 	    return value_pack_name + "__" + std::to_string(e);
@@ -41698,7 +50971,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		{
 		    const std::string &pn = ((TokenIdent *)pt)->spelling();
 		    if ( pn == pack_param )
-		    { inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e])); continue; }
+		    { inj.push_back(new TokenDataType(
+			bind_spelling(pack_elems[e]).c_str(), *pack_elems[e])); continue; }
 		    if ( !value_pack_name.empty() && pn == value_pack_name )
 		    { inj.push_back(new TokenIdent(elem_value_name(e).c_str())); continue; }
 		}
@@ -41710,6 +50984,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    TokenBase *bt = ft.decl[i];
 	    if ( !bt )
 		continue;
+	    // [expr.sizeof]/5 — fold `sizeof...(P)` to the pack's ARITY, exactly
+	    // as the single-element loop below does. This branch (N>=2) is
+	    // reached INSTEAD of that loop (it sets multi_done), so without this
+	    // arm the operator survived substitution unfolded and the whole
+	    // instantiation threw "Expecting '(' or identifier after sizeof" —
+	    // silently, keeping the placeholder. Arity 1 worked and arity 2 did
+	    // not, which is why every existing variadic gate passed over it.
+	    {
+		std::string sop_pn;
+		if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
+		{
+		    // Copy the operator through UNTOUCHED, pack name included, so
+		    // the parser's sizeof... arm sees it. Substituting the name
+		    // here is what forced the old fold to exist: the 1:1 arm would
+		    // rewrite `P` to a bound TYPE and manufacture the un-foldable
+		    // `sizeof...(int32_t&)`.
+		    for ( size_t k = 0; k < 7; ++k )
+			inj.push_back(ft.decl[i+k]->clone());
+		    i += 6;
+		    continue;
+		}
+	    }
 	    // Pack DECLARATION `_Args [decl-suffix] ... __args`: expand to N
 	    // typed params `T0 [decl-suffix] __args__0, ...`.
 	    if ( bt->type() == TokenType::ttIdentifier
@@ -41730,7 +51026,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    for ( size_t e = 0; e < N; ++e )
 		    {
 			if ( e ) inj.push_back(new TokenComma());
-			inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e]));
+			inj.push_back(new TokenDataType(
+			    bind_spelling(pack_elems[e]).c_str(), *pack_elems[e]));
 			for ( TokenBase *sfx : decl_suffix ) inj.push_back(sfx->clone());
 			inj.push_back(new TokenIdent(elem_value_name(e).c_str()));
 		    }
@@ -41783,6 +51080,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		std::map<std::string, int64_t>::iterator nsi = nontype_subst.find(idname);
 		if ( nsi != nontype_subst.end() )
 		{ inj.push_back(new TokenInt(nsi->second)); continue; }
+		std::map<std::string, std::string>::iterator tni =
+		    tmpl_name_subst.find(idname);
+		if ( tni != tmpl_name_subst.end() )
+		{ inj.push_back(new TokenIdent(tni->second.c_str())); continue; }
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(idname);
 		if ( si != subst.end() && idname != pack_param )
 		{ inj.push_back(si->second->clone()); continue; }
@@ -41820,31 +51121,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	// argument — std::pair's piecewise ctor: count 0/1) or the regular type
 	// pack (pack_elems / pack_empty). This feeds `_Build_index_tuple<
 	// sizeof...(_Args1)>::__type()` in the piecewise->indexed ctor delegation.
-	if ( is_contextual_identifier_token(bt)
-	  && contextual_identifier_name(bt) == "sizeof"
-	  && i + 6 < ft.decl.size()
-	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
-	  && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
-	  && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot
-	  && ft.decl[i+4] && ft.decl[i+4]->id() == TokenID::tkOpBrk
-	  && ft.decl[i+5] && ft.decl[i+5]->type() == TokenType::ttIdentifier
-	  && ft.decl[i+6] && ft.decl[i+6]->id() == TokenID::tkClBrk )
+	std::string sop_pn;
+	if ( sizeof_pack_operand_name(ft.decl, i, sop_pn) )
 	{
-	    const std::string &pn = ((TokenIdent *)ft.decl[i+5])->spelling();
-	    int64_t cnt = -1;
-	    if ( tidpack_one.count(pn) || nontype_tidpack_one.count(pn) )
-		cnt = 1;
-	    else if ( tidpack_empty_names.count(pn) || nontype_tidpack_empty.count(pn) )
-		cnt = 0;
-	    else if ( !pack_param.empty() && pn == pack_param )
-		cnt = pack_empty ? 0
-		    : (int64_t)(pack_elems.empty() ? 1 : pack_elems.size());
-	    if ( cnt >= 0 )
-	    {
-		inj.push_back(new TokenInt(cnt));
-		i += 6;	// consumed `sizeof` `...` `(` name `)`
-		continue;
-	    }
+	    // Verbatim — see the multi-element twin above. The tidpack_one /
+	    // tidpack_empty_names counts this arm used to consult are published
+	    // as pack arities before the loop, so the parser resolves them.
+	    for ( size_t k = 0; k < 7; ++k )
+		inj.push_back(ft.decl[i+k]->clone());
+	    i += 6;
+	    continue;
 	}
 	// Pattern pack-expansion ellipsis (`std::forward<Args>(args)...`,
 	// `g<Args>(args)...`): the pattern's tokens are substituted inline by
@@ -42003,6 +51289,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		nontype_subst.find(idname);
 	    if ( nsi != nontype_subst.end() )
 	    { inj.push_back(new TokenInt(nsi->second)); continue; }
+	    {
+		std::map<std::string, std::string>::iterator tni =
+		    tmpl_name_subst.find(idname);
+		if ( tni != tmpl_name_subst.end() )
+		{ inj.push_back(new TokenIdent(tni->second.c_str())); continue; }
+	    }
 	    std::map<std::string, TokenDataType *>::iterator si =
 		subst.find(idname);
 	    if ( si != subst.end() )
@@ -42015,15 +51307,46 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // (`, ...`) follow a comma, never an identifier, and survive.
 	    // Declarator-qualified pack (`_Base*...`/`_Base&&...`/`_Base&...`):
 	    // copy through the suffix then drop the `...` (a plain pack leaves
-	    // k at i+1).
+	    // k at i+1). [dcl.ref]/6 in SPELLING space: a REFERENCE element
+	    // ABSORBS a `&`/`&&` suffix (`_Args&&...` with _Args = int& IS
+	    // int&) — copying it through fed the OPAQUE lane's spelling
+	    // collector `int32_t&&` and minted a shell instance
+	    // (tuple_int32_tRR — forward_as_tuple's return temp, the map:967
+	    // return-type mismatch). A non-reference element keeps the
+	    // copy-through (the type-lane arg fold collapses it and the
+	    // spelling identity matches).
 	    // C varargs (`, ...`) follow a comma, never an identifier, survive.
 	    if ( !pack_param.empty() )
 	    {
+		bool elem_is_ref = si != subst.end() && si->second
+				&& si->second->definition.is_reference();
+		{
+		    static const char *rrt2 = ::getenv("MADC_RRTRAP2");
+		    if ( rrt2 && *rrt2 && idname == pack_param
+		      && i + 1 < ft.decl.size() && ft.decl[i+1]
+		      && (ft.decl[i+1]->id() == TokenID::tkBand
+		       || ft.decl[i+1]->id() == TokenID::tkLand) )
+			fprintf(stderr, "RRTRAP2 %s key=%s subst=%d ref=%d"
+				" elem=%s spell=%s\n",
+				idname.c_str(), key.c_str(),
+				(int)(si != subst.end()), (int)elem_is_ref,
+				(si != subst.end() && si->second)
+				    ? si->second->definition.name.c_str() : "-",
+				(si != subst.end() && si->second)
+				    ? si->second->spelling() : "-");
+		}
 		size_t k = i + 1;
+		size_t copied = 0;
 		while ( k < ft.decl.size() && ft.decl[k]
 		     && tsubst_pack_decl_suffix_token(ft.decl[k]) )
 		{
-		    inj.push_back(ft.decl[k]->clone());
+		    if ( !(elem_is_ref
+			   && (ft.decl[k]->id() == TokenID::tkBand
+			    || ft.decl[k]->id() == TokenID::tkLand)) )
+		    {
+			inj.push_back(ft.decl[k]->clone());
+			++copied;
+		    }
 		    ++k;
 		}
 		if ( k + 2 < ft.decl.size()
@@ -42032,11 +51355,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		  && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
 		    i = k + 2;	// consumed decl suffix + the three dots
 		else
-		    while ( k > i + 1 )	// no `...`: undo the suffix copy-through
+		    while ( copied-- )	// no `...`: undo the suffix copy-through
 		    {
 			delete inj.back();
 			inj.pop_back();
-			--k;
 		    }
 	    }
 	    continue;
@@ -42065,8 +51387,20 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	size_t head = 0;
 	auto is_word = [&](TokenBase *t, const char *w) {
-	    return t && t->type() == TokenType::ttIdentifier
-		&& ((TokenIdent *)t)->spelling_is(w);
+	    // BOTH lexings: a raw ttIdentifier clone AND the reserved
+	    // tkCPPKEYWORD form — `inline`/`constexpr` lex as KEYWORDS
+	    // (TokenKeyword::type() is ttKeyword), so the old
+	    // ttIdentifier-only test never advanced the head past a
+	    // specifiers-first `inline constexpr typename X<_Tp>::type
+	    // f(...)` and the SFINAE pre-check missed the typename return
+	    // entirely (__convert_to_integral's non-enum overload then died
+	    // in the body parse instead of being discarded).
+	    if ( !t )
+		return false;
+	    if ( t->type() != TokenType::ttIdentifier
+	      && !is_contextual_identifier_token(t) )
+		return false;
+	    return contextual_identifier_name(t) == w;
 	};
 	while ( head < inj.size()
 	     && (is_word(inj[head], "constexpr") || is_word(inj[head], "inline")
@@ -42283,7 +51617,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
     Program::ErrorInfo saved_last_error = pgm.last_error;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    // Env-gated diagnosis (MADC_FNTPL_LOUD=1): skip the SFINAE mute so the
+    // REAL error prints with its location via the normal throwbuf::sync path
+    // — Throw.str() at catch time can hold a STALE message from an earlier
+    // recovered candidate (the __copy 'unexpected token type 13' hunt).
+    static const char *fntpl_loud = ::getenv("MADC_FNTPL_LOUD");
+    if ( !fntpl_loud )
+	std::cerr.rdbuf(&g_madc_null_streambuf);
+    std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
+    pgm.pending_fn_instantiation_identity = inst_key;
     ++pgm.fn_template_instantiation_depth;
     try
     {
@@ -42313,11 +51655,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	// fprintf(stderr) + Throw.str() bypass the std::cerr mute that a nesting
 	// fold_nontype_arg_constant sets — surfacing the REAL parse error that
 	// aborted this instantiation (otherwise lost -> silent undefined import).
-	fprintf(stderr, "[FNTPLTHROW] %s body THREW: %s\n",
-		inst_key.c_str(), pgm.Throw.str().c_str());
+	fprintf(stderr, "[FNTPLTHROW] %s body THREW: %s | last_error: %s (%s:%d)\n",
+		inst_key.c_str(), pgm.Throw.str().c_str(),
+		pgm.last_error.message.c_str(), pgm.last_error.file.c_str(),
+		pgm.last_error.line);
 #endif
     }
     --pgm.fn_template_instantiation_depth;
+    pgm.pending_fn_instantiation_identity = saved_inst_identity;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     if ( !ok )
@@ -42458,6 +51803,26 @@ static std::string spelling_strip_spaces(const std::string &s)
 static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 						      const std::string &spelling)
 {
+    // Builtin scalars FIRST, against a space-NORMALIZED (not stripped) form:
+    // the one builtin table (resolve_builtin_type_spelling) keys multi-word
+    // spellings ("signed char", "unsigned long long") that the full strip
+    // below destroys ("signedchar" resolves nowhere, and the miss read as
+    // "cannot disprove" in free_operator_concrete_param_matches — libc++'s
+    // operator<<(..., signed char) claimed a const char* argument).
+    {
+	std::string norm;
+	for ( size_t i = 0; i < spelling.size(); ++i )
+	{
+	    char c = spelling[i];
+	    if ( c == ' ' && (norm.empty() || norm.back() == ' ') )
+		continue;
+	    norm += c;
+	}
+	while ( !norm.empty() && norm.back() == ' ' )
+	    norm.pop_back();
+	if ( DataDef *bd = pgm.resolve_builtin_type_spelling(norm) )
+	    return new TokenDataType(spelling.c_str(), *bd);
+    }
     std::string s = spelling_strip_spaces(spelling);
     if ( s.empty() || s.find('&') != std::string::npos )
 	return NULL;	// references are not representable as a bound type arg
@@ -42471,13 +51836,25 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
     {
 	size_t stars = 0;
 	while ( !s.empty() && s.back() == '*' ) { s.pop_back(); ++stars; }
-	// Drop a leading cv-qualifier on the pointee: madc tracks const/volatile
-	// only in a type's IDENTITY/name (instantiate_template_id folds the bare
-	// base into the DataDefPTR and records cv separately), so the DataDef for
-	// `const int*` is DataDefPTR(int) — the same base resolution as `int*`.
-	while ( s.compare(0, 5, "const") == 0 || s.compare(0, 8, "volatile") == 0 )
-	    s.erase(0, s[0] == 'c' ? 5 : 8);
-	TokenDataType *base = resolve_canonical_type_spelling(pgm, s);
+	// The pointee recursion gets the ORIGINAL spelling minus the stars —
+	// spaces intact, so a multi-word builtin pointee ("signed char*")
+	// reaches the builtin table above. Leading cv drops here (word form),
+	// as before: madc tracks const/volatile only in a type's IDENTITY.
+	std::string pointee = spelling;
+	while ( !pointee.empty()
+	     && (pointee.back() == '*' || pointee.back() == ' ') )
+	    pointee.pop_back();
+	for (;;)
+	{
+	    while ( !pointee.empty() && pointee[0] == ' ' )
+		pointee.erase(0, 1);
+	    if ( pointee.compare(0, 6, "const ") == 0 )
+	    { pointee.erase(0, 6); continue; }
+	    if ( pointee.compare(0, 9, "volatile ") == 0 )
+	    { pointee.erase(0, 9); continue; }
+	    break;
+	}
+	TokenDataType *base = resolve_canonical_type_spelling(pgm, pointee);
 	if ( !base )
 	    return NULL;
 	DataDef *dd = &base->definition;
@@ -42569,15 +51946,57 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	core.pop_back();
     while ( core.compare(0, 6, "const ") == 0 )    core.erase(0, 6);
     while ( core.compare(0, 9, "volatile ") == 0 ) core.erase(0, 9);
-    if ( core.empty() || core.back() == '*' )
-	return true;	// pointer / empty: permissive (conversions)
+    if ( core.empty() )
+	return true;	// unparsed: cannot disprove; stay permissive
+    if ( core.back() == '*' )
+    {
+	// Concrete POINTER param: only a pointer or array argument reaches
+	// it by a STANDARD conversion ([conv.ptr], [conv.array] — the null
+	// pointer constant is a VALUE property this type walker cannot
+	// see). Same first-deduced-wins constraint as the arithmetic arm
+	// below, and the missed half of its incident: libc++ declares
+	// operator>>(basic_istream&, unsigned char*) BEFORE the
+	// basic_string extractor, and the permissive pointer arm let it
+	// claim `cin >> name` — the whole basic_string object passed as
+	// the char* (c2mir "incompatible argument type for pointer type
+	// parameter"); `cout << s` likewise bound const char* over the
+	// basic_string inserter (task #90's wrong overload identity).
+	if ( !arg_core || arg_core->is_pointer()
+	  || dynamic_cast<DataDefCArray *>(arg_core) )
+	    return true;
+	return false;
+    }
     TokenDataType *tdt = resolve_canonical_type_spelling(pgm, core);
     if ( !tdt )
 	return true;	// unresolvable -> cannot disprove; stay permissive
     DataDef *pdd = &tdt->definition;
     DataDefCLASS *pcls = dynamic_cast<DataDefCLASS *>(pdd);
     if ( !pcls && !dynamic_cast<DataDefENUM *>(pdd) )
+    {
+	// Arithmetic concrete param: a POINTER argument has no standard
+	// conversion to it ([conv] — pointer->bool notwithstanding: this
+	// walker is first-deduced-wins, so a conversion-needing candidate
+	// must never claim a call an exact sibling matches). The incident:
+	// libc++'s operator<<(basic_ostream<char,_Traits>&, char) registered
+	// before the const char* overload and claimed `cout << "hello "` —
+	// the pointer truncated to one char and the padding path printed
+	// garbage.
+	//
+	// A CLASS argument is the same rule and was missed: a class type
+	// reaches an arithmetic parameter ONLY through a user-defined
+	// conversion ([over.ics.user]), never a standard one, so by this
+	// walker's own first-deduced-wins constraint it must not claim the
+	// call either. The same libc++ overload claimed `cout << s` for a
+	// std::string and the whole basic_string struct was passed BY VALUE
+	// as the `char`, which c2mir reported a phase later as "incompatible
+	// argument type for arithmetic type parameter" — naming no operator.
+	// ENUM arguments stay permissive: integral promotion IS a standard
+	// conversion.
+	if ( arg_core && (arg_core->is_pointer()
+			  || dynamic_cast<DataDefCLASS *>(arg_core)) )
+	    return false;
 	return true;	// scalar / builtin param: permissive
+    }
     if ( pdd == arg_core || (arg_core && pdd->name == arg_core->name) )
 	return true;
     if ( pcls )
@@ -42585,6 +52004,30 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	    if ( ac->is_or_derives_from(pcls) )
 		return true;
     return false;	// a concrete named type the argument is not -> reject
+}
+
+// [temp.deduct.call]/[over.ics.ref] derived-to-base: the class itself or the
+// first base (transitive; non-virtual bases + the primary base_class chain)
+// whose canonical template head matches `want_head`, else NULL. The cir W2
+// signature lane walks the same set via collect_self_and_base_spellings;
+// this is the body-instantiation lane's walk of the same rule.
+static DataDefCLASS *class_or_base_with_template_head(DataDefCLASS *cls,
+						      const std::string &want_head)
+{
+    if ( !cls )
+	return NULL;
+    const std::string canon = cls->canonical_cpp_spelling().empty()
+			    ? cls->name : cls->canonical_cpp_spelling();
+    if ( template_head_component(canon) == want_head )
+	return cls;
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( cls->bases[i].base && !cls->bases[i].is_virtual )
+	    if ( DataDefCLASS *hit = class_or_base_with_template_head(
+			cls->bases[i].base, want_head) )
+		return hit;
+    if ( cls->base_class )
+	return class_or_base_with_template_head(cls->base_class, want_head);
+    return NULL;
 }
 
 static DataDef *try_instantiate_free_operator_template(Program &pgm,
@@ -42650,6 +52093,14 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
 	    if ( !cls )
 		return NULL;
+	    // Derived-to-base ref binding for deduction: an ofstream argument
+	    // binds `basic_ostream<_CharT,_Traits>&` through its BASE. Without
+	    // the walk this candidate was refused and try_free_operator_call
+	    // fell SILENTLY back to the member operator<<(const void*) —
+	    // `outf << "hello"` wrote the pointer VALUE into the file.
+	    if ( DataDefCLASS *bc = class_or_base_with_template_head(
+			cls, template_head_component(sp)) )
+		cls = bc;
 	    const std::string canon = cls->canonical_cpp_spelling().empty()
 				    ? cls->name : cls->canonical_cpp_spelling();
 	    if ( template_head_component(sp) != template_head_component(canon) )
@@ -42793,12 +52244,31 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 {
     const std::string suffix = "::" + opname;
     DataDef *result = NULL;
+    // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the BODY half.
+    // The W2 caller matched its candidate in free_operator_overloads (the
+    // captured SIGNATURES); the body served here comes from fn_template_map
+    // (the RETAINED TEMPLATES). Those are two different containers filled at
+    // two different times, so "the candidate exists but no body instantiates"
+    // is a real state and this is the only place it is visible.
+    static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
+    const bool _fop_on = _fop && *_fop && opname.find(_fop) != std::string::npos;
+    size_t _fop_keys = 0, _fop_cands = 0;
     fn_template_map.for_each(
 	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
 	    std::string key(key_c);
-	    if ( key.size() <= suffix.size()
+	    // `<`, not `<=`: the GLOBAL scope's key is exactly "::" + opname
+	    // (empty namespace) — the same suffix walk find_free_operator_function
+	    // uses. `<=` silently dropped every global-namespace operator template.
+	    if ( key.size() < suffix.size()
 	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
 		return false;
+	    if ( _fop_on )
+	    {
+		++_fop_keys;
+		_fop_cands += vec.size();
+		fprintf(stderr, "FOPBODY key=%s candidates=%zu\n",
+			key.c_str(), vec.size());
+	    }
 #ifdef MADC_DBG_QCALL
 	    fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
 		    vec.size());
@@ -42809,6 +52279,10 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 		{ result = ret; return true; }
 	    return false;
 	});
+    if ( _fop_on )
+	fprintf(stderr, "FOPBODY %s -> %s (keys=%zu candidates=%zu)\n",
+		opname.c_str(), result ? "INSTANTIATED" : "NO BODY",
+		_fop_keys, _fop_cands);
     return result;
 }
 
@@ -42968,8 +52442,10 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // required (stod's empty-pack shape). The template's presence in
     // fn_template_map is the signal; the inst_key memo dedupes.
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    if ( !fd
-      || fd->namespace_name.empty() || fd->function_display_name.empty() )
+    // A GLOBAL-scope template has an empty namespace_name, which is a valid key
+    // component, not a reason to refuse instantiation — the other half of the
+    // same assumption removed at the registration site.
+    if ( !fd || fd->function_display_name.empty() )
 	return;
     std::string fn_key = fd->namespace_name + "::" + fd->function_display_name;
     std::vector<FnTemplateDef> *mi = fn_template_map.find(fn_key);
@@ -42988,9 +52464,27 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    { pos = j; break; }
 	order.insert(order.begin() + pos, cand);
     }
+    Variable *inst = NULL;
     for ( Program::FnTemplateDef *cand : order )
-	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc) )
+	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
+						   NULL, NULL, &inst) )
+	{
+	    // Pin the CALL's return type to the INSTANCE's ([temp.deduct] — the
+	    // deduced specialization's type IS the call's type). The placeholder
+	    // FuncDef returns int64, which is indistinguishable from a scalar
+	    // return but wrong for a template-id return (`pack<T> peek(...)`):
+	    // parse-time consumption of the result (`peek(b).get()`) needs the
+	    // real class type NOW, not at CIR ranking time.
+	    FuncDef *ifd = inst ? dynamic_cast<FuncDef *>(inst->type) : NULL;
+	    if ( ifd && !tc->return_override )
+	    {
+		DataDef *rt = &ifd->return_value_type();
+		tc->return_override = rt;
+		tc->returns_ref_override = ifd->returns_reference();
+		tc->setDataType(rt);
+	    }
 	    return;
+	}
 }
 
 static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i)
@@ -43450,17 +52944,18 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 	    packs.insert(fd->template_param_names[i]);
     if ( packs.empty() )
 	return;
-    int paren = 0, square = 0, brace = 0;
-    for ( size_t i = 0; i < def_tokens.size(); ++i )
+    DelimDepth d;
+    for ( size_t i = 0; i < def_tokens.size(); )
     {
 	TokenBase *t = def_tokens[i];
 	if ( !t )
-	    continue;
-	if ( paren == 0 && square == 0 && brace == 0
-	  && t->id() == TokenID::tkClBrk )
+	    { ++i; continue; }
+	// The original tracked paren/square/brace only; angle was never part
+	// of its condition, so keep testing exactly those three axes.
+	bool outside = !d.paren && !d.square && !d.brace;
+	if ( outside && t->id() == TokenID::tkClBrk )
 	    break;	// end of the function declarator's parameter list
-	if ( paren == 0 && square == 0 && brace == 0
-	  && tsubst_pack_param_token(t, packs) )
+	if ( outside && tsubst_pack_param_token(t, packs) )
 	{
 	    size_t k = i + 1;
 	    while ( k < def_tokens.size() && def_tokens[k]
@@ -43470,15 +52965,11 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 	    {
 		def_tokens.erase(def_tokens.begin() + k,
 				 def_tokens.begin() + k + 3);
-		continue;
+		continue;	// re-examine this token, depth unchanged
 	    }
 	}
-	if ( t->id() == TokenID::tkOpBrk ) ++paren;
-	else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
-	else if ( t->id() == TokenID::tkOpSqr ) ++square;
-	else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
-	else if ( t->id() == TokenID::tkOpBrc ) ++brace;
-	else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	size_t n = delim_scan_step(def_tokens, i, d);
+	i += n ? n : 1;
     }
 }
 
@@ -43670,8 +53161,19 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     TokenFunc *pattern = NULL;
     if ( pending_funcs.size() > before )
     {
+	// The RECIPE is the pattern TokenFunc parseFunction pushed LAST — but
+	// the dependent body parse may have eagerly instantiated CONCRETE
+	// classes along the way (UPtr<Node,Del> inside Tree::construct's
+	// body), whose method definitions ALSO landed in pending_funcs after
+	// `before`. Those classes SURVIVE this function (nothing undoes their
+	// registration, and tsubst bodies resolve calls against them), so the
+	// old blanket resize ORPHANED them: every definition vanished while
+	// the class kept its methods — the "tsubst body calls un-emittable
+	// symbol" bail (task #88; libc++'s __compressed_pair_elem ctor under
+	// `cout << string`). Remove ONLY the recipe.
 	pattern = dynamic_cast<TokenFunc *>(pending_funcs.back());
-	pending_funcs.resize(before);	// a recipe, not a pending function
+	if ( pattern )
+	    pending_funcs.pop_back();	// the recipe, not a pending function
     }
     funcdef_map.erase(parse_id);	// undo parseFunction's registration
     if ( getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && fd_is_ctor )
@@ -43823,6 +53325,57 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
 	? dynamic_cast<DataDefCLASS *>(dmi->second) : NULL;
 }
 
+// May this member template's i-th NON-TYPE parameter default be filled at
+// instantiation? Only when its captured constraint run is EMPTY — a
+// bare-headed param (`bool _Dummy = true`) carries no SFINAE in its declared
+// type, so filling asserts nothing. A COMPOUND declared type (`typename
+// enable_if<C, bool>::type = true`) IS the SFINAE, and filling its default
+// without evaluating the run caused the pair-ctor incident (see the call
+// twin's comment). A missing/mismatched constraints vector — an old forest
+// record predating v38 — answers NO for every param: no info degrades to
+// the pre-v38 clear-all behavior, never to an unevaluated assertion.
+// The ONE shared rule for both instantiation twins (call + ctor).
+static bool member_template_nontype_default_fillable(const FuncDef *fd,
+	size_t i)
+{
+    return fd
+	&& fd->member_template_param_constraints.size()
+	       == fd->template_param_names.size()
+	&& i < fd->member_template_param_constraints.size()
+	&& fd->member_template_param_constraints[i].empty();
+}
+
+// Populate the retained template head for both member-function and member-ctor
+// instantiation. The constraint run makes a constrained non-type default safe
+// to retain: instantiate_fn_template_binding resolves it under the completed
+// binding and rejects the candidate on substitution failure. An older forest
+// record with no constraint carriage keeps the conservative clear behavior.
+static void populate_member_template_head(const FuncDef *fd,
+	Program::FnTemplateDef &ft)
+{
+    ft.typeparams = fd->template_param_names;
+    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
+	ft.typeparam_is_type = fd->template_param_is_type;
+    else
+	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
+	ft.typeparam_is_pack = fd->template_param_is_pack;
+    else
+	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    if ( fd->member_template_param_defaults.size() != ft.typeparams.size() )
+	return;
+
+    ft.typeparam_defaults = fd->member_template_param_defaults;
+    if ( fd->member_template_param_constraints.size() == ft.typeparams.size() )
+	ft.typeparam_constraints = fd->member_template_param_constraints;
+    for ( size_t i = 0; i < ft.typeparam_defaults.size(); ++i )
+	if ( (i >= ft.typeparam_is_type.size() || !ft.typeparam_is_type[i])
+	  && !member_template_nontype_default_fillable(fd, i)
+	  && (i >= ft.typeparam_constraints.size()
+	      || ft.typeparam_constraints[i].empty()) )
+	    ft.typeparam_defaults[i].clear();
+}
+
 Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
     InstTimer _it(*this, _inst_member_fn_count);	// --show-stats
@@ -43899,31 +53452,19 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // Cycle break (logical-identity keyed): the allocator trait chain
     // construct -> _S_construct -> __has_construct -> __test -> construct re-requests
     // the SAME logical instantiation from a DIFFERENT call site, so call-site keying
-    // (inst_name below) can't stop it. Key on owner + fn + arg-type spellings; a
+    // (inst_name below) can't stop it. Key on owner + fn + the shared call shape; a
     // re-entrant request returns early (its body finishes in the outer frame).
-    std::string mfi_key = owner->name + "::" + fd->function_display_name + "(";
-    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-    {
-	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-	mfi_key += (pdd ? pdd->name : std::string("?")) + ",";
-    }
-    mfi_key += ")";
-    // Per type-shape instance memo — keyed on the PLACEHOLDER identity
+    const std::string call_shape = fn_template_call_shape_suffix(tc);
+    std::string mfi_key = owner->name + "::" + fd->function_display_name
+			  + call_shape;
+    // Per-call-shape instance memo — keyed on the PLACEHOLDER identity
     // (tc->var.name is the unique registered symbol), NOT the cycle key above:
     // function_display_name can be empty, and the cycle key deliberately blurs
     // sibling placeholders (its job is catching logical re-requests), which
-    // would bind one member template's call to ANOTHER's instance. Explicit
-    // template args are a distinct instantiation axis (`h.f<int>(0)` vs
-    // `h.f<long>(0)` differ ONLY here) — fold them in.
-    std::string shape_key = tc->var.name + "(";
-    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-    {
-	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-	shape_key += (pdd ? pdd->name : std::string("?")) + ",";
-    }
-    shape_key += ")";
-    for ( DataDef *ea : tc->explicit_template_args )
-	shape_key += "<" + (ea ? ea->name : std::string("?"));
+    // would bind one member template's call to ANOTHER's instance. The shared
+    // suffix includes argument value categories (a forwarding-reference axis)
+    // and explicit template args (`h.f<int>(0)` vs `h.f<long>(0)`).
+    std::string shape_key = tc->var.name + call_shape;
     // Memo hit: this shape was already instantiated — bind the call to ITS
     // instance (a member template used at two types has two instances; the
     // placeholder's local_emit_name alias is first-wins and cannot answer for
@@ -43962,6 +53503,42 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	~MfiGuard() { s.erase(k); }
     } mfi_guard{ member_fn_inst_in_progress, mfi_key };
 
+    // [temp.deduct]/8 overload fall-through: the call token binds ONE
+    // placeholder, but the member may be an OVERLOAD SET of member templates
+    // whose constraints select mutually exclusively — allocator_traits::
+    // select_on_container_copy_construction is an __enable_if_t<HAS>-gated
+    // overload plus its __enable_if_t<!HAS> sibling. A substitution failure
+    // removes the candidate and the NEXT same-name sibling must be tried, or
+    // the call silently stays on the varargs placeholder (an implicit
+    // int-returning call in the emitted C — string:709's struct-from-int).
+    std::vector<FuncDef *> mti_cands;
+    mti_cands.push_back(fd);
+    {
+	DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+	const std::string mti_base_sym = strip_overload_suffix(tc->var.name);
+	if ( ocls )
+	    for ( Variable *mv : ocls->methods )
+	    {
+		FuncDef *cfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		if ( cfd && cfd != fd && cfd->is_member_template
+		  && cfd->member_template_owner == fd->member_template_owner
+		  && !cfd->member_template_decl.empty()
+		  && !cfd->template_param_names.empty()
+		  && strip_overload_suffix(mv->name) == mti_base_sym )
+		    mti_cands.push_back(cfd);
+	    }
+    }
+    bool ok = false;
+    Variable *inst_var = NULL;
+    std::string inst_name;
+    std::vector<DataDef *> concrete_type_args;
+    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
+    for ( size_t mci = 0; mci < mti_cands.size() && !ok; ++mci )
+    {
+    fd = mti_cands[mci];
+    inst_var = NULL;
+    if ( !fd->dependent_pattern )
+	build_dependent_pattern(fd);
     // A one-shot free-function template from the retained body: rename the
     // declarator to a unique instantiation symbol (so the parsed function
     // neither collides with the declaration-only placeholder member nor with
@@ -43970,23 +53547,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // instantiated definition is then aliased (local_emit_name) to the call's
     // symbol below.
     FnTemplateDef ft;
-    ft.typeparams = fd->template_param_names;
-    ft.typeparam_is_type.assign(ft.typeparams.size(), true);
-    // Honor a variadic typeparam (`typename... _Args`) — a member template like
-    // allocator_traits::construct must instantiate its pack from the call's
-    // trailing args. Fall back to none-are-packs when pack-ness wasn't recorded.
-    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
-	ft.typeparam_is_pack = fd->template_param_is_pack;
-    else
-	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
-    ft.ns = std::string();
+    populate_member_template_head(fd, ft);
+    // The member template's DEFINING namespace is its owner class's ([temp.point]
+    // / [basic.lookup.unqual]): a defaulted parameter names its neighbors
+    // unqualified (`__enable_if_t<...>` in std::__1), and the defaults fill
+    // resolves in ft.ns — an empty ns left those names unresolvable, so the
+    // whole instantiation silently bailed (deftype MISS with no error).
+    ft.ns = namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
     // placeholder, which would drop them) — unique PER TYPE-SHAPE
     // (unique_overload_symbol: the first shape keeps `__mti`, later shapes get
     // `__mti__oN`), and each call binds its own shape's instance via the
     // shape_key memo above + tc->mti_instance below.
-    std::string inst_name = unique_overload_symbol(tc->var.name + "__mti");
+    inst_name = unique_overload_symbol(tc->var.name + "__mti");
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
     {
 	TokenBase *t = fd->member_template_decl[i];
@@ -43998,7 +53572,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
     size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( name_idx >= ft.decl.size() || !ft.decl[name_idx] )
-	return NULL;
+	continue;	// malformed candidate decl: try the next sibling
     {
 	TokenBase *old = ft.decl[name_idx];
 	TokenBase *ren = new TokenIdent(inst_name.c_str());
@@ -44035,8 +53609,6 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // `static` specifier was dropped above, so re-derive from the retained decl.
     ft.instance_method =
 	!skipped_template_function_is_static(fd->member_template_decl);
-    std::vector<DataDef *> concrete_type_args;
-    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
     // Phase-5 slice 2 (4b flip): the source has a Tree-1 recipe — the
     // instantiated body comes from tsubst at lowering, so arm the name-keyed
     // body-parse skip for this instantiation (parseFunction captures the span
@@ -44053,12 +53625,15 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // resolves to an already-instantiated binding reuses that instance —
     // one instantiation per (template, binding), the g++ model. The memo
     // hands the existing instance back via inst_var; adopt its name below.
-    ft.inst_identity = tc->var.name + "__mti";
-    Variable *inst_var = NULL;
-    bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
-						    &concrete_type_args,
-						    &concrete_type_arg_packs,
-						    &inst_var);
+    // Distinct memo identity per CANDIDATE: two same-name siblings can reach
+    // the same binding, and one shared identity would hand candidate B
+    // candidate A's instance.
+    ft.inst_identity = tc->var.name + "__mti"
+	+ (mci ? "__c" + std::to_string(mci) : std::string());
+    ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
+					       &concrete_type_args,
+					       &concrete_type_arg_packs,
+					       &inst_var);
     tsubst_skip_body_name = saved_skip_body;
     if ( ok && inst_var && inst_var->name != inst_name )
 	inst_name = inst_var->name;	// binding-memo dedupe: reuse the instance
@@ -44068,6 +53643,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		  << " inst=" << inst_name
 		  << " ok=" << (int)ok << std::endl;
 #endif
+    }
     if ( !ok )
 	return NULL;
     // Bind the CALL to the instantiated definition: the call references the
@@ -44119,9 +53695,21 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 void Program::instantiate_member_ctor_template_for_construction(
 	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
 {
-    InstTimer _it(*this, _inst_member_ctor_count);	// --show-stats
     if ( !cdd )
 	return;
+    const size_t candidate_limit = cdd->ctors.size();
+    for ( size_t skip = 0; skip < candidate_limit; ++skip )
+	if ( instantiate_member_ctor_template_candidate(cdd, ctor_args, skip) )
+	    return;
+}
+
+bool Program::instantiate_member_ctor_template_candidate(
+	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+	size_t candidate_skip)
+{
+    InstTimer _it(*this, _inst_member_ctor_count);	// --show-stats
+    if ( !cdd )
+	return false;
 #ifdef MADC_DEBUG_CTORTMPL
     bool dbg_ct = getenv("MADC_DEBUG_CTORTMPL") && cdd->name.find("pair") != std::string::npos;
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] ENTER cdd=%s nargs=%zu ext=%d extinst=%d ctors=%zu\n",
@@ -44131,7 +53719,26 @@ void Program::instantiate_member_ctor_template_for_construction(
     // A libstdc++-EXPORTED class binds mangled-direct; only a madc-LOCAL
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
-	return;
+	return false;
+    // [over.match.best] + [class.copy.ctor]: for a SAME-TYPE (or sliced
+    // derived-to-base) single-argument construction, the IMPLICIT copy
+    // constructor — a non-template — outranks any member-template instance
+    // (`template<class U> X(const X<U>&)` deduces U=T to a copy signature,
+    // but a template never beats the implicit copy). madc does not list the
+    // implicit copy in cdd->ctors; the ctor-less copy path (spill-copy)
+    // IS that ctor. Instantiating here instead hijacked every by-value copy
+    // through a reference-param call — `&(temporary)` failed c2mir's lvalue
+    // check (testtplargkey, after the member-fn-template self-name keep made
+    // the converting-ctor deduction actually succeed).
+    if ( ctor_args.size() == 1 && ctor_args[0] )
+    {
+	DataDef *avd = operand_value_datadef(ctor_args[0]);
+	while ( DataDefCONST *ac = dynamic_cast<DataDefCONST *>(avd) )
+	    avd = ac->base_type;
+	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(avd);
+	if ( acls && acls->is_or_derives_from(cdd) )
+	    return false;
+    }
     // Dependent deferral — the CTOR mirror of the call path's rule (see
     // instantiate_member_fn_template_for_call): inside a dependent pattern
     // parse, a construction whose args involve a template-parameter
@@ -44142,7 +53749,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     if ( dependent_parse_in_progress )
 	for ( TokenBase *a : ctor_args )
 	    if ( a && datadef_involves_placeholder(a->datadef()) )
-		return;
+		return false;
     // Count the FUNCTION parameters of a member-template ctor from its retained
     // decl (top-level commas between the declarator '(' and ')', `<...>` nested).
     // std::pair registers TWO member-template ctors — the piecewise (3 params) and
@@ -44179,6 +53786,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     Variable *placeholder = NULL;
     FuncDef *fd_fallback = NULL;
     Variable *ph_fallback = NULL;
+    size_t arity_candidate = 0;
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -44191,24 +53799,53 @@ void Program::instantiate_member_ctor_template_for_construction(
 	    if ( member_ctor_param_count(cfd->member_template_decl)
 		 == (int)ctor_args.size() )
 	    {
+		if ( arity_candidate++ < candidate_skip )
+		    continue;
 		fd = cfd;
 		placeholder = cv;
 		break;
 	    }
 	}
     }
-    if ( !fd ) { fd = fd_fallback; placeholder = ph_fallback; }
+    if ( !fd && candidate_skip == 0 )
+	{ fd = fd_fallback; placeholder = ph_fallback; }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] placeholder=%p fd=%p\n", (void*)placeholder, (void*)fd);
 #endif
+    // Env-gated probe (MADC_MCT_PROBE=<class-name substr>): the candidate set.
+    // "No member-template ctor found" and "found but not instantiable" produce
+    // the SAME symptom — an undefined import for the placeholder — so the
+    // ctor-by-ctor flags are what separate a REGISTRATION failure from an
+    // instantiation failure.
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	{
+	    fprintf(stderr, "MCTPROBE %s cand args=%zu ctors=%zu chose=%p\n",
+		    cdd->name.c_str(), ctor_args.size(), cdd->ctors.size(),
+		    (void *)fd);
+	    for ( Variable *cv : cdd->ctors )
+	    {
+		FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		fprintf(stderr, "MCTPROBE   ctor %s mt=%d decl=%zu"
+			" owner_ok=%d tparams=%zu declonly=%d\n",
+			cv ? cv->name.c_str() : "(null)",
+			cfd ? (int)cfd->is_member_template : -1,
+			cfd ? cfd->member_template_decl.size() : (size_t)0,
+			cfd ? (int)(cfd->member_template_owner == cdd) : -1,
+			cfd ? cfd->template_param_names.size() : (size_t)0,
+			cfd ? (int)cfd->declaration_only : -1);
+	    }
+	}
+    }
     if ( !fd || !placeholder )
-	return;
+	return false;
     if ( !fd->dependent_pattern )
 	build_dependent_pattern(fd);
 
     // Memoize / break the construct -> forward -> construct recursion: key on the
     // class + each argument's value type.
-    std::string key = cdd->name + "::ctor(";
+    std::string key = placeholder->name + "|" + cdd->name + "::ctor(";
     for ( TokenBase *a : ctor_args )
     {
 	DataDef *adp = a ? operand_value_datadef(a) : NULL;
@@ -44216,7 +53853,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     }
     key += ")";
     if ( !member_ctor_inst_done.insert(key).second )
-	return;	// already instantiated (or instantiating) this construction shape
+	return false;	// already instantiated (or instantiating) this candidate shape
 
     // Build the free-fn-template descriptor from the retained ctor decl, dropping
     // `static`/`explicit`, and rename the declarator to a CONCRETE ctor symbol.
@@ -44224,21 +53861,59 @@ void Program::instantiate_member_ctor_template_for_construction(
     // mem-initializer list and treat the body as a constructor; instance_method
     // gives it the hidden __this (the object under construction).
     FnTemplateDef ft;
-    ft.typeparams = fd->template_param_names;
-    // Per-param type-ness from the captured template head (a member-template ctor
-    // with non-type packs — std::pair's indexed ctor `size_t... _Indexes` — must
-    // NOT mark every param type); fall back to all-type for older registrations.
-    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
-	ft.typeparam_is_type = fd->template_param_is_type;
-    else
-	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
-    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
-	ft.typeparam_is_pack = fd->template_param_is_pack;
-    else
-	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
-    ft.ns = std::string();
+    populate_member_template_head(fd, ft);
+    // The ctor template's DEFINING namespace is its owner class's — the
+    // defaults fill resolves unqualified neighbors there (see the call twin):
+    // __compressed_pair_elem's `class = __enable_if_t<!is_same<...>>` names
+    // std::__1 residents, and an empty ns silently bailed the instantiation
+    // (the cout smoke's string:709 "no matching constructor").
+    ft.ns = namespace_scope_from_cpp_spelling(cdd->canonical_cpp_spelling());
     ft.owner_class = cdd;
     ft.instance_method = true;
+    // Env-gated probe (MADC_MCT_PROBE=<class-name substr>): the ctor twin of
+    // MADC_MTI_PROBE. The parallel-vector carriage into FnTemplateDef is where
+    // this lane keeps losing template-head facts — pack-ness, then type-ness,
+    // then defaults — and each loss shows up only as an undefined MIR import
+    // for the placeholder ctor. Print the sizes that must match.
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	{
+	    std::string fill;
+	    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+		fill += member_template_nontype_default_fillable(fd, i)
+			? 'F' : '-';
+	    fprintf(stderr, "MCTPROBE %s ctor args=%zu tparams=%zu"
+		    " is_type=%zu is_pack=%zu defaults=%zu carried=%d"
+		    " constraints=%zu fill=%s\n",
+		    cdd->name.c_str(), ctor_args.size(), ft.typeparams.size(),
+		    fd->template_param_is_type.size(),
+		    fd->template_param_is_pack.size(),
+		    fd->member_template_param_defaults.size(),
+		    (int)!ft.typeparam_defaults.empty(),
+		    fd->member_template_param_constraints.size(), fill.c_str());
+	    // Per-param captured state: the mis-SPLIT of a nested constraint
+	    // (`__enable_if_t<_And<...>::value, int> = 0`) shows only here.
+	    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	    {
+		std::string ds, cs;
+		if ( i < ft.typeparam_defaults.size() )
+		    for ( TokenBase *t : ft.typeparam_defaults[i] )
+			if ( t ) { ds += template_token_fragment(t); ds += ' '; }
+		if ( i < ft.typeparam_constraints.size() )
+		    for ( TokenBase *t : ft.typeparam_constraints[i] )
+			if ( t ) { cs += template_token_fragment(t); cs += ' '; }
+		fprintf(stderr, "MCTPROBE   param[%zu] '%s' type=%d pack=%d"
+			" default='%s' constraint='%s'\n",
+			i, ft.typeparams[i].c_str(),
+			i < ft.typeparam_is_type.size()
+			    ? (int)ft.typeparam_is_type[i] : -1,
+			i < ft.typeparam_is_pack.size()
+			    ? (int)ft.typeparam_is_pack[i] : -1,
+			ds.c_str(), cs.c_str());
+	    }
+	}
+    }
 
     std::string ctor_decl_name =
 	skipped_template_function_declarator_name(fd->member_template_decl);
@@ -44250,12 +53925,31 @@ void Program::instantiate_member_ctor_template_for_construction(
 		|| (t->type() == TokenType::ttIdentifier
 		    && (static_cast<TokenIdent *>(t)->spelling_is("static")
 		     || static_cast<TokenIdent *>(t)->spelling_is("explicit")))) )
+	{
+	    // C++20 conditional explicit ([dcl.fct.spec]p2): dropping the
+	    // keyword must also drop its `( const-expr )` condition group, or
+	    // the orphaned parens derail the signature extraction (libc++
+	    // tuple's variadic ctors under -std=c++17).
+	    if ( t->type() == TokenType::ttIdentifier
+	      && static_cast<TokenIdent *>(t)->spelling_is("explicit")
+	      && i + 1 < fd->member_template_decl.size()
+	      && fd->member_template_decl[i + 1]
+	      && fd->member_template_decl[i + 1]->id() == TokenID::tkOpBrk )
+	    {
+		DelimDepth d;
+		size_t k = i + 1;
+		k += delim_scan_step(fd->member_template_decl, k, d);
+		while ( k < fd->member_template_decl.size() && !d.top() )
+		    k += delim_scan_step(fd->member_template_decl, k, d);
+		i = k - 1;	// consumed `explicit ( ... )`
+	    }
 	    continue;
+	}
 	ft.decl.push_back(t ? t->clone() : NULL);
     }
     size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( ni >= ft.decl.size() || !ft.decl[ni] )
-	return;
+	return false;
     {
 	TokenBase *old = ft.decl[ni];
 	TokenBase *ren = new TokenIdent(inst_name.c_str());
@@ -44305,8 +53999,14 @@ void Program::instantiate_member_ctor_template_for_construction(
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] try_instantiate ok=%d inst_name=%s\n", (int)ok, inst_name.c_str());
 #endif
+    {
+	static const char *mcp = ::getenv("MADC_MCT_PROBE");
+	if ( mcp && *mcp && cdd->name.find(mcp) != std::string::npos )
+	    fprintf(stderr, "MCTPROBE %s try ok=%d inst=%s\n",
+		    cdd->name.c_str(), (int)ok, inst_name.c_str());
+    }
     if ( !ok )
-	return;
+	return false;
 
     // Register the concrete instantiation as a real ctor of cdd: its parameters
     // are the deduced concrete signature (__this + substituted ctor params), so
@@ -44316,7 +54016,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     if ( !inst_var )
 	inst_var = findVariable(inst_name);
     if ( !inst_var )
-	return;
+	return false;
     FuncDef *inst_fd = dynamic_cast<FuncDef *>(inst_var->type);
     if ( inst_fd )
     {
@@ -44331,6 +54031,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     }
     if ( !vector_contains_variable(cdd->ctors, inst_var) )
 	cdd->ctors.push_back(inst_var);
+    return true;
 }
 
 static bool skipped_template_function_is_static(
@@ -44454,8 +54155,11 @@ static DataDef *skipped_template_function_return_type(
 			    { depends_on_fn_param = true; break; }
 		}
 	if ( rs < type_end && !depends_on_fn_param )
+	{
+	    Program::ClassTypeLookupScope return_definition_scope(pgm, owner);
 	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, type_end) )
 		return apply_declarators(tid);
+	}
     }
     // Pointer-declarator stars between the base type and the name
     // (`Node * make`, `T ** f`): count them backward and fold getPointerType
@@ -44548,12 +54252,38 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 {
     if ( ret_ref )
 	*ret_ref = false;
-    if ( !tc || tc->explicit_template_args.empty() )
+    // No explicit args: an UNEVALUATED deduced call ([dcl.type.decltype] —
+    // `decltype(addr(x))`, libc++'s `decltype(std::__to_address(...))`) still
+    // forms its function type; deduce the binding from the argument value
+    // types instead (evaluated calls keep full instantiation as their source
+    // of truth — this lane serves only where instantiation is suppressed).
+    bool deduce_from_args = false;
+    if ( !tc )
 	return NULL;
+    if ( tc->explicit_template_args.empty() )
+    {
+	if ( unevaluated_operand_depth == 0 || tc->parameters.empty() )
+	    return NULL;
+	deduce_from_args = true;
+    }
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    if ( !fd || fd->namespace_name.empty() || fd->function_display_name.empty() )
+    // The GLOBAL namespace is a namespace: registration keys a global fn
+    // template as "::name" (current_namespace() is empty), and this key
+    // derivation matches it — so an empty namespace_name must NOT bail
+    // (it made decltype(and_fn<...>(0)) keep the placeholder's `auto`).
+    // function_display_name is the placeholder-shape discriminator.
+    if ( !fd || fd->function_display_name.empty() )
 	return NULL;
     std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    if ( deduce_from_args )
+    {
+	std::vector<DataDef *> arg_types;
+	arg_types.reserve(tc->parameters.size());
+	for ( TokenBase *p : tc->parameters )
+	    arg_types.push_back(p ? operand_value_datadef(p) : NULL);
+	return resolve_fn_template_return_by_key(key, std::vector<DataDef *>(),
+						 ret_ref, 0, &arg_types);
+    }
     return resolve_fn_template_return_by_key(key, tc->explicit_template_args,
 					     ret_ref, 0);
 }
@@ -44565,11 +54295,13 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 DataDef *Program::resolve_fn_template_return_by_key(
 		const std::string &key,
 		const std::vector<DataDef *> &explicit_args,
-		bool *ret_ref, int depth)
+		bool *ret_ref, int depth,
+		const std::vector<DataDef *> *call_arg_types)
 {
     if ( ret_ref )
 	*ret_ref = false;
-    if ( depth > 8 || explicit_args.empty() )
+    bool have_arg_types = call_arg_types && !call_arg_types->empty();
+    if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
 	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
     // free templates of this name — declval and friends are body-less.
@@ -44584,8 +54316,60 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	if ( di != fn_template_decl_map.end() )
 	    for ( FnTemplateDef &c : *di ) cands.push_back(&c);
     }
+    // [namespace.qual]: members of N include N's inline namespace set — a
+    // qualified key (`std::__declval`) must also probe the inline children
+    // transitively (`std::__1::__declval`, where libc++ actually declares
+    // it). Same walk find_template_alias's qualified branch does over its
+    // own registry; each registry owns its copy today.
+    if ( cands.empty() )
+    {
+	size_t sep = key.rfind("::");
+	if ( sep != std::string::npos )
+	{
+	    std::string base_name = key.substr(sep + 2);
+	    std::map<std::string, std::vector<std::string>>::iterator ci =
+		inline_namespace_children.find(key.substr(0, sep));
+	    std::vector<std::string> pending =
+		ci == inline_namespace_children.end()
+		? std::vector<std::string>() : ci->second;
+	    for ( size_t pi = 0; pi < pending.size() && cands.empty(); ++pi )
+	    {
+		std::string child_key = pending[pi] + "::" + base_name;
+		std::vector<FnTemplateDef> *cmi = fn_template_map.find(child_key);
+		if ( cmi != fn_template_map.end() )
+		    for ( FnTemplateDef &c : *cmi ) cands.push_back(&c);
+		std::vector<FnTemplateDef> *cdi =
+		    fn_template_decl_map.find(child_key);
+		if ( cdi != fn_template_decl_map.end() )
+		    for ( FnTemplateDef &c : *cdi ) cands.push_back(&c);
+		ci = inline_namespace_children.find(pending[pi]);
+		if ( ci != inline_namespace_children.end() )
+		    for ( size_t k = 0; k < ci->second.size(); ++k )
+			pending.push_back(ci->second[k]);
+	    }
+	}
+    }
     if ( cands.empty() )
 	return NULL;
+    // [over.match.best]/[over.ics.ellipsis]: an ellipsis-only candidate
+    // (`auto __or_fn(...) -> true_type`, the SFINAE catch-all) loses to any
+    // viable non-ellipsis one. This resolver takes the FIRST candidate whose
+    // return RESOLVES (a substitution failure `continue`s to the next), so
+    // ordering the non-ellipsis candidates first IS the tiebreak: the
+    // catch-all serves only when every SFINAE overload's return fails.
+    std::stable_partition(cands.begin(), cands.end(),
+	[](FnTemplateDef *c) {
+	    const std::string nm =
+		skipped_template_function_declarator_name(c->decl);
+	    for ( size_t i = 0; i + 4 < c->decl.size(); ++i )
+		if ( c->decl[i] && is_skipped_template_function_name(c->decl[i])
+		  && skipped_template_function_name(c->decl[i]) == nm
+		  && c->decl[i+1] && c->decl[i+1]->id() == TokenID::tkOpBrk )
+		    return !(c->decl[i+2] && c->decl[i+2]->id() == TokenID::tkDot
+			  && c->decl[i+3] && c->decl[i+3]->id() == TokenID::tkDot
+			  && c->decl[i+4] && c->decl[i+4]->id() == TokenID::tkDot);
+	    return true;
+	});
     static const std::set<std::string> specifiers = {
 	"static", "constexpr", "inline", "virtual", "friend", "extern",
 	"typename", "const", "volatile", "auto"
@@ -44593,8 +54377,21 @@ DataDef *Program::resolve_fn_template_return_by_key(
     for ( FnTemplateDef *ftp : cands )
     {
 	FnTemplateDef &ft = *ftp;
-	if ( ft.typeparams.empty()
-	  || explicit_args.size() > ft.typeparams.size() )
+	if ( ft.typeparams.empty() )
+	    continue;
+	// A TRAILING TYPE pack absorbs any surplus explicit args (gcc 13's
+	// `__or_fn<_Bn...>` takes N trait args against ONE pack param); the
+	// pack-blind arity gate skipped every such candidate and decltype of
+	// the call fell to the placeholder's `auto`.
+	size_t nfixed = ft.typeparams.size();
+	std::string pack_name;
+	if ( ft.typeparam_is_pack.size() == ft.typeparams.size()
+	  && !ft.typeparam_is_pack.empty() && ft.typeparam_is_pack.back() )
+	{
+	    pack_name = ft.typeparams.back();
+	    nfixed = ft.typeparams.size() - 1;
+	}
+	if ( pack_name.empty() && explicit_args.size() > ft.typeparams.size() )
 	    continue;
 	std::string name = skipped_template_function_declarator_name(ft.decl);
 	if ( name.empty() )
@@ -44641,9 +54438,12 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    }
 	}
 	if ( !is_trailing )
+	    // Test the token's SPELLING across token kinds: in C++ modes
+	    // `const`/`inline` are KEYWORD tokens (ttKeyword), not contextual
+	    // identifiers — the identifier-only test left `const _Facet&`'s
+	    // const in the range and the resolve failed (std::use_facet).
 	    while ( rs < re && ft.decl[rs]
-		 && is_contextual_identifier_token(ft.decl[rs])
-		 && specifiers.count(contextual_identifier_name(ft.decl[rs])) )
+		 && specifiers.count(template_token_fragment(ft.decl[rs])) )
 		++rs;
 	// Fold a trailing `&` / `&&` off the end (a reference return collapses to
 	// the referenced type for type identity; tr_ref then drives the DataDefREF
@@ -44664,19 +54464,60 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// pair ctor (map<K,string>::operator[]). Skip such a kind-mismatched candidate
 	// so the viable by-INDEX overload (or full instantiation) supplies the type.
 	std::map<std::string, DataDef *> binding;
+	std::vector<DataDef *> pack_elems;
 	bool kind_mismatch = false;
-	for ( size_t i = 0; i < explicit_args.size()
-			 && i < ft.typeparams.size(); ++i )
+	for ( size_t i = 0; i < explicit_args.size(); ++i )
 	    if ( explicit_args[i] )
 	    {
+		if ( i >= nfixed )
+		{
+		    if ( pack_name.empty() )
+			break;	// surplus arg, no pack (gated above; belt)
+		    // A TYPE pack: a value arg is a kind mismatch here too.
+		    if ( datadef_is_nontype_constant(explicit_args[i]) )
+			{ kind_mismatch = true; break; }
+		    pack_elems.push_back(explicit_args[i]);
+		    continue;
+		}
 		bool tp_is_type = i >= ft.typeparam_is_type.size()
 			       || ft.typeparam_is_type[i];
 		if ( tp_is_type && datadef_is_nontype_constant(explicit_args[i]) )
 		    { kind_mismatch = true; break; }
 		binding[ft.typeparams[i]] = explicit_args[i];
 	    }
-	if ( kind_mismatch || binding.empty() )
+	// Deduced binding ([temp.deduct.call], return-only): pair the call's
+	// argument value types with this candidate's parameter spellings and
+	// bind via the ONE per-param deducer (`T*`/`const P&` cores — the
+	// libc++ __to_address / __to_address_helper::__call shapes). Explicit
+	// bindings win; a spelling the deducer cannot handle is skipped (the
+	// unbound-return check below rejects the candidate if that parameter
+	// was load-bearing).
+	if ( have_arg_types )
+	{
+	    std::vector<std::string> spellings;
+	    if ( po_param_spellings(*this, ft, spellings) )
+		for ( size_t i = 0; i < spellings.size()
+				 && i < call_arg_types->size(); ++i )
+		{
+		    std::string tp;
+		    DataDef *dd = NULL;
+		    if ( fn_template_deduce_param(spellings[i], ft.typeparams,
+						  (*call_arg_types)[i], tp,
+						  dd) == 1
+		      && !binding.count(tp) )
+			binding[tp] = dd;
+		}
+	}
+	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
 	    continue;
+	// NOTE ([temp.deduct]/8, defaulted params): this lane does NOT resolve
+	// an unbound defaulted param's default. Its callers pass EXPLICIT args
+	// only, and a defaulted param here may still be DEDUCED from the call
+	// arguments at full instantiation — resolving the default early served
+	// the wrong type to c++20's iterator_traits chains (stl_iterator.h:141).
+	// The member-template twin (resolve_member_template_call_return_type)
+	// DOES enforce defaults: its __test-style callers are all-explicit by
+	// construction. A deduction-aware version for this lane is filed.
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
 	// depends on a parameter that must be DEDUCED from the call arguments.
@@ -44696,6 +54537,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		if ( !t || !is_contextual_identifier_token(t) )
 		    continue;
 		const std::string nm = contextual_identifier_name(t);
+		if ( !pack_name.empty() && nm == pack_name )
+		    continue;	// the pack IS bound (via pack_elems)
 		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
 		    if ( ft.typeparams[tj] == nm && !binding.count(nm) )
 		    { return_has_unbound_tp = true; break; }
@@ -44703,25 +54546,13 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    if ( return_has_unbound_tp )
 		continue;
 	}
-	// Substitute each type-parameter name with its bound type, then resolve
-	// (resolve_type_token_range carries its own SFINAE trap -> NULL on failure).
-	std::vector<TokenBase *> sub;
-	for ( size_t i = rs; i < re; ++i )
-	{
-	    TokenBase *t = ft.decl[i];
-	    if ( t && is_contextual_identifier_token(t) )
-	    {
-		std::map<std::string, DataDef *>::iterator bi =
-		    binding.find(contextual_identifier_name(t));
-		if ( bi != binding.end() && bi->second )
-		{
-		    sub.push_back(new TokenDataType(bi->second->name.c_str(),
-						    *bi->second));
-		    continue;
-		}
-	    }
-	    sub.push_back(t ? t->clone() : NULL);
-	}
+	// Substitute each type-parameter name with its bound type — the ONE
+	// shared implementation, incl. `pattern...` trailing-pack expansion
+	// (resolve_type_token_range below carries its own SFINAE trap ->
+	// NULL on failure).
+	std::vector<TokenBase *> range(ft.decl.begin() + rs, ft.decl.begin() + re);
+	std::vector<TokenBase *> sub = substitute_return_range_tokens(
+	    range, binding, pack_name, pack_elems);
 	// A `-> decltype(inner_call)` return (declval's `decltype(__declval<_Tp>
 	// (0))`): recurse into the inner call's template return type WITHOUT
 	// emitting it. madc has no true unevaluated context, so routing the
@@ -44730,11 +54561,48 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// resolver reads the substituted decl tokens directly — no emission.
 	DataDef *rt = NULL;
 	bool dt_ref = false;
-	if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
-	  && contextual_identifier_name(sub[0]) == "decltype" )
-	    rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
-	else
-	    rt = resolve_type_token_range(sub, 0, sub.size());
+	{
+	    // [temp.names]: unqualified names in the candidate's return type
+	    // bind in its DEFINITION context — gcc 13's `__and_fn` (defined in
+	    // std::__detail) names `__first_t` (std::__detail) and
+	    // `__enable_if_t` (std, via the enclosing-namespace walk)
+	    // unqualified. Without the push the alias lookup ran in the DEMAND
+	    // context, missed both, and the ellipsis catch-all won every time.
+	    Program::NamespaceScope ns_scope(*this, ft.ns);
+	    if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
+	      && contextual_identifier_name(sub[0]) == "decltype" )
+		rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
+	    else
+		rt = resolve_type_token_range(sub, 0, sub.size());
+	}
+	// An ORIGIN-LESS opaque placeholder is not a resolution — an alias body
+	// that could not fold (std::get's `__enable_if_t<(sizeof...(_Elements)
+	// > __i)>` SFINAE guard) falls through to a minted placeholder with NO
+	// DependentDerivedOrigin record: tsubst can never re-derive it, so
+	// taking it as this candidate's return stamps a dead-end
+	// return_override that survives to translate as an untranslatable
+	// dependent-typed arg (the pair piecewise-ctor `std::get<_Indexes>`
+	// calls inside map::operator[]). Treat it as a substitution failure:
+	// fall to the next candidate, or return NULL and defer to full
+	// instantiation. A TEMPLATE-PARAM placeholder return (`_Tp&&` bound to
+	// a pack name at PATTERN time — std::forward<_Args>) stays: it is
+	// exactly the carrier the per-element pack window substitutes at HIT
+	// relower; NULLing it froze the pattern's type at a concrete wrong
+	// 'tuple' that no elem_subst could remap (@tuple@tuple@tuple).
+	if ( rt && !rt->is_template_param() )
+	    if ( DataDefCLASS *rtc = dynamic_cast<DataDefCLASS *>(rt) )
+		if ( rtc->is_dependent_placeholder
+		  && !dependent_derived_origin.count(rt) )
+		    rt = NULL;
+	DBG({
+	    std::string spelled;
+	    for ( TokenBase *t : sub )
+		if ( t ) spelled += template_token_fragment(t);
+	    std::cout << "fn_tpl_return_by_key: " << key << " cand='" << name
+		      << "' trailing=" << is_trailing << " pack=" << pack_name
+		      << "(" << pack_elems.size() << ") sub='" << spelled
+		      << "' -> " << (rt ? rt->name : "(fail)") << std::endl;
+	});
 	for ( TokenBase *t : sub )
 	    delete t;
 	if ( rt )
@@ -44774,8 +54642,25 @@ DataDef *Program::resolve_decltype_call_return(
       || !is_contextual_identifier_token(sub[op_s]) )
 	return NULL;
     std::string inner_name = contextual_identifier_name(sub[op_s]);
-    // A template-id call: IDENT `<` targs `>` `(` args `)`.
+    // A template-id call: IDENT `<` targs `>` `(` args `)`. The callee may be
+    // NAMESPACE-QUALIFIED — libc++ spells the declval probe
+    // `decltype(std::__declval<_Tp>(0))` where libstdc++'s is bare — so
+    // consume leading `IDENT ::` segments into the lookup namespace and match
+    // the template-id on the terminal identifier. Without this the operand
+    // failed the IDENT `<` shape test, the resolver returned NULL, and the
+    // call's type fell to the implicit 64-bit return:
+    // decltype(std::declval<int>()) sized as 8 (silent wrong answer).
     size_t p = op_s + 1;
+    std::string qual;
+    while ( p + 1 < op_e && sub[p] && sub[p]->id() == TokenID::tkNS
+	 && sub[p + 1] && is_contextual_identifier_token(sub[p + 1]) )
+    {
+	if ( !qual.empty() )
+	    qual += "::";
+	qual += inner_name;
+	inner_name = contextual_identifier_name(sub[p + 1]);
+	p += 2;
+    }
     if ( p >= op_e || !sub[p] || sub[p]->id() != TokenID::tkLT )
 	return NULL;
     // Match the angle brackets; collect comma-separated type-arg segments.
@@ -44812,7 +54697,17 @@ DataDef *Program::resolve_decltype_call_return(
     }
     if ( inner_args.empty() )
 	return NULL;
-    return resolve_fn_template_return_by_key(ns + "::" + inner_name,
+    // A spelled qualifier wins over the caller's context namespace. Resolve it
+    // globally through the inline-namespace-aware canonicalizer (std ->
+    // std::__1 under libc++); an unresolvable spelling keeps the raw qualifier
+    // (no worse than the pre-fix NULL, which fell to the 64-bit fallback).
+    std::string lookup_ns = ns;
+    if ( !qual.empty() )
+    {
+	std::string canon = canonical_namespace_path(std::string(), qual);
+	lookup_ns = canon.empty() ? qual : canon;
+    }
+    return resolve_fn_template_return_by_key(lookup_ns + "::" + inner_name,
 					     inner_args, ret_ref, depth + 1);
 }
 
@@ -44825,7 +54720,10 @@ DataDef *Program::resolve_decltype_call_return(
 static void stamp_member_template_pattern(
 	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	const std::vector<bool> &typeparam_is_pack, const std::string &name)
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints)
 {
     if ( !fd )
 	return;
@@ -44836,11 +54734,46 @@ static void stamp_member_template_pattern(
     // skipped-template parse's global, the flush the record's pack bits).
     if ( typeparam_is_pack.size() == typeparams.size() )
 	fd->template_param_is_pack = typeparam_is_pack;
+    // Preserve TYPE-ness the same way — a NON-TYPE param
+    // (`template <unsigned long __a>`) must not instantiate as a type param, or
+    // deduction binds its explicit VALUE argument as a type and fails.
+    if ( typeparam_is_type.size() == typeparams.size() )
+	fd->template_param_is_type = typeparam_is_type;
+    // Preserve per-param DEFAULT token runs (same parallel-vector contract):
+    // [temp.deduct]/8 — an unbound defaulted param must substitute-and-resolve
+    // at the call (resolve_member_template_call_return_type), or the candidate
+    // is not viable. Cloned: the source runs belong to the skipped-parse
+    // globals / the pattern record, whose lifetimes are not the FuncDef's.
+    fd->member_template_param_defaults.clear();
+    if ( typeparam_defaults.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_defaults.size(); ++i )
+	{
+	    fd->member_template_param_defaults.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_defaults[i] )
+		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
+    // Per-param CONSTRAINT runs (same parallel-vector contract, cloned for
+    // the same lifetime reason): a non-type param's compound declared type —
+    // the run that decides whether its default is fillable
+    // (member_template_nontype_default_fillable).
+    fd->member_template_param_constraints.clear();
+    if ( typeparam_constraints.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_constraints.size(); ++i )
+	{
+	    fd->member_template_param_constraints.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_constraints[i] )
+		fd->member_template_param_constraints.back().push_back(
+		    t ? t->clone() : NULL);
+	}
     std::string ret_spelling;
     std::vector<std::string> param_spellings;
     size_t name_idx = skipped_template_function_declarator_name_index(tokens,
 								      NULL);
     size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
+    fd->is_const_method = function_declarator_is_const_member(tokens);
     if ( name_idx < tokens.size() && lparen < tokens.size()
       && tokens[lparen]
       && tokens[lparen]->id() == TokenID::tkOpBrk
@@ -44880,26 +54813,138 @@ static void stamp_member_template_pattern(
 	for ( size_t i = rs; i < name_idx; ++i )
 	    fd->member_template_return_tokens.push_back(
 		tokens[i] ? tokens[i]->clone() : NULL);
+	// Retain each FUNCTION parameter's TYPE token run (declaration order,
+	// truncated at a top-level `=` default value): [temp.deduct]/8's other
+	// half — the SFINAE may live in the parameter type itself
+	// (`typename _Up::iterator_category* = nullptr`, libc++'s
+	// __has_iterator_category __test pair) rather than in a defaulted type
+	// param. resolve_member_template_call_return_type substitutes and
+	// resolves a run that names a bound template param; failure removes
+	// the candidate. DelimDepth owns the balanced walk.
+	fd->member_template_param_type_tokens.clear();
+	{
+	    DelimDepth pd;
+	    size_t j = lparen;
+	    j += delim_scan_step(tokens, j, pd);	// the '(' — paren -> 1
+	    std::vector<TokenBase *> run;
+	    bool truncated = false;
+	    bool any = false;
+	    while ( j < tokens.size() && pd.paren > 0 )
+	    {
+		size_t j0 = j;
+		TokenBase *t = tokens[j0];
+		j += delim_scan_step(tokens, j, pd);
+		if ( pd.paren == 0 )
+		    break;				// the matching ')'
+		any = true;
+		bool top = pd.paren == 1 && pd.square == 0 && pd.brace == 0
+			 && pd.angle == 0;
+		if ( t && t->id() == TokenID::tkComma && top )
+		{
+		    fd->member_template_param_type_tokens.push_back(run);
+		    run.clear();
+		    truncated = false;
+		    continue;
+		}
+		if ( t && t->id() == TokenID::tkAssign && top )
+		{
+		    truncated = true;
+		    continue;
+		}
+		if ( truncated )
+		    continue;
+		for ( size_t k = j0; k < j; ++k )
+		    run.push_back(tokens[k] ? tokens[k]->clone() : NULL);
+	    }
+	    if ( any || !run.empty() )
+		fd->member_template_param_type_tokens.push_back(run);
+	}
     }
+    // The declaring class, body or not: the return-type resolution pushes it
+    // as the lookup scope ([temp.inst] — a member's names resolve in its
+    // class's context), and the forest freeze keys the member-template record
+    // by it (a decl-only member template has no other owner trace).
+    fd->member_template_owner = owner;
     // Retain the body of a body-bearing member function template so an ODR-use
     // call site can instantiate it locally (instantiate_member_fn_template_for_call)
     // when the owner is a madc-LOCAL class libstdc++ does not export. Both STATIC
     // and INSTANCE (this-taking) member templates qualify: a static one
     // instantiates as a free function, an instance one as a METHOD of the owner
     // (the clang/gcc model — static-ness is just a flag). Bodyless declarations
-    // stay on the existing mangled-direct paths.
+    // stay on the existing mangled-direct paths; a non-empty member_template_decl
+    // MEANS body-bearing everywhere downstream — never set it for a declaration.
     bool has_body = false;
     for ( size_t i = 0; i < tokens.size(); ++i )
 	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
 	{ has_body = true; break; }
     if ( has_body )
     {
-	fd->member_template_owner = owner;
 	fd->member_template_decl.clear();
 	for ( size_t i = 0; i < tokens.size(); ++i )
 	    fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
 							 : NULL);
     }
+}
+
+// Decl-only twin of stamp_member_template_pattern for a forest-restored
+// placeholder (v34): a body-less member template retains no declaration
+// tokens, so its record carries only the dependent return-type range — stamp
+// exactly the fields the live registration derives for that shape. The
+// signature SPELLINGS are underivable from the range alone, so the
+// spelling-scored deduction lanes stay unlit for a thawed decl-only member;
+// the all-explicit decltype lane (resolve_member_template_call_return_type),
+// the one that consumes the range, reproduces. member_template_decl stays
+// EMPTY — non-empty means body-bearing everywhere downstream.
+static void stamp_member_template_pattern_decl_only(
+	DataDefCLASS *owner, FuncDef *fd,
+	const std::vector<TokenBase *> &ret_tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints)
+{
+    if ( !fd )
+	return;
+    fd->method_display_name = name;
+    fd->is_member_template = true;
+    fd->template_param_names = typeparams;
+    if ( typeparam_is_pack.size() == typeparams.size() )
+	fd->template_param_is_pack = typeparam_is_pack;
+    if ( typeparam_is_type.size() == typeparams.size() )
+	fd->template_param_is_type = typeparam_is_type;
+    fd->member_template_owner = owner;
+    fd->member_template_return_tokens.clear();
+    for ( size_t i = 0; i < ret_tokens.size(); ++i )
+	fd->member_template_return_tokens.push_back(
+	    ret_tokens[i] ? ret_tokens[i]->clone() : NULL);
+    // v36: the per-param DEFAULT runs carry a decl-only member template's
+    // whole [temp.deduct]/8 SFINAE (`typename = decltype(declval<_Tp1&>().
+    // ~_Tp1())`, __is_destructible_impl::__test) — without them a thawed
+    // candidate never fails substitution (the packed-lane testdestructible
+    // failure this stamp arm caused when it dropped them).
+    fd->member_template_param_defaults.clear();
+    if ( typeparam_defaults.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_defaults.size(); ++i )
+	{
+	    fd->member_template_param_defaults.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_defaults[i] )
+		fd->member_template_param_defaults.back().push_back(
+		    t ? t->clone() : NULL);
+	}
+    // v38: the CONSTRAINT runs gate the non-type default fill exactly like
+    // the body-bearing stamp (one shared rule).
+    fd->member_template_param_constraints.clear();
+    if ( typeparam_constraints.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparam_constraints.size(); ++i )
+	{
+	    fd->member_template_param_constraints.push_back(
+		std::vector<TokenBase *>());
+	    for ( TokenBase *t : typeparam_constraints[i] )
+		fd->member_template_param_constraints.back().push_back(
+		    t ? t->clone() : NULL);
+	}
 }
 
 static void register_skipped_class_template_function(
@@ -44910,6 +54955,23 @@ static void register_skipped_class_template_function(
     if ( !owner )
 	return;
     std::string name = skipped_template_function_declarator_name(tokens);
+    // Env-gated probe (MADC_REG_PROBE=<class substring>): the declarator name
+    // this stub registers under. An empty name returns SILENTLY, so a member
+    // template whose declarator the scanner cannot read simply never exists —
+    // no stub, no diagnostic, and the call site later picks a sibling overload.
+    {
+	static const char *_rp = ::getenv("MADC_REG_PROBE");
+	if ( _rp && *_rp && owner->name.find(_rp) != std::string::npos )
+	{
+	    std::string spell;
+	    for ( size_t i = 0; i < tokens.size() && i < 12; ++i )
+		if ( tokens[i] )
+		    spell += template_token_fragment(tokens[i]) + " ";
+	    fprintf(stderr, "REGFN %s name='%s' toks=%zu [%s]\n",
+		    owner->name.c_str(), name.c_str(), tokens.size(),
+		    spell.c_str());
+	}
+    }
     if ( name.empty() )
 	return;
 
@@ -44935,7 +54997,10 @@ static void register_skipped_class_template_function(
 	fd->declaration_only = true;
 	stamp_member_template_pattern(owner, fd, tokens, typeparams,
 				      pgm.last_skipped_template_typeparam_is_pack,
-				      name);
+				      pgm.last_skipped_template_typeparam_is_type,
+				      name,
+				      pgm.last_skipped_template_typeparam_defaults,
+				      pgm.last_skipped_template_typeparam_constraints);
     }
 #if MADC_DEBUG_FNTPL
     {
@@ -44994,8 +55059,9 @@ static void register_skipped_class_template_function(
 	    owner->ctors.push_back(var);
 	owner->has_user_ctor = true;
     }
-    // (Body retention for a body-bearing pattern — member_template_owner +
-    // member_template_decl — is stamped by stamp_member_template_pattern above.)
+    // (member_template_owner — every member template — and body retention for
+    // a body-bearing pattern — member_template_decl — are stamped by
+    // stamp_member_template_pattern above.)
 }
 
 std::vector<TokenBase *> Program::collect_template_class_prefix()
@@ -45227,27 +55293,12 @@ static void skip_template_suffix_tokens(const std::vector<TokenBase *> &param,
 {
     if ( idx >= param.size() || param[idx]->id() != TokenID::tkLT )
 	return;
-    int angle_depth = 0;
+    DelimDepth d;
     while ( idx < param.size() )
     {
-	TokenBase *t = param[idx++];
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	{
-	    --angle_depth;
-	    if ( angle_depth == 0 )
-		break;
-	}
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	    if ( angle_depth == 0 )
-		break;
-	}
+	idx += delim_scan_step(param, idx, d);
+	if ( d.angle == 0 )
+	    break;
     }
 }
 
@@ -45281,6 +55332,7 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
     if ( !is_contextual_identifier_token(t) )
 	return NULL;
 
+    size_t type_start = idx;
     std::vector<std::string> parts;
     parts.push_back(contextual_identifier_name(t));
     ++idx;
@@ -45293,6 +55345,25 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
 	++idx;
     }
     skip_template_suffix_tokens(param, idx);
+    // A TEMPLATE-ID parameter (`tp<cb,int>`, libc++'s
+    // `chrono::time_point<chrono::steady_clock, chrono::nanoseconds>`) is only
+    // distinguishable from its sibling overloads by its ARGUMENTS, and the
+    // name-based lookup below deliberately steps over the `<...>` suffix — so
+    // every specialization of one template collapsed to the same answer (the
+    // pattern), leaving same-arity overloads indistinguishable. Resolve the
+    // whole type region through resolve_type_token_range, the owner that reads
+    // a token range with the REAL resolver (isolated stream, instantiates the
+    // template-id, memoized) — the same helper the member-template return path
+    // uses. Only when a template-id is actually present, and only as a
+    // preference: a NULL keeps the established name lookup below, so a type
+    // this cannot resolve behaves exactly as before.
+    bool has_template_id = false;
+    for ( size_t i = type_start; i < idx && i < param.size(); ++i )
+	if ( param[i] && param[i]->id() == TokenID::tkLT )
+	{ has_template_id = true; break; }
+    if ( has_template_id && idx > type_start )
+	if ( DataDef *ranged = resolve_type_token_range(param, type_start, idx) )
+	    return ranged;
 
     if ( parts.size() > 1 )
     {
@@ -45306,6 +55377,15 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
 	}
     }
 
+    // An UNQUALIFIED name here may be a nested type of the enclosing class —
+    // this probe reads a member's parameter list, and resolve_named_datadef
+    // consults only the global tables (struct_map / datatype_map / builtins /
+    // lazy). The main declaration path already resolves member aliases through
+    // class_scope_stack; this thinner probe did not, so `B::B(flags x)` with a
+    // nested `flags` produced NO signature at all.
+    if ( parts.size() == 1 )
+	if ( DataDef *scoped = resolve_type_in_class_scopes(*this, parts.back()) )
+	    return scoped;
     return resolve_named_datadef(parts.back());
 }
 
@@ -45407,12 +55487,118 @@ static bool function_explicit_params_match(FuncDef *fd,
     return true;
 }
 
+// Strip a trailing NUMERIC overload suffix (`__o2`, `__o17`) from an internal
+// member-symbol tail, leaving the source member name. unique_overload_symbol
+// mints those suffixes, so every consumer that maps a symbol back to the name
+// the SOURCE wrote needs this — it was hand-rolled at two sites before, and the
+// method-definition matcher below would have made three.
+static std::string strip_overload_suffix(const std::string &tail)
+{
+    size_t osfx = tail.rfind("__o");
+    if ( osfx == std::string::npos || osfx + 3 >= tail.size() )
+	return tail;
+    for ( size_t si = osfx + 3; si < tail.size(); ++si )
+	if ( !isdigit((unsigned char)tail[si]) )
+	    return tail;
+    return tail.substr(0, osfx);
+}
+
+// Which DECLARED overload does an out-of-line member definition define?
+//
+// findMethod() answers with ONE overload per name and compares no signatures at
+// all, so a definition of an OVERLOADED member bound to whatever that one
+// happened to be. Worse: register_skipped_class_template_function registers a
+// member TEMPLATE as a VARARGS placeholder stub whose parameters are
+// (this, int64 marker) rather than the declared ones, and findMethod can hand
+// back THAT — the definition then took its parameter types from the stub, so
+// the body saw `int64_t` where the source wrote `unique_lock<mutex>&`. That is
+// libc++ __condition_variable/condition_variable.h:211's
+// "member reference is not a structure or union": __do_timed_wait is declared
+// three times (system_clock, steady_clock, and a `template <class _Clock>`),
+// and the varargs stub is arity-agnostic, so it matched regardless.
+//
+// Match on the upcoming parameter SIGNATURE instead, exactly as
+// find_constructor_for_upcoming_params already does for constructors — the
+// method path simply never had an equivalent.
+//
+// Returns NULL unless EXACTLY ONE non-template overload matches. An ambiguous
+// or unresolved probe keeps the existing findMethod behaviour rather than
+// guessing: binding a definition to the wrong overload would compile the body
+// under a sibling's symbol, which is a silent wrong answer and strictly worse
+// than the loud error this replaces.
+Variable *Program::find_method_definition_target(DataDefCLASS *owner,
+						const std::string &member)
+{
+    if ( !owner || member.empty() )
+	return NULL;
+    // split_upcoming_function_params scans from the CURRENT token and returns at
+    // the first top-level `)`, so it must start INSIDE the parameter list. At the
+    // declarator site the `(` is still unconsumed (the function path below
+    // consumes it), so step over it for the probe and rewind — otherwise the
+    // `(` is collected as a parameter token, its `)` never reads as top-level,
+    // and the probe silently fails for EVERY definition.
+    TokenStream::Pos saved = tokens.savepos();
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	nextToken();
+    // [basic.scope.class]/1: an out-of-line member definition's parameter list
+    // is in the class's scope, so a parameter may name a nested type (the #39
+    // lesson — without the scope pushed the probe bails and `sigs` is empty).
+    class_scope_stack.push_back(owner);
+    std::vector<ParsedParamSig> sigs;
+    bool have_sigs = upcoming_param_signatures(sigs);
+    if ( !class_scope_stack.empty() && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
+    tokens = saved;
+    if ( !have_sigs )
+	return NULL;
+    const std::string prefix = owner->name + "__";
+    Variable *match = NULL;
+    size_t matches = 0;
+    for ( size_t i = 0; i < owner->methods.size(); ++i )
+    {
+	Variable *mv = owner->methods[i];
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( !fd )
+	    continue;
+	// A definition with no `template<...>` head cannot define a member
+	// template, and the template's stub carries placeholder parameters.
+	if ( fd->is_member_template )
+	    continue;
+	// Methods are keyed by MANGLED name; the unmangled display name is
+	// recorded when there is one, else derive it from the symbol.
+	std::string disp = fd->method_display_name;
+	if ( disp.empty() && mv->name.compare(0, prefix.size(), prefix) == 0 )
+	    disp = strip_overload_suffix(mv->name.substr(prefix.size()));
+	if ( disp != member )
+	    continue;
+	if ( !function_explicit_params_match(fd, sigs) )
+	    continue;
+	match = mv;
+	++matches;
+    }
+    return matches == 1 ? match : NULL;
+}
+
 Variable *Program::find_constructor_for_upcoming_params(DataDefCLASS *owner)
 {
     if ( !owner )
 	return NULL;
+    // [basic.scope.class]/1: the parameter list of an OUT-OF-LINE member
+    // definition is in the class's scope, so a parameter may name a nested
+    // type of the class — `B::B(flags x)` where `flags` is `B::flags`.
+    // Without the scope pushed, resolve_param_type_from_tokens cannot resolve
+    // `flags`, upcoming_param_signatures bails, and `sigs` comes back EMPTY —
+    // so the arity test below (parameters.size() != sigs.size() + 1) rejects
+    // the real ctor, no arity_match is recorded, and the definition registers
+    // under a FRESH symbol. The declared ctor then stays an undefined import:
+    // `undefined MIR import: B__B`, no diagnostic, only a link failure.
+    // The out-of-line METHOD path already resolves its parameters in class
+    // scope, which is why only constructors were affected.
+    class_scope_stack.push_back(owner);
     std::vector<ParsedParamSig> sigs;
     bool have_sigs = upcoming_param_signatures(sigs);
+    if ( !class_scope_stack.empty() && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
     Variable *arity_match = NULL;
     for ( size_t i = 0; i < owner->ctors.size(); ++i )
     {
@@ -45439,7 +55625,8 @@ static bool vector_contains_variable(const std::vector<Variable *> &vars,
     return false;
 }
 
-bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
+bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
+	DataDefCLASS *pre_owner, const std::string *src_class_name)
 {
     if ( is_c_mode() || !first_tb || !is_contextual_identifier_token(first_tb) )
 	return false;
@@ -45460,20 +55647,32 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
 	    skip_template_id_suffix();
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
+	    // A nested chain under a pre-resolved template-id owner
+	    // (`bs<0,0>::Inner::Inner`) has no spelling-based resolution —
+	    // fail loud rather than resolve the wrong scope.
+	    if ( pre_owner )
+		Throw(first_tb) << "Nested qualified member definition under a"
+				" template-id scope is not supported" << flush;
 	    scope_parts.push_back(member_name);
 	    continue;
 	}
 	break;
     }
 
-    DataDefCLASS *owner = resolve_qualified_class_owner(scope_parts);
+    DataDefCLASS *owner = pre_owner ? pre_owner
+			: resolve_qualified_class_owner(scope_parts);
     if ( !owner )
 	Throw(first_tb) << "Unknown C++ declarator scope '"
 			    << join_scope_parts(scope_parts, scope_parts.size())
 			    << "'" << flush;
 
-    bool is_ctor = member_name == owner->name;
-    bool is_dtor = member_name == "~" + owner->name;
+    // The ctor/dtor spelling in source: the owner's own name for a plain
+    // class; for a pre-resolved template-id owner the registered name is the
+    // mangled instantiation key, so compare against the SOURCE class name.
+    const std::string &ctor_name = (pre_owner && src_class_name)
+	? *src_class_name : owner->name;
+    bool is_ctor = member_name == ctor_name;
+    bool is_dtor = member_name == "~" + ctor_name;
     if ( !is_ctor && !is_dtor )
 	Throw(first_tb) << "Qualified member definition requires a return type" << flush;
 
@@ -45534,151 +55733,23 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		  << ":" << TokenBase::_parse_line << std::endl);
     pgm.last_skipped_template_decl.clear();
     pgm.last_skipped_template_typeparams.clear();
+    pgm.last_skipped_template_typeparam_defaults.clear();
+    pgm.last_skipped_template_typeparam_constraints.clear();
 
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkLT )
 	pgm.Throw(tn) << "Expecting '<' after template" << flush;
 
-    // <typename T [, typename U ...]> — 'typename' lexes as an identifier,
-    // 'class' as the tkCLASS keyword; both are optional before each param name.
-    // Real C++ headers also use unnamed type parameters (`template<typename>`)
-    // and explicit specializations (`template<>`).
-    std::vector<std::string> typeparams;
-    std::vector<std::vector<TokenBase *>> typeparam_defaults;
-    std::vector<bool> typeparam_is_type;
-    std::vector<bool> typeparam_is_pack;
-    auto add_template_parameter = [&](const std::string &name, bool is_type,
-				      bool is_pack = false)
-    {
-	typeparams.push_back(name);
-	typeparam_is_type.push_back(is_type);
-	typeparam_is_pack.push_back(is_pack);
-    };
-    size_t anon_param_index = 0;
-    bool has_non_type_params = false;
-    for (;;)
-    {
-	tn = pgm.nextToken();
-	if ( pgm.consume_template_close(tn) )
-	    break;
-	if ( tn->id() == TokenID::tkTEMPLATE )
-	{
-	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
-		pgm.Throw(tn) << "Expecting '<' after template parameter template" << flush;
-	    pgm.skip_template_id_suffix();
-	    TokenBase *intro = pgm.nextToken();
-	    if ( !is_template_type_param_intro(intro) )
-		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_template_parameter_decl_name(pgm.peekToken()) )
-		    add_template_parameter(template_parameter_decl_name(pgm.nextToken()), false, true);
-		else
-		    add_template_parameter("__anon_ttpack" + std::to_string(anon_param_index++), false, true);
-	    }
-	    else if ( pgm.peekToken()
-		   && (is_template_param_separator(pgm.peekToken())
-		    || pgm.peekToken()->id() == TokenID::tkAssign) )
-		add_template_parameter("__anon_ttparam" + std::to_string(anon_param_index++), false);
-	    else
-	    {
-		tn = pgm.nextToken();
-		if ( !is_template_parameter_decl_name(tn) )
-		    pgm.Throw(tn) << "Expecting template-template parameter name" << flush;
-		add_template_parameter(template_parameter_decl_name(tn), false);
-	    }
-	    has_non_type_params = true;
-	}
-	else if ( is_template_type_param_intro(tn) )
-	{
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), true, true);
-		else
-		    add_template_parameter("__anon_tpack" + std::to_string(anon_param_index++), true, true);
-		has_non_type_params = true;
-	    }
-	    else if ( pgm.peekToken() && is_template_param_separator(pgm.peekToken()) )
-		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
-	    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
-		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
-	    else
-	    {
-		tn = pgm.nextToken();
-		if ( !is_template_parameter_decl_name(tn) )
-		    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-		// Disambiguate a TYPE parameter (`typename T`) from a NON-TYPE
-		// parameter whose type is a dependent typename-specifier
-		// (`typename enable_if<C, bool>::type = true` — the pervasive
-		// libstdc++ SFINAE idiom). If the name just read is immediately
-		// followed by '<' or '::', it is the head of a qualified/template
-		// type, not the parameter's own name: consume the rest of that
-		// type-specifier, then the optional parameter name, and register an
-		// anonymous non-type parameter. madc does not evaluate the
-		// constraint (no concepts; see below), so the enclosing declaration
-		// parses as if unconstrained — only the parse must succeed.
-		if ( pgm.peekToken()
-		  && (pgm.peekToken()->id() == TokenID::tkLT
-		   || pgm.peekToken()->id() == TokenID::tkNS) )
-		{
-		    pgm.consume_template_parameter_type_suffix();
-		    if ( pgm.peekToken()
-		      && is_template_parameter_decl_name(pgm.peekToken()) )
-			pgm.nextToken();   // optional (unused) parameter name
-		    add_template_parameter("__anon_ntparam"
-			+ std::to_string(anon_param_index++), false);
-		    has_non_type_params = true;
-		}
-		else
-		    add_template_parameter(template_parameter_decl_name(tn), true);
-	    }
-	}
-	else if ( tn->type() == TokenType::ttIdentifier
-	       || tn->type() == TokenType::ttDataType )
-	{
-	    bool qualified_type = pgm.consume_template_parameter_type_suffix();
-	    TokenBase *param_name = pgm.peekToken();
-	    if ( pgm.consume_ellipsis() )
-	    {
-		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), false, true);
-		else
-		    add_template_parameter("__anon_ntpack" + std::to_string(anon_param_index++), false, true);
-		has_non_type_params = true;
-	    }
-	    else if ( param_name && is_contextual_identifier_token(param_name) )
-	    {
-		pgm.nextToken();
-		add_template_parameter(contextual_identifier_name(param_name), false);
-		has_non_type_params = true;
-	    }
-	    else if ( qualified_type )
-	    {
-		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
-		has_non_type_params = true;
-	    }
-	    else if ( tn->type() == TokenType::ttIdentifier )
-		add_template_parameter(((TokenIdent *)tn)->spelling(), true);
-	    else
-	    {
-		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
-		has_non_type_params = true;
-	    }
-	}
-	else
-	    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-	typeparam_defaults.push_back(std::vector<TokenBase *>());
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
-	{
-	    pgm.nextToken();
-	    typeparam_defaults.back() = pgm.collect_template_default_argument();
-	}
-	tn = pgm.nextToken();
-	if ( tn->id() == TokenID::tkComma ) continue;
-	if ( pgm.consume_template_close(tn) ) break;
-	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
-    }
+    ParsedTemplateParameterList parameter_list;
+    parse_template_parameter_list(pgm, parameter_list);
+    std::vector<std::string> &typeparams = parameter_list.names;
+    std::vector<std::vector<TokenBase *> > &typeparam_defaults =
+	parameter_list.defaults;
+    std::vector<std::vector<TokenBase *> > &typeparam_constraints =
+	parameter_list.constraints;
+    std::vector<bool> &typeparam_is_type = parameter_list.is_type;
+    std::vector<bool> &typeparam_is_pack = parameter_list.is_pack;
+    bool has_non_type_params = parameter_list.has_non_type_params;
 
     // C++20 requires-clause between the template-parameter-list and the
     // declaration (`template<...> requires C<T> struct X ...`): consume it so
@@ -45737,7 +55808,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	std::string concept_name = is_contextual_identifier_token(cname_tok)
 				 ? contextual_identifier_name(cname_tok)
 				 : std::string();
-	int paren = 0, square = 0, brace = 0;
+	DelimDepth d;
 	TokenBase *t;
 	// Capture the constraint tokens (after the top-level `=`, up to `;`) for a
 	// future concept-satisfaction evaluator. Storage-only today.
@@ -45745,19 +55816,20 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	bool past_eq = false;
 	while ( (t = pgm.nextToken()) )
 	{
-	    if ( t->id() == TokenID::tkSemi
-	      && paren == 0 && square == 0 && brace == 0 )
+	    // Tested BEFORE the token is applied, and on the same three axes
+	    // the original used (angle was never in its condition).
+	    bool outside = !d.paren && !d.square && !d.brace;
+	    if ( outside && t->id() == TokenID::tkSemi )
 		break;
-	    if ( t->id() == TokenID::tkOpBrk ) ++paren;
-	    else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
-	    else if ( t->id() == TokenID::tkOpSqr ) ++square;
-	    else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
-	    else if ( t->id() == TokenID::tkOpBrc ) ++brace;
-	    else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	    std::vector<TokenBase *> opsyms;
+	    pgm.delimStepStream(t, d, &opsyms);
 	    if ( past_eq )
+	    {
 		constraint.push_back(t->clone());
-	    else if ( t->id() == TokenID::tkAssign
-		   && paren == 0 && square == 0 && brace == 0 )
+		for ( TokenBase *o : opsyms )
+		    constraint.push_back(o->clone());
+	    }
+	    else if ( outside && t->id() == TokenID::tkAssign )
 		past_eq = true;
 	}
 	if ( !concept_name.empty() && past_eq && !constraint.empty() )
@@ -45849,6 +55921,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	pgm.last_skipped_template_typeparam_is_type = typeparam_is_type;
+	pgm.last_skipped_template_typeparam_defaults = typeparam_defaults;
+	pgm.last_skipped_template_typeparam_constraints = typeparam_constraints;
 	// Out-of-line NESTED-CLASS definition: capture keyed by the owner
 	// template; instantiate with each monomorphization of the owner
 	// (including any already recorded — the replay mirrors the member-def
@@ -45930,9 +56005,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    d.typeparams = typeparams;
 	    d.is_member_template = ool_is_member_template;
 	    if ( ool_is_member_template )
-		extract_inner_template_typeparams(skipped_decl,
-						  d.inner_typeparams, d.inner_is_pack,
-						  d.inner_is_type);
+		extract_inner_template_typeparams(pgm, skipped_decl,
+					  d.inner_typeparams, d.inner_is_pack,
+					  d.inner_is_type);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
 	    const Program::TemplateDef *owner_template =
@@ -45964,7 +56039,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 							typeparams,
 							&typeparam_defaults,
 							&typeparam_is_type,
-							&typeparam_is_pack);
+							&typeparam_is_pack,
+							&typeparam_constraints);
 	return NULL;
     }
     TokenBase *name_tb = pgm.nextToken();
@@ -46271,9 +56347,50 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    if ( si != pgm.struct_map.end() )
 		pgm.struct_map.set(alias_key, si->second);
 	}
+	// A NESTED explicit specialization (`template <> struct
+	// _FirstPaddingByte<true>` inside __libcpp_datasizeof<char>'s instance
+	// re-parse) registers under its BARE key — the spec-registration path
+	// forms the name without the enclosing class — while every consumer
+	// (and the check below) looks up the OWNER-PREFIXED spelling. Alias
+	// the prefixed key to the one parsed class, exactly as the alias_key
+	// block above does for qualified/legacy spellings.
+	if ( td.owner_class
+	  && pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
+	{
+	    flat_datatype_map_iter bi = pgm.datatype_map.find(mangled);
+	    if ( bi != pgm.datatype_map.end() )
+	    {
+		pgm.datatype_map[registered_mangled] = (*bi);
+		datadef_map_citer bsi = pgm.struct_map.find(mangled);
+		if ( bsi != pgm.struct_map.end() )
+		    pgm.struct_map.set(registered_mangled, bsi->second);
+	    }
+	}
 	if ( pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
+	{
+	    // Env-gated probe (MADC_SPECREG_PROBE=1): the expected key + every
+	    // datatype_map key sharing its MEMBER tail — the wrong-owner-prefix
+	    // diagnostic (chain A: __libcpp_datasizeof's nested
+	    // _FirstPaddingByte<true>).
+	    if ( ::getenv("MADC_SPECREG_PROBE") )
+	    {
+		fprintf(stderr, "[specreg] MISS expected='%s' owner='%s'"
+			" canon='%s' mangled='%s'\n",
+			registered_mangled.c_str(),
+			td.owner_class ? td.owner_class->name.c_str() : "-",
+			td.owner_class
+			    ? td.owner_class->canonical_cpp_spelling().c_str()
+			    : "-",
+			mangled.c_str());
+		const char *cands[2] = { mangled.c_str(), NULL };
+		for ( int ci = 0; ci < 1; ++ci )
+		    fprintf(stderr, "[specreg]   probe '%s' -> %d\n", cands[ci],
+			    pgm.datatype_map.find(cands[ci])
+				!= pgm.datatype_map.end());
+	    }
 	    pgm.Throw(name_tb) << "internal: explicit specialization "
 			       << registered_mangled << " did not register" << flush;
+	}
 	return NULL;
     }
     if ( !specialized_template_id )
@@ -46347,6 +56464,22 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 TokenBase *Program::parseCompound()
 {
     if ( compounds.empty() ) { throw "Internal error -- compound stack empty"; }
+    // A compound is its own declarative region: the declaration-HEAD extern
+    // context must not leak onto block-scope locals. The reachable leak is a
+    // linkage block ([dcl.link]p7 makes extern apply to the block's DIRECTLY
+    // contained declarations, so TokenEXTERN holds the flag across its whole
+    // statement loop): libstdc++ wraps <bits/exception_ptr.h> in
+    // `extern "C++" { }`, and exception_ptr::swap's local `void *__tmp`
+    // emitted as `extern void *__tmp = ...` — a c2mir check error.
+    // Namespace bodies parse via parse_namespace_block's own loop, never
+    // through here, so their members correctly keep the linkage-block flag.
+    struct ExternDeclScope {
+	Program &p; bool saved;
+	ExternDeclScope(Program &pg)
+	    : p(pg), saved(pg.parsing_extern_decl)
+	{ pg.parsing_extern_decl = false; }
+	~ExternDeclScope() { p.parsing_extern_decl = saved; }
+    } extern_scope(*this);
     TokenCpnd *code = compounds.top();
     TokenBase *tb = NULL;
 
@@ -46393,36 +56526,28 @@ static bool old_style_param_name_exists(const std::vector<std::string> &ids,
 
 bool Program::old_style_parameter_head_has_declaration_suffix()
 {
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk )
+	// The unmatched ')' that closes the parameter head — decided BEFORE the
+	// depth update, since DelimDepth clamps a close at depth 0.
+	if ( t->id() == TokenID::tkClBrk && d.paren == 0 )
 	{
-	    if ( paren_depth == 0 )
-	    {
-		TokenBase *after = (i + 1 < tokens.size())
-		    ? tokens[i + 1] : NULL;
-		// Bare identifier list with an EMPTY declaration list —
-		// `f(x) { ... }` — is the other C89 old-style form: every
-		// parameter defaults to int (the declaration-list loop after
-		// the parameter loop already defaults undeclared identifiers
-		// to ddINT32).
-		if ( after && after->id() == TokenID::tkOpBrc )
-		    return true;
-		return is_old_style_parameter_declaration_start(after);
-	    }
-	    --paren_depth;
+	    TokenBase *after = (i + 1 < tokens.size())
+		? tokens[i + 1] : NULL;
+	    // Bare identifier list with an EMPTY declaration list —
+	    // `f(x) { ... }` — is the other C89 old-style form: every
+	    // parameter defaults to int (the declaration-list loop after
+	    // the parameter loop already defaults undeclared identifiers
+	    // to ddINT32).
+	    if ( after && after->id() == TokenID::tkOpBrc )
+		return true;
+	    return is_old_style_parameter_declaration_start(after);
 	}
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
+	d.update(t);
     }
     return false;
 }
@@ -46560,9 +56685,7 @@ void Program::parse_old_style_parameter_declaration(
 	    TokenBase *star = nextToken();
 	    if ( star && star->id() == TokenID::tkMul )
 	    {
-		TokenBase *name_tok = nextToken();
-		while ( name_tok && (is_post_pointer_qualifier_token(name_tok) || name_tok->id() == TokenID::tkCONST) )
-		    name_tok = nextToken();
+		TokenBase *name_tok = skip_cv_qualifier_tokens(nextToken());
 		if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		    Throw(name_tok ? name_tok : open) << "Expecting parameter name in K&R parameter declaration" << flush;
 
@@ -46595,7 +56718,7 @@ void Program::parse_old_style_parameter_declaration(
 	    if ( star )
 		pushToken(star);
 	}
-	while ( nt && (nt->id() == TokenID::tkMul || is_post_pointer_qualifier_token(nt)) )
+	while ( nt && (nt->id() == TokenID::tkMul || is_cv_qualifier_token(nt)) )
 	{
 	    if ( nt->id() == TokenID::tkMul )
 		decl_type = getPointerType(decl_type);
@@ -46664,8 +56787,7 @@ bool Program::scan_old_style_definition_suffix(
     if ( !is_old_style_parameter_declaration_start(peekToken()) )
 	return false;
 
-    int paren_depth = 0;
-    int square_depth = 0;
+    DelimDepth d;
     for ( size_t guard = 0; guard < 512; ++guard )
     {
 	TokenBase *t = nextToken();
@@ -46673,18 +56795,14 @@ bool Program::scan_old_style_definition_suffix(
 	    return false;
 	suffix.push_back(t);
 
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc && paren_depth == 0 && square_depth == 0 )
-	    return true;
-	else if ( t->id() == TokenID::tkClBrc && paren_depth == 0 && square_depth == 0 )
-	    return false;
+	if ( d.paren == 0 && d.square == 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		return true;
+	    if ( t->id() == TokenID::tkClBrc )
+		return false;
+	}
+	d.update(t);
     }
     return false;
 }
@@ -46770,17 +56888,7 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
     std::string prefix = owner->name + "__";
     if ( id.compare(0, prefix.size(), prefix) != 0 )
 	return false;
-    std::string ctor_tail = id.substr(prefix.size());
-    size_t osfx = ctor_tail.rfind("__o");
-    if ( osfx != std::string::npos )
-    {
-	bool numeric = osfx + 3 < ctor_tail.size();
-	for ( size_t si = osfx + 3; numeric && si < ctor_tail.size(); ++si )
-	    if ( !isdigit((unsigned char)ctor_tail[si]) )
-		numeric = false;
-	if ( numeric )
-	    ctor_tail = ctor_tail.substr(0, osfx);
-    }
+    std::string ctor_tail = strip_overload_suffix(id.substr(prefix.size()));
     return resolve_class_type_alias(owner, ctor_tail) == owner;
 }
 
@@ -46808,6 +56916,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->captured_vars = src->captured_vars;
     f->local_emit_name = src->local_emit_name;  // allowed-exception: field copy (clone), not symbol build
     f->return_types = src->return_types;
+    f->multi_ret_struct = src->multi_ret_struct;
     f->const_params = src->const_params;
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
@@ -46852,6 +56961,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->decl_file = src->decl_file;
     f->defaulted_or_deleted = src->defaulted_or_deleted;
     f->is_deleted = src->is_deleted;
+    f->noexcept_spec = src->noexcept_spec;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     f->vague_linkage = src->vague_linkage;
@@ -47065,14 +57175,32 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func = fmi->second;
 	func_already_declared = true;
+	// A MACHINE-registered FuncDef (builtin_registry, host embedding,
+	// dlsym namespace mint) is replaced WHOLESALE by an explicit source
+	// (re)declaration — gcc canon: an explicit prototype replaces a
+	// builtin. Nothing carries over: the registration's parameter list
+	// and wrapper binding (getenv's 2-param result-buffer convention,
+	// local_emit_name = __madc_getenv) are conventions the header knows
+	// nothing about. A half-adopt (return refreshed below, params kept)
+	// left a hybrid prototype nothing declares — getenv("HOME") under
+	// real <stdlib.h> errored "expected 2 got 1". The fresh FuncDef
+	// carries no local_emit_name, so the call emits the source name and
+	// MIR-link dlsym binds the real libc symbol.
+	if ( func->builtin_registration )
+	{
+	    func = new FuncDef(returnDecl(dd, return_ref));
+	    funcdef_map[id] = func;
+	    func_already_declared = false;
+	}
 	// C `f()` is an old-style declaration with unspecified parameters,
 	// not a real zero-parameter prototype. When the later definition
 	// provides the actual parameter list, rebuild the FuncDef from
 	// scratch so the body binds those names normally.
-	if ( !func->is_void_params && func->parameters.empty() )
+	else if ( !func->is_void_params && func->parameters.empty() )
 	{
 	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;
+	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
@@ -47081,6 +57209,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
+	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
@@ -47099,6 +57228,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
 	    fresh->return_types = func->return_types;
+	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
@@ -47107,6 +57237,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
+	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    funcdef_map[id] = fresh;
@@ -47148,21 +57279,22 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     else if ( inline_specified )
 	func->vague_linkage = true;
 
-    // for multi-return functions, inject hidden __retbuf parameter as first arg
+    // Declared-form multi-return `(T0, T1) f(...)`: record the per-slot types
+    // and synthesize the transport struct. NO hidden parameter is injected
+    // into FuncDef::parameters — the transport is the function's C-level
+    // RETURN type; the CIR emits the hidden `S *__retbuf` itself when the
+    // struct is non-trivial (exactly as for any by-value class return). The
+    // old ddINT64 param injection corrupted call-site arity checks
+    // ("expected 3 got 2"), which left this form uncallable.
     if ( multi_ret && multi_ret->size() > 1 )
     {
 	func->return_types = *multi_ret;
-	if ( !func_already_declared )
-	{
-	    func->parameters.push_back(&ddINT64); // void* as int64
-	    func->param_cpp_spellings.push_back(""); // hidden — excluded from mangling
-	    func->param_typedef_names.push_back("");
-	    func->param_template_param_spelled_directly.push_back(false);
-	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
-	}
-	ids.push_back("__retbuf");
-	param_aliases.push_back("");
-	DBG(cout << "parseFunction() injected hidden __retbuf for multi-return (" << multi_ret->size() << " types)" << endl);
+	if ( !func->multi_ret_struct )
+	    func->multi_ret_struct =
+		multi_return_transport_struct(func->return_types, nt);
+	DBG(cout << "parseFunction() multi-return transport "
+	    << func->multi_ret_struct->name << " ("
+	    << multi_ret->size() << " types)" << endl);
     }
 
     // for class methods, inject hidden __this parameter as first arg.
@@ -47722,6 +57854,11 @@ paramdecl:
 	// parameter declaration
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
+	    // `param_dd` is the complete declarator built while consuming this
+	    // parameter. Wrap it once so both declaration/definition writeback
+	    // paths preserve every inner pointer layer (`T*&` -> REF(PTR(T))).
+	    DataDef *reference_param_type = (rtype == RefType::rtReference)
+		? static_cast<DataDef *>(getReferenceType(param_dd)) : NULL;
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
 	    DataDef *scope_param_type = NULL;
@@ -47729,18 +57866,15 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref);
-		// the already-declared FuncDef stored the POINTER type. param_dd here
-		// is only the base — the `&` set rtype but, unlike `*`, did not
-		// pointer-ify param_dd. Pointer-ify it (mirroring the non-declared
-		// branch's `getPointerType(&pb->definition)`) so the in-scope param's
-		// type MATCHES its vfREFERENCE flag. Otherwise the CIR deref gate
+		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref).
+		// The in-scope param's type must match its vfREFERENCE flag. Otherwise
+		// the CIR deref gate
 		// (vfREFERENCE && type->is_pointer()) misses, and a re-parsed body /
 		// ctor mem-init read of the ref param reads the address, not the
 		// referent (e.g. a member-template ctor's `: first(__a)` stored the
 		// pointer value into the int member → garbage).
-		scope_param_type = (rtype == RefType::rtReference)
-		    ? (DataDef *)getReferenceType(&pb->definition) : param_dd;
+		scope_param_type = reference_param_type
+		    ? reference_param_type : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
@@ -47769,10 +57903,9 @@ paramdecl:
 		    param_template_param_spelled_directly);
 		if ( rtype == RefType::rtReference )
 		{
-		    DataDef *ref_ptr = getReferenceType(&pb->definition);
-		    func->parameters.push_back(ref_ptr);
+		    func->parameters.push_back(reference_param_type);
 		    func->const_params.push_back(param_has_const);
-		    scope_param_type = ref_ptr;
+		    scope_param_type = reference_param_type;
 		}
 		else if ( rtype == RefType::rtPointer )
 		{
@@ -47914,6 +58047,17 @@ paramdecl:
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
 	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	// C++11 ref-qualifier ([dcl.fct]p6): `T f() &`, `T f() const &&`.
+	// libc++ __optional_storage_base::__get declares all four cv/ref
+	// combinations; without this arm the loop broke on the '&' and the
+	// body parse threw "Expecting brace after function declaration" at
+	// lazy pattern instantiation (map<K,V> via node-handle optional).
+	if ( q->id() == TokenID::tkBand || q->id() == TokenID::tkLand )
+	{
+	    func->ref_qualifier = (q->id() == TokenID::tkLand) ? 2 : 1;
+	    nt = nextToken();
+	    continue;
+	}
 	if ( q->id() == TokenID::tkDeRef )	// `->` trailing return type
 	{
 	    nt = nextToken();
@@ -47940,15 +58084,55 @@ paramdecl:
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
+	    // An EMPTY dynamic-exception-specification `throw()` is the
+	    // pre-C++11 non-throwing spelling ([except.spec]); a non-empty
+	    // list still permits throwing the listed types.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+		func->noexcept_spec = FuncDef::NxTrue;
 	    nt = consume_balanced_parenthesized_suffix(open);
 	    continue;
 	}
-	if ( q->type() == TokenType::ttIdentifier ) {
-	    const std::string &qs = ((TokenIdent *)q)->spelling();
+	// `noexcept` arrives as a reserved TokenCppKeyword in C++ modes and as a
+	// plain identifier when replayed from captured token runs; both carry
+	// their spelling through contextual_identifier_name.
+	if ( q->type() == TokenType::ttIdentifier
+	  || q->id() == TokenID::tkCPPKEYWORD ) {
+	    const std::string qs = contextual_identifier_name(q);
 	    if ( qs == "noexcept" ) {
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
-		    nt = consume_balanced_parenthesized_suffix(nt);
+		{
+		    // `noexcept(expr)`: capture the balanced condition tokens
+		    // and constant-fold them with the same local folder the
+		    // template-argument path uses; an unfoldable condition
+		    // records honestly as Unknown (a trait consumer answers
+		    // "cannot determine" rather than a wrong bool).
+		    std::vector<TokenBase *> cond;
+		    int nd = 1;
+		    for (;;)
+		    {
+			TokenBase *ct = nextToken();
+			if ( !ct )
+			    break;
+			if ( ct->id() == TokenID::tkOpBrk ) ++nd;
+			else if ( ct->id() == TokenID::tkClBrk )
+			{
+			    if ( --nd == 0 )
+				break;
+			}
+			cond.push_back(ct);
+		    }
+		    int64_t cv = 0;
+		    if ( fold_nontype_template_arg(cond,
+			     template_tokens_spelling(cond), cv) )
+			func->noexcept_spec = cv ? FuncDef::NxTrue
+						 : FuncDef::NxNone;
+		    else
+			func->noexcept_spec = FuncDef::NxUnknown;
+		    nt = nextToken();
+		}
+		else
+		    func->noexcept_spec = FuncDef::NxTrue;
 		continue;
 	    }
 	    if ( qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
@@ -48135,6 +58319,19 @@ paramdecl:
 	if ( explicitly_defaulted
 	  && defaulted_member_parses_empty(owner_class, id, func) )
 	{
+	    // Record that `= default` was WRITTEN, because rewriting it to `{}`
+	    // is exactly what makes it unrecoverable afterwards: from here on
+	    // nothing can tell this ctor from a user-written `X() {}`, and the
+	    // difference is load-bearing. [except.spec]p7 gives the defaulted
+	    // one the memberwise noexcept CONJUNCTION, while a user-written
+	    // ctor's spec is unknown to madc (the lexer erases conditional
+	    // `noexcept(expr)`), so __is_nothrow_constructible must refuse.
+	    // record_dropped_special_ctor owns this flag for every OTHER
+	    // defaulted member, but it keys on defaulted_or_deleted — which
+	    // this path deliberately leaves clear — so it never sees the one
+	    // ctor the flag is named after.
+	    if ( owner_class )
+		owner_class->has_defaulted_default_ctor = true;
 	    pushToken(new TokenClBrc());
 	    pushToken(new TokenOpBrc());
 	    nt = nextToken();
@@ -48171,18 +58368,8 @@ paramdecl:
 	    std::string prefix = owner_class->name + "__";
 	    if ( id.compare(0, prefix.size(), prefix) == 0 )
 	    {
-		std::string ctor_tail = id.substr(prefix.size());
-		size_t overload_suffix = ctor_tail.rfind("__o");
-		if ( overload_suffix != std::string::npos )
-		{
-		    bool numeric_suffix = overload_suffix + 3 < ctor_tail.size();
-		    for ( size_t si = overload_suffix + 3;
-			  numeric_suffix && si < ctor_tail.size(); ++si )
-			if ( !isdigit((unsigned char)ctor_tail[si]) )
-			    numeric_suffix = false;
-		    if ( numeric_suffix )
-			ctor_tail = ctor_tail.substr(0, overload_suffix);
-		}
+		std::string ctor_tail =
+		    strip_overload_suffix(id.substr(prefix.size()));
 		DataDef *ctor_alias = resolve_class_type_alias(owner_class,
 							       ctor_tail);
 		parse_ctor_initializers = (ctor_alias == owner_class);
@@ -48205,69 +58392,36 @@ paramdecl:
 	pending_deferred_ctor_inits.clear();
 	if ( !parse_ctor_initializers || defer_ctor_initializers )
 	{
-	    int paren_depth = 0;
-	    int square_depth = 0;
-	    int angle_depth = 0;
-	    int brace_depth = 0;
+	    DelimDepth d;
 	    bool expecting_initializer = true;
 	    while ( (nt = nextToken()) )
 	    {
-		if ( isOperatorIdStart(nt) )
+		// Caller-specific logic, layered ON TOP of DelimDepth and
+		// tested against the depth BEFORE this token is applied.
+		// A `{` at top level is the function BODY — unless a
+		// mem-initializer is still expected, in which case it opens a
+		// brace-init (`m{1,2}`) and is just another nesting level.
+		if ( d.top() )
 		{
-		    if ( defer_ctor_initializers )
-		    {
-			std::vector<TokenBase *> opsyms;
-			pending_deferred_ctor_inits.push_back(nt);
-			parseOperatorId(nt, &opsyms);
-			for ( size_t oi = 0; oi < opsyms.size(); ++oi )
-			    pending_deferred_ctor_inits.push_back(opsyms[oi]);
-		    }
-		    else
-			parseOperatorId(nt);
-		    continue;
-		}
-		if ( paren_depth == 0 && square_depth == 0
-		  && angle_depth == 0 && brace_depth == 0
-		  && nt->id() == TokenID::tkComma )
-		{
-		    expecting_initializer = true;
-		    if ( defer_ctor_initializers )
-			pending_deferred_ctor_inits.push_back(nt);
-		    continue;
-		}
-		if ( nt->id() == TokenID::tkOpBrk )
-		{
-		    ++paren_depth;
-		    if ( square_depth == 0 && angle_depth == 0 && brace_depth == 0 )
+		    if ( nt->id() == TokenID::tkOpBrc && !expecting_initializer )
+			break;
+		    if ( nt->id() == TokenID::tkComma )
+			expecting_initializer = true;
+		    else if ( nt->id() == TokenID::tkOpBrk
+			   || nt->id() == TokenID::tkOpBrc )
 			expecting_initializer = false;
 		}
-		else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
-		    --paren_depth;
-		else if ( nt->id() == TokenID::tkOpSqr )
-		    ++square_depth;
-		else if ( nt->id() == TokenID::tkClSqr && square_depth > 0 )
-		    --square_depth;
-		else if ( nt->id() == TokenID::tkLT )
-		    ++angle_depth;
-		else if ( nt->id() == TokenID::tkGT && angle_depth > 0 )
-		    --angle_depth;
-		else if ( nt->id() == TokenID::tkBSR && angle_depth > 0 )
-		    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-		else if ( nt->id() == TokenID::tkOpBrc
-		       && paren_depth == 0 && square_depth == 0
-		       && angle_depth == 0 && expecting_initializer )
-		{
-		    ++brace_depth;
-		    expecting_initializer = false;
-		}
-		else if ( nt->id() == TokenID::tkClBrc && brace_depth > 0 )
-		    --brace_depth;
-		else if ( nt->id() == TokenID::tkOpBrc
-		       && paren_depth == 0 && square_depth == 0
-		       && angle_depth == 0 && brace_depth == 0 )
-		    break;
+		// operator-ids (operator<, operator T) are NAMES; the stream
+		// helper consumes them opaquely so their symbols are never
+		// counted as delimiters.
+		std::vector<TokenBase *> opsyms;
+		delimStepStream(nt, d, &opsyms);
 		if ( defer_ctor_initializers )
+		{
 		    pending_deferred_ctor_inits.push_back(nt);
+		    for ( TokenBase *s : opsyms )
+			pending_deferred_ctor_inits.push_back(s);
+		}
 	    }
 	    if ( pattern_ctor_meminit )
 		pattern_ctor_init_toks.swap(pending_deferred_ctor_inits);
@@ -48626,7 +58780,9 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
 // parse a lambda expression: [](type arg, ...) { body }
 // Returns a TokenVar referencing the lambda's anonymous function variable.
 // The lambda is pushed onto ast as a top-level TokenFunc so it compiles
-// before the enclosing function (asmjit can't nest addFunc/endFunc).
+// before the enclosing function. (Originally because asmjit could not nest
+// addFunc/endFunc; still correct without it, since C has no nested functions
+// and lambdas lower to hoisted free functions plus a function pointer.)
 //
 // Find the first `return <expr>;` statement reachable from a parsed body and
 // report its expression's deduced type — the C++14 lambda return type.
@@ -48843,6 +58999,7 @@ TokenBase *Program::parseLambda()
 	    fresh->potential_captures	 = func->potential_captures;
 	    fresh->captures		 = func->captures;
 	    fresh->return_types		 = func->return_types;
+	    fresh->multi_ret_struct	 = func->multi_ret_struct;
 	    fresh->const_params		 = func->const_params;
 	    fresh->is_varargs		 = func->is_varargs;
 	    fresh->is_void_params	 = func->is_void_params;
@@ -48867,6 +59024,76 @@ TokenBase *Program::parseLambda()
     // return a TokenVar that references the lambda function variable
     // When compiled, TokenVar::compile() emits the function's address
     return new TokenVar(*var);
+}
+
+// THE lambda dispatch for expression context. A lambda-expression is a
+// primary-expression ([expr.prim.lambda]), so the postfix chain continues
+// through it — it can be invoked immediately:
+//
+//     [](int x){ return x + 99; }(1)
+//
+// Pushing the lambda as a bare VALUE and returning left the trailing `(...)`
+// to be read as a separate parenthesized expression. In argument position that
+// produced no diagnostic at all — the argument list simply took the LAST
+// expression, so `printf("%d", [](int x){ return x + 99; }(1))` printed 1
+// instead of 100, exit 0. Silent wrong answers are why this is one function
+// and not a check repeated at each dispatch site.
+//
+// The call is built the same way the function-pointer paths build theirs
+// (TokenCallFunc + parseCallFunc, pushed on opStack): a lambda IS a function
+// pointer here, so it takes the same road rather than a private one.
+Program::ExprStep Program::parseLambdaExprStep(std::stack<TokenBase *> &exStack,
+					       std::stack<TokenBase *> &opStack,
+					       bool &done)
+{
+    TokenBase *lambda = parseLambda();
+    TokenVar *lv = dynamic_cast<TokenVar *>(lambda);
+    if ( lv && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	TokenBase *ob = nextToken();		// the call's '('
+	TokenCallFunc *tc = new TokenCallFunc(lv->var);
+	tc->file = ob->file;
+	tc->line = ob->line;
+	tc->column = ob->column;
+	TokenBase *after = parseCallFunc(tc);
+	DBG(cout << "parseExpression: immediately-invoked lambda "
+		 << lv->var.name << endl);
+	opStack.push(tc);
+	if ( after && after->id() == TokenID::tkSemi )
+	    done = true;
+	return done ? ExprStep::Done : ExprStep::Break;
+    }
+    exStack.push(lambda);
+    return done ? ExprStep::Done : ExprStep::Break;
+}
+
+// Is the lambda whose introducer is at the head of the stream immediately
+// invoked? Walks the balanced introducer, parameter list and body with the
+// shared DelimDepth tracker and asks whether a '(' follows the body.
+//
+// The `auto x = <init>` path needs this BEFORE parsing: `auto f = [](int){…};`
+// deduces a function pointer, while `auto v = [](int x){…}(1);` deduces the
+// CALL's return type. Its sibling branch already made exactly this distinction
+// for a function NAME (`followed_by_call`) and the lambda branch did not.
+bool Program::lambdaIsImmediatelyInvoked()
+{
+    DelimDepth d;
+    bool seen_body = false;
+    size_t i = 0;
+    while ( i < tokens.size() && tokens[i] )
+    {
+	// The body '{' is the one opened at top level; a brace inside the
+	// parameter list (a default argument) is not it.
+	bool opens_body = tokens[i]->id() == TokenID::tkOpBrc && d.top();
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+	if ( opens_body )
+	    seen_body = true;
+	if ( seen_body && d.top() )
+	    return i < tokens.size() && tokens[i]
+		&& tokens[i]->id() == TokenID::tkOpBrk;
+    }
+    return false;
 }
 
 void Program::configure_nested_function_captures(FuncDef *func)
@@ -49135,12 +59362,137 @@ bool Program::paren_group_is_function_def()
 	    if ( --depth == 0 )
 	    {
 		++ix; // token after the matching ')'
+		// Skip an exception specification between the parameter list
+		// and the body ([except.spec]) — throw(...) / noexcept /
+		// noexcept(cond); declarator_exception_spec_at is the one
+		// classify/skip owner.
+		size_t after_spec = ix;
+		declarator_exception_spec_at(*this, tokens, ix, &after_spec);
+		ix = after_spec;
 		return ix < tokens.size()
 		    && tokens[ix]->id() == TokenID::tkOpBrc;
 	    }
 	}
     }
     return false;
+}
+
+// One owner for "does this unqualified name ALSO name a type or a
+// class/alias template" — the [dcl.ambig.res] tie-breaker input shared by
+// the two paren-group disambiguators below. Function templates are
+// deliberately excluded: a function-template name is not a type, so it
+// cannot begin a parameter-declaration and `_Tp __t(move(__x))` keeps its
+// direct-init reading.
+bool Program::unqualified_name_is_type_or_template(const std::string &nm)
+{
+    if ( datatype_map.find(nm) != datatype_map.end() )
+	return true;
+    if ( find_template(nm, std::string(), NULL) )
+	return true;
+    return find_template_alias(nm, std::string(), NULL) != NULL;
+}
+
+// `T name(X);` with a CLASS T: the paren group is a parameter-declaration-
+// clause (hence a function DECLARATION — [dcl.ambig.res] favours any reading
+// that can be a declaration) when it is empty or its head can begin a
+// parameter-declaration: a decl-specifier keyword, a type token, or an
+// (optionally qualified) name that names a type or class/alias template.
+// Everything else (a literal, an operator, a nested '(', a pure value name)
+// can only be an expression-list, so the ctor-call reading stands. A type
+// head followed by '(' keeps the declaration reading only for the
+// redundant-paren declarator `Type(x)` — `Type(5)` / `Type("s")` is a
+// function-style cast, an expression ([dcl.ambig.res]/2's worked examples).
+// This is the CLASS twin of paren_group_is_nonclass_direct_init below: that
+// one diverts an unambiguous EXPRESSION away from a default declaration
+// reading; this one diverts an unambiguous PARAMETER CLAUSE away from a
+// default ctor-call reading. tokens.front() is expected to be the `(`;
+// nothing is consumed.
+bool Program::paren_group_can_be_param_decl_clause()
+{
+    if ( tokens.size() < 2 )
+	return false;
+    TokenBase *open = tokens[0];
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	return false;
+    TokenBase *first = tokens[1];
+    if ( !first )
+	return false;
+    // `T name();` — the empty clause: canon reads a function declaration
+    // (the textbook most-vexing-parse). Previously this misparsed SILENTLY
+    // into a global variable, surfacing only as a MIR-link ctor import.
+    if ( first->id() == TokenID::tkClBrk )
+	return true;
+    switch ( first->id() )
+    {
+    case TokenID::tkCONST:
+    case TokenID::tkVOLATILE:
+    case TokenID::tkSTRUCT:
+    case TokenID::tkCLASS:
+    case TokenID::tkENUM:
+	return true;	// a decl-specifier can only begin a parameter-declaration
+    default:
+	break;
+    }
+    TokenStream::Pos saved = tokens.savepos();
+    nextToken();			// the '('
+    TokenBase *head = nextToken();	// the group's head token
+    bool head_is_type = false;
+    if ( head && (head->type() == TokenType::ttDataType
+	       || head->type() == TokenType::ttIdentifier) )
+    {
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    // An ENUM head cannot introduce a nested type — `Enum::id` names
+	    // an ENUMERATOR (a value), so the group is an expression-list:
+	    // libc++'s <=> category statics are exactly this shape
+	    // (`inline constexpr partial_ordering
+	    //   partial_ordering::less(_OrdResult::__less);`,
+	    // __compare/ordering.h:114).
+	    TokenDataType *head_dt =
+		resolve_declared_type_token(head, false, true);
+	    if ( head_dt && dynamic_cast<DataDefENUM *>(&head_dt->definition) )
+		head_is_type = false;
+	    else
+		// Qualified head — the WHOLE chain must name a type. A member
+		// FUNCTION / static-member tail is a call or value, not a
+		// parameter type: libstdc++ __str_concat's local
+		// `_Str __str(_Alloc_traits::_S_select_on_copy(__a));` heads
+		// with a ttDataType token whose chain names a static member
+		// function — an unconsumed `::` after the trial resolve is
+		// that signature.
+		head_is_type =
+		    resolve_declared_type_token(head, true, true) != NULL
+		    && !(peekToken() && peekToken()->id() == TokenID::tkNS);
+	}
+	else if ( head->type() == TokenType::ttDataType )
+	    head_is_type = true;
+	else
+	    head_is_type = unqualified_name_is_type_or_template(
+				contextual_identifier_name(head));
+    }
+    bool result = false;
+    if ( head_is_type )
+    {
+	TokenBase *after = peekToken();
+	if ( !after || after->id() == TokenID::tkOpBrc )
+	    result = false;		// Type{...} — list-init expression
+	else if ( after->id() == TokenID::tkOpBrk )
+	{
+	    // `Type(x)` = redundant-paren DECLARATOR (declaration reading)
+	    // vs `Type(5)` / `Type("s")` / `Type(a+b)` = function-style
+	    // cast (expression): only a LONE identifier inside the parens
+	    // keeps the declaration reading.
+	    nextToken();		// the inner '('
+	    TokenBase *inner = nextToken();
+	    TokenBase *close = peekToken();
+	    result = inner && is_contextual_identifier_token(inner)
+		  && close && close->id() == TokenID::tkClBrk;
+	}
+	else
+	    result = true;
+    }
+    tokens.restore(saved);
+    return result;
 }
 
 // `T name(X)` is direct-initialization (== `T name = X`) rather than a function
@@ -49186,8 +59538,39 @@ bool Program::paren_group_is_nonclass_direct_init()
 	std::string nm = contextual_identifier_name(first);
 	if ( nm == "this" )
 	    return true;
-	if ( findVariable(nm) )
+	// A value hit alone cannot decide: a name that ALSO names a concrete
+	// type or a class/alias template CAN begin a parameter-declaration,
+	// and then the group stays a declaration (both canons keep the
+	// declaration reading of `void f(vector &v)` and diagnose the missing
+	// template arguments — neither ever diverts to direct-init). libc++'s
+	// CTAD deduction guides surface VALUE entries named `array`/`vector`/
+	// `pair`, so under `using namespace std` the value-name shadowed the
+	// madc builtin type `array` here and every `f(array &ctx, ...)`
+	// param-1 head in <ns_madc> diverted to direct-init, dying on its
+	// parameter name.
+	if ( findVariable(nm) && !unqualified_name_is_type_or_template(nm) )
 	    return true;
+	// A QUALIFIED name: a parameter-declaration may begin with a qualified
+	// TYPE (`f(std::size_t)` is a nested function DECLARATION), so shape
+	// alone cannot decide — [dcl.ambig.res] reads the group as a
+	// declaration ONLY when the content can be a parameter-declaration.
+	// Trial-resolve the qualified head as a declared type on a rewound
+	// cursor: a name that does NOT resolve to a type — `std::move(__x)`
+	// (a function), `Cls::val` (a static member), `Color::red` (an
+	// enumerator) — cannot begin a parameter-declaration, so the group is
+	// direct-initialization (libc++'s std::swap body:
+	// `_Tp __t(std::move(__x));` instantiated at a concrete _Tp).
+	if ( tokens.size() > 2 && tokens[2]
+	  && tokens[2]->id() == TokenID::tkNS )
+	{
+	    TokenStream::Pos saved = tokens.savepos();
+	    nextToken();			// the '('
+	    TokenBase *head = nextToken();	// the qualified head identifier
+	    TokenDataType *resolved =
+		resolve_declared_type_token(head, true, true);
+	    tokens.restore(saved);
+	    return resolved == NULL;
+	}
     }
     return false;
 }
@@ -49211,8 +59594,12 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     // is not a FuncDef), so it keeps its existing TokenAddrOf / TokenAddrExpr path.
     {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr);
-	FuncDef *cfd = tcf ? dynamic_cast<FuncDef *>(tcf->var.type) : NULL;
-	if ( cfd && cfd->returns_reference() )
+	// call_returns_reference covers BOTH sources of reference-ness: the
+	// callee FuncDef's declared return AND the token's substituted return
+	// (returns_ref_override — a placeholder-bound template call with
+	// explicit args, `std::use_facet<F>(loc)`, carries its `const F&`
+	// there; the placeholder FuncDef itself returns a value type).
+	if ( tcf && tcf->call_returns_reference() )
 	{
 	    TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
 	    copy_token_location(addr, expr);
@@ -49231,13 +59618,18 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	bound->setDataType(ptr_type);
 	return bound;
     }
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-    {
-	tv->var.flags |= vfADDRTAKEN;
-	TokenAddrOf *addr = new TokenAddrOf(tv->var, ptr_type);
-	copy_token_location(addr, expr);
-	return addr;
-    }
+    // A call token DERIVES FROM TokenVar (TokenCallFunc : TokenVar); a
+    // VALUE-returning call reaching this arm would take the address of its
+    // callee FUNCTION (`&__ns_std_use_facet`) — a silent wrong bind. Exclude
+    // calls: a prvalue call falls to the lvalue diagnostic below (loud).
+    if ( !dynamic_cast<TokenCallFunc *>(expr) )
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	{
+	    tv->var.flags |= vfADDRTAKEN;
+	    TokenAddrOf *addr = new TokenAddrOf(tv->var, ptr_type);
+	    copy_token_location(addr, expr);
+	    return addr;
+	}
     if ( is_addressable_expression(expr) )
     {
 	TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
@@ -49274,15 +59666,55 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     DBG(std::cout << "parseDeclaration(" << tb->spelling() << ") START" << std::endl);
 
-    // A GNU attribute can sit between the declaration specifiers and the
-    // declarator (`static void __attribute__((optimize(...))) f()`).
-    // consume_gnu_attributes records anything madc acts on (e.g. the pending
-    // no-strict-aliasing flag the function parse picks up).
-    if ( is_attribute_identifier_token(peekToken()) )
+    // Between the type-specifier and the declarator, [dcl.spec]/1 allows
+    // decl-specifiers in ANY order — llvm-18's <__algorithm/copy.h> spells
+    // `pair<_InIter, _OutIter> inline constexpr __copy(...)` with the
+    // function-specifiers AFTER the type — and GNU attributes can interleave
+    // (`static void __attribute__((optimize(...))) f()`). Consume the run:
+    // `inline` and the constexpr family fold into the same flags the
+    // specifiers-first path set; `static` is legal here in C too
+    // (`int static x;`). Both lexings match — the reserved tkCPPKEYWORD form
+    // and a retained-clone ttIdentifier (an instantiation-injected body);
+    // the bare-identifier spellings are gated to C++ mode, where they are
+    // reserved words no user identifier can shadow.
+    for (;;)
     {
-	TokenBase *after = consume_gnu_attributes(nextToken());
-	if ( after )
-	    pushToken(after);
+	TokenBase *pk = peekToken();
+	if ( !pk )
+	    break;
+	if ( pk->id() == TokenID::tkSTATIC )
+	{
+	    gotstatic = true;
+	    nextToken();
+	    continue;
+	}
+	bool spec = is_ignored_cpp_specifier_token(pk);
+	bool is_inline_word = false;
+	if ( !spec && presents_as_cpp()
+	  && pk->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = ((TokenIdent *)pk)->spelling();
+	    spec = s == "inline" || s == "constexpr" || s == "consteval"
+		|| s == "constinit";
+	    is_inline_word = s == "inline";
+	}
+	else if ( spec )
+	    is_inline_word = ((TokenIdent *)pk)->spelling_is("inline");
+	if ( spec )
+	{
+	    if ( is_inline_word )
+		gotinline = true;
+	    nextToken();
+	    continue;
+	}
+	if ( is_attribute_identifier_token(pk) )
+	{
+	    TokenBase *after = consume_gnu_attributes(nextToken());
+	    if ( after )
+		pushToken(after);
+	    continue;
+	}
+	break;
     }
 
     // check for pointer declarator(s): type * [*...] identifier.
@@ -49582,7 +60014,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		Throw(nt) << "Unknown C++ declarator scope '"
 			  << join_scope_parts(scope_parts, scope_parts.size())
 			  << "'" << flush;
-	    Variable *mvar = qualified_owner_class->findMethod(qualified_member_name);
+	    // Prefer the overload whose SIGNATURE this definition declares.
+	    // findMethod answers with one arbitrary overload and compares
+	    // nothing, which bound a definition to a member-template varargs
+	    // stub and mistyped its parameters (libc++ condition_variable.h:211).
+	    // A declining probe falls back to the historical behaviour.
+	    Variable *mvar = find_method_definition_target(qualified_owner_class,
+							  qualified_member_name);
+	    if ( !mvar )
+		mvar = qualified_owner_class->findMethod(qualified_member_name);
 	    id = mvar ? mvar->name
 		      : qualified_owner_class->name + "__" + qualified_member_name;
 	}
@@ -49630,15 +60070,32 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// (`auto r = foo(args);`) is a general expression whose deduced type is the
 	// call's RETURN type — distinguished by the token following the identifier
 	// (tokens[0] is the identifier itself, tokens[1] the next token).
-	bool rhs_is_lambda = rhs_tok && rhs_tok->id() == TokenID::tkOpSqr;
+	// A lambda VALUE takes the fn-ptr path (`auto f = [](int){…};` deduces
+	// a function pointer). An IMMEDIATELY INVOKED lambda does not — its
+	// type is the CALL's return type, so it belongs on the general
+	// deduction path below. This is the same value-vs-call distinction the
+	// function-NAME branch just below already makes via `followed_by_call`;
+	// the lambda branch tested only "next token is '['", so
+	// `auto v = [](int x){ return x + 99; }(1);` bound v to the lambda,
+	// dropped the call, and left v uninitialised — garbage, exit 0.
+	bool rhs_is_lambda = rhs_tok && rhs_tok->id() == TokenID::tkOpSqr
+			     && !lambdaIsImmediatelyInvoked();
 	bool rhs_is_func_name = false;
 	if ( !rhs_is_lambda && rhs_tok && rhs_tok->type() == TokenType::ttIdentifier )
 	{
 	    Variable *probe = findVariable(((TokenIdent *)rhs_tok)->spelling());
 	    bool followed_by_call = tokens.size() > 1 && tokens[1]
 				    && tokens[1]->id() == TokenID::tkOpBrk;
+	    // `id ::` — the identifier heads a nested-name-specifier, and
+	    // qualified lookup ignores functions ([basic.lookup.qual]): a
+	    // same-named function (libc++'s `namespace ranges::__destroy` vs
+	    // madc's global `__destroy` intrinsic) must not hijack
+	    // `auto x = ns::fn{};` onto the fn-ptr path — the whole qualified
+	    // expression belongs to general deduction below.
+	    bool followed_by_scope = tokens.size() > 1 && tokens[1]
+				    && tokens[1]->id() == TokenID::tkNS;
 	    rhs_is_func_name = probe && probe->type && probe->type->is_function()
-			       && !followed_by_call;
+			       && !followed_by_call && !followed_by_scope;
 	}
 
 	if ( rhs_is_lambda || rhs_is_func_name )
@@ -49840,17 +60297,58 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // Only real array declarators (`char buf[] = "literal";`) should take the
     // char-array string-initializer path below.
 
+    // A by-value CLASS declaration requires a COMPLETE type ([basic.def]p5).
+    // A bodyless forward instantiation minted before the template's
+    // definition (libc++ <iosfwd>'s `typedef basic_istringstream<char>
+    // istringstream;` — the definition arrives with <sstream>) is an empty
+    // shell with no ctors: the ctor-call branch below then declines it and
+    // `istringstream s("3")` mis-routes into the FUNCTION DECLARATION parse
+    // (and default-init built a silent size-0 object). Pointer/reference
+    // declarators folded above do not reach this (their decl_type is no
+    // longer btClass), matching C++'s completeness rules.
+    if ( decl_type->basetype() == BaseType::btClass )
+	decl_type = complete_class_type_on_demand(decl_type);
+
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
-    // Only for user-defined classes with a constructor.
+    // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
+    // [dcl.init.list]/3: when the class has constructors, the braced list's
+    // elements are CTOR ARGUMENTS ranked against the overload set, exactly
+    // like the paren form (libc++:
+    // `nullopt_t nullopt{nullopt_t::__secret_tag{}, ...}`). Routing it to
+    // the aggregate `= { ... }` machinery below field-filled a ctor-ful
+    // class and dropped every argument after the first. Aggregates (no user
+    // ctor) still take the brace-list path below. Only the paren form can
+    // be a function declaration (most vexing parse); braces never are —
+    // and the paren form is one whenever a body follows OR the group can
+    // be a parameter-declaration-clause ([dcl.ambig.res]): gating on body
+    // presence alone read EVERY bodyless class-returning prototype as a
+    // ctor-call variable — `path __absolute(const path&, error_code*);`
+    // (libc++ __filesystem/operations.h:37, via <fstream>) died on its
+    // parameter names, and the 0-param form (`path foo();`) misparsed
+    // SILENTLY into a global variable that only failed at MIR link.
     if ( !ret_is_ref
-      && nt->id() == TokenID::tkOpBrk && arr_dims.empty()
+      && (nt->id() == TokenID::tkOpBrk || nt->id() == TokenID::tkOpBrc)
+      && arr_dims.empty()
       && decl_type->basetype() == BaseType::btClass
-      && !paren_group_is_function_def() )
+      && !(nt->id() == TokenID::tkOpBrk
+	   && (paren_group_is_function_def()
+	       || paren_group_can_be_param_decl_clause())) )
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
-	if ( ddc->has_user_ctor )
+	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
+	// existing brace-init route below; a NON-empty list with user ctors is
+	// a ctor-argument list and belongs here.
+	bool braced_ctor_args = nt->id() == TokenID::tkOpBrc
+	    && tokens.size() > 1 && tokens[1]
+	    && tokens[1]->id() != TokenID::tkClBrc;
+	if ( ddc->has_user_ctor
+	  && (nt->id() == TokenID::tkOpBrk || braced_ctor_args) )
 	{
-	    nextToken(); // consume '('
+	    TokenID ctor_close_id = nt->id() == TokenID::tkOpBrk
+				  ? TokenID::tkClBrk : TokenID::tkClBrc;
+	    const char *ctor_close_sp =
+		ctor_close_id == TokenID::tkClBrk ? ")" : "}";
+	    nextToken(); // consume '(' or '{'
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
@@ -49867,7 +60365,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // captured tokens). Same cursor tap as the v23 param defaults.
 	    DefCapState ctor_cap;
 	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
-	    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+	    while ( peekToken() && peekToken()->id() != ctor_close_id )
 	    {
 		TokenBase *arg = parseExpression(nextToken(), true);
 		td->ctor_args.push_back(arg);
@@ -49876,9 +60374,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);
-	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-		Throw(tb) << "Expected ')' after constructor arguments" << flush;
-	    nextToken(); // consume ')'
+	    if ( !peekToken() || peekToken()->id() != ctor_close_id )
+		Throw(tb) << "Expected '" << ctor_close_sp
+			  << "' after constructor arguments" << flush;
+	    nextToken(); // consume ')' or '}'
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
@@ -50563,7 +61062,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	      && decl_type->size > 0 && elem_count == 1
 	      && decl_type->basetype() != BaseType::btFunct )
 	    {
-		var->data = calloc(1, decl_type->size);
+		var->data = calloc(1, Variable::slot_size(*decl_type));
 		var->flags |= vfALLOC;
 		var->flags &= ~vfSTACK;
 	    }
@@ -50805,7 +61304,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		{
 		    if ( !var->data && var->type->size > 0 )
 		    {
-			var->data = calloc(1, var->type->size);
+			var->data = calloc(1, Variable::slot_size(*var->type));
 			if ( var->data )
 			    var->flags |= vfALLOC;
 		    }
@@ -50872,6 +61371,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( nt->id() != TokenID::tkOpBrk )
     {
 	DBG(std::cerr << "parseDeclaration() throwing token " << (int)nt->id() << std::endl);
+	if ( ::getenv("MADC_POPOP_PROBE") )
+	    fprintf(stderr, "[popop] site=decl-lparen tok type=%d id=%d "
+		    "spelling='%s' at %s:%d:%d\n",
+		    (int)nt->type(), (int)nt->id(),
+		    overload_token_spelling(nt).c_str(),
+		    nt->file ? nt->file : "?", nt->line, nt->column);
 	Throw(nt) << "unexpected token type " << (int)nt->type() << flush;
     }
 
@@ -50896,6 +61401,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	{
 	    ns_overload_tracked = true;
 	    ns_overload_spelling = peek_param_list_spelling();
+	    // A template-INSTANTIATION product's overload identity includes
+	    // its BINDING (inst_key): two specializations differing only in a
+	    // non-type value (g<int,3> / g<int,7>) share a parameter spelling
+	    // but are distinct functions ([temp.over.link]) — without the fold
+	    // the same-spelling reuse handed the second the first's symbol
+	    // (repeated MIR item declaration). Binding-derived, so identical
+	    // bindings still reuse/match (forest LOADED == PARSED preserved).
+	    if ( fn_template_instantiation_depth > 0
+	      && !pending_fn_instantiation_identity.empty() )
+		ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	    std::vector<NamespaceFnOverload> &ovset =
 		namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 	    Variable *same = NULL;
@@ -50921,14 +61436,40 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
     else if ( !qualified_owner_class && !is_c_mode()
 	   && current_linkage == LinkageSpec::Cpp
-	   && source_id.compare(0, 8, "operator") == 0 )
+	   && (source_id.compare(0, 8, "operator") == 0
+	    || fn_template_instantiation_depth > 0
+	    || (is_system_header_path(TokenBase::_parse_file)
+	     && (findVariable(source_id)
+	      || namespace_fn_overload_sets.count("::" + source_id)))) )
     {
-	// C++ free-OPERATOR overloading at GLOBAL scope: the same per-overload
+	// C++ free-function overloading at GLOBAL scope, for OPERATORS,
+	// fn-template INSTANTIATION PRODUCTS, and SYSTEM-HEADER functions
+	// whose name is already taken: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
-	// empty-namespace key ("::operatorX"), so operator-expression dispatch
-	// (find_free_operator_function) can enumerate and rank the parsed set.
+	// empty-namespace key ("::name" / "::operatorX") — global scope IS the
+	// empty namespace. Operator-expression dispatch
+	// (find_free_operator_function) enumerates and ranks the operator sets;
+	// instantiation-product sets serve call ranking and fn-template
+	// re-entry (a SFINAE overload pair instantiates TWO same-name globals
+	// — width(int) / width(double) — which need distinct symbols and a set
+	// to rank, and whose display name lets a repeat call re-enter
+	// deduction). A PLAIN global function stays on the legacy path — its
+	// declaration-only form must import by SOURCE NAME for the dlsym
+	// fallback (libc declarations — tracking it would mangle the import) —
+	// UNLESS it is a system-header declaration re-using an existing name:
+	// that is C++ overloading (libc++'s five global inline `abs` overloads
+	// after glibc's extern-C `int abs(int)`), and the legacy shared-id
+	// reuse spliced them into ONE FuncDef — the last body emitted as a
+	// plain-named linkonce `abs` clobbering the libc import, so
+	// `abs(-7)` ran the long-double body and read back 0. The FIRST
+	// declaration of a name still keeps the source name (import intact);
+	// only same-name successors mint per-overload symbols.
 	ns_overload_tracked = true;
 	ns_overload_spelling = peek_param_list_spelling();
+	// Same binding-identity fold as the namespace branch above.
+	if ( fn_template_instantiation_depth > 0
+	  && !pending_fn_instantiation_identity.empty() )
+	    ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	std::vector<NamespaceFnOverload> &ovset =
 	    namespace_fn_overload_sets["::" + source_id];
 	Variable *same = NULL;
@@ -51090,27 +61631,47 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
     return expr;
 }
 
+// A type-headed statement `T ( ... ) ...` / `T < ... > ( ... ) ...` is a
+// functional-cast / temporary-construction EXPRESSION, not a declaration,
+// when either
+// (a) the balanced paren group is followed by `.` / `->` — member access
+//     on the temporary, or
+// (b) C++ only: the group carries a COMMA at its top level — a
+//     parenthesized declarator holds exactly ONE declarator-id
+//     ([dcl.ambig.res]), so `T(a, b);` and
+//     `Dtor<T, A>(alloc, true)(ptr);` (libc++ __node_handle's
+//     __generic_container_node_destructor call) can only be expressions.
+//     A lone `T(a);` stays a DECLARATION of `a`, exactly as the standard
+//     resolves the ambiguity.
+// The head type token is already consumed by the caller; an optional
+// balanced `<...>` template-id suffix may precede the paren group (C++).
 bool Program::datatype_statement_starts_functional_expr()
 {
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+    TokenBase *head = peekToken();
+    if ( !head )
 	return false;
-    int depth = 0;
-    for ( size_t i = 0; i < tokens.size(); ++i )
+    bool angle_first = !is_c_mode() && head->id() == TokenID::tkLT;
+    if ( head->id() != TokenID::tkOpBrk && !angle_first )
+	return false;
+    DelimDepth d;
+    bool in_group = false;	// inside the `(...)` group
+    size_t i = 0;
+    while ( i < tokens.size() )
     {
 	TokenBase *t = tokens[i];
-	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
+	if ( t && !in_group && !d.angle && t->id() == TokenID::tkOpBrk )
+	    in_group = true;	// the group opens (directly, or after `<...>`)
+	else if ( t && !in_group && i > 0 && d.top() )
+	    return false;	// the token after `<...>` is not `(`
+	if ( t && in_group && !is_c_mode() && t->id() == TokenID::tkComma
+	  && d.paren == 1 && !d.square && !d.brace && !d.angle )
+	    return true;
+	i += delim_scan_step(tokens, i, d);
+	if ( in_group && d.top() )
 	{
-	    --depth;
-	    if ( depth == 0 )
-	    {
-		TokenBase *next = (i + 1 < tokens.size()) ? tokens[i + 1] : NULL;
-		return next && (next->id() == TokenID::tkDot
-			     || next->id() == TokenID::tkDeRef);
-	    }
+	    TokenBase *next = (i < tokens.size()) ? tokens[i] : NULL;
+	    return next && (next->id() == TokenID::tkDot
+			 || next->id() == TokenID::tkDeRef);
 	}
     }
     return false;
@@ -51261,6 +61822,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return tb;
 
 	    DBG(std::cerr << "parseStatement() throwing token " << (char)tb->get() << std::endl);
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=stmt-symbol tok type=%d id=%d "
+			"spelling='%s' at %s:%d:%d\n",
+			(int)tb->type(), (int)tb->id(),
+			overload_token_spelling(tb).c_str(),
+			tb->file ? tb->file : "?", tb->line, tb->column);
 	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
 
 	// if we start with an operator or an identifier, then this could be an
@@ -51300,6 +61867,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return parse_static_assert_statement(tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->spelling()) )
 		return parseDeclaration(parse_typeof_datatype(tb));
+	    // `decltype(expr)` heading a STATEMENT is a declaration's type
+	    // ([dcl.type.simple]) — the decltype twin of the typeof line above;
+	    // libc++ bsd_locale_fallbacks.h:31 is the motivating shape:
+	    //   inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(locale_t)
+	    // resolve_declared_type_token owns the decltype arm (including the
+	    // qualified member-chain continuation). Gated out of strict C, where
+	    // `decltype` stays an ordinary identifier.
+	    if ( !is_c_mode()
+	      && is_decltype_identifier(((TokenIdent *)tb)->spelling())
+	      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		if ( TokenDataType *dt =
+			resolve_declared_type_token(tb, true, true, false) )
+		    return parseDeclaration(dt);
+	    }
 	    if ( ((TokenIdent *)tb)->spelling_is("__label__") )
 	    {
 		TokenBase *tn = nextToken();
@@ -51400,9 +61982,63 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    if ( DataDefCLASS *owner =
 					    dynamic_cast<DataDefCLASS *>(
 						&resolved->definition) )
+				    {
+					TokenStream::Pos qsaved = tokens.savepos();
 					if ( TokenDataType *member =
 						resolve_class_member_type_chain(owner, tb) )
-					    return parseDeclaration(member);
+					{
+					    // A CTOR/DTOR spelling resolves as a type
+					    // too (`X::X` names X — the injected class
+					    // name), so it must not be captured here:
+					    // a return type is followed by a
+					    // DECLARATOR, a ctor name by '('. Mirror
+					    // of the plain-name branch's guard below.
+					    if ( peekToken()
+					      && peekToken()->id() != TokenID::tkOpBrk )
+						return parseDeclaration(member);
+					    tokens = qsaved;
+					}
+					// `bs<0,0>::bs(...) {...}` — an out-of-line
+					// special member of an explicit specialization,
+					// defined WITHOUT a template<> prefix
+					// ([temp.expl.spec]/5; libc++ bitset:598's
+					// `inline __bitset<0,0>::__bitset() {}`).
+					// Gate on the exact `:: name (` / `:: ~name (`
+					// shape so qualified statics/expressions keep
+					// their existing routes.
+					bool sm_shape = false;
+					if ( tokens.size() >= 3 && tokens[1] && tokens[2]
+					  && is_contextual_identifier_token(tokens[1])
+					  && contextual_identifier_name(tokens[1]) == tname
+					  && tokens[2]->id() == TokenID::tkOpBrk )
+					    sm_shape = true;
+					else if ( tokens.size() >= 4 && tokens[1]
+					  && tokens[2] && tokens[3]
+					  && tokens[1]->id() == TokenID::tkBnot
+					  && is_contextual_identifier_token(tokens[2])
+					  && contextual_identifier_name(tokens[2]) == tname
+					  && tokens[3]->id() == TokenID::tkOpBrk )
+					    sm_shape = true;
+					if ( sm_shape
+					  && parse_qualified_special_member_definition(
+						tb, owner, &tname) )
+					    return NULL;
+				    }
+				}
+				// The resolved template-id heads a functional-cast /
+				// temporary-construction EXPRESSION, not a declaration
+				// (`Dtor<T, A>(alloc, true)(ptr);` —
+				// __node_handle's destructor call; [dcl.ambig.res]).
+				// Same consult the ttDataType statement arm makes;
+				// the template-id is already consumed, so the
+				// classifier's plain-paren path applies.
+				if ( peekToken()
+				  && peekToken()->id() == TokenID::tkOpBrk
+				  && !compounds.empty()
+				  && datatype_statement_starts_functional_expr() )
+				{
+				    resetPrevToken();
+				    return parseExprStmt(resolved);
 				}
 				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
 				return parseDeclaration(resolved);
@@ -51411,6 +62047,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    // instantiate the concrete class and declare a variable of it.
 		    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 		    {
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+			  && !compounds.empty()
+			  && datatype_statement_starts_functional_expr() )
+			{
+			    resetPrevToken();
+			    return parseExprStmt(inst);
+			}
 			DBG(std::cout << "parseStatement() template instantiation, calling parseDeclaration" << std::endl);
 			return parseDeclaration(inst);
 		    }
@@ -51450,6 +62093,37 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 						return parseDeclaration(member);
 				    resetPrevToken();
 				    return parseExprStmt(tb);
+				}
+				// FILE SCOPE: `Class::NestedType Class::member(...)`
+				// — the LEADING qualified-id is the RETURN TYPE,
+				// not the declarator. Probe it as a member type
+				// with the same owner the in-body branch above
+				// uses; without this the special-member parser
+				// below, which knows only ctor/dtor names,
+				// diagnoses it as a missing return type. libc++
+				// <ios>:455 is exactly this shape:
+				//   inline ios_base::fmtflags ios_base::flags() const
+				// An unqualified return type (`int Class::m()`)
+				// already worked — this is the qualified twin.
+				{
+				    TokenStream::Pos qsaved = tokens.savepos();
+				    DataDefCLASS *qowner =
+					dynamic_cast<DataDefCLASS *>(
+					    &(*dmi)->definition);
+				    TokenDataType *qmember = qowner
+					? resolve_class_member_type_chain(qowner, tb)
+					: NULL;
+				    // A CTOR/DTOR spelling resolves as a type too
+				    // (`X::X` names X — the injected class name),
+				    // so it must not be captured here. A return
+				    // type is followed by a DECLARATOR; a ctor
+				    // name is followed by '('. The probe consumes
+				    // on success, hence the rewind.
+				    if ( qmember && peekToken()
+				      && peekToken()->id() != TokenID::tkOpBrk )
+					return parseDeclaration(qmember);
+				    if ( qmember )
+					tokens = qsaved;
 				}
 				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;
@@ -51529,42 +62203,56 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    // parse the RHS function call
 		    TokenBase *rhs = parseExpression(nextToken());
 
-		    // look up the function's return_types to infer variable types
+		    // The receivers' types are the callee's per-slot return
+		    // types, so the callee must be a known DIRECT function
+		    // call — anything else (unknown name, function pointer,
+		    // method) rejects HERE, where the receivers bind; the old
+		    // int64-receiver default turned those into silent wrong
+		    // answers (pointer bits, truncated doubles).
 		    FuncDef *func = NULL;
+		    std::string callee_name;
 		    if ( rhs->type() == TokenType::ttCallFunc )
 		    {
 			TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(rhs);
+			callee_name = tcf->var.name;
 			if ( tcf->var.type->basetype() == BaseType::btFunct )
 			    func = (FuncDef *)tcf->var.type;
 		    }
+		    if ( !func )
+			Throw(tb) << "':=' with " << ids.size() << " receivers"
+			    " requires a direct call to a known function" << flush;
+		    // Arity is checkable now only if the callee's defining
+		    // `return a, b;` (or `(T0, T1)` signature) has been
+		    // parsed; a callee defined LATER in the file is checked
+		    // at compile time instead (multi_return_unpack).
+		    if ( !func->return_types.empty()
+		      && func->return_types.size() != ids.size() )
+			Throw(tb) << "'" << callee_name << "' returns "
+			    << func->return_types.size() << " values, but "
+			    << ids.size() << " receivers given" << flush;
 
-		    // create a TokenCpnd-like wrapper that declares all variables
-		    // and generates the multi-return unpack
-		    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		    // File-scope in script mode: the receivers bind to the
+		    // synthesized main (script_statement_scope) — main-locals,
+		    // exactly what receivers inside a written main are.
+		    TokenCpnd *code = script_statement_scope(tb);
 
-		    // create variables with inferred types from return_types
+		    // Receivers are ordinary scope variables typed by the
+		    // callee's slot types (block-top declaration gives class
+		    // receivers their default construction and scope-exit
+		    // destruction through the normal local machinery); the
+		    // statement itself is the multi-target assignment, which
+		    // the CIR lowers via the transport struct.
 		    std::vector<Variable *> vars;
 		    for ( size_t i = 0; i < ids.size(); ++i )
 		    {
-			DataDef *vtype = &ddINT64; // default
-			if ( func && i < func->return_types.size() )
+			DataDef *vtype = &func->return_value_type();
+			if ( i < func->return_types.size() )
 			    vtype = func->return_types[i];
-			else if ( func && i == 0 )
-			    vtype = &func->return_value_type();
 			bool alloc = (!code) ? true : false;
 			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
 			vars.push_back(v);
 		    }
 
-		    // build a TokenDecl for the first variable with the call as initializer
-		    // The multi-return unpack will be handled at compile time
-		    TokenDecl *td = new TokenDecl(*vars[0]);
-		    td->file = tb->file;
-		    td->line = tb->line;
-		    td->column = tb->column;
-
-		    // store extra info for multi-return compile
-		    // We use a TokenMultiReturn node that wraps the call and target variables
 		    TokenAssign *assign = new TokenAssign();
 		    assign->file = tb->file;
 		    assign->line = tb->line;
@@ -51572,10 +62260,9 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    assign->left = new TokenVar(*vars[0]);
 		    assign->right = rhs;
 		    assign->multi_vars = vars; // store all target variables
-		    td->initialize = assign;
 
 		    DBG(std::cout << "parseStatement() multi-return ':=' with " << ids.size() << " variables" << std::endl);
-		    return td;
+		    return assign;
 		}
 
 		// single := declaration (existing behavior)
@@ -51584,21 +62271,28 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DataDef *inferred = rhs->datadef();
 		if ( !inferred || inferred == &ddVOID )
 		    inferred = &ddINT64;
-		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		// File-scope in script mode: the receiver binds to the
+		// synthesized main (script_statement_scope) — a main-local,
+		// block-top declared by translate_block like the multi
+		// form's receivers; the statement is the bare assignment.
+		bool file_scope = compounds.empty();
+		TokenCpnd *code = script_statement_scope(tb);
 		bool alloc = (!code) ? true : false;
 		Variable *var = addVariable(code, *inferred, first_id, 1, NULL, alloc);
-		TokenDecl *td = new TokenDecl(*var);
-		td->file = tb->file;
-		td->line = tb->line;
-		td->column = tb->column;
 		TokenAssign *assign = new TokenAssign();
 		assign->file = tb->file;
 		assign->line = tb->line;
 		assign->column = tb->column;
 		assign->left  = new TokenVar(*var);
 		assign->right = rhs;
-		td->initialize = assign;
 		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
+		if ( file_scope && code )
+		    return assign;
+		TokenDecl *td = new TokenDecl(*var);
+		td->file = tb->file;
+		td->line = tb->line;
+		td->column = tb->column;
+		td->initialize = assign;
 		return td;
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`
@@ -51608,25 +62302,78 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    // multi-return function declaration: (type, type) funcname(...)
+	    // Entries may be builtin types OR registered class/typedef names
+	    // (`(int, string) f()`), each with optional `*` suffixes. An
+	    // identifier head is tentative — a non-type first entry restores
+	    // the stream and falls through to the expression lane.
 	    if ( tb->id() == TokenID::tkOpBrk && peekToken()
-		 && peekToken()->type() == TokenType::ttDataType )
+		 && (peekToken()->type() == TokenType::ttDataType
+		     || peekToken()->type() == TokenType::ttIdentifier) )
 	    {
 		std::vector<DataDef *> rtypes;
 		std::vector<TokenBase *> saved;
 		bool saw_multi_return_comma = false;
+		bool not_a_type_list = false;
 		while ( true )
 		{
 		    TokenBase *rt = nextToken();
 		    saved.push_back(rt);
-		    if ( rt->type() != TokenType::ttDataType )
-			Throw(rt) << "Expecting type in multi-return declaration" << flush;
-		    rtypes.push_back(&((TokenDataType *)rt)->definition);
+		    // Leading `const` qualifier (`(double, const char *)`) —
+		    // consume it and qualify the resolved base type.
+		    bool entry_const = false;
+		    while ( rt && rt->id() == TokenID::tkCONST )
+		    {
+			entry_const = true;
+			rt = nextToken();
+			saved.push_back(rt);
+		    }
+		    TokenDataType *tdt = NULL;
+		    if ( rt->type() == TokenType::ttDataType )
+			tdt = (TokenDataType *)rt;
+		    else if ( rt->type() == TokenType::ttIdentifier )
+			tdt = resolve_declared_type_token(rt, true, true);
+		    if ( !tdt )
+		    {
+			// A committed list (past a comma) with a non-type
+			// entry is an error; an uncommitted head is just an
+			// ordinary parenthesized expression.
+			if ( saw_multi_return_comma )
+			    Throw(rt) << "Expecting type in multi-return declaration" << flush;
+			not_a_type_list = true;
+			break;
+		    }
+		    DataDef *entry = &tdt->definition;
+		    if ( entry_const )
+			entry = getConstType(entry);
 		    TokenBase *sep = nextToken();
 		    saved.push_back(sep);
+		    while ( sep && sep->id() == TokenID::tkMul )
+		    {
+			entry = getPointerType(entry);
+			sep = nextToken();
+			saved.push_back(sep);
+		    }
+		    rtypes.push_back(entry);
+		    if ( !sep )
+			Throw(rt) << "Expecting , or ) in multi-return type list" << flush;
 		    if ( sep->id() == TokenID::tkClBrk ) break;
 		    if ( sep->id() != TokenID::tkComma )
-			Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+		    {
+			if ( saw_multi_return_comma )
+			    Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+			not_a_type_list = true;
+			break;
+		    }
 		    saw_multi_return_comma = true;
+		}
+		if ( not_a_type_list )
+		{
+		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
+			  it != saved.rend(); ++it )
+			if ( *it )
+			    pushToken(*it);
+		    resetPrevToken();
+		    return parseExprStmt(tb);
 		}
 		if ( !saw_multi_return_comma )
 		{
@@ -51656,6 +62403,25 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		parseFunction(*rtypes[0], id, NULL, &rtypes);
 		return NULL;
 	    }
+	    // Statement-leading global-scope qualifier ([stmt.ambig]): `::T w;`
+	    // is a DECLARATION when ::T names a global type — route through
+	    // the type resolver, whose tkNS arm owns the global-scope lookup
+	    // (it returns NULL without consuming when the name is not a
+	    // registered type, so a `::globalfn(...)` / `::x = 5` expression
+	    // statement falls through to the expression lane unchanged).
+	    if ( tb->id() == TokenID::tkNS )
+	    {
+		bool saved_vri = allow_variadic_real_inst;
+		allow_variadic_real_inst = true;
+		TokenDataType *resolved = resolve_declared_type_token(tb, true, true);
+		allow_variadic_real_inst = saved_vri;
+		if ( resolved )
+		{
+		    DBG(std::cout << "parseStatement(::) global-scope declaration "
+			<< resolved->definition.name << std::endl);
+		    return parseDeclaration(resolved);
+		}
+	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExprStmt" << std::endl);
 	    resetPrevToken();
 	    return parseExprStmt(tb);
@@ -51676,6 +62442,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    return parse_static_assert_statement(tb);
 		if ( kw == "asm" || kw == "__asm__" || kw == "__asm" )
 		    return skip_gnu_asm_statement(tb);
+		// `decltype(expr)` heading a statement is a declaration's type
+		// ([dcl.type.simple]) — the identifier arm's route, mirrored
+		// for the reserved spelling (libc++ bsd_locale_fallbacks.h:31:
+		// `inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(...)`).
+		// resolve_declared_type_token owns the decltype arm; falls
+		// through unchanged when the resolver declines.
+		if ( is_decltype_identifier(kw)
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    if ( TokenDataType *dt =
+			    resolve_declared_type_token(tb, true, true, false) )
+			return parseDeclaration(dt);
+		}
 		// Ignored declaration-specifiers (constexpr/consteval/constinit)
 		// qualify a declaration: fall through to parseKeyword
 		// (TokenCppKeyword::parse), which consumes the specifier and
@@ -51739,18 +62518,34 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    DBG(std::cout << "parseKeyword(" << ((TokenKeyword *)tb)->spelling() << ") calling parseKeyword" << std::endl);
 	    return parseKeyword((TokenKeyword *)tb);
 
+	// An expression-statement may begin with ANY expression ([stmt.expr]),
+	// including a literal. The shape that actually reaches statement
+	// position is minted by NON-TYPE template substitution: libc++
+	// basic_string::__assign_no_alias's `__is_short ? __set_short_size(__n)
+	// : __set_long_size(__n);` instantiates to `1 ? ... : ...;` — the whole
+	// statement is the side-effecting branch selection.
+	case TokenType::ttInteger:
+	case TokenType::ttReal:
+	case TokenType::ttChar:
+	case TokenType::ttString:
+	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") literal-headed expression statement" << std::endl);
+	    resetPrevToken();
+	    return parseExprStmt(tb);
+
 /* keep this here for tokentype reference
 	case TokenType::ttBase:
 	case TokenType::ttOperator:
 	case TokenType::ttIdentifier:
-	case TokenType::ttString:
-	case TokenType::ttChar:
-	case TokenType::ttInteger:
-	case TokenType::ttReal:
 	case TokenType::ttKeyword:
 	case TokenType::ttDataType:
 */
 	default:
+	    if ( ::getenv("MADC_POPOP_PROBE") )
+		fprintf(stderr, "[popop] site=stmt-default tok type=%d id=%d "
+			"spelling='%s' at %s:%d:%d\n",
+			(int)tb->type(), (int)tb->id(),
+			overload_token_spelling(tb).c_str(),
+			tb->file ? tb->file : "?", tb->line, tb->column);
 	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
     } // end switch
     DBG(cout << "parseStatement() returns NULL" << endl);
@@ -51843,10 +62638,15 @@ void Program::dump_registered_names(FILE *out)
     //  - instantiation products (canonical spelling / key carries a
     //    bracketed template-id): tsubst re-creates them from the pattern;
     //  - class METHODS registered as namespace variables (Class__member):
-    //    member lookup goes through the class, whose own name is indexed.
+    //    member lookup goes through the class, whose own name is indexed;
+    //  - anything minted DURING instantiation (vfINSTPRODUCT), which since
+    //    static data members gained storage at their declaration includes an
+    //    instantiated class's static (numpunct<char>::id -> the global
+    //    `numpunct_char__id`). Methods of such a class were already excluded
+    //    by the function-type test above — this is the other half of that same
+    //    Class__member rule, for the DATA members.
     auto instantiation_product = [](DataDef *dd) -> bool {
-	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
-	return dc && dc->canonical_cpp_spelling().find('<') != std::string::npos;
+	return dd && dd->canonical_cpp_spelling().find('<') != std::string::npos;
     };
     auto function_local_class = [&](DataDef *dd) -> bool {
 	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
@@ -51961,6 +62761,9 @@ void Program::dump_registered_names(FILE *out)
 		continue;
 	    if ( it->second && it->second->type && it->second->type->is_function() )
 		continue;	// methods/functions-as-variables: not a lookup entry
+	    if ( it->second && (it->second->flags & vfINSTPRODUCT) )
+		continue;	// minted by instantiation: re-created from the pattern
+	    
 	    lines.insert(std::string("variable\t")
 			 + (ni->first.empty() ? std::string() : (ni->first + "::"))
 			 + it->first);
@@ -52068,6 +62871,10 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 		// identifier of a declaration).
 		case TokenID::tkBSL:    case TokenID::tkBSR:
 		case TokenID::tkTerC:	// label definition `name:`
+		// `:=` short declarations (`x := e;` / `a, b := f();`): a
+		// declaration's FIRST identifier resolves as a type token,
+		// never a bare identifier directly followed by `:=` or `,`.
+		case TokenID::tkColEq:  case TokenID::tkComma:
 		    return true;
 		default:
 		    return false;	// tkNS-qualified etc.: result-classified
@@ -52192,6 +62999,22 @@ void Program::ensure_script_main(TokenBase *loc)
 	script_main_tf->column = loc->column;
 	func->decl_file = loc->file;
     }
+}
+
+// The compound a statement-scoped binding (a `:=` receiver, a `defer`
+// registration) belongs to: the innermost open compound, or — for a
+// file-scope statement in script mode — the synthesized main itself
+// (TokenFunc IS the body compound translate_block walks). NULL means
+// "no scope": standards modes and include-origin files keep their
+// existing file-scope handling / rejects.
+TokenCpnd *Program::script_statement_scope(TokenBase *loc)
+{
+    if ( !compounds.empty() )
+	return compounds.top();
+    if ( language_std != STD_MADC || !token_is_tu_origin(loc) )
+	return NULL;
+    ensure_script_main(loc);
+    return script_main_tf;
 }
 
 // Route a classified file-scope statement into the synthesized main.

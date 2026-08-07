@@ -83,6 +83,22 @@ TEST_SUITE("Itanium type encoding") {
 		      == "_ZSt24__throw_out_of_range_fmtPKcz");
 	}
 
+	TEST_CASE("Free operators encode their operator code in EVERY scope") {
+		// The std and general-qualified branches fell to source_name,
+		// emitting the invalid _ZSt10operator<< — only the global branch
+		// consulted operator_code(). Oracle: c++filt on each expected form
+		// demangles to the intended declaration.
+		// c++filt _ZStlsii -> std::operator<<(int, int)
+		CHECK(itanium_mangle_nested_sub({"std"}, "operator<<", {"int", "int"})
+		      == "_ZStlsii");
+		// c++filt _ZN5mylibplEii -> mylib::operator+(int, int)
+		CHECK(itanium_mangle_nested_sub({"mylib"}, "operator+", {"int", "int"})
+		      == "_ZN5mylibplEii");
+		// Plain names unchanged; real libstdc++ export.
+		CHECK(itanium_mangle_nested_sub({"std"}, "terminate", {})
+		      == "_ZSt9terminatev");
+	}
+
 	TEST_CASE("Desugared typedef params match libstdc++ exports") {
 		// __basic_file<char>::seekoff(streamoff, _Ios_Seekdir) — streamoff
 		// desugars to long ('l'); the enum keeps its own name. Oracle:
@@ -99,6 +115,29 @@ TEST_SUITE("Itanium type encoding") {
 			      "std::basic_ostream<char,std::char_traits<char>>&",
 			      {"$T0"}, false)
 		      == "_ZNSo9_M_insertIlEERSoT_");
+	}
+
+	TEST_CASE("Class static data members match libstdc++ exports") {
+		// A static data member of a LIBRARY-owned class must carry its real
+		// Itanium symbol: the storage lives in libstdc++, and madc's own
+		// `<tag>__<member>` spelling (numpunct_char__id) names nothing.
+		// Oracles, all `nm -D libstdc++.so.6` (probe UNANCHORED — these
+		// carry @@GLIBCXX version suffixes, and a `$`-anchored grep reports
+		// a false zero).
+		CHECK(itanium_mangle_nested_var({"std", "numpunct<char>"}, "id")
+		      == "_ZNSt8numpunctIcE2idE");
+		CHECK(itanium_mangle_nested_var({"std", "__cxx11", "numpunct<char>"}, "id")
+		      == "_ZNSt7__cxx118numpunctIcE2idE");
+		// A NON-TYPE template argument is an expression, not a type:
+		// `false` is `Lb0E`, not the identifier `5false`. This one mangled
+		// wrong until the literal encoding landed.
+		CHECK(itanium_mangle_nested_var({"std", "moneypunct<char,false>"}, "id")
+		      == "_ZNSt10moneypunctIcLb0EE2idE");
+		CHECK(itanium_mangle_nested_var({"std", "moneypunct<char,true>"}, "id")
+		      == "_ZNSt10moneypunctIcLb1EE2idE");
+		// A plain namespace-scope variable is the same call with a shorter
+		// chain — the class name is just one more qualifier.
+		CHECK(itanium_mangle_nested_var({"std"}, "cout") == "_ZSt4cout");
 	}
 }
 
@@ -554,5 +593,58 @@ TEST_SUITE("Itanium substitution: type encoder sanity") {
 		CHECK(itanium_encode_type_sub("long&&") == "Ol");
 		CHECK(itanium_encode_type_sub("long&")  == "Rl");
 		CHECK(itanium_encode_type_sub("const char*") == "PKc");
+	}
+}
+
+TEST_SUITE("Stdlib flavor: LLVM ABI namespace from parsed config") {
+
+	// The setters model what Program::note_std_abi_define pushes when the
+	// PARSED stdlib config defines _LIBCPP_ABI_NAMESPACE (libc++) or
+	// _GLIBCXX_USE_CXX11_ABI (libstdc++). Oracle: clang++-18 -stdlib=libc++
+	// on the container (see _Z1fRKNSt3__112basic_stringI... below).
+
+	TEST_CASE("libc++ spellings and encodings follow _LIBCPP_ABI_NAMESPACE") {
+		madc_mangle_set_stdlib_llvm("__1");
+		CHECK(std_string_type()
+		      == "std::__1::basic_string<char,std::__1::char_traits<char>,"
+		         "std::__1::allocator<char>>");
+		// clang++-18: unsigned long f(const std::string&) →
+		// _Z1fRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE
+		CHECK(itanium_encode_type_sub(std_string_type())
+		      == "NSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE");
+		CHECK(itanium_mangle_nested_sub({}, "f",
+		                                {"const " + std_string_type() + "&"})
+		      == "_Z1fRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE");
+		// clang++-18: &std::cout → _ZNSt3__14coutE
+		CHECK(itanium_mangle_std_var("cout") == "_ZNSt3__14coutE");
+
+		// marshals_value_text must re-evaluate its cached carrier on a
+		// flavor flip — the libc++ string IS the text carrier now, the
+		// GNU spelling is NOT.
+		DataDef llvmstr("basic_string", 24, DataType::dtVOID);
+		llvmstr.set_canonical_spelling(std_string_type());
+		CHECK(llvmstr.marshals_value_text());
+		DataDef gnustr("basic_string", 32, DataType::dtVOID);
+		gnustr.set_canonical_spelling(
+			"std::__cxx11::basic_string<char,std::char_traits<char>,"
+			"std::allocator<char>>");
+		CHECK_FALSE(gnustr.marshals_value_text());
+
+		// Restore the build default and prove the flip back.
+		madc_mangle_set_stdlib_gnu(true);
+		CHECK(gnustr.marshals_value_text());
+		CHECK_FALSE(llvmstr.marshals_value_text());
+		CHECK(itanium_mangle_std_var("cout") == "_ZSt4cout");
+	}
+
+	TEST_CASE("libstdc++ pre-cxx11 ABI drops __cxx11 (Ss form)") {
+		madc_mangle_set_stdlib_gnu(false);
+		CHECK(std_string_type()
+		      == "std::basic_string<char,std::char_traits<char>,"
+		         "std::allocator<char>>");
+		CHECK(itanium_encode_type_sub(std_string_type()) == "Ss");
+		madc_mangle_set_stdlib_gnu(true);
+		CHECK(itanium_encode_type_sub(std_string_type())
+		      == "NSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
 	}
 }

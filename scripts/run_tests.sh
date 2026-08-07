@@ -29,21 +29,61 @@
 #           the in-process loader (`madc foo.o` — the precompiled-cache
 #           lane). Failures are reported as "FAIL(obj): ..." separately.
 #
+#   --stdlib=NAME
+#           Run the whole suite against a NON-DEFAULT C++ standard library
+#           flavor (`--stdlib=libc++`). This is the parity lane: the measure of
+#           whether a flavor behaves like the default one is the same suite
+#           passing under it, not a handful of flavor-specific fixtures. A test
+#           that is structurally out of scope for the flavor carries
+#           tests/<base>.<flavor>_skip (`+` written as `x`, so libc++ ->
+#           .libcxx_skip) with one line saying why. The summary is labelled so a
+#           flavored run can never be quoted as the default-lane baseline.
+#
 # MADC_BIN (env): the madc binary to test (default bin/madc). Generic
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
+# Flags passed to EVERY madc invocation below, including the AOT compile legs
+# (which deliberately do not take $BACKEND_FLAG).
+#
+# --no-config is hermeticity (forest-carriers S6): the suite must not be
+# perturbed by an ambient madc.ini — one in the repo root, in the developer's
+# config dir, or installed in the system config dir would silently change every
+# test's dialect or include path.
+#
+# --stdlib=NAME appends the FLAVORED-LANE flag here, which is why every leg of
+# every pass picks it up without touching a single invocation line.
+HERMETIC_FLAGS="--no-config"
+STDLIB_NAME=""
+STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
         --obj) RUN_OBJ=1; shift ;;
         --backend=*) BACKEND_FLAG="$1"; shift ;;
+        --stdlib=*) STDLIB_NAME="${1#--stdlib=}"; shift ;;
         *) break ;;
     esac
 done
+if [ -n "$STDLIB_NAME" ]; then
+    HERMETIC_FLAGS="$HERMETIC_FLAGS -stdlib=$STDLIB_NAME"
+    # Per-flavor skip fixture, discovered by CONVENTION like every other
+    # fixture: the flavor's own spelling with `+` written as `x`, matching how
+    # this tree already names its flavored tests (tests/testcommontype_libcxx.mad
+    # for -stdlib=libc++). So `libc++` -> tests/<base>.libcxx_skip. A mechanical
+    # transform, not a per-flavor table — a third flavor needs no runner change.
+    STDLIB_SKIP_EXT=$(printf '%s' "$STDLIB_NAME" | tr '+' 'x')
+fi
+
+# Remaining positional arguments are basename GLOBS selecting a SUBSET of the
+# suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
+# hard-coded here — the caller supplies the pattern, so this stays a generic
+# runner capability (.claude/rules/test-fixtures.md). With no globs the whole
+# suite runs, which is what every pre-merge invocation does.
+TEST_GLOBS="$*"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
@@ -57,9 +97,19 @@ EXE_PASS=0
 EXE_FAIL=0
 OBJ_PASS=0
 OBJ_FAIL=0
+SELECTED=0
+STDLIB_SKIPPED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
+    if [ -n "$TEST_GLOBS" ]; then
+        keep=0
+        for g in $TEST_GLOBS; do
+            case "$base" in $g) keep=1; break ;; esac
+        done
+        [ $keep -eq 0 ] && continue
+    fi
+    SELECTED=$((SELECTED+1))
 
     input_file="tests/$base.input"
     argv_file="tests/$base.argv"
@@ -73,6 +123,15 @@ for t in tests/*.mad; do
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
         SKIP=$((SKIP+1))
+        continue
+    fi
+
+    # Flavored lane: a test structurally out of scope for THIS stdlib flavor
+    # (content = one line saying why). Only consulted when --stdlib= selected a
+    # flavor, so the default lane is untouched.
+    if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "tests/$base.$STDLIB_SKIP_EXT""_skip" ]; then
+        SKIP=$((SKIP+1))
+        STDLIB_SKIPPED=$((STDLIB_SKIPPED+1))
         continue
     fi
 
@@ -92,9 +151,9 @@ for t in tests/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -118,9 +177,9 @@ for t in tests/*.mad; do
         # assert it is empty; without the fixture it is simply discarded.
         errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" "$MADC" $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
+            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -184,11 +243,11 @@ for t in tests/*.mad; do
             run_flags+=("$fl")
         done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if "$MADC" -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 "$MADC" "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -225,7 +284,7 @@ for t in tests/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if "$MADC" -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
@@ -257,6 +316,17 @@ for t in tests/*.mad; do
         fi
     fi
 done
+if [ -n "$TEST_GLOBS" ]; then
+    # Never let a filtered run read as a full one. A subset that says
+    # only "N passed" is indistinguishable from the suite at a glance,
+    # and that is exactly how a partial run gets quoted as a baseline.
+    echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls tests/*.mad | wc -l) tests; NOT a suite baseline)"
+fi
+if [ -n "$STDLIB_NAME" ]; then
+    # Never let a FLAVORED run read as the default-lane baseline. The two lanes
+    # measure different libraries and legitimately have different skip sets.
+    echo "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
+fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
     echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
@@ -266,3 +336,12 @@ if [ $RUN_OBJ -eq 1 ]; then
 fi
 [ $FAIL -eq 0 ] || exit 1
 [ $TIMEOUTS -eq 0 ] || exit 1
+# The EXE and OBJ lanes gate the exit status too. They were PRINTED and then
+# ignored: `--obj` reported "OBJ: 3 passed, 1 failed" and exited 0, so
+# remote_build's stage summary said `tests obj rc=0` and a battery could be red
+# in either native lane while reporting `total rc=0`. Same false-green shape as
+# piping a suite through `tail` — the verdict came from a line nobody read
+# instead of the exit code. A lane that did not run has a 0 counter, so these
+# are unconditional.
+[ $EXE_FAIL -eq 0 ] || exit 1
+[ $OBJ_FAIL -eq 0 ] || exit 1

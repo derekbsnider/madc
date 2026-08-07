@@ -1,0 +1,9 @@
+read 5 7
+via ptr 11
+via name 12
+same object 1
+after bump 22
+double 4.75 4.75
+ns 8
+distinct 22 3
+sizes 4 8

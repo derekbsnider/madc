@@ -1,0 +1,66 @@
+// [basic.lookup.classref]/1: the name after `.` or `->` is looked up in the
+// CLASS's scope FIRST. So a member named like a TYPE is the member — never the
+// type — and `recv.name(...)` is a member call, not functional construction.
+//
+// madc's expression parser keys functional construction on "an identifier that
+// names a class type, immediately followed by `(`", which is exactly the shape
+// of a type-named member CALL. So `u.mtx()` built a temporary `mtx` instead of
+// calling the method, and the result was an object where a pointer was needed.
+//
+// libc++ hits this in unique_lock, whose accessor is literally
+//	mutex_type *mutex() const _NOEXCEPT { return __m_; }
+// — a method named for class `mutex` — so
+// __condition_variable/condition_variable.h:225's
+//	__lk.mutex()->native_handle()
+// failed with "expression before '->' must be a pointer".
+//
+// The trigger is narrow, and the controls below are the evidence for that: a
+// member VARIABLE named like a type already resolved correctly, as did the same
+// method under any other name, and neither the nested typedef nor the template
+// parameter in the return type was involved. Only `name (` in member-access
+// position was caught, because that is what the functional-construction arm
+// keys on. Each arm here is one of those distinctions:
+//   A — method named for a type, returning a pointer to a NESTED TYPEDEF
+//   B — the same method renamed (must keep working)
+//   C — method named for a type, returning a pointer to the TEMPLATE PARAM
+//   D — a member VARIABLE named for a type (must keep working)
+//   E — genuine functional construction of that same type must STILL work
+//       outside member-access position, or the guard has over-reached
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	7 7 7 3 9
+#include <cstdio>
+
+struct mtx {
+	int h;
+	int native_handle() const { return h; }
+};
+
+template <class M> struct ul {
+	typedef M mutex_type;
+	M *m_;
+	mutex_type *mtx() const { return m_; }		// A: named for struct mtx
+	mutex_type *getm() const { return m_; }		// B: control name
+	M *raw() const { return m_; }			// C: template-param return
+};
+
+struct holder { int mtx; };				// D: member VAR named mtx
+
+int main()
+{
+	mtx m;
+	m.h = 7;
+	ul<mtx> u;
+	u.m_ = &m;
+	holder h;
+	h.mtx = 3;
+	mtx made = mtx();				// E: real functional construction
+	made.h = 9;
+	printf("%d %d %d %d %d\n",
+	       u.mtx()->native_handle(),		// A
+	       u.getm()->native_handle(),		// B
+	       u.raw()->native_handle(),		// C
+	       h.mtx,					// D
+	       made.native_handle());			// E
+	return 0;
+}

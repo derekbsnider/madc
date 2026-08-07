@@ -1,0 +1,51 @@
+// #58 reducer, arm (c): out-of-line OVERLOAD defs in a DIFFERENT order
+// than the in-class declarations. libc++ <ostream> declares operator<<
+// overloads (3 inline fn-ptr ones, then bool, short, ushort, int, ...,
+// streambuf* LAST) but DEFINES operator<<(basic_streambuf*) FIRST
+// (ostream:350). A binder that matches out-of-line defs to overloads by
+// NAME+CONSTNESS ONLY (no signature) attaches bodies first-come-first-
+// served, shifting every body one overload over: the streambuf* body
+// (which constructs istreambuf_iterator from its param) lands on an
+// int-param overload -> "no matching constructor ... (int32_t)".
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	42 6 1007
+#include <cstdio>
+
+template <class T, class Tr> struct buf { T v; };
+
+template <class T, class Tr = int> struct stream {
+	typedef T char_type;
+	int last;
+	stream& operator<<(bool b) { last = b ? 100 : 101; return *this; }	// inline, like the fn-ptr trio
+	stream& operator<<(short n);
+	stream& operator<<(int n);
+	stream& operator<<(buf<char_type, Tr>* b);
+};
+
+// defs OUT of declaration order: the ptr def FIRST, like ostream:350
+template <class T, class Tr>
+stream<T, Tr>& stream<T, Tr>::operator<<(buf<char_type, Tr>* b) {
+	last = (int)b->v + 1000;
+	return *this;
+}
+
+template <class T, class Tr>
+stream<T, Tr>& stream<T, Tr>::operator<<(short n) { last = n + 1; return *this; }
+
+template <class T, class Tr>
+stream<T, Tr>& stream<T, Tr>::operator<<(int n) { last = n; return *this; }
+
+int main()
+{
+	stream<char> s;
+	s.last = 0;
+	s << 42;
+	printf("%d", s.last);
+	s << (short)5;
+	printf(" %d", s.last);
+	buf<char, int> b;
+	b.v = (char)7;
+	s << &b;
+	printf(" %d\n", s.last);
+	return 0;
+}

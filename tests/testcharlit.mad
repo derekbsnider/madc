@@ -1,0 +1,20 @@
+// Regression: the tokenizer knew only the L literal prefix; u / U / u8 fell
+// through as identifiers ("use of undeclared identifier 'U'" -- libc++
+// __format/unicode.h:70 `U'\ufffd'`), and \uXXXX / \UXXXXXXXX
+// universal-character-names were unread in wide/prefixed literals. Types per
+// [lex.ccon]: L''->wchar_t, U''->char32_t, u''->char16_t, u8''->char8_t.
+// Covers both the UCN escape spelling (\ufffd) and a raw UTF-8 codepoint
+// in the literal (e-acute). (u8/U STRING literals store UTF-8 bytes / 4-byte
+// units; u"..." UTF-16 strings remain a loud unsupported error.)
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "fffd e9 41 5a ok".
+#include <cstdio>
+
+int main()
+{
+	char32_t r = U'\ufffd';
+	char16_t e = u'é';
+	int a = u8'A';
+	int z = L'Z';
+	printf("%x %x %x %x ok\n", (unsigned)r, (unsigned)e, (unsigned)a, (unsigned)z);
+	return 0;
+}

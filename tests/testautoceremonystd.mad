@@ -1,0 +1,9 @@
+// NEGATIVE CONTROL for zero-ceremony: under --std=c++17 (see .flags) there
+// is NO auto-include and NO default namespace preference — full standard
+// ceremony applies, so bare `cout` without <iostream> must be rejected
+// loudly. Guards the STD_MADC gate on both mechanisms.
+int main()
+{
+	cout << "must not compile" << endl;
+	return 0;
+}

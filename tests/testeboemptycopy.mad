@@ -1,0 +1,24 @@
+// Copy-initializing an empty base performs no value-bearing write. The C11
+// carrier's synthetic one-byte pad must not overwrite an offset-zero EBO
+// sibling.
+#include <stdio.h>
+
+struct Empty {
+};
+
+struct Value {
+	unsigned long value;
+	Value(unsigned long v) : value(v) {}
+};
+
+struct Pair : Value, Empty {
+	Pair(unsigned long v, const Empty& empty) : Value(v), Empty(empty) {}
+};
+
+int main()
+{
+	Empty empty = Empty();
+	Pair pair(0x112233445566775aUL, empty);
+	printf("%u\n", (unsigned)(pair.value & 255));
+	return 0;
+}

@@ -1,0 +1,37 @@
+// A friend TEMPLATE-SPECIALIZATION declaration of a free operator —
+// `friend box operator+ <>(const box&, const box&);` ([temp.friend]) —
+// must grant friendship by the OPERATOR-ID name: the declarator carries
+// a template-id suffix (`<>`) between the operator-id and the parameter
+// list, and the befriended template's instantiated body reads a private
+// member. libc++ basic_string declares its five operator+ friends
+// exactly this way (string:2120), and operator+'s body reads the
+// private __get_pointer() — without the grant the instantiation dies
+// muted and string concatenation collapses.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "7"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> class box;
+template <class T> box<T> operator+(const box<T> &a, const box<T> &b);
+
+template <class T> class box {
+	T v;
+	friend box operator+ <>(const box &a, const box &b);
+public:
+	box(T x) : v(x) {}
+	T get() const { return v; }
+};
+
+template <class T> box<T> operator+(const box<T> &a, const box<T> &b) {
+	return box<T>(a.v + b.v);
+}
+
+}
+
+int main()
+{
+	lib::box<long> x(3), y(4);
+	printf("%d\n", (int)(x + y).get());
+	return 0;
+}

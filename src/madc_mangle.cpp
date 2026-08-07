@@ -7,6 +7,7 @@
 // nested names, constructors (C1), destructors (D1).
 
 #include "madc_mangle.h"
+#include "spelling_delim.h"
 #include <cstring>
 #include <typeinfo>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -35,6 +36,30 @@ static bool ends_with(const std::string &s, const std::string &suffix)
 }
 
 // Try to match a builtin type name, return its Itanium code or empty string
+// A NON-TYPE template argument is an expression, not a type: Itanium encodes it
+// `L <type> <value> E`. parse_component sends every template argument through
+// parse_type, so `moneypunct<char,false>` mangled the VALUE `false` as if it
+// were a type name — `_ZNSt10moneypunctIc5falseE2idE` where libstdc++ exports
+// `_ZNSt10moneypunctIcLb0EE2idE`. A wrong symbol links against nothing, which
+// is the whole failure mode Rule #1 exists to prevent.
+//
+// Only literals whose TYPE is unambiguous from their spelling are encoded here.
+// `true`/`false` are bool by definition, so `Lb1E`/`Lb0E` are exact.
+//
+// An INTEGER literal deliberately falls through: Itanium takes the type from
+// the template PARAMETER's declaration, not the argument, so the same spelling
+// `8` is `Li8E` for `int`, `Lm8E` for `size_t` (std::array, std::bitset),
+// `Lj8E` for `unsigned`. The mangler is handed only a spelling and cannot tell
+// them apart — guessing would trade a visibly-wrong symbol for an
+// invisibly-wrong one. Fixing it means carrying the parameter's declared type
+// into the spelling the caller passes; see the KG gap.
+static std::string nontype_literal_code(const std::string &t)
+{
+	if (t == "false") return "Lb0E";
+	if (t == "true")  return "Lb1E";
+	return std::string();
+}
+
 static std::string builtin_code(const std::string &t)
 {
 	if (t == "void")                return "v";
@@ -294,45 +319,20 @@ std::string mstrip(const std::string &s)
 	return s.substr(a, b - a + 1);
 }
 
-// Split a comma-separated template-arg list at top level (respecting <>).
+// Split a comma-separated template-arg list at top level. The depth rule is
+// the shared one (include/spelling_delim.h) — the local copy tracked only
+// `<`/`>`, so a `<` inside `(...)` or after a non-name character (`operator<`)
+// counted as a template open.
 std::vector<std::string> split_targs(const std::string &s)
 {
-	std::vector<std::string> out;
-	int depth = 0;
-	size_t start = 0;
-	for (size_t i = 0; i < s.size(); ++i) {
-		char c = s[i];
-		if (c == '<') depth++;
-		else if (c == '>') depth--;
-		else if (c == ',' && depth == 0) {
-			out.push_back(mstrip(s.substr(start, i - start)));
-			start = i + 1;
-		}
-	}
-	std::string last = mstrip(s.substr(start));
-	if (!last.empty()) out.push_back(last);
-	return out;
+	return split_template_args_spelling(s);
 }
 
 // Split a qualified name "a::b::c<...>" into component strings at top-level
 // "::" (respecting <>). Each component may still carry its own <...>.
 std::vector<std::string> split_scope(const std::string &s)
 {
-	std::vector<std::string> out;
-	int depth = 0;
-	size_t start = 0;
-	for (size_t i = 0; i + 1 < s.size(); ++i) {
-		char c = s[i];
-		if (c == '<') depth++;
-		else if (c == '>') depth--;
-		else if (c == ':' && s[i + 1] == ':' && depth == 0) {
-			out.push_back(s.substr(start, i - start));
-			i++;            // skip second ':'
-			start = i + 1;
-		}
-	}
-	out.push_back(s.substr(start));
-	return out;
+	return split_scope_spelling(s);
 }
 
 TypeNode parse_type(const std::string &raw);
@@ -341,23 +341,16 @@ TypeNode parse_type(const std::string &raw);
 NameComponent parse_component(const std::string &raw)
 {
 	NameComponent nc;
-	std::string s = mstrip(raw);
-	size_t lt = std::string::npos;
-	int depth = 0;
-	for (size_t i = 0; i < s.size(); ++i) {
-		if (s[i] == '<') { if (depth == 0) { lt = i; } depth++; }
-		else if (s[i] == '>') depth--;
-	}
-	if (lt == std::string::npos) {
-		nc.ident = s;
+	std::vector<std::string> targs;
+	// A component arrives already split at top-level "::", so its template-id
+	// is the only one — first and last coincide. Ignore is the historical
+	// policy for anything trailing the closing '>'; the local copy expressed
+	// it by taking rfind('>') as the close.
+	if (!split_template_id_parts(mstrip(raw), nc.ident, targs,
+				     SpellingTail::Ignore))
 		return nc;
-	}
-	nc.ident = mstrip(s.substr(0, lt));
-	// strip the matching outer < >
-	size_t gt = s.rfind('>');
-	std::string inside = s.substr(lt + 1, gt - lt - 1);
 	nc.is_template = true;
-	for (const auto &a : split_targs(inside))
+	for (const auto &a : targs)
 		nc.targs.push_back(parse_type(a));
 	return nc;
 }
@@ -421,6 +414,17 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
+	// A non-type argument rides the builtin channel: encode_core emits
+	// `builtin` verbatim and, unlike a class type, registers NO substitution
+	// candidate — which is exactly right, since an expression literal is not
+	// a substitutable <type> under the ABI.
+	std::string lit = nontype_literal_code(s);
+	if (!lit.empty()) {
+		t.is_builtin = true;
+		t.builtin = lit;
+		return t;
+	}
+
 	std::string code = builtin_code(s);
 	if (!code.empty()) {
 		t.is_builtin = true;
@@ -442,6 +446,32 @@ TypeNode parse_param_type(const std::string &raw)
 	if (t.decos.size() == 1 && t.decos[0] == "K")
 		t.decos.clear();
 	return t;
+}
+
+// ---- stdlib flavor state ----------------------------------------------------
+// Declared HERE, above the encoder, because the SCOPE of a std:: entity depends
+// on the active flavor: under libstdc++ `std::terminate` really is in `std`,
+// while under libc++ it is in the inline namespace `std::__1`, and a mangled
+// name that gets that scope wrong does not resolve. The setters and the
+// source-spelling helpers stay below, next to the rest of the flavor surface.
+// The "__cxx11" spelling and the LLVM namespace policy live in this file and
+// only in this file — the mangler is the one permitted home for std:: symbol
+// knowledge. The LLVM namespace is never a literal: it arrives from the parsed
+// _LIBCPP_ABI_NAMESPACE via madc_mangle_set_stdlib_llvm().
+
+static MangleStdlib g_std_stdlib = mstdlibGnu;
+static std::string g_std_abi_ns = "__cxx11";	// build default: GNU cxx11 ABI
+static unsigned g_std_abi_gen = 0;		// bumped on change; caches key on it
+
+// The inline namespace a std:: ENTITY lives in for the active flavor, or empty
+// when it lives directly in `std`. GNU's `__cxx11` is an ABI TAG on selected
+// components (basic_string et al), not a scope every name sits in — so only the
+// LLVM flavor answers non-empty here. Keeping that distinction in one predicate
+// is what stops `__cxx11` from leaking into unrelated GNU symbols.
+static const std::string &std_entity_inline_ns()
+{
+	static const std::string none;
+	return g_std_stdlib == mstdlibLlvm ? g_std_abi_ns : none;
 }
 
 // ---- the encoder -----------------------------------------------------------
@@ -567,16 +597,36 @@ public:
 	        const std::vector<std::string> &params)
 	{
 		reset();
-		// The function-template NAME is itself substitution candidate #0 (per the
+		// The SCOPE is encoded FIRST because under libc++ it is a nested-name
+		// whose std::__1 prefix is substitution candidate #0 — which is what
+		// shifts every later slot by one (the same operator+ reads S6_/S9_
+		// under libc++ and S5_/S8_ under libstdc++).
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		// The function-template NAME is the next substitution candidate (per the
 		// Itanium ABI: "<template-prefix>" of a function template is substitutable;
 		// e.g. the spec's `first<Duo>` example registers `first` as S_). It is
 		// rarely back-referenced but it shifts every later slot by one.
 		add_sub("@fn:" + opOrName);
-		std::string out = "_ZSt" + opOrName + "I";
+		std::string out = (nested ? "_ZN" : "_Z") + scope + opOrName + "I";
 		for (const auto &a : targs) out += encode_type(parse_type(a));
-		out += "E";
+		out += "E";			// close the template-args
+		if (nested) out += "E";		// close the <nested-name>
 		out += encode_type(parse_type(ret));
 		for (const auto &p : params) out += encode_type(parse_param_type(p));
+		return out;
+	}
+
+	// A namespace-scope std:: VARIABLE (cout, cin, …). Same scope rule as the
+	// functions above, so it shares the one owner rather than spelling the
+	// prefix again: GNU _ZSt4cout, libc++ _ZNSt3__14coutE.
+	std::string mangle_std_var(const std::string &name)
+	{
+		reset();
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		std::string out = (nested ? "_ZN" : "_Z") + scope + source_name(name);
+		if (nested) out += "E";
 		return out;
 	}
 
@@ -585,16 +635,18 @@ public:
 	                                   const std::vector<std::string> &params)
 	{
 		reset();
+		// An operator name encodes as its Itanium operator-name code in
+		// EVERY scope — ::operator new(size_t) is _Znwm, std::operator<<
+		// is _ZStls…, N::operator+ is _ZN1NplE…. Only the global branch
+		// had this; the std and qualified branches fell to source_name,
+		// producing invalid symbols like _ZSt10operator<<.
+		std::string opcode;
+		if (name.compare(0, 8, "operator") == 0)
+			opcode = operator_code(name.substr(8));
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
-		// An operator name encodes as its Itanium operator-name code —
-		// ::operator new(size_t) is _Znwm, sized ::operator delete is
-		// _ZdlPvm (the libstdc++ allocation-operator exports).
 		if (qualifiers.empty()) {
-			std::string code;
-			if (name.compare(0, 8, "operator") == 0)
-				code = operator_code(name.substr(8));
-			std::string out = "_Z" + (code.empty() ? source_name(name)
-			                                       : code);
+			std::string out = "_Z" + (opcode.empty() ? source_name(name)
+			                                         : opcode);
 			if (params.empty())
 				out += "v";
 			else
@@ -602,12 +654,25 @@ public:
 					out += encode_type(parse_param_type(p));
 			return out;
 		}
-		// A function directly in namespace std is an Itanium <unscoped-name>
-		// using the St abbreviation (_ZSt<name>…), NOT a nested-name
-		// (_ZNSt<name>E…). libstdc++ exports e.g. std::terminate() as
-		// _ZSt9terminatev — the St-direct form is what resolves at link.
+		// A function whose DECLARED scope is exactly `std`. The qualifier
+		// list here is PARSE-FAITHFUL (current_namespace() / FuncDef::
+		// namespace_name carry the inline-namespace model), so a plain
+		// {"std"} means the UNVERSIONED namespace in BOTH flavors — an
+		// Itanium <unscoped-name> with the St abbreviation and NO
+		// nested-name wrapper (_ZSt9terminatev). libc++ deliberately
+		// declares its ABI-stable entry points there (<new>'s
+		// __throw_bad_alloc, in a `namespace std // purposefully not
+		// using versioning namespace` block, exports as
+		// _ZSt17__throw_bad_allocv); widening it to std::__1 via
+		// std_entity_scope minted an import libc++.so does not export.
+		// An entity that really lives in the versioning namespace
+		// arrives as {"std","__1"} and takes the chain path below.
+		// std_entity_scope remains the rule ONLY for the flavor-agnostic
+		// W2 spellings (mangle_std_var / mangle_std_free_template),
+		// whose callers never tracked the inline namespace.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			std::string out = "_ZSt" + source_name(name);
+			std::string out = "_ZSt"
+			                + (opcode.empty() ? source_name(name) : opcode);
 			if (params.empty())
 				out += "v";
 			else
@@ -620,7 +685,7 @@ public:
 			chain.push_back(parse_component(q));
 		std::string out = "_ZN";
 		out += encode_name(chain, /*standalone=*/false);
-		out += source_name(name);
+		out += opcode.empty() ? source_name(name) : opcode;
 		out += "E";
 		if (params.empty())
 			out += "v";
@@ -768,6 +833,29 @@ private:
 		return "";
 	}
 
+	// The mangled scope a std:: ENTITY sits in under the active stdlib flavor,
+	// and whether the name therefore needs the nested-name `N…E` wrapper.
+	// Registers the substitution candidate the scope creates, so a caller must
+	// invoke this BEFORE encoding anything else in the symbol.
+	//
+	// GNU:  `St` — the Itanium abbreviation for ::std::, an <unscoped-name>, so
+	//       NO wrapper. libstdc++ exports _ZSt9terminatev, _ZStplIc…E…
+	// LLVM: the entity really lives in the inline namespace std::__1, so the
+	//       scope is a two-component <nested-name> `St3__1` and the wrapper IS
+	//       required. libc++ exports _ZNSt3__1plIc…EE… — and that prefix is
+	//       also substitution candidate S_, which is why libc++'s inner names
+	//       read NS_11char_traitsIcEE and every later slot sits exactly one
+	//       higher than the GNU symbol's (S6_/S9_ vs S5_/S8_ on operator+).
+	std::string std_entity_scope(bool &needs_nesting)
+	{
+		const std::string &ins = std_entity_inline_ns();
+		needs_nesting = !ins.empty();
+		if (!needs_nesting)
+			return "St";		// abbreviation: consumes no slot
+		add_sub("std::" + ins);		// the key the type encoder looks up
+		return "St" + source_name(ins);
+	}
+
 	// ---- name encoding -------------------------------------------------------
 	//
 	// Encodes a qualified-name chain, registering a substitution candidate for
@@ -906,9 +994,39 @@ std::string op_special(const std::string &op)
 
 std::string itanium_encode_type_sub(const std::string &cpp_type)
 {
+	// MEMOIZED. Encoding a type means parsing it back out of its C++ spelling
+	// character by character (parse_type -> parse_component ->
+	// SpellingDelimDepth) and then mangling the resulting tree — cheap once,
+	// ruinous repeated. DataDef::marshals_value_text() calls this to answer a
+	// yes/no question ("is this the flavor's std::string?") for EVERY parameter
+	// and return of EVERY emitted symbol, and callers re-ask for the same
+	// handful of types constantly. Under -stdlib=libc++ each spelling also
+	// carries the std::__1:: inline-namespace tag on every nested component, so
+	// the strings are several times longer than the libstdc++ ones and the same
+	// call count costs far more: this chain measured 88.7% of a 19.9 s
+	// front-end run (tests/testsubscript.mad, 2026-08-02) against 1.2 s for the
+	// same file on the default flavor.
+	//
+	// The result is NOT a pure function of the input: std_entity_scope() reads
+	// the flavor globals (g_std_stdlib / g_std_abi_ns), so a spelling encodes
+	// differently after an ABI switch — which --project performs per TU. The
+	// generation stamp is therefore part of the key, the convention g_std_abi_gen
+	// is declared for ("bumped on change; caches key on it") and the one
+	// marshals_value_text's carrier cache already follows.
+	static unsigned memo_gen = ~0u;
+	static std::map<std::string, std::string> memo;
+	if (memo_gen != g_std_abi_gen) {
+		memo.clear();
+		memo_gen = g_std_abi_gen;
+	}
+	std::map<std::string, std::string>::const_iterator hit = memo.find(cpp_type);
+	if (hit != memo.end())
+		return hit->second;
 	ItaniumMangler m;
 	m.reset();
-	return m.encode_type(parse_type(cpp_type));
+	std::string encoded = m.encode_type(parse_type(cpp_type));
+	memo[cpp_type] = encoded;
+	return encoded;
 }
 
 std::string itanium_mangle_member_sub(const std::string &qualified_class,
@@ -942,10 +1060,11 @@ std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
 	                       param_types, false);
 }
 
-std::string itanium_mangle_dtor_sub(const std::string &qualified_class)
+std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
+                                    const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", "D1",
+	return m.mangle_member(qualified_class, "", flavor,
 	                       {}, false);
 }
 
@@ -987,18 +1106,82 @@ std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers
 	return m.mangle_nested_variable(qualifiers, name);
 }
 
+// ---- stdlib flavor / std ABI inline namespace --------------------------------
+// See madc_mangle.h. The state itself is declared ABOVE the encoder (it decides
+// what scope a std:: name is mangled in); this is the rest of the surface.
+
+void madc_mangle_set_stdlib_gnu(bool cxx11_abi)
+{
+	const std::string ns = cxx11_abi ? "__cxx11" : "";
+	if (g_std_stdlib == mstdlibGnu && g_std_abi_ns == ns)
+		return;
+	g_std_stdlib = mstdlibGnu;
+	g_std_abi_ns = ns;
+	++g_std_abi_gen;
+}
+
+void madc_mangle_set_stdlib_llvm(const std::string &abi_ns)
+{
+	if (g_std_stdlib == mstdlibLlvm && g_std_abi_ns == abi_ns)
+		return;
+	g_std_stdlib = mstdlibLlvm;
+	g_std_abi_ns = abi_ns;
+	++g_std_abi_gen;
+}
+
+MangleStdlib madc_mangle_active_stdlib()
+{
+	return g_std_stdlib;
+}
+
+MangleHostFlavorScope::MangleHostFlavorScope()
+	: saved_stdlib(g_std_stdlib), saved_abi_ns(g_std_abi_ns)
+{
+	madc_mangle_set_stdlib_gnu(true);	// the host build's ABI (GNU cxx11)
+}
+
+MangleHostFlavorScope::~MangleHostFlavorScope()
+{
+	if (saved_stdlib == mstdlibLlvm)
+		madc_mangle_set_stdlib_llvm(saved_abi_ns);
+	else
+		madc_mangle_set_stdlib_gnu(saved_abi_ns == "__cxx11");
+}
+
+// "std::" prefix for components INSIDE the versioned inline namespace (GNU:
+// only the cxx11-tagged components; LLVM: everything).
+static std::string std_prefix_tagged()
+{
+	return g_std_abi_ns.empty() ? "std::" : "std::" + g_std_abi_ns + "::";
+}
+
+// "std::" prefix for the supporting templates (allocator, char_traits, less,
+// pair, and the containers): directly in std under GNU, inside the ABI
+// namespace under LLVM.
+static std::string std_prefix_untagged()
+{
+	return g_std_stdlib == mstdlibLlvm ? std_prefix_tagged() : "std::";
+}
+
 std::string itanium_mangle_std_var(const std::string &name)
 {
-	// A namespace-scope variable under std: _ZSt <length-prefixed-name>.
-	return "_ZSt" + source_name(name);
+	// GNU: namespace-scope std vars (cout, cin, ...) live directly in std
+	// (never in __cxx11): _ZSt <length-prefixed-name>. LLVM: everything
+	// lives in the ABI namespace: _ZN St <ns> <name> E. Both spellings come
+	// from ItaniumMangler::std_entity_scope, the one owner of that rule —
+	// this used to build the prefix itself, which is how the FUNCTION
+	// manglers came to disagree with it.
+	ItaniumMangler m;
+	return m.mangle_std_var(name);
 }
 
 // ---- canonical std:: type spellings -----------------------------------------
 
 std::string std_string_type()
 {
-	return "std::__cxx11::basic_string<char,std::char_traits<char>,"
-	       "std::allocator<char>>";
+	return std_prefix_tagged() + "basic_string<char,"
+	       + std_prefix_untagged() + "char_traits<char>,"
+	       + std_prefix_untagged() + "allocator<char>>";
 }
 
 // Marshalling-boundary predicate (declared on DataDef in datadef.h, defined
@@ -1043,30 +1226,41 @@ bool DataDef::marshals_value_text() const
 		canonical_cpp_spelling().empty() ? name : canonical_cpp_spelling();
 	if (spelling.empty())
 		return false;
-	static const std::string text_carrier =
-		itanium_encode_type_sub(std_string_type());
+	// Cache keyed on the stdlib-flavor generation, not computed once: the
+	// carrier spelling follows the parsed ABI config, which can land AFTER
+	// the first call (and --project TUs may re-sync it per TU).
+	static unsigned carrier_gen = ~0u;
+	static std::string text_carrier;
+	if (carrier_gen != g_std_abi_gen) {
+		text_carrier = itanium_encode_type_sub(std_string_type());
+		carrier_gen = g_std_abi_gen;
+	}
 	return itanium_encode_type_sub(spelling) == text_carrier;
 }
 
 std::string std_vector_type(const std::string &elem)
 {
-	return "std::vector<" + elem + ",std::allocator<" + elem + ">>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "vector<" + elem + "," + ns + "allocator<" + elem + ">>";
 }
 
 std::string std_map_type(const std::string &key, const std::string &val)
 {
-	return "std::map<" + key + "," + val + ",std::less<" + key + ">,"
-	       "std::allocator<std::pair<const " + key + "," + val + ">>>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "map<" + key + "," + val + "," + ns + "less<" + key + ">,"
+	       + ns + "allocator<" + ns + "pair<const " + key + "," + val + ">>>";
 }
 
 std::string std_set_type(const std::string &elem)
 {
-	return "std::set<" + elem + ",std::less<" + elem + ">,"
-	       "std::allocator<" + elem + ">>";
+	const std::string ns = std_prefix_untagged();
+	return ns + "set<" + elem + "," + ns + "less<" + elem + ">,"
+	       + ns + "allocator<" + elem + ">>";
 }
 
 std::string std_stringstream_type()
 {
-	return "std::__cxx11::basic_stringstream<char,std::char_traits<char>,"
-	       "std::allocator<char>>";
+	return std_prefix_tagged() + "basic_stringstream<char,"
+	       + std_prefix_untagged() + "char_traits<char>,"
+	       + std_prefix_untagged() + "allocator<char>>";
 }

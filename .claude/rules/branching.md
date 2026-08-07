@@ -16,3 +16,7 @@
   See `docs/adr/0001-cir-c2mir-backend.md`.
 - Commit early and often on feature branches
 - Use `#ifdef FEATURE_NAME` guards for in-progress code on shared branches
+- Before merging a feature branch, run `/dupaudit` scoped to the subsystem the
+  feature touched; a family it reports as divergent is a live bug, not debt
+- Every duplication a `/dupaudit` finding gets consolidated leaves a gate behind
+  in `fulltest` — one implementation without a gate regrows

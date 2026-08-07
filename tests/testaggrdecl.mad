@@ -1,0 +1,33 @@
+// [dcl.init.aggr] braced initialization of an OBJECT-member aggregate through
+// the DECLARATION lanes (companion to tests/testaggrinit.mad, which covers
+// the TokenObjTemp construction sites). var_decl's C INIT list cannot serve a
+// class member — it bit-copies the representation and orders the materialized
+// initializer temp's decl AFTER the SPEC_DECL that uses it ("undeclared
+// identifier __madc_objtmp_0") — and the decl copy-elision arm handed the
+// full list to class_ctor_call, which DROPPED it (default-constructed
+// members, garbage scalars, exit 0). Storage stays bare; the declaration
+// claims the full list via decl_aggregate_claim.
+// Covers: `=`-braced local, direct-list local, elided `S v = S{...}`,
+// file-scope global, and the `= {}` value-init control.
+// Oracle: g++ 13 and clang++ 18 print "42 hi|42 hi|42 hi|3 gg|0 []".
+#include <string>
+#include <cstdio>
+
+struct S {
+    std::string s;
+    int y;
+};
+
+S gs = {std::string("gg"), 3};
+
+int main()
+{
+    S a = {std::string("hi"), 42};
+    S b{std::string("hi"), 42};
+    S c = S{std::string("hi"), 42};
+    S z = {};
+    printf("%d %s|%d %s|%d %s|%d %s|%d [%s]\n",
+	   a.y, a.s.c_str(), b.y, b.s.c_str(), c.y, c.s.c_str(),
+	   gs.y, gs.s.c_str(), z.y, z.s.c_str());
+    return 0;
+}

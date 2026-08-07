@@ -1,0 +1,36 @@
+// A namespace fn-template whose RETURN TYPE is a template-id, returned BY
+// VALUE (`pack<T> peek(const box<T>&)`) — the call site must see the
+// INSTANCE's class return type at parse time, so member access on the
+// result (`peek(b).get()`) resolves. The placeholder FuncDef returns
+// int64, indistinguishable for scalar returns but fatal here.
+// libc++'s __pad_and_output returns ostreambuf_iterator<C,T> by value and
+// its result takes `.failed()` — this is that shape, flavor-independent.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "8"
+#include <cstdio>
+
+namespace lib {
+
+template <class T> struct pack { T x; pack(T a) : x(a) {} T get() const { return x; } };
+
+template <class T> class box;
+template <class T> pack<T> peek(const box<T> &b);
+
+template <class T> class box {
+public:
+	T v;
+	box(T x) : v(x) {}
+	T get() const { return v; }
+};
+
+template <class T> pack<T> peek(const box<T> &b) {
+	return pack<T>(b.get() + 1);
+}
+
+}
+
+int main()
+{
+	lib::box<long> b(7);
+	printf("%d\n", (int)lib::peek(b).get());
+	return 0;
+}

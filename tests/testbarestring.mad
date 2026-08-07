@@ -1,0 +1,25 @@
+// Bare `string` without `using namespace std` — the madc dialect gives a
+// namespace-scope type alias unqualified visibility when the flat name is
+// FREE (no-clobber: std::pmr::string must never steal the name). libstdc++
+// spells std::string as a TYPEDEF (typedef lane, always registered flat);
+// libc++ spells it `using string = basic_string<char>;` (__fwd/string.h) —
+// the using-alias lane's old never-flat rule left bare `string` unresolvable
+// ONLY under -stdlib=libc++, in every declaration context: file-scope
+// variable, function declaration/definition, and block-scope local.
+#include <string>
+
+string g = "global";
+
+string *fwd(string *s);
+
+int main()
+{
+	string s = *fwd(&g) + " local";
+	printf("%s\n", s.c_str());
+	return 0;
+}
+
+string *fwd(string *s)
+{
+	return s;
+}

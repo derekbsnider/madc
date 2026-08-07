@@ -1,0 +1,20 @@
+#include <iostream>
+using namespace std;
+// Multi-return with double values: every slot carries the declared return
+// type; the values travel the transport struct bit-exact (the old long-slot
+// ABI silently truncated 1.5/2.25 to 1/2).
+
+double stats(double base)
+{
+	double lo = base * 0.5;
+	double hi = base * 1.5;
+	return lo, hi;
+}
+
+int main()
+{
+	a, b := stats(3.0);
+	cout << a << endl;
+	cout << b << endl;
+	return 0;
+}

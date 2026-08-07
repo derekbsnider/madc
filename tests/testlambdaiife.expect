@@ -1,0 +1,10 @@
+arg 100
+decl 101
+assign 102
+auto 103
+paren 104
+value 105
+passed 101
+subscript 30 20
+meminit 100 7
+agg 1 2 3 4 5 6

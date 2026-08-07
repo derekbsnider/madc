@@ -1,6 +1,554 @@
 # Test Status
 
-> **Current (2026-07-25, `develop` — v0.48.0, forest-carriers S3
+> **Current (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
+> session #66 close):** fulltest **997/0/9skip**; lane
+> **993/0/13skip**; session-end native legs EXE **976/0**, OBJ
+> **976/0** (of 997 JIT-passing tests). Battery log:
+> `tmp/logs/rb-20260806-194726.log` (fulltest, libcxx jit, exe, obj
+> all rc=0). +13 fulltest tests over session #65: the multi-return
+> struct-transport gates (testmultiret double/ptr/string/hetero +
+> reject/exprpos/bare — class values, Go-style heterogeneous
+> `(int, string) f()` signatures, loud rejects; @a369cb17), the
+> zero-ceremony gates (testautoincludecpp/ns, testpreferdefault,
+> testautoceremonystd, testnsheaderfirst; @1fafe265 @0bc6ce07
+> @715fbadb), and testsizeofvaluepack (@b411715c). Also @429842b4:
+> the enum-constant parse-time slot heap overflow fixed
+> (Variable::slot_size owns the 64-bit ddINT slot contract;
+> valgrind-verified). Doc-example harness: **53/53** fenced examples
+> green at this HEAD. Ships as **v0.68.0**.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @520e77d6 —
+> session #65 close: 🏁 LANE ZERO):** fulltest **984/0**; lane
+> **980/0/13skip** — the `-stdlib=libc++` flavored lane's failing set
+> is **EMPTY** for the first time: full behavior-parity with the
+> default libstdc++ lane. testtuple (the #110 pack wall's last
+> standing test) FIXED; the other +4 passes are the four new session
+> gates (testctortemplatetrait, testusingfnoverload,
+> testexternblockbody, testctorttpdefault). Four fixes: (30)
+> `trait_class_constructible` no longer refuses same-class
+> constructibility when the ctor set contains a TEMPLATE (the -1
+> refusal laundered through a failed static-const capture into a
+> silent 0 — `is_move_constructible<allocator<T>>` folded false);
+> (31) a using-declared function JOINS the target namespace's
+> overload set ([namespace.udecl] — `std::swap(int,int)` with
+> `<memory>` bound the exception_ptr overload); (32) extern
+> linkage-block context no longer leaks into function bodies
+> ([dcl.link]p7 — "__tmp in block scope with external linkage");
+> (33) THE WALL: a template-template parameter defaulted to a
+> DIFFERENT named template binds as a template NAME ([temp.param]p11
+> — libc++ tuple()'s `_IsDefault = is_default_constructible` idiom
+> captured as a never-foldable non-type default, so the ctor never
+> instantiated and construction called the never-defined
+> placeholder). The 13 lane skips = the 9 baseline `.mir_skip` + the
+> 4 documented `.libcxx_skip`. `docs/parity/libcxx-failset.txt`
+> records the ZERO and becomes the P2.7 gate per its charter.
+> Battery log: `tmp/logs/rb-20260806-145634.log` (fulltest rc=0,
+> libcxx jit rc=0, total rc=0). Session-end native legs GREEN: EXE
+> **967/0**, OBJ **967/0** (of 984 JIT-passing tests;
+> `tmp/logs/rb-20260806-151939.log`, total rc=0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @01e0e7d7 —
+> session #64 close):** fulltest **980/0**; lane **975/1/13skip**
+> (+5 gates: testaggrdecl, teststructbraceexpr, testint128global,
+> testemptystructret, testcomplexretconv, testcastcallpostfix — the
+> last five landed after the 970/1 checkpoint). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Six fixes: (24) DECL-lane
+> braced aggregate init of object-member aggregates; (25) `P{7, 3.5}`
+> braced functional construction of plain structs parses
+> (parse_compound_struct_lit — one brace reader for `(T){...}` and
+> `T{...}`); (26) const `__int128` file-scope initializers (fork:
+> gen_initializer int128 data arm — was the pack-freeze SEGV);
+> (27) empty-struct call results reserve a real call-arg slot (fork:
+> "undeclared func reg fp" at pack-thaw); (28) `_Complex` return-value
+> conversion (fork: `return 3.0;` loaded components from absolute
+> address 0); (29) cast operands continue the postfix chain
+> (`(int)getb().n`). Follow-ons recorded: swap<allocator> return-type
+> mistyping (tsubst), duration<double>::operator%= drain
+> instantiation (pack gate is check-only), dependent-decltype
+> pattern-freeze. Session-end native legs GREEN: EXE **963/0** and OBJ
+> **963/0** (of 980 JIT-passing tests).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @8f8f4009 —
+> DECL-lane braced aggregate init):** fulltest **975/0**; lane
+> **970/1/13skip** (+1 gate: testaggrdecl). The only remaining lane
+> failure is **testtuple** (#110 pack wall). Residual (a) resolved:
+> braced aggregate init of OBJECT-member aggregates in the DECLARATION
+> lanes — var_decl's C INIT list bit-copied the class member and ordered
+> the materialized temp's decl after the SPEC_DECL ("undeclared
+> identifier __madc_objtmp_0"), and the decl copy-elision arm
+> `S v = S{a, b}` silently DROPPED the full list (garbage, exit 0).
+> Storage stays bare (braced_aggregate_needs_construction); the three
+> FULL-list declaration sites claim via decl_aggregate_claim →
+> class_aggregate_init; multi-element aggregate-shaped declines fail
+> loud.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @e658a5b8 —
+> testfreezerun FLIPPED):** fulltest **974/0**; lane **969/1/13skip**
+> (+1 gate: testaggrinit). The only remaining lane failure is
+> **testtuple** (#110 pack wall). Four fixes: the flavor-runtime dlopen
+> moved into `cir_translate_guarded` (the freeze lane's CIR-time dlsym
+> probes shaped a different tree — facet-id externs unrecorded); frozen
+> containers carry the flavor `link_libs` and the thaw reopens them (16
+> trap-bound imports → 0); nested-class ctor/dtor no longer false-match
+> the owner's out-of-line defs (sentry's Itanium bind restored); and
+> aggregate list-init of ctor-less classes stops DROPPING initializers
+> (class_aggregate_init, [dcl.init.aggr] — was silent garbage in the
+> PLAIN lane too, S{string,42} printed junk with exit 0).
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @588d9e73 —
+> one-key fix for typedef'd anon-aggregate template args):** fulltest
+> **973/0**; lane **967/2/13skip** (+1 gate: testanontypedefspec). The
+> fix removed a SILENT wrong value in plain JIT (explicit spec invisible
+> behind a typedef'd anon-struct key — 0 for 7, exit 0) and pushed the
+> testfreezerun libc++ frontier from the ClassPattern-base error to
+> thaw-time static-member facet imports (num_put/ctype `id`). Remaining
+> 2: testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @4e1a4004 —
+> testsysobject FLIPPED):** fulltest **970/0**; lane **966/2/13skip**
+> (+2 gates: testfriendnonmember, testfreeoptemplate). Two fixes: a
+> class-body FRIEND template never registers as a MEMBER ([class.friend] —
+> libc++ string:1762's `bool friend operator==` poisoned
+> `method_map["operator=="]` with a basic_string return, so
+> `string == "lit"` typed as basic_string and `cout <<` bound the string
+> inserter over a bool rvalue), and GLOBAL-scope free operator templates
+> bind (retained-body key walk dropped the exact `"::operatorX"` key,
+> `<=` vs the sibling walk's `<`; plain C struct operands now engage the
+> lowering via operand_value_datadef + DataDefSTRUCT). Remaining 2:
+> testfreezerun, testtuple.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @022cbb3b —
+> testmathheader FLIPPED):** fulltest **968/0**; lane **963/3/13skip**
+> (+2 gates: testcastmembertype, teststaticoverload). Two fixes:
+> qualified member-TYPE casts (`(typename __promote<T>::type)x` — the
+> __math::isinf undefined-import root) and non-template static overload
+> ranking by argument types + [expr]/5 argument reference-collapse (the
+> silent `__promote<double>::type == long double` wrong value). Residual
+> filed: dependent-decltype pattern-freeze (tmp/r58b.mad). Remaining 3:
+> testfreezerun, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bd6fed08 —
+> testifconstexpr FLIPPED; `<format>` chain THROUGH):** fulltest **968/0**;
+> lane **960/4/13skip** (+5 gates: testnsdmineg, testenumqualcase,
+> testinlinenstype, teststaticbraceinit, testvartemplatefold). Five fixes:
+> NSDMI isolated-parse context reset, ns-qualified scoped-enum case labels,
+> inline-namespace type descent, static brace-or-equal-init brace form
+> (the flip), ns-qualified variable-template constant fold (transactional
+> `fold_constant_qualified_member` + `inline_namespace_descendants`
+> consolidation). testinvocable reclassified `.libcxx_skip` (clang++
+> -stdlib=libc++ rejects its libstdc++-internal `__is_invocable` source).
+> Remaining 4: testfreezerun, testmathheader, testsysobject, testtuple.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @1de7b430 —
+> fixes 8-11; parser_std_format_spec.h open to :339):** fulltest **963/0**;
+> lane **954/6** byte-identical failset (+4 gates: testparenctor,
+> testanonbitfield, testenumsize, testtraitcopyable); enum fixed bases now
+> drive layout ([dcl.enum]p8, freeze-carried); EXE **938/0**, OBJ **938/0**
+> (session-end legs, of 954 JIT-passing).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @aaee9009 —
+> seven front-end fixes; unicode.h through):** fulltest **959/0** (rc=0,
+> forest oracles green). Seven oracle-verified fixes advanced
+> testifconstexpr's chain five links (ranges_construct_at.h:94 →
+> buffer.h:62 → unicode.h:51/:70/:302 → parser_std_format_spec.h:58):
+> nested-name-specifier head vs the auto fn-ptr shortcut, concept-headed
+> template params, braced NSDMI, enum trailing declarator, bit-field
+> brace-init skip, u/U/u8 literal prefixes + UCNs, and the scoped-enum
+> pseudo-namespace bridge for using-declarations. The flavored
+> measurement is **950 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set at every batch checkpoint; +6 = the new
+> gates testnsfncollide, testconceptparam, testbracensdmi, testenumdecl,
+> testbitfieldinit, testcharlit, testusingenum), eligible EXE **934/0**,
+> OBJ **934/0**. NEW TEST PROTOCOL (owner): per fix targeted globs + one
+> frontier test; per batch fulltest + `libcxxjit`; EXE/OBJ legs at
+> session end.
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @179d1ab0 —
+> C++20 abbreviated function templates, member form):** fulltest green
+> (rc=0) and default EXE leg green. [dcl.fct]/18 lands as a token-level
+> desugar: `auto` parameter placeholders become invented identifiers
+> under a synthesized `template<...>` head, so the member-template
+> capture + tsubst own the rest. libc++'s `dangling(auto&&...)`
+> (testifconstexpr's first blocker) is THROUGH; the chain moved to
+> ranges_construct_at.h:94, so zero flips: the whole flavored
+> measurement is **944 passed / 6 failed / 0 timed out / 12 skipped**
+> (byte-identical failing set; +2 = gates testbarestring +
+> testabbrevtpl), eligible EXE **928/0**, OBJ **928/0**. New gate
+> `testabbrevtpl` (pack ctor + bodied auto ctor, both oracles, both
+> flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @bb435bfd —
+> namespace-scope using-aliases flat-register when free):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green (freeze/forest gates included). The dialect's unqualified
+> visibility for namespace-scope type names is a flat `datatype_map`
+> write that only the TYPEDEF lane performed; the USING-ALIAS lane was
+> cut from the flat map after `std::pmr::string`'s alias clobbered the
+> real `string`. libc++ spells `std::string` as a using-alias
+> (`__fwd/string.h`) where libstdc++ uses a typedef, so bare `string`
+> was unresolvable in every declaration context only under
+> `-stdlib=libc++`. The alias arm now flat-registers only when the name
+> is FREE (primary wins; pmr stays namespace-only). testexterncstringptr
+> and testforeachheaderbody flip: the whole flavored measurement is
+> **942 passed / 6 failed / 0 timed out / 12 skipped**, eligible EXE
+> **926/0**, OBJ **926/0**, zero newly broken (two-way name diff). New
+> gate `testbarestring` (file-scope var + fn decl/def + block local,
+> both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @075c7f81 —
+> system-header global C++ overloads register distinctly):** fulltest
+> **950 passed, 0 failed, 0 timed out, 9 skipped** (rc=0) and default EXE
+> leg green. libc++'s `stdlib.h` declares five inline C++ `abs` overloads
+> at GLOBAL scope after glibc's extern-C `int abs(int)`; plain globals
+> were excluded from the tracked-overload arm, so all five spliced into
+> one shared-id FuncDef and the last body (long double, `fabsl`) emitted
+> as a plain-named linkonce `abs` clobbering the libc import — `abs(-7)`
+> silently returned 0 under `-stdlib=libc++` (testincludenext "42 0" vs
+> oracle "42 7"). A system-header plain global C++ function whose name is
+> already taken now joins the per-overload model; first/solo declarations
+> keep the source name (dlsym imports intact). testincludenext flips: the
+> whole flavored measurement is **939 passed / 8 failed / 0 timed out /
+> 12 skipped**, eligible EXE **923/0**, OBJ **923/0**, zero newly broken
+> (two-way name diff). New gate `testglobaloverload` (abs/labs values
+> against both oracles, validated in default JIT + libc++ JIT + EXE).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @01d774fe —
+> transitive secondary vtable groups):** fulltest **950 passed, 0 failed,
+> 0 timed out, 9 skipped** (rc=0, all forest gates green). Itanium gives
+> every polymorphic base subobject off the primary chain its own vtable
+> group + ctor vptr stamp — TRANSITIVELY; madc collected only direct
+> non-primary bases, so `E : D` (D : A, B) left the B-subobject on B's
+> standalone vtable with wrong vbase-offset slots. Under libc++ that was
+> stringstream (`basic_ostream` = `basic_iostream`'s second base): the
+> virtual `basic_ios` resolved at +24 vs clang's +128 through any
+> `basic_ostream` view — real libc++ code and emitted bodies read an
+> uninitialized `basic_ios`, every insert silently lost, `<< 42` SIGSEGV
+> in the locale copy ctor. testsstream and testopinherit flip: the whole
+> flavored measurement is **938 passed / 9 failed / 0 timed out /
+> 12 skipped**, eligible EXE **922/0**, zero newly broken (two-way name
+> diff). New gate `testtranssecondary` (plain depth-2 + template stream
+> shapes, both oracles, both flavors).
+>
+> **Previous (2026-08-05, `feature/libcxx-parity7-claude` @41cbb2c5 — the
+> bucket-A chain):** fulltest **949 passed, 0 failed, 0 timed out, 9 skipped**
+> (rc=0, all forest gates green). Session #58 bucketed the 15 remaining
+> flavored failures by first error and cleared the largest bucket in five
+> commits: class-typed `return {...}` selects a constructor (the bare `{`
+> unbalanced the scope stack — libc++ `proximate()` lost its parameters);
+> conversion-type-ids take cv-qualifiers and reference conversions route
+> through `returnDecl` (six copy-pasted cv-skip loops consolidated into
+> `Program::skip_cv_qualifier_tokens`); `friend` may follow other
+> declaration-specifiers (one friend-decl owner, both entry arms); using-alias
+> targets take east-cv suffixes via `consume_declarator_stars`; and the
+> SILENT-WRONG headline — the free-operator body deduction lacked the
+> derived-to-base receiver walk, so `ofstream << "text"` bound the member
+> `operator<<(const void*)` and wrote pointer values into files. A sixth
+> commit restored the identity-return pattern recording @7b63f8c6 had
+> accidentally severed.
+>
+> The whole flavored measurement is **935 passed / 11 failed / 0 timed out /
+> 12 skipped**: testdefer, testfstream, testloop, testmanipview FIXED with
+> zero newly broken (two-way comm-diff against the 15-name set); eligible EXE
+> and OBJ each **919/0**. New gate `testofstreamwrite`; extended gates
+> `testbracedreturn`, `testconvopclass`, `testfriendkeyword`,
+> `testaliasptrtarget` — all match g++ AND clang++ in both stdlib flavors.
+> Next: `libcxx_stringstream_construction_state` (testsstream + testopinherit
+> share the locale-copy-ctor SIGSEGV; minimal reducer tmp/r19.cpp).
+>
+> **Previous (2026-08-04, `feature/libcxx-parity7-claude` @7b63f8c6 — the
+> noexcept operator):** fulltest **948 passed, 0 failed, 0 timed out,
+> 9 skipped** (rc=0, all forest gates green). The `[expr.unary.noexcept]`
+> operator is implemented: `noexcept` is a reserved C++11 keyword (the lexer
+> erasure destroyed the operator — an expression-context `noexcept(e)`
+> SIGSEGV'd and a template-argument `BC<noexcept(e)>` lost the argument);
+> `evaluate_noexcept_operator` folds the noexcept-spec conjunction over the
+> unevaluated operand's parsed tree, instantiating conditional-spec callees on
+> demand ([temp.inst]/14 — caught by `forest_selfexe_gate` when the refusal
+> dropped `_S_nothrow_relocate`'s body). Registration placeholders capture
+> declaration exception specs; a qualified template-id pack expansion
+> (`std::declval<_Args>()...`) is one unit including its qualifier chain.
+> New gates: `testnoexceptop`, `testqualpackelide`.
+>
+> The whole flavored measurement is **930 passed / 15 failed / 0 timed out /
+> 12 skipped**: `testconstructible` FIXED with zero additions (two-way
+> comm-diff), eligible EXE and OBJ each **914/0**. madc-as-GCC compiles
+> libc++'s non-builtin nothrow-trait arm (`_LIBCPP_COMPILER_GCC` at
+> `__config:38`), whose `integral_constant` base is exactly the noexcept
+> operator over a ctor call — the whole family escaped as silent 0s before.
+> The recorded DataDefREF `T&`/`T&&` gap was NOT this test's cause and stays
+> open only for the ungated `is_nothrow_move_constructible<std::string>`.
+>
+> **Previous (2026-08-04, `feature/libcxx-parity6-codex` @672a0966 —
+> forwarding-reference deduction owners):** fulltest **946 passed, 0 failed,
+> 0 timed out, 9 skipped**, warning census **0**, tsubst fallback **0**;
+> `forest_index_oracle` is **5227 indexed names / 3521 registered lookups**.
+> `testfwdpackvaluecategory` proves a named lvalue and a value-returning call
+> with the same value type deduce `T=int&` and `T=int`: GCC, Clang, and madc
+> print `1 0`. Its focused ten-test blast radius passes **10/0** in JIT, EXE,
+> and OBJ. `testmembertmplctor` remains `10 400`, proving dependent `sizeof(U)`
+> measures the referent when forwarding deduction binds `U=tag&`. The function-
+> template and dependent-type-query ownership gates are green alongside the
+> existing reference-argument gate.
+>
+> Real libc++ `testcontainerdtor` now completes in production: vector size 4,
+> integer vector size 3, set size 2, map size 2, then `done`; the experimental
+> `MADC_FWDREF_ARM` is deleted. The whole flavored measurement is **927 passed /
+> 16 failed / 0 timed out / 12 skipped**. Eight prior failures cleared with zero
+> additions: `testcastarrow`, `testcontainerdtor`, `testforinitscope`,
+> `testmadc_ns`, `testmap`, `testmapiter`, `teststdmapint`, and `testsubscript`.
+> Eligible EXE and OBJ are each **911/0**. Logs:
+> `tmp/logs/rb-20260804-193248.log` (fulltest),
+> `tmp/logs/rb-20260804-194241.log` (whole libc++ battery), and
+> `tmp/logs/rb-20260804-193158.log` (focused JIT/EXE/OBJ).
+>
+> **Previous (2026-08-03, `feature/libcxx-parity6-claude` @ba7517b4 —
+> pack/variadic correctness, unreleased):** fulltest **922 passed, 0
+> failed, 0 timed out, 9 skipped**, unittest rc=0, `--exe` **875/0** and
+> `--obj` **875/0** (of the 891 JIT-passing). All gates green (delimiter
+> ratchet 0, rule-trailer gate 207/0 since epoch, tsubst fallback 0,
+> warning ratchet 0). Three new gates: `testvariadicmember`,
+> `testbasepacktwo`, `testsizeofpack` — each carries at least TWO pack
+> elements with DIFFERENT values, because at arity 1 splice and
+> replicate are indistinguishable and three real defects shipped green
+> behind arity-1 gates.
+>
+> The flavored parity lane was unchanged at 891 passed / 28 failed / 0
+> timed out / 12 skipped** (`run_tests.sh --stdlib=libc++`, measured at
+> @ba7517b4; the failing set is comm-diffed BOTH WAYS against
+> `docs/parity/libcxx-failset.txt` — 28 vs 28, no new, no fixed). All
+> three commits this session are default-lane correctness; none of them
+> moved the lane. The 28 are now bucketed into named roots (see
+> `claude_status.json`): `__tree` tsubst (5), the retbuf-ABI predicate
+> disagreement pinned to `cir_builder.cpp:5074` (best next target),
+> free functions not overloading, C++20 abbreviated templates (2),
+> `basic_string_view(__long**)` (3, untriaged), the
+> `filesystem/operations.h:240` group (4, mechanism unconfirmed), and
+> ~9 singles including a SIGSEGV and a silent wrong answer.
+
+> **Previous (2026-08-01, v0.67.0 — the flavor-ABI release, pre-merge
+> battery on `feature/libcxx-parity5-claude` @190ff9d2 + release
+> files):** fulltest **911 passed, 0 failed, 0 timed out, 9 skipped**,
+> `--exe` **894/0**, `--obj` **894/0**, and the packed release arbiter
+> **911/0/0/9**. All gates green (delimiter ratchet 0, rule-trailer
+> gate 180/0 since epoch, tsubst ratchet 0, retire-std-hardcoding,
+> forest self-exe). The flavored parity lane stands at
+> **880 passed / 26 failed / 2 timed out** (`run_tests.sh
+> --stdlib=libc++`, measured @e09c5381; the failing set is banked and
+> comm-diffed in `docs/parity/libcxx-failset.txt` — 21 net flips over
+> v0.66.0, zero regressions at every measured step). Nine new gates:
+> `testarrayparam`, `testcinstr_libcxx`, `testclassproto`,
+> `testconstaccess`, `testconstovl`, `testdeductionguide`,
+> `testpacktypedef`, `testprivmethod`, `testtypedefarg`. Fork
+> unchanged (**1.0-madc.0.63.0** @8f3934ac). Battery logs:
+> `tmp/logs/rb-20260801-231615.log` + `rb-20260801-234210.log`.
+
+> **Previous (2026-07-30, v0.63.0 — the libc++ parity-lane burn-down,
+> pre-merge battery on `feature/libcxx-string2-claude` @c4a98c9c):**
+> fulltest **856 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
+> **840/0**, `--obj` **840/0**, and the packed release arbiter
+> **856/0/0/9**. All gates green (libcxx_gate incl. the operator+ leg,
+> delimiter ratchet 0, rule-trailer gate clean, tsubst ratchet 0).
+> The flavored parity lane stands at **747 passed / 108 failed**
+> (`run_tests.sh --stdlib=libc++`; the failing set is banked and
+> set-diffed in `docs/parity/libcxx-failset.txt` — zero regressions at
+> every measured step from the 534/282 baseline). Fork at
+> **1.0-madc.0.63.0** @8f3934ac (zero-length-array diagnostic parity).
+> Battery log: `tmp/logs/rb-20260730-192345.log`.
+
+> **Previous (2026-07-28, `develop` — v0.57.0, the libc++ burn-down: eight
+> core-C++ defects in one chain):** fulltest **784 passed, 0 failed,
+> 0 timed out, 9 skipped**, `--exe` **768/0**, `--obj` **768/0**, and the
+> packed release arbiter **784/0/0/9**. All gates green: `libcxx_gate` OK
+> (two new legs: `<cwchar>` compiles AND runs; the CRTP base-arg shape is
+> bounded on the forced-legacy lane and `<string>` terminates loudly, never
+> with a signal), delimiter ratchet at 0, rule-trailer gate clean, tsubst
+> ratchet 0. Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> Eight new gates this release, each byte-identical across g++ 13 and
+> clang++-18: `testinlinensopen`, `testusingaliasfnptr`,
+> `testnestedinlinens`, `testcrtpbasearg`, `testnestedtagctor`,
+> `testbracedctor`, `testunderlyingtype`, `testdeclonlyspec`.
+> The `-stdlib=libc++` parse frontier now stops at ONE recorded defect for
+> both `<string_view>` and `<string>`:
+> `Gap{common_type_dependent_member_key_explosion}`.
+> Battery log: `tmp/logs/rb-20260728-162624.log`.
+
+> **Previous (2026-07-28, `feature/class-static-alias-claude` — eval scope
+> capture + the instantiation-product lookup surface):** fulltest **770 passed,
+> 0 failed, 0 timed out, 9 skipped**, `--exe` **754/0**, `--obj` **754/0**, and
+> the packed release arbiter **770/0/0/9**. All gates green: `libcxx_gate` OK,
+> `forest_index_oracle` OK (5180 indexed names cover 3487 registered lookups,
+> 40 allowlisted), delimiter ratchet at 0, rule-trailer gate clean.
+> Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> New gate: `testevalexterncapture` (+1 baseline), plus `.expect_quiet` added
+> to the four `testmadceval*` tests — they had none, so a flood of
+> "undeclared identifier" diagnostics on stderr passed on stdout alone.
+> Worth keeping from the run: **`fulltest` went rc=2 with every one of the 770
+> tests passing in all four lanes.** The failure was `forest_index_oracle`, and
+> the only reason it was actionable is that the driver now prints a per-stage rc
+> summary — the previous battery reported a bare `total rc=1` through a `tail`
+> pipe that had discarded the stage, and the whole ~30-minute run was wasted.
+> The tooling fix (self-logging, stage summary, `TESTS=` subset runs) shipped
+> with the same batch; targeted runs are the inner loop now, full suite is the
+> pre-merge gate.
+
+> **Previous (2026-07-27, `develop` — v0.54.0, six C++ correctness fixes,
+> four of them silent wrong answers):** fulltest **769 passed, 0 failed,
+> 0 timed out, 9 skipped**, `--exe` **753/0**, `--obj` **753/0**, and the
+> packed release arbiter **769/0/0/9**. All gates green: the delimiter
+> ratchet at 0, the rule-trailer gate clean, `libcxx_gate` OK.
+> Fork unchanged (**1.0-madc.0.52.0** @ba216dea).
+> Four new gates this release: `testqualifiedpostfix`,
+> `testclassqualifiedcall`, `teststaticmemberstorage`,
+> `testnestedtypescope` — each byte-identical across g++ 13, clang++-18
+> and madc, each with empty stderr.
+> Worth keeping from the run: **two of the three batteries on the
+> static-member fix went RED**, each naming a different class of
+> static-member storage symbol that nothing in the translation unit
+> defines, and **45 green reducers said nothing about either** — a user
+> class's static always has its definition in the same file, so that
+> shape is unreachable from a reducer. The suite found what the reducers
+> structurally could not, which is the argument for running it rather
+> than trusting a reducer sweep.
+
+> **Previous (2026-07-26, `develop` — v0.52.0, Mach-O axis B step 4:
+> the darwin `.o` lane is real — axis B is DONE):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped**, `--exe`
+> **740/0**, and `--obj` **740/0** — the ELF `.o` lane run explicitly,
+> because `MIR_object_read` was refactored onto a format-neutral input
+> view so the fork keeps ONE merge implementation behind two container
+> fronts. Unit tests unchanged (`test_object_load` among them, exercising
+> the refactored reader). Packed release arbiter **756/0/0/9** (`make
+> release`: 240 units + the ledger, 2 modules / 22 symbols / 3175 bytes) —
+> the fork's ELF merge path rides libmir into the release binary too.
+> NEW gate `scripts/macho_obj_gate.sh` / `make -C src machogate`:
+> **30 assertions, 15 per arch (arm64 + x86_64)**, over TWO INDEPENDENT
+> AUTHORITIES. (a) `ld64.lld-18` + the macOS SDK: Apple's own linker
+> links our `MH_OBJECT`, including a MIXED link where a clang-18 TU calls
+> into the madc-compiled one, and the relocations it applies land where
+> they must — pool slots inside `__text` and `__bss`, the import slot as a
+> real dyld bind, a global constructor's entry kept in
+> `__mod_init_func`. (b) madc's own read-back: `-c` then link
+> disassembles IDENTICALLY to the direct `-o` emit, pool contents
+> included (a full-file `cmp` differs only in the code-signature
+> identifier, which is the output basename). The gate is NOT in fulltest —
+> its cross-madc / llvm-18 / SDK prerequisites would make it silently
+> skip there — so the make target rebuilds both cross madcs first and it
+> can never validate a stale binary.
+> That equivalence leg is the one that earned its keep: it caught a real
+> read-back bug every structural check passed over. Mach-O has ONE
+> `ARM64_RELOC_PAGEOFF12` where ELF has `LDST64_LO12` and `ADD_LO12`, so
+> the reader recovers the kind from the instruction's opcode — and the
+> first mask dropped bit 31 (`sf`), reading every `add Xd, Xn, #imm12`
+> back as a scaled load: immediate `#0x1` where the direct emit had
+> `#0x8`. Structurally valid, silently wrong arithmetic. Lesson kept in
+> the plan doc: for a format round trip, assert EQUIVALENCE against the
+> path that does not round-trip, not just "the linker accepted it".
+> Gate-craft trap found the same way: `llvm-otool -s` dumps section bytes
+> as 4-byte WORDS on arm64 and single BYTES on x86-64, so a byte-only
+> parser silently finds zero slots and fails on one arch only.
+> Still the owner's Mac: RUNNING any emitted Mach-O binary (every darwin
+> slice's RUN leg).
+> Fork release **1.0-madc.0.52.0** (@ba216dea).
+
+> **Previous (2026-07-26, `develop` — v0.51.0, forest-carriers S6
+> complete — the carriers track is DONE):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_config_gate` — the
+> `madc.ini` promise: **39 checks over 18 legs**, and every settings leg is
+> PAIRED with a baseline that would fail without the config file. The
+> dialect baseline is the ABSENCE of `__STDC_VERSION__` (so `std = c99` →
+> `199901L` cannot pass by accident), the include fixture is unreachable
+> without the ini, and `mem-limit = 24` trips the address-space guard with
+> the message NAMING the ini value — then `MADC_MEM_LIMIT=4096` overrides
+> it, which is the precedence rule proved rather than asserted. The
+> `forest` key is discovery **arm 5** and gets the S3 ordering treatment:
+> a valid `$MADC_FOREST` binds with NO not-a-container notice (proving arm
+> 5 was never probed), while the same junk ini path with an empty
+> environment IS reached and IS loud. Strictness has its own legs: unknown
+> key (naming file:line + the accepted set), foreign section, missing
+> `=`, non-numeric limit, and a named `--config=` that does not exist all
+> refuse nonzero.
+> Unit tests **+4 cases** (`test_config_file`: 19 cases / 86 assertions),
+> including a **schema-blind reader reuse** suite that drives the reader as
+> `"madcdat"` with madcdat's own keys — the only test that proves the
+> reader is reusable rather than merely generic-shaped, and the guard that
+> fails if anyone re-welds madc's schema into it.
+> Suite hermeticity: `run_tests.sh` now passes `--no-config` on EVERY madc
+> invocation (including the AOT compile legs, which take no
+> `$BACKEND_FLAG`), and both pack scripts do too — an ambient `madc.ini`
+> would otherwise change the frozen corpus's producer config and send every
+> ordinary compile through the dialect gate.
+> `--exe` lane **740/0** and packed arbiter **756/0/0/9** (measured at the
+> feature commit `3edccef2`; the layering re-cut after it touches no
+> codegen, emit path, forest format or pack script, and was covered by a
+> grouped fulltest — test scoping by blast radius, owner directive
+> 2026-07-26).
+> Configure-axis evidence, which no gate can produce because a gate cannot
+> reconfigure the tree: `--disable-config-file` → `ENABLE_CONFIG_FILE=0` in
+> config.mk → the define drops and the axis stamp flips; an ambient
+> `./madc.ini` is not read; `--config=` refuses naming
+> `enable-config-file`; `--no-config` stays a no-op; bare `./configure`
+> restores. That exercise is what caught the missing `config.mk.in`
+> substitution — without it `--disable-config-file` would have been a
+> SILENT no-op.
+> Also fixed: the installed `madcdis/snapshot.h` did not compile downstream
+> (it names `PchCompression` in public signatures but `madc_pch.h` was
+> never installed) — proven both ways by staging an install and compiling a
+> TU that includes only `<madcdis/snapshot.h>`, then reproducing the
+> original `fatal error` with the header removed.
+> Fork unchanged (`1.0-madc.0.47.0` @74e705e4).
+
+> **Earlier (2026-07-26, `develop` — v0.50.0, forest-carriers S5
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_ledger_gate` — the
+> `-static-libmadc` promise: 14 checks over a container the gate freezes
+> itself with `--freeze-ledger=` (the same call the release pack makes).
+> A **baseline leg per program** proves the program is genuinely
+> runtime-needing (it keeps `libmadc.so.0` WITHOUT the flag), so the
+> `-static-libmadc` legs cannot pass vacuously; then try/catch and VLA
+> each emit with **no madc library and no `__madc_*` imports**, output
+> byte-identical to the JIT run, and the try/catch binary runs under an
+> **empty library path**. Failure surfaces are separated: a Tier-B (C++
+> script-lane) program refuses NAMING its symbols, while a carrier with
+> no ledger gets the BUILD-side message and never blames Tier B; `-c`
+> and the `.o` link lane refuse at their own layers.
+> **PRODUCT path** (the real one, no `--forest-bind`): `make release`
+> packs `bin/madc-release` with 240 units **plus the ledger** (2 modules,
+> 22 symbols), that packed binary reports it via `--dump-forest`, emits a
+> try/catch program with **0 `libmadc` DT_NEEDED entries**, and the
+> program runs correctly under `env -i LD_LIBRARY_PATH=/nonexistent`.
+> Packed arbiter **756/0/0/9**; `--exe` lane **740/0**. Unit tests +1
+> (`test_forest_policy`: the ledger carrier probe is silent and
+> policy-free on an empty chain). Fork unchanged (`1.0-madc.0.47.0`
+> @74e705e4).
+
+> **Previous (2026-07-26, `develop` — v0.49.0, forest-carriers S4
+> complete):**
+> fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
+> forest gate green, including the NEW `forest_library_gate` — the
+> shared shape's carrier: nine legs over a staged `bin/` + `lib/`
+> install (thin-CLI live parity; **library-image** bind with `-v` arm
+> naming + byte parity vs `--no-forest-bind`; arm order — the library
+> image beats a present `<exe>.forest` AND a junk `MADC_FOREST`;
+> `<lib>.forest` bind; and the embedding-host legs with no CLI knob:
+> strict+sandboxed binding THROUGH the library image, the
+> `enable_external_forest=false` refusal the S3 slice owed (same env,
+> knob flipped, opposite outcome), strict-on-empty, silent library
+> default). Thin-CLI parity suite (`MADC_BIN=bin/madc-thin`)
+> **756/0/0/9** — the shared-linked CLI behaves exactly like the
+> monolithic one. PRODUCT `--enable-shared` shape: `make release`
+> packs `lib/libmadc.so` (**240 units**), packed arbiter
+> **756/0/0/9** through the library carrier, and the installed tree
+> (133 KB `usr/bin/madc` + 11.5 MB `usr/lib/libmadc.so.0`) binds 240
+> units via `[library-image]`. The DEFAULT monolithic product shape was
+> re-run too (`forest_pack.sh` was refactored this slice): release packs
+> `bin/madc-release` (240 units), packed arbiter **756/0/0/9**.
+> `--exe` lane **740/0**. Unit tests +1
+> (`test_forest_policy`: monolithic image identity). Fork unchanged
+> (`1.0-madc.0.47.0` @74e705e4).
+
+> **Earlier (2026-07-25, `develop` — v0.48.0, forest-carriers S3
 > complete):**
 > fulltest **756 passed, 0 failed, 0 timed out, 9 skipped** with every
 > forest gate green, including the NEW `forest_sidecar_gate` — the

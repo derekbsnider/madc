@@ -1,0 +1,22 @@
+// THE first `cout << string` in a program, under -stdlib=libc++ (task #88's
+// second half / the 28-test bucket root, task #90). libc++ declares
+// basic_string(const _CharT*) as a MEMBER TEMPLATE (an __enable_if_t guard
+// rides a defaulted param), so the class's ctor list holds its varargs
+// declaration-only PLACEHOLDER; the instantiate-and-reselect arm mints the
+// concrete instantiation, and the selection must then prefer the
+// instantiation over ITS OWN placeholder even when their scores tie —
+// the emitted call otherwise names the declaration-only symbol and dies
+// as an undefined MIR import (__compressed_pair_elem's forward ctor was
+// the visible casualty). The pairing is exact via tsubst_source; a blanket
+// placeholder demotion instead hands THIS six-liner's ctor to the copy
+// ctor and recurses to a stack overflow — both failure modes are this
+// gate's negative controls.
+// Oracle: clang++ -stdlib=libc++ prints "H".
+#include <iostream>
+using namespace std;
+int main()
+{
+    string hello = "H";
+    std::cout << hello << std::endl;
+    return 0;
+}

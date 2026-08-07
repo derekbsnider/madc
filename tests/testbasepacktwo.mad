@@ -1,0 +1,47 @@
+// Base-clause pack expansion at TWO elements ([temp.variadic]/5).
+//
+// tests/testbasepack.mad and tests/testbasepacklockstep.mad both expand a pack
+// of ONE, and at one element SPLICE and REPLICATE emit identical tokens — so
+// neither could tell that the replication lane was unreachable for a pure type
+// pack, or that the ctor's parameter pack was being spliced. Both shipped green
+// over three real defects. THIS file is the arity the feature exists for:
+//
+//   struct impl : leaf<0, Hs>...        must become TWO bases, not leaf<0,A,B>
+//   impl(Hs... hs)                      must become TWO NAMED parameters
+//   : leaf<0, Hs>(hs)...                element e must read parameter e
+//
+// The last one is what makes this a value check and not a compile check: with
+// one shared parameter name the object is built from the LAST argument twice
+// and prints `a=9 b=9` — it compiles, runs, exits 0, and is wrong. Reading two
+// DIFFERENT values back is the only thing that catches it.
+//
+// A helper reads each leaf. madc parses neither `m.leaf<0,int>::get()` nor the
+// cast `((leaf<0,int>&)m)` (task #97's family), so a base-qualified probe is not
+// available here; `pick` deduces the base by derived-to-base conversion.
+//
+// Oracle: g++-13 and clang++-18 both print "a=7 b=9".
+#include <cstdio>
+
+template <unsigned I, class H>
+struct leaf
+{
+	H v;
+	H &get() { return v; }
+	leaf(H h) : v(h) {}
+};
+
+template <unsigned I, class H>
+H &pick(leaf<I, H> &l) { return l.get(); }
+
+template <class... Hs>
+struct impl : leaf<0, Hs>...
+{
+	impl(Hs... hs) : leaf<0, Hs>(hs)... {}
+};
+
+int main()
+{
+	impl<int, long> m(7, 9);
+	printf("a=%d b=%ld\n", pick<0, int>(m), pick<0, long>(m));
+	return 0;
+}

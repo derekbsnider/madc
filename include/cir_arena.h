@@ -210,6 +210,18 @@ enum DefFlags : uint32_t {
 						// context so the local-class reuse allowance
 						// (TokenCLASS::parse, `struct _Save_errno`)
 						// applies exactly as live
+	DF_NOEXCEPT_TRUE     = 1u << 29,	// v35: FuncDef::noexcept_spec == NxTrue
+	DF_NOEXCEPT_UNKNOWN  = 1u << 30,	// v35: FuncDef::noexcept_spec == NxUnknown
+						// (neither bit -> NxNone); consumed by the
+						// __is_nothrow_constructible trait so a thawed
+						// class folds it exactly as live (LOADED==PARSED)
+	DF_NSBIND_OVERLOAD_MEMBER = 1u << 0,	// DK_NSBIND-scoped: the imported fn is a MEMBER
+						// of ns::name's overload set ([namespace.udecl]
+						// join — the using-arm's second registration);
+						// the flush joins it back so a bound consumer
+						// ranks the SAME set the freezing parse ranked
+						// (LOADED==PARSED; a smaller thaw-side set split
+						// instantiation identities — stl_vector.h:428)
 };
 
 // Per-method flag bits (methodrec.flags) — the class-membership classification the live
@@ -241,7 +253,7 @@ struct defrec {
 	uint32_t datatype;	// the originating DataType enum value (rawtype seed)
 	uint32_t flags;		// DefFlags
 	uint32_t ns_id;		// defining-namespace intern id (0 = global)
-	uint32_t ref0;		// PTR/REF/CONST: operand type-id; FUNC: return type-id; VAR: type type-id; else 0
+	uint32_t ref0;		// PTR/REF/CONST: operand type-id; FUNC: return type-id; VAR: type type-id; ENUM: fixed-underlying type-id; else 0
 	// struct/class members:
 	uint32_t members_begin;	// WORD offset of the memberrec run in payload
 	uint32_t members_count;

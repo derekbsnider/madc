@@ -28,6 +28,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
@@ -239,9 +240,13 @@ static void cpu_guard_handler(int sig)
     raise(sig);
 }
 
-static void install_resource_guards(size_t project_tus)
+static void install_resource_guards(size_t project_tus,
+                                    const madc::config_settings &cfg)
 {
-    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 0);
+    // Precedence for both guards: environment > madc.ini > baked default
+    // (neither has a CLI flag, so the CLI layer of the rule is vacuous here).
+    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT",
+                               cfg.has_cpu_limit ? (rlim_t)cfg.cpu_limit_secs : 0);
     if ( cpu_secs > 0 ) {
         struct rlimit rl;
         rl.rlim_cur = cpu_secs;
@@ -263,8 +268,12 @@ static void install_resource_guards(size_t project_tus)
     // single file. Give each TU a 128 MB allowance on top of the single-file
     // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
     // so 128 keeps ~2x headroom while a true runaway still trips.
-    // MADC_MEM_LIMIT overrides the computed default verbatim.
-    rlim_t default_mb = 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
+    // MADC_MEM_LIMIT — or a madc.ini mem-limit key — overrides the computed
+    // default verbatim (an explicitly configured ceiling is a ceiling; it does
+    // not silently grow with the manifest).
+    rlim_t default_mb = cfg.has_mem_limit
+                      ? (rlim_t)cfg.mem_limit_mb
+                      : 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
     rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
 #ifdef __APPLE__
     // darwin does not enforce RLIMIT_AS (setrlimit rejects finite values
@@ -491,6 +500,10 @@ static void print_usage(const char *prog)
 "  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), c++NN, or madc\n"
 "                          (default; C++ keywords reserved). A .c TU under\n"
 "                          --project defaults to C mode.\n"
+"  -stdlib=<lib>           C++ standard library flavor (clang's spelling):\n"
+"                          libstdc++ / libc++, whichever this build could probe.\n"
+"                          REPLACES the C++ include search list, as clang does —\n"
+"                          it is not the same as putting the library first with -I.\n"
 "  -D<name>[=value]        define a preprocessor macro\n"
 "  -I<dir>                 add an include search directory\n"
 "  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
@@ -522,6 +535,10 @@ static void print_usage(const char *prog)
 "  --freeze-mir-cache      also compile the frozen module and pack its MIR\n"
 "                          binary form as a cache segment (consumers skip\n"
 "                          node rebuild + c2mir; absent = normal fallback)\n"
+"  --freeze-ledger=<src>   also compile this C-lane runtime source into the\n"
+"                          container's AOT ledger segment, so -static-libmadc\n"
+"                          programs carry it (repeatable; the build's list is\n"
+"                          scripts/ledger_sources.txt)\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -543,8 +560,10 @@ static void print_usage(const char *prog)
 "                          Discovery order (first usable container wins):\n"
 "                          1. this binary's own image (ELF trailer /\n"
 "                             Mach-O __MADC,__forest section),\n"
-"                          2. <exe>.forest beside the binary (sidecar),\n"
-"                          3. the $MADC_FOREST path\n"
+"                          2. the libmadc image, when linked shared,\n"
+"                          3. <exe>.forest, then <lib>.forest (sidecars),\n"
+"                          4. the $MADC_FOREST path,\n"
+"                          5. the madc.ini `forest' key\n"
 "  --no-forest-bind        force live parse (overrides the default and an\n"
 "                          explicit --forest-bind; the A/B measurement lever)\n"
 "  --dump-registered       parse, then print the registered name maps\n"
@@ -560,6 +579,21 @@ static void print_usage(const char *prog)
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "\n"
+"Configuration file (optional; CLI > environment > madc.ini > defaults):\n"
+"  --config=<file>         read this madc.ini instead of searching; a file\n"
+"                          that fails to load is an error, never ignored\n"
+"  --no-config             skip the search entirely (hermetic builds)\n"
+"  Searched in order, first existing file wins (never merged): ./madc.ini,\n"
+"  $XDG_CONFIG_HOME/madc/madc.ini (or ~/.config/madc/madc.ini), then the\n"
+"  system config dir. Keys — an unknown one is an error, not a warning:\n"
+"    std = c17            default dialect (a --std= on the CLI wins)\n"
+"    stdlib = libc++      default C++ stdlib flavor (a -stdlib= on the CLI wins)\n"
+"    forest = <file>      frozen forest container (discovery arm 5)\n"
+"    include = <dir>      extra include dir, repeatable, searched after -I\n"
+"    cpu-limit = <secs>   MADC_CPU_LIMIT default (0 = off)\n"
+"    mem-limit = <MB>     MADC_MEM_LIMIT default (0 = off)\n"
+"  Relative paths resolve against the config file's own directory; ~/ works.\n"
+"\n"
 "Environment:\n"
 "  MADC_CPU_LIMIT=<secs>   arm an RLIMIT_CPU guard (default: off — madc also\n"
 "                          runs the program, so no finite default is safe;\n"
@@ -567,9 +601,12 @@ static void print_usage(const char *prog)
 "  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
 "                          mappings); default 4096 MB + 128 MB per --project\n"
 "                          TU; 0 disables. Trips name the knob.\n"
-"  MADC_FOREST=<file>      frozen forest container to bind when neither the\n"
-"                          binary's own image nor the <exe>.forest sidecar\n"
-"                          carries one (discovery arm 3)\n"
+"  MADC_FOREST=<file>      frozen forest container to bind when no earlier\n"
+"                          discovery arm (binary image, libmadc image,\n"
+"                          <exe>.forest / <lib>.forest sidecars) carries one;\n"
+"                          beats the madc.ini `forest' key, which is last\n"
+"  XDG_CONFIG_HOME=<dir>   where the madc.ini search looks for the user config\n"
+"                          (<dir>/madc/madc.ini; default ~/.config)\n"
 "\n"
 "AOT output (gcc vocabulary; do not run):\n"
 "  -c [-o file.o]          compile to a relocatable native object\n"
@@ -582,6 +619,20 @@ static void print_usage(const char *prog)
 "                          the ELF directly (no external toolchain); needs\n"
 "                          libmadc.so at run time (DT_RUNPATH is set);\n"
 "                          position-independent (PIE) by default, gcc parity\n"
+"  -static-libmadc         carry the madc runtime pieces the program needs\n"
+"                          INSIDE the emitted image (from this binary's AOT\n"
+"                          ledger), so it runs with no madc library at all;\n"
+"                          libc/libstdc++ stay dynamic. Covers the C lane\n"
+"                          (try/catch, VLA scope exit); a program needing the\n"
+"                          C++ script-lane runtime refuses, naming the\n"
+"                          symbols. -static is an alias (gcc -static-libgcc\n"
+"                          precedent)\n"
+"  -fno-eval-shims         leave the __madc_shim_* host-call adapters out of\n"
+"                          the artifact: it will not be called through the\n"
+"                          value ABI by a libmadc host. An executable emit\n"
+"                          implies this; pass it when compiling .o files you\n"
+"                          will link with -static-libmadc (the adapters need\n"
+"                          value-ABI accessors, which are not on the ledger)\n"
 "  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
 "                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
@@ -656,6 +707,7 @@ int main(int argc, char **argv)
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
     bool freeze_mir_cache = false;        // --freeze-mir-cache: pack the compiled MIR module blob
+    std::vector<std::string> freeze_ledger_srcs;  // --freeze-ledger=: AOT ledger sources (S5)
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
@@ -664,6 +716,9 @@ int main(int argc, char **argv)
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
     bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
     bool no_forest_bind = false;          // --no-forest-bind: force live parse (overrides the default and --forest-bind)
+    const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
+    bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
+    bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -763,6 +818,17 @@ int main(int argc, char **argv)
             if ( *name )
                 prog->disabled_builtin_names.insert(name);
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-fno-eval-shims") == 0
+                || strcmp(argv[i], "-feval-shims") == 0) {
+            // Whether this artifact can be host-called through the value ABI
+            // is a property of the BUILD, and for a .o only the build knows:
+            // an executable never can (implied), a shared object usually can,
+            // and a .o headed for a standalone link never will. Same shape as
+            // -fPIC — the object's intended use, stated at compile time.
+            // Emit-lane state (like -static-libmadc), so every lane —
+            // single-TU, --project, .o link — sees the same answer.
+            madc_no_eval_shims = strcmp(argv[i], "-fno-eval-shims") == 0;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
             filearg = i + 1;
@@ -797,11 +863,29 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--freeze-mir-cache") == 0) {
             freeze_mir_cache = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze-ledger=", 16) == 0) {
+            // Repeatable: each C-lane runtime source compiled into the
+            // container's AOT ledger segment (forest-carriers S5). The
+            // canonical list is scripts/ledger_sources.txt, handed over by
+            // scripts/forest_pack.sh — never spelled out here.
+            freeze_ledger_srcs.push_back(argv[i] + 16);
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
             madc_pack_forest_path = argv[i] + 14;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-static-libmadc") == 0
+                   || strcmp(argv[i], "-static") == 0) {
+            // gcc's -static-libgcc precedent: carry the madc runtime pieces
+            // this program needs INSIDE the emitted image (from the AOT
+            // ledger), so it runs with no madc library installed. libc and
+            // libstdc++ stay dynamic. `-static` is accepted as the alias
+            // where full-static cannot exist (darwin has no static
+            // libSystem) and is reserved for a future true full-static on
+            // Linux — same promise either way today.
+            madc_static_libmadc = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--run-frozen") == 0) {
             run_frozen = true;
@@ -820,18 +904,30 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--forest-bind") == 0) {
             // Phase 6 (opt-in): bind grove-backed system #includes from the
             // blob appended to this executable instead of live-parsing them.
-            prog->forest_bind_enabled = true;
+            prog->registration_policy.enable_forest_bind = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--forest-bind=", 14) == 0) {
             // --forest-bind=PATH: bind from a standalone --freeze container
             // (dev/testing without appending to the binary).
-            prog->forest_bind_enabled = true;
+            prog->registration_policy.enable_forest_bind = true;
             prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-forest-bind") == 0) {
             // Force live parse: overrides both the packed-binary default and
             // an explicit --forest-bind (the A/B lever for measurement).
             no_forest_bind = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--config=", 9) == 0) {
+            // madc.ini (S6): this file is the WHOLE search — a named config
+            // that silently failed to load is the same failure class as a
+            // named forest container that was ignored.
+            config_path = argv[i] + 9;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-config") == 0) {
+            // Skip the madc.ini lookup entirely (hermetic builds and test
+            // runs: no ambient file in the CWD or the user's config dir can
+            // change what this compile does).
+            no_config = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-registered") == 0) {
             dump_registered = true;
@@ -878,9 +974,20 @@ int main(int argc, char **argv)
             do_emit = true;
             filearg = i + 1;
         } else if (prog->set_language_standard_option(argv[i])) {
+            cli_set_std = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--std=", 6) == 0) {
             std::cerr << "Unknown --std target: " << (argv[i] + 6) << std::endl;
+            return 1;
+        } else if (prog->set_stdlib_flavor_option(argv[i])) {
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "-stdlib=", 8) == 0) {
+            // Which flavors exist is a property of the BUILD host (what
+            // gen_sys_includes.sh could probe), so name the ones this binary
+            // actually has rather than the ones the flag could spell.
+            std::cerr << "Unknown -stdlib flavor: " << (argv[i] + 8)
+                      << " (this madc was built with: " << prog->stdlib_flavor_names()
+                      << ")" << std::endl;
             return 1;
         } else {
             filearg = i;
@@ -900,6 +1007,58 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 0;
     }
+
+    // madc.ini (forest-carriers S6). The precedence rule is
+    // CLI > environment > madc.ini > baked defaults, and it is enforced HERE,
+    // in one visible place:
+    //   - the command line has already been parsed, so a --std= on it wins
+    //     (cli_set_std) and its -I dirs are already in front of these;
+    //   - the environment beats these because each consumer reads its env var
+    //     first (MADC_FOREST is discovery arm 4, the forest key is arm 5;
+    //     install_resource_guards checks MADC_*_LIMIT before the ini value);
+    //   - what is left is the baked default, which these replace.
+    madc::config_settings config;
+    if ( config_path && !*config_path )
+    {
+        std::cerr << "madc: --config= needs a file path" << std::endl;
+        return 1;
+    }
+    // Both together is a contradiction, and resolving it either way would mean
+    // silently ignoring one of two explicit instructions.
+    if ( config_path && no_config )
+    {
+        std::cerr << "madc: --config= and --no-config may not be used together"
+                  << std::endl;
+        return 1;
+    }
+    if ( !no_config && !madc::config_load(config_path, config, std::cerr) )
+        return 1;
+    if ( config.has_std && !cli_set_std
+      && !prog->set_language_standard(config.std_option) )
+    {
+        std::cerr << "madc: " << config.source_path << ": unknown std '"
+                  << config.std_option << "'" << std::endl;
+        return 1;
+    }
+    // A -stdlib= on the command line already set prog->stdlib_flavor, and CLI
+    // outranks madc.ini — same precedence as `std` above.
+    if ( config.has_stdlib && !prog->stdlib_flavor
+      && !prog->set_stdlib_flavor_option("-stdlib=" + config.stdlib_option) )
+    {
+        std::cerr << "madc: " << config.source_path << ": unknown stdlib '"
+                  << config.stdlib_option << "' (this madc was built with: "
+                  << prog->stdlib_flavor_names() << ")" << std::endl;
+        return 1;
+    }
+    // Appended AFTER the command line's -I dirs (gcc searches configured
+    // directories last).
+    for ( const std::string &dir : config.include_dirs )
+        prog->add_include_dir(dir);
+    // Discovery arm 5, on both the program and the engine — the engine's copy
+    // is what --project TU programs and runtime-eval children inherit (the
+    // MADC_FOREST_EXPECT_* block above sets the pair the same way).
+    prog->registration_policy.forest_config_path = config.forest;
+    engine.registration_policy.forest_config_path = config.forest;
 
     // A .json input file with no explicit --project defaults to project mode:
     // `madc compile_commands.json [args...]` == `madc --project compile_commands.json
@@ -953,7 +1112,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    install_resource_guards(manifest.tus.size());
+    install_resource_guards(manifest.tus.size(), config);
 
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
     // system #includes from the blob appended to this executable —
@@ -963,11 +1122,11 @@ int main(int argc, char **argv)
     // freezing stays an explicit test-harness request, never the default.
     if ( no_forest_bind )
     {
-        prog->forest_bind_enabled = false;
+        prog->registration_policy.enable_forest_bind = false;
         prog->forest_bind_path.clear();
     }
-    else if ( !prog->forest_bind_enabled && !freeze_path && !freeze_run )
-        prog->forest_bind_enabled = true;
+    else if ( !prog->registration_policy.enable_forest_bind && !freeze_path && !freeze_run )
+        prog->registration_policy.enable_forest_bind = true;
 
     // AOT (-c / -shared / -o / --emit-*): compile through gen object-capture
     // mode and write a native artifact instead of running. -o without -c or
@@ -985,6 +1144,20 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // -g on a Mach-O target: neither the executable writer nor the .o writer
+    // emits __DWARF sections yet. Say so ONCE, here, where the user's -g is
+    // visible, and continue without debug info — the alternative was the
+    // executable writer silently dropping an attached debug builder while the
+    // .o writer refused the emit outright.
+#if MADC_TARGET_APPLE_P
+    if ( madc_debug_info )
+    {
+        std::cerr << "madc: -g: DWARF is not emitted for Mach-O targets yet;"
+                     " continuing without debug info" << std::endl;
+        madc_debug_info = false;
+    }
+#endif
+
     // --pack-forest rides a LINKED image (executable or shared object): a
     // relocatable .o has no self-image carrier, and a JIT run produces no
     // image at all. One chokepoint for every lane (source, .o link,
@@ -995,6 +1168,20 @@ int main(int argc, char **argv)
     {
         std::cerr << "madc: --pack-forest requires a linked native output"
                      " (-o executable or -shared)" << std::endl;
+        return 1;
+    }
+
+    // -static-libmadc rides a LINKED image too: the runtime pieces are merged
+    // at the link that produces the final image, exactly as gcc resolves
+    // -static-libgcc there. Putting them in a .o would duplicate them into
+    // every object of a multi-TU program.
+    if ( madc_static_libmadc
+         && (!emit_native || compile_object || emit_object_path
+             || emit_relocatable) )
+    {
+        std::cerr << "madc: -static-libmadc requires a linked native output"
+                     " (-o executable or -shared); the runtime is merged at"
+                     " the final link" << std::endl;
         return 1;
     }
 
@@ -1019,7 +1206,7 @@ int main(int argc, char **argv)
                          : generic_output_path ? generic_output_path
                          : "a.out";
         return madc_cir_link_objects(run_object_paths, kind, outp,
-                                     cc_link_args) == 0 ? 0 : 1;
+                                     cc_link_args, prog.get()) == 0 ? 0 : 1;
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
@@ -1057,7 +1244,8 @@ int main(int argc, char **argv)
         for ( int i = filearg; i < argc; ++i )
             oargv.push_back(argv[i]);
         return madc_cir_run_objects(run_object_paths,
-                                    (int)oargv.size(), oargv.data());
+                                    (int)oargv.size(), oargv.data(),
+                                    prog->active_stdlib_flavor());
     }
 
     // --run-frozen: thaw + compile + run a frozen forest container — no
@@ -1187,7 +1375,7 @@ int main(int argc, char **argv)
 			        : "a.out";   // -r too: gcc emits a relocatable a.out
 	    int erc = madc_project_emit_native(engine, manifest, kind, outpath,
 					       cc_link_args,
-					       prog->forest_bind_enabled,
+					       prog->registration_policy.enable_forest_bind,
 					       prog->forest_bind_path);
 	    return erc == 0 ? 0 : 1;
 	}
@@ -1198,7 +1386,7 @@ int main(int argc, char **argv)
 	int run_argc = argc - filearg;
 	char **run_argv = argv + filearg;
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
-				      prog->forest_bind_enabled,
+				      prog->registration_policy.enable_forest_bind,
 				      prog->forest_bind_path,
 				      prog->class_pattern_live_capture);
 	return (rc < 0) ? 1 : rc;
@@ -1501,8 +1689,19 @@ int main(int argc, char **argv)
 	// a forest snapshot container; do not run.
 	if ( freeze_path )
 	{
+	    // --freeze-ledger=: compile the C-lane runtime sources into ledger
+	    // modules FIRST (each an independent compile with its own Program),
+	    // then pack them alongside the groves. A ledger failure fails the
+	    // freeze — a container that silently lacks the ledger it was asked
+	    // for is worse than no container at all.
+	    std::vector<cir_ledger_module> ledger;
+	    if ( !freeze_ledger_srcs.empty()
+		 && !madc_cir_ledger_compile(engine, freeze_ledger_srcs, ledger,
+						 prog.get()) )
+		return 1;
 	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
-				      freeze_append, freeze_mir_cache);
+				      freeze_append, freeze_mir_cache,
+				      ledger.empty() ? NULL : &ledger);
 	    print_stats();
 	    return frc == 0 ? 0 : 1;
 	}
@@ -1531,6 +1730,10 @@ int main(int argc, char **argv)
 	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
 	    std::vector<char *> cargv;
 	    cargv.push_back(argv[0]);
+	    // Verbosity crosses the re-exec: the thaw side's diagnostics
+	    // (trap-bind list, link trace) are DBG-gated in the CHILD.
+	    if ( madc_verbose )
+		cargv.push_back((char *)"-v");
 	    cargv.push_back((char *)opt.c_str());
 	    for ( int i = filearg + 1; i < argc; ++i )   // program args after the source
 		cargv.push_back(argv[i]);

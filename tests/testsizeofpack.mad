@@ -1,0 +1,48 @@
+// [expr.sizeof]/5 — `sizeof...(P)` yields the pack's ARITY.
+//
+// evaluate_type_query parses the sizeof OPERAND and implements no `...` arm, so
+// the operator is honoured by FOLDING it during substitution. (`sizeof` IS a
+// keyword — a soft-reserved TokenCppKeyword that is_contextual_identifier_token
+// deliberately admits — so an unfolded one degrades to a VARIABLE lookup rather
+// than a syntax error, which is what made this failure silent.)
+// The free-function-template path has two
+// branches — single-element, and pack_elems.size() >= 2 — and only the single
+// one carried the fold. At arity 1 this test would pass with the bug present,
+// which is exactly why no existing variadic gate caught it: the multi branch
+// sets multi_done and skips the loop the fold lived in.
+//
+// So this gate expands TWO and THREE elements. With the fold missing from the
+// multi branch, `sizeof` survives substitution as a bare identifier, the
+// instantiation throws "Expecting '(' or identifier after sizeof", the
+// placeholder is kept SILENTLY, and the program dies at MIR link with
+// "import of undefined item probe" — an error naming neither sizeof nor the
+// template body.
+//
+// one=1 is the lower bound (the branch that always worked); two=2 and three=3
+// are the ones that regressed. A void-returning case is included because the
+// first reducer that found this printed from a void function, and the return
+// type turned out to be irrelevant — keeping it pins that.
+//
+// Oracle: g++-13 and clang++-18 both print "one=1 two=2 three=3 void=2".
+#include <cstdio>
+
+template <class... Tf>
+int count(Tf... t)
+{
+	return (int)sizeof...(Tf);
+}
+
+template <class... Tf>
+void vcount(Tf... t)
+{
+	printf("void=%d\n", (int)sizeof...(Tf));
+}
+
+int main()
+{
+	printf("one=%d\n", count(1));
+	printf("two=%d\n", count(1, 2L));
+	printf("three=%d\n", count(1, 2L, 'c'));
+	vcount(1, 2L);
+	return 0;
+}

@@ -1,0 +1,30 @@
+// libc++ __compressed_pair reduced: an EMPTY-base elem specialization whose
+// accessor returns *this upcast to the base reference, consumed through
+// static_cast<Base&>(*this).get() on a two-base pair — the exact shape of
+// basic_string's __rep/allocator storage. Exercises: member access on a
+// cast-to-reference head (parser), the receiver addressing for the preserved
+// operand lvalue (CIR), and the derived-to-base adjust in the ref-cast
+// lowering (CIR).
+// Oracle: g++ 13 == clang++-18 print "42 7".
+#include <cstdio>
+struct Empty { int tag() const { return 7; } };
+template <class T, int I, bool E>
+struct Elem { T v; T& get() { return v; } };
+template <class T, int I>
+struct Elem<T, I, true> : private T {
+  T& get() { return *this; }
+};
+template <class A, class B>
+class CP : private Elem<A,0,false>, private Elem<B,1,true> {
+public:
+  typedef Elem<A,0,false> B1;
+  typedef Elem<B,1,true> B2;
+  A& first() { return static_cast<B1&>(*this).get(); }
+  B& second() { return static_cast<B2&>(*this).get(); }
+};
+int main() {
+  CP<long, Empty> p;
+  p.first() = 42;
+  printf("%ld %d\n", p.first(), p.second().tag());
+  return 0;
+}

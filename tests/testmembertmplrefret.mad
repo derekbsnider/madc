@@ -1,0 +1,73 @@
+// A member function template whose RETURN TYPE is a reference to its own
+// template parameter (`T &f(...)`), sitting in an overload set with a variadic
+// sibling. This is the C++ SFINAE detection idiom, and libc++ writes
+// __libcpp_is_referenceable with exactly it:
+//
+//	struct __libcpp_is_referenceable_impl {
+//	  template <class _Tp> static _Tp& __test(int);
+//	  template <class _Tp> static false_type __test(...);
+//	};
+//
+// resolve_type_token_range required its token range to be FULLY consumed (the
+// rule that closed the `enable_if<false,void>::type` leak), but the resolver it
+// calls stops at the type NAME and leaves a trailing `&` on the stream. So a
+// reference return NEVER resolved, and the caller
+// (resolve_member_template_call_return_type) treated that as a substitution
+// failure, fell back to enumerating same-name candidates, and SILENTLY answered
+// with the variadic sibling's return type.
+//
+// Consequence at the library level: `__libcpp_is_referenceable<int>::value`
+// came out FALSE, so libc++'s add_pointer selected its `false` specialization
+// and `std::add_pointer<int>::type` was `int` instead of `int*` — a silent
+// wrong answer (exit 0, wrong values), which tests/testaddpointer.mad now
+// pins under -stdlib=libc++.
+//
+// Asserted here, all against the one shared resolver:
+//   * ref     — the dependent REFERENCE return wins over the variadic sibling
+//   * val     — the dependent BY-VALUE return (this one always worked)
+//   * concrete— a non-dependent return (also always worked)
+//   * solo    — a reference return with NO sibling (worked; the sibling is what
+//               made the failure visible, so keep the control)
+//   * plain   — a NON-template overload pair, which ranked correctly all along
+//               and must keep doing so
+// sizeof of the resolved type is the oracle: 4 == int/int&, 1 == ft.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	4 4 8 4 4 1
+#include <cstdio>
+
+struct ft { char c; };
+
+struct refset {
+	template <class T> static T &pick(int);
+	template <class T> static ft pick(...);
+};
+struct valset {
+	template <class T> static T pick(int);
+	template <class T> static ft pick(...);
+};
+struct concreteset {
+	template <class T> static long pick(int);
+	template <class T> static ft pick(...);
+};
+struct solo {
+	template <class T> static T &only(int);
+};
+struct plainset {			// not templates — the always-worked control
+	static int &pick(int);
+	static ft pick(...);
+};
+
+using RRef      = decltype(refset::pick<int>(0));	// int&  -> 4
+using RVal      = decltype(valset::pick<int>(0));	// int   -> 4
+using RConcrete = decltype(concreteset::pick<int>(0));	// long  -> 8
+using RSolo     = decltype(solo::only<int>(0));		// int&  -> 4
+using RPlain    = decltype(plainset::pick(0));		// int&  -> 4
+
+int main()
+{
+	printf("%zu %zu %zu %zu %zu %zu\n",
+	       sizeof(RRef), sizeof(RVal), sizeof(RConcrete),
+	       sizeof(RSolo), sizeof(RPlain), sizeof(ft));
+	return 0;
+}

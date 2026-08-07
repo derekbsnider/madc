@@ -1,0 +1,53 @@
+// An explicitly-defaulted DEFAULT constructor IS the implicitly-defined one
+// ([dcl.fct.def.default], [except.spec]p7): its noexcept-ness is the memberwise
+// CONJUNCTION, never a written specifier — it has none to write.
+//
+// madc parses `= default` on the default ctor by rewriting it to an empty body
+// (defaulted_member_parses_empty), because the ctor-prologue machinery already
+// synthesizes exactly what the implicit ctor does. The cost is that afterwards
+// nothing can tell it from a user-written `X() {}`: it carries no
+// defaulted_or_deleted flag and no noexcept spec. __is_nothrow_constructible
+// read that absent spec as "unknown" and refused the whole trait (-1), so every
+// class with a defaulted default ctor was unanswerable.
+//
+// That is what blocked libc++'s <mutex>:47 —
+//   static_assert(is_nothrow_default_constructible<mutex>::value, ...)
+// — and because the refusal happened inside a trait template's base clause, the
+// throw was swallowed and reported as the generic "Expecting integer constant
+// expression", pointing nowhere near the cause. The class flag
+// has_defaulted_default_ctor is what distinguishes the two, and it was never
+// set for this ctor: record_dropped_special_ctor owns that flag but keys on
+// defaulted_or_deleted, which this path deliberately leaves clear.
+//
+// The mutex-shaped case (union member, deleted copy, declared-only dtor) is
+// asserted here too: that combination is the actual libc++ std::mutex.
+//
+// A user-written `X() {}` stays deliberately unanswerable — the lexer erases
+// conditional `noexcept(expr)`, so an absent spec really is unknown there — so
+// it is NOT exercised here; only the defaulted form has a knowable answer.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	1 1 1 1 1 1 0
+#include <cstdio>
+
+struct plainm { int a; long b; };
+union u { plainm d; char s[40]; long al; };
+
+struct defd       { plainm m; defd() = default; };
+struct defd_nsdmi { int m = 7; defd_nsdmi() = default; };
+struct defd_dtor  { plainm m; defd_dtor() = default; ~defd_dtor(); };
+struct mtxlike    { u m; mtxlike() = default; mtxlike(const mtxlike &) = delete; ~mtxlike(); };
+struct nodefault  { plainm m; nodefault() = delete; };
+
+int main()
+{
+	printf("%d %d %d %d %d %d %d\n",
+	       __is_nothrow_constructible(defd),		// defaulted, plain member
+	       __is_nothrow_constructible(defd_nsdmi),		// + an NSDMI
+	       __is_nothrow_constructible(defd_dtor),		// + a declared-only dtor
+	       __is_nothrow_constructible(mtxlike),		// the std::mutex shape
+	       __is_constructible(mtxlike),			// the plain form agrees
+	       __is_nothrow_constructible(u),			// the union alone
+	       __is_nothrow_constructible(nodefault));		// = delete still wins
+	return 0;
+}

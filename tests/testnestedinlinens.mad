@@ -1,0 +1,23 @@
+// Reducer for math.h:414 "Unknown namespace 'std::__math'": a namespace
+// nested inside an INLINE namespace must be reachable through the parent
+// qualifier ([namespace.qual] applies to the whole inline set). libc++
+// registers __math as std::__1::__math; math.h says `using std::__math::fpclassify;`.
+#include <stdio.h>
+
+namespace std { inline namespace __1 { namespace __math {
+int fpc(int x) { return x + 40; }
+}}}
+
+using std::__math::fpc;
+
+namespace outer { inline namespace v1 { namespace deep {
+int nine() { return 9; }
+}}}
+
+int main()
+{
+	printf("%d\n", fpc(2));
+	printf("%d\n", outer::deep::nine());      // expression path
+	printf("%d\n", std::__math::fpc(3));      // fully qualified through inline
+	return 0;
+}

@@ -1,0 +1,53 @@
+// Static DATA members that have real STORAGE — the twin of
+// teststaticconstmember.mad, which covers the in-class-constant kind.
+//
+// `int counter::hits = 5;` is what declares the storage, and `counter::hits`
+// must read and write it. Both were broken and neither was loud about it: the
+// resolver folded every non-class-typed static to its (absent) in-class
+// constant, so a read produced a silent 0 whatever the definition said, and a
+// write reported "lvalue required as left operand of assignment".
+//
+// Also covers `Class::member` as a CAST operand. The postfix/cast operand path
+// knew only namespace and scoped-enum-tag qualifiers, so `(int)counter::hits`
+// reported "undeclared identifier 'counter'" while a bare `counter::hits` on
+// the same line parsed fine — and a cast is the usual spelling for trait use.
+// The namespace form is kept here as a regression guard, since that arm is
+// right next to the one this exercises.
+//
+// Matches g++ -std=c++11 and clang++ -std=c++11.
+#include <stdio.h>
+
+struct counter {
+	static int hits;		// storage; defined below
+	static const int limit = 7;	// in-class constant; folds
+	enum { tag = 3 };		// class-scope enumerator
+};
+
+int counter::hits = 5;
+
+namespace N { const int scoped = 11; }
+
+// A TEMPLATE-ID qualifier is the same operand-path question one step harder,
+// and it is how every type trait is spelled. Both the unqualified and the
+// namespace-qualified form must work as a cast operand, partial specializations
+// included — `(int)std::is_same<A,B>::value` is the shape that matters.
+template <class T, class U> struct same_p { static const bool value = false; };
+template <class T> struct same_p<T, T> { static const bool value = true; };
+
+namespace M {
+	template <class T, class U> struct sp { static const bool value = false; };
+	template <class T> struct sp<T, T> { static const bool value = true; };
+}
+
+int main()
+{
+	printf("read=%d cast=%d\n", counter::hits, (int)counter::hits);
+	counter::hits = 9;
+	printf("write=%d bump=%d\n", counter::hits, counter::hits + 1);
+	printf("konst=%d castkonst=%d\n", counter::limit, (int)counter::limit);
+	printf("enumtag=%d ns=%d\n", (int)counter::tag, (int)N::scoped);
+	printf("tmpl=%d %d nstmpl=%d %d\n",
+	       (int)same_p<int, int>::value, (int)same_p<int, long>::value,
+	       (int)M::sp<int, int>::value, (int)M::sp<int, long>::value);
+	return 0;
+}

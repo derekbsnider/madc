@@ -32,6 +32,18 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
+#include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
+
+// Out-of-line anchor for intern_keyed_map's env-gated write trap
+// (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
+// catch every string-keyed insertion of a poisoned key, whoever the caller.
+namespace madc { namespace dis {
+void madcdis_mapwrite_trap_hit(const char *key)
+{
+    fprintf(stderr, "[maptrap] write key=%s\n", key);
+}
+} }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
@@ -166,6 +178,27 @@ static uint32_t read_literal_escape_value(Source &source, char esc)
 	    }
 	    return val;
 	}
+	case 'u': case 'U': {
+	    // Universal-character-name ([lex.charset]): \uXXXX / \UXXXXXXXX.
+	    // Only the wide/prefixed-literal reader routes escapes here, so
+	    // narrow-string escape handling is untouched.
+	    int need = esc == 'u' ? 4 : 8;
+	    uint32_t val = 0;
+	    int dig = 0;
+	    while ( dig < need && source.good() )
+	    {
+		int c = source.peek();
+		int d = (c >= '0' && c <= '9') ? c - '0'
+		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if ( d < 0 )
+		    break;
+		val = (val << 4) | (uint32_t)d;
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
 	case '0': case '1': case '2': case '3':
 	case '4': case '5': case '6': case '7': {
 	    uint32_t val = (uint32_t)(esc - '0');
@@ -201,6 +234,32 @@ static void append_narrow_string_as_wide(std::string &out,
 	append_wide_codepoint(out, (uint32_t)c);
 }
 
+// Encode one codepoint as UTF-8 bytes (u8"..." literal storage — madc narrow
+// strings are UTF-8 byte strings, so a u8 string IS a narrow string).
+static void append_utf8_codepoint(std::string &out, uint32_t cp)
+{
+    if ( cp < 0x80 )
+	out += (char)cp;
+    else if ( cp < 0x800 )
+    {
+	out += (char)(0xC0 | (cp >> 6));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else if ( cp < 0x10000 )
+    {
+	out += (char)(0xE0 | (cp >> 12));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+    else
+    {
+	out += (char)(0xF0 | (cp >> 18));
+	out += (char)(0x80 | ((cp >> 12) & 0x3F));
+	out += (char)(0x80 | ((cp >> 6) & 0x3F));
+	out += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
 static std::string narrow_string_as_wide(const std::string &narrow)
 {
     std::string out;
@@ -208,13 +267,17 @@ static std::string narrow_string_as_wide(const std::string &narrow)
     return out;
 }
 
-TokenBase *Program::read_wide_literal()
+TokenBase *Program::read_wide_literal(const std::string &prefix)
 {
     char quote = source.get();
     int row = source.line();
     int col = source.column();
     if ( quote == '"' )
     {
+	// u"..." (UTF-16 units) has no faithful storage in the 4-byte-unit
+	// wide model or the narrow byte model — loud, not silently wrong.
+	if ( prefix == "u" )
+	    throw "UTF-16 string literals (u\"...\") are not supported";
 	std::string bytes;
 	while ( source.good() && source.peek() != '"' )
 	{
@@ -228,7 +291,13 @@ TokenBase *Program::read_wide_literal()
 	    }
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
-	    append_wide_codepoint(bytes, cp);
+	    // u8"..." stores UTF-8 bytes (a narrow madc string IS UTF-8);
+	    // L"..." / U"..." store 4-byte units (wchar_t and char32_t share
+	    // the 32-bit layout on this ABI).
+	    if ( prefix == "u8" )
+		append_utf8_codepoint(bytes, cp);
+	    else
+		append_wide_codepoint(bytes, cp);
 	}
 	if ( !source.good() )
 	{
@@ -236,7 +305,7 @@ TokenBase *Program::read_wide_literal()
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return make_str(bytes, true);
+	return make_str(bytes, prefix != "u8");
     }
 
     uint32_t cp = 0;
@@ -259,7 +328,12 @@ TokenBase *Program::read_wide_literal()
     }
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
-    ti->setDataType(&ddINT32);
+    // [lex.ccon] literal types: L'' -> wchar_t (int32 here), U'' -> char32_t
+    // (uint32), u'' -> char16_t (uint16), u8'' -> char8_t (uint8).
+    ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
+		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
+		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
+		  : static_cast<DataDef *>(&ddINT32));
     return ti;
 }
 
@@ -412,11 +486,39 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
     return saw_any;
 }
 
-static const char *auto_include_embedded_header_for_identifier(const std::string &word)
+static const char *auto_include_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
 	{"string", "string"},
 	{"stringstream", "sstream"},
+
+	{"cout", "iostream"},
+	{"cin", "iostream"},
+	{"cerr", "iostream"},
+	{"clog", "iostream"},
+	{"endl", "iostream"},
+
+	{"ifstream", "fstream"},
+	{"ofstream", "fstream"},
+	{"fstream", "fstream"},
+
+	{"getline", "string"},
+	{"to_string", "string"},
+	{"stoi", "string"},
+	{"stol", "string"},
+	{"stod", "string"},
+
+	{"vector", "vector"},
+	{"map", "map"},
+	{"set", "set"},
+
+	{"php", "ns_php"},
+	{"perl", "ns_perl"},
+	{"python", "ns_python"},
+	{"ruby", "ns_ruby"},
+	{"js", "ns_js"},
+	{"rust", "ns_rust"},
+	{"madc", "ns_madc"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -495,9 +597,17 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"string",
 	"sstream",
 	"iostream",
+	"fstream",
 	"vector",
 	"map",
 	"set",
+	"ns_php",
+	"ns_perl",
+	"ns_python",
+	"ns_ruby",
+	"ns_js",
+	"ns_rust",
+	"ns_madc",
 	NULL
     };
 
@@ -583,8 +693,25 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 	break;
     }
 
-    const char *header = auto_include_embedded_header_for_identifier(word);
+    const char *header = auto_include_header_for_identifier(word);
     if ( !header )
+	return false;
+
+    // Host policy must not be bypassed by the auto-include convenience: the
+    // literal-include path deliberately falls through to the filesystem when
+    // an embedded stub is policy-disallowed (explicit includes resolve or
+    // error, gcc canon), and include/madc/ can exist on disk — so a QUEUED
+    // disallowed header would serve anyway. An identifier match never queues
+    // one; the name stays unknown and the parse-time diagnostic ("Unknown
+    // namespace or class 'php'") is the host's contract
+    // (test_libmadc_program security_policy case).
+    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
+	return false;
+    // The namespace-head table entries additionally respect the per-namespace
+    // registration policy (security_policy.allow_*_namespace) — the check
+    // answers true for every non-namespace word, so the std-surface entries
+    // are unaffected.
+    if ( !is_namespace_registration_enabled(word) )
 	return false;
 
     pending_auto_include_headers.insert(header);
@@ -692,57 +819,24 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const std::string &header = *hi;
-	    std::string include_key = std::string("<") + header + ">";
-	    if ( !should_tokenize_include(include_key) )
-		continue;
-
-	    std::string pch_path;
-	    if ( find_filesystem_precompiled_header(*this, header, true, pch_path) )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( load_precompiled_header_file(pch_path, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, pch_path, pch_tokens);
-		    continue;
-		}
-	    }
-	    const PrecompiledHeader *pch = find_precompiled_header(header);
-	    if ( pch )
-	    {
-		std::deque<TokenBase *> pch_tokens;
-		if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
-		{
-		    push_precompiled_header_tokens(*this, header, pch_tokens);
-		    continue;
-		}
-	    }
-
-	    const std::string *embedded = find_embedded_header(header);
-	    if ( !embedded )
-		continue;
-	    if ( !is_embedded_header_allowed(header) )
-		Throw << "embedded header '" << header
-		      << "' is not allowed by registration policy" << flush;
-
-	    pack_record_edge(header);	// B4a: auto-include edge, pre-swap
+	    // Delegate to the LITERAL include owner: feed a synthetic
+	    // `#include <hdr>` line through the real directive handler, so
+	    // forest bind, PCH discovery, embedded text, the filesystem
+	    // walk, once-only dedup, pack edges and include flags all apply
+	    // identically to an include the user wrote. The injector keeps
+	    // NO private serving copy of that chain: its old PCH+embedded
+	    // arms silently dropped every header without a named provider,
+	    // which is how retiring the embedded <string>/<sstream> twins
+	    // broke the C++ arm of auto-include unnoticed.
 	    Source saved = std::move(source);
-	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-	    suppress_auto_include_scan = true;
 	    source = Source();
-	    source.fname(header.c_str());
-	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
-	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
+	    source.fname("<auto-include>");
+	    std::string directive = std::string("#include <") + header + ">\n";
+	    { ReadTimer _rt(_read_seconds); source.str(directive); }
 	    TokenBase *itb;
-	    const char *interned = intern_file(header);
-	    pack_note_unit(interned);
 	    while ( (itb = getRealToken()) )
-	    {
-		itb->file = interned;
 		push_token_with_literal_concat(itb);
-	    }
 	    source = std::move(saved);
-	    suppress_auto_include_scan = saved_suppress_auto_include_scan;
-	    mark_embedded_include_flag(header);
 	}
     }
 
@@ -1427,6 +1521,21 @@ void Program::_tokenizer_init()
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
+    // __builtin_launder(p) IS p ([ptr.launder]/2 — same address, same type).
+    // It exists only to stop the optimizer assuming a pointer still refers to
+    // the object it was formed from; madc's IR makes no such provenance
+    // assumption, so the identity is the whole implementation. The macro keeps
+    // the operand's TYPE (a function would need the template), and evaluates it
+    // once. has_builtin() reads macro_map, so this also answers libc++'s
+    // __has_builtin query truthfully. Without it std::__launder's body called
+    // an undefined __builtin_launder, its instantiation never registered, and
+    // every std::launder<T> left an undefined __launder import (task #103).
+    {
+	MacroDef m;
+	m.params = {"__p"};
+	m.body = "(__p)";
+	macro_map["__builtin_launder"] = m;
+    }
     // FP classification builtins (type-generic compiler magic; real <math.h>
     // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
     // classification exports (__fpclassify*/__isnan*/__isinf*/__signbit*/
@@ -1584,6 +1693,43 @@ void Program::_tokenizer_init()
 	nanl.params = {"__tag"};
 	nanl.body = "(0.0L / 0.0L)";
 	macro_map["__builtin_nanl"] = nanl;
+    }
+    {
+	// SIGNALING NaN — deliberately not a copy of the quiet trio above.
+	// 0.0/0.0 yields a QUIET NaN (it folds to the canon pattern bit-for-bit,
+	// which is why the block above is correct), and no arithmetic can
+	// produce a signaling one: every operation on a signaling NaN quiets it.
+	// So the pattern is materialized directly. Aliasing these to the quiet
+	// forms would compile and then make numeric_limits<T>::signaling_NaN()
+	// silently wrong — libc++'s <limits> is what reaches them.
+	//
+	// Patterns are gcc's and clang's, verified identical on x86-64:
+	//   nansf 7fa00000   nans 7ff4000000000000   nansl 7fff:a000000000000000
+	// A statement expression rather than a C11 compound literal purely
+	// because that is what madc parses today (an anonymous-union compound
+	// literal is a separate front-end gap); c2mir supports statement
+	// expressions natively and both canon compilers accept them.
+	MacroDef nans;
+	nans.params = {"__tag"};
+	nans.body = "(__extension__ ({ union { unsigned long long __i; double __d; } __u;"
+		    " __u.__i = 0x7ff4000000000000ULL; __u.__d; }))";
+	macro_map["__builtin_nans"] = nans;
+	MacroDef nansf;
+	nansf.params = {"__tag"};
+	nansf.body = "(__extension__ ({ union { unsigned int __i; float __f; } __u;"
+		     " __u.__i = 0x7fa00000U; __u.__f; }))";
+	macro_map["__builtin_nansf"] = nansf;
+	// x87 80-bit: mantissa in the low 8 bytes, sign+exponent in the next 2,
+	// so BOTH halves must be written — a union over a single 64-bit field
+	// would leave the exponent bytes uninitialized now that `long double` is
+	// genuinely 16 bytes wide. (It read as the double pattern plus stack
+	// garbage while long double was still mapped to double.)
+	MacroDef nansl;
+	nansl.params = {"__tag"};
+	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+		     " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
+		     " __u.__l; }))";
+	macro_map["__builtin_nansl"] = nansl;
     }
     {
 	MacroDef isnan;
@@ -1754,7 +1900,10 @@ void Program::_tokenizer_init()
     // Command-line -D defines, applied AFTER the builtins/predefined so a -D
     // overrides one (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1").
     for ( const std::pair<std::string,std::string> &d : cli_defines )
+    {
 	define_map[d.first] = d.second;
+	note_std_abi_define(d.first, d.second);
+    }
 }
 
 bool Program::include_already_seen(const std::string &path)
@@ -1798,10 +1947,16 @@ static double forest_stat_now(void)
 // (a C compile must not bind a C++-parsed corpus; the packed-binary default
 // relies on it). The config gate reads only the directory header, so a
 // mismatched arm costs footer + directory, not the pool/arena binds (R1).
+// header_only stops right there, at the directory: the container-global
+// segments (the AOT ledger) live outside the groves, so a consumer that only
+// wants those must not be made to bind the frozen string pool / arena into
+// live parse state it does not have (the .o link lane never parses).
 static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
-					 double &map_secs, double &open_secs)
+					 double &map_secs, double &open_secs,
+					 bool require_config_match = true,
+					 bool header_only = false)
 {
     double _t0 = forest_stat_now();
     const void *image = NULL;
@@ -1822,8 +1977,9 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	delete f;
 	return NULL;
     }
-    if ( f->language_std() != madc_forest_config_word(prog)
-      || f->defines_hash() != madc_forest_defines_hash(prog) )
+    if ( require_config_match
+      && ( f->language_std() != madc_forest_config_word(prog)
+	|| f->defines_hash() != madc_forest_defines_hash(prog) ) )
     {
 	open_secs += forest_stat_now() - _t1;
 	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
@@ -1832,7 +1988,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	delete f;
 	return NULL;
     }
-    if ( !f->complete_open(/*c2m=*/NULL) )
+    if ( !header_only && !f->complete_open(/*c2m=*/NULL) )
     {
 	open_secs += forest_stat_now() - _t1;
 	delete f;
@@ -1840,8 +1996,109 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
     }
     open_secs += forest_stat_now() - _t1;
     DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
-	<< f->unit_count() << " units)" << std::endl);
+	<< (header_only ? "directory only"
+			: std::to_string(f->unit_count()) + " units") << ")"
+	<< std::endl);
     return f;
+}
+
+// The ordered carrier discovery chain (forest-carriers plan: one format, one
+// loader, N carriers). Returns the first arm that yields a usable container,
+// or NULL. TWO consumers walk it: the grove bind (require_config_match — a C
+// compile must not bind a C++-parsed corpus, the v27 contract) and the AOT
+// ledger (S5: madc's OWN runtime, target-specific but dialect-agnostic, so it
+// binds regardless of the producer's std/-D). Keeping ONE walker keeps the arm
+// ORDER — the thing carriers are actually about — in a single place.
+CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
+					     bool &cfg_mismatch,
+					     bool header_only)
+{
+    // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
+    // every discovery arm).
+    if ( !forest_bind_path.empty() )
+	return forest_probe_arm(this, forest_bind_path.c_str(),
+				"explicit", /*quiet_missing=*/false,
+				cfg_mismatch, _forest_map_seconds,
+				_forest_open_seconds, require_config_match,
+				header_only);
+
+    // Arm 1: self-image — the running binary's own carrier (ELF trailer /
+    // Mach-O __MADC,__forest section). An unpacked dev binary misses quietly.
+    CirFrozenForest *f = forest_probe_arm(this, NULL, "self-image",
+					  /*quiet_missing=*/true, cfg_mismatch,
+					  _forest_map_seconds, _forest_open_seconds,
+					  require_config_match,
+					  header_only);
+    // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
+    // forest rides libmadc's own image, so ONE container serves the thin CLI
+    // and every embedding host. dladdr on a libmadc symbol resolves the image
+    // path; in the monolithic shape that path IS the executable, which arm 1
+    // already probed, so the arm is skipped. Deliberately NOT gated by
+    // enable_external_forest: the library is part of the installation the host
+    // already loaded and executes — not an external redirection of where
+    // frozen state is loaded from.
+    std::string exe = madc_self_exe_path();
+    std::string lib = madc_self_lib_path();
+    bool have_lib_image = !lib.empty() && lib != exe;
+    if ( !f && have_lib_image )
+	f = forest_probe_arm(this, lib.c_str(), "library-image",
+			     /*quiet_missing=*/true, cfg_mismatch,
+			     _forest_map_seconds, _forest_open_seconds,
+			     require_config_match,
+			     header_only);
+    if ( !f && registration_policy.enable_external_forest )
+    {
+	// Arm 3: sidecar container beside an image (<exe>.forest, then
+	// <lib>.forest in the shared shape — the packaged-install shape; dev
+	// iteration without re-packing). Same image order as the carriers
+	// above: the executable's sidecar outranks the library's.
+	if ( !exe.empty() )
+	    f = forest_probe_arm(this, (exe + ".forest").c_str(),
+				 "sidecar", /*quiet_missing=*/false,
+				 cfg_mismatch, _forest_map_seconds,
+				 _forest_open_seconds, require_config_match,
+				 header_only);
+	if ( !f && have_lib_image )
+	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
+				 "lib-sidecar", /*quiet_missing=*/false,
+				 cfg_mismatch, _forest_map_seconds,
+				 _forest_open_seconds, require_config_match,
+				 header_only);
+	// Arm 4: MADC_FOREST environment variable (a configured path; env
+	// outranks the madc.ini key per the config precedence rule
+	// CLI > environment > madc.ini > baked defaults).
+	const char *env = getenv("MADC_FOREST");
+	if ( !f && env && *env )
+	    f = forest_probe_arm(this, env, "MADC_FOREST",
+				 /*quiet_missing=*/false, cfg_mismatch,
+				 _forest_map_seconds, _forest_open_seconds,
+				 require_config_match,
+				 header_only);
+	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
+	// arm, because a configured default must lose to everything more
+	// specific. The CLI parses the file and hands the path down through
+	// the registration policy; libmadc hosts leave it empty.
+	if ( !f && !registration_policy.forest_config_path.empty() )
+	    f = forest_probe_arm(this,
+				 registration_policy.forest_config_path.c_str(),
+				 "madc.ini", /*quiet_missing=*/false,
+				 cfg_mismatch, _forest_map_seconds,
+				 _forest_open_seconds, require_config_match,
+				 header_only);
+    }
+    return f;
+}
+
+// The arms the discovery chain actually probed, for the failure diagnostics
+// below — ONE owner, so the loud notice and the strict error can never drift
+// from each other or from probe_forest_chain's real arm list.
+std::string Program::forest_probed_arms() const
+{
+    std::string arms("self-image, library image, <exe>.forest / <lib>.forest"
+		     " sidecars, $MADC_FOREST");
+    if ( !registration_policy.forest_config_path.empty() )
+	arms += ", the madc.ini forest key";
+    return arms;
 }
 
 CirFrozenForest *Program::ensure_bind_forest()
@@ -1850,70 +2107,60 @@ CirFrozenForest *Program::ensure_bind_forest()
 	return bind_forest;
     bind_forest_tried = true;
 
-    // Arm 0: an explicit --forest-bind=PATH is the whole search (CLI beats
-    // every discovery arm). A named container that fails to open falls back
-    // to live parse LOUDLY regardless of policy — the user pointed at it, so
-    // ignoring it silently is exactly the degradation the failure policy
-    // exists to prevent (strict still hard-errors via the shared fallback).
+    bool cfg_mismatch = false;
+    bind_forest = probe_forest_chain(/*require_config_match=*/true, cfg_mismatch);
+    if ( bind_forest )
+	return bind_forest;
+
+    // A named container that fails to open falls back to live parse LOUDLY
+    // regardless of policy — the user pointed at it, so ignoring it silently
+    // is exactly the degradation the failure policy exists to prevent (strict
+    // still hard-errors).
     if ( !forest_bind_path.empty() )
     {
-	bool cfg_mismatch = false;
-	bind_forest = forest_probe_arm(this, forest_bind_path.c_str(),
-				       "explicit", /*quiet_missing=*/false,
-				       cfg_mismatch,
-				       _forest_map_seconds,
-				       _forest_open_seconds);
-	if ( !bind_forest )
-	{
-	    if ( registration_policy.forest_missing_policy
-		 == RegistrationPolicy::ForestPolicy::strict_require )
-		Throw(NULL) << "frozen forest required (strict forest policy):"
-			       " '" << forest_bind_path << "' did not provide"
-			       " a usable container" << std::flush;
-	    (error_stream ? *error_stream : std::cerr)
-		<< "madc: --forest-bind: '" << forest_bind_path
-		<< "' did not provide a usable forest container; falling"
-		   " back to live parse" << std::endl;
-	}
-	return bind_forest;
+	if ( registration_policy.forest_missing_policy
+	     == RegistrationPolicy::ForestPolicy::strict_require )
+	    Throw(NULL) << "frozen forest required (strict forest policy):"
+			   " '" << forest_bind_path << "' did not provide"
+			   " a usable container" << std::flush;
+	(error_stream ? *error_stream : std::cerr)
+	    << "madc: --forest-bind: '" << forest_bind_path
+	    << "' did not provide a usable forest container; falling"
+	       " back to live parse" << std::endl;
+	return NULL;
     }
-
-    // Discovery chain (forest-carriers plan) — fixed order, first usable
-    // container wins. Arm 1: self-image — the running binary's own carrier
-    // (ELF trailer / Mach-O __MADC,__forest section). An unpacked dev binary
-    // misses quietly.
-    bool cfg_mismatch = false;
-    bind_forest = forest_probe_arm(this, NULL, "self-image",
-				   /*quiet_missing=*/true, cfg_mismatch,
-				   _forest_map_seconds, _forest_open_seconds);
-    // Arm 2 (S4 slot): library image — when madc is built shared, the forest
-    // rides libmadc's image (dladdr on a libmadc symbol -> the same
-    // per-format probe). Lands with the shared shape.
-    if ( !bind_forest && registration_policy.enable_external_forest )
-    {
-	// Arm 3: sidecar container beside the binary (<exe>.forest — the
-	// packaged-install shape; dev iteration without re-packing).
-	std::string exe = madc_self_exe_path();
-	if ( !exe.empty() )
-	    bind_forest = forest_probe_arm(this, (exe + ".forest").c_str(),
-					   "sidecar", /*quiet_missing=*/false,
-					   cfg_mismatch,
-					   _forest_map_seconds,
-					   _forest_open_seconds);
-	// Arm 4: MADC_FOREST environment variable (a configured path; env
-	// outranks the madc.ini key / baked default per the config
-	// precedence rule — those land as arm 5 with S6).
-	const char *env = getenv("MADC_FOREST");
-	if ( !bind_forest && env && *env )
-	    bind_forest = forest_probe_arm(this, env, "MADC_FOREST",
-					   /*quiet_missing=*/false,
-					   cfg_mismatch,
-					   _forest_map_seconds,
-					   _forest_open_seconds);
-    }
-    if ( !bind_forest )
-	forest_missing_fallback(cfg_mismatch);
+    forest_missing_fallback(cfg_mismatch);
     return bind_forest;
+}
+
+// The carrier the AOT ledger is read from (-static-libmadc, S5). The grove
+// bind's container when it opened one — same file, already mapped — else the
+// SAME chain walked with the producer-config gate OFF, because a compile whose
+// dialect cannot bind the groves must still be able to link madc's runtime.
+// enable_forest_bind is likewise not consulted: --no-forest-bind says "parse
+// the headers live", not "leave the runtime out of my binary".
+// Silent on failure: the emit lane owns the diagnostic (it alone knows whether
+// this program needs the runtime at all).
+CirFrozenForest *Program::ensure_ledger_forest()
+{
+    if ( ledger_forest_tried )
+	return ledger_forest;
+    ledger_forest_tried = true;
+    if ( bind_forest )
+    {
+	ledger_forest = bind_forest;
+	return ledger_forest;
+    }
+    bool cfg_mismatch = false;
+    // header_only: the ledger is a container-GLOBAL segment, so the directory
+    // is the whole requirement — binding the frozen string pool and arena is
+    // grove work, and it needs live parse state this consumer may not have
+    // (the .o link lane links precompiled objects: no lexer, no pool).
+    ledger_forest = probe_forest_chain(/*require_config_match=*/false,
+				       cfg_mismatch, /*header_only=*/true);
+    DBG(std::cout << "ledger: carrier "
+	<< (ledger_forest ? "opened" : "not found") << std::endl);
+    return ledger_forest;
 }
 
 // The discovery chain ended with no usable container: apply the failure
@@ -1946,10 +2193,10 @@ void Program::forest_missing_fallback(bool config_mismatch)
 	    break;
 	}
 	(error_stream ? *error_stream : std::cerr)
-	    << "madc: no frozen forest found (probed: self-image,"
-	       " <exe>.forest sidecar, $MADC_FOREST); falling back to live"
-	       " parse — startup will be slower. Point --forest-bind=<file>"
-	       " at a container, or silence this with --no-forest-bind."
+	    << "madc: no frozen forest found (probed: " << forest_probed_arms()
+	    << "); falling back to live parse — startup will be slower. Point"
+	       " --forest-bind=<file> at a container, or silence this with"
+	       " --no-forest-bind."
 	    << std::endl;
 	break;
     case RegistrationPolicy::ForestPolicy::strict_require:
@@ -1959,8 +2206,8 @@ void Program::forest_missing_fallback(bool config_mismatch)
 			   " (std/-D defines) does not match this compile"
 			<< std::flush;
 	Throw(NULL) << "frozen forest required (strict forest policy) but no"
-		       " usable container was found (probed: self-image,"
-		       " <exe>.forest sidecar, $MADC_FOREST)" << std::flush;
+		       " usable container was found (probed: "
+		    << forest_probed_arms() << ")" << std::flush;
 	break;
     }
 }
@@ -2074,6 +2321,7 @@ void Program::forest_install_pp(uint32_t unit)
 	    {
 		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
 		define_map[name] = b ? std::string(b) : std::string();
+		note_std_abi_define(name, define_map[name]);
 	    }
 	    else // peDefineFn
 	    {
@@ -2092,6 +2340,158 @@ void Program::forest_install_pp(uint32_t unit)
 	    }
 	}
 	k += 5 + nparams;
+    }
+}
+
+// --- the generated include tables, read through ONE pair of accessors --------
+//
+// System include paths are captured at BUILD time from the configured compiler's
+// own search list (scripts/gen_sys_includes.sh -> src/sys_include_paths.cpp), so
+// madc searches the SAME dirs the toolchain does — including the C++ paths the
+// old hardcoded C-only list lacked. There is one list per C++ standard library
+// flavor; `-stdlib=` picks which, defaulting to the flavor $(CXX) uses.
+//
+// Selecting a flavor REPLACES the search list rather than reordering it, which
+// is what clang's driver does and what correctness requires: libc++'s <cstdlib>
+// reaches the C library through `#include_next <stdlib.h>`, so leaving the GNU
+// C++ dirs on the path behind libc++ makes that walk land in
+// /usr/include/c++/NN/stdlib.h and fail on its `using std::abort;`.
+// Canonicalize a filesystem path for COMPARISON. The one owner of that step:
+// include bookkeeping keys files by their resolved path, and the search-dir
+// prefixes must be resolved the same way or the two never match (clang reports
+// `.../bin/../include/c++/v1`). Returns the input unchanged when it does not
+// resolve — a cross/hosted table may name a sysroot absent from this machine.
+// NOT for resolving argv[0] or a dladdr image name; those are different rules
+// with their own call sites.
+static std::string canonical_path_for_compare(const std::string &path)
+{
+    if ( char *rp = realpath(path.c_str(), NULL) )
+    {
+	std::string out(rp);
+	free(rp);
+	return out;
+    }
+    return path;
+}
+
+static const char *madc_fallback_include_paths[] = {
+    "/usr/local/include/",
+    "/usr/include/",
+    "/usr/include/x86_64-linux-gnu/",
+    (const char *)0
+};
+
+const char *const *Program::sys_include_paths() const
+{
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
+    // Minimal C list when detection produced nothing (no compiler at build time).
+    if ( !f->paths || !f->paths[0] )
+	return madc_fallback_include_paths;
+    return f->paths;
+}
+
+const char *Program::compiler_owned_include_dir() const
+{
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
+    return f->compiler_owned_dir ? f->compiler_owned_dir : "";
+}
+
+// The same search dirs, resolved through realpath — because a compiler reports
+// its search list in whatever spelling it computed, and those spellings are not
+// always canonical. clang says `/usr/lib/llvm-18/bin/../include/c++/v1`, and a
+// file found there is recorded by its realpath, so a raw prefix compare between
+// the two MISSES and every libc++ header classifies as user code. Cached per
+// flavor: realpath touches the filesystem, and this is asked once per token file.
+//
+// Entries that do not resolve (a cross/hosted table naming a sysroot that does
+// not exist on this machine) keep their original spelling, so the raw compare
+// below still covers them.
+const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
+{
+    const madc_stdlib_flavor *f = active_stdlib_flavor();
+    if ( _canon_prefix_flavor == f && !_canon_prefixes.empty() )
+	return _canon_prefixes;
+    _canon_prefixes.clear();
+    const char *const *paths = sys_include_paths();
+    for ( int i = 0; paths[i]; ++i )
+    {
+	std::string p = canonical_path_for_compare(paths[i]);
+	if ( p != paths[i] && (p.empty() || p.back() != '/') )
+	    p += '/';		// realpath drops the trailing '/' a prefix needs
+	_canon_prefixes.push_back(p);
+    }
+    _canon_prefix_flavor = f;
+    return _canon_prefixes;
+}
+
+std::string Program::stdlib_flavor_names() const
+{
+    std::string out;
+    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+    {
+	if ( !*madc_stdlib_flavors[i].name )
+	    continue;
+	if ( !out.empty() )
+	    out += ", ";
+	out += madc_stdlib_flavors[i].name;
+    }
+    // A build host with no C++ compiler to probe records no flavor NAME at all;
+    // say so rather than printing an empty list.
+    return out.empty() ? std::string("none — no C++ compiler was probed at build time")
+		       : out;
+}
+
+const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name)
+{
+    if ( name.empty() )
+	return NULL;	// an empty name must not match an unnamed flavor entry
+    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+	if ( name == madc_stdlib_flavors[i].name )
+	    return &madc_stdlib_flavors[i];
+    return NULL;	// unknown or not built with this flavor
+}
+
+bool Program::set_stdlib_flavor_option(const std::string &arg)
+{
+    static const std::string opt = "-stdlib=";
+    if ( arg.compare(0, opt.size(), opt) != 0 )
+	return false;
+    const madc_stdlib_flavor *f = madc_stdlib_flavor_lookup(arg.substr(opt.size()));
+    if ( !f )
+	return false;	// caller diagnoses with stdlib_flavor_names()
+    stdlib_flavor = f;
+    return true;
+}
+
+const madc_stdlib_flavor *Program::active_stdlib_flavor() const
+{
+    return stdlib_flavor ? stdlib_flavor : &madc_stdlib_flavors[0];
+}
+
+// The std:: inline ABI namespace follows the PARSED stdlib configuration —
+// never a literal keyed on the flavor name. Each stdlib declares it via the
+// macro that exists for exactly this purpose:
+//   libc++:    _LIBCPP_ABI_NAMESPACE  (the namespace itself, e.g. __1)
+//   libstdc++: _GLIBCXX_USE_CXX11_ABI (1 => the cxx11-tagged ABI, 0 => not)
+// Pushes the fact into the mangler the moment it is recorded, from every
+// define_map write site (#define directive, forest PP replay, CLI -D).
+void Program::note_std_abi_define(const std::string &name, const std::string &value)
+{
+    if ( name == "_LIBCPP_ABI_NAMESPACE" )
+    {
+	size_t b = value.find_first_not_of(" \t");
+	size_t e = value.find_last_not_of(" \t");
+	if ( b == std::string::npos )
+	    return;		// empty value: nothing to record
+	std::string ns = value.substr(b, e - b + 1);
+	DBG(std::cout << "std ABI namespace (libc++): " << ns << std::endl);
+	madc_mangle_set_stdlib_llvm(ns);
+    }
+    else if ( name == "_GLIBCXX_USE_CXX11_ABI" )
+    {
+	bool on = strtol(value.c_str(), NULL, 10) != 0;
+	DBG(std::cout << "std ABI namespace (libstdc++): cxx11=" << on << std::endl);
+	madc_mangle_set_stdlib_gnu(on);
     }
 }
 
@@ -2118,21 +2518,8 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    if ( probe.good() )
 		return candidate;
 	}
-	// System include paths captured at BUILD time from the configured
-	// compiler's own search list (scripts/gen_sys_includes.sh ->
-	// src/sys_include_paths.cpp) — so madc searches the SAME dirs the toolchain
-	// does, including the C++ paths (/usr/include/c++/NN, …) the old hardcoded
-	// C-only list lacked. Falls back to that minimal C list when detection
-	// produced nothing (no compiler at build time).
-	extern const char *madc_sys_include_paths[];
-	static const char *fallback_paths[] = {
-	    "/usr/local/include/",
-	    "/usr/include/",
-	    "/usr/include/x86_64-linux-gnu/",
-	    NULL
-	};
-	const char **sys_paths = (madc_sys_include_paths[0] != NULL)
-				 ? madc_sys_include_paths : fallback_paths;
+	// Then the selected flavor's system include paths (see sys_include_paths()).
+	const char *const *sys_paths = sys_include_paths();
 	for ( int i = 0; sys_paths[i]; ++i )
 	{
 	    std::string candidate = std::string(sys_paths[i]) + incfile;
@@ -2176,8 +2563,8 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 // Is this source file one that came from a system/toolchain include directory
 // (glibc / libstdc++ / their bits/), as opposed to the user's own .mad/.c/.h?
 // Data-driven (project Rule #7): a prefix match against the SAME compiler-derived
-// search dirs `#include <...>` uses (madc_sys_include_paths[], generated by
-// scripts/gen_sys_includes.sh) — never a namespace==std or class-name test.
+// search dirs `#include <...>` uses (sys_include_paths(), the selected stdlib
+// flavor's generated table) — never a namespace==std or class-name test.
 // Used by the CIR backend to gate emission of library inline-method bodies
 // (reachability DCE): madc emits a body only for entities it defines; a function
 // parsed from a system header is emitted only when reachable from user code.
@@ -2195,12 +2582,25 @@ bool Program::is_system_header_path(const char *path) const
     // demand libSystem imports from every program).
     if ( find_embedded_header(path) )
 	return true;
-    extern const char *madc_sys_include_paths[];
-    for ( int i = 0; madc_sys_include_paths[i]; ++i )
+    const char *const *sys_paths = sys_include_paths();
+    for ( int i = 0; sys_paths[i]; ++i )
     {
-	const char *prefix = madc_sys_include_paths[i];
+	const char *prefix = sys_paths[i];
 	size_t plen = strlen(prefix);
 	if ( plen && strncmp(path, prefix, plen) == 0 )
+	    return true;
+    }
+    // Then the canonical spellings, for a caller that realpath'd its file (as
+    // should_tokenize_include does) against a table entry that is not canonical.
+    // Getting this wrong is not cosmetic: a system header misread as user code
+    // gets madc's require-once semantics instead of gcc's guard-checked
+    // multiple-include, which permanently drops the second visit to a header
+    // written to be included twice — libc++'s <stddef.h>/<stdint.h> wrappers are
+    // exactly that, and <cstddef> #errors when its second visit never happens.
+    const std::vector<std::string> &canon = sys_include_prefixes_canonical();
+    for ( size_t i = 0; i < canon.size(); ++i )
+    {
+	if ( !canon[i].empty() && strncmp(path, canon[i].c_str(), canon[i].size()) == 0 )
 	    return true;
     }
     return false;
@@ -2223,15 +2623,7 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
     std::vector<std::string> search;
     for ( size_t i = 0; i < include_paths.size(); ++i )
 	search.push_back(include_paths[i]);
-    extern const char *madc_sys_include_paths[];
-    static const char *fallback_paths[] = {
-	"/usr/local/include/",
-	"/usr/include/",
-	"/usr/include/x86_64-linux-gnu/",
-	NULL
-    };
-    const char **sys_paths = (madc_sys_include_paths[0] != NULL)
-			     ? madc_sys_include_paths : fallback_paths;
+    const char *const *sys_paths = sys_include_paths();
     for ( int i = 0; sys_paths[i]; ++i )
 	search.push_back(sys_paths[i]);
 
@@ -2481,16 +2873,11 @@ void Program::dump_macros(FILE *out)
 
 bool Program::should_tokenize_include(const std::string &path)
 {
+    // Same canonicalization the search-dir prefixes get — they are compared
+    // against each other, so one owner (canonical_path_for_compare) or they drift.
     std::string canonical = path;
     if ( !path.empty() && path[0] != '<' )
-    {
-	char *rp = realpath(path.c_str(), NULL);
-	if ( rp )
-	{
-	    canonical = rp;
-	    free(rp);
-	}
-    }
+	canonical = canonical_path_for_compare(path);
     if ( !path.empty() && path[0] == '<' )
     {
 	// Named (embedded/PCH) include keys: blanket once-only — the baked
@@ -2591,8 +2978,15 @@ static bool named_include_provider_exists(Program &pgm,
 	return true;
     if ( find_precompiled_header(incfile) )
 	return true;
+    // The embedded arm answers only when nothing OUTRANKS the embedded copy —
+    // the embedded set sits at madc's compiler-resource-dir slot, so a C++
+    // standard library (or any -I dir) ahead of that slot supplies the name
+    // instead. Gated here as well as at the tokenize site so the once-only
+    // dedup key and the auto-include defer gate agree with what actually
+    // resolves; a name they disagreed about would be dropped silently.
     return find_embedded_header(incfile) != NULL
-	&& pgm.is_embedded_header_allowed(incfile);
+	&& pgm.is_embedded_header_allowed(incfile)
+	&& !pgm.embedded_header_outranked(incfile);
 }
 
 static bool load_precompiled_header_file(const std::string &path,
@@ -2705,10 +3099,11 @@ void Program::add_keywords()
     // ONLY genuine reserved keywords appear here. Contextual identifiers
     // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
     // reserved (a hard reservation broke 49 tests — see the KG lesson). The
-    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
-    // (special lexer handling) keep their existing treatment. The erased
-    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
-    // being removed from the erase map, and need decl-specifier consume handling.
+    // pervasive ignored specifier `alignas` (special lexer handling) keeps its
+    // existing treatment. The erased specifiers `constexpr`/`consteval`/
+    // `constinit` are registered below AFTER being removed from the erase map,
+    // and need decl-specifier consume handling; `inline` and `noexcept` keep
+    // their erasure in NON-C++ modes only.
     struct CppReservedKw { const char *kw; LanguageStd min_std; };
     static const CppReservedKw cpp_reserved[] = {
 	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
@@ -2796,6 +3191,13 @@ void Program::add_keywords()
 	{ "typeid",           STD_CPP98 },
 	{ "decltype",         STD_CPP11 },
 	{ "alignof",          STD_CPP11 },
+	// noexcept — BOTH surfaces ([expr.unary.noexcept] operator and the
+	// [except.spec] specifier — un-erased 2026-08-04): the operator folds by
+	// spelling in parse_constant_primary and the expression parser (like
+	// sizeof/alignof); the specifier is captured by parseFunction's
+	// trailing-qualifier walk (NxTrue/NxNone/NxUnknown). Non-C++ modes keep
+	// the getToken() balanced-paren erasure (mirror of inline's C-mode split).
+	{ "noexcept",         STD_CPP11 },
 	// Slice 4b: boolean / pointer literals.
 	{ "true",             STD_CPP98 },
 	{ "false",            STD_CPP98 },
@@ -2919,6 +3321,18 @@ void Program::add_datatypes()
     datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
     datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
     datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
+
+    // Everything registered above is one of madc's OWN base datatypes, never a
+    // user declaration. Marking the whole map here keeps that automatic — a
+    // future builtin needs no second edit — and lets the typedef paths accept a
+    // real header re-declaring one of these names (gcc's <stddef.h> carries
+    // `typedef struct {...} max_align_t;`) without weakening the genuine
+    // user-vs-user redefinition diagnostic.
+    datatype_map.for_each([](const char *, TokenDataType *&tdt) {
+	if ( tdt )
+	    tdt->builtin = true;
+	return false;	// visit every entry
+    });
 }
 
 
@@ -2999,7 +3413,7 @@ TokenBase *Program::make_int(int64_t value, const std::string &src)
     return new TokenInt(value, src);
 }
 
-TokenBase *Program::make_real(double value)
+TokenBase *Program::make_real(long double value)
 {
     return new TokenReal(value);
 }
@@ -3264,9 +3678,9 @@ TokenBase *Program::_getToken()
 			// restore the forest's typed decl records into the symbol
 			// tables (forest_restore_decls, once per compile), and
 			// return WITHOUT re-parsing the header. Non-forest headers
-			// fall through to live parse. Gated on forest_bind_enabled
+			// fall through to live parse. Gated on the policy knob
 			// so the default path is one predicted branch.
-			if ( forest_bind_enabled )
+			if ( registration_policy.enable_forest_bind )
 			{
 			    int fu = forest_unit_for_include(incfile);
 			    if ( fu >= 0 )
@@ -3357,6 +3771,18 @@ TokenBase *Program::_getToken()
 				<< "> embedded stub disallowed by policy; using filesystem" << std::endl);
 			    embedded = NULL;
 			}
+			// Outranked by a directory ahead of madc's resource-dir
+			// slot (a C++ standard library's own wrapper, or any -I
+			// dir): the real header wins and we fall through to the
+			// filesystem walk below. Shadowing libc++'s <stddef.h>
+			// here is exactly what makes it #error that its wrapper
+			// was bypassed.
+			if ( embedded && embedded_header_outranked(incfile) )
+			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> outranked by an earlier search dir; using the real header" << std::endl);
+			    embedded = NULL;
+			}
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
@@ -3394,7 +3820,7 @@ TokenBase *Program::_getToken()
 		    // double-define its contents ("Repeated item declaration").
 		    // Keyed on the RESOLVED path (the name the freeze tokenized
 		    // the unit under). #include_next keeps its positional walk.
-		    if ( forest_bind_enabled && !is_include_next
+		    if ( registration_policy.enable_forest_bind && !is_include_next
 		      && !full_path.empty() )
 		    {
 			int fu = forest_unit_for_include(full_path);
@@ -3593,6 +4019,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string value = read_macro_body(source);
 		    define_map[name] = value;
+		    note_std_abi_define(name, value);
 		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();
@@ -3626,7 +4053,7 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
-		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+		    bool defined = macro_name_defined(name);
 		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
@@ -3718,158 +4145,7 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "pragma" )
 		{
-		    while ( source.peek() == ' ' || source.peek() == '\t' )
-			source.get();
-		    std::string pragma;
-		    int pragma_line = source.line();
-		    int pragma_col = source.column();
-		    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
-			pragma += source.get();
-		    if ( pragma == "pack" )
-		    {
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			if ( source.peek() == '(' )
-			{
-			    source.get(); // consume (
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			    std::string arg;
-			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-				arg += source.get();
-			    // GCC semantics (see the pack block in madc.h):
-			    // push saves the current value and an optional
-			    // `, N` then sets it; pop restores; pack(N) sets;
-			    // pack() resets to the default layout. Ops are
-			    // QUEUED, not applied — parse-time application
-			    // rides the token side channel (lex-time state
-			    // would be stale by parse time).
-			    if ( arg == "push" )
-			    {
-				while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
-				    source.get();
-				int val = 0;
-				while ( source.good() && isdigit(source.peek()) )
-				    val = val * 10 + (source.get() - '0');
-				_pending_pack_ops.push_back(std::make_pair(1, val));
-				DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
-				    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
-			    }
-			    else if ( arg == "pop" )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(2, 0));
-				DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
-			    }
-			    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
-				DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
-			    }
-			    else if ( arg.empty() )
-			    {
-				_pending_pack_ops.push_back(std::make_pair(0, 0));
-				DBG(std::cout << "#pragma pack() reset queued" << std::endl);
-			    }
-			    // discard trailing tokens via the lexer (handles a
-			    // multi-line /* */ comment on this line)
-			    consume_directive_line_tail();
-			}
-		    }
-		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
-		    {
-			bool is_push = (pragma == "push_macro");
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			if ( source.peek() == '(' )
-			{
-			    source.get(); // consume (
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			    // Expect "macro_name"
-			    if ( source.peek() == '"' )
-			    {
-				source.get(); // consume opening "
-				std::string mname;
-				while ( source.good() && !source.eof() && source.peek() != '"' )
-				    mname += source.get();
-				if ( source.peek() == '"' )
-				    source.get(); // consume closing "
-				if ( is_push )
-				{
-				    auto it = define_map.find(mname);
-				    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
-				    _macro_save_stack[mname].push(val);
-				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
-				}
-				else
-				{
-				    auto sit = _macro_save_stack.find(mname);
-				    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
-				    {
-					std::string val = sit->second.top();
-					sit->second.pop();
-					if ( val == "\x01" )
-					    define_map.erase(mname);
-					else
-					    define_map[mname] = val;
-					DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
-				    }
-				}
-			    }
-			}
-			// discard trailing tokens via the lexer (handles a
-			// multi-line /* */ comment on this line)
-			consume_directive_line_tail();
-		    }
-		    else if ( pragma == "prefer" )
-		    {
-			std::vector<std::string> order;
-			while ( source.peek() == ' ' || source.peek() == '\t' )
-			    source.get();
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			{
-			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
-				source.get();
-			    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
-				break;
-			    std::string name;
-			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-				name += source.get();
-			    if ( !name.empty() )
-				order.push_back(name);
-			    while ( source.peek() == ' ' || source.peek() == '\t' )
-				source.get();
-			}
-
-			TokenBase *tb = make_token(TokenID::tkPREFER);
-			tb->line = pragma_line;
-			tb->column = pragma_col;
-			injected_tokens.push_back(tb);
-			for ( size_t i = 0; i < order.size(); ++i )
-			{
-			    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
-			    ti->line = pragma_line;
-			    ti->column = pragma_col;
-			    injected_tokens.push_back(ti);
-			    if ( i + 1 < order.size() )
-			    {
-				tb = make_token(TokenID::tkComma);
-				tb->line = pragma_line;
-				tb->column = pragma_col;
-				injected_tokens.push_back(tb);
-			    }
-			}
-			tb = make_token(TokenID::tkSemi);
-			tb->line = pragma_line;
-			tb->column = pragma_col;
-			injected_tokens.push_back(tb);
-		    }
-		    else
-		    {
-			// consume the rest of the directive line for unknown
-			// pragmas; discard trailing tokens via the lexer
-			consume_directive_line_tail();
-		    }
+		    handle_pragma_body();
 		    return _getToken();
 		}
 	    }
@@ -4287,7 +4563,7 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
 			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			// Preserve full literal text with imaginary suffix for transpiler
@@ -4298,9 +4574,11 @@ TokenBase *Program::_getToken()
 			return tr;
 		    }
 		    {
-			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
 			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
+			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			    tr->setDataType(&ddLDOUBLE);
 			return tr;
 		    }
 		    }
@@ -4375,7 +4653,7 @@ TokenBase *Program::_getToken()
 				lit_text += (char)source.get();
 			    }
 			}
-			double num = strtod(lit_text.c_str(), NULL);
+			long double num = strtold(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
 			    TokenReal *tr = (TokenReal *)make_real(num);
@@ -4447,7 +4725,7 @@ TokenBase *Program::_getToken()
 			    lit_text += (char)source.get();
 		    }
 		}
-		double num = strtod(lit_text.c_str(), NULL);
+		long double num = strtold(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
 		    TokenReal *tr = (TokenReal *)make_real(num);
@@ -4467,6 +4745,11 @@ TokenBase *Program::_getToken()
 		    // mixed float/float-_Complex arithmetic to double precision.
 		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			tr->setDataType(&ddFLOAT);
+		    // An `L` literal is a long double, the same way `f` is a float:
+		    // the suffix is the only thing that says so, and without this the
+		    // value was parsed at full precision and then typed as a double.
+		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			tr->setDataType(&ddLDOUBLE);
 		    return tr;
 		}
 	    }
@@ -4495,9 +4778,17 @@ TokenBase *Program::_getToken()
 		    word += (char)wc;
 		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
-		if ( word == "L" && source.good()
-		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return read_wide_literal();
+		// Prefixed literals ([lex.ccon]/[lex.string]): L / u / U / u8
+		// ahead of a quote — the same prefix set the preprocessor's
+		// is_prefixed_literal_token accepts (libc++ unicode.h:
+		// `U'�'`). Gate the C++11/20 prefixes on the dialect so a
+		// C89 identifier `u` before a string stays two tokens.
+		if ( source.good()
+		  && (source.peek() == '"' || source.peek() == '\'')
+		  && (word == "L"
+		   || ((word == "u" || word == "U") && cpp_keyword_active(STD_CPP11))
+		   || (word == "u8" && cpp_keyword_active(STD_CPP20))) )
+		    return read_wide_literal(word);
 		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
 		// for every per-word map probe below (macro/define/keyword/cpp-operator)
 		// — a flat sid-indexed array access, no string compare, no tree.
@@ -4537,7 +4828,7 @@ TokenBase *Program::_getToken()
 				std::string name;
 				while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				    name += source.get();
-				bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+				bool defined = macro_name_defined(name);
 				bool active = (dir == "ifdef") ? defined : !defined;
 				++macro_ifdef_depth;
 				if ( !active )
@@ -5000,6 +5291,18 @@ TokenBase *Program::_getToken()
 		    source.pushback(std::to_string(source.line()));
 		    return getToken();
 		}
+		// _Pragma("...") — the token form of #pragma (C99, C++11), routed
+		// to the same handler the directive uses. It sits here, after the
+		// define_map check above, so a user `#define _Pragma …` still wins,
+		// exactly as it does for __FILE__ / __LINE__. Deliberately NOT gated
+		// on --std=: both canon compilers accept _Pragma in every mode,
+		// -std=c89 -pedantic included (its name is reserved to the
+		// implementation, so it can never collide with user code).
+		if ( word == "_Pragma" )
+		{
+		    handle_pragma_operator();
+		    return getToken();
+		}
 		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
 		// as magic identifiers. madc tokenizes the whole file before
 		// parsing, so parseExpression resolves them after cur_func_name
@@ -5007,13 +5310,16 @@ TokenBase *Program::_getToken()
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
 		    return make_ident(word);
-		// noexcept / noexcept(expr): madc ignores exception
-		// specifications. Strip the optional (...) by BALANCED parens
-		// — NOT via a function-like macro, whose comma-splitting breaks
-		// on a template-id condition such as
+		// noexcept in NON-C++ modes only: strip the optional (...) by
+		// BALANCED parens — NOT via a function-like macro, whose
+		// comma-splitting breaks on a template-id condition such as
 		// noexcept(is_nothrow_constructible<T, Args...>::value) (the
-		// preprocessor does not treat <...> as grouping).
-		if ( word == "noexcept" )
+		// preprocessor does not treat <...> as grouping). In C++ modes /
+		// the madc dialect, noexcept is a reserved TokenCppKeyword
+		// (cpp_reserved) serving both the [except.spec] specifier and the
+		// [expr.unary.noexcept] operator, so it falls through to the
+		// keyword_map lookup below.
+		if ( word == "noexcept" && !cpp_keyword_active(STD_CPP11) )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
@@ -5025,7 +5331,15 @@ TokenBase *Program::_getToken()
 			    if ( c == '(' ) ++depth;
 			    else if ( c == ')' ) --depth;
 			} while ( source.good() && depth > 0 );
+			return getToken();
 		    }
+		    // An UNCONDITIONAL `noexcept` re-lexes as its token
+		    // equivalent `throw()` ([except.spec]p1: both declare the
+		    // function non-throwing) so the parser's exception-spec arm
+		    // records FuncDef::NxTrue — full erasure left every user
+		    // ctor's nothrow-ness unknowable to
+		    // __is_nothrow_constructible.
+		    source.pushback("throw()");
 		    return getToken();
 		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
@@ -5221,8 +5535,13 @@ TokenBase *Program::_getToken()
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
 			    return make_datatype("double", ddDOUBLE);
 			case TS_LONG + TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long double", ddDOUBLE);
+			    // ddLDOUBLE, not ddDOUBLE: `long double` is its own type
+			    // (x87 80-bit on x86-64). Mapping it to the double DataDef
+			    // made sizeof 8, broke printf("%Lg") at the varargs
+			    // boundary, and left the mangler emitting Itanium `e` for a
+			    // value passed as a double.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddLDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long double", ddLDOUBLE);
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
@@ -5385,16 +5704,51 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    std::string word;
 	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
 		word += expr[i++];
+	    // `defined` and the clang `__has_*` family are #if OPERATORS, not
+	    // macros, and their operands are NOT macro-expanded. That is not a
+	    // fine point for madc: it aliases 138 builtins in define_map
+	    // (__builtin_memcpy -> memcpy), so expanding the operand would turn
+	    // __has_builtin(__builtin_memcpy) into __has_builtin(memcpy) and
+	    // answer NO for a builtin madc implements.
+	    bool is_has_op = word.size() > 6 && word.compare(0, 6, "__has_") == 0;
 	    // B4a: every identifier a #if/#elif condition consults (including
 	    // `defined` operands, which the evaluator resolves later) is a
-	    // branch-relevant macro name for the pack container.
-	    if ( word != "defined" )
+	    // branch-relevant macro name for the pack container. The operators
+	    // themselves are not macros and are not recorded.
+	    if ( word != "defined" && !is_has_op )
 		pack_record_branch_macro(word);
-	    // Don't expand 'defined' — it's a #if operator
 	    if ( word == "defined" )
 	    {
 		out += word;
 		preserve_defined_operand = true;
+		continue;
+	    }
+	    if ( is_has_op )
+	    {
+		out += word;
+		// Copy the whole parenthesized operand through verbatim — one
+		// group, so `<a/b.h>`, `"a.h"` and `clang::foo` all survive
+		// intact for the operator to interpret.
+		size_t j = i;
+		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
+		    ++j;
+		if ( j < expr.size() && expr[j] == '(' )
+		{
+		    int pdepth = 0;
+		    while ( j < expr.size() )
+		    {
+			if ( expr[j] == '(' )
+			    ++pdepth;
+			else if ( expr[j] == ')' && --pdepth == 0 )
+			{
+			    ++j;
+			    break;
+			}
+			++j;
+		    }
+		    out += expr.substr(i, j - i);
+		    i = j;
+		}
 		continue;
 	    }
 	    if ( preserve_defined_operand )
@@ -5527,6 +5881,143 @@ std::string Program::expandIfMacros(const std::string &raw)
 	if ( !changed ) break;
     }
     return expr;
+}
+
+// --- the clang `__has_*` preprocessor operators ------------------------------
+//
+// A modern standard library does not merely *prefer* compiler intrinsics — it
+// asks for them and then commits: libc++ 18 queries `__has_builtin` 122 times
+// and, where it has no fallback, `#error`s outright. madc answered every one
+// of those by falling through parse_primary's "unknown identifier = 0", which
+// is the right ANSWER for a builtin it lacks but arrived by accident, and left
+// `__has_include` — a question madc can answer exactly — answering no.
+//
+// THE RULE FOR EVERY QUERY HERE: answer from madc's own state, and answer
+// truthfully. A yes madc cannot back trades a library's clean "not
+// implemented" #error for a mystifying failure deep inside its headers. When
+// in doubt the answer is 0: that costs a fast path, never correctness.
+bool Program::has_builtin(const std::string &name)
+{
+    // Compiler type-trait intrinsics carry no __builtin_ prefix, and madc
+    // implements a real subset of them (__is_class, __has_trivial_destructor,
+    // …). Answer from THAT registry — it is the same "answer from madc's own
+    // state" contract, applied to a second kind of state. Saying no here is
+    // what made libc++ #error on a trait madc had all along.
+    if ( is_type_trait_builtin(name) )
+	return true;
+    // Builtin TEMPLATES madc implements natively — same "answer from madc's
+    // own state" contract (instantiate_make_integer_seq is the state). libc++
+    // takes its integer_sequence BUILTIN branch on this answer.
+    if ( name.compare("__make_integer_seq") == 0 )
+	return true;
+    // __type_pack_element<I, Types...> — folded natively at
+    // instantiate_template_use (the I-th type IS the result; no
+    // instantiation). libc++'s tuple_element takes its builtin branch on
+    // this answer instead of the decltype-indexer fallback, whose
+    // resolution minted an opaque dependent shell (task #103).
+    if ( name.compare("__type_pack_element") == 0 )
+	return true;
+    if ( name.compare(0, 10, "__builtin_") != 0 )
+	return false;	// trait intrinsics madc does NOT implement
+			// (__remove_reference_t and the rest of libc++'s 41)
+			// answer no — see
+			// docs/plans/2026-07-26-libcxx-flavor-plan.md
+    // The alias table IS madc's builtin implementation for this family: each
+    // entry rewrites the call to the libc function that implements it, so
+    // membership is exactly "madc compiles a call to this". -fno-builtin-foo
+    // deliberately does NOT change the answer, matching clang: the flag
+    // suppresses the optimization, it does not unimplement the builtin.
+    return define_map.count(name) > 0 || macro_map.count(name) > 0;
+}
+
+// The `__has_*` operators madc ANSWERS from its own state. This is the single
+// list behind two questions that must never disagree: what evaluateHasQuery
+// will answer, and what `#ifdef` can see. madc previously answered
+// __has_builtin correctly while `#ifdef __has_builtin` said NO — and
+// libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in exactly that ifdef
+// (c++config.h:830), so every guard below it silently evaluated to 0 and the
+// default lane quietly lost LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and their
+// siblings. The operators madc cannot back (__has_attribute, __has_feature,
+// …) stay OFF this list and thus invisible: claiming them would be the
+// unbacked yes this file refuses.
+bool Program::has_query_operator_implemented(const std::string &op)
+{
+    return op == "__has_builtin"
+	|| op == "__has_include"
+	|| op == "__has_include_next";
+}
+
+bool Program::macro_name_defined(const std::string &name)
+{
+    return define_map.count(name) > 0 || macro_map.count(name) > 0
+	|| has_query_operator_implemented(name);
+}
+
+int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr,
+				  size_t &pos)
+{
+    if ( !has_query_operator_implemented(op) )
+	return 0;	// see has_query_operator_implemented — deliberate 0
+    while ( pos < expr.size() && (expr[pos] == ' ' || expr[pos] == '\t') )
+	++pos;
+    if ( pos >= expr.size() || expr[pos] != '(' )
+	return 0;	// bare identifier: no query to answer
+    ++pos;
+    // Take the argument as raw text to the matching ')': the forms differ per
+    // operator (`<a/b.h>`, `"a.h"`, `clang::foo`, a bare identifier), so the
+    // shape belongs to the operator, not to this scanner.
+    std::string arg;
+    int depth = 1;
+    while ( pos < expr.size() )
+    {
+	char c = expr[pos];
+	if ( c == '(' )
+	    ++depth;
+	else if ( c == ')' && --depth == 0 )
+	{
+	    ++pos;
+	    break;
+	}
+	arg += c;
+	++pos;
+    }
+    size_t b = arg.find_first_not_of(" \t");
+    size_t e = arg.find_last_not_of(" \t");
+    arg = (b == std::string::npos) ? std::string() : arg.substr(b, e - b + 1);
+    if ( arg.empty() )
+	return 0;
+
+    if ( op == "__has_builtin" )
+	return has_builtin(arg) ? 1 : 0;
+
+    if ( op == "__has_include" || op == "__has_include_next" )
+    {
+	// Answered EXACTLY, by the same resolver `#include` itself uses — so
+	// "can I include this?" and "will including it work?" can never
+	// disagree. resolve_include_path returns the bare name when it finds
+	// nothing, so the probe is the file opening, not the string.
+	bool is_system = arg[0] == '<';
+	if ( (is_system && arg.back() != '>')
+	  || (!is_system && (arg[0] != '"' || arg.back() != '"')) )
+	    return 0;
+	std::string file = arg.substr(1, arg.size() - 2);
+	if ( file.empty() )
+	    return 0;
+	std::string path = op == "__has_include_next"
+			 ? resolve_include_next_path(file)
+			 : resolve_include_path(file, is_system);
+	std::ifstream probe(path.c_str());
+	return probe.good() ? 1 : 0;
+    }
+
+    // __has_attribute / __has_cpp_attribute / __has_declspec_attribute /
+    // __has_feature / __has_extension / __has_keyword: madc supports a real
+    // subset of each (cleanup, vector_size, the C++11 keyword set the
+    // LanguageStd gate already knows), but there is no registry to ask yet, so
+    // claiming any of it would be exactly the unbacked yes this file refuses.
+    // 0 keeps every library on its portable path — the same answer they got
+    // before these operators existed, now given deliberately.
+    return 0;
 }
 
 bool Program::evaluateIfCondition()
@@ -5709,8 +6200,16 @@ bool Program::evaluateIfCondition()
 		skip_ws();
 		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
 		    ++pos;
-		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
+		return macro_name_defined(name) ? 1 : 0;
 	    }
+
+	    // The clang __has_* family. Modern standard libraries gate whole
+	    // implementation strategies on these — libc++ 18 asks __has_builtin
+	    // 122 times and #errors outright for a trait it has no fallback for —
+	    // and madc answered every one by falling through to "unknown
+	    // identifier = 0". Now they are real operators.
+	    if ( word.compare(0, 6, "__has_") == 0 )
+		return evaluateHasQuery(word, expr, pos);
 
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )
@@ -6014,6 +6513,220 @@ void Program::consume_directive_line_tail()
 	/* discard — same as getRealToken() drops trivia */;
 }
 
+// The ONE pragma implementation, entered with `source` positioned at the pragma
+// text itself (`pack(1)`, `push_macro("min")`, …). Both of the language's
+// spellings reach it: the `#pragma` directive, which arrives already
+// positioned, and the C99/C++11 `_Pragma("...")` operator, which destringizes
+// its operand into the source stream first (handle_pragma_operator below).
+// Staying text-driven is precisely what lets one implementation serve both — a
+// pragma must behave identically however it was written, and pack / push_macro
+// are the two madc genuinely acts on rather than ignores.
+void Program::handle_pragma_body()
+{
+    while ( source.peek() == ' ' || source.peek() == '\t' )
+	source.get();
+    std::string pragma;
+    int pragma_line = source.line();
+    int pragma_col = source.column();
+    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
+	pragma += source.get();
+    if ( pragma == "pack" )
+    {
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	if ( source.peek() == '(' )
+	{
+	    source.get(); // consume (
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    std::string arg;
+	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+		arg += source.get();
+	    // GCC semantics (see the pack block in madc.h):
+	    // push saves the current value and an optional
+	    // `, N` then sets it; pop restores; pack(N) sets;
+	    // pack() resets to the default layout. Ops are
+	    // QUEUED, not applied — parse-time application
+	    // rides the token side channel (lex-time state
+	    // would be stale by parse time).
+	    if ( arg == "push" )
+	    {
+		while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+		    source.get();
+		int val = 0;
+		while ( source.good() && isdigit(source.peek()) )
+		    val = val * 10 + (source.get() - '0');
+		_pending_pack_ops.push_back(std::make_pair(1, val));
+		DBG(std::cout << "#pragma pack(push" << (val ? ", " : "")
+		    << (val ? std::to_string(val) : std::string()) << ") queued" << std::endl);
+	    }
+	    else if ( arg == "pop" )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(2, 0));
+		DBG(std::cout << "#pragma pack(pop) queued" << std::endl);
+	    }
+	    else if ( !arg.empty() && isdigit((unsigned char)arg[0]) )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(0, atoi(arg.c_str())));
+		DBG(std::cout << "#pragma pack(" << arg << ") queued" << std::endl);
+	    }
+	    else if ( arg.empty() )
+	    {
+		_pending_pack_ops.push_back(std::make_pair(0, 0));
+		DBG(std::cout << "#pragma pack() reset queued" << std::endl);
+	    }
+	    // discard trailing tokens via the lexer (handles a
+	    // multi-line /* */ comment on this line)
+	    consume_directive_line_tail();
+	}
+    }
+    else if ( pragma == "push_macro" || pragma == "pop_macro" )
+    {
+	bool is_push = (pragma == "push_macro");
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	if ( source.peek() == '(' )
+	{
+	    source.get(); // consume (
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    // Expect "macro_name"
+	    if ( source.peek() == '"' )
+	    {
+		source.get(); // consume opening "
+		std::string mname;
+		while ( source.good() && !source.eof() && source.peek() != '"' )
+		    mname += source.get();
+		if ( source.peek() == '"' )
+		    source.get(); // consume closing "
+		if ( is_push )
+		{
+		    auto it = define_map.find(mname);
+		    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
+		    _macro_save_stack[mname].push(val);
+		    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+		}
+		else
+		{
+		    auto sit = _macro_save_stack.find(mname);
+		    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
+		    {
+			std::string val = sit->second.top();
+			sit->second.pop();
+			if ( val == "\x01" )
+			    define_map.erase(mname);
+			else
+			    define_map[mname] = val;
+			DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+		    }
+		}
+	    }
+	}
+	// discard trailing tokens via the lexer (handles a
+	// multi-line /* */ comment on this line)
+	consume_directive_line_tail();
+    }
+    else if ( pragma == "prefer" )
+    {
+	std::vector<std::string> order;
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+	{
+	    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+		source.get();
+	    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
+		break;
+	    std::string name;
+	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+		name += source.get();
+	    if ( !name.empty() )
+	    {
+		order.push_back(name);
+		// The pragma reads its names char-by-char, so they bypass the
+		// identifier lexer's auto-include scan — feed them to the same
+		// hook the statement form gets for free, or `#pragma prefer
+		// rust, ...` fails "Unknown namespace" while `prefer rust, ...;`
+		// works (the ns_* header injects before parse-time validation).
+		auto_include_standard_identifier(name);
+	    }
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	}
+
+	TokenBase *tb = make_token(TokenID::tkPREFER);
+	tb->line = pragma_line;
+	tb->column = pragma_col;
+	injected_tokens.push_back(tb);
+	for ( size_t i = 0; i < order.size(); ++i )
+	{
+	    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
+	    ti->line = pragma_line;
+	    ti->column = pragma_col;
+	    injected_tokens.push_back(ti);
+	    if ( i + 1 < order.size() )
+	    {
+		tb = make_token(TokenID::tkComma);
+		tb->line = pragma_line;
+		tb->column = pragma_col;
+		injected_tokens.push_back(tb);
+	    }
+	}
+	tb = make_token(TokenID::tkSemi);
+	tb->line = pragma_line;
+	tb->column = pragma_col;
+	injected_tokens.push_back(tb);
+    }
+    else
+    {
+	// consume the rest of the directive line for unknown
+	// pragmas; discard trailing tokens via the lexer
+	consume_directive_line_tail();
+    }
+}
+
+// _Pragma("...") — the C99 (and C++11) token form of #pragma, which
+// destringizes its operand and processes it as though it had been written as a
+// directive. libc++ reaches it through _LIBCPP_SUPPRESS_DEPRECATED_PUSH and
+// friends; it is not libc++-specific, though (doctest's macros use it too).
+//
+// The operand is read as a TOKEN rather than character-by-character because the
+// standard macro-expands it first, and real headers depend on that: libc++
+// writes both `_Pragma(#x)` and
+// `_Pragma(_LIBCPP_TOSTRING(clang diagnostic ignored str))`, neither of which is
+// a string literal until expansion has run. Going through the lexer gets that
+// expansion for free — and the string case has already undone \" and \\, which
+// `_Pragma("GCC diagnostic ignored \"-Wdeprecated\"")` needs — so the token's
+// text IS the destringized pragma line, with no second unescaper to drift.
+void Program::handle_pragma_operator()
+{
+    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t'
+			   || source.peek() == '\n' || source.peek() == '\r') )
+	source.get();
+    if ( source.peek() != '(' )
+	Throw << "_Pragma expects a parenthesized string literal" << flush;
+    source.get();				// consume (
+    TokenBase *operand = getRealToken();
+    if ( !operand || operand->type() != TokenType::ttString )
+	Throw << "_Pragma expects a parenthesized string literal" << flush;
+    std::string text = ((TokenIdent *)operand)->spelling();
+    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t'
+			   || source.peek() == '\n' || source.peek() == '\r') )
+	source.get();
+    if ( source.peek() != ')' )
+	Throw << "_Pragma: expected ')' after the pragma string" << flush;
+    source.get();				// consume )
+    DBG(std::cout << "_Pragma(\"" << text << "\")" << std::endl);
+    // Hand the text back to the shared handler as a pragma line. The trailing
+    // newline is load-bearing: every branch of handle_pragma_body ends by
+    // discarding the rest of its directive line, so without a terminator that
+    // discard would run off the end of the pushback and eat real code. A
+    // pushed-back newline does not advance the line counter, so diagnostics
+    // after a _Pragma still name the line it was written on.
+    source.pushback(text + "\n");
+    handle_pragma_body();
+}
+
 // Exact source text of a trivia token (whitespace via its RLE count, comment
 // via its stored text incl. delimiters). Used for full-fidelity reconstruction.
 static std::string trivia_text(TokenBase *tb)
@@ -6293,7 +7006,15 @@ void show_error_source_line(const std::string &ln, int col)
 
     if ( ln.length()+5 > term_columns )
     {
-	std::string trunc = "  ..." + ln.substr(col);
+	// The column can exceed the fetched line (a token inside a macro
+	// expansion carries post-expansion provenance). A diagnostic must
+	// never throw — clamp the tail slice to the line's end instead of
+	// letting substr raise out_of_range mid-print (which surfaced as
+	// "tree build failed (basic_string::substr...)" and MASKED the
+	// real error).
+	size_t start = (col > 0 && (size_t)col <= ln.length())
+		     ? (size_t)col : ln.length();
+	std::string trunc = "  ..." + ln.substr(start);
 	std::cerr << trunc << std::endl;
 	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
 	return;
@@ -6480,6 +7201,16 @@ TokenProgram *Program::tokenize(const char *fname)
 
     DBG(std::cout << "Program::tokenize() finished tokenizing" << std::endl);
 
+    // Auto-includes inject BEFORE the forest flush: the synthetic #include
+    // must bind its frozen unit while the one-shot decl restore (item 5,
+    // inside the flush) can still see it in forest_chain_set. The parse()-
+    // start injection stays as the live/eval fallback (pending set is empty
+    // here after this call), but under a forest bind it ran too late — the
+    // restore window had closed and the auto-included header's names never
+    // registered (`string s` in a bare script: "use of undeclared
+    // identifier 'string'" only when packed).
+    inject_pending_auto_includes();
+
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
     flush_forest_pending_globals();	// v13: globals staged during #include bind
@@ -6556,6 +7287,9 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     }
 
     DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
+
+    // Auto-includes inject BEFORE the forest flush — see tokenize()'s tail.
+    inject_pending_auto_includes();
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;

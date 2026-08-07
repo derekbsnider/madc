@@ -1,0 +1,22 @@
+// The global-scope qualifier ([namespace.qual]) in TYPE positions: a leading
+// `::` pins the name lookup to the global scope — `typedef ::timespec t;`
+// (libc++ __threading_support:54, the <string_view> frontier), a using-alias
+// target, and statement-position `::wrap w;` ([stmt.ambig]: a declaration
+// when ::T names a type; the statement dispatch routes a leading `::`
+// through resolve_declared_type_token's global-scope arm, and a `::name`
+// that is NOT a type keeps the expression lane — ::global_fn(7) below).
+// Oracle: g++ 13 and clang++-18 print 5 9 3 7.
+#include <ctime>
+#include <cstdio>
+struct wrap { int x; };
+static int global_fn(int v) { return v; }
+typedef ::timespec td_ts;
+using ua_ts = ::timespec;
+int main() {
+    td_ts a; a.tv_sec = 5;
+    ua_ts b; b.tv_sec = 9;
+    ::wrap w; w.x = 3;
+    int r = ::global_fn(7);
+    printf("%d %d %d %d\n", (int)a.tv_sec, (int)b.tv_sec, w.x, r);
+    return 0;
+}

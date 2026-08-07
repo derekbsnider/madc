@@ -1,0 +1,67 @@
+// A target's implicit copy constructor can bind through a conversion function
+// on the source. Selection uses the source object's cv, and both named and
+// address-based construction sites share the same conversion/writeback path.
+//
+// The conversion-type-id may be cv-qualified, west or east, and may be a
+// reference or pointer: `operator const View&() const` (libc++
+// directory_entry.h:92 `operator const _Path&() const noexcept`) and
+// `operator View const*() const`. The west-const spelling used to throw
+// "Expecting conversion type after operator" — the conversion arm handed
+// `const` itself to the type resolver.
+#include <stdio.h>
+
+class View {
+public:
+	int value;
+	View() { value = 0; }
+};
+
+class Source {
+public:
+	int value;
+	Source() { value = 0; }
+
+	operator View()
+	{
+		View out;
+		out.value = value + 1;
+		return out;
+	}
+
+	operator View() const
+	{
+		View out;
+		out.value = value + 2;
+		return out;
+	}
+};
+
+class Holder {
+public:
+	View held;
+	Holder() { held.value = 9; }
+	operator const View&() const { return held; }	// west-cv reference
+	operator View const*() const { return &held; }	// east-cv pointer
+};
+
+int main()
+{
+	Source source;
+	source.value = 40;
+	View first(source);
+	const Source& cref = source;
+	View second(cref);
+	View *third = new View(cref);
+	printf("%d %d %d\n", first.value, second.value, third->value);
+	delete third;
+
+	Holder h;
+	View fourth(h);			// copy ctor binds via operator const View&()
+	printf("%d\n", fourth.value);
+	// NOT covered here: conversion selection in plain init contexts
+	// (`const View &rv = h;` / `const View *pv = h;`) — the init/assign
+	// paths do not consult conversion functions yet (the ref form binds
+	// &h by layout accident with a warning; the pointer form is a loud
+	// check error). Tracked as its own root.
+	return 0;
+}

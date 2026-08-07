@@ -1,0 +1,1 @@
+Default-flavor by construction: asserts libstdc++'s basic_string size (32). The libc++ half of the pair is tests/teststring_libcxx.mad, which asserts 24.

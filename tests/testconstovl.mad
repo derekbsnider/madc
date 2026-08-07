@@ -1,0 +1,28 @@
+#include <cstdio>
+
+struct S {
+	int f() { return 1; }
+	int f() const { return 2; }
+};
+
+struct T {
+	int f() { return 1; }
+	int f() const { return 2; }
+	int g() { return f(); }		// non-const context -> 1
+	int gc() const { return f(); }	// const context -> 2
+};
+
+int viaref(const T &r) { return r.f(); }	// const ref -> 2
+int viaref2(T &r) { return r.f(); }		// non-const ref -> 1
+
+int main()
+{
+	S s;
+	const S cs = S();
+	T t;
+	const T ct = T();
+	printf("%d %d %d %d %d %d %d %d\n",
+	       s.f(), cs.f(), t.g(), t.gc(), ct.f(), ct.gc(),
+	       viaref(t), viaref2(t));
+	return 0;
+}

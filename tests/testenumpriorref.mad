@@ -1,0 +1,21 @@
+// #55 reducer: an enumerator's initializer names PRIOR enumerators of the
+// SAME enum being defined ([dcl.enum]/5). libc++ __charconv/chars_format.h:
+//	enum class chars_format { scientific=..., fixed=..., hex=...,
+//	                          general = fixed | scientific };
+// Arms:
+//   A — enum class, OR of two prior enumerators (the libc++ shape)
+//   B — control: plain C enum, same shape
+//   C — control: enum class, plain copy of a prior enumerator (no operator)
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	3 3 3
+#include <cstdio>
+
+enum class CF { sci = 1, fix = 2, hexf = 4, gen = fix | sci };
+enum PF { pa = 1, pb = 2, pc = pb | pa };
+enum class SC { x = 3, y = x };
+
+int main()
+{
+	printf("%d %d %d\n", (int)CF::gen, (int)pc, (int)SC::y);
+	return 0;
+}

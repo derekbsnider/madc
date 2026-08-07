@@ -1,0 +1,55 @@
+#!/../bin/madc
+#include <stdio.h>
+
+// Angle-bracket disambiguation ([temp.names]). A `<` opens a template
+// argument list ONLY in a template-id head context; after `)`, a literal,
+// or another operator it is LESS-THAN. A `>` inside parens opened within
+// the list is greater-than, not a close.
+//
+// One shared scanner owns this rule: DelimDepth (src/parser.cpp). Every
+// shape below broke, or would break, a hand-rolled `++angle_depth` copy.
+
+// --- The scope-corruption hazard --------------------------------------
+// `declval<T>() < declval<U>()` inside a partial-specialization head. A
+// scanner that counts this `<` as an open consumes the rest of the file
+// looking for a `>` that does not exist. When that happens inside a
+// namespace the namespace never closes, and EVERYTHING declared after it
+// becomes unreachable from `::` — this is exactly how libc++'s
+// __utility/is_pointer_in_range.h took out `using ::isalnum;` six headers
+// downstream. `ns::after_hazard` below is the probe: if the scan runs
+// away, that name cannot be found and this file fails to compile.
+namespace ns {
+template <class T> T declval();
+template <class...> struct vt { typedef void type; };
+template <class T, class U, class = void> struct cmp { static const int v = 0; };
+template <class T, class U>
+struct cmp<T, U, typename vt<decltype(declval<T>() < declval<U>())>::type>
+{ static const int v = 1; };
+int after_hazard = 42;
+}
+// (Which specialization `cmp` SELECTS needs decltype-SFINAE partial-spec
+// matching — a separate gap, deliberately not asserted here.)
+
+// --- Shapes whose VALUES this rule decides ----------------------------
+// 1. `<` after `)` is less-than: the real <type_traits> shape
+//    `integral_constant<bool, _Tp(-1) < _Tp(0)>`.
+template <class T> struct signedish { static const int v = T(-1) < T(0) ? 1 : 0; };
+
+// 2. A `>` inside parens opened WITHIN the argument list is greater-than.
+template <bool B> struct bconst { static const int v = B ? 1 : 0; };
+
+// 3. A `>>` that is really a shift, inside parens.
+template <int N> struct ival { static const int v = N; };
+
+// 4. Genuine nested template-ids must still close — spaced and `>>` forms.
+template <class T> struct box { static const int v = 7; };
+
+int main()
+{
+	printf("scope %d\n", ns::after_hazard);
+	printf("signedish %d %d\n", signedish<int>::v, signedish<unsigned>::v);
+	printf("bconst %d %d\n", bconst<(3 > 2)>::v, bconst<(1 > 2)>::v);
+	printf("ival %d\n", ival<(1024 >> 3)>::v);
+	printf("box %d %d\n", box<box<int> >::v, box<box<int>>::v);
+	return 0;
+}

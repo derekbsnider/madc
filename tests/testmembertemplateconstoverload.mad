@@ -1,0 +1,45 @@
+// A retained const member-template overload must remain viable on a const
+// receiver. Dropping the placeholder's trailing const selected the converting
+// non-template sibling before the template could be instantiated.
+#include <stdio.h>
+
+struct View {
+	int value;
+};
+
+struct Box {
+	Box() {}
+	Box(const View& view) { (void)view; }
+
+	int compare(const Box& other) const
+	{
+		(void)other;
+		return 1;
+	}
+
+	template<class U>
+	int compare(const U& other) const
+	{
+		(void)other;
+		return 2;
+	}
+};
+
+struct PointerBox {
+	int pick(void*) const { return 1; }
+
+	template<class U>
+	int pick(U**) const { return 3; }
+};
+
+int main()
+{
+	const Box box;
+	const PointerBox pointer_box;
+	View view;
+	int value = 9;
+	int* pointer = &value;
+	view.value = 7;
+	printf("%d %d\n", box.compare(view), pointer_box.pick(&pointer));
+	return 0;
+}

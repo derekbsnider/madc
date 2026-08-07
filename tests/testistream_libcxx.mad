@@ -1,0 +1,19 @@
+// libc++ istringstream end-to-end gate (task #83/#84 chain): construct a
+// vbase-carrying stream from a string, extract, print. Exercises the whole
+// construction/destruction chain madc emits from libc++ headers: the hidden
+// __madc_vb ctor params (base construction cannot use the library C1 — it
+// rebuilds the vbases at the STANDALONE layout), the materialized
+// basic_ios::init body (a declaration shell must not shadow the deferred
+// out-of-line definition), the D2 base-dtor flavor (an external D1
+// double-destroyed the vbase), and the Rung-3 mark by declared name.
+// Oracle (clang++ -stdlib=libc++): 42
+#include <sstream>
+#include <cstdio>
+int main()
+{
+	std::istringstream s("41");
+	int i = 0;
+	s >> i;
+	printf("%d\n", i + 1);
+	return 0;
+}

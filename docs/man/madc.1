@@ -59,6 +59,26 @@ C++ keywords reserved). A
 .I .c
 translation unit under \fB\-\-project\fR defaults to C mode.
 .TP
+.BI \-stdlib= lib
+C++ standard library flavor, in clang's spelling:
+.B libstdc++
+or
+.BR libc++ ,
+whichever this build could probe \(em an unknown or unbuilt flavor is an
+error naming the ones this binary actually has. Selecting a flavor
+.I replaces
+the C++ include search list, exactly as clang's driver does; it is not
+the same as putting the library first with
+.BR \-I ,
+because a library reaches the C headers behind it through
+.BR #include_next ,
+which would otherwise walk into the other library's directories.
+Orthogonal to the target: a Mach\-O target
+.I defaults
+to libc++, it never
+.I means
+libc++.
+.TP
 .BI \-D name\fR[=\fIvalue\fR]
 Define a preprocessor macro.
 .TP
@@ -108,6 +128,29 @@ runtime-free.
 .TP
 .BR \-shared " [" \-o " \fIfile.so\fR]"
 Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
+.TP
+.BR \-static\-libmadc ", " \-static
+Carry the madc runtime pieces the program needs INSIDE the emitted
+image, so it runs with no madc library installed at all
+.RB ( gcc "'s " \-static\-libgcc " precedent)."
+The pieces come from this madc's AOT ledger \(em the C\-lane runtime
+compiled to MIR modules and carried in its frozen\-forest container, so
+a packed or installed madc has one and a bare development build does
+not (point at a container with
+.BR \-\-forest\-bind= \fIfile\fR).
+Covers the C lane: try/catch/throw and VLA scope exit. A program that
+needs the C++ script\-lane runtime refuses at emit, naming the symbols.
+libc and libstdc++ stay dynamic \(em the flag scopes exactly what it
+promises;
+.B \-static
+is an alias (full\-static cannot exist on darwin, which has no static
+libSystem). Requires a linked output: the runtime merges at the link
+that produces the final image, not into a
+.BR \-c " .o."
+Note that a
+.B \-static\-libmadc
+image carries PROCESS\-GLOBAL exception state rather than per\-thread:
+MIR has no thread\-local storage.
 .SH SOURCE OUTPUT (do not run)
 .TP
 .B \-\-emit=c11\fR|\fBmc11
@@ -133,6 +176,16 @@ Verbose / debug output.
 .BR \-h ", " \-? ", " \-\-help
 Show the full option list, including the frozen-forest (compile-once)
 and dump/diagnostic options not listed here.
+.TP
+.BI \-\-config= file
+Read this configuration file instead of searching for one (see
+.B FILES
+below). A named file that cannot be loaded is an error \(em never
+silently ignored.
+.TP
+.B \-\-no\-config
+Skip the configuration-file search entirely, so no ambient file can
+affect the compile. Build systems and test harnesses should pass this.
 .SH ENVIRONMENT
 .TP
 .BI MADC_CPU_LIMIT= secs
@@ -146,9 +199,108 @@ plus 128 MB per \fB\-\-project\fR translation unit; 0 disables. A
 tripped guard names the knob in its error message.
 .TP
 .BI MADC_FOREST= file
-Frozen forest container to bind when neither the binary's own image nor
-the \fI<exe>\fB.forest\fR sidecar beside it carries one (discovery
-arm 3; first usable container wins).
+Frozen forest container to bind when no earlier discovery arm carries
+one. The chain, first usable container wins: the binary's own image,
+the
+.B libmadc
+image when madc is linked shared, the \fI<exe>\fB.forest\fR and
+\fI<lib>\fB.forest\fR sidecars, this path, and finally the
+.B forest
+key of a configuration file.
+.TP
+.BI XDG_CONFIG_HOME= dir
+Where the configuration-file search looks for the per-user file
+(\fIdir\fB/madc/madc.ini\fR); defaults to \fB~/.config\fR.
+.SH FILES
+.B madc
+optionally reads one
+.B madc.ini
+configuration file. Settings resolve in this order, most specific first:
+.B command line
+>
+.B environment
+>
+.B madc.ini
+> built-in defaults.
+.PP
+Unless
+.BI \-\-config= file
+or
+.B \-\-no\-config
+is given, these are tried in order and the
+.I first existing
+file wins outright \(em configuration files are never merged:
+.PP
+.nf
+    ./madc.ini
+    $XDG_CONFIG_HOME/madc/madc.ini   (or ~/.config/madc/madc.ini)
+    <sysconfdir>/madc.ini            (baked at build time)
+.fi
+.PP
+The format is \fBkey = value\fR, one per line, with
+.B #
+or
+.B ;
+comments and an optional
+.B [madc]
+section header. Values may be quoted. A relative path resolves against
+the configuration file's own directory, and a leading
+.B ~/
+expands. An unknown key, a malformed line, or a non-numeric limit is an
+.I error
+\(em a configuration file that half-applies is worse than one that
+refuses. Keys:
+.TP
+.BI std= dialect
+Default language standard, as for
+.BR \-\-std= .
+A
+.B \-\-std=
+on the command line overrides it.
+.TP
+.BI stdlib= lib
+Default C++ standard library flavor, as for
+.BR \-stdlib= .
+A
+.B \-stdlib=
+on the command line overrides it.
+.TP
+.BI forest= file
+Frozen forest container, used as the last discovery arm (see
+.B MADC_FOREST
+above, which outranks it).
+.TP
+.BI include= dir
+Additional include directory, repeatable, searched after every
+.B \-I
+directory from the command line. It is applied through the same path as
+.BR \-I ,
+so it behaves identically \(em including in
+.B \-\-project
+mode, where the manifest's own include paths are what each translation
+unit gets.
+.TP
+.BI cpu\-limit= secs
+Default for
+.BR MADC_CPU_LIMIT ;
+.B 0
+disables. The environment variable overrides it.
+.TP
+.BI mem\-limit= MB
+Default for
+.BR MADC_MEM_LIMIT ;
+.B 0
+disables. The environment variable overrides it.
+.PP
+Configuration-file support is a build-time option
+(\fBconfigure \-\-disable\-config\-file\fR removes it, which embedding
+hosts and sandboxed deployments want: a file that can redirect where the
+compiler loads frozen state from is an attack surface).
+.B libmadc
+itself never reads a configuration file \(em this is a
+.BR madc (1)
+feature, and an embedding host configures its compiles through the
+library API.
 .SH EXAMPLES
 Run a file as a script (no main, no includes needed):
 .PP

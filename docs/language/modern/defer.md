@@ -4,9 +4,14 @@ Go-style deferred execution — register a statement to run at scope exit in LIF
 
 ## Syntax
 
-```c
+```text
 defer statement;
 ```
+
+`defer` attaches to the enclosing function or block scope. In script
+mode a top-level `defer` attaches to the synthesized `main`, so its
+statement runs at the end of the script (LIFO with any other top-level
+defers). Standards modes (`--std=c*`/`c++*`) reject file-scope `defer`.
 
 ## How It Works
 
@@ -17,21 +22,30 @@ A `return <expr>` evaluates the expression **before** the deferred statements ru
 ## Example
 
 ```c
-ofstream out;
-string fname = "output.txt";
-out.open(fname);
-defer out.close();         // runs at scope exit, after all other code
-out << "data" << endl;     // runs before the deferred close
+int main()
+{
+	ofstream out;
+	string fname = "defer_demo.txt";
+	out.open(fname);
+	defer out.close();        // runs at scope exit, after all other code
+	out << "data" << endl;    // runs before the deferred close
+	return 0;
+}
 ```
 
 ## LIFO Order
 
 ```c
-defer cout << "third" << endl;   // runs last
-defer cout << "second" << endl;  // runs second
-cout << "first" << endl;          // runs first
-// output: first, second, third
+int main()
+{
+	defer cout << "third" << endl;   // runs last
+	defer cout << "second" << endl;  // runs second
+	cout << "first" << endl;         // runs first
+	return 0;
+}
 ```
+
+Output: `first`, `second`, `third`.
 
 ## Limitations
 

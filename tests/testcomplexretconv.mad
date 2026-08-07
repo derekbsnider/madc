@@ -1,0 +1,29 @@
+// Implicit conversions at RETURN in a _Complex-returning function
+// (C99 6.3.1.7: scalar converts to complex with zero imaginary part;
+// 6.3.1.6: complex-to-complex converts each component). c2mir's N_RETURN
+// arm never converted — target_add_ret_ops read the scalar value op's
+// nonexistent mem fields, emitting component loads from ABSOLUTE addresses
+// (`dmov d_0, d:0`) — SIGSEGV at run for `double _Complex f() { return 3.0; }`
+// in madc's JIT and standalone c2m alike. Fixed in the MIR fork: the return
+// arm routes through scalar_to_complex / complex_to_complex.
+// Oracle: gcc 13 and clang 18 print "3 0 5 0 2 1 7 0".
+double _Complex from_scalar(void) { return 3.0; }
+float _Complex from_double(void) { return 5; }
+double _Complex widen(void) { float _Complex z = 2.0f + 1.0f * 1.0fi; return z; }
+long double _Complex byaddr_scalar(void) { return 7; }
+
+int printf(const char *, ...);
+
+int main()
+{
+    double _Complex a = from_scalar();
+    float _Complex b = from_double();
+    double _Complex c = widen();
+    long double _Complex d = byaddr_scalar();
+    printf("%d %d %d %d %d %d %d %d\n",
+	   (int)__real__ a, (int)__imag__ a,
+	   (int)__real__ b, (int)__imag__ b,
+	   (int)__real__ c, (int)__imag__ c,
+	   (int)__real__ d, (int)__imag__ d);
+    return 0;
+}

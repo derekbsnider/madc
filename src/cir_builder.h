@@ -156,15 +156,28 @@ class CirBuilder {
 	// zero of the right type is a conformant lowering c2mir will compile).
 	DataDef *m_cur_func_scalar_ret = NULL;
 	Method *m_cur_method = NULL;
+	// Non-NULL while translating a madc-emitted CONSTRUCTOR of a class with
+	// virtual bases: the ctor carries hidden `struct V *__madc_vb<i>` params
+	// (one per collect_vbases entry — see ctor_hidden_vbase_owner), and a
+	// vbase locate on `__this` must read those params, NOT the vptr's
+	// vbase-offset slot (the prologue stamped the class's STANDALONE vtable,
+	// whose vbase offsets are wrong for a base-subobject `this` — the
+	// construction-vtables gap, task #83 leg 2). Saved/restored in func_def
+	// beside m_cur_method.
+	DataDefCLASS *m_cur_ctor_vbase_owner = NULL;
 	// True while translating the body of a multi-return function (`return a, b;`,
-	// Go-style). Such a function uses the multi-return __retbuf ABI: C return type
-	// `void`, a hidden `long *__retbuf` first parameter, and `return a, b;` becomes
-	// "__retbuf[0]=a; __retbuf[1]=b; return;". The call site `x, y := f()` allocates
-	// a `long __mret[N]` buffer, passes it as __retbuf, then reads x=__mret[0] etc.
-	// (Ported to cir_builder 2026-06-02; it was an asmjit-only feature dropped when
-	// that backend was removed in 64f44b3 and never reimplemented on CIR.)
+	// Go-style). Such a function's C-level return type is its transport struct
+	// (`struct { T0 v0; ... }`, m_cur_func_multi_struct): a CLASS transport
+	// (some slot is an object) takes the __retbuf ABI and `return a, b;`
+	// constructs/assigns each slot directly into *__retbuf; a TRIVIAL
+	// transport returns natively and `return a, b;` fills a local `struct S`
+	// and returns it. The call site `x, y := f()` receives the struct and
+	// unpacks its fields (multi_return_unpack).
 	bool m_cur_func_multi_return = false;
-	// Per-translation counter for unique multi-return buffer names (__mret_K).
+	// The current multi-return function's transport struct (FuncDef::
+	// multi_ret_struct), NULL otherwise. Set beside m_cur_func_multi_return.
+	DataDefSTRUCT *m_cur_func_multi_struct = NULL;
+	// Per-translation counter for unique multi-return temp names (__mret_K).
 	int m_mret_counter = 0;
 	// Active `defer` scopes while translating the current function's body:
 	// each entry is a compound whose `deferred` vector is non-empty, innermost
@@ -197,11 +210,14 @@ class CirBuilder {
 	// the returned class/struct type.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
 
-	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign whose
-	// multi_vars holds the N target variables). Pushes the `long __mret_K[N]`
-	// buffer decl, the `f(__mret_K, args)` call, and the assigns for multi_vars[1..]
-	// to m_pending_stmts (flushed before this decl statement); returns __mret_K[0]
-	// as multi_vars[0]'s initializer. See m_cur_func_multi_return.
+	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign
+	// statement whose multi_vars holds the N receiver variables, all plain
+	// block-top scope vars). Emits the transport-struct temp, the call
+	// (native-return assign, or `f(&__t, args)` for a class transport), and
+	// one fill per receiver (plain assign for a scalar slot, member-wise
+	// copy-assign for an object slot) via m_pending_stmts; returns the last
+	// fill's value node for the enclosing expression statement. See
+	// m_cur_func_multi_return.
 	node_t multi_return_unpack(class TokenAssign *as, TokenBase *origin);
 
 	// Statements that must be emitted in the enclosing block immediately
@@ -272,14 +288,13 @@ class CirBuilder {
 	}
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
-	// otherwise. Gates the by-value non-trivial-class return (__retbuf) ABI to
-	// madc-compiled functions only; external/native functions keep their own ABI.
+	// otherwise. Used with the materialized/deferred sets to decide whether a
+	// resolved symbol is emitted by this module and can therefore link.
 	const std::set<std::string> *m_user_func_names = nullptr;
 	// Emit symbols of deferred lazy bodies ([temp.inst]) MATERIALIZED this
-	// module: madc emits their definitions (retbuf ABI for by-value class
-	// returns) but they are not in m_user_func_names; the classification in
-	// object_returning_call_class needs them after deferred_lazy_bodies
-	// erases the materialized entry.
+	// module. They are not in m_user_func_names, and deferred_lazy_bodies erases
+	// each entry as it materializes, so retain the symbols for linkability and
+	// reachability decisions made later in the module pass.
 	std::set<std::string> m_materialized_lib_syms;
 
 	// ---- Pack-time drain / check-gate state (rung 1) ----
@@ -294,6 +309,12 @@ class CirBuilder {
 	std::vector<std::set<std::string> > pack_def_callees;
 	std::vector<char> pack_is_dropped;
 	std::set<std::string> pack_dropped;
+	// Symbols of materialized bodies whose pack-time LOWERING failed (the
+	// drain's policy drop): no def was ever stashed or tree-flushed, so no
+	// decl surface may carry their broken signature — the late proto pass
+	// and the output-extern flush skip them, and the check gate splices
+	// (rather than TU-aborts on) any residual decl bearing one.
+	std::set<std::string> pack_defless_syms;
 	// Symbols whose tree-resident defs must NOT stamp DF_HAS_FOREST_BODY
 	// (consumer-excluded under the emission split): DEFBODY-reverted bodies
 	// and cascade-excluded callers. Consumed by
@@ -376,6 +397,10 @@ class CirBuilder {
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
+	// A `char __pad<index>[bytes]` synthetic member — layout filler shared by
+	// the class emitter (vptr/base gaps, tail pad) and the empty-aggregate
+	// definition (C++ sizeof-1 empty struct must not emit a size-0 body).
+	node_t char_pad_member(int index, size_t bytes);
 
 	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
 	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.
@@ -405,10 +430,43 @@ class CirBuilder {
 	// The shim core, keyed on the function Variable — serves parsed
 	// functions AND host-callback trampolines (which have no TokenFunc).
 	node_t synth_call_shim_var(Program *prog, Variable *fvar);
+	// `vbase_forward` = the receiver is a BASE SUBOBJECT of the object the
+	// current ctor is constructing (base-construction / delegation lanes):
+	// the hidden __madc_vb args forward the caller's own params. Default
+	// (false) = complete-object lane: the vbase addresses are static
+	// offsets in `vbase_complete_cls`'s layout from a fresh
+	// `vbase_complete_mint()` node (NULL mint = bind this_addr once into a
+	// scoped local and mint ids off it).
 	node_t ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 				  FuncDef *ctor,
 				  const std::vector<node_t> &explicit_nodes,
-				  TokenBase *origin);
+				  TokenBase *origin,
+				  bool vbase_forward = false,
+				  const std::function<node_t()> *vbase_complete_mint = NULL,
+				  DataDefCLASS *vbase_complete_cls = NULL);
+	// The class whose hidden `__madc_vb<i>` ctor params `fd` carries:
+	// method->owner_class when fd is a madc-emitted (emit_symbol empty)
+	// ctor of a class with virtual bases; NULL otherwise. The one key for
+	// param injection (func_def / func_proto / Pass 0.75 externs) and the
+	// call-site appends — all four MUST agree or c2mir arity-checks fail.
+	DataDefCLASS *ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
+			       const std::string &fname);
+	// Append the hidden `struct V *__madc_vb<i>` parameter declarations
+	// for `ocls`'s ctor (one per collect_vbases entry, that order).
+	void append_ctor_vbase_params(node_t param_list, DataDefCLASS *ocls,
+			       TokenBase *origin);
+	// Append the hidden __madc_vb ARGUMENTS for a callee ctor of `callee`,
+	// forwarding the current ctor's own params (base-subobject lanes).
+	// False when a slot cannot be mapped — caller falls back to static.
+	bool append_ctor_vbase_forward_args(node_t args, DataDefCLASS *callee,
+			       TokenBase *origin);
+	// Append the hidden __madc_vb ARGUMENTS as static complete-object
+	// addresses: `(struct V *)((char *)mint_base() + off)` with off from
+	// `complete_cls`'s layout (mint_base returns a FRESH node per call —
+	// c2mir single parent link).
+	void append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee,
+			       const std::function<node_t()> &mint_base,
+			       DataDefCLASS *complete_cls, TokenBase *origin);
 	void synth_call_shims(Program *prog, const std::vector<TokenFunc *> &roots,
 			      std::vector<node_t> &func_def_nodes);
 	// Host-callback trampoline synthesis (translate_module): one module
@@ -428,17 +486,24 @@ class CirBuilder {
 	// True only for a genuine class OBJECT value (declared class variable,
 	// class member, class-array element, or reference/value parameter).
 	static bool is_class_object_value(TokenBase *arg);
-	// A CALL to a madc-COMPILED function returning a non-trivial class by value
-	// (one routed through the __retbuf ABI). Returns the class, or NULL.
+	// A CALL whose selected function returns a non-trivial class by value through
+	// the __retbuf ABI. Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);
 	// The referenced type of a REFERENCE-returning call argument
 	// (std::move(x), a T&/T&& method) — the pointer representation
 	// unwrapped; NULL when arg is not a ref-returning call.
 	DataDef *ref_returning_call_type(TokenBase *arg);
+	// The operand of an IDENTITY reference-cast call (std::move/forward,
+	// inline_builtin_kind "forward") — transparent for TYPE questions;
+	// NULL when fw is not such a call. See cir_builder.cpp.
+	TokenBase *identity_forward_operand(TokenCallFunc *fw);
 	// The class that, returned by value, must use the __retbuf ABI (a
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// The single function-signature owner for the __retbuf decision: reject
+	// pointer/reference/multi returns, then classify the returned value type.
+	DataDefCLASS *function_retbuf_class(class FuncDef *fd);
 	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
 	// (after a bit-copy for scalars), so the return slot owns its own buffers.
 	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
@@ -491,7 +556,7 @@ class CirBuilder {
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
 	node_t upcast_class_ptr(node_t value, DataDef *lhs_dd, class TokenBase *rhs,
-				class TokenBase *origin);
+				class TokenBase *origin, DataDef *rhs_dd = NULL);
 	node_t upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 				     class TokenBase *rhs, class TokenBase *origin);
 	node_t object_addr(const char *name, TokenBase *origin); // (void*)&name
@@ -503,6 +568,10 @@ class CirBuilder {
 	// Coerce an object with a c_str() method to const char* for a char*-expecting
 	// call.
 	node_t object_cstr_arg(TokenBase *arg);
+	// True when object_cstr_arg would really produce a char* for this operand
+	// (the class has a resolvable c_str()) rather than falling back to the raw
+	// object — the one test, for callers that cannot use that fallback.
+	bool thrown_object_has_cstr(TokenBase *arg);
 	// Coerce an argument to an object pointer for a call whose parameter is a
 	// class object (value or reference). A genuine object is passed by address;
 	// any value accepted by a converting ctor is materialized into a temp.
@@ -512,6 +581,10 @@ class CirBuilder {
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
+	enum class RefArgValueForm {
+		ReferentValue,
+		ReferentAddress
+	};
 	// Address of an argument bound to a NON-class reference parameter
 	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
 	// prvalue (a by-value call result, a post-increment, a builtin
@@ -521,6 +594,12 @@ class CirBuilder {
 	node_t ref_param_arg_addr(TokenBase *arg,
 				  DataDef *expected_referent = NULL,
 				  bool allow_converted_temp = false);
+	node_t ref_param_arg_addr_from_value(
+		TokenBase *arg, const std::function<node_t()> &value,
+		DataDef *value_type, DataDef *expected_referent,
+		bool allow_converted_temp, RefArgValueForm value_form,
+		std::vector<node_t> &prefix);
+	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value);
 	// True for the argument forms that are unambiguously prvalues and therefore
 	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
 	// binary arithmetic/bitwise result, or a literal. Conservative by design —
@@ -711,6 +790,15 @@ public:
 	// asm-label emits the labeled symbol directly. Non-aliased variables return
 	// their own name.
 	std::string var_emit_name(const class Variable &v) const;
+	// Record a file-scope reference so pass 0.78 emits its extern decl.
+	// THE one owner: every path that reads a global BY NAME must call it,
+	// or the emitted C references an identifier c2mir never saw.
+	void note_global_reference(const class Variable &v);
+	// The mangled-direct link test (one owner, three bind sites): a symbol
+	// that neither the loaded native libraries provide nor madc itself
+	// emits can never link — binding it is always wrong; declining lets a
+	// body/instance lane serve ([temp.inst]).
+	bool extern_symbol_can_link(const std::string &sym);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
@@ -734,6 +822,31 @@ public:
 	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
 	std::string call_target_emit_name(class TokenCallFunc *tcf,
 					  class FuncDef **fd_out = NULL);
+	// task #69 flavor-ABI marshalling boundary. Detection: the callee is a
+	// host-implemented namespace public whose signature carries the flavor
+	// string (marshals_value_text) while the script flavor differs from the
+	// host build's. Slice 1 ships the detector as a probe
+	// (MADC_FLVMAR_PROBE=1): logs the script symbol, the host-flavor twin,
+	// and each one's dlsym resolution — no behavior change.
+	bool flavor_marshal_candidate(class FuncDef *fd) const;
+	void flavor_marshal_probe(const std::string &sym, class FuncDef *fd);
+	// Slice 2 (dark behind MADC_FLVMAR=1): swap the callee to a generated
+	// marshalling thunk when the host really exports the entry (dlsym on the
+	// callee's own symbol — extern-C twins — or on the host-flavor remint).
+	// Returns the thunk symbol, or empty when no marshalling applies.
+	std::string flavor_marshal_thunk(const std::string &sym, class FuncDef *fd);
+	node_t flavor_marshal_thunk_def(const char *thunk_sym,
+					const std::string &host_sym,
+					class FuncDef *fd);
+	bool flavor_marshal_string_syms(class DataDefCLASS *scr,
+					std::string &cstr_sym,
+					std::string &size_sym,
+					std::string &ctor_sym,
+					std::string &dtor_sym);
+	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
+	std::vector<node_t> m_flvmar_defs;
+	int m_flvmar_counter = 0;
+	bool m_flvmar_generating = false;	// reentrancy: no thunks for a thunk's own callees
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
@@ -751,6 +864,7 @@ public:
 	node_t integer_typed(madc_wide_int val, DataDef *dd, TokenBase *origin = NULL);
 	node_t real(double val, TokenBase *origin = NULL);
 	node_t real_float(float val, TokenBase *origin = NULL);
+	node_t real_ldouble(long double val, TokenBase *origin = NULL);
 	node_t complex_literal(double val, DataDef *complex_dd, TokenBase *origin = NULL);
 	node_t ch(long val, TokenBase *origin = NULL);
 	node_t str(const char *s, size_t len, TokenBase *origin = NULL);
@@ -788,6 +902,10 @@ public:
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);
+	// (struct T){0} — the C11 zero compound literal for value-initializing
+	// a plain struct ([dcl.init]p8 zero-init: `T()` casts and empty-args
+	// mem-inits on struct members share this one shape).
+	node_t zero_struct_compound(const DataDefSTRUCT *cst, TokenBase *origin);
 	// Declare a block-local temp of dd into `items`; returns its name.
 	std::string int_complex_temp(node_t items, DataDef *dd, TokenBase *origin);
 	// Convert an already-translated value of src_dd to the lowered type
@@ -837,12 +955,6 @@ public:
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
-	// When `fd` returns an object BY VALUE through the __retbuf ABI (void
-	// return + hidden `T* __retbuf` first param), report that returned type so
-	// the fn-ptr type renders the same
-	// ABI (`void (*)(T*, params)`) and indirect calls pass a retbuf temp.
-	// Returns NULL for the ordinary (scalar/pointer/trivial) return shape.
-	DataDef *fnptr_retbuf_type(class FuncDef *fd);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
@@ -1020,6 +1132,45 @@ public:
 			       TokenBase *origin);
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin, bool vbase_forward = false);
+	// [dcl.init.aggr]: memberwise copy-initialization of a CTOR-LESS class
+	// from an explicit initializer list (brace form, and the C++20 P0960
+	// paren form), declaration order; trailing members value-initialize
+	// (NSDMI first). `member_lvalue` mints a FRESH member-access lvalue per
+	// call (c2mir single parent link). Claims ONLY the clean aggregate case
+	// (no vptr/bases/union, servable members); every other shape DECLINES
+	// (NULL, nothing emitted) back to the legacy construction lanes that
+	// already serve it. Callers are the FULL-list construction sites (the
+	// TokenObjTemp arms, class_ctor_call_addr, and the declaration lanes
+	// via decl_aggregate_claim) — never class_ctor_call itself: the
+	// declaration lanes probe THAT with a PARTIAL argument view. Motivating
+	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
+	// and S{string, int} printing garbage in the plain lane.
+	node_t class_aggregate_init(
+			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// TRUE when a braced-init class instance's storage declaration must stay
+	// BARE (no C INIT list from var_decl): an OBJECT member needs
+	// copy-construction — bit-copying its representation is wrong, and a
+	// materialized initializer temp's declaration would order AFTER the
+	// SPEC_DECL that uses it. The declaration lanes then own the full list
+	// via decl_aggregate_claim. Consulted by var_decl's aggregate demotion
+	// and by the claim sites — one predicate, or the emitter and the
+	// construction lanes drift (double-init or dropped list).
+	bool braced_aggregate_needs_construction(Variable *v, TokenDecl *tdecl,
+			       DataDefCLASS *cdd);
+	// Aggregate claim for a DECLARATION site that holds the FULL braced
+	// list (`S v = {a, b}`, the decl copy-elision arm, a file-scope
+	// global). Returns the claimed construction; a LOUD error node when the
+	// list is aggregate-shaped but unservable (a silent fall-through would
+	// drop initializers — `S v = S{a, b}` default-constructed members and
+	// read garbage, exit 0); NULL to decline to the ctor lanes (copy shape,
+	// user-ctor list-init).
+	node_t decl_aggregate_claim(const std::string &vname,
+			       DataDefCLASS *cdcl,
+			       const std::vector<TokenBase *> &args,
 			       TokenBase *origin);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
 	// user-ctor virtual bases first (base-most order), then the C2-flavor
@@ -1059,9 +1210,13 @@ public:
 	// Default-construct the non-virtual base subobjects of ctorless `cdd`
 	// through the named receiver pointer, recursing through ctorless
 	// layers with the accumulated offset.
+	// `complete_cls` = the class whose COMPLETE object `recv_ptr` points at
+	// (vbase addresses for a constructed base's hidden params are offsets
+	// in ITS layout); NULL means cdd is itself the complete class.
 	void append_base_default_constructs(node_t items, const char *recv_ptr,
 			       DataDefCLASS *cdd, size_t off0,
-			       TokenBase *origin);
+			       TokenBase *origin,
+			       DataDefCLASS *complete_cls = NULL);
 	// The loud no-match result shared by both ctor-call builders: an
 	// error_node naming the class and the initializer argument types.
 	node_t no_ctor_match_error(DataDefCLASS *cdd,
@@ -1102,6 +1257,13 @@ public:
 	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
+	// select_ctor_overload + copy-time member-template ctor recovery: when
+	// selection misses (or lands on the declaration-only placeholder),
+	// instantiate the class's member-template ctor for THESE argument types
+	// (idempotent, memoized) and re-select. The placement-new lambda's dance,
+	// shared by every construction-emission site.
+	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args);
 	// Select the operator overload (operator= / operator+=) matching the RHS by
 	// generic argument scoring. Falls back to the first by-name match. NULL when
 	// the class has no such operator.
@@ -1118,10 +1280,16 @@ public:
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
 				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp
-	// + inline byte-select into _M_value (g++ -O0 canon, no call). The
-	// category class was resolved at parse time from the parsed <compare>.
+	// + inline select into its sole data member (g++ -O0 canon, no call).
+	// The category class was resolved at parse time from the parsed
+	// <compare>; the arm values read the category's own public statics.
 	node_t three_way_builtin_lowering(class TokenOperator *top,
 					  TokenBase *origin);
+	// `cat::stat`'s payload: the static read through the category's sole
+	// data member (name discovered, never spelled — it differs per stdlib
+	// flavor). NULL when the static does not resolve.
+	node_t cmpcat_static_value(DataDefCLASS *cat, const char *stat,
+				   const char *valm, TokenBase *origin);
 	// madc dialect strict equality `a === b` / `a !== b`: type-domain
 	// identity AND value equality (STD_MADC only; spec
 	// docs/superpowers/specs/2026-06-11-strict-equality-design.md).
@@ -1194,9 +1362,13 @@ public:
 	// pointer. The called symbols come from the member class registration.
 	// Used to give a class with object members proper member lifetime inside
 	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
+	// `done_bases` = indices of BASE subobjects whose ctor/dtor this
+	// function already emitted. Members flattened in from those bases are
+	// that base's lifetime, not ours — see member_origin in datadef.h.
 	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				    TokenBase *origin,
-				    const std::set<std::string> *skip = NULL);
+				    const std::set<std::string> *skip = NULL,
+				    const std::set<int> *done_bases = NULL);
 	// `sym((void*)recv->member)` expression statement — madarray_construct /
 	// madarray_destruct on a madc `array` (madc::value) data member.
 	node_t array_member_runtime_call(const char *sym, bool returns_value,
@@ -1209,6 +1381,17 @@ public:
 					 DataDefCLASS *scls, TokenBase *origin);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
+	// Aggregate list-initialization of a member ([dcl.init.aggr]):
+	// `Foo() : p{1,2}` assigns the flattened argument sequence to the
+	// member's FIELDS in declaration order, recursing into nested
+	// aggregates. `path` is the field chain from `__this`; the access
+	// expression is rebuilt per statement so no c2mir node is shared
+	// between two parents.
+	bool aggregate_member_init_stmts(std::vector<std::string> &path,
+				    DataDef *mtype,
+				    const std::vector<TokenBase *> &args,
+				    size_t &ai, std::vector<node_t> &out,
+				    TokenBase *origin);
 	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
 	// scalar/pointer member not explicitly initialized (not in `skip`). The
 	// receiver is `recv`, accessed `recv->member` when `arrow` (a ctor body's
@@ -1219,7 +1402,8 @@ public:
 				    TokenBase *origin,
 				    const std::set<std::string> *skip = NULL);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
-				   TokenBase *origin);
+				   TokenBase *origin,
+				   const std::set<int> *done_bases = NULL);
 	// True when the class has at least one embedded object member needing
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
@@ -1270,11 +1454,19 @@ public:
 	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
 	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
+	// Does the active stdlib runtime PROVIDE this class's complete-object
+	// (D1) dtor? Per-symbol truth behind the dtor-synthesis gates: libstdc++
+	// exports it for its explicit instantiations, libc++'s header-only
+	// streams do not (madc synthesizes).
+	bool class_external_dtor_available(DataDefCLASS *cdd);
 	// True iff Pass 1.6 synthesizes a base dtor (Cls___dtor) for this class.
 	bool class_gets_synth_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	// Base-subobject (Itanium D2) destruction symbol — an external D1
+	// would destroy a vbase-carrying base's virtual bases twice.
+	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a
@@ -1518,10 +1710,12 @@ public:
 			     const std::map<DataDef *, DataDef *> &subst);
 	std::string copied_pack_value_name(const char *name) const;
 	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
-					 DataDef *formal, bool refp);
+					 bool refp);
 	node_t copied_call_arg_for_formal(class TokenBase *arg, node_t src_arg,
 					 DataDef *formal, bool refp,
-					 const std::map<DataDef *, DataDef *> *subst);
+					 bool allow_converted_temp,
+					 const std::map<DataDef *, DataDef *> *subst,
+					 std::vector<node_t> &prefix);
 	class Variable *resolve_copied_dependent_call(
 		class TokenCallFunc *tcf,
 		const std::map<DataDef *, DataDef *> *subst,

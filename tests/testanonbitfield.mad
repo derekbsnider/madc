@@ -1,0 +1,28 @@
+// Regression: bit-field members inside an ANONYMOUS aggregate
+// (`union { __alignment __alignment_ : 3; ... };` — libc++
+// parser_std_format_spec.h:289 __parsed_specifications) were unparseable:
+// the anonymous-aggregate member loop had no bit-field arm, so the ':' after
+// the member name died "Expecting ';' after anonymous class aggregate
+// member". Width via the shared parse_bitfield_width + addBitField; unnamed
+// padding (`int : 2;`) rides the same arm.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "3 7 ok".
+#include <cstdio>
+
+struct S {
+	union {
+		unsigned a : 3;
+		unsigned char raw;
+	};
+	unsigned pad1 : 2;
+	int : 2;
+	unsigned w : 4;
+};
+
+int main()
+{
+	S s;
+	s.a = 3;
+	s.w = 7;
+	printf("%u %u ok\n", s.a, s.w);
+	return 0;
+}

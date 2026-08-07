@@ -1,0 +1,33 @@
+// Postfix binds tighter than a cast ([expr.post] vs [expr.cast]):
+// `(int)getb().n` casts the MEMBER, not the call result. madc's cast-operand
+// arm claimed an unqualified call via parse_cast_function_call_operand and
+// STOPPED at the call, so the trailing `.n` applied to `(int)getb()` —
+// "member reference is not a structure or union". The call operand now
+// continues through parsePostfixChainFrom (the owner the qualified operand
+// paths already use): members, subscripts, arrows, chained calls.
+// `(T)f() << k` keeps the tight cast binding (the arm's original purpose).
+// Oracle: g++ 13 and clang 18 print "9 4 9 5 4294967296".
+#include <cstdio>
+
+struct B {
+    int n;
+    long a[4];
+};
+
+struct B gb;
+
+struct B getb(void) { struct B b = {9, {1, 2, 3, 4}}; return b; }
+struct B *getp(void) { return &gb; }
+unsigned long long one(void) { return 1ULL; }
+
+int main()
+{
+    gb = getb();
+    printf("%d %d %d %ld %llu\n",
+	   (int)getb().n,
+	   (int)getb().a[3],
+	   (int)getp()->n,
+	   (long)getb().a[3] + 1,
+	   (unsigned long long)one() << 32);
+    return 0;
+}

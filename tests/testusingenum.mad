@@ -1,0 +1,30 @@
+// Regression: a using-declaration importing a scoped enum
+// (`using detail::prop;`) did not make qualified enumerator references
+// (`prop::A`) resolvable from the importing scope — madc keeps a tagged
+// enum's enumerators in a PSEUDO-namespace keyed by its defining path
+// ([dcl.enum]p11 model), and the import only bridged the datatype maps, so
+// `prop::A` died "Unknown namespace or class 'prop'". The import now also
+// bridges the pseudo-namespace under the importing scope's key. libc++
+// shape: __format/unicode.h:302 — function-body
+// `using __extended_grapheme_custer_property_boundary::__property;` then
+// `__property::__Extended_Pictographic`.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 accept; output "1 2 ok".
+#include <cstdio>
+
+namespace outer {
+namespace detail {
+enum class prop : unsigned char { A = 1, B = 2 };
+}
+inline int f(int x)
+{
+	using detail::prop;
+	prop p = x ? prop::A : prop::B;
+	return p == prop::A ? 1 : 2;
+}
+}
+
+int main()
+{
+	printf("%d %d ok\n", outer::f(1), outer::f(0));
+	return 0;
+}

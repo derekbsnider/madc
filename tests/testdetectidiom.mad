@@ -1,0 +1,54 @@
+// SFINAE member-detection through a partial specialization whose template
+// argument is a `decltype(...)` — libc++'s spelling of the void_t idiom, which
+// carries no wrapper at all:
+//
+//	template <class _Alloc, class = void> struct __has_max_size : false_type {};
+//	template <class _Alloc>
+//	struct __has_max_size<_Alloc, decltype((void)declval<_Alloc&>().max_size())>
+//	    : true_type {};
+//
+// madc's detection-slot evaluator was keyed on libstdc++'s `__void_t<...>`
+// spelling and rejected anything else at its first gate, so EVERY libc++
+// detector fell through to the primary template and answered false — silently,
+// with no diagnostic. __has_max_size<allocator<char>> reading false is what left
+// std::allocator_traits<A>::max_size unresolvable on the <string> path.
+//
+// A bare decltype contributes its OWN type rather than being forced to void, so
+// matching requires type EQUALITY and not merely well-formedness: dt_ul must
+// match a concrete `unsigned long` and must NOT match a concrete `void`. That
+// last one is the negative control — a well-formedness-only test passes it by
+// accident.
+//
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	1 0 1 1 0
+#include <cstdio>
+
+template <class T> T &&mydeclval();
+
+struct yes  { unsigned long max_size() const { return 5; } };
+struct nope { };
+
+// The libc++ idiom verbatim: void-cast probe, defaulted second parameter.
+template <class A, class = void> struct has_ms { static const int v = 0; };
+template <class A>
+struct has_ms<A, decltype((void)mydeclval<A &>().max_size())> { static const int v = 1; };
+
+// A NON-dependent decltype as the specialization argument.
+template <class A, class = void> struct dt_void { static const int v = 0; };
+template <class A> struct dt_void<A, decltype((void)0)> { static const int v = 1; };
+
+// A decltype whose type is NOT void: matches its own type, nothing else.
+template <class A, class B> struct dt_ul { static const int v = 0; };
+template <class A>
+struct dt_ul<A, decltype(mydeclval<A &>().max_size())> { static const int v = 1; };
+
+int main()
+{
+	printf("%d %d %d %d %d\n",
+	       has_ms<const yes>::v,		// probe well-formed  -> spec
+	       has_ms<const nope>::v,		// no max_size()      -> primary
+	       dt_void<int>::v,			// decltype((void)0)  -> void
+	       dt_ul<const yes, unsigned long>::v,
+	       dt_ul<const yes, void>::v);	// unsigned long != void -> primary
+	return 0;
+}

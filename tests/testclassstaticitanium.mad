@@ -1,0 +1,48 @@
+// A static data member of a LIBRARY class binds to its real Itanium symbol.
+//
+// Rule #1: g++ names a static data member by the Itanium ABI, so madc must too.
+// It named them with an invented scheme instead — `<internal-tag>__<member>`,
+// so `std::numpunct<char>::id` became the C identifier `numpunct_char__id`
+// while libstdc++ exports `_ZNSt7__cxx118numpunctIcE2idE`. A reference to a
+// name nothing defines.
+//
+// This test does not merely check that the reference RESOLVES — resolving to
+// the wrong symbol is the failure mode. It compares the address against
+// dlsym() of the real Itanium name, so it can only pass if madc bound to the
+// same object the flavor's compiler binds to. All three spellings are
+// accepted because the ABI inline namespace depends on the stdlib in use:
+// libstdc++ `__cxx11` / pre-cxx11 bare, libc++ `__1` (same rule, second
+// flavor — under -stdlib=libc++ madc must mint _ZNSt3__1... and bind the
+// libc++ object even with both libstdc++ symbols live in the process).
+//
+// Three separate defects had to be fixed before this could pass, each found
+// only after the previous one was cleared:
+//   1. no Itanium integration point for class statics at all (every other
+//      entity category had one);
+//   2. `&std::numpunct<char>::id` did not parse — parseAddressOfExpression
+//      took the identifier after `std::` as the MEMBER, so `numpunct` became
+//      the member name and `<char>::id` was never looked at;
+//   3. the address-of lowering emitted the symbol without recording it, so no
+//      `extern` declaration was emitted and c2mir reported an undeclared
+//      identifier for the (correct) mangled name.
+//
+// Oracle: g++ 13 on this same source prints the identical two lines.
+#include <locale>
+#include <dlfcn.h>
+#include <cstdio>
+
+int main()
+{
+	const void *via_cpp = (const void *)&std::numpunct<char>::id;
+
+	// The real exported object, under any ABI spelling.
+	const void *a = dlsym(RTLD_DEFAULT, "_ZNSt7__cxx118numpunctIcE2idE");
+	const void *b = dlsym(RTLD_DEFAULT, "_ZNSt8numpunctIcE2idE");
+	const void *c = dlsym(RTLD_DEFAULT, "_ZNSt3__18numpunctIcE2idE");
+
+	printf("resolved=%d\n", via_cpp != 0);
+	printf("matches_itanium=%d\n", (a && via_cpp == a) || (b && via_cpp == b)
+				    || (c && via_cpp == c));
+
+	return 0;
+}

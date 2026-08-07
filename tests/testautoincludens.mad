@@ -1,0 +1,12 @@
+// Auto-include's namespace arm: a qualified `php::` / `rust::` use pulls the
+// matching <ns_*> embedded header with zero ceremony — the namespace HEAD
+// identifier is in the auto-include table, and the ns headers are themselves
+// self-contained (testnsheaderfirst), so the whole chain needs no user
+// #include at all.
+string s = "  hello  ";
+php::trim(s);
+cout << "[" << s << "]" << endl;
+
+string r = "  world  ";
+rust::trim(r);
+cout << "[" << r << "]" << endl;

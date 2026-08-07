@@ -1,0 +1,24 @@
+// Reducer for the __underlying_type intrinsic (blocks libc++
+// __atomic/memory_order.h:27 via underlying_type<E>::type; libstdc++'s
+// underlying_type uses the SAME intrinsic). Canon rules (g++ == clang++):
+// unfixed non-negative -> unsigned int; any negative -> int; beyond 32-bit
+// -> [unsigned] long; enum class unfixed -> int; fixed base -> that base.
+#include <stdio.h>
+
+enum plain { p_a, p_b };
+enum negs { n_a = -1, n_b };
+enum class scoped { s_a };
+enum fixed : short { f_a };
+
+int main()
+{
+	__underlying_type(plain) a = 0;
+	__underlying_type(negs) b = -1;
+	__underlying_type(scoped) c = 1;
+	__underlying_type(fixed) d = 2;
+	printf("%zu %d\n", sizeof(a), (int)(a - 1 > 0));   // 4, unsigned -> 1
+	printf("%zu %d\n", sizeof(b), (int)(b < 0));       // 4, signed -> 1
+	printf("%zu\n", sizeof(c));                        // 4
+	printf("%zu\n", sizeof(d));                        // 2
+	return 0;
+}

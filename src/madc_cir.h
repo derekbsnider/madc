@@ -12,6 +12,7 @@
 #ifndef __MADC_CIR_H
 #define __MADC_CIR_H 1
 
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -23,6 +24,7 @@
 // the parser keys on it too (asm-label symbol space), not just the CIR layer.
 
 // Forward declarations (c2mir types)
+struct madc_stdlib_flavor;	// include/madc_sys_includes.h
 struct c2m_ctx;
 typedef struct c2m_ctx *c2m_ctx_t;
 struct node;
@@ -54,6 +56,27 @@ enum MadcNativeKind {
 // executable-emit sites (source lanes and the .o link lane); .o and
 // -shared outputs refuse it loudly at the CLI.
 extern const char *madc_pack_forest_path;
+
+// -static-libmadc (forest-carriers S5; gcc's -static-libgcc precedent): the
+// emitted image carries the madc runtime pieces it needs INSIDE itself, so
+// there is no libmadc.so.0 DT_NEEDED / dylib load command. The pieces come
+// from the AOT ledger in this madc's forest container (Tier A: the C-lane
+// machinery); a program needing a Tier-B piece (the C++ script-lane runtime)
+// refuses loudly at emit, listing the symbols. libc/libstdc++ stay dynamic —
+// the flag spelling scopes exactly what it promises. Emit-lane state, like
+// madc_pack_forest_path: read at both native-emit sites.
+extern bool madc_static_libmadc;
+
+// -fno-eval-shims: omit the __madc_shim_<sym> host-call adapters from this
+// artifact. They are the value-ABI surface a libmadc host calls a compiled
+// function through, so every artifact that CAN be host-called carries them —
+// but a `.o` headed for a standalone link never will be, and the adapters'
+// madc_value_* imports are Tier B (not on the AOT ledger), which would make
+// -static-libmadc refuse. Whether the artifact is host-callable is a property
+// of the BUILD; an executable emit infers it (nothing can call in), a `.o`
+// cannot, so the build says it — the shape -fPIC has. Emit-lane state, read
+// wherever aot_skip_eval_shims is stamped (the source lanes and --project).
+extern bool madc_no_eval_shims;
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
@@ -197,14 +220,25 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 // combined .o (ld -r), executables (PIE default/-no-pie) and -shared as
 // from source; -g inputs' DWARF merges into the output (multi-CU; a cache
 // emitted before the cross-section debug relocations is refused with a
-// re-emit message). Returns 0/-1.
+// re-emit message). Returns 0/-1. `prog` supplies the forest carrier the
+// AOT ledger is read from under -static-libmadc (the runtime enters as one
+// more relocatable, generated against the merged builder's UNDEF names);
+// nothing else in this lane reads it, so a caller with no compile state may
+// pass NULL — with -static-libmadc that reads as "no carrier", the same
+// build-side refusal an unpacked madc gets.
 // madc_cir_run_objects: merge in memory, load, run main (argv[0] = the
-// first object path); a single path takes the R4b direct-load lane.
+// first object path); a single path takes the R4b direct-load lane. `flavor`
+// is the stdlib flavor the objects were COMPILED against: its runtime is
+// loaded before resolution, exactly as the JIT lane does, because the loader
+// resolves the same mangled-direct imports out of the same process. NULL =
+// the build default.
 int madc_cir_link_objects(const std::vector<std::string> &paths,
 			  MadcNativeKind kind, const char *out_path,
-			  const std::vector<std::string> &user_libs);
+			  const std::vector<std::string> &user_libs,
+			  Program *prog);
 int madc_cir_run_objects(const std::vector<std::string> &paths,
-			 int argc, char **argv);
+			 int argc, char **argv,
+			 const madc_stdlib_flavor *flavor = NULL);
 
 // R4b, the .o-as-precompiled-cache lane (`madc foo.o [args...]`): load a
 // madc-emitted relocatable object back into this process via the fork
@@ -233,6 +267,17 @@ int madc_project_emit_native(MadcEngine &engine,
 			     bool forest_bind,
 			     const std::string &forest_bind_path);
 
+// One AOT-ledger module (forest-carriers S5), decoded: a C-lane madc runtime
+// source compiled to a MIR module, with the symbol set it DEFINES — the
+// selection index the -static-libmadc emit matches unresolved imports
+// against. The wire form lives in cir_freeze.h (CIR_FOREST_SEG_LEDGER).
+struct cir_ledger_module
+{
+	std::string              name;	 // the ledger source path (module name)
+	std::vector<std::string> syms;	 // defined symbols
+	std::vector<uint8_t>     bytes;	 // MIR_write_module bytes
+};
+
 // Freeze the parsed Program's module tree (PRE-check — c2mir's checker
 // mutates trees it compiles) into a forest snapshot container at out_path:
 // per-unit segments, string-pool/position/type-name closure, link libs,
@@ -241,9 +286,28 @@ int madc_project_emit_native(MadcEngine &engine,
 // `mir_cache` additionally compiles the assembled container's module and
 // packs its MIR binary form as an optional cache segment
 // (--freeze-mir-cache; blob failure never fails the freeze).
+// `ledger` (non-empty) packs the AOT ledger segment — the C-lane runtime
+// modules a -static-libmadc emit merges into the produced image (S5).
 // Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
-		    const char *out_path, bool append, bool mir_cache = false);
+		    const char *out_path, bool append, bool mir_cache = false,
+		    const std::vector<cir_ledger_module> *ledger = NULL);
+
+// Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
+// scripts/ledger_sources.txt is the canonical list) into MIR modules with
+// their defined-symbol index, ready to pack into a forest container. Each
+// source is a normal madc compile through the SAME front end a user program
+// takes — a ledger module is madc's own runtime, compiled by madc, for the
+// target this madc emits. Prints a diagnostic and returns false on the first
+// failure. (S5; see docs/plans/2026-07-25-forest-carriers-plan.md.)
+// `restore` is the Program that must own the process-global token/value/type
+// pools when this returns — the ledger compile activates its own Programs and
+// then destroys them, so the caller's Program must be re-activated or its next
+// intern touches freed memory. Pass the Program the caller goes on to use.
+bool madc_cir_ledger_compile(MadcEngine &engine,
+			     const std::vector<std::string> &sources,
+			     std::vector<cir_ledger_module> &out,
+			     Program *restore);
 
 // Thaw + compile + run a frozen forest: from the container file at
 // `container_path`, or from the blob appended to the running executable

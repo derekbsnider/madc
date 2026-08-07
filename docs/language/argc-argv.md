@@ -30,9 +30,17 @@ subscripting on `char **` (and other pointer-to-pointer / array-of-T
 shapes), so the C-style idiom works as written:
 
 ```c
-cout << argv[0] << endl;          // script filename
-puts(argv[1]);                    // first argument
-char *first = argv[1];            // bind to a local
+int main(int argc, char **argv)
+{
+	cout << argv[0] << endl;          // script filename
+	if ( argc > 1 )
+	{
+		puts(argv[1]);            // first argument
+		char *first = argv[1];    // bind to a local
+		cout << first << endl;
+	}
+	return 0;
+}
 ```
 
 ## `int main()` (no arguments)
@@ -58,7 +66,11 @@ retained for backward compatibility with older scripts. New code should
 use `argv[i]` directly.
 
 ```c
-cout << get_argv(argv, 0) << endl;  // equivalent to argv[0]
+int main(int argc, char **argv)
+{
+	cout << get_argv(argv, 0) << endl;  // equivalent to argv[0]
+	return 0;
+}
 ```
 
 ## Implementation

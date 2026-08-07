@@ -1,0 +1,24 @@
+// Template-instantiation KEY identity for declarator-bearing args: X<int*>
+// and X<int&> are DISTINCT instantiations, but the key fragment sanitized
+// both '*' and '&' to '_', so whichever registered first served the other's
+// lookups. move_iterator<int*>'s using-alias instantiates
+// remove_reference<int&> FIRST; std::move<int*>'s return
+// `remove_reference<int*>::type&&` then cache-hit the reference
+// instantiation and lost a pointer level (emitted C declared `int *` over an
+// `int **` ref-return body -> truncated pointer live, SIGSEGV in the frozen
+// gate's __do_uninit_copy). The sizeof pair is decisive in EITHER
+// registration order: a collision makes both read one class (equal sizes).
+// Oracle: g++ 13 == clang++-18 print "0" then "8 4".
+#include <iterator>
+#include <type_traits>
+#include <cstdio>
+int main()
+{
+    int a[3] = {1, 2, 3};
+    std::move_iterator<int*> it = std::make_move_iterator(a + 0);
+    printf("%d\n", (int)(it.base() - a));
+    printf("%d %d\n",
+	   (int)sizeof(std::remove_reference<int*>::type),
+	   (int)sizeof(std::remove_reference<int&>::type));
+    return 0;
+}

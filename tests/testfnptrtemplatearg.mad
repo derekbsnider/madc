@@ -1,0 +1,33 @@
+// #52 reducer: a FUNCTION-POINTER TYPE as a template argument — libc++
+// <locale> uses `unique_ptr<char_type, void (*)(void*)>` pervasively (the
+// money/num get/put buffers), first at locale:286. The reported position
+// (locale:2373, money_get's class head) was a Throw(at) artifact — third
+// time in this campaign.
+// Arms:
+//   A — fn-ptr type as the 2nd template arg (the libc++ shape)
+//   B — fn-ptr with a nonvoid signature as an arg
+//   C — control: same fn-ptr type through a using-alias (already worked)
+//   D — control: plain pointer arg
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 both print
+//	8 8 8 8 1
+#include <cstdio>
+
+template <class T, class D> struct up { T *p; D d; };
+
+using FP = void (*)(void *);
+
+up<int, void (*)(void *)> a;		// A
+up<int, int (*)(int, char)> b;		// B
+up<int, FP> c;				// C
+up<int, char *> d;			// D
+
+int main()
+{
+	printf("%d %d %d %d %d\n",
+	       (int)sizeof(a.d),
+	       (int)sizeof(b.d),
+	       (int)sizeof(c.d),
+	       (int)sizeof(d.d),
+	       (int)(sizeof(a) == sizeof(c)));	// 8 8 8 8 1
+	return 0;
+}

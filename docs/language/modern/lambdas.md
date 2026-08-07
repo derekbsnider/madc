@@ -1,40 +1,55 @@
 # Lambda Expressions
 
-Anonymous inline functions that produce function pointer values.
+Anonymous inline functions. Two spellings are supported: the C++ form and
+the madc typed-return form (return type inside the brackets).
 
 ## Syntax
 
 ```c
-// void lambda
-auto fn = [](string name) { cout << name << endl; };
+int main()
+{
+	// C++-style void lambda
+	auto say = [](string name) { cout << "hi " << name << endl; };
+	say("world");
 
-// typed-return lambda (return type inside [])
-auto add = [int](int a, int b) { return a + b; };
+	// madc typed-return lambda (return type inside [])
+	auto add = [int](int a, int b) { return a + b; };
+	cout << add(17, 25) << endl;
+
+	// capture by reference
+	int counter = 0;
+	auto inc = [&]() { counter = counter + 1; };
+	inc();
+	inc();
+	cout << counter << endl;
+	return 0;
+}
 ```
 
-## How It Works
+Output: `hi world`, `42`, `2`.
 
-**Parsing:** `parseLambda()` is triggered when `[` appears in an expression context. It parses the optional return type, parameter list, and body — following the same pattern as `parseFunction()`. The lambda gets a unique auto-generated name (`__lambda_0`, `__lambda_1`, ...).
+## Capture
 
-**AST hoisting:** The lambda is pushed onto `pgm.ast` as a top-level `TokenFunc` during parsing of the enclosing function. Since `ast` is FIFO and the enclosing function's `ast.push` happens after `parseCompound` returns, the lambda compiles first — its `FuncNode` label is available when the enclosing function references it.
-
-This hoisting is required because asmjit cannot nest `addFunc()`/`endFunc()` calls.
-
-**Compilation:** The lambda compiles identically to a named function via `TokenFunc::compile()`. The caller gets a `TokenVar` referencing the lambda's function variable, which emits the function's address through the Phase 2 function-pointer machinery.
+`[&]` captures the enclosing scope by reference — the body reads and
+writes the outer variables directly (integers, strings, objects). See
+`tests/testcapture.mad` for the covered shapes.
 
 ## Return Type
 
-- `[]` — void return (default)
-- `[int]` — returns int
-- `[string]` — returns string
+- `[]` — void return
+- `[int]`, `[string]`, `[double]` — madc spelling for a typed return
 
-## Limitations (V1)
+## How It Works
 
-- No capture semantics (`[&]` not yet supported)
-- Lambdas cannot access variables from the enclosing scope
-- Return type must be specified explicitly (no inference from `return` statements)
+A lambda parses like a function (`parseLambda()`, sharing
+`parseFunction()`'s machinery), gets a unique generated name, and is
+hoisted to a free function in the `cir_node` tree; the expression's value
+is the function's address, usable through `auto` function pointers and
+calls. Reference captures pass the captured frame through a hidden
+parameter.
 
 ## Files
 
-- `include/madc.h` — `parseLambda()` declaration
-- `src/parser.cpp` — `parseLambda()` implementation, `[` detection in `parseExpression()`, lambda support in `auto` handler
+- `src/parser.cpp` — `parseLambda()`, `[` detection in expressions,
+  capture handling
+- `src/cir_builder.cpp` — hoisted-function lowering

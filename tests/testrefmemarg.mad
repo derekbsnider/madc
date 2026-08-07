@@ -1,0 +1,25 @@
+// An AGGREGATE REFERENCE MEMBER denotes its referent ([expr.ref]).
+// Passing it BY VALUE must copy the referent (not the stored pointer);
+// passing it BY REFERENCE must alias the ORIGINAL object (not a temp) —
+// libc++'s _AllocatorDestroyRangeReverse holds `_Alloc& __alloc_` /
+// `_Iter& __first_` and does both inside operator().
+#include <cstdio>
+struct Pt { int x, y; };
+struct Holder {
+    Pt& a;
+    Pt& b;
+    Holder(Pt& a_, Pt& b_) : a(a_), b(b_) {}
+    int run() const;
+};
+int take_val(Pt p) { return p.x * 10 + p.y; }
+int take_ref(Pt& p) { p.y += 1; return p.x; }
+int Holder::run() const { return take_val(a) + take_ref(b); }
+int main()
+{
+    Pt p1; p1.x = 3; p1.y = 4;
+    Pt p2; p2.x = 5; p2.y = 6;
+    Holder h(p1, p2);
+    int r = h.run();
+    printf("%d %d\n", r, p2.y);
+    return 0;
+}

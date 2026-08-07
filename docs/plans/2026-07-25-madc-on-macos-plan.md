@@ -82,8 +82,22 @@ using `std::string`/STL containers/iostreams.
 
 ### Phase 2 — libc++ STD-ABI flavor (script-lane C++ types)
 
+> **TRACK STARTED 2026-07-26 (owner-prioritized, ahead of the remaining
+> Mach-O polish). Own plan doc:**
+> [`2026-07-26-libcxx-flavor-plan.md`](2026-07-26-libcxx-flavor-plan.md)
+> — and note the owner's correction the same day: **libc++ is a standard
+> LIBRARY, not a platform** (Apple, the Android NDK, FreeBSD, and clang
+> on Linux all use it), so the track is madc's second stdlib flavor
+> selected by `-stdlib=`, with darwin as its first consumer. The
+> consequence is that the library work — the parse burn-down and the
+> mangled-direct ABI flavor — is developed and gated ON LINUX against
+> `libc++-18-dev`, and only the target plumbing (SDK-derived include +
+> predefined-macro tables for the cross MODEs, then the frozen libc++
+> groves in the darwin packs) is darwin-specific and hardware-gated.
+
 `madc_mangle.cpp` is the single mangling authority (plus ~8 call sites
-carrying `__cxx11` knowledge) — give it an ABI flavor switch:
+carrying `__cxx11` knowledge — 21 references across 7 files as counted
+2026-07-26) — give it an ABI flavor switch:
 `std::__cxx11::`/libstdc++ layouts on GNU hosts, `std::__1::`/libc++
 layouts on Apple hosts.  Includes the object-size/layout table
 (string/stream sizes used for stack reservation), `cout`/`cerr`/`cin`

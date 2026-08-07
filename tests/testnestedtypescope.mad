@@ -1,0 +1,101 @@
+// A nested type is a member of its enclosing scope ([class.nest]) — and the
+// `struct` keyword does not change that.
+//
+// Two halves were broken, both only for the `struct` spelling:
+//
+//   class Outer { struct Inner { ... }; };   -> `Outer::Inner` unresolvable,
+//        because the nested-CLASS path registered a scope entry and the
+//        nested-STRUCT path never did.
+//   struct Outer { struct Inner { ... }; };  -> "Unknown namespace 'Outer'",
+//        because a scope is a DataDefCLASS thing and a plain struct never
+//        became one.
+//
+// The second is fixed on the principle the promotion site already states: the
+// keyword does not decide struct-vs-class, the CONTENTS do. An object member
+// and an NSDMI already earned class-hood; a nested type — which is what makes
+// the aggregate a scope at all — now does too. A struct with no nested type is
+// untouched and stays a plain DataDefSTRUCT.
+//
+// The nested tags are given DISTINCT names on purpose. Two different scopes
+// each declaring a `struct Inner` still collides ("Class 'Inner' already
+// defined"), because a nested tag inside a STRUCT body is registered under its
+// bare name at file scope — a struct body opens no scope to qualify it with.
+// That is the C rule, deliberately relied on elsewhere, and making it
+// C++-correct means a struct body pushing a scope, i.e. promoting every C
+// struct. Recorded as its own defect rather than half-done here.
+//
+// Every value here is checked against g++ and clang++ on the same source.
+#include <stdio.h>
+
+// struct outer, struct inner — the shape that reported "Unknown namespace".
+struct SS
+{
+	struct Inner { int v; };
+	static int twice(int x) { return x * 2; }
+};
+
+// struct outer, inner with a static function: used as a `::` QUALIFIER.
+struct SQ
+{
+	struct Node
+	{
+		static int triple(int x) { return x * 3; }
+	};
+};
+
+// class outer, struct inner — the half where the nested-class path worked and
+// the nested-struct path did not.
+class CS
+{
+    public:
+	struct Pair { int a; int b; };
+	static int half(int x) { return x / 2; }
+};
+
+// class outer, class inner — the spelling that always worked, kept as the
+// control that says the fix did not disturb it.
+class CC
+{
+    public:
+	class Leaf
+	{
+	    public:
+		static int quad(int x) { return x * 4; }
+	};
+};
+
+// A trivial C struct with no nested type must be unaffected — same layout,
+// still usable exactly as before.
+struct Plain { int x; int y; };
+
+int main(void)
+{
+	// Nested type named through a struct scope, as a TYPE.
+	SS::Inner si;
+	si.v = 11;
+	printf("struct/struct %d\n", si.v);
+
+	// Nested type named through a struct scope, as a `::` QUALIFIER.
+	printf("qualifier %d\n", SQ::Node::triple(7));
+	printf("qualifier-cast %d\n", (int)SQ::Node::triple(5));
+
+	// Nested struct inside a class.
+	CS::Pair ci;
+	ci.a = 3;
+	ci.b = 4;
+	printf("class/struct %d %d\n", ci.a, ci.b);
+
+	// Nested class inside a class — the control.
+	printf("class/class %d\n", CC::Leaf::quad(6));
+
+	// The enclosing scope's own statics still resolve alongside the type.
+	printf("own statics %d %d\n", SS::twice(21), CS::half(84));
+
+	// A trivial struct is untouched.
+	struct Plain p;
+	p.x = 1;
+	p.y = 2;
+	printf("plain %d %d %d\n", p.x, p.y, (int)sizeof(p));
+
+	return 0;
+}

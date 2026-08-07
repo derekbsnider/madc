@@ -1,115 +1,75 @@
-# Embedded Headers
+# Headers: Real, Embedded, and Auto-Included
 
-madc supports C/C++ style `#include` directives with **embedded headers** — header files
-baked into the binary at build time so no external files are needed at runtime.
+madc's `#include` reaches three kinds of headers:
 
-## Usage
-
-```c
-#include <iostream>    // angle brackets → embedded headers first, then filesystem
-#include "myfile.mad"  // quotes → filesystem only (relative to current file)
+```text
+#include <iostream>    // the REAL installed system header
+#include <ns_php>      // a madc embedded header (baked into the binary)
+#include "myfile.mad"  // project file, filesystem relative to the includer
 ```
 
-## Implemented Headers
+## Real system headers are the default
 
-### `<iostream>`
+`<iostream>`, `<string>`, `<vector>`, `<math.h>`, `<stdio.h>` and the
+rest of the C/C++ library are the **real installed headers** — madc
+parses them and resolves their symbols against the real libc and the
+active C++ standard library (libstdc++, or libc++ under
+`-stdlib=libc++`). There are no madc stand-in copies of these; the old
+embedded shim twins were retired.
 
-Registers `std::cout`, `std::cin`, `std::cerr`, and `std::endl`.
-Including the header does not add bare global names; use `std::` or
-import the names explicitly with `using`.
+In the packed release binary, common system headers load from the
+frozen forest (pre-parsed state) instead of being re-parsed — same
+semantics, faster.
 
-```c
-#include <iostream>
+## The embedded set
 
-int main()
-{
-    std::cout << "Hello, world!" << std::endl;
-    return 0;
-}
-```
+`include/madc/` bakes a small set of headers into the binary — no
+external files needed at runtime:
 
-### `<string>`
+- **Freestanding C headers:** `stddef.h`, `stdint.h`, `stdarg.h`,
+  `stdbool.h`, `float.h`, `limits.h`
+- **The namespace headers:** `<ns_php>`, `<ns_perl>`, `<ns_python>`,
+  `<ns_ruby>`, `<ns_js>`, `<ns_rust>`, `<ns_madc>` — declaration-only
+  surfaces for the [multi-language utility namespaces](overview.md#namespaces),
+  each self-contained (they include `<string>` themselves)
 
-Registers the `std::string` type plus `std::to_string`,
-`std::stoi`, and `std::stod`. Bare `string` is available only after
-`using namespace std;` or `using std::string;`.
+A real header found earlier in the include search path outranks the
+embedded copy of the same name, and `--no-embedded-headers` disables the
+embedded set entirely.
 
-```c
-#include <string>
+## Auto-include (madc dialect)
 
-int main()
-{
-    std::string value;
-    std::to_string(value, 42);
-    return 0;
-}
-```
-
-### `<math.h>`
-
-Auto-loads libm via `#load "libm.so.6"`. Defines math constants and makes all libm
-functions available via the dlsym fallback.
-
-**Constants:** `M_PI`, `M_PI_2`, `M_PI_4`, `M_E`, `M_LOG2E`, `M_LOG10E`, `M_LN2`,
-`M_LN10`, `M_SQRT2`, `M_SQRT1_2`, `HUGE_VAL`, `INFINITY`
-
-**Functions (via dlsym):** `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
-`pow`, `exp`, `log`, `log2`, `log10`, `floor`, `ceil`, `round`, `fabs`, `fmod`, `hypot`
+In the default dialect, using a well-known identifier pulls its header
+automatically, in the official include order — `string`, `cout`/`cin`/
+`endl`, the containers, the C limit macros, and the namespace heads
+(`php::…` pulls `<ns_php>`):
 
 ```c
-#include <math.h>
-
-int main()
-{
-    double x = sqrt(16.0);    // 4.0
-    double y = pow(2.0, 10.0); // 1024.0
-    double z = sin(M_PI / 2); // 1.0
-    return 0;
-}
+string s = "zero-ceremony";   // <string> auto-included
+cout << s << endl;            // <iostream> auto-included
+php::trim(s);                 // <ns_php> auto-included
 ```
 
-### `<stdio.h>`
-
-Defines standard I/O constants. `printf` family available via dlsym (libc always loaded).
-
-**Constants:** `EOF` (-1), `SEEK_SET` (0), `SEEK_CUR` (1), `SEEK_END` (2), `BUFSIZ` (8192), `NULL` (0)
-
-**Functions (via dlsym):** `printf`, `fprintf`, `sprintf`, `snprintf`, `puts`, `putchar`
-
-```c
-#include <stdio.h>
-
-int main()
-{
-    printf("Hello %s, you are %d years old\n", "Alice", 30);
-    return 0;
-}
-```
-
-## Build System
-
-Embedded headers live in `include/madc/`. At build time, `scripts/gen_embedded_headers.sh`
-converts them to C++ string literals in `src/embedded_headers.cpp`. The Makefile regenerates
-this file when any header in `include/madc/` changes.
-
-## Adding New Headers
-
-1. Create the header file in `include/madc/` (e.g., `include/madc/stdlib.h`)
-2. Use `#define` for constants and `#load` if a shared library is needed
-3. If the header needs to register built-in globals/functions:
-   - Add a flag (`_include_xxx`) to the Program class in `include/madc.h`
-   - Set the flag in the lexer's `#include` handler
-   - Add namespace registrations or an `add_xxx()` function that
-     populates `lazy_map`
-   - Add cases in `add_namespaces()`, `lazy_resolve()`, or
-     `lazy_resolve_type()`
-4. Run `make -C src` — the gen script runs automatically
+Standards modes (`--std=c*` / `--std=c++*`) do no auto-inclusion —
+explicit includes are required, as the standards demand. Embedding
+hosts' security policies are honored: a namespace the host disabled is
+never auto-served.
 
 ## dlsym Fallback
 
-Functions don't need explicit registration. Any unresolved function call followed by `(`
-automatically tries `dlsym(RTLD_DEFAULT, name)`. If the symbol exists in the process
-(libc is always loaded, libm after `#include <math.h>`), it becomes callable.
+Functions need no explicit registration: an unresolved call tries
+`dlsym(RTLD_DEFAULT, name)`, so anything in the process's loaded
+libraries (libc always; anything brought in by `-l` or `#load`) is
+callable. The call's convention is built from the actual argument
+types; string arguments auto-coerce to `const char*`. Embedded headers
+declare real return types where it matters (`strcmp` returns `int`,
+pointer-returning functions are typed) — see
+`.claude/rules/embedded-headers.md` for the contributor-facing rules
+and the lazy-registration procedure.
 
-The variadic dlsym path builds the calling convention from actual argument types — int args
-use Gp registers, double args use Xmm registers, strings are auto-coerced to `const char*`.
+## Build System
+
+Embedded headers live in `include/madc/`; at build time
+`scripts/gen_embedded_headers.sh` converts them into
+`src/embedded_headers.cpp`. The Makefile regenerates it automatically
+when any file in `include/madc/` changes.

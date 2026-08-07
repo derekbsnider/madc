@@ -1,0 +1,41 @@
+// __is_constructible / __is_nothrow_constructible builtins (gcc-13
+// type_traits:1039/1107 uses them UNCONDITIONALLY): madc previously lacked
+// them, so the whole constructible trait family escaped through the
+// unfoldable-nontype-arg lane as SILENT wrong values —
+// is_nothrow_move_constructible<int> read 0, and vector<int>'s realloc
+// lane (__move_if_noexcept_cond) folded differently live vs pack-drained
+// (the forest_bind_gate [vecbind] item-set divergence). The class arm
+// walks the real ctor overload set; noexcept-ness rides the new
+// FuncDef::noexcept_spec capture.
+// NOT gated here: is_nothrow_move_constructible<std::string> — the library
+// spells the argument via __add_rval_ref_t, whose &&-ness bakes into madc's
+// single post-resolution reference kind, so the value-category preference
+// cannot engage and the trait honestly declines (prints the escape's 0,
+// oracle 1). Needs an rvalue bit on DataDefREF (filed follow-up); the direct
+// builtin spelling `__is_nothrow_constructible(std::string, std::string&&)`
+// already answers 1 (tmp reducer ct67).
+// Oracle: g++ 13 == clang++-18 print "1 1 1 1 1" then "0 1 0 1 1".
+#include <string>
+#include <type_traits>
+#include <cstdio>
+
+struct NoCopy { NoCopy(); NoCopy(const NoCopy &) = delete; };
+struct Loud   { Loud() {} };
+struct Quiet  { Quiet() noexcept {} };
+
+int main()
+{
+    printf("%d %d %d %d %d\n",
+	   (int)std::is_nothrow_move_constructible<int>::value,
+	   (int)std::is_copy_constructible<int>::value,
+	   (int)std::is_constructible<int, double>::value,
+	   (int)std::is_constructible<int>::value,
+	   (int)std::is_move_constructible<std::string>::value);
+    printf("%d %d %d %d %d\n",
+	   (int)std::is_copy_constructible<NoCopy>::value,
+	   (int)std::is_constructible<Loud>::value,
+	   (int)std::is_nothrow_constructible<Loud>::value,
+	   (int)std::is_nothrow_constructible<Quiet>::value,
+	   (int)std::is_copy_constructible<Quiet>::value);
+    return 0;
+}

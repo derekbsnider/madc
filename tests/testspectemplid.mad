@@ -1,0 +1,23 @@
+#!../bin/madc
+// One-key rule for a full specialization keyed on a TEMPLATE-ID argument
+// (canonical_arg_key_fragment's template-id arm): name_of<alloc9<int>>
+// registered from its raw source spelling (alloc9_int_) while use sites
+// spell the RESOLVED type canonically (alloc9_int32_t_) — the spec went
+// invisible and the PRIMARY instantiated silently ("other"). Covers the
+// spelled use, the typedef'd use, and nested template-id args.
+// g++ and clang++ print "int" then "node".
+#include <cstdio>
+template <class K, class T> struct vt2 { };
+template <class T, class V> struct node2 { T v; };
+typedef vt2<const int, int> VT;
+typedef node2<VT, void *> ND;
+template <class T> struct alloc9 { };
+template <class X> struct name_of { static const char *n() { return "other"; } };
+template <> struct name_of<alloc9<int> > { static const char *n() { return "int"; } };
+template <> struct name_of<alloc9<ND> > { static const char *n() { return "node"; } };
+int main() {
+    typedef alloc9<ND> NA;
+    printf("%s\n", name_of<alloc9<int> >::n());   // spelled use
+    printf("%s\n", name_of<NA>::n());             // typedef'd use, nested args
+    return 0;
+}

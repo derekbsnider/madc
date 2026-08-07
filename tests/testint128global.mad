@@ -1,0 +1,27 @@
+// File-scope __int128 objects with constant initializers ([basic.start.static]
+// / C11 6.7.9p4 arithmetic constant expressions). c2mir's gen_initializer had
+// no int128 DATA arm: an op-shaped constant initializer SEGFAULTED (the val_gen
+// pre-pass materializes int128 through function temps — int128_temp's ALLOCA —
+// and file scope has no curr_func), and a plain constant leaf died with
+// "MIR fatal error: wrong type in data" (int128 has no MIR data type). Fixed in
+// the MIR fork (two MIR_T_U64 data halves, the store_int128_halves layout).
+// The real-world trigger was libc++ <charconv>'s __pow10_128 table, reached
+// only by the pack-freeze lane's deferred-body drain.
+// Oracle: gcc 13 and clang 18 print "0 5 50 50 7 0 5".
+__int128 g = (__int128)10000000000000000000ULL * 10;
+unsigned __int128 h = ((unsigned __int128)0x8AC7230489E80000ULL) * 10 + 5;
+__int128 a = (__int128)5 * 10;
+__int128 c = 50;
+unsigned __int128 shifted = ((unsigned __int128)7 << 64) | 3;
+
+int printf(const char *, ...);
+
+int main()
+{
+    __int128 x = (__int128)10000000000000000000ULL * 10;
+    unsigned __int128 y = ((unsigned __int128)0x8AC7230489E80000ULL) * 10 + 5;
+    printf("%d %d %d %d %d %d %d\n", (int)(g % 100), (int)(h % 100),
+	   (int)a, (int)c, (int)(shifted >> 64), (int)(x % 100),
+	   (int)(y % 100));
+    return 0;
+}

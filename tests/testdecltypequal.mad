@@ -1,0 +1,27 @@
+// decltype(...)::member is a QUALIFIED-ID in expression position
+// ([expr.prim.id.qual]) — the libc++ detection-idiom shape
+// (`decltype(__test<_Tp>(0))::value`), in both the free fn-template and the
+// class-static member-template overload-pair forms.
+// Oracle: g++ -std=c++11 and clang++-18 -std=c++11 print "1 1".
+#include <cstdio>
+
+struct TT { static const bool value = true; };
+struct FT { static const bool value = false; };
+
+struct traits { typedef int cat; };
+
+template <class _Up> FT ftest(...);
+template <class _Up> TT ftest(typename _Up::cat * = 0);
+
+struct owner {
+	template <class _Up> static FT mtest(...);
+	template <class _Up> static TT mtest(typename _Up::cat * = 0);
+};
+
+int main()
+{
+	printf("%d %d\n",
+	       (int)decltype(ftest<traits>(0))::value,
+	       (int)decltype(owner::mtest<traits>(0))::value);
+	return 0;
+}

@@ -1,0 +1,45 @@
+// `long double` is its own type — x87 80-bit on x86-64, sizeof 16.
+//
+// It used to lex straight to the DOUBLE DataDef. Nothing said so out loud: the
+// type system already had DataType::dtLDOUBLE and is_real() already accounted
+// for it, the generated macro table advertised __LDBL_MAX__ 1.189e+4932, the
+// mangler emitted Itanium 'e', and the builtin registry declared copysignl with
+// long-double parameters — while the front end handed every one of them a
+// double. The visible symptoms were sizeof reporting 8, printf("%Lg") printing
+// nan (glibc reads 80 bits off the varargs stack), and a silent ABI mismatch on
+// any mangled-direct call taking a long double.
+//
+// The literal half mattered just as much as the type half: TokenReal stored a
+// double and literals were parsed with strtod, so `1.0L` was truncated at lex
+// time before any type could matter. That produced the tell-tale split this
+// test pins — a folded `1.0L/3.0L` disagreeing with the same expression forced
+// through runtime arithmetic by a cast.
+//
+// Every line matches gcc -std=c11 and clang -std=c11 exactly.
+#include <stdio.h>
+
+int main()
+{
+	long double v = 1.0L / 3.0L;		// folded at compile time
+	long double one = 1.0L;
+	long double pi = 3.14159265358979323846L;
+
+	printf("sizeof=%d\n", (int)sizeof(long double));
+	// a long double VARIABLE as a vararg
+	printf("var=%.20Lg\n", v);
+	// a long double LITERAL as a vararg — this printed nan when the literal
+	// was emitted as an 8-byte double node
+	printf("lit=%.20Lg\n", 1.0L);
+	// a folded literal EXPRESSION as a vararg
+	printf("fold=%.20Lg\n", 1.0L / 3.0L);
+	// the same value computed at runtime instead of folded — the two must
+	// agree, and did not while the fold ran at double precision
+	printf("cast=%.20Lg\n", (long double)1.0 / 3.0);
+	// full mantissa retained from the source text (strtold, not strtod)
+	printf("pi=%.20Lg\n", pi);
+	// more than one long double in a single varargs call
+	printf("two=%.20Lg %.20Lg\n", one, v);
+	// a long double is wider than a double: this difference is representable
+	printf("wider=%d\n", (long double)1.0 / 3.0 != (double)1.0 / 3.0);
+	return 0;
+}

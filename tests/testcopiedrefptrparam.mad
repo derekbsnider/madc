@@ -1,0 +1,32 @@
+// A dependent member-template call must rebind a pointer-reference formal to
+// the caller's pointer slot. The tsubst call rebuild sees pointer VALUE `parent`
+// and must emit `&parent`, preserving both layers of `T*&`.
+#include <stdio.h>
+#include <utility>
+
+template<typename T>
+struct Linker {
+	typedef T *pointer;
+
+	template<typename U>
+	void bind(pointer& parent, U& value)
+	{
+		parent = (pointer)&value;
+	}
+
+	template<typename U>
+	int run(U& value)
+	{
+		pointer parent;
+		bind<U>(parent, std::forward<U&>(value));
+		return parent == &value;
+	}
+};
+
+int main()
+{
+	int value = 42;
+	Linker<int> linker;
+	printf("%d\n", linker.run(value));
+	return 0;
+}

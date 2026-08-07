@@ -1,0 +1,27 @@
+// A QUALIFIED template-id inside a pack expansion is ONE expansion unit:
+// `ns::wrap<Ts>...` with an EMPTY pack elides the qualifier too (never
+// `Base<int, ns::>`), and a multi-element pack keeps the qualifier on EVERY
+// element (never `ns::wrap<A>, wrap<B>`). Partial-spec base clause — the
+// libc++ __libcpp_is_nothrow_constructible shape. Reducers: tmp/nx6, tmp/nx7
+// (2026-08-04). NOTE: the PRIMARY-template spelling of the same base clause
+// (`template<class... Ts> struct X : Base<ns::wrap<Ts>...>`) fails one lane
+// earlier (eager qualified-base instantiation, "wrap<> expects 1 argument") —
+// a separate recorded gap, not this gate's subject.
+// Oracle: g++ 13 == clang++-18 print "1 2 3".
+#include <cstdio>
+
+namespace ns { template<class T> struct wrap { T v; }; }
+
+template<class... Bs> struct Base { static const int n = sizeof...(Bs); };
+
+template<bool, class... Ts> struct X;
+template<class... Ts> struct X<true, Ts...> : Base<int, ns::wrap<Ts>...> {};
+
+int main()
+{
+    printf("%d %d %d\n",
+	   (int)X<true>::n,
+	   (int)X<true, char>::n,
+	   (int)X<true, char, long>::n);
+    return 0;
+}
