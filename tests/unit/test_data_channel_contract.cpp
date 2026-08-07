@@ -5,6 +5,8 @@
 #include "libmadc/cursor.h"
 #include "libmadc/dataset.h"
 #include "libmadc/driver.h"
+#include "libmadc/flow.h"
+#include "libmadc/sink.h"
 #include "madcdis/query.h"
 
 #include <string>
@@ -290,4 +292,70 @@ TEST_CASE("dataset local query limit does not drain a streaming driver")
 	CHECK(row.as_integer() == 1);
 	CHECK_FALSE(cursor->next(row));
 	CHECK(state->pulls == 1);
+}
+
+TEST_CASE("filter is lazy and pulls only until the next match")
+{
+	std::size_t pulls = 0;
+	std::unique_ptr<madc::Cursor<int> > generated = madc::from_generator<int>(
+		std::function<bool(int &, madc::error *)>(
+			[&pulls](int &out, madc::error *) {
+				if ( pulls >= 4 )
+					return false;
+				out = static_cast<int>(++pulls);
+				return true;
+			}));
+	std::unique_ptr<madc::Cursor<int> > even = madc::filter<int>(
+		std::move(generated), [](int input) { return input % 2 == 0; });
+
+	CHECK(pulls == 0);
+	int item = 0;
+	CHECK(even->next(item));
+	CHECK(item == 2);
+	CHECK(pulls == 2);
+}
+
+TEST_CASE("filter transform and copy stream through a container sink")
+{
+	std::vector<int> input;
+	input.push_back(1);
+	input.push_back(2);
+	input.push_back(3);
+	input.push_back(4);
+	std::unique_ptr<madc::Cursor<int> > source(
+		new madc::detail::VectorCursor<int>(input));
+	std::unique_ptr<madc::Cursor<int> > even = madc::filter<int>(
+		std::move(source), [](int item) { return item % 2 == 0; });
+	std::unique_ptr<madc::Cursor<std::string> > rendered =
+		madc::transform<int, std::string>(
+			std::move(even),
+			[](int item) { return std::string("item-") + std::to_string(item); });
+
+	std::vector<std::string> output;
+	madc::BackInsertSink<std::vector<std::string> > sink = madc::to_container(output);
+	CHECK(madc::copy(std::move(rendered), sink));
+	REQUIRE(output.size() == 2);
+	CHECK(output[0] == "item-2");
+	CHECK(output[1] == "item-4");
+}
+
+TEST_CASE("downstream failure closes the upstream cursor")
+{
+	std::shared_ptr<LazyState> state(new LazyState());
+	std::unique_ptr<madc::Cursor<madc::value> > source(
+		new LazyValueCursor(state, 10));
+	madc::FunctionSink<madc::value> sink = madc::to_function<madc::value>(
+		[](const madc::value &, madc::error *err) {
+			if ( err )
+				*err = madc::error(madc::error::severity::error,
+						   madc::error::phase::runtime,
+						   "sink failed");
+			return false;
+		});
+	madc::error err;
+
+	CHECK_FALSE(madc::copy(std::move(source), sink, &err));
+	CHECK(err.message == "sink failed");
+	CHECK(state->pulls == 1);
+	CHECK(state->closes == 1);
 }
