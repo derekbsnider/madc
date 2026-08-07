@@ -20555,6 +20555,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		const char *nm = forest.pool_str(ents[e].name_id);
 		if ( !nm || !*nm )
 		    continue;
+		// Env-gated probe (MADC_DECLIDX_PROBE=<substr>): dump matching
+		// declared-name index entries with their unit + bound verdict.
+		{
+		    static const char *dip = ::getenv("MADC_DECLIDX_PROBE");
+		    if ( dip && *dip && strstr(nm, dip) )
+			fprintf(stderr, "DECLIDX %s unit=%s bound=%d\n",
+				nm, upath ? upath : "?", (int)bound);
+		}
 		std::unordered_map<std::string, bool>::iterator di =
 		    forest_declared_bound.find(nm);
 		if ( di == forest_declared_bound.end() )
@@ -20657,7 +20665,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // declaring template, which IS indexed. Judge the product by that head so
     // <iostream>'s pre-instantiated stream products don't leak into a
     // stdio-only TU (their secondary derivations — method default-args —
-    // reference names only their own closure declares).
+    // reference names only their own closure declares). The complement — an
+    // ADMITTED record whose default-arg run names a type this gate dropped
+    // (pmr _Alloc_hider's `= _Alloc()` naming polymorphic_allocator_char) —
+    // is handled where the run re-derives: the flush's default re-parse is
+    // best-effort and skips a default whose referents the closure dropped.
     auto forest_product_permitted = [&](DataDef *dd) -> bool {
 	if ( !forest_closure_filter || !dd
 	  || dd->canonical_cpp_spelling().empty() )
@@ -21920,6 +21932,7 @@ void Program::flush_forest_pending_globals()
 		Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
 		Method temp_method(temp_fn);
 		temp_method.owner_class = rd.owner;
+		size_t saved_css = class_scope_stack.size();
 		pushCompound();
 		TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
 		if ( pscope )
@@ -21928,16 +21941,41 @@ void Program::flush_forest_pending_globals()
 		    class_scope_stack.push_back(rd.owner);
 		// Live also parsed inside `namespace NS {}` — unqualified names
 		// (io_errc) resolve through the namespace chain.
-		TokenBase *expr;
-		if ( rd.ns && *rd.ns )
+		// BEST-EFFORT: a default whose referents the closure filter
+		// dropped must not re-derive — same live-parity principle as
+		// the owner gate above, one reference deeper. The registration
+		// gates judge by NAME/HEAD verdicts, but a run's tokens spell
+		// referents by NAME (pmr _Alloc_hider's `= _Alloc()` names
+		// polymorphic_allocator_char — a product the head gate
+		// dropped), so the mismatch surfaces only here. Skip leaves
+		// the param defaultless: a later call that genuinely demands
+		// it fails LOUD on arity — never a silent wrong value.
+		TokenBase *expr = NULL;
+		try
 		{
-		    NamespaceScope nsg(*this, rd.ns);
-		    expr = parseExpression(nextToken(), true);
+		    if ( rd.ns && *rd.ns )
+		    {
+			NamespaceScope nsg(*this, rd.ns);
+			expr = parseExpression(nextToken(), true);
+		    }
+		    else
+			expr = parseExpression(nextToken(), true);
 		}
-		else
-		    expr = parseExpression(nextToken(), true);
-		if ( rd.owner )
+		catch ( ... )
+		{
+		    expr = NULL;
+		    DBG(std::cout << "flush_forest_pending_globals: default arg "
+			<< (rd.owner ? rd.owner->name + "::" : std::string())
+			<< rd.fd->name << " param " << pidx
+			<< " SKIPPED (referent outside the bound closure)"
+			<< std::endl);
+		}
+		// Unwind to the saved marks: a mid-parse throw can leave extra
+		// compound / class-scope frames behind.
+		while ( class_scope_stack.size() > saved_css )
 		    class_scope_stack.pop_back();
+		while ( pscope && !compounds.empty() && compounds.top() != pscope )
+		    popCompound();
 		if ( pscope && !compounds.empty() && compounds.top() == pscope )
 		    popCompound();
 		_cur_token = saved_cur;
