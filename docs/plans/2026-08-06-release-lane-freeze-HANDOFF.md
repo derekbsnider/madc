@@ -78,6 +78,14 @@ fallback SILENTLY produced the collapsed layout — c2mir accepted a
 wrong-sized member with no diagnostic; that lane deserves a loud refuse
 or a correct structural emission (probe after the battery).
 
+**BATTERY v2 GREEN — #20 CLOSED (2026-08-07, shipped as v0.69.0):**
+all six stages rc=0 (log `tmp/logs/rb-20260807-021101.log`): fulltest
+999/0/0TO/9skip, libcxx jit 995/0/13skip, EXE 978/0, OBJ 978/0,
+`make release` rc=0 with forest_pack verify OK (242 units appended to
+bin/madc-release; bind cache == no-cache), packed suite **999/0/9skip**
+(was 982/15). Branch pushed, merged to develop, released per the
+cadence. Fork unchanged (1.0-madc.0.68.0 @4573a0f3 carries forward).
+
 Probes added (all env-gated, in-tree): MADC_TMPL_CHOOSE (multi-variant
 unqualified chooser route), MADC_ARGSPELL (despaced-index resolutions),
 MADC_CANONTRAP (abort at a class-instantiation canon composition — names

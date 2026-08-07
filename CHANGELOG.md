@@ -2,6 +2,79 @@
 
 ## [Unreleased]
 
+## [v0.69.0] — 2026-08-07
+
+**The release lane restored — the frozen-corpus instantiation-identity
+split is repaired (#20) and script mode completes: top-level `defer` and
+`:=` join the synthesized main (#16, #18).**
+
+`make release` had been silently red since Aug 1 (no v0.68.0
+`madc-release` binary ever existed): programs compiled against the full
+19-header packed forest split template instantiation identities between
+the freezing parse and bound consumers — the packed suite sat at 982/15.
+Nine root-cause fixes later the packed suite is **999/0**, identical to
+the live lane, and a new cross-TU freeze-consumer gate in `fulltest`
+makes the whole class unregrowable. The release-HEAD battery measures
+fulltest **999/0/0TO/9skip**, libc++ lane **995/0/13skip**, native
+EXE/OBJ **978/0**, `make release` rc=0 (forest-pack verify: 242 units,
+bind cache == no-cache), packed suite **999/0/9skip**.
+
+- **feat: top-level `defer` and `:=` complete script mode (#16, #18 —
+  @126f03eb, @11c983a6).** Zero-ceremony scripts can now use the full
+  statement surface: a top-level `defer` joins the synthesized
+  script-mode main's deferred chain (runs at program exit, LIFO), and a
+  top-level `a, b := multi_ret()` (including the single-receiver form)
+  declares its receivers as script-main locals through the one-owner
+  `Program::script_statement_scope()` / `script_lookup_scope()` chain.
+  Gates: `testscripttopdefer`, `testscripttopmultiret`.
+
+- **fix: the release-lane freeze repair (#20) — nine fixes across
+  parser, freeze recorder, restore, CIR, and lexer.** The bisected root
+  (@6a24cffa's [namespace.udecl] overload join, correct live) exposed
+  that frozen-corpus identity minting and thaw-side replay had drifted
+  from the live parse on several axes:
+  1. using-declaration overload-set membership rounds through the
+     forest — the thaw replay rejoins `namespace_fn_overload_sets`
+     (@8b77c972);
+  2. one canonical dd per fundamental type in template-argument
+     bindings — no more `forward<int>` vs `forward<int32_t>` twins
+     (@3e8605f1);
+  3. the freeze recorder pins scalar aliases to the canonical flavor
+     twin (@ea49eeb8);
+  4. a copied-call member-access argument recovers its substituted
+     class (the stl_vector.h:428 non-scalar conversion) (@8c60b61d);
+  5. using-decl method imports restore at their recorded methodrec
+     position — live parse order, first-wins arbitration (@4fdbffd7);
+  6. a dd's own name is not a typedef alias — narrowed to BUILTIN
+     names only after the wall-fall battery itself caught the first
+     cut collapsing glibc's `jmp_buf` constructed typedef (every
+     `-static-libmadc` try/catch image SIGSEGV'd at setjmp; bisected
+     in four container-worktree builds) (@75c99d6f + @57a5f7a9);
+  7. despaced type lookup honors the query's namespace qualifier
+     through the inline-namespace closure — `std::char_traits` no
+     longer answers `__gnu_cxx::char_traits` on a shared despaced key
+     (@33fc8eb9);
+  8. default-argument re-derivation is best-effort under a filtered
+     bind — a default whose referents the admitted closure dropped
+     skips instead of terminating through cerr (@b5a9c21f);
+  9. auto-includes inject before the forest flush, inside the one-shot
+     decl-restore window — zero-ceremony `string`/`cout`/`intptr_t`
+     work against a packed forest (@7b332772).
+
+- **test: cross-TU freeze-consumer gate (@77923eb4).** `fulltest` now
+  freezes a small corpus ({string, vector, memory}, ~3 s) and binds
+  three consumers against it — the defect-P reducer verbatim, a
+  `<memory>`-only consumer, and a zero-ceremony script — each pinning
+  bind engagement and live-parity output. The prior forest gates froze
+  each test's OWN translation unit and missed this entire cross-TU
+  class.
+
+- **chore: five env-gated freeze/thaw probes join the toolbox**
+  (`MADC_TMPL_CHOOSE`, `MADC_ARGSPELL`, `MADC_CANONTRAP`,
+  `MADC_DECLIDX_PROBE`, `MADC_DEFARG_PROBE`), alongside session #68's
+  (`MADC_DEBUG_INTSPLIT`, `MADC_DEBUG_ARGBIND`, `MADC_MTI_PROBE`,
+  `MADC_RRTRAP`).
+
 ## [v0.68.0] — 2026-08-06
 
 **The libc++ LANE-ZERO release: the flavored parity burn-down completes —
