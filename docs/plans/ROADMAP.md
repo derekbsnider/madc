@@ -32,13 +32,17 @@ cast through explicit operator bool). #114 remains blocked on the owner
 decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
-the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
-**central near-term goal is feature parity with `master`** (which still carries
-the removed asmjit backend at full C89 coverage): `develop` is not promoted to
-`master` until the CIR path's test coverage matches or exceeds it. Track 1.3
-(CIR coverage) is therefore the gating workstream — most other tracks are
-re-established or unblocked behind it. Where a track below was completed on the
-old backend, it is marked "proven on old backend, re-establishing on CIR."
+the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone.
+The old parity-with-asmjit-master goal is HISTORY: the CIR backend met the
+re-defined promote gate (all class-(a) torture failures fixed, stamped in
+[failset-classification.md](../parity/failset-classification.md)) and has been
+promoted to `master` repeatedly — v0.38.0 (2026-07-23, the first CIR master),
+v0.48.0 (2026-07-25), **v0.69.0 (2026-08-07, current)**. `master` now tracks
+develop's release cadence at owner-called promote points; the standing gate is
+`.claude/rules/branching.md` (torture class-(a) burndown, currently satisfied;
+the 10 remaining failset entries are class-(b) GNU extensions = roadmap items).
+Where a track below was completed on the old backend, it is marked "proven on
+old backend, re-establishing on CIR."
 
 ## The Intermediate Representation — MC11-IR (SET IN STONE, 2026-05-29)
 
