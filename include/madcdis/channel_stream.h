@@ -70,6 +70,8 @@ private:
 	ChannelOutputStreamBuffer buffer_;
 };
 
+bool channel_stream_error(const std::ios &stream, error &out);
+
 } // namespace madc
 
 #endif // __MADCDIS_CHANNEL_STREAM_H

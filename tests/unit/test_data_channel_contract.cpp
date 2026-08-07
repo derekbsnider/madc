@@ -248,6 +248,39 @@ public:
 	std::vector<unsigned char> output;
 };
 
+class FailingChannel : public madc::DataChannel {
+public:
+	const char *name() const override { return "failing"; }
+	madc::ChannelCapabilities capabilities() const override
+	{
+		madc::ChannelCapabilities caps;
+		caps.read = true;
+		caps.write = true;
+		return caps;
+	}
+	bool read(void *, std::size_t, std::size_t &bytes_read,
+		  madc::error *err) override
+	{
+		bytes_read = 0;
+		if ( err )
+			*err = madc::error(madc::error::severity::error,
+					   madc::error::phase::runtime,
+					   "channel read failed deliberately");
+		return false;
+	}
+	bool write(const void *, std::size_t, std::size_t &bytes_written,
+		   madc::error *err) override
+	{
+		bytes_written = 0;
+		if ( err )
+			*err = madc::error(madc::error::severity::error,
+					   madc::error::phase::runtime,
+					   "channel write failed deliberately");
+		return false;
+	}
+	void close() override {}
+};
+
 class MemoryChannelFactory : public madc::DataChannelRegistry::Factory {
 public:
 	std::unique_ptr<madc::DataChannel> open(const madc::DataSource &,
@@ -650,6 +683,26 @@ TEST_CASE("format adapters stream typed values over channels")
 	CHECK(sink.close());
 	std::string result(output_channel.bytes().begin(), output_channel.bytes().end());
 	CHECK(result == "30\n40\n");
+}
+
+TEST_CASE("format adapters preserve channel failures as errors")
+{
+	IntegerLineFormat format;
+	madc::error err;
+
+	FailingChannel read_channel;
+	madc::ChannelInputStream input(read_channel);
+	madc::FormatCursor<int> cursor(input, format);
+	int item = 0;
+	CHECK(madc::cursor_next(cursor, item, &err) == madc::CursorStatus::failure);
+	CHECK(err.message == "channel read failed deliberately");
+
+	FailingChannel write_channel;
+	madc::ChannelOutputStream output(write_channel);
+	madc::FormatSink<int> sink(output, format);
+	err = madc::error();
+	CHECK_FALSE(sink.put(42, &err));
+	CHECK(err.message == "channel write failed deliberately");
 }
 
 TEST_CASE("source adapter cursor preserves eager implementations")

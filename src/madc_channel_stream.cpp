@@ -82,4 +82,23 @@ ChannelOutputStream::ChannelOutputStream(DataChannel &channel)
 bool ChannelOutputStream::channel_failed() const { return buffer_.failed(); }
 const error &ChannelOutputStream::channel_error() const { return buffer_.last_error(); }
 
+bool channel_stream_error(const std::ios &stream, error &out)
+{
+	const ChannelInputStreamBuffer *input =
+		dynamic_cast<const ChannelInputStreamBuffer *>(stream.rdbuf());
+	if ( input && input->failed() )
+	{
+		out = input->last_error();
+		return true;
+	}
+	const ChannelOutputStreamBuffer *output =
+		dynamic_cast<const ChannelOutputStreamBuffer *>(stream.rdbuf());
+	if ( output && output->failed() )
+	{
+		out = output->last_error();
+		return true;
+	}
+	return false;
+}
+
 } // namespace madc

@@ -1,6 +1,7 @@
 #ifndef __LIBMADCDIS_FORMAT_FLOW_H
 #define __LIBMADCDIS_FORMAT_FLOW_H 1
 
+#include "madcdis/channel_stream.h"
 #include "madcdis/cursor.h"
 #include "madcdis/mapper.h"
 #include "madcdis/sink.h"
@@ -31,6 +32,8 @@ public:
 		error *target = err ? err : &local;
 		if ( adapter_.read_one(input_, out, target) )
 			return CursorStatus::item;
+		if ( channel_stream_error(input_, *target) )
+			return CursorStatus::failure;
 		if ( input_.eof() && target->message.empty() )
 			return CursorStatus::end;
 		if ( target->message.empty() )
@@ -58,7 +61,19 @@ public:
 
 	bool put(const T &input, error *err = nullptr) override
 	{
-		return !closed_ && adapter_.write_one(output_, input, err);
+		if ( closed_ )
+			return false;
+		error local;
+		error *target = err ? err : &local;
+		if ( adapter_.write_one(output_, input, target) )
+			return true;
+		if ( channel_stream_error(output_, *target) )
+			return false;
+		if ( target->message.empty() )
+			*target = error(error::severity::error, error::phase::runtime,
+					"format adapter `" + std::string(adapter_.name())
+					+ "` failed to write an item");
+		return false;
 	}
 
 	bool close(error *err = nullptr) override
@@ -69,10 +84,13 @@ public:
 		closed_ = true;
 		if ( output_.good() )
 			return true;
-		if ( err && err->message.empty() )
-			*err = error(error::severity::error, error::phase::runtime,
-				     "format adapter `" + std::string(adapter_.name())
-				     + "` failed to flush output");
+		error local;
+		error *target = err ? err : &local;
+		if ( !channel_stream_error(output_, *target)
+		  && target->message.empty() )
+			*target = error(error::severity::error, error::phase::runtime,
+					"format adapter `" + std::string(adapter_.name())
+					+ "` failed to flush output");
 		return false;
 	}
 
