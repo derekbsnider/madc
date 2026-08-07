@@ -11,10 +11,12 @@
 #include "madcdis/datachannel.h"
 #include "madcdis/format_flow.h"
 #include "madcdis/query.h"
+#include "madcdis/source_adapter.h"
 
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 thread_local bool madc_verbose = false;
@@ -191,6 +193,23 @@ private:
 	std::size_t count_;
 };
 
+class CollectingDriver : public LegacyDriver {
+public:
+	explicit CollectingDriver(
+		std::shared_ptr<std::vector<madc::value> > records)
+		: records_(records)
+	{}
+
+	bool insert_record(const madc::value &record, madc::error *) override
+	{
+		records_->push_back(record);
+		return true;
+	}
+
+private:
+	std::shared_ptr<std::vector<madc::value> > records_;
+};
+
 class ValueMapper : public madc::DataMapper<madc::value> {
 public:
 	madc::SchemaInfo schema() const override { return madc::SchemaInfo("values"); }
@@ -258,6 +277,52 @@ public:
 		output << input << '\n';
 		return output.good();
 	}
+};
+
+class EagerSourceAdapter : public madc::SourceAdapter {
+public:
+	const char *name() const override { return "eager"; }
+	bool can_read(const madc::DataSource &) const override { return true; }
+	bool discover_types(const madc::DataSource &,
+			    std::vector<madc::ExtractedRecordType> &out,
+			    madc::error *) const override
+	{
+		out.push_back(madc::ExtractedRecordType("record"));
+		return true;
+	}
+	bool extract(const madc::DataSource &, const std::string &type_name,
+		     std::vector<madc::ExtractedRecord> &out,
+		     madc::error *) const override
+	{
+		madc::ExtractedRecord record;
+		record.type_name = type_name;
+		record.record = madc::value(int64_t(5));
+		out.push_back(record);
+		return true;
+	}
+};
+
+class StreamingSource : public EagerSourceAdapter,
+			public madc::StreamingSourceAdapter {
+public:
+	StreamingSource() : streamed(false) {}
+
+	std::unique_ptr<madc::Cursor<madc::ExtractedRecord> > extract_stream(
+		const madc::DataSource &, const std::string &type_name,
+		madc::error *) const override
+	{
+		streamed = true;
+		madc::ExtractedRecord record;
+		record.type_name = type_name;
+		record.record = madc::value(int64_t(9));
+		std::vector<madc::ExtractedRecord> records;
+		records.push_back(record);
+		return std::unique_ptr<madc::Cursor<madc::ExtractedRecord> >(
+			new madc::detail::VectorCursor<madc::ExtractedRecord>(
+				std::move(records)));
+	}
+
+	mutable bool streamed;
 };
 
 } // namespace
@@ -426,6 +491,40 @@ TEST_CASE("downstream failure closes the upstream cursor")
 	CHECK(state->closes == 1);
 }
 
+TEST_CASE("dataset cursors flow lazily through transforms into dataset sinks")
+{
+	std::shared_ptr<LazyState> source_state(new LazyState());
+	madc::DataSet<madc::value> source("lazy://source");
+	source.mapper(std::shared_ptr<madc::DataMapper<madc::value> >(new ValueMapper()));
+	source.driver(std::unique_ptr<madc::DataDriver>(
+		new LazyStreamingDriver(source_state, 4)));
+
+	std::shared_ptr<std::vector<madc::value> > inserted(
+		new std::vector<madc::value>());
+	madc::DataSet<madc::value> destination("collect://destination");
+	destination.mapper(
+		std::shared_ptr<madc::DataMapper<madc::value> >(new ValueMapper()));
+	destination.driver(std::unique_ptr<madc::DataDriver>(
+		new CollectingDriver(inserted)));
+
+	std::unique_ptr<madc::Cursor<madc::value> > odd = madc::filter<madc::value>(
+		source.scan(), [](const madc::value &item) {
+			return item.as_integer() % 2 != 0;
+		});
+	std::unique_ptr<madc::Cursor<madc::value> > scaled =
+		madc::transform<madc::value, madc::value>(
+			std::move(odd), [](const madc::value &item) {
+				return madc::value(item.as_integer() * 10);
+			});
+	madc::DataSetSink<madc::value> sink(destination);
+
+	REQUIRE(madc::copy(std::move(scaled), sink));
+	CHECK(source_state->pulls == 4);
+	REQUIRE(inserted->size() == 2);
+	CHECK((*inserted)[0].as_integer() == 10);
+	CHECK((*inserted)[1].as_integer() == 30);
+}
+
 TEST_CASE("memory channel preserves binary data and distinguishes EOF")
 {
 	std::vector<unsigned char> seed;
@@ -459,7 +558,8 @@ TEST_CASE("write_all handles partial channel writes")
 
 TEST_CASE("file channel roundtrips bytes through the core registry")
 {
-	const char *path = "../tmp/data_channel_contract.bin";
+	const std::string path = "/tmp/madc_data_channel_contract_"
+		+ std::to_string(static_cast<long long>(getpid())) + ".bin";
 	const std::string uri = std::string("file://") + path;
 	const unsigned char input[] = {'x', 0, 'y'};
 	madc::error err;
@@ -480,7 +580,7 @@ TEST_CASE("file channel roundtrips bytes through the core registry")
 	REQUIRE(collected.output.size() == sizeof(input));
 	CHECK(std::memcmp(&collected.output[0], input, sizeof(input)) == 0);
 	input_channel->close();
-	std::remove(path);
+	std::remove(path.c_str());
 }
 
 TEST_CASE("channel and driver registries may share a scheme")
@@ -521,4 +621,31 @@ TEST_CASE("format adapters stream typed values over channels")
 	CHECK(sink.close());
 	std::string result(output_channel.bytes().begin(), output_channel.bytes().end());
 	CHECK(result == "30\n40\n");
+}
+
+TEST_CASE("source adapter cursor preserves eager implementations")
+{
+	EagerSourceAdapter adapter;
+	std::unique_ptr<madc::Cursor<madc::ExtractedRecord> > cursor =
+		madc::extract_adapter_cursor(
+			adapter, madc::DataSource("file:///tmp/input"), "record");
+	madc::ExtractedRecord record;
+
+	REQUIRE(cursor.get() != nullptr);
+	CHECK(cursor->next(record));
+	CHECK(record.record.as_integer() == 5);
+}
+
+TEST_CASE("source adapter cursor selects the streaming extension")
+{
+	StreamingSource adapter;
+	std::unique_ptr<madc::Cursor<madc::ExtractedRecord> > cursor =
+		madc::extract_adapter_cursor(
+			adapter, madc::DataSource("file:///tmp/input"), "record");
+	madc::ExtractedRecord record;
+
+	REQUIRE(cursor.get() != nullptr);
+	CHECK(adapter.streamed);
+	CHECK(cursor->next(record));
+	CHECK(record.record.as_integer() == 9);
 }
