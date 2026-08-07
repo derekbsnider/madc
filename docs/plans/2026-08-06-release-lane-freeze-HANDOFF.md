@@ -6,7 +6,73 @@ had been built since Aug 1. First `release packed` run since then
 forest-pack verify and the packed suite is 982/15. The failure predates
 and is independent of `feature/script-toplevel-claude` (#16/#18).
 
-## STATE AT COMPACTION #2 (2026-08-07) — READ THIS FIRST, THEN FINISH IT
+## RESOLUTION (2026-08-07, session #69) — WALL DOWN: subset 8 -> 0
+
+Three more fixes (sessions #68's five + these = eight total) took the
+sidecar subset from 8 failing to **15/15 green** with the defect-P
+reducer printing "7 1" rc=0 against a fresh full 19-header re-freeze:
+
+6. **fix(parser) @33fc8eb9 — namespace-faithful despaced lookup.** The
+   despaced index keys `despace(strip_ns(canonical))`, so
+   `std::char_traits<char>` and `__gnu_cxx::char_traits<char>` share ONE
+   key; the tie-break (smallest map key: `__gnu…` < `std…`) answered
+   __gnu_cxx for a query that NAMED std. The corpus legitimately holds
+   both flavors (std::char_traits<char>'s constexpr-fallback bodies call
+   `__gnu_cxx::char_traits<char_type>::…` — the freeze parses ALL
+   deferred bodies; single live tests never mint the second flavor,
+   which is why live never collided). find_despaced index is multi-hit
+   per key + a qualified overload filtering by the query's qualifier
+   through the inline-namespace closure (`std` matches `std::__cxx11`);
+   `type_namespace_of()` twins strip_type_namespace;
+   `namespace_inline_closure()` is THE one BFS (find_template /
+   find_template_alias adopted onto it). Flipped testmanipview +
+   testofstreamwrite — the parallel __gnu_cxx iostream family and the
+   downstream `repeated declaration __vptr_8` died together.
+7. **fix(restore) @b5a9c21f — best-effort default-arg re-derivation.**
+   The declared-unit index is NOISY for instantiation products (a
+   product's record is attributed to whichever unit was parsing at its
+   completion — pmr _Alloc_hider records sit under stl_list.h), so a
+   registered owner's default run can name a referent the head gate
+   dropped (pmr `= _Alloc()` naming polymorphic_allocator_char); the
+   re-parse threw through cerr's flush into std::terminate = the
+   testctortemplatetrait / testusingfnoverload SIGABRTs. A default whose
+   referents the closure dropped now SKIPS (live parity: live never
+   parsed that flavor); later demand fails LOUD on arity. NOTE: widening
+   registration instead (deleting the head gate) was tried and DISPROVEN
+   — it regressed testcommontype (stream products' defaults dangle on
+   ios_base); the closure can never be name-complete.
+8. **fix(lexer) @7b332772 — auto-include injects before the forest
+   flush.** Injection ran at parse() start — AFTER tokenize's flush had
+   run the ONE-SHOT decl restore. Live: injected includes contribute
+   parseable tokens (harmless). Packed: an include contributes NO tokens
+   — the unit bound after the restore window closed, so `string`/`cout`/
+   `intptr_t` never registered. Injection now runs at both tokenize
+   tails before the flush. Flipped all four auto-include tests.
+
+**Gate shipped @77923eb4:** `scripts/forest_crosstu_gate.sh`
+(wired into fulltest) freezes {string,vector,memory} (~3 s) and binds
+three consumers — the defect-P reducer VERBATIM (leg A, expects "7 1"),
+a <memory>-only consumer (the pmr bind-replay lane), a zero-ceremony
+.mad script (`string` via auto-include). Each leg pins bind ENGAGEMENT
+(-v "bound to grove unit") + live-parity output. Decision (documented
+here per decide-good-defaults): the handoff's "promote fmin_use.mad to
+tests/" is satisfied by leg A — a live tests/*.mad copy would only
+duplicate testvector; the defect only ever manifested against a frozen
+corpus, which is exactly where the gate compiles it.
+
+Probes added (all env-gated, in-tree): MADC_TMPL_CHOOSE (multi-variant
+unqualified chooser route), MADC_ARGSPELL (despaced-index resolutions),
+MADC_CANONTRAP (abort at a class-instantiation canon composition — names
+the instantiator), MADC_DECLIDX_PROBE (declared-name index entries with
+unit + verdict), MADC_DEFARG_PROBE (serialized default-arg runs by
+identifier).
+
+FILED (dormant-live, from #68, still open after the wall): the
+__alloc_traits own-construct use-site spelling capture; SFINAE-failed
+instantiation leaves the call placeholder-bound; the ~51962
+free-operator conflict compare is name-keyed.
+
+## STATE AT COMPACTION #2 (2026-08-07) — superseded by RESOLUTION above; kept for the investigation record
 
 **OWNER DIRECTIVE: resolve ALL of #20 next session.** That means: the
 remaining 8 subset failures -> 0, then the full finish line (below).
