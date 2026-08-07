@@ -2498,14 +2498,21 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
 {
     if ( alias.empty() || !dd || !user_typedef_names.count(alias) )
 	return false;
-    // A spelling that IS the dd's own name is the NAME, not an alias. A thawed
-    // token rebuilt from a restored dd spells its name ("int32_t" for the
-    // canonical ddINT32), and the restored typedef registry contains it —
+    // A spelling that IS a BUILTIN dd's own name is the NAME, not an alias. A
+    // thawed token rebuilt from a restored dd spells its name ("int32_t" for
+    // the canonical ddINT32), and the restored typedef registry contains it —
     // recording it as a param/cast typedef made the emitter render
     // `int32_t *__p` in a module that never emits that typedef (c2mir
-    // "unknown type int32_t"). Live never records these: its tokens spell the
-    // keyword ("int"). Rendering from the DataDef is always equivalent.
-    if ( alias == dd->name )
+    // "unknown type int32_t"; defect P). Live never records these: its tokens
+    // spell the keyword ("int"), and the emitter renders the C keyword from
+    // the DataDef alone. That equivalence holds ONLY for builtins: a
+    // CONSTRUCTED typedef type (glibc's `typedef struct __jmp_buf_tag
+    // jmp_buf[1]`) registers a dd NAMED BY the typedef, so the name-equal
+    // spelling IS the load-bearing alias — rejecting it dropped the member's
+    // ID("jmp_buf") emission, c2mir sized MadcTryContext without the 200-byte
+    // array, and the ledger try/catch setjmp wrote through garbage
+    // (forest_ledger_gate SIGSEGV).
+    if ( alias == dd->name && resolve_builtin_type_spelling(alias) == dd )
 	return false;
     if ( resolve_named_datadef(alias) == dd )
 	return true;
