@@ -7,8 +7,13 @@
 #include "libmadc/driver.h"
 #include "libmadc/flow.h"
 #include "libmadc/sink.h"
+#include "madcdis/channel_stream.h"
+#include "madcdis/datachannel.h"
+#include "madcdis/format_flow.h"
 #include "madcdis/query.h"
 
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -194,6 +199,67 @@ public:
 	const char *name() const override { return "value"; }
 };
 
+class PartialWriteChannel : public madc::DataChannel {
+public:
+	const char *name() const override { return "partial"; }
+	madc::ChannelCapabilities capabilities() const override
+	{
+		madc::ChannelCapabilities caps;
+		caps.write = true;
+		return caps;
+	}
+	bool read(void *, std::size_t, std::size_t &bytes_read,
+		  madc::error *) override
+	{
+		bytes_read = 0;
+		return false;
+	}
+	bool write(const void *buffer, std::size_t size, std::size_t &bytes_written,
+		   madc::error *) override
+	{
+		bytes_written = size < 2 ? size : 2;
+		const unsigned char *bytes = static_cast<const unsigned char *>(buffer);
+		output.insert(output.end(), bytes, bytes + bytes_written);
+		return true;
+	}
+	void close() override {}
+
+	std::vector<unsigned char> output;
+};
+
+class MemoryChannelFactory : public madc::DataChannelRegistry::Factory {
+public:
+	std::unique_ptr<madc::DataChannel> open(const madc::DataSource &,
+						madc::ChannelOpenMode,
+						madc::error *) const override
+	{
+		return std::unique_ptr<madc::DataChannel>(new madc::MemoryDataChannel());
+	}
+};
+
+class IntegerLineFormat : public madc::FormatAdapter<int> {
+public:
+	const char *name() const override { return "integer-lines"; }
+	bool read_one(std::istream &input, int &out, madc::error *err) const override
+	{
+		if ( input >> out )
+			return true;
+		if ( input.eof() )
+			return false;
+		if ( err )
+			*err = madc::error(madc::error::severity::error,
+					   madc::error::phase::runtime,
+					   "malformed integer");
+		return false;
+	}
+	bool write_one(std::ostream &output, const int &input,
+		       madc::error *) const override
+	{
+		output << input << '\n';
+		return output.good();
+	}
+};
+
 } // namespace
 
 TEST_CASE("legacy cursor ABI remains source compatible")
@@ -358,4 +424,101 @@ TEST_CASE("downstream failure closes the upstream cursor")
 	CHECK(err.message == "sink failed");
 	CHECK(state->pulls == 1);
 	CHECK(state->closes == 1);
+}
+
+TEST_CASE("memory channel preserves binary data and distinguishes EOF")
+{
+	std::vector<unsigned char> seed;
+	seed.push_back(static_cast<unsigned char>('a'));
+	seed.push_back(0);
+	seed.push_back(static_cast<unsigned char>('b'));
+	madc::MemoryDataChannel channel(seed);
+	unsigned char buffer[2] = {0, 0};
+	std::size_t count = 0;
+
+	CHECK(channel.read(buffer, sizeof(buffer), count));
+	REQUIRE(count == 2);
+	CHECK(buffer[0] == static_cast<unsigned char>('a'));
+	CHECK(buffer[1] == 0);
+	CHECK(channel.read(buffer, sizeof(buffer), count));
+	CHECK(count == 1);
+	CHECK(buffer[0] == static_cast<unsigned char>('b'));
+	CHECK(channel.read(buffer, sizeof(buffer), count));
+	CHECK(count == 0);
+}
+
+TEST_CASE("write_all handles partial channel writes")
+{
+	PartialWriteChannel channel;
+	const unsigned char input[] = {'a', 0, 'b', 'c', 'd'};
+
+	CHECK(madc::write_all(channel, input, sizeof(input)));
+	REQUIRE(channel.output.size() == sizeof(input));
+	CHECK(std::memcmp(&channel.output[0], input, sizeof(input)) == 0);
+}
+
+TEST_CASE("file channel roundtrips bytes through the core registry")
+{
+	const char *path = "../tmp/data_channel_contract.bin";
+	const std::string uri = std::string("file://") + path;
+	const unsigned char input[] = {'x', 0, 'y'};
+	madc::error err;
+
+	std::unique_ptr<madc::DataChannel> output =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::write, &err);
+	REQUIRE(output.get() != nullptr);
+	CHECK(madc::write_all(*output, input, sizeof(input), &err));
+	output->close();
+
+	std::unique_ptr<madc::DataChannel> input_channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::read, &err);
+	REQUIRE(input_channel.get() != nullptr);
+	PartialWriteChannel collected;
+	CHECK(madc::copy_channel(*input_channel, collected, &err));
+	REQUIRE(collected.output.size() == sizeof(input));
+	CHECK(std::memcmp(&collected.output[0], input, sizeof(input)) == 0);
+	input_channel->close();
+	std::remove(path);
+}
+
+TEST_CASE("channel and driver registries may share a scheme")
+{
+	madc::DataDriverRegistry::instance().register_factory(
+		"contract",
+		std::unique_ptr<madc::DataDriverRegistry::Factory>(new LegacyFactory()));
+	madc::DataChannelRegistry::instance().register_factory(
+		"contract",
+		std::unique_ptr<madc::DataChannelRegistry::Factory>(
+			new MemoryChannelFactory()));
+
+	CHECK(madc::DataDriverRegistry::instance().has_factory("contract"));
+	CHECK(madc::DataChannelRegistry::instance().has_factory("contract"));
+}
+
+TEST_CASE("format adapters stream typed values over channels")
+{
+	const char encoded[] = "10\n20\n";
+	std::vector<unsigned char> seed(encoded, encoded + sizeof(encoded) - 1);
+	madc::MemoryDataChannel input_channel(seed);
+	madc::ChannelInputStream input(input_channel);
+	IntegerLineFormat format;
+	madc::FormatCursor<int> cursor(input, format);
+	int item = 0;
+
+	CHECK(cursor.next(item));
+	CHECK(item == 10);
+	CHECK(cursor.next(item));
+	CHECK(item == 20);
+	CHECK_FALSE(cursor.next(item));
+
+	madc::MemoryDataChannel output_channel;
+	madc::ChannelOutputStream output(output_channel);
+	madc::FormatSink<int> sink(output, format);
+	CHECK(sink.put(30));
+	CHECK(sink.put(40));
+	CHECK(sink.close());
+	std::string result(output_channel.bytes().begin(), output_channel.bytes().end());
+	CHECK(result == "30\n40\n");
 }
