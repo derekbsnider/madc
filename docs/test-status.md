@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
+> **Current (2026-08-07, `feature/data-channel-flow-codex` @cd1f19c6 -
+> session #70 close):** clean enabled remote fulltest
+> **999/0/0TO/9skip**, total rc=0; all warning, forest, rule-trailer,
+> SIGPIPE-owner, and close-on-exec-owner gates passed. Focused unit suites:
+> data channels **23/23 cases, 143/143 assertions**; process **7/7,
+> 95/95**; storage contract **25/25, 223/223**. A separate clean
+> `--enable-madcdat=no` remote build passed the same focused suites and
+> proved the dependency-free DSV/FLR/VLR and memory/file/FIFO/TCP/UDP/UDS
+> core. GCC 13.3 and Clang 18 reducers both reported
+> `tcp=ok uds=ok udp_trunc=ok` and `cloexec=ok`. Battery log:
+> `tmp/logs/rb-20260807-205332.log`.
+>
+> **Previous (2026-08-06, `feature/libcxx-parity7-claude` @429842b4 —
 > session #66 close):** fulltest **997/0/9skip**; lane
 > **993/0/13skip**; session-end native legs EXE **976/0**, OBJ
 > **976/0** (of 997 JIT-passing tests). Battery log:

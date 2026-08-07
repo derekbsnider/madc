@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Added:** ABI-compatible optional streaming extensions for `Cursor`,
+  `DataDriver`, and `SourceAdapter`; lazy typed sources, filters, transforms,
+  sinks, and copy flows; raw memory, file, FIFO, TCP, UDP, and UDS channels;
+  format bridges; and explicit process endpoints with independent standard
+  streams, argv, environment, working directory, and bounded pumping.
+- **Changed:** DSV scans now use an incremental cursor while retaining the
+  legacy vector API. Dependency-free DSV, FLR, and VLR implementations now
+  live in `madcdis`; `madcdat` remains the provider layer for implementations
+  that link external client libraries.
+- **Fixed:** Channel writes suppress process-wide `SIGPIPE`, stream and format
+  flows preserve channel errors, and all channel/process descriptors are
+  close-on-exec except the exact child endpoints intentionally retained for
+  `exec`.
+
 ## [v0.69.0] — 2026-08-07
 
 **The release lane restored — the frozen-corpus instantiation-identity
