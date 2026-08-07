@@ -38,16 +38,36 @@ already exists and has run green on the owner's hardware.
 - **Universal-binary tooling**: llvm-lipo ships with the provisioned
   llvm-18, so fusing universal2 on Linux is available if wanted.
 
-## The gating decision (OWNER) — SDK-derived content in a public artifact
+## W0 — RESOLVED (owner, 2026-08-07): provenance-clean prelude
 
-The hosted binaries embed a prelude **generated from the owner's macOS
-SDK**. The standing law is "the SDK is never committed, synced, or
-redistributed." A public GitHub release of a binary embedding
-SDK-derived declarations is a redistribution question that only the
-owner can settle (Xcode/SDK license terms). **Nothing below ships until
-this is decided.** Options if it is a problem: regenerate the prelude
-from open-source Apple headers (libc portions are APSL/open source),
-or gate the macOS artifacts to a channel the owner controls.
+**Finding that forced the decision:** the hosted prelude is not
+compiled data — `gen_darwin_prelude.sh` embeds `clang -E -dD` output,
+i.e. flattened Apple header TEXT with every `#define` kept, and madc
+SERVES it as headers to user programs (that is its purpose). The
+script's own law ("SDK-derived: never committed, synced, or
+redistributed") therefore applies to any public artifact embedding it.
+
+**Decision: regenerate the prelude from openly licensed sources**
+instead of the SDK tree, so public artifacts are defensible by
+construction (the Zig approach — Zig has publicly shipped a curated
+macOS libc header tree for years):
+
+- **C++ surface**: libc++ headers are LLVM, Apache-2.0-with-LLVM-
+  exception — same upstream the SDK copies; freely redistributable
+  with attribution.
+- **C/POSIX surface**: there is no "clang libc" — assemble the tree
+  from Apple's own open-source releases (`apple-oss-distributions`:
+  Libc, xnu bsd headers, availability machinery; APSL/BSD). Zig's
+  curated macOS libc tree is the base candidate rather than curating
+  from scratch (original licenses carried).
+- **License notices** (APSL/BSD/Apache) ship in the artifact
+  (`usr/share/doc/madc/`).
+- **The SDK remains build-side only** — cross-LINKING still uses the
+  owner's SDK (`.tbd` stubs, crt); that is "developing with the SDK,"
+  its licensed purpose. Zero SDK-derived text in shipped artifacts;
+  the unchanged law now has a mechanical meaning the packaging step
+  can gate on (the hosted release target accepts only the
+  open-provenance prelude dir).
 
 ## Decisions to make (with defaults proposed)
 
@@ -79,7 +99,15 @@ or gate the macOS artifacts to a channel the owner controls.
 
 ## Work items (order)
 
-- **W0 (owner)**: settle the SDK-prelude redistribution question.
+- **W0 (owner)**: ~~settle the SDK-prelude redistribution question~~
+  RESOLVED 2026-08-07 — provenance-clean prelude (section above).
+- **W0.5 — provenance-clean prelude (NEW, gates public artifacts)**:
+  assemble the open-licensed header tree (evaluate adopting Zig's
+  curated macOS libc tree + LLVM's libc++ headers, matched to the
+  target OS version), point `gen_darwin_prelude.sh` at it, and DIFF
+  the resulting prelude against the current SDK-derived output to
+  find declaration gaps (the SDK-derived prelude stays as the
+  private-use oracle, never shipped). Ship the license notices.
 - **W1 — release-grade hosted builds**: add packed -O2 hosted release
   targets (the darwin twin of `make release`): build hosted slice,
   strip, `forest_pack_darwin.sh`, verify read-back. Wire into
