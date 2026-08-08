@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.71.0] — 2026-08-08
+
+**True random access for record storage (FLR plan S1+S2): seekable
+channels with positioned IO, the FLR driver reborn lazy with O(1)
+record locators, and a capability-truth gate that makes a hollow
+capability claim a build failure.**
+
 - **`SeekableDataChannel` — random access joins the channel framework**
   (FLR plan S1, `docs/plans/2026-08-08-flr-random-access-struct-schema-plan.md`).
   `size`/`seek` plus positioned transfers (`read_at`/`write_at`,
