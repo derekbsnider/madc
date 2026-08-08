@@ -56,6 +56,7 @@ and the streams are the real library objects.
 | Function pointers via `auto` | [modern/function-pointers.md](modern/function-pointers.md) |
 | Built-in regex via `madc::` | [regex.md](regex.md) |
 | `sys` object — argv, environment, process info | [sys-object.md](sys-object.md) |
+| `madc::channel` — URI byte channels (`exec://`, `tcp://`, `file://`) | [channel.md](channel.md) |
 
 ## Namespaces
 

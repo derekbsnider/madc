@@ -1,0 +1,4 @@
+connected
+server got: ping
+client got: pong
+client eof

@@ -1,4 +1,5 @@
 #include "madcdis/process.h"
+#include "madc_datachannel_internal.h"
 #include "madc_posix_io.h"
 
 #include <cerrno>
@@ -18,8 +19,7 @@ namespace {
 
 void set_process_error(error *err, const std::string &message)
 {
-	if ( err )
-		*err = error(error::severity::error, error::phase::runtime, message);
+	detail::set_channel_error(err, message);
 }
 
 void set_process_errno(error *err, const std::string &operation, int number)
@@ -287,13 +287,44 @@ bool Process::start(error *err)
 		environment_vector.push_back(const_cast<char *>(environment_storage[i].c_str()));
 	environment_vector.push_back(nullptr);
 
+	// posix_spawnp shape: a command with no '/' resolves against the
+	// SPAWN environment's PATH (options.environment can override it);
+	// execve itself never searches. argv[0] keeps the caller's spelling,
+	// execvp-style. An unresolved command falls through to execve and
+	// reports ENOENT through the exec-errno pipe.
+	std::string executable = _->source.path();
+	if ( executable.find('/') == std::string::npos )
+	{
+		std::map<std::string, std::string>::const_iterator path_it =
+			environment.find("PATH");
+		const std::string search =
+			path_it != environment.end() ? path_it->second : "";
+		std::size_t begin = 0;
+		while ( begin <= search.size() && !search.empty() )
+		{
+			std::size_t end = search.find(':', begin);
+			if ( end == std::string::npos )
+				end = search.size();
+			std::string dir = search.substr(begin, end - begin);
+			if ( dir.empty() )
+				dir = ".";
+			std::string candidate = dir + "/" + executable;
+			if ( ::access(candidate.c_str(), X_OK) == 0 )
+			{
+				executable = candidate;
+				break;
+			}
+			begin = end + 1;
+		}
+	}
+
 	int input_fds[2] = { -1, -1 };
 	int output_fds[2] = { -1, -1 };
 	int error_fds[2] = { -1, -1 };
 	int exec_fds[2] = { -1, -1 };
 	if ( !make_cloexec_pipe(input_fds, err)
 	  || !make_cloexec_pipe(output_fds, err)
-	  || !make_cloexec_pipe(error_fds, err)
+	  || (!_->options.inherit_stderr && !make_cloexec_pipe(error_fds, err))
 	  || !make_cloexec_pipe(exec_fds, err) )
 	{
 		close_pipe(input_fds);
@@ -319,7 +350,7 @@ bool Process::start(error *err)
 		close_fd(exec_fds[0]);
 		if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
 		  || ::dup2(output_fds[1], STDOUT_FILENO) < 0
-		  || ::dup2(error_fds[1], STDERR_FILENO) < 0 )
+		  || (error_fds[1] >= 0 && ::dup2(error_fds[1], STDERR_FILENO) < 0) )
 		{
 			int number = errno;
 			report_child_error(exec_fds[1], number);
@@ -335,7 +366,7 @@ bool Process::start(error *err)
 			report_child_error(exec_fds[1], number);
 			::_exit(127);
 		}
-		::execve(_->source.path().c_str(), &argv[0], &environment_vector[0]);
+		::execve(executable.c_str(), &argv[0], &environment_vector[0]);
 		int number = errno;
 		report_child_error(exec_fds[1], number);
 		::_exit(127);
@@ -432,9 +463,12 @@ bool pump_process(DataChannel &input,
 		return false;
 	}
 
+	// inherit_stderr leaves the process with no stderr pipe; a pump leg on
+	// that unreadable channel would fail instantly and terminate the child.
+	bool pump_stderr = process.stderr_channel().capabilities().read;
 	bool input_ok = false;
 	bool output_ok = false;
-	bool stderr_ok = false;
+	bool stderr_ok = !pump_stderr;
 	error input_error;
 	error output_error;
 	error stderr_error;
@@ -456,19 +490,22 @@ bool pump_process(DataChannel &input,
 			process.terminate();
 		}
 	});
-	std::thread stderr_thread([&]() {
-		stderr_ok = copy_channel(process.stderr_channel(), stderr_output,
-					 result.stderr_bytes, &stderr_error);
-		if ( !stderr_ok )
-		{
-			input.close_read();
-			process.terminate();
-		}
-	});
+	std::thread stderr_thread;
+	if ( pump_stderr )
+		stderr_thread = std::thread([&]() {
+			stderr_ok = copy_channel(process.stderr_channel(), stderr_output,
+						 result.stderr_bytes, &stderr_error);
+			if ( !stderr_ok )
+			{
+				input.close_read();
+				process.terminate();
+			}
+		});
 
 	input_thread.join();
 	output_thread.join();
-	stderr_thread.join();
+	if ( stderr_thread.joinable() )
+		stderr_thread.join();
 	if ( !process.wait(err) )
 		return false;
 	result.exit_status = process.exit_status();
@@ -496,5 +533,139 @@ bool pump_process(DataChannel &input,
 	}
 	return true;
 }
+
+namespace {
+
+// exec:// as a registry channel: write -> child stdin, read -> child stdout.
+// The child's stderr stays on the parent's (inherit_stderr) so an undrained
+// stderr pipe can never block a chatty child. Never seekable.
+class ExecDataChannel : public DataChannel
+{
+public:
+	explicit ExecDataChannel(std::unique_ptr<Process> process)
+		: process_(std::move(process))
+	{}
+
+	~ExecDataChannel() override { close(); }
+
+	const char *name() const override { return "exec"; }
+
+	ChannelCapabilities capabilities() const override
+	{
+		ChannelCapabilities capabilities;
+		if ( !process_ )
+			return capabilities;
+		capabilities.read = process_->stdout_channel().capabilities().read;
+		capabilities.write = process_->stdin_channel().capabilities().write;
+		capabilities.half_close = true;
+		return capabilities;
+	}
+
+	bool read(void *buffer, std::size_t capacity, std::size_t &bytes_read,
+		  error *err = nullptr) override
+	{
+		bytes_read = 0;
+		if ( !process_ )
+		{
+			set_process_error(err, "exec channel is closed");
+			return false;
+		}
+		return process_->stdout_channel().read(buffer, capacity, bytes_read, err);
+	}
+
+	bool write(const void *buffer, std::size_t size, std::size_t &bytes_written,
+		   error *err = nullptr) override
+	{
+		bytes_written = 0;
+		if ( !process_ )
+		{
+			set_process_error(err, "exec channel is closed");
+			return false;
+		}
+		return process_->stdin_channel().write(buffer, size, bytes_written, err);
+	}
+
+	void close_read() override
+	{
+		if ( process_ )
+			process_->stdout_channel().close_read();
+	}
+
+	void close_write() override
+	{
+		if ( process_ )
+			process_->close_stdin();
+	}
+
+	void close() override
+	{
+		if ( !process_ )
+			return;
+		// Stdin EOF + a closed stdout let the child run out; wait() reaps
+		// it, and the Process dtor SIGKILLs one that never exits.
+		process_->close_stdin();
+		process_->stdout_channel().close_read();
+		process_->wait();
+		process_.reset();
+	}
+
+private:
+	std::unique_ptr<Process> process_;
+};
+
+class ExecChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+	std::unique_ptr<DataChannel> open(const DataSource &source,
+					  ChannelOpenMode mode,
+					  error *err = nullptr) const override
+	{
+		// An exec channel is inherently bidirectional (the pipes are the
+		// truth); mode does not narrow it. argv splits on single spaces —
+		// this is NOT a shell: no quoting, globbing, variables, or
+		// redirection. An argument containing a space needs the
+		// ProcessOptions.args API.
+		(void)mode;
+		const std::string &spec = source.path();
+		std::vector<std::string> words;
+		std::size_t begin = 0;
+		while ( begin <= spec.size() )
+		{
+			std::size_t end = spec.find(' ', begin);
+			if ( end == std::string::npos )
+				end = spec.size();
+			if ( end > begin )
+				words.push_back(spec.substr(begin, end - begin));
+			begin = end + 1;
+		}
+		if ( words.empty() )
+		{
+			set_process_error(err, "exec channel requires a command");
+			return std::unique_ptr<DataChannel>();
+		}
+		ProcessOptions options;
+		options.args.assign(words.begin() + 1, words.end());
+		options.inherit_stderr = true;
+		std::unique_ptr<Process> process(
+			new Process(DataSource("exec://" + words[0]), options));
+		if ( !process->start(err) )
+			return std::unique_ptr<DataChannel>();
+		return std::unique_ptr<DataChannel>(
+			new ExecDataChannel(std::move(process)));
+	}
+};
+
+} // namespace
+
+namespace detail {
+
+void register_exec_channel_factory(DataChannelRegistry &registry)
+{
+	registry.register_factory(
+		"exec", std::unique_ptr<DataChannelRegistry::Factory>(
+				new ExecChannelFactory()));
+}
+
+} // namespace detail
 
 } // namespace madc

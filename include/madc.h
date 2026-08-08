@@ -5526,6 +5526,9 @@ public:
     std::string host_flavor_fn_symbol(const std::string &ns_name,
 				      const std::string &member_name,
 				      FuncDef *fd);
+    // The method half: the HOST-flavor twin of a host-implemented class
+    // method's Itanium symbol (madc::channel::readline under -stdlib=libc++).
+    std::string host_flavor_method_symbol(FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

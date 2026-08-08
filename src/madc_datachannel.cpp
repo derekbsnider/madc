@@ -14,12 +14,17 @@
 namespace madc {
 namespace detail {
 
+void set_channel_error(error *err, const std::string &message)
+{
+	if ( err )
+		*err = error(error::severity::error, error::phase::runtime, // ERROR-COMPOSER-OWNER
+			     message);
+}
+
 void set_channel_error(error *err, const std::string &operation,
 		       const std::string &detail)
 {
-	if ( err )
-		*err = error(error::severity::error, error::phase::runtime,
-			     operation + ": " + detail);
+	set_channel_error(err, operation + ": " + detail);
 }
 
 void set_channel_errno(error *err, const std::string &operation,
@@ -464,6 +469,7 @@ DataChannelRegistry::DataChannelRegistry()
 	register_factory("file", std::unique_ptr<Factory>(new FileChannelFactory()));
 	register_factory("pipe", std::unique_ptr<Factory>(new FileChannelFactory()));
 	detail::register_socket_channel_factories(*this);
+	detail::register_exec_channel_factory(*this);
 }
 
 DataChannelRegistry &DataChannelRegistry::instance()

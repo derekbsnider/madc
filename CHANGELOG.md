@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+## [v0.72.0] — 2026-08-08
+
+**The data-channel substrate reaches the language: `madc::channel` opens
+`exec://` / `tcp://` / `file://` URIs from a script, exec:// becomes a
+first-class channel scheme, and the suite gains its first script-level
+tcp/exec coverage — hermetic httpget included.**
+
+- **`madc::channel` — the data-channel substrate reaches the language**
+  (Track 5C slice 1, `docs/plans/2026-08-08-track5c-script-channels-plan.md`).
+  One URI-addressed byte channel with line helpers, declared in
+  `<ns_madc>` and resolved mangled-direct to the host class
+  (`include/madcdis/channel.h` — the same class is the embedder's
+  convenience wrapper, cpp-first). `readline` strips newlines (CRLF
+  clean) and returns the unterminated tail; buffered bytes are served
+  to `read()` before the wire; modes `"r"/"w"/"rw"/"a"`; failures latch
+  in `ok()`/`last_error()`. First madc-owned class on the
+  mangled-direct spine. Docs: `docs/language/channel.md`.
+- **`exec://` is a first-class channel scheme.** `ExecDataChannel`
+  adapts a spawned `Process` (write → child stdin, read → child stdout,
+  `close_write` → stdin EOF, never seekable); the URI's path splits on
+  single spaces into argv — NOT a shell (no quoting/globbing/variables);
+  the child's stderr is inherited, not piped, so an undrained stderr
+  can never block a chatty child. `Process` itself gains spawn-PATH
+  resolution for bare commands (posix_spawnp shape) and the
+  `ProcessOptions.inherit_stderr` option; `pump_process` skips its
+  stderr leg when there is no stderr pipe.
+- **Script-level channel tests** — the suite's first `tcp://` and
+  `exec://` coverage, all hermetic: `testexecchannel.mad` (exec://sort
+  round-trip + loud failed spawn), `testtcpchannel.mad` (single-process
+  loopback listener, bidirectional exchange, half-close EOF),
+  `testhttpget.mad` (canned HTTP/1.0 loopback; the client half is the
+  real-world httpget shape). Green in all three lanes (JIT/EXE/OBJ)
+  and under `-stdlib=libc++`.
+- **Flavor marshalling grows its method half** (task #69).
+  `madc::channel` is the first madc-owned class resolved mangled-direct
+  to cross the stdlib-flavor boundary; the host-twin mint for class
+  METHODS (`Program::host_flavor_method_symbol`) re-runs the one method
+  mint under the host-flavor mangler state with carrier params swapped
+  to the host string spelling — under `-stdlib=libc++`,
+  `channel::readline(string&)` now marshals to the host's `__cxx11`
+  implementation instead of dying on an undefined `NSt3__1` import.
+- **One runtime-error composition owner** (pre-merge dupaudit find,
+  caught in-branch): the channel/process subsystem composes
+  runtime-phase errors in exactly one place (the one-arg
+  `detail::set_channel_error`); sibling helpers delegate. Gated by
+  `scripts/check-one-error-composer.sh` in fulltest (negative control
+  verified).
+
 ## [v0.71.0] — 2026-08-08
 
 **True random access for record storage (FLR plan S1+S2): seekable

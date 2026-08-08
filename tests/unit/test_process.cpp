@@ -147,6 +147,64 @@ TEST_CASE("Process keeps stdout stderr and exit status independent")
 	CHECK(process.exit_status() == 7);
 }
 
+TEST_CASE("process start resolves a bare command against the spawn PATH")
+{
+	// The spawn environment's PATH (options.environment overrides the
+	// inherited one) is the search space — point it at the fixture's
+	// directory only, so the resolution proven is madc's, not the host's.
+	std::string fixture = fixture_path();
+	std::size_t slash = fixture.find_last_of('/');
+	madc::ProcessOptions options;
+	options.environment["PATH"] = fixture.substr(0, slash);
+	options.args.push_back("argv");
+	options.args.push_back("resolved");
+	madc::Process process(madc::DataSource("exec://test_process_fixture"), options);
+	madc::error err;
+
+	REQUIRE(process.start(&err));
+	REQUIRE(process.close_stdin(&err));
+	CHECK(as_string(read_channel(process.stdout_channel(), &err)) == "8:resolved\n");
+	CHECK(read_channel(process.stderr_channel(), &err).empty());
+	REQUIRE(process.wait(&err));
+	CHECK(process.exit_status() == 0);
+}
+
+TEST_CASE("process start reports an unresolvable bare command")
+{
+	madc::ProcessOptions options;
+	options.environment["PATH"] = "/nonexistent-madc-path";
+	madc::Process process(madc::DataSource("exec://madc-no-such-command"), options);
+	madc::error err;
+
+	CHECK_FALSE(process.start(&err));
+	CHECK(err.message.find("process exec failed") != std::string::npos);
+}
+
+TEST_CASE("inherit_stderr leaves no stderr pipe and pump skips its leg")
+{
+	std::vector<unsigned char> input_bytes;
+	const char text[] = "alpha\nbeta\n";
+	input_bytes.assign(text, text + sizeof(text) - 1);
+
+	madc::MemoryDataChannel input(input_bytes);
+	madc::MemoryDataChannel output;
+	madc::ProcessOptions options;
+	options.inherit_stderr = true;
+	options.args.push_back("echo");
+	madc::Process process(madc::DataSource("exec://" + fixture_path()), options);
+	madc::ProcessPumpResult result;
+	madc::error err;
+
+	REQUIRE(process.start(&err));
+	CHECK_FALSE(process.stderr_channel().capabilities().read);
+	REQUIRE(madc::pump_process(input, process, output, nullptr, result, &err));
+	CHECK(result.input_bytes == input_bytes.size());
+	CHECK(result.output_bytes == input_bytes.size());
+	CHECK(result.stderr_bytes == 0);
+	CHECK(result.exit_status == 0);
+	CHECK(output.bytes() == input_bytes);
+}
+
 TEST_CASE("process pump concurrently drains large stdout and stderr")
 {
 	std::vector<unsigned char> input_bytes(1024 * 1024);

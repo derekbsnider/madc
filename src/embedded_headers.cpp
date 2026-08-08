@@ -200,6 +200,40 @@ namespace madc {
 	const char *const hostname;
     };
     extern SysInfo sys;
+
+    // madc::channel — one URI-addressed byte channel with line helpers
+    // (exec://, tcp://, file://, ... via the host channel registry).
+    // Declaration-only: methods resolve mangled-direct to the host class
+    // (src/madc_channel_object.cpp). LAYOUT CONTRACT with
+    // include/madcdis/channel.h — a single void* member, append-only,
+    // keep both in sync. Modes: "r" "w" "rw" (default) "a".
+    // readline() strips the trailing newline (and a preceding '\r') and
+    // returns the final unterminated tail; false only at EOF.
+    // Non-copyable: the copy ctor is private and unimplemented.
+    class channel {
+    public:
+	channel(const char *uri);
+	channel(const char *uri, const char *mode);
+	~channel();
+
+	bool ok() const;
+	const char *last_error() const;
+
+	long read(void *buffer, long capacity);
+	bool readline(std::string &out);
+	bool readall(std::string &out);
+	bool write(const char *text);
+	bool write(const char *buffer, long size);
+	bool write(std::string &text);
+	bool close_write();
+	void close();
+
+    private:
+	channel(const channel &);
+	channel &operator=(const channel &);
+
+	void *impl_;
+    };
 }
 )EMBED"},
     {"ns_perl", R"EMBED(#include <string>
