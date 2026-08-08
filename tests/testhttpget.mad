@@ -1,0 +1,91 @@
+#include <ns_madc>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+// The owner's few-liner in hermetic form: the client half is exactly the
+// real-world httpget shape (connect, write the GET, readline the reply);
+// the server half is a loopback listener serving one canned HTTP/1.0
+// response, so the suite never touches the network.
+int main()
+{
+    int server = socket(AF_INET, SOCK_STREAM, 0);
+    if ( server < 0 )
+    {
+        printf("socket failed\n");
+        return 1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if ( bind(server, (struct sockaddr *)&addr, sizeof(addr)) != 0 )
+    {
+        printf("bind failed\n");
+        return 1;
+    }
+    if ( listen(server, 1) != 0 )
+    {
+        printf("listen failed\n");
+        return 1;
+    }
+    socklen_t addr_len = sizeof(addr);
+    getsockname(server, (struct sockaddr *)&addr, &addr_len);
+
+    char uri[64];
+    sprintf(uri, "tcp://127.0.0.1:%d", ntohs(addr.sin_port));
+
+    // --- the httpget client shape ---
+    madc::channel http(uri);
+    if ( !http.ok() )
+    {
+        printf("connect failed: %s\n", http.last_error());
+        return 1;
+    }
+    http.write("GET /hello HTTP/1.0\r\nHost: localhost\r\n\r\n");
+    http.close_write();
+
+    // --- the canned server ---
+    int peer = accept(server, (struct sockaddr *)0, (socklen_t *)0);
+    if ( peer < 0 )
+    {
+        printf("accept failed\n");
+        return 1;
+    }
+    char request[512];
+    long got = read(peer, request, sizeof(request) - 1);
+    if ( got > 0 )
+    {
+        request[got] = '\0';
+        if ( strstr(request, "GET /hello") )
+            printf("server saw the GET\n");
+    }
+    const char *reply = "HTTP/1.0 200 OK\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "\r\n"
+                        "hello from madc\n";
+    write(peer, reply, strlen(reply));
+    shutdown(peer, SHUT_WR);
+
+    // --- the client reads the reply; readline strips CRLF ---
+    string line;
+    int lineno = 0;
+    int in_body = 0;
+    while ( http.readline(line) )
+    {
+        lineno = lineno + 1;
+        if ( lineno == 1 )
+            printf("status: %s\n", line.c_str());
+        else if ( in_body )
+            printf("body: %s\n", line.c_str());
+        else if ( line.length() == 0 )
+            in_body = 1;
+    }
+
+    close(peer);
+    close(server);
+    return 0;
+}

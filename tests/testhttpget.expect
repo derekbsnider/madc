@@ -1,0 +1,3 @@
+server saw the GET
+status: HTTP/1.0 200 OK
+body: hello from madc
