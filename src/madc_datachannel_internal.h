@@ -13,6 +13,9 @@ class DataChannelRegistry;
 
 namespace detail {
 
+// The one composition owner for runtime-phase errors in the channel/process
+// subsystem; sibling helpers delegate here (check-one-error-composer.sh).
+void set_channel_error(error *err, const std::string &message);
 void set_channel_error(error *err, const std::string &operation,
 		       const std::string &detail);
 void set_channel_errno(error *err, const std::string &operation,

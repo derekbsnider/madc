@@ -1,4 +1,5 @@
 #include "madcdis/channel.h"
+#include "madc_datachannel_internal.h"
 
 #include <cstring>
 
@@ -24,7 +25,7 @@ ChannelState *state(void *impl)
 void set_state_error(ChannelState *s, const std::string &message)
 {
 	s->failed = true;
-	s->last_error = error(error::severity::error, error::phase::runtime, message);
+	detail::set_channel_error(&s->last_error, message);
 }
 
 bool parse_mode(const char *mode, ChannelOpenMode &out)

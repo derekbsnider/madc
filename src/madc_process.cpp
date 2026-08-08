@@ -19,8 +19,7 @@ namespace {
 
 void set_process_error(error *err, const std::string &message)
 {
-	if ( err )
-		*err = error(error::severity::error, error::phase::runtime, message);
+	detail::set_channel_error(err, message);
 }
 
 void set_process_errno(error *err, const std::string &operation, int number)
