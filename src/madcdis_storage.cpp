@@ -1,7 +1,9 @@
 // Dependency-free record-file drivers owned by the madcdis core.
 
 #include "madcdis/driver.h"
+#include "madcdis/flow.h"
 #include "madcdis/query.h"
+#include "madcdis/sink.h"
 #include "madc_datachannel_internal.h"
 
 #include <algorithm>
@@ -679,22 +681,7 @@ public:
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
 	if ( !cursor.get() )
 	    return false;
-
-	value record;
-	for ( ;; )
-	{
-	    CursorStatus status = cursor_next(*cursor, record, err);
-	    if ( status == CursorStatus::end )
-		break;
-	    if ( status == CursorStatus::failure )
-	    {
-		cursor->close();
-		return false;
-	    }
-	    out.push_back(record);
-	}
-	cursor->close();
-	return true;
+	return copy(std::move(cursor), to_container(out), err);
     }
 
     std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const override
@@ -733,20 +720,8 @@ private:
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
 	if ( !cursor.get() )
 	    return false;
-	value record;
-	for ( ;; )
-	{
-	    CursorStatus status = cursor_next(*cursor, record, err);
-	    if ( status == CursorStatus::end )
-		break;
-	    if ( status == CursorStatus::failure )
-	    {
-		cursor->close();
-		return false;
-	    }
-	    rows.push_back(record);
-	}
-	cursor->close();
+	if ( !copy(std::move(cursor), to_container(rows), err) )
+	    return false;
 	_rows.swap(rows);
 	_rows_loaded = true;
 	return true;
@@ -1226,9 +1201,8 @@ public:
 			     "flr open_on_channel requires a channel");
 	    return false;
 	}
-	SeekableDataChannel *seekable =
-	    dynamic_cast<SeekableDataChannel *>(channel.get());
-	if ( !seekable || !channel->capabilities().seek )
+	SeekableDataChannel *seekable = seekable_surface(channel.get());
+	if ( !seekable )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
@@ -1664,22 +1638,7 @@ public:
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
 	if ( !cursor.get() )
 	    return false;
-
-	value record;
-	for ( ;; )
-	{
-	    CursorStatus status = cursor_next(*cursor, record, err);
-	    if ( status == CursorStatus::end )
-		break;
-	    if ( status == CursorStatus::failure )
-	    {
-		cursor->close();
-		return false;
-	    }
-	    out.push_back(record);
-	}
-	cursor->close();
-	return true;
+	return copy(std::move(cursor), to_container(out), err);
     }
 
     std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const override
@@ -1707,9 +1666,8 @@ public:
 	    detail::open_file_channel(_path, ChannelOpenMode::read, err);
 	if ( !channel.get() )
 	    return std::unique_ptr<Cursor<value> >();
-	SeekableDataChannel *seekable =
-	    dynamic_cast<SeekableDataChannel *>(channel.get());
-	if ( !seekable || !channel->capabilities().seek )
+	SeekableDataChannel *io = seekable_surface(channel.get());
+	if ( !io )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
@@ -1717,7 +1675,6 @@ public:
 			     "flr requires a seekable file: " + _path);
 	    return std::unique_ptr<Cursor<value> >();
 	}
-	SeekableDataChannel *io = seekable;
 	return std::unique_ptr<Cursor<value> >(
 	    new FlrCursor(std::move(channel), io, _schema, _tombstones,
 			  _record_count));
@@ -2038,9 +1995,8 @@ private:
 	    err);
 	if ( !channel.get() )
 	    return false;
-	SeekableDataChannel *seekable =
-	    dynamic_cast<SeekableDataChannel *>(channel.get());
-	if ( !seekable || !channel->capabilities().seek )
+	SeekableDataChannel *seekable = seekable_surface(channel.get());
+	if ( !seekable )
 	{
 	    if ( err )
 		*err = error(error::severity::error,

@@ -89,6 +89,11 @@ public:
 			      error *err = nullptr) = 0;
 };
 
+// The one truthful-seekability probe: interface present AND the instance
+// claims it. Returns nullptr otherwise — consumers never dynamic_cast the
+// mixin themselves.
+SeekableDataChannel *seekable_surface(DataChannel *channel);
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
 // Pump source to destination until EOF, flushing at the end. The counted

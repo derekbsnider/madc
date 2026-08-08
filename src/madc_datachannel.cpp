@@ -259,6 +259,13 @@ std::unique_ptr<DataChannel> open_file_channel(const std::string &path,
 
 } // namespace detail
 
+SeekableDataChannel *seekable_surface(DataChannel *channel)
+{
+	if ( !channel || !channel->capabilities().seek )
+		return nullptr;
+	return dynamic_cast<SeekableDataChannel *>(channel);
+}
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err)
 {
