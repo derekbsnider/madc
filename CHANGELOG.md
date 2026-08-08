@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.72.0] — 2026-08-08
+
+**The data-channel substrate reaches the language: `madc::channel` opens
+`exec://` / `tcp://` / `file://` URIs from a script, exec:// becomes a
+first-class channel scheme, and the suite gains its first script-level
+tcp/exec coverage — hermetic httpget included.**
+
 - **`madc::channel` — the data-channel substrate reaches the language**
   (Track 5C slice 1, `docs/plans/2026-08-08-track5c-script-channels-plan.md`).
   One URI-addressed byte channel with line helpers, declared in
@@ -26,7 +33,22 @@
   round-trip + loud failed spawn), `testtcpchannel.mad` (single-process
   loopback listener, bidirectional exchange, half-close EOF),
   `testhttpget.mad` (canned HTTP/1.0 loopback; the client half is the
-  real-world httpget shape). Green in all three lanes (JIT/EXE/OBJ).
+  real-world httpget shape). Green in all three lanes (JIT/EXE/OBJ)
+  and under `-stdlib=libc++`.
+- **Flavor marshalling grows its method half** (task #69).
+  `madc::channel` is the first madc-owned class resolved mangled-direct
+  to cross the stdlib-flavor boundary; the host-twin mint for class
+  METHODS (`Program::host_flavor_method_symbol`) re-runs the one method
+  mint under the host-flavor mangler state with carrier params swapped
+  to the host string spelling — under `-stdlib=libc++`,
+  `channel::readline(string&)` now marshals to the host's `__cxx11`
+  implementation instead of dying on an undefined `NSt3__1` import.
+- **One runtime-error composition owner** (pre-merge dupaudit find,
+  caught in-branch): the channel/process subsystem composes
+  runtime-phase errors in exactly one place (the one-arg
+  `detail::set_channel_error`); sibling helpers delegate. Gated by
+  `scripts/check-one-error-composer.sh` in fulltest (negative control
+  verified).
 
 ## [v0.71.0] — 2026-08-08
 

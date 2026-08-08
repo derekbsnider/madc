@@ -1,5 +1,16 @@
 # madc Roadmap
 
+**✅ TRACK 5C SLICE 1 LANDED (2026-08-08, v0.72.0):** the script-facing
+channel surface — `madc::channel` in `<ns_madc>` (mangled-direct to the
+host class, the first madc-owned class on that spine), `exec://` as a
+first-class channel scheme (space-split argv, inherited stderr,
+spawn-PATH resolution in `Process`), flavor marshalling's METHOD half
+(task #69 — madc-owned classes with `string&` params work under
+`-stdlib=libc++`), and the suite's first script-level tcp/exec legs
+(`testexecchannel` / `testtcpchannel` / `testhttpget`, all hermetic).
+Plan: `docs/plans/2026-08-08-track5c-script-channels-plan.md` — later
+5C slices: script-side `DataSet`/query surface, listener channels.
+
 **✅ FLR RANDOM ACCESS S1+S2 LANDED (2026-08-08, v0.71.0):** seekable
 channels with positioned IO (`SeekableDataChannel`, truthful per-fd
 `seek` capability), the FLR driver reborn lazy (geometry-only open,
@@ -20,8 +31,9 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-08 (v0.71.0 — FLR
-random access S1+S2; previous: v0.70.0 — the
+Master plan linking all workstreams. Updated 2026-08-08 (v0.72.0 — the
+script-facing channel surface; previous: v0.71.0 — FLR
+random access S1+S2; v0.70.0 — the
 data-channel core; v0.69.0 — the release-lane restoration +
 script-mode completion; v0.68.0 —
 the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
@@ -1556,6 +1568,7 @@ raw channels, processes, and standard dependency-free drivers belong here.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
+| 5C.0 | Script-facing channel surface (`madc::channel` in `<ns_madc>`, `exec://` scheme, tcp/exec/httpget suite legs) | — | **DONE** v0.72.0 | [2026-08-08-track5c-script-channels-plan.md](2026-08-08-track5c-script-channels-plan.md) |
 | 5C.1 | C-native core API (DataSet, Cursor, Query builder) | 2-3 wk | **Partial** | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
 | 5C.2 | C++23 ranges integration (madc::linq::) | 3-4 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
 | 5C.3 | Ruby-style trailing blocks (madc::ruby::) | 2-3 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
