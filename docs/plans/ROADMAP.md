@@ -1,15 +1,18 @@
 # madc Roadmap
 
-**✅ RELEASE LANE RESTORED (2026-08-07, v0.69.0):** the frozen-corpus
-instantiation-identity split (#20) is repaired — nine fixes took the
-packed suite 982/15 → **999/0** and `make release` is green again
-(forest-pack verify: bind cache == no-cache). A cross-TU
-freeze-consumer gate now holds the class in `fulltest`. Script mode
-completed in the same release (#16 top-level `defer` + #18 top-level
-`:=`). Post-mortem: `docs/plans/2026-08-06-release-lane-freeze-HANDOFF.md`.
+**✅ TRACK 5A LANDED (2026-08-08, v0.70.0):** the data-channel
+streaming & process-flow core — dependency-free typed streaming over
+memory/file/FIFO/TCP/UDP/UDS and child processes behind ABI-compatible
+extension seams; the madcdis/madcdat boundary is dependency-based
+(core/OS in madcdis, external-library providers in madcdat).
+Guideline: `docs/plans/2026-08-07-data-channel-streaming-process-flow-plan.md`.
+Open Track 5 follow-ups: optional madcdat service providers
+(libcurl-backed HTTP/REST etc.) and migrating suitable eager
+drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-07 (v0.69.0 — the
-release-lane restoration + script-mode completion; previous: v0.68.0 —
+Master plan linking all workstreams. Updated 2026-08-08 (v0.70.0 — the
+data-channel core; previous: v0.69.0 — the release-lane restoration +
+script-mode completion; v0.68.0 —
 the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
@@ -58,6 +61,27 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.70.0 (2026-08-08): the data-channel streaming & process-flow
+  core (Track 5A).** madcdis gains the dependency-free streaming
+  framework: lazy typed `Sink`/`Flow` adapters over ABI-compatible
+  extension seams (existing Cursor/DataDriver/SourceAdapter vtables
+  untouched; `Streaming*`/`ErrorAwareCursor` extensions capability-
+  probed with vector-API fallback), a `DataChannel` framework covering
+  memory/file/FIFO/TCP/UDP/UDS behind one scheme registry with
+  SIGPIPE-safe single-owner writes and datagram-truncation refusal,
+  explicit-argv `Process` endpoints with exec-errno self-pipe +
+  bounded concurrent pumping, and native incremental DSV scans. The
+  madcdis/madcdat boundary is DEPENDENCY-BASED (owner decision, KG
+  `Decision{madcdis_madcdat_dependency_boundary}`): core/OS in
+  madcdis, external-library providers in madcdat — the storage core
+  moved as a verified faithful move and the DSV/FLR/VLR suites now
+  run under `--enable-madcdat=no`. Reviewed function-by-function
+  pre-merge; hardening: atomic close-on-exec at fd creation (darwin
+  post-hoc fallback kept), one channel-pump owner, documented
+  channel/pump thread contracts, two new fulltest gates. Battery:
+  fulltest **999/0/9skip**, lane **995/0/13skip**, EXE/OBJ **978/0**,
+  packed **999/0/9skip**. Implemented by Codex 5.6-sol (session #70).
 
 - **v0.69.0 (2026-08-07): the release-lane restoration + script-mode
   completion.** `make release` had been red since Aug 1 (the packed
