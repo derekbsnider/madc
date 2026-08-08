@@ -20437,7 +20437,19 @@ static Program::TemplateDef *registered_template_entry_for(
     const std::vector<Program::TemplateDef> *found =
 	entry ? entry->find(td.owner_class) : NULL;
     if ( !found )
+    {
+#ifdef MADC_USE_COUNT_PROBE
+	static const char *ucp0 = ::getenv("MADC_USE_COUNT_PROBE");
+	if ( ucp0 && *ucp0 && td.class_name.find(ucp0) != std::string::npos )
+	    fprintf(stderr, "[refind-probe] %s NO-ENTRY name_id=%u entry=%p"
+		    " (registry_name_id=%u interned=%u) owner=%p partial=%d\n",
+		    td.class_name.c_str(), name_id, (const void *)entry,
+		    td.registry_name_id,
+		    pgm.template_name_pool.intern(td.class_name),
+		    (void *)td.owner_class, (int)td.is_partial_specialization);
+#endif
 	return NULL;
+    }
     std::vector<Program::TemplateDef> *variants =
 	pgm.active_class_registration_journal
 	? &pgm.class_template_variants_for_write(name_id, td.owner_class,
@@ -20452,6 +20464,24 @@ static Program::TemplateDef *registered_template_entry_for(
 	  && v.is_partial_specialization == td.is_partial_specialization )
 	    return &v;
     }
+#ifdef MADC_USE_COUNT_PROBE
+    static const char *ucp = ::getenv("MADC_USE_COUNT_PROBE");
+    if ( ucp && *ucp && td.class_name.find(ucp) != std::string::npos )
+    {
+	fprintf(stderr, "[refind-probe] %s MISS nvariants=%zu td(ns=%s body=%zu owner=%p partial=%d)\n",
+		td.class_name.c_str(), variants->size(),
+		td.defining_namespace.c_str(), td.body.size(),
+		(void *)td.owner_class, (int)td.is_partial_specialization);
+	for ( size_t i = 0; i < variants->size(); ++i )
+	{
+	    Program::TemplateDef &v = (*variants)[i];
+	    fprintf(stderr, "  [refind-probe] v%zu ns=%s body=%zu owner=%p partial=%d bodyeq=%d\n",
+		    i, v.defining_namespace.c_str(), v.body.size(),
+		    (void *)v.owner_class, (int)v.is_partial_specialization,
+		    (int)(v.body == td.body));
+	}
+    }
+#endif
     return NULL;
 }
 
@@ -20475,6 +20505,13 @@ void Program::note_class_pattern_use(const TemplateDef &td)
     TemplateDef *entry = registered_template_entry_for(*this, td);
     if ( entry && entry->class_pattern_use_count != (uint16_t)~0u )
 	++entry->class_pattern_use_count;
+#ifdef MADC_USE_COUNT_PROBE
+    static const char *ucp = ::getenv("MADC_USE_COUNT_PROBE");
+    if ( ucp && *ucp && td.class_name.find(ucp) != std::string::npos )
+	fprintf(stderr, "[use-count-probe] %s refind=%d count=%u\n",
+		td.class_name.c_str(), entry ? 1 : 0,
+		entry ? (unsigned)entry->class_pattern_use_count : 0u);
+#endif
 }
 
 void Program::queue_class_pattern_capture(const TemplateDef &td)
