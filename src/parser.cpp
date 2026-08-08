@@ -5765,15 +5765,36 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	return binding.pattern.capture_reason;
     if ( binding.dependent_surface )
 	return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
-    if ( binding.definition.has_non_type_params || !token_subst.empty() )
-	return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
+    // slice N2 (class-pattern value-args plan): non-type params and their
+    // token_subst bindings no longer refuse wholesale — a captured pattern
+    // exists ONLY if the capture normalizer proved the body free of value
+    // expressions and param-named template dependencies, so a binding whose
+    // every token_subst key names a declared NON-TYPE param is servable
+    // (the value participated in mangling/spec-selection upstream; the
+    // body never reads it). A token_subst key that is NOT a declared
+    // non-type param (a template-template binding, a spec-win type rebind)
+    // still refuses — the serve has no token substitution.
+    for ( std::map<std::string, std::vector<TokenBase *> >::const_iterator
+	      ts = token_subst.begin(); ts != token_subst.end(); ++ts )
+    {
+	bool declared_value_param = false;
+	for ( size_t i = 0; i < binding.definition.typeparams.size(); ++i )
+	    if ( binding.definition.typeparams[i] == ts->first
+	      && i < binding.definition.typeparam_is_type.size()
+	      && !binding.definition.typeparam_is_type[i]
+	      && !(i < binding.definition.typeparam_is_pack.size()
+		    && binding.definition.typeparam_is_pack[i]) )
+	    {
+		declared_value_param = true;
+		break;
+	    }
+	if ( !declared_value_param )
+	    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
+    }
     if ( !pack_subst.empty() )
 	return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
     for ( size_t i = 0; i < binding.definition.typeparams.size(); ++i )
     {
-	if ( i < binding.definition.typeparam_is_type.size()
-	  && !binding.definition.typeparam_is_type[i] )
-	    return class_pattern_eligibility_note(binding, Reason::DependentValueExpression, __builtin_LINE());
 	if ( i < binding.definition.typeparam_is_pack.size()
 	  && binding.definition.typeparam_is_pack[i] )
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
@@ -8260,20 +8281,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	  && class_pattern_live_capture )
     {
 	// Definition-only pre-filter: eligibility categorically rejects
-	// non-type params, value/pack params, and friend-bearing bodies —
-	// capturing such a template is a guaranteed-wasted parse. Stamp the
-	// same reason eligibility would report and never revisit.
+	// pack params and friend-bearing bodies — capturing such a template
+	// is a guaranteed-wasted parse. Stamp the same reason eligibility
+	// would report and never revisit. Non-type params are NO LONGER
+	// doomed here (slice N2, class-pattern value-args plan): capture is
+	// attempted, and its normalizer fails the bodies that genuinely
+	// embed value expressions or param-named template dependencies —
+	// enable_if-shaped templates (value params unused in the body)
+	// capture and serve.
 	ClassParseReason doomed = ClassParseReason::None;
-	if ( td.has_non_type_params )
-	    doomed = ClassParseReason::DependentValueExpression;
 	for ( size_t p = 0; doomed == ClassParseReason::None
 			     && p < td.typeparams.size(); ++p )
-	{
-	    if ( p < td.typeparam_is_type.size() && !td.typeparam_is_type[p] )
-		doomed = ClassParseReason::DependentValueExpression;
-	    else if ( p < td.typeparam_is_pack.size() && td.typeparam_is_pack[p] )
+	    if ( p < td.typeparam_is_pack.size() && td.typeparam_is_pack[p] )
 		doomed = ClassParseReason::UnsupportedDeclKind;
-	}
 	for ( size_t t = 0; doomed == ClassParseReason::None
 			     && t < td.body.size(); ++t )
 	    if ( td.body[t] && td.body[t]->id() == TokenID::tkFRIEND
@@ -29205,6 +29225,33 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 			<< td.class_name << ": no type id for '"
 			<< external_types[i]->name << "'" << std::endl;
 	    }
+	}
+    // slice N2 safety net (class-pattern value-args plan): a TemplateId
+    // dependency whose name IS a template parameter (a template-template
+    // param used in the body, or a value param named in template position)
+    // cannot replay — the serve resolves dependency names through the live
+    // registries, so the param NAME would bind whatever template happens to
+    // share it: a silent wrong answer. Fail the capture; the parse lane
+    // substitutes correctly. (Type-param uses never take this shape — they
+    // normalize as TemplateParam slots.)
+    if ( pending.capture_reason == ClassParseReason::None )
+	for ( size_t ti = 0; ti < pending.types.size(); ++ti )
+	{
+	    if ( pending.types[ti].kind != ClassTypePatternKind::TemplateId )
+		continue;
+	    const std::string &dep = pending.types[ti].name;
+	    size_t tail = dep.rfind("::");
+	    const std::string bare =
+		tail == std::string::npos ? dep : dep.substr(tail + 2);
+	    for ( size_t p = 0; p < td.typeparams.size(); ++p )
+		if ( bare == td.typeparams[p] )
+		{
+		    pending.capture_reason =
+			ClassParseReason::DependentValueExpression;
+		    break;
+		}
+	    if ( pending.capture_reason != ClassParseReason::None )
+		break;
 	}
     pending.semantic_fingerprint = class_pattern_fingerprint(pending);
     td.class_pattern_reason = pending.capture_reason;
