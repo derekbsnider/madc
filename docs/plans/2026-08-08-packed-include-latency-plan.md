@@ -37,6 +37,19 @@ on-demand unit loads land inside "cir build" (84ms shown; real lowering
 Also source-verified: `snapshot_reader::find()` (madcdis_snapshot.cpp:380)
 is a LINEAR scan of the segment directory per lookup (4 finds × unit).
 
+## Profile refresh (post-A/D, tmp/cg_string_postAD.out, string probe, 878M Ir)
+
+| share | what | disposition |
+|---|---|---|
+| 13.4% | zstd | mostly UNIT node-record loads (12 units ≈ 3.2MB/unit), not templates — needs a pack-side lever (slice E candidate: faster codec level / hot-cold split for node segments) |
+| 12.9% | `__memset` | the ONE remaining resize-zero-fill per decode destination (columnar `rb`, children/positions, thread-local planes, every aux `read_segment(out)`) → **slice A2** |
+| 8.3% | `unit_segment` self | per-record validation firewall (445k records when all load); candidate: trust the SELF-IMAGE arm (owner decision) |
+| ~12.5% | malloc/free churn | deserialize TokenBase allocs (slice B) + map/vector churn |
+| 4.4% | memcmp | string-keyed compares (slice C domain) |
+| 3.0%+1.4% | deserialize_tokens + token_from_id/TokenBase::new | eager template restore_run → slice B (~10ms, smaller than first modeled) |
+| 2.1% | materialize_from_arena | slice B (template walk share) + C |
+| ~3% | findVariable family | registration lookups → slice C |
+
 ## Why an unused include pays at all (the eager-restore chain)
 
 `forest_restore_decls` → template-record walk (cir_freeze.cpp ~3294):
@@ -63,6 +76,18 @@ no templates to restore and libc functions ride the dlsym fallback
   154→130ms, C-path 31→29ms** — unit loads 57→34ms, register 32→23ms,
   materialize 25→21ms (the indexed find serves the restore paths too).
   Unit suite green (9019 assertions incl. test_madcdis_snapshot).
+- **A2 — no-init decode destinations (post-A/D profile: memset still
+  12.9%).** `madc::dis::default_init_allocator` + `decode_vector<T>` /
+  `decode_bytes` (include/madcdis/pod_alloc.h): vector::resize on a
+  decode destination default-initializes (no zero-fill) — every element
+  is written by the decoder right after. Swapped: cir_frozen_blob
+  records/children, unit connectors/positions, columnar `rb` +
+  `_record_planes`, the thread-local BYTEPLANE scratch, read_unit_seg +
+  its four aux readers, pool/arena block buffers, template
+  tokens/payload staging, globals/extern/mir-cache/ledger decode
+  locals. snapshot_reader gained decode_bytes overloads of
+  read_segment / read_segment_transformed (same decode_payload core).
+  Writer side untouched (allocator-transparent push_back).
 - **B — lazy template payloads (the big one).** Registration keeps the
   template KEY surface eager (lookup must see the name), but
   `CirRestoredTemplate` payload/token-run decode defers to first
@@ -72,16 +97,55 @@ no templates to restore and libc functions ride the dlsym fallback
   Risk: instantiation-path correctness; the forest gates
   (selfexe/bind/emitpack/sidecar/crosstu/library/ledger/config) +
   full battery are the net.
+
+  **Settled design (2026-08-08, post-D recon):**
+  - *B1 — forest side (self-contained, behavior-preserving):* the
+    materialize template walk goes THIN — identity only (key/name/ns/
+    extra/owner/flags/pattern_reason from the record + pool; NO
+    `ensure_template_payload()` call). `CirRestoredTemplate` carries the
+    raw record offsets (param_begin/count, run_begin, spec_count,
+    pattern_begin/words) + a `hydrated` flag; new
+    `CirFrozenForest::hydrate_restored_template(rt)` decodes the payload
+    pair on first call and fills params/runs/pattern pointer.
+  - *B2 — parser side:* the restore loop registers STUB *Defs (identity
+    fields + `frozen_src` = {&rt, &forest}; no restore_run). Thaw
+    happens through Program-level wrapper accessors
+    (`thawed_class_templates(name_id)` etc.) that hydrate an entry's
+    stubs in place on first content read. Read-site census (must ALL
+    convert): template_map find_readonly ×7 + for_each 62785;
+    partial_spec_map ×5 + for_each; template_alias_map ×3 + for_each;
+    fn_template_map/decl_map for_each 52314 + find 52509 + 54369-54401.
+    Existence reads (count / find!=end with no deref) stay direct.
+    GATE: a check-*.sh in fulltest denying direct content reads on the
+    four maps outside the thaw-owner region (decays otherwise).
+  - *B3 — deferred recapture:* `recapture_free_overload_surfaces` needs
+    fd.decl at restore (free_operator_overloads / manipulator /
+    free_function_overloads signature tables consulted during
+    expression parse). Defer as a pending list flushed ONE-SHOT at the
+    first consult of those tables (~4 sites, parser.cpp 16923/17172/
+    17222 + free_function reads). Unused TU: never flushes.
+  - *Kept eager in B (v1):* VAR/CONCEPT (tiny populations), OUTOFLINE +
+    MEMBER-template staging (big runs but entangled with the
+    placeholder stamp flush — extend only if the post-B profile still
+    shows them), v23 param-default parseExpression re-runs (separate
+    eager cost, candidate for its own slice).
 - **C — lazy registration.** register = 32ms flat, all map injection
   (`findVariable`/intern/Rb_tree ~7-8% + memcmp share). The decl-index
   sweep is 2-3ms — resolve through the frozen index on lookup misses
   instead of eagerly injecting 139 units' decls. Biggest architectural
   change; do after A+B re-measure.
-- **D — stats attribution.** One depth-guarded forest-work clock
-  (InstTimer discipline; entries: map/open/bind/restore/unit-load)
-  sampled at the tokenize/parse boundaries so lex/cir-build report NET
-  compute and the forest share prints as its own carved lines. Do with
-  A so post-A numbers are honest.
+- **D — stats attribution — ✅ DONE (@07377df7).** ForestWorkFrame
+  (cir_freeze.h): ONE depth-guarded clock, frames at probe/open, bind
+  walk, decl restore, unit loads, materialize, template payload,
+  extern-index build; Program clock installed into the bound forest.
+  Sampled at tokenize/parse boundaries + inside the timed CIR window
+  (`_cir_forest_seconds`). lex/parse/cir now report NET with a
+  "forest in phases" carve line. **Post-D honest string-probe read:
+  lex-real 21ms, cir-real 26ms, forest = lex 69 + parse 0 + cir 43
+  (map+open 9 + bind 1 + restore 59 [declidx 3 + mat 27 + register 29]
+  + unit loads 42).** Kind-breakdown sums equal the phase carves —
+  depth guard verified. Also proves: restore runs entirely under
+  tokenize; on-demand unit loads entirely under cir build.
 
 Floor estimate: C-path parity is not reachable (C++ genuinely restores
 class/template surfaces C doesn't have), but unused-include ≈ C-path

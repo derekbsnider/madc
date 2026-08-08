@@ -870,7 +870,7 @@ CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *fore
 }
 
 CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit,
-				   std::vector<uint8_t> &&record_planes,
+				   madc::dis::decode_bytes &&record_planes,
 				   size_t record_count, CirFrozenForest *forest,
 				   c2m_ctx_t c2m)
 	: _blob(std::move(unit.blob)), _record_planes(std::move(record_planes)),
@@ -1109,7 +1109,7 @@ CirFrozenForest::~CirFrozenForest()
 // decompressed into `own`.
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
-					std::vector<uint8_t> &own, size_t &len)
+					madc::dis::decode_bytes &own, size_t &len)
 {
 	const madc::dis::snapshot_segment *s = r.find(seg_id);
 	if (!s || s->kind != kind)
@@ -1265,7 +1265,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// = none; materialize_from_arena swizzles each type_id -> DataDef*).
 	if (const madc::dis::snapshot_segment *gs =
 		_reader.find(CIR_FOREST_SEG_GLOBALS)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (gs->kind != SNAP_KIND_CIR_GLOBALS
 		    || !_reader.read_segment(*gs, d)
 		    || d.size() % sizeof(cir_forest_global_record)) {
@@ -1282,7 +1282,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// runs deserialize on the parser side (forest_restore_decls).
 	if (const madc::dis::snapshot_segment *ts =
 		_reader.find(CIR_FOREST_SEG_TEMPLATES)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (ts->kind != SNAP_KIND_CIR_TEMPLATES
 		    || !_reader.read_segment(*ts, d)
 		    || d.size() % sizeof(cir_forest_template_record)) {
@@ -1438,7 +1438,7 @@ int CirFrozenForest::find_unit(const std::string &name) const
 // --- grove payload v2 readers (B4a) ----------------------------------------
 
 bool CirFrozenForest::read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
-				    std::vector<uint8_t> &out) const
+				    madc::dis::decode_bytes &out) const
 {
 	if (unit >= _units.size())
 		return false;
@@ -1465,7 +1465,7 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 	if (!s || s->kind != SNAP_KIND_CIR_MIR_MODULE
 	    || s->raw_size <= sizeof(cir_forest_mir_header))
 		return false;	// no cache segment: the normal blob-less case
-	std::vector<uint8_t> payload;
+	madc::dis::decode_bytes payload;
 	if (!_reader.read_segment(*s, payload)
 	    || payload.size() <= sizeof(cir_forest_mir_header)) {
 		fprintf(stderr, "madc: mir cache: malformed segment — "
@@ -1503,7 +1503,7 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 	if (!s || s->kind != SNAP_KIND_CIR_LEDGER
 	    || s->raw_size < sizeof(cir_forest_ledger_header))
 		return false;	// no ledger segment: the normal case
-	std::vector<uint8_t> payload;
+	madc::dis::decode_bytes payload;
 	if (!_reader.read_segment(*s, payload)
 	    || payload.size() < sizeof(cir_forest_ledger_header)) {
 		fprintf(stderr, "madc: ledger: malformed segment\n");
@@ -1562,7 +1562,7 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 4, SNAP_KIND_CIR_UNIT_TOKENS, raw)
 	    || raw.size() < sizeof(uint32_t))
 		return false;
@@ -1574,7 +1574,7 @@ bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payl
 bool CirFrozenForest::unit_decl_index(uint32_t unit,
 				      std::vector<cir_forest_decl_entry> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 5, SNAP_KIND_CIR_DECL_INDEX, raw)
 	    || raw.size() % sizeof(cir_forest_decl_entry))
 		return false;
@@ -1586,7 +1586,7 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 
 bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 6, SNAP_KIND_CIR_PP_EXPORTS, raw)
 	    || raw.size() % sizeof(uint32_t))
 		return false;
@@ -1598,7 +1598,7 @@ bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
 
 bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 7, SNAP_KIND_CIR_UNIT_EDGES, raw)
 	    || raw.size() % sizeof(uint32_t))
 		return false;
@@ -3430,7 +3430,7 @@ bool CirFrozenForest::extern_loc_for(const std::string &sym,
 		ForestWorkFrame _fw(_work_secs, _work_depth);
 		const madc::dis::snapshot_segment *xs =
 			_reader.find(CIR_FOREST_SEG_EXTERN_LOCS);
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (xs && xs->kind == SNAP_KIND_CIR_EXTERN_LOCS
 		    && _reader.read_segment(*xs, d)
 		    && d.size() % sizeof(cir_forest_extern_loc) == 0) {
@@ -3478,7 +3478,7 @@ bool CirFrozenForest::ensure_template_payload() const
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
 		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
@@ -3570,8 +3570,8 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
 		return NULL;
 	}
-	std::vector<uint8_t> rb;   // columnar records: the plane buffer IS the
-				   // segment's retained storage (moved below)
+	madc::dis::decode_bytes rb;	// columnar records: the plane buffer IS the
+					// segment's retained storage (moved below)
 	bool records_columnar =
 		madc::dis::snap_xform_id(recs->flags)
 			== madc::dis::SNAP_XFORM_BYTEPLANE

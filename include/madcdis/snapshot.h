@@ -10,6 +10,7 @@
 #include "madc_pch.h"	// PchCompression + madc_pch::compress/decompress — the ONE
 			// in-tree compression vocabulary/implementation (zstd
 			// preferred when built with HAVE_ZSTD, zlib fallback).
+#include "pod_alloc.h"	// decode_bytes — resize-without-zero-fill destinations
 
 // madcdis/snapshot.h — the madc::dis pool-snapshot CONTAINER.
 //
@@ -187,7 +188,10 @@ public:
 
     // Decompress (or copy) a segment payload into out (resized to raw_size),
     // inverting the segment's transform when one is recorded in seg.flags.
+    // The decode_bytes overload skips the resize's zero-fill (the decode
+    // overwrites every byte) — prefer it for hot-path decode destinations.
     bool read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const;
+    bool read_segment(const snapshot_segment &seg, decode_bytes &out) const;
 
     // Same, into caller-owned storage of at least seg.raw_size bytes — no
     // allocation and no staging buffer, so a consumer that already owns the
@@ -201,6 +205,8 @@ public:
     // directly use this to avoid eagerly rebuilding the original layout.
     bool read_segment_transformed(const snapshot_segment &seg,
 				  std::vector<uint8_t> &out) const;
+    bool read_segment_transformed(const snapshot_segment &seg,
+				  decode_bytes &out) const;
 
     // Zero-copy payload pointer for codec None segments (bind-in-place path);
     // NULL for compressed or transformed segments.

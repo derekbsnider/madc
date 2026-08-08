@@ -159,11 +159,13 @@ enum : uint8_t
 // owning unit's connector pool, whose uint64 entries are (unit << 32 | record).
 enum : uint32_t { CIR_FROZEN_CHILD_CONNECTOR_BIT = 0x80000000u };
 
-// A frozen subtree in memory: record 0 is the root.
+// A frozen subtree in memory: record 0 is the root. decode_vector: the
+// reader sizes these once and decodes over them — no zero-fill; the write
+// side push_backs into them unchanged (allocator-transparent).
 struct cir_frozen_blob
 {
-	std::vector<cir_frozen_record> records;
-	std::vector<uint32_t>          children;
+	madc::dis::decode_vector<cir_frozen_record> records;
+	madc::dis::decode_vector<uint32_t>          children;
 };
 
 // Flatten the sub-DAG rooted at `root` (iterative; share/cycle-safe).
@@ -875,8 +877,8 @@ struct cir_forest_unit
 {
 	uint32_t                    unit_name_id;
 	cir_frozen_blob             blob;
-	std::vector<uint64_t>       connectors;	// (target_unit << 32) | target_record
-	std::vector<cir_frozen_pos> positions;	// parallel to blob.records
+	madc::dis::decode_vector<uint64_t>       connectors;	// (target_unit << 32) | target_record
+	madc::dis::decode_vector<cir_frozen_pos> positions;	// parallel to blob.records
 	// --- grove payload v2 (B4a) ---
 	std::vector<uint8_t>        token_payload;	// .madh record form
 	uint32_t                    token_count = 0;
@@ -986,10 +988,10 @@ class CirFrozenSegment : public cir_segment_source
 	friend class CirFrozenForest;
 
 	cir_frozen_blob _blob;
-	std::vector<uint8_t> _record_planes;	// forest byte-plane records, kept columnar
+	madc::dis::decode_bytes _record_planes;	// forest byte-plane records, kept columnar
 	size_t _record_count;
-	std::vector<uint64_t> _connectors;	// forest units only
-	std::vector<cir_frozen_pos> _positions;	// forest units only
+	madc::dis::decode_vector<uint64_t> _connectors;	// forest units only
+	madc::dis::decode_vector<cir_frozen_pos> _positions;	// forest units only
 	CirFrozenForest *_forest;		// NULL = standalone (B2 mode)
 	c2m_ctx_t _c2m;
 	uint32_t _seg;				// registered segment id
@@ -1010,7 +1012,7 @@ public:
 	CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
 			 c2m_ctx_t c2m);
 	CirFrozenSegment(cir_forest_unit &&unit,
-			 std::vector<uint8_t> &&record_planes,
+			 madc::dis::decode_bytes &&record_planes,
 			 size_t record_count, CirFrozenForest *forest,
 			 c2m_ctx_t c2m);
 	~CirFrozenSegment();
@@ -1264,7 +1266,7 @@ class CirFrozenForest
 	// blocks; decompressed copies owned here when the segments are
 	// compressed, bound in place when codec is None).
 	madc::dis::frozen_intern_table _pool;
-	std::vector<uint8_t> _pool_bytes, _pool_entries, _pool_buckets;
+	madc::dis::decode_bytes _pool_bytes, _pool_entries, _pool_buckets;
 	// v2 container-global payloads (loaded at open; empty on v2-less
 	// module containers).
 	std::vector<uint32_t> _branch_macros, _canon_order;
@@ -1300,7 +1302,7 @@ class CirFrozenForest
 	// whose bound closure declares no templates (trivial C) never pays.
 	// Mutable: restored_template_run is a const reader.
 	mutable std::vector<uint32_t> _template_payload;
-	mutable std::vector<uint8_t>  _template_tokens;
+	mutable madc::dis::decode_bytes _template_tokens;
 	mutable bool _template_payload_loaded = false;
 	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
@@ -1318,9 +1320,9 @@ class CirFrozenForest
 	// uncompressed, else into the owned buffers. A type-less freeze binds an
 	// empty view (zero-length segments).
 	madc::dis::FrozenDefArena _arena;
-	std::vector<uint8_t> _arena_defs, _arena_payload;
-	std::vector<uint8_t> _arena_sbytes, _arena_sentries, _arena_sbuckets;
-	std::vector<uint8_t> _arena_tokbytes;	// v23: param-default token runs
+	madc::dis::decode_bytes _arena_defs, _arena_payload;
+	madc::dis::decode_bytes _arena_sbytes, _arena_sentries, _arena_sbuckets;
+	madc::dis::decode_bytes _arena_tokbytes;	// v23: param-default token runs
 	// v23: per-FuncDef param-default token runs (paramrec.def_tok_*), built by
 	// materialize_from_arena alongside the methods/free functions. The parser's
 	// pending-funcs flush deserializes each run and re-runs parseExpression.
@@ -1332,7 +1334,7 @@ class CirFrozenForest
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
-			   std::vector<uint8_t> &out) const;
+			   madc::dis::decode_bytes &out) const;
 
 	const char *pool_cstr(uint32_t id, uint32_t &len) const;
 	uint32_t live_str_id(uint32_t frozen_id);	// re-intern (memoized)

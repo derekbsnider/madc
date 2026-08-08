@@ -428,6 +428,15 @@ bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
     return decode_payload(seg, out.data());
 }
 
+bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
+					decode_bytes &out) const
+{
+    if ( !_blob )
+	return false;
+    out.resize((size_t)seg.raw_size);	// no zero-fill (default_init_allocator)
+    return decode_payload(seg, out.data());
+}
+
 bool snapshot_reader::read_segment_into(const snapshot_segment &seg,
 					uint8_t *dst, size_t capacity) const
 {
@@ -445,7 +454,7 @@ bool snapshot_reader::read_segment_into(const snapshot_segment &seg,
     uint32_t xid = snap_xform_id(seg.flags);
     if ( xid == SNAP_XFORM_BYTEPLANE )
     {
-	static thread_local std::vector<uint8_t> planes;
+	static thread_local decode_bytes planes;
 	if ( !read_segment_transformed(seg, planes) )
 	    return false;
 	size_t stride = snap_xform_param(seg.flags);
@@ -463,6 +472,12 @@ bool snapshot_reader::read_segment_into(const snapshot_segment &seg,
 bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const
 {
     out.resize((size_t)seg.raw_size);
+    return read_segment_into(seg, out.data(), out.size());
+}
+
+bool snapshot_reader::read_segment(const snapshot_segment &seg, decode_bytes &out) const
+{
+    out.resize((size_t)seg.raw_size);	// no zero-fill (default_init_allocator)
     return read_segment_into(seg, out.data(), out.size());
 }
 
