@@ -680,6 +680,158 @@ TEST_CASE("FIFO channel reports a closed reader without SIGPIPE termination")
 	std::remove(path.c_str());
 }
 
+TEST_CASE("file channel on a regular file is truthfully seekable")
+{
+	const std::string path = "/tmp/madc_data_channel_seek_"
+		+ std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string uri = std::string("file://") + path;
+	const unsigned char input[] = {'a', 'b', 'c', 'd', 'e', 'f'};
+	madc::error err;
+
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::read_write, &err);
+	REQUIRE(channel.get() != nullptr);
+	CHECK(channel->capabilities().seek);
+	madc::SeekableDataChannel *seekable =
+		dynamic_cast<madc::SeekableDataChannel *>(channel.get());
+	REQUIRE(seekable != nullptr);
+
+	CHECK(madc::write_all(*channel, input, sizeof(input), &err));
+	uint64_t bytes = 0;
+	CHECK(seekable->size(bytes, &err));
+	CHECK(bytes == sizeof(input));
+
+	// Positioned reads carry their own offset and leave the sequential
+	// position alone.
+	CHECK(seekable->seek(0, &err));
+	unsigned char probe[2] = {0, 0};
+	std::size_t count = 0;
+	CHECK(seekable->read_at(4, probe, sizeof(probe), count, &err));
+	REQUIRE(count == 2);
+	CHECK(probe[0] == 'e');
+	CHECK(probe[1] == 'f');
+	CHECK(channel->read(probe, 1, count, &err));
+	REQUIRE(count == 1);
+	CHECK(probe[0] == 'a');
+
+	// Positioned write patches one spot without touching the rest.
+	const unsigned char patch = 'Z';
+	std::size_t written = 0;
+	CHECK(seekable->write_at(2, &patch, 1, written, &err));
+	CHECK(written == 1);
+	CHECK(seekable->read_at(0, probe, 1, count, &err));
+	CHECK(probe[0] == 'a');
+	CHECK(seekable->read_at(2, probe, 1, count, &err));
+	CHECK(probe[0] == 'Z');
+
+	// seek() repositions the sequential stream.
+	CHECK(seekable->seek(5, &err));
+	CHECK(channel->read(probe, sizeof(probe), count, &err));
+	REQUIRE(count == 1);
+	CHECK(probe[0] == 'f');
+
+	channel->close();
+	std::remove(path.c_str());
+}
+
+TEST_CASE("file channel on a FIFO refuses the seekable surface")
+{
+	const std::string path = "/tmp/madc_data_channel_fifo_seek_"
+		+ std::to_string(static_cast<long long>(getpid()));
+	const std::string uri = std::string("pipe://") + path;
+	madc::error err;
+
+	REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
+	int reader = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+	REQUIRE(reader >= 0);
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::write, &err);
+	REQUIRE(channel.get() != nullptr);
+
+	// The interface is implemented, but the per-instance capability tells
+	// the truth and every seekable operation refuses cleanly.
+	CHECK_FALSE(channel->capabilities().seek);
+	madc::SeekableDataChannel *seekable =
+		dynamic_cast<madc::SeekableDataChannel *>(channel.get());
+	REQUIRE(seekable != nullptr);
+	uint64_t bytes = 0;
+	CHECK_FALSE(seekable->size(bytes, &err));
+	CHECK(err.message.find("not seekable") != std::string::npos);
+	CHECK_FALSE(seekable->seek(0, &err));
+	std::size_t count = 0;
+	unsigned char probe = 0;
+	CHECK_FALSE(seekable->read_at(0, &probe, 1, count, &err));
+
+	channel->close();
+	::close(reader);
+	std::remove(path.c_str());
+}
+
+TEST_CASE("append-mode file channel never claims seek")
+{
+	const std::string path = "/tmp/madc_data_channel_append_seek_"
+		+ std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string uri = std::string("file://") + path;
+	madc::error err;
+
+	std::unique_ptr<madc::DataChannel> channel =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource(uri), madc::ChannelOpenMode::append, &err);
+	REQUIRE(channel.get() != nullptr);
+	CHECK_FALSE(channel->capabilities().seek);
+	channel->close();
+	std::remove(path.c_str());
+}
+
+TEST_CASE("memory channel serves positioned reads and writes")
+{
+	std::vector<unsigned char> seed;
+	seed.push_back('a');
+	seed.push_back('b');
+	seed.push_back('c');
+	madc::MemoryDataChannel channel(seed);
+	madc::error err;
+
+	CHECK(channel.capabilities().seek);
+	uint64_t bytes = 0;
+	CHECK(channel.size(bytes, &err));
+	CHECK(bytes == 3);
+
+	unsigned char probe = 0;
+	std::size_t count = 0;
+	CHECK(channel.read_at(1, &probe, 1, count, &err));
+	REQUIRE(count == 1);
+	CHECK(probe == 'b');
+
+	// read_at leaves the sequential read position alone.
+	CHECK(channel.read(&probe, 1, count, &err));
+	REQUIRE(count == 1);
+	CHECK(probe == 'a');
+
+	// write_at extends and zero-fills past the end.
+	const unsigned char patch = 'Z';
+	std::size_t written = 0;
+	CHECK(channel.write_at(5, &patch, 1, written, &err));
+	CHECK(written == 1);
+	CHECK(channel.size(bytes, &err));
+	REQUIRE(bytes == 6);
+	CHECK(channel.bytes()[3] == 0);
+	CHECK(channel.bytes()[4] == 0);
+	CHECK(channel.bytes()[5] == 'Z');
+
+	// seek() repositions the sequential reader.
+	CHECK(channel.seek(2, &err));
+	CHECK(channel.read(&probe, 1, count, &err));
+	REQUIRE(count == 1);
+	CHECK(probe == 'c');
+
+	// Reads past the end are EOF, not failure.
+	CHECK(channel.read_at(100, &probe, 1, count, &err));
+	CHECK(count == 0);
+}
+
 TEST_CASE("TCP channel connects and preserves byte-stream half-close semantics")
 {
 	uint16_t port = 0;
