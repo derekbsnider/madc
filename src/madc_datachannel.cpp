@@ -130,6 +130,10 @@ public:
 			break;
 		}
 
+		// O_CLOEXEC is POSIX-2008 (Linux and darwin both have it):
+		// close-on-exec is atomic at open, no post-hoc fcntl window.
+		flags |= O_CLOEXEC;
+
 		int fd;
 		do
 			fd = ::open(source.path().c_str(), flags, 0666);
@@ -137,15 +141,6 @@ public:
 		if ( fd < 0 )
 		{
 			set_channel_errno(err, "file channel open failed", source.path());
-			return std::unique_ptr<DataChannel>();
-		}
-		if ( !detail::set_fd_close_on_exec(fd) )
-		{
-			int number = errno;
-			::close(fd);
-			errno = number;
-			set_channel_errno(
-				err, "file channel close-on-exec setup failed", source.path());
 			return std::unique_ptr<DataChannel>();
 		}
 		return std::unique_ptr<DataChannel>(

@@ -22,6 +22,12 @@ enum class SocketSemantics
 
 int create_socket(int domain, int socket_type, int protocol)
 {
+#ifdef SOCK_CLOEXEC
+	// Atomic close-on-exec at creation: no window for a concurrent
+	// fork+exec in a threaded embedding host to leak the fd.
+	return ::socket(domain, socket_type | SOCK_CLOEXEC, protocol);
+#else
+	// Portable fallback (darwin has no SOCK_CLOEXEC): post-hoc owner.
 	int fd = ::socket(domain, socket_type, protocol);
 	if ( fd < 0 )
 		return -1;
@@ -31,6 +37,7 @@ int create_socket(int domain, int socket_type, int protocol)
 	::close(fd);
 	errno = number;
 	return -1;
+#endif
 }
 
 bool socket_capabilities(ChannelOpenMode mode, SocketSemantics semantics,

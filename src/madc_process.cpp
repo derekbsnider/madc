@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <fcntl.h>
 #include <map>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -35,6 +36,17 @@ void close_fd(int &fd)
 
 bool make_cloexec_pipe(int fds[2], error *err)
 {
+#ifdef __linux__
+	// Atomic close-on-exec at creation: no window for a concurrent
+	// fork+exec in a threaded embedding host to leak the pipe ends.
+	if ( ::pipe2(fds, O_CLOEXEC) != 0 )
+	{
+		set_process_errno(err, "process pipe creation failed", errno);
+		return false;
+	}
+	return true;
+#else
+	// Portable fallback (darwin has no pipe2): post-hoc owner.
 	if ( ::pipe(fds) != 0 )
 	{
 		set_process_errno(err, "process pipe creation failed", errno);
@@ -52,6 +64,7 @@ bool make_cloexec_pipe(int fds[2], error *err)
 		}
 	}
 	return true;
+#endif
 }
 
 class ProcessPipeChannel : public DataChannel
