@@ -236,6 +236,52 @@ class/template surfaces C doesn't have), but unused-include ≈ C-path
 cost and used-`<string>` well under 100ms look attainable from the
 profile shares.
 
+## The USE-side wall (owner recon request, 2026-08-08 post-B)
+
+Owner observation: testsubscript.mad costs ~4× the string probe — "this
+doesn't add up." Confirmed, and the forest is NOT the reason:
+
+- testsubscript (iostream+vector+map+string, 4 container types used):
+  **total 395–450ms**; forest ≈ 90–110ms of it (198 units bound, 78MB
+  decoded — barely above the string probe's 76MB). The rest is USE-side:
+  **instantiate 186ms (6,274 calls) + cir build 180ms (≈128ms net of
+  forest)**. Callgrind: 2.4B Ir vs the string probe's 738M (3.3×).
+- **Pathology by our own baseline (gcc-parity rule):** g++ -O0 compiles
+  the identical source warm in ~325ms INCLUDING parsing ~100k header
+  lines from text; madc with every header pre-parsed takes ~425ms. The
+  instantiation lane eats the entire forest advantage.
+- **Family 1 — pattern-lane refusals: 280 of ~500 class instantiations
+  re-parse live** (`class instantiate: 220 pattern / 280 parse / 642
+  cache / 67 opaque`). The ranked why-list is dominated by the TINIEST
+  classes — metaprogramming traits: 51× `std::__and_`
+  [pattern-parse-error], 20× `std::enable_if`
+  [dependent-value-expression], 16× `std::__or_` [pattern-parse-error],
+  10× `__is_nothrow_swappable_impl`, 10× `integral_constant`
+  [pattern-parse-error], 9× `_PCC`/`__not_`/`pair` … The coarse gates:
+  `basic_class_pattern_eligibility` (parser.cpp ~5768) refuses ANY
+  definition with `has_non_type_params || !token_subst.empty()`
+  (→ dependent-value-expression) and any `pack_subst`
+  (→ unsupported-decl-kind); variadic trait bodies also fail capture
+  (→ pattern-parse-error). libstdc++ internals are saturated with
+  non-type params and packs, so container use falls off the pattern
+  lane wholesale.
+- **Family 2 — per-call constant factor** (callgrind, diffuse): ~17%
+  malloc/free churn, ~8.8% string compares + hashing (string-keyed
+  instantiation keys/spellings — enum-over-strings territory), 3.7%
+  `dynamic_cast` RTTI probing, ~2.8% findVariable walks — × 6,274
+  instantiate calls.
+- **Burn-down order (proposed, next leg — no owner gate needed):**
+  (1) pattern-lane NON-TYPE params — substitute the non-type binding at
+  serve time; kills the dominant why-class; (2) variadic/pack patterns
+  OR a Tier-1 sema fold for the trait family (enable_if / __and_ /
+  __or_ / __not_ / integral_constant are semantic primitives; precedent:
+  eval_void_t_detection_slot, __enable_if_t in
+  eval_substituted_slot_type — design so it stays shape-keyed, not
+  name-keyed, per design-principles #7); (3) instantiation-key
+  interning + dynamic_cast reduction on the instantiate hot path.
+  Include-side slices C/E drop BELOW this in priority — the use side is
+  the bigger prize, exactly as the owner suspected.
+
 ## Facts for re-measurement
 
 - Probes: `tmp/lexprobe_bare.mad`, `tmp/lexprobe_cstring.mad`,
