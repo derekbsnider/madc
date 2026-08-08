@@ -2107,10 +2107,18 @@ CirFrozenForest *Program::ensure_bind_forest()
 	return bind_forest;
     bind_forest_tried = true;
 
+    // task #25 slice D: probe/map/open under the forest-work clock; a bound
+    // forest gets the clock installed so its own on-demand entries (unit
+    // loads, materialize, template payload) accumulate on the same clock.
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     bool cfg_mismatch = false;
     bind_forest = probe_forest_chain(/*require_config_match=*/true, cfg_mismatch);
     if ( bind_forest )
+    {
+	bind_forest->_work_secs = &_forest_work_seconds;
+	bind_forest->_work_depth = &_forest_work_depth;
 	return bind_forest;
+    }
 
     // A named container that fails to open falls back to live parse LOUDLY
     // regardless of policy — the user pointed at it, so ignoring it silently
@@ -2270,6 +2278,7 @@ void Program::forest_bind_include(uint32_t unit)
 {
     if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
 	return;
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
     // recursion excluded — so the accumulated total sums cleanly.

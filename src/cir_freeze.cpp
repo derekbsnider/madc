@@ -1442,6 +1442,9 @@ bool CirFrozenForest::read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
 {
 	if (unit >= _units.size())
 		return false;
+	// slice D: every on-demand aux-segment decode (edges / PP events /
+	// decl index / token runs) rides this choke — one frame covers them.
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
 	const madc::dis::snapshot_segment *s = _reader.find(base + slot);
 	if (!s || s->kind != kind || !s->raw_size)
@@ -1710,6 +1713,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
@@ -3421,6 +3425,9 @@ bool CirFrozenForest::extern_loc_for(const std::string &sym,
 		// (Gated on _fully_opened: name ids resolve through the pool
 		// complete_open binds — never memoize an empty index early.)
 		_extern_index_built = true;
+		// slice D: the one-shot index build decodes a segment; the
+		// per-call map lookup below stays outside the clock.
+		ForestWorkFrame _fw(_work_secs, _work_depth);
 		const madc::dis::snapshot_segment *xs =
 			_reader.find(CIR_FOREST_SEG_EXTERN_LOCS);
 		std::vector<uint8_t> d;
@@ -3468,6 +3475,7 @@ bool CirFrozenForest::ensure_template_payload() const
 	if (_template_payload_loaded)
 		return true;
 	_template_payload_loaded = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
 		std::vector<uint8_t> d;
@@ -3535,6 +3543,7 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		return NULL;
 	if (_segs[unit])
 		return _segs[unit];
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
 
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;

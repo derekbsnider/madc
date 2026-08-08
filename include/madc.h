@@ -3690,6 +3690,17 @@ public:
     double _forest_bind_seconds = 0.0;
     double _forest_restore_seconds = 0.0;
     double _forest_declidx_seconds = 0.0;
+    // task #25 slice D: the ONE depth-guarded forest-work clock
+    // (ForestWorkFrame, cir_freeze.h) — total wall seconds inside forest
+    // entries, nested frames uncounted, so it can be SAMPLED at phase
+    // boundaries. The stats display snapshots it around tokenize and parse;
+    // _cir_forest_seconds is its advance inside the timed CIR-build window
+    // (accumulated beside _cir_build_seconds). The lex / parse / cir-build
+    // buckets then report NET compute — the kind-breakdown timers above
+    // stay the itemization of WHAT the forest time was.
+    double _forest_work_seconds = 0.0;
+    int    _forest_work_depth   = 0;
+    double _cir_forest_seconds  = 0.0;
     std::vector<std::pair<std::string, double> > _forest_unit_bind_costs;
     // Plain snapshot of the above plus the forest-owned counters (unit loads,
     // arena materialize, reader decode) so display code needs no

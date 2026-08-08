@@ -789,6 +789,9 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     builder->set_tu_name(source_name);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
+    // slice D: forest-work clock advance inside this timed window = the
+    // on-demand unit/body loads the build triggers, carved out of the bucket.
+    double _cir_fw0 = prog ? prog->_forest_work_seconds : 0.0;
     try {
 	tree = builder->translate_module(prog);
     } catch (const std::exception &e) {
@@ -802,8 +805,11 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 	return NULL;
     }
     if (prog)
+    {
 	prog->_cir_build_seconds += std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _cir_t0).count();
+	prog->_cir_forest_seconds += prog->_forest_work_seconds - _cir_fw0;
+    }
     if (!tree) {
 	fprintf(stderr, "%s: tree build failed\n", source_name);
 	delete builder;

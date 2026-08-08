@@ -20566,6 +20566,7 @@ static double forest_restore_now(void)
 
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     double _t_restore0 = forest_restore_now();
     // Phase 6 / B3 (v18): LOAD the serialized type graph (do NOT re-derive).
     // materialize_from_arena reconstructs the DataDef objects (forest-owned)

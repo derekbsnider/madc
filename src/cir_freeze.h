@@ -55,6 +55,7 @@
 #ifndef __CIR_FREEZE_H
 #define __CIR_FREEZE_H 1
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -1210,6 +1211,40 @@ struct CirMaterializeFilter
 	std::unordered_map<std::string, bool> declared_bound;
 };
 
+// --show-stats (task #25 slice D): ONE depth-guarded forest-work clock, the
+// InstTimer discipline (parser.cpp). Every forest entry point — probe/open,
+// bind walk, decl restore, unit-segment load, arena materialize, template
+// payload, extern-index build — opens a frame on the owning Program's clock;
+// only the OUTERMOST frame accumulates wall time, so nested entries are never
+// double counted. The stats display samples the clock at the tokenize/parse/
+// cir-build boundaries so those phase buckets report NET compute with the
+// forest share carved into its own lines. Null clock (standalone consumers:
+// unit harness, --run-frozen tools) = every frame no-ops.
+struct ForestWorkFrame
+{
+	double *secs;
+	int *depth;
+	bool outer;
+	std::chrono::steady_clock::time_point t0;
+	ForestWorkFrame(double *s, int *d) : secs(s), depth(d), outer(false)
+	{
+		if (!secs || !depth)
+			return;
+		outer = ((*depth)++ == 0);
+		if (outer)
+			t0 = std::chrono::steady_clock::now();
+	}
+	~ForestWorkFrame()
+	{
+		if (!secs || !depth)
+			return;
+		if (outer)
+			*secs += std::chrono::duration<double>(
+				std::chrono::steady_clock::now() - t0).count();
+		--(*depth);
+	}
+};
+
 class CirFrozenForest
 {
 	friend class CirFrozenSegment;
@@ -1357,6 +1392,12 @@ public:
 	double _stat_unitload_secs = 0.0;	// unit_segment(): node-record decode + validate
 	unsigned long long _stat_unitload_count = 0;
 	double _stat_mat_secs = 0.0;	// materialize_from_arena(): DataDef rebuild
+	// task #25 slice D: the owning Program's depth-guarded forest-work clock
+	// (Program::_forest_work_seconds / _forest_work_depth), installed by
+	// ensure_bind_forest so forest-side entries share ONE clock with the
+	// Program-side ones. Null in standalone consumers — frames no-op.
+	double *_work_secs = 0;
+	int    *_work_depth = 0;
 	unsigned long long stat_zstd_frames() const { return _reader.stat_zstd_frames; }
 	unsigned long long stat_zstd_bytes_out() const { return _reader.stat_zstd_bytes_out; }
 	double             stat_zstd_secs() const { return _reader.stat_zstd_secs; }

@@ -1402,12 +1402,17 @@ int main(int argc, char **argv)
 	    prog->forest_arena_enabled = true; // B3: populate forest_arena during parse — the arena IS the type-graph dump (v18)
 	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time
 	gettimeofday(&_tk0, NULL);
+	// slice D: sample the forest-work clock at the same boundaries so the
+	// lex/parse buckets can report NET compute (the clock's advance inside
+	// each window is the forest share, carved into its own stats lines).
+	double _fw_tk0 = prog->_forest_work_seconds;
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
 	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 1;
 	gettimeofday(&_tk1, NULL);
+	double _fw_tk1 = prog->_forest_work_seconds;
 
 	if ( dump_source )
 	{
@@ -1427,8 +1432,10 @@ int main(int argc, char **argv)
 	// This is the sole backend; the asmjit JIT codegen path was removed.
 	struct timeval _ps0, _ps1;     // --show-stats: parse wall time
 	gettimeofday(&_ps0, NULL);
+	double _fw_ps0 = prog->_forest_work_seconds;
 	bool parse_ok = prog->parse(tp);
 	gettimeofday(&_ps1, NULL);
+	double _fw_ps1 = prog->_forest_work_seconds;
 
 	// --show-stats: report input volume, token-stream traffic, and phase timing
 	// (read / lex / parse / c2mir-compile / execution, with tokens-per-second).
@@ -1445,13 +1452,21 @@ int main(int argc, char **argv)
 	    double bytes      = (double)prog->input_bytes();
 	    double tok_wall   = _secs(_tk0, _tk1);
 	    double read_secs  = prog->_read_seconds;
-	    double lex_secs   = tok_wall - read_secs;
+	    // slice D: the forest-work clock's advance inside each phase window
+	    // — carved OUT of that phase's bucket so lex/parse/cir report NET
+	    // compute (the forest lines below own the carved share).
+	    double fw_lex     = _fw_tk1 - _fw_tk0;
+	    double fw_parse   = _fw_ps1 - _fw_ps0;
+	    double fw_cir     = prog->_cir_forest_seconds;
+	    double lex_secs   = tok_wall - read_secs - fw_lex;
 	    if ( lex_secs < 0 ) lex_secs = 0;
-	    double parse_secs = _secs(_ps0, _ps1);
+	    double parse_secs = _secs(_ps0, _ps1) - fw_parse;
+	    if ( parse_secs < 0 ) parse_secs = 0;
 	    double inst_secs  = prog->_inst_seconds;
 	    double decl_secs  = parse_secs - inst_secs;
 	    if ( decl_secs < 0 ) decl_secs = 0;
-	    double cir_secs   = prog->_cir_build_seconds;
+	    double cir_secs   = prog->_cir_build_seconds - fw_cir;
+	    if ( cir_secs < 0 ) cir_secs = 0;
 	    double c2mir_secs = prog->_c2mir_seconds;
 	    double exec_secs  = prog->_exec_seconds;
 	    // Reconcile to a measured in-process total. The named phases are the
@@ -1464,7 +1479,8 @@ int main(int argc, char **argv)
 	    gettimeofday(&_t_now, NULL);
 	    double total_secs = _secs(_t_main, _t_now);
 	    double accounted  = read_secs + lex_secs + parse_secs + cir_secs
-			      + c2mir_secs + exec_secs;
+			      + c2mir_secs + exec_secs
+			      + fw_lex + fw_parse + fw_cir;
 	    double other_secs = total_secs - accounted;
 	    if ( other_secs < 0 ) other_secs = 0;
 	    fprintf(stderr,
@@ -1615,12 +1631,14 @@ int main(int argc, char **argv)
 			"[stats] forest bind ......... %.3f s  (%llu units bound / %u packed)\n"
 			"[stats] forest restore ...... %.3f s  (decl-index sweep %.3f + materialize %.3f + register %.3f)\n"
 			"[stats] forest unit loads ... %.3f s  (%llu node-record segments)\n"
-			"[stats] forest decode ....... %.3f s  (%llu zstd frames -> %.1f KiB; %llu copies, %.1f KiB)\n",
+			"[stats] forest decode ....... %.3f s  (%llu zstd frames -> %.1f KiB; %llu copies, %.1f KiB)\n"
+			"[stats] forest in phases .... lex %.3f + parse %.3f + cir %.3f s  (carved OUT of those buckets)\n",
 			fs.bind_secs, fs.units_bound, fs.units_total,
 			fs.restore_secs, fs.declidx_secs, fs.mat_secs, reg_secs,
 			fs.unitload_secs, fs.unitload_count,
 			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
-			fs.copy_calls, fs.copy_bytes / 1024.0);
+			fs.copy_calls, fs.copy_bytes / 1024.0,
+			fw_lex, fw_parse, fw_cir);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<std::string, double> > rows =
