@@ -49096,6 +49096,13 @@ static void recapture_free_overload_surfaces(Program &pgm,
 // entries are tiny pointer pairs and the cursor snapshot needs stable indices.
 void Program::ensure_free_overload_surfaces()
 {
+    if ( forest_overload_recaptures_flushed
+		>= forest_pending_overload_recaptures.size() )
+	return;
+    // Frozen-payload decode runs under the forest-work clock (slice D
+    // invariant) — without this frame the recapture deserialize leaks into
+    // whichever phase consults first. KG DupFamily forest_payload_work_frame.
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     while ( forest_overload_recaptures_flushed
 		< forest_pending_overload_recaptures.size() )
     {
