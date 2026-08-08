@@ -1,10 +1,14 @@
 // Dependency-free record-file drivers owned by the madcdis core.
 
 #include "madcdis/driver.h"
+#include "madcdis/flow.h"
 #include "madcdis/query.h"
+#include "madcdis/sink.h"
+#include "madc_datachannel_internal.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -13,6 +17,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 namespace madc {
@@ -676,22 +681,7 @@ public:
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
 	if ( !cursor.get() )
 	    return false;
-
-	value record;
-	for ( ;; )
-	{
-	    CursorStatus status = cursor_next(*cursor, record, err);
-	    if ( status == CursorStatus::end )
-		break;
-	    if ( status == CursorStatus::failure )
-	    {
-		cursor->close();
-		return false;
-	    }
-	    out.push_back(record);
-	}
-	cursor->close();
-	return true;
+	return copy(std::move(cursor), to_container(out), err);
     }
 
     std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const override
@@ -730,20 +720,8 @@ private:
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
 	if ( !cursor.get() )
 	    return false;
-	value record;
-	for ( ;; )
-	{
-	    CursorStatus status = cursor_next(*cursor, record, err);
-	    if ( status == CursorStatus::end )
-		break;
-	    if ( status == CursorStatus::failure )
-	    {
-		cursor->close();
-		return false;
-	    }
-	    rows.push_back(record);
-	}
-	cursor->close();
+	if ( !copy(std::move(cursor), to_container(rows), err) )
+	    return false;
 	_rows.swap(rows);
 	_rows_loaded = true;
 	return true;
@@ -843,11 +821,313 @@ private:
     bool _opened;
 };
 
-class FlrDriver : public DataDriver
+// The one owner of the flr offset formula. S3's header-region metadata
+// (SchemaInfo data_offset) slots in here and nowhere else.
+uint64_t flr_record_offset(const SchemaInfo &schema, uint64_t index)
+{
+    return index * static_cast<uint64_t>(schema.record_size());
+}
+
+bool flr_encode_record(const SchemaInfo &schema, const value &record,
+		       std::vector<char> &out, error *err)
+{
+    out.assign(schema.record_size(), 0);
+    const std::map<std::string, value> &obj = record.as_object();
+
+    for ( std::size_t i = 0; i < schema.fields().size(); ++i )
+    {
+	const SchemaField &field = schema.fields()[i];
+	const value &input = obj.at(field.name);
+
+	if ( field_is_boolean(field) )
+	{
+	    uint8_t b = input.as_boolean() ? 1 : 0;
+	    write_pod_value(out, field.byte_offset, b);
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 8 )
+	{
+	    if ( field.is_signed )
+	    {
+		int64_t v = input.as_integer();
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    else
+	    {
+		uint64_t v = static_cast<uint64_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 4 )
+	{
+	    if ( field.is_signed )
+	    {
+		int32_t v = static_cast<int32_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    else
+	    {
+		uint32_t v = static_cast<uint32_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 2 )
+	{
+	    if ( field.is_signed )
+	    {
+		int16_t v = static_cast<int16_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    else
+	    {
+		uint16_t v = static_cast<uint16_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 1 )
+	{
+	    if ( field.is_signed )
+	    {
+		int8_t v = static_cast<int8_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    else
+	    {
+		uint8_t v = static_cast<uint8_t>(input.as_integer());
+		write_pod_value(out, field.byte_offset, v);
+	    }
+	    continue;
+	}
+	if ( field_is_real(field) && field.byte_size == 4 )
+	{
+	    float v = static_cast<float>(input.as_real());
+	    write_pod_value(out, field.byte_offset, v);
+	    continue;
+	}
+	if ( field_is_real(field) && field.byte_size == 8 )
+	{
+	    double v = input.as_real();
+	    write_pod_value(out, field.byte_offset, v);
+	    continue;
+	}
+	if ( field_is_character(field) )
+	{
+	    const std::string &text = input.as_string();
+	    char ch = text.empty() ? '\0' : text[0];
+	    write_pod_value(out, field.byte_offset, ch);
+	    continue;
+	}
+	if ( field_is_text(field) )
+	{
+	    std::string text = input.as_string();
+	    std::size_t max_bytes = field.byte_size;
+	    if ( max_bytes == 0 )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "flr text field `" + field.name + "` has no fixed size");
+		return false;
+	    }
+	    if ( text.size() >= max_bytes )
+	    {
+		if ( field.text_overflow == SchemaField::overflow_policy::truncate )
+		    text = text.substr(0, max_bytes - 1);
+		else
+		{
+		    if ( err )
+			*err = error(error::severity::error,
+				     error::phase::runtime,
+				     "flr field `" + field.name + "` exceeds fixed size");
+		    return false;
+		}
+	    }
+	    std::memcpy(&out[field.byte_offset], text.data(), text.size());
+	    out[field.byte_offset + text.size()] = '\0';
+	    continue;
+	}
+
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "flr field `" + field.name + "` uses unsupported type `" + field.type_name + "`");
+	return false;
+    }
+
+    return true;
+}
+
+bool flr_decode_record(const SchemaInfo &schema, const std::vector<char> &record,
+		       value &out, error *err)
+{
+    (void)err;
+    out = value::make_object();
+    for ( std::size_t i = 0; i < schema.fields().size(); ++i )
+    {
+	const SchemaField &field = schema.fields()[i];
+	if ( field_is_boolean(field) )
+	{
+	    uint8_t b = read_pod_value<uint8_t>(record, field.byte_offset);
+	    out.object()[field.name] = value(b != 0);
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 8 )
+	{
+	    if ( field.is_signed )
+		out.object()[field.name] = value(read_pod_value<int64_t>(record, field.byte_offset));
+	    else
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint64_t>(record, field.byte_offset)));
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 4 )
+	{
+	    if ( field.is_signed )
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int32_t>(record, field.byte_offset)));
+	    else
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint32_t>(record, field.byte_offset)));
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 2 )
+	{
+	    if ( field.is_signed )
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int16_t>(record, field.byte_offset)));
+	    else
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint16_t>(record, field.byte_offset)));
+	    continue;
+	}
+	if ( field_is_integer(field) && field.byte_size == 1 )
+	{
+	    if ( field.is_signed )
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int8_t>(record, field.byte_offset)));
+	    else
+		out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint8_t>(record, field.byte_offset)));
+	    continue;
+	}
+	if ( field_is_real(field) && field.byte_size == 4 )
+	{
+	    out.object()[field.name] = value(static_cast<double>(read_pod_value<float>(record, field.byte_offset)));
+	    continue;
+	}
+	if ( field_is_real(field) && field.byte_size == 8 )
+	{
+	    out.object()[field.name] = value(read_pod_value<double>(record, field.byte_offset));
+	    continue;
+	}
+	if ( field_is_character(field) )
+	{
+	    char ch = read_pod_value<char>(record, field.byte_offset);
+	    out.object()[field.name] = value(std::string(1, ch));
+	    continue;
+	}
+	if ( field_is_text(field) )
+	{
+	    const char *start = &record[field.byte_offset];
+	    std::size_t len = 0;
+	    while ( len < field.byte_size && start[len] != '\0' )
+		++len;
+	    out.object()[field.name] = value(std::string(start, len));
+	    continue;
+	}
+	return false;
+    }
+    return true;
+}
+
+// One positioned read of one raw record. Shared by the cursor and the
+// driver so "how a record is fetched" has a single owner.
+bool flr_read_record_raw(SeekableDataChannel &io, const SchemaInfo &schema,
+			 uint64_t index, std::vector<char> &out, error *err)
+{
+    out.assign(schema.record_size(), 0);
+    std::size_t got = 0;
+    if ( !io.read_at(flr_record_offset(schema, index), &out[0], out.size(),
+		     got, err) )
+	return false;
+    if ( got != out.size() )
+    {
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "short read while loading flr record");
+	return false;
+    }
+    return true;
+}
+
+// Streaming cursor over an flr byte image: one positioned read per next(),
+// tombstones skipped, constant memory. Owns its channel when the driver is
+// path-backed; borrows the driver's channel when it was opened on an
+// injected channel (positioned reads carry their own offset, so borrowed
+// and owning cursors never fight over a shared position).
+class FlrCursor : public Cursor<value>, public ErrorAwareCursor<value>
+{
+public:
+    FlrCursor(std::unique_ptr<DataChannel> owned,
+	      SeekableDataChannel *io,
+	      const SchemaInfo &schema,
+	      const std::vector<bool> &tombstones,
+	      std::size_t record_count)
+	: _owned(std::move(owned)), _io(io), _schema(schema),
+	  _tombstones(tombstones), _record_count(record_count),
+	  _index(0), _closed(false)
+    {}
+
+    ~FlrCursor() override { close(); }
+
+    bool next(value &out) override
+    {
+	return next_status(out, nullptr) == CursorStatus::item;
+    }
+
+    CursorStatus next_status(value &out, error *err) override
+    {
+	if ( _closed )
+	    return CursorStatus::end;
+	while ( _index < _record_count )
+	{
+	    std::size_t index = _index++;
+	    if ( index < _tombstones.size() && _tombstones[index] )
+		continue;
+	    std::vector<char> record;
+	    if ( !flr_read_record_raw(*_io, _schema, index, record, err) )
+		return CursorStatus::failure;
+	    if ( !flr_decode_record(_schema, record, out, err) )
+		return CursorStatus::failure;
+	    return CursorStatus::item;
+	}
+	return CursorStatus::end;
+    }
+
+    void close() override
+    {
+	if ( _closed )
+	    return;
+	if ( _owned.get() )
+	    _owned->close();
+	_closed = true;
+    }
+
+private:
+    std::unique_ptr<DataChannel> _owned;
+    SeekableDataChannel *_io;
+    SchemaInfo _schema;
+    std::vector<bool> _tombstones;
+    std::size_t _record_count;
+    std::size_t _index;
+    bool _closed;
+};
+
+class FlrDriver : public DataDriver,
+		  public StreamingDataDriver,
+		  public ChannelBackedDataDriver
 {
 public:
     FlrDriver()
-	: _opened(false)
+	: _seekable(nullptr), _channel_writable(false),
+	  _external_channel(false), _record_count(0), _opened(false)
     {}
 
     const char *name() const { return "flr"; }
@@ -860,6 +1140,7 @@ public:
 	caps.write = true;
 	caps.scan = true;
 	caps.point_lookup = true;
+	caps.locator_lookup = true;
 	caps.soft_delete = true;
 	return caps;
     }
@@ -878,6 +1159,9 @@ public:
 	return true;
     }
 
+    // Lazy open: geometry (stat + size-multiple validation) and the small
+    // tombstone bitmap only — zero records are read here. The byte channel
+    // itself attaches lazily in the access mode the first operation needs.
     bool open(const DataSource &source, error *err = nullptr)
     {
 	if ( source.scheme() != "flr" )
@@ -889,78 +1173,63 @@ public:
 	    return false;
 	}
 
+	reset_state();
 	_path = source.path();
-	_rows.clear();
-	_tombstones.clear();
 	_tombstone_path = _schema.tombstone_path();
 	_dead_record_path = _schema.dead_record_path();
 
-	std::ifstream is(_path.c_str(), std::ios::binary);
-	if ( !is.good() )
+	if ( !load_geometry(err) )
 	{
-	    _opened = true;
-	    if ( !_tombstone_path.empty() )
-		return read_packed_bits(_tombstone_path, 0, _tombstones, err, "flr");
-	    return true;
+	    reset_state();
+	    return false;
 	}
+	_opened = true;
+	return true;
+    }
 
-	is.seekg(0, std::ios::end);
-	std::streamoff bytes = is.tellg();
-	is.seekg(0, std::ios::beg);
-	if ( bytes < 0 )
+    // Channel-backed open: serve records straight off any seekable channel
+    // (a memory image, or the capability-truth gate's counting shim).
+    bool open_on_channel(std::unique_ptr<DataChannel> channel,
+			 error *err = nullptr) override
+    {
+	reset_state();
+	if ( !channel.get() )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
 			     error::phase::runtime,
-			     "failed to inspect flr file size");
+			     "flr open_on_channel requires a channel");
 	    return false;
 	}
-	if ( bytes % static_cast<std::streamoff>(_schema.record_size()) != 0 )
+	SeekableDataChannel *seekable = seekable_surface(channel.get());
+	if ( !seekable )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
 			     error::phase::runtime,
-			     "flr file size is not an exact multiple of record size");
+			     "flr requires a seekable channel");
 	    return false;
 	}
 
-	while ( true )
+	_channel = std::move(channel);
+	_seekable = seekable;
+	_channel_writable = _channel->capabilities().write;
+	_external_channel = true;
+	_tombstone_path = _schema.tombstone_path();
+	_dead_record_path = _schema.dead_record_path();
+
+	if ( !load_geometry(err) )
 	{
-	    std::vector<char> record(_schema.record_size(), 0);
-	    is.read(&record[0], static_cast<std::streamsize>(record.size()));
-	    if ( is.gcount() == 0 )
-		break;
-	    if ( is.gcount() != static_cast<std::streamsize>(record.size()) )
-	    {
-		if ( err )
-		    *err = error(error::severity::error,
-				 error::phase::runtime,
-				 "short read while loading flr record");
-		return false;
-	    }
-	    value decoded;
-	    if ( !decode_record(record, decoded, err) )
-		return false;
-	    _rows.push_back(decoded);
-	}
-
-	if ( !_tombstone_path.empty()
-	  && !read_packed_bits(_tombstone_path, _rows.size(), _tombstones, err, "flr") )
+	    reset_state();
 	    return false;
-	if ( _tombstone_path.empty() )
-	    _tombstones.assign(_rows.size(), false);
-
+	}
 	_opened = true;
 	return true;
     }
 
     void close()
     {
-	_rows.clear();
-	_tombstones.clear();
-	_path.clear();
-	_tombstone_path.clear();
-	_dead_record_path.clear();
+	reset_state();
 	_opened = false;
     }
 
@@ -997,18 +1266,20 @@ public:
 
     bool insert_record(const value &record, error *err = nullptr)
     {
-	if ( !ensure_record_shape(record, err) )
+	std::size_t index = 0;
+	return insert_record_appending(record, index, err);
+    }
+
+    bool insert_record_with_locator(const value &record,
+				    RecordLocator &locator,
+				    error *err = nullptr)
+    {
+	locator = RecordLocator::none();
+	std::size_t index = 0;
+	if ( !insert_record_appending(record, index, err) )
 	    return false;
-	value normalized;
-	if ( !normalize_record(record, normalized, err) )
-	    return false;
-	_rows.push_back(normalized);
-	_tombstones.push_back(false);
-	if ( flush(err) )
-	    return true;
-	_rows.pop_back();
-	_tombstones.pop_back();
-	return false;
+	locator = RecordLocator::at_record_index(index);
+	return true;
     }
 
     bool update_record(const std::string &key_field,
@@ -1018,7 +1289,9 @@ public:
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
-	int idx = find_row_index(key_field, key);
+	long idx = 0;
+	if ( !find_record_index(key_field, key, false, idx, nullptr, err) )
+	    return false;
 	if ( idx < 0 )
 	{
 	    if ( err )
@@ -1027,22 +1300,30 @@ public:
 			     "flr update failed: key not found");
 	    return false;
 	}
-	value normalized;
-	if ( !normalize_record(record, normalized, err) )
+	return write_normalized_record_at(static_cast<std::size_t>(idx),
+					  record, err);
+    }
+
+    bool update_record_by_locator(const RecordLocator &locator,
+				  const value &record,
+				  error *err = nullptr)
+    {
+	if ( !ensure_record_shape(record, err) )
 	    return false;
-	value previous = _rows[static_cast<std::size_t>(idx)];
-	_rows[static_cast<std::size_t>(idx)] = normalized;
-	if ( flush(err) )
-	    return true;
-	_rows[static_cast<std::size_t>(idx)] = previous;
-	return false;
+	std::size_t index = 0;
+	if ( !resolve_locator_index(locator, "flr update_record_by_locator failed",
+				    index, err) )
+	    return false;
+	return write_normalized_record_at(index, record, err);
     }
 
     bool erase_record(const std::string &key_field,
 		      const value &key,
 		      error *err = nullptr)
     {
-	int idx = find_row_index(key_field, key);
+	long idx = 0;
+	if ( !find_record_index(key_field, key, false, idx, nullptr, err) )
+	    return false;
 	if ( idx < 0 )
 	{
 	    if ( err )
@@ -1062,18 +1343,17 @@ public:
 				 "flr erase failed: record is already tombstoned");
 		return false;
 	    }
+	    // Soft delete is bitmap-only: flip one bit, rewrite the small
+	    // sidecar. The record file is not touched.
 	    _tombstones[pos] = true;
-	    if ( flush(err) )
+	    if ( write_packed_bits(_tombstone_path, _tombstones, err, "flr") )
 		return true;
 	    _tombstones[pos] = false;
 	    return false;
 	}
-	value removed = _rows[static_cast<std::size_t>(idx)];
-	_rows.erase(_rows.begin() + idx);
-	if ( flush(err) )
-	    return true;
-	_rows.insert(_rows.begin() + idx, removed);
-	return false;
+	// Hard erase shifts positions, so it is the rewrite case: stream to
+	// a temp file and rename (positions are not stable across it).
+	return rewrite_excluding(static_cast<std::size_t>(idx), err);
     }
 
     bool restore_record(const std::string &key_field,
@@ -1088,7 +1368,9 @@ public:
 			     "flr restore requires a tombstone sidecar");
 	    return false;
 	}
-	int idx = find_row_index(key_field, key, true);
+	long idx = 0;
+	if ( !find_record_index(key_field, key, true, idx, nullptr, err) )
+	    return false;
 	if ( idx >= 0 )
 	{
 	    std::size_t pos = static_cast<std::size_t>(idx);
@@ -1101,7 +1383,7 @@ public:
 		return false;
 	    }
 	    _tombstones[pos] = false;
-	    if ( flush(err) )
+	    if ( write_packed_bits(_tombstone_path, _tombstones, err, "flr") )
 		return true;
 	    _tombstones[pos] = true;
 	    return false;
@@ -1115,9 +1397,17 @@ public:
 			     "flr restore failed: key not found");
 	    return false;
 	}
+	if ( _external_channel )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr restore from archive is unsupported on a channel-backed open");
+	    return false;
+	}
 
 	std::vector<value> archive_rows;
-	if ( !read_rows_from_file(_dead_record_path, archive_rows, err, false) )
+	if ( !read_rows_from_file(_dead_record_path, archive_rows, err) )
 	    return false;
 
 	int archive_idx = find_row_index_in_rows(archive_rows, key_field, key);
@@ -1131,26 +1421,28 @@ public:
 	}
 
 	value restored = archive_rows[static_cast<std::size_t>(archive_idx)];
-	std::vector<value> previous_rows = _rows;
-	std::vector<bool> previous_tombstones = _tombstones;
-	std::size_t insert_pos = insertion_index_for_record(restored);
-	_rows.insert(_rows.begin() + static_cast<std::ptrdiff_t>(insert_pos), restored);
-	_tombstones.insert(_tombstones.begin() + static_cast<std::ptrdiff_t>(insert_pos), false);
-
-	if ( !flush(err) )
-	{
-	    _rows = previous_rows;
-	    _tombstones = previous_tombstones;
+	std::size_t insert_pos = 0;
+	if ( !insertion_index_for_record(restored, insert_pos, err) )
 	    return false;
+
+	if ( insert_pos == _record_count )
+	{
+	    std::size_t appended = 0;
+	    if ( !insert_record_appending(restored, appended, err) )
+		return false;
+	    insert_pos = appended;
 	}
+	else if ( !rewrite_inserting(insert_pos, restored, err) )
+	    return false;
 
 	archive_rows.erase(archive_rows.begin() + archive_idx);
 	if ( write_rows_to_file(_dead_record_path, archive_rows, err) )
 	    return true;
 
-	_rows = previous_rows;
-	_tombstones = previous_tombstones;
-	flush(nullptr);
+	// Archive rewrite failed after the live insert: undo the live side
+	// (best effort, matching the old rollback-and-reflush behavior) so a
+	// reported failure does not leave the record restored.
+	rewrite_excluding(insert_pos, nullptr);
 	return false;
     }
 
@@ -1173,42 +1465,100 @@ public:
 	    return false;
 	}
 
-	std::vector<value> live_rows;
-	std::vector<value> dead_rows;
-	live_rows.reserve(_rows.size());
-	dead_rows.reserve(_rows.size());
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	if ( _external_channel )
 	{
-	    if ( is_tombstoned(i) )
-		dead_rows.push_back(_rows[i]);
-	    else
-		live_rows.push_back(_rows[i]);
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact is unsupported on a channel-backed open");
+	    return false;
 	}
 
-	if ( dead_rows.empty() )
+	std::size_t dead_count = 0;
+	for ( std::size_t i = 0; i < _record_count; ++i )
+	{
+	    if ( is_tombstoned(i) )
+		++dead_count;
+	}
+	if ( dead_count == 0 )
 	    return true;
 
 	std::string live_tmp = _path + ".compact.tmp";
 	std::string dead_tmp = _dead_record_path + ".compact.tmp";
 	std::string tomb_tmp = _tombstone_path + ".compact.tmp";
 
-	if ( !write_rows_to_file(live_tmp, live_rows, err) )
+	if ( !ensure_channel(false, err) )
 	    return false;
 
-	std::vector<value> archive_rows;
-	if ( !read_rows_from_file(_dead_record_path, archive_rows, err, false) )
+	// Stream live records into the temp live file and dead records onto
+	// a byte copy of the archive — raw record moves, constant memory.
+	std::size_t live_count = 0;
 	{
-	    std::remove(live_tmp.c_str());
-	    return false;
-	}
-	archive_rows.insert(archive_rows.end(), dead_rows.begin(), dead_rows.end());
-	if ( !write_rows_to_file(dead_tmp, archive_rows, err) )
-	{
-	    std::remove(live_tmp.c_str());
-	    return false;
+	    std::unique_ptr<DataChannel> live_out =
+		detail::open_file_channel(live_tmp, ChannelOpenMode::write, err);
+	    if ( !live_out.get() )
+		return false;
+	    for ( std::size_t i = 0; i < _record_count; ++i )
+	    {
+		if ( is_tombstoned(i) )
+		    continue;
+		std::vector<char> raw;
+		if ( !flr_read_record_raw(*_seekable, _schema, i, raw, err)
+		  || !write_all(*live_out, &raw[0], raw.size(), err) )
+		{
+		    live_out->close();
+		    std::remove(live_tmp.c_str());
+		    return false;
+		}
+		++live_count;
+	    }
+	    live_out->close();
 	}
 
-	std::vector<bool> live_tombstones(live_rows.size(), false);
+	{
+	    std::unique_ptr<DataChannel> dead_out =
+		detail::open_file_channel(dead_tmp, ChannelOpenMode::write, err);
+	    if ( !dead_out.get() )
+	    {
+		std::remove(live_tmp.c_str());
+		return false;
+	    }
+	    // An absent (or unreadable) archive contributes nothing, exactly
+	    // as the old row-based reader treated it.
+	    error open_err;
+	    std::unique_ptr<DataChannel> archive_in =
+		detail::open_file_channel(_dead_record_path,
+					  ChannelOpenMode::read, &open_err);
+	    if ( archive_in.get() )
+	    {
+		if ( !copy_channel(*archive_in, *dead_out, err) )
+		{
+		    archive_in->close();
+		    dead_out->close();
+		    std::remove(live_tmp.c_str());
+		    std::remove(dead_tmp.c_str());
+		    return false;
+		}
+		archive_in->close();
+	    }
+	    for ( std::size_t i = 0; i < _record_count; ++i )
+	    {
+		if ( !is_tombstoned(i) )
+		    continue;
+		std::vector<char> raw;
+		if ( !flr_read_record_raw(*_seekable, _schema, i, raw, err)
+		  || !write_all(*dead_out, &raw[0], raw.size(), err) )
+		{
+		    dead_out->close();
+		    std::remove(live_tmp.c_str());
+		    std::remove(dead_tmp.c_str());
+		    return false;
+		}
+	    }
+	    dead_out->close();
+	}
+
+	std::vector<bool> live_tombstones(live_count, false);
 	if ( !write_packed_bits(tomb_tmp, live_tombstones, err, "flr") )
 	{
 	    std::remove(live_tmp.c_str());
@@ -1252,7 +1602,8 @@ public:
 	    return false;
 	}
 
-	_rows = live_rows;
+	release_channel();
+	_record_count = live_count;
 	_tombstones = live_tombstones;
 	return true;
     }
@@ -1262,28 +1613,71 @@ public:
 		    value &out,
 		    error *err = nullptr) const
     {
-	int idx = find_row_index(key_field, key);
-	if ( idx < 0 )
-	{
-	    (void)err;
+	long idx = 0;
+	if ( !find_record_index(key_field, key, false, idx, &out, err) )
 	    return false;
-	}
-	out = _rows[static_cast<std::size_t>(idx)];
-	return true;
+	return idx >= 0;
     }
 
+    bool get_record_by_locator(const RecordLocator &locator,
+			       value &out,
+			       error *err = nullptr) const
+    {
+	std::size_t index = 0;
+	if ( !resolve_locator_index(locator, "flr get_record_by_locator failed",
+				    index, err) )
+	    return false;
+	return read_record_at(index, out, err);
+    }
+
+    // Legacy vector API: delegates to the streaming cursor.
     bool scan_records(std::vector<value> &out,
 		      error *err = nullptr) const
     {
-	(void)err;
 	out.clear();
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
+	if ( !cursor.get() )
+	    return false;
+	return copy(std::move(cursor), to_container(out), err);
+    }
+
+    std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const override
+    {
+	if ( !_opened )
 	{
-	    if ( is_tombstoned(i) )
-		continue;
-	    out.push_back(_rows[i]);
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr scan requires an open driver");
+	    return std::unique_ptr<Cursor<value> >();
 	}
-	return true;
+	if ( _record_count == 0 )
+	    return std::unique_ptr<Cursor<value> >(
+		new detail::VectorCursor<value>(std::vector<value>()));
+
+	if ( _external_channel )
+	    return std::unique_ptr<Cursor<value> >(
+		new FlrCursor(std::unique_ptr<DataChannel>(), _seekable,
+			      _schema, _tombstones, _record_count));
+
+	// Path-backed: every cursor owns its own channel, so concurrent
+	// cursors and later driver rewrites never share an fd.
+	std::unique_ptr<DataChannel> channel =
+	    detail::open_file_channel(_path, ChannelOpenMode::read, err);
+	if ( !channel.get() )
+	    return std::unique_ptr<Cursor<value> >();
+	SeekableDataChannel *io = seekable_surface(channel.get());
+	if ( !io )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr requires a seekable file: " + _path);
+	    return std::unique_ptr<Cursor<value> >();
+	}
+	return std::unique_ptr<Cursor<value> >(
+	    new FlrCursor(std::move(channel), io, _schema, _tombstones,
+			  _record_count));
     }
 
 private:
@@ -1377,263 +1771,431 @@ private:
 	return -1;
     }
 
-    std::size_t insertion_index_for_record(const value &record) const
+    // Streaming ordered-insert position: one positioned read per record,
+    // consulting every record (tombstoned included) like the row-based
+    // predecessor did. Returns false only on an IO/decode failure.
+    bool insertion_index_for_record(const value &record, std::size_t &out,
+				    error *err) const
     {
+	out = _record_count;
 	if ( _schema.record_ordering() != SchemaInfo::ordering_mode::ordered_by_key )
-	    return _rows.size();
+	    return true;
 
 	const std::string &key_field = _schema.ordered_key_field();
 	if ( key_field.empty() )
-	    return _rows.size();
+	    return true;
 
 	const std::map<std::string, value> &incoming = record.as_object();
 	std::map<std::string, value>::const_iterator incoming_it = incoming.find(key_field);
 	if ( incoming_it == incoming.end() )
-	    return _rows.size();
+	    return true;
 
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	for ( std::size_t i = 0; i < _record_count; ++i )
 	{
-	    const std::map<std::string, value> &existing = _rows[i].as_object();
-	    std::map<std::string, value>::const_iterator existing_it = existing.find(key_field);
-	    if ( existing_it == existing.end() )
+	    value existing;
+	    if ( !read_record_at(i, existing, err) )
+		return false;
+	    const std::map<std::string, value> &fields = existing.as_object();
+	    std::map<std::string, value>::const_iterator existing_it = fields.find(key_field);
+	    if ( existing_it == fields.end() )
 		continue;
 	    if ( compare_key_values(incoming_it->second, existing_it->second) < 0 )
-		return i;
+	    {
+		out = i;
+		return true;
+	    }
 	}
-
-	return _rows.size();
+	return true;
     }
 
-    int find_row_index(const std::string &key_field,
-		       const value &key,
-		       bool include_tombstoned = false) const
+    // Streaming key search: one positioned read per record, early exit on
+    // match, constant memory. index_out = -1 when the key is absent; the
+    // return value is false only on an IO/decode failure. `found`
+    // (optional) receives the matched record so callers avoid a re-read.
+    bool find_record_index(const std::string &key_field,
+			   const value &key,
+			   bool include_tombstoned,
+			   long &index_out,
+			   value *found,
+			   error *err) const
     {
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	index_out = -1;
+	for ( std::size_t i = 0; i < _record_count; ++i )
 	{
 	    if ( !include_tombstoned && is_tombstoned(i) )
 		continue;
-	    const std::map<std::string, value> &record = _rows[i].as_object();
+	    value decoded;
+	    if ( !read_record_at(i, decoded, err) )
+		return false;
+	    const std::map<std::string, value> &record = decoded.as_object();
 	    std::map<std::string, value>::const_iterator it = record.find(key_field);
 	    if ( it != record.end() && it->second == key )
-		return static_cast<int>(i);
+	    {
+		index_out = static_cast<long>(i);
+		if ( found )
+		    *found = decoded;
+		return true;
+	    }
 	}
-	return -1;
+	return true;
     }
 
-    bool encode_record(const value &record, std::vector<char> &out, error *err) const
+    bool resolve_locator_index(const RecordLocator &locator,
+			       const std::string &operation,
+			       std::size_t &index,
+			       error *err) const
     {
-	out.assign(_schema.record_size(), 0);
-	const std::map<std::string, value> &obj = record.as_object();
-
-	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	index = 0;
+	if ( locator.locator_kind == RecordLocator::kind::record_index )
+	    index = static_cast<std::size_t>(locator.record_index);
+	else if ( locator.locator_kind == RecordLocator::kind::byte_offset )
 	{
-	    const SchemaField &field = _schema.fields()[i];
-	    const value &input = obj.at(field.name);
+	    // A byte-offset locator is honored when it is record-aligned.
+	    if ( locator.byte_offset % _schema.record_size() != 0 )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 operation + ": locator byte offset is not record-aligned");
+		return false;
+	    }
+	    index = static_cast<std::size_t>(
+		locator.byte_offset / _schema.record_size());
+	}
+	else
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     operation + ": locator is invalid");
+	    return false;
+	}
+	if ( index >= _record_count )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     operation + ": locator is out of range");
+	    return false;
+	}
+	if ( is_tombstoned(index) )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     operation + ": locator points to a tombstoned record");
+	    return false;
+	}
+	return true;
+    }
 
-	    if ( field_is_boolean(field) )
+    void release_channel() const
+    {
+	_channel.reset();
+	_seekable = nullptr;
+	_channel_writable = false;
+    }
+
+    void reset_state()
+    {
+	release_channel();
+	_external_channel = false;
+	_record_count = 0;
+	_tombstones.clear();
+	_path.clear();
+	_tombstone_path.clear();
+	_dead_record_path.clear();
+    }
+
+    // Geometry only: byte size (stat, or the injected channel's own size),
+    // the size-multiple validation, and the small tombstone bitmap. No
+    // record bytes move here — that is what makes open() lazy.
+    bool load_geometry(error *err)
+    {
+	if ( _schema.record_size() == 0 )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr open requires a bound fixed-record schema");
+	    return false;
+	}
+
+	uint64_t bytes = 0;
+	bool have_bytes = false;
+	if ( _external_channel )
+	{
+	    if ( !_seekable->size(bytes, err) )
+		return false;
+	    have_bytes = true;
+	}
+	else
+	{
+	    struct stat st;
+	    if ( ::stat(_path.c_str(), &st) == 0 )
 	    {
-		uint8_t b = input.as_boolean() ? 1 : 0;
-		write_pod_value(out, field.byte_offset, b);
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 8 )
-	    {
-		if ( field.is_signed )
-		{
-		    int64_t v = input.as_integer();
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		else
-		{
-		    uint64_t v = static_cast<uint64_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 4 )
-	    {
-		if ( field.is_signed )
-		{
-		    int32_t v = static_cast<int32_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		else
-		{
-		    uint32_t v = static_cast<uint32_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 2 )
-	    {
-		if ( field.is_signed )
-		{
-		    int16_t v = static_cast<int16_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		else
-		{
-		    uint16_t v = static_cast<uint16_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 1 )
-	    {
-		if ( field.is_signed )
-		{
-		    int8_t v = static_cast<int8_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		else
-		{
-		    uint8_t v = static_cast<uint8_t>(input.as_integer());
-		    write_pod_value(out, field.byte_offset, v);
-		}
-		continue;
-	    }
-	    if ( field_is_real(field) && field.byte_size == 4 )
-	    {
-		float v = static_cast<float>(input.as_real());
-		write_pod_value(out, field.byte_offset, v);
-		continue;
-	    }
-	    if ( field_is_real(field) && field.byte_size == 8 )
-	    {
-		double v = input.as_real();
-		write_pod_value(out, field.byte_offset, v);
-		continue;
-	    }
-	    if ( field_is_character(field) )
-	    {
-		const std::string &text = input.as_string();
-		char ch = text.empty() ? '\0' : text[0];
-		write_pod_value(out, field.byte_offset, ch);
-		continue;
-	    }
-	    if ( field_is_text(field) )
-	    {
-		std::string text = input.as_string();
-		std::size_t max_bytes = field.byte_size;
-		if ( max_bytes == 0 )
+		if ( !S_ISREG(st.st_mode) )
 		{
 		    if ( err )
 			*err = error(error::severity::error,
 				     error::phase::runtime,
-				     "flr text field `" + field.name + "` has no fixed size");
+				     "flr requires a regular file: " + _path);
 		    return false;
 		}
-		if ( text.size() >= max_bytes )
-		{
-		    if ( field.text_overflow == SchemaField::overflow_policy::truncate )
-			text = text.substr(0, max_bytes - 1);
-		    else
-		    {
-			if ( err )
-			    *err = error(error::severity::error,
-					 error::phase::runtime,
-					 "flr field `" + field.name + "` exceeds fixed size");
-			return false;
-		    }
-		}
-		std::memcpy(&out[field.byte_offset], text.data(), text.size());
-		out[field.byte_offset + text.size()] = '\0';
-		continue;
+		bytes = static_cast<uint64_t>(st.st_size);
+		have_bytes = true;
 	    }
+	    // A missing file is a valid empty dataset (created by the first
+	    // insert), exactly as before.
+	}
 
+	if ( have_bytes
+	  && bytes % static_cast<uint64_t>(_schema.record_size()) != 0 )
+	{
 	    if ( err )
 		*err = error(error::severity::error,
 			     error::phase::runtime,
-			     "flr field `" + field.name + "` uses unsupported type `" + field.type_name + "`");
+			     "flr file size is not an exact multiple of record size");
 	    return false;
 	}
+	_record_count = have_bytes
+	    ? static_cast<std::size_t>(bytes / _schema.record_size())
+	    : 0;
 
+	if ( !_tombstone_path.empty() )
+	    return read_packed_bits(_tombstone_path, _record_count,
+				    _tombstones, err, "flr");
+	_tombstones.assign(_record_count, false);
 	return true;
     }
 
-    bool decode_record(const std::vector<char> &record, value &out, error *err) const
+    // Attach the byte channel lazily in the access mode the operation
+    // needs. O_RDWR|O_CREAT does not truncate, so a write attach preserves
+    // an existing file (and creates a missing one, as inserts always did).
+    bool ensure_channel(bool for_write, error *err) const
     {
-	(void)err;
-	out = value::make_object();
-	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	if ( _external_channel )
 	{
-	    const SchemaField &field = _schema.fields()[i];
-	    if ( field_is_boolean(field) )
+	    if ( for_write && !_channel_writable )
 	    {
-		uint8_t b = read_pod_value<uint8_t>(record, field.byte_offset);
-		out.object()[field.name] = value(b != 0);
-		continue;
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "flr channel is not writable");
+		return false;
 	    }
-	    if ( field_is_integer(field) && field.byte_size == 8 )
-	    {
-		if ( field.is_signed )
-		    out.object()[field.name] = value(read_pod_value<int64_t>(record, field.byte_offset));
-		else
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint64_t>(record, field.byte_offset)));
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 4 )
-	    {
-		if ( field.is_signed )
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int32_t>(record, field.byte_offset)));
-		else
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint32_t>(record, field.byte_offset)));
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 2 )
-	    {
-		if ( field.is_signed )
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int16_t>(record, field.byte_offset)));
-		else
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint16_t>(record, field.byte_offset)));
-		continue;
-	    }
-	    if ( field_is_integer(field) && field.byte_size == 1 )
-	    {
-		if ( field.is_signed )
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<int8_t>(record, field.byte_offset)));
-		else
-		    out.object()[field.name] = value(static_cast<int64_t>(read_pod_value<uint8_t>(record, field.byte_offset)));
-		continue;
-	    }
-	    if ( field_is_real(field) && field.byte_size == 4 )
-	    {
-		out.object()[field.name] = value(static_cast<double>(read_pod_value<float>(record, field.byte_offset)));
-		continue;
-	    }
-	    if ( field_is_real(field) && field.byte_size == 8 )
-	    {
-		out.object()[field.name] = value(read_pod_value<double>(record, field.byte_offset));
-		continue;
-	    }
-	    if ( field_is_character(field) )
-	    {
-		char ch = read_pod_value<char>(record, field.byte_offset);
-		out.object()[field.name] = value(std::string(1, ch));
-		continue;
-	    }
-	    if ( field_is_text(field) )
-	    {
-		const char *start = &record[field.byte_offset];
-		std::size_t len = 0;
-		while ( len < field.byte_size && start[len] != '\0' )
-		    ++len;
-		out.object()[field.name] = value(std::string(start, len));
-		continue;
-	    }
+	    return _channel.get() != nullptr;
+	}
+	if ( _channel.get() && (!for_write || _channel_writable) )
+	    return true;
+
+	std::unique_ptr<DataChannel> channel = detail::open_file_channel(
+	    _path,
+	    for_write ? ChannelOpenMode::read_write : ChannelOpenMode::read,
+	    err);
+	if ( !channel.get() )
+	    return false;
+	SeekableDataChannel *seekable = seekable_surface(channel.get());
+	if ( !seekable )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr requires a seekable file: " + _path);
+	    return false;
+	}
+	_channel = std::move(channel);
+	_seekable = seekable;
+	_channel_writable = for_write;
+	return true;
+    }
+
+    bool read_record_at(std::size_t index, value &out, error *err) const
+    {
+	if ( !ensure_channel(false, err) )
+	    return false;
+	std::vector<char> raw;
+	if ( !flr_read_record_raw(*_seekable, _schema, index, raw, err) )
+	    return false;
+	return flr_decode_record(_schema, raw, out, err);
+    }
+
+    bool write_record_raw_at(std::size_t index,
+			     const std::vector<char> &encoded,
+			     error *err)
+    {
+	if ( !ensure_channel(true, err) )
+	    return false;
+	std::size_t written = 0;
+	if ( !_seekable->write_at(flr_record_offset(_schema, index),
+				  &encoded[0], encoded.size(), written, err) )
+	    return false;
+	if ( written != encoded.size() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "short write while storing flr record");
 	    return false;
 	}
 	return true;
     }
 
-    bool normalize_record(const value &record, value &out, error *err) const
+    // Positional single-record update: encode, one positioned write.
+    bool write_normalized_record_at(std::size_t index, const value &record,
+				    error *err)
     {
 	std::vector<char> encoded;
-	if ( !encode_record(record, encoded, err) )
+	if ( !flr_encode_record(_schema, record, encoded, err) )
 	    return false;
-	return decode_record(encoded, out, err);
+	return write_record_raw_at(index, encoded, err);
     }
 
+    // Append = one positioned write at the end plus a bitmap grow. The
+    // whole-file flush is gone.
+    bool insert_record_appending(const value &record, std::size_t &index,
+				 error *err)
+    {
+	if ( !ensure_record_shape(record, err) )
+	    return false;
+	std::vector<char> encoded;
+	if ( !flr_encode_record(_schema, record, encoded, err) )
+	    return false;
+	index = _record_count;
+	if ( !write_record_raw_at(index, encoded, err) )
+	    return false;
+	_tombstones.push_back(false);
+	if ( uses_tombstones()
+	  && !write_packed_bits(_tombstone_path, _tombstones, err, "flr") )
+	{
+	    _tombstones.pop_back();
+	    return false;
+	}
+	++_record_count;
+	return true;
+    }
+
+    // The rewrite cases — hard erase and ordered restore — shift record
+    // positions, so they stream raw records to a temp file and rename it
+    // into place (the atomic-replacement contract for unstable positions).
+    bool rewrite_records(std::size_t position, bool exclude,
+			 const std::vector<char> *inserted, error *err)
+    {
+	if ( _external_channel )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr rewrite is unsupported on a channel-backed open");
+	    return false;
+	}
+	if ( !ensure_channel(false, err) )
+	    return false;
+
+	std::string live_tmp = _path + ".rewrite.tmp";
+	{
+	    std::unique_ptr<DataChannel> out =
+		detail::open_file_channel(live_tmp, ChannelOpenMode::write, err);
+	    if ( !out.get() )
+		return false;
+	    for ( std::size_t i = 0; i <= _record_count; ++i )
+	    {
+		if ( inserted && i == position
+		  && !write_all(*out, &(*inserted)[0], inserted->size(), err) )
+		{
+		    out->close();
+		    std::remove(live_tmp.c_str());
+		    return false;
+		}
+		if ( i == _record_count )
+		    break;
+		if ( exclude && i == position )
+		    continue;
+		std::vector<char> raw;
+		if ( !flr_read_record_raw(*_seekable, _schema, i, raw, err)
+		  || !write_all(*out, &raw[0], raw.size(), err) )
+		{
+		    out->close();
+		    std::remove(live_tmp.c_str());
+		    return false;
+		}
+	    }
+	    out->close();
+	}
+
+	std::vector<bool> tombstones = _tombstones;
+	if ( exclude )
+	{
+	    if ( position < tombstones.size() )
+		tombstones.erase(tombstones.begin()
+				 + static_cast<std::ptrdiff_t>(position));
+	}
+	else if ( inserted )
+	    tombstones.insert(tombstones.begin()
+			      + static_cast<std::ptrdiff_t>(position), false);
+
+	std::string tomb_tmp;
+	if ( uses_tombstones() )
+	{
+	    tomb_tmp = _tombstone_path + ".rewrite.tmp";
+	    if ( !write_packed_bits(tomb_tmp, tombstones, err, "flr") )
+	    {
+		std::remove(live_tmp.c_str());
+		return false;
+	    }
+	}
+
+	std::remove(_path.c_str());
+	if ( std::rename(live_tmp.c_str(), _path.c_str()) != 0 )
+	{
+	    std::remove(live_tmp.c_str());
+	    if ( !tomb_tmp.empty() )
+		std::remove(tomb_tmp.c_str());
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr rewrite failed: could not replace live file");
+	    return false;
+	}
+	if ( !tomb_tmp.empty() )
+	{
+	    std::remove(_tombstone_path.c_str());
+	    if ( std::rename(tomb_tmp.c_str(), _tombstone_path.c_str()) != 0 )
+	    {
+		std::remove(tomb_tmp.c_str());
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "flr rewrite failed: could not replace tombstone sidecar");
+		return false;
+	    }
+	}
+
+	release_channel();
+	_tombstones.swap(tombstones);
+	if ( exclude )
+	    --_record_count;
+	else if ( inserted )
+	    ++_record_count;
+	return true;
+    }
+
+    bool rewrite_excluding(std::size_t index, error *err)
+    {
+	return rewrite_records(index, true, nullptr, err);
+    }
+
+    bool rewrite_inserting(std::size_t position, const value &record,
+			   error *err)
+    {
+	std::vector<char> encoded;
+	if ( !flr_encode_record(_schema, record, encoded, err) )
+	    return false;
+	return rewrite_records(position, false, &encoded, err);
+    }
+
+    // Archive-file helpers: the dead-record archive is read and rewritten
+    // as whole row sets (it is bounded by reaped rows, not the live file).
     bool write_rows_to_file(const std::string &path,
 			   const std::vector<value> &rows,
 			   error *err) const
@@ -1651,7 +2213,7 @@ private:
 	for ( std::size_t i = 0; i < rows.size(); ++i )
 	{
 	    std::vector<char> encoded;
-	    if ( !encode_record(rows[i], encoded, err) )
+	    if ( !flr_encode_record(_schema, rows[i], encoded, err) )
 		return false;
 	    os.write(&encoded[0], static_cast<std::streamsize>(encoded.size()));
 	}
@@ -1660,34 +2222,12 @@ private:
 
     bool read_rows_from_file(const std::string &path,
 			     std::vector<value> &rows,
-			     error *err,
-			     bool require_multiple_of_record_size) const
+			     error *err) const
     {
 	rows.clear();
 	std::ifstream is(path.c_str(), std::ios::binary);
 	if ( !is.good() )
 	    return true;
-
-	is.seekg(0, std::ios::end);
-	std::streamoff bytes = is.tellg();
-	is.seekg(0, std::ios::beg);
-	if ( bytes < 0 )
-	{
-	    if ( err )
-		*err = error(error::severity::error,
-			     error::phase::runtime,
-			     "failed to inspect flr file size");
-	    return false;
-	}
-	if ( require_multiple_of_record_size
-	  && bytes % static_cast<std::streamoff>(_schema.record_size()) != 0 )
-	{
-	    if ( err )
-		*err = error(error::severity::error,
-			     error::phase::runtime,
-			     "flr file size is not an exact multiple of record size");
-	    return false;
-	}
 
 	while ( true )
 	{
@@ -1704,20 +2244,10 @@ private:
 		return false;
 	    }
 	    value decoded;
-	    if ( !decode_record(record, decoded, err) )
+	    if ( !flr_decode_record(_schema, record, decoded, err) )
 		return false;
 	    rows.push_back(decoded);
 	}
-	return true;
-    }
-
-    bool flush(error *err)
-    {
-	if ( !write_rows_to_file(_path, _rows, err) )
-	    return false;
-	if ( uses_tombstones()
-	  && !write_packed_bits(_tombstone_path, _tombstones, err, "flr") )
-	    return false;
 	return true;
     }
 
@@ -1725,7 +2255,14 @@ private:
     std::string _path;
     std::string _tombstone_path;
     std::string _dead_record_path;
-    std::vector<value> _rows;
+    // The byte surface attaches lazily in the access mode an operation
+    // needs; mutable because const read paths may trigger the attach (the
+    // dsv driver's mutable row cache is the precedent).
+    mutable std::unique_ptr<DataChannel> _channel;
+    mutable SeekableDataChannel *_seekable;
+    mutable bool _channel_writable;
+    bool _external_channel;
+    std::size_t _record_count;
     std::vector<bool> _tombstones;
     bool _opened;
 };

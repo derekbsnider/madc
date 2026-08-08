@@ -5,6 +5,7 @@
 #include "libmadc/error.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -67,6 +68,32 @@ public:
 		error *err = nullptr) = 0;
 };
 
+// Optional extension for random-access channels. Positioned transfers
+// (read_at/write_at) carry their own offset and never disturb the sequential
+// position used by read()/write(); seek() repositions that sequential stream.
+// Implementing this interface only says the channel CAN support random
+// access — capabilities().seek is the per-instance truth (a file channel on
+// a FIFO path implements the interface but reports seek=false). Probe BOTH
+// before relying on it.
+class SeekableDataChannel
+{
+public:
+	virtual ~SeekableDataChannel() {}
+
+	virtual bool size(uint64_t &out, error *err = nullptr) = 0;
+	virtual bool seek(uint64_t offset, error *err = nullptr) = 0;
+	virtual bool read_at(uint64_t offset, void *buffer, std::size_t capacity,
+			     std::size_t &bytes_read, error *err = nullptr) = 0;
+	virtual bool write_at(uint64_t offset, const void *buffer,
+			      std::size_t size, std::size_t &bytes_written,
+			      error *err = nullptr) = 0;
+};
+
+// The one truthful-seekability probe: interface present AND the instance
+// claims it. Returns nullptr otherwise — consumers never dynamic_cast the
+// mixin themselves.
+SeekableDataChannel *seekable_surface(DataChannel *channel);
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
 // Pump source to destination until EOF, flushing at the end. The counted
@@ -77,7 +104,11 @@ bool copy_channel(DataChannel &source, DataChannel *destination,
 bool copy_channel(DataChannel &source, DataChannel &destination,
 		  error *err = nullptr);
 
-class MemoryDataChannel : public DataChannel
+// In-memory byte channel. Sequential read() consumes from the read position;
+// sequential write() always appends. The seekable surface addresses the whole
+// byte image: seek() moves the read position, read_at()/write_at() are
+// position-independent (write_at extends and zero-fills past the end).
+class MemoryDataChannel : public DataChannel, public SeekableDataChannel
 {
 public:
 	MemoryDataChannel();
@@ -90,6 +121,12 @@ public:
 		  std::size_t &bytes_read, error *err = nullptr) override;
 	bool write(const void *buffer, std::size_t size,
 		   std::size_t &bytes_written, error *err = nullptr) override;
+	bool size(uint64_t &out, error *err = nullptr) override;
+	bool seek(uint64_t offset, error *err = nullptr) override;
+	bool read_at(uint64_t offset, void *buffer, std::size_t capacity,
+		     std::size_t &bytes_read, error *err = nullptr) override;
+	bool write_at(uint64_t offset, const void *buffer, std::size_t size,
+		      std::size_t &bytes_written, error *err = nullptr) override;
 	void close_read() override;
 	void close_write() override;
 	void close() override;

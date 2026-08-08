@@ -396,4 +396,106 @@ TEST_SUITE("libmadc flr backend") {
 	std::remove(tombstones.c_str());
 	std::remove(dead.c_str());
     }
+
+    TEST_CASE("flr record locators give positioned point access through the dataset API") {
+	const std::string path =
+	    "/tmp/madc_flr_locator_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	std::remove(path.c_str());
+
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id").fixed_record_size(64);
+
+	madc::DataSet<StorageProbe> ds("flr://" + path);
+	ds.mapping(spec).name("users");
+
+	madc::error err;
+	madc::RecordLocator first;
+	REQUIRE(ds.insert_with_locator(
+		    make_probe(10, 1, 0, true, StorageStatus::active, 'A',
+			       "ALPHA", "Alice", 1.0), first, &err));
+	CHECK(first.locator_kind == madc::RecordLocator::kind::record_index);
+	CHECK(first.record_index == 0);
+
+	REQUIRE(ds.insert(make_probe(20, 2, 0, true, StorageStatus::active, 'B',
+				     "BRAVO", "Bob", 2.0), &err));
+	madc::RecordLocator third;
+	REQUIRE(ds.insert_with_locator(
+		    make_probe(30, 3, 0, true, StorageStatus::active, 'C',
+			       "CHARLIE", "Carol", 3.0), third, &err));
+	CHECK(third.record_index == 2);
+
+	// Point lookup by index, and by a record-aligned byte offset.
+	StorageProbe fetched;
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_record_index(1),
+				  fetched, &err));
+	CHECK(fetched.id == 20);
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_byte_offset(2 * 64),
+				  fetched, &err));
+	CHECK(fetched.id == 30);
+
+	// Misaligned and out-of-range locators are refused loudly.
+	CHECK_FALSE(ds.get_by_locator(madc::RecordLocator::at_byte_offset(65),
+				      fetched, &err));
+	CHECK(err.message.find("record-aligned") != std::string::npos);
+	CHECK_FALSE(ds.get_by_locator(madc::RecordLocator::at_record_index(3),
+				      fetched, &err));
+	CHECK(err.message.find("out of range") != std::string::npos);
+
+	// Positional update rewrites exactly one record in place.
+	REQUIRE(ds.update_by_locator(
+		    madc::RecordLocator::at_record_index(1),
+		    make_probe(20, 222, 0, true, StorageStatus::active, 'B',
+			       "BRAVO", "Bob Updated", 2.5), &err));
+	CHECK(file_size(path) == 3 * 64);
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_record_index(1),
+				  fetched, &err));
+	CHECK(fetched.score == 222);
+	CHECK(fetched.title == "Bob Updated");
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_record_index(0),
+				  fetched, &err));
+	CHECK(fetched.id == 10);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("flr locator lookup refuses tombstoned records") {
+	const std::string path =
+	    "/tmp/madc_flr_loctomb_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string tombstones =
+	    "/tmp/madc_flr_loctomb_" + std::to_string(static_cast<long long>(getpid())) + ".bits";
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id")
+	    .fixed_record_size(64)
+	    .tombstone_file(tombstones);
+
+	madc::DataSet<StorageProbe> ds("flr://" + path);
+	ds.mapping(spec).name("users");
+
+	madc::error err;
+	REQUIRE(ds.insert(make_probe(1, 10, 0, true, StorageStatus::active, 'A',
+				     "ALPHA", "Alice", 1.0), &err));
+	REQUIRE(ds.insert(make_probe(2, 20, 0, true, StorageStatus::active, 'B',
+				     "BRAVO", "Bob", 2.0), &err));
+
+	StorageProbe fetched;
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_record_index(1),
+				  fetched, &err));
+	CHECK(fetched.id == 2);
+
+	REQUIRE(ds.erase(madc::value(int64_t(2)), &err));
+	CHECK_FALSE(ds.get_by_locator(madc::RecordLocator::at_record_index(1),
+				      fetched, &err));
+	CHECK(err.message.find("tombstoned") != std::string::npos);
+
+	REQUIRE(ds.restore(madc::value(int64_t(2)), &err));
+	REQUIRE(ds.get_by_locator(madc::RecordLocator::at_record_index(1),
+				  fetched, &err));
+	CHECK(fetched.id == 2);
+
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+    }
 }

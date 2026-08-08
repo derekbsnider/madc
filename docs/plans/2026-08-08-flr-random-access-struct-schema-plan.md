@@ -1,5 +1,25 @@
 # FLR random access & the struct-schema arc (2026-08-08)
 
+## Status
+
+- **S1 + S2 SHIPPED 2026-08-08** (`feature/flr-random-access-claude`):
+  SeekableDataChannel with positioned transfers; FLR lazy open, streaming
+  cursor, O(1) `record_index` locator lookup, positional update; the
+  capability-truth gate (`tests/unit/test_driver_capability_truth.cpp`,
+  running inside `fulltest`'s unit stage). Two refinements over the
+  original sketch, both strengthening it:
+  - The seekable mixin carries `read_at`/`write_at` (pread/pwrite shape)
+    besides `seek`/`size` — a shared channel with only seek+read is a
+    positional race the moment a cursor and a point lookup coexist.
+  - The read-counting shim required a real injection seam, so it landed
+    as a first-class feature: `ChannelBackedDataDriver::open_on_channel`
+    opens a record driver over ANY seekable channel (an embedding host's
+    memory image, or the gate's counting channel). Proof machinery and
+    the records-over-memory story are the same code.
+- **S3 is next**: locator-as-column pushdown + the VLR offset sidecar
+  (VLR deliberately does NOT claim `locator_lookup` until then — the
+  gate's claims table pins that).
+
 ## Motivation
 
 The v0.70.0 review established that the record-file drivers never got
@@ -36,10 +56,14 @@ that computes exact struct layouts. The plan spends those assets.
 ## LEVEL 1 — true random access on the v0.70.0 seams
 
 **L1.1 — `SeekableDataChannel` extension mixin** (pattern:
-`DatagramDataChannel`): `seek(uint64_t offset)`, `size(uint64_t &)`.
-Implemented by the file channel (lseek/fstat); the dormant
-`ChannelCapabilities.seek` flag finally means something and is set
-truthfully. Sockets/FIFOs/processes never claim it.
+`DatagramDataChannel`): `seek(uint64_t)`, `size(uint64_t &)`, and the
+positioned transfers `read_at`/`write_at` (pread/pwrite) that carry
+their own offset and never disturb the sequential position — cursors
+and point lookups can share one channel without a positional race.
+Implemented by the file channel (fstat/lseek/pread/pwrite) and by
+`MemoryDataChannel`; the dormant `ChannelCapabilities.seek` flag
+finally means something and is set truthfully per fd (`S_ISREG`, never
+for `O_APPEND`). Sockets/FIFOs/processes never claim it.
 
 **L1.2 — FLR reborn lazy.** `open()` = open the channel + stat +
 size-multiple validation + load the tombstone BITMAP (small) — zero
@@ -74,15 +98,21 @@ offset computation. A header region maintained beside appended records
 (running counts/aggregates) becomes expressible, feeding the
 derivation-relations track (5A.11) later.
 
-**L1.6 — the capability-truth gate** (`check-driver-capability-truth`,
-wired into fulltest). For every registered driver, the gate cross-
-examines advertised capabilities against behavior: a driver claiming
-point-lookup must serve a locator hit WITHOUT reading the whole file
-(the gate measures via a read-counting channel shim); a driver
-claiming streaming must serve `limit 1` without draining. **No
-capability may be advertised that the gate does not exercise.** This
-is the structural fix for interface-without-implementation: the gate
-makes a hollow claim a build failure, not a review finding.
+**L1.6 — the capability-truth gate**
+(`tests/unit/test_driver_capability_truth.cpp`, running inside
+`fulltest`'s unit stage). The gate cross-examines advertised
+capabilities against behavior: `locator_lookup` (a stronger claim than
+`point_lookup`) must serve a locator hit as positioned access WITHOUT
+reading the whole file — measured through a read-counting channel
+injected via `ChannelBackedDataDriver` — and a claim with no injectable
+seam behind it fails as unprovable; a streaming driver must serve the
+first row without draining. A `sizeof(DriverCapabilities)` ratchet
+fails the build when a capability field is added without a truth leg,
+and the core schemes' exact claims are pinned in a table so any claim
+change must visit the gate. **No capability may be advertised that the
+gate does not exercise.** This is the structural fix for
+interface-without-implementation: a hollow claim is a build failure,
+not a review finding.
 
 ## LEVEL 2 — the leap that is uniquely madc's
 
@@ -141,8 +171,8 @@ special-cased per format.
 
 | Slice | Content | Ships with |
 |---|---|---|
-| S1 | SeekableDataChannel + file impl + seek capability truth | unit tests + gate leg |
-| S2 | FLR lazy open + streaming cursor + locator point lookup + positional update | contract tests (incl. read-counting proof of O(1)) + capability-truth gate |
+| S1 ✅ | SeekableDataChannel + file/memory impls + seek capability truth | channel contract tests (regular file / FIFO / append / memory legs) |
+| S2 ✅ | FLR lazy open + streaming cursor + locator point lookup + positional update + `open_on_channel` seam | locator dataset tests + the capability-truth gate (read-counting O(1) proof, claims table, sizeof ratchet) |
 | S3 | Locator-as-column pushdown + VLR offset sidecar | query tests + gate leg |
 | S4 | C-struct-as-schema (`SchemaInfo` from madc type; `bind<T>`) | reducer suite vs g++-computed offsets (the oracle IS offsetof) |
 | S5 | Catalog object + range-for typed cursors | integration tests; a SMAUG binary structure as the real-data fixture |

@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [v0.71.0] — 2026-08-08
+
+**True random access for record storage (FLR plan S1+S2): seekable
+channels with positioned IO, the FLR driver reborn lazy with O(1)
+record locators, and a capability-truth gate that makes a hollow
+capability claim a build failure.**
+
+- **`SeekableDataChannel` — random access joins the channel framework**
+  (FLR plan S1, `docs/plans/2026-08-08-flr-random-access-struct-schema-plan.md`).
+  `size`/`seek` plus positioned transfers (`read_at`/`write_at`,
+  pread/pwrite shape) that never disturb the sequential position, so
+  cursors and point lookups share one channel without a positional
+  race. The dormant `ChannelCapabilities.seek` flag is now set
+  truthfully per fd (`S_ISREG`, never for `O_APPEND`); FIFOs, sockets,
+  and processes refuse the surface cleanly. `MemoryDataChannel`
+  implements the same contract (`write_at` extends and zero-fills), and
+  "open a path as a channel" has one owner (`detail::open_file_channel`).
+- **FLR reborn lazy with O(1) record locators** (FLR plan S2). `open()`
+  reads geometry and the tombstone bitmap only — zero records; scans
+  stream one positioned read per row; `RecordLocator` gains
+  `record_index` and a locator hit is one read + one decode (aligned
+  `byte_offset` accepted; misaligned/out-of-range/tombstoned refused
+  loudly). Inserts append one record and hand out locators; updates —
+  including the new `DataSet::update_by_locator` positional update —
+  write exactly one record; soft erase/restore touch only the sidecar
+  bitmap; the whole-file rewrite-per-mutation `flush()` is gone
+  (position-shifting cases stream to a temp file and rename).
+- **Capability claims are now provable — and proven.**
+  `DriverCapabilities.locator_lookup` states the stronger contract
+  (positioned access, never a scan); `ChannelBackedDataDriver::
+  open_on_channel` opens a record driver over any seekable channel (an
+  embedding host's memory image — records-over-memory is now a real
+  feature — or a test's counting shim); and the capability-truth gate
+  (`tests/unit/test_driver_capability_truth.cpp`) cross-examines every
+  claim: read-counted O(1) locator proof, open-reads-nothing proof,
+  streaming-does-not-drain proof, a pinned claims table for the core
+  schemes (VLR honestly claims no `locator_lookup` until its S3
+  sidecar), and a `sizeof` ratchet so a new capability field cannot
+  land without a truth leg.
+- **Dupaudit consolidation (gated):** one truthful-seekability probe
+  (`madc::seekable_surface`) and one cursor→container drain owner
+  (`madc::copy` + `to_container`, adopted by dsv/flr);
+  `scripts/check-storage-seam-adoption.sh` joins `fulltest`.
+
 ## [v0.70.0] — 2026-08-08
 
 **The data-channel streaming & process-flow core (Track 5A):

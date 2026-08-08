@@ -1,5 +1,15 @@
 # madc Roadmap
 
+**✅ FLR RANDOM ACCESS S1+S2 LANDED (2026-08-08, v0.71.0):** seekable
+channels with positioned IO (`SeekableDataChannel`, truthful per-fd
+`seek` capability), the FLR driver reborn lazy (geometry-only open,
+streaming cursor, O(1) `record_index` locator lookup, positional
+single-record writes), `ChannelBackedDataDriver` records-over-memory,
+and the capability-truth gate (a hollow capability claim is a build
+failure). Plan: `docs/plans/2026-08-08-flr-random-access-struct-schema-plan.md`
+— next slices: S3 locator-as-column pushdown + VLR offset sidecar,
+S4 C-struct-as-schema `bind<T>`, S5 typed catalog.
+
 **✅ TRACK 5A LANDED (2026-08-08, v0.70.0):** the data-channel
 streaming & process-flow core — dependency-free typed streaming over
 memory/file/FIFO/TCP/UDP/UDS and child processes behind ABI-compatible
@@ -10,8 +20,9 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-08 (v0.70.0 — the
-data-channel core; previous: v0.69.0 — the release-lane restoration +
+Master plan linking all workstreams. Updated 2026-08-08 (v0.71.0 — FLR
+random access S1+S2; previous: v0.70.0 — the
+data-channel core; v0.69.0 — the release-lane restoration +
 script-mode completion; v0.68.0 —
 the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
