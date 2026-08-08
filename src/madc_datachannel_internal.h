@@ -18,6 +18,7 @@ void set_channel_error(error *err, const std::string &operation,
 void set_channel_errno(error *err, const std::string &operation,
 		       const std::string &target);
 void register_socket_channel_factories(DataChannelRegistry &registry);
+void register_exec_channel_factory(DataChannelRegistry &registry);
 // The one owner of "open a filesystem path as a DataChannel" — the file/pipe
 // scheme factory and the record-file storage drivers all delegate here.
 std::unique_ptr<DataChannel> open_file_channel(const std::string &path,

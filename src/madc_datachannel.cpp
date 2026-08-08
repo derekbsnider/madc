@@ -464,6 +464,7 @@ DataChannelRegistry::DataChannelRegistry()
 	register_factory("file", std::unique_ptr<Factory>(new FileChannelFactory()));
 	register_factory("pipe", std::unique_ptr<Factory>(new FileChannelFactory()));
 	detail::register_socket_channel_factories(*this);
+	detail::register_exec_channel_factory(*this);
 }
 
 DataChannelRegistry &DataChannelRegistry::instance()
