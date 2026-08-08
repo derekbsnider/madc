@@ -614,6 +614,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-template-thaw-choke.sh
 	@cd .. && bash scripts/check-ref-arg-lowering-owner.sh
 	@cd .. && bash scripts/check-fn-template-deduction-owner.sh
 	@cd .. && bash scripts/check-dependent-type-query-owner.sh
