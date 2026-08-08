@@ -3272,29 +3272,6 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// live. A record whose owner class did not restore cleanly LACKS (a
 	// member-template pattern without its class cannot instantiate anyway).
 	{
-		auto run_at = [&](uint32_t word_off) -> CirRestoredTemplateRun {
-			CirRestoredTemplateRun rr;
-			rr.bytes = NULL;
-			rr.len = 0;
-			rr.count = 0;
-			rr.file = NULL;
-			cir_forest_token_run tr;
-			if (!madc::dis::pod_read(_template_payload, word_off, tr))
-				return rr;
-			if (tr.tok_count
-			    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
-				rr.bytes = _template_tokens.data() + tr.tok_off;
-				rr.len   = tr.tok_bytes;
-				rr.count = tr.tok_count;
-			}
-			if (tr.file_id) {
-				uint32_t flen = 0;
-				rr.file = pool_cstr(tr.file_id, flen);
-			}
-			return rr;
-		};
-		const size_t pw = madc::dis::pod_words<cir_forest_template_param>();
-		const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
 		for (size_t i = 0; i < _templates.size(); ++i) {
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
@@ -3345,56 +3322,28 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (tv < 0)
 					continue;
 			}
-			if (!ensure_template_payload())
-				continue;
+			// slice B1: IDENTITY only — no payload touch. The raw
+			// offsets ride the record; params / run table / pattern
+			// slice decode in hydrate_restored_template() on first
+			// demand (and the payload/token SEGMENTS stay cold until
+			// the first hydrate of any record).
 			CirRestoredTemplate rt;
 			rt.kind  = t.kind;
 			rt.key   = key;
 			rt.name  = t.name_id ? pool_str(t.name_id) : NULL;
 			rt.ns    = t.ns_id ? pool_str(t.ns_id) : NULL;
 			rt.extra = t.extra_id ? pool_str(t.extra_id) : NULL;
-			rt.owner = NULL;
+			rt.owner = oc;	// swizzled by the owner fence above (NULL = ns-scope)
 			rt.flags = t.flags;
 			rt.pattern = NULL;
 			rt.pattern_words = 0;
 			rt.pattern_reason = t.pattern_reason;
-			if (t.pattern_words) {
-				size_t begin = t.pattern_begin;
-				size_t count = t.pattern_words;
-				if (begin > _template_payload.size()
-				    || count > _template_payload.size() - begin)
-					continue;
-				rt.pattern = _template_payload.data() + begin;
-				rt.pattern_words = t.pattern_words;
-			}
-			rt.owner = oc;	// swizzled by the owner fence above (NULL = ns-scope)
-			bool ok = true;
-			for (uint32_t p = 0; p < t.param_count; ++p) {
-				cir_forest_template_param pr;
-				if (!madc::dis::pod_read(_template_payload,
-							 t.param_begin + p * pw, pr)) {
-					ok = false; break;
-				}
-				uint32_t plen = 0;
-				const char *pn = pool_cstr(pr.name_id, plen);
-				if (!pn) { ok = false; break; }
-				rt.params.push_back(std::make_pair(pn, pr.pflags));
-			}
-			if (!ok)
-				continue;
-			// Positional run table: body, constraint, per-param
-			// defaults, per-slot spec patterns.
-			uint32_t ro = t.run_begin;
-			rt.body       = run_at(ro); ro += (uint32_t)rw;
-			rt.constraint = run_at(ro); ro += (uint32_t)rw;
-			for (uint32_t p = 0; p < t.param_count; ++p) {
-				rt.defaults.push_back(run_at(ro));
-				ro += (uint32_t)rw;
-			}
-			for (uint32_t sp = 0; sp < t.spec_count; ++sp) {
-				rt.spec.push_back(run_at(ro));
-				ro += (uint32_t)rw;
-			}
+			rt.rec_param_begin   = t.param_begin;
+			rt.rec_param_count   = t.param_count;
+			rt.rec_run_begin     = t.run_begin;
+			rt.rec_spec_count    = t.spec_count;
+			rt.rec_pattern_begin = t.pattern_begin;
+			rt.rec_pattern_words = t.pattern_words;
 			_restored_templates.push_back(rt);
 		}
 	}
@@ -3497,6 +3446,81 @@ bool CirFrozenForest::ensure_template_payload() const
 			return false;
 		}
 	}
+	return true;
+}
+
+// slice B1 (task #25): decode ONE restored-template record's payload-backed
+// fields — params, the positional token-run table (body / constraint /
+// per-param defaults / per-slot spec patterns), and the ClassPattern payload
+// slice — memoized per record. The identity fields were filled by the
+// materialize walk; the payload/token segments decode at the FIRST hydrate
+// (ensure_template_payload), so a TU that instantiates nothing never pays.
+bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
+{
+	if (rt.hydrated)
+		return !rt.hydrate_failed;
+	rt.hydrated = true;
+	rt.hydrate_failed = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
+	if (!ensure_template_payload())
+		return false;
+	auto run_at = [&](uint32_t word_off) -> CirRestoredTemplateRun {
+		CirRestoredTemplateRun rr;
+		rr.bytes = NULL;
+		rr.len = 0;
+		rr.count = 0;
+		rr.file = NULL;
+		cir_forest_token_run tr;
+		if (!madc::dis::pod_read(_template_payload, word_off, tr))
+			return rr;
+		if (tr.tok_count
+		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
+			rr.bytes = _template_tokens.data() + tr.tok_off;
+			rr.len   = tr.tok_bytes;
+			rr.count = tr.tok_count;
+		}
+		if (tr.file_id) {
+			uint32_t flen = 0;
+			rr.file = pool_cstr(tr.file_id, flen);
+		}
+		return rr;
+	};
+	const size_t pw = madc::dis::pod_words<cir_forest_template_param>();
+	const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
+	if (rt.rec_pattern_words) {
+		size_t begin = rt.rec_pattern_begin;
+		size_t count = rt.rec_pattern_words;
+		if (begin > _template_payload.size()
+		    || count > _template_payload.size() - begin)
+			return false;
+		rt.pattern = _template_payload.data() + begin;
+		rt.pattern_words = rt.rec_pattern_words;
+	}
+	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
+		cir_forest_template_param pr;
+		if (!madc::dis::pod_read(_template_payload,
+					 rt.rec_param_begin + p * pw, pr))
+			return false;
+		uint32_t plen = 0;
+		const char *pn = pool_cstr(pr.name_id, plen);
+		if (!pn)
+			return false;
+		rt.params.push_back(std::make_pair(pn, pr.pflags));
+	}
+	// Positional run table: body, constraint, per-param defaults,
+	// per-slot spec patterns.
+	uint32_t ro = rt.rec_run_begin;
+	rt.body       = run_at(ro); ro += (uint32_t)rw;
+	rt.constraint = run_at(ro); ro += (uint32_t)rw;
+	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
+		rt.defaults.push_back(run_at(ro));
+		ro += (uint32_t)rw;
+	}
+	for (uint32_t sp = 0; sp < rt.rec_spec_count; ++sp) {
+		rt.spec.push_back(run_at(ro));
+		ro += (uint32_t)rw;
+	}
+	rt.hydrate_failed = false;
 	return true;
 }
 

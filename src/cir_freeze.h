@@ -1156,6 +1156,16 @@ struct CirRestoredTemplate
 	const uint32_t *pattern;		// ClassPattern payload words (NULL = absent)
 	uint32_t pattern_words;
 	uint32_t pattern_reason;
+	// slice B1 (task #25): raw record offsets for LAZY payload hydration.
+	// The materialize walk fills IDENTITY only (the fields above through
+	// pattern_reason, minus params/runs/pattern); everything payload-backed
+	// decodes in hydrate_restored_template() on first demand, so a TU pays
+	// for the templates it instantiates, not the ones its headers declare.
+	uint32_t rec_param_begin = 0, rec_param_count = 0;
+	uint32_t rec_run_begin = 0, rec_spec_count = 0;
+	uint32_t rec_pattern_begin = 0, rec_pattern_words = 0;
+	bool hydrated = false;		// hydrate ran (either way)
+	bool hydrate_failed = false;	// payload bounds broken — drop the def
 };
 
 // v26: one restored deferred-method-body entry (DK_DEFBODY). The parser-side
@@ -1477,9 +1487,18 @@ public:
 	const std::vector<CirRestoredFunc> &restored_funcs() const
 	{ return _restored_funcs; }
 	// v20: the restored template-NAME state (metadata + token-run spans).
-	// Valid after materialize_from_arena() — call it first.
+	// Valid after materialize_from_arena() — call it first. slice B1: the
+	// walk restores IDENTITY only; a consumer that needs params/runs/
+	// pattern hydrates the record first (non-const overload + hydrate).
 	const std::vector<CirRestoredTemplate> &restored_templates() const
 	{ return _restored_templates; }
+	std::vector<CirRestoredTemplate> &restored_templates()
+	{ return _restored_templates; }
+	// slice B1 (lazy template payloads): decode ONE record's params +
+	// token-run table + ClassPattern payload slice, memoized per record.
+	// False = payload bounds broken (corrupt container) — the caller drops
+	// the definition, exactly as the eager walk's `continue` did.
+	bool hydrate_restored_template(CirRestoredTemplate &rt) const;
 	const char *restored_template_string(uint32_t id) const;
 	CirRestoredTemplateRun restored_template_run(
 		const cir_forest_token_run &run) const;

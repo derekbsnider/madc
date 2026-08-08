@@ -21067,7 +21067,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // from_system_header classification, lazy-body deferral, and error
     // attribution — matches a live capture (the .madh record form keeps
     // line/column per token; the file rides the run descriptor).
-    const std::vector<CirRestoredTemplate> &tmpls = forest.restored_templates();
+    std::vector<CirRestoredTemplate> &tmpls = forest.restored_templates();
     auto restore_run = [&](const CirRestoredTemplateRun &run,
 			   std::vector<TokenBase *> &out) {
 	out.clear();
@@ -21087,7 +21087,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     };
     for ( size_t i = 0; i < tmpls.size(); ++i )
     {
-	const CirRestoredTemplate &rt = tmpls[i];
+	CirRestoredTemplate &rt = tmpls[i];
 	std::string key(rt.key);
 	// Namespace/global keys are tapped verbatim. Every member template rides
 	// its owner class's fate; owner-scoped registry keys are derived and are
@@ -21099,6 +21099,12 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		continue;
 	}
 	else if ( !forest_name_permitted(key, rt.ns) )
+	    continue;
+	// slice B1 (task #25): the walk restored IDENTITY only; the payload-
+	// backed fields (params / token runs / pattern slice) decode here.
+	// Still eager per surviving record for now — slice B2 moves this call
+	// to the registry thaw chokes so only INSTANTIATED keys pay it.
+	if ( !forest.hydrate_restored_template(rt) )
 	    continue;
 	switch ( rt.kind )
 	{

@@ -2431,8 +2431,11 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 
 	// The metadata view: the primary (with its per-param default run), the
 	// partial spec (with per-slot pattern runs), and the alias template.
-	const std::vector<CirRestoredTemplate> &ts = forest.restored_templates();
-	const CirRestoredTemplate *primary = NULL, *partial = NULL, *alias = NULL;
+	// slice B1 (task #25): the walk restores IDENTITY only — the payload-
+	// backed fields (params / runs / pattern) fill at hydrate, which is the
+	// consumer contract this test now exercises.
+	std::vector<CirRestoredTemplate> &ts = forest.restored_templates();
+	CirRestoredTemplate *primary = NULL, *partial = NULL, *alias = NULL;
 	for (size_t i = 0; i < ts.size(); ++i) {
 		if (!ts[i].key) continue;
 		std::string k(ts[i].key);
@@ -2441,6 +2444,8 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		if (k == "W2Same" && ts[i].kind == CIR_TMPLK_ALIAS)  alias = &ts[i];
 	}
 	REQUIRE(primary != NULL);
+	CHECK(primary->params.size() == 0);	// pre-hydrate: identity only
+	REQUIRE(forest.hydrate_restored_template(*primary));
 	REQUIRE(primary->params.size() == 2);
 	CHECK(std::string(primary->params[0].first) == "T");
 	CHECK((primary->params[0].second & CIR_TMPLP_IS_TYPE) != 0);
@@ -2458,12 +2463,14 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		CHECK(has_file);			// token provenance (origin file)
 	}
 	REQUIRE(partial != NULL);
+	REQUIRE(forest.hydrate_restored_template(*partial));
 	CHECK((partial->flags & CIR_TMPLF_IS_PARTIAL_SPEC) != 0);
 	CHECK(partial->spec.size() == 2);		// one pattern run per arg slot
 	CHECK(partial->body.count > 0);
 	CHECK(partial->pattern != NULL);
 	CHECK(partial->pattern_words > 0);
 	REQUIRE(alias != NULL);
+	REQUIRE(forest.hydrate_restored_template(*alias));
 	CHECK(alias->body.count > 0);			// the alias TARGET tokens
 
 	// RESTORE into a fresh Program: the maps hold parse-equivalent state and

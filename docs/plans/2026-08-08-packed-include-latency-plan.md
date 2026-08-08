@@ -99,31 +99,53 @@ no templates to restore and libc functions ride the dlsym fallback
   full battery are the net.
 
   **Settled design (2026-08-08, post-D recon):**
-  - *B1 — forest side (self-contained, behavior-preserving):* the
-    materialize template walk goes THIN — identity only (key/name/ns/
-    extra/owner/flags/pattern_reason from the record + pool; NO
+  - *B1 — forest side (self-contained, behavior-preserving) — CODED,
+    validation queued behind the D+A2 batch gate:* the materialize
+    template walk goes THIN — identity only (key/name/ns/extra/owner/
+    flags/pattern_reason from the record + pool; NO
     `ensure_template_payload()` call). `CirRestoredTemplate` carries the
-    raw record offsets (param_begin/count, run_begin, spec_count,
-    pattern_begin/words) + a `hydrated` flag; new
-    `CirFrozenForest::hydrate_restored_template(rt)` decodes the payload
-    pair on first call and fills params/runs/pattern pointer.
+    raw record offsets (rec_param_begin/count, rec_run_begin,
+    rec_spec_count, rec_pattern_begin/words) + hydrated/hydrate_failed;
+    `CirFrozenForest::hydrate_restored_template(rt)` (memoized, under
+    the forest-work clock) decodes params/runs/pattern on first call.
+    forest_restore_decls hydrates EAGERLY per surviving record for now
+    (identical behavior; payload-broken records drop at hydrate exactly
+    like the old walk's `continue`).
   - *B2 — parser side:* the restore loop registers STUB *Defs (identity
     fields + `frozen_src` = {&rt, &forest}; no restore_run). Thaw
     happens through Program-level wrapper accessors
-    (`thawed_class_templates(name_id)` etc.) that hydrate an entry's
-    stubs in place on first content read. Read-site census (must ALL
-    convert): template_map find_readonly ×7 + for_each 62785;
-    partial_spec_map ×5 + for_each; template_alias_map ×3 + for_each;
-    fn_template_map/decl_map for_each 52314 + find 52509 + 54369-54401.
-    Existence reads (count / find!=end with no deref) stay direct.
+    (`thawed_template_entry(name_id)` etc.) that hydrate an ENTRY's
+    stubs in place on first content read (memoized hydration is
+    logically const — const_cast inside the owner helper only).
+    Read-site census (must ALL convert): template_map find_readonly ×7
+    + for_each 62785; partial_spec_map ×5 + for_each; template_alias_map
+    ×3 + for_each; fn_template_map/decl_map for_each 52314 + find 52509
+    + 54369-54401. Existence reads (count / find!=end with no deref)
+    stay direct — stubs ARE entries, existence is already correct.
+    Scope order: B2a class/partial/alias lanes, B2b fn lanes; VAR/
+    CONCEPT stay eager (tiny), OOL/MEMBER re-judged from the post-B2
+    profile. TRAPS (recon 2026-08-08): (1) intern_keyed_map `_vals` is
+    a dense vector that REALLOCATES past reserve() — never hold *Def
+    POINTERS across inserts; pending lists store (map, key) or the
+    (rt*, forest*) pair, and `frozen_src` must point into
+    `_restored_templates` (stable after materialize), never at map
+    values. (2) the freeze-writer for_each at 62785-87 exports
+    EVERYTHING → thaw-all there (pack path, rare); the free-operator
+    for_each at 52314 thaws only suffix-MATCHING keys inside the
+    callback. (3) `restore_run` hoists from the loop lambda to a
+    Program method so the recapture flush and entry thaw share it.
     GATE: a check-*.sh in fulltest denying direct content reads on the
     four maps outside the thaw-owner region (decays otherwise).
   - *B3 — deferred recapture:* `recapture_free_overload_surfaces` needs
     fd.decl at restore (free_operator_overloads / manipulator /
     free_function_overloads signature tables consulted during
-    expression parse). Defer as a pending list flushed ONE-SHOT at the
-    first consult of those tables (~4 sites, parser.cpp 16923/17172/
-    17222 + free_function reads). Unused TU: never flushes.
+    expression parse). Defer as a pending list of (rt*, forest*) pairs
+    flushed ONE-SHOT by `ensure_free_overload_surfaces()` at the first
+    consult of those tables (~4 sites, parser.cpp 16923/17172/17222 +
+    free_function reads). The flush hydrates each rt and deserializes
+    the decl run itself (independent of the fd stub's own thaw — a
+    template that both captures and instantiates deserializes twice;
+    acceptable). Unused TU: never flushes.
   - *Kept eager in B (v1):* VAR/CONCEPT (tiny populations), OUTOFLINE +
     MEMBER-template staging (big runs but entangled with the
     placeholder stamp flush — extend only if the post-B profile still
