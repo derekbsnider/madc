@@ -337,7 +337,10 @@ bool MemoryDataChannel::read(void *buffer, std::size_t capacity,
 		set_channel_error(err, "memory read failed", "read side is closed");
 		return false;
 	}
-	std::size_t available = bytes_.size() - read_position_;
+	// seek() may place the position past the end (file semantics); a
+	// read there is EOF, not an underflowing size subtraction.
+	std::size_t available = read_position_ < bytes_.size()
+		? bytes_.size() - read_position_ : 0;
 	bytes_read = std::min(capacity, available);
 	if ( bytes_read )
 		std::memcpy(buffer, &bytes_[read_position_], bytes_read);

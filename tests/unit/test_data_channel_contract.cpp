@@ -827,8 +827,12 @@ TEST_CASE("memory channel serves positioned reads and writes")
 	REQUIRE(count == 1);
 	CHECK(probe == 'c');
 
-	// Reads past the end are EOF, not failure.
+	// Reads past the end are EOF, not failure — for positioned reads AND
+	// for a sequential read after a beyond-end seek.
 	CHECK(channel.read_at(100, &probe, 1, count, &err));
+	CHECK(count == 0);
+	CHECK(channel.seek(100, &err));
+	CHECK(channel.read(&probe, 1, count, &err));
 	CHECK(count == 0);
 }
 
