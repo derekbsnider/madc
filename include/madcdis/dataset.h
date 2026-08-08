@@ -740,6 +740,20 @@ public:
 	return true;
     }
 
+    bool update_by_locator(const RecordLocator &locator,
+			   const T &input,
+			   error *err = nullptr)
+    {
+	if ( !open(err) )
+	    return false;
+	value logical = _mapper->encode(input);
+	value storage = detail::logical_to_storage_record<T>(logical, _mapping);
+	if ( !_driver->update_record_by_locator(locator, storage, err) )
+	    return false;
+	invalidate_snapshot();
+	return true;
+    }
+
     bool get_by_locator(const RecordLocator &locator,
 			T &out,
 			error *err = nullptr) const
