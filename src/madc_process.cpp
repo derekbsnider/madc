@@ -197,23 +197,6 @@ void report_child_error(int fd, int number)
 	}
 }
 
-bool copy_counted(DataChannel &source, DataChannel *destination,
-		  std::size_t &byte_count, error *err)
-{
-	unsigned char buffer[16384];
-	for ( ;; )
-	{
-		std::size_t count = 0;
-		if ( !source.read(buffer, sizeof(buffer), count, err) )
-			return false;
-		if ( count == 0 )
-			return destination ? destination->flush(err) : true;
-		byte_count += count;
-		if ( destination && !write_all(*destination, buffer, count, err) )
-			return false;
-	}
-}
-
 } // namespace
 
 struct Process::impl
@@ -457,7 +440,7 @@ bool pump_process(DataChannel &input,
 	error stderr_error;
 
 	std::thread input_thread([&]() {
-		input_ok = copy_counted(input, &process.stdin_channel(),
+		input_ok = copy_channel(input, &process.stdin_channel(),
 					result.input_bytes, &input_error);
 		if ( input_ok )
 			input_ok = process.close_stdin(&input_error);
@@ -465,7 +448,7 @@ bool pump_process(DataChannel &input,
 			process.terminate();
 	});
 	std::thread output_thread([&]() {
-		output_ok = copy_counted(process.stdout_channel(), &output,
+		output_ok = copy_channel(process.stdout_channel(), &output,
 					 result.output_bytes, &output_error);
 		if ( !output_ok )
 		{
@@ -474,7 +457,7 @@ bool pump_process(DataChannel &input,
 		}
 	});
 	std::thread stderr_thread([&]() {
-		stderr_ok = copy_counted(process.stderr_channel(), stderr_output,
+		stderr_ok = copy_channel(process.stderr_channel(), stderr_output,
 					 result.stderr_bytes, &stderr_error);
 		if ( !stderr_ok )
 		{

@@ -43,6 +43,10 @@ public:
 		(void)err;
 		return true;
 	}
+	// Thread-safety contract: a DataChannel is single-threaded EXCEPT
+	// close_read()/close_write(), which one other thread may call as a
+	// wake-up for a blocked read/write (pump_process's failure paths do).
+	// No other member may be called concurrently.
 	virtual void close_read() {}
 	virtual void close_write() {}
 	virtual void close() = 0;
@@ -65,6 +69,11 @@ public:
 
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
+// Pump source to destination until EOF, flushing at the end. The counted
+// overload reports the bytes moved and accepts a null destination
+// (drain-and-count); the plain overload delegates to it.
+bool copy_channel(DataChannel &source, DataChannel *destination,
+		  std::size_t &byte_count, error *err = nullptr);
 bool copy_channel(DataChannel &source, DataChannel &destination,
 		  error *err = nullptr);
 

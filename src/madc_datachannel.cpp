@@ -172,7 +172,8 @@ bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	return true;
 }
 
-bool copy_channel(DataChannel &source, DataChannel &destination, error *err)
+bool copy_channel(DataChannel &source, DataChannel *destination,
+		  std::size_t &byte_count, error *err)
 {
 	unsigned char buffer[16384];
 	for ( ;; )
@@ -181,10 +182,17 @@ bool copy_channel(DataChannel &source, DataChannel &destination, error *err)
 		if ( !source.read(buffer, sizeof(buffer), count, err) )
 			return false;
 		if ( count == 0 )
-			return destination.flush(err);
-		if ( !write_all(destination, buffer, count, err) )
+			return destination ? destination->flush(err) : true;
+		byte_count += count;
+		if ( destination && !write_all(*destination, buffer, count, err) )
 			return false;
 	}
+}
+
+bool copy_channel(DataChannel &source, DataChannel &destination, error *err)
+{
+	std::size_t byte_count = 0;
+	return copy_channel(source, &destination, byte_count, err);
 }
 
 MemoryDataChannel::MemoryDataChannel()

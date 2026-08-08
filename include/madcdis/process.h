@@ -55,6 +55,12 @@ struct ProcessPumpResult
 	int exit_status = -1;
 };
 
+// Drives input -> child stdin, child stdout -> output, and child stderr ->
+// stderr_output concurrently (three bounded pump threads), then reaps the
+// child. input, output, and stderr_output must be DISTINCT channels — two
+// pumps writing one channel would race (DataChannel is single-threaded; see
+// the contract note in madcdis/datachannel.h). Failure paths use
+// close_read()/terminate() as cross-thread wake-ups.
 bool pump_process(DataChannel &input,
 		  Process &process,
 		  DataChannel &output,
