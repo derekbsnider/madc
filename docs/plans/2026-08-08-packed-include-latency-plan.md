@@ -88,7 +88,8 @@ no templates to restore and libc functions ride the dlsym fallback
   locals. snapshot_reader gained decode_bytes overloads of
   read_segment / read_segment_transformed (same decode_payload core).
   Writer side untouched (allocator-transparent push_back).
-- **B — lazy template payloads (the big one).** Registration keeps the
+- **B — lazy template payloads — ✅ DONE (B1+B2+B3+gate; measured
+  numbers in the LANDED block below).** Registration keeps the
   template KEY surface eager (lookup must see the name), but
   `CirRestoredTemplate` payload/token-run decode defers to first
   instantiation request of THAT key. Kills most of the 57MB decode +
@@ -97,6 +98,23 @@ no templates to restore and libc functions ride the dlsym fallback
   Risk: instantiation-path correctness; the forest gates
   (selfexe/bind/emitpack/sidecar/crosstu/library/ledger/config) +
   full battery are the net.
+
+  **LANDED 2026-08-08: B1 @4bd24886 · B2a @96744056 · B2b+B3 @ef894e26 ·
+  gate @e4bcc107** — as-built deltas from this design are recorded in the
+  "As built" bullet at the end of this section.
+
+  **Measured (post-B2/B3, best-of-7, packed binary):** `<string>` used
+  134→**124ms**, unused 115→**109ms**, C-path 26ms (unchanged), bare 1ms.
+  Cumulative vs baseline: used 185→124 (−33%), unused 154→109 (−29%),
+  C-path gap 6×→4.8×. String-probe phase detail: forest restore 45ms
+  (materialize 20 + register 21, was 59 = mat 27 + reg 29 pre-B2), class
+  patterns "0 materialized / 5 deferred" (was ~600 deferred eagerly —
+  only THAWED defs count now), unit loads 33ms + zstd decode 43ms/76MB
+  unchanged (that cost is unit node-records — slice E territory, not B).
+  Batch gate green: fulltest 1002/0 incl. the new thaw-choke gate,
+  libcxxjit 998/0/13skip, RELEASE+PACKED suite 1002/0/9skip on the
+  lazy-thaw binary (packed added to this batch gate deliberately — B2
+  rewires the packed lane's restore semantics).
 
   **Settled design (2026-08-08, post-D recon):**
   - *B1 — forest side (self-contained, behavior-preserving) — CODED,
@@ -151,6 +169,30 @@ no templates to restore and libc functions ride the dlsym fallback
     placeholder stamp flush — extend only if the post-B profile still
     shows them), v23 param-default parseExpression re-runs (separate
     eager cost, candidate for its own slice).
+  - *As built (deltas from the design above):* (1) thaw landed PER-DEF
+    (`thaw_template_def` / `thaw_alias_def` / `thaw_fn_def`, memoized
+    via `frozen_src` NULLed up front), not per-entry — selection reads
+    only identity, so `find_template` / `find_template_alias` were
+    split into `*_raw` cores with thawing wrappers at the egress; an
+    existence probe through them thaws only the ONE selected def.
+    (2) `register_template`'s default-merge arms thaw the matched prior
+    variant (both arms read/write its typeparam_defaults — a later thaw
+    would clobber accumulated defaults). (3) B3 flush sites are SIX,
+    not 4: the census found three more consults in the CIR builder
+    (std_free_operator_instantiation, try_free_operator_call,
+    std_free_function_instantiation). (4) the flush keeps a CURSOR
+    (no drain) snapshotted in the journal State beside the
+    overload-table sizes; rollback rewinds it so truncated surfaces
+    re-derive — no lost captures, no duplicates. (5) thaw bypasses
+    intern_keyed_map's transaction save (logically const): a rollback
+    restoring a pre-thaw stub copy re-thaws at the next read. (6) the
+    gate is marker-based (`/* thaw-owner */` / `/* identity-read */`
+    on the matching line, `\b` guards exclude the eager
+    var_template_map); negative control verified. (7) unit-test
+    contract: direct map reads see stubs — the v20 case asserts empty
+    pre-thaw + hydrated post-thaw; `_class_pattern_restore_deferred`
+    now counts THAWED defs (the `>` materialized assertion became
+    `>=`).
 - **C — lazy registration.** register = 32ms flat, all map injection
   (`findVariable`/intern/Rb_tree ~7-8% + memcmp share). The decl-index
   sweep is 2-3ms — resolve through the frozen index on lookup misses
