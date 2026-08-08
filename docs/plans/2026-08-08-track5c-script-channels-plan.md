@@ -1,61 +1,70 @@
 # Track 5C slice 1 — script-facing channels: `madc::channel` (2026-08-08)
 
-## Implementation state (compaction checkpoint, session #71b)
+## Implementation state (session #71b)
 
-**DONE — C1 @ this branch (`feature/script-channels-claude`, off
-develop/v0.71.0):** `ProcessOptions.inherit_stderr` + PATH resolution
-in `Process::start` (committed pre-test as a bank; unit tests land with
-C2).
+**DONE — C1 @fc06f723:** `ProcessOptions.inherit_stderr` + PATH
+resolution in `Process::start`.
 
-**NEXT — C2 (all decisions settled, just write it):**
-- `pump_process`: stderr leg must SKIP an unreadable stderr channel
-  (`process.stderr_channel().capabilities().read == false` → no stderr
-  thread, `stderr_ok = true`) or inherit_stderr would terminate the
-  child spuriously.
-- `ExecDataChannel` in `madc_process.cpp` (anon ns, beside Process):
-  holds `std::unique_ptr<Process>`; `name()="exec"`; capabilities =
-  stdout.read / stdin.write / half_close=true, never seek;
-  read→stdout_channel().read, write→stdin_channel().write,
-  close_write→close_stdin, close() = close_stdin + stdout
-  close_read + wait + reset (child on EOF/EPIPE exits; Process dtor
-  SIGKILLs a survivor).
-- `ExecChannelFactory::open`: split `source.path()` on single spaces
-  (skip empty tokens; first = command, rest = argv; empty command =
-  error), `inherit_stderr=true`, `Process(DataSource("exec://" +
-  command), options)`, `start(err)` (null on failure), wrap.
-  Registration: `detail::register_exec_channel_factory(registry)`
-  declared in `madc_datachannel_internal.h`, called from the
-  `DataChannelRegistry` ctor after the socket factories.
-- Unit tests `tests/unit/test_exec_channel.cpp`: registry-opened
-  `exec://sort` round-trip (write lines, close_write, drain, expect
-  sorted; caps truthful), `exec:///nonexistent/x` → null + "process
-  exec failed", `exec://sort -r` argv split.
+**DONE — C2 @a74a5189:** `ExecDataChannel` + `ExecChannelFactory` +
+registry entry (space-split argv, inherit_stderr, loud spawn failure),
+plus the C1 follow-through fixes (execve consumes the resolved path,
+child dup2 tolerates the absent stderr pipe, pump_process skips its
+stderr leg when the stderr channel is unreadable). Unit tests:
+`test_exec_channel.cpp` (4 cases) + 3 new `test_process.cpp` legs.
 
-**THEN — C3:** `include/madcdis/channel.h` (+ `include/libmadc/channel.h`
-stub) + `src/madc_channel_object.cpp` (add to CORE_OFILES in
-src/Makefile). `class channel { void *impl_; }` — impl =
-`ChannelState { unique_ptr<DataChannel> channel; error last_error;
-std::string pending; bool eof, failed; }`. Semantics: `readline` strips
-the newline and returns the final unterminated tail, false at EOF;
-`read` serves `pending` first; `readall(string&)` drains; writes go
-through `write_all`; `close_write` = flush + half-close; modes
-"r"/"w"/"rw"/"a"; non-copyable (private copy ctor). Opens via
-`DataChannelRegistry::instance().open(DataSource(uri), mode,
-&last_error)`.
+**DONE — C3 @95edaa3a:** `madc::channel` host class
+(`include/madcdis/channel.h`, impl `src/madc_channel_object.cpp`,
+`ChannelState` behind one `void *impl_`). One deviation from the
+checkpoint sketch, settled: `write(string&)` is NON-const (eval-family
+precedent; const-qualified script types are still an active track).
+Unit tests: `test_channel_object.cpp` (5 cases).
 
-**THEN — C4:** extend `include/madc/ns_madc` with the declaration-only
-class twin (layout-contract comment both sides, `SysInfo` precedent);
-the three `.mad` tests + `.expect` fixtures per the Design section.
-Risk to validate FIRST in C4: `madc::channel` is the first madc-OWNED
-class resolved mangled-direct from an embedded header (std::string
-proves the machinery for real headers) — if a method import fails,
-compare madc's mangling of the symbol against `clang++`'s for the same
-declaration (madc_mangle.cpp is the fix site, not the header).
+**DONE — C4 @28bb7ed6:** `<ns_madc>` class twin + the three suite legs
+(`testexecchannel.mad`, `testtcpchannel.mad`, `testhttpget.mad` +
+`.expect` fixtures). The flagged risk was probed FIRST
+(`tmp/probe_channel.mad`) and did not materialize — madc's mangling of
+its own class resolved cleanly; no `madc_mangle.cpp` change. All three
+tests green in all three lanes (JIT / EXE / OBJ, 3/3 each).
 
-**Cadence:** batch gate (fulltest + libcxxjit) before push; /dupaudit
-scoped to process/channel + full battery pre-merge; merge ⇒ release
-(v0.72.0). SMAUG under madc already does raw socket()/bind()/listen()
-— script-side socket calls in the tcp tests are proven ground.
+**IN PROGRESS — C5:** `docs/language/channel.md` + overview index +
+CHANGELOG written; then the full battery, release v0.72.0, merge to
+develop.
+
+**Lane wall (hit and fixed in-branch):** the first batch gate ran
+fulltest GREEN but the libc++ JIT lane failed exactly the three new
+tests — undefined MIR imports for `channel::readline/write(string&)`
+mangled `NSt3__1` (script flavor) while the host exports `NSt7__cxx11`.
+The task #69 flavor-marshalling hook SAW the method calls and
+classified them as candidates; the sole defect was the host-twin mint:
+`host_flavor_fn_symbol` (a namespace-function mint) fed a METHOD
+produced garbage (`_Z0P7channel…` — empty name, no class scope, __this
+mangled as an explicit param). Fix at that layer:
+`Program::host_flavor_method_symbol(FuncDef*)` re-runs the ONE method
+mint (`itanium_mangle_member_sub`, the bind_declared_cpp_symbol owner)
+under `MangleHostFlavorScope`, owning class read from the hidden
+`__this` receiver; `flavor_marshal_thunk` selects fn-vs-method mint by
+`method_display_name`. The thunk generator itself needed nothing —
+`__this` passes through as a kind-0 pointer, and by-ref string
+out-params (readline's shape) are the proven `eval_unit(string&,…)`
+shape.
+
+**Dupaudit (pre-merge, scoped to channel/process) — done.** Known
+overlapping families re-checked, no regrowth (copy-loops owner still
+1, seekable probe still 1; the fd-write/cloexec/storage-seam gates
+re-verify in fulltest). ONE new family found and fixed in-branch:
+`runtime_error_composition` — three sites composed
+`error(severity::error, phase::runtime, …)`, the third copy being
+added by this branch itself. Consolidated @f5a64821 (one-arg
+`detail::set_channel_error` = ERROR-COMPOSER-OWNER, siblings
+delegate), gated by `scripts/check-one-error-composer.sh` in fulltest
+(negative control verified), recorded gated in the KG. Judged
+NOT duplication (tie-breaker): PATH-split vs argv-split (two rules —
+POSIX empty-field="." vs skip-empty tokens); `readall` vs
+`copy_channel` (buffered line-reader with shared pending buffer vs
+channel→channel drain). Cosmetic, dropped: the two test-side drain
+helpers (`read_channel` / `drain`). `scheme_factory_registry_twins`
+stays open, unchanged by this branch, assigned to 5B.7's opening
+commit.
 
 ## Mission (owner directive)
 
