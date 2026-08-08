@@ -2304,6 +2304,63 @@ std::string Program::host_flavor_fn_symbol(const std::string &ns_name,
     return namespace_cpp_function_symbol(ns_name, member_name, fd, &mask);
 }
 
+// task #69, method half: the HOST-flavor twin of a host-implemented class
+// method's Itanium symbol (madc::channel::readline under -stdlib=libc++ —
+// the first madc-owned class on the mangled-direct spine to cross the
+// flavor boundary). Mirrors host_flavor_fn_symbol: re-run the ONE method
+// mint (bind_declared_cpp_symbol's itanium_mangle_member_sub) under the
+// scoped host-flavor state — never string surgery on the script symbol.
+// The owning class is read from the hidden __this receiver (parameters[0]);
+// a static method has no receiver and returns empty — no host-implemented
+// static public needs the twin yet.
+std::string Program::host_flavor_method_symbol(FuncDef *fd)
+{
+    if ( !fd || fd->method_display_name.empty() )
+	return std::string();
+    if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+	return std::string();
+    DataDefPTR *self = fd->parameters.empty()
+	? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+    DataDefCLASS *cls = self
+	? dynamic_cast<DataDefCLASS *>(self->base_type) : NULL;
+    if ( !cls )
+	return std::string();
+    // Which params are the flavor string — decided under the SCRIPT state
+    // (the captured spellings already name the script flavor's string, so
+    // re-mangling alone cannot retarget them; the carrier positions swap to
+    // std_string_type() under the host scope, exactly as the fn twin does).
+    std::vector<char> mask;
+    for ( size_t i = 0; i < fd->parameters.size(); ++i )
+    {
+	DataDef *p = fd->parameters[i];
+	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+	    p = pp->base_type ? pp->base_type : p;
+	mask.push_back(p && p->marshals_value_text() ? 1 : 0);
+    }
+    const std::string &mname = fd->method_display_name;
+    MangleHostFlavorScope host_state;
+    std::vector<std::string> psp;
+    for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
+    {
+	std::string spelling = fd->mangle_param_spelling(i);
+	if ( mask[i] )
+	{
+	    bool refp = fd->is_ref_param(i);
+	    bool ptrp = !refp
+		&& dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+	    spelling = std_string_type() + (refp ? "&" : ptrp ? "*" : "");
+	}
+	psp.push_back(spelling);
+    }
+    fd->spell_varargs_tail(psp);
+    if ( mname.compare(0, 8, "operator") == 0 && mname.size() > 8 )
+	return itanium_mangle_operator_sub(cls->canonical_cpp_spelling(),
+					   mname.substr(8), psp,
+					   fd->is_const_method);
+    return itanium_mangle_member_sub(cls->canonical_cpp_spelling(), mname,
+				     psp, fd->is_const_method);
+}
+
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
 {
     if ( !base_type )

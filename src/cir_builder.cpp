@@ -4800,8 +4800,10 @@ void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
 		return;
 	bool script_hit = dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
 	std::string twin = m_prog
-		? m_prog->host_flavor_fn_symbol(fd->namespace_name,
-						fd->function_display_name, fd)
+		? (fd->method_display_name.empty()
+		   ? m_prog->host_flavor_fn_symbol(fd->namespace_name,
+						   fd->function_display_name, fd)
+		   : m_prog->host_flavor_method_symbol(fd))
 		: std::string();
 	bool twin_hit = !twin.empty()
 		     && dlsym(RTLD_DEFAULT, twin.c_str()) != NULL;
@@ -4846,9 +4848,14 @@ std::string CirBuilder::flavor_marshal_thunk(const std::string &sym,
 	m_flvmar_thunks[sym] = std::string();	// memo the miss until proven
 	std::string host = sym;
 	if (!symbol_is_host_implemented(host)) {
+		// A class method mints its twin through the method mint (the fn
+		// mint fed a method produces garbage: no class scope, __this
+		// mangled as an explicit param).
 		host = m_prog
-			? m_prog->host_flavor_fn_symbol(fd->namespace_name,
+			? (fd->method_display_name.empty()
+			   ? m_prog->host_flavor_fn_symbol(fd->namespace_name,
 					fd->function_display_name, fd)
+			   : m_prog->host_flavor_method_symbol(fd))
 			: std::string();
 		if (!symbol_is_host_implemented(host)) {
 			if (fmt_probe)
