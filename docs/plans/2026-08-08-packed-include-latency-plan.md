@@ -52,14 +52,17 @@ no templates to restore and libc functions ride the dlsym fallback
 
 ## Slices
 
-- **A — decode-in-place + O(1) segment lookup (mechanical, low risk).**
-  `snapshot_reader::read_segment_into(seg, dst, cap)` primitive (no
-  allocation; memcpy or zstd straight into caller storage);
-  `unit_segment` sizes the typed destination vectors once and decodes
-  directly into them (kills the staging buffers: one memset instead of
-  two, no second copy, less malloc churn); seg_id → index map built at
-  `open()` so `find()` stops scanning. Est. 15-25ms off; every packed
-  program benefits.
+- **A — decode-in-place + O(1) segment lookup — ✅ DONE.**
+  `snapshot_reader::read_segment_into(seg, dst, cap)` primitive over a
+  shared `decode_payload` core (both read_segment overloads ride it —
+  one implementation); `unit_segment` sizes the typed destination
+  vectors once from the directory's raw sizes and decodes directly into
+  them (staging buffers deleted: one memset instead of two, no second
+  copy, no staging mallocs); `_dir_index` built at `open()` so `find()`
+  is O(1). **Measured: `<string>` used 185→143ms (−23%), unused
+  154→130ms, C-path 31→29ms** — unit loads 57→34ms, register 32→23ms,
+  materialize 25→21ms (the indexed find serves the restore paths too).
+  Unit suite green (9019 assertions incl. test_madcdis_snapshot).
 - **B — lazy template payloads (the big one).** Registration keeps the
   template KEY surface eager (lookup must see the name), but
   `CirRestoredTemplate` payload/token-run decode defers to first

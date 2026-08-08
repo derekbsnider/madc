@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <unordered_map>
 #include <vector>
 #include <string>
 
@@ -162,6 +163,14 @@ class snapshot_reader
     size_t _blob_size;
     snapshot_header _hdr;
     std::vector<snapshot_segment> _dir;
+    // seg_id -> _dir index, built at open(); find() is O(1), not a scan
+    // (a per-unit load sweep issues four finds per unit over a ~1000-entry
+    // directory).
+    std::unordered_map<uint32_t, uint32_t> _dir_index;
+    // The one decode core: decompress (or copy) a payload into dst, no
+    // transform inversion, no allocation. Both read_segment overloads and
+    // read_segment_into ride it.
+    bool decode_payload(const snapshot_segment &seg, uint8_t *dst) const;
 public:
     snapshot_reader() : _blob(0), _blob_size(0) { _hdr = snapshot_header(); }
 
@@ -179,6 +188,13 @@ public:
     // Decompress (or copy) a segment payload into out (resized to raw_size),
     // inverting the segment's transform when one is recorded in seg.flags.
     bool read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const;
+
+    // Same, into caller-owned storage of at least seg.raw_size bytes — no
+    // allocation and no staging buffer, so a consumer that already owns the
+    // destination (a typed vector sized from the directory) pays ONE
+    // zero-fill instead of two plus a copy.
+    bool read_segment_into(const snapshot_segment &seg,
+			   uint8_t *dst, size_t capacity) const;
 
     // Decompress (or copy) a segment payload while preserving its recorded
     // byte-stream transform. Consumers that can bind the transformed shape

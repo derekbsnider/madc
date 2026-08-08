@@ -3550,36 +3550,53 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		fprintf(stderr, "madc: forest unit %u segments missing\n", unit);
 		return NULL;
 	}
-	std::vector<uint8_t> rb, kb, cb, pb;
+	// Divisibility gates come from the DIRECTORY's raw sizes, so the typed
+	// destination vectors can be sized once and decoded into directly —
+	// no staging buffers (the payload used to be zero-filled twice and
+	// copied twice; the memset alone was 12% of a packed <string> compile).
+	if (recs->raw_size % sizeof(cir_frozen_record)
+	    || kids->raw_size % sizeof(uint32_t)
+	    || conn->raw_size % sizeof(uint64_t)
+	    || poss->raw_size % sizeof(cir_frozen_pos)) {
+		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
+		return NULL;
+	}
+	std::vector<uint8_t> rb;   // columnar records: the plane buffer IS the
+				   // segment's retained storage (moved below)
 	bool records_columnar =
 		madc::dis::snap_xform_id(recs->flags)
 			== madc::dis::SNAP_XFORM_BYTEPLANE
 		&& madc::dis::snap_xform_param(recs->flags)
 			== sizeof(cir_frozen_record);
-	bool records_ok = records_columnar
-		? _reader.read_segment_transformed(*recs, rb)
-		: _reader.read_segment(*recs, rb);
-	if (!records_ok || !_reader.read_segment(*kids, kb)
-	    || !_reader.read_segment(*conn, cb) || !_reader.read_segment(*poss, pb)
-	    || rb.size() % sizeof(cir_frozen_record) || kb.size() % sizeof(uint32_t)
-	    || cb.size() % sizeof(uint64_t) || pb.size() % sizeof(cir_frozen_pos)) {
-		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
-		return NULL;
-	}
 
 	cir_forest_unit fu;
 	fu.unit_name_id = _units[unit].unit_name_id;
-	size_t record_count = rb.size() / sizeof(cir_frozen_record);
-	if (!records_columnar)
+	size_t record_count = (size_t)recs->raw_size / sizeof(cir_frozen_record);
+	bool records_ok;
+	if (records_columnar)
+		records_ok = _reader.read_segment_transformed(*recs, rb);
+	else {
 		fu.blob.records.resize(record_count);
-	fu.blob.children.resize(kb.size() / sizeof(uint32_t));
-	fu.connectors.resize(cb.size() / sizeof(uint64_t));
-	fu.positions.resize(pb.size() / sizeof(cir_frozen_pos));
-	if (!records_columnar && !rb.empty())
-		memcpy(fu.blob.records.data(), rb.data(), rb.size());
-	if (!kb.empty()) memcpy(fu.blob.children.data(), kb.data(), kb.size());
-	if (!cb.empty()) memcpy(fu.connectors.data(), cb.data(), cb.size());
-	if (!pb.empty()) memcpy(fu.positions.data(), pb.data(), pb.size());
+		records_ok = _reader.read_segment_into(
+			*recs, reinterpret_cast<uint8_t *>(fu.blob.records.data()),
+			(size_t)recs->raw_size);
+	}
+	fu.blob.children.resize((size_t)kids->raw_size / sizeof(uint32_t));
+	fu.connectors.resize((size_t)conn->raw_size / sizeof(uint64_t));
+	fu.positions.resize((size_t)poss->raw_size / sizeof(cir_frozen_pos));
+	if (!records_ok
+	    || !_reader.read_segment_into(
+		    *kids, reinterpret_cast<uint8_t *>(fu.blob.children.data()),
+		    (size_t)kids->raw_size)
+	    || !_reader.read_segment_into(
+		    *conn, reinterpret_cast<uint8_t *>(fu.connectors.data()),
+		    (size_t)conn->raw_size)
+	    || !_reader.read_segment_into(
+		    *poss, reinterpret_cast<uint8_t *>(fu.positions.data()),
+		    (size_t)poss->raw_size)) {
+		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
+		return NULL;
+	}
 
 	bool ok = record_count == _units[unit].record_count
 	       && fu.connectors.size() == _units[unit].connector_count
