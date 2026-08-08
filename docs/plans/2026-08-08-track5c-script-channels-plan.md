@@ -1,5 +1,62 @@
 # Track 5C slice 1 — script-facing channels: `madc::channel` (2026-08-08)
 
+## Implementation state (compaction checkpoint, session #71b)
+
+**DONE — C1 @ this branch (`feature/script-channels-claude`, off
+develop/v0.71.0):** `ProcessOptions.inherit_stderr` + PATH resolution
+in `Process::start` (committed pre-test as a bank; unit tests land with
+C2).
+
+**NEXT — C2 (all decisions settled, just write it):**
+- `pump_process`: stderr leg must SKIP an unreadable stderr channel
+  (`process.stderr_channel().capabilities().read == false` → no stderr
+  thread, `stderr_ok = true`) or inherit_stderr would terminate the
+  child spuriously.
+- `ExecDataChannel` in `madc_process.cpp` (anon ns, beside Process):
+  holds `std::unique_ptr<Process>`; `name()="exec"`; capabilities =
+  stdout.read / stdin.write / half_close=true, never seek;
+  read→stdout_channel().read, write→stdin_channel().write,
+  close_write→close_stdin, close() = close_stdin + stdout
+  close_read + wait + reset (child on EOF/EPIPE exits; Process dtor
+  SIGKILLs a survivor).
+- `ExecChannelFactory::open`: split `source.path()` on single spaces
+  (skip empty tokens; first = command, rest = argv; empty command =
+  error), `inherit_stderr=true`, `Process(DataSource("exec://" +
+  command), options)`, `start(err)` (null on failure), wrap.
+  Registration: `detail::register_exec_channel_factory(registry)`
+  declared in `madc_datachannel_internal.h`, called from the
+  `DataChannelRegistry` ctor after the socket factories.
+- Unit tests `tests/unit/test_exec_channel.cpp`: registry-opened
+  `exec://sort` round-trip (write lines, close_write, drain, expect
+  sorted; caps truthful), `exec:///nonexistent/x` → null + "process
+  exec failed", `exec://sort -r` argv split.
+
+**THEN — C3:** `include/madcdis/channel.h` (+ `include/libmadc/channel.h`
+stub) + `src/madc_channel_object.cpp` (add to CORE_OFILES in
+src/Makefile). `class channel { void *impl_; }` — impl =
+`ChannelState { unique_ptr<DataChannel> channel; error last_error;
+std::string pending; bool eof, failed; }`. Semantics: `readline` strips
+the newline and returns the final unterminated tail, false at EOF;
+`read` serves `pending` first; `readall(string&)` drains; writes go
+through `write_all`; `close_write` = flush + half-close; modes
+"r"/"w"/"rw"/"a"; non-copyable (private copy ctor). Opens via
+`DataChannelRegistry::instance().open(DataSource(uri), mode,
+&last_error)`.
+
+**THEN — C4:** extend `include/madc/ns_madc` with the declaration-only
+class twin (layout-contract comment both sides, `SysInfo` precedent);
+the three `.mad` tests + `.expect` fixtures per the Design section.
+Risk to validate FIRST in C4: `madc::channel` is the first madc-OWNED
+class resolved mangled-direct from an embedded header (std::string
+proves the machinery for real headers) — if a method import fails,
+compare madc's mangling of the symbol against `clang++`'s for the same
+declaration (madc_mangle.cpp is the fix site, not the header).
+
+**Cadence:** batch gate (fulltest + libcxxjit) before push; /dupaudit
+scoped to process/channel + full battery pre-merge; merge ⇒ release
+(v0.72.0). SMAUG under madc already does raw socket()/bind()/listen()
+— script-side socket calls in the tcp tests are proven ground.
+
 ## Mission (owner directive)
 
 The data-channel substrate stopped short of the language: `tcp://` and
