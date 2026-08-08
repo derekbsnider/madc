@@ -26,9 +26,12 @@ Unit tests: `test_channel_object.cpp` (5 cases).
 its own class resolved cleanly; no `madc_mangle.cpp` change. All three
 tests green in all three lanes (JIT / EXE / OBJ, 3/3 each).
 
-**IN PROGRESS — C5:** `docs/language/channel.md` + overview index +
-CHANGELOG written; then the full battery, release v0.72.0, merge to
-develop.
+**DONE — C5, SLICE 1 COMPLETE:** `docs/language/channel.md` + overview
+index + CHANGELOG; full battery all-green (JIT 1002/0/9skip, EXE 981/0,
+OBJ 981/0, libc++ JIT 998/0/13skip, packed 1002/0); released as
+**v0.72.0**, merged --no-ff to develop @2604561f, pushed, binaries
+rebaked. Later 5C slices: script-side `DataSet`/query surface, listener
+channels (`tcp://` is connect-only).
 
 **Lane wall (hit and fixed in-branch):** the first batch gate ran
 fulltest GREEN but the libc++ JIT lane failed exactly the three new
