@@ -287,13 +287,44 @@ bool Process::start(error *err)
 		environment_vector.push_back(const_cast<char *>(environment_storage[i].c_str()));
 	environment_vector.push_back(nullptr);
 
+	// posix_spawnp shape: a command with no '/' resolves against the
+	// SPAWN environment's PATH (options.environment can override it);
+	// execve itself never searches. argv[0] keeps the caller's spelling,
+	// execvp-style. An unresolved command falls through to execve and
+	// reports ENOENT through the exec-errno pipe.
+	std::string executable = _->source.path();
+	if ( executable.find('/') == std::string::npos )
+	{
+		std::map<std::string, std::string>::const_iterator path_it =
+			environment.find("PATH");
+		const std::string search =
+			path_it != environment.end() ? path_it->second : "";
+		std::size_t begin = 0;
+		while ( begin <= search.size() && !search.empty() )
+		{
+			std::size_t end = search.find(':', begin);
+			if ( end == std::string::npos )
+				end = search.size();
+			std::string dir = search.substr(begin, end - begin);
+			if ( dir.empty() )
+				dir = ".";
+			std::string candidate = dir + "/" + executable;
+			if ( ::access(candidate.c_str(), X_OK) == 0 )
+			{
+				executable = candidate;
+				break;
+			}
+			begin = end + 1;
+		}
+	}
+
 	int input_fds[2] = { -1, -1 };
 	int output_fds[2] = { -1, -1 };
 	int error_fds[2] = { -1, -1 };
 	int exec_fds[2] = { -1, -1 };
 	if ( !make_cloexec_pipe(input_fds, err)
 	  || !make_cloexec_pipe(output_fds, err)
-	  || !make_cloexec_pipe(error_fds, err)
+	  || (!_->options.inherit_stderr && !make_cloexec_pipe(error_fds, err))
 	  || !make_cloexec_pipe(exec_fds, err) )
 	{
 		close_pipe(input_fds);

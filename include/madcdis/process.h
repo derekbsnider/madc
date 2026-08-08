@@ -17,6 +17,12 @@ struct ProcessOptions
 	std::vector<std::string> args;
 	std::map<std::string, std::string> environment;
 	std::string working_directory;
+	// Leave the child's stderr on the parent's (shell-pipe semantics)
+	// instead of piping it. A piped stderr that nobody drains blocks a
+	// chatty child; inherit when no consumer will read stderr_channel().
+	// When set, stderr_channel() reports itself unreadable and
+	// pump_process skips its stderr leg.
+	bool inherit_stderr = false;
 };
 
 class Process
