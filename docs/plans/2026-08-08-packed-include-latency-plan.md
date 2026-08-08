@@ -50,6 +50,26 @@ is a LINEAR scan of the segment directory per lookup (4 finds × unit).
 | 2.1% | materialize_from_arena | slice B (template walk share) + C |
 | ~3% | findVariable family | registration lookups → slice C |
 
+## Profile refresh (post-B, tmp/cg_string_postB.out, string probe, 738M Ir — down 16% from post-A/D's 878M)
+
+| share | what | disposition |
+|---|---|---|
+| ~17.0% | zstd (15.9 + 1.1) | unit node-record loads, 76MB/12 units — NOW THE #1 LEVER: slice E (pack-side codec level / hot-cold split for node segments; pack-format change) |
+| 9.9% | `unit_segment` self | per-record validation firewall — trusting the SELF-IMAGE arm = OWNER decision |
+| ~12.7% | malloc/_int_free/free | token + DataDef alloc churn (diffuse: deserialize, materialize, maps) |
+| 5.8% | `__memset` | residual (A2 killed decode destinations; likely calloc/arena zeroing outside the decode path — not yet chased) |
+| 4.9% | memcmp | string-keyed map compares — slice C domain |
+| 2.4% | materialize_from_arena | typed-DataDef rebuild |
+| 1.8% | deserialize_tokens | remaining eager: MEMBER/OOL staging + thawed defs (down from 3.0%) |
+| ~2.7% + 1.4% | findVariable family + _Hash_bytes | registration lookups — slice C domain (register bucket now 21ms) |
+
+Slice C's whole domain is ~9% ≈ 21ms; zstd + validation together are
+~27%. Both bigger levers need decisions C doesn't: E changes the pack
+format, the validation arm trades the corrupt-container firewall for
+speed on the self-image. **Milestone decision (2026-08-08): close the
+branch at slice B (merge + release), take C/E on a fresh branch after
+the owner weighs in on the E format change and the validation arm.**
+
 ## Why an unused include pays at all (the eager-restore chain)
 
 `forest_restore_decls` → template-record walk (cir_freeze.cpp ~3294):

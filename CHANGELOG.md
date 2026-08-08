@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [v0.73.0] — 2026-08-08
+
+**The packed lane stops paying for templates it never uses: `#include
+<string>` drops 185→124 ms (−33 %), an unused include 154→109 ms, and
+the gap to the C path narrows from 6× to 4.8× — decode-in-place,
+no-init decode buffers, honest phase attribution, and lazy template
+thaw (task #25).**
+
+- **Lazy template thaw** (slices B1/B2/B3,
+  `docs/plans/2026-08-08-packed-include-latency-plan.md`).
+  Forest-restored template definitions — class, partial-spec, alias,
+  and fn lanes — now register as identity-only STUBS; the payload
+  (params, defaults, bodies/targets/decls, constraints, spec patterns,
+  frozen class-pattern spans) decodes on the FIRST content read at the
+  thaw owners (`find_template` / `find_template_alias` selection
+  wrappers, `template_with_body`, `match_partial_specialization`, the
+  fn-lane candidate chokes, the freeze writer's thaw-all). The
+  free-overload signature recapture (stream `operator<<`, manipulators,
+  `std::getline`) defers to a one-shot flush at the first consult of
+  those tables, with its cursor snapshotted in the class-registration
+  journal so rollbacks re-derive truncated surfaces. A TU that never
+  names a template never pays its decode; `<string>`'s class-pattern
+  deferrals drop from ~600 eager to 5 thawed.
+  `scripts/check-template-thaw-choke.sh` (in fulltest) fails any
+  unmarked direct read of the five lazy registries.
+- **Decode-in-place + O(1) segment lookup** (slice A).
+  `snapshot_reader` gains a shared `decode_payload` core and
+  `read_segment_into`; `unit_segment` decodes straight into the typed
+  destination vectors (staging buffers deleted — one memset instead of
+  two, no second copy); the segment directory is indexed at `open()`.
+- **No-init decode destinations** (slice A2).
+  `madc::dis::default_init_allocator` + `decode_vector`/`decode_bytes`
+  (`include/madcdis/pod_alloc.h`): resize on a decode destination no
+  longer zero-fills memory the decoder overwrites immediately.
+- **Honest phase attribution** (slice D). One depth-guarded
+  `ForestWorkFrame` clock spans every forest bind/restore/load path;
+  `--show-stats` now reports lex/parse/cir NET of forest work plus a
+  "forest in phases" carve line — the 96 ms "lex" mirage was forest
+  work all along.
+- Batteries at the release tree: fulltest **1002/0** (incl. the new
+  thaw gate), packed **1002/0/9skip**, libc++ JIT **998/0/13skip**,
+  EXE/OBJ **981/0**. Fork unchanged (1.0-madc.0.68.0).
+
 ## [v0.72.0] — 2026-08-08
 
 **The data-channel substrate reaches the language: `madc::channel` opens

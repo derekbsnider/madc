@@ -210,7 +210,7 @@ details.
 
 ## Project status
 
-The current release is **v0.72.0** (2026-08-08) — see the
+The current release is **v0.73.0** (2026-08-08) — see the
 [changelog](CHANGELOG.md) for what each release added. Headline results:
 
 - **1002** integration tests passing, with 0 failures and 0 timeouts —
