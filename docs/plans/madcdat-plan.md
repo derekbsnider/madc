@@ -17,13 +17,17 @@ This plan is paired with:
 
 `madcdat` ("madc data external") is the external/optional half of
 the data system. It ships as `libmadcdat`, depends on `libmadc`
-(which includes `madcdis`), and adds drivers for:
+(which includes `madcdis`), and adds implementations that require
+external libraries for:
 
-- File-format storage (CSV, FLR, VLR, plain files)
 - Local databases (BerkeleyDB, GDBM, QDBM, SQLite)
 - Network databases (MySQL, PostgreSQL, Redis, FalkorDB)
-- Service APIs (HTTP, REST, MCP, FTP, S3)
-- Structured text source parsing (SMAUG areas, mbox, TOML, INI)
+- Service APIs (libcurl-backed HTTP/HTTPS/REST/FTP/S3, MCP, mail)
+- File formats and structured sources whose implementation needs an
+  optional parser/client library
+
+Dependency-free standard transports and formats are core `madcdis`:
+memory, files, FIFOs, TCP, UDP, UDS, processes, DSV, FLR, and VLR.
 
 A Mad-C program that only needs in-memory or shared-memory data
 does not link `libmadcdat`. Linking it enables additional driver
@@ -35,17 +39,18 @@ schemes through the existing `DataDriverRegistry` in core.
 
 - Implement the `madcdis::DataDriver` interface for external
   backends
-- Implement the `madcdis::SourceAdapter` interface for structured
-  text source parsing
+- Implement the `madcdis::SourceAdapter` interface when an adapter
+  needs an optional external dependency
 - Register drivers and adapters into the core registries at load
   time
 - Provide nothing else — no new types, no new core API, no new
   query semantics
 
-All data model concerns (datasets, relations, query IR, planner,
-in-memory drivers, value system, refcounting, interning,
-multiplicity dedup, column encoding, derivation) live in `madcdis`.
-`madcdat` plugs into them.
+All data model concerns and dependency-free implementations (datasets,
+relations, query IR, planner, typed flows, raw channels, processes,
+standard file drivers, in-memory drivers, value system, refcounting,
+interning, multiplicity dedup, column encoding, derivation) live in
+`madcdis`. `madcdat` plugs external-library implementations into them.
 
 ## Non-Goals
 
@@ -145,15 +150,16 @@ policies pruning the `shm://` data as keyframes become canonical.
 
 ### 8. Drivers register themselves into core registries
 
-`register_optional_storage_drivers(registry)` is the canonical
-entry point. Mad-C programs that link `libmadcdat` get the
-external drivers registered automatically at startup. Programs
-that do not link it get a clean "no driver for scheme X" error if
-they request an external scheme.
+`register_core_storage_drivers(registry)` registers dependency-free DSV,
+FLR, and VLR support unconditionally. `register_optional_storage_drivers`
+is the separate canonical entry point for BDB, GDBM, QDBM, SQLite, and
+future external-library providers. Programs without `madcdat` retain all
+core drivers and get a clean "no driver for scheme X" error only when
+they request an optional scheme.
 
 ## Driver Families
 
-### File-format drivers
+### Core file-format drivers (`madcdis`)
 
 Local file formats:
 
@@ -181,6 +187,11 @@ pool snapshots directly, providing the fastest possible disk
 persistence path. Mad-C programs can write a hot `shm://` pool to
 a `snapshot://` file and reload it byte-for-byte; no encoding
 translation required.
+
+DSV, FLR, and VLR are implemented in `madcdis_storage.cpp`; DSV scan
+is natively cursor-backed, while compatibility APIs remain available.
+An optional file-format implementation belongs in `madcdat` only when
+it links an external library.
 
 ### Keyed local database drivers
 
@@ -443,6 +454,9 @@ Drivers:
 
 These are typically narrower in capability and require explicit
 error paths for operations the underlying service does not support.
+Where libcurl is used for HTTP/HTTPS/REST/FTP/S3, that provider remains
+in `madcdat`; raw `tcp://`, `udp://`, and `uds://` channels are core
+`madcdis` transports and do not depend on libcurl.
 
 The `s3://` driver in particular enables cold-tier archive of
 keyframes and historical data — the long-term storage tier for
@@ -450,29 +464,28 @@ the derivation pattern.
 
 ## Migration from Current State
 
-The current code has many `madcdis`-belonging types in
-`include/madcdat/`. The split is:
+The core interface migration is complete:
 
-**Move out of `madcdat/` into `madcdis/`:**
+**Canonical in `madcdis/`:**
 
 - `schema.h`, `mapper.h`, `query.h`, `relation.h`, `dataset.h`
-- `driver.h` (the interface, not the implementations)
+- `driver.h`, `source_adapter.h`, Cursor/Sink/Flow, DataChannel, Process
+- dependency-free DSV/FLR/VLR and memory/file/FIFO/TCP/UDP/UDS support
 
 **Stay in `madcdat/`:**
 
-- `source_adapter.h` (text-source parsing is external-content
-  territory)
-- Driver implementation source files (`madcdat_storage_*.cpp`)
-- `register_optional_storage_drivers` declaration
+- Driver/adapter implementations that link external libraries
+  (`madcdat_storage_bdb.cpp`, GDBM, QDBM, SQLite, and future clients)
+- `register_optional_storage_drivers` declaration and implementation
 
 **Update everywhere:**
 
-- Driver implementation `.cpp` files: include from `madcdis/` for
-  the interface, keep their own implementation headers in
-  `madcdat/` if needed.
+- External implementation `.cpp` files include their interfaces from
+  `madcdis/` and keep dependency-specific headers in `madcdat/` if needed.
+- Compatibility headers under older paths remain forwarding-only.
 
-The migration is mechanical — header path changes and include
-updates. No behavioral changes to existing drivers.
+The remaining migration is behavioral only where a suitable eager driver
+adopts the optional native streaming extension; legacy vector APIs remain.
 
 ## Open Questions
 

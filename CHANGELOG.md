@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+## [v0.70.0] — 2026-08-08
+
+**The data-channel streaming & process-flow core (Track 5A):
+dependency-free typed streaming over memory, files, FIFOs, TCP/UDP/UDS,
+and child processes — with the madcdis/madcdat boundary settled as
+dependency-based.**
+
+Implemented in session #70 (Codex 5.6-sol under the owner's guideline,
+`docs/plans/2026-08-07-data-channel-streaming-process-flow-plan.md`),
+then reviewed function-by-function and hardened before this merge.
+The boundary decision (owner): **madcdis owns all core/OS
+functionality** — the streaming framework, standard formats, and
+OS-level transports — while **madcdat owns external-library
+providers** (BDB/GDBM/QDBM/SQLite behind their `HAVE_*` guards). The
+storage core moved madcdat→madcdis as a verified faithful move (96/96
+functions accounted for, 93 byte-identical), and the DSV/FLR/VLR and
+storage-contract suites now run in the `--enable-madcdat=no` core
+build.
+
+- **ABI-compatible streaming seams.** Existing `Cursor`, `DataDriver`,
+  and `SourceAdapter` vtables are unchanged (moved verbatim into their
+  own headers); streaming is opt-in via new extension types
+  (`StreamingSourceAdapter`, `StreamingDataDriver`, `ErrorAwareCursor`)
+  discovered by capability probes that fall back to the legacy vector
+  APIs through single-owner helpers. Typed `Sink`/`Flow` adapters are
+  lazy end-to-end (gates: filter laziness, downstream failure closes
+  the upstream cursor, a local query limit does not drain a streaming
+  driver). DSV scans natively through an owned cursor while retaining
+  the legacy vector API.
+- **Dependency-free `DataChannel` framework** (`madcdis/datachannel.h`):
+  memory, file, FIFO, and TCP/UDP/UDS socket channels behind one
+  scheme registry, plus a `std::iostream` bridge that preserves channel
+  errors. Datagram channels refuse silent truncation (`MSG_TRUNC`) and
+  preserve the zero-length-datagram vs stream-EOF distinction;
+  byte-stream channels get real half-close (`shutdown`) semantics; all
+  channel writes suppress process-wide `SIGPIPE` through one owner.
+- **`Process`** (`madcdis/process.h`): explicit argv/env/cwd — no
+  shell, argv boundaries preserved — with independent stdin/stdout/
+  stderr channels, a cloexec self-pipe reporting the child's exec
+  errno, guaranteed reaping (including the destructor), and
+  `pump_process` driving all three streams concurrently with bounded
+  buffers.
+- **Two new fulltest gates**: every stream fd write must delegate to
+  the one SIGPIPE-safe owner (`check-datachannel-write-owner.sh`), and
+  every owned descriptor must follow the one close-on-exec policy
+  (`check-datachannel-cloexec-owner.sh`).
+- **Review hardening (this merge):** close-on-exec is now ATOMIC at fd
+  creation where the platform provides it (`O_CLOEXEC` on opens,
+  `pipe2`/`SOCK_CLOEXEC` on Linux; darwin keeps the shared post-hoc
+  owner as fallback — the gate enforces both); the twin channel-pump
+  loops were unified into one `copy_channel` owner; the DataChannel
+  thread-safety contract and `pump_process`'s distinct-channels
+  requirement are documented. Recorded follow-ups: the twin
+  scheme→factory registries (KG `DupFamily`), `pipe://` write-mode
+  `O_CREAT` surprise on a missing FIFO path.
+- Tests: data-channel contract 23 cases / 143 assertions, process
+  7 / 95, storage contract 25 / 223 — all green from the full build
+  AND the `--enable-madcdat=no` core build. Release-HEAD battery:
+  fulltest **999/0/0TO/9skip**, libc++ lane **995/0/13skip**, EXE/OBJ
+  **978/0**, `make release` rc=0 (forest-pack verify), packed suite
+  **999/0/9skip**.
+
 ## [v0.69.0] — 2026-08-07
 
 **The release lane restored — the frozen-corpus instantiation-identity

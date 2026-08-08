@@ -89,7 +89,7 @@ RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -365,7 +365,7 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
-MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_dsv.cpp $(TESTDIR)/test_libmadc_flr.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_relation.cpp $(TESTDIR)/test_libmadc_sqlite.cpp $(TESTDIR)/test_libmadc_storage_contract.cpp $(TESTDIR)/test_libmadc_vlr.cpp
+MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
 ifeq ($(HAVE_MADCDAT),1)
 ACTIVE_TESTSRCS = $(TESTSRCS)
 else
@@ -373,6 +373,7 @@ ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS), $(TESTSRCS))
 endif
 ALL_TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
+PROCESS_FIXTURE = $(BINDIR)/test_process_fixture
 # Link tests against all objects except madc.o (which has main())
 TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 LIBMADC_OBJECTS = $(filter-out $(PICOBJDIR)/madc.o, $(PIC_OBJECTS))
@@ -584,6 +585,7 @@ clean:
 	rm -f $(LIBMADC_SHARED)
 	rm -f $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
 	rm -f $(THIN_CLI)
+	rm -f $(PROCESS_FIXTURE)
 	rm -f sys_include_paths.cpp
 	rm -f predefined_macros.cpp
 
@@ -615,6 +617,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-ref-arg-lowering-owner.sh
 	@cd .. && bash scripts/check-fn-template-deduction-owner.sh
 	@cd .. && bash scripts/check-dependent-type-query-owner.sh
+	@cd .. && bash scripts/check-datachannel-write-owner.sh
+	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
@@ -655,6 +659,12 @@ WHOLE_ARCHIVE_END   ?= -Wl,--no-whole-archive
 
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
+
+$(BINDIR)/test_process: $(PROCESS_FIXTURE)
+
+$(PROCESS_FIXTURE): ../tests/helpers/process_fixture.cpp
+	mkdir -p $(BINDIR)
+	$(CXX) -o $@ $(CXXFLAGS) $<
 
 # Where a thin CLI looks for its libmadc: $ORIGIN/../lib resolves in BOTH
 # layouts — bin/madc -> lib/libmadc.so in the build tree, $(PREFIX)/bin/madc ->

@@ -3,6 +3,7 @@
 
 #include "libmadc/datasource.h"
 #include "libmadc/error.h"
+#include "madcdis/cursor.h"
 #include "madcdis/schema.h"
 #include "libmadc/value.h"
 
@@ -137,6 +138,32 @@ public:
 			      error *err = nullptr) const = 0;
 };
 
+class StreamingDataDriver
+{
+public:
+	virtual ~StreamingDataDriver() {}
+
+	virtual std::unique_ptr<Cursor<value> > scan_stream(error *err = nullptr) const = 0;
+	virtual bool can_stream_query(const Query &query) const
+	{
+		(void)query;
+		return false;
+	}
+	virtual std::unique_ptr<Cursor<value> > query_stream(const Query &query,
+							       error *err = nullptr) const
+	{
+		(void)query;
+		(void)err;
+		return std::unique_ptr<Cursor<value> >();
+	}
+};
+
+std::unique_ptr<Cursor<value> > scan_driver_cursor(const DataDriver &driver,
+						    error *err = nullptr);
+std::unique_ptr<Cursor<value> > query_driver_cursor(const DataDriver &driver,
+						     const Query &query,
+						     error *err = nullptr);
+
 class DataDriverRegistry
 {
 public:
@@ -161,6 +188,7 @@ private:
     std::unique_ptr<impl> _;
 };
 
+void register_core_storage_drivers(DataDriverRegistry &registry);
 void register_optional_storage_drivers(DataDriverRegistry &registry);
 
 } // namespace madc
