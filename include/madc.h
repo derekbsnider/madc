@@ -36,6 +36,8 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
+struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -2654,6 +2656,14 @@ public:
 	const uint32_t *frozen_class_pattern;
 	uint32_t frozen_class_pattern_words;
 	CirFrozenForest *frozen_class_pattern_forest;
+	// task #25 B2: a forest-restored definition registers as a STUB —
+	// identity fields only. frozen_src points at the CirRestoredTemplate
+	// (inside the bound forest's stable _restored_templates vector) whose
+	// payload decodes on the first content read (Program::thaw_template_def).
+	// NULL = fully thawed / live-parsed. Never point this at a registry
+	// value — intern_keyed_map's dense storage relocates on insert.
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	TemplateDef() : has_non_type_params(false), registry_name_id(0),
 			owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
@@ -2661,7 +2671,8 @@ public:
 			class_pattern_capture_deferred(false),
 			class_pattern_use_count(0),
 			frozen_class_pattern(NULL), frozen_class_pattern_words(0),
-			frozen_class_pattern_forest(NULL) {}
+			frozen_class_pattern_forest(NULL),
+			frozen_src(NULL), frozen_src_forest(NULL) {}
     };
 	template<class Definition>
 	struct TemplateRegistryEntry {
@@ -2776,6 +2787,13 @@ public:
     TemplateDef *find_template(uint32_t name_id,
 			       const std::string &ns_hint,
 			       DataDefCLASS *owner_hint);
+    // task #25 B2: the selection core (no thaw). Selection reads only
+    // identity fields (defining_namespace / owner_class); find_template
+    // wraps it and thaws the returned definition, so every caller-visible
+    // TemplateDef is hydrated.
+    TemplateDef *find_template_raw(uint32_t name_id,
+				   const std::string &ns_hint,
+				   DataDefCLASS *owner_hint);
     // The inline-namespace closure of `parent`: parent first, then every
     // inline descendant in BFS order. The ONE enumeration behind
     // find_template's / find_template_alias's qualified variant scans and
@@ -2909,13 +2927,27 @@ public:
 	std::vector<TokenBase *> target;
 	std::string defining_namespace;
 	DataDefCLASS *owner_class;
+	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	TemplateAliasDef() : has_non_type_params(false), registry_name_id(0),
-		owner_class(nullptr) {}
+		owner_class(nullptr), frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     typedef TemplateRegistryEntry<TemplateAliasDef> template_alias_registry_entry_t;
     madc::dis::intern_keyed_map<template_alias_registry_entry_t> template_alias_map; // bare-name id -> namespace + owner variants
     std::vector<TemplateAliasDef> &alias_template_variants_for_write(
 	uint32_t name_id, DataDefCLASS *owner);
+    // task #25 B2 thaw owners: decode a frozen stub's payload in place on
+    // first content read (memoized via frozen_src, NULLed on completion).
+    // Thaw is logically const — it never routes through intern_keyed_map's
+    // transaction save, so a journal rollback that restores a stub copy
+    // simply re-thaws on the next read.
+    void forest_restore_run(const CirRestoredTemplateRun &run,
+			    std::vector<TokenBase *> &out);
+    void thaw_template_def(TemplateDef &td);
+    void thaw_alias_def(TemplateAliasDef &ad);
+    // Freeze-writer path: a re-freeze exports every payload — thaw them all.
+    void thaw_all_frozen_templates();
     struct ClassNestedTemplateCaptureEntry {
 	ClassNestedTemplateKind kind;
 	bool partial_specialization;
@@ -5280,6 +5312,11 @@ public:
     TemplateAliasDef *find_template_alias(uint32_t name_id,
 					  const std::string &ns_hint,
 					  DataDefCLASS *owner_hint);
+    // task #25 B2: the alias selection core (no thaw). find_template_alias
+    // wraps it and thaws the returned definition.
+    TemplateAliasDef *find_template_alias_raw(uint32_t name_id,
+					      const std::string &ns_hint,
+					      DataDefCLASS *owner_hint);
     void register_template_alias(const TemplateAliasDef &td);
     // Owner is any dependent-surface type: an opaque placeholder CLASS or a
     // bare TEMPLATE-PARAMETER placeholder (`typename T::member` in a dependent

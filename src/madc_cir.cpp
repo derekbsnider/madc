@@ -3759,17 +3759,20 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	for (size_t i = 0; i < owners.size(); ++i)
 	    emit_variants(*owners[i].second);
     };
-    prog->template_map.for_each([&](const char *key,
+    // task #25 B2: a re-freeze on top of a bound forest serializes every
+    // definition's payload — thaw the frozen stubs first (no-op live).
+    prog->thaw_all_frozen_templates();
+    prog->template_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_registry_entry_t &registry) {
 	emit_class_registry(CIR_TMPLK_CLASS, key, registry);
 	return false;
     });
-    prog->partial_spec_map.for_each([&](const char *key,
+    prog->partial_spec_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_registry_entry_t &registry) {
 	emit_class_registry(CIR_TMPLK_PARTIAL, key, registry);
 	return false;
     });
-    prog->template_alias_map.for_each([&](const char *key,
+    prog->template_alias_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_alias_registry_entry_t &registry) {
 	auto emit_variants = [&](std::vector<Program::TemplateAliasDef> &variants) {
 	    for (Program::TemplateAliasDef &ad : variants) {

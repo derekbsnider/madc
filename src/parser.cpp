@@ -3822,7 +3822,7 @@ static std::string template_instantiation_key_head(
 	DataDefCLASS *owner = NULL)
 {
     const Program::template_registry_entry_t *entry =
-	pgm.template_map.find_readonly(name_id);
+	pgm.template_map.find_readonly(name_id);	/* identity-read: variant count only */
     const std::vector<Program::TemplateDef> *g =
 	entry ? entry->find(owner) : NULL;
     if ( g && g->size() > 1
@@ -7633,7 +7633,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // partial-spec match below can run and swap to that spec; if none matches, the
     // primary's empty body falls back to the opaque placeholder downstream (3287).
     const template_registry_entry_t *partial_entry =
-	partial_spec_map.find_readonly(tname_id);
+	partial_spec_map.find_readonly(tname_id);	/* identity-read: existence only */
     bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 			   && partial_entry && partial_entry->find(td.owner_class);
     if ( vri_debug_enabled() )
@@ -20425,8 +20425,8 @@ static Program::TemplateDef *registered_template_entry_for(
 	? td.registry_name_id : pgm.template_name_pool.intern(td.class_name);
     const Program::template_registry_entry_t *entry =
 	td.is_partial_specialization
-	? pgm.partial_spec_map.find_readonly(name_id)
-	: pgm.template_map.find_readonly(name_id);
+	? pgm.partial_spec_map.find_readonly(name_id)	/* identity-read: pointer-identity refind */
+	: pgm.template_map.find_readonly(name_id);	/* identity-read: pointer-identity refind */
     const std::vector<Program::TemplateDef> *found =
 	entry ? entry->find(td.owner_class) : NULL;
     if ( !found )
@@ -20500,8 +20500,8 @@ void Program::drain_pending_class_pattern_captures()
     for ( size_t i = 0; i < queue.size(); ++i )
     {
 	const template_registry_entry_t *entry = queue[i].is_partial
-	    ? partial_spec_map.find_readonly(queue[i].name_id)
-	    : template_map.find_readonly(queue[i].name_id);
+	    ? partial_spec_map.find_readonly(queue[i].name_id)	/* identity-read: capture flags only */
+	    : template_map.find_readonly(queue[i].name_id);	/* identity-read: capture flags only */
 	const std::vector<TemplateDef> *found =
 	    entry ? entry->find(queue[i].owner) : NULL;
 	if ( !found )
@@ -20562,6 +20562,145 @@ static double forest_restore_now(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+// Deserialize one frozen token run into live tokens, re-stamping the run's
+// origin file (intern_file) so instantiation provenance — _parse_file ->
+// from_system_header classification, lazy-body deferral, error attribution —
+// matches a live capture. Hoisted from the forest_restore_decls loop (task #25
+// B2) so the registration path, the thaw owners, and the deferred-recapture
+// flush share the one implementation.
+void Program::forest_restore_run(const CirRestoredTemplateRun &run,
+				 std::vector<TokenBase *> &out)
+{
+    out.clear();
+    if ( !run.bytes || !run.count )
+	return;
+    std::deque<TokenBase *> toks;
+    if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
+	return;
+    const char *fn = run.file ? intern_file(run.file) : NULL;
+    for ( TokenBase *t : toks )
+    {
+	if ( !t )
+	    continue;
+	t->file = fn;
+	out.push_back(t);
+    }
+}
+
+// task #25 B2 thaw owner: decode a class/partial template stub's frozen
+// payload in place. Memoized via frozen_src (NULLed up front); a journal
+// rollback that restored a pre-thaw stub copy re-thaws on the next read.
+// A payload bounds break (hydrate failure) leaves the def empty — the
+// container-level validation already gated the load, so this is
+// defense-in-depth, not a live path.
+void Program::thaw_template_def(TemplateDef &td)
+{
+    if ( !td.frozen_src )
+	return;
+    CirRestoredTemplate &rt = *td.frozen_src;
+    CirFrozenForest *forest = td.frozen_src_forest;
+    td.frozen_src = NULL;
+    td.frozen_src_forest = NULL;
+    if ( !forest || !forest->hydrate_restored_template(rt) )
+	return;
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    {
+	// Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): show what
+	// the forest actually carried for a matching template record.
+	static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
+	if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
+			    || !strcmp(cpp_probe, "*")) )
+	    std::cerr << "[class-pattern-probe] thaw: "
+		<< (rt.ns ? rt.ns : "") << "::" << td.class_name
+		<< " kind=" << rt.kind
+		<< " partial=" << td.is_partial_specialization
+		<< " reason=" << (unsigned)rt.pattern_reason
+		<< " pattern_words=" << rt.pattern_words
+		<< " params=" << rt.params.size()
+		<< std::endl;
+    }
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	td.typeparams.push_back(rt.params[p].first);
+	td.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	td.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	td.typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    forest_restore_run(rt.defaults[p], td.typeparam_defaults.back());
+    }
+    forest_restore_run(rt.body, td.body);
+    forest_restore_run(rt.constraint, td.constraint);
+    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
+    {
+	td.spec_pattern.push_back(std::vector<TokenBase *>());
+	forest_restore_run(rt.spec[sp], td.spec_pattern.back());
+    }
+    if ( rt.pattern && rt.pattern_words )
+    {
+	td.frozen_class_pattern = rt.pattern;
+	td.frozen_class_pattern_words = rt.pattern_words;
+	td.frozen_class_pattern_forest = forest;
+	++_class_pattern_restore_deferred;
+    }
+}
+
+// task #25 B2 thaw owner: the alias-template stub arm.
+void Program::thaw_alias_def(TemplateAliasDef &ad)
+{
+    if ( !ad.frozen_src )
+	return;
+    CirRestoredTemplate &rt = *ad.frozen_src;
+    CirFrozenForest *forest = ad.frozen_src_forest;
+    ad.frozen_src = NULL;
+    ad.frozen_src_forest = NULL;
+    if ( !forest || !forest->hydrate_restored_template(rt) )
+	return;
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	ad.typeparams.push_back(rt.params[p].first);
+	ad.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	ad.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	ad.typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    forest_restore_run(rt.defaults[p], ad.typeparam_defaults.back());
+    }
+    forest_restore_run(rt.body, ad.target);
+}
+
+// Freeze-writer path: a re-freeze (pack on top of a bound forest) serializes
+// every definition's payload — thaw them all first. Thaw mutates values in
+// place (no insert), so running it inside for_each is safe.
+void Program::thaw_all_frozen_templates()
+{
+    auto thaw_class_registry = [&](const char *,
+	    template_registry_entry_t &e) -> bool {
+	for ( TemplateDef &v : e.namespace_variants )
+	    thaw_template_def(v);
+	for ( std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateDef> >::iterator it =
+		e.member_variants.begin();
+	      it != e.member_variants.end(); ++it )
+	    for ( TemplateDef &v : it->second )
+		thaw_template_def(v);
+	return false;
+    };
+    template_map.for_each(thaw_class_registry);		/* thaw-owner */
+    partial_spec_map.for_each(thaw_class_registry);	/* thaw-owner */
+    template_alias_map.for_each([&](const char *,	/* thaw-owner */
+	    template_alias_registry_entry_t &e) -> bool {
+	for ( TemplateAliasDef &v : e.namespace_variants )
+	    thaw_alias_def(v);
+	for ( std::unordered_map<DataDefCLASS *,
+		std::vector<TemplateAliasDef> >::iterator it =
+		e.member_variants.begin();
+	      it != e.member_variants.end(); ++it )
+	    for ( TemplateAliasDef &v : it->second )
+		thaw_alias_def(v);
+	return false;
+    });
 }
 
 void Program::forest_restore_decls(CirFrozenForest &forest)
@@ -21068,23 +21207,6 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // attribution — matches a live capture (the .madh record form keeps
     // line/column per token; the file rides the run descriptor).
     std::vector<CirRestoredTemplate> &tmpls = forest.restored_templates();
-    auto restore_run = [&](const CirRestoredTemplateRun &run,
-			   std::vector<TokenBase *> &out) {
-	out.clear();
-	if ( !run.bytes || !run.count )
-	    return;
-	std::deque<TokenBase *> toks;
-	if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
-	    return;
-	const char *fn = run.file ? intern_file(run.file) : NULL;
-	for ( TokenBase *t : toks )
-	{
-	    if ( !t )
-		continue;
-	    t->file = fn;
-	    out.push_back(t);
-	}
-    };
     for ( size_t i = 0; i < tmpls.size(); ++i )
     {
 	CirRestoredTemplate &rt = tmpls[i];
@@ -21100,11 +21222,19 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	else if ( !forest_name_permitted(key, rt.ns) )
 	    continue;
+	// task #25 B2: CLASS/PARTIAL/ALIAS register as STUBS — identity only,
+	// payload deferred to the thaw owners (thaw_template_def /
+	// thaw_alias_def) so only names whose content is actually read pay
+	// the hydrate + token deserialize. The remaining kinds stay eager:
+	// VAR/CONCEPT are tiny populations; OUTOFLINE/MEMBER are entangled
+	// with the placeholder stamp flush (re-judged from the post-B profile).
+	bool lazy_kind = rt.kind == CIR_TMPLK_CLASS
+		      || rt.kind == CIR_TMPLK_PARTIAL
+		      || rt.kind == CIR_TMPLK_ALIAS;
 	// slice B1 (task #25): the walk restored IDENTITY only; the payload-
-	// backed fields (params / token runs / pattern slice) decode here.
-	// Still eager per surviving record for now — slice B2 moves this call
-	// to the registry thaw chokes so only INSTANTIATED keys pay it.
-	if ( !forest.hydrate_restored_template(rt) )
+	// backed fields (params / token runs / pattern slice) decode here for
+	// the eager kinds, at first content read for the lazy ones.
+	if ( !lazy_kind && !forest.hydrate_restored_template(rt) )
 	    continue;
 	switch ( rt.kind )
 	{
@@ -21122,44 +21252,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		td.class_pattern_reason = (ClassParseReason)rt.pattern_reason;
 	    else
 		td.class_pattern_reason = ClassParseReason::PatternParseError;
-	    {
-		// Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): show what
-		// the forest actually carried for a matching template record.
-		static const char *cpp_probe = ::getenv("MADC_CLASS_PATTERN_PROBE");
-		if ( cpp_probe && (td.class_name.find(cpp_probe) != std::string::npos
-				    || !strcmp(cpp_probe, "*")) )
-		    std::cerr << "[class-pattern-probe] restore: "
-			<< (rt.ns ? rt.ns : "") << "::" << td.class_name
-			<< " kind=" << rt.kind
-			<< " partial=" << td.is_partial_specialization
-			<< " reason=" << (unsigned)rt.pattern_reason
-			<< " pattern_words=" << rt.pattern_words
-			<< " params=" << rt.params.size()
-			<< std::endl;
-	    }
-	    for ( size_t p = 0; p < rt.params.size(); ++p )
-	    {
-		td.typeparams.push_back(rt.params[p].first);
-		td.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-		td.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-		td.typeparam_defaults.push_back(std::vector<TokenBase *>());
-		if ( p < rt.defaults.size() )
-		    restore_run(rt.defaults[p], td.typeparam_defaults.back());
-	    }
-	    restore_run(rt.body, td.body);
-	    restore_run(rt.constraint, td.constraint);
-	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
-	    {
-		td.spec_pattern.push_back(std::vector<TokenBase *>());
-		restore_run(rt.spec[sp], td.spec_pattern.back());
-	    }
-	    if ( rt.pattern && rt.pattern_words )
-	    {
-		td.frozen_class_pattern = rt.pattern;
-		td.frozen_class_pattern_words = rt.pattern_words;
-		td.frozen_class_pattern_forest = &forest;
-		++_class_pattern_restore_deferred;
-	    }
+	    td.frozen_src = &rt;	// stable: &tmpls[i] lives in the bound forest
+	    td.frozen_src_forest = &forest;
 	    if ( rt.kind == CIR_TMPLK_CLASS )
 	    {
 		class_template_variants_for_write(
@@ -21186,16 +21280,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    ad.defining_namespace = rt.ns ? rt.ns : "";
 	    ad.owner_class = rt.owner;
 	    ad.has_non_type_params = (rt.flags & CIR_TMPLF_HAS_NON_TYPE_PARAMS) != 0;
-	    for ( size_t p = 0; p < rt.params.size(); ++p )
-	    {
-		ad.typeparams.push_back(rt.params[p].first);
-		ad.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-		ad.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-		ad.typeparam_defaults.push_back(std::vector<TokenBase *>());
-		if ( p < rt.defaults.size() )
-		    restore_run(rt.defaults[p], ad.typeparam_defaults.back());
-	    }
-	    restore_run(rt.body, ad.target);
+	    ad.frozen_src = &rt;
+	    ad.frozen_src_forest = &forest;
 	    alias_template_variants_for_write(
 		ad.registry_name_id, ad.owner_class).push_back(ad);
 	    record_class_pattern_nested_template(ad.owner_class,
@@ -21217,7 +21303,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		fd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
 		fd.typeparam_defaults.push_back(std::vector<TokenBase *>());
 		if ( p < rt.defaults.size() )
-		    restore_run(rt.defaults[p], fd.typeparam_defaults.back());
+		    forest_restore_run(rt.defaults[p], fd.typeparam_defaults.back());
 	    }
 	    // v33: per-param constraint-TYPE runs ride the record's spec slot
 	    // (empty for a class-partial-style use — FN records never carried
@@ -21225,9 +21311,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
 	    {
 		fd.typeparam_constraints.push_back(std::vector<TokenBase *>());
-		restore_run(rt.spec[sp], fd.typeparam_constraints.back());
+		forest_restore_run(rt.spec[sp], fd.typeparam_constraints.back());
 	    }
-	    restore_run(rt.body, fd.decl);
+	    forest_restore_run(rt.body, fd.decl);
 	    if ( rt.kind == CIR_TMPLK_FN )
 		fn_template_map[key].push_back(fd);
 	    else
@@ -21254,7 +21340,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		vd.typeparams.push_back(rt.params[p].first);
 		vd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
 	    }
-	    restore_run(rt.body, vd.init);
+	    forest_restore_run(rt.body, vd.init);
 	    var_template_map[key] = vd;
 	    break;
 	}
@@ -21264,7 +21350,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    cd.defining_namespace = rt.ns ? rt.ns : "";
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
 		cd.typeparams.push_back(rt.params[p].first);
-	    restore_run(rt.constraint, cd.constraint);
+	    forest_restore_run(rt.constraint, cd.constraint);
 	    concept_map[key] = cd;
 	    break;
 	}
@@ -21288,7 +21374,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		else
 		    d.typeparams.push_back(rt.params[p].first);
 	    }
-	    restore_run(rt.body, d.decl);
+	    forest_restore_run(rt.body, d.decl);
 	    if ( !d.decl.empty() && !d.member_name.empty() )
 		out_of_line_member_defs[key].push_back(d);
 	    break;
@@ -21313,8 +21399,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    pm.owner = owner;
 	    pm.key   = rt.key  ? rt.key  : "";
 	    pm.disp  = rt.name ? rt.name : "";
-	    restore_run(rt.body, pm.tokens);
-	    restore_run(rt.constraint, pm.ret_tokens);
+	    forest_restore_run(rt.body, pm.tokens);
+	    forest_restore_run(rt.constraint, pm.ret_tokens);
 	    if ( pm.tokens.empty() && pm.ret_tokens.empty() )
 		break;
 	    for ( size_t p = 0; p < rt.params.size(); ++p )
@@ -21327,7 +21413,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		// [temp.deduct]/8 SFINAE defaults.
 		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
 		if ( p < rt.defaults.size() )
-		    restore_run(rt.defaults[p], pm.typeparam_defaults.back());
+		    forest_restore_run(rt.defaults[p], pm.typeparam_defaults.back());
 		// v38: the per-param CONSTRAINT runs ride the record's spec
 		// slot (the FN lane's v33 convention). An older record has
 		// rt.spec empty — cleared below so the size mismatch
@@ -21335,7 +21421,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		// the pre-v38 behavior (no info ≠ all-unconstrained).
 		pm.typeparam_constraints.push_back(std::vector<TokenBase *>());
 		if ( p < rt.spec.size() )
-		    restore_run(rt.spec[p], pm.typeparam_constraints.back());
+		    forest_restore_run(rt.spec[p], pm.typeparam_constraints.back());
 		if ( vri_debug_enabled() )
 		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
 			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
@@ -26133,8 +26219,21 @@ Program::TemplateDef *Program::find_template(uint32_t name_id,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
 {
+    // task #25 B2: selection reads identity only; the returned definition's
+    // payload thaws here — the ONE egress every template_map content read
+    // flows through.
+    TemplateDef *td = find_template_raw(name_id, ns_hint, owner_hint);
+    if ( td )
+	thaw_template_def(*td);	/* thaw-owner */
+    return td;
+}
+
+Program::TemplateDef *Program::find_template_raw(uint32_t name_id,
+						 const std::string &ns_hint,
+						 DataDefCLASS *owner_hint)
+{
     const template_registry_entry_t *entry =
-	template_map.find_readonly(name_id);
+	template_map.find_readonly(name_id);	/* thaw-owner: selection core */
     const std::vector<Program::TemplateDef> *found =
 	entry ? entry->find(owner_hint) : NULL;
     std::vector<Program::TemplateDef> *g = const_cast<
@@ -26215,8 +26314,22 @@ Program::TemplateAliasDef *Program::find_template_alias(
 							const std::string &ns_hint,
 							DataDefCLASS *owner_hint)
 {
+    // task #25 B2: same discipline as find_template — thaw the selected
+    // definition on egress (the class-tree member walk re-enters through
+    // this wrapper, so its result is thawed too).
+    TemplateAliasDef *ad = find_template_alias_raw(name_id, ns_hint, owner_hint);
+    if ( ad )
+	thaw_alias_def(*ad);	/* thaw-owner */
+    return ad;
+}
+
+Program::TemplateAliasDef *Program::find_template_alias_raw(
+							uint32_t name_id,
+							const std::string &ns_hint,
+							DataDefCLASS *owner_hint)
+{
     const template_alias_registry_entry_t *entry =
-	template_alias_map.find_readonly(name_id);
+	template_alias_map.find_readonly(name_id);	/* thaw-owner: selection core */
     if ( !entry )
 	return NULL;
     // [basic.lookup.unqual] in a member context: an unqualified alias-template
@@ -26302,8 +26415,8 @@ Program::TemplateAliasDef *Program::find_template_alias(
 Program::TemplateDef *Program::template_with_body(
 	const std::string &name)
 {
-    const template_registry_entry_t *entry = template_map.find_readonly(
-	template_name_pool.intern(name));
+    const template_registry_entry_t *entry =
+	template_map.find_readonly(template_name_pool.intern(name));	/* thaw-owner */
     const std::vector<Program::TemplateDef> *found =
 	entry ? entry->find(NULL) : NULL;
     std::vector<Program::TemplateDef> *g = const_cast<
@@ -26311,8 +26424,11 @@ Program::TemplateDef *Program::template_with_body(
     if ( !g )
 	return NULL;
     for ( size_t i = 0; i < g->size(); ++i )
+    {
+	thaw_template_def((*g)[i]);	// body presence is a payload read
 	if ( !(*g)[i].body.empty() )
 	    return &(*g)[i];
+    }
     return NULL;
 }
 
@@ -26332,6 +26448,11 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 	if ( variants[i].defining_namespace != td.defining_namespace
 	  || variants[i].owner_class != td.owner_class )
 	    continue;
+	// task #25 B2: both merge arms read (and the accumulate arm writes
+	// into) the prior variant's typeparam_defaults — a frozen stub must
+	// thaw before either, or the merge reads empties / a later thaw
+	// clobbers the accumulated defaults.
+	thaw_template_def(variants[i]);
 	if ( only_if_absent )
 	{
 	    // First declaration in this ns wins the BODY/pattern — but
@@ -27060,7 +27181,7 @@ Program::ClassRegistrationJournal::alias_template_variants_for_write(
 	return pgm.template_alias_map[name_id].for_write(owner);
 
     const template_alias_registry_entry_t *existing =
-	pgm.template_alias_map.find_readonly(name_id);
+	pgm.template_alias_map.find_readonly(name_id);	/* identity-read: journal snapshot */
     if ( !existing )
     {
 	state->inserted_alias_ids.insert(name_id);
@@ -27348,7 +27469,7 @@ void Program::ClassRegistrationJournal::rollback()
 	const State::SavedAliasTemplateVariants &saved =
 	    state->alias_template_variants[i];
 	template_alias_registry_entry_t *entry =
-	    pgm.template_alias_map.find(saved.name_id);
+	    pgm.template_alias_map.find(saved.name_id);	/* identity-read: rollback restore */
 	assert(entry);
 	if ( saved.owner )
 	{
@@ -28138,29 +28259,37 @@ class ClassPatternNormalizer
 	    if ( entry.kind == Program::ClassNestedTemplateKind::AliasTemplate )
 	    {
 		const Program::template_alias_registry_entry_t *registry =
-		    pgm.template_alias_map.find_readonly(entry.name_id);
+		    pgm.template_alias_map.find_readonly(entry.name_id);	/* thaw-owner */
 		const std::vector<Program::TemplateAliasDef> *variants =
 		    registry ? registry->find(owner) : NULL;
 		if ( !variants )
 		    continue;
 		for ( size_t v = 0; v < variants->size(); ++v )
 		    if ( (*variants)[v].owner_class == owner )
+		    {
+			pgm.thaw_alias_def(const_cast<
+			    Program::TemplateAliasDef &>((*variants)[v]));
 			node.nested_templates.push_back(
 			    nested_alias_template((*variants)[v]));
+		    }
 		continue;
 	    }
 	    const Program::template_registry_entry_t *registry =
 		entry.partial_specialization
-		? pgm.partial_spec_map.find_readonly(entry.name_id)
-		: pgm.template_map.find_readonly(entry.name_id);
+		? pgm.partial_spec_map.find_readonly(entry.name_id)	/* thaw-owner */
+		: pgm.template_map.find_readonly(entry.name_id);	/* thaw-owner */
 	    const std::vector<Program::TemplateDef> *variants =
 		registry ? registry->find(owner) : NULL;
 	    if ( !variants )
 		continue;
 	    for ( size_t v = 0; v < variants->size(); ++v )
 		if ( (*variants)[v].owner_class == owner )
+		{
+		    pgm.thaw_template_def(const_cast<
+			Program::TemplateDef &>((*variants)[v]));
 		    node.nested_templates.push_back(
 			nested_class_template((*variants)[v]));
+		}
 	}
     }
 
@@ -30611,7 +30740,7 @@ std::string Program::canonical_template_arg_spelling(const std::string &spelling
     rebuilt += ">";
     // Is the outer name registered in exactly ONE namespace?
     const template_registry_entry_t *entry =
-	template_map.find_readonly(template_name_pool.intern(outer));
+	template_map.find_readonly(template_name_pool.intern(outer));	/* identity-read: defining_namespace only */
     const std::vector<TemplateDef> *g = entry ? entry->find(NULL) : NULL;
     bool single_ns = g && !g->empty();
     std::string reg_ns = single_ns ? (*g)[0].defining_namespace : std::string();
@@ -30742,10 +30871,15 @@ Program::TemplateDef *Program::match_partial_specialization(
     if ( !name_id )
 	name_id = template_name_pool.intern(name);
     const template_registry_entry_t *entry =
-	partial_spec_map.find_readonly(name_id);
+	partial_spec_map.find_readonly(name_id);	/* thaw-owner */
     const std::vector<TemplateDef> *found =
 	entry ? entry->find(owner_hint) : NULL;
     std::vector<TemplateDef> *it = const_cast<std::vector<TemplateDef> *>(found);
+    // task #25 B2: unification reads every candidate's spec_pattern — thaw
+    // the owner bucket before matching.
+    if ( it )
+	for ( TemplateDef &v : *it )
+	    thaw_template_def(v);
     static const char *smp = ::getenv("MADC_SPECMATCH_PROBE");
     const bool smp_on = smp && *smp && name.find(smp) != std::string::npos;
     if ( smp_on )
@@ -62788,9 +62922,9 @@ void Program::dump_registered_names(FILE *out)
 	    add_class_templates(it->second);
 	return false;
     };
-    template_map.for_each(add_class_registry);
-    partial_spec_map.for_each(add_class_registry);
-    template_alias_map.for_each([&](const char *,
+    template_map.for_each(add_class_registry);		/* identity-read: names only */
+    partial_spec_map.for_each(add_class_registry);	/* identity-read: names only */
+    template_alias_map.for_each([&](const char *,	/* identity-read: names only */
 	    template_alias_registry_entry_t &registry) -> bool {
 	auto add_aliases = [&](const std::vector<TemplateAliasDef> &defs) {
 	    for ( const TemplateAliasDef &td : defs )

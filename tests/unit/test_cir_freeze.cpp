@@ -2559,6 +2559,14 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		REQUIRE(psv != nullptr);
 		REQUIRE(psv->size() == 1);
 		CHECK((*psv)[0].is_partial_specialization);
+		// task #25 B2: a restored definition registers as a STUB —
+		// identity only; a direct map read sees the pre-thaw state.
+		// Payload reads route through the thaw owners
+		// (find_template / match_partial_specialization / explicit).
+		CHECK((*psv)[0].spec_pattern.empty());
+		CHECK((*psv)[0].frozen_src != nullptr);
+		progB->thaw_template_def((*psv)[0]);
+		CHECK((*psv)[0].frozen_src == nullptr);
 		CHECK((*psv)[0].spec_pattern.size() == 2);
 		CHECK((*psv)[0].class_pattern_id == 0);
 		const Program::ClassPattern *restored_partial_pattern =
@@ -2571,7 +2579,11 @@ TEST_CASE("v20: template-NAME state (pattern maps + token bodies) freezes and re
 		      producer_partial_fingerprint);
 	}
 	CHECK(progB->_class_pattern_restore_materialized == 3);
-	CHECK(progB->_class_pattern_restore_deferred >
+	// task #25 B2: _class_pattern_restore_deferred counts THAWED defs whose
+	// pattern materialization was deferred — under lazy payloads it equals
+	// (not exceeds) the materialized count for a consumer that materializes
+	// everything it thaws.
+	CHECK(progB->_class_pattern_restore_deferred >=
 	      progB->_class_pattern_restore_materialized);
 	CHECK(progB->template_alias_map.count("W2Same") == 1);
 	std::remove(inc_path.c_str());
