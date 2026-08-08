@@ -3138,10 +3138,14 @@ public:
 	// mint duplicate definitions — g++ has one instantiation per
 	// (template, binding). Set to the placeholder's stable symbol.
 	std::string inst_identity;
+	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	FnTemplateDef() : typeparams(), typeparam_defaults(),
 	    typeparam_constraints(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
-	    owner_class(NULL), instance_method(false), inst_identity() {}
+	    owner_class(NULL), instance_method(false), inst_identity(),
+	    frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
     // BODY-LESS free/namespace function template declarations (no `{ body }` to
@@ -3152,6 +3156,24 @@ public:
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
+    // task #25 B2 thaw owners, fn lanes: find + thaw every def of the key.
+    void thaw_fn_def(FnTemplateDef &fd);
+    std::vector<FnTemplateDef> *thawed_fn_templates(const std::string &key);
+    std::vector<FnTemplateDef> *thawed_fn_template_decls(const std::string &key);
+    // task #25 B3: free-overload surface recaptures (free_operator_overloads /
+    // manipulator / free_function_overloads signature tables) deferred at
+    // restore — the derivation needs the decl tokens. Flushed one-shot by
+    // ensure_free_overload_surfaces() at the first consult of those tables,
+    // so an unused TU never pays. The flush cursor is journal-snapshotted:
+    // a rollback that truncated the tables rewinds it so the entries
+    // re-flush at the next consult.
+    struct PendingOverloadRecapture {
+	CirRestoredTemplate *rt;	// into the forest's stable vector
+	CirFrozenForest *forest;
+    };
+    std::vector<PendingOverloadRecapture> forest_pending_overload_recaptures;
+    size_t forest_overload_recaptures_flushed = 0;	// first un-flushed index
+    void ensure_free_overload_surfaces();
     registration_set<std::string> fn_template_instantiated; // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.

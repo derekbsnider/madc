@@ -3809,7 +3809,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    emit_variants(*owners[i].second);
 	return false;
     });
-    prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+    prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
 	    emit(CIR_TMPLK_FN, key, std::string(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,
@@ -3820,7 +3820,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 Program::ClassParseReason::None);
 	return false;
     });
-    prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+    prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
 	    emit(CIR_TMPLK_FN_DECL, key, std::string(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,

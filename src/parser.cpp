@@ -16887,6 +16887,7 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
       && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->left))
       && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->right)) )
 	return NULL;
+    ensure_free_overload_surfaces();	// task #25 B3: consult flush
     std::string opname = std::string("operator") + opsym;
     // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>): which arm of this
     // lowering claimed the expression. A bail here hands the pair back to the
@@ -17169,7 +17170,10 @@ static std::string template_head_component(const std::string &spelling)
 DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
 	const std::string &opname, TokenBase *right)
 {
-    if ( !lc || !right || free_operator_overloads.empty() )
+    if ( !lc || !right )
+	return NULL;
+    ensure_free_overload_surfaces();	// task #25 B3: consult flush
+    if ( free_operator_overloads.empty() )
 	return NULL;
     DataDefCLASS *rc = operand_object_class(right);
     if ( !rc )
@@ -17219,7 +17223,10 @@ DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
 DataDef *Program::free_binary_operator_return_class_nonclass_lhs(
 	TokenBase *left, const std::string &opname, TokenBase *right)
 {
-    if ( !left || !right || free_operator_overloads.empty() )
+    if ( !left || !right )
+	return NULL;
+    ensure_free_overload_surfaces();	// task #25 B3: consult flush
+    if ( free_operator_overloads.empty() )
 	return NULL;
     DataDefCLASS *rc = operand_object_class(right);
     DataDef *ld = left->datadef();
@@ -20646,6 +20653,62 @@ void Program::thaw_template_def(TemplateDef &td)
     }
 }
 
+// task #25 B2 thaw owner: the fn-template stub arm (fn_template_map /
+// fn_template_decl_map values).
+void Program::thaw_fn_def(FnTemplateDef &fd)
+{
+    if ( !fd.frozen_src )
+	return;
+    CirRestoredTemplate &rt = *fd.frozen_src;
+    CirFrozenForest *forest = fd.frozen_src_forest;
+    fd.frozen_src = NULL;
+    fd.frozen_src_forest = NULL;
+    if ( !forest || !forest->hydrate_restored_template(rt) )
+	return;
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	fd.typeparams.push_back(rt.params[p].first);
+	fd.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	fd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	fd.typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    forest_restore_run(rt.defaults[p], fd.typeparam_defaults.back());
+    }
+    // v33: per-param constraint-TYPE runs ride the record's spec slot
+    // (empty for a class-partial-style use — FN records never carried
+    // spec patterns before v33).
+    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
+    {
+	fd.typeparam_constraints.push_back(std::vector<TokenBase *>());
+	forest_restore_run(rt.spec[sp], fd.typeparam_constraints.back());
+    }
+    forest_restore_run(rt.body, fd.decl);
+}
+
+// task #25 B2 thaw owners: the fn-lane content-read chokes — find the key's
+// overload vector and thaw every def in it (candidate selection reads
+// typeparams / constraints / decl of each).
+std::vector<Program::FnTemplateDef> *Program::thawed_fn_templates(
+	const std::string &key)
+{
+    std::vector<FnTemplateDef> *mi = fn_template_map.find(key);	/* thaw-owner */
+    if ( mi )
+	for ( FnTemplateDef &fd : *mi )
+	    thaw_fn_def(fd);
+    return mi;
+}
+
+std::vector<Program::FnTemplateDef> *Program::thawed_fn_template_decls(
+	const std::string &key)
+{
+    std::vector<FnTemplateDef> *di = fn_template_decl_map.find(key);	/* thaw-owner */
+    if ( di )
+	for ( FnTemplateDef &fd : *di )
+	    thaw_fn_def(fd);
+    return di;
+}
+
 // task #25 B2 thaw owner: the alias-template stub arm.
 void Program::thaw_alias_def(TemplateAliasDef &ad)
 {
@@ -20701,6 +20764,14 @@ void Program::thaw_all_frozen_templates()
 		thaw_alias_def(v);
 	return false;
     });
+    auto thaw_fn_vec = [&](const char *,
+	    std::vector<FnTemplateDef> &v) -> bool {
+	for ( FnTemplateDef &fd : v )
+	    thaw_fn_def(fd);
+	return false;
+    };
+    fn_template_map.for_each(thaw_fn_vec);		/* thaw-owner */
+    fn_template_decl_map.for_each(thaw_fn_vec);		/* thaw-owner */
 }
 
 void Program::forest_restore_decls(CirFrozenForest &forest)
@@ -21222,15 +21293,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	else if ( !forest_name_permitted(key, rt.ns) )
 	    continue;
-	// task #25 B2: CLASS/PARTIAL/ALIAS register as STUBS — identity only,
-	// payload deferred to the thaw owners (thaw_template_def /
-	// thaw_alias_def) so only names whose content is actually read pay
-	// the hydrate + token deserialize. The remaining kinds stay eager:
-	// VAR/CONCEPT are tiny populations; OUTOFLINE/MEMBER are entangled
-	// with the placeholder stamp flush (re-judged from the post-B profile).
+	// task #25 B2: CLASS/PARTIAL/ALIAS/FN/FN_DECL register as STUBS —
+	// identity only, payload deferred to the thaw owners
+	// (thaw_template_def / thaw_alias_def / thaw_fn_def) so only names
+	// whose content is actually read pay the hydrate + token deserialize.
+	// The remaining kinds stay eager: VAR/CONCEPT are tiny populations;
+	// OUTOFLINE/MEMBER are entangled with the placeholder stamp flush
+	// (re-judged from the post-B profile).
 	bool lazy_kind = rt.kind == CIR_TMPLK_CLASS
 		      || rt.kind == CIR_TMPLK_PARTIAL
-		      || rt.kind == CIR_TMPLK_ALIAS;
+		      || rt.kind == CIR_TMPLK_ALIAS
+		      || rt.kind == CIR_TMPLK_FN
+		      || rt.kind == CIR_TMPLK_FN_DECL;
 	// slice B1 (task #25): the walk restored IDENTITY only; the payload-
 	// backed fields (params / token runs / pattern slice) decode here for
 	// the eager kinds, at first content read for the lazy ones.
@@ -21296,24 +21370,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    fd.inline_builtin_kind = rt.extra ? rt.extra : "";
 	    fd.owner_class = rt.owner;
 	    fd.instance_method = (rt.flags & CIR_TMPLF_INSTANCE_METHOD) != 0;
-	    for ( size_t p = 0; p < rt.params.size(); ++p )
-	    {
-		fd.typeparams.push_back(rt.params[p].first);
-		fd.typeparam_is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-		fd.typeparam_is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-		fd.typeparam_defaults.push_back(std::vector<TokenBase *>());
-		if ( p < rt.defaults.size() )
-		    forest_restore_run(rt.defaults[p], fd.typeparam_defaults.back());
-	    }
-	    // v33: per-param constraint-TYPE runs ride the record's spec slot
-	    // (empty for a class-partial-style use — FN records never carried
-	    // spec patterns before v33).
-	    for ( size_t sp = 0; sp < rt.spec.size(); ++sp )
-	    {
-		fd.typeparam_constraints.push_back(std::vector<TokenBase *>());
-		forest_restore_run(rt.spec[sp], fd.typeparam_constraints.back());
-	    }
-	    forest_restore_run(rt.body, fd.decl);
+	    fd.frozen_src = &rt;
+	    fd.frozen_src_forest = &forest;
 	    if ( rt.kind == CIR_TMPLK_FN )
 		fn_template_map[key].push_back(fd);
 	    else
@@ -21323,12 +21381,13 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // which ALSO derived the free-overload signature tables
 	    // (free_operator_overloads: `os << x`; the manipulator shape:
 	    // `os << endl` -> mangled-direct endl(&os); free_function_overloads:
-	    // std::getline). Re-run the same captures over the restored tokens
-	    // — the one live derivation, no parallel format. Owner-classed
-	    // (member) patterns never captured on live; neither here.
-	    if ( !fd.ns.empty() && !fd.owner_class && !fd.decl.empty() )
-		recapture_free_overload_surfaces(*this, fd.decl, fd.typeparams,
-						 fd.ns);
+	    // std::getline). Owner-classed (member) patterns never captured on
+	    // live; neither here. task #25 B3: the re-derivation needs the decl
+	    // TOKENS — deferred to ensure_free_overload_surfaces(), flushed
+	    // one-shot at the first consult of those tables.
+	    if ( !fd.ns.empty() && !fd.owner_class )
+		forest_pending_overload_recaptures.push_back(
+		    PendingOverloadRecapture{&rt, &forest});
 	    break;
 	}
 	case CIR_TMPLK_VAR:
@@ -21574,7 +21633,7 @@ void Program::flush_forest_pending_globals()
 		}
 		bool tmpl_placeholder = pf.fd->declaration_only
 		    && !pf.fd->namespace_name.empty()
-		    && fn_template_map.find(ovkey) != fn_template_map.end();
+		    && fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
 		// A CONCRETE declaration-only C++ namespace function binds its
 		// external Itanium symbol via the Variable's storage_alias_name
 		// (parseFunction's tail, e.g. std::__throw_bad_alloc ->
@@ -26906,6 +26965,10 @@ struct Program::ClassRegistrationJournal::State
 	fn_template_instantiated_vars;
     size_t free_operator_overloads_size;
     size_t free_function_overloads_size;
+    // task #25 B3: rollback truncates the overload tables above — rewind the
+    // deferred-recapture flush cursor with them so truncated entries
+    // re-derive at the next consult.
+    size_t overload_recaptures_flushed;
     registration_map<std::string, std::vector<NamespaceFnOverload> >::transaction_state
 	namespace_fn_overload_sets_transaction;
     registration_map<std::string,
@@ -26965,6 +27028,7 @@ struct Program::ClassRegistrationJournal::State
 	  forest_tokbytes_size(snapshot_forest ? p.forest_arena.tokbytes.size() : 0),
 	  free_operator_overloads_size(p.free_operator_overloads.size()),
 	  free_function_overloads_size(p.free_function_overloads.size()),
+	  overload_recaptures_flushed(p.forest_overload_recaptures_flushed),
 	  template_param_pool_size(p.template_param_pool.size()),
 	  template_param_scopes_size(p.template_param_scopes.size()),
 	  ast_size(p.ast.size()),
@@ -27521,6 +27585,7 @@ void Program::ClassRegistrationJournal::rollback()
 	state->out_of_line_nested_class_defs_transaction);
     pgm.free_operator_overloads.resize(state->free_operator_overloads_size);
     pgm.free_function_overloads.resize(state->free_function_overloads_size);
+    pgm.forest_overload_recaptures_flushed = state->overload_recaptures_flushed;
     for ( std::map<std::string,
 	    variable_map_t::transaction_state>::iterator it =
 	    state->namespace_map_transactions.begin();
@@ -32761,7 +32826,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // absent from the type-template registries instantiate_template_id
 		    // consults, but is present in fn_template_map.)
 		    bool member_is_fn_template =
-			fn_template_map.find(ns_name + "::" + member_name)
+			fn_template_map.find(ns_name + "::" + member_name)	/* identity-read: existence */
 			    != fn_template_map.end();
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
 		      && template_declared_in_namespace(member_name, ns_name)
@@ -49021,6 +49086,36 @@ static void recapture_free_overload_surfaces(Program &pgm,
 	capture_free_function_overload(pgm, tokens, typeparams, name);
 }
 
+// task #25 B3: flush the restore-deferred free-overload surface recaptures —
+// called at every consult of free_operator_overloads / the manipulator shape /
+// free_function_overloads (parser lowering + CIR-builder instantiation). The
+// cursor never re-runs a flushed entry; a class-registration-journal rollback
+// that truncated the tables rewinds the cursor (journal State snapshot), so
+// the truncated entries re-derive at the next consult. An unused TU never
+// consults, so it never pays. The list itself is kept intact (no drain) —
+// entries are tiny pointer pairs and the cursor snapshot needs stable indices.
+void Program::ensure_free_overload_surfaces()
+{
+    while ( forest_overload_recaptures_flushed
+		< forest_pending_overload_recaptures.size() )
+    {
+	PendingOverloadRecapture pr = forest_pending_overload_recaptures[
+	    forest_overload_recaptures_flushed++];
+	if ( !pr.rt || !pr.forest
+	  || !pr.forest->hydrate_restored_template(*pr.rt) )
+	    continue;
+	std::vector<TokenBase *> tokens;
+	forest_restore_run(pr.rt->body, tokens);
+	if ( tokens.empty() )
+	    continue;
+	std::vector<std::string> typeparams;
+	for ( size_t p = 0; p < pr.rt->params.size(); ++p )
+	    typeparams.push_back(pr.rt->params[p].first);
+	recapture_free_overload_surfaces(*this, tokens, typeparams,
+					 pr.rt->ns ? pr.rt->ns : "");
+    }
+}
+
 // Deduce which template parameter a parameter SPELLING names, and what the
 // argument's DataDef binds it to. Supported shapes: bare `Tp` with optional
 // cv-qualifiers, trailing pointer/reference layers, and an optional direct-pack
@@ -52451,7 +52546,7 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
     static const char *_fop = ::getenv("MADC_FREEOP_PROBE");
     const bool _fop_on = _fop && *_fop && opname.find(_fop) != std::string::npos;
     size_t _fop_keys = 0, _fop_cands = 0;
-    fn_template_map.for_each(
+    fn_template_map.for_each(	/* thaw-owner */
 	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
 	    std::string key(key_c);
 	    // `<`, not `<=`: the GLOBAL scope's key is exactly "::" + opname
@@ -52460,6 +52555,10 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 	    if ( key.size() < suffix.size()
 	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
 		return false;
+	    // task #25 B2: only suffix-MATCHING keys thaw — the enumeration
+	    // itself stays identity-only.
+	    for ( FnTemplateDef &c : vec )
+		thaw_fn_def(c);
 	    if ( _fop_on )
 	    {
 		++_fop_keys;
@@ -52646,7 +52745,7 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     if ( !fd || fd->function_display_name.empty() )
 	return;
     std::string fn_key = fd->namespace_name + "::" + fd->function_display_name;
-    std::vector<FnTemplateDef> *mi = fn_template_map.find(fn_key);
+    std::vector<FnTemplateDef> *mi = thawed_fn_templates(fn_key);
     if ( mi == fn_template_map.end() )
 	return;
     // Order candidates most-specialized first ([temp.func.order]) so the
@@ -54506,11 +54605,11 @@ DataDef *Program::resolve_fn_template_return_by_key(
     std::vector<FnTemplateDef *> cands;
     {
 	std::vector<FnTemplateDef> *mi =
-	    fn_template_map.find(key);
+	    thawed_fn_templates(key);
 	if ( mi != fn_template_map.end() )
 	    for ( FnTemplateDef &c : *mi ) cands.push_back(&c);
 	std::vector<FnTemplateDef> *di =
-	    fn_template_decl_map.find(key);
+	    thawed_fn_template_decls(key);
 	if ( di != fn_template_decl_map.end() )
 	    for ( FnTemplateDef &c : *di ) cands.push_back(&c);
     }
@@ -54533,11 +54632,11 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    for ( size_t pi = 0; pi < pending.size() && cands.empty(); ++pi )
 	    {
 		std::string child_key = pending[pi] + "::" + base_name;
-		std::vector<FnTemplateDef> *cmi = fn_template_map.find(child_key);
+		std::vector<FnTemplateDef> *cmi = thawed_fn_templates(child_key);
 		if ( cmi != fn_template_map.end() )
 		    for ( FnTemplateDef &c : *cmi ) cands.push_back(&c);
 		std::vector<FnTemplateDef> *cdi =
-		    fn_template_decl_map.find(child_key);
+		    thawed_fn_template_decls(child_key);
 		if ( cdi != fn_template_decl_map.end() )
 		    for ( FnTemplateDef &c : *cdi ) cands.push_back(&c);
 		ci = inline_namespace_children.find(pending[pi]);
@@ -62942,11 +63041,11 @@ void Program::dump_registered_names(FILE *out)
 	lines.insert(std::string("template\t") + key);
 	return false;
     });
-    fn_template_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {
+    fn_template_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {	/* identity-read: names only */
 	lines.insert(std::string("template\t") + key);
 	return false;
     });
-    fn_template_decl_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {
+    fn_template_decl_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {	/* identity-read: names only */
 	lines.insert(std::string("template\t") + key);
 	return false;
     });

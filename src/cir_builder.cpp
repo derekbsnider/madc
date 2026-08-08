@@ -14359,6 +14359,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	// lcls may be NULL for the literal-lhs mixed shape (`"pre" + s`) —
 	// then the rhs must be the class operand (Pass 2b below).
 	if (!lcls && !operand_object_class(top->right)) return NULL;
+	m_prog->ensure_free_overload_surfaces();	// task #25 B3: consult flush
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 	auto mit = m_free_op_inst_by_call.find(top);
 	if (mit != m_free_op_inst_by_call.end()) return mit->second;
@@ -14874,6 +14875,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	if (!m_prog || top == NULL || !top->right) return NULL;
 	// NULL lcls = the literal-lhs mixed shape; the rhs must be the class.
 	if (!lcls && !operand_object_class(top->right)) return NULL;
+	m_prog->ensure_free_overload_surfaces();	// task #25 B3: consult flush
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 
 	// W2 manipulator: `os << endl` — the parser built a (0-arg) call node for
@@ -15246,6 +15248,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 		return NULL;
 	if (tcf->src_node && !dynamic_cast<FuncDef *>(tcf->var.type))
 		return NULL;
+	m_prog->ensure_free_overload_surfaces();	// task #25 B3: consult flush
 	auto mit = m_free_fn_inst_by_call.find(tcf);
 	if (mit != m_free_fn_inst_by_call.end()) return mit->second;
 	m_free_fn_inst_by_call[tcf] = NULL;   // negative-cache; success overwrites
