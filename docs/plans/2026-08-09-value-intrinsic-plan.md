@@ -247,6 +247,16 @@ canonical).
 
 ## Traps / notes for the next session
 
+- **Process-intrinsic registrations must not serialize.** The
+  namespace prototypes (madc::value/array) rode the forest's
+  namespace_datatype_map sweep and the packed restore minted a
+  file-scope `typedef int value;` colliding with user variables named
+  value (3 packed-only failures; dev lane green — a packed-vs-dev
+  divergence is the tell for this class). The sweep now skips
+  ns=="madc" entries whose definition is ddARRAY; anything
+  add_madc_namespace (or a future intrinsic registrar) creates must
+  either be skipped there or never enter the serialized maps.
+
 - `resolve_builtin_type_spelling` is called from identity formers —
   NEVER put dialect spellings back in it. The `typedef long array;`
   c++17 identity bug is the proof; the regression test is the gate.
