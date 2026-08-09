@@ -1,0 +1,9 @@
+s=hello
+i=42
+r=3.500000
+b=true
+w=via var
+copy=true
+q=qualified cstr=qualified
+count=0
+a=scalar now

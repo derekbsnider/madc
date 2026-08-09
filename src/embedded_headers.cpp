@@ -123,66 +123,95 @@ inline std::string &stringify(std::string &result, madc::value &values) { return
 
 #endif
 )EMBED"},
-    {"ns_madc", R"EMBED(#include <string>
-// madc embedded <ns_madc> — script-level runtime eval + expression eval.
+    {"ns_madc", R"EMBED(// madc embedded <ns_madc> — script-level runtime eval + expression eval.
 // Declaration-only: the madc:: publics below resolve mangled-direct
 // (Itanium symbols) to the real namespace madc implementations in the
 // host, src/ns_madc.cpp (cpp-first-api.md — script namespace publics are
 // never routed through extern-C wrappers; the C-linkage __madc_*_runtime
-// surface is the API for C hosts only). `array` is the script alias of
-// madc::value, so array& parameters bind to the host madc::value&
-// symbols.
+// surface is the API for C hosts only).
+//
+// VALUE-FIRST (slice V2): the primary API is typed in madc::value and
+// const char* — this header deliberately does NOT include <string>, so
+// madc::-only scripts never pay the <string> cost. The std::string
+// overloads below are CONVENIENCES, declared only when <string> was
+// included BEFORE this header (gated on the standard library's own
+// include guards). Auto-include orders <string> first, so scripts with
+// no explicit includes get them whenever they use a `string`; explicit
+// includers write `#include <string>` above `#include <ns_madc>`.
+//
 // Security: the runtime honours the engine's madc_runtime_eval_policy;
 // scope-access variants are gated by the parser's scope-access hooks.
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
-    // `__madc_eval()`; the rendered result text lands in `out`.
-    std::string &eval_unit(std::string &out, std::string &source);
-    bool eval_bool(std::string &source);
-    long eval_int(std::string &source);
+    // `__madc_eval()`. The value-destination forms carry the rendered
+    // result text as a string-kind value ("42", "4.000000", "echo").
+    value &eval_unit(value &out, const char *source);
+    bool eval_bool(const char *source);
     long eval_int(const char *source);
-    double eval_double(std::string &source);
-    std::string &eval_string(std::string &out, std::string &source);
+    double eval_double(const char *source);
+    value &eval_string(value &out, const char *source);
 
     // Expression eval: a single expression, no function calls unless the
     // engine's expression policy allows them.
     bool eval_expression_bool(const char *expr);
     long eval_expression_int(const char *expr);
     double eval_expression_double(const char *expr);
-    std::string &eval_expression_string(std::string &out, const char *expr);
+    value &eval_expression_string(value &out, const char *expr);
 
     // Typed out-parameter forms (overloaded on the destination). The
-    // string-destination form RENDERS any result type ("42", "4.000000",
-    // "echo"); eval_expression_string above is the strict string-typed
+    // value-destination form RENDERS any result type into a string-kind
+    // value; eval_expression_string above is the strict string-typed
     // coercion.
     void eval_expression(long &out, const char *expr);
     void eval_expression(double &out, const char *expr);
-    void eval_expression(std::string &out, const char *expr);
+    void eval_expression(value &out, const char *expr);
 
-    // Context-carrying expression forms: `ctx` is a madc array of nested
+    // Context-carrying expression forms: `ctx` is a madc value of nested
     // key/value entries built with the context_set_* helpers below.
-    std::string &eval_expression_ctx(std::string &out, const char *expr, array &ctx);
-    bool eval_expression_bool_ctx(const char *expr, array &ctx);
-    long eval_expression_int_ctx(const char *expr, array &ctx);
-    double eval_expression_double_ctx(const char *expr, array &ctx);
-    std::string &eval_expression_string_ctx(std::string &out, const char *expr, array &ctx);
-    void eval_expression_ctx(long &out, const char *expr, array &ctx);
-    void eval_expression_ctx(double &out, const char *expr, array &ctx);
+    bool eval_expression_bool_ctx(const char *expr, value &ctx);
+    long eval_expression_int_ctx(const char *expr, value &ctx);
+    double eval_expression_double_ctx(const char *expr, value &ctx);
+    value &eval_expression_string_ctx(value &out, const char *expr, value &ctx);
+    void eval_expression_ctx(long &out, const char *expr, value &ctx);
+    void eval_expression_ctx(double &out, const char *expr, value &ctx);
+    void eval_expression_ctx(value &out, const char *expr, value &ctx);
 
     // Context-carrying full-eval forms — the rebind targets for call-site
     // scope capture.
-    std::string &eval_unit_ctx(std::string &out, std::string &source, array &ctx);
-    bool eval_bool_ctx(std::string &source, array &ctx);
-    long eval_int_ctx(std::string &source, array &ctx);
-    long eval_int_ctx(const char *source, array &ctx);
-    double eval_double_ctx(std::string &source, array &ctx);
-    std::string &eval_string_ctx(std::string &out, std::string &source, array &ctx);
+    value &eval_unit_ctx(value &out, const char *source, value &ctx);
+    bool eval_bool_ctx(const char *source, value &ctx);
+    long eval_int_ctx(const char *source, value &ctx);
+    double eval_double_ctx(const char *source, value &ctx);
+    value &eval_string_ctx(value &out, const char *source, value &ctx);
 
-    void context_set_int(array &ctx, std::string &key, long value);
-    void context_set_real(array &ctx, std::string &key, double value);
-    void context_set_string(array &ctx, std::string &key, const char *value);
-    void context_set_array(array &ctx, std::string &key, array &value);
+    void context_set_int(value &ctx, const char *key, long v);
+    void context_set_real(value &ctx, const char *key, double v);
+    void context_set_string(value &ctx, const char *key, const char *v);
+    void context_set_array(value &ctx, const char *key, value &v);
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+    // std::string conveniences — present only because <string> precedes
+    // this header in this translation unit (libstdc++/libc++ guard).
+    std::string &eval_unit(std::string &out, std::string &source);
+    bool eval_bool(std::string &source);
+    long eval_int(std::string &source);
+    double eval_double(std::string &source);
+    std::string &eval_string(std::string &out, std::string &source);
+    std::string &eval_expression_string(std::string &out, const char *expr);
+    void eval_expression(std::string &out, const char *expr);
+    std::string &eval_expression_ctx(std::string &out, const char *expr, value &ctx);
+    std::string &eval_expression_string_ctx(std::string &out, const char *expr, value &ctx);
+    std::string &eval_unit_ctx(std::string &out, std::string &source, value &ctx);
+    bool eval_bool_ctx(std::string &source, value &ctx);
+    long eval_int_ctx(std::string &source, value &ctx);
+    double eval_double_ctx(std::string &source, value &ctx);
+    std::string &eval_string_ctx(std::string &out, std::string &source, value &ctx);
+    void context_set_int(value &ctx, std::string &key, long v);
+    void context_set_real(value &ctx, std::string &key, double v);
+    void context_set_string(value &ctx, std::string &key, const char *v);
+    void context_set_array(value &ctx, std::string &key, value &v);
+#endif
 
     // The system object (Python `sys` convention — include this header
     // like Python's `import sys`). sys.argv / sys.path are mutable madc
@@ -200,6 +229,48 @@ namespace madc {
 	const char *const hostname;
     };
     extern SysInfo sys;
+
+    // madc::channel — one URI-addressed byte channel with line helpers
+    // (exec://, tcp://, file://, ... via the host channel registry).
+    // Declaration-only: methods resolve mangled-direct to the host class
+    // (src/madc_channel_object.cpp). LAYOUT CONTRACT with
+    // include/madcdis/channel.h — a single void* member, append-only,
+    // keep both in sync. Modes: "r" "w" "rw" (default) "a".
+    // readline() strips the trailing newline (and a preceding '\r') and
+    // returns the final unterminated tail; false only at EOF.
+    // Non-copyable: the copy ctor is private and unimplemented.
+    class channel {
+    public:
+	channel(const char *uri);
+	channel(const char *uri, const char *mode);
+	~channel();
+
+	bool ok() const;
+	const char *last_error() const;
+
+	long read(void *buffer, long capacity);
+	// value carriers: the line/payload lands as a string-kind value;
+	// write() sends the value's text view.
+	bool readline(value &out);
+	bool readall(value &out);
+	bool write(const char *text);
+	bool write(const char *buffer, long size);
+	bool write(value &text);
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+	// std::string conveniences — <string> must precede this header.
+	bool readline(std::string &out);
+	bool readall(std::string &out);
+	bool write(std::string &text);
+#endif
+	bool close_write();
+	void close();
+
+    private:
+	channel(const channel &);
+	channel &operator=(const channel &);
+
+	void *impl_;
+    };
 }
 )EMBED"},
     {"ns_perl", R"EMBED(#include <string>

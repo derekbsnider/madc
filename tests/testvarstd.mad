@@ -1,0 +1,7 @@
+// Dialect gate twin: `var` is madc-dialect-only; an explicit C standard
+// keeps it an ordinary identifier (undeclared here — compile error).
+int main()
+{
+    var x;
+    return 0;
+}

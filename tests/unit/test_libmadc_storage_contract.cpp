@@ -101,6 +101,23 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(socket.is_unix_socket());
 	CHECK_FALSE(socket.is_storage());
 	CHECK(socket.is_local());
+
+	madc::DataSource tcp("tcp://127.0.0.1:9000");
+	CHECK(tcp.source_domain() == madc::DataSource::domain::ipc);
+	CHECK(tcp.source_family() == madc::DataSource::family::network_stream);
+	CHECK(tcp.is_network_stream());
+	CHECK(tcp.is_remote());
+
+	madc::DataSource udp("udp://127.0.0.1:9001");
+	CHECK(udp.source_domain() == madc::DataSource::domain::ipc);
+	CHECK(udp.source_family() == madc::DataSource::family::network_datagram);
+	CHECK(udp.is_network_datagram());
+	CHECK(udp.is_remote());
+
+	madc::DataSource uds("uds:///tmp/madc.sock");
+	CHECK(uds.path() == "/tmp/madc.sock");
+	CHECK(uds.is_unix_socket());
+	CHECK(uds.is_local());
     }
 
     TEST_CASE("DataSource can distinguish relational and keyed database families") {

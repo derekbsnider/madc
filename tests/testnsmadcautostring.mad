@@ -1,0 +1,13 @@
+// Slice V2 — the auto-include lane provides the std::string conveniences:
+// no explicit includes; the `string` and `madc` identifiers auto-include
+// <string> and <ns_madc>, and the canonical auto-include order puts
+// <string> FIRST, so <ns_madc>'s gated string overloads are present.
+madc::channel sorter("exec://sort");
+sorter.write("pear\n");
+string fruit = "apple\n";
+sorter.write(fruit);
+sorter.close_write();
+string line;
+while ( sorter.readline(line) )
+    printf("sorted: %s\n", line.c_str());
+printf("done\n");

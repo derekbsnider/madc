@@ -1,0 +1,8 @@
+// The dialect spellings are FALLBACKS: user declarations named value/var/
+// array shadow them (they are not reserved keywords). Pins the resolution
+// order — a user variable wins over the intrinsic type spelling.
+int value = 5;
+int var = 6;
+int array = 7;
+value = value + 1;
+printf("%d %d %d\n", value, var, array);

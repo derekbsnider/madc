@@ -77,7 +77,14 @@ Perform the full release workflow:
 
 12. **Push develop to GitHub**: `git push origin develop`
 
-13. **Report**: Print a summary of what was released, the madc version, the fork release (if one was cut), and remind the user to run `/promote` when ready to push to master
+13. **Archive the release binary** (owner directive 2026-08-09): after the
+    release rebake, copy the packed release binary to the per-release archive
+    on BOTH hosts so releases can be timed against each other later:
+    `cp -p bin/madc-release tmp/release-bins/madc-release-vX.Y.Z`
+    (`tmp/` is gitignored; create `tmp/release-bins/` if missing). Do the same
+    in the container tree when the rebake happens there.
+
+14. **Report**: Print a summary of what was released, the madc version, the fork release (if one was cut), and remind the user to run `/promote` when ready to push to master
 
 ## Important
 - Run `make -C src fulltest` before starting — abort if tests fail

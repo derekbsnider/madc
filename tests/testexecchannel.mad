@@ -1,0 +1,31 @@
+#include <string>
+#include <ns_madc>
+#include <stdio.h>
+
+int main()
+{
+    // exec://sort round-trip — ASCII input so no locale can reorder it.
+    madc::channel sorter("exec://sort");
+    if ( !sorter.ok() )
+    {
+        printf("open failed: %s\n", sorter.last_error());
+        return 1;
+    }
+    sorter.write("pear\n");
+    string fruit = "apple\nmango\n";
+    sorter.write(fruit);
+    sorter.close_write();
+
+    string line;
+    while ( sorter.readline(line) )
+        printf("sorted: %s\n", line.c_str());
+    sorter.close();
+
+    // A spawn that cannot succeed fails loudly, not silently.
+    madc::channel missing("exec:///nonexistent/no-such-tool");
+    if ( !missing.ok() )
+        printf("missing: refused\n");
+
+    printf("done\n");
+    return 0;
+}

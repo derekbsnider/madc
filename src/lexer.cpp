@@ -2107,10 +2107,18 @@ CirFrozenForest *Program::ensure_bind_forest()
 	return bind_forest;
     bind_forest_tried = true;
 
+    // task #25 slice D: probe/map/open under the forest-work clock; a bound
+    // forest gets the clock installed so its own on-demand entries (unit
+    // loads, materialize, template payload) accumulate on the same clock.
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     bool cfg_mismatch = false;
     bind_forest = probe_forest_chain(/*require_config_match=*/true, cfg_mismatch);
     if ( bind_forest )
+    {
+	bind_forest->_work_secs = &_forest_work_seconds;
+	bind_forest->_work_depth = &_forest_work_depth;
 	return bind_forest;
+    }
 
     // A named container that fails to open falls back to live parse LOUDLY
     // regardless of policy — the user pointed at it, so ignoring it silently
@@ -2270,6 +2278,7 @@ void Program::forest_bind_include(uint32_t unit)
 {
     if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
 	return;
+    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
     // recursion excluded — so the accumulated total sums cleanly.
@@ -3290,7 +3299,16 @@ void Program::add_datatypes()
     datatype_map[tkUINT64.str] = &tkUINT64;
     datatype_map[tkFLOAT.str] = &tkFLOAT;
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
-    datatype_map[tkARRAY.str] = &tkARRAY;
+    // `array` is madc-dialect-only (slice V1): explicit C/C++ standards
+    // keep it an ordinary identifier (SMAUG-class C89 code declares
+    // `int array;` freely). Its dialect twins `value` and `var` are
+    // deliberately NOT lexer datatype tokens at all — a datatype token
+    // hijacks every identifier position, and `value` is ubiquitous in
+    // system headers (members, params, template bodies). They resolve
+    // through the typedef lane instead: Program::madc_dialect_type_spelling
+    // consulted by resolve_declared_type_token and the statement arm.
+    if ( language_std == STD_MADC )
+	datatype_map[tkARRAY.str] = &tkARRAY;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
@@ -7149,6 +7167,17 @@ TokenProgram *Program::tokenize(const char *fname)
     }
 
     _tokenizer_init();
+
+    // INTERN the caller's name before anything stores it: every main-source
+    // token's `file` and forest_root_file keep this pointer for the
+    // Program's LIFETIME, while the caller's buffer need not outlive the
+    // call — libmadc's with_temp_source frees its temp path right after
+    // compiling, and the lazy JIT build later walked freed memory
+    // (valgrind: invalid read in is_system_header_path from
+    // translate_module; two layout-dependent libmadc unit asserts). The
+    // buffer lane (tokenize_buffer) already interned; this lane is the
+    // same rule.
+    fname = intern_file(fname);
 
     forest_root_file = fname;	// v24: the program's own file — its state
 				// never enters the forest's bind surface

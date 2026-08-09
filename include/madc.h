@@ -36,6 +36,8 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
+struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -142,6 +144,50 @@ public:
     // the Itanium mangler so a header-declared C++ method binds to its real
     // external symbol.
     std::vector<std::string> param_cpp_spellings;
+    // Parameter i is a NON-CONST LVALUE reference (`T&`): it binds only a
+    // same-type (or derived) lvalue, never the temporary a conversion
+    // materializes ([dcl.init.ref]p5). `T&&` params — which DO bind conversion
+    // temporaries — are recognized by their captured spelling: DataDefREF
+    // spells '&' for both `&` and `&&`, so the spelling is the only carrier
+    // (same discipline as the Itanium mangler above). A ref param with no
+    // recorded spelling counts as an lvalue reference.
+    bool is_nonconst_lref_param(size_t i) const {
+	if ( !is_ref_param(i) )
+	    return false;
+	if ( i < const_params.size() && const_params[i] )
+	    return false;
+	// A typedef'd const ref (`const_reference __x` — libc++ spells
+	// push_back this way) has NO leading const token, so const_params
+	// stays false; when the resolved type graph carries it (DataDefREF
+	// whose referent is DataDefCONST), read it from there.
+	if ( parameters[i]->is_reference() )
+	{
+	    const DataDefPTR *rp =
+		dynamic_cast<const DataDefPTR *>(parameters[i]);
+	    if ( rp && rp->base_type && rp->base_type->is_const() )
+		return false;
+	}
+	// POSITIVE-evidence rule: claim a non-const lvalue reference ONLY
+	// when the captured spelling explicitly shows one — a single-'&'
+	// tail with no const qualifier. While the const-qualified-type
+	// campaign (FEATURE_CONST_TYPES) is incomplete, a typedef'd ref
+	// ("const_reference", "reference") hides BOTH facts from every
+	// carrier above — abstain rather than refuse a binding madc cannot
+	// prove illegal. The type-graph test above tightens this
+	// automatically as DataDefCONST coverage grows.
+	if ( i >= param_cpp_spellings.size() )
+	    return false;
+	const std::string &sp = param_cpp_spellings[i];
+	size_t n = sp.size();
+	if ( n < 1 || sp[n - 1] != '&' )
+	    return false;                      // no explicit '&' tail: unknown
+	if ( n >= 2 && sp[n - 2] == '&' )
+	    return false;                      // rvalue reference
+	if ( sp.compare(0, 6, "const ") == 0
+	  || sp.find(" const") != std::string::npos )
+	    return false;                      // west or east const qualifier
+	return true;
+    }
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
     std::vector<std::string> param_typedef_names;
@@ -463,9 +509,13 @@ public:
 // zero — a C++ null-pointer constant ([conv.ptr]), so it binds a pointer
 // parameter as a standard conversion. Only callers that can see the argument
 // token set it; the DataDef alone cannot carry "literal zero".
+// `param_is_nonconst_lref`: the parameter is a NON-CONST LVALUE reference
+// (FuncDef::is_nonconst_lref_param) — the user-defined-conversion path is not
+// viable for it ([dcl.init.ref]p5: `T&` never binds a conversion temporary).
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		       bool param_is_ref = false, bool allow_udc = true,
-		       bool arg_is_zero_literal = false);
+		       bool arg_is_zero_literal = false,
+		       bool param_is_nonconst_lref = false);
 
 class DataStruct: public DataDef
 {
@@ -963,6 +1013,13 @@ class TokenCallMethod: public TokenMember
 public:
     TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
+    // Number of USER-WRITTEN arguments, set when reselect_method_overload
+    // appends C++ default arguments after selecting the overload — the same
+    // contract as TokenCallFunc::user_argc (a re-rank must ignore appended
+    // defaults: they were copied from ONE overload's declaration and scoring
+    // them would veto the very overload that supplied them).
+    // (size_t)-1 = no defaults appended; every argument is user-written.
+    size_t user_argc = (size_t)-1;
 };
 
 // subscript access: container[index]
@@ -2654,6 +2711,14 @@ public:
 	const uint32_t *frozen_class_pattern;
 	uint32_t frozen_class_pattern_words;
 	CirFrozenForest *frozen_class_pattern_forest;
+	// task #25 B2: a forest-restored definition registers as a STUB —
+	// identity fields only. frozen_src points at the CirRestoredTemplate
+	// (inside the bound forest's stable _restored_templates vector) whose
+	// payload decodes on the first content read (Program::thaw_template_def).
+	// NULL = fully thawed / live-parsed. Never point this at a registry
+	// value — intern_keyed_map's dense storage relocates on insert.
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	TemplateDef() : has_non_type_params(false), registry_name_id(0),
 			owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
@@ -2661,7 +2726,8 @@ public:
 			class_pattern_capture_deferred(false),
 			class_pattern_use_count(0),
 			frozen_class_pattern(NULL), frozen_class_pattern_words(0),
-			frozen_class_pattern_forest(NULL) {}
+			frozen_class_pattern_forest(NULL),
+			frozen_src(NULL), frozen_src_forest(NULL) {}
     };
 	template<class Definition>
 	struct TemplateRegistryEntry {
@@ -2776,6 +2842,13 @@ public:
     TemplateDef *find_template(uint32_t name_id,
 			       const std::string &ns_hint,
 			       DataDefCLASS *owner_hint);
+    // task #25 B2: the selection core (no thaw). Selection reads only
+    // identity fields (defining_namespace / owner_class); find_template
+    // wraps it and thaws the returned definition, so every caller-visible
+    // TemplateDef is hydrated.
+    TemplateDef *find_template_raw(uint32_t name_id,
+				   const std::string &ns_hint,
+				   DataDefCLASS *owner_hint);
     // The inline-namespace closure of `parent`: parent first, then every
     // inline descendant in BFS order. The ONE enumeration behind
     // find_template's / find_template_alias's qualified variant scans and
@@ -2909,13 +2982,27 @@ public:
 	std::vector<TokenBase *> target;
 	std::string defining_namespace;
 	DataDefCLASS *owner_class;
+	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	TemplateAliasDef() : has_non_type_params(false), registry_name_id(0),
-		owner_class(nullptr) {}
+		owner_class(nullptr), frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     typedef TemplateRegistryEntry<TemplateAliasDef> template_alias_registry_entry_t;
     madc::dis::intern_keyed_map<template_alias_registry_entry_t> template_alias_map; // bare-name id -> namespace + owner variants
     std::vector<TemplateAliasDef> &alias_template_variants_for_write(
 	uint32_t name_id, DataDefCLASS *owner);
+    // task #25 B2 thaw owners: decode a frozen stub's payload in place on
+    // first content read (memoized via frozen_src, NULLed on completion).
+    // Thaw is logically const — it never routes through intern_keyed_map's
+    // transaction save, so a journal rollback that restores a stub copy
+    // simply re-thaws on the next read.
+    void forest_restore_run(const CirRestoredTemplateRun &run,
+			    std::vector<TokenBase *> &out);
+    void thaw_template_def(TemplateDef &td);
+    void thaw_alias_def(TemplateAliasDef &ad);
+    // Freeze-writer path: a re-freeze exports every payload — thaw them all.
+    void thaw_all_frozen_templates();
     struct ClassNestedTemplateCaptureEntry {
 	ClassNestedTemplateKind kind;
 	bool partial_specialization;
@@ -3106,10 +3193,14 @@ public:
 	// mint duplicate definitions — g++ has one instantiation per
 	// (template, binding). Set to the placeholder's stable symbol.
 	std::string inst_identity;
+	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
+	CirRestoredTemplate *frozen_src;
+	CirFrozenForest *frozen_src_forest;
 	FnTemplateDef() : typeparams(), typeparam_defaults(),
 	    typeparam_constraints(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
-	    owner_class(NULL), instance_method(false), inst_identity() {}
+	    owner_class(NULL), instance_method(false), inst_identity(),
+	    frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
     // BODY-LESS free/namespace function template declarations (no `{ body }` to
@@ -3120,6 +3211,24 @@ public:
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
+    // task #25 B2 thaw owners, fn lanes: find + thaw every def of the key.
+    void thaw_fn_def(FnTemplateDef &fd);
+    std::vector<FnTemplateDef> *thawed_fn_templates(const std::string &key);
+    std::vector<FnTemplateDef> *thawed_fn_template_decls(const std::string &key);
+    // task #25 B3: free-overload surface recaptures (free_operator_overloads /
+    // manipulator / free_function_overloads signature tables) deferred at
+    // restore — the derivation needs the decl tokens. Flushed one-shot by
+    // ensure_free_overload_surfaces() at the first consult of those tables,
+    // so an unused TU never pays. The flush cursor is journal-snapshotted:
+    // a rollback that truncated the tables rewinds it so the entries
+    // re-flush at the next consult.
+    struct PendingOverloadRecapture {
+	CirRestoredTemplate *rt;	// into the forest's stable vector
+	CirFrozenForest *forest;
+    };
+    std::vector<PendingOverloadRecapture> forest_pending_overload_recaptures;
+    size_t forest_overload_recaptures_flushed = 0;	// first un-flushed index
+    void ensure_free_overload_surfaces();
     registration_set<std::string> fn_template_instantiated; // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
@@ -3690,6 +3799,17 @@ public:
     double _forest_bind_seconds = 0.0;
     double _forest_restore_seconds = 0.0;
     double _forest_declidx_seconds = 0.0;
+    // task #25 slice D: the ONE depth-guarded forest-work clock
+    // (ForestWorkFrame, cir_freeze.h) — total wall seconds inside forest
+    // entries, nested frames uncounted, so it can be SAMPLED at phase
+    // boundaries. The stats display snapshots it around tokenize and parse;
+    // _cir_forest_seconds is its advance inside the timed CIR-build window
+    // (accumulated beside _cir_build_seconds). The lex / parse / cir-build
+    // buckets then report NET compute — the kind-breakdown timers above
+    // stay the itemization of WHAT the forest time was.
+    double _forest_work_seconds = 0.0;
+    int    _forest_work_depth   = 0;
+    double _cir_forest_seconds  = 0.0;
     std::vector<std::pair<std::string, double> > _forest_unit_bind_costs;
     // Plain snapshot of the above plus the forest-owned counters (unit loads,
     // arena materialize, reader decode) so display code needs no
@@ -5269,6 +5389,11 @@ public:
     TemplateAliasDef *find_template_alias(uint32_t name_id,
 					  const std::string &ns_hint,
 					  DataDefCLASS *owner_hint);
+    // task #25 B2: the alias selection core (no thaw). find_template_alias
+    // wraps it and thaws the returned definition.
+    TemplateAliasDef *find_template_alias_raw(uint32_t name_id,
+					      const std::string &ns_hint,
+					      DataDefCLASS *owner_hint);
     void register_template_alias(const TemplateAliasDef &td);
     // Owner is any dependent-surface type: an opaque placeholder CLASS or a
     // bare TEMPLATE-PARAMETER placeholder (`typename T::member` in a dependent
@@ -5328,6 +5453,11 @@ public:
     // Python/PHP element model; long fallback when no string class is known).
     DataDef *madc_array_element_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
+    // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
+    // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
+    // every strict C/C++ mode. Instance method on purpose — these names
+    // must never enter the static identity-canonicalization table above.
+    DataDef *madc_dialect_type_spelling(const std::string &name) const;
     static DataDef *builtin_va_list_type();
     DataDef *use_builtin_va_list();
     // The one DataDefCOMPLEX per element type (process-wide cache) — lexer,
@@ -5344,6 +5474,10 @@ public:
     bool fold_constant_qualified_member_walk(TokenBase *first,
 					     madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
+    // Member (data/static/method) of the currently-parsing method's owner
+    // class — the class-scope half of the contextual-type-name shadow test
+    // (a member named value/array/var wins over the dialect type spelling).
+    bool current_method_class_has_member(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // What a qualifier names before `::` in an expression — THE one classify
     // policy for the expression arms (postfix chain, address-of, identifier
@@ -5526,6 +5660,9 @@ public:
     std::string host_flavor_fn_symbol(const std::string &ns_name,
 				      const std::string &member_name,
 				      FuncDef *fd);
+    // The method half: the HOST-flavor twin of a host-implemented class
+    // method's Itanium symbol (madc::channel::readline under -stdlib=libc++).
+    std::string host_flavor_method_symbol(FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

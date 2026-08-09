@@ -1,0 +1,20 @@
+// Regression: under an explicit C++ standard, a user scalar typedef named
+// `array` keeps its own template-binding identity. Historically `array` sat
+// in the STATIC builtin-spelling table, so canonical_template_binding_dd
+// mapped the alias dd to ddARRAY (madc::value) by bare name — S<array>
+// minted a class-typed identity for a long. The dialect spellings now live
+// in the instance-gated madc_dialect_type_spelling, never in that table.
+#include <cstdio>
+
+typedef long array;
+
+template <typename T> struct S { T x; };
+
+int main()
+{
+    S<array> s;
+    s.x = 42;
+    array a = 7;
+    printf("%ld %ld\n", s.x, (long)a);
+    return 0;
+}

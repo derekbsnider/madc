@@ -2,9 +2,16 @@
 
 ## Status
 
-Active design track. `madcdis` is the typed in-memory data substrate
-that ships as part of core `libmadc`. It supersedes earlier framings
-in which the entire data subsystem was optional.
+Active design track. `madcdis` is the dependency-free data substrate
+and streaming framework that ships as part of core `libmadc`. It
+supersedes earlier framings in which the entire data subsystem was
+optional or limited to typed in-memory storage.
+
+> **UPDATE 2026-08-07** - The streaming/process-flow milestone is complete.
+> `madcdis` now owns the optional cursor extensions, typed sources/sinks/flows,
+> raw channels, process endpoints, and standard dependency-free transports and
+> record formats. `madcdat` owns only implementations that require external
+> libraries. See `2026-08-07-data-channel-streaming-process-flow-plan.md`.
 
 > **UPDATE 2026-06-12** — reconciled with
 > `docs/plans/2026-06-12-type-table-value-abi-design.md` (DESIGN AGREED),
@@ -44,14 +51,16 @@ This plan is paired with:
 of the data system. It lives inside `libmadc` and is available to
 every Mad-C program without an opt-in dependency.
 
-`madcdat` is the optional companion library that adds external
-storage and service drivers on top of `madcdis`. It depends on
+`madcdat` is the optional companion library that adds external-library
+storage and service implementations on top of `madcdis`. It depends on
 `madcdis`; `madcdis` does not depend on it.
 
 Headers split accordingly:
 
-- core headers under `include/madcdis/`
-- driver headers under `include/madcdat/`
+- core interfaces under `include/madcdis/`
+- compatibility forwarding headers under `include/madcdat/` and
+  `include/libmadc/`
+- dependency-specific implementation headers under `include/madcdat/`
 - `madc::DataSource` stays in `include/libmadc/` because it is a
   general external-conduit abstraction broader than storage
 
@@ -71,12 +80,14 @@ These techniques are integrated as composable primitives, not
 bolt-on features. The user picks combinations based on workload; the
 substrate handles the mechanics.
 
-Every Mad-C program gets the substrate by default. External storage
-plugs in via `madcdat` when needed.
+Every Mad-C program gets the substrate, typed flows, process endpoints,
+memory/file/FIFO/TCP/UDP/UDS channels, and DSV/FLR/VLR drivers by default.
+Implementations backed by external client libraries plug in via `madcdat`.
 
 ## Non-Goals
 
-- No required external storage drivers (those live in `madcdat`).
+- No required external-library storage or service drivers (those live in
+  `madcdat`). Dependency-free standard drivers and transports are core.
 - No general-purpose tracing garbage collector. Refcounting plus
   weak references plus pool drop handle the cases.
 - No distributed/cross-machine clustering. Single-machine,
@@ -90,10 +101,11 @@ plugs in via `madcdat` when needed.
 
 ### 1. The substrate is core, not optional
 
-Pools, values, refcounting, interning, datasets, relations, query
-IR, planner, and in-memory drivers ship as part of `libmadc`. A
-Mad-C program can declare `DataSet<Room> rooms("mem://world")` and
-run GQL queries against it without linking any optional library.
+Pools, values, refcounting, interning, datasets, relations, query IR,
+planner, typed flows, raw channels, processes, and dependency-free
+drivers ship as part of `libmadc`. A Mad-C program can declare
+`DataSet<Room> rooms("mem://world")`, stream DSV, or connect raw sockets
+without linking any optional library.
 
 ### 2. Structural redundancy is exploited at every layer
 
@@ -430,8 +442,8 @@ madc::EncodingSelector
 ```
 madc::DataDriver
     virtual interface for storage backends
-    implemented by MemPoolDriver, ShmPoolDriver (in madcdis)
-    implemented by all madcdat drivers externally
+    implemented by dependency-free drivers in madcdis
+    implemented by external-library drivers in madcdat
     
 madc::DataDriverRegistry
     registers drivers by scheme
@@ -702,23 +714,22 @@ shape. They sharpen what V6 already delivers.
 
 ## Migration from current state
 
-The current code has most `madcdis` pieces sitting in
-`include/madcdat/`. Migration is mechanical:
+The interface ownership migration is complete:
 
-1. **Move headers**: `madcdat/{schema,mapper,query,relation,
-   dataset,driver}.h` to `madcdis/...`
-2. **Update internal includes** in moved headers
-3. **Add forwarding shims** under `madcdat/` for backward
-   compatibility during transition
-4. **Add pool subsystem** as new code (no displacement)
-5. **Add `MemPoolDriver` and `ShmPoolDriver`** as new code
-6. **Register in-memory drivers** in `libmadc` init
-7. **Update `madcdat`** to include from `madcdis/` for interfaces
-8. **Sunset forwarding shims** once all consumers updated
+1. **Canonical core headers**: schema, mapper, query, relation, dataset,
+   driver, source adapter, cursor, sink, flow, channel, format flow, and
+   process interfaces live under `include/madcdis/`.
+2. **Compatibility shims**: older `madcdat/` and `libmadc/` paths forward to
+   canonical headers where compatibility requires them.
+3. **Core implementations**: DSV/FLR/VLR and memory/file/FIFO/TCP/UDP/UDS
+   support build independently of `madcdat`.
+4. **Optional implementations**: BDB, GDBM, QDBM, SQLite, and future
+   client-library providers remain in `madcdat` and include interfaces from
+   `madcdis`.
 
-The existing `madcdat` driver implementations (`bdb`, `gdbm`,
-`qdbm`, `sqlite`) don't change behavior; they just include from
-`madcdis/` for the `DataDriver` interface and related types.
+Remaining migration work is incremental: suitable eager drivers and future
+shipped `SourceAdapter` implementations may adopt the optional streaming
+extension seams without changing legacy vector vtables.
 
 ## Open Questions
 
@@ -743,10 +754,11 @@ specific choices come from concrete workload requirements.
 
 ## Relationship to `madcdat`
 
-`libmadcdat` is the optional companion library covering external
-storage and services. It depends on `madcdis` and consumes:
+`libmadcdat` is the optional companion library covering implementations
+backed by external storage/service libraries. It depends on `madcdis` and
+consumes:
 
-- `DataDriver` interface (to implement file/db/service drivers)
+- `DataDriver` interface (to implement external-library drivers)
 - `Query` IR (to receive plans from the planner)
 - `DriverCapabilities` (to advertise what each driver can handle)
 - `DataSource` (to identify external sources)
@@ -755,9 +767,10 @@ storage and services. It depends on `madcdis` and consumes:
 - Column encoding catalog (for external drivers that can store
   encoded columns natively)
 
-`madcdat` does not modify `madcdis` runtime types or extend the
-core API surface. It only registers additional drivers into the
-existing registry and implements `SourceAdapter` for parsing
-external content formats.
+`madcdat` does not modify `madcdis` runtime types or extend the core API
+surface. It only registers implementations that need external libraries into
+the existing registries. Dependency-free standard formats and raw transports
+remain in `madcdis`; libcurl-backed HTTP/HTTPS/REST/FTP/S3 and client-backed
+database/service providers remain in `madcdat`.
 
 See `madcdat-plan.md` for the external driver bundle plan.

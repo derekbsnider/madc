@@ -1,0 +1,14 @@
+// Member-call twin of testnonconstref: madc::channel::readline takes
+// std::string& — passing a char buffer must be a compile error (g++:
+// non-const lvalue ref cannot bind a conversion temporary), not a silent
+// hidden-temp call that leaves the buffer empty.
+// <string> precedes the auto-included <ns_madc> so the std::string
+// convenience overloads exist — THEY are this gate's subject (V2
+// value-first header; without <string> the value&-only miss is
+// testnsmadcorder's subject instead).
+#include <string>
+madc::channel c("exec://sort");
+c.write("z\n");
+c.close_write();
+char buf[64];
+c.readline(buf);

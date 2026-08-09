@@ -1,0 +1,85 @@
+#include <string>
+#include <ns_madc>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+int main()
+{
+    // Single-process loopback: the TCP handshake completes against the
+    // listen backlog, so connect-then-accept in one thread cannot hang.
+    int server = socket(AF_INET, SOCK_STREAM, 0);
+    if ( server < 0 )
+    {
+        printf("socket failed\n");
+        return 1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if ( bind(server, (struct sockaddr *)&addr, sizeof(addr)) != 0 )
+    {
+        printf("bind failed\n");
+        return 1;
+    }
+    if ( listen(server, 1) != 0 )
+    {
+        printf("listen failed\n");
+        return 1;
+    }
+    socklen_t addr_len = sizeof(addr);
+    if ( getsockname(server, (struct sockaddr *)&addr, &addr_len) != 0 )
+    {
+        printf("getsockname failed\n");
+        return 1;
+    }
+
+    char uri[64];
+    sprintf(uri, "tcp://127.0.0.1:%d", ntohs(addr.sin_port));
+    madc::channel client(uri);
+    if ( !client.ok() )
+    {
+        printf("connect failed: %s\n", client.last_error());
+        return 1;
+    }
+    printf("connected\n");
+
+    int peer = accept(server, (struct sockaddr *)0, (socklen_t *)0);
+    if ( peer < 0 )
+    {
+        printf("accept failed\n");
+        return 1;
+    }
+
+    // client -> server
+    client.write("ping\n");
+    char buffer[16];
+    long total = 0;
+    while ( total < 5 )
+    {
+        long got = read(peer, buffer + total, 5 - total);
+        if ( got <= 0 )
+            break;
+        total = total + got;
+    }
+    buffer[4] = '\0';
+    printf("server got: %s\n", buffer);
+
+    // server -> client, then half-close: readline drains to EOF.
+    write(peer, "pong\n", 5);
+    shutdown(peer, SHUT_WR);
+
+    string line;
+    while ( client.readline(line) )
+        printf("client got: %s\n", line.c_str());
+    printf("client eof\n");
+
+    close(peer);
+    close(server);
+    client.close();
+    return 0;
+}

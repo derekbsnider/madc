@@ -1,15 +1,55 @@
 # madc Roadmap
 
-**✅ RELEASE LANE RESTORED (2026-08-07, v0.69.0):** the frozen-corpus
-instantiation-identity split (#20) is repaired — nine fixes took the
-packed suite 982/15 → **999/0** and `make release` is green again
-(forest-pack verify: bind cache == no-cache). A cross-TU
-freeze-consumer gate now holds the class in `fulltest`. Script mode
-completed in the same release (#16 top-level `defer` + #18 top-level
-`:=`). Post-mortem: `docs/plans/2026-08-06-release-lane-freeze-HANDOFF.md`.
+**✅ VALUE INTRINSIC V1+V2 LANDED (2026-08-09, v0.75.0):** `madc::value`
+as a first-class script intrinsic — `value` / `var` / `madc::value`
+spellings of the ONE DataDef, `--std=madc`-gated, typedef-lane resolution
+with C++ name-hiding guards (never lexer tokens) — and the value-first
+`<ns_madc>`: no `#include <string>`, primary API in value + const char*,
+std::string overloads PP-gated on the stdlib's own include guards.
+madc::-only scripts hit the millisecond floor (testsort 15ms packed, was
+~130ms). Shipped with two discovered-defect fixes: proven no-viable
+method-overload diagnosis + method default arguments (34d24c67), and the
+tokenize file-lane use-after-free (091c977a). Plan:
+`docs/plans/2026-08-09-value-intrinsic-plan.md` — follow-up track: the
+general [over.match.viable] diagnostic (scorer conversion modeling).
 
-Master plan linking all workstreams. Updated 2026-08-07 (v0.69.0 — the
-release-lane restoration + script-mode completion; previous: v0.68.0 —
+**✅ TRACK 5C SLICE 1 LANDED (2026-08-08, v0.72.0):** the script-facing
+channel surface — `madc::channel` in `<ns_madc>` (mangled-direct to the
+host class, the first madc-owned class on that spine), `exec://` as a
+first-class channel scheme (space-split argv, inherited stderr,
+spawn-PATH resolution in `Process`), flavor marshalling's METHOD half
+(task #69 — madc-owned classes with `string&` params work under
+`-stdlib=libc++`), and the suite's first script-level tcp/exec legs
+(`testexecchannel` / `testtcpchannel` / `testhttpget`, all hermetic).
+Plan: `docs/plans/2026-08-08-track5c-script-channels-plan.md` — later
+5C slices: script-side `DataSet`/query surface, listener channels.
+
+**✅ FLR RANDOM ACCESS S1+S2 LANDED (2026-08-08, v0.71.0):** seekable
+channels with positioned IO (`SeekableDataChannel`, truthful per-fd
+`seek` capability), the FLR driver reborn lazy (geometry-only open,
+streaming cursor, O(1) `record_index` locator lookup, positional
+single-record writes), `ChannelBackedDataDriver` records-over-memory,
+and the capability-truth gate (a hollow capability claim is a build
+failure). Plan: `docs/plans/2026-08-08-flr-random-access-struct-schema-plan.md`
+— next slices: S3 locator-as-column pushdown + VLR offset sidecar,
+S4 C-struct-as-schema `bind<T>`, S5 typed catalog.
+
+**✅ TRACK 5A LANDED (2026-08-08, v0.70.0):** the data-channel
+streaming & process-flow core — dependency-free typed streaming over
+memory/file/FIFO/TCP/UDP/UDS and child processes behind ABI-compatible
+extension seams; the madcdis/madcdat boundary is dependency-based
+(core/OS in madcdis, external-library providers in madcdat).
+Guideline: `docs/plans/2026-08-07-data-channel-streaming-process-flow-plan.md`.
+Open Track 5 follow-ups: optional madcdat service providers
+(libcurl-backed HTTP/REST etc.) and migrating suitable eager
+drivers/adapters to native cursors.
+
+Master plan linking all workstreams. Updated 2026-08-09 (v0.75.0 — the
+value intrinsic + value-first `<ns_madc>`; previous: v0.72.0 — the
+script-facing channel surface; v0.71.0 — FLR
+random access S1+S2; v0.70.0 — the
+data-channel core; v0.69.0 — the release-lane restoration +
+script-mode completion; v0.68.0 —
 the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
@@ -32,13 +72,17 @@ cast through explicit operator bool). #114 remains blocked on the owner
 decision about mangling overloaded user free functions.
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
-the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
-**central near-term goal is feature parity with `master`** (which still carries
-the removed asmjit backend at full C89 coverage): `develop` is not promoted to
-`master` until the CIR path's test coverage matches or exceeds it. Track 1.3
-(CIR coverage) is therefore the gating workstream — most other tracks are
-re-established or unblocked behind it. Where a track below was completed on the
-old backend, it is marked "proven on old backend, re-establishing on CIR."
+the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone.
+The old parity-with-asmjit-master goal is HISTORY: the CIR backend met the
+re-defined promote gate (all class-(a) torture failures fixed, stamped in
+[failset-classification.md](../parity/failset-classification.md)) and has been
+promoted to `master` repeatedly — v0.38.0 (2026-07-23, the first CIR master),
+v0.48.0 (2026-07-25), **v0.69.0 (2026-08-07, current)**. `master` now tracks
+develop's release cadence at owner-called promote points; the standing gate is
+`.claude/rules/branching.md` (torture class-(a) burndown, currently satisfied;
+the 10 remaining failset entries are class-(b) GNU extensions = roadmap items).
+Where a track below was completed on the old backend, it is marked "proven on
+old backend, re-establishing on CIR."
 
 ## The Intermediate Representation — MC11-IR (SET IN STONE, 2026-05-29)
 
@@ -54,6 +98,27 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.70.0 (2026-08-08): the data-channel streaming & process-flow
+  core (Track 5A).** madcdis gains the dependency-free streaming
+  framework: lazy typed `Sink`/`Flow` adapters over ABI-compatible
+  extension seams (existing Cursor/DataDriver/SourceAdapter vtables
+  untouched; `Streaming*`/`ErrorAwareCursor` extensions capability-
+  probed with vector-API fallback), a `DataChannel` framework covering
+  memory/file/FIFO/TCP/UDP/UDS behind one scheme registry with
+  SIGPIPE-safe single-owner writes and datagram-truncation refusal,
+  explicit-argv `Process` endpoints with exec-errno self-pipe +
+  bounded concurrent pumping, and native incremental DSV scans. The
+  madcdis/madcdat boundary is DEPENDENCY-BASED (owner decision, KG
+  `Decision{madcdis_madcdat_dependency_boundary}`): core/OS in
+  madcdis, external-library providers in madcdat — the storage core
+  moved as a verified faithful move and the DSV/FLR/VLR suites now
+  run under `--enable-madcdat=no`. Reviewed function-by-function
+  pre-merge; hardening: atomic close-on-exec at fd creation (darwin
+  post-hoc fallback kept), one channel-pump owner, documented
+  channel/pump thread contracts, two new fulltest gates. Battery:
+  fulltest **999/0/9skip**, lane **995/0/13skip**, EXE/OBJ **978/0**,
+  packed **999/0/9skip**. Implemented by Codex 5.6-sol (session #70).
 
 - **v0.69.0 (2026-08-07): the release-lane restoration + script-mode
   completion.** `make release` had been red since Aug 1 (the packed
@@ -1473,13 +1538,15 @@ drivers (madcdat) + language-conventional interfaces.*
 
 ### Track 5A: madcdis — Core Data Substrate (`libmadcdis`)
 
-*Typed in-memory data substrate. Ships as optional `libmadcdis.so`.
-Pools, values, interning, datasets, relations, query IR, planner.*
+*Dependency-free core data substrate. The interfaces and implementations are
+currently delivered through `libmadc`; the standalone `libmadcdis.so` split
+remains planned. Pools, values, datasets, relations, query IR, typed flows,
+raw channels, processes, and standard dependency-free drivers belong here.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 5A.1 | Library restructure — split madcdis from madcdat | 2-3 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
-| 5A.2 | DataSet/Relation/Query/Schema/Mapper → `include/madcdis/` | 1 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.1 | Library restructure — split madcdis from madcdat | 2-3 wk | **Partial** (ownership split; standalone library pending) | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.2 | DataSet/Relation/Query/Schema/Mapper → `include/madcdis/` | 1 wk | **DONE** | [madcdis-plan.md](madcdis-plan.md) |
 | 5A.3 | DataSource moves from libmadc to madcdis | 1 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
 | 5A.4 | Memory pools (arena, slab, size-class, intern) | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
 | 5A.5 | Value system — NaN-boxing, refcounting, interning | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
@@ -1490,6 +1557,9 @@ Pools, values, interning, datasets, relations, query IR, planner.*
 | 5A.10 | GQL as canonical query language + SQL/Cypher lowering | 4-6 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
 | 5A.11 | Derivation relations (keyframe aggregation, retention) | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
 | 5A.12 | COW snapshots (fork-based, page-level) | 2-3 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.13 | Lazy Cursor/Sink/Flow + ABI-compatible streaming extensions | — | **DONE** @cd1f19c6 | [2026-08-07-data-channel-streaming-process-flow-plan.md](2026-08-07-data-channel-streaming-process-flow-plan.md) |
+| 5A.14 | Raw channels + format bridge + explicit Process (`memory/file/FIFO/TCP/UDP/UDS/exec`) | — | **DONE** @cd1f19c6 | [2026-08-07-data-channel-streaming-process-flow-plan.md](2026-08-07-data-channel-streaming-process-flow-plan.md) |
+| 5A.15 | Standard dependency-free record drivers (DSV/FLR/VLR); DSV native streaming | — | **DONE** @079ca8c3/@533947e1 | [madcdat-plan.md](madcdat-plan.md) |
 
 ### Track 5B: madcdat — External Storage Drivers (`libmadcdat`)
 
@@ -1498,12 +1568,12 @@ Pools, values, interning, datasets, relations, query IR, planner.*
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 5B.1 | Library restructure — libmadcdat depends on libmadcdis | 1-2 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
-| 5B.2 | File-format drivers (CSV/DSV, FLR, VLR, snapshot) | Ongoing | **Partial** (DSV, FLR, VLR exist) | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.2 | Optional external-library file/storage integrations (`snapshot://` remains planned) | Ongoing | Planned; DSV/FLR/VLR moved to core 5A.15 | [madcdat-plan.md](madcdat-plan.md) |
 | 5B.3 | Keyed local DB drivers (BDB, GDBM, QDBM) | — | **DONE** | [madcdat-plan.md](madcdat-plan.md) |
 | 5B.4 | SQLite driver | — | **DONE** | [madcdat-plan.md](madcdat-plan.md) |
 | 5B.5 | Network DB drivers (MySQL, PostgreSQL) | 3-4 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
 | 5B.6 | Graph DB drivers (FalkorDB, Neo4j) | 3-4 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
-| 5B.7 | Service drivers (HTTP/REST, MCP, S3) | 4-6 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.7 | External-library service drivers (libcurl HTTP/HTTPS/REST/FTP/S3, MCP, mail) | 4-6 wk | Planned; raw TCP/UDP/UDS complete in core | [madcdat-plan.md](madcdat-plan.md) |
 | 5B.8 | Structured text adapters (SMAUG areas, mbox, TOML) | 2-3 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
 
 ### Track 5C: Language-Conventional Interfaces
@@ -1512,6 +1582,7 @@ Pools, values, interning, datasets, relations, query IR, planner.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
+| 5C.0 | Script-facing channel surface (`madc::channel` in `<ns_madc>`, `exec://` scheme, tcp/exec/httpget suite legs) | — | **DONE** v0.72.0 | [2026-08-08-track5c-script-channels-plan.md](2026-08-08-track5c-script-channels-plan.md) |
 | 5C.1 | C-native core API (DataSet, Cursor, Query builder) | 2-3 wk | **Partial** | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
 | 5C.2 | C++23 ranges integration (madc::linq::) | 3-4 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
 | 5C.3 | Ruby-style trailing blocks (madc::ruby::) | 2-3 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
@@ -1530,11 +1601,9 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 ```
 
 **Dependencies:**
-- **Track 1.3 (CIR coverage) must reach full parity before any
-  Track 5 work begins.** The data substrate needs a stable compiler
-  foundation — templates, full C++ class support, and AOT output must
-  work before DataSet<T>/Cursor<T>/Relation<A,B> can compile through
-  the CIR → c2mir → MIR pipeline.
+- The host-facing Track 5 core is active and validated through `libmadc`.
+  Compiler-integrated language surfaces still depend on complete CIR coverage
+  for their chosen C++ standard.
 - 5A.1-5A.3 (restructure) first — moves existing code to new library boundary
 - 5B.1 follows 5A.1 — madcdat depends on madcdis
 - 5A.4-5A.5 (pools, values) before 5A.7-5A.12 (column encoding, COW, derivation)

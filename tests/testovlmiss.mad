@@ -1,0 +1,23 @@
+// [over.match.viable] gate for the VALUE-intrinsic contract — a method call
+// passing a class object where only a `value &` parameter exists is
+// ILL-FORMED, not the arity pick. Pre-fix, reselect_method_overload kept
+// the by-name candidate on the scored miss in evaluated contexts and the
+// call compiled passing the raw object pointer as a madc::value* (the
+// channel readline(value&)-took-std::string* type confusion; g++/clang
+// reject the analogous call). ddARRAY's conversion surface is closed by
+// construction, so this miss is provable; the GENERAL class-vs-class
+// diagnostic is a recorded follow-up (needs scorer conversion modeling).
+#include <string>
+#include <stdio.h>
+
+struct Sink {
+    bool take(value &v) { printf("take value\n"); return true; }
+};
+
+int main()
+{
+    Sink s;
+    string line = "hello";
+    s.take(line);
+    return 0;
+}

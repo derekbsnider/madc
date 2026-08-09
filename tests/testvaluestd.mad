@@ -1,0 +1,8 @@
+// Dialect gate: the bare `value` spelling is madc-dialect-only. Under an
+// explicit C++ standard it must stay an ordinary (here undeclared)
+// identifier — a compile error, never a madc::value declaration.
+int main()
+{
+    value v;
+    return 0;
+}

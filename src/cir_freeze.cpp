@@ -870,7 +870,7 @@ CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *fore
 }
 
 CirFrozenSegment::CirFrozenSegment(cir_forest_unit &&unit,
-				   std::vector<uint8_t> &&record_planes,
+				   madc::dis::decode_bytes &&record_planes,
 				   size_t record_count, CirFrozenForest *forest,
 				   c2m_ctx_t c2m)
 	: _blob(std::move(unit.blob)), _record_planes(std::move(record_planes)),
@@ -1109,7 +1109,7 @@ CirFrozenForest::~CirFrozenForest()
 // decompressed into `own`.
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
-					std::vector<uint8_t> &own, size_t &len)
+					madc::dis::decode_bytes &own, size_t &len)
 {
 	const madc::dis::snapshot_segment *s = r.find(seg_id);
 	if (!s || s->kind != kind)
@@ -1265,7 +1265,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// = none; materialize_from_arena swizzles each type_id -> DataDef*).
 	if (const madc::dis::snapshot_segment *gs =
 		_reader.find(CIR_FOREST_SEG_GLOBALS)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (gs->kind != SNAP_KIND_CIR_GLOBALS
 		    || !_reader.read_segment(*gs, d)
 		    || d.size() % sizeof(cir_forest_global_record)) {
@@ -1282,7 +1282,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// runs deserialize on the parser side (forest_restore_decls).
 	if (const madc::dis::snapshot_segment *ts =
 		_reader.find(CIR_FOREST_SEG_TEMPLATES)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (ts->kind != SNAP_KIND_CIR_TEMPLATES
 		    || !_reader.read_segment(*ts, d)
 		    || d.size() % sizeof(cir_forest_template_record)) {
@@ -1438,10 +1438,13 @@ int CirFrozenForest::find_unit(const std::string &name) const
 // --- grove payload v2 readers (B4a) ----------------------------------------
 
 bool CirFrozenForest::read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
-				    std::vector<uint8_t> &out) const
+				    madc::dis::decode_bytes &out) const
 {
 	if (unit >= _units.size())
 		return false;
+	// slice D: every on-demand aux-segment decode (edges / PP events /
+	// decl index / token runs) rides this choke — one frame covers them.
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
 	const madc::dis::snapshot_segment *s = _reader.find(base + slot);
 	if (!s || s->kind != kind || !s->raw_size)
@@ -1462,7 +1465,7 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 	if (!s || s->kind != SNAP_KIND_CIR_MIR_MODULE
 	    || s->raw_size <= sizeof(cir_forest_mir_header))
 		return false;	// no cache segment: the normal blob-less case
-	std::vector<uint8_t> payload;
+	madc::dis::decode_bytes payload;
 	if (!_reader.read_segment(*s, payload)
 	    || payload.size() <= sizeof(cir_forest_mir_header)) {
 		fprintf(stderr, "madc: mir cache: malformed segment — "
@@ -1500,7 +1503,7 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 	if (!s || s->kind != SNAP_KIND_CIR_LEDGER
 	    || s->raw_size < sizeof(cir_forest_ledger_header))
 		return false;	// no ledger segment: the normal case
-	std::vector<uint8_t> payload;
+	madc::dis::decode_bytes payload;
 	if (!_reader.read_segment(*s, payload)
 	    || payload.size() < sizeof(cir_forest_ledger_header)) {
 		fprintf(stderr, "madc: ledger: malformed segment\n");
@@ -1559,7 +1562,7 @@ bool CirFrozenForest::ledger_modules(std::vector<cir_ledger_module> &out) const
 bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
 				  uint32_t &token_count)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 4, SNAP_KIND_CIR_UNIT_TOKENS, raw)
 	    || raw.size() < sizeof(uint32_t))
 		return false;
@@ -1571,7 +1574,7 @@ bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payl
 bool CirFrozenForest::unit_decl_index(uint32_t unit,
 				      std::vector<cir_forest_decl_entry> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 5, SNAP_KIND_CIR_DECL_INDEX, raw)
 	    || raw.size() % sizeof(cir_forest_decl_entry))
 		return false;
@@ -1583,7 +1586,7 @@ bool CirFrozenForest::unit_decl_index(uint32_t unit,
 
 bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 6, SNAP_KIND_CIR_PP_EXPORTS, raw)
 	    || raw.size() % sizeof(uint32_t))
 		return false;
@@ -1595,7 +1598,7 @@ bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
 
 bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 {
-	std::vector<uint8_t> raw;
+	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 7, SNAP_KIND_CIR_UNIT_EDGES, raw)
 	    || raw.size() % sizeof(uint32_t))
 		return false;
@@ -1710,6 +1713,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
@@ -3268,29 +3272,6 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// live. A record whose owner class did not restore cleanly LACKS (a
 	// member-template pattern without its class cannot instantiate anyway).
 	{
-		auto run_at = [&](uint32_t word_off) -> CirRestoredTemplateRun {
-			CirRestoredTemplateRun rr;
-			rr.bytes = NULL;
-			rr.len = 0;
-			rr.count = 0;
-			rr.file = NULL;
-			cir_forest_token_run tr;
-			if (!madc::dis::pod_read(_template_payload, word_off, tr))
-				return rr;
-			if (tr.tok_count
-			    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
-				rr.bytes = _template_tokens.data() + tr.tok_off;
-				rr.len   = tr.tok_bytes;
-				rr.count = tr.tok_count;
-			}
-			if (tr.file_id) {
-				uint32_t flen = 0;
-				rr.file = pool_cstr(tr.file_id, flen);
-			}
-			return rr;
-		};
-		const size_t pw = madc::dis::pod_words<cir_forest_template_param>();
-		const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
 		for (size_t i = 0; i < _templates.size(); ++i) {
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
@@ -3341,56 +3322,28 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (tv < 0)
 					continue;
 			}
-			if (!ensure_template_payload())
-				continue;
+			// slice B1: IDENTITY only — no payload touch. The raw
+			// offsets ride the record; params / run table / pattern
+			// slice decode in hydrate_restored_template() on first
+			// demand (and the payload/token SEGMENTS stay cold until
+			// the first hydrate of any record).
 			CirRestoredTemplate rt;
 			rt.kind  = t.kind;
 			rt.key   = key;
 			rt.name  = t.name_id ? pool_str(t.name_id) : NULL;
 			rt.ns    = t.ns_id ? pool_str(t.ns_id) : NULL;
 			rt.extra = t.extra_id ? pool_str(t.extra_id) : NULL;
-			rt.owner = NULL;
+			rt.owner = oc;	// swizzled by the owner fence above (NULL = ns-scope)
 			rt.flags = t.flags;
 			rt.pattern = NULL;
 			rt.pattern_words = 0;
 			rt.pattern_reason = t.pattern_reason;
-			if (t.pattern_words) {
-				size_t begin = t.pattern_begin;
-				size_t count = t.pattern_words;
-				if (begin > _template_payload.size()
-				    || count > _template_payload.size() - begin)
-					continue;
-				rt.pattern = _template_payload.data() + begin;
-				rt.pattern_words = t.pattern_words;
-			}
-			rt.owner = oc;	// swizzled by the owner fence above (NULL = ns-scope)
-			bool ok = true;
-			for (uint32_t p = 0; p < t.param_count; ++p) {
-				cir_forest_template_param pr;
-				if (!madc::dis::pod_read(_template_payload,
-							 t.param_begin + p * pw, pr)) {
-					ok = false; break;
-				}
-				uint32_t plen = 0;
-				const char *pn = pool_cstr(pr.name_id, plen);
-				if (!pn) { ok = false; break; }
-				rt.params.push_back(std::make_pair(pn, pr.pflags));
-			}
-			if (!ok)
-				continue;
-			// Positional run table: body, constraint, per-param
-			// defaults, per-slot spec patterns.
-			uint32_t ro = t.run_begin;
-			rt.body       = run_at(ro); ro += (uint32_t)rw;
-			rt.constraint = run_at(ro); ro += (uint32_t)rw;
-			for (uint32_t p = 0; p < t.param_count; ++p) {
-				rt.defaults.push_back(run_at(ro));
-				ro += (uint32_t)rw;
-			}
-			for (uint32_t sp = 0; sp < t.spec_count; ++sp) {
-				rt.spec.push_back(run_at(ro));
-				ro += (uint32_t)rw;
-			}
+			rt.rec_param_begin   = t.param_begin;
+			rt.rec_param_count   = t.param_count;
+			rt.rec_run_begin     = t.run_begin;
+			rt.rec_spec_count    = t.spec_count;
+			rt.rec_pattern_begin = t.pattern_begin;
+			rt.rec_pattern_words = t.pattern_words;
 			_restored_templates.push_back(rt);
 		}
 	}
@@ -3421,9 +3374,12 @@ bool CirFrozenForest::extern_loc_for(const std::string &sym,
 		// (Gated on _fully_opened: name ids resolve through the pool
 		// complete_open binds — never memoize an empty index early.)
 		_extern_index_built = true;
+		// slice D: the one-shot index build decodes a segment; the
+		// per-call map lookup below stays outside the clock.
+		ForestWorkFrame _fw(_work_secs, _work_depth);
 		const madc::dis::snapshot_segment *xs =
 			_reader.find(CIR_FOREST_SEG_EXTERN_LOCS);
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (xs && xs->kind == SNAP_KIND_CIR_EXTERN_LOCS
 		    && _reader.read_segment(*xs, d)
 		    && d.size() % sizeof(cir_forest_extern_loc) == 0) {
@@ -3468,9 +3424,10 @@ bool CirFrozenForest::ensure_template_payload() const
 	if (_template_payload_loaded)
 		return true;
 	_template_payload_loaded = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
-		std::vector<uint8_t> d;
+		madc::dis::decode_bytes d;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
 		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
@@ -3489,6 +3446,81 @@ bool CirFrozenForest::ensure_template_payload() const
 			return false;
 		}
 	}
+	return true;
+}
+
+// slice B1 (task #25): decode ONE restored-template record's payload-backed
+// fields — params, the positional token-run table (body / constraint /
+// per-param defaults / per-slot spec patterns), and the ClassPattern payload
+// slice — memoized per record. The identity fields were filled by the
+// materialize walk; the payload/token segments decode at the FIRST hydrate
+// (ensure_template_payload), so a TU that instantiates nothing never pays.
+bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
+{
+	if (rt.hydrated)
+		return !rt.hydrate_failed;
+	rt.hydrated = true;
+	rt.hydrate_failed = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
+	if (!ensure_template_payload())
+		return false;
+	auto run_at = [&](uint32_t word_off) -> CirRestoredTemplateRun {
+		CirRestoredTemplateRun rr;
+		rr.bytes = NULL;
+		rr.len = 0;
+		rr.count = 0;
+		rr.file = NULL;
+		cir_forest_token_run tr;
+		if (!madc::dis::pod_read(_template_payload, word_off, tr))
+			return rr;
+		if (tr.tok_count
+		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
+			rr.bytes = _template_tokens.data() + tr.tok_off;
+			rr.len   = tr.tok_bytes;
+			rr.count = tr.tok_count;
+		}
+		if (tr.file_id) {
+			uint32_t flen = 0;
+			rr.file = pool_cstr(tr.file_id, flen);
+		}
+		return rr;
+	};
+	const size_t pw = madc::dis::pod_words<cir_forest_template_param>();
+	const size_t rw = madc::dis::pod_words<cir_forest_token_run>();
+	if (rt.rec_pattern_words) {
+		size_t begin = rt.rec_pattern_begin;
+		size_t count = rt.rec_pattern_words;
+		if (begin > _template_payload.size()
+		    || count > _template_payload.size() - begin)
+			return false;
+		rt.pattern = _template_payload.data() + begin;
+		rt.pattern_words = rt.rec_pattern_words;
+	}
+	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
+		cir_forest_template_param pr;
+		if (!madc::dis::pod_read(_template_payload,
+					 rt.rec_param_begin + p * pw, pr))
+			return false;
+		uint32_t plen = 0;
+		const char *pn = pool_cstr(pr.name_id, plen);
+		if (!pn)
+			return false;
+		rt.params.push_back(std::make_pair(pn, pr.pflags));
+	}
+	// Positional run table: body, constraint, per-param defaults,
+	// per-slot spec patterns.
+	uint32_t ro = rt.rec_run_begin;
+	rt.body       = run_at(ro); ro += (uint32_t)rw;
+	rt.constraint = run_at(ro); ro += (uint32_t)rw;
+	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
+		rt.defaults.push_back(run_at(ro));
+		ro += (uint32_t)rw;
+	}
+	for (uint32_t sp = 0; sp < rt.rec_spec_count; ++sp) {
+		rt.spec.push_back(run_at(ro));
+		ro += (uint32_t)rw;
+	}
+	rt.hydrate_failed = false;
 	return true;
 }
 
@@ -3535,6 +3567,7 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		return NULL;
 	if (_segs[unit])
 		return _segs[unit];
+	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
 
 	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
@@ -3550,36 +3583,53 @@ CirFrozenSegment *CirFrozenForest::unit_segment(uint32_t unit)
 		fprintf(stderr, "madc: forest unit %u segments missing\n", unit);
 		return NULL;
 	}
-	std::vector<uint8_t> rb, kb, cb, pb;
+	// Divisibility gates come from the DIRECTORY's raw sizes, so the typed
+	// destination vectors can be sized once and decoded into directly —
+	// no staging buffers (the payload used to be zero-filled twice and
+	// copied twice; the memset alone was 12% of a packed <string> compile).
+	if (recs->raw_size % sizeof(cir_frozen_record)
+	    || kids->raw_size % sizeof(uint32_t)
+	    || conn->raw_size % sizeof(uint64_t)
+	    || poss->raw_size % sizeof(cir_frozen_pos)) {
+		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
+		return NULL;
+	}
+	madc::dis::decode_bytes rb;	// columnar records: the plane buffer IS the
+					// segment's retained storage (moved below)
 	bool records_columnar =
 		madc::dis::snap_xform_id(recs->flags)
 			== madc::dis::SNAP_XFORM_BYTEPLANE
 		&& madc::dis::snap_xform_param(recs->flags)
 			== sizeof(cir_frozen_record);
-	bool records_ok = records_columnar
-		? _reader.read_segment_transformed(*recs, rb)
-		: _reader.read_segment(*recs, rb);
-	if (!records_ok || !_reader.read_segment(*kids, kb)
-	    || !_reader.read_segment(*conn, cb) || !_reader.read_segment(*poss, pb)
-	    || rb.size() % sizeof(cir_frozen_record) || kb.size() % sizeof(uint32_t)
-	    || cb.size() % sizeof(uint64_t) || pb.size() % sizeof(cir_frozen_pos)) {
-		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
-		return NULL;
-	}
 
 	cir_forest_unit fu;
 	fu.unit_name_id = _units[unit].unit_name_id;
-	size_t record_count = rb.size() / sizeof(cir_frozen_record);
-	if (!records_columnar)
+	size_t record_count = (size_t)recs->raw_size / sizeof(cir_frozen_record);
+	bool records_ok;
+	if (records_columnar)
+		records_ok = _reader.read_segment_transformed(*recs, rb);
+	else {
 		fu.blob.records.resize(record_count);
-	fu.blob.children.resize(kb.size() / sizeof(uint32_t));
-	fu.connectors.resize(cb.size() / sizeof(uint64_t));
-	fu.positions.resize(pb.size() / sizeof(cir_frozen_pos));
-	if (!records_columnar && !rb.empty())
-		memcpy(fu.blob.records.data(), rb.data(), rb.size());
-	if (!kb.empty()) memcpy(fu.blob.children.data(), kb.data(), kb.size());
-	if (!cb.empty()) memcpy(fu.connectors.data(), cb.data(), cb.size());
-	if (!pb.empty()) memcpy(fu.positions.data(), pb.data(), pb.size());
+		records_ok = _reader.read_segment_into(
+			*recs, reinterpret_cast<uint8_t *>(fu.blob.records.data()),
+			(size_t)recs->raw_size);
+	}
+	fu.blob.children.resize((size_t)kids->raw_size / sizeof(uint32_t));
+	fu.connectors.resize((size_t)conn->raw_size / sizeof(uint64_t));
+	fu.positions.resize((size_t)poss->raw_size / sizeof(cir_frozen_pos));
+	if (!records_ok
+	    || !_reader.read_segment_into(
+		    *kids, reinterpret_cast<uint8_t *>(fu.blob.children.data()),
+		    (size_t)kids->raw_size)
+	    || !_reader.read_segment_into(
+		    *conn, reinterpret_cast<uint8_t *>(fu.connectors.data()),
+		    (size_t)conn->raw_size)
+	    || !_reader.read_segment_into(
+		    *poss, reinterpret_cast<uint8_t *>(fu.positions.data()),
+		    (size_t)poss->raw_size)) {
+		fprintf(stderr, "madc: forest unit %u payload corrupt\n", unit);
+		return NULL;
+	}
 
 	bool ok = record_count == _units[unit].record_count
 	       && fu.connectors.size() == _units[unit].connector_count

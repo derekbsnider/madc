@@ -1,6 +1,7 @@
 #ifndef __LIBMADC_DATASOURCE_H
 #define __LIBMADC_DATASOURCE_H 1
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -14,7 +15,8 @@ public:
 	unknown,
 	storage,
 	service,
-	ipc
+	ipc,
+	execution
     };
 
     enum class family
@@ -29,7 +31,10 @@ public:
 	unix_socket,
 	pipe,
 	shared_memory,
-	generic_ipc
+	generic_ipc,
+	process,
+	network_stream,
+	network_datagram
     };
 
     DataSource() {}
@@ -41,14 +46,26 @@ public:
     const std::string &authority() const { return _authority; }
     const std::string &path() const { return _path; }
     const std::string &location() const { return _location; }
-    domain source_domain() const { return classify_scheme(_scheme); }
-    family source_family() const { return classify_family(_scheme); }
+    domain source_domain() const
+    {
+	return !_uri.empty() && _scheme.empty()
+	    ? domain::storage : classify_scheme(_scheme);
+    }
+    family source_family() const
+    {
+	return !_uri.empty() && _scheme.empty()
+	    ? family::file : classify_family(_scheme);
+    }
 
     bool empty() const { return _uri.empty(); }
     bool is_storage() const { return source_domain() == domain::storage; }
     bool is_service() const { return source_domain() == domain::service; }
     bool is_ipc() const { return source_domain() == domain::ipc; }
-    bool is_file_like() const { return is_file_like_scheme(_scheme); }
+    bool is_process() const { return source_family() == family::process; }
+    bool is_file_like() const
+    {
+	return !_uri.empty() && _scheme.empty() ? true : is_file_like_scheme(_scheme);
+    }
     bool is_plain_file() const { return source_family() == family::file; }
     bool is_record_file() const { return source_family() == family::record_file; }
     bool is_database() const
@@ -61,15 +78,17 @@ public:
     bool is_keyed_database() const { return source_family() == family::keyed_database; }
     bool is_graph_database() const { return source_family() == family::graph_database; }
     bool is_service_api() const { return source_family() == family::service_api; }
+    bool is_network_stream() const { return source_family() == family::network_stream; }
+    bool is_network_datagram() const { return source_family() == family::network_datagram; }
     bool is_unix_socket() const { return source_family() == family::unix_socket; }
     bool is_pipe() const { return source_family() == family::pipe; }
     bool is_shared_memory() const { return source_family() == family::shared_memory; }
     bool is_local() const
     {
-	return is_file_like()
-	    || _scheme == "unix"
-	    || _scheme == "pipe"
-	    || _scheme == "shm";
+	if ( !empty() && _scheme.empty() )
+	    return true;
+	const SchemeInfo *info = scheme_info(_scheme);
+	return info && info->local;
     }
     bool is_remote() const { return !empty() && !is_local(); }
 
@@ -80,78 +99,74 @@ public:
     }
 
 private:
+    struct SchemeInfo
+    {
+	const char *name;
+	domain source_domain;
+	family source_family;
+	bool path_like;
+	bool local;
+    };
+
+    static const SchemeInfo *scheme_info(const std::string &scheme)
+    {
+	static const SchemeInfo schemes[] = {
+	    { "file", domain::storage, family::file, true, true },
+	    { "dsv", domain::storage, family::record_file, true, true },
+	    { "flr", domain::storage, family::record_file, true, true },
+	    { "vlr", domain::storage, family::record_file, true, true },
+	    { "sqlite", domain::storage, family::relational_database, true, true },
+	    { "bdb", domain::storage, family::keyed_database, true, true },
+	    { "gdbm", domain::storage, family::keyed_database, true, true },
+	    { "qdbm", domain::storage, family::keyed_database, true, true },
+	    { "mysql", domain::storage, family::relational_database, false, false },
+	    { "pgsql", domain::storage, family::relational_database, false, false },
+	    { "postgres", domain::storage, family::relational_database, false, false },
+	    { "postgresql", domain::storage, family::relational_database, false, false },
+	    { "redis", domain::storage, family::keyed_database, false, false },
+	    { "falkordb", domain::storage, family::graph_database, false, false },
+	    { "http", domain::service, family::service_api, false, false },
+	    { "https", domain::service, family::service_api, false, false },
+	    { "ftp", domain::service, family::service_api, false, false },
+	    { "rest", domain::service, family::service_api, false, false },
+	    { "mcp", domain::service, family::service_api, false, false },
+	    { "smtp", domain::service, family::service_api, false, false },
+	    { "smtps", domain::service, family::service_api, false, false },
+	    { "imap", domain::service, family::service_api, false, false },
+	    { "imaps", domain::service, family::service_api, false, false },
+	    { "tcp", domain::ipc, family::network_stream, false, false },
+	    { "udp", domain::ipc, family::network_datagram, false, false },
+	    { "uds", domain::ipc, family::unix_socket, true, true },
+	    { "unix", domain::ipc, family::unix_socket, true, true },
+	    { "pipe", domain::ipc, family::pipe, true, true },
+	    { "shm", domain::ipc, family::shared_memory, true, true },
+	    { "ipc", domain::ipc, family::generic_ipc, false, false },
+	    { "exec", domain::execution, family::process, true, true }
+	};
+	for ( std::size_t i = 0; i < sizeof(schemes) / sizeof(schemes[0]); ++i )
+	{
+	    if ( scheme == schemes[i].name )
+		return &schemes[i];
+	}
+	return nullptr;
+    }
+
     static bool is_file_like_scheme(const std::string &scheme)
     {
-	return scheme == "file"
-	    || scheme == "dsv"
-	    || scheme == "flr"
-	    || scheme == "vlr"
-	    || scheme == "sqlite"
-	    || scheme == "bdb"
-	    || scheme == "gdbm"
-	    || scheme == "qdbm";
+	const SchemeInfo *info = scheme_info(scheme);
+	return info && info->path_like && info->source_domain == domain::storage;
     }
 
     static family classify_family(const std::string &scheme)
     {
-	if ( scheme == "file" )
-	    return family::file;
-	if ( scheme == "dsv"
-	  || scheme == "flr"
-	  || scheme == "vlr" )
-	    return family::record_file;
-	if ( scheme == "sqlite"
-	  || scheme == "mysql"
-	  || scheme == "pgsql"
-	  || scheme == "postgres"
-	  || scheme == "postgresql" )
-	    return family::relational_database;
-	if ( scheme == "bdb"
-	  || scheme == "gdbm"
-	  || scheme == "qdbm"
-	  || scheme == "redis" )
-	    return family::keyed_database;
-	if ( scheme == "falkordb" )
-	    return family::graph_database;
-	if ( scheme == "http"
-	  || scheme == "https"
-	  || scheme == "ftp"
-	  || scheme == "rest"
-	  || scheme == "mcp" )
-	    return family::service_api;
-	if ( scheme == "unix" )
-	    return family::unix_socket;
-	if ( scheme == "pipe" )
-	    return family::pipe;
-	if ( scheme == "shm" )
-	    return family::shared_memory;
-	if ( scheme == "ipc" )
-	    return family::generic_ipc;
-	return family::unknown;
+	const SchemeInfo *info = scheme_info(scheme);
+	return info ? info->source_family : family::unknown;
     }
 
     static domain classify_scheme(const std::string &scheme)
     {
-	if ( is_file_like_scheme(scheme)
-	  || scheme == "redis"
-	  || scheme == "falkordb"
-	  || scheme == "mysql"
-	  || scheme == "pgsql"
-	  || scheme == "postgres"
-	  || scheme == "postgresql" )
-	    return domain::storage;
-	if ( scheme == "http"
-	  || scheme == "https"
-	  || scheme == "ftp"
-	  || scheme == "rest"
-	  || scheme == "mcp" )
-	    return domain::service;
-	if ( scheme == "unix"
-	  || scheme == "pipe"
-	  || scheme == "shm"
-	  || scheme == "ipc" )
-	    return domain::ipc;
-	return domain::unknown;
+	const SchemeInfo *info = scheme_info(scheme);
+	return info ? info->source_domain : domain::unknown;
     }
 
     void assign(const std::string &uri)
@@ -176,10 +191,8 @@ private:
 	_scheme = _uri.substr(0, pos);
 	std::string rest = _uri.substr(pos + 3);
 
-	if ( is_file_like_scheme(_scheme)
-	  || _scheme == "unix"
-	  || _scheme == "pipe"
-	  || _scheme == "shm" )
+	const SchemeInfo *info = scheme_info(_scheme);
+	if ( info && info->path_like )
 	{
 	    _path = rest.empty() ? std::string("/") : rest;
 	    _location = _path;

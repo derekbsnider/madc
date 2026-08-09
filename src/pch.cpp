@@ -289,6 +289,11 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
     if ( s == "max_align_t" ) return &ddMAX_ALIGN_T;
     if ( s == "LPSTR" ) return &ddLPSTR;
     if ( s == "array" ) return &ddARRAY;
+    // Dialect twins of `array` (slice V1) — a producer tokenizing under
+    // STD_MADC serializes these as datatype tokens; restore is a codec,
+    // not a language gate, so they map unconditionally like `array`.
+    if ( s == "value" ) return &ddARRAY;
+    if ( s == "var" ) return &ddARRAY;
     if ( s == "auto" ) return &ddAUTO;
     return NULL;
 }

@@ -1,0 +1,13 @@
+// Slice V2 — the order rule is LOUD: <ns_madc> without <string> before it
+// keeps the std::string conveniences gated OFF; calling one is a compile
+// error (fix: include <string> first, or use the value carriers).
+#include <ns_madc>
+#include <stdio.h>
+
+int main()
+{
+    madc::channel sorter("exec://sort");
+    string line;
+    sorter.readline(line);
+    return 0;
+}

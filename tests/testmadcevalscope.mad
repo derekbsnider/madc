@@ -1,5 +1,6 @@
 #include <iostream>
 using namespace std;
+#include <string>
 #include <ns_madc>
 #include <stdio.h>
 

@@ -345,8 +345,10 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 	return false;
 
     _dir.resize(ftr.segment_count);
+    _dir_index.clear();
     if ( ftr.segment_count )
 	memcpy(_dir.data(), blob + ftr.dir_offset, (size_t)dir_bytes);
+    _dir_index.reserve(_dir.size());
     for ( size_t i = 0; i < _dir.size(); ++i )
     {
 	const snapshot_segment &s = _dir[i];
@@ -354,11 +356,13 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 	     || s.offset + s.comp_size > ftr.dir_offset )
 	{
 	    _dir.clear();
+	    _dir_index.clear();
 	    return false;
 	}
 	if ( s.codec == (uint32_t)PchCompression::None && s.comp_size != s.raw_size )
 	{
 	    _dir.clear();
+	    _dir_index.clear();
 	    return false;
 	}
 	// Transform vocabulary is v2; a v1 blob must carry zeroed flags, and
@@ -368,8 +372,11 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 	     || !xform_valid(s.flags, s.raw_size) )
 	{
 	    _dir.clear();
+	    _dir_index.clear();
 	    return false;
 	}
+	// First-wins, matching the linear find() this index replaces.
+	_dir_index.emplace(s.seg_id, (uint32_t)i);
     }
 
     _blob = blob;
@@ -379,24 +386,20 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 
 const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const
 {
-    for ( size_t i = 0; i < _dir.size(); ++i )
-	if ( _dir[i].seg_id == seg_id )
-	    return &_dir[i];
-    return (const snapshot_segment *)0;
+    std::unordered_map<uint32_t, uint32_t>::const_iterator it =
+	_dir_index.find(seg_id);
+    return it != _dir_index.end() ? &_dir[it->second]
+				  : (const snapshot_segment *)0;
 }
 
-bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
-					std::vector<uint8_t> &out) const
+bool snapshot_reader::decode_payload(const snapshot_segment &seg,
+				     uint8_t *dst) const
 {
-    if ( !_blob )
-	return false;
     const uint8_t *payload = _blob + seg.offset;
-    out.resize((size_t)seg.raw_size);
-
     if ( seg.codec == (uint32_t)PchCompression::None )
     {
 	if ( seg.raw_size )
-	    memcpy(out.data(), payload, (size_t)seg.raw_size);
+	    memcpy(dst, payload, (size_t)seg.raw_size);
 	stat_copy_calls += 1;
 	stat_copy_bytes += seg.raw_size;
     }
@@ -405,7 +408,7 @@ bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
 	struct timeval t0, t1;
 	gettimeofday(&t0, NULL);
 	if ( !madc_pch::decompress(payload, (size_t)seg.comp_size,
-				   out.data(), (size_t)seg.raw_size,
+				   dst, (size_t)seg.raw_size,
 				   (PchCompression)seg.codec) )
 	    return false;
 	gettimeofday(&t1, NULL);
@@ -416,32 +419,66 @@ bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
     return true;
 }
 
-bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const
+bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
+					std::vector<uint8_t> &out) const
 {
     if ( !_blob )
 	return false;
+    out.resize((size_t)seg.raw_size);
+    return decode_payload(seg, out.data());
+}
+
+bool snapshot_reader::read_segment_transformed(const snapshot_segment &seg,
+					decode_bytes &out) const
+{
+    if ( !_blob )
+	return false;
+    out.resize((size_t)seg.raw_size);	// no zero-fill (default_init_allocator)
+    return decode_payload(seg, out.data());
+}
+
+bool snapshot_reader::read_segment_into(const snapshot_segment &seg,
+					uint8_t *dst, size_t capacity) const
+{
+    if ( !_blob || capacity < (size_t)seg.raw_size )
+	return false;
+    if ( !seg.raw_size )
+	return true;
+    if ( !dst )
+	return false;
 
     // Byte-plane inversion permutes rather than mutates, so it decodes via a
-    // scratch buffer; the in-place transforms decode straight into out. The
+    // scratch buffer; the in-place transforms decode straight into dst. The
     // scratch is reused across calls (grow-only) — a per-call vector re-pays
     // page faults on every multi-MB segment of a lazy per-unit load sweep.
     uint32_t xid = snap_xform_id(seg.flags);
     if ( xid == SNAP_XFORM_BYTEPLANE )
     {
-	static thread_local std::vector<uint8_t> planes;
+	static thread_local decode_bytes planes;
 	if ( !read_segment_transformed(seg, planes) )
 	    return false;
-	out.resize((size_t)seg.raw_size);
 	size_t stride = snap_xform_param(seg.flags);
-	byteplane_inv(planes.data(), out.data(), out.size() / stride, stride);
+	byteplane_inv(planes.data(), dst, (size_t)seg.raw_size / stride, stride);
 	return true;
     }
 
-    if ( !read_segment_transformed(seg, out) )
+    if ( !decode_payload(seg, dst) )
 	return false;
     if ( xid == SNAP_XFORM_DELTA32 )
-	delta32_inv(out.data(), out.size());
+	delta32_inv(dst, (size_t)seg.raw_size);
     return true;
+}
+
+bool snapshot_reader::read_segment(const snapshot_segment &seg, std::vector<uint8_t> &out) const
+{
+    out.resize((size_t)seg.raw_size);
+    return read_segment_into(seg, out.data(), out.size());
+}
+
+bool snapshot_reader::read_segment(const snapshot_segment &seg, decode_bytes &out) const
+{
+    out.resize((size_t)seg.raw_size);	// no zero-fill (default_init_allocator)
+    return read_segment_into(seg, out.data(), out.size());
 }
 
 const uint8_t *snapshot_reader::raw_ptr(const snapshot_segment &seg) const

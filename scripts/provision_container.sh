@@ -66,8 +66,12 @@ PKGS_codec="libzstd-dev zlib1g-dev"
 # backend (and its unit-test surface) versus the pre-crash config.
 PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
 PKGS_cross="qemu-user-static"
+# rpm supplies rpmbuild for scripts/package_release.sh (.rpm leg); dpkg-deb
+# is part of the base image but rpm is not — its absence 127'd the v0.69.0
+# promote's package build after a container rebuild dropped the apt layer.
+PKGS_package="rpm"
 
-ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross"
+ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package"
 
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the

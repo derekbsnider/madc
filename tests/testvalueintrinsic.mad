@@ -1,0 +1,30 @@
+// Slice V1: madc::value is an intrinsic script type — spelled `value`,
+// `var`, `array`, or `madc::value`, no #include needed. Scalar assignment
+// retags the carrier; printf coerces through the text view (c_str /
+// madarray_cstr); `var` contrasts with `auto`: runtime-retaggable.
+value v;
+v = "hello";
+printf("s=%s\n", v);
+v = 42;
+printf("i=%s\n", v);
+v = 3.5;
+printf("r=%s\n", v);
+v = true;
+printf("b=%s\n", v);
+
+var w;
+w = "via var";
+printf("w=%s\n", w);
+w = v;
+printf("copy=%s\n", w);
+
+madc::value q;
+q = "qualified";
+printf("q=%s cstr=%s\n", q, q.c_str());
+
+// One carrier: an array IS a value whose kind is array. Vivified arrays
+// still count; a scalar retag replaces, never appends.
+array a;
+printf("count=%ld\n", a.count());
+a = "scalar now";
+printf("a=%s\n", a);

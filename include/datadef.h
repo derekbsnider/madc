@@ -1136,9 +1136,18 @@ public:
     // ([over.match.funcs]/4): 1 = const (a non-const member is NOT viable),
     // 0 = non-const (cv-match breaks score ties), -1 = unknown (the implicit
     // object parameter does not discriminate — legacy behavior).
+    // all_rejections_proven (optional out): true iff EVERY same-name candidate
+    // that was rejected fell to a PROVABLE verdict — non-template arity/score
+    // failure where the failing arg/param pair are both concrete class types
+    // (identity, bases and ctor conversions are modeled, so a class-vs-class
+    // -1 is a real [over.match.viable] miss). Member-template candidates,
+    // cv-rejections, and scalar/enum/typedef-opaque score failures mark it
+    // false: those verdicts are not yet trustworthy enough to hard-fail a
+    // call on. Consumers use it to decide whether a scored miss may THROW.
     Variable *findMethodOverload(const std::string &name,
 				 const std::vector<const DataDef *> &argtypes,
-				 int obj_cv = -1);
+				 int obj_cv = -1,
+				 bool *all_rejections_proven = 0);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.

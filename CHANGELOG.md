@@ -2,6 +2,294 @@
 
 ## [Unreleased]
 
+## [v0.75.0] — 2026-08-09
+
+**madc::value is a first-class script intrinsic — `value`, `var`, and
+`madc::value` with zero includes — and the madc:: API surface is now
+typed in it: value-first `<ns_madc>` drops its `#include <string>`, so
+madc::-only scripts compile at the millisecond floor.**
+
+- **`madc::value` script intrinsic** (slice V1): `value`, `var`, and
+  qualified `madc::value` are spellings of the ONE intrinsic DataDef
+  (canonical `madc::value`; `array` is unchanged — a madc::array IS a
+  madc::value carrying an array). `var` declares the runtime-retaggable
+  dynamic carrier (contrast compile-time `auto`). Bare spellings are
+  `--std=madc`-only (the default dialect); strict C/C++ modes keep them
+  ordinary identifiers, and qualified `madc::value` works everywhere.
+  Resolution rides the typedef lane with C++ name-hiding shadow guards
+  ([basic.scope.hiding]) — deliberately NOT lexer datatype tokens, which
+  would hijack every identifier position (`integral_constant::value`).
+  Scalar surface: native `operator=` family (cstr/int/real/bool/value)
+  and `c_str()` on the intrinsic; channel `readline`/`readall`/`write`
+  value carriers. The owner's testsort shape runs verbatim
+  (tests/testvaluesort.mad). Fixed en route: `array` sat in the static
+  builtin-spelling identity table and corrupted `typedef long array;`
+  template-binding identity under `--std=c++17`
+  (tests/testarraytypedefidentity); the madc:: intrinsic prototypes
+  must never ride the forest typedef sweep (packed restore minted a
+  colliding file-scope `typedef int value;`).
+- **Value-first `<ns_madc>`** (slice V2): the header no longer includes
+  `<string>` — the primary madc:: API is typed in `madc::value` +
+  `const char*` (value-destination eval twins with `_ctx` siblings,
+  `const char*` context keys, the V1 channel value carriers). The
+  `std::string` overloads — namespace eval/context forms and the
+  channel's string members — are conveniences declared only when
+  `<string>` precedes `<ns_madc>` in the TU (PP-gated on the stdlib's
+  own include guards; auto-include orders them correctly). A madc::-only
+  script no longer pays the `<string>` cost: value-only channel script
+  ~12ms on the dev binary vs ~520ms the moment `<string>` enters.
+  Gates: testvaluensmadceval, testnsmadcautostring, testnsmadcorder.
+- **No-viable method overloads against `value` parameters now diagnose**
+  ([over.match.viable], g++/clang canon): a method call passing a class
+  object where only a `value&` parameter exists used to silently keep
+  the by-name arity pick and compile with the wrong parameter class — a
+  raw `std::string*` passed as `madc::value*` (the readline type
+  confusion). Both the instance and qualified-static arms now error
+  (`no viable overload of 'X' in C for these argument types`). The
+  value intrinsic's conversion surface is closed by construction, which
+  is what makes the miss provable; the GENERAL class-vs-class
+  diagnostic is a recorded follow-up (needs scorer conversion-modeling
+  maturity — enum operator overloads, typedef-ref params, template-ctor
+  channels; iteration ledger in the value-intrinsic plan doc).
+- **Use-after-free fixed in the file-lane tokenizer** (latent since the
+  libmadc embedding lane existed): `Program::tokenize(fname)` stored
+  the CALLER's raw pointer into every main-source token's `file` and
+  into `forest_root_file`; the CLI's argv masked it, but libmadc's
+  `with_temp_source` frees its temp path right after compiling, so a
+  later lazy JIT build walked freed memory (valgrind-confirmed; two
+  layout-dependent libmadc unit asserts). The name is now interned like
+  the buffer lane's, and the parseFunction fallback that stored
+  `source.fname()`'s raw c_str interns too.
+- **Method default arguments work**: findMethodOverload's arity gate
+  admits `[required..total]` args and the selected overload's trailing
+  defaults are filled at the call — previously a defaulted method call
+  survived overload selection only via the silent fallback and then
+  died in c2mir ("too few arguments"). Gates: testovlmiss,
+  testovlmissstatic, testmethoddefaultargs.
+
+## [v0.74.0] — 2026-08-09
+
+**Reference-binding correctness: a converted argument can no longer
+silently bind a non-const `T&` parameter — the `channel::readline(char
+buffer)` empty-output bug becomes a compile error, matching g++/clang++.**
+
+- **Non-const lvalue references no longer bind conversion temporaries**
+  ([dcl.init.ref]p5, g++/clang++ canon). Passing a `char` buffer to
+  `channel::readline(std::string&)` — or any converted argument to a
+  `T&` parameter — used to compile silently: madc materialized a hidden
+  temp, the callee wrote into it, and the caller's object was never
+  touched (testsort.mad printed empty lines with exit 0). Overload
+  ranking now scores such candidates non-viable and the argument
+  lowering refuses with `cannot bind a non-const lvalue reference
+  parameter to a converted temporary` at the call site. One predicate
+  owns the rule (`FuncDef::is_nonconst_lref_param`): positive-evidence
+  only — explicitly spelled `T&` params are gated; typedef'd refs
+  (libc++'s `push_back(const_reference)`) abstain until
+  FEATURE_CONST_TYPES gives the type graph alias const-ness. Legal
+  bindings (`char*` → `const string&`, lvalue → `string&`, `&&`
+  overload sets) are pinned by tests/testconstrefbind; reducers
+  tests/testnonconstref + tests/testnonconstrefmember gate the errors.
+- Release flow now archives each release's `bin/madc-release` under
+  `tmp/release-bins/` on both hosts for cross-release timing (owner
+  directive; seeded with v0.72.0 and v0.73.0).
+
+## [v0.73.0] — 2026-08-08
+
+**The packed lane stops paying for templates it never uses: `#include
+<string>` drops 185→124 ms (−33 %), an unused include 154→109 ms, and
+the gap to the C path narrows from 6× to 4.8× — decode-in-place,
+no-init decode buffers, honest phase attribution, and lazy template
+thaw (task #25).**
+
+- **Lazy template thaw** (slices B1/B2/B3,
+  `docs/plans/2026-08-08-packed-include-latency-plan.md`).
+  Forest-restored template definitions — class, partial-spec, alias,
+  and fn lanes — now register as identity-only STUBS; the payload
+  (params, defaults, bodies/targets/decls, constraints, spec patterns,
+  frozen class-pattern spans) decodes on the FIRST content read at the
+  thaw owners (`find_template` / `find_template_alias` selection
+  wrappers, `template_with_body`, `match_partial_specialization`, the
+  fn-lane candidate chokes, the freeze writer's thaw-all). The
+  free-overload signature recapture (stream `operator<<`, manipulators,
+  `std::getline`) defers to a one-shot flush at the first consult of
+  those tables, with its cursor snapshotted in the class-registration
+  journal so rollbacks re-derive truncated surfaces. A TU that never
+  names a template never pays its decode; `<string>`'s class-pattern
+  deferrals drop from ~600 eager to 5 thawed.
+  `scripts/check-template-thaw-choke.sh` (in fulltest) fails any
+  unmarked direct read of the five lazy registries.
+- **Decode-in-place + O(1) segment lookup** (slice A).
+  `snapshot_reader` gains a shared `decode_payload` core and
+  `read_segment_into`; `unit_segment` decodes straight into the typed
+  destination vectors (staging buffers deleted — one memset instead of
+  two, no second copy); the segment directory is indexed at `open()`.
+- **No-init decode destinations** (slice A2).
+  `madc::dis::default_init_allocator` + `decode_vector`/`decode_bytes`
+  (`include/madcdis/pod_alloc.h`): resize on a decode destination no
+  longer zero-fills memory the decoder overwrites immediately.
+- **Honest phase attribution** (slice D). One depth-guarded
+  `ForestWorkFrame` clock spans every forest bind/restore/load path;
+  `--show-stats` now reports lex/parse/cir NET of forest work plus a
+  "forest in phases" carve line — the 96 ms "lex" mirage was forest
+  work all along.
+- Batteries at the release tree: fulltest **1002/0** (incl. the new
+  thaw gate), packed **1002/0/9skip**, libc++ JIT **998/0/13skip**,
+  EXE/OBJ **981/0**. Fork unchanged (1.0-madc.0.68.0).
+
+## [v0.72.0] — 2026-08-08
+
+**The data-channel substrate reaches the language: `madc::channel` opens
+`exec://` / `tcp://` / `file://` URIs from a script, exec:// becomes a
+first-class channel scheme, and the suite gains its first script-level
+tcp/exec coverage — hermetic httpget included.**
+
+- **`madc::channel` — the data-channel substrate reaches the language**
+  (Track 5C slice 1, `docs/plans/2026-08-08-track5c-script-channels-plan.md`).
+  One URI-addressed byte channel with line helpers, declared in
+  `<ns_madc>` and resolved mangled-direct to the host class
+  (`include/madcdis/channel.h` — the same class is the embedder's
+  convenience wrapper, cpp-first). `readline` strips newlines (CRLF
+  clean) and returns the unterminated tail; buffered bytes are served
+  to `read()` before the wire; modes `"r"/"w"/"rw"/"a"`; failures latch
+  in `ok()`/`last_error()`. First madc-owned class on the
+  mangled-direct spine. Docs: `docs/language/channel.md`.
+- **`exec://` is a first-class channel scheme.** `ExecDataChannel`
+  adapts a spawned `Process` (write → child stdin, read → child stdout,
+  `close_write` → stdin EOF, never seekable); the URI's path splits on
+  single spaces into argv — NOT a shell (no quoting/globbing/variables);
+  the child's stderr is inherited, not piped, so an undrained stderr
+  can never block a chatty child. `Process` itself gains spawn-PATH
+  resolution for bare commands (posix_spawnp shape) and the
+  `ProcessOptions.inherit_stderr` option; `pump_process` skips its
+  stderr leg when there is no stderr pipe.
+- **Script-level channel tests** — the suite's first `tcp://` and
+  `exec://` coverage, all hermetic: `testexecchannel.mad` (exec://sort
+  round-trip + loud failed spawn), `testtcpchannel.mad` (single-process
+  loopback listener, bidirectional exchange, half-close EOF),
+  `testhttpget.mad` (canned HTTP/1.0 loopback; the client half is the
+  real-world httpget shape). Green in all three lanes (JIT/EXE/OBJ)
+  and under `-stdlib=libc++`.
+- **Flavor marshalling grows its method half** (task #69).
+  `madc::channel` is the first madc-owned class resolved mangled-direct
+  to cross the stdlib-flavor boundary; the host-twin mint for class
+  METHODS (`Program::host_flavor_method_symbol`) re-runs the one method
+  mint under the host-flavor mangler state with carrier params swapped
+  to the host string spelling — under `-stdlib=libc++`,
+  `channel::readline(string&)` now marshals to the host's `__cxx11`
+  implementation instead of dying on an undefined `NSt3__1` import.
+- **One runtime-error composition owner** (pre-merge dupaudit find,
+  caught in-branch): the channel/process subsystem composes
+  runtime-phase errors in exactly one place (the one-arg
+  `detail::set_channel_error`); sibling helpers delegate. Gated by
+  `scripts/check-one-error-composer.sh` in fulltest (negative control
+  verified).
+
+## [v0.71.0] — 2026-08-08
+
+**True random access for record storage (FLR plan S1+S2): seekable
+channels with positioned IO, the FLR driver reborn lazy with O(1)
+record locators, and a capability-truth gate that makes a hollow
+capability claim a build failure.**
+
+- **`SeekableDataChannel` — random access joins the channel framework**
+  (FLR plan S1, `docs/plans/2026-08-08-flr-random-access-struct-schema-plan.md`).
+  `size`/`seek` plus positioned transfers (`read_at`/`write_at`,
+  pread/pwrite shape) that never disturb the sequential position, so
+  cursors and point lookups share one channel without a positional
+  race. The dormant `ChannelCapabilities.seek` flag is now set
+  truthfully per fd (`S_ISREG`, never for `O_APPEND`); FIFOs, sockets,
+  and processes refuse the surface cleanly. `MemoryDataChannel`
+  implements the same contract (`write_at` extends and zero-fills), and
+  "open a path as a channel" has one owner (`detail::open_file_channel`).
+- **FLR reborn lazy with O(1) record locators** (FLR plan S2). `open()`
+  reads geometry and the tombstone bitmap only — zero records; scans
+  stream one positioned read per row; `RecordLocator` gains
+  `record_index` and a locator hit is one read + one decode (aligned
+  `byte_offset` accepted; misaligned/out-of-range/tombstoned refused
+  loudly). Inserts append one record and hand out locators; updates —
+  including the new `DataSet::update_by_locator` positional update —
+  write exactly one record; soft erase/restore touch only the sidecar
+  bitmap; the whole-file rewrite-per-mutation `flush()` is gone
+  (position-shifting cases stream to a temp file and rename).
+- **Capability claims are now provable — and proven.**
+  `DriverCapabilities.locator_lookup` states the stronger contract
+  (positioned access, never a scan); `ChannelBackedDataDriver::
+  open_on_channel` opens a record driver over any seekable channel (an
+  embedding host's memory image — records-over-memory is now a real
+  feature — or a test's counting shim); and the capability-truth gate
+  (`tests/unit/test_driver_capability_truth.cpp`) cross-examines every
+  claim: read-counted O(1) locator proof, open-reads-nothing proof,
+  streaming-does-not-drain proof, a pinned claims table for the core
+  schemes (VLR honestly claims no `locator_lookup` until its S3
+  sidecar), and a `sizeof` ratchet so a new capability field cannot
+  land without a truth leg.
+- **Dupaudit consolidation (gated):** one truthful-seekability probe
+  (`madc::seekable_surface`) and one cursor→container drain owner
+  (`madc::copy` + `to_container`, adopted by dsv/flr);
+  `scripts/check-storage-seam-adoption.sh` joins `fulltest`.
+
+## [v0.70.0] — 2026-08-08
+
+**The data-channel streaming & process-flow core (Track 5A):
+dependency-free typed streaming over memory, files, FIFOs, TCP/UDP/UDS,
+and child processes — with the madcdis/madcdat boundary settled as
+dependency-based.**
+
+Implemented in session #70 (Codex 5.6-sol under the owner's guideline,
+`docs/plans/2026-08-07-data-channel-streaming-process-flow-plan.md`),
+then reviewed function-by-function and hardened before this merge.
+The boundary decision (owner): **madcdis owns all core/OS
+functionality** — the streaming framework, standard formats, and
+OS-level transports — while **madcdat owns external-library
+providers** (BDB/GDBM/QDBM/SQLite behind their `HAVE_*` guards). The
+storage core moved madcdat→madcdis as a verified faithful move (96/96
+functions accounted for, 93 byte-identical), and the DSV/FLR/VLR and
+storage-contract suites now run in the `--enable-madcdat=no` core
+build.
+
+- **ABI-compatible streaming seams.** Existing `Cursor`, `DataDriver`,
+  and `SourceAdapter` vtables are unchanged (moved verbatim into their
+  own headers); streaming is opt-in via new extension types
+  (`StreamingSourceAdapter`, `StreamingDataDriver`, `ErrorAwareCursor`)
+  discovered by capability probes that fall back to the legacy vector
+  APIs through single-owner helpers. Typed `Sink`/`Flow` adapters are
+  lazy end-to-end (gates: filter laziness, downstream failure closes
+  the upstream cursor, a local query limit does not drain a streaming
+  driver). DSV scans natively through an owned cursor while retaining
+  the legacy vector API.
+- **Dependency-free `DataChannel` framework** (`madcdis/datachannel.h`):
+  memory, file, FIFO, and TCP/UDP/UDS socket channels behind one
+  scheme registry, plus a `std::iostream` bridge that preserves channel
+  errors. Datagram channels refuse silent truncation (`MSG_TRUNC`) and
+  preserve the zero-length-datagram vs stream-EOF distinction;
+  byte-stream channels get real half-close (`shutdown`) semantics; all
+  channel writes suppress process-wide `SIGPIPE` through one owner.
+- **`Process`** (`madcdis/process.h`): explicit argv/env/cwd — no
+  shell, argv boundaries preserved — with independent stdin/stdout/
+  stderr channels, a cloexec self-pipe reporting the child's exec
+  errno, guaranteed reaping (including the destructor), and
+  `pump_process` driving all three streams concurrently with bounded
+  buffers.
+- **Two new fulltest gates**: every stream fd write must delegate to
+  the one SIGPIPE-safe owner (`check-datachannel-write-owner.sh`), and
+  every owned descriptor must follow the one close-on-exec policy
+  (`check-datachannel-cloexec-owner.sh`).
+- **Review hardening (this merge):** close-on-exec is now ATOMIC at fd
+  creation where the platform provides it (`O_CLOEXEC` on opens,
+  `pipe2`/`SOCK_CLOEXEC` on Linux; darwin keeps the shared post-hoc
+  owner as fallback — the gate enforces both); the twin channel-pump
+  loops were unified into one `copy_channel` owner; the DataChannel
+  thread-safety contract and `pump_process`'s distinct-channels
+  requirement are documented. Recorded follow-ups: the twin
+  scheme→factory registries (KG `DupFamily`), `pipe://` write-mode
+  `O_CREAT` surprise on a missing FIFO path.
+- Tests: data-channel contract 23 cases / 143 assertions, process
+  7 / 95, storage contract 25 / 223 — all green from the full build
+  AND the `--enable-madcdat=no` core build. Release-HEAD battery:
+  fulltest **999/0/0TO/9skip**, libc++ lane **995/0/13skip**, EXE/OBJ
+  **978/0**, `make release` rc=0 (forest-pack verify), packed suite
+  **999/0/9skip**.
+
 ## [v0.69.0] — 2026-08-07
 
 **The release lane restored — the frozen-corpus instantiation-identity

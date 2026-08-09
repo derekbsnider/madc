@@ -789,6 +789,9 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     builder->set_tu_name(source_name);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
+    // slice D: forest-work clock advance inside this timed window = the
+    // on-demand unit/body loads the build triggers, carved out of the bucket.
+    double _cir_fw0 = prog ? prog->_forest_work_seconds : 0.0;
     try {
 	tree = builder->translate_module(prog);
     } catch (const std::exception &e) {
@@ -802,8 +805,11 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 	return NULL;
     }
     if (prog)
+    {
 	prog->_cir_build_seconds += std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _cir_t0).count();
+	prog->_cir_forest_seconds += prog->_forest_work_seconds - _cir_fw0;
+    }
     if (!tree) {
 	fprintf(stderr, "%s: tree build failed\n", source_name);
 	delete builder;
@@ -3753,17 +3759,20 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	for (size_t i = 0; i < owners.size(); ++i)
 	    emit_variants(*owners[i].second);
     };
-    prog->template_map.for_each([&](const char *key,
+    // task #25 B2: a re-freeze on top of a bound forest serializes every
+    // definition's payload — thaw the frozen stubs first (no-op live).
+    prog->thaw_all_frozen_templates();
+    prog->template_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_registry_entry_t &registry) {
 	emit_class_registry(CIR_TMPLK_CLASS, key, registry);
 	return false;
     });
-    prog->partial_spec_map.for_each([&](const char *key,
+    prog->partial_spec_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_registry_entry_t &registry) {
 	emit_class_registry(CIR_TMPLK_PARTIAL, key, registry);
 	return false;
     });
-    prog->template_alias_map.for_each([&](const char *key,
+    prog->template_alias_map.for_each([&](const char *key,	/* thaw-owner */
 	    Program::template_alias_registry_entry_t &registry) {
 	auto emit_variants = [&](std::vector<Program::TemplateAliasDef> &variants) {
 	    for (Program::TemplateAliasDef &ad : variants) {
@@ -3800,7 +3809,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    emit_variants(*owners[i].second);
 	return false;
     });
-    prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+    prog->fn_template_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
 	    emit(CIR_TMPLK_FN, key, std::string(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,
@@ -3811,7 +3820,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		 Program::ClassParseReason::None);
 	return false;
     });
-    prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {
+    prog->fn_template_decl_map.for_each([&](const char *key, std::vector<Program::FnTemplateDef> &v) {	/* thaw-owner */
 	for (Program::FnTemplateDef &fd : v)
 	    emit(CIR_TMPLK_FN_DECL, key, std::string(), fd.ns, fd.inline_builtin_kind,
 		 fd.owner_class,
@@ -4135,6 +4144,15 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
 			if (it->first.find('<') != std::string::npos || !it->second)
 				continue;		// template product / empty: follow-on
+			// The madc:: intrinsic carrier prototypes (value/array ->
+			// ddARRAY, slice V1) are PROCESS state: add_madc_namespace
+			// re-registers them in every Program, packed consumers
+			// included. Serializing them minted a restored file-scope
+			// `typedef int value;` that collided with user variables
+			// named value (packed-lane testasmoutputonly).
+			if (&it->second->definition == &ddARRAY
+			    && strcmp(ns, "madc") == 0)
+				continue;
 			// The ONE cross-ref policy (forest_serialize_type_id): a
 			// btSimple scalar alias (std::size_t — a project-side copy
 			// of unsigned long, the A2 class) resolves to its PINNED
