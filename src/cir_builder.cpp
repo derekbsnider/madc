@@ -2110,7 +2110,8 @@ static FuncDef *single_arg_conversion_ctor(DataDefCLASS *target,
 			continue;
 		DataDef *pt = fd->parameters[1];
 		bool refp = fd->is_ref_param(1);
-		int score = score_arg_to_param(source, pt, refp, false, false);
+		int score = score_arg_to_param(source, pt, refp, false, false,
+					       fd->is_nonconst_lref_param(1));
 		if (score > best_score) {
 			best_score = score;
 			best = fd;
@@ -2164,7 +2165,8 @@ static bool method_body_matches_args(Variable *v, FuncDef *fd,
 		DataDef *pt = pi < fd->parameters.size()
 			    ? fd->parameters[pi] : NULL;
 		bool refp = fd->is_ref_param(pi);
-		if (score_arg_to_param(argtypes[i], pt, refp) < 0)
+		if (score_arg_to_param(argtypes[i], pt, refp, true, false,
+				       fd->is_nonconst_lref_param(pi)) < 0)
 			return false;
 	}
 	return true;
@@ -5686,7 +5688,8 @@ static bool class_operator_value_result(TokenBase *arg);
 // Defined below with the member-read deref family; the argument helpers here
 // consult it for the aggregate-reference-member binding arms.
 
-node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
+node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
+				   bool nonconst_lref)
 {
 	if (!target) target = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
@@ -5738,7 +5741,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	if (TokenCast *tcr = dynamic_cast<TokenCast *>(arg))
 		if (tcr->cast_type && tcr->cast_type->is_reference()
 		    && tcr->expr)
-			return object_arg_addr(tcr->expr, target);
+			return object_arg_addr(tcr->expr, target, nonconst_lref);
 
 	// A REFERENCE-returning call (std::move(x), a T&/T&& method): the call
 	// VALUE already is the referenced object's address. Bind it directly
@@ -5812,7 +5815,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	if (!own && arg && arg->datadef() && arg->datadef()->is_reference())
 		own = pointee_user_class(arg->datadef());
 	if (own && own != target && own->is_or_derives_from(target)) {
-		node_t addr = object_arg_addr(arg, own);
+		node_t addr = object_arg_addr(arg, own, nonconst_lref);
 		node_t dyn = vbase_dynamic_adjust(addr, own, target, arg);
 		if (dyn) return dyn;
 		size_t off = own->base_offset_of(target);
@@ -5949,6 +5952,21 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 				target ? target->name.c_str() : "?",
 				m_cur_method ? m_cur_method->returns.name.c_str() : "?");
 		return error_node("tsubst: dependent-arg object construction", arg);
+	}
+	// [dcl.init.ref]p5: a NON-CONST lvalue reference parameter binds only a
+	// same-type (or derived) lvalue. An argument of a DIFFERENT type reaches
+	// this materializing tail only through a conversion, and the converted
+	// temporary must NOT bind (g++: "cannot bind non-const lvalue reference
+	// to an rvalue") — writing into the hidden temp instead of the caller's
+	// object is a silent wrong answer (testsort.mad readline(char[1024])).
+	// A same-class prvalue spill keeps its existing value-category-blind
+	// behavior; only the CONVERSION shape is refused.
+	if (nonconst_lref) {
+		DataDefCLASS *ac = class_arg_type(arg ? arg->datadef() : NULL);
+		if (!ac || (ac != target && !ac->is_or_derives_from(target)))
+			return error_node(
+				"cannot bind a non-const lvalue reference "
+				"parameter to a converted temporary", arg);
 	}
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
@@ -6277,7 +6295,8 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		int vla_stars = 0;
 		DataDef *velem = NULL;
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
-			append(args, object_arg_addr(arg, pc));
+			append(args, object_arg_addr(arg, pc,
+				callee && callee->is_nonconst_lref_param(pi)));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
@@ -9645,7 +9664,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		bool refp = callee->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 			eparams.push_back({ {N_VOID}, true });
-			append(args, object_arg_addr(arg, pc));
+			append(args, object_arg_addr(arg, pc,
+				callee->is_nonconst_lref_param(pi)));
 		} else if (DataDefCLASS *vc = as_class_instance(pt)) {
 			eparams.push_back(native_param_shape(pt, false));
 			append(args, object_arg_value(arg, vc));
@@ -10272,7 +10292,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				? arg_callee->parameters[pi] : NULL;
 		bool is_ref_param = arg_callee && arg_callee->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
-			append(args, object_arg_addr(arg, pc));
+			append(args, object_arg_addr(arg, pc,
+				arg_callee && arg_callee->is_nonconst_lref_param(pi)));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
@@ -11121,7 +11142,8 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 					? copy_ctor->parameters[pi] : NULL;
 			bool refp = copy_ctor->is_ref_param(pi);
 			if (DataDefCLASS *pc = param_object_class(pt, refp))
-				append(args, object_arg_addr(arg, pc));
+				append(args, object_arg_addr(arg, pc,
+					copy_ctor->is_nonconst_lref_param(pi)));
 			else if (DataDefCLASS *vc = as_class_instance(pt))
 				append(args, object_arg_value(arg, vc));
 			else if (refp)
@@ -11920,7 +11942,8 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 // converting-ctor rules like any other class.
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		       bool param_is_ref, bool allow_udc,
-		       bool arg_is_zero_literal)
+		       bool arg_is_zero_literal,
+		       bool param_is_nonconst_lref)
 {
 	if (!pdc || !adc)
 		return 0;   // unknown shape: neutral, don't reject
@@ -11959,6 +11982,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (ac && pc2 && ac->is_or_derives_from(pc2))
 				return 3;
 		}
+		// [dcl.init.ref]p5: a NON-CONST lvalue reference binds only a
+		// same-type (or derived) lvalue — never the temporary a
+		// user-defined conversion materializes. Without this a `char*`
+		// argument "bound" `std::string&` through the converting ctor,
+		// the call wrote a hidden temp, and the caller's object stayed
+		// untouched (testsort.mad readline — silent wrong answer;
+		// g++: "cannot bind non-const lvalue reference to an rvalue").
+		if (param_is_nonconst_lref)
+			return -1;
 		if (!allow_udc)
 			return -1;  // no further user-defined conversion permitted
 		const DataDefCLASS *pc = as_user_class(pdc);
@@ -11982,7 +12014,8 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				continue;
 			bool cref = fd->is_ref_param(1);
 			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,
-						   arg_is_zero_literal);
+						   arg_is_zero_literal,
+						   fd->is_nonconst_lref_param(1));
 			if (s > best)
 				best = s;
 		}
@@ -12291,7 +12324,8 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			bool refp = fd->is_ref_param(pi);
 			DataDef *adc = ctor_arg_datadef(ctor_args[i]);
 			int s = score_arg_to_param(adc, pt, refp, true,
-					is_zero_integer_literal(ctor_args[i]));
+					is_zero_integer_literal(ctor_args[i]),
+					fd->is_nonconst_lref_param(pi));
 			if (s < 0) { ok = false; break; }
 			total += s;
 		}
@@ -12835,7 +12869,8 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 				? ctor->parameters[pi] : NULL;
 		bool is_ref_param = ctor && ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
-			explicit_nodes.push_back(object_arg_addr(arg, pc));
+			explicit_nodes.push_back(object_arg_addr(arg, pc,
+				ctor && ctor->is_nonconst_lref_param(pi)));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			explicit_nodes.push_back(object_arg_value(arg, vc));
 		else if (is_ref_param)
@@ -13433,7 +13468,8 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				? ctor->parameters[pi] : NULL;
 		bool is_ref_param = ctor && ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param)) {
-			append(args, object_arg_addr(arg, pc));
+			append(args, object_arg_addr(arg, pc,
+				ctor && ctor->is_nonconst_lref_param(pi)));
 		} else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
@@ -13725,7 +13761,8 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		DataDef *p1dd = (fd->parameters.size() > 1)
 			      ? fd->parameters[1] : NULL;
 		bool refp = fd->is_ref_param(1);
-		int score = score_arg_to_param(rhs_dd, p1dd, refp);
+		int score = score_arg_to_param(rhs_dd, p1dd, refp, true, false,
+					       fd->is_nonconst_lref_param(1));
 		if (score >= 0 && score > best_score) {
 			best_score = score;
 			best = fd;
@@ -13764,7 +13801,8 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		if (fd->parameters.size() <= 1) continue;   // unary
 		DataDef *p1dd = fd->parameters[1];
 		bool refp = fd->is_ref_param(1);
-		int score = score_arg_to_param(rhs_dd, p1dd, refp);
+		int score = score_arg_to_param(rhs_dd, p1dd, refp, true, false,
+					       fd->is_nonconst_lref_param(1));
 		if (score >= 0 && score > best_score) {
 			best_score = score;
 			best = fd;

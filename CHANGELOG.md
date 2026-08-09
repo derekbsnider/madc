@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [v0.74.0] — 2026-08-09
+
+**Reference-binding correctness: a converted argument can no longer
+silently bind a non-const `T&` parameter — the `channel::readline(char
+buffer)` empty-output bug becomes a compile error, matching g++/clang++.**
+
+- **Non-const lvalue references no longer bind conversion temporaries**
+  ([dcl.init.ref]p5, g++/clang++ canon). Passing a `char` buffer to
+  `channel::readline(std::string&)` — or any converted argument to a
+  `T&` parameter — used to compile silently: madc materialized a hidden
+  temp, the callee wrote into it, and the caller's object was never
+  touched (testsort.mad printed empty lines with exit 0). Overload
+  ranking now scores such candidates non-viable and the argument
+  lowering refuses with `cannot bind a non-const lvalue reference
+  parameter to a converted temporary` at the call site. One predicate
+  owns the rule (`FuncDef::is_nonconst_lref_param`): positive-evidence
+  only — explicitly spelled `T&` params are gated; typedef'd refs
+  (libc++'s `push_back(const_reference)`) abstain until
+  FEATURE_CONST_TYPES gives the type graph alias const-ness. Legal
+  bindings (`char*` → `const string&`, lvalue → `string&`, `&&`
+  overload sets) are pinned by tests/testconstrefbind; reducers
+  tests/testnonconstref + tests/testnonconstrefmember gate the errors.
+- Release flow now archives each release's `bin/madc-release` under
+  `tmp/release-bins/` on both hosts for cross-release timing (owner
+  directive; seeded with v0.72.0 and v0.73.0).
+
 ## [v0.73.0] — 2026-08-08
 
 **The packed lane stops paying for templates it never uses: `#include
