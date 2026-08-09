@@ -104,12 +104,27 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   value in `dimensions[0]`.
 - **fold_nontype_arg_constant(tokens, int64&)** — the existing fold
   owner (parser.cpp 4666/4781/4865/4978/7547/7799 call shapes).
-- **OPEN (first implementation question):** the consumer of a concrete
-  dependency spelling — does the dependent-instantiation dispatch accept
-  an argument rendered as an unfolded expression string, or must the
-  ValueArg fold to a literal before rendering? Callers of the concrete
-  spelling: parser.cpp 5556/5609/5615/5627/6070. Resolve by reading the
-  6070 consumer before writing the serve arm.
+- **RESOLVED — the serve consumer is the resolver, not the spelling.**
+  The concrete-spelling mode has NO serve-side caller; eligibility uses
+  concrete=false only. The real consumer is
+  `BasicClassPatternResolver::resolve`'s TemplateId arm (parser.cpp
+  ~6429): `instantiate_pattern_template(type.name, type.arguments, ...)`
+  resolves each argument ClassTypePatternId to a DataDef* and routes
+  through the FULL instantiation dispatch (with memo: memo_arguments is
+  a vector<DataDef*> feeding the resolution hash).
+- **N1 serve design (decided):** the full dispatch already evaluates
+  value arguments from TOKENS in the live lane (fold_nontype_arg_constant
+  after substitution) — so ValueArg serves by handing its captured token
+  run (params substituted per binding.type_subst) to that SAME dispatch.
+  Parse-once compliant: tokens saved once at capture, resolver re-runs
+  over the saved run — the tsubst model, no re-lex/re-parse.
+  Implementation surfaces: (a) ValueArg token-run storage — reuse the
+  pattern token-SPAN mechanism method bodies use (find it before
+  coding); (b) instantiate_pattern_template grows a value-slot transport
+  (folded int64 per value slot after substitution); (c) memo hash must
+  incorporate value slots (memo_arguments is DataDef*-only today);
+  (d) pre-fold constant expressions at capture (flags bit +
+  dimensions[0]) to skip serve-time work for `true`/`0` literals.
 
 ## Facts / probes for the next session
 
