@@ -144,6 +144,50 @@ public:
     // the Itanium mangler so a header-declared C++ method binds to its real
     // external symbol.
     std::vector<std::string> param_cpp_spellings;
+    // Parameter i is a NON-CONST LVALUE reference (`T&`): it binds only a
+    // same-type (or derived) lvalue, never the temporary a conversion
+    // materializes ([dcl.init.ref]p5). `T&&` params — which DO bind conversion
+    // temporaries — are recognized by their captured spelling: DataDefREF
+    // spells '&' for both `&` and `&&`, so the spelling is the only carrier
+    // (same discipline as the Itanium mangler above). A ref param with no
+    // recorded spelling counts as an lvalue reference.
+    bool is_nonconst_lref_param(size_t i) const {
+	if ( !is_ref_param(i) )
+	    return false;
+	if ( i < const_params.size() && const_params[i] )
+	    return false;
+	// A typedef'd const ref (`const_reference __x` — libc++ spells
+	// push_back this way) has NO leading const token, so const_params
+	// stays false; when the resolved type graph carries it (DataDefREF
+	// whose referent is DataDefCONST), read it from there.
+	if ( parameters[i]->is_reference() )
+	{
+	    const DataDefPTR *rp =
+		dynamic_cast<const DataDefPTR *>(parameters[i]);
+	    if ( rp && rp->base_type && rp->base_type->is_const() )
+		return false;
+	}
+	// POSITIVE-evidence rule: claim a non-const lvalue reference ONLY
+	// when the captured spelling explicitly shows one — a single-'&'
+	// tail with no const qualifier. While the const-qualified-type
+	// campaign (FEATURE_CONST_TYPES) is incomplete, a typedef'd ref
+	// ("const_reference", "reference") hides BOTH facts from every
+	// carrier above — abstain rather than refuse a binding madc cannot
+	// prove illegal. The type-graph test above tightens this
+	// automatically as DataDefCONST coverage grows.
+	if ( i >= param_cpp_spellings.size() )
+	    return false;
+	const std::string &sp = param_cpp_spellings[i];
+	size_t n = sp.size();
+	if ( n < 1 || sp[n - 1] != '&' )
+	    return false;                      // no explicit '&' tail: unknown
+	if ( n >= 2 && sp[n - 2] == '&' )
+	    return false;                      // rvalue reference
+	if ( sp.compare(0, 6, "const ") == 0
+	  || sp.find(" const") != std::string::npos )
+	    return false;                      // west or east const qualifier
+	return true;
+    }
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
     std::vector<std::string> param_typedef_names;
@@ -465,9 +509,13 @@ public:
 // zero — a C++ null-pointer constant ([conv.ptr]), so it binds a pointer
 // parameter as a standard conversion. Only callers that can see the argument
 // token set it; the DataDef alone cannot carry "literal zero".
+// `param_is_nonconst_lref`: the parameter is a NON-CONST LVALUE reference
+// (FuncDef::is_nonconst_lref_param) — the user-defined-conversion path is not
+// viable for it ([dcl.init.ref]p5: `T&` never binds a conversion temporary).
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		       bool param_is_ref = false, bool allow_udc = true,
-		       bool arg_is_zero_literal = false);
+		       bool arg_is_zero_literal = false,
+		       bool param_is_nonconst_lref = false);
 
 class DataStruct: public DataDef
 {

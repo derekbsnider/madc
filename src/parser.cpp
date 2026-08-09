@@ -16278,7 +16278,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		size_t pi = i + hidden;
 		DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
 		bool refp = fd->is_ref_param(pi);
-		s = score_arg_to_param(argtypes[i], pt, refp);
+		s = score_arg_to_param(argtypes[i], pt, refp, true, false,
+				       fd->is_nonconst_lref_param(pi));
 	    }
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
@@ -17401,7 +17402,8 @@ static Variable *rank_fn_overload_candidates(
 	    bool refp = fd->is_ref_param(i);
 	    bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
 	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp,
-				       true, zlit);
+				       true, zlit,
+				       fd->is_nonconst_lref_param(i));
 #if MADC_DEBUG_FNTPL
 	    std::cerr << "FNTPL rank cand=" << e.var->name << " arg" << i
 		      << " a=" << (argtypes[i] ? argtypes[i]->name : "?")
