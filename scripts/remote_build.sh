@@ -63,9 +63,17 @@ stages="$*"
 if [ -z "$stages" ]; then
 	stages="sync build"
 fi
-if [ "$stages" = "battery" ]; then
-	stages="sync build fulltest exe obj release packed"
-fi
+# `battery` expands wherever it appears in the stage list (not only alone —
+# `remote_build.sh battery libcxxjit` used to die as "unknown stage: battery").
+expanded=""
+for stage in $stages; do
+	if [ "$stage" = "battery" ]; then
+		expanded="$expanded sync build fulltest exe obj release packed"
+	else
+		expanded="$expanded $stage"
+	fi
+done
+stages="$expanded"
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
