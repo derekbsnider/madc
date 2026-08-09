@@ -2422,6 +2422,9 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( DataDef *dd = resolve_builtin_type_spelling(name) )
 	return dd;
 
+    if ( DataDef *dd = madc_dialect_type_spelling(name) )
+	return dd;
+
     return lazy_resolve_type(name);
 }
 
@@ -2493,10 +2496,29 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "char32_t" ) return &ddUINT32;
     if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
     if ( name == "LPSTR" ) return &ddLPSTR;
-    if ( name == "array" ) return &ddARRAY;
     if ( name == "auto" ) return &ddAUTO;
     if ( name == "__builtin_va_list" ) return builtin_va_list_type();
 
+    return NULL;
+}
+
+// The madc-DIALECT type spellings, gated to --std=madc (the default). The
+// dynamic tagged carrier madc::value is intrinsic to the dialect under three
+// spellings — `array` (the historical array-flavored name), `value` (the
+// general carrier), `var` (declaration spelling, the runtime-retaggable
+// contrast to compile-time `auto`) — all the SAME DataDef. Deliberately NOT
+// in resolve_builtin_type_spelling: that static table feeds identity
+// canonicalization (canonical_template_binding_dd maps btSimple alias dds
+// through it BY NAME, so a user `typedef long array;` under --std=c++17
+// would swap its template-binding identity to ddARRAY), and it cannot see
+// language_std to gate. Strict C/C++ modes keep all three as ordinary
+// identifiers.
+DataDef *Program::madc_dialect_type_spelling(const std::string &name) const
+{
+    if ( language_std != STD_MADC )
+	return NULL;
+    if ( name == "array" || name == "value" || name == "var" )
+	return &ddARRAY;
     return NULL;
 }
 
@@ -2569,7 +2591,8 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
     // ID("jmp_buf") emission, c2mir sized MadcTryContext without the 200-byte
     // array, and the ledger try/catch setjmp wrote through garbage
     // (forest_ledger_gate SIGSEGV).
-    if ( alias == dd->name && resolve_builtin_type_spelling(alias) == dd )
+    if ( alias == dd->name && (resolve_builtin_type_spelling(alias) == dd
+			     || madc_dialect_type_spelling(alias) == dd) )
 	return false;
     if ( resolve_named_datadef(alias) == dd )
 	return true;
@@ -3054,6 +3077,33 @@ Variable *Program::find_variable_for_contextual_type_name(const std::string &nam
 	return NULL;
     lookup = name.substr(sp + 1);
     return findVariable(lookup);
+}
+
+// Does `name` denote a member (data, static, or method) of the class whose
+// method body is currently parsing? The statement/expression disambiguators
+// consult this beside find_variable_for_contextual_type_name so a dialect
+// type spelling (`value` / `array` / `var`) used as a MEMBER NAME keeps
+// expression semantics inside its own class's methods ([class.mfct]: class
+// scope is searched before any ambient scope — `T value; void store(T v)
+// { value = v; }` reads the member, never a declaration of type value).
+bool Program::current_method_class_has_member(const std::string &name)
+{
+    if ( compounds.empty() || !compounds.top()
+      || !compounds.top()->method
+      || !compounds.top()->method->owner_class )
+	return false;
+    DataDefCLASS *cls = compounds.top()->method->owner_class;
+    std::string mname = name;
+    if ( cls->m_offset(mname) >= 0 )
+	return true;
+    if ( cls->findMethod(mname) )
+	return true;
+    if ( cls->static_member_types.count(mname) )
+	return true;
+    int64_t sval;
+    if ( resolve_class_static_member_const_value(cls, mname, sval) )
+	return true;
+    return false;
 }
 
 DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
@@ -9541,7 +9591,8 @@ bool Program::alias_arg_tokens_dependent(const std::vector<TokenBase *> &toks)
 	      && !find_template(nm_id, std::string(), NULL)
 	      && !find_template_alias(nm_id, std::string(), NULL)
 	      && !namespace_map.count(nm)
-	      && !resolve_builtin_type_spelling(nm) )
+	      && !resolve_builtin_type_spelling(nm)
+	      && !madc_dialect_type_spelling(nm) )
 	    {
 		if ( vri_debug_enabled() )
 		    fprintf(stderr, "[vriprobe] argdep: unresolvable %s\n", nm.c_str());
@@ -10979,6 +11030,28 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	use->column = tb->column;
 	return resolve_member_chain_or_type(use, tb, consume_class_member_chain);
     }
+
+    // madc-dialect intrinsic spellings (`value` / `var` — slice V1): plain
+    // identifiers at lex time (a lexer datatype token would hijack every
+    // identifier position in system headers, where members and params named
+    // `value` are ubiquitous), resolved as types HERE — the same lane user
+    // typedefs ride, AFTER every user type above so declared types shadow.
+    // Name hiding is C++'s: a declared VARIABLE or a MEMBER of the current
+    // method's class wins over the type spelling ([basic.scope.hiding] /
+    // [class.mfct] — `int value = 5; value = 6;` and integral_constant-style
+    // `value` members keep their expression reading; the speculative
+    // statement-decl probes consult this resolver with no shadow context of
+    // their own, so the guard lives HERE). Gated to STD_MADC by the helper.
+    if ( DataDef *dd = madc_dialect_type_spelling(tname) )
+	if ( !findVariable(tname) && !current_method_class_has_member(tname) )
+	{
+	    TokenDataType *tdt = new TokenDataType(tname.c_str(), *dd);
+	    tdt->file   = tb->file;
+	    tdt->line   = tb->line;
+	    tdt->column = tb->column;
+	    return resolve_member_chain_or_type(tdt, tb,
+						consume_class_member_chain);
+	}
 
     // `Name<ConcreteType>` where Name is a captured (alias or class) template:
     // instantiate (or reuse) the concrete type and return it. Guarded on a
@@ -22227,6 +22300,23 @@ void Program::add_madc_namespace()
     var->flags |= vfSTATIC;
     madc_ns["array"] = var;
 
+    // register the general carrier as madc::value — the SAME DataDef as
+    // madc::array (one tagged carrier; array is its array-flavored
+    // spelling). Unconditional like array: explicit madc:: qualification
+    // is an opt-in even outside the madc dialect.
+    id = "__madc_value";
+    var = new Variable(id, ddARRAY, 1, NULL, false);
+    var->flags |= vfSTATIC;
+    madc_ns["value"] = var;
+
+    // Namespace-scoped TYPE entries: `madc::value` / `madc::array` in type
+    // positions, and the unqualified spellings inside `namespace madc`
+    // blocks — the embedded <ns_madc> channel methods take `value &`, which
+    // resolves through namespace_chain_datatype during the header parse.
+    // The Variables above stay for the expression-lane back-compat.
+    namespace_datatype_map["madc"]["array"] = new TokenDataType("array", ddARRAY);
+    namespace_datatype_map["madc"]["value"] = new TokenDataType("value", ddARRAY);
+
     var = addFunction("__madc_regex_match", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_match);
     if (var) madc_ns["regex_match"] = var;
 
@@ -22268,6 +22358,78 @@ void Program::add_array_methods()
 	    md->owner_class = &ddARRAY;
 	ddARRAY.methods.push_back(var);
 	ddARRAY.method_map[name] = var;
+    }
+
+    // Scalar (re)assignment surface (slice V1): native operator= overloads
+    // binding to the madarray_assign_* runtime entries (madc_mir_backend.cpp).
+    // One registration per scalar kind + the value copy-assign; expression
+    // resolution (select_operator_overload scans ddARRAY.methods by name) and
+    // the builder's class_assign_*_operator_def helpers pick them up like any
+    // parsed operator=. isMethod registrations skip funcdef_map, so the five
+    // same-name entries are distinct FuncDefs disambiguated by parameter.
+    // Return type and the copy-assign parameter are a REAL DataDefREF passed
+    // PLAIN (rtValue) — ref_of() would collapse to the base class in
+    // addFunction's resolve_data_type, and a by-value ddARRAY return would
+    // wrongly take the sret/retbuf path (the runtime returns the receiver
+    // pointer; returns_reference() gets the N_DEREF lowering that matches).
+    static DataDefREF *array_ref = new DataDefREF(ddARRAY);
+    struct ArrayAssignOp { typespec_t param; const char *sym; };
+    const ArrayAssignOp assign_ops[] = {
+	{ ptr_of(ddCHAR),         "madarray_assign_cstr"  },
+	{ DataType::dtINT64,      "madarray_assign_int"   },
+	{ DataType::dtDOUBLE,     "madarray_assign_real"  },
+	{ DataType::dtBOOL,       "madarray_assign_bool"  },
+	{ typespec_t(array_ref),  "madarray_assign_value" },
+    };
+    for ( const ArrayAssignOp &op : assign_ops )
+    {
+	Variable *var = addFunction("operator=",
+	    datatype_vec_t{typespec_t(array_ref), ptr_of(ddARRAY), op.param},
+	    NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = op.sym;
+	    fd->method_display_name = "operator=";
+	    // The copy-assign binds any value lvalue AND conversion
+	    // temporaries: const array& (C++ idiom).
+	    if ( op.param.dd == array_ref )
+		fd->const_params = { false, false, true };
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map["operator="] = var;
+    }
+
+    // Text view (slice V1): c_str() bound to madarray_cstr gives the value
+    // carrier the same const char* coercion surface a madc string has —
+    // object_cstr_arg discovers it generically, which is what lowers a value
+    // in a varargs tail (printf "%s") or into a const char* formal; scripts
+    // may also call .c_str() explicitly. String kind returns the payload;
+    // other kinds render (madc_mir_backend.cpp madarray_cstr).
+    {
+	Variable *var = addFunction("c_str",
+	    datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddARRAY)}, NULL, true);
+	if ( var )
+	{
+	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	    if ( fd )
+	    {
+		fd->declaration_only = true;
+		fd->emit_symbol = "madarray_cstr";
+		fd->method_display_name = "c_str";
+	    }
+	    Method *md = static_cast<Method *>(var->data);
+	    if ( md )
+		md->owner_class = &ddARRAY;
+	    ddARRAY.methods.push_back(var);
+	    ddARRAY.method_map["c_str"] = var;
+	}
     }
 }
 
@@ -31269,6 +31431,19 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	std::string ctx_name = contextual_identifier_name(bt);
 	Variable *ctx_var =
 	    find_variable_for_contextual_type_name(ctx_name);
+	// A MEMBER of the current method's class shadows the type spelling
+	// ([class.mfct] — `value = v;` / `return value;` inside the owner's
+	// methods read the member). Re-dispatch as an identifier so the
+	// implicit-this member arm resolves it (the same Redo-to-ident move
+	// the spaced-spelling arm above uses).
+	if ( !ctx_var && current_method_class_has_member(ctx_name) )
+	{
+	    tb = new TokenIdent(ctx_name);
+	    tb->file = bt->file;
+	    tb->line = bt->line;
+	    tb->column = bt->column;
+	    return ExprStep::Redo;
+	}
 	if ( !ctx_var && peekToken()
 	  && peekToken()->id() == TokenID::tkOpBrk )
 	{
@@ -42568,12 +42743,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
 	    mname = pgm.parseOperatorId(tn);
-	else if ( tn->type() != TokenType::ttIdentifier )
+	// Contextual, not ttIdentifier-only: dialect type spellings are valid
+	// member names (`static constexpr _Tp value = __v;` — every std trait;
+	// same shadow rule the statement lane applies to array/value/var).
+	else if ( !is_contextual_identifier_token(tn) )
 	{
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
 	}
 	else
-	    mname = ((TokenIdent *)tn)->spelling();
+	    mname = contextual_identifier_name(tn);
 
 	// peek: is this a method (followed by '(') or a data member (followed by ';')?
 	tn = pgm.peekToken();
@@ -42766,9 +42944,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    std::string bf_name;
 		    if ( !bf_unnamed )
 		    {
-			if ( !bnm || bnm->type() != TokenType::ttIdentifier )
+			if ( !bnm || !is_contextual_identifier_token(bnm) )
 			    pgm.Throw(bnm ? bnm : tn) << "Expecting member name in class definition" << flush;
-			bf_name = ((TokenIdent *)bnm)->spelling();
+			bf_name = contextual_identifier_name(bnm);
 			TokenBase *colon = pgm.nextToken();
 			if ( !colon || colon->id() != TokenID::tkColon )
 			    pgm.Throw(colon ? colon : bnm) << "Expecting ':' in bit-field declarator" << flush;
@@ -42980,9 +43158,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 					pgm.nextToken();
 			}
 			TokenBase *nm = pgm.nextToken();
-			if ( !nm || nm->type() != TokenType::ttIdentifier )
+			if ( !nm || !is_contextual_identifier_token(nm) )
 				pgm.Throw(nm ? nm : tn) << "Expecting member name in class definition" << flush;
-			std::string nmname = ((TokenIdent *)nm)->spelling();
+			std::string nmname = contextual_identifier_name(nm);
 			size_t ncount = 1;
 			bool nis_array = false;
 			std::vector<carray_dim_t> ndims;
@@ -62069,14 +62247,16 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		resetPrevToken();
 		return parseExprStmt(tb);
 	    }
-	    // Contextual type names (array, string) that shadow a variable in
-	    // scope: treat as expression when followed by an operator or [.
+	    // Contextual type names (array, string, value, var) that shadow a
+	    // variable in scope OR a member of the current method's class:
+	    // treat as expression when followed by an operator or [.
 	    if ( is_contextual_identifier_token(tb) )
 	    {
 		std::string ctx = contextual_identifier_name(tb);
 		Variable *ctx_var =
 		    find_variable_for_contextual_type_name(ctx);
-		if ( ctx_var && peekToken()
+		if ( (ctx_var || current_method_class_has_member(ctx))
+		  && peekToken()
 		  && peekToken()->id() != TokenID::tkMul  // not a pointer decl
 		  && peekToken()->type() != TokenType::ttIdentifier ) // not a decl
 		{
@@ -62239,6 +62419,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
+		// (`value v;` / `var x;` — the dialect intrinsic spellings —
+		// need no arm of their own here: the speculative declaration
+		// probe below resolves them through resolve_declared_type_token,
+		// whose dialect tail carries the shadow guards.)
 		flat_datatype_map_iter dmi = datatype_map.find(tname);
 		// A template-id `Name<...>` must resolve as a template instantiation
 		// even when `Name` ALSO has a datatype_map entry — a forward template

@@ -1,5 +1,6 @@
 #include "madcdis/channel.h"
 #include "madc_datachannel_internal.h"
+#include "ns_common.h"
 
 #include <cstring>
 
@@ -191,6 +192,25 @@ bool channel::readall(std::string &out)
 	return true;
 }
 
+// value-carrier twins (slice V1): delegate to the string implementations —
+// one line/payload owner — and retag the carrier as string kind. On a false
+// return the carrier is left null (never a stale previous line).
+bool channel::readline(value &out)
+{
+	std::string line;
+	bool got = readline(line);
+	out = got ? value(line) : value();
+	return got;
+}
+
+bool channel::readall(value &out)
+{
+	std::string payload;
+	bool got = readall(payload);
+	out = got ? value(payload) : value();
+	return got;
+}
+
 bool channel::write(const char *text)
 {
 	if ( !text )
@@ -222,6 +242,19 @@ bool channel::write(const char *buffer, long size)
 bool channel::write(std::string &text)
 {
 	return write(text.data(), static_cast<long>(text.size()));
+}
+
+// value carrier: send the text view (string kind sends its payload
+// directly; other scalar kinds render through the one value->text owner).
+bool channel::write(value &text)
+{
+	if ( text.is_string() )
+		return write(static_cast<const char *>(text.data()),
+			     static_cast<long>(text.size()));
+	std::string rendered;
+	if ( !ns_common::value_to_string(text, rendered) )
+		return false;
+	return write(rendered.data(), static_cast<long>(rendered.size()));
 }
 
 bool channel::close_write()

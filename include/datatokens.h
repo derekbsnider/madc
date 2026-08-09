@@ -59,6 +59,11 @@ class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataTyp
 // `std::string` or via `using namespace std;`. It is NOT a global builtin
 // type token, exactly like C++. (Phase A5, stdtypes-as-real-classes.)
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
+// NOTE: `value` and `var` — the dialect twins of `array` (same DataDef,
+// ddARRAY == madc::value) — are deliberately NOT lexer datatype tokens: a
+// datatype token hijacks every identifier position, and `value` is
+// ubiquitous in system headers. They resolve through the typedef lane
+// (Program::madc_dialect_type_spelling in the parser).
 
 class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
 

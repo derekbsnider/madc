@@ -27,6 +27,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 #include "libmadc/sysinfo.h"
 
 extern "C" {
@@ -71,6 +72,47 @@ long madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;
 	return v->is_array() ? (long)v->as_array().size() : 0;
+    }
+
+// Scalar (re)assignment surface for the intrinsic value/array carrier —
+// the native operator= family add_array_methods registers on ddARRAY.
+// Each retags the carrier in place through madc::value's own operator=
+// (so freeze() rejection and payload-cell release ride the one owner).
+// Returns the receiver: operator= yields *this.
+void *madarray_assign_cstr(void *ptr, const char *s)
+    { *(madc::value *)ptr = madc::value(s ? s : ""); return ptr; }
+void *madarray_assign_int(void *ptr, long i)
+    { *(madc::value *)ptr = madc::value((int64_t)i); return ptr; }
+void *madarray_assign_real(void *ptr, double d)
+    { *(madc::value *)ptr = madc::value(d); return ptr; }
+void *madarray_assign_bool(void *ptr, long b)
+    { *(madc::value *)ptr = madc::value(b != 0); return ptr; }
+void *madarray_assign_value(void *ptr, void *src)
+    { *(madc::value *)ptr = *(const madc::value *)src; return ptr; }
+
+// Text view of a value for C varargs (printf "%s") — the coercion the CIR
+// builder applies to a value argument in a variadic call. String kind
+// returns the value's own payload (stable, value-owned). Other kinds
+// render through the ONE value->text owner (ns_common::value_to_string)
+// into a thread-local ring, so several value args in one call keep
+// distinct buffers (the inet_ntoa model; a pointer stays valid until its
+// slot recycles). Container kinds render a diagnostic tag, never crash.
+const char *madarray_cstr(void *ptr)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (v->is_string())
+	    return (const char *)v->data();
+	thread_local std::string ring[8];
+	thread_local unsigned ring_i = 0;
+	std::string &slot = ring[ring_i++ & 7u];
+	if (v->is_null())
+	    slot = "";
+	else if (v->is_boolean())
+	    slot = v->as_boolean() ? "true" : "false";
+	else if (!ns_common::value_to_string(*v, slot))
+	    slot = std::string("[") + madc::value::kind_name(v->type())
+		 + ":" + std::to_string((long long)v->size()) + "]";
+	return slot.c_str();
     }
 
 // madc::sys population (task #91) — injected by the CIR builder in TUs

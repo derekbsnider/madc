@@ -5446,6 +5446,11 @@ public:
     // Python/PHP element model; long fallback when no string class is known).
     DataDef *madc_array_element_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
+    // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
+    // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
+    // every strict C/C++ mode. Instance method on purpose — these names
+    // must never enter the static identity-canonicalization table above.
+    DataDef *madc_dialect_type_spelling(const std::string &name) const;
     static DataDef *builtin_va_list_type();
     DataDef *use_builtin_va_list();
     // The one DataDefCOMPLEX per element type (process-wide cache) — lexer,
@@ -5462,6 +5467,10 @@ public:
     bool fold_constant_qualified_member_walk(TokenBase *first,
 					     madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
+    // Member (data/static/method) of the currently-parsing method's owner
+    // class — the class-scope half of the contextual-type-name shadow test
+    // (a member named value/array/var wins over the dialect type spelling).
+    bool current_method_class_has_member(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // What a qualifier names before `::` in an expression — THE one classify
     // policy for the expression arms (postfix chain, address-of, identifier

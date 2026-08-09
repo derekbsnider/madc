@@ -4554,16 +4554,23 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 	// TokenVar — an ungated downcast would classify a method CALL (an
 	// rvalue when returning by value) as an addressable member/variable
 	// lvalue. (dynamic_cast stays — TokenVar virtually inherits TokenBase.)
+	// The intrinsic value carrier (ddARRAY == madc::value) IS a class
+	// object value: admitting it routes value args through the same
+	// address/coercion arms user-class objects take (object_arg_addr's
+	// named-variable arm, object_cstr_arg in char*/varargs positions)
+	// instead of the materializing tail / raw struct pass.
 	if (arg && arg->type() == TokenType::ttMember)
 		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg))
-			return as_class_instance(tm->datadef()) != NULL;
+			return as_class_instance(tm->datadef()) != NULL
+			    || is_array_object(tm->datadef());
 	if (arg && arg->type() == TokenType::ttVariable)
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			if (tv->var.name.compare(0, 11, "__literal__") == 0)
 				return false;
 			if ((tv->var.is_reference()) && class_behind(tv->var.type))
 				return true;
-			return as_class_instance(tv->var.type) != NULL;
+			return as_class_instance(tv->var.type) != NULL
+			    || is_array_object(tv->var.type);
 		}
 	return false;
 }
@@ -5616,6 +5623,8 @@ bool CirBuilder::thrown_object_has_cstr(TokenBase *arg)
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		cdd = class_behind(arg ? arg->datadef() : NULL);
+	if (!cdd && is_array_object(arg ? arg->datadef() : NULL))
+		cdd = &ddARRAY;	// the value carrier's c_str is madarray_cstr
 	if (!cdd)
 		return false;
 	std::string sym = class_method_symbol(cdd, "c_str");
@@ -5627,6 +5636,8 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		cdd = class_behind(arg ? arg->datadef() : NULL);
+	if (!cdd && is_array_object(arg ? arg->datadef() : NULL))
+		cdd = &ddARRAY;	// the value carrier's c_str is madarray_cstr
 	if (!cdd)
 		return translate_expr(arg);
 	std::string sym = class_method_symbol(cdd, "c_str");
@@ -15566,6 +15577,18 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// is a plain pointer assignment. operand_object_class resolves the class
 	// without unwrapping plain pointers (only the reference representation).
 	DataDefCLASS *lcls = operand_object_class(top->left);
+	// The intrinsic value carrier (`array`/`value`/`var` — ddARRAY) is a
+	// compiler-known class with NATIVE operator= methods (add_array_methods)
+	// but lives outside the user-class universe (as_user_class requires
+	// dtRESERVED; array objects lower to aligned long[] buffers). Admit an
+	// lvalue of it here so scalar (re)assignment resolves through the same
+	// operator machinery; operators it lacks decline in
+	// select_operator_overload and fall through unchanged.
+	if (!lcls && top->left
+	    && (top->left->type() == TokenType::ttVariable
+		|| top->left->type() == TokenType::ttMember)
+	    && unqualified_type(top->left->datadef()) == &ddARRAY)
+		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;

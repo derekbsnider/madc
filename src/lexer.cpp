@@ -3299,7 +3299,16 @@ void Program::add_datatypes()
     datatype_map[tkUINT64.str] = &tkUINT64;
     datatype_map[tkFLOAT.str] = &tkFLOAT;
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
-    datatype_map[tkARRAY.str] = &tkARRAY;
+    // `array` is madc-dialect-only (slice V1): explicit C/C++ standards
+    // keep it an ordinary identifier (SMAUG-class C89 code declares
+    // `int array;` freely). Its dialect twins `value` and `var` are
+    // deliberately NOT lexer datatype tokens at all — a datatype token
+    // hijacks every identifier position, and `value` is ubiquitous in
+    // system headers (members, params, template bodies). They resolve
+    // through the typedef lane instead: Program::madc_dialect_type_spelling
+    // consulted by resolve_declared_type_token and the statement arm.
+    if ( language_std == STD_MADC )
+	datatype_map[tkARRAY.str] = &tkARRAY;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;

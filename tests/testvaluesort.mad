@@ -1,0 +1,17 @@
+// Slice V1 acceptance — the owner's testsort shape verbatim: script mode,
+// no includes, `value line;` receiving channel lines, printf %s coercion.
+madc::channel sorter("exec://sort");
+
+if ( !sorter.ok() )
+{
+    printf("open failed: %s\n", sorter.last_error());
+    return 1;
+}
+
+sorter.write("pear\napple\nmango\n");
+sorter.close_write();
+
+value line;
+while ( sorter.readline(line) )
+    printf("sorted: %s\n", line);
+sorter.close();

@@ -2,6 +2,7 @@
 #define __MADCDIS_CHANNEL_H 1
 
 #include "madcdis/datachannel.h"
+#include "libmadc/value.h"
 
 #include <string>
 
@@ -32,9 +33,14 @@ public:
 	long read(void *buffer, long capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);
+	// value-carrier twins (slice V1): the line/payload lands as a
+	// string-kind madc::value; write() sends the value's text view.
+	bool readline(value &out);
+	bool readall(value &out);
 	bool write(const char *text);
 	bool write(const char *buffer, long size);
 	bool write(std::string &text);
+	bool write(value &text);
 	bool close_write();
 	void close();
 

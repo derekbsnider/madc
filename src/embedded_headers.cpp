@@ -222,9 +222,14 @@ namespace madc {
 	long read(void *buffer, long capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);
+	// value-carrier twins: the line/payload lands as a string-kind
+	// value; write() sends the value's text view.
+	bool readline(value &out);
+	bool readall(value &out);
 	bool write(const char *text);
 	bool write(const char *buffer, long size);
 	bool write(std::string &text);
+	bool write(value &text);
 	bool close_write();
 	void close();
 
