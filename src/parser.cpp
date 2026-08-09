@@ -33,6 +33,7 @@
 #include <stack>
 #include <chrono>
 #include <algorithm>
+#include <stdexcept>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 // Temporary fn-template pack diagnostics — enable with
@@ -3655,8 +3656,16 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	hash.add_u64(node.static_members.size());
 	for ( size_t s = 0; s < node.static_members.size(); ++s )
 	{
-	    hash.add_string(node.static_members[s].first);
-	    hash.add_u64(node.static_members[s].second);
+	    const ClassStaticMemberPattern &sm = node.static_members[s];
+	    hash.add_string(sm.name);
+	    hash.add_u64(sm.type);
+	    hash.add_bool(sm.eq_init);
+	    hash.add_bool(sm.brace_init);
+	    hash.add_u64(sm.value_run);
+	    hash.add_u64(sm.count);
+	    hash.add_u64(sm.dimensions.size());
+	    for ( size_t d = 0; d < sm.dimensions.size(); ++d )
+		hash.add_u64(sm.dimensions[d]);
 	}
 	hash.add_u64(node.static_values.size());
 	for ( size_t s = 0; s < node.static_values.size(); ++s )
@@ -5844,8 +5853,15 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
 	if ( node.kind == Program::ClassAggregateKind::Enum )
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedNestedDefinition, __builtin_LINE());
-	if ( !node.static_members.empty() || !node.static_values.empty() )
-	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
+	// Slice N3b: static data members serve — validate the pattern rows.
+	for ( size_t s = 0; s < node.static_members.size(); ++s )
+	{
+	    const Program::ClassStaticMemberPattern &sm = node.static_members[s];
+	    if ( sm.name.empty() || !sm.type
+	      || sm.type >= binding.pattern.types.size()
+	      || sm.value_run > binding.pattern.value_arg_tokens.size() )
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
+	}
 	if ( !friend_bodies_checked
 	  && (!node.friend_functions.empty() || !node.friend_classes.empty()) )
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedFriendDefinition, __builtin_LINE());
@@ -5990,9 +6006,11 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 		break;
 	    case Program::ClassDeclKind::DefaultedComparison:
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDefaultedComparison, __builtin_LINE());
+	    case Program::ClassDeclKind::StaticDataMember:
+		// Slice N3b: served — the static-member rows validate below.
+		break;
 	    case Program::ClassDeclKind::BitField:
 	    case Program::ClassDeclKind::AnonymousAggregate:
-	    case Program::ClassDeclKind::StaticDataMember:
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	    }
 	}
@@ -6254,22 +6272,14 @@ class BasicClassPatternResolver
     // binding.type_subst; VALUE params splice the use-site argument tokens
     // from binding.arg_tokens_by_slot (slice N3a — enable_if<B,T> shapes
     // where B is the definition's own value param).
-    bool fold_pattern_value_arg(const Program::ClassTypePattern &argp,
-	int64_t &out)
+    // The ONE substitution walk over a saved value run (the tsubst step —
+    // parse-once, never a re-parse): TYPE params clone from
+    // binding.type_subst; VALUE params splice the use-site tokens from
+    // binding.arg_tokens_by_slot. Returns false when a referenced value
+    // slot has no use-site tokens (a DEFAULTED slot).
+    bool substitute_value_run(const std::vector<TokenBase *> &run,
+	std::vector<TokenBase *> &substituted)
     {
-	if ( argp.flags & 1u )
-	{
-	    if ( argp.dimensions.empty() )
-		return false;
-	    out = (int64_t)argp.dimensions[0];
-	    return true;
-	}
-	if ( argp.template_param_index
-	     >= binding.pattern.value_arg_tokens.size() )
-	    return false;
-	const std::vector<TokenBase *> &run =
-	    binding.pattern.value_arg_tokens[argp.template_param_index];
-	std::vector<TokenBase *> substituted;
 	substituted.reserve(run.size());
 	for ( size_t i = 0; i < run.size(); ++i )
 	{
@@ -6298,9 +6308,6 @@ class BasicClassPatternResolver
 		    }
 		if ( value_slot < binding.definition.typeparams.size() )
 		{
-		    // A DEFAULTED value slot has no use-site tokens; the
-		    // unbound name then fails the fold below — the loud
-		    // serve-failure path, same as any unfoldable run.
 		    if ( value_slot >= binding.arg_tokens_by_slot.size()
 		      || binding.arg_tokens_by_slot[value_slot].empty() )
 			return false;
@@ -6314,6 +6321,27 @@ class BasicClassPatternResolver
 	    }
 	    substituted.push_back(t->clone());
 	}
+	return true;
+    }
+
+    bool fold_pattern_value_arg(const Program::ClassTypePattern &argp,
+	int64_t &out)
+    {
+	if ( argp.flags & 1u )
+	{
+	    if ( argp.dimensions.empty() )
+		return false;
+	    out = (int64_t)argp.dimensions[0];
+	    return true;
+	}
+	if ( argp.template_param_index
+	     >= binding.pattern.value_arg_tokens.size() )
+	    return false;
+	std::vector<TokenBase *> substituted;
+	if ( !substitute_value_run(
+		binding.pattern.value_arg_tokens[argp.template_param_index],
+		substituted) )
+	    return false;
 	return pgm.fold_nontype_arg_constant(substituted, out);
     }
 
@@ -6654,6 +6682,45 @@ public:
     std::string concrete_spelling(Program::ClassTypePatternId id)
     {
 	return basic_class_datadef_spelling(resolve(id));
+    }
+
+    // Slice N3b: fold a banked static-member initializer run with PARITY to
+    // the parse lane — capture_constant_initializer_value, the same owner
+    // the concrete class parse calls on the same (substituted) tokens, so a
+    // run it declines there (static_cast shapes) is declined here too.
+    // Failure is NOT an error: the parse lane leaves such members without a
+    // const value, and so does the serve.
+    bool fold_static_member_initializer(uint32_t value_run_plus1,
+	bool brace_form, DataDefCLASS *owner, int64_t &out)
+    {
+	if ( !value_run_plus1
+	  || value_run_plus1 > binding.pattern.value_arg_tokens.size() )
+	    return false;
+	std::vector<TokenBase *> substituted;
+	if ( !substitute_value_run(
+		binding.pattern.value_arg_tokens[value_run_plus1 - 1],
+		substituted) )
+	    return false;
+	substituted.push_back(new TokenSemi());
+	TokenStream::State saved_tokens =
+	    pgm.tokens.swap_in(std::move(substituted));
+	// The parse lane folds these DURING the class body parse, with the
+	// class on the scope stack: member typedefs (`type(-1) < type(0)`)
+	// and earlier statics (`digits = ... - is_signed`) resolve through
+	// it. Give the serve fold the same scope.
+	if ( owner )
+	    pgm.class_scope_stack.push_back(owner);
+	bool ok = false;
+	try
+	{
+	    ok = pgm.capture_constant_initializer_value(out, brace_form);
+	}
+	catch ( ... ) { ok = false; }
+	if ( owner && !pgm.class_scope_stack.empty()
+	  && pgm.class_scope_stack.back() == owner )
+	    pgm.class_scope_stack.pop_back();
+	pgm.tokens = saved_tokens;
+	return ok;
     }
 };
 
@@ -7452,6 +7519,61 @@ public:
 		member.is_array ? &dimensions : NULL);
 	    if ( !owner->member_access.empty() )
 		owner->member_access.back() = member.access;
+	}
+
+	// Slice N3b: replay static data members with parity to the parse
+	// lane's arm (TokenCLASS::parse): the type registers always; EXTERN
+	// storage only without an '='-form initializer (g++'s
+	// DECL_IN_AGGR_P model — brace and no-init both get storage); a
+	// const VALUE comes from the capture-folded constant (static_values
+	// below) or the banked run folded per binding. The integer gate
+	// mirrors the parse arm's; a fold failure leaves the member without
+	// a value exactly as the parse lane's CAPTURE-FAIL does. BEFORE the
+	// methods: their default-argument parses read the statics (a view
+	// class's `substr(..., size_type n = npos)` — the pack bake broke
+	// with "undeclared identifier npos" when statics replayed last).
+	// Capture-folded constants land first — a banked run may read them.
+	for ( size_t i = 0; i < node.static_values.size(); ++i )
+	    owner->static_member_const_values[node.static_values[i].first] =
+		node.static_values[i].second;
+	for ( size_t i = 0; i < node.static_members.size(); ++i )
+	{
+	    const Program::ClassStaticMemberPattern &sm = node.static_members[i];
+	    DataDef *sm_type = resolver.resolve(sm.type);
+	    if ( !sm_type )
+		continue;
+	    owner->static_member_types[sm.name] = sm_type;
+	    if ( !sm.eq_init && pgm.tkProgram )
+	    {
+		const std::string storage =
+		    class_static_member_storage_name(owner, sm.name);
+		if ( !pgm.tkProgram->findVariable(pgm.strpool, storage) )
+		{
+		    uint32_t scount = sm.count ? (uint32_t)sm.count : 1;
+		    if ( Variable *sv = pgm.addVariable(NULL, *sm_type,
+					    storage, scount, NULL, true) )
+		    {
+			sv->flags |= vfEXTERN;
+			sv->storage_alias_name =
+			    class_static_member_itanium_symbol(owner, sm.name);
+			if ( !sm.dimensions.empty() )
+			{
+			    sv->flags |= vfFIXEDARRAY;
+			    for ( size_t d = 0; d < sm.dimensions.size(); ++d )
+				sv->dims.push_back(
+				    (carray_dim_t)sm.dimensions[d]);
+			}
+		    }
+		}
+	    }
+	    if ( sm.value_run && sm_type->is_integer()
+	      && !sm_type->is_pointer() )
+	    {
+		int64_t folded = 0;
+		if ( resolver.fold_static_member_initializer(
+			sm.value_run, sm.brace_init, owner, folded) )
+		    owner->static_member_const_values[sm.name] = folded;
+	    }
 	}
 
 	for ( size_t i = 0; i < node.using_members.size(); ++i )
@@ -11630,6 +11752,32 @@ size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
     if ( DataDef *ref = referent_if_reference(const_cast<DataDef *>(dd)) )
 	if ( ref != dd )
 	    dd = ref;
+    // A PLACEHOLDER type has no measure. Returning its 0 size SILENTLY
+    // let a speculative capture-time fold bake 0 as a static member's
+    // constant (`width = sizeof(T)` served 0 — slice N3b found it).
+    // Throwing makes every speculative fold (the ccv /
+    // fold_nontype_arg_constant / constraint family, all catch(...))
+    // decline the way they decline other dependent shapes, and a genuine
+    // dependent sizeof on a non-speculative path fails loud, never as a
+    // wrong 0. Deliberately NARROW — the type ITSELF, not
+    // datadef_has_unresolved_dependent_surface's member-surface walk: a
+    // concrete class whose internals are still resolving lazily measures
+    // fine, and the wide predicate refused it (25 packed failures, the
+    // pack bake among them).
+    // A POINTER to anything measures fine (8) — never unwrap pointers
+    // here; only an ARRAY's element chain inherits unmeasurability.
+    const DataDef *placeholder_probe = dd;
+    while ( const DataDefCArray *arr =
+		dynamic_cast<const DataDefCArray *>(placeholder_probe) )
+	placeholder_probe = arr->element_type;
+    const DataDefCLASS *placeholder_class =
+	dynamic_cast<const DataDefCLASS *>(placeholder_probe);
+    if ( placeholder_probe
+      && (placeholder_probe->is_template_param()
+	  || (placeholder_class && placeholder_class->is_dependent_placeholder)) )
+	throw std::runtime_error(
+	    (want_alignof ? "alignof" : "sizeof")
+	    + std::string(" of a dependent type: ") + dd->name);
     return want_alignof ? dd->alignment() : dd->size;
 }
 
@@ -20493,12 +20641,21 @@ class ClassPatternPayloadReader
 	uint32_t ntemplates = count();
 	for ( uint32_t i = 0; valid && i < ntemplates; ++i )
 	    out.nested_templates.push_back(nested_template());
+	// v6: full static-member rows (slice N3b).
 	uint32_t nstatic = count();
 	for ( uint32_t i = 0; valid && i < nstatic; ++i )
 	{
-	    std::string name = string();
-	    uint32_t type = word();
-	    out.static_members.push_back(std::make_pair(name, type));
+	    Program::ClassStaticMemberPattern sm;
+	    sm.name = string();
+	    sm.type = word();
+	    sm.eq_init = boolean();
+	    sm.brace_init = boolean();
+	    sm.value_run = word();
+	    sm.count = word64();
+	    uint32_t ndims = count();
+	    for ( uint32_t d = 0; valid && d < ndims; ++d )
+		sm.dimensions.push_back(word64());
+	    out.static_members.push_back(std::move(sm));
 	}
 	uint32_t nvalues = count();
 	for ( uint32_t i = 0; valid && i < nvalues; ++i )
@@ -27948,6 +28105,7 @@ class ClassPatternNormalizer
     const std::map<DataDefCLASS *,
 	std::vector<Program::DeferredFunctionBody> > &bodies;
     const Program::class_nested_template_capture_t &nested_template_keys;
+    const Program::class_static_init_capture_t &static_init_captures;
     Program::ClassPattern pattern;
     std::map<DataDef *, Program::ClassTypePatternId> type_ids;
     std::map<DataDef *, uint32_t> node_ids;
@@ -28972,11 +29130,60 @@ class ClassPatternNormalizer
 		node.methods.push_back(normalize_method(cls, var));
 	    }
 	    collect_nested_templates(cls, node);
+	    // Slice N3b: merge the per-member channel facts (init form,
+	    // storage dims, banked initializer run) into the static-member
+	    // patterns. A member absent from the channel was declared
+	    // before the channel existed only in tests that never serve;
+	    // it normalizes with defaults (no init, scalar storage).
+	    const std::vector<Program::ClassStaticInitCapture> *static_facts =
+		NULL;
+	    {
+		Program::class_static_init_capture_t::const_iterator sfi =
+		    static_init_captures.find(cls);
+		if ( sfi != static_init_captures.end() )
+		    static_facts = &sfi->second;
+	    }
+	    // Row order = DECLARATION order (the channel's), not the map's
+	    // alphabetical order: a later static's initializer reads an
+	    // earlier one (base2's `digits = ... - is_signed`), and the
+	    // serve folds rows in sequence exactly as the parse lane folds
+	    // the class body.
+	    std::set<std::string> banked_names;
+	    for ( size_t f = 0; static_facts && f < static_facts->size(); ++f )
+	    {
+		const Program::ClassStaticInitCapture &fact =
+		    (*static_facts)[f];
+		std::map<std::string, DataDef *>::const_iterator typed =
+		    cls->static_member_types.find(fact.member);
+		if ( typed == cls->static_member_types.end()
+		  || !banked_names.insert(fact.member).second )
+		    continue;
+		Program::ClassStaticMemberPattern sm;
+		sm.name = fact.member;
+		sm.type = normalize_type(typed->second);
+		sm.eq_init = fact.eq_init;
+		sm.brace_init = fact.brace_init;
+		sm.count = fact.count;
+		sm.dimensions = fact.dimensions;
+		if ( !fact.tokens.empty() )
+		{
+		    pattern.value_arg_tokens.push_back(
+			class_pattern_clone_tokens(fact.tokens));
+		    sm.value_run = (uint32_t)pattern.value_arg_tokens.size();
+		}
+		node.static_members.push_back(std::move(sm));
+	    }
 	    for ( std::map<std::string, DataDef *>::const_iterator member =
 		    cls->static_member_types.begin();
 		  member != cls->static_member_types.end(); ++member )
-		node.static_members.push_back(std::make_pair(
-		    member->first, normalize_type(member->second)));
+	    {
+		if ( banked_names.count(member->first) )
+		    continue;
+		Program::ClassStaticMemberPattern sm;
+		sm.name = member->first;
+		sm.type = normalize_type(member->second);
+		node.static_members.push_back(std::move(sm));
+	    }
 	    for ( std::map<std::string, int64_t>::const_iterator value =
 		    cls->static_member_const_values.begin();
 		  value != cls->static_member_const_values.end(); ++value )
@@ -29085,10 +29292,12 @@ public:
 	const std::map<DataDefCLASS *,
 	    std::vector<Program::DeferredFunctionBody> > &body_recipes,
 	const Program::class_nested_template_capture_t &nested_templates,
+	const Program::class_static_init_capture_t &static_inits,
 	const std::string &identity)
 	: pgm(program), td(def), decls(ordered),
 	  using_decls(using_members), bodies(body_recipes),
-	  nested_template_keys(nested_templates), normalizing_owner(NULL)
+	  nested_template_keys(nested_templates),
+	  static_init_captures(static_inits), normalizing_owner(NULL)
     {
 	pattern.identity = identity;
 	pattern.class_name = td.class_name;
@@ -29272,15 +29481,19 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	*saved_body_capture = class_pattern_body_capture;
     class_nested_template_capture_t *saved_nested_template_capture =
 	class_pattern_nested_template_capture;
+    class_static_init_capture_t *saved_static_init_capture =
+	class_pattern_static_init_capture;
     std::map<DataDefCLASS *, std::vector<ClassDeclKind> > captured_decls;
     std::map<DataDefCLASS *,
 	std::vector<std::pair<DataDefCLASS *, std::string> > > captured_using;
     std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> > captured_bodies;
     class_nested_template_capture_t captured_nested_templates;
+    class_static_init_capture_t captured_statics;
     class_pattern_decl_capture = &captured_decls;
     class_pattern_using_capture = &captured_using;
     class_pattern_body_capture = &captured_bodies;
     class_pattern_nested_template_capture = &captured_nested_templates;
+    class_pattern_static_init_capture = &captured_statics;
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
@@ -29342,7 +29555,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
 	    {
 		ClassPatternNormalizer normalizer(*this, td, root_type,
 		    captured_decls, captured_using,
-		    captured_bodies, captured_nested_templates, identity);
+		    captured_bodies, captured_nested_templates,
+		    captured_statics, identity);
 		pending = normalizer.release(external_types);
 		parsed = true;
 		{
@@ -29378,6 +29592,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     class_pattern_using_capture = saved_using_capture;
     class_pattern_body_capture = saved_body_capture;
     class_pattern_nested_template_capture = saved_nested_template_capture;
+    class_pattern_static_init_capture = saved_static_init_capture;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
     unwind_block_typedef_shadows(0, "class-pattern");
@@ -43166,6 +43381,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( is_static_member )
 	    {
 		ddc->static_member_types[mname] = cmember_dd;
+		// Slice N3b: during a pattern-capture parse, bank the static
+		// member's declaration facts (form flags, storage dims, and —
+		// when the constant fold declines below — the initializer
+		// run) so the pattern can replay what this arm does.
+		Program::ClassStaticInitCapture static_banked;
+		bool static_bank_armed =
+		    pgm.class_pattern_static_init_capture != NULL;
+		static_banked.member = mname;
+		static_banked.count = member_count;
+		static_banked.dimensions.assign(member_dims.begin(),
+						member_dims.end());
 		// The DECLARATION introduces the entity, exactly as g++'s
 		// finish_static_data_member_decl does while parsing the class
 		// body: it creates the VAR_DECL, marks it DECL_IN_AGGR_P
@@ -43238,6 +43464,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		bool static_brace_init = pgm.peekToken()
 		    && pgm.peekToken()->id() == TokenID::tkOpBrc;
+		static_banked.eq_init = has_inclass_init;
+		static_banked.brace_init = static_brace_init;
 		if ( static_brace_init
 		  || (pgm.peekToken()
 		      && pgm.peekToken()->id() == TokenID::tkAssign) )
@@ -43284,6 +43512,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			      && d.brace == 0 )
 				break;
 			    d.update(tn);
+			    if ( static_bank_armed )
+				static_banked.tokens.push_back(tn->clone());
 			}
 			if ( !tn )
 			    pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
@@ -43295,6 +43525,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( !tn || tn->id() != TokenID::tkSemi )
 			pgm.Throw(tn ? tn : this) << "Expecting ';' after static class member" << flush;
 		}
+		if ( static_bank_armed )
+		    (*pgm.class_pattern_static_init_capture)[ddc].push_back(
+			std::move(static_banked));
 		DBG(cout << "TokenCLASS::parse() recorded static member "
 		    << cmember_dd->name << ' ' << mname << endl);
 		pgm.note_class_decl(Program::ClassDeclKind::StaticDataMember);

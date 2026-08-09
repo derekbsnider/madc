@@ -1,0 +1,29 @@
+// Class-pattern static value members (slice N3b).
+// IC          — integral_constant's exact shape: `value = v` reads the
+//               template's OWN value param; the initializer run banks at
+//               capture and parity-folds per binding at serve.
+// Traits      — a constant init capture-folds at capture (static_values);
+//               `width = sizeof(T)` banks and folds after substitution.
+// TU-root templates capture eagerly, gating the LIVE arm; the packed
+// suite gates the pack-time arm via the system headers.
+#include <cstdio>
+
+template<class T, T v> struct IC {
+    static const T value = v;
+    using value_type = T;
+};
+
+template<class T> struct Traits {
+    static const bool flagged = true;
+    static const int width = sizeof(T);
+};
+
+int main()
+{
+    printf("ic42=%d\n", (int)IC<int, 42>::value);
+    printf("icbool=%d\n", (int)IC<bool, true>::value);
+    printf("flagged=%d width=%d\n", (int)Traits<int>::flagged,
+	   Traits<double>::width);
+    printf("cwidth=%d\n", Traits<char>::width);
+    return 0;
+}

@@ -2568,6 +2568,24 @@ public:
 	    : kind(ClassNestedTemplateKind::ClassTemplate),
 	      has_non_type_params(false), is_partial_specialization(false) {}
     };
+    // A static data member (slice N3b). Mirrors the parse lane's rules:
+    // storage is created iff the decl has NO '='-form initializer (brace
+    // and no-init both get storage); a const VALUE comes from either a
+    // capture-folded constant (the node's static_values row) or the banked
+    // initializer run (value_run = index+1 into ClassPattern::
+    // value_arg_tokens), substituted and parity-folded at serve.
+    struct ClassStaticMemberPattern {
+	std::string name;
+	ClassTypePatternId type;	// ELEMENT type (array-ness in dims)
+	bool eq_init;			// '='-form init: suppresses storage
+	bool brace_init;		// '{...}' spelling (serve fold parity)
+	uint32_t value_run;		// index+1 into value_arg_tokens; 0 = none
+	uint64_t count;			// storage element count (0 = unsized)
+	std::vector<uint64_t> dimensions;
+	ClassStaticMemberPattern()
+	    : type(0), eq_init(false), brace_init(false), value_run(0),
+	      count(1) {}
+    };
     struct ClassAggregatePatternNode {
 	uint32_t local_id;
 	uint32_t parent_id;
@@ -2583,7 +2601,7 @@ public:
 	std::vector<ClassMethodPattern> methods;
 	std::vector<ClassUsingMemberPattern> using_members;
 	std::vector<ClassNestedTemplatePattern> nested_templates;
-	std::vector<std::pair<std::string, ClassTypePatternId> > static_members;
+	std::vector<ClassStaticMemberPattern> static_members;
 	std::vector<std::pair<std::string, int64_t> > static_values;
 	std::vector<std::string> friend_classes;
 	std::vector<std::string> friend_functions;
@@ -3020,6 +3038,24 @@ public:
 	std::vector<ClassNestedTemplateCaptureEntry> >
 	class_nested_template_capture_t;
     class_nested_template_capture_t *class_pattern_nested_template_capture = NULL;
+    // Slice N3b: per-static-member capture channel (armed only during a
+    // pattern-capture parse, like the decl/using/body channels). One entry
+    // per static data member seen; `tokens` holds the initializer run only
+    // when the capture-time constant fold declined it (param-dependent —
+    // the serve substitutes and parity-folds it per binding).
+    struct ClassStaticInitCapture {
+	std::string member;
+	bool eq_init;
+	bool brace_init;
+	uint64_t count;
+	std::vector<uint64_t> dimensions;
+	std::vector<TokenBase *> tokens;
+	ClassStaticInitCapture()
+	    : eq_init(false), brace_init(false), count(1) {}
+    };
+    typedef std::map<DataDefCLASS *, std::vector<ClassStaticInitCapture> >
+	class_static_init_capture_t;
+    class_static_init_capture_t *class_pattern_static_init_capture = NULL;
     void record_class_pattern_nested_template(DataDefCLASS *owner,
 	ClassNestedTemplateKind kind, const std::string &key,
 	bool partial_specialization = false);

@@ -802,7 +802,9 @@ enum : uint32_t {
 	// stale payloads cannot reproduce bound typedef identity exactly.
 	// v5 adds the ValueArg token-run side table (slice N1, class-pattern
 	// value-args plan) between the types and the nodes.
-	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 5
+	// v6 widens static-member rows to full ClassStaticMemberPattern
+	// records (slice N3b: init form, storage dims, banked value run).
+	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 6
 };
 struct cir_forest_template_param
 {

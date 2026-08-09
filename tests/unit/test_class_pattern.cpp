@@ -991,12 +991,15 @@ TEST_CASE("N1 dependent non-type argument slots no longer poison capture")
 		program.class_pattern_arena.get(outer_definition->class_pattern_id);
 	REQUIRE(outer_pattern != NULL);
 	// The outer template only passes TYPE arguments; a dependency's own
-	// dependent-value ineligibility is not contagious (the resolver
-	// instantiates the dependency through the full dispatch, which sends
-	// it to the parse lane) — so the outer pattern captures clean.
+	// capture state is not contagious (the resolver instantiates the
+	// dependency through the full dispatch, which picks its best lane)
+	// — so the outer pattern captures clean.
 	CHECK(outer_pattern->capture_reason ==
 	      Program::ClassParseReason::None);
-	CHECK(program._class_inst_parse >= 1);
+	// Post-N3b even PatternTrait (a static-value trait) serves, so the
+	// whole chain rides the pattern lane; the dispatch routing is what
+	// this pins, not which lane it picked.
+	CHECK(program._class_inst_pattern + program._class_inst_parse >= 1);
 }
 
 TEST_CASE("N3a value-param references in dependency slots capture and serve")

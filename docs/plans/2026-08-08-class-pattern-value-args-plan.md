@@ -225,6 +225,47 @@ after N1** (268 pattern / 445 cache / 66 opaque) before the overload
 fence; re-measure after the fence — pair's 9 bindings return to parse
 but the _PCC/__conditional/enable_if-poisoned families stay served.
 
+## N3 implementation notes (2026-08-09, as landed)
+
+- **N3a** (@cd4f2d74): fold_pattern_value_arg splices
+  binding.arg_tokens_by_slot[j] for value-param references (the ONE
+  substitution walk extracted as substitute_value_run); capture refusal
+  of value-param-referencing runs lifted. Reducer:
+  tests/testclasspatternvaluearg.mad (+ unit case).
+- **N3b**: static data members serve. Capture channel
+  class_pattern_static_init_capture (decl_capture-style, armed only
+  during capture parses) banks per-member {eq_init, brace_init, count,
+  dims, initializer run when the capture fold declines};
+  ClassStaticMemberPattern rows replace the (name,typeid) pairs; the
+  materializer replays type + EXTERN storage (parity: storage iff NO
+  '='-form init — brace/no-init both get storage, g++ DECL_IN_AGGR_P
+  model) + values (capture-folded static_values verbatim; banked runs
+  substituted then folded through capture_constant_initializer_value —
+  the SAME owner the concrete parse calls, so declines match). Freeze
+  payload v6. Eligibility admits StaticDataMember + validates rows.
+- **sizeof(placeholder) baked 0 (fix-what-you-find):**
+  query_datadef_measure returned a dependent placeholder's 0 size
+  silently, so a capture parse folded `width = sizeof(T)` to 0 and
+  banked it as a static constant — harmless while statics never served,
+  live poison at N3b. The single measurement point now THROWS — on a
+  PLACEHOLDER type only (the type itself a template param /
+  dependent-placeholder class, arrays chasing the element; POINTERS
+  never unwrap). The first cut used
+  datadef_has_unresolved_dependent_surface and its member-surface walk
+  refused concrete classes with lazily-resolving internals: 25 packed
+  failures including the pack bake. Reducer:
+  tests/testclasspatternstatic.mad `Traits<T>::width`.
+- **Serve-parity rules the first N3b cut missed** (both found by the
+  battery, both now in the materializer): (1) statics replay BEFORE
+  methods — method default-arg parses read them (string_view
+  `substr(..., n = npos)` broke the bake with "undeclared identifier
+  npos"); (2) banked runs fold with the materialized class ON THE
+  SCOPE STACK and rows in DECLARATION order (channel order, not the
+  static_member_types map's alphabetical order) — runs read member
+  typedefs and earlier statics (`is_signed = type(-1) < type(0)`;
+  `digits = ... - is_signed`; testunsignedfold printed "0 0" until
+  both held, "64 0" after).
+
 ## Facts / probes for the next session
 
 - Probes: `MADC_CLASS_PATTERN_PROBE=<substr|*>` (lazy-arm on STDOUT;

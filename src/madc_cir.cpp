@@ -3584,11 +3584,21 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		token_run(nested.constraint);
 		token_run(nested.target);
 	    }
+	    // v6: full static-member rows (slice N3b).
 	    words.push_back((uint32_t)node.static_members.size());
 	    for ( size_t s = 0; s < node.static_members.size(); ++s )
 	    {
-		words.push_back(intern_spelling(node.static_members[s].first));
-		words.push_back(node.static_members[s].second);
+		const Program::ClassStaticMemberPattern &sm =
+		    node.static_members[s];
+		words.push_back(intern_spelling(sm.name));
+		words.push_back(sm.type);
+		words.push_back(sm.eq_init ? 1u : 0u);
+		words.push_back(sm.brace_init ? 1u : 0u);
+		words.push_back(sm.value_run);
+		word64(sm.count);
+		words.push_back((uint32_t)sm.dimensions.size());
+		for ( size_t d = 0; d < sm.dimensions.size(); ++d )
+		    word64(sm.dimensions[d]);
 	    }
 	    words.push_back((uint32_t)node.static_values.size());
 	    for ( size_t s = 0; s < node.static_values.size(); ++s )
