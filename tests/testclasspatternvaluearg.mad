@@ -1,0 +1,52 @@
+// Class-pattern value arguments in dependency slots (slices N1 + N3a).
+// TU-root templates capture eagerly, so this gates the LIVE capture arm
+// (the packed suite gates the pack-time arm via the system headers).
+//
+// Sel<8, T>      — N1: a CONSTANT value argument pre-folds at capture.
+// Sel<N + 2, T>  — N1: a type-param-free expression pre-folds at capture.
+// Mid<B, T>      — N3a: the dependency's value slot references the
+//                  definition's OWN value param; the serve splices the
+//                  use-site tokens (arg_tokens_by_slot) and folds.
+// Pick<B,T>::type — N3a through the DependentMember owner recursion.
+#include <cstdio>
+
+template<int N, class T> struct Sel {
+    T field;
+    int tag() { return N; }
+};
+
+template<bool B, class T> struct Pick {
+    using type = T;
+};
+
+template<class T> struct Wrap {
+    Sel<8, T> direct;
+    Sel<4 + 2, T> summed;
+};
+
+template<class T, bool B> struct Mid {
+    Sel<B ? 3 : 5, T> chosen;
+    typename Pick<B, T>::type value;
+};
+
+int main()
+{
+    Wrap<int> w;
+    w.direct.field = 10;
+    w.summed.field = 20;
+    printf("direct=%d tag=%d\n", w.direct.field, w.direct.tag());
+    printf("summed=%d tag=%d\n", w.summed.field, w.summed.tag());
+
+    Mid<int, true> m;
+    m.chosen.field = 30;
+    m.value = 40;
+    printf("chosen=%d tag=%d value=%d\n", m.chosen.field, m.chosen.tag(),
+	   m.value);
+
+    Mid<long, false> n;
+    n.chosen.field = 50;
+    n.value = 60;
+    printf("nchosen=%ld tag=%d nvalue=%ld\n", (long)n.chosen.field,
+	   n.chosen.tag(), (long)n.value);
+    return 0;
+}

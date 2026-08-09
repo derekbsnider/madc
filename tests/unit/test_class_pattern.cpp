@@ -999,6 +999,64 @@ TEST_CASE("N1 dependent non-type argument slots no longer poison capture")
 	CHECK(program._class_inst_parse >= 1);
 }
 
+TEST_CASE("N3a value-param references in dependency slots capture and serve")
+{
+	// The dependency's value slot reads the definition's OWN value param
+	// (PatternSel<B ? 3 : 5, T> inside PatternMid<T, B>): the run cannot
+	// pre-fold at capture (param-referencing) and goes to the
+	// value_arg_tokens side table; the serve splices the use-site tokens
+	// from arg_tokens_by_slot and folds. Pre-N3a capture refused this
+	// shape outright (DependentValueExpression).
+	const char *source =
+		"template<int N, class T> struct PatternSel {\n"
+		"    T field;\n"
+		"};\n"
+		"template<class T, bool B> struct PatternMid {\n"
+		"    PatternSel<B ? 3 : 5, T> chosen;\n"
+		"};\n"
+		"PatternMid<int64_t, true> probe;\n";
+	Program program;
+	TokenProgram *tokens = program.tokenize_buffer(
+		source, "<class-pattern-value-param-slot>");
+	REQUIRE(tokens != NULL);
+	REQUIRE(program.parse(tokens));
+	const Program::TemplateDef *definition = program.find_template(
+		"PatternMid");
+	REQUIRE(definition != NULL);
+	REQUIRE(definition->class_pattern_id != 0);
+	const Program::ClassPattern *pattern =
+		program.class_pattern_arena.get(definition->class_pattern_id);
+	REQUIRE(pattern != NULL);
+	CHECK(pattern->capture_reason == Program::ClassParseReason::None);
+	bool found_value_run = false;
+	for (size_t i = 1; i < pattern->types.size() && !found_value_run; ++i)
+		found_value_run = pattern->types[i].kind ==
+			Program::ClassTypePatternKind::ValueArg
+			&& !(pattern->types[i].flags & 1u);
+	CHECK(found_value_run);
+	CHECK(!pattern->value_arg_tokens.empty());
+	// The serve folded B?3:5 with B=true — the member materialized as
+	// PatternSel<3,int64_t>. Match the instantiation by canonical PREFIX:
+	// the value slot may render as `true` or its folded `1`.
+	DataDefCLASS *mid = NULL;
+	for (datadef_map_citer it = program.struct_map.begin();
+	     !mid && it != program.struct_map.end(); ++it) {
+		DataDefCLASS *candidate = dynamic_cast<DataDefCLASS *>(it->second);
+		if (candidate && candidate->canonical_cpp_spelling().compare(
+			0, 16, "PatternMid<int64") == 0)
+			mid = candidate;
+	}
+	REQUIRE(mid != NULL);
+	bool chosen_ok = false;
+	for (size_t i = 0; i < mid->members.size(); ++i)
+		if (mid->members[i].first == "chosen" && mid->members[i].second)
+			chosen_ok = mid->members[i].second->name.find(
+				"PatternSel") != std::string::npos
+				&& mid->members[i].second->name.find("3")
+					!= std::string::npos;
+	CHECK(chosen_ok);
+}
+
 TEST_CASE("B3 dependent member types require a guaranteed pattern member")
 {
 	const char *source =

@@ -6248,11 +6248,12 @@ class BasicClassPatternResolver
     }
 
     // Serve a ValueArg dependency slot: a pre-folded constant reads straight
-    // from the node; a token run is substituted per binding.type_subst (the
-    // tsubst step over the SAVED run — parse-once, never a re-parse) and
-    // folded through the same owner the live lane uses. Capture refused runs
-    // referencing the definition's VALUE params, so type_subst is the whole
-    // substitution surface.
+    // from the node; a token run is substituted (the tsubst step over the
+    // SAVED run — parse-once, never a re-parse) and folded through the same
+    // owner the live lane uses. TYPE params substitute from
+    // binding.type_subst; VALUE params splice the use-site argument tokens
+    // from binding.arg_tokens_by_slot (slice N3a — enable_if<B,T> shapes
+    // where B is the definition's own value param).
     bool fold_pattern_value_arg(const Program::ClassTypePattern &argp,
 	int64_t &out)
     {
@@ -6275,15 +6276,43 @@ class BasicClassPatternResolver
 	    TokenBase *t = run[i];
 	    if ( !t )
 		continue;
-	    TokenDataType *bound = NULL;
 	    if ( is_contextual_identifier_token(t) )
 	    {
+		const std::string name = contextual_identifier_name(t);
 		std::map<std::string, TokenDataType *>::const_iterator found =
-		    binding.type_subst.find(contextual_identifier_name(t));
+		    binding.type_subst.find(name);
 		if ( found != binding.type_subst.end() && found->second )
-		    bound = found->second;
+		{
+		    substituted.push_back(found->second->clone());
+		    continue;
+		}
+		size_t value_slot = binding.definition.typeparams.size();
+		for ( size_t j = 0; j < binding.definition.typeparams.size();
+		      ++j )
+		    if ( binding.definition.typeparams[j] == name
+		      && j < binding.definition.typeparam_is_type.size()
+		      && !binding.definition.typeparam_is_type[j] )
+		    {
+			value_slot = j;
+			break;
+		    }
+		if ( value_slot < binding.definition.typeparams.size() )
+		{
+		    // A DEFAULTED value slot has no use-site tokens; the
+		    // unbound name then fails the fold below — the loud
+		    // serve-failure path, same as any unfoldable run.
+		    if ( value_slot >= binding.arg_tokens_by_slot.size()
+		      || binding.arg_tokens_by_slot[value_slot].empty() )
+			return false;
+		    const std::vector<TokenBase *> &slot_tokens =
+			binding.arg_tokens_by_slot[value_slot];
+		    for ( size_t k = 0; k < slot_tokens.size(); ++k )
+			if ( slot_tokens[k] )
+			    substituted.push_back(slot_tokens[k]->clone());
+		    continue;
+		}
 	    }
-	    substituted.push_back(bound ? bound->clone() : t->clone());
+	    substituted.push_back(t->clone());
 	}
 	return pgm.fold_nontype_arg_constant(substituted, out);
     }
@@ -28076,8 +28105,11 @@ class ClassPatternNormalizer
 		return id;
 	    }
 	}
+	// A run may reference the definition's TYPE params (serve substitutes
+	// binding.type_subst) or its VALUE params (slice N3a: serve splices
+	// the use-site tokens from binding.arg_tokens_by_slot). Either way it
+	// goes to the side table; only param-FREE runs pre-fold here.
 	bool references_param = false;
-	bool references_value_param = false;
 	for ( size_t i = 0; i < tokens.size(); ++i )
 	{
 	    if ( !is_contextual_identifier_token(tokens[i]) )
@@ -28087,16 +28119,10 @@ class ClassPatternNormalizer
 		if ( td.typeparams[j] == name )
 		{
 		    references_param = true;
-		    if ( j < td.typeparam_is_type.size()
-		      && !td.typeparam_is_type[j] )
-			references_value_param = true;
 		    break;
 		}
-	}
-	if ( references_value_param )
-	{
-	    fail(Program::ClassParseReason::DependentValueExpression);
-	    return id;
+	    if ( references_param )
+		break;
 	}
 	if ( !references_param )
 	{
