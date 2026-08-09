@@ -7,7 +7,14 @@ Merges develop into master, tags the release, and pushes.
 1. **Pre-flight checks**:
    - Ensure working tree is clean (no uncommitted changes) — abort if dirty
    - Ensure current branch is `develop` — if not, ask user to switch first
-   - Run `make -C src fulltest` — abort if tests fail
+   - **Do NOT re-run test suites** (owner rule, 2026-08-09). A promotion
+     inherits the release's validation: verify the promotion candidate is
+     the SAME commit a recorded green battery ran at (the release's
+     CHANGELOG/status/release-notes counts, or the release session's
+     battery in this conversation). Promotion is a git ceremony, not a
+     test event. Only if develop has moved SINCE the last validated
+     release commit (code commits without a battery) does a fulltest run
+     first — and then say why.
    - Read version from `VERSION` file
 
 2. **Merge develop into master**:
