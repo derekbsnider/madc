@@ -800,7 +800,9 @@ enum : uint32_t {
 	CIR_CLASS_PATTERN_MAGIC = 0x43504154u,	// "CPAT"
 	// v4 adds direct-template-parameter spelling provenance to method params;
 	// stale payloads cannot reproduce bound typedef identity exactly.
-	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 4
+	// v5 adds the ValueArg token-run side table (slice N1, class-pattern
+	// value-args plan) between the types and the nodes.
+	CIR_CLASS_PATTERN_PAYLOAD_VERSION = 5
 };
 struct cir_forest_template_param
 {

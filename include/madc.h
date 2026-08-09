@@ -2413,7 +2413,14 @@ public:
 	FunctionPointer,
 	TemplateId,
 	DependentMember,
-	PackExpansion
+	PackExpansion,
+	// A VALUE argument in a TemplateId/DependentMember dependency slot
+	// (slice N1, class-pattern value-args plan). `name` = source spelling.
+	// flags bit 0 set = pre-folded at capture, value in dimensions[0];
+	// clear = template_param_index indexes ClassPattern::value_arg_tokens
+	// (the run is substituted and folded at serve). Appended LAST so the
+	// serialized ordinals of the kinds above stay stable.
+	ValueArg
     };
     enum class ClassAggregateKind : uint8_t {
 	Class,
@@ -2592,6 +2599,10 @@ public:
 	ClassParseReason capture_reason;
 	uint64_t semantic_fingerprint;
 	std::vector<ClassTypePattern> types;
+	// Token runs for non-pre-folded ValueArg nodes, indexed by the node's
+	// template_param_index. A side table (not a ClassTypePattern field) so
+	// the per-type record stays lean and the freeze delta is one field.
+	std::vector<std::vector<TokenBase *> > value_arg_tokens;
 	std::vector<ClassAggregatePatternNode> nodes;
 	ClassPattern()
 	    : is_partial_specialization(false),

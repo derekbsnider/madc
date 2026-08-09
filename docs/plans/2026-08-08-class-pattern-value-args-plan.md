@@ -132,6 +132,58 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   (d) pre-fold constant expressions at capture (flags bit +
   dimensions[0]) to skip serve-time work for `true`/`0` literals.
 
+## N1 implementation notes (2026-08-09, as landed)
+
+Three decisions made at implementation time, refining the serve design:
+
+- **Value-bearing template-ids SKIP the resolver memo** instead of growing
+  the memo key: memo entries compare `DataDef*` argument vectors only, so
+  a value slot would need signature churn across six functions + two
+  structs to avoid false collisions. Skipping gives the same correctness
+  (the instantiation dispatch's own cache still dedups the replay, keyed
+  on the folded value). N3/N5 may add value-aware memo keys if profiling
+  shows replay cost matters.
+- **Capture never pre-folds a param-referencing run** — during capture the
+  params are placeholder-bound, so `sizeof(T)` would fold against the
+  placeholder and bake a wrong constant. Param-free runs MUST pre-fold at
+  capture or the slot poisons (the serve would see identical tokens and
+  fail identically). Runs referencing the definition's VALUE params also
+  poison: the serve substitutes `type_subst` only (an N2.5 extension —
+  substituting `arg_tokens_by_slot` for value-param names — exists if the
+  tally shows demand).
+- **Template-template arguments are refused by shape**: a bare template
+  NAME in a value slot (template-template params register is_type=false
+  exactly like value params) fails capture, preserving the deleted
+  fence's poison for those deps. `dependent_shell_fallback_reason` and
+  `has_non_type_template_parameter` are deleted; per-slot routing
+  (`HeadSlots`) replaced them at both capture surfaces (the inline
+  TemplateId argument loop and the dependent-shell arm). The
+  DependentMember/derived arm keeps type-only normalization (value args
+  there poison as before — out of N1 scope).
+
+Freeze: `CIR_CLASS_PATTERN_PAYLOAD_VERSION` 4 → 5 (`value_arg_tokens`
+side table serialized between types and nodes; fingerprint covers it via
+`add_tokens`).
+
+**Wall exposed by the unpoisoning (fixed with its own fence commit):**
+with pair serving for the first time on the packed lane, 4 tests
+(testset/testsubscript/testmapiter/testtuple) failed with `tsubst body
+calls un-emittable symbol` — a covered `_M_insert_unique` body resolves
+pair's SFINAE ctor twin `__o7`, whose FuncDef exists but whose body the
+nested-recipe replay never minted (recipes select by NAME; pair/tuple
+carry ~6 member-template ctors all named like the class — the exact gap
+the `UnsupportedMemberTemplateOverloads` enum documented but never
+stamped). Eligibility now refuses a node with ≥2 member-template methods
+sharing a display_name; a SINGLE member template per name (vector's
+range ctor, _Rb_tree's `_M_insert_unique`) replays unambiguously and
+keeps serving. Lifting this = finishing recipe selection by SIGNATURE
+(an N-later slice; unlocks pair/tuple serving).
+
+Tally (packed, testsubscript): 280 parse (pre-N2) → 242 (N2) → **139
+after N1** (268 pattern / 445 cache / 66 opaque) before the overload
+fence; re-measure after the fence — pair's 9 bindings return to parse
+but the _PCC/__conditional/enable_if-poisoned families stay served.
+
 ## Facts / probes for the next session
 
 - Probes: `MADC_CLASS_PATTERN_PROBE=<substr|*>` (lazy-arm on STDOUT;

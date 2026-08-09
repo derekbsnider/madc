@@ -3429,6 +3429,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	    for ( size_t d = 0; d < type.dimensions.size(); ++d )
 		word64(type.dimensions[d]);
 	}
+	// v5: ValueArg token-run side table (slice N1).
+	words.push_back((uint32_t)pattern.value_arg_tokens.size());
+	for ( size_t v = 0; v < pattern.value_arg_tokens.size(); ++v )
+	    token_run(pattern.value_arg_tokens[v]);
 	words.push_back((uint32_t)pattern.nodes.size());
 	for ( size_t i = 0; i < pattern.nodes.size(); ++i )
 	{

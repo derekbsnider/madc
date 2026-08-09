@@ -944,7 +944,7 @@ TEST_CASE("R1 partial specializations stay namespace-scoped")
 	CHECK(!has_member(right, "left"));
 }
 
-TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")
+TEST_CASE("N1 dependent non-type argument slots no longer poison capture")
 {
 	const char *source =
 		"template<class T> struct PatternTrait {\n"
@@ -975,8 +975,14 @@ TEST_CASE("B3 dependent non-type template arguments stay on the fallback lane")
 	const Program::ClassPattern *pattern =
 		program.class_pattern_arena.get(definition->class_pattern_id);
 	REQUIRE(pattern != NULL);
+	// Slice N1 (class-pattern value-args plan): a dependency whose target
+	// has a non-type param no longer poisons capture wholesale. Here the
+	// value slot is DEFAULTED — only the spelled TYPE argument is encoded,
+	// and the serve's replay routes through the full dispatch, which fills
+	// the default (folding PatternTrait<T>::value) exactly as the parse
+	// lane does. Pre-N1 this pattern carried DependentValueExpression.
 	CHECK(pattern->capture_reason ==
-	      Program::ClassParseReason::DependentValueExpression);
+	      Program::ClassParseReason::None);
 	const Program::TemplateDef *outer_definition = program.find_template(
 		"PatternValueOuter");
 	REQUIRE(outer_definition != NULL);

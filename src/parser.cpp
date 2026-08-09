@@ -3507,6 +3507,9 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	for ( size_t d = 0; d < type.dimensions.size(); ++d )
 	    hash.add_u64(type.dimensions[d]);
     }
+    hash.add_u64(pattern.value_arg_tokens.size());
+    for ( size_t i = 0; i < pattern.value_arg_tokens.size(); ++i )
+	add_tokens(pattern.value_arg_tokens[i]);
     hash.add_u64(pattern.nodes.size());
     for ( size_t i = 0; i < pattern.nodes.size(); ++i )
     {
@@ -5631,6 +5634,16 @@ static std::string basic_class_pattern_type_spelling(
 	    }
 	}
 	break;
+    case Program::ClassTypePatternKind::ValueArg:
+	// Pre-folded renders the VALUE (the same decimal the dispatch keys
+	// instantiations by after its own fold — `enable_if<1,...>` matches
+	// the parse lane's key, `enable_if<true,...>` would not); a serve-
+	// folded run renders its source spelling.
+	spelling = (type.flags & 1u)
+	    ? std::to_string(type.dimensions.empty()
+		? (int64_t)0 : (int64_t)type.dimensions[0])
+	    : type.name;
+	break;
     case Program::ClassTypePatternKind::FunctionPointer:
     case Program::ClassTypePatternKind::PackExpansion:
 	break;
@@ -5671,6 +5684,11 @@ static bool basic_class_pattern_type_is_dependent(
 	for ( size_t i = 0; i < type.arguments.size() && !dependent; ++i )
 	    dependent = basic_class_pattern_type_is_dependent(
 		pattern, type.arguments[i], active);
+	break;
+    case Program::ClassTypePatternKind::ValueArg:
+	// A pre-folded constant is binding-independent; a token run folds
+	// against the binding's substituted type params.
+	dependent = !(type.flags & 1u);
 	break;
     }
     active[id] = false;
@@ -5932,6 +5950,12 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 		  || type.arguments[a] >= binding.pattern.types.size() )
 		    return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
 	    break;
+	case Program::ClassTypePatternKind::ValueArg:
+	    if ( (type.flags & 1u) ? type.dimensions.empty()
+		 : type.template_param_index
+		     >= binding.pattern.value_arg_tokens.size() )
+		return class_pattern_eligibility_note(binding, Reason::UnnormalizableType, __builtin_LINE());
+	    break;
 	case Program::ClassTypePatternKind::FunctionPointer:
 	case Program::ClassTypePatternKind::PackExpansion:
 	    return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
@@ -6003,6 +6027,25 @@ static Program::ClassParseReason basic_class_pattern_eligibility(
 		return class_pattern_eligibility_note(binding, Reason::UnsupportedDeclKind, __builtin_LINE());
 	}
 
+	// SAME-NAME member-function-template overloads (pair/tuple's
+	// explicit/non-explicit SFINAE ctor twins): the nested-recipe replay
+	// selects recipes by NAME and cannot yet reproduce live overload
+	// selection — a covered tsubst body that instantiates one of the
+	// twins gets a FuncDef whose body was never minted (testset's
+	// un-emittable pair ctor __o7). Refuse the pattern; the parse lane
+	// owns these until the replay disambiguates by signature. A SINGLE
+	// member template per name (vector's range ctor, _Rb_tree's
+	// _M_insert_unique) replays unambiguously and stays served.
+	{
+	    std::map<std::string, unsigned> member_template_census;
+	    for ( size_t i = 0; i < node.methods.size(); ++i )
+		if ( node.methods[i].is_member_template )
+		    if ( ++member_template_census[node.methods[i].display_name]
+			 > 1 )
+			return class_pattern_eligibility_note(binding,
+			    Reason::UnsupportedMemberTemplateOverloads,
+			    __builtin_LINE());
+	}
 	for ( size_t i = 0; i < node.methods.size(); ++i )
 	{
 	    const Program::ClassMethodPattern &method = node.methods[i];
@@ -6204,6 +6247,47 @@ class BasicClassPatternResolver
 	return NULL;
     }
 
+    // Serve a ValueArg dependency slot: a pre-folded constant reads straight
+    // from the node; a token run is substituted per binding.type_subst (the
+    // tsubst step over the SAVED run — parse-once, never a re-parse) and
+    // folded through the same owner the live lane uses. Capture refused runs
+    // referencing the definition's VALUE params, so type_subst is the whole
+    // substitution surface.
+    bool fold_pattern_value_arg(const Program::ClassTypePattern &argp,
+	int64_t &out)
+    {
+	if ( argp.flags & 1u )
+	{
+	    if ( argp.dimensions.empty() )
+		return false;
+	    out = (int64_t)argp.dimensions[0];
+	    return true;
+	}
+	if ( argp.template_param_index
+	     >= binding.pattern.value_arg_tokens.size() )
+	    return false;
+	const std::vector<TokenBase *> &run =
+	    binding.pattern.value_arg_tokens[argp.template_param_index];
+	std::vector<TokenBase *> substituted;
+	substituted.reserve(run.size());
+	for ( size_t i = 0; i < run.size(); ++i )
+	{
+	    TokenBase *t = run[i];
+	    if ( !t )
+		continue;
+	    TokenDataType *bound = NULL;
+	    if ( is_contextual_identifier_token(t) )
+	    {
+		std::map<std::string, TokenDataType *>::const_iterator found =
+		    binding.type_subst.find(contextual_identifier_name(t));
+		if ( found != binding.type_subst.end() && found->second )
+		    bound = found->second;
+	    }
+	    substituted.push_back(bound ? bound->clone() : t->clone());
+	}
+	return pgm.fold_nontype_arg_constant(substituted, out);
+    }
+
     DataDef *instantiate_pattern_template(
 	const std::string &qualified_name,
 	const std::vector<Program::ClassTypePatternId> &arguments,
@@ -6214,13 +6298,35 @@ class BasicClassPatternResolver
     {
 	memo_arguments.clear();
 	memo_arguments.reserve(arguments.size());
+	bool has_value_args = false;
+	std::vector<int64_t> value_by_index(arguments.size(), 0);
 	for ( size_t i = 0; i < arguments.size(); ++i )
-	    memo_arguments.push_back(resolve(arguments[i]));
-	DataDef *cached = find_memoized(memo_kind, memo_name_id,
-	    memo_namespace_id, owner, memo_arguments, memo_hash);
-	if ( cached )
-	    return cached;
-	memo_miss = true;
+	{
+	    const Program::ClassTypePattern *argp =
+		arguments[i] && arguments[i] < binding.pattern.types.size()
+		? &binding.pattern.types[arguments[i]] : NULL;
+	    if ( argp && argp->kind == Program::ClassTypePatternKind::ValueArg )
+	    {
+		has_value_args = true;
+		if ( !fold_pattern_value_arg(*argp, value_by_index[i]) )
+		    return invalid("value argument did not fold at serve");
+		memo_arguments.push_back(NULL);
+	    }
+	    else
+		memo_arguments.push_back(resolve(arguments[i]));
+	}
+	// A value-bearing template-id SKIPS the resolver memo: entries compare
+	// DataDef* argument vectors only, so two bindings differing solely in
+	// a value slot would falsely collide. The instantiation dispatch's own
+	// cache still dedups the replay (it keys on the folded value).
+	if ( !has_value_args )
+	{
+	    DataDef *cached = find_memoized(memo_kind, memo_name_id,
+		memo_namespace_id, owner, memo_arguments, memo_hash);
+	    if ( cached )
+		return cached;
+	    memo_miss = true;
+	}
 
 	std::string name = qualified_name;
 	std::string ns;
@@ -6237,6 +6343,16 @@ class BasicClassPatternResolver
 	{
 	    if ( i )
 		replay.push_back(new TokenComma());
+	    // A VALUE slot replays its folded constant; the dispatch folds it
+	    // again and keys the instantiation by the value, exactly as the
+	    // parse lane does after tsubst.
+	    if ( arguments[i] && arguments[i] < binding.pattern.types.size()
+	      && binding.pattern.types[arguments[i]].kind
+		 == Program::ClassTypePatternKind::ValueArg )
+	    {
+		replay.push_back(new TokenInt(value_by_index[i]));
+		continue;
+	    }
 	    // The replay arg token carries the REGISTERED type identity
 	    // (dd->name) — the spelling the parse lane's tsubst feeds at the
 	    // same juncture. A C++-source spelling here leaks into the nested
@@ -6461,6 +6577,9 @@ public:
 	    }
 	    break;
 	}
+	case Program::ClassTypePatternKind::ValueArg:
+	    // Served inline by instantiate_pattern_template's argument walk;
+	    // never resolves as a type — falls through to the loud error.
 	case Program::ClassTypePatternKind::FunctionPointer:
 	case Program::ClassTypePatternKind::PackExpansion:
 	    break;
@@ -7189,6 +7308,7 @@ class BasicClassPatternMaterializer
 	case Program::ClassTypePatternKind::ConcreteType:
 	case Program::ClassTypePatternKind::TemplateParam:
 	case Program::ClassTypePatternKind::SelfType:
+	case Program::ClassTypePatternKind::ValueArg:
 	    break;
 	}
     }
@@ -20399,7 +20519,7 @@ public:
 	{
 	    Program::ClassTypePattern type;
 	    uint32_t kind = word();
-	    if ( kind > (uint32_t)Program::ClassTypePatternKind::PackExpansion )
+	    if ( kind > (uint32_t)Program::ClassTypePatternKind::ValueArg )
 		invalidate(__LINE__);
 	    type.kind = (Program::ClassTypePatternKind)kind;
 	    type.flags = word();
@@ -20429,6 +20549,14 @@ public:
 	    for ( uint32_t d = 0; valid && d < ndims; ++d )
 		type.dimensions.push_back(word64());
 	    out.types.push_back(std::move(type));
+	}
+	// v5: ValueArg token-run side table (slice N1).
+	out.value_arg_tokens.clear();
+	uint32_t nvalue_runs = count();
+	for ( uint32_t i = 0; valid && i < nvalue_runs; ++i )
+	{
+	    out.value_arg_tokens.push_back(std::vector<TokenBase *>());
+	    tokens(out.value_arg_tokens.back());
 	}
 	uint32_t nnodes = count();
 	for ( uint32_t i = 0; valid && i < nnodes; ++i )
@@ -27853,53 +27981,143 @@ class ClassPatternNormalizer
 	return NULL;
     }
 
-    static bool has_non_type_template_parameter(
-	const std::vector<bool> &param_is_type, bool has_non_type_params)
+    // Per-slot param classification of a TemplateId dependency's target,
+    // routing each captured argument: a VALUE slot (is_type=false, not a
+    // pack) captures as ValueArg; everything else normalizes as a type.
+    // This replaced the whole-target non-type-param fence (slice N1): the
+    // dependency's own capture state is still not contagious — the resolver
+    // routes every dependency through the full instantiation dispatch.
+    // TemplateDef.has_non_type_params is a documented misnomer (a variadic
+    // TYPE pack also sets it), so classification consults the per-param
+    // vectors only. Template-template params also register is_type=false —
+    // capture_value_arg refuses their bare-template-name argument shape, so
+    // those dependencies poison exactly as the fence poisoned them. The
+    // vectors are COPIED: registry storage can reallocate under the fold
+    // recursion a pre-fold triggers.
+    struct HeadSlots
     {
-	// TemplateDef.has_non_type_params is a documented misnomer (see the
-	// registration at TokenTEMPLATE::parse and the note near the opaque
-	// path): a variadic TYPE pack (`typename... _Bn`, __and_/__or_) also
-	// sets it, because the legacy instantiation lanes treat packs and
-	// value params alike. THIS fence exists for a narrower reason — a
-	// VALUE argument must not be mis-encoded as a type pattern — so it
-	// consults the per-param classification: a type pack's arguments are
-	// always types and replay fine. Template-template and value params
-	// register is_type=false and stay fenced.
-	for ( size_t i = 0; i < param_is_type.size(); ++i )
-	    if ( !param_is_type[i] )
-		return true;
-	// Defensive only: no registration path sets the flag without also
-	// pushing a param, so an empty vector defers to the flag.
-	return param_is_type.empty() && has_non_type_params;
+	std::vector<bool> is_type;
+	std::vector<bool> is_pack;
+	bool known;
+	HeadSlots() : known(false) {}
+	bool value_slot(size_t slot) const
+	{
+	    if ( !known || is_type.empty() )
+		return false;
+	    size_t idx = slot < is_type.size() ? slot : is_type.size() - 1;
+	    bool pack = idx < is_pack.size() && is_pack[idx];
+	    if ( slot >= is_type.size() && !pack )
+		return false;
+	    return !is_type[idx] && !pack;
+	}
+    };
+
+    HeadSlots head_slots_for(uint32_t name_id, const std::string &ns,
+	DataDefCLASS *owner)
+    {
+	HeadSlots out;
+	if ( const Program::TemplateAliasDef *alias =
+		pgm.find_template_alias(name_id, ns, owner) )
+	{
+	    out.is_type = alias->typeparam_is_type;
+	    out.is_pack = alias->typeparam_is_pack;
+	    out.known = true;
+	}
+	else if ( const Program::TemplateDef *definition =
+		pgm.find_template(name_id, ns, owner) )
+	{
+	    out.is_type = definition->typeparam_is_type;
+	    out.is_pack = definition->typeparam_is_pack;
+	    out.known = true;
+	}
+	return out;
     }
 
-    Program::ClassParseReason dependent_shell_fallback_reason(
-	const Program::DependentShellOrigin &origin)
+    HeadSlots head_slots_for_origin(const Program::DependentShellOrigin &origin)
     {
-	const uint32_t name_id = origin.registry_name_id
-	    ? origin.registry_name_id : pgm.template_name_pool.intern(origin.tname);
-	const Program::TemplateAliasDef *alias = pgm.find_template_alias(
-	    name_id, origin.defining_namespace, origin.owner_class);
-	if ( alias )
-	    return has_non_type_template_parameter(alias->typeparam_is_type,
-		alias->has_non_type_params)
-	    ? Program::ClassParseReason::DependentValueExpression
-	    : Program::ClassParseReason::None;
-	const Program::TemplateDef *definition = pgm.find_template(
-	    name_id, origin.defining_namespace, origin.owner_class);
-	if ( !definition )
-	    return Program::ClassParseReason::None;
-	if ( has_non_type_template_parameter(definition->typeparam_is_type,
-		definition->has_non_type_params) )
-	    return Program::ClassParseReason::DependentValueExpression;
-	// The dependency's OWN capture state is not contagious: at pattern
-	// instantiation the resolver routes every TemplateId dependency
-	// through the full instantiation dispatch, which picks that
-	// dependency's best lane (its pattern if eligible, else the parse
-	// lane). Inheriting its capture failure here permanently poisoned
-	// every dependent pattern (vector/map/_Rb_tree all carried a
-	// dependency's pattern-parse-error despite capturing cleanly).
-	return Program::ClassParseReason::None;
+	return head_slots_for(origin.registry_name_id
+		? origin.registry_name_id
+		: pgm.template_name_pool.intern(origin.tname),
+	    origin.defining_namespace, origin.owner_class);
+    }
+
+    // Capture a VALUE argument in a dependency slot (ClassTypePatternKind::
+    // ValueArg). Constant runs pre-fold here; runs referencing the
+    // definition's TYPE params go to the value_arg_tokens side table and
+    // fold at serve after substitution. Refused: bare template names (a
+    // template-template argument — is_type=false like a value param, but
+    // never a value), runs referencing the definition's VALUE params (the
+    // serve substitutes type_subst only), and non-constant runs with no
+    // param to substitute (the serve fold would see identical tokens and
+    // fail identically — poison now, attributably).
+    Program::ClassTypePatternId capture_value_arg(
+	const std::vector<TokenBase *> &raw)
+    {
+	std::vector<TokenBase *> tokens;
+	tokens.reserve(raw.size());
+	for ( size_t i = 0; i < raw.size(); ++i )
+	    if ( raw[i] )
+		tokens.push_back(raw[i]);
+	Program::ClassTypePatternId id = append_type();
+	pattern.types[id].kind = Program::ClassTypePatternKind::ValueArg;
+	pattern.types[id].name = class_pattern_tokens_spelling(tokens);
+	if ( tokens.empty() )
+	{
+	    fail(Program::ClassParseReason::DependentValueExpression);
+	    return id;
+	}
+	if ( tokens.size() == 1 && is_contextual_identifier_token(tokens[0]) )
+	{
+	    const std::string name = contextual_identifier_name(tokens[0]);
+	    if ( pgm.find_template_alias(name, std::string(), NULL)
+	      || pgm.find_template(name, std::string(), NULL) )
+	    {
+		fail(Program::ClassParseReason::DependentValueExpression);
+		return id;
+	    }
+	}
+	bool references_param = false;
+	bool references_value_param = false;
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	{
+	    if ( !is_contextual_identifier_token(tokens[i]) )
+		continue;
+	    const std::string name = contextual_identifier_name(tokens[i]);
+	    for ( size_t j = 0; j < td.typeparams.size(); ++j )
+		if ( td.typeparams[j] == name )
+		{
+		    references_param = true;
+		    if ( j < td.typeparam_is_type.size()
+		      && !td.typeparam_is_type[j] )
+			references_value_param = true;
+		    break;
+		}
+	}
+	if ( references_value_param )
+	{
+	    fail(Program::ClassParseReason::DependentValueExpression);
+	    return id;
+	}
+	if ( !references_param )
+	{
+	    // Param-free runs MUST fold here or never: the capture context
+	    // binds no placeholders into them. Never pre-fold a param-
+	    // referencing run — its params are placeholder-bound during
+	    // capture, and a placeholder fold would bake a wrong constant.
+	    int64_t folded = 0;
+	    if ( pgm.fold_nontype_arg_constant(tokens, folded) )
+	    {
+		pattern.types[id].flags = 1u;
+		pattern.types[id].dimensions.push_back((uint64_t)folded);
+	    }
+	    else
+		fail(Program::ClassParseReason::DependentValueExpression);
+	    return id;
+	}
+	pattern.types[id].template_param_index =
+	    (uint32_t)pattern.value_arg_tokens.size();
+	pattern.value_arg_tokens.push_back(class_pattern_clone_tokens(tokens));
+	return id;
     }
 
     // (The capture-time "dependent member guaranteed" gate and its
@@ -28027,26 +28245,49 @@ class ClassPatternNormalizer
 	    pattern.types[base].kind = Program::ClassTypePatternKind::TemplateId;
 	    std::vector<TokenBase *> head(tokens.begin(), tokens.begin() + open);
 	    pattern.types[base].name = class_pattern_tokens_spelling(head);
+	    // One head lookup serves the representability gate AND the
+	    // per-slot value/type routing below.
+	    std::string head_base = pattern.types[base].name;
+	    std::string head_ns;
+	    size_t head_scope = head_base.rfind("::");
+	    if ( head_scope != std::string::npos )
+	    {
+		head_ns = head_base.substr(0, head_scope);
+		head_base = head_base.substr(head_scope + 2);
+	    }
+	    const Program::TemplateAliasDef *head_alias =
+		pgm.find_template_alias(head_base, head_ns, NULL);
+	    const Program::TemplateDef *head_def = head_alias ? NULL
+		: pgm.find_template(head_base, head_ns, NULL);
 	    // Structural representability gate: a bare TemplateId replays at
 	    // materialization with owner=NULL under a DIFFERENT class stack, so
 	    // a head that resolves only as a MEMBER alias of some class (cond2
 	    // inside doer — the __cond_t shape) is capture-time context the
 	    // resolver cannot reproduce. Reject the pattern; the token-parser
 	    // lane owns member-alias lookup ([basic.lookup.unqual], layer 1).
-	    if ( pattern.types[base].name.find("::") == std::string::npos )
+	    if ( head_scope == std::string::npos )
 	    {
-		const Program::TemplateAliasDef *head_alias =
-		    pgm.find_template_alias(pattern.types[base].name,
-					    std::string(), NULL);
 		bool member_alias_head = head_alias && head_alias->owner_class;
 		bool free_head = (head_alias && !head_alias->owner_class)
-		    || pgm.find_template(pattern.types[base].name,
-					 std::string(), NULL);
+		    || head_def;
 		if ( member_alias_head || !free_head )
 		{
 		    fail(Program::ClassParseReason::UnnormalizableType);
 		    return base;
 		}
+	    }
+	    HeadSlots head_slots;
+	    if ( head_alias )
+	    {
+		head_slots.is_type = head_alias->typeparam_is_type;
+		head_slots.is_pack = head_alias->typeparam_is_pack;
+		head_slots.known = true;
+	    }
+	    else if ( head_def )
+	    {
+		head_slots.is_type = head_def->typeparam_is_type;
+		head_slots.is_pack = head_def->typeparam_is_pack;
+		head_slots.known = true;
 	    }
 	    // Argument split on the shared tracker (delimiter-tracking.md).
 	    // The hand-rolled ++depth/--depth walk this replaces treated the
@@ -28073,12 +28314,16 @@ class ClassPatternNormalizer
 			arg.push_back(new TokenGT());
 		    if ( !arg.empty() )
 		    {
-			// normalize_token_type recurses into append_type() and
-			// can REALLOCATE pattern.types — resolve it into a
-			// local BEFORE indexing types[base] (C++11 leaves the
-			// order of the index and the call unspecified).
+			// normalize_token_type / capture_value_arg recurse
+			// into append_type() and can REALLOCATE
+			// pattern.types — resolve into a local BEFORE
+			// indexing types[base] (C++11 leaves the order of
+			// the index and the call unspecified).
+			size_t arg_slot = pattern.types[base].arguments.size();
 			Program::ClassTypePatternId argument =
-			    normalize_token_type(arg);
+			    head_slots.value_slot(arg_slot)
+			    ? capture_value_arg(arg)
+			    : normalize_token_type(arg);
 			pattern.types[base].arguments.push_back(argument);
 		    }
 		    break;
@@ -28088,8 +28333,11 @@ class ClassPatternNormalizer
 		{
 		    if ( !arg.empty() )
 		    {
+			size_t arg_slot = pattern.types[base].arguments.size();
 			Program::ClassTypePatternId argument =
-			    normalize_token_type(arg);
+			    head_slots.value_slot(arg_slot)
+			    ? capture_value_arg(arg)
+			    : normalize_token_type(arg);
 			pattern.types[base].arguments.push_back(argument);
 			arg.clear();
 		    }
@@ -28269,28 +28517,19 @@ class ClassPatternNormalizer
 			: shell->second.defining_namespace + "::"
 			    + shell->second.tname;
 		}
-		Program::ClassParseReason dependency_reason =
-		    dependent_shell_fallback_reason(shell->second);
-		if ( dependency_reason != Program::ClassParseReason::None )
-		{
-		    // Env-gated probe (MADC_CLASS_PATTERN_PROBE=<substr>): WHICH
-		    // shell dependency carried the fallback reason.
-		    static const char *cpp_probe =
-			::getenv("MADC_CLASS_PATTERN_PROBE");
-		    if ( cpp_probe && *cpp_probe
-		      && (td.class_name.find(cpp_probe) != std::string::npos
-			   || !strcmp(cpp_probe, "*")) )
-			// cout, not cerr: the capture window MUTES cerr.
-			std::cout << "[class-pattern-probe] shell-fallback: "
-			    << td.class_name << " dep="
-			    << pattern.types[id].name << " reason="
-			    << (unsigned)dependency_reason << std::endl;
-		    fail(dependency_reason);
-		}
+		// The whole-target non-type-param fence that poisoned here
+		// (DependentValueExpression on any dep whose target had a
+		// non-type param) is gone (slice N1): value slots capture as
+		// ValueArg; an uncapturable argument poisons inside
+		// capture_value_arg / normalize_token_type instead, with its
+		// own probe line.
+		HeadSlots dep_slots = head_slots_for_origin(shell->second);
 		for ( size_t i = 0; i < shell->second.raw_arg_tokens.size(); ++i )
 		{
 		    Program::ClassTypePatternId argument =
-			normalize_token_type(shell->second.raw_arg_tokens[i]);
+			dep_slots.value_slot(i)
+			? capture_value_arg(shell->second.raw_arg_tokens[i])
+			: normalize_token_type(shell->second.raw_arg_tokens[i]);
 		    pattern.types[id].arguments.push_back(argument);
 		}
 	    }
