@@ -72,6 +72,16 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   folded constant — resolve_class_static_member_const_value is the
   read side). Unlocks integral_constant + every trait deriving from it
   IF the initializer folds (the __is_* builtins do).
+  **N3 trap (recon 2026-08-09):** `ClassAggregatePatternNode.static_values`
+  holds capture-time folded `(name,int64)` pairs — binding-INDEPENDENT.
+  An initializer referencing a template param (integral_constant's
+  `value = __v` — the headline target!) would fold against capture
+  placeholders, so a stored constant is wrong per-binding. Those need
+  the initializer TOKEN RUN substituted+folded at serve — reuse N1's
+  `value_arg_tokens` side table + `fold_pattern_value_arg` shape (same
+  never-pre-fold-a-param-referencing-run rule). Capture side feeds from
+  `cls->static_member_const_values` (parser.cpp ~28954); check what the
+  capture parse folds `__v` to before trusting any stored value.
 - **N4 — pack params** (__and_/__or_/tuple): pattern capture/serve for
   variadic class templates. Biggest; separate design pass.
 - **N5 — coverage + default-on.** Pack-time: force-parse + capture the
