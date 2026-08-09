@@ -245,6 +245,39 @@ canonical).
   shape verbatim (script mode, no includes, `value line;`). Batch gate:
   fulltest + libcxxjit; session end: EXE/OBJ/release/packed.
 
+## Slice V2 — value-first `<ns_madc>` (DESIGNED, awaiting owner go)
+
+**Owner design principle (2026-08-09):** the madc:: surface is defined in
+the dialect's OWN intrinsic types — madc::value primary, std:: types only
+as opt-in conveniences. "The madc stuff should use madc::value instead of
+std::string, and only provide string options as conveniences."
+
+Motivation, measured (madc-release, container): a bare script-mode
+printf is 3-4ms; ONE `madc::` token is ~112-120ms — because <ns_madc>'s
+first line is `#include <string>` (its API is typed in std::string), so
+every madc:: script pays the packed <string> thaw (the task #25 grind).
+testsort.mad ≈ 130ms = 4ms compile + ~115ms <string> + ~15ms exec://sort
+round trip.
+
+Plan:
+1. `<ns_madc>` drops `#include <string>`. Primary API in value +
+   const char*: channel value& twins exist (V1); eval family gets
+   host-side value twins (eval_unit(value&, const char*) — some
+   const char* variants already exist); context_set_* keys go
+   const char* (currently `std::string &key` — that alone forces the
+   include). Audit SysInfo/sys the same way.
+2. String overloads become conveniences declared ONLY when <string> is
+   present. Auto-include makes the gate seamless: any script touching a
+   `string` has tripped the `string` identifier and pulled <string>
+   already. Mechanism: the lexer's per-header flags (_include_ns_madc /
+   string-seen) gate a convenience declaration block — details at
+   implementation.
+3. Payoff: madc::-only scripts hit the ~4ms floor (testsort ~130ms →
+   ~20ms); the <string> thaw cost then only applies to scripts that
+   genuinely use strings.
+4. Compat by construction: testexecchannel declares `string line;` →
+   auto-includes <string> → conveniences present.
+
 ## Traps / notes for the next session
 
 - **Process-intrinsic registrations must not serialize.** The
