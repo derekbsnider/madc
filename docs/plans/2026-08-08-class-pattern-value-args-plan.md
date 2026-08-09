@@ -82,6 +82,23 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   never-pre-fold-a-param-referencing-run rule). Capture side feeds from
   `cls->static_member_const_values` (parser.cpp ~28954); check what the
   capture parse folds `__v` to before trusting any stored value.
+  **Resolved (recon 2026-08-09):** no wrong constant is ever stored —
+  `capture_constant_initializer_value` (parser.cpp ~43234) FAILS cleanly
+  on an unbound param reference (`value = __v` at capture), so
+  static_values only ever holds genuinely constant initializers (safe to
+  replay verbatim). The param-dependent member lands ONLY in
+  `static_member_types` (the typed registration at ~43190 runs
+  regardless), and it is the static_members half of the eligibility
+  check that keeps integral_constant refused today. N3 therefore:
+  (a) capture the initializer TOKEN RUN at the ~43244 CAPTURE-FAIL arm
+  (during pattern-capture parses only) — transport: the
+  class_pattern_decl_capture-style side channel or a DataDefCLASS map,
+  for the normalizer to lift at ~28954; (b) serve replays
+  static_member_types (type + storage registration:
+  class_static_member_storage_name / itanium alias, ~43190 shape) and
+  static_values verbatim, and folds captured runs per-binding via
+  fold_pattern_value_arg; (c) eligibility admits static_members whose
+  types resolve and value runs meeting the ValueArg capturability rules.
 - **N4 — pack params** (__and_/__or_/tuple): pattern capture/serve for
   variadic class templates. Biggest; separate design pass.
 - **N5 — coverage + default-on.** Pack-time: force-parse + capture the
