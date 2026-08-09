@@ -4144,6 +4144,15 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
 			if (it->first.find('<') != std::string::npos || !it->second)
 				continue;		// template product / empty: follow-on
+			// The madc:: intrinsic carrier prototypes (value/array ->
+			// ddARRAY, slice V1) are PROCESS state: add_madc_namespace
+			// re-registers them in every Program, packed consumers
+			// included. Serializing them minted a restored file-scope
+			// `typedef int value;` that collided with user variables
+			// named value (packed-lane testasmoutputonly).
+			if (&it->second->definition == &ddARRAY
+			    && strcmp(ns, "madc") == 0)
+				continue;
 			// The ONE cross-ref policy (forest_serialize_type_id): a
 			// btSimple scalar alias (std::size_t — a project-side copy
 			// of unsigned long, the A2 class) resolves to its PINNED
