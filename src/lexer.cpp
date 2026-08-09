@@ -7159,6 +7159,15 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
+    // Own the filename for the Program's lifetime BEFORE anything stores it:
+    // every main-TU token gets `tb->file = fname` below, and a caller-owned
+    // buffer (libmadc's with_temp_source path — a LOCAL std::string) dies at
+    // its scope end, leaving every token/TopDecl file pointer dangling
+    // (valgrind: is_system_header_path reading a freed 25-byte block during
+    // eval's translate_module). tokenize_buffer has interned since v24;
+    // this overload never did.
+    fname = intern_file(fname);
+
     forest_root_file = fname;	// v24: the program's own file — its state
 				// never enters the forest's bind surface
     source.fname(fname);
