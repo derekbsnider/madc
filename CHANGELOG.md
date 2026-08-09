@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- **Value-first `<ns_madc>`** (slice V2): the header no longer includes
+  `<string>` — the primary madc:: API is typed in `madc::value` +
+  `const char*` (value-destination eval twins with `_ctx` siblings,
+  `const char*` context keys, the V1 channel value carriers). The
+  `std::string` overloads — namespace eval/context forms and the
+  channel's string members — are conveniences declared only when
+  `<string>` precedes `<ns_madc>` in the TU (PP-gated on the stdlib's
+  own include guards; auto-include orders them correctly). A madc::-only
+  script no longer pays the `<string>` cost: value-only channel script
+  ~12ms on the dev binary vs ~520ms the moment `<string>` enters.
+  Gates: testvaluensmadceval, testnsmadcautostring, testnsmadcorder.
+- **No-viable method overloads against `value` parameters now diagnose**
+  ([over.match.viable], g++/clang canon): a method call passing a class
+  object where only a `value&` parameter exists used to silently keep
+  the by-name arity pick and compile with the wrong parameter class — a
+  raw `std::string*` passed as `madc::value*` (the readline type
+  confusion). Both the instance and qualified-static arms now error
+  (`no viable overload of 'X' in C for these argument types`). The
+  value intrinsic's conversion surface is closed by construction, which
+  is what makes the miss provable; the GENERAL class-vs-class
+  diagnostic is a recorded follow-up (needs scorer conversion-modeling
+  maturity — enum operator overloads, typedef-ref params, template-ctor
+  channels; iteration ledger in the value-intrinsic plan doc).
+- **Use-after-free fixed in the file-lane tokenizer** (latent since the
+  libmadc embedding lane existed): `Program::tokenize(fname)` stored
+  the CALLER's raw pointer into every main-source token's `file` and
+  into `forest_root_file`; the CLI's argv masked it, but libmadc's
+  `with_temp_source` frees its temp path right after compiling, so a
+  later lazy JIT build walked freed memory (valgrind-confirmed; two
+  layout-dependent libmadc unit asserts). The name is now interned like
+  the buffer lane's, and the parseFunction fallback that stored
+  `source.fname()`'s raw c_str interns too.
+- **Method default arguments work**: findMethodOverload's arity gate
+  admits `[required..total]` args and the selected overload's trailing
+  defaults are filled at the call — previously a defaulted method call
+  survived overload selection only via the silent fallback and then
+  died in c2mir ("too few arguments"). Gates: testovlmiss,
+  testovlmissstatic, testmethoddefaultargs.
+
 ## [v0.74.0] — 2026-08-09
 
 **Reference-binding correctness: a converted argument can no longer

@@ -278,6 +278,85 @@ Plan:
 4. Compat by construction: testexecchannel declares `string line;` →
    auto-includes <string> → conveniences present.
 
+### As implemented (2026-08-09, same session as the owner go)
+
+Mechanism decisions that differ from (or sharpen) the sketch above:
+
+- **The gate is PP-level on the stdlib's own guards** —
+  `#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)` inside
+  `<ns_madc>` — NOT the lexer's per-header flags. Recon findings that
+  forced this: `_include_string` is write-only and never set on the
+  PCH/filesystem lanes (`mark_embedded_include_flag` only fires on the
+  embedded + forest lanes); the stdlib guards by contrast are live in
+  every lane (dev live-parse defines them; the packed forest replays a
+  bound unit's PP-export delta into the live macro tables —
+  lexer.cpp:2304). `ns_madc` itself is in NEITHER the forest pack list
+  (scripts/forest_pack_headers.txt) nor the (empty) PCH set, so it
+  live-tokenizes in every lane and the `#if` evaluates fresh per TU.
+- **Both surfaces in ONE header** — no companion header. The string
+  conveniences (namespace eval/context overloads AND the channel's
+  std::string members) sit in gated blocks. A companion header cannot
+  carry class members (a class body cannot be re-opened), which is why
+  every companion-header variant died on the drawing board.
+- **The order rule**: `<string>` before `<ns_madc>` (a tokenize-order
+  gate — the `#if` evaluates when ns_madc's text tokenizes). Auto-include
+  already orders string-family before ns_* in `preferred_order`
+  (lexer.cpp ~590), so include-free scripts get both surfaces. Explicit
+  includers follow ordinary C++ "include what you use" order. Eight
+  tests updated to the canonical explicit order; the unit-test snippets
+  already used it.
+- **Value twins carry rendered text as string-kind values** (the V1
+  channel-carrier convention). eval_unit does NOT auto-wrap (faithful to
+  the string form — only the typed forms pass a wrapper_return_type).
+  Typed-kind eval results (integer-kind value from an int result) need a
+  new runtime-core entry — deferred, do NOT hack it into the header.
+- **Scope-capture rebind constraint**: every value-first eval overload
+  ships a `_ctx` sibling or the parser's call-site capture rebind has no
+  target (ns_madc.cpp's long-standing rule; the twins were added in the
+  same shape). No ref-returning + void pair may share a signature
+  (return type never disambiguates — the first build failure).
+- **Defect found by the order-rule reducer (fixed in its own commit)**:
+  `reselect_method_overload` kept the by-name arity pick on a PROVEN
+  scored miss in evaluated contexts — `sorter.readline(line)` with a
+  std::string arg compiled against `readline(value&)` passing the raw
+  std::string* (silent type confusion; g++/clang both reject). Fixed by
+  broadening the [over.match.viable] throw beyond unevaluated operands
+  (instance + static arms), which required teaching findMethodOverload's
+  arity gate about DEFAULT ARGUMENTS ([required..total] via
+  required_param_count) — defaulted method calls previously survived
+  only via that silent fallback (and then died in c2mir: the builder
+  never filled them; reselect now fills from the SELECTED overload's
+  param_defaults, TokenCallMethod::user_argc guarding re-ranks). Gates:
+  testovlmiss, testovlmissstatic, testmethoddefaultargs, testnsmadcorder.
+- **The evaluated-context throw is double-gated**: (a) CLASS-OBJECT
+  argument evidence, and (b) `all_rejections_proven` from
+  findMethodOverload — and after four red iterations the proof bar
+  landed on the ONE class whose conversion surface is closed by
+  construction: **a miss is provable only against a `value&`/`value`
+  (ddARRAY) parameter** on a non-template candidate, with arity and
+  cv rejections never counting as proof. The iteration ledger, so the
+  next widening attempt starts where this one stopped:
+  1. unconditional throw → 333 failures (`ios_base::setf(fixed |
+     scientific, …)`: madc types the enum `operator|` result as INTEGER
+     — the bitmask-enum operator overload is not selected in expression
+     typing);
+  2. class-arg evidence → `_M_realloc_insert(iterator, …)` (member
+     template scored as concrete) and libc++ `push_back(const_reference)`
+     (typedef-opaque param);
+  3. + non-template + class-vs-class proof → `fs::path::__compare`
+     (template ctor `path(const _Source&)` is an unmodeled conversion
+     channel) and `__tree` statics (hidden-slot arity compares);
+  4. + no-template-ctor / non-system / plain-aggregate bars →
+     `__tree_node_types::__get_ptr` still fired (instantiation shells
+     lose provenance; some node-types model as unpromoted structs).
+  **Follow-up track (general [over.match.viable] diagnostic)**: select
+  user enum operator overloads in expression typing; model typedef-ref
+  params; carry from_system_header through instantiation; model
+  template-ctor conversion channels. The plain-struct reducer for the
+  general case (R passed to take(Q&): g++ "cannot convert 'R' to 'Q&'",
+  madc warns + miscompiles) lives in this doc's history and must become
+  a test when that track lands.
+
 ## Traps / notes for the next session
 
 - **Process-intrinsic registrations must not serialize.** The
