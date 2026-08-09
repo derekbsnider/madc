@@ -575,7 +575,11 @@ class CirBuilder {
 	// Coerce an argument to an object pointer for a call whose parameter is a
 	// class object (value or reference). A genuine object is passed by address;
 	// any value accepted by a converting ctor is materialized into a temp.
-	node_t object_arg_addr(TokenBase *arg, DataDefCLASS *target);
+	// `nonconst_lref`: the receiving parameter is a NON-CONST lvalue
+	// reference — the materializing tail must refuse a conversion temp
+	// ([dcl.init.ref]p5) instead of silently binding it.
+	node_t object_arg_addr(TokenBase *arg, DataDefCLASS *target,
+			       bool nonconst_lref = false);
 	// Coerce an argument to a class value for a by-value object parameter. A
 	// matching object value is passed as-is; a convertible scalar/pointer is
 	// materialized into a scope-local temporary first.

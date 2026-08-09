@@ -1,0 +1,18 @@
+// A non-const lvalue reference parameter must NOT bind the temporary a
+// user-defined conversion materializes ([dcl.init.ref]p5). g++/clang++
+// reject this call ("cannot bind non-const lvalue reference of type
+// 'std::string&' to an rvalue of type 'std::string'"); madc used to
+// silently construct a hidden string temp, write into it, and leave the
+// caller's buffer untouched (the testsort.mad readline empty-output bug).
+#include <string>
+#include <stdio.h>
+
+void fill(std::string &out)
+{
+    out = "FILLED";
+}
+
+char line[64];
+
+fill(line);
+printf("after fill: [%s]\n", line);

@@ -1,0 +1,9 @@
+// Member-call twin of testnonconstref: madc::channel::readline takes
+// std::string& — passing a char buffer must be a compile error (g++:
+// non-const lvalue ref cannot bind a conversion temporary), not a silent
+// hidden-temp call that leaves the buffer empty.
+madc::channel c("exec://sort");
+c.write("z\n");
+c.close_write();
+char buf[64];
+c.readline(buf);

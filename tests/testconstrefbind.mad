@@ -1,0 +1,29 @@
+// Positive boundary for the non-const-lvalue-reference gate
+// (testnonconstref): every binding here IS legal C++ and must keep
+// compiling — char* -> const string& (conversion temp to CONST ref),
+// lvalue string -> string& (identity), char* -> push_back's overload set
+// (const&/&& both accept the conversion temp).
+#include <string>
+#include <vector>
+#include <stdio.h>
+
+void show(const std::string &s)
+{
+    printf("const-ref sees [%s]\n", s.c_str());
+}
+
+void fill(std::string &out)
+{
+    out = "FILLED";
+}
+
+std::string keep("start");
+
+show("hello");
+fill(keep);
+printf("keep=[%s]\n", keep.c_str());
+std::vector<std::string> v;
+v.push_back("via-udc");
+std::string a("A");
+v.push_back(a);
+printf("v0=[%s] v1=[%s]\n", v[0].c_str(), v[1].c_str());
