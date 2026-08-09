@@ -210,13 +210,13 @@ details.
 
 ## Project status
 
-The current release is **v0.73.0** (2026-08-08) — see the
+The current release is **v0.74.0** (2026-08-09) — see the
 [changelog](CHANGELOG.md) for what each release added. Headline results:
 
-- **1002** integration tests passing, with 0 failures and 0 timeouts —
+- **1005** integration tests passing, with 0 failures and 0 timeouts —
   in the live JIT lane AND in the packed-release lane (the suite run
   against the stripped, forest-packed `bin/madc-release`)
-- **998/0** in the libc++ lane — the full suite passes under both stdlib
+- **1001/0** in the libc++ lane — the full suite passes under both stdlib
   flavors (behavior parity, zero failing tests)
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions

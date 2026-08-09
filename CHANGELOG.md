@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.74.0] — 2026-08-09
+
+**Reference-binding correctness: a converted argument can no longer
+silently bind a non-const `T&` parameter — the `channel::readline(char
+buffer)` empty-output bug becomes a compile error, matching g++/clang++.**
+
 - **Non-const lvalue references no longer bind conversion temporaries**
   ([dcl.init.ref]p5, g++/clang++ canon). Passing a `char` buffer to
   `channel::readline(std::string&)` — or any converted argument to a
