@@ -1013,6 +1013,13 @@ class TokenCallMethod: public TokenMember
 public:
     TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
+    // Number of USER-WRITTEN arguments, set when reselect_method_overload
+    // appends C++ default arguments after selecting the overload — the same
+    // contract as TokenCallFunc::user_argc (a re-rank must ignore appended
+    // defaults: they were copied from ONE overload's declaration and scoring
+    // them would veto the very overload that supplied them).
+    // (size_t)-1 = no defaults appended; every argument is user-written.
+    size_t user_argc = (size_t)-1;
 };
 
 // subscript access: container[index]

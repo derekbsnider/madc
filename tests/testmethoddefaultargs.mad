@@ -1,0 +1,30 @@
+// Default-argument METHOD calls stay viable in overload selection
+// ([over.match.viable]/2): findMethodOverload's arity gate accepts
+// [required..total] visible args via FuncDef::required_param_count.
+// Pre-fix the gate demanded exact arity, the defaulted call scored
+// non-viable, and only the reselect miss-arm's silent fallback kept it
+// compiling — the positive gate for tightening that fallback.
+#include <stdio.h>
+
+struct Calc {
+    int add(int a, int b = 10, int c = 100) { return a + b + c; }
+    // A same-name overload so selection has to actually rank.
+    int add(const char *tag) { printf("tag=%s\n", tag); return -1; }
+};
+
+// The static arm rides parseCallFunc's free-function filling.
+struct SCalc {
+    static int mul(int a, int b = 3) { return a * b; }
+};
+
+int main()
+{
+    Calc k;
+    printf("one=%d\n", k.add(1));
+    printf("two=%d\n", k.add(1, 2));
+    printf("three=%d\n", k.add(1, 2, 3));
+    printf("tagged=%d\n", k.add("hi"));
+    printf("smul=%d\n", SCalc::mul(5));
+    printf("smul2=%d\n", SCalc::mul(5, 4));
+    return 0;
+}

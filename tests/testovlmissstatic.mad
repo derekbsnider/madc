@@ -1,0 +1,17 @@
+// [over.match.viable] gate, static arm — a qualified static call passing a
+// class object where only a `value &` parameter exists is ILL-FORMED.
+// Same proven-miss bar as the instance arm (testovlmiss): ddARRAY's
+// conversion surface is closed by construction.
+#include <string>
+#include <stdio.h>
+
+struct Sink {
+    static bool take(value &v) { printf("take value\n"); return true; }
+};
+
+int main()
+{
+    string line = "hello";
+    Sink::take(line);
+    return 0;
+}

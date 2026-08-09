@@ -16272,13 +16272,33 @@ static int score_retained_member_template_param(
 // the partial-ordering primitives it reuses).
 static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
 
+// The concrete class a parameter DECLARES, seen through the reference
+// representation (DataDefPTR/REF wrapper) when refp; NULL for scalars,
+// enums, plain pointers and typedef-opaque shapes — the shapes whose
+// score verdicts are not proof-grade (see all_rejections_proven).
+static const DataDefSTRUCT *param_concrete_class_for_proof(DataDef *pt, bool refp)
+{
+    if ( !pt )
+	return NULL;
+    if ( refp )
+	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pt) )
+	    pt = pp->base_type;
+    return dynamic_cast<const DataDefSTRUCT *>(pt);
+}
+
+
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes,
-					  int obj_cv)
+					  int obj_cv,
+					  bool *all_rejections_proven)
 {
     Variable *best = NULL;
     int best_score = -1;
     bool any_named = false;
+    // True while every rejected same-name candidate fell to a PROVABLE
+    // verdict (header comment in datadef.h) — the licence for a caller to
+    // turn a total miss into a diagnostic.
+    bool rejections_proven = true;
     // Scan ALL same-name overloads (the registration pushes each type-differing
     // overload into `methods` under the same display name); rank by arg type.
     for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
@@ -16303,6 +16323,13 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		  ? fd->parameters.size() - hidden : 0;
 	bool varargs = fd->is_varargs && pn > 0;
 	size_t fixed = varargs ? pn - 1 : pn;
+	// Default arguments make the method callable with [required..pn]
+	// visible args ([over.match.viable]/2 via FuncDef::required_param_count;
+	// hidden slots are leading and never defaulted, so the subtraction is
+	// safe). The old `pn != argc` gate scored a defaulted call non-viable,
+	// which the reselect miss-arm used to paper over silently.
+	size_t req = fd->required_param_count();
+	size_t req_vis = req >= hidden ? req - hidden : 0;
 	// Env-gated probe (MADC_OVL_PROBE=<name substring>). Placed BEFORE the
 	// arity gate and before the viability `continue`s below, because a probe
 	// downstream of them prints nothing for a REJECTED candidate — and that
@@ -16322,24 +16349,43 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 			fd->template_param_spellings.empty()
 			    ? "-" : fd->template_param_spellings[0].c_str(),
 			argtypes.size(),
-			(int)!((!varargs && pn != argtypes.size())
+			(int)!((!varargs && (argtypes.size() < req_vis
+					  || argtypes.size() > pn))
 			    || (varargs && argtypes.size() < fixed)));
 	}
-	if ( (!varargs && pn != argtypes.size())
+	if ( (!varargs && (argtypes.size() < req_vis || argtypes.size() > pn))
 	  || (varargs && argtypes.size() < fixed) )
+	{
+	    // An arity rejection is NEVER proof: member-template arity is
+	    // elastic (packs, deduction), and hidden-slot conventions
+	    // (__this/__retbuf/__va_args) make static-member arity compares
+	    // untrustworthy (see feedback: hidden param slots break arity
+	    // compares — libc++ __tree::__get_ptr fired falsely on this).
+	    rejections_proven = false;
 	    continue;
+	}
 	// [over.match.funcs]/4: a non-static member's implicit object param
 	// carries the member's cv, and a CONST object argument cannot
 	// initialize a non-const implicit object param ([over.match.viable]).
 	// Dtors stay callable on const objects.
 	if ( obj_cv == 1 && hidden && !fd->is_const_method && name[0] != '~' )
+	{
+	    // Receiver-cv misses stay in the lenient lane: the proven-miss
+	    // diagnostic is scoped to ARGUMENT-type confusion.
+	    rejections_proven = false;
 	    continue;
+	}
 	int total = 0;
 	bool ok = true;
+	// Set when the score failure below is a class-vs-class mismatch —
+	// the one score verdict that is proof-grade (identity, bases and
+	// ctor conversions are modeled).
+	bool fail_proven = false;
 	bool retained_member_template = fd->is_member_template
 	    && fd->template_param_spellings.size() == argtypes.size();
 	std::map<std::string, std::string> template_bindings;
-	for ( size_t i = 0; i < fixed; i++ )
+	// Score only the PROVIDED args — with defaults, argc may be < fixed.
+	for ( size_t i = 0; i < fixed && i < argtypes.size(); i++ )
 	{
 	    int s = -1;
 	    if ( retained_member_template )
@@ -16353,6 +16399,34 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		bool refp = fd->is_ref_param(pi);
 		s = score_arg_to_param(argtypes[i], pt, refp, true, false,
 				       fd->is_nonconst_lref_param(pi));
+		if ( s < 0 )
+		{
+		    // Proof requires the ONE param class whose conversion
+		    // surface is closed by construction: the madc value
+		    // intrinsic (ddARRAY — its ctor/operator set is the
+		    // fixed native madarray family, never user-extended), so
+		    // ANY concretely-typed argument the scorer rejects
+		    // against it is a real [over.match.viable] miss (only a
+		    // value lvalue binds value&). Every wider bar tried
+		    // (class-typed args, plain aggregates, non-system
+		    // classes, no-template-ctor classes) fired falsely
+		    // somewhere in libc++'s template machinery — typedef
+		    // webs, template ctors and instantiation shells hide
+		    // conversion channels the scorer half-models, and
+		    // provenance flags don't survive instantiation. The
+		    // GENERAL diagnostic is the recorded follow-up
+		    // (value-intrinsic plan doc) — it needs scorer
+		    // conversion-modeling maturity first.
+		    const DataDefSTRUCT *pc =
+			param_concrete_class_for_proof(pt, refp);
+		    fail_proven = pc == (const DataDefSTRUCT *)&ddARRAY
+			// Second proof-grade verdict: an explicitly spelled
+			// non-const `T&` param refusing a converted argument
+			// ([dcl.init.ref]p5, the shipped nonconst-lref rule —
+			// positive-evidence only, typedef refs abstain via
+			// is_nonconst_lref_param itself).
+			|| (refp && fd->is_nonconst_lref_param(pi));
+		}
 	    }
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
@@ -16374,7 +16448,10 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		    total += s;
 		}
 		if ( !ok )
+		{
+		    rejections_proven = false;   // template rejection: unproven
 		    continue;
+		}
 	    }
 	    else
 		total += 1;
@@ -16407,6 +16484,14 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 			    ? "-" : fd->template_param_spellings[0].c_str(),
 			argtypes.size(), ats.c_str());
 	    }
+	}
+	if ( !ok )
+	{
+	    // A score rejection proves the miss only for the class-vs-class
+	    // pair (fail_proven) on a non-template candidate.
+	    if ( fd->is_member_template || !fail_proven )
+		rejections_proven = false;
+	    continue;
 	}
 	if ( ok && total > best_score )
 	{
@@ -16447,10 +16532,20 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
     // overloads. Only descend to the base when this class declares none.
     if ( any_named )
     {
+	if ( all_rejections_proven )
+	    *all_rejections_proven = rejections_proven;
 	return NULL;
     }
     if ( base_class )
-	return base_class->findMethodOverload(name, argtypes, obj_cv);
+	return base_class->findMethodOverload(name, argtypes, obj_cv,
+					      all_rejections_proven);
+    // No same-name candidate anywhere in the chain: the by-name pick the
+    // caller holds came through a lookup path this walk cannot see (alias
+    // webs, using-declarations — libc++ __tree_node_types::__get_ptr).
+    // ZERO examined candidates prove NOTHING — never report a vacuous
+    // miss as proven.
+    if ( all_rejections_proven )
+	*all_rejections_proven = false;
     return NULL;
 }
 
@@ -17628,27 +17723,47 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     // the instantiated free `operator<(const string&, const string&)` body
     // `lhs.method(rhs)` scored `rhs` as the pointer representation and selected
     // a pointer overload instead of the class-object overload.
-    for ( TokenBase *p : tc->parameters )
-	at.push_back(p ? operand_value_datadef(p) : NULL);
-    Variable *ov = cls->findMethodOverload(id, at,
-					   implicit_object_constness(recv));
-    TokenCallMethod *selected = tc;
-    if ( !ov && unevaluated_operand_depth > 0 )
+    // Rank only the USER-WRITTEN args (user_argc): a prior reselect may have
+    // appended default arguments from the selected overload's declaration.
+    size_t n_rank = tc->parameters.size();
+    if ( tc->user_argc != (size_t)-1 && tc->user_argc < n_rank )
+	n_rank = tc->user_argc;
+    for ( size_t pi = 0; pi < n_rank; ++pi )
     {
-	// In an unevaluated operand (a decltype/SFINAE probe) a scored MISS —
-	// same-name candidates exist (tc->var is the arity pick) but none is
-	// viable for these argument types — is [over.match.viable] failure:
-	// the call is ill-formed and the probe must SFINAE-reject. Keeping
-	// the arity pick typed `declval<Alloc>().destroy(declval<B*>())` as
-	// well-formed, so __has_destroy folded TRUE for an argument the
-	// member cannot take, and allocator_traits::destroy bound the
-	// __a.destroy arm — the __tree:890 tsubst bail (gate testptrviab).
+	TokenBase *p = tc->parameters[pi];
+	at.push_back(p ? operand_value_datadef(p) : NULL);
+    }
+    bool rejections_proven = true;
+    Variable *ov = cls->findMethodOverload(id, at,
+					   implicit_object_constness(recv),
+					   &rejections_proven);
+    TokenCallMethod *selected = tc;
+    if ( !ov )
+    {
+	// A scored MISS — same-name candidates exist (tc->var is the arity
+	// pick) but none is viable for these argument types — is
+	// [over.match.viable] failure. In an unevaluated operand (a
+	// decltype/SFINAE probe) the throw SFINAE-rejects (keeping the arity
+	// pick typed `declval<Alloc>().destroy(declval<B*>())` as well-formed
+	// folded __has_destroy TRUE for an argument the member cannot take —
+	// the __tree:890 tsubst bail; gate testptrviab). In an EVALUATED
+	// context it is a user diagnostic, but only on a CLASS-OBJECT
+	// argument: the scorer's class-type verdicts (identity, bases, ctor
+	// conversions) are proven, its scalar/enum verdicts are not yet —
+	// `ios_base::fixed | ios_base::scientific` types as integer because
+	// the enum operator| overload is not selected (recorded follow-up in
+	// the value-intrinsic plan doc), and an unconditional throw on that
+	// miss failed 333 suite tests. The silent type-confusion class this
+	// diagnostic exists for — an object passed as an UNRELATED class
+	// (a raw std::string* as value*) — is exactly the class-typed case
+	// (gates testovlmiss, testnsmadcorder).
 	// An unknown argument shape (a NULL DataDef) keeps the lenient
 	// fall-through — reject only what scored as PROVEN non-viable.
 	bool all_args_known = true;
 	for ( const DataDef *a : at )
 	    if ( !a ) { all_args_known = false; break; }
-	if ( all_args_known )
+	if ( all_args_known
+	  && (unevaluated_operand_depth > 0 || rejections_proven) )
 	    Throw(tc) << "no viable overload of '" << id << "' in "
 		      << cls->name << " for these argument types" << flush;
     }
@@ -17656,12 +17771,36 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     {
 	selected = new TokenCallMethod(recv, *ov);
 	selected->parameters = tc->parameters;
+	selected->user_argc = tc->user_argc;
 	selected->explicit_template_args = tc->explicit_template_args;
 	selected->parent_expr = tc->parent_expr;
 	selected->file = tc->file;
 	selected->line = tc->line;
 	selected->column = tc->column;
     }
+    // C++ default arguments: fill omitted TRAILING args from the SELECTED
+    // overload's parameter defaults — the method analogue of parseCallFunc's
+    // free-function filling (param_defaults is index-aligned with parameters,
+    // hidden slots hold NULL; stop at the first param without a default).
+    if ( FuncDef *sfd = dynamic_cast<FuncDef *>(selected->var.type) )
+	if ( !sfd->is_varargs && !sfd->param_defaults.empty() )
+	{
+	    Method *smd = (Method *)selected->var.data;
+	    size_t hidden = (smd && smd->owner_class
+			  && !(selected->var.flags & vfSTATIC)) ? 1 : 0;
+	    for ( size_t pi = hidden + selected->parameters.size();
+		  pi < sfd->parameters.size(); ++pi )
+	    {
+		if ( pi < sfd->param_defaults.size() && sfd->param_defaults[pi] )
+		{
+		    if ( selected->user_argc == (size_t)-1 )
+			selected->user_argc = selected->parameters.size();
+		    selected->parameters.push_back(sfd->param_defaults[pi]);
+		}
+		else
+		    break;
+	    }
+	}
 #if MADC_DEBUG_FNTPL
     {
 	const char *dump = ::getenv("MADC_DEBUG_FNTPL_DUMP");
@@ -18011,7 +18150,19 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	// concrete argument list.
 	if ( !all_args_known )
 	    return tc;
-	Variable *ov = owner->findMethodOverload(member, at);
+	bool rejections_proven = true;
+	Variable *ov = owner->findMethodOverload(member, at, -1,
+						 &rejections_proven);
+	if ( !ov )
+	{
+	    // [over.match.viable]: a fully-typed, concrete argument list no
+	    // same-name candidate can take is ill-formed — the same
+	    // proven-rejection bar as the instance arm
+	    // (reselect_method_overload). Gate: testovlmissstatic.
+	    if ( rejections_proven )
+		Throw(tc) << "no viable overload of '" << member << "' in "
+			  << owner->name << " for these argument types" << flush;
+	}
 	if ( ov && (ov->flags & vfSTATIC) && ov != &tc->var )
 	{
 	    TokenCallFunc *sel = new TokenCallFunc(*ov);
@@ -59121,7 +59272,13 @@ paramdecl:
     }
     else if ( source.line() > 0 )
     {
-	tf->file = source.fname();
+	// INTERN the name: source.fname() is the raw c_str() of Source::_fname,
+	// which reallocates on every source swap (includes, the next
+	// tokenize_buffer) — a TokenFunc storing it raw carries a dangling
+	// file pointer the lazy JIT build later reads (valgrind: invalid read
+	// in is_system_header_path from translate_module's funcs loop; the
+	// libmadc unit suite failed 2 layout-dependent asserts from it).
+	tf->file = intern_file(source.fname());
 	tf->line = source.line();
 	tf->column = 0;
     }
