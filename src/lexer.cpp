@@ -7168,6 +7168,17 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
+    // INTERN the caller's name before anything stores it: every main-source
+    // token's `file` and forest_root_file keep this pointer for the
+    // Program's LIFETIME, while the caller's buffer need not outlive the
+    // call — libmadc's with_temp_source frees its temp path right after
+    // compiling, and the lazy JIT build later walked freed memory
+    // (valgrind: invalid read in is_system_header_path from
+    // translate_module; two layout-dependent libmadc unit asserts). The
+    // buffer lane (tokenize_buffer) already interned; this lane is the
+    // same rule.
+    fname = intern_file(fname);
+
     forest_root_file = fname;	// v24: the program's own file — its state
 				// never enters the forest's bind surface
     source.fname(fname);
