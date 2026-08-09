@@ -210,13 +210,17 @@ details.
 
 ## Project status
 
-The current release is **v0.74.0** (2026-08-09) — see the
-[changelog](CHANGELOG.md) for what each release added. Headline results:
+The current release is **v0.75.0** (2026-08-09) — `madc::value` as a
+first-class script intrinsic (`value`, `var`, zero includes) and the
+value-first `<ns_madc>` surface: madc::-only scripts compile at the
+millisecond floor (owner's exec-channel sort script: 15ms packed, was
+~130ms). See the [changelog](CHANGELOG.md) for what each release added.
+Headline results:
 
-- **1005** integration tests passing, with 0 failures and 0 timeouts —
+- **1017** integration tests passing, with 0 failures and 0 timeouts —
   in the live JIT lane AND in the packed-release lane (the suite run
   against the stripped, forest-packed `bin/madc-release`)
-- **1001/0** in the libc++ lane — the full suite passes under both stdlib
+- **1013/0** in the libc++ lane — the full suite passes under both stdlib
   flavors (behavior parity, zero failing tests)
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions

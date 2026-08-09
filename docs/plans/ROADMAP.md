@@ -1,5 +1,18 @@
 # madc Roadmap
 
+**✅ VALUE INTRINSIC V1+V2 LANDED (2026-08-09, v0.75.0):** `madc::value`
+as a first-class script intrinsic — `value` / `var` / `madc::value`
+spellings of the ONE DataDef, `--std=madc`-gated, typedef-lane resolution
+with C++ name-hiding guards (never lexer tokens) — and the value-first
+`<ns_madc>`: no `#include <string>`, primary API in value + const char*,
+std::string overloads PP-gated on the stdlib's own include guards.
+madc::-only scripts hit the millisecond floor (testsort 15ms packed, was
+~130ms). Shipped with two discovered-defect fixes: proven no-viable
+method-overload diagnosis + method default arguments (34d24c67), and the
+tokenize file-lane use-after-free (091c977a). Plan:
+`docs/plans/2026-08-09-value-intrinsic-plan.md` — follow-up track: the
+general [over.match.viable] diagnostic (scorer conversion modeling).
+
 **✅ TRACK 5C SLICE 1 LANDED (2026-08-08, v0.72.0):** the script-facing
 channel surface — `madc::channel` in `<ns_madc>` (mangled-direct to the
 host class, the first madc-owned class on that spine), `exec://` as a
@@ -31,8 +44,9 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-08 (v0.72.0 — the
-script-facing channel surface; previous: v0.71.0 — FLR
+Master plan linking all workstreams. Updated 2026-08-09 (v0.75.0 — the
+value intrinsic + value-first `<ns_madc>`; previous: v0.72.0 — the
+script-facing channel surface; v0.71.0 — FLR
 random access S1+S2; v0.70.0 — the
 data-channel core; v0.69.0 — the release-lane restoration +
 script-mode completion; v0.68.0 —

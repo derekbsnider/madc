@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [v0.75.0] — 2026-08-09
+
+**madc::value is a first-class script intrinsic — `value`, `var`, and
+`madc::value` with zero includes — and the madc:: API surface is now
+typed in it: value-first `<ns_madc>` drops its `#include <string>`, so
+madc::-only scripts compile at the millisecond floor.**
+
+- **`madc::value` script intrinsic** (slice V1): `value`, `var`, and
+  qualified `madc::value` are spellings of the ONE intrinsic DataDef
+  (canonical `madc::value`; `array` is unchanged — a madc::array IS a
+  madc::value carrying an array). `var` declares the runtime-retaggable
+  dynamic carrier (contrast compile-time `auto`). Bare spellings are
+  `--std=madc`-only (the default dialect); strict C/C++ modes keep them
+  ordinary identifiers, and qualified `madc::value` works everywhere.
+  Resolution rides the typedef lane with C++ name-hiding shadow guards
+  ([basic.scope.hiding]) — deliberately NOT lexer datatype tokens, which
+  would hijack every identifier position (`integral_constant::value`).
+  Scalar surface: native `operator=` family (cstr/int/real/bool/value)
+  and `c_str()` on the intrinsic; channel `readline`/`readall`/`write`
+  value carriers. The owner's testsort shape runs verbatim
+  (tests/testvaluesort.mad). Fixed en route: `array` sat in the static
+  builtin-spelling identity table and corrupted `typedef long array;`
+  template-binding identity under `--std=c++17`
+  (tests/testarraytypedefidentity); the madc:: intrinsic prototypes
+  must never ride the forest typedef sweep (packed restore minted a
+  colliding file-scope `typedef int value;`).
 - **Value-first `<ns_madc>`** (slice V2): the header no longer includes
   `<string>` — the primary madc:: API is typed in `madc::value` +
   `const char*` (value-destination eval twins with `_ctx` siblings,
