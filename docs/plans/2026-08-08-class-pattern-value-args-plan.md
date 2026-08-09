@@ -79,6 +79,38 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   decide defaulting MADC_CLASS_PATTERN_LIVE on (owner call — it
   changes live-lane behavior/perf). Re-measure testsubscript vs g++.
 
+## N1 recon (2026-08-09, verified by reading)
+
+- **Serve side is spelling-driven — confirmed.** TemplateId dependencies
+  rebuild as `type.name + "<" + arg-spellings + ">"` in
+  `basic_class_pattern_type_spelling` (parser.cpp ~5515); every argument
+  slot recurses into the same spelling builder. A ValueArg kind only has
+  to render its value text into that string.
+- **Capture insertion point:** the TemplateId argument loop
+  (parser.cpp ~28060-28105) splits args on DelimDepth and recurses each
+  through `normalize_token_type`, which fails on value expressions
+  (UnnormalizableType). The ValueArg arm goes there, keyed by the head
+  target's `typeparam_is_type[slot]` (same per-slot discipline as
+  slice N2's eligibility).
+- **Fence 2 relaxation:** `dependent_shell_fallback_reason`
+  (parser.cpp ~27876) currently poisons on `has_non_type_template_parameter`
+  of the dependency's target ALONE. After ValueArg lands it must only
+  poison when a value slot failed to capture.
+- **Struct fields reuse — no new fields needed:**
+  `ClassTypePatternKind::ValueArg` appended LAST (existing serialized
+  ordinals stable); `name` = source spelling of the expression
+  (`class_pattern_tokens_spelling` already exists and is used by the
+  fallback arm); a `flags` bit marks "pre-folded at capture" with the
+  value in `dimensions[0]`.
+- **fold_nontype_arg_constant(tokens, int64&)** — the existing fold
+  owner (parser.cpp 4666/4781/4865/4978/7547/7799 call shapes).
+- **OPEN (first implementation question):** the consumer of a concrete
+  dependency spelling — does the dependent-instantiation dispatch accept
+  an argument rendered as an unfolded expression string, or must the
+  ValueArg fold to a literal before rendering? Callers of the concrete
+  spelling: parser.cpp 5556/5609/5615/5627/6070. Resolve by reading the
+  6070 consumer before writing the serve arm.
+
 ## Facts / probes for the next session
 
 - Probes: `MADC_CLASS_PATTERN_PROBE=<substr|*>` (lazy-arm on STDOUT;
