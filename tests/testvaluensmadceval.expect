@@ -1,0 +1,12 @@
+int=42
+bool=1
+double=3.5
+unit=42
+xint=42
+render=42
+exact=echo
+cint=42
+cbool=1
+cdouble=3.0
+who=echo
+crender=42

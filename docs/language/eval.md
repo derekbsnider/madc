@@ -14,6 +14,14 @@ Two families:
 - **Unit eval** — a full program fragment with declarations, control
   flow, and includes: `eval_*` / `eval_unit`
 
+The primary API is **value-first**: sources are `const char *`, results
+land in `madc::value` destinations (string-kind, carrying the rendered
+text), and context keys are `const char *` — so an eval-using script
+never needs `<string>`. The `std::string` overloads shown in some
+examples are *conveniences*, declared only when `<string>` is included
+**before** `<ns_madc>` (auto-include orders them correctly in the
+default dialect; explicit includers write `#include <string>` first).
+
 ## Expression Eval
 
 Typed result forms, plus out-parameter overloads that pick the
@@ -21,6 +29,7 @@ overload from the destination's type:
 
 ```c
 #include <iostream>
+#include <string>
 #include <ns_madc>
 using namespace std;
 
@@ -51,6 +60,7 @@ An evaluated expression sees the caller's locals by name:
 
 ```c
 #include <iostream>
+#include <string>
 #include <ns_madc>
 using namespace std;
 
@@ -80,6 +90,7 @@ define `__madc_eval()` itself, alongside helper functions and
 
 ```c
 #include <iostream>
+#include <string>
 #include <ns_madc>
 using namespace std;
 
@@ -113,6 +124,7 @@ into them:
 
 ```c
 #include <iostream>
+#include <string>
 #include <ns_madc>
 using namespace std;
 

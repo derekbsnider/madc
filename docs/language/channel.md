@@ -42,10 +42,18 @@ madc::channel sorter("exec://sort");
 sorter.write("pear\napple\n");
 sorter.close_write();               // EOF to the child
 
-string line;
+value line;
 while ( sorter.readline(line) )
-    printf("%s\n", line.c_str());   // apple, pear
+    printf("%s\n", line);           // apple, pear
 ```
+
+The **value carriers** are the primary line/payload surface — each line
+lands as a string-kind `value`, and `write()` sends a value's text view,
+so a channel-using script never needs `<string>`. The `std::string`
+overloads (as in the httpget example above) are conveniences, declared
+only when `<string>` is included **before** `<ns_madc>`; the default
+dialect's auto-include orders them correctly, so scripts with no
+explicit includes get both surfaces.
 
 `exec://` semantics (deliberate):
 
@@ -68,9 +76,9 @@ while ( sorter.readline(line) )
 | `ok()` | open succeeded and no error is latched |
 | `last_error()` | the latched error message (`""` when clean) |
 | `read(buf, cap)` | bytes read; `0` at EOF, `-1` on error |
-| `readline(out)` | one line, newline stripped; `false` at EOF |
-| `readall(out)` | drains the rest of the stream |
-| `write(text)` / `write(buf, n)` | C string, `string`, or counted bytes |
+| `readline(out)` | one line, newline stripped; `false` at EOF (`value` or `string` out) |
+| `readall(out)` | drains the rest of the stream (`value` or `string` out) |
+| `write(text)` / `write(buf, n)` | C string, `value`, `string`, or counted bytes |
 | `close_write()` | flush + half-close (EOF to the peer / child) |
 | `close()` | full close; the destructor calls it |
 
