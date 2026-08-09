@@ -118,9 +118,15 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   run (params substituted per binding.type_subst) to that SAME dispatch.
   Parse-once compliant: tokens saved once at capture, resolver re-runs
   over the saved run — the tsubst model, no re-lex/re-parse.
-  Implementation surfaces: (a) ValueArg token-run storage — reuse the
-  pattern token-SPAN mechanism method bodies use (find it before
-  coding); (b) instantiate_pattern_template grows a value-slot transport
+  Implementation surfaces: (a) ValueArg token-run storage — patterns
+  store runs as plain `std::vector<TokenBase *>` (body_tokens,
+  template_param_defaults, param_type_token_runs) which the freeze
+  serializer already persists; give ClassPattern ONE side table
+  `std::vector<std::vector<TokenBase *> > value_arg_tokens` and let the
+  ValueArg node reuse `template_param_index` as its index into it
+  (`name` = source spelling for diagnostics/canonical spelling) — keeps
+  ClassTypePattern lean and the serializer delta to one field;
+  (b) instantiate_pattern_template grows a value-slot transport
   (folded int64 per value slot after substitution); (c) memo hash must
   incorporate value slots (memo_arguments is DataDef*-only today);
   (d) pre-fold constant expressions at capture (flags bit +
