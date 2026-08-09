@@ -99,6 +99,20 @@ non-type], 10× __is_nothrow_swappable_impl, 9× _PCC, 9× pair
   static_values verbatim, and folds captured runs per-binding via
   fold_pattern_value_arg; (c) eligibility admits static_members whose
   types resolve and value runs meeting the ValueArg capturability rules.
+  **N3 requires the value-param substitution extension** (deferred from
+  N1): integral_constant's `value = __v` references its OWN value param,
+  which fold_pattern_value_arg does not substitute (type_subst only —
+  N1's capture refuses such runs). Extend it: an identifier naming
+  `td.typeparams[j]` with `!typeparam_is_type[j]` splices a CLONE of
+  `binding.arg_tokens_by_slot[j]` (use-site value tokens; a defaulted
+  slot may be empty — refuse at serve via the fold-fail path). The
+  capture-side refusal of value-param-referencing runs then lifts for
+  the static-value arm AND ValueArg dependency slots in the same commit
+  (one rule, one owner). Storage: reuse ClassPattern::value_arg_tokens
+  as the single run pool; node-side static_value_runs = (member name,
+  pool index) pairs; capture transport = a Program-side channel shaped
+  like class_pattern_decl_capture (non-NULL only during captures).
+  Freeze: bump payload to v6 at the N3 commit.
 - **N4 — pack params** (__and_/__or_/tuple): pattern capture/serve for
   variadic class templates. Biggest; separate design pass.
 - **N5 — coverage + default-on.** Pack-time: force-parse + capture the
