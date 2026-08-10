@@ -259,6 +259,60 @@ intended message. That staleness was itself a trap worth closing — the tree
 sync pushed the NAS's old MIR drivers over the container's fresh ones, so the
 sync now excludes MIR build output entirely.
 
+### W2 second Mac run — the darwin runtime table was empty
+
+With the ABI fix in, the battery went **2 passed/4 failed → 3 passed/3 failed**:
+the C prelude probe (every `strcpy`/`memcpy`/`memset` on darwin) went from
+SIGBUS to clean.
+
+The next failure had a different cause, visible on the owner's x86-64 Mac as
+`undeclared identifier _ZNSt3__15ctypeIcE2idE` (`std::__1::ctype<char>::id`):
+the hosted-darwin flavor's runtime list shipped **empty**, because
+`link_libs()` linked a probe and then read it with `readelf -d` — and an Apple
+target emits Mach-O, where the runtime is `LC_LOAD_DYLIB`. The probe reported
+nothing, silently, so on a Mac madc had no libc++ to dlopen, every
+mangled-direct C++ static failed its CIR-time dlsym probe, and none of them got
+declared. Fixed by making the probe format-aware (`-dumpmachine` picks the
+container; Mach-O reads through `llvm-otool -L`, subtracting libSystem as the
+ELF arm subtracts libc/libm/ld-). No soname is hardcoded — the toolchain still
+reports its own runtime. The darwin table now carries
+`/usr/lib/libc++.1.dylib`.
+
+Both generated tables also gained their generator as a **prerequisite**: the
+rules existed to "generate if missing" with no prerequisites, so editing the
+capture logic left the old table in place — the same staleness class as the
+stale `c2m`.
+
+### Still open after the second run (precise reducers)
+
+Two darwin-only defects remain, both C++-side and both reduced:
+
+1. **A `__fwd` alias does not survive the darwin bind.** On the Mac,
+   `#include <sstream>; std::ostringstream os;` → "use of undeclared identifier
+   'ostringstream'" (same for `stringstream`), while in the SAME build
+   `std::basic_ostringstream<char>` (the template it aliases) resolves, and
+   `std::string`/`std::wstring` (aliases in `__fwd/string.h`) resolve. Evidence
+   gathered: the forest HAS the entry (`declindex … type ostringstream` in unit
+   22, `__fwd/sstream.h`), the edge `sstream → __fwd/sstream.h` exists, and
+   BOTH units bind (`-v` shows "bound to grove unit 630/22") — including when
+   the fwd header is included explicitly. So bind is fine and the restore of
+   that `type` entry is where it is lost. It does **not** reproduce on Linux
+   under `-stdlib=libc++` (freeze + bind of the same header text resolves), so
+   suspicion falls on the darwin freeze's check-gate drop set (297 defs dropped
+   there) removing what the alias's restore depends on. Next step: instrument
+   the decl restore for a dropped-target alias; add a `forest_bind_gate` case
+   for an alias whose target lives in another unit.
+2. **The `value` intrinsic segfaults on darwin.** `value v = 41; v = v + 1;`
+   warns `using pointer without cast for integer type parameter` at the `v + 1`
+   line and then SIGSEGVs at 0x0. A signature mismatch on a value-runtime
+   helper; the standing trap "intrinsic namespace prototypes must not
+   serialize" makes the darwin forest the first suspect (a frozen prototype the
+   consumer restores with the wrong types).
+
+The AOT probe's failure is not a bug: in-process loading of Mach-O objects is
+genuinely unimplemented ("emit an executable instead"). The battery should
+treat it as a known-unsupported expectation on darwin rather than a FAIL.
+
 ### Battery hardening (post-W1, same session)
 
 The Linux regression battery over the stdint/stddef completion surfaced a

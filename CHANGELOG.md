@@ -19,6 +19,30 @@
   remote_build stage; `scripts/mac_battery.sh` is the Mac-side
   evidence run. ⚠ Artifacts stay owner-private until the W0.5
   provenance-clean C prelude lands.
+- **Fixed (MIR fork): an unprototyped call is not a variadic call.** c2mir
+  described a call whose callee has no parameter information (`T f();`,
+  a C89 implicit declaration) with a VARARG proto carrying zero fixed
+  args. That is invisible on x86-64 SysV, where varargs ride the same
+  registers as fixed args, and fatal on Apple arm64, where every vararg
+  goes on the stack: the callee read registers and found residue —
+  including the callee's own address arriving as argument 0. Such a call
+  now builds its proto from that call site's actual, default-promoted
+  argument types, matching gcc/clang. On darwin this was the whole
+  memory-writing C surface (the SDK rewrites `memcpy`/`memset`/`strcpy`
+  into `__builtin___*_chk`, which madc serves from undeclared runtime
+  helpers), and it would equally break C89 implicit calls there. Gate:
+  `scripts/unprototyped_call_abi_gate.sh` asserts the IR shape (behaviour
+  cannot — both shapes run correctly on x86-64), with a variadic callee
+  in the same TU as its negative control. `MIR_COMMIT` → `e2c0ae95`.
+- **Fixed: darwin flavors report a runtime.** `link_libs()` read a
+  linked probe with `readelf`, so on an Apple target — Mach-O, where the
+  runtime is `LC_LOAD_DYLIB` — it reported nothing and the flavor table
+  shipped empty. A Mac then had no libc++ to dlopen, so every
+  mangled-direct C++ static failed its CIR-time dlsym probe and went
+  undeclared (`_ZNSt3__15ctypeIcE2idE`). The probe is now format-aware
+  via `-dumpmachine` + `llvm-otool -L`; no soname is hardcoded. The
+  generated tables also gained their generator as a prerequisite, so
+  editing the capture logic actually regenerates them.
 - **Fixed: `#include_next` / `__has_include(_next)` embedded-set
   parity** — libc++'s C wrappers can reach the embedded prelude (the
   only C library an Apple target has), and the probes answer what
