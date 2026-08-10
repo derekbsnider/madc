@@ -235,6 +235,16 @@ class CirBuilder {
 	// leaked into the NEXT translated function's body.
 	void flush_pending_stmts(std::vector<node_t> &out);
 	int m_strtmp_counter = 0;
+	// Constructor-coercion cycle guard: (arg token, target class) pairs whose
+	// materializing conversion is IN PROGRESS in object_arg_addr's tail. A
+	// re-entry with an identical pair means ctor selection fell back to the
+	// copy ctor (parameter `target&`) for the same unconverted arg — the
+	// object_arg_addr <-> class_ctor_call recursion; no progress is possible
+	// by construction, so the tail refuses loudly instead of recursing to
+	// stack death (libc++ <fstream> under the freeze drain found the
+	// unguarded shape; the dependent-arg guards above it cover only
+	// template-typed args).
+	std::set<std::pair<TokenBase *, DataDefCLASS *> > m_objaddr_inprogress;
 	// File-scope class-instance globals lower to opaque
 	// struct storage at file scope plus a constructor call that must run before
 	// any user code. C++ does this via static-init; madc injects these ctor

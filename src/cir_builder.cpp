@@ -5979,6 +5979,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 				"cannot bind a non-const lvalue reference "
 				"parameter to a converted temporary", arg);
 	}
+	// Cycle guard (see m_objaddr_inprogress): re-entering this materializing
+	// tail with the identical (arg, target) pair means the ctor selection
+	// below fell back to target's copy ctor for the same unconverted arg —
+	// infinite object_arg_addr <-> class_ctor_call recursion. Refuse loudly.
+	std::pair<TokenBase *, DataDefCLASS *> coerce_key(arg, target);
+	if (arg && !m_objaddr_inprogress.insert(coerce_key).second)
+		return error_node("constructor argument coercion cycle "
+				  "(no viable converting constructor)", arg);
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
@@ -5986,7 +5994,17 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	m_pending_stmts.push_back(var_decl(tmp, arg));
 	std::vector<TokenBase *> ctor_args;
 	if (arg) ctor_args.push_back(arg);
-	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
+	node_t cc;
+	try {
+		cc = class_ctor_call(tmp, target, ctor_args, arg);
+	} catch (...) {
+		// The freeze lane catches translate errors and continues; a key
+		// left behind would refuse a later legitimate coercion.
+		if (arg) m_objaddr_inprogress.erase(coerce_key);
+		throw;
+	}
+	if (arg)
+		m_objaddr_inprogress.erase(coerce_key);
 	if (cc) m_pending_stmts.push_back(cc);
 	return object_addr(name, arg);
 }
