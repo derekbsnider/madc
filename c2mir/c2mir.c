@@ -19723,8 +19723,16 @@ static void gen_mir_protos (c2m_ctx_t c2m_ctx) {
     collect_args_and_func_types (c2m_ctx, func_type, first_arg);
     if (!func_type->dots_p && NL_HEAD (func_type->param_list->u.ops) == NULL) {
       /* Unprototyped callee: the proto describes THIS call's actual args, so it
-         belongs to the call node -- func_type is shared by every call site. */
-      ((struct expr *) call->attr)->call_proto_item = get_mir_proto (c2m_ctx, FALSE);
+         belongs to the call node -- func_type is shared by every call site.
+         It stays a VARARG proto whose FIXED args are those actual args, which
+         is what both ABIs need and what gcc emits. The fixed list is what
+         places the arguments (AArch64-Darwin only banishes to the stack what
+         sits BEYOND arg_vars_num, and nothing does), while the vararg flag is
+         what keeps the SysV x86-64 %al vector-register count -- which that ABI
+         requires for PROTOTYPE-LESS calls precisely because the callee may turn
+         out to be variadic. Declaring it non-vararg dropped %al and broke an
+         undeclared printf (tests/testnegzerostatic.mad, EXE leg). */
+      ((struct expr *) call->attr)->call_proto_item = get_mir_proto (c2m_ctx, TRUE);
     } else {
       func_type->proto_item = get_mir_proto (c2m_ctx, func_type->dots_p);
     }
