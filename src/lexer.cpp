@@ -3845,8 +3845,11 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			if ( resolves_named )
+			if ( resolves_named && !protocol_visit )
 			    should_tokenize_include(include_key);   // record the name
+			// (a protocol visit records nothing: it served ONE
+			// request, not the header — the full content is
+			// still owed to a later plain include)
 			if ( !pch_path.empty() )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
