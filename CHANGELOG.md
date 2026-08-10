@@ -40,6 +40,13 @@
   wrapper chain (26 lane fails), glibc `stdlib.h` under `--std=c17`
   (`wchar_t` unfound on the second protocol visit), and 12
   ns_madc/eval/channel tests.
+- **Fixed: the freeze forms NO unit for a `__need` protocol serving**
+  — the serving (tokens, PP events, AND cir_node records) belongs to
+  the *includer's* unit, keyed by token identity. Previously a husk
+  unit named `stdarg.h` (two 4-token typedef servings) satisfied a
+  consumer's plain `#include <stdarg.h>` by name, losing
+  `va_list`/`va_start` — 25 packed-lane test failures. Gated by the
+  new `forest_bind_gate.sh` case `need` (negative-control verified).
 - **Fixed: a global struct tag now coexists with a flat-registered
   namespace-scoped class** (darwin math.h's SVID `struct exception`
   vs `std::exception`); gate `testglobalnstag`.
