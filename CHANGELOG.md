@@ -29,6 +29,12 @@
   compiled out behind `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` /
   `FEATURE_FOREST_CLASS_STATIC_ALIAS` — see
   `docs/plans/2026-08-07-macos-release-lane-plan.md`.
+- **Fixed (found in passing): a real `-Wformat-truncation`** in the
+  multi-return struct synthesiser — `char mname[16]` for `"v%zu"`, where
+  the widest `size_t` needs 21 bytes. Unreachable in practice (the index
+  is a member position) but the build is warning-clean again. Landed in
+  the commit above rather than its own, because it sits in the same file
+  as the fix that surfaced it; noted here so it is not invisible.
 
 - **macOS release lane (W1/W2/W4, plan 2026-08-07)**: `make -C src
   release-macos` builds BOTH hosted darwin binaries (arm64 + x86-64,
