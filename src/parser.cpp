@@ -38252,6 +38252,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     dds->definition_origin = aggregate_definition_origin(
 	pgm, tag ? tag->file : file);
     std::string tag_store_key = tag ? tag->spelling() : "";
+    // Set when a GLOBAL-scope definition reclaims its bare tag from a
+    // relocated namespace-scoped prior (the mirror arm below): the
+    // pre-registration must then OVERWRITE the bare slot instead of
+    // skipping on "already present".
+    bool global_reclaims_bare = false;
     if ( tag )
     {
 	DataDefCLASS *owner = pgm.nested_aggregate_owner();
@@ -38292,6 +38297,39 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( ns_flat[fi] == ':' )
 			    ns_flat[fi] = '_';
 		    dds->name = ns_flat + "__" + tag->spelling();
+		}
+	    }
+	    // The MIRROR case: a GLOBAL-scope definition whose bare tag is
+	    // held by a flat-registered NAMESPACE-scoped prior (darwin
+	    // math.h's SVID `struct exception` arriving after libc++
+	    // registered std::__1::exception under the bare convenience
+	    // key). [basic.scope.namespace]: both declarations are legal,
+	    // and unqualified lookup at global scope must find ::S — so the
+	    // GLOBAL definition takes the bare key. The prior RELOCATES to
+	    // its canonical scoped key (the registry never erases; set()
+	    // overwrites, and in-namespace references resolve through the
+	    // per-namespace registries, not this flat convenience slot).
+	    // A true global redefinition still throws — its prior's
+	    // canonical spelling IS the bare tag.
+	    if ( tag_store_key == tag->spelling()
+	      && pgm.current_namespace().empty() )
+	    {
+		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+		if ( prior_sd && prior_sd->is_complete
+		  && !prior_sd->canonical_cpp_spelling().empty()
+		  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+		{
+		    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
+		    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(),
+				       prior_sd);
+		    global_reclaims_bare = true;
+		    // Distinct EMITTED identity: two same-tag struct defs in
+		    // one c2mir TU cross-resolve member references. The
+		    // prior's records (arena, methods) already carry its
+		    // name, so the one being defined NOW takes the rename.
+		    dds->name = std::string("__madc_global__") + tag->spelling();
 		}
 	    }
 	}
@@ -38336,7 +38374,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
     bool was_pre_registered = false;
-    if ( tag && pgm.struct_map.find(tag_store_key) == pgm.struct_map.end() )
+    if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
+		 || global_reclaims_bare) )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map.set(tag_store_key, dds);
