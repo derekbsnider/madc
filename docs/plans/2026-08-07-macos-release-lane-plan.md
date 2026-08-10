@@ -229,3 +229,22 @@ Final gate: fulltest **1018/0**, libc++ JIT lane **1014/0** (both +1 for
 the new `testglobalnstag`). The darwin release binaries were then
 **rebuilt** so the containers re-bake the fixed embedded
 stddef/stdarg/stdint — the first tarballs predated these fixes.
+
+The first PACKED run after the protocol fixes then exposed the same
+contract's **producer half** (25 varargs/ns_madc failures): the freeze
+had formed a husk unit named `stdarg.h` out of stdio.h/wchar.h's
+`__need___va_list` servings (8 tokens — two typedef servings), and a
+consumer's plain `#include <stdarg.h>` bound it by name — no `va_list`,
+no `va_start`. Fix at the producer taps (commit `8a89ed9d`): a protocol
+serving belongs to the *includer's* unit — no edge/unit/canon entry
+forms for the served header; PP events route to the includer via a
+`pack_current_unit()` override; served tokens are owned by token
+IDENTITY (`pack_protocol_token_owner` — the buffer mutators keep
+pointers stable where absolute indices break), honored by both freeze
+partitions (the token bucketer and, via the new `cir_unit_owner_fn`
+override, the record partition — the container layer stays
+Program-blind). Gate: `forest_bind_gate.sh` case `need`
+(negative-control verified against the pre-fix binary). The darwin
+forests were dump-verified husk-free (the flattened prelude leaves no
+live `__need` requests at freeze time), so the darwin rebuild after
+this fix carries the corrected lexer rather than repairing artifacts.
