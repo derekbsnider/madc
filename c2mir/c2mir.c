@@ -6307,6 +6307,12 @@ struct expr {
     mir_ldouble d_val;
   } c;
   mir_ullong c_u_hi_val; /* high half for 128-bit integer constants */
+  /* For an N_CALL whose callee type is UNPROTOTYPED (`T f();`): this call
+     site's OWN proto.  Such a call passes its actual, default-promoted
+     arguments, so the proto differs per call site and cannot live on the
+     (shared) func_type.  NULL for every other expression.  Placed here to sit
+     in the padding before the 16-byte-aligned member below. */
+  MIR_item_t call_proto_item;
   mir_ldouble c_im_val; /* imaginary part for complex constants (real part in c.d_val) */
 };
 
@@ -9460,6 +9466,7 @@ static struct expr *create_expr (c2m_ctx_t c2m_ctx, node_t r) {
   e->u.lvalue_node = NULL;
   e->const_p = e->const_addr_p = e->builtin_call_p = FALSE;
   e->c_u_hi_val = 0;
+  e->call_proto_item = NULL;
   e->c_im_val = 0.0L;
   return e;
 }
@@ -15677,7 +15684,37 @@ static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct ty
 }
 #endif
 
-static void collect_args_and_func_types (c2m_ctx_t c2m_ctx, struct func_type *func_type) {
+/* C11 6.5.2.2p6 default argument promotions: the types a call through an
+   UNPROTOTYPED function type actually passes (float -> double, narrow integer
+   -> int/unsigned).  gcc and clang pass such a call by the ORDINARY, NON-
+   variadic convention, so the proto and the pushed argument op must agree on
+   the promoted type.  On a target whose variadic convention differs from the
+   fixed one -- Apple arm64 passes EVERY vararg on the stack -- disagreeing
+   here is an ABI break, not a cosmetic mismatch. */
+static struct type *default_arg_promoted_type (c2m_ctx_t c2m_ctx, struct type *type) {
+  struct type *res;
+
+  if (type->mode == TM_BASIC && type->u.basic_type == TP_FLOAT) {
+    res = create_type (c2m_ctx, NULL);
+    res->mode = TM_BASIC;
+    res->u.basic_type = TP_DOUBLE;
+  } else if (integer_type_p (type)) {
+    struct type prom = integer_promotion (type);
+
+    if (type->mode == TM_BASIC && prom.u.basic_type == type->u.basic_type) return type;
+    res = create_type (c2m_ctx, &prom);
+  } else {
+    return type;
+  }
+  set_type_layout (c2m_ctx, res);
+  return res;
+}
+
+/* first_actual_arg is the first argument node of the CALL being described, or
+   NULL when there is no call site (a function definition).  It is used only for
+   an unprototyped callee, whose proto can only come from the actual args. */
+static void collect_args_and_func_types (c2m_ctx_t c2m_ctx, struct func_type *func_type,
+                                         node_t first_actual_arg) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   node_t declarator, id, first_param, p;
   struct type *param_type;
@@ -15708,6 +15745,18 @@ static void collect_args_and_func_types (c2m_ctx_t c2m_ctx, struct func_type *fu
         name = get_param_name (c2m_ctx, param_type, id->u.s.s);
       }
       target_add_arg_proto (c2m_ctx, name, param_type, &arg_info, proto_info.arg_vars);
+    }
+  } else if (first_param == NULL && !func_type->dots_p) {
+    /* Unprototyped callee (`T f();`): there is no parameter list to describe,
+       so the proto takes THIS call site's actual, default-promoted argument
+       types -- the same call gcc/clang emit.  Describing no args at all and
+       calling the proto variadic instead (what this used to do, to keep the
+       call free of an arg-count check) makes every argument variadic, which on
+       Apple arm64 moves them all to the stack while the callee reads registers. */
+    for (p = first_actual_arg; p != NULL; p = NL_NEXT (p)) {
+      param_type = default_arg_promoted_type (c2m_ctx, ((struct expr *) p->attr)->type);
+      set_type_layout (c2m_ctx, param_type);
+      target_add_arg_proto (c2m_ctx, "p", param_type, &arg_info, proto_info.arg_vars);
     }
   }
 }
@@ -18668,7 +18717,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       func_type = func_expr->type;
       assert (func_type->mode == TM_PTR && func_type->u.ptr_type->mode == TM_FUNC);
       func_type = func_type->u.ptr_type;
-      proto_item = func_type->u.func_type->proto_item;  // ???
+      /* An unprototyped callee's proto is per CALL SITE (its actual args are
+         all it has to go on), so it hangs off the call node; every other proto
+         is a property of the func type and shared by all its call sites. */
+      proto_item = ((struct expr *) r->attr)->call_proto_item;
+      if (proto_item == NULL) proto_item = func_type->u.func_type->proto_item;
       VARR_PUSH (MIR_op_t, call_ops, MIR_new_ref_op (ctx, proto_item));
       op1 = val_gen (c2m_ctx, func);
       if (!jcall_p && op1.mir_op.mode == MIR_OP_REF && func->code == N_ID
@@ -18777,6 +18830,13 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           assert (param->code == N_SPEC_DECL || param->code == N_TYPE);
           decl_spec = get_param_decl_spec (param);
           arg_type = decl_spec->type;
+        } else if (NL_HEAD (param_list->u.ops) == NULL && !func_type->u.func_type->dots_p) {
+          /* Unprototyped callee: the argument is passed as its default-promoted
+             type, which is exactly what this call's proto declares (see
+             collect_args_and_func_types) -- keep the two in step.  A genuine
+             vararg tail (a `...` callee) is deliberately left alone: those args
+             sit beyond the proto, so nothing describes them but the op. */
+          arg_type = default_arg_promoted_type (c2m_ctx, arg_type);
         }
         memory_arg_p = memory_value_type_p (arg_type);
         if (int128_type_p (arg_type)) {
@@ -18993,7 +19053,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     stmtexpr_last_expr = NULL;
     curr_func_def = r;
     curr_call_arg_area_offset = 0;
-    collect_args_and_func_types (c2m_ctx, decl_type->u.func_type);
+    collect_args_and_func_types (c2m_ctx, decl_type->u.func_type, NULL);
     curr_func = ((decl_type->u.func_type->dots_p
                     ? MIR_new_vararg_func_arr
                     : MIR_new_func_arr) (ctx, NL_HEAD (declarator->u.ops)->u.s.s,
@@ -19637,7 +19697,7 @@ static MIR_item_t get_mir_proto (c2m_ctx_t c2m_ctx, int vararg_p) {
 static void gen_mir_protos (c2m_ctx_t c2m_ctx) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  node_t call, func, op1;
+  node_t call, func, op1, arg_list, first_arg;
   struct type *type;
   struct func_type *func_type;
 
@@ -19647,19 +19707,27 @@ static void gen_mir_protos (c2m_ctx_t c2m_ctx) {
     call = VARR_GET (node_t, call_nodes, i);
     assert (call->code == N_CALL);
     op1 = NL_HEAD (call->u.ops);
-    if (op1->code == N_ID && strcmp (op1->u.s.s, JCALL) == 0)
-      func = NL_HEAD (NL_NEXT (op1)->u.ops);
-    else
-      func = NL_HEAD (call->u.ops);
+    arg_list = NL_NEXT (op1);
+    if (op1->code == N_ID && strcmp (op1->u.s.s, JCALL) == 0) {
+      func = NL_HEAD (arg_list->u.ops);
+      first_arg = NL_EL (arg_list->u.ops, 1);
+    } else {
+      func = op1;
+      first_arg = NL_HEAD (arg_list->u.ops);
+    }
     type = ((struct expr *) func->attr)->type;
     assert (type->mode == TM_PTR && type->u.ptr_type->mode == TM_FUNC);
     set_type_layout (c2m_ctx, type);
     func_type = type->u.ptr_type->u.func_type;
     assert (func_type->param_list->code == N_LIST);
-    collect_args_and_func_types (c2m_ctx, func_type);
-    func_type->proto_item
-      = get_mir_proto (c2m_ctx,
-                       func_type->dots_p || NL_HEAD (func_type->param_list->u.ops) == NULL);
+    collect_args_and_func_types (c2m_ctx, func_type, first_arg);
+    if (!func_type->dots_p && NL_HEAD (func_type->param_list->u.ops) == NULL) {
+      /* Unprototyped callee: the proto describes THIS call's actual args, so it
+         belongs to the call node -- func_type is shared by every call site. */
+      ((struct expr *) call->attr)->call_proto_item = get_mir_proto (c2m_ctx, FALSE);
+    } else {
+      func_type->proto_item = get_mir_proto (c2m_ctx, func_type->dots_p);
+    }
   }
   HTAB_DESTROY (MIR_item_t, proto_tab);
 }
