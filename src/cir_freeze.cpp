@@ -1435,6 +1435,30 @@ int CirFrozenForest::find_unit(const std::string &name) const
 	return it == _unit_by_name.end() ? -1 : (int)it->second;
 }
 
+// Path-tail lookup: the unit whose (path-)name ends in "/<incfile>".
+// Filesystem-frozen units are keyed by the PRODUCER's full header path,
+// which a consumer on a different machine can never spell — the hosted
+// darwin binaries carry groves frozen from the build container's libc++
+// tree, and the Mac's resolver has nothing to resolve against (that is
+// the point: run-only Macs have no headers). The include SPELLING is the
+// machine-portable identity: match it against the name's tail component
+// path. First hit in unit order; -1 when none or when the spelling is
+// itself an absolute path.
+int CirFrozenForest::find_unit_path_tail(const std::string &incfile) const
+{
+	if (incfile.empty() || incfile[0] == '/')
+		return -1;
+	const std::string tail = "/" + incfile;
+	for (std::map<std::string, uint32_t>::const_iterator it =
+		     _unit_by_name.begin(); it != _unit_by_name.end(); ++it) {
+		const std::string &nm = it->first;
+		if (nm.size() > tail.size()
+		    && nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0)
+			return (int)it->second;
+	}
+	return -1;
+}
+
 // --- grove payload v2 readers (B4a) ----------------------------------------
 
 bool CirFrozenForest::read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,

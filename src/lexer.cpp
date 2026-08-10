@@ -2264,7 +2264,15 @@ int Program::forest_unit_for_include(const std::string &incfile)
     std::string fp = resolve_include_path(incfile, /*is_system=*/true);
     if ( !fp.empty() && fp != incfile )
 	u = f->find_unit(fp);
-    return u;
+    if ( u >= 0 )
+	return u;
+    // Machine-portable arm: filesystem-frozen units carry the PRODUCER's
+    // full header path, which this machine's resolver may not be able to
+    // spell at all (the hosted darwin groves are frozen from the build
+    // container's libc++ tree; run-only Macs have no headers to resolve
+    // against). The include SPELLING matched against the unit name's tail
+    // components is the identity that travels.
+    return f->find_unit_path_tail(incfile);
 }
 
 // Bind a grove unit and its include closure: post-order DFS over the unit's
@@ -2615,21 +2623,14 @@ bool Program::is_system_header_path(const char *path) const
     return false;
 }
 
-// #include_next <file>: behave like a system #include, but search the
-// path list starting AFTER the directory the current file was found in.
-// Used by libstdc++ wrapper headers (cstdlib -> stdlib.h, cmath -> math.h …)
-// to reach the "real" header of the same name that sits later in the search
-// order. The embedded/curated layer is consulted first by the caller (so
-// curated libc headers still win while libc stays curated); this resolves the
-// filesystem fallback for the non-curated targets.
-std::string Program::resolve_include_next_path(const std::string &incfile)
+// The ordered #include_next walk: the same dirs <> includes search (-I paths
+// first, then the compiler-derived system include paths), with the start
+// position AFTER the directory the current file was found in. ONE builder for
+// both next-walkers — resolve_include_next_path (which filesystem dir serves
+// the name) and embedded_wins_include_next (does the embedded slot come
+// first) — so their notion of "after the current file" cannot diverge.
+size_t Program::include_next_search_list(std::vector<std::string> &search)
 {
-    if ( incfile.empty() || incfile[0] == '/' )
-	return incfile;
-
-    // Ordered system search list — the same dirs <> includes search:
-    // -I paths first, then the compiler-derived system include paths.
-    std::vector<std::string> search;
     for ( size_t i = 0; i < include_paths.size(); ++i )
 	search.push_back(include_paths[i]);
     const char *const *sys_paths = sys_include_paths();
@@ -2641,18 +2642,31 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
     std::string cur = current_source_directory();
     if ( !cur.empty() && cur.back() != '/' )
 	cur += '/';
-    size_t start = 0;
     for ( size_t i = 0; i < search.size(); ++i )
     {
 	std::string d = search[i];
 	if ( !d.empty() && d.back() != '/' )
 	    d += '/';
 	if ( d == cur )
-	{
-	    start = i + 1;
-	    break;
-	}
+	    return i + 1;
     }
+    return 0;
+}
+
+// #include_next <file>: behave like a system #include, but search the
+// path list starting AFTER the directory the current file was found in.
+// Used by libstdc++/libc++ wrapper headers (cstdlib -> stdlib.h, cmath ->
+// math.h …) to reach the "real" header of the same name that sits later in
+// the search order. The embedded set is consulted by the caller through
+// embedded_wins_include_next (position-aware, below); this resolves the
+// filesystem fallback for the non-embedded targets.
+std::string Program::resolve_include_next_path(const std::string &incfile)
+{
+    if ( incfile.empty() || incfile[0] == '/' )
+	return incfile;
+
+    std::vector<std::string> search;
+    size_t start = include_next_search_list(search);
     for ( size_t i = start; i < search.size(); ++i )
     {
 	std::string &dir = search[i];
@@ -2662,6 +2676,44 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
 	    return candidate;
     }
     return incfile; // not found — will fail at open
+}
+
+// Does #include_next <name> resolve to madc's EMBEDDED copy? The embedded
+// set occupies the compiler-resource-dir slot of the search order, and
+// embedded_header_outranked (parser.cpp) asks the ranking question from the
+// TOP of the list — right for a plain include, WRONG for #include_next,
+// whose walk starts after the current file's directory: a directory can
+// only beat the embedded copy if it sits between that position and the
+// slot AND supplies the name. The distinction is what makes the
+// hosted-darwin C++ groves work at all: libc++'s C wrappers (c++/v1's
+// stdio.h, wchar.h, …) #include_next the C library, and on an Apple target
+// the C library IS the embedded prelude — there is nothing on disk after
+// the slot. On glibc hosts the embedded set does not carry libc names (the
+// retired-shims law), so this answers false and the filesystem walk serves
+// /usr/include exactly as before.
+bool Program::embedded_wins_include_next(const std::string &incfile)
+{
+    if ( !find_embedded_header(incfile) || !is_embedded_header_allowed(incfile) )
+	return false;
+    const std::string owned = compiler_owned_include_dir();
+    // No slot recorded (no compiler at build time, or the fallback list is
+    // in use): the embedded set keeps its historical unconditional
+    // precedence — the same answer embedded_header_outranked gives.
+    if ( owned.empty() )
+	return true;
+    std::vector<std::string> search;
+    size_t start = include_next_search_list(search);
+    for ( size_t i = start; i < search.size(); ++i )
+    {
+	if ( search[i] == owned )
+	    return true;    // reached the slot before any real provider
+	std::string candidate = search[i]
+	    + (search[i].empty() || search[i].back() == '/' ? "" : "/") + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return false;   // a real directory between here and the slot wins
+    }
+    return true;   // slot not reached in the list — preserve the old order
 }
 
 // Detect the classic include guard of a header file: the first significant
@@ -3666,9 +3718,13 @@ TokenBase *Program::_getToken()
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
 		    // #include_next is POSITIONAL (continue the path search after
-		    // the current header's dir) — it must never resolve through
-		    // the named PCH/embedded caches, only the filesystem walk.
-		    if ( is_system && !is_include_next )
+		    // the current header's dir) — it resolves through the named
+		    // providers ONLY when the positional walk says the embedded
+		    // set's slot is the next provider (embedded_wins_include_next:
+		    // libc++'s C wrappers reaching the hosted-darwin prelude);
+		    // otherwise it stays a pure filesystem walk.
+		    if ( is_system
+		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
 			if ( !suppress_auto_include_scan
 			  && pending_auto_include_headers.count(incfile) )
@@ -3794,8 +3850,11 @@ TokenBase *Program::_getToken()
 			// dir): the real header wins and we fall through to the
 			// filesystem walk below. Shadowing libc++'s <stddef.h>
 			// here is exactly what makes it #error that its wrapper
-			// was bypassed.
-			if ( embedded && embedded_header_outranked(incfile) )
+			// was bypassed. #include_next skips this from-the-TOP
+			// test — its ranking was already decided positionally
+			// by embedded_wins_include_next at the block gate.
+			if ( embedded && !is_include_next
+			  && embedded_header_outranked(incfile) )
 			{
 			    DBG(std::cout << "#include <" << incfile
 				<< "> outranked by an earlier search dir; using the real header" << std::endl);
@@ -6010,10 +6069,13 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 
     if ( op == "__has_include" || op == "__has_include_next" )
     {
-	// Answered EXACTLY, by the same resolver `#include` itself uses — so
+	// Answered EXACTLY, by the same resolution `#include` itself uses — so
 	// "can I include this?" and "will including it work?" can never
-	// disagree. resolve_include_path returns the bare name when it finds
-	// nothing, so the probe is the file opening, not the string.
+	// disagree. That resolution consults the NAMED providers (embedded
+	// text, baked PCH) before the filesystem, through the same gates; a
+	// file-open probe alone said NO to names madc itself serves (libc++'s
+	// __mbstate_t.h asks __has_include_next(<wchar.h>) and #errors on the
+	// honest-but-wrong answer — the hosted-darwin prelude is on no disk).
 	bool is_system = arg[0] == '<';
 	if ( (is_system && arg.back() != '>')
 	  || (!is_system && (arg[0] != '"' || arg.back() != '"')) )
@@ -6021,6 +6083,20 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	std::string file = arg.substr(1, arg.size() - 2);
 	if ( file.empty() )
 	    return 0;
+	if ( is_system )
+	{
+	    if ( op == "__has_include_next" )
+	    {
+		if ( embedded_wins_include_next(file) )
+		    return 1;
+	    }
+	    else
+	    {
+		std::string pch_path;
+		if ( named_include_provider_exists(*this, file, pch_path) )
+		    return 1;
+	    }
+	}
 	std::string path = op == "__has_include_next"
 			 ? resolve_include_next_path(file)
 			 : resolve_include_path(file, is_system);

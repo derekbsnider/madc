@@ -1425,6 +1425,10 @@ public:
 	// The key is the exact unit_name string — a resolved include path or a bare
 	// compiler-builtin/embedded name (e.g. "stddef.h").
 	int find_unit(const std::string &name) const;
+	// Machine-portable fallback: the unit whose path-name ends in
+	// "/<incfile>" (see the .cpp comment — consumers on machines without
+	// the producer's header tree cannot spell full-path unit names).
+	int find_unit_path_tail(const std::string &incfile) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
 
 	// --- grove payload v2 readers (B4a observability, B4b bind) ---

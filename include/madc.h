@@ -4645,6 +4645,14 @@ public:
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     std::string resolve_include_next_path(const std::string &incfile);
+    // The ordered #include_next walk (search list + start position after the
+    // current file's directory) — ONE builder shared by the path resolver and
+    // the embedded-ranking test so their notion of "after" cannot diverge.
+    size_t include_next_search_list(std::vector<std::string> &search);
+    // Position-aware twin of embedded_header_outranked for #include_next:
+    // from the current position, does the embedded set's resource-dir slot
+    // come before any real directory that supplies <name>?
+    bool embedded_wins_include_next(const std::string &name);
     bool is_system_header_path(const char *path) const;
     // The ONE reader of the generated include tables: every consumer asks these
     // rather than the globals, so selecting a -stdlib= flavor switches the whole
