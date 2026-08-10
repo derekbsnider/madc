@@ -4595,6 +4595,9 @@ public:
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    // A __need_* request macro is live: the next include is a protocol
+    // visit (re-tokenize the protocol text; no once-only/PCH/forest).
+    bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();

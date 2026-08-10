@@ -2248,6 +2248,29 @@ Program::ForestBindStats Program::forest_bind_stats() const
     return s;
 }
 
+// Is a __need request macro live right now? — the protocol by which a
+// C-library header asks the resource-dir stddef.h/stdarg.h for ONE
+// definition via re-inclusion (glibc: `#define __need_wchar_t` +
+// `#include <stddef.h>`). A live request marks the next include as a
+// protocol visit (see the include site): it must re-tokenize the
+// protocol-aware text, never a one-shot cache. The list is exactly the
+// requests madc's OWN embedded protocol headers implement
+// (include/madc/stddef.h's __need arms + stdarg's __va_list) and grows in
+// lockstep with them — only embedded-served names need the predicate;
+// filesystem headers are never name-deduped or PCH-served, so glibc's
+// other __need pairs behave as they always did.
+bool Program::need_protocol_macro_live()
+{
+    static const char *const macros[] = {
+	"__need_size_t", "__need_ptrdiff_t", "__need_wchar_t",
+	"__need_NULL", "__need_wint_t", "__need___va_list",
+    };
+    for ( size_t i = 0; i < sizeof(macros) / sizeof(macros[0]); ++i )
+	if ( define_map.count(macros[i]) )
+	    return true;
+    return false;
+}
+
 // Map a system include spelling to a frozen grove unit index (-1 = miss). Tries
 // the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
 // "stddef.h"), then the resolved filesystem path (real headers name their full
@@ -3726,7 +3749,18 @@ TokenBase *Program::_getToken()
 		    if ( is_system
 		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
-			if ( !suppress_auto_include_scan
+			// glibc's __need protocol: a request macro
+			// (__need_size_t, __need_wchar_t, gcc's
+			// __need___va_list, ...) live at the include marks a
+			// PROTOCOL VISIT — the header is DESIGNED for
+			// repeated inclusion, serving one definition per
+			// pass and clearing the request. Such a visit must
+			// reach the protocol-aware TEXT: no name-level
+			// once-only skip (the first visit served a DIFFERENT
+			// request), no baked PCH, no forest bind (both are
+			// the full-content one-shot).
+			bool protocol_visit = need_protocol_macro_live();
+			if ( !suppress_auto_include_scan && !protocol_visit
 			  && pending_auto_include_headers.count(incfile) )
 			{
 			    // Defer to the auto-include prelude ONLY when a
@@ -3754,7 +3788,8 @@ TokenBase *Program::_getToken()
 			// return WITHOUT re-parsing the header. Non-forest headers
 			// fall through to live parse. Gated on the policy knob
 			// so the default path is one predicted branch.
-			if ( registration_policy.enable_forest_bind )
+			if ( registration_policy.enable_forest_bind
+			  && !protocol_visit )
 			{
 			    int fu = forest_unit_for_include(incfile);
 			    if ( fu >= 0 )
@@ -3794,10 +3829,13 @@ TokenBase *Program::_getToken()
 			// deliberately guard-less header (bits/mathcalls.h, multi-
 			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
-			bool name_already_included = include_already_seen(include_key);
+			bool name_already_included = !protocol_visit
+			    && include_already_seen(include_key);
 			std::string pch_path;
 			bool resolves_named =
 			    named_include_provider_exists(*this, incfile, pch_path);
+			if ( protocol_visit )
+			    pch_path.clear();	// a baked PCH is the full one-shot
 			if ( resolves_named && name_already_included )
 			{
 			    // B4a: the include EDGE exists in the source even when
