@@ -1114,6 +1114,8 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     finalize_pop1_rec(tb);
     tokens.push_back(tb);
+    if ( pack_protocol_unit )	// __need serving: the includer owns this token
+	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
 }
 
@@ -2855,10 +2857,29 @@ const char *Program::pack_current_unit()
 {
     if ( !pack_recording )
 	return NULL;
+    if ( pack_protocol_unit )	// __need serving: every effect (the served
+	return pack_protocol_unit;	// #define/#undef) belongs to the includer
     const char *f = source.fname();
     if ( !f || !*f )
 	return NULL;
     return intern_file(f);
+}
+
+// __need protocol serving window (see the member comment in madc.h). begin()
+// captures the includer as the owner — call it BEFORE the source swap, while
+// the includer is still the current file — and returns the prior owner so
+// nested servings keep the OUTERMOST includer; end() restores it.
+const char *Program::pack_protocol_serving_begin()
+{
+    const char *saved = pack_protocol_unit;
+    if ( pack_recording && !pack_protocol_unit )
+	pack_protocol_unit = pack_current_unit();
+    return saved;
+}
+
+void Program::pack_protocol_serving_end(const char *saved)
+{
+    pack_protocol_unit = saved;
 }
 
 void Program::pack_note_unit(const char *interned_file)
@@ -3738,6 +3759,18 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // glibc's __need protocol: a request macro (__need_size_t,
+		    // __need_wchar_t, gcc's __need___va_list, ...) live at the
+		    // include marks a PROTOCOL VISIT — the header is DESIGNED
+		    // for repeated inclusion, serving one definition per pass
+		    // and clearing the request. Such a visit must reach the
+		    // protocol-aware TEXT: no name-level once-only skip (the
+		    // first visit served a DIFFERENT request), no baked PCH,
+		    // no forest bind (both are the full-content one-shot).
+		    // And the freeze must form NO unit for it — the serving
+		    // belongs to the INCLUDER (pack_protocol_serving_begin;
+		    // both the embedded and the filesystem arm gate on this).
+		    bool protocol_visit = need_protocol_macro_live();
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
 		    // #include_next is POSITIONAL (continue the path search after
@@ -3749,17 +3782,6 @@ TokenBase *Program::_getToken()
 		    if ( is_system
 		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
-			// glibc's __need protocol: a request macro
-			// (__need_size_t, __need_wchar_t, gcc's
-			// __need___va_list, ...) live at the include marks a
-			// PROTOCOL VISIT — the header is DESIGNED for
-			// repeated inclusion, serving one definition per
-			// pass and clearing the request. Such a visit must
-			// reach the protocol-aware TEXT: no name-level
-			// once-only skip (the first visit served a DIFFERENT
-			// request), no baked PCH, no forest bind (both are
-			// the full-content one-shot).
-			bool protocol_visit = need_protocol_macro_live();
 			if ( !suppress_auto_include_scan && !protocol_visit
 			  && pending_auto_include_headers.count(incfile) )
 			{
@@ -3904,7 +3926,14 @@ TokenBase *Program::_getToken()
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
-			    pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
+			    // B4a: a protocol visit forms no unit and no edge —
+			    // the serving belongs to the includer's unit (owner
+			    // captured pre-swap, while the includer is current).
+			    const char *_proto_saved = NULL;
+			    if ( protocol_visit )
+				_proto_saved = pack_protocol_serving_begin();
+			    else
+				pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
 			    Source saved = std::move(source);
 			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 			    suppress_auto_include_scan = true;
@@ -3914,7 +3943,8 @@ TokenBase *Program::_getToken()
 			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 			    TokenBase *itb;
 			    const char *_interned1 = intern_file(incfile);
-			    pack_note_unit(_interned1);
+			    if ( !protocol_visit )
+				pack_note_unit(_interned1);
 			    while ( (itb = getRealToken()) )
 			    {
 				itb->file = _interned1;
@@ -3922,6 +3952,8 @@ TokenBase *Program::_getToken()
 			    }
 			    source = std::move(saved);
 			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+			    if ( protocol_visit )
+				pack_protocol_serving_end(_proto_saved);
 			    // flag headers for deferred registration during parse init
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
@@ -3955,7 +3987,8 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( !should_tokenize_include(full_path) )
 		    {
-			pack_record_edge(full_path);	// B4a: edge survives the dedup skip
+			if ( !protocol_visit )	// a protocol visit records nothing
+			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -3965,7 +3998,16 @@ TokenBase *Program::_getToken()
 		    DBG(std::cout << "#include "
 			<< (is_system ? "<" : "\"") << full_path
 			<< (is_system ? ">" : "\"") << std::endl);
-		    pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
+		    // B4a: a protocol visit (a real gcc/glibc stddef.h reached
+		    // through the filesystem walk, or a stdlib wrapper on the
+		    // way to one — the request macro is still live at ITS
+		    // include site) forms no unit and no edge; the serving
+		    // belongs to the includer's unit (owner captured pre-swap).
+		    const char *_proto_saved = NULL;
+		    if ( protocol_visit )
+			_proto_saved = pack_protocol_serving_begin();
+		    else
+			pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
@@ -3976,6 +4018,8 @@ TokenBase *Program::_getToken()
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
+			if ( protocol_visit )
+			    pack_protocol_serving_end(_proto_saved);
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
@@ -3988,7 +4032,8 @@ TokenBase *Program::_getToken()
 		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
-		    pack_note_unit(_interned2);
+		    if ( !protocol_visit )
+			pack_note_unit(_interned2);
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
@@ -3996,6 +4041,8 @@ TokenBase *Program::_getToken()
 		    }
 		    source = std::move(saved);
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+		    if ( protocol_visit )
+			pack_protocol_serving_end(_proto_saved);
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )

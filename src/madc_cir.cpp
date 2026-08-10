@@ -2278,6 +2278,23 @@ int madc_cir_run_objects(const std::vector<std::string> &paths,
 // deltas, include edges, the branch-macro set, and the canonical unit order.
 // Lives HERE (not in cir_freeze.cpp) so the container layer stays
 // Program-blind (design doc 2026-07-04 §2).
+// Record-partition owner override (cir_unit_owner_fn): a node whose origin
+// token was produced by a __need protocol serving belongs to the INCLUDER's
+// unit (the same ownership the token bucketer below applies), so the freeze
+// forms no husk unit under the served header's name.
+static const char *cir_pack_protocol_owner(void *ctx, uint32_t origin_id)
+{
+    Program *prog = (Program *)ctx;
+    if (!origin_id || prog->pack_protocol_token_owner.empty())
+	return NULL;
+    TokenBase *tb = madc_token_for_slot(origin_id);
+    if (!tb)
+	return NULL;
+    std::map<TokenBase *, const char *>::const_iterator it =
+	prog->pack_protocol_token_owner.find(tb);
+    return it == prog->pack_protocol_token_owner.end() ? NULL : it->second;
+}
+
 static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !prog->pack_recording)
@@ -2305,6 +2322,12 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 1. Bucket the token stream per unit. unit_of/local_of are parallel to
     //    the absolute stream index (== the recorder's cursor positions).
+    //    A __need protocol serving's tokens keep their honest origin file
+    //    (diagnostics) but belong to the INCLUDER's translation (gcc canon) —
+    //    pack_protocol_token_owner redirects them so no husk unit forms under
+    //    the protocol header's name (packed-lane va_start regression).
+    const std::map<TokenBase *, const char *> &proto_owner =
+	prog->pack_protocol_token_owner;
     size_t n = (size_t)(prog->tokens.end() - prog->tokens.begin());
     std::vector<uint32_t> unit_of(n, 0xffffffffu), local_of(n, 0);
     std::vector<std::vector<TokenBase *> > unit_toks;
@@ -2317,7 +2340,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	if (!tb || !tb->file)
 	    continue;	// unbucketable: a range containing it flags SPANS_UNITS
 	uint32_t u;
-	if (tb->file == last_file)
+	std::map<TokenBase *, const char *>::const_iterator po;
+	if (!proto_owner.empty()
+	    && (po = proto_owner.find(tb)) != proto_owner.end())
+	    u = ensure_unit(po->second);	// leave the last_file cache alone
+	else if (tb->file == last_file)
 	    u = last_unit;
 	else {
 	    u = ensure_unit(tb->file);
@@ -5165,7 +5192,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    source_name, nerr);
 	} else if (tree && gate_ok) {
 	    cir_frozen_forest f;
-	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f)) {
+	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f,
+				   cir_pack_protocol_owner, prog)) {
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;

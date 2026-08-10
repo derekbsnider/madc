@@ -205,7 +205,9 @@ static bool cir_fill_record(cir_node *n, cir_frozen_record &r)
 struct cir_freeze_loc { uint32_t unit, idx; };
 
 static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
-				   bool by_unit, cir_frozen_forest &out)
+				   bool by_unit, cir_frozen_forest &out,
+				   cir_unit_owner_fn owner_override = NULL,
+				   void *owner_ctx = NULL)
 {
 	if (!root)
 		return false;
@@ -248,9 +250,21 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 		return true;
 	};
 
+	// A node's unit is its origin token's source file — unless the owner
+	// override reassigns it (a __need protocol serving's nodes belong to
+	// the INCLUDER's unit; see cir_unit_owner_fn in cir_freeze.h).
+	auto node_unit_file = [&](cir_node *n) -> const char * {
+		if (owner_override) {
+			const char *own = owner_override(owner_ctx, n->origin_id);
+			if (own)
+				return own;
+		}
+		return n->src_file();
+	};
+
 	// Pass 1: discovery.
 	{
-		const char *rf = by_unit ? root->src_file() : NULL;
+		const char *rf = by_unit ? node_unit_file(root) : NULL;
 		uint32_t ru = by_unit ? unit_for(rf ? rf : main_unit_name) : 0;
 		if (!place(root, ru))
 			return false;
@@ -268,7 +282,7 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 				continue;
 			uint32_t cu = nu;
 			if (by_unit) {
-				const char *cf = c->src_file();
+				const char *cf = node_unit_file(c);
 				if (cf)
 					cu = unit_for(cf);
 			}
@@ -437,7 +451,8 @@ bool cir_freeze_subtree(cir_node *root, cir_frozen_blob &out)
 }
 
 bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
-		       cir_frozen_forest &out)
+		       cir_frozen_forest &out,
+		       cir_unit_owner_fn owner_override, void *owner_ctx)
 {
 	if (!TokenBase::_active_strpool) {
 		fprintf(stderr, "madc internal: cir forest freeze with no"
@@ -446,7 +461,7 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 	}
 	return cir_freeze_partitioned(root, main_unit_name ? main_unit_name
 							   : "<main>",
-				      true, out);
+				      true, out, owner_override, owner_ctx);
 }
 
 // ---------------------------------------------------------------------------

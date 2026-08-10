@@ -947,11 +947,21 @@ uint32_t madc_forest_defines_hash(const Program *prog);
 // Partition the sub-DAG rooted at `root` into per-unit segments keyed by
 // each node's origin-token source file (origin-less nodes inherit their
 // discovering parent's unit; the root falls back to `main_unit_name`).
+// Optional unit-ownership override for the record partition: given a node's
+// origin token slot-id, return the unit name that OWNS the node, or NULL for
+// the default (the origin token's source file). The bridge layer uses this
+// for __need protocol servings — a serving's nodes belong to the INCLUDER's
+// unit, so no husk unit forms under the served header's name (this layer
+// stays Program-blind; the resolver lives with the caller).
+typedef const char *(*cir_unit_owner_fn)(void *ctx, uint32_t origin_id);
+
 // Interns unit names, string payloads, and position file names into the
 // ACTIVE string pool — serialize that pool into the same container after
 // this call. False on a null root or an out-of-format tree.
 bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
-		       cir_frozen_forest &out);
+		       cir_frozen_forest &out,
+		       cir_unit_owner_fn owner_override = NULL,
+		       void *owner_ctx = NULL);
 
 // Stage a complete forest into a container: directory, string-pool blocks
 // (the active pool, whose ids all forest handles reference), typeid->name

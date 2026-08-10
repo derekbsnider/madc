@@ -3743,6 +3743,21 @@ public:
     std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
     std::vector<PackDeclEntry> pack_decls;	// parse-time top-level decl boundaries
     std::vector<PackDeclFrame> pack_decl_stack;	// open frames (namespace bodies nest)
+    // A __need protocol serving (glibc's stddef/stdarg re-inclusion protocol,
+    // need_protocol_macro_live): tokens and PP events produced while a request
+    // macro is live belong to the INCLUDER's translation (gcc canon — the
+    // header served ONE definition, not its content), so NO unit may form
+    // under the served header's name; a consumer plain-including it would bind
+    // the husk (packed-lane va_start regression, 2026-08-10). Ownership is
+    // keyed by token IDENTITY — buffer reorders (move_tail_to) and rewrites
+    // (assign_ids_from) keep TokenBase pointers stable where absolute indices
+    // are not. pack_protocol_unit is the live owner (the OUTERMOST includer;
+    // liveness is macro-state-based, so a wrapper chain nests consistently);
+    // NULL outside a serving and whenever pack_recording is off.
+    const char *pack_protocol_unit = NULL;
+    std::map<TokenBase *, const char *> pack_protocol_token_owner;
+    const char *pack_protocol_serving_begin();	// returns the prior owner (restore token)
+    void pack_protocol_serving_end(const char *saved);
     // Recording hooks (PP side in lexer.cpp, decl side in parser.cpp; every
     // one gates on pack_recording so default builds pay one predicted branch).
     void pack_note_unit(const char *interned_file);

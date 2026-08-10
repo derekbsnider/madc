@@ -99,6 +99,45 @@ int main() { myint x = 42; myint y = x + 3; printf("y=%d\n", y); return 0; }
 EOF
 run_case typedef "y=45"
 
+# --- case: need (glibc __need protocol vs the freeze) --------------------------
+# The producer's header protocol-includes <stdarg.h> (__need___va_list live,
+# glibc stdio.h's idiom). The serving belongs to the INCLUDER's unit and the
+# freeze must form NO unit named stdarg.h — a husk unit there would satisfy
+# the consumer's PLAIN #include <stdarg.h> by name and lose va_list/va_start
+# (the packed-lane regression of 2026-08-10: 25 varargs/ns_madc tests). The
+# consumer proves both halves: fbgate_need_valist (the serving replayed with
+# the bound includer) AND va_start (the plain include still gets the full
+# header).
+cat > tmp/fbgate_need.h <<'EOF'
+#ifndef FBGATE_NEED_H
+#define FBGATE_NEED_H
+#define __need___va_list
+#include <stdarg.h>
+typedef __gnuc_va_list fbgate_need_valist;
+#endif
+EOF
+cat > tmp/fbgate_need_producer.cpp <<'EOF'
+#include <fbgate_need.h>
+int main() { fbgate_need_valist *p = 0; (void)p; return 0; }
+EOF
+cat > tmp/fbgate_need_consumer.cpp <<'EOF'
+#include <fbgate_need.h>
+#include <stdarg.h>
+#include <cstdio>
+static int sum(int n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    int s = 0;
+    while (n--)
+        s += va_arg(ap, int);
+    va_end(ap);
+    return s;
+}
+int main() { fbgate_need_valist *p = 0; (void)p; printf("s=%d\n", sum(3, 10, 20, 12)); return 0; }
+EOF
+run_case need "s=42"
+
 # --- case: struct (slice 3a) — mixed-type padding + a union + sizeof, so the
 #     reconstruction's layout (addMember/finalize) must match g++ byte-for-byte.
 cat > tmp/fbgate_struct.h <<'EOF'
