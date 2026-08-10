@@ -27,7 +27,19 @@
 - **Fixed: embedded `stdint.h` is the complete C11 7.20 surface**
   (least/fast/intmax + limits + `INTN_C`; `stddef.h` gained its
   promised `max_align_t`) — unblocks `<cstdint>` in BOTH stdlib
-  flavors (the long-standing pack-list blocker).
+  flavors (the long-standing pack-list blocker); resolves 102
+  known PP-parity divergences (dm-oracle baseline 305→205 lines).
+- **Fixed: the embedded resource-dir headers honour the glibc
+  `__need` protocol** (three commits): `stddef.h` serves ONE
+  requested definition per re-inclusion and CLEARS the request
+  macro; `stdarg.h` does the same for `__need___va_list` (a live
+  leak marked every later include a protocol visit); and a live
+  `__need_*` request bypasses — and is never recorded by — the
+  name-level once-only dedup, baked PCH, and forest bind, which are
+  full-content one-shots. Un-broke libc++'s `<cstddef>`→`stddef.h`
+  wrapper chain (26 lane fails), glibc `stdlib.h` under `--std=c17`
+  (`wchar_t` unfound on the second protocol visit), and 12
+  ns_madc/eval/channel tests.
 - **Fixed: a global struct tag now coexists with a flat-registered
   namespace-scoped class** (darwin math.h's SVID `struct exception`
   vs `std::exception`); gate `testglobalnstag`.
