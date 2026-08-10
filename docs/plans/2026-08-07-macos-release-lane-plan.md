@@ -354,27 +354,49 @@ write-through disabled it fails `bind output '' != 'p=1'`).
 static-member one is FIXED (below); the husk one is still compiled out:
 
 - `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` — with the alias name restored, the
-  target is still an empty husk (`Unidentified member 'str'`). A live consumer
-  recovers via `complete_shell_class_type`, which replays from
-  `dependent_shell_origin` — pointer-keyed parse scratch that does not
-  serialize. Completing them at freeze time is the right shape (the producer
-  holds both the origin and, by end of parse, the pattern), but **measured: all
-  96 opaque alias targets in the libc++ grove set report `origin=NO runs=0`**,
-  so the replay has no source.
-  **WHY, located (session #76) — it is one guard, not a missing mechanism.**
-  `instantiate_template_use`'s opaque arm (parser.cpp ~8329) fires for
-  `td.body.empty()` — the template is only DECLARED, which is precisely libc++'s
-  `__fwd/sstream.h` case — and then calls `record_dependent_shell_origin` only
-  `if ( unresolved_surface )`. A bodyless declaration with CONCRETE arguments
-  has `dependent_surface` and `placeholder_arg` both false, so the origin is
-  never recorded for exactly the mints that later need completing. The call site
-  already holds everything the replay wants: `td`, `tname`, `arg_spellings`,
-  `shell_origin_arg_tokens`. Next slice: record the origin for the concrete
-  bodyless-declaration mint too, then let the freeze complete the husk once the
-  real definition has been parsed. No canonical-spelling → (template, args)
-  resolver is needed after all (there is none: searched `from_spelling`,
+  target is still an empty husk (`Unidentified member 'str'`). **Mechanism FOUND
+  and measured (session #76); still compiled out, because it fails WORSE than the
+  husk.**
+  The earlier reading of this ("needs the origin recorded at the mint site, or a
+  canonical-spelling → (template, args) resolver") asked the wrong question. Live
+  does not complete these shells through the origin replay at all — it **demands
+  completeness**, and `record_pending_template_instantiation` (template name +
+  mangled key + arg tokens) is written **unconditionally** by the same opaque arm
+  that records the origin only `if (unresolved_surface)`. That is exactly why all
+  96 targets measured `origin=NO`: `complete_shell_class_type` is the wrong owner
+  for a concrete bodyless-declaration mint. The producer can make the same demand
+  itself at freeze time (`request_template_instantiation_completion`), and by end
+  of parse `<sstream>` has defined what `__fwd/sstream.h` declared. No
+  spelling→type resolver is needed (there is none: searched `from_spelling`,
   `spelling_to_type`, `resolve_type_spelling` — only pch.cpp's builtins-only
   `builtin_datadef_from_spelling`).
+  **Measured with it on**, 894-unit libc++ grove set: 96 opaque alias targets →
+  **18 complete**, 2 stay incomplete, 76 have no pending record at all
+  (`__enable_if_t` SFINAE internals minted by the alias-template arm, which
+  records neither origin nor pending — nobody names them). Cost: freeze 37s →
+  52s, records 1.27M → 1.55M (+22%), container 7.05 → 7.62MB.
+  **Why it stays off:** `std::ostringstream os; os << 7; os.str()` under a bound
+  grove goes from a hard error to **exit 0 with the wrong value** (empty). A
+  silent wrong answer never ships. The completed class is right in every other
+  measurable — `sizeof` 264 == live == clang++, `rdbuf()` non-null,
+  `good()/bad()/fail()` identical to live — yet BOTH `operator<<` overloads (int
+  and `const char*`) and `str()` yield nothing. So construction, layout and
+  stream state all survive the completion, and the remaining defect is one layer
+  below: what a completed class CARRIES. Next step: split the write half from the
+  read half (does the char reach the stringbuf?) and compare the completed class's
+  method BODIES against live.
+  Two unrelated defects surfaced while building discriminators, both filed with
+  reducers and a clang++ oracle: `(long)os.tellp()` → "conversion of non-scalar
+  value requested" (a cast ignores `std::fpos`'s `operator streamoff`), and
+  `(std::stringbuf *)os.rdbuf()` → "'stringbuf' is not a member of namespace
+  'std'" on a LIVE parse — where the plain declaration `std::stringbuf *sb = 0;`
+  works on both flavors, so the alias IS registered and the CAST type-name path
+  is what cannot resolve a qualified `std::` name.
+  The one piece that DID ship from the attempt: `Program::SilentReplay`, the
+  extracted mute-cerr + rewind-diagnostics scope. A freeze-time replay without it
+  turns one libc++ SFINAE probe into a compile error on the producer's TU and
+  aborts the freeze; `complete_shell_class_type` already owned that discipline
+  inline, so both sites now share one implementation.
 - ~~`FEATURE_FOREST_CLASS_STATIC_ALIAS`~~ **FIXED (session #76) — and the fix
   is one layer below where the guard sat.** The owner's x86-64 laptop error,
   `undeclared identifier _ZNSt3__15ctypeIcE2idE` at `locale:378`, also

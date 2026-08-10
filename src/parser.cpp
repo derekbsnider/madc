@@ -5255,16 +5255,10 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     if ( oi == dependent_shell_origin.end()
       || oi->second.raw_arg_tokens.empty() )
 	return NULL;
-    // SILENT SFINAE discipline (the constraint evaluator's pattern): a replay
-    // that cannot re-enter cleanly — a still-dependent shell, a
-    // spelling-matched-spec template — must leave no stderr noise and no
-    // diagnostic behind, because the caller's opaque path is still valid.
-    struct ShellNullBuf : std::streambuf
-    { int overflow(int c) { return c; } };
-    static ShellNullBuf shell_null_buf;
-    size_t sd = diagnostics.size();
-    Program::ErrorInfo se = last_error;
-    std::streambuf *sc = std::cerr.rdbuf(&shell_null_buf);
+    // Speculative: a replay that cannot re-enter cleanly — a still-dependent
+    // shell, a spelling-matched-spec template — must leave the caller exactly
+    // as it was (SilentReplay owns that discipline).
+    SilentReplay sr(*this);
     TokenDataType *real = NULL;
     try
     {
@@ -5272,14 +5266,32 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 					       oi->second.raw_arg_tokens);
     }
     catch ( ... ) { real = NULL; }
-    std::cerr.rdbuf(sc);
     DataDefCLASS *rc = real
 	? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
     if ( rc && !is_incomplete_class_datadef(rc) )
 	return rc;
-    diagnostics.resize(sd);
-    last_error = se;
+    sr.rewind();
     return NULL;
+}
+
+Program::SilentReplay::SilentReplay(Program &p)
+    : pgm(p), saved_diagnostics(p.diagnostics.size()), saved_error(p.last_error)
+{
+    struct ReplayNullBuf : std::streambuf
+    { int overflow(int c) { return c; } };
+    static ReplayNullBuf replay_null_buf;
+    saved_cerr = std::cerr.rdbuf(&replay_null_buf);
+}
+
+Program::SilentReplay::~SilentReplay()
+{
+    std::cerr.rdbuf(saved_cerr);
+}
+
+void Program::SilentReplay::rewind()
+{
+    pgm.diagnostics.resize(saved_diagnostics);
+    pgm.last_error = saved_error;
 }
 
 // Freeze prep: complete every namespaced ALIAS whose target is an opaque
@@ -5289,34 +5301,48 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 // spells all four stream aliases ahead of <sstream>'s definitions) binds the
 // alias to an opaque concrete mint, and nothing in a header-only producer TU
 // ever forces the real instantiation because nothing USES the alias. A LIVE
-// consumer recovers on first use — complete_shell_class_type replays the
-// instantiation from dependent_shell_origin — but that origin is
-// pointer-keyed parse scratch which does not serialize, so a consumer of the
-// FROZEN forest resolved the name to an empty husk instead ("Unidentified
-// member 'str'" for std::ostringstream).
+// consumer recovers on first use, by DEMANDING completeness — the pending
+// instantiation the opaque arm recorded is replayed once the pattern has a body.
+// A consumer of the FROZEN forest cannot: the pending records are parse state,
+// so it resolved the name to an empty husk ("Unidentified member 'str'" for
+// std::ostringstream).
 //
-// The producer holds BOTH halves the consumer lacks: the origin, and — by end
-// of parse — the pattern's definition. So complete it here, before the tree is
-// built. The forest then carries the finished class, which is both what a live
-// consumer computes and what a forest exists to precompute. Replay owns its
-// own silence; a shell that cannot complete stays opaque, exactly as before.
+// The producer can make that demand itself, and by end of parse it has what the
+// demand needs (`<sstream>` has defined what `__fwd/sstream.h` declared). So
+// complete the shells here, before the tree is built: the forest then carries
+// the finished class, which is both what a live consumer computes and what a
+// forest exists to precompute. A shell with no pending record, or one whose
+// pattern never got a body, stays opaque exactly as before.
 void Program::forest_complete_alias_target_shells()
 {
 #ifndef FEATURE_FOREST_ALIAS_SHELL_COMPLETE
-    // OFF: this pass CANNOT work as written, measured — of the 96 opaque alias
-    // targets in the libc++ grove set, every single one reports
-    // `origin=NO runs=0`. complete_shell_class_type replays from
-    // dependent_shell_origin, and these shells were minted by a path that
-    // records none (materialize_opaque_class_type takes only name+spelling;
-    // the origin map is also transactional, so a speculative parse that rolled
-    // back would drop an origin while struct_map keeps the shell). Finishing
-    // this needs one of: record the origin at the real mint site, or resolve
-    // the shell's canonical spelling back to (template, args) — and no
-    // spelling->type resolver exists yet (searched: "from_spelling",
-    // "spelling_to_type", "resolve_type_spelling"; only pch.cpp's
-    // builtin_datadef_from_spelling, which handles builtins only).
-    // Kept compiled-out rather than deleted: the collection walk and the
-    // rebind are right, only the completion source is missing.
+    // OFF — and this time not because the mechanism is missing. It WORKS; the
+    // completed class is simply not usable yet, and it fails WORSE than the husk
+    // it replaces: `os << 7; os.str()` compiles, runs, exits 0 and yields the
+    // WRONG value (empty), where the husk gave a hard "Unidentified member
+    // 'str'". A silent wrong answer never ships, so this stays compiled out
+    // until the completed class answers correctly.
+    //
+    // What the demand below achieves, measured on the 894-unit libc++ grove set
+    // (2026-08-10): of 96 opaque alias targets, 18 COMPLETE and 2 stay
+    // incomplete; the other 76 have no pending record at all — they are
+    // `__enable_if_t` SFINAE internals minted by the ALIAS-TEMPLATE arm
+    // (~line 10152), which records neither an origin nor a pending
+    // instantiation. Nobody names those, so they do not matter. Cost when on:
+    // freeze 37s -> 52s, records 1.27M -> 1.55M (+22%), container 7.05 -> 7.62MB.
+    //
+    // The remaining defect is one layer BELOW this pass, in what a completed
+    // class carries. The completed std::ostringstream is right in every way
+    // measured — sizeof 264 == live == clang++, rdbuf() non-null,
+    // good()/bad()/fail() identical to live — yet BOTH operator<< overloads
+    // (int and const char*) and str() yield nothing. So construction, layout and
+    // stream state all survive; something the class does is a no-op. Next step:
+    // split the write half from the read half (does the char reach the
+    // stringbuf?) and compare the completed class's METHOD BODIES against live.
+    // Two attempts to split it were blocked by unrelated madc gaps, both filed
+    // with reducers: `(long)os.tellp()` (pos_type conversion) and a C-style cast
+    // to a std:: class pointer, `(std::stringbuf *)os.rdbuf()` — clang++ accepts
+    // both.
     return;
 #endif
     // Collect BEFORE completing: a replay instantiates a template, which
@@ -5351,28 +5377,52 @@ void Program::forest_complete_alias_target_shells()
 	    dynamic_cast<DataDefCLASS *>(&it->second->definition);
 	if ( !cdd || !is_incomplete_class_datadef(cdd) )
 	    continue;		// already completed by an earlier replay
-	DataDefCLASS *rc = complete_shell_class_type(cdd);
-	if ( !rc || rc == cdd )
+	// Demand completeness the way a LIVE use site does. The opaque arm that
+	// minted this shell also recorded a PENDING instantiation (template name
+	// + mangled key + arg tokens) — unconditionally, unlike the dependent
+	// shell ORIGIN, which that arm records only for a dependent surface and
+	// therefore never for a concrete bodyless-declaration mint (measured:
+	// origin=NO on all 96 of the libc++ grove set's opaque alias targets;
+	// complete_shell_class_type is simply the wrong owner here). By end of
+	// the producer's parse the pattern HAS a body — `<sstream>` defines what
+	// `__fwd/sstream.h` only declared — so the existing demand entry point
+	// replays the instantiation and completes the shell IN PLACE.
+	bool demanded = false;
 	{
-	    DBG({
-		auto oi = dependent_shell_origin.find(cdd);
-		bool have = oi != dependent_shell_origin.end();
-		std::cout << "forest_complete_alias_target_shells: "
-		    << work[i].first << "::" << work[i].second
-		    << " NOT completed (origin=" << (have ? "yes" : "NO")
-		    << " runs="
-		    << (have ? oi->second.raw_arg_tokens.size() : (size_t)0)
-		    << ")" << std::endl;
-	    });
+	    // Speculative, exactly like the live use-site replay: a libc++
+	    // pattern that cannot instantiate here (an SFINAE probe, a
+	    // still-dependent argument) must not turn into a compile error on
+	    // the PRODUCER's TU and abort the freeze.
+	    SilentReplay sr(*this);
+	    try
+	    {
+		demanded = request_template_instantiation_completion(cdd->name);
+	    }
+	    catch ( ... ) { demanded = false; }
+	    if ( !demanded || is_incomplete_class_datadef(cdd) )
+		sr.rewind();
+	}
+	if ( !demanded )
+	{
+	    DBG(std::cout << "forest_complete_alias_target_shells: "
+		<< work[i].first << "::" << work[i].second
+		<< " no pending instantiation for " << cdd->name << std::endl);
 	    continue;
 	}
-	// The replay registers the completed instantiation under its own
-	// mangled name; the ALIAS still points at the husk, so rebind it —
-	// the same `owner = rc` the live use-site does.
-	it->second = new TokenDataType(work[i].second.c_str(), *rc);
+	// Completion normally lands IN PLACE (the real instantiation reuses the
+	// registered shell), so the alias needs no rebind. Re-read the flat entry
+	// anyway: if the replay registered a different object under the mangled
+	// key, the alias would still name the husk.
+	flat_datatype_map_iter done = datatype_map.find(cdd->name);
+	DataDefCLASS *rc = done != datatype_map.end()
+	    ? dynamic_cast<DataDefCLASS *>(&(*done)->definition) : NULL;
+	if ( rc && rc != cdd )
+	    it->second = new TokenDataType(work[i].second.c_str(), *rc);
 	DBG(std::cout << "forest_complete_alias_target_shells: "
 	    << work[i].first << "::" << work[i].second << " -> "
-	    << rc->name << std::endl);
+	    << (rc ? rc->name : cdd->name)
+	    << (is_incomplete_class_datadef(rc ? rc : cdd)
+		? " STILL INCOMPLETE" : " completed") << std::endl);
     }
 }
 

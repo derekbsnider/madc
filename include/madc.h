@@ -5393,6 +5393,24 @@ public:
     // diagnostics rewound, so a replay that cannot re-enter cleanly leaves the
     // caller exactly as it was. Returns NULL when the shell stays opaque.
     DataDefCLASS *complete_shell_class_type(DataDefCLASS *cls);
+    // THE silent-replay discipline (the constraint evaluator's pattern), as a
+    // scope: a SPECULATIVE instantiation that cannot re-enter cleanly must
+    // leave no stderr noise and no diagnostic behind, because the caller's
+    // opaque path is still valid. Construct to mute cerr + snapshot the
+    // diagnostic state, call rewind() when the replay did not achieve its goal,
+    // destruct to unmute. Every speculative-instantiation site shares this one
+    // implementation — a hand-rolled copy is how a freeze-time replay turns a
+    // library's SFINAE probe into a producer compile error.
+    struct SilentReplay
+    {
+	Program &pgm;
+	size_t saved_diagnostics;
+	ErrorInfo saved_error;
+	std::streambuf *saved_cerr;
+	explicit SilentReplay(Program &p);
+	~SilentReplay();
+	void rewind();
+    };
     // Freeze prep (called before the tree build): complete namespaced aliases
     // whose target is still an opaque forward tag, so the container carries the
     // finished class instead of a husk a consumer cannot complete.

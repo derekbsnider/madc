@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **One owner for speculative replay** (`Program::SilentReplay`): muting
+  `cerr` and rewinding the diagnostic state around a speculative
+  instantiation was inline in `complete_shell_class_type`; it is now a
+  scope both replay sites share. A freeze-time replay needs it more than
+  the live one — without it a single libc++ SFINAE probe that will not
+  instantiate becomes a compile error on the *producer's* TU and aborts
+  the whole freeze.
+- **Located (not yet shipped): why a frozen alias target stays an empty
+  husk.** The blocker was recorded as "needs the shell origin, or a
+  canonical-spelling → (template, args) resolver that does not exist".
+  Both were the wrong question: live never completes these shells from
+  the origin — it *demands* completeness, and the pending-instantiation
+  record (template + mangled key + arg tokens) is written
+  **unconditionally** by the same opaque arm that records the origin only
+  for a dependent surface. That is why all 96 targets measured
+  `origin=NO`. Making the producer issue the same demand at freeze time
+  completes **18 of 96** (the other 76 are `__enable_if_t` internals
+  nobody names) at a cost of freeze 37s → 52s and +22% records — but it
+  turns `os << 7; os.str()` from a hard "Unidentified member 'str'" into
+  **exit 0 with an empty string**, so it stays behind
+  `FEATURE_FOREST_ALIAS_SHELL_COMPLETE`. The guard now carries the
+  mechanism, the numbers, and the one open question (the completed class
+  matches live on `sizeof`, `rdbuf()`, and `good()/bad()/fail()`, yet
+  every member call is a no-op — so the defect is in what a *completed*
+  class carries, one layer below that pass).
 - **Fixed: a file-scope `static` CLASS object declared as `static int`.**
   The variable declarator hand-rolled its type-spec derivation once per
   storage class, and the `static` copy tested `is_struct()` — btStruct
