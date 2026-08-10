@@ -811,12 +811,15 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 # Host system include search paths, captured from the configured compiler.
 # Host-specific + gitignored, so generate it if missing (a fresh checkout has
 # none); `make clean` removes it to force a refresh when the toolchain changes.
-sys_include_paths.cpp:
+# The generator is a PREREQUISITE, not just the recipe: without it an edit to
+# the capture logic left the existing table in place, so the build kept serving
+# a table the current generator would never have produced.
+sys_include_paths.cpp: ../scripts/gen_sys_includes.sh
 	CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh
 
 # Host predefined compiler macros, captured from the configured compiler.
 # Same host-specific/gitignored/regenerate-if-missing treatment as above.
-predefined_macros.cpp:
+predefined_macros.cpp: ../scripts/gen_predefined_macros.sh
 	CXX="$(HOSTTAB_CXX)" ../scripts/gen_predefined_macros.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)

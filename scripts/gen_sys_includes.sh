@@ -88,15 +88,36 @@ detect_flavor() {
 # names a different runtime reports it here. Empty on probe failure (no
 # linkable runtime, no readelf): the emitter then falls back.
 link_libs() {
-    command -v readelf >/dev/null 2>&1 || return 0
     local tmp
     tmp=$(mktemp) || return 0
-    if echo 'int main(){return 0;}' \
-        | "$@" -Wl,--no-as-needed -x c++ - -o "$tmp" 2>/dev/null; then
-        readelf -d "$tmp" 2>/dev/null \
-            | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p' \
-            | grep -v -e '^libc\.' -e '^libm\.' -e '^ld-'
-    fi
+    # Which container the probe will produce decides how to read it back. An
+    # Apple target emits Mach-O, where the runtime is recorded as LC_LOAD_DYLIB
+    # and readelf reports nothing at all — that silence used to leave the whole
+    # darwin flavor with NO runtime, so on a Mac madc had no libc++ to dlopen
+    # and every mangled-direct C++ static (std::__1::ctype<char>::id, cout, …)
+    # failed its CIR-time dlsym probe and went undeclared.
+    case "$("$@" -dumpmachine 2>/dev/null)" in
+        *apple*|*darwin*)
+            # ld64/lld, not ELF: --no-as-needed does not exist there, and the
+            # platform base to subtract is libSystem (libc/libm/loader in one).
+            if echo 'int main(){return 0;}' \
+                | "$@" -fuse-ld=lld -x c++ - -o "$tmp" 2>/dev/null; then
+                { llvm-otool-18 -L "$tmp" 2>/dev/null \
+                  || otool -L "$tmp" 2>/dev/null; } \
+                    | sed -n 's/^[[:space:]]*\([^[:space:]]*dylib\).*/\1/p' \
+                    | grep -v -e 'libSystem'
+            fi
+            ;;
+        *)
+            if command -v readelf >/dev/null 2>&1 \
+               && echo 'int main(){return 0;}' \
+                  | "$@" -Wl,--no-as-needed -x c++ - -o "$tmp" 2>/dev/null; then
+                readelf -d "$tmp" 2>/dev/null \
+                    | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p' \
+                    | grep -v -e '^libc\.' -e '^libm\.' -e '^ld-'
+            fi
+            ;;
+    esac
     rm -f "$tmp"
 }
 
