@@ -496,6 +496,57 @@ int main()
 EOF
 run_case declonlymt "r=1 v=2"
 
+# --- case: fwdalias — an ALIAS to a specialization of a template that is only
+#     DECLARED at the point of the alias. libc++'s __fwd/sstream.h + __fwd/
+#     fstream.h shape in miniature: all four stream aliases are spelled ahead
+#     of the definitions in <sstream>, and a header-only producer never USES
+#     them, so the alias binds to an opaque concrete mint that nothing ever
+#     completes. Two independent defects met here, and each one alone loses the
+#     name for every consumer of the container:
+#       1. the mint had no arena record (no completion hook -> no project
+#          type-id -> outside the freeze sweep's domain), so the namespaced
+#          alias walk skipped the alias entirely while the decl INDEX still
+#          listed it -> "use of undeclared identifier 'ostringstream'";
+#       2. the husk cannot complete on the consumer side (the replay reads
+#          dependent_shell_origin, pointer-keyed parse scratch that does not
+#          serialize) -> "Unidentified member 'str'".
+#     Live parse of the same header resolves both, which is what made this a
+#     bind-only defect. It reached a SHIPPED product on darwin, whose grove set
+#     is the only one frozen from libc++.
+#     This case gates (1) ONLY: it uses the alias where an INCOMPLETE type is
+#     legal (a pointer), which is exactly what the alias declaration itself
+#     promises. Completing the husk is defect (2), still open — when it lands,
+#     tighten this consumer to touch a member and re-baseline the expectation.
+cat > tmp/fbgate_fwdalias.h <<'EOF'
+#ifndef FBGATE_FWDALIAS_H
+#define FBGATE_FWDALIAS_H
+namespace fbg {
+template <typename T, typename U = int> class fbg_holder;	/* declaration only */
+using fbg_alias = fbg_holder<char>;				/* -> opaque mint */
+template <typename T, typename U> class fbg_holder {		/* definition later */
+public:
+    U v;
+    U get() const { return v; }
+};
+}
+#endif
+EOF
+cat > tmp/fbgate_fwdalias_producer.cpp <<'EOF'
+#include <fbgate_fwdalias.h>
+int main() { return 0; }		/* deliberately never uses fbg_alias */
+EOF
+cat > tmp/fbgate_fwdalias_consumer.cpp <<'EOF'
+#include <fbgate_fwdalias.h>
+#include <cstdio>
+int main()
+{
+    fbg::fbg_alias *p = 0;		/* the NAME must resolve */
+    printf("p=%d\n", p == 0 ? 1 : 0);
+    return 0;
+}
+EOF
+run_case fwdalias "p=1"
+
 # --- case: flavorgate (v34: the stdlib FLAVOR is producer-config identity) ---
 # A container frozen under the build's default flavor (libstdc++) must NOT
 # bind into a -stdlib=libc++ compile — the corpus carries the WRONG stdlib's

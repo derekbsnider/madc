@@ -302,6 +302,93 @@ Two darwin-only defects remain, both C++-side and both reduced:
    there) removing what the alias's restore depends on. Next step: instrument
    the decl restore for a dropped-target alias; add a `forest_bind_gate` case
    for an alias whose target lives in another unit.
+
+   **RESOLVED / SUPERSEDED (session #75) — read the section below instead.**
+   Almost every inference in the paragraph above turned out wrong: it is not
+   darwin-only, it is not a restore bug, and the check-gate drop set is not
+   involved. "The forest HAS the entry" was read off the **decl index**, which
+   is a different structure from the **type graph** — the index listed
+   `ostringstream` while the arena held no record for it at all.
+
+### The real defect: libc++-flavor freeze, not darwin (session #75)
+
+**Scope correction.** This is a **stdlib-flavor** defect in the freeze, fully
+reproducible on Linux x86-64: freeze a libc++ grove set with
+`bin/madc -stdlib=libc++ --freeze-append=`, bind it, and `std::ostringstream`
+is gone — while a **live** parse of the same headers resolves it. Darwin was
+the only place it showed because darwin's grove set is the only **shipped**
+forest frozen from libc++ (the Linux forest packs libstdc++). Nothing about
+Mach-O, code signing, or the cross-freeze is involved. Everything below was
+diagnosed and gated container-side with no Mac in the loop.
+
+Losses are **per-unit and complete**: every alias in `__fwd/sstream.h`
+(`stringbuf`, `istringstream`, `ostringstream`, `stringstream`) and
+`__fwd/fstream.h` (`ifstream`, `ofstream`) is lost; every alias in
+`__fwd/string.h`, `__fwd/string_view.h`, `__fwd/streambuf.h`,
+`__fwd/ostream.h`, `__fwd/istream.h` survives. Neither the `using`-vs-`typedef`
+spelling, the template's parameter count, nor the `_LIBCPP_PREFERRED_NAME`
+re-declaration tail discriminates them — all three were checked and refuted
+against the surviving aliases.
+
+**Root cause (fixed).** `using ostringstream = basic_ostringstream<char>;` in
+`__fwd/sstream.h` names a template that is only *declared* at that point, so
+`instantiate_template_use` misses and madc mints a **concrete opaque forward
+tag** instead. That tag is MINTED, never parsed to a `}`, so it has no
+completion hook — therefore no project type-id, therefore invisible to
+`cir_forest_arena_refresh`, whose sweep walks the project *table*. The
+namespaced-alias walk in `cir_forest_arena_complete` then minted the id itself,
+**after** the arena snapshot (`f.arena = prog->forest_arena`), found no record
+at that slot, and silently skipped the alias — leaving the name in the decl
+index and absent from the type graph. The tell-tale was the target tids:
+16794105–16794110, contiguous in map-iteration order, far above every
+surviving alias's.
+
+The fix is the missing arena write-through at the one funnel every opaque mint
+passes through (`Program::stamp_opaque_mint_context`), which is also where the
+concrete-vs-placeholder verdict is made. Pattern-context placeholders are
+unaffected — `forest_arena_record_aggregate`'s own kill arm still drops them.
+Gate: `forest_bind_gate` case **`fwdalias`** (negative-controlled: with the
+write-through disabled it fails `bind output '' != 'p=1'`).
+
+**Two further layers, diagnosed and compiled out behind feature guards.**
+Both are real, both are one level deeper than the alias record, and neither is
+safe to ship yet:
+
+- `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` — with the alias name restored, the
+  target is still an empty husk (`Unidentified member 'str'`). A live consumer
+  recovers via `complete_shell_class_type`, which replays from
+  `dependent_shell_origin` — pointer-keyed parse scratch that does not
+  serialize. Completing them at freeze time is the right shape (the producer
+  holds both the origin and, by end of parse, the pattern), but **measured: all
+  96 opaque alias targets in the libc++ grove set report `origin=NO runs=0`**,
+  so the replay has no source. Finishing needs either the origin recorded at
+  the real mint site, or a canonical-spelling → (template, args) resolver;
+  no spelling→type resolver exists today (searched `from_spelling`,
+  `spelling_to_type`, `resolve_type_spelling` — only pch.cpp's
+  `builtin_datadef_from_spelling`, builtins only).
+- `FEATURE_FOREST_CLASS_STATIC_ALIAS` — the owner's x86-64 laptop error,
+  `undeclared identifier _ZNSt3__15ctypeIcE2idE` at `locale:378`, also
+  reproduces on Linux under a libc++ forest bind. Live creates a static data
+  member's storage Variable **while parsing the class body** (vfEXTERN + the
+  library's Itanium `storage_alias_name`); a bound class never parses that
+  body. What the generic extern-ref restore does rebuild it names wrongly —
+  `namespace_cpp_variable_symbol` over the FLAT key mangles `Tag__member` as
+  ONE identifier component (`_ZSt14ctype_char__id`), which no library exports,
+  so the emitter's dlsym gate declined it. (`class_struct_def` defends against
+  that malformed name rather than fixing the derivation.) Correcting it with
+  `class_static_member_itanium_symbol` works — 35 corrections, all flat-key →
+  real Itanium symbol, and the undeclared-identifier error disappears — but it
+  uncovers a **pre-existing duplicate declaration**: the CIR tree carries both
+  `extern struct locale__id <sym>` (node 19649) and a late implicit
+  `extern int <sym>` synthesized beside libc's implicit fns (node 104750), so
+  the error becomes `incompatible types of … declarations`. While the alias
+  stayed malformed the two names never met. Landing the derivation fix without
+  that dedup only trades one hard error for another. Also note the ordering
+  constraint discovered here: the correction must run **after** the
+  `forest_pending_globals` loop (the Variable does not exist before it), and
+  availability cannot be tested at flush time at all — the flavor runtime is
+  not dlopened until the tree build, so dlsym answers "no" for every real
+  libc++ export.
 2. **The `value` intrinsic segfaults on darwin.** `value v = 41; v = v + 1;`
    warns `using pointer without cast for integer type parameter` at the `v + 1`
    line and then SIGSEGVs at 0x0. A signature mismatch on a value-runtime

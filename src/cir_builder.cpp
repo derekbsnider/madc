@@ -359,7 +359,14 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 	return call_emit_symbol(v, fd);
 }
 
-static bool external_symbol_available(const std::string &sym)
+// The loaded-libraries symbol probe — the same dlsym the MIR import resolver
+// uses. Non-static because the parser's forest restore shares it: rebuilding a
+// bound class's static-member storage must bind ONLY to symbols a library
+// really exports, which is the identical question this answers here.
+// Declared in madc.h; keep the definition in THIS translation unit —
+// symbol_is_host_implemented() below takes its address as the host-object
+// anchor (task #69).
+bool external_symbol_available(const std::string &sym)
 {
 	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
 }

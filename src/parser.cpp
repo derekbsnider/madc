@@ -5282,6 +5282,100 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     return NULL;
 }
 
+// Freeze prep: complete every namespaced ALIAS whose target is an opaque
+// forward tag.
+//
+// `using X = T<A>;` written while T is only DECLARED (libc++'s __fwd/sstream.h
+// spells all four stream aliases ahead of <sstream>'s definitions) binds the
+// alias to an opaque concrete mint, and nothing in a header-only producer TU
+// ever forces the real instantiation because nothing USES the alias. A LIVE
+// consumer recovers on first use — complete_shell_class_type replays the
+// instantiation from dependent_shell_origin — but that origin is
+// pointer-keyed parse scratch which does not serialize, so a consumer of the
+// FROZEN forest resolved the name to an empty husk instead ("Unidentified
+// member 'str'" for std::ostringstream).
+//
+// The producer holds BOTH halves the consumer lacks: the origin, and — by end
+// of parse — the pattern's definition. So complete it here, before the tree is
+// built. The forest then carries the finished class, which is both what a live
+// consumer computes and what a forest exists to precompute. Replay owns its
+// own silence; a shell that cannot complete stays opaque, exactly as before.
+void Program::forest_complete_alias_target_shells()
+{
+#ifndef FEATURE_FOREST_ALIAS_SHELL_COMPLETE
+    // OFF: this pass CANNOT work as written, measured — of the 96 opaque alias
+    // targets in the libc++ grove set, every single one reports
+    // `origin=NO runs=0`. complete_shell_class_type replays from
+    // dependent_shell_origin, and these shells were minted by a path that
+    // records none (materialize_opaque_class_type takes only name+spelling;
+    // the origin map is also transactional, so a speculative parse that rolled
+    // back would drop an origin while struct_map keeps the shell). Finishing
+    // this needs one of: record the origin at the real mint site, or resolve
+    // the shell's canonical spelling back to (template, args) — and no
+    // spelling->type resolver exists yet (searched: "from_spelling",
+    // "spelling_to_type", "resolve_type_spelling"; only pch.cpp's
+    // builtin_datadef_from_spelling, which handles builtins only).
+    // Kept compiled-out rather than deleted: the collection walk and the
+    // rebind are right, only the completion source is missing.
+    return;
+#endif
+    // Collect BEFORE completing: a replay instantiates a template, which
+    // registers types and can rehash the very maps being walked.
+    std::vector<std::pair<std::string, std::string> > work;
+    namespace_datatype_map.for_each(
+	[&](const char *ns, datatype_map_t &m) -> bool {
+	    if ( !ns || !*ns )
+		return false;
+	    for ( datatype_map_iter it = m.begin(); it != m.end(); ++it )
+	    {
+		if ( it->first.find('<') != std::string::npos || !it->second )
+		    continue;		// template product, not an alias key
+		DataDefCLASS *cdd =
+		    dynamic_cast<DataDefCLASS *>(&it->second->definition);
+		if ( !cdd || !cdd->opaque_concrete_tag
+		  || !is_incomplete_class_datadef(cdd) )
+		    continue;
+		work.push_back(std::make_pair(std::string(ns), it->first));
+	    }
+	    return false;
+	});
+    DBG(std::cout << "forest_complete_alias_target_shells: " << work.size()
+	<< " opaque alias target(s)" << std::endl);
+    for ( size_t i = 0; i < work.size(); ++i )
+    {
+	datatype_map_t &m = namespace_datatype_map[work[i].first];
+	datatype_map_iter it = m.find(work[i].second);
+	if ( it == m.end() || !it->second )
+	    continue;
+	DataDefCLASS *cdd =
+	    dynamic_cast<DataDefCLASS *>(&it->second->definition);
+	if ( !cdd || !is_incomplete_class_datadef(cdd) )
+	    continue;		// already completed by an earlier replay
+	DataDefCLASS *rc = complete_shell_class_type(cdd);
+	if ( !rc || rc == cdd )
+	{
+	    DBG({
+		auto oi = dependent_shell_origin.find(cdd);
+		bool have = oi != dependent_shell_origin.end();
+		std::cout << "forest_complete_alias_target_shells: "
+		    << work[i].first << "::" << work[i].second
+		    << " NOT completed (origin=" << (have ? "yes" : "NO")
+		    << " runs="
+		    << (have ? oi->second.raw_arg_tokens.size() : (size_t)0)
+		    << ")" << std::endl;
+	    });
+	    continue;
+	}
+	// The replay registers the completed instantiation under its own
+	// mangled name; the ALIAS still points at the husk, so rebind it —
+	// the same `owner = rc` the live use-site does.
+	it->second = new TokenDataType(work[i].second.c_str(), *rc);
+	DBG(std::cout << "forest_complete_alias_target_shells: "
+	    << work[i].first << "::" << work[i].second << " -> "
+	    << rc->name << std::endl);
+    }
+}
+
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
 
 static bool class_has_dependent_base(DataDefCLASS *cls,
@@ -5457,6 +5551,25 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
 void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
 {
     dep->opaque_concrete_tag = !dependent_parse_in_progress;
+    // B3 write-through (the ONE funnel every opaque mint passes through, and
+    // where concrete-vs-placeholder is decided). A CONCRETE opaque tag is
+    // legitimate live state and freezes in the v21 empty shape — but nothing
+    // recorded it: it is MINTED, never parsed to a `}`, so it has no completion
+    // hook and never got a project type-id, which put it outside the domain of
+    // cir_forest_arena_refresh's sweep (that walks the project TABLE). The
+    // namespaced-alias walk then minted the id itself, AFTER the arena
+    // snapshot, found no record at the slot and silently skipped the alias.
+    // Net effect: libc++'s `using ostringstream = basic_ostringstream<char>;`
+    // — an opaque mint, because __fwd/sstream.h only DECLARES the template —
+    // left std::ostringstream (and stringbuf/stringstream/istringstream/
+    // ifstream/ofstream) absent from the frozen type graph while the decl INDEX
+    // still listed them, so every consumer binding that grove reported "use of
+    // undeclared identifier". Stamping the id here is what puts the tag in the
+    // sweep's domain; refresh re-records it with its final fields (the caller
+    // sets the canonical spelling AFTER this hook). Pattern-context
+    // placeholders are unaffected — record_aggregate's own kill arm drops them.
+    if ( forest_arena_enabled && dep->opaque_concrete_tag )
+	forest_arena_record_aggregate(dep);
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque class
     // mint with its context — the concrete-tag discriminator diagnostic.
     static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
@@ -21414,6 +21527,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pf.mvar = mv;
 		forest_pending_funcs.push_back(pf);
 	    }
+	    // A class-scope STATIC DATA MEMBER also needs its storage Variable
+	    // (live builds it while parsing the class body). Same reason the
+	    // methods stage: tkProgram does not exist yet.
+	    if ( !cdd->static_member_types.empty() )
+		forest_pending_static_owners.push_back(cdd);
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);
@@ -22155,6 +22273,88 @@ void Program::flush_forest_pending_globals()
 	    << " (" << pg.type->name << ")" << std::endl);
     }
     forest_pending_globals.clear();
+
+    // A bound class's STATIC DATA MEMBER storage. Live's class-body parse
+    // creates a vfEXTERN Variable named `Tag__member` whose storage_alias_name
+    // is the library's real Itanium symbol (parser.cpp, the is_static_member
+    // arm) — that Variable is what CirBuilder::class_struct_def looks up to
+    // emit `extern <type> _ZN...E`. A bound class never parses its body, so
+    // the lookup failed and NOTHING declared the symbol: `std::use_facet<F>`
+    // odr-uses `F::id`, so a libc++ grove bind died with "undeclared
+    // identifier _ZNSt3__15ctypeIcE2idE" at locale:378 for any program that
+    // touched a stream (the owner's x86-64 Mac; reproducible on Linux under
+    // -stdlib=libc++ with a frozen forest, where live parse of the same
+    // headers works).
+    //
+    // What the generic extern-ref restore DOES rebuild, it names wrongly: it
+    // derives the alias with namespace_cpp_variable_symbol over the FLAT key,
+    // so `Tag__member` mangles as ONE identifier component —
+    // _ZSt14ctype_char__id for std::__1::ctype<char>::id, and
+    // _ZNSt7__cxx1117numpunct_char__idE for libstdc++'s numpunct. No library
+    // exports those, so the emitter's dlsym gate declined them and nothing
+    // declared the real symbol. (class_struct_def defended against the
+    // malformed name rather than fixing the derivation; this is that fix.)
+    // Correct it with the SAME derivation live uses —
+    // class_static_member_itanium_symbol over the class's canonical spelling.
+    //
+    // Correct the alias ONLY; never invent storage that no other path
+    // registered. Whether a member HAS storage is live's has_inclass_init
+    // question, and getting it wrong the permissive way turns a folded
+    // constant into a reference to a symbol nothing defines (live gives
+    // basic_string::npos and memory_resource::_S_max_align no storage).
+    // Availability cannot be tested here either: this runs during the PARSE,
+    // while cir_open_stdlib_runtime does not dlopen the flavor runtime until
+    // the tree build, so dlsym answers "no" for every real libc++ export.
+    // Recording the right NAME is the parser's job; deciding whether it links
+    // stays with the emitter's gate, which runs once the runtime is open.
+    //
+    // OFF pending one more layer, because correcting the name is necessary but
+    // not yet sufficient. With it on, `undeclared identifier
+    // _ZNSt3__15ctypeIcE2idE` becomes `incompatible types of
+    // _ZNSt3__15ctypeIcE2idE declarations`: the CIR tree ends up with BOTH a
+    // properly typed `extern struct locale__id <sym>` (from the corrected
+    // Variable, node 19649 in --dump-cir of the sstream reducer) and a late
+    // implicit `extern int <sym>` synthesized in the same block as libc's
+    // implicitly-declared fns (node 104750). That duplicate is PRE-EXISTING and
+    // was merely invisible: while the alias stayed malformed the two
+    // declarations carried different names and never met. Landing this without
+    // the dedup would trade one hard error for another, so it stays compiled
+    // out — the derivation here is proven right (35 corrections on the libc++
+    // grove set, every one from a flat-key mangling to the real Itanium symbol).
+    for ( size_t i = 0; i < forest_pending_static_owners.size(); ++i )
+    {
+#ifndef FEATURE_FOREST_CLASS_STATIC_ALIAS
+	break;
+#endif
+	DataDefCLASS *scdd = forest_pending_static_owners[i];
+	if ( !scdd )
+	    continue;
+	for ( std::map<std::string, DataDef *>::const_iterator smi =
+		  scdd->static_member_types.begin();
+	      smi != scdd->static_member_types.end(); ++smi )
+	{
+	    if ( !smi->second )
+		continue;
+	    const std::string alias =
+		class_static_member_itanium_symbol(scdd, smi->first);
+	    if ( alias.empty() )
+		continue;		// madc's own class: the invented name is right
+	    const std::string storage =
+		class_static_member_storage_name(scdd, smi->first);
+	    Variable *sv = findVariable(storage);
+	    if ( !sv )
+		continue;		// nothing registered it; nothing to correct
+	    if ( sv->storage_alias_name == alias )
+		continue;
+	    DBG(std::cout << "flush_forest_pending_globals: class static "
+		<< scdd->name << "::" << smi->first << " alias '"
+		<< sv->storage_alias_name << "' -> '" << alias
+		<< "' vartype=" << (sv->type ? sv->type->name : "(null)")
+		<< " memtype=" << smi->second->name << std::endl);
+	    sv->storage_alias_name = alias;
+	}
+    }
+    forest_pending_static_owners.clear();
 
     // v25: restored NAMESPACE-SURFACE state — after every fn/global above is
     // registered, so the bindings resolve their targets.
@@ -43667,7 +43867,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 	: new DataDefSTRUCT(sname, 0, DataType::dtRESERVED);
     for ( size_t i = 0; i < types.size(); ++i )
     {
-	char mname[16];
+	char mname[24];		// "v" + up to 20 size_t digits + NUL
 	snprintf(mname, sizeof mname, "v%zu", i);
 	s->addMember(mname, *types[i], 1);
     }

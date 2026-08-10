@@ -1743,6 +1743,11 @@ public:
 void show_error_source_line(const std::string &ln, int col);
 bool madc_show_file_error(const char *fname, int row, int col);
 
+// Does a loaded native library export this symbol? ONE owner (defined in
+// cir_builder.cpp, beside the mangled-direct bind sites that ask it most) —
+// the same dlsym the MIR import resolver uses, so a yes here always links.
+bool external_symbol_available(const std::string &sym);
+
 // very simple exception container
 class Exception: public std::exception
 {
@@ -4533,6 +4538,14 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // Restored classes that declare STATIC DATA MEMBERS. Live creates each
+    // member's storage Variable while parsing the class body (vfEXTERN +
+    // the library's Itanium storage_alias_name); a bound class never parses
+    // that body, so the Variable did not exist and the emitter's extern-decl
+    // pass found nothing to declare. Registration needs tkProgram, which does
+    // not exist during forest_restore_decls, so the owners stage here and
+    // flush_forest_pending_globals rebuilds live's registration exactly.
+    std::vector<DataDefCLASS *> forest_pending_static_owners;
     // v26: origin file of each plain/anonymous-enum ENUMERATOR constant
     // (TokenENUM's global branch — the constants live in tkProgram->variables
     // with no TopDecl and no back-link to the enum tag). Stamped at the one
@@ -5384,6 +5397,10 @@ public:
     // diagnostics rewound, so a replay that cannot re-enter cleanly leaves the
     // caller exactly as it was. Returns NULL when the shell stays opaque.
     DataDefCLASS *complete_shell_class_type(DataDefCLASS *cls);
+    // Freeze prep (called before the tree build): complete namespaced aliases
+    // whose target is still an opaque forward tag, so the container carries the
+    // finished class instead of a husk a consumer cannot complete.
+    void forest_complete_alias_target_shells();
     // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
     // primitive): valid only as the entire pattern of a template-argument pack
     // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a

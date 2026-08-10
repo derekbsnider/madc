@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- **Fixed: a libc++ `__fwd` alias vanished from every frozen forest.**
+  `using ostringstream = basic_ostringstream<char>;` names a template
+  that `__fwd/sstream.h` has only *declared*, so madc mints a concrete
+  opaque forward tag. A minted tag is never parsed to a `}`, so it has
+  no completion hook, so it never got a project type-id — which put it
+  outside the domain of `cir_forest_arena_refresh` (that sweep walks the
+  project *table*). The namespaced-alias walk then minted the id itself
+  **after** the arena snapshot, found no record, and silently skipped the
+  alias: the name stayed in the decl index and disappeared from the type
+  graph, so a consumer binding the grove reported "use of undeclared
+  identifier 'ostringstream'". Fixed with the missing arena write-through
+  at the one funnel every opaque mint passes through
+  (`stamp_opaque_mint_context`, which already owns the
+  concrete-vs-placeholder verdict); placeholders are still dropped by
+  `forest_arena_record_aggregate`'s own kill arm. Whole per-unit families
+  were affected — all four `__fwd/sstream.h` aliases and both
+  `__fwd/fstream.h` ones. Gate: `forest_bind_gate` case `fwdalias`
+  (negative-controlled).
+  **Scope note:** this was filed as darwin-only. It is not — it is a
+  stdlib-FLAVOR defect that reproduces on Linux x86-64 under
+  `-stdlib=libc++` with a frozen forest, and darwin was merely the only
+  *shipped* forest frozen from libc++. Two deeper layers found while
+  reducing it (the husk not completing; a bound class's static-member
+  Itanium alias mis-derived from the flattened key) are diagnosed and
+  compiled out behind `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` /
+  `FEATURE_FOREST_CLASS_STATIC_ALIAS` — see
+  `docs/plans/2026-08-07-macos-release-lane-plan.md`.
+
 - **macOS release lane (W1/W2/W4, plan 2026-08-07)**: `make -C src
   release-macos` builds BOTH hosted darwin binaries (arm64 + x86-64,
   `-O2`), now carrying the **C++ standard-library groves** in the

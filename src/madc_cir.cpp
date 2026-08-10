@@ -4220,8 +4220,33 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			}
 			madc::dis::defrec r;
 			if (!madc::dis::arena_id_is_project(tid) || !a.get_def_at(tid, r)
-			    || r.kind == madc::dis::DK_NONE)
+			    || r.kind == madc::dis::DK_NONE) {
+				// A namespaced alias whose TARGET has no arena record
+				// emits nothing, so the name is absent from the frozen
+				// type graph while the decl INDEX still lists it — the
+				// consumer then reports "use of undeclared identifier"
+				// for the alias and the index says it should be there.
+				// Name the skip (load-side twin: MADC_ALIAS_PROBE).
+				DBG({
+					DataDef *tdd = &it->second->definition;
+					DataDefSTRUCT *tsd =
+						dynamic_cast<DataDefSTRUCT *>(tdd);
+					DataDefCLASS *tcd =
+						dynamic_cast<DataDefCLASS *>(tdd);
+					std::cout << "cir_forest_arena_complete: ns alias "
+						  << ns << "::" << it->first
+						  << " SKIPPED - target tid=" << tid
+						  << " has no arena record [name=" << tdd->name
+						  << " complete="
+						  << (tsd ? (tsd->is_complete ? "1" : "0") : "-")
+						  << " placeholder="
+						  << (tcd ? (tcd->is_dependent_placeholder ? "1" : "0") : "-")
+						  << " opaque_tag="
+						  << (tcd ? (tcd->opaque_concrete_tag ? "1" : "0") : "-")
+						  << "]" << std::endl;
+				});
 				continue;		// type not in the arena (follow-on kind)
+			}
 			uint32_t key_id = a.strings.intern(it->first);
 			if (key_id != r.name_id) {
 				// A namespaced ALIAS whose key differs from the aggregate's
@@ -5090,6 +5115,11 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		"(the DefArena is the type-graph serialization)\n", source_name);
 	return -1;
     }
+
+    // Before the tree exists: finish any alias whose target is still an opaque
+    // forward tag, so the container ships the completed class rather than a
+    // husk only the producer could have completed (see the method's comment).
+    prog->forest_complete_alias_target_shells();
 
     // Translate needs the c2mir contexts but never compiles: the frozen tree
     // must be PRE-check (c2mir's do_context writes attr scratch into any tree

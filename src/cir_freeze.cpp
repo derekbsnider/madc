@@ -2977,19 +2977,43 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 
 	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their
 	// synthetic slots) -> (name, ns, underlying).
+	//
+	// Env-gated probe (MADC_ALIAS_PROBE=<substr>): report every matching
+	// alias record with its namespace, target id and verdict — the arena-side
+	// twin of MADC_DECLIDX_PROBE. Each `continue` below drops an alias the
+	// consumer then fails to resolve with "use of undeclared identifier",
+	// naming the alias and never the target, so the drop is invisible from
+	// the outside; the probe is what makes it a measurement.
+	static const char *aliprobe = ::getenv("MADC_ALIAS_PROBE");
+	auto alias_say = [&](const madc::dis::defrec &r, const char *nm,
+			     const char *verdict) {
+		const char *ns = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		fprintf(stderr, "ALIAS %s%s%s ref0=%u %s\n", ns ? ns : "",
+			ns && *ns ? "::" : "", nm, r.ref0, verdict);
+	};
 	for (uint32_t s = 0; s < nslots; ++s) {
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_TYPEDEF)
 			continue;
-		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
-			continue;	// v24: the program's own typedef — fenced
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		const bool probed = aliprobe && *aliprobe && nm
+				  && strstr(nm, aliprobe) != NULL;
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN) {
+			if (probed)
+				alias_say(r, nm, "DROPPED (tu-root fence)");
+			continue;	// v24: the program's own typedef — fenced
+		}
 		if (!nm || !*nm)
 			continue;
 		DataDef *underlying = arena_swizzle(r.ref0, by_id);
-		if (!underlying)
+		if (!underlying) {
+			if (probed)
+				alias_say(r, nm, "DROPPED (target not materialized)");
 			continue;
+		}
+		if (probed)
+			alias_say(r, nm, "kept");
 		CirRestoredType rt;
 		rt.name       = nm;
 		rt.kind       = CIR_TYPEK_TYPEDEF;
