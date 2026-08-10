@@ -195,3 +195,37 @@ forest bytes + arm64 signature survived), `scripts/package_release_macos.sh`
 (tarballs + SHA256SUMS lines + LLVM license notice + quarantine README),
 `remote_build.sh release-macos` stage, and `scripts/mac_battery.sh` (W2:
 the self-contained evidence run for the owner's Macs).
+
+### Battery hardening (post-W1, same session)
+
+The Linux regression battery over the stdint/stddef completion surfaced a
+hidden contract the embedded resource-dir headers had never implemented:
+**glibc's `__need` protocol**. Real gcc stddef.h/stdarg.h serve ONE
+requested definition per re-inclusion (`__need_size_t`, `__need_NULL`,
+`__need___va_list`, …) and CLEAR the request macro; glibc re-includes them
+several times per TU under different requests. Three commits, each with
+its own reducer:
+
+1. **stddef.h implements the protocol arms** (serve + `#undef` per
+   request; no full-header guard on protocol visits). Without it, libc++'s
+   `<cstddef>` → `stddef.h` wrapper chain mis-routed — 26 libc++-lane
+   fails.
+2. **A live `__need_*` request bypasses — and is never recorded by — the
+   once-only caches** (`need_protocol_macro_live()`, lexer.cpp): the
+   name-level dedup, the baked PCH, and the forest bind are all
+   full-content one-shots, and a protocol visit must not consume or
+   satisfy them. Without it, glibc `stdlib.h` under `--std=c17` lost
+   `wchar_t` on its second protocol re-include.
+3. **stdarg.h clears `__need___va_list`** — a leaked request macro marked
+   EVERY later include in the TU a protocol visit, defeating the caches
+   TU-wide (12 ns_madc/eval/channel fails).
+
+The stdint completion then paid for itself at the PP-parity ratchet:
+`forest_dm_oracle --rebaseline` (reviewed) resolved **102 known gcc-vs-madc
+divergences** (the `INT*_C` + least/fast limit macros), baseline 305→205
+lines, +2 madc-only implementation guards.
+
+Final gate: fulltest **1018/0**, libc++ JIT lane **1014/0** (both +1 for
+the new `testglobalnstag`). The darwin release binaries were then
+**rebuilt** so the containers re-bake the fixed embedded
+stddef/stdarg/stdint — the first tarballs predated these fixes.
