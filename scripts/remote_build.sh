@@ -155,7 +155,19 @@ for stage in $stages; do
 		rc=$?
 		echo "sync madc rc=$rc"
 		note_stage "sync madc" "$rc"
+		# The container builds every MIR artifact; the NAS builds nothing
+		# (owner directive). So push SOURCE only — never build output.
+		# Objects/archives were already excluded; the linked drivers were
+		# not, and on 2026-08-10 an OLD c2m sitting in the NAS tree
+		# replaced the freshly built one and answered for a c2mir that
+		# was not under test (a gate failed against pre-fix behaviour and
+		# read as a real regression). build-*/ are the container's
+		# per-target cross trees, absent here — excluding them also ends
+		# the "cannot delete non-empty directory" spam --delete produced.
 		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
+			--exclude="build-*/" \
+			--exclude=c2m --exclude=m2b --exclude=b2m --exclude=b2ctab \
+			--exclude=mir-bin-run --exclude=run-test \
 			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
 		rc=$?
 		echo "sync mir rc=$rc"

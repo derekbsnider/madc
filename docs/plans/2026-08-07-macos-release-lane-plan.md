@@ -196,6 +196,69 @@ forest bytes + arm64 signature survived), `scripts/package_release_macos.sh`
 `remote_build.sh release-macos` stage, and `scripts/mac_battery.sh` (W2:
 the self-contained evidence run for the owner's Macs).
 
+## W2 first real Mac run (2026-08-10) — the unprototyped-call ABI bug
+
+The battery on the owner's arm64 Mac (macOS 15.3.2) is what W2 existed to
+find, and it found a genuine ABI defect on the first run: **2 passed, 4
+failed**, with the C prelude probe dying on `SIGBUS`.
+
+Diagnosis (the reasoning matters more than the fix):
+
+- Every faulting address was one of `__madc_builtin_{strcpy,memcpy,memset}_chk`
+  / `__madc_builtin_object_size` — all inside ONE 16KB page — while
+  `madc_puts`, a page away, worked. That pattern says code-signing page-hash
+  invalidation, so it was checked first: `codesign -v` reported **valid**.
+  Hypothesis dead in one command.
+- lldb (after re-signing a debug copy with `get-task-allow`, since
+  linker-signed binaries are not debuggable) gave the real fault:
+  `EXC_BAD_ACCESS (code=2)` **inside `_platform_memset`**, storing to
+  `0x1002804f4` — with ASLR off, exactly `__madc_builtin_memset_chk`'s own
+  address. `x0` held the callee's address; `x1`/`x2` held the correct 2nd and
+  3rd arguments. So the helper was called with its OWN address in the
+  destination slot.
+- The control that named the layer: the SAME call with an explicit prototype
+  works (`zzz`); **undeclared** faults. Not the fortify lowering — the
+  no-prototype call path.
+- Oracle: `clang -S -arch arm64` on `extern long f(); f(b,122,3,32)` passes the
+  args in `x0`–`x3` (an ordinary call). madc/c2mir made it **variadic**, and
+  Apple arm64 passes every vararg on the **stack** (`mir-aarch64.c`: "all
+  varargs are passed only on stack"), so the callee read registers and found
+  residue.
+
+Root cause, one line in the fork — `c2mir.c` marked a call vararg when the
+callee's parameter list was empty (`dots_p || NL_HEAD (param_list) == NULL`),
+a way to let any argument count through without an arity check. Invisible on
+x86-64 SysV, where varargs ride the same registers as fixed args; fatal on
+Apple arm64. This is a **c2mir defect, not a madc one** — madc's bare `()`
+emission matches gcc's gnu89 semantics, and the `--emit=c11` → gcc/clang path
+was always correct.
+
+Why it hit the whole C surface: the macOS SDK's `<secure/_string.h>` rewrites
+`memcpy`/`memset`/`strcpy`/… into `__builtin___*_chk(...)`, which madc serves
+from runtime helpers that no header declares. So every memory-WRITING libc
+call on darwin was an unprototyped call, while reads were fine — exactly the
+observed split. It would equally break any C89 implicit-declaration call, i.e.
+the SMAUG corpus, on Apple silicon.
+
+Fix (fork, Tier 2 — the ABI of a call is c2mir's decision): an unprototyped
+call builds its proto from **that call site's actual, default-promoted
+argument types** and is NOT variadic. Because the types differ per call site
+and `proto_item` hangs off the shared `func_type`, the per-site proto is
+stashed on the call node (a slot placed in existing padding, so `struct expr`
+does not grow). The emission passes the same promoted type to
+`target_add_call_arg_op` so the proto and the pushed op agree; a genuine `...`
+callee is untouched.
+
+Gate: `scripts/unprototyped_call_abi_gate.sh` (in `fulltest`). Behaviour
+cannot gate this — both shapes run correctly on x86-64 — so it asserts the IR
+shape via `c2m -S`: the unprototyped call's proto has no `...` and carries one
+entry per actual arg, while a genuinely variadic callee in the same TU still
+comes out variadic (the gate's own negative control). A stale `c2m` proved the
+control for real: against pre-fix c2mir the gate failed with exactly its
+intended message. That staleness was itself a trap worth closing — the tree
+sync pushed the NAS's old MIR drivers over the container's fresh ones, so the
+sync now excludes MIR build output entirely.
+
 ### Battery hardening (post-W1, same session)
 
 The Linux regression battery over the stdint/stddef completion surfaced a
