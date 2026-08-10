@@ -32,8 +32,13 @@
   into `__builtin___*_chk`, which madc serves from undeclared runtime
   helpers), and it would equally break C89 implicit calls there. Gate:
   `scripts/unprototyped_call_abi_gate.sh` asserts the IR shape (behaviour
-  cannot — both shapes run correctly on x86-64), with a variadic callee
-  in the same TU as its negative control. `MIR_COMMIT` → `e2c0ae95`.
+  cannot — the JIT suite passed all 1018 either way), with a variadic
+  callee in the same TU as its negative control. The correct shape keeps
+  BOTH halves and the gate checks both: the actual args as **fixed** args
+  (AArch64-Darwin stack-banishes only what lies beyond them) **and** the
+  vararg flag (SysV x86-64 needs `%al` for a prototype-less call, since
+  the callee may be variadic — dropping it broke an undeclared `printf`,
+  which only the EXE/OBJ legs caught). `MIR_COMMIT` → `731c2234`.
 - **Fixed: darwin flavors report a runtime.** `link_libs()` read a
   linked probe with `readelf`, so on an Apple target — Mach-O, where the
   runtime is `LC_LOAD_DYLIB` — it reported nothing and the flavor table

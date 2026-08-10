@@ -71,16 +71,25 @@ va="$(call_proto_of variadic)"
 up_line="$(proto_line_of "$up")"
 va_line="$(proto_line_of "$va")"
 
-# 1. The unprototyped call must not be variadic ("..." is MIR's vararg marker).
-case "$up_line" in
-    *...*) fail "unprototyped call is still VARIADIC — Apple arm64 would pass every arg on the stack: $up_line";;
-esac
-
-# 2. It must describe the four ACTUAL arguments (a non-vararg proto with no
-#    args would be an arity lie that MIR rejects, but assert the count anyway).
+# The correct shape has BOTH halves, and this gate asserts both, because each
+# ABI cares about a different one and dropping either breaks a real target:
+#
+#   fixed args = the actual arguments  ->  AArch64-Darwin stack-banishes only
+#       what sits BEYOND them, so with all of them fixed they travel in
+#       registers, which is where an ordinary C callee looks. (The original bug:
+#       a vararg proto with ZERO fixed args sent every argument to the stack.)
+#   vararg flag still set             ->  SysV x86-64 requires %al, the vector-
+#       register count, for PROTOTYPE-LESS calls precisely because the callee
+#       may turn out to be variadic. (Declaring it non-vararg dropped %al and
+#       broke an undeclared printf — tests/testnegzerostatic.mad, caught only by
+#       the EXE/OBJ legs; the JIT suite passed all 1018.)
 nargs=$(printf '%s\n' "$up_line" | tr ',' '\n' | grep -cE ':p$')
 [ "$nargs" -eq 4 ] \
-    || fail "unprototyped call proto describes $nargs arg(s), expected 4: $up_line"
+    || fail "unprototyped call proto describes $nargs fixed arg(s), expected 4 (the actual args) — with fewer, Apple arm64 passes the rest on the stack while the callee reads registers: $up_line"
+case "$up_line" in
+    *...*) : ;;
+    *) fail "unprototyped call proto lost its vararg flag — SysV x86-64 needs %al for a prototype-less call (an undeclared printf misreads its args): $up_line";;
+esac
 
 # 3. Negative control: a real `...` callee stays variadic.
 case "$va_line" in
@@ -89,4 +98,4 @@ case "$va_line" in
 esac
 
 rm -f "$src"
-echo "unprototyped_call_abi_gate: OK (unprototyped call is a fixed $nargs-arg proto; '...' callee still variadic)"
+echo "unprototyped_call_abi_gate: OK (unprototyped call carries its $nargs actual args as FIXED args and keeps the vararg flag; '...' callee unchanged)"
