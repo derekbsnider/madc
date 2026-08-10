@@ -135,8 +135,9 @@ int main() {
     sorter.write("mango\n");
     sorter.close_write();
     value line;
+    // readline() strips the trailing newline (<ns_madc> contract).
     while (sorter.readline(line))
-        printf("%s", line.c_str());
+        printf("%s\n", line.c_str());
     return 0;
 }
 EOF
