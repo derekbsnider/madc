@@ -66,9 +66,10 @@ stages="$*"
 if [ -z "$stages" ]; then
 	stages="sync build"
 fi
-if [ "$stages" = "battery" ]; then
-	stages="sync build fulltest exe obj release packed"
-fi
+# battery expands IN PLACE (any position — other stages may surround it,
+# e.g. "sync battery libcxxjit"; the old whole-string match silently dropped
+# it to "unknown stage" and the run lost its fulltest leg, 2026-08-10).
+stages=${stages/battery/sync build fulltest exe obj release packed}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
