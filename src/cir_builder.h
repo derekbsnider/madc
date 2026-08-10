@@ -956,6 +956,16 @@ public:
 	void append_lit_type_spec(node_t spec, DataDef *dd,
 				  const std::string &typedef_name);
 	node_t type_list(DataDef *dd, const std::string &typedef_alias = "");
+	// The append form of type_list, for a spec list that must carry a
+	// storage-class specifier ahead of the type specs.
+	void append_decl_type_specs(node_t lst, DataDef *dd,
+				    const std::string &typedef_alias);
+	// THE type-spec derivation for a VARIABLE declaration of any storage
+	// class (plain / static / extern) — anonymous aggregate inlined, else
+	// append_decl_type_specs. Callers emit their own storage class. Pass a
+	// NULL Variable to skip the typedef-alias arm (specs only).
+	void append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
+				   DataDefSTRUCT *anon_sdd);
 	node_t pointer();
 
 	// ---- Function-pointer declarators ----

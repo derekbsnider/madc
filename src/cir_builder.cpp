@@ -6562,15 +6562,17 @@ std::string CirBuilder::typedef_emit_name(const std::string &alias,
 
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
-node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
+// The append form of type_list, so a site that must PREPEND a storage-class
+// specifier to the same spec list can reuse this one derivation instead of
+// hand-rolling a narrower copy of it (see append_var_type_specs).
+void CirBuilder::append_decl_type_specs(node_t lst, DataDef *dd,
+					const std::string &typedef_alias)
 {
-	node_t lst = list();
-
 	// If a typedef name is available, emit ID("alias") — matches c2m's behavior.
 	// An alias that collides across namespaces emits its unique struct tag.
 	if (!typedef_alias.empty()) {
 		append(lst, id(typedef_emit_name(typedef_alias, dd).c_str()));
-		return lst;
+		return;
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
@@ -6584,7 +6586,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 				node_t marker = ignore();
 				CIR_NODE(marker)->set_datadef(sdd);
 				append(lst, marker);
-				return lst;
+				return;
 			}
 			// Tag kind MUST match the definition (struct vs union), or
 			// c2mir rejects it ("kind of tag X unmatched"). A union-typed
@@ -6599,12 +6601,52 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 			if (m_tsubst_pattern_mode)
 				CIR_NODE(sref)->set_datadef(sdd);
 			append(lst, sref);
-			return lst;
+			return;
 		}
 	}
 
 	append_type_specs(lst, dd);
+}
+
+node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
+{
+	node_t lst = list();
+	append_decl_type_specs(lst, dd, typedef_alias);
 	return lst;
+}
+
+// THE type-specifier derivation for a VARIABLE declaration, appended to a spec
+// list the caller owns — the storage-class specifier is the only thing that
+// differs between the plain / `static` / `extern` shapes, so it stays the
+// caller's. An anonymous aggregate has no tag to forward-reference, so its body
+// inlines (a `struct anonymous` reference is never defined); everything else
+// routes through append_decl_type_specs, which preserves the typedef alias and
+// emits the struct/union TAG for an aggregate.
+//
+// A bare append_type_specs CANNOT express a tag — it falls through to `int`,
+// which is how two storage-class sites silently degraded an aggregate:
+// `static Cls g;` emitted `static int g` ("request for member x in something
+// not a structure"), and the referenced-global extern pass emitted
+// `extern int <sym>` for a class-typed alias-bound static data member — a
+// SECOND, incompatible declaration of a symbol var_decl had already typed
+// correctly ("incompatible types of _ZNSt3__15ctypeIcE2idE declarations" under
+// a libc++ forest bind). One derivation, so a fix reaches every storage class.
+void CirBuilder::append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
+				       DataDefSTRUCT *anon_sdd)
+{
+	if (anon_sdd) {
+		append(lst, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+				  ignore(), anon_members_list(anon_sdd)));
+		return;
+	}
+	// A typedef'd declaration keeps its alias spec (`static io *gp`) so the
+	// pointee resolves through the typedef's own complete definition; the
+	// alias belongs to the UNPEELED type.
+	if (v && !v->typedef_name.empty()) {
+		append_decl_type_specs(lst, v->type, v->typedef_name);
+		return;
+	}
+	append_decl_type_specs(lst, base_dd, std::string());
 }
 
 // Single function-signature owner for the __retbuf ABI decision. A by-value
@@ -7690,64 +7732,31 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (v->is_fixed_array())
 			fnptr_dims = v->dims;
 		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
-	} else if (anon_sdd) {
-		tl = anon_inline_spec(anon_sdd);
 	} else {
-		tl = !v->typedef_name.empty()
-				? type_list(v->type, v->typedef_name)
-				: type_list(base_dd);
+		tl = list();
+		append_var_type_specs(tl, v, base_dd, anon_sdd);
 	}
 
 	// Storage class qualifiers (fn-ptr vars handle storage class above).
+	// Both arms share ONE type-spec derivation with the plain path above
+	// (append_var_type_specs) — a hand-rolled copy per storage class is how
+	// `static Cls g;` came to emit `static int g` while the extern arm had
+	// already been widened past the btStruct-only test.
 	if (!fnptr && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
-		if (!v->typedef_name.empty()) {
-			// A typedef'd type keeps its alias spec (`static io *gp`), so
-			// the pointee resolves through the typedef's own (complete)
-			// definition. Dropping the alias to a `struct anonymous` tag left
-			// the pointee incomplete ("struct has no member" through `gp->`).
-			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
-		} else if (anon_sdd) {
-			// Anonymous aggregate: inline the body (no tag to reference).
-			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-					       ignore(), anon_members_list(anon_sdd)));
-		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-			if (sdd)
-				append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
-			else
-				append_type_specs(new_list, base_dd);
-		} else {
-			append_type_specs(new_list, base_dd);
-		}
+		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
 	if (!fnptr && (v->flags & vfEXTERN)) {
 		// An extern is a forward reference to a symbol defined elsewhere, so
 		// emit its type exactly as the definition would — preserve the typedef
-		// alias and struct tag. The old append_type_specs path dropped the
-		// alias, so `extern bool x` degraded to `extern int x` and conflicted
-		// with the `bool x` definition ("incompatible types of x declarations").
+		// alias and struct tag. Dropping the alias made `extern bool x` degrade
+		// to `extern int x`, conflicting with the `bool x` definition
+		// ("incompatible types of x declarations").
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
-		if (!v->typedef_name.empty()) {
-			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
-		} else if (anon_sdd) {
-			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-					       ignore(), anon_members_list(anon_sdd)));
-		} else if (base_dd && !base_dd->is_complex()
-			   && !base_dd->is_madc_array()
-			   && dynamic_cast<DataDefSTRUCT *>(base_dd)) {
-			// Struct OR class tag ref (a DataDefCLASS IS-A
-			// DataDefSTRUCT — the old is_struct() gate was
-			// btStruct-only, so an extern of CLASS type degraded to
-			// `extern int`, e.g. the madc::sys SysInfo instance).
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-			append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
-		} else {
-			append_type_specs(new_list, base_dd);
-		}
+		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
 
@@ -26228,7 +26237,14 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
-		append_type_specs(ext_list, gdd);
+		// The same derivation var_decl uses for its own extern arm — this
+		// pass declares the SAME kind of entity (a file-scope extern), and a
+		// bare append_type_specs degraded an aggregate to `extern int`,
+		// contradicting var_decl's correctly-typed declaration of the same
+		// symbol. NULL Variable: take the tag/scalar specs only, never the
+		// typedef-alias arm — this pass adds its own single `pointer()` below,
+		// which an alias that already spells the star would double.
+		append_var_type_specs(ext_list, NULL, gdd, NULL);
 		node_t share = node1(N_SHARE, ext_list);
 
 		node_t var_id = id(gname.c_str());

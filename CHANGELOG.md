@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **Fixed: a file-scope `static` CLASS object declared as `static int`.**
+  The variable declarator hand-rolled its type-spec derivation once per
+  storage class, and the `static` copy tested `is_struct()` — btStruct
+  ONLY — so a class-typed file-scope static (`static Cls g;`) emitted
+  `static int g` and every member access failed with "request for member
+  x in something not a structure or union". g++ and clang++ both compile
+  it. The `extern` copy had already been widened past that same test
+  (for `madc::sys`), which is exactly how one rule with N implementations
+  rots. All three storage shapes (plain / `static` / `extern`) plus the
+  referenced-global extern pass now share ONE derivation
+  (`append_var_type_specs` over `type_list`), so the next widening
+  reaches every site. Reducer: `tests/teststaticclassglobal.mad`
+  (oracle: both canons).
 - **Fixed: a libc++ `__fwd` alias vanished from every frozen forest.**
   `using ostringstream = basic_ostringstream<char>;` names a template
   that `__fwd/sstream.h` has only *declared*, so madc mints a concrete

@@ -1,0 +1,38 @@
+// A file-scope `static` aggregate must declare with its real type.
+//
+// The storage-class arms of the variable declarator each hand-rolled their own
+// type-spec derivation; the `static` one tested is_struct() (btStruct ONLY), so
+// a CLASS-typed file-scope static degraded to `static int` and every member
+// access failed with "request for member x in something not a structure or
+// union". The extern arm had already been widened past the same test, which is
+// exactly how one rule with N implementations rots. Oracle: g++ and clang++
+// both print the line below.
+#include <cstdio>
+
+struct Box { int a; int b; };
+class Cls { public: int x; Cls() : x(5) {} };
+union U { int i; unsigned char b[4]; };
+
+static Box gbox;
+static Cls gcls;
+static U gu;
+static struct { int q; } ganon;
+
+// A declaration COMPLETED by a definition in the same TU (two tentative
+// definitions in C — gcc/clang accept, and vfEXTERN is cleared by the
+// definition, so this is NOT the extern arm; that one is covered by
+// testsysobject's madc::sys and the forest gate's extern-ref cout).
+extern Box gdecl;
+Box gdecl;
+
+int main()
+{
+	gbox.a = 3;
+	gbox.b = 4;
+	gu.i = 0;
+	ganon.q = 9;
+	gdecl.a = 7;
+	printf("box=%d,%d cls=%d u=%d anon=%d decl=%d\n",
+	       gbox.a, gbox.b, gcls.x, gu.i, ganon.q, gdecl.a);
+	return 0;
+}
