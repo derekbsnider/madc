@@ -156,6 +156,18 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
     static std::set<std::string> opened;
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
+    // The cross-Apple probe stand-in (empty everywhere else): the target's
+    // runtime cannot be dlopen'd on the build host, so the HOST's library of
+    // the same flavor answers the CIR-time dlsym probes — the Itanium
+    // surface is platform-neutral. See madc_sys_includes.h.
+    for (int i = 0; madc_stdlib_probe_standin_libs[i]; i++) {
+	const char *lib = madc_stdlib_probe_standin_libs[i];
+	if (!opened.insert(lib).second)
+	    continue;
+	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
+		    lib, dlerror());
+    }
     if (!flavor->link_libs)
 	return;
     for (int i = 0; flavor->link_libs[i]; i++) {
@@ -4792,6 +4804,7 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
     c2mir_init(ctx);
     c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
     bool ok = false;
+    bool mir_errored = false;
     {
 	CirFrozenForest forest;
 	do {
@@ -4807,6 +4820,7 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
 	    if (setjmp(cir_mir_error_jmp)) {
 		cir_mir_error_armed = false;
 		cir_mir_cache_sink = NULL;
+		mir_errored = true;
 		fprintf(stderr, "%s: mir cache: MIR error during module "
 			"compile: %s — blob skipped (consumers fall back)\n",
 			source_name, cir_mir_error_text);
@@ -4834,11 +4848,20 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
 	    cir_mir_error_armed = false;
 	    ok = out.size() > sizeof(mh);
 	} while (0);
-	if (c2m)
+	if (c2m && !mir_errored)
 	    cir_finish(c2m);
     }
-    c2mir_finish(ctx);
-    MIR_finish(ctx);
+    if (!mir_errored) {
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+    // else: the longjmp left the context with an UNFINISHED module/function,
+    // and MIR_finish fatals on that state ("finish when module is not
+    // finished") — killing the whole freeze this lane exists to keep
+    // error-contained (the gen-only duration<double>::operator%= drain
+    // defect did exactly this). Deliberately LEAK the one-shot context: the
+    // producer process exits after the pack, and the contract above ("the
+    // pack carries no blob, consumers fall back") holds.
     if (!ok)
 	out.clear();
     return ok;

@@ -136,3 +136,62 @@ macOS libc header tree for years):
 - No SDK content in the repo or the sync path — unchanged law.
 - The QNAP/container division is unchanged: container builds
   everything; Macs only run the battery.
+
+## W1 as implemented (2026-08-10)
+
+The owner's ask ("Mach-O x86 + arm libc++ madc-release binaries with
+compressed frozen forest") made W1 concrete: the hosted binaries now pack
+the **C++ standard-library groves** beside the C prelude, and a
+`release-macos` lane strips, verifies, and tarballs them.
+
+**The C++ world is LLVM's libc++-18 tree** (`LLVM_LIBCXX_INC`,
+`/usr/lib/llvm-18/include/c++/v1`) — not the SDK's Apple fork. Three
+reasons, all in the src/Makefile comment: Apache-2.0 provenance (the W0
+resolution), text already proven at libc++-lane zero, and it sits outside
+the CLT prefix map so the cross freezer opens it on the container while
+freezer/consumer tables stay byte-identical. madc's own build keeps
+compiling against the SDK headers + .tbd stubs.
+
+**Posture: the served tables present GCC** (`MADC_PREDEF_GCC_POSTURE`,
+`scripts/gcc_posture_filter.sh` — ONE filter shared by
+gen_predefined_macros.sh and gen_darwin_prelude.sh, because the flattened
+prelude's kept `-dD` defines carry clang's identity macros and would
+re-poison the posture mid-TU). Under `__clang__`, libc++ gates <atomic> on
+`__has_feature` probes madc refuses to fake; under GCC posture it keys off
+the `__GCC_ATOMIC_*` predefines, which survive the filter.
+
+**Freezer plumbing fixed on the way** (each its own commit):
+- `#include_next` / `__has_include_next` now resolve through the embedded
+  set position-aware (`embedded_wins_include_next`): libc++'s C wrappers
+  reach the prelude by include_next, and on an Apple target the C library
+  IS the embedded set. The recursive hosted→cross make no longer leaks the
+  CLT prefix map into the cross madc's table (shared HOSTTAB_CXX block +
+  per-mode `sys_include_paths.cpp`, embedded_headers.cpp precedent).
+- The embedded stdint.h is now the COMPLETE C11 7.20 resource-dir surface
+  (least/fast/intmax types + limits + INTN_C), which also unblocks the
+  long-standing Linux `<cstdint>` pack blocker; stddef.h gained the
+  guarded max_align_t its own comment promised.
+- Global-scope struct tags coexist with flat-registered namespace-scoped
+  classes (darwin math.h's SVID `struct exception` vs std::exception);
+  gate tests/testglobalnstag.mad.
+- The object_arg_addr↔class_ctor_call coercion recursion is cycle-guarded
+  (libc++ <fstream> under the freeze drain segfaulted on it).
+- The mir-cache blob-skip path now honors its own error-containment
+  contract (leaks the one-shot MIR context instead of MIR_finish-fataling
+  on an unfinished module — the n2 duration<double>::operator%= class).
+
+**Cost accepted in v1:** the darwin containers may ship without the MIR
+cache blob when the n2 drain defect trips (consumers rebuild nodes — the
+pack still gates unit presence); the C prelude remains SDK-derived until
+W0.5, so artifacts stay owner-private; C++ names outside the packed set
+fail loudly on header-less Macs (and deliberately resolve nowhere else —
+no CLT-version mixing).
+
+New pieces: `scripts/forest_pack_headers_darwin.txt` (the darwin C++
+canonical list — deliberately separate from the Linux list; the flavors'
+blocker sets diverge), `make -C src release-macos` (build both arches
+sequentially → llvm-strip → `scripts/verify_macho_release.sh` proves the
+forest bytes + arm64 signature survived), `scripts/package_release_macos.sh`
+(tarballs + SHA256SUMS lines + LLVM license notice + quarantine README),
+`remote_build.sh release-macos` stage, and `scripts/mac_battery.sh` (W2:
+the self-contained evidence run for the owner's Macs).

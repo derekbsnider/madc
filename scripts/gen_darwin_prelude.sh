@@ -52,6 +52,14 @@ HEADERS=(
     unistd.h dirent.h getopt.h libgen.h
     sys/types.h sys/stat.h sys/time.h sys/wait.h sys/resource.h
     sys/mman.h sys/select.h sys/uio.h sys/utsname.h sys/ioctl.h
+    # The wide-character + locale C surface libc++ reaches through its
+    # include_next wrappers (the darwin C++ groves, macos-release-lane W1):
+    # __mbstate_t.h wants <wchar.h> (the SDK has no uchar.h), __locale
+    # wants <xlocale.h>, and the locale facets touch the rest.
+    wchar.h wctype.h xlocale.h langinfo.h nl_types.h monetary.h
+    # libc++'s __threading_support (pulled by <memory>/<mutex>/the stream
+    # groves) is pthread-based on darwin.
+    pthread.h sched.h
 )
 
 mkdir -p "$OUTDIR"
@@ -83,12 +91,20 @@ UMB_TMP="$OUTDIR/.umbrella.$$"
 # them out cleanly.
 if ! $CLANG -target "$TARGET" --sysroot "$SDK" -x c -std=c11 -fno-blocks \
         -D_Nullable= -D_Nonnull= -D_Null_unspecified= \
-        -E -dD -P "$UMB_TMP.c" -o "$UMB_TMP"; then
-    rm -f "$UMB_TMP.c" "$UMB_TMP"
+        -E -dD -P "$UMB_TMP.c" -o "$UMB_TMP.raw"; then
+    rm -f "$UMB_TMP.c" "$UMB_TMP.raw"
     echo "Error: $CLANG preprocess of the darwin prelude failed" >&2
     exit 1
 fi
 rm -f "$UMB_TMP.c"
+# The -dD output opens with clang's own identity macros (__clang__,
+# __GNUC__ 4, ...). Served as header text they would re-poison the GCC
+# posture the baked table presents (gen_predefined_macros.sh) the moment a
+# TU includes any prelude name before the C++ groves — libc++'s __config
+# would flip to its clang-based branches mid-TU. Same filter, same posture.
+"$(dirname "$0")/gcc_posture_filter.sh" "${MADC_PREDEF_GCC_POSTURE:-}" \
+    < "$UMB_TMP.raw" > "$UMB_TMP"
+rm -f "$UMB_TMP.raw"
 
 # A prelude without printf is the exact silent failure this script exists
 # to prevent — refuse to install it.

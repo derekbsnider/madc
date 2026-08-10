@@ -22,6 +22,9 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   release-macos  make -C src release-macos (both hosted darwin arches,
+#             stripped + forest-verified) + package_release_macos.sh
+#             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
 #   battery   fulltest + exe + obj + release + packed (the push gate)
@@ -218,6 +221,21 @@ for stage in $stages; do
 		;;
 	release)
 		run_remote "release" "make -C /workspace/madc/src -j20 release"
+		;;
+	release-macos)
+		# The two arches build SEQUENTIALLY inside the target (shared
+		# per-arch generated tables); -j parallelizes within each.
+		run_remote "release-macos" "make -C /workspace/madc/src -j20 release-macos"
+		run_remote "package-macos" "cd /workspace/madc; bash scripts/package_release_macos.sh"
+		mkdir -p "$LOCAL_MADC/dist"
+		rsync -az --no-perms --no-owner --no-group \
+			-e "ssh -p $PORT" \
+			--include='madc-*-macos-*.tar.gz' --include='SHA256SUMS' \
+			--exclude='*' \
+			"$REMOTE:/workspace/madc/dist/" "$LOCAL_MADC/dist/"
+		rc=$?
+		echo "pull macos tarballs rc=$rc"
+		note_stage "pull macos tarballs" "$rc"
 		;;
 	packed)
 		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"

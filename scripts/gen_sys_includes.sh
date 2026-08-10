@@ -18,7 +18,12 @@
 set -u
 
 CXX="${CXX:-c++}"
-OUT="$(dirname "$0")/../src/sys_include_paths.cpp"
+# The Apple-target modes generate into their per-mode obj tree instead
+# (MADC_SYS_INCLUDES_OUT, src/Makefile): the hosted and cross tables for one
+# arch differ (only the cross madc carries the probe stand-in sonames), and
+# a shared src/ file would flip between the recursive make layers — a write
+# race under -j. The embedded_headers.cpp precedent.
+OUT="${MADC_SYS_INCLUDES_OUT:-$(dirname "$0")/../src/sys_include_paths.cpp}"
 # Optional "from=to" path-prefix rewrite for cross-built binaries whose build
 # sysroot lives elsewhere on the RUN machine (e.g. hosted-darwin modes map the
 # staged SDK to the standard CLT SDK location).
@@ -111,6 +116,39 @@ emit_link_libs_array() {
     echo '};'
 }
 
+# CIR-probe stand-in runtime (MADC_LINKLIBS_STANDIN=1, the cross-Apple
+# modes): a cross toolchain cannot link a BUILD-HOST executable, so its
+# flavor's link_libs probe yields nothing — yet the CIR-time availability
+# probes (cir_open_stdlib_runtime → dlsym) still need a runtime of the SAME
+# FLAVOR loaded in the build-host process. The Itanium-mangled surface is
+# platform-neutral, so the HOST's library of that flavor answers for the
+# target's. This is a SEPARATE array, never the flavor's link_libs: those
+# sonames ride into freeze containers and the consumer binary's table, and
+# a Linux soname must not be dlopen'd (or recorded) on a Mac.
+emit_standin_array() {
+    local flavor="$1" libs="" f cand
+    if [ "${MADC_LINKLIBS_STANDIN:-}" = "1" ] && [ -n "$flavor" ]; then
+        for cand in "c++" "g++" "clang++-18 -stdlib=libc++" \
+                    "clang++ -stdlib=libc++" "clang++-18" "clang++"; do
+            f=$(detect_flavor $cand)
+            if [ "$f" = "$flavor" ]; then
+                libs=$(link_libs $cand)
+                [ -n "$libs" ] && break
+            fi
+        done
+    fi
+    echo 'const char *const madc_stdlib_probe_standin_libs[] = {'
+    if [ -n "$libs" ]; then
+        local l
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            printf '    "%s",\n' "$l"
+        done <<< "$libs"
+    fi
+    echo '    (const char *)0'
+    echo '};'
+}
+
 emit_paths_array() {
     # $1 = array suffix, rest = probe command
     local idx="$1"; shift
@@ -186,6 +224,8 @@ emit() {
     echo '    { (const char *)0, (const char *const *)0, "", (const char *const *)0 }'
     echo '};'
     echo "const char *madc_default_stdlib_flavor = \"$DEFAULT_FLAVOR\";"
+    echo
+    emit_standin_array "$DEFAULT_FLAVOR"
 }
 
 # Idempotent write: rewrite only on real content change, so the parse-time

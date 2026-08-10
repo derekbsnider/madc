@@ -150,6 +150,19 @@ MACOS_MINOS ?= 12
 # standard cross spelling fixes it: drop the toolchain's C++ dirs, name the
 # SDK's. C is unaffected (-nostdinc++ is C++-only), so $(CC) does not carry it.
 DARWIN_CXX_ISYS = -nostdinc++ -isystem $(MACOS_SDK)/usr/include/c++/v1
+# The C++ world madc PRESENTS to user code on Apple targets (HOSTTAB_CXX
+# below) is LLVM's own libc++ — not the SDK's copy. Two reasons: (1)
+# provenance — LLVM libc++ is Apache-2.0-with-LLVM-exception, the openly
+# licensed upstream the SDK copies, so frozen groves derived from it are
+# redistributable (macos-release-lane plan W0); (2) parity — it is the
+# EXACT header text the -stdlib=libc++ lane holds at zero failures, where
+# the SDK's Apple fork is text madc has never parsed. It also sits outside
+# the SDK prefix, so the CLT prefix map below leaves it alone: the cross
+# FREEZER can open it on the build container while the hosted table stays
+# byte-identical (LOADED == parsed needs freezer and consumer to agree).
+# madc's OWN build keeps DARWIN_CXX_ISYS (the SDK headers + .tbd stubs it
+# links against) — only the served include world differs.
+LLVM_LIBCXX_INC ?= /usr/lib/llvm-18/include/c++/v1
 ifeq ($(MODE),cross-x86-64-macos)
 # MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
 # sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
@@ -157,14 +170,14 @@ MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
 DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = x86-64
 DARWIN_PRELUDE_TARGET = x86_64-apple-macos$(MACOS_MINOS)
-HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
+MADC_LINKLIBS_STANDIN = 1
 endif
 ifeq ($(MODE),cross-arm64-macos)
 MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = arm64
 DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
-HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
+MADC_LINKLIBS_STANDIN = 1
 endif
 # --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
 # The darwin toolchain: clang-18 against the owner's staged SDK, linking with
@@ -205,21 +218,51 @@ MADC_STORAGE_DB_OFILES =
 LIBS = -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
-# On-Mac header search: map the build sysroot to the standard CLT SDK path
-# (present only if the user installed CLT; the embedded headers carry the
-# no-CLT case, which includes the owner's run-only Macs).
-MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
-export MADC_SYS_INCLUDE_PREFIX_MAP
 endif
 # The compiler whose `#include <...>` world and predefined-macro environment
 # this madc presents to the code it COMPILES. Normally $(CXX) — the compiler
-# that builds madc is the one whose headers it will read — with the CROSS
-# Apple modes as the deliberate exception: that binary emits Mach-O, so it must
-# search the SDK's headers and predefine the TARGET's macros. Both tables, not
-# just the include list: libc++'s __config branches on __APPLE__/__MACH__, so a
-# cross madc predefining __linux__ cannot configure libc++ however good its
-# header search is. No prefix map on the cross side — a cross build reads those
-# headers right here, at the paths the generator captured.
+# that builds madc is the one whose headers it will read — with the Apple
+# modes (cross AND hosted) as the deliberate exception: those binaries face
+# Mach-O targets, so they must search Apple-target headers and predefine the
+# TARGET's macros. Both tables, not just the include list: libc++'s __config
+# branches on __APPLE__/__MACH__, so a madc predefining __linux__ cannot
+# configure libc++ however good its header search is.
+#
+# ONE assignment for all four Apple modes — the cross madc IS the darwin
+# grove freezer (forest-carriers S1), so its served include world must be
+# byte-identical to the hosted consumer's or LOADED == parsed breaks.
+# (The per-cross-block copies this replaces inherited the hosted export of
+# MADC_SYS_INCLUDE_PREFIX_MAP through the recursive make, baking CLT paths
+# into the cross madc — which then could not open a single C++ header on
+# the build container.)
+#
+# The prefix map applies to BOTH sides for the same reason: the SDK's C
+# paths rewrite to the on-Mac CLT location identically in freezer and
+# consumer, and neither ever opens them on the container (the embedded
+# prelude serves C). $(LLVM_LIBCXX_INC) sits outside the mapped prefix, so
+# the freezer opens the C++ headers at their real container paths while
+# the hosted binary carries the same spelling (inert on a run-only Mac —
+# the packed groves serve C++ there).
+ifdef DARWIN_PRELUDE_TARGET
+HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
+MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+export MADC_SYS_INCLUDE_PREFIX_MAP
+# Per-mode include-table source (embedded_headers.cpp precedent): the hosted
+# and cross tables for one arch DIFFER (only the cross madc carries the
+# probe stand-in sonames), and the hosted build recursively makes the cross
+# freezer — a shared src/ file would flip between the two make layers, a
+# write race under -j. Compile rule beside the embedded_headers.o one below.
+SYS_INCLUDES_CPP = $(OBJDIR)/sys_include_paths.cpp
+export MADC_SYS_INCLUDES_OUT = $(SYS_INCLUDES_CPP)
+# The served predefined-macro table presents as GCC (the posture every host
+# lane runs — host tables come from g++, and "madc impersonates gcc" is the
+# configuration the libc++ parity campaign proved). The capture compiler here
+# is necessarily clang; without the filter libc++ would take its clang-based
+# branches and gate <atomic> on __has_feature probes madc refuses to fake.
+# 13.3.0 = the host g++, so both postures agree on the version.
+MADC_PREDEF_GCC_POSTURE = 13.3.0
+export MADC_PREDEF_GCC_POSTURE
+endif
 HOSTTAB_CXX ?= $(CXX)
 # The host-derived tables (system include paths, predefined macros) are
 # regenerated at PARSE time like embedded_headers.cpp — placed HERE because
@@ -227,7 +270,7 @@ HOSTTAB_CXX ?= $(CXX)
 # whose binary they end up inside (a mode switch silently left the previous
 # toolchain's tables in place before; the generators are idempotent, so an
 # unchanged toolchain never churns mtimes).
-HOSTTAB_GEN := $(shell CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
+HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_LINKLIBS_STANDIN="$(MADC_LINKLIBS_STANDIN)" MADC_SYS_INCLUDES_OUT="$(MADC_SYS_INCLUDES_OUT)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
 # Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
@@ -244,7 +287,7 @@ HOSTTAB_GEN := $(shell CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_
 ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
-EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 endif
@@ -492,6 +535,23 @@ $(MIRDIR)/build-arm64-macos/libmir.a: FORCE
 # and it skips (rc 0) when any is missing, which would make it silent there.
 machogate: cross-arm64-macos cross-x86-64-macos
 	@cd .. && bash scripts/macho_obj_gate.sh
+
+# macOS release artifacts (macos-release-lane plan W1): the darwin twin of
+# `release`. The hosted binaries are ALREADY -O2 and forest-packed at link
+# time (the __MADC,__forest section — a signed Mach-O cannot take the ELF
+# EOF trailer), so the release step is: build both arches SEQUENTIALLY (the
+# per-mode generated tables share src/ file paths — never parallelize
+# across arches), strip into the release-named twins, and verify the strip
+# kept the forest bytes and the arm64 ad-hoc signature (llvm-strip re-signs
+# when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
+# side's job (W2, scripts/mac_battery.sh).
+release-macos:
+	$(MAKE) hosted-arm64-macos
+	$(MAKE) hosted-x86-64-macos
+	llvm-strip-18 -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
+	llvm-strip-18 -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
+	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
+	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
 
 # madc hosted on macOS (Route 1): full madc binaries for the Macs.
 hosted-x86-64-macos:
@@ -778,6 +838,12 @@ ifdef DARWIN_PRELUDE_TARGET
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+# Per-mode include-table source (see SYS_INCLUDES_CPP above): same shape as
+# embedded_headers.o — the generated .cpp lives in the obj tree, never src/.
+$(OBJDIR)/sys_include_paths.o: $(SYS_INCLUDES_CPP) $(DEPENDS)
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
@@ -790,7 +856,7 @@ ifdef HOSTED_DARWIN_TARGET
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 
-$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh
+$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt
 	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 

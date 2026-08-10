@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- **macOS release lane (W1/W2/W4, plan 2026-08-07)**: `make -C src
+  release-macos` builds BOTH hosted darwin binaries (arm64 + x86-64,
+  `-O2`), now carrying the **C++ standard-library groves** in the
+  compressed frozen forest beside the C prelude — `<string>`,
+  containers, streams, `<algorithm>` compile on a header-less Mac
+  straight from the forest. The C++ world is LLVM's Apache-2.0
+  libc++-18 tree (provenance-clean, parity-proven), served under the
+  GCC posture (`scripts/gcc_posture_filter.sh` — one filter for the
+  baked macro table AND the flattened prelude). Stripped via
+  `llvm-strip` (re-signs arm64 ad-hoc), gated by
+  `scripts/verify_macho_release.sh` (forest bytes + signature survive
+  the strip), tarballed by `scripts/package_release_macos.sh`
+  (`madc-<ver>-macos-{arm64,x86_64}.tar.gz` + SHA256SUMS + LLVM
+  notice + quarantine README), driven by the `release-macos`
+  remote_build stage; `scripts/mac_battery.sh` is the Mac-side
+  evidence run. ⚠ Artifacts stay owner-private until the W0.5
+  provenance-clean C prelude lands.
+- **Fixed: `#include_next` / `__has_include(_next)` embedded-set
+  parity** — libc++'s C wrappers can reach the embedded prelude (the
+  only C library an Apple target has), and the probes answer what
+  `#include` actually does (libc++'s `__mbstate_t.h` #error'd on the
+  honest-but-wrong 0).
+- **Fixed: embedded `stdint.h` is the complete C11 7.20 surface**
+  (least/fast/intmax + limits + `INTN_C`; `stddef.h` gained its
+  promised `max_align_t`) — unblocks `<cstdint>` in BOTH stdlib
+  flavors (the long-standing pack-list blocker).
+- **Fixed: a global struct tag now coexists with a flat-registered
+  namespace-scoped class** (darwin math.h's SVID `struct exception`
+  vs `std::exception`); gate `testglobalnstag`.
+- **Fixed: object_arg_addr↔class_ctor_call coercion recursion**
+  (cycle-guarded; libc++ `<fstream>` under the freeze drain segfaulted)
+  and the **mir-cache blob-skip path no longer MIR-fatals** on an
+  unfinished module (the n2 `duration<double>::operator%=` class) —
+  the freeze stays error-contained as its contract always claimed.
+- **Forest binding is machine-portable**: a consumer resolves a
+  filesystem-frozen unit by include-spelling path-tail match
+  (`find_unit_path_tail`) — run-only Macs cannot spell the build
+  container's header paths.
+
 ## [v0.75.0] — 2026-08-09
 
 **madc::value is a first-class script intrinsic — `value`, `var`, and
