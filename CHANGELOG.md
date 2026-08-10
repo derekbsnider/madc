@@ -15,6 +15,28 @@
   (`append_var_type_specs` over `type_list`), so the next widening
   reaches every site. Reducer: `tests/teststaticclassglobal.mad`
   (oracle: both canons).
+- **Fixed: a bound class's STATIC DATA MEMBER named a symbol no library
+  exports.** `std::use_facet<F>(loc)` odr-uses `F::id`, whose storage
+  lives in the stdlib. Live records that Variable while parsing the class
+  body, with the alias derived by the owner for its category
+  (`class_static_member_itanium_symbol` → the nested
+  `_ZNSt3__15ctypeIcE2idE`); a bound class never parses its body, and the
+  forest restore **re-derived** the alias with the namespace-variable
+  owner over the flat storage key `Tag__member`, producing one identifier
+  component (`_ZSt14ctype_char__id`). Symptom depended on where the
+  reference came from: a restored grove body named the real symbol
+  nothing had declared ("undeclared identifier `_ZNSt3__15ctypeIcE2idE`"
+  at `locale:378` — the error on the owner's x86-64 Mac), while a
+  consumer-side instantiation named the invented one ("import of
+  undefined item `_ZSt14ctype_char__id`"). The producer already held the
+  right symbol, so it is now **transported** in the global record
+  (container format **v39**, `alias_id`) and used verbatim — LOADED ==
+  parsed covers derived names too, and no consumer-side derivation can
+  disagree with the owner again. This retires the
+  `FEATURE_FOREST_CLASS_STATIC_ALIAS` correction pass (deleted, not
+  un-guarded: correcting a name the wrong owner wrote was a shim one
+  layer above the transport). Gate: `forest_bind_gate` case `statmem`
+  (`-stdlib=libc++`, negative-controlled).
 - **Fixed: a libc++ `__fwd` alias vanished from every frozen forest.**
   `using ostringstream = basic_ostringstream<char>;` names a template
   that `__fwd/sstream.h` has only *declared*, so madc mints a concrete

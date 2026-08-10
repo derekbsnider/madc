@@ -350,9 +350,8 @@ unaffected — `forest_arena_record_aggregate`'s own kill arm still drops them.
 Gate: `forest_bind_gate` case **`fwdalias`** (negative-controlled: with the
 write-through disabled it fails `bind output '' != 'p=1'`).
 
-**Two further layers, diagnosed and compiled out behind feature guards.**
-Both are real, both are one level deeper than the alias record, and neither is
-safe to ship yet:
+**Two further layers were found one level deeper than the alias record.** The
+static-member one is FIXED (below); the husk one is still compiled out:
 
 - `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` — with the alias name restored, the
   target is still an empty husk (`Unidentified member 'str'`). A live consumer
@@ -361,34 +360,56 @@ safe to ship yet:
   serialize. Completing them at freeze time is the right shape (the producer
   holds both the origin and, by end of parse, the pattern), but **measured: all
   96 opaque alias targets in the libc++ grove set report `origin=NO runs=0`**,
-  so the replay has no source. Finishing needs either the origin recorded at
-  the real mint site, or a canonical-spelling → (template, args) resolver;
-  no spelling→type resolver exists today (searched `from_spelling`,
-  `spelling_to_type`, `resolve_type_spelling` — only pch.cpp's
-  `builtin_datadef_from_spelling`, builtins only).
-- `FEATURE_FOREST_CLASS_STATIC_ALIAS` — the owner's x86-64 laptop error,
+  so the replay has no source.
+  **WHY, located (session #76) — it is one guard, not a missing mechanism.**
+  `instantiate_template_use`'s opaque arm (parser.cpp ~8329) fires for
+  `td.body.empty()` — the template is only DECLARED, which is precisely libc++'s
+  `__fwd/sstream.h` case — and then calls `record_dependent_shell_origin` only
+  `if ( unresolved_surface )`. A bodyless declaration with CONCRETE arguments
+  has `dependent_surface` and `placeholder_arg` both false, so the origin is
+  never recorded for exactly the mints that later need completing. The call site
+  already holds everything the replay wants: `td`, `tname`, `arg_spellings`,
+  `shell_origin_arg_tokens`. Next slice: record the origin for the concrete
+  bodyless-declaration mint too, then let the freeze complete the husk once the
+  real definition has been parsed. No canonical-spelling → (template, args)
+  resolver is needed after all (there is none: searched `from_spelling`,
+  `spelling_to_type`, `resolve_type_spelling` — only pch.cpp's builtins-only
+  `builtin_datadef_from_spelling`).
+- ~~`FEATURE_FOREST_CLASS_STATIC_ALIAS`~~ **FIXED (session #76) — and the fix
+  is one layer below where the guard sat.** The owner's x86-64 laptop error,
   `undeclared identifier _ZNSt3__15ctypeIcE2idE` at `locale:378`, also
-  reproduces on Linux under a libc++ forest bind. Live creates a static data
+  reproduces on Linux under a libc++ forest bind. Live records a static data
   member's storage Variable **while parsing the class body** (vfEXTERN + the
-  library's Itanium `storage_alias_name`); a bound class never parses that
-  body. What the generic extern-ref restore does rebuild it names wrongly —
-  `namespace_cpp_variable_symbol` over the FLAT key mangles `Tag__member` as
-  ONE identifier component (`_ZSt14ctype_char__id`), which no library exports,
-  so the emitter's dlsym gate declined it. (`class_struct_def` defends against
-  that malformed name rather than fixing the derivation.) Correcting it with
-  `class_static_member_itanium_symbol` works — 35 corrections, all flat-key →
-  real Itanium symbol, and the undeclared-identifier error disappears — but it
-  uncovers a **pre-existing duplicate declaration**: the CIR tree carries both
-  `extern struct locale__id <sym>` (node 19649) and a late implicit
-  `extern int <sym>` synthesized beside libc's implicit fns (node 104750), so
-  the error becomes `incompatible types of … declarations`. While the alias
-  stayed malformed the two names never met. Landing the derivation fix without
-  that dedup only trades one hard error for another. Also note the ordering
-  constraint discovered here: the correction must run **after** the
-  `forest_pending_globals` loop (the Variable does not exist before it), and
-  availability cannot be tested at flush time at all — the flavor runtime is
-  not dlopened until the tree build, so dlsym answers "no" for every real
-  libc++ export.
+  alias its OWN owner derives — `class_static_member_itanium_symbol`); a bound
+  class never parses that body, and the restore **re-derived** the alias with
+  the namespace-variable owner over the FLAT storage key `Tag__member`, so one
+  identifier component came out (`_ZSt14ctype_char__id`) where the nested
+  `_ZNSt3__15ctypeIcE2idE` is what libc++ exports. Which error you saw depended
+  on where the reference came from: a restored grove body named the real symbol
+  nothing had declared (undeclared identifier), a consumer-side instantiation
+  named the invented one (`import of undefined item _ZSt14ctype_char__id`).
+  The guarded pass CORRECTED the name after the wrong owner wrote it — a shim.
+  The producer already held the right symbol for every category, so the fix is
+  to **transport** it: `cir_forest_global_record.alias_id` (container format
+  **v39**), used verbatim at restore, derivation kept only as the no-alias
+  fallback. The correction pass and its staging vector are deleted.
+  Landing it needed a second, independent fix first: the CIR tree ended up with
+  a properly typed `extern struct locale__id <sym>` AND a late
+  `extern int <sym>`, because the referenced-global extern pass derived its type
+  spec with a bare `append_type_specs`, which cannot express a struct/union tag
+  and falls through to `int`. That was one of THREE hand-rolled copies of the
+  declaration type-spec derivation (`var_decl`'s `static` arm degraded a
+  class-typed file-scope static the same way — `static Cls g;` compiled as
+  `static int g`, reduced in `tests/teststaticclassglobal.mad`); all now share
+  `append_var_type_specs`. Gates: `forest_bind_gate` case `statmem` plus that
+  reducer. Note the constraint the guarded version had discovered and the
+  transport sidesteps entirely: availability could not be tested at flush time
+  at all, because `cir_open_stdlib_runtime` does not dlopen the flavor runtime
+  until the tree build, so dlsym answers "no" for every real libc++ export.
+  Frontier after the fix: `std::use_facet<std::ctype<char> >` runs correctly
+  under a bound libc++ grove; `std::cout << "hi"` now reaches RUNTIME and
+  SIGSEGVs inside `std::locale`'s copy ctor via `ios_base::getloc` — the next
+  layer, and a different defect.
 2. **The `value` intrinsic segfaults on darwin.** `value v = 41; v = v + 1;`
    warns `using pointer without cast for integer type parameter` at the `v + 1`
    line and then SIGSEGVs at 0x0. A signature mismatch on a value-runtime

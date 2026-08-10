@@ -3312,6 +3312,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rg.gflags     = g.gflags;
 		uint32_t nslen = 0;
 		rg.ns         = g.ns_id ? pool_cstr(g.ns_id, nslen) : NULL;	// v22
+		uint32_t allen = 0;
+		rg.alias      = g.alias_id ? pool_cstr(g.alias_id, allen) : NULL;	// v39
 		rg.init_value = g.init_value;
 		// v25: the ctor-args raw-token run (arena tokbytes span).
 		rg.ctor_bytes = NULL;

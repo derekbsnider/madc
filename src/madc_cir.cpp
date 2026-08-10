@@ -3168,6 +3168,17 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		return t.decl && prog->forest_is_tu_root_file(t.decl->file);
 	return false;
     };
+    // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
+    // it through whichever owner the entity's category has —
+    // namespace_cpp_variable_symbol for a namespace variable,
+    // class_static_member_itanium_symbol for a class-scope static data member —
+    // and the consumer must not re-run one derivation over all of them (it did,
+    // and mangled `ctype_char__id` as a single identifier component). Carrying
+    // it is what makes LOADED == parsed hold for the symbol too.
+    auto global_alias_id = [&](Variable *gv) -> uint32_t {
+	return gv->storage_alias_name.empty()
+		   ? 0u : pool.intern(gv->storage_alias_name);
+    };
     for (Variable *v : prog->tkProgram->variables) {
 	if (!v || !v->type)
 	    continue;
@@ -3198,6 +3209,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		if (eo->second && prog->forest_is_tu_root_file(eo->second))
 			g.gflags |= CIR_GLOBALF_TU_ROOT;
 		g.ns_id      = global_ns_id(v);
+		g.alias_id      = global_alias_id(v);	// v39
 		g.init_value = v->get<int64_t>();
 		DBG(std::cout << "cir_forest_fill_globals: enum const "
 			  << v->name << " = " << g.init_value
@@ -3233,6 +3245,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (global_tu_root(v))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    f.globals.push_back(g);
 	    continue;
 	}
@@ -3252,6 +3265,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (global_tu_root(v))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    // v16: classify the header's initializer FORM so the load rebuilds a
 	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
 	    // NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
@@ -3344,6 +3358,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (prog->forest_is_tu_root_file(td->file))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    f.globals.push_back(g);
 	    continue;
 	}
@@ -3373,6 +3388,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	if (td && prog->forest_is_tu_root_file(td->file))
 	    g.gflags |= CIR_GLOBALF_TU_ROOT;
 	g.ns_id      = global_ns_id(v);
+	g.alias_id      = global_alias_id(v);	// v39
 	g.init_value = rhs->ival();
 	f.globals.push_back(g);
     }

@@ -4495,6 +4495,10 @@ public:
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
     struct PendingForestGlobal {
 	std::string name; std::string ns; DataDef *type;
+	// v39: Variable::storage_alias_name as the PRODUCER derived it (empty =
+	// none). Transported, not re-derived — the consumer had one derivation
+	// for every category and mis-mangled class-scope static data members.
+	std::string alias;
 	uint32_t flags; uint32_t gflags; int64_t init_value;
 	// v25: the ctor-args raw-token run (CIR_GLOBALF_CTOR_ARG_TOKENS) — a
 	// span into the bound forest's arena tokbytes; the flush re-runs the
@@ -4538,14 +4542,6 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
-    // Restored classes that declare STATIC DATA MEMBERS. Live creates each
-    // member's storage Variable while parsing the class body (vfEXTERN +
-    // the library's Itanium storage_alias_name); a bound class never parses
-    // that body, so the Variable did not exist and the emitter's extern-decl
-    // pass found nothing to declare. Registration needs tkProgram, which does
-    // not exist during forest_restore_decls, so the owners stage here and
-    // flush_forest_pending_globals rebuilds live's registration exactly.
-    std::vector<DataDefCLASS *> forest_pending_static_owners;
     // v26: origin file of each plain/anonymous-enum ENUMERATOR constant
     // (TokenENUM's global branch — the constants live in tkProgram->variables
     // with no TopDecl and no back-link to the enum tag). Stamped at the one

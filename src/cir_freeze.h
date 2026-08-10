@@ -196,6 +196,19 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // container whose version differs from the reader's is rejected wholesale
 // (live parse takes over) — never partially read. History, newest first:
 //
+// v39: GLOBAL STORAGE ALIAS TRANSPORTED — cir_forest_global_record gains
+// alias_id, Variable::storage_alias_name verbatim. The consumer used to
+// RE-DERIVE the emitted symbol for every restored extern reference through the
+// namespace-variable derivation, which is the wrong owner for a class-scope
+// STATIC DATA MEMBER: its flat storage key `Tag__member` mangled as ONE
+// identifier component (_ZSt14ctype_char__id) instead of the nested
+// _ZNSt3__15ctypeIcE2idE that libc++/libstdc++ actually export, so
+// `std::use_facet<F>` under a bound grove died on an undeclared identifier (or
+// an undefined MIR import for the invented name). The producer already held the
+// right name — every entity category derives its symbol through its OWN owner
+// at parse — so it is carried, not recomputed. LOADED == parsed covers derived
+// names too.
+//
 // v38: MEMBER-TEMPLATE PARAM CONSTRAINT RUNS — the ClassMethodPattern payload
 // gains a per-param constraint-run section between the v36 defaults and the
 // v37 function-param type runs, and CIR_TMPLK_MEMBER records carry the runs
@@ -520,7 +533,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v6: complete type-table serialization (typeid->full DataDef, swizzle on
 // load) replaces the typeid->name closure + the decl_record/struct_member
 // parallel streams
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 38 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 39 };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -755,6 +768,16 @@ struct cir_forest_global_record
 	uint32_t ctor_tok_bytes;
 	uint32_t ctor_tok_count;
 	uint32_t ctor_file_id;
+	// v39: Variable::storage_alias_name VERBATIM (intern handle; 0 = none) —
+	// the emitted symbol this reference resolves to. The producer computed it
+	// at parse through whichever derivation OWNS the entity's category, so it
+	// is transported, never re-derived: the consumer had one derivation
+	// (namespace_cpp_variable_symbol) and used it for every record, which
+	// mangled a class-scope STATIC DATA MEMBER's flat key `Tag__member` as a
+	// single identifier component (_ZSt14ctype_char__id — a name no library
+	// exports) instead of the nested _ZNSt3__15ctypeIcE2idE. LOADED == parsed
+	// applies to derived names too.
+	uint32_t alias_id;
 };
 
 // --- v20 (widening slice 2): template-NAME state records -------------------
@@ -1083,6 +1106,7 @@ struct CirRestoredGlobal
 	uint32_t    flags;		// Variable::flags verbatim
 	uint32_t    gflags;		// forest-global flags (CIR_GLOBALF_*) — v14
 	const char *ns;			// defining namespace (NULL/"" = global) — v22
+	const char *alias;		// v39: storage_alias_name verbatim (NULL = none)
 	int64_t     init_value;		// scalar integer init (valid iff CIR_GLOBALF_SCALAR_INIT) — v14
 	// v25 (CIR_GLOBALF_CTOR_ARG_TOKENS): the ctor-args raw-token run — a span
 	// into the arena tokbytes; the parser-side flush deserializes it and

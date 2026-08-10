@@ -21527,11 +21527,6 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pf.mvar = mv;
 		forest_pending_funcs.push_back(pf);
 	    }
-	    // A class-scope STATIC DATA MEMBER also needs its storage Variable
-	    // (live builds it while parsing the class body). Same reason the
-	    // methods stage: tkProgram does not exist yet.
-	    if ( !cdd->static_member_types.empty() )
-		forest_pending_static_owners.push_back(cdd);
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);
@@ -21559,6 +21554,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
 	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
+	pg.alias      = rg.alias ? rg.alias : "";	// v39: the producer's symbol
 	pg.type       = rg.type;
 	pg.flags      = rg.flags;
 	pg.gflags     = rg.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
@@ -22091,18 +22087,37 @@ void Program::flush_forest_pending_globals()
 	    continue;			// unresolved / already present
 	// v22: an `extern T name;` REFERENCE to a library-defined object
 	// (std::cout). Rebuild live's registration exactly (parser.cpp var-decl
-	// tail): a vfEXTERN Variable (flags verbatim), the Itanium storage
-	// alias via the ONE live derivation (namespace_cpp_variable_symbol),
-	// and the namespace binding. NO TopDecl and NO ctor — the object lives
-	// in the library; emission is reference-driven, as live.
+	// tail): a vfEXTERN Variable (flags verbatim), the storage alias, and
+	// the namespace binding. NO TopDecl and NO ctor — the object lives in
+	// the library; emission is reference-driven, as live.
+	//
+	// v39: the alias is TRANSPORTED (pg.alias), not re-derived. It used to
+	// be recomputed here with namespace_cpp_variable_symbol for every
+	// record, which is the wrong owner for a class-scope STATIC DATA MEMBER:
+	// its storage key is the FLAT `Tag__member`, so one identifier component
+	// came out (_ZSt14ctype_char__id) where the nested
+	// _ZNSt3__15ctypeIcE2idE is what libc++ exports — no library defines the
+	// invented name, so `std::use_facet<F>` under a bound grove failed on an
+	// undeclared identifier / undefined MIR import. The producer already
+	// held the right symbol for every category. The derivation stays only as
+	// the fallback for a record that carries no alias at all.
 	if ( pg.gflags & CIR_GLOBALF_EXTERN_REF )
 	{
 	    Variable *xv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
 	    xv->flags = pg.flags;
+	    if ( !pg.alias.empty() )
+		xv->storage_alias_name = pg.alias;
 	    if ( !pg.ns.empty() )
 	    {
-		xv->storage_alias_name =
-		    namespace_cpp_variable_symbol(pg.ns, pg.name);
+		if ( xv->storage_alias_name.empty() )
+		{
+		    xv->storage_alias_name =
+			namespace_cpp_variable_symbol(pg.ns, pg.name);
+		    DBG(std::cout << "flush_forest_pending_globals: extern ref "
+			<< pg.ns << "::" << pg.name
+			<< " carried NO alias — derived "
+			<< xv->storage_alias_name << std::endl);
+		}
 		variable_map_t &xns = namespace_variables_for_write(pg.ns);
 		if ( xns.find(pg.name) == xns.end() )
 		    xns[pg.name] = xv;
@@ -22274,87 +22289,12 @@ void Program::flush_forest_pending_globals()
     }
     forest_pending_globals.clear();
 
-    // A bound class's STATIC DATA MEMBER storage. Live's class-body parse
-    // creates a vfEXTERN Variable named `Tag__member` whose storage_alias_name
-    // is the library's real Itanium symbol (parser.cpp, the is_static_member
-    // arm) — that Variable is what CirBuilder::class_struct_def looks up to
-    // emit `extern <type> _ZN...E`. A bound class never parses its body, so
-    // the lookup failed and NOTHING declared the symbol: `std::use_facet<F>`
-    // odr-uses `F::id`, so a libc++ grove bind died with "undeclared
-    // identifier _ZNSt3__15ctypeIcE2idE" at locale:378 for any program that
-    // touched a stream (the owner's x86-64 Mac; reproducible on Linux under
-    // -stdlib=libc++ with a frozen forest, where live parse of the same
-    // headers works).
-    //
-    // What the generic extern-ref restore DOES rebuild, it names wrongly: it
-    // derives the alias with namespace_cpp_variable_symbol over the FLAT key,
-    // so `Tag__member` mangles as ONE identifier component —
-    // _ZSt14ctype_char__id for std::__1::ctype<char>::id, and
-    // _ZNSt7__cxx1117numpunct_char__idE for libstdc++'s numpunct. No library
-    // exports those, so the emitter's dlsym gate declined them and nothing
-    // declared the real symbol. (class_struct_def defended against the
-    // malformed name rather than fixing the derivation; this is that fix.)
-    // Correct it with the SAME derivation live uses —
-    // class_static_member_itanium_symbol over the class's canonical spelling.
-    //
-    // Correct the alias ONLY; never invent storage that no other path
-    // registered. Whether a member HAS storage is live's has_inclass_init
-    // question, and getting it wrong the permissive way turns a folded
-    // constant into a reference to a symbol nothing defines (live gives
-    // basic_string::npos and memory_resource::_S_max_align no storage).
-    // Availability cannot be tested here either: this runs during the PARSE,
-    // while cir_open_stdlib_runtime does not dlopen the flavor runtime until
-    // the tree build, so dlsym answers "no" for every real libc++ export.
-    // Recording the right NAME is the parser's job; deciding whether it links
-    // stays with the emitter's gate, which runs once the runtime is open.
-    //
-    // OFF pending one more layer, because correcting the name is necessary but
-    // not yet sufficient. With it on, `undeclared identifier
-    // _ZNSt3__15ctypeIcE2idE` becomes `incompatible types of
-    // _ZNSt3__15ctypeIcE2idE declarations`: the CIR tree ends up with BOTH a
-    // properly typed `extern struct locale__id <sym>` (from the corrected
-    // Variable, node 19649 in --dump-cir of the sstream reducer) and a late
-    // implicit `extern int <sym>` synthesized in the same block as libc's
-    // implicitly-declared fns (node 104750). That duplicate is PRE-EXISTING and
-    // was merely invisible: while the alias stayed malformed the two
-    // declarations carried different names and never met. Landing this without
-    // the dedup would trade one hard error for another, so it stays compiled
-    // out — the derivation here is proven right (35 corrections on the libc++
-    // grove set, every one from a flat-key mangling to the real Itanium symbol).
-    for ( size_t i = 0; i < forest_pending_static_owners.size(); ++i )
-    {
-#ifndef FEATURE_FOREST_CLASS_STATIC_ALIAS
-	break;
-#endif
-	DataDefCLASS *scdd = forest_pending_static_owners[i];
-	if ( !scdd )
-	    continue;
-	for ( std::map<std::string, DataDef *>::const_iterator smi =
-		  scdd->static_member_types.begin();
-	      smi != scdd->static_member_types.end(); ++smi )
-	{
-	    if ( !smi->second )
-		continue;
-	    const std::string alias =
-		class_static_member_itanium_symbol(scdd, smi->first);
-	    if ( alias.empty() )
-		continue;		// madc's own class: the invented name is right
-	    const std::string storage =
-		class_static_member_storage_name(scdd, smi->first);
-	    Variable *sv = findVariable(storage);
-	    if ( !sv )
-		continue;		// nothing registered it; nothing to correct
-	    if ( sv->storage_alias_name == alias )
-		continue;
-	    DBG(std::cout << "flush_forest_pending_globals: class static "
-		<< scdd->name << "::" << smi->first << " alias '"
-		<< sv->storage_alias_name << "' -> '" << alias
-		<< "' vartype=" << (sv->type ? sv->type->name : "(null)")
-		<< " memtype=" << smi->second->name << std::endl);
-	    sv->storage_alias_name = alias;
-	}
-    }
-    forest_pending_static_owners.clear();
+    // A bound class's STATIC DATA MEMBER storage needs no fix-up here: the
+    // vfEXTERN Variable the extern-ref arm above rebuilds now carries the
+    // PRODUCER's symbol (v39 alias transport), which for a class static is
+    // class_static_member_itanium_symbol's nested mangling — the same name live
+    // records while parsing the class body, and the name
+    // CirBuilder::class_struct_def looks up to emit `extern <type> _ZN...E`.
 
     // v25: restored NAMESPACE-SURFACE state — after every fn/global above is
     // registered, so the bindings resolve their targets.

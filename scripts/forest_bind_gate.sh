@@ -547,6 +547,76 @@ int main()
 EOF
 run_case fwdalias "p=1"
 
+# --- case: statmem — a BOUND class's STATIC DATA MEMBER resolves to the
+#     LIBRARY's symbol. `std::use_facet<F>(loc)` odr-uses `F::id`, whose storage
+#     lives in the stdlib, not in the program. Live records that Variable while
+#     parsing the class body, with the alias its OWN owner derives
+#     (class_static_member_itanium_symbol -> the nested _ZNSt3__15ctypeIcE2idE);
+#     a bound class never parses its body, and the restore re-derived the alias
+#     with the NAMESPACE-variable owner over the flat storage key `Tag__member`,
+#     yielding one identifier component (_ZSt14ctype_char__id) that no library
+#     exports. Symptom depended on where the reference came from: a restored
+#     grove body named the real symbol nothing had declared ("undeclared
+#     identifier _ZNSt3__15ctypeIcE2idE" at locale:378 — the owner's x86-64 Mac),
+#     while a consumer-side instantiation named the invented one ("import of
+#     undefined item _ZSt14ctype_char__id"). Fixed by TRANSPORTING the
+#     producer's alias (format v39), so no derivation runs on the consumer side.
+#     Runs under -stdlib=libc++ because that flavor's facets are the ones a
+#     shipped forest binds (darwin's grove set is frozen from libc++); the
+#     libstdc++ forest reaches the same code and must stay green too.
+if printf 'int main(){return 0;}\n' > tmp/fbgate_statmem_probe.cpp \
+   && timeout 60 "$BIN" -stdlib=libc++ tmp/fbgate_statmem_probe.cpp >/dev/null 2>&1; then
+    sm_snap="tmp/fbgate_statmem.msnap"
+    sm_prod="tmp/fbgate_statmem_producer.cpp"
+    sm_cons="tmp/fbgate_statmem_consumer.cpp"
+    sm_bin="tmp/fbgate_statmem_clang"
+    sm_vlog="tmp/fbgate_statmem_v.log"
+    sm_exp="up=A"
+    cat > "$sm_prod" <<'EOF'
+#include <locale>
+int main() { return 0; }		/* header-only producer: never uses a facet */
+EOF
+    cat > "$sm_cons" <<'EOF'
+#include <cstdio>
+#include <locale>
+int main()
+{
+    std::locale loc;
+    /* use_facet<F> odr-uses F::id — the class-scope static data member whose
+       storage the LIBRARY defines. */
+    const std::ctype<char> &ct = std::use_facet<std::ctype<char> >(loc);
+    printf("up=%c\n", ct.toupper('a'));
+    return 0;
+}
+EOF
+    if ! timeout 600 "$BIN" -stdlib=libc++ --freeze="$sm_snap" "$sm_prod" >/dev/null 2>&1; then
+        fail "[statmem] --freeze (-stdlib=libc++) FAILED"
+    fi
+    [ -f "$sm_snap" ] || fail "[statmem] --freeze produced no container"
+    sm_live=$(timeout 120 "$BIN" -stdlib=libc++ "$sm_cons" 2>/dev/null)
+    [ "$sm_live" = "$sm_exp" ] || fail "[statmem] live-parse output '$sm_live' != '$sm_exp'"
+    if command -v clang++ >/dev/null 2>&1; then
+        if timeout 120 clang++ -stdlib=libc++ "$sm_cons" -o "$sm_bin" >/dev/null 2>&1; then
+            sm_or=$("$sm_bin" 2>/dev/null)
+            [ "$sm_or" = "$sm_exp" ] || fail "[statmem] clang++ -stdlib=libc++ output '$sm_or' != '$sm_exp'"
+        fi
+    fi
+    sm_out=$(timeout 120 "$BIN" -stdlib=libc++ --forest-bind="$sm_snap" "$sm_cons" 2>/dev/null)
+    [ "$sm_out" = "$sm_exp" ] \
+        || fail "[statmem] bind output '$sm_out' != '$sm_exp' (static-member alias re-derived?)"
+    # No silent live fall-through: the grove must actually have bound.
+    timeout 120 "$BIN" -v -stdlib=libc++ --forest-bind="$sm_snap" "$sm_cons" >"$sm_vlog" 2>/dev/null
+    if ! grep -aq "bound to grove unit" "$sm_vlog"; then
+        rm -f "$sm_snap" "$sm_bin" "$sm_vlog"
+        fail "[statmem] consumer did NOT bind the grove (live fall-through?)"
+    fi
+    rm -f "$sm_snap" "$sm_bin" "$sm_vlog" "$sm_prod" "$sm_cons" tmp/fbgate_statmem_probe.cpp
+    echo "forest_bind_gate: [statmem] OK — a bound class's static data member resolves to the library symbol, output == live == clang++"
+else
+    rm -f tmp/fbgate_statmem_probe.cpp
+    echo "forest_bind_gate: [statmem] SKIP — this build has no libc++ flavor"
+fi
+
 # --- case: flavorgate (v34: the stdlib FLAVOR is producer-config identity) ---
 # A container frozen under the build's default flavor (libstdc++) must NOT
 # bind into a -stdlib=libc++ compile — the corpus carries the WRONG stdlib's
