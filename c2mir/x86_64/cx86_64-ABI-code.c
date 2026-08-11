@@ -417,7 +417,17 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
   MIR_var_t var;
   MIR_type_t type;
   MIR_type_t qword_types[MAX_QWORDS];
-  int n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
+  int n_qwords;
+
+  if (ret_addr_param_p (arg_type)) { /* hidden result address -> RBLK */
+    var.name = name;
+    var.type = MIR_T_RBLK;
+    var.size = type_size (c2m_ctx, arg_type->u.ptr_type);
+    VARR_PUSH (MIR_var_t, arg_vars, var);
+    arg_info->n_iregs++;
+    return;
+  }
+  n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
 
   /* pass aggregates on the stack and pass by value for others: */
   var.name = name;
@@ -448,7 +458,17 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_type_t type;
   MIR_type_t qword_types[MAX_QWORDS];
-  int n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
+  int n_qwords;
+
+  if (ret_addr_param_p (arg_type)) { /* hidden result address -> RBLK */
+    op_t addr = force_reg (c2m_ctx, arg, MIR_T_I64);
+    VARR_PUSH (MIR_op_t, call_ops,
+               MIR_new_mem_op (ctx, MIR_T_RBLK, type_size (c2m_ctx, arg_type->u.ptr_type),
+                               addr.mir_op.u.reg, 0, 1));
+    arg_info->n_iregs++;
+    return;
+  }
+  n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
 
   /* pass aggregates on the stack and pass by value for others: */
   if (!memory_value_type_p (arg_type)) {

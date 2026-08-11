@@ -319,6 +319,18 @@ struct type {
   enum type_mode mode;
   char func_type_before_adjustment_p;
   char unnamed_anon_struct_union_member_type_p;
+  /* __attribute__((ret_addr)) on a POINTER parameter: that pointer is the
+     hidden result address of a by-value aggregate return, and is emitted as
+     MIR_T_RBLK so the TARGET places it — x8 on AArch64 (mir-aarch64.c: "First
+     RBLK arg is passed in r8"), the first argument register on x86-64 SysV.
+     A front end whose source language returns some class indirectly at a size
+     C would return in registers (C++: any non-trivially-copyable class) cannot
+     say that through the return TYPE, because C classifies by size; and it must
+     NOT say it by returning the aggregate by value either, since the callee has
+     to CONSTRUCT IN PLACE in the caller's slot — a by-value return copies out of
+     a temporary, which for such a class is exactly what is forbidden.  The flag
+     is set on the POINTEE type by check_decl_spec; ret_addr_param_p tests it. */
+  char ret_addr_p;
   int align; /* type align, undefined if < 0  */
   /* Raw type size (w/o alignment type itself requirement but with
      element alignment requirements), undefined if mir_size_max.  */
@@ -5961,6 +5973,7 @@ static void init_type (struct type *type) {
   type->raw_size = MIR_SIZE_MAX;
   type->func_type_before_adjustment_p = FALSE;
   type->unnamed_anon_struct_union_member_type_p = FALSE;
+  type->ret_addr_p = FALSE;
 }
 
 static void set_type_pos_node (struct type *type, node_t n) {
@@ -7748,6 +7761,7 @@ static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
 static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t decl_node) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   int n_sc = 0, sign = 0, size = 0, complex_p = 0, func_p = FALSE;
+  int ret_addr_p = FALSE; /* __attribute__((ret_addr)) seen */
   struct decl_spec *res;
   struct type *type;
 
@@ -8104,6 +8118,8 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
           res->weak_p = TRUE;
         else if (attr_name_eq_p (aname->u.s.s, "linkonce"))
           res->linkonce_p = TRUE;
+        else if (attr_name_eq_p (aname->u.s.s, "ret_addr"))
+          ret_addr_p = TRUE;
       }
       break;
     }
@@ -8140,6 +8156,9 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     error (c2m_ctx, POS (r), "integer _Complex is not supported (lower it in the front end)");
   set_type_qual (c2m_ctx, r, &type->type_qual, type->mode);
   apply_vector_attr_list (c2m_ctx, r, &res->type);
+  /* After apply_vector_attr_list, which may replace res->type.  The declarator
+     wraps this in TM_PTR, so the flag ends up on the pointee. */
+  if (ret_addr_p) res->type->ret_addr_p = TRUE;
   type = res->type;
   if (res->align_node) {
     if (res->typedef_p)
@@ -15487,12 +15506,30 @@ static MIR_type_t MIR_UNUSED simple_target_get_blk_type (c2m_ctx_t c2m_ctx MIR_U
   return MIR_T_BLK;
 }
 
+/* TRUE for a pointer parameter carrying __attribute__((ret_addr)): the hidden
+   result address of a by-value aggregate return.  Emitted as MIR_T_RBLK so the
+   target places it in its indirect-result register instead of the first
+   ordinary argument register.  Only meaningful for a pointer to an aggregate;
+   anything else keeps the ordinary path. */
+static int ret_addr_param_p (struct type *arg_type) {
+  return (arg_type->mode == TM_PTR && arg_type->u.ptr_type != NULL
+          && arg_type->u.ptr_type->ret_addr_p
+          && aggregate_type_p (arg_type->u.ptr_type));
+}
+
 static void MIR_UNUSED simple_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name,
                                              struct type *arg_type, void *arg_info MIR_UNUSED,
                                              VARR (MIR_var_t) * arg_vars) {
   MIR_var_t var;
   MIR_type_t type;
 
+  if (ret_addr_param_p (arg_type)) {
+    var.name = name;
+    var.type = MIR_T_RBLK;
+    var.size = type_size (c2m_ctx, arg_type->u.ptr_type);
+    VARR_PUSH (MIR_var_t, arg_vars, var);
+    return;
+  }
   type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
   var.name = name;
   var.type = type;
@@ -15505,6 +15542,17 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_type_t type;
 
+  if (ret_addr_param_p (arg_type)) {
+    /* The argument is already the caller's slot ADDRESS — the callee writes
+       through it, so nothing is materialized and nothing is copied.  Hand it
+       to MIR as an RBLK memory operand based on that address. */
+    op_t addr = force_reg (c2m_ctx, arg, MIR_T_I64);
+    VARR_PUSH (MIR_op_t, call_ops,
+               MIR_new_mem_op (c2m_ctx->ctx, MIR_T_RBLK,
+                               type_size (c2m_ctx, arg_type->u.ptr_type),
+                               addr.mir_op.u.reg, 0, 1));
+    return;
+  }
   type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
   if (type != MIR_T_BLK) {
     VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
