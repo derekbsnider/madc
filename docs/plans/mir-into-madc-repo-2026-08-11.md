@@ -1294,6 +1294,12 @@ zig `libSystem.tbd` cross-link follow-up (Intel macOS runners are being
 retired upstream, so a native x86_64 Apple runner may not exist by
 then).
 
+Sequencing (owner, 2026-08-11, post-go): the **Windows release comes
+first** — "once we have a working windows build, then we will set up
+all the github runner stuff." The runner matrix should automate build
+lanes that already exist, and a Windows lane adds a fourth artifact
+family that changes the matrix's shape.
+
 ---
 
 # 31. Guiding Principle
