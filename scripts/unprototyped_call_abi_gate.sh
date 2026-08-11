@@ -27,7 +27,7 @@ cd "$(dirname "$0")/.."
 
 ulimit -t 120 2>/dev/null
 
-C2M="${C2M:-/workspace/mir/c2m}"
+C2M="${C2M:-obj/mir/host/c2m}"
 MIRDIR="$(dirname "$C2M")"
 
 fail() { echo "unprototyped_call_abi_gate: $1"; exit 1; }

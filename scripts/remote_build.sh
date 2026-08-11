@@ -9,8 +9,8 @@
 # Usage:
 #   scripts/remote_build.sh [stage ...]
 # Stages (default: sync build):
-#   sync      rsync madc + mir deltas to the container
-#   build     make MIR libmir.a + configure (once) + make -C src
+#   sync      rsync the madc tree to the container (third_party/mir rides along)
+#   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
 #   exe       bash scripts/run_tests.sh --exe
@@ -37,7 +37,6 @@ REMOTE="dev@localhost"
 PORT=2299
 SSH="ssh -p $PORT $REMOTE"
 LOCAL_MADC=/workspace/madc
-LOCAL_MIR=/workspace/mir
 
 # ALWAYS keep a full transcript, whether or not the caller redirects.
 #
@@ -155,26 +154,14 @@ for stage in $stages; do
 		rc=$?
 		echo "sync madc rc=$rc"
 		note_stage "sync madc" "$rc"
-		# The container builds every MIR artifact; the NAS builds nothing
-		# (owner directive). So push SOURCE only — never build output.
-		# Objects/archives were already excluded; the linked drivers were
-		# not, and on 2026-08-10 an OLD c2m sitting in the NAS tree
-		# replaced the freshly built one and answered for a c2mir that
-		# was not under test (a gate failed against pre-fix behaviour and
-		# read as a real regression). build-*/ are the container's
-		# per-target cross trees, absent here — excluding them also ends
-		# the "cannot delete non-empty directory" spam --delete produced.
-		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
-			--exclude="build-*/" \
-			--exclude=c2m --exclude=m2b --exclude=b2m --exclude=b2ctab \
-			--exclude=mir-bin-run --exclude=run-test \
-			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
-		rc=$?
-		echo "sync mir rc=$rc"
-		note_stage "sync mir" "$rc"
+		# MIR rides the madc sync: third_party/mir is ordinary madc source
+		# (subtree migration, docs/plans/mir-into-madc-repo-2026-08-11.md).
+		# The historical stale-c2m trap (2026-08-10: an OLD NAS-built c2m
+		# shadowed the container's and answered for a c2mir not under test)
+		# is closed by construction — every libmir/c2m build product lands
+		# in obj/mir/, and obj/ is excluded from the sync.
 		;;
 	build)
-		run_remote "build mir" "make -C /workspace/mir -j20 libmir.a"
 		run_remote "configure" "cd /workspace/madc; test -f src/config.mk || ./configure"
 		run_remote "build madc" "make -C /workspace/madc/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted

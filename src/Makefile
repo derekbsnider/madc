@@ -110,7 +110,14 @@ OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
-MIRDIR	= /workspace/mir
+# MIR lives IN this repository (subtree import of the former fork —
+# docs/plans/mir-into-madc-repo-2026-08-11.md); third_party/mir is ordinary
+# madc source. libmir build products land OUTSIDE the subtree, under
+# ../obj/mir/<variant>, so a build never dirties third_party/mir.
+# Deliberately outside `clean`'s scope (madc objects only) — `mirclean`
+# removes them.
+MIRDIR	= $(abspath ../third_party/mir)
+MIRBUILD = $(abspath ../obj/mir)
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
@@ -124,13 +131,13 @@ LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 # the sources so a new consumer joins automatically.
 VERSION_DEP_SRCS := $(shell grep -l 'MADC_VERSION_STR' *.cpp 2>/dev/null)
 $(VERSION_DEP_SRCS:%.cpp=$(OBJDIR)/%.o) $(VERSION_DEP_SRCS:%.cpp=$(PICOBJDIR)/%.o): ../VERSION
-MIRLIB	= $(MIRDIR)/libmir.a
+MIRLIB	= $(MIRBUILD)/host/libmir.a
 ifeq ($(MODE),cross-aarch64-linux)
 # One MIR variant lib per target (mir-target.h knobs; zero mir makefile
 # changes — the variant builds through the stock CPPFLAGS hook, rule below).
 # The same target define compiles madc's objects (per-mode obj tree), and
 # MADC_CROSS_TARGET names the target for the driver's emit-only guard.
-MIRLIB	= $(MIRDIR)/build-aarch64-linux/libmir.a
+MIRLIB	= $(MIRBUILD)/aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
 # Shared Apple-target facts (cross + hosted MODEs). DARWIN_PRELUDE_TARGET is
@@ -175,14 +182,14 @@ LLVM_LIBCXX_INC ?= /usr/lib/llvm-18/include/c++/v1
 ifeq ($(MODE),cross-x86-64-macos)
 # MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
 # sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
-MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
+MIRLIB	= $(MIRBUILD)/x86-64-macos/libmir.a
 DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = x86-64
 DARWIN_PRELUDE_TARGET = x86_64-apple-macos$(MACOS_MINOS)
 MADC_LINKLIBS_STANDIN = 1
 endif
 ifeq ($(MODE),cross-arm64-macos)
-MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
+MIRLIB	= $(MIRBUILD)/arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = arm64
 DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
@@ -208,7 +215,7 @@ CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=l
 CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS) -fuse-ld=lld
 AR  = llvm-ar-18
 MODE_OPTFLAGS = -O2
-MIRLIB	= $(MIRDIR)/build-$(MODE)/libmir.a
+MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 # The configure-probed host packages (madcdat backends) do not exist in the
 # SDK: hosted modes build as if --enable-madcdat=no. zstd — the forest/pch
 # container codec the release pack ships — comes from a per-target static
@@ -528,11 +535,23 @@ FORCE:
 cross-aarch64-linux:
 	$(MAKE) MODE=cross-aarch64-linux ../bin/madc-aarch64-linux
 
-# MIR variant lib for the cross target: the fork's stock makefile with the
-# target define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS
-# clobbers the fork makefile's default -I$$(SRC_DIR)).
-$(MIRDIR)/build-aarch64-linux/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' build-aarch64-linux/libmir.a
+# Host libmir + the c2m compiler the CIR-diff / ABI gates drive: built by
+# madc's own build, so a fresh clone needs no separate MIR step (migration
+# plan §11). FORCE delegates up-to-dateness to the MIR makefile's own
+# dependency tracking; a current build is a cheap no-op.
+$(MIRBUILD)/host/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/host
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/host $(MIRBUILD)/host/libmir.a $(MIRBUILD)/host/c2m
+
+mirclean:
+	rm -rf $(MIRBUILD)
+
+# MIR variant lib for the cross target: the MIR makefile with the target
+# define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS clobbers
+# the MIR makefile's default -I$$(SRC_DIR)).
+$(MIRBUILD)/aarch64-linux/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/aarch64-linux
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' $(MIRBUILD)/aarch64-linux/libmir.a
 
 # Emit-only cross compilers for the Mach-O targets (axis B): the same MIR
 # variant-lib pattern; the writer signs ad-hoc, so the produced binaries
@@ -543,11 +562,13 @@ cross-x86-64-macos:
 cross-arm64-macos:
 	$(MAKE) MODE=cross-arm64-macos ../bin/madc-arm64-macos
 
-$(MIRDIR)/build-x86-64-macos/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' build-x86-64-macos/libmir.a
+$(MIRBUILD)/x86-64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/x86-64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' $(MIRBUILD)/x86-64-macos/libmir.a
 
-$(MIRDIR)/build-arm64-macos/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
+$(MIRBUILD)/arm64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/arm64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' $(MIRBUILD)/arm64-macos/libmir.a
 
 # The MH_OBJECT `.o` gate (Mach-O axis B step 4): builds BOTH cross madcs
 # first, so the gate can never validate a stale binary, then runs the two
@@ -586,15 +607,14 @@ hosted-arm64-macos:
 	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
-# detection selects the Apple arms natively — no MIR_TARGET knobs. (The
-# fork makefile has no mkdir rule for new BUILD_DIRs — create it here.)
-$(MIRDIR)/build-hosted-arm64-macos/libmir.a: FORCE
-	mkdir -p $(MIRDIR)/build-hosted-arm64-macos
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-arm64-macos CC='$(CC)' AR='$(AR)' build-hosted-arm64-macos/libmir.a
+# detection selects the Apple arms natively — no MIR_TARGET knobs.
+$(MIRBUILD)/hosted-arm64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-arm64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-arm64-macos CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-arm64-macos/libmir.a
 
-$(MIRDIR)/build-hosted-x86-64-macos/libmir.a: FORCE
-	mkdir -p $(MIRDIR)/build-hosted-x86-64-macos
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-x86-64-macos CC='$(CC)' AR='$(AR)' build-hosted-x86-64-macos/libmir.a
+$(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-x86-64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-macos CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-macos/libmir.a
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
