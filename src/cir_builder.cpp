@@ -6677,10 +6677,14 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	if (!fd) return node1(N_FUNC, param_list);   // unknown signature -> ()
 
 	// A by-value object-returning target uses the __retbuf ABI: a hidden
-	// leading `T* __retbuf` param (abstract/unnamed in a fn-ptr type).
+	// leading `T* __retbuf` param — abstract/unnamed here, because this is a
+	// fn-ptr TYPE, not a declaration. It still carries the result-address
+	// marker: every declaration of such a function now does, so an unmarked
+	// call THROUGH a pointer would disagree with the target it points at.
 	DataDefCLASS *retbuf_dd = function_retbuf_class(fd);
 	if (retbuf_dd) {
 		node_t pspec = type_list(retbuf_dd);
+		append(pspec, ret_addr_attr());
 		node_t pdecl = list();
 		append(pdecl, pointer());
 		append(param_list, node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)));
@@ -6919,6 +6923,12 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 	}
 }
 
+// THE one spelling of the hidden-result-address marker (see cir_builder.h).
+node_t CirBuilder::ret_addr_attr()
+{
+	return node2(N_ATTR, id("ret_addr"), list());
+}
+
 // The hidden return-slot parameter `struct <Cls> *__retbuf` of a by-value
 // object-returning function. A named pointer parameter: N_SPEC_DECL with the
 // returned class/struct spec (bare LIST, like param_decl's pspec) and a DECL
@@ -6927,6 +6937,14 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 {
 	node_t pspec = type_list(retdd ? retdd : &ddVOID);
+	// The marker rides the SPECIFIERS, so the declarator's `*` below puts it
+	// on the pointee — which is where c2mir's ret_addr_param_p reads it.
+	// UNCONDITIONAL, at every emitter: prototype, definition and typed extern
+	// must agree, and whether the module also DEFINES the symbol is not known
+	// when a declaration is emitted (a lazily-materialized body may or may not
+	// arrive). Marking everywhere also matches the platform ABI for a weak
+	// definition the linker may preempt.
+	append(pspec, ret_addr_attr());
 	node_t pdecl_list = list();
 	append(pdecl_list, pointer());
 	node_t sd = simple(N_SPEC_DECL, origin);
@@ -7263,19 +7281,23 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 		append(param_list, node2(N_TYPE, void_spec, void_decl));
 	} else {
 		for (size_t i = 0; i < params.size(); i++) {
+			// The hidden result address goes through its one owner, so
+			// this emitter cannot drift from the other three — and so it
+			// carries the same `__retbuf` name, which is what makes the
+			// slot identifiable in the IR (sret_abi_gate.sh reads it).
+			// Mixing a NAMED param into an otherwise-abstract prototype
+			// is what param_decl already does; c2mir expects it.
+			if (params[i].ret_addr && params[i].cls) {
+				append(param_list,
+				       retbuf_param((DataDef *)params[i].cls, NULL));
+				continue;
+			}
 			node_t specs = list();
 			// A by-value struct/union param: one tag-ref spec (struct X
 			// / union X per union_layout), no pointer. Otherwise the
 			// scalar spec list, optionally one pointer level.
 			if (params[i].cls) {
 				append(specs, class_tag_ref(params[i].cls));
-				// The hidden result address: a C declaration cannot say
-				// "this pointer is the indirect-result register", and
-				// C's own rule (classify the RETURN by size) is the
-				// wrong rule for a non-trivial class. Say it on the
-				// PARAMETER instead and leave placement to the target.
-				if (params[i].ret_addr)
-					append(specs, node2(N_ATTR, id("ret_addr"), list()));
 			} else {
 				for (size_t j = 0; j < params[i].specs.size(); j++)
 					append(specs, simple(params[i].specs[j]));

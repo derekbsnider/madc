@@ -814,14 +814,84 @@ BOUND -stdlib=libc++ --forest-bind -> 0 rblk in the MIR, fill=32
 Both print the right answer on x86-64 — the old shape coincides with the ABI
 there — which is exactly why this hid. On arm64 the bound shape is garbage.
 
-**So: a forest-RESTORED class loses its non-triviality.** `class_return_via_retbuf`
-answers from `class_needs_dtor(cdd)`, the restored `std::locale` reports no
-dtor, `function_retbuf_class` returns NULL, and madc emits getloc as an
-ordinary scalar-returning call — no hidden result pointer at all. Same family
-as the husk layer: what a restored class CARRIES.
+**Hypothesis (WRONG — superseded by the next section): a forest-RESTORED class
+loses its non-triviality.** `class_return_via_retbuf` answers from
+`class_needs_dtor(cdd)`; if the restored `std::locale` reported no dtor,
+`function_retbuf_class` would return NULL and madc would emit getloc as an
+ordinary scalar-returning call. Same family as the husk layer: what a restored
+class CARRIES.
 
 **This is the remaining darwin blocker and it now has a cheap discriminator** —
 `grep -c rblk` between a live and a bound compile of the same probe, on Linux,
-no Mac required. Next step: find where the restored class's dtor/non-triviality
-is dropped (freeze side or thaw side), which is the same question the husk
-layer asks one level up.
+no Mac required.
+
+#### The third defect, actually diagnosed (session #78): four emitters, one marker
+
+The discriminator reproduces in one command: same binary, same source, one flag
+apart.
+
+```
+LIVE  -stdlib=libc++              -> call ... getloc, rblk:8(U_1), U_3
+BOUND -stdlib=libc++ --forest-bind -> call ... getloc, U_1, U_3
+```
+
+The hypothesis above was wrong, and one look at the emitted C says so — the
+bound lane's declaration is *already* the right shape:
+
+```c
+/* live  */ extern void ...getlocEv(struct locale  *, void *);
+/* bound */ extern void ...getlocEv(struct locale *__retbuf, struct ios_base *p0);
+```
+
+Both carry the hidden pointer, so nothing lost its non-triviality:
+`has_user_dtor` round-trips through the arena (`madc_cir.cpp` sets
+`DF_HAS_USER_DTOR`, `cir_freeze.cpp` restores it), and `class_needs_dtor`
+answers the same either way. What differs is **which emitter wrote the
+declaration** — abstract params with `void *` is `need_output_extern`; named
+params (`__retbuf`, `p0`) is Pass 0.75's referenced-FuncDef typed extern.
+
+madc has **four** emitters of the hidden result-address parameter:
+
+| emitter | serves | carried the marker |
+|---|---|---|
+| `need_output_extern` | call-site externs | yes |
+| Pass 0.75 typed extern (`translate_module`) | referenced FuncDefs | **no** |
+| `func_proto` | forward protos | **no** |
+| `func_def` | madc's own definitions | **no** |
+
+Pass 0.75 inserts into `typed_proto_syms`, and the `m_output_externs` flush
+*skips* those symbols — so whichever emitter runs first wins, exclusively. A
+grove supplying a declaration for `ios_base::getloc` is enough to move it from
+the first row to the second, which drops the marker. On x86-64 both shapes run
+correctly, so the suite stayed green and the answer stayed right; only AArch64
+can tell them apart.
+
+**It was never confined to the bound lane.** A mechanism-level audit of the MIR
+— *every call to an imported symbol whose proto carries a `__retbuf` arg must
+carry it as `rblk`* — found `basic_string::substr` and
+`ostringstream::str` unmarked in the **live, default (libstdc++)** lane as well.
+The Mac symptom pointed at bind only because `getloc` is what `cout << "hi"`
+happens to reach.
+
+**Fix.** `retbuf_param()` is the one owner of that parameter, so it marks
+unconditionally — being the result address is what the parameter IS, not a
+property of the caller — and `need_output_extern` now builds its result-address
+param through the same owner instead of by hand. Unconditional is also the only
+timing-safe answer: whether the module will ALSO define the symbol is not known
+when a declaration is emitted (a lazily-materialized body may or may not
+arrive), and a first attempt that gated the marker on `madc_emits_definition()`
+produced exactly the live-vs-bound split it was meant to prevent. Marking
+everywhere additionally matches the platform ABI for a weak definition the
+linker may preempt.
+
+Routing through the one owner also gives the slot its `__retbuf` NAME in every
+prototype, which is what makes it identifiable in the IR — that is what the gate
+reads.
+
+**Gate.** `scripts/sret_abi_gate.sh` now asserts the MECHANISM, in both lanes,
+keyed on no particular class, symbol or header: zero imported `__retbuf` args
+may be plain. Negative controls: a trivially-copyable class return
+(`vector::begin` → `__normal_iterator`) must STILL come back in a register; a
+minimum marked count, so the gate cannot pass vacuously if the reducer stops
+compiling; and — verified once by hand, not shipped — suppressing the marker at
+its owner makes the gate name all three offenders and exit 1.

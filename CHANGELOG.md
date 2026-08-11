@@ -31,6 +31,27 @@
   (IR-shape — behaviour cannot tell the shapes apart on x86-64), with a
   trivially-copyable class return as its negative control.
 
+- **One owner for that hidden result parameter, so the marker cannot be
+  forgotten** — the follow-on defect, and the one that was actually still
+  breaking `std::cout << "hi"` on darwin. madc has four emitters of the
+  parameter (call-site externs, the referenced-FuncDef typed extern,
+  forward prototypes, definitions) and a fifth shape for function-pointer
+  types; the marker landed on exactly one of them. Which emitter wins is
+  decided by whether something else already declared the symbol, so a
+  forest grove supplying a declaration silently reverted a compile to the
+  x86-64-only shape — the same source, the same binary, one flag apart:
+  `call ... getloc, rblk:8(U_1), U_3` live versus `call ... getloc, U_1,
+  U_3` bound. An audit of the IR then showed it was never confined to the
+  bound lane: `basic_string::substr` and `ostringstream::str` were unmarked
+  in the live, default (libstdc++) lane too. `CirBuilder::retbuf_param` is
+  now the single producer of that parameter and marks unconditionally —
+  being the result address is what the parameter IS, not a property of the
+  caller, and whether the module will also DEFINE the symbol is not yet
+  known when a declaration is emitted. The gate went with it: it asserts a
+  MECHANISM (every prototype argument named `__retbuf` must be `rblk`),
+  keyed on no particular class, symbol or header, in both the live and
+  bound lanes.
+
 - **One owner for speculative replay** (`Program::SilentReplay`): muting
   `cerr` and rewinding the diagnostic state around a speculative
   instantiation was inline in `complete_shell_class_type`; it is now a

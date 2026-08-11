@@ -207,8 +207,15 @@ class CirBuilder {
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
 	// hidden first parameter of a by-value object-returning function. `retdd` is
-	// the returned class/struct type.
+	// the returned class/struct type. Always carries ret_addr_attr — being the
+	// result address is what this parameter IS, not a property of the caller.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
+	// THE one spelling of the hidden-result-address marker. A C declaration
+	// cannot say "this pointer is the indirect-result register", and C's own
+	// rule (classify the RETURN by size) is the wrong rule for a non-trivial
+	// class, which is returned indirectly at ANY size. Say it on the PARAMETER
+	// and leave the placement to the target.
+	node_t ret_addr_attr();
 
 	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign
 	// statement whose multi_vars holds the N receiver variables, all plain
