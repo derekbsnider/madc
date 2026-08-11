@@ -17495,7 +17495,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// (c2mir.c) then rewrites the typedef's type into a real vector type, so every
 	// later use of NAME inherits it and c2mir handles vector literals / subscript /
 	// arithmetic natively. Tier-1 lowering: reuse c2mir's vector machinery rather
-	// than duplicating it. (Needs the fork's <=16B SIMD support, MIR_COMMIT 2ffebff+.)
+	// than duplicating it. (Needs MIR's <=16B SIMD support — in third_party/mir
+	// since fork-history commit 2ffebff.)
 	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
 		node_t sl = list();
 		append(sl, simple(N_TYPEDEF));

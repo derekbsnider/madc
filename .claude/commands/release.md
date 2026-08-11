@@ -38,26 +38,11 @@ Perform the full release workflow:
    - Update the `### Recent Releases` sub-section with one-line summaries of the last 5 releases (read from `docs/release-notes/`)
    - Update the bold "Current status" test-counts line near the Testing section
 
-8. **Release the MIR fork alongside** (only if the fork changed since the
-   last madc release — compare the commit in `MIR_COMMIT` against the commit
-   the previous `v<MIR_VERSION>` fork tag points to):
-   - New fork version: `<upstream-base>-madc.<new madc version>` — upstream
-     base = the newest upstream MIR release merged into the fork (bump it
-     only when a newer upstream release was merged; otherwise carry it
-     forward from the current `MIR_VERSION`)
-   - Write the new version to `MIR_VERSION` (included in the release commit)
-   - On the fork (`/workspace/mir`): ensure `develop` is pushed and
-     `MIR_COMMIT` points at it, then
-     `git tag -a v<MIR_VERSION> <MIR_COMMIT commit> -m "MIR fork release <MIR_VERSION>"`
-     and push the tag
-   - If `gh auth status` succeeds, also publish the GitHub Release:
-     `gh release create v<MIR_VERSION> --repo derekbsnider/mir --title
-     "<MIR_VERSION> — the MIR madc vX.Y.Z ships against" --notes-file <notes> --latest`
-     (notes: what changed in the fork since its previous release, +
-     "Consumed by madc vX.Y.Z"). If gh is not authed, note it in the
-     report and continue.
-   - If the fork is UNCHANGED since the previous release: leave
-     `MIR_VERSION` untouched, cut no fork tag
+8. **MIR needs no separate release** (subtree migration 2026-08-11):
+   MIR lives in-tree at `third_party/mir`, so the madc release version
+   identifies the exact MIR it ships — there is no `MIR_VERSION`, no
+   fork tag, no lockstep. If the release notes should call out notable
+   MIR-level changes, read them from `git log -- third_party/mir`.
 
 9. **Update `claude_status.json`**:
    - Read the existing file and update all fields to reflect current state
@@ -65,7 +50,7 @@ Perform the full release workflow:
    - Write the updated JSON
 
 10. **Commit all changes on current branch**:
-    - Stage: `VERSION`, `MIR_VERSION` (if bumped), `docs/plans/ROADMAP.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
+    - Stage: `VERSION`, `docs/plans/ROADMAP.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
     - Commit message: `Release vX.Y.Z — <one-line summary>`
     - Do NOT use `--amend`
 
@@ -84,7 +69,7 @@ Perform the full release workflow:
     (`tmp/` is gitignored; create `tmp/release-bins/` if missing). Do the same
     in the container tree when the rebake happens there.
 
-14. **Report**: Print a summary of what was released, the madc version, the fork release (if one was cut), and remind the user to run `/promote` when ready to push to master
+14. **Report**: Print a summary of what was released and the madc version, and remind the user to run `/promote` when ready to push to master
 
 ## Important
 - **Do NOT re-run test suites on already-validated content** (owner rule,
