@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+- **`--emit=c11` is target-neutral for mangled-direct by-value class
+  returns** (the owner-directed struct slice). The emitted C used to spell
+  the hidden result pointer as an explicit first argument — right only on
+  x86-64, where that register happens to be the indirect-result register.
+  Now `CirBuilder::emitc_lower_indirect_returns` (emit-time pre-pass, C11
+  output only — the JIT/native lanes and the `.mc11` twin never see it)
+  declares each true-extern callee as returning an opaque `>16`-byte struct
+  (`struct __madc_ret_K`, `_Alignas`/`sizeof`-computed, `unsigned char`
+  members so it can never be an AArch64 float aggregate) and fuses the
+  destination's declaration with the call into the one C spelling both ABIs
+  compile to the C++ convention: `struct __madc_ret_K X = SYM(args);` —
+  gcc x86-64 passes `&X` in the first argument register, clang AArch64 sets
+  `x8 = &X`, zero copies. Assignment into an existing object and
+  return-position calls needed nothing new: the tree already routes both
+  through a temp plus the class's real `operator=`/copy-ctor. Per-symbol
+  all-or-nothing; the counted residuals (global-destination initialization,
+  address-taken symbols, fn-pointer calls) keep the old shape and warn on
+  stderr. Gated by `scripts/emitc_sret_gate.sh` in fulltest: mechanism
+  audit in the emitted text, run-vs-`g++`-oracle equality, an arm64 cross
+  `-S` x8 check, the 8-byte `std::locale` pad leg under `-stdlib=libc++`,
+  and a negative control proving the audit still detects the unlowered
+  shape.
+
+- **Late declarations now precede every definition in the emitted module.**
+  Pass 1.95's three late lists (forward prototypes for fixpoint-materialized
+  bodies, externs registered during fixpoint body translation, stack-array
+  dtor wrappers) were appended at the module tail — but Passes 1.6/1.7/1.8
+  had already emitted synthesized-dtor DEFINITIONS whose bodies call exactly
+  the symbols those lists declare (a synthesized `_Vector_impl` dtor calls
+  the `allocator<int>` dtor its own reference materialized). The call
+  textually preceded any declaration of its callee: c2mir and the JIT
+  tolerated it, gcc flagged it, clang — canon — rejects the emitted C
+  outright ("call to undeclared function"). The late lists now splice at an
+  anchor captured before Pass 1.6 (`c2mir_op_tail` +
+  `c2mir_op_splice_after`, the late-instantiated-struct precedent), making
+  the pass's own stated invariant — "ahead of every definition" — actually
+  hold.
+
 - **The hidden result pointer of a by-value class return is placed by the
   TARGET, not spelled by madc** — the last C++-on-darwin blocker, and an
   ABI bug rather than a darwin one. madc declared such a callee

@@ -216,6 +216,11 @@ class CirBuilder {
 	// class, which is returned indirectly at ANY size. Say it on the PARAMETER
 	// and leave the placement to the target.
 	node_t ret_addr_attr();
+	// Replace `oldc` (a direct child of `parent`) with the DETACHED node
+	// `newc`, preserving position — c2mir op lists are DLISTs and a bare
+	// remove+append would move the operand to the tail, which reorders
+	// call arguments and fixed-arity operands.
+	void replace_op(node_t parent, node_t oldc, node_t newc);
 
 	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign
 	// statement whose multi_vars holds the N receiver variables, all plain
@@ -1643,6 +1648,17 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// --emit=c11 (celC11) ONLY: lower the mangled-direct indirect-return edge
+	// to the portable >16-byte-struct-return shape, so gcc/clang place the
+	// destination address in the target's indirect-result register themselves
+	// (x8 on AArch64, first argument register on x86-64) — the emitted C stays
+	// target-neutral. Runs on the finished tree between translate_module and
+	// cir_emit_c; the JIT/native lanes and the .mc11 twin never see it.
+	// Per-symbol all-or-nothing: a symbol retypes only when EVERY call site
+	// fuses into the `struct __madc_ret_K X = SYM(args);` initializer form;
+	// unfused residuals keep the first-argument shape and are counted (warned
+	// on stderr). See docs/plans/2026-08-07-macos-release-lane-plan.md.
+	void emitc_lower_indirect_returns(node_t module);
 	// TU identity for the object-mode per-TU init symbol; call before
 	// translate_module (harmless in JIT mode — unused there).
 	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }

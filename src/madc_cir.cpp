@@ -5939,6 +5939,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	return -1;
     }
 
+    // C11 output ONLY (never the .mc11 twin — that is the faithful IR
+    // serialization): lower the mangled-direct indirect-return edge to the
+    // target-neutral struct-return shape. The env knob exists solely as the
+    // gate's negative control (scripts/emitc_sret_gate.sh runs it on every
+    // fulltest to prove the checker still detects the unlowered shape).
+    if (lang == celC11 && getenv("MADC_XTEST_NO_SRET_LOWER") == NULL)
+	builder.emitc_lower_indirect_returns(tree);
+
     cir_emit_c(out, tree, lang);
 
     cir_finish(c2m);

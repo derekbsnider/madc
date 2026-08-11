@@ -820,7 +820,111 @@ defined answer for it, and the plausible ones differ a lot in cost:
 Whichever is chosen, the answer belongs in this doc before code is written; the
 first two are the realistic candidates.
 
-#### After the fix: a THIRD defect, and it is Linux-reproducible
+**ANSWERED (session #79, 2026-08-11): the question dissolves — the tree already
+routes every such case through a madc-declared local.** Reading the actual
+emitted C (specimens `tmp/emitc_specimen{,2}.mad|.c` on the container) instead
+of reasoning from the source construct:
+
+- `c = b + a;` into an existing string ALREADY lowers to a fresh
+  `__madc_objtmp_N` (cleanup-tagged), the extern constructing into `&tmp`, then
+  the real mangled `operator=` (`_ZNSt…aSERKS4_(&c, &tmp)`). Candidate 1 was
+  already built years-of-sessions ago as the assignment lowering itself.
+- `return s + s;` in a madc function ALREADY lowers to temp + real copy-ctor
+  into `__retbuf` (`_ZNSt…C1ERKS4_(__retbuf, &tmp)`) — the builder never passes
+  its own `__retbuf` through to an extern callee.
+
+So the destination of an extern `__retbuf`-shaped call is ALWAYS a local the
+builder itself declared (a named local under initialization, or an objtmp), and
+the pre-pass needs **no assignment machinery at all**: it only fuses that decl
+with its constructing call into the initializer form. What the specimens DID
+surface that the candidates above missed:
+
+- **Decl and call are not adjacent** — argument temps land between them
+  (`std::string e = a + b + a;` declares `e`, then the inner temp, then calls
+  into `&e`). The fusion therefore MOVES the declaration down to the call
+  statement's position. That flips cleanup order between `e` and the argument
+  temps (C++ destroys the temp at full-expression end, strictly before `e`);
+  madc's lowering already extends temp lifetime to scope end, so this stays
+  inside the accepted relaxation — the objects are independent by construction
+  (the fused call deep-copies out of its argument temps).
+- **Per-symbol all-or-nothing.** The extern has one declaration; a symbol with
+  both fusable and unfusable call sites cannot be half-retyped. The pre-pass
+  plans all sites first and retypes a symbol only when EVERY site fused;
+  otherwise every site keeps the old shape (consistent, x86-64-only) and is
+  counted.
+- **Residuals (kept on the old shape, counted, warned to stderr):** a
+  destination that is not a same-block local declaration (today that is global
+  initialization in `__madc_global_init`), a symbol whose address is taken
+  outside callee position, labels/gotos or a nested shadowing redecl between
+  decl and call, and calls through function pointers (an abstract-param type —
+  the same known gap `sret_abi_gate.sh` documents for the JIT lane).
+
+**The mechanics (all verified against real compilers before coding):**
+
+```c
+struct __madc_ret_K {            /* per class K, emitted after K's def */
+	_Alignas(_Alignof(struct K)) unsigned char
+		__pad[sizeof(struct K) > 16 ? sizeof(struct K) : 17];
+};                               /* >16B forces the indirect path on BOTH ABIs;
+                                    unsigned char members can never be an HFA,
+                                    so no AArch64 float-aggregate trap; sizes
+                                    computed by the C compiler, never baked */
+extern struct __madc_ret_K SYM(void *, void *);   /* was: void SYM(K *__retbuf, …) */
+struct __madc_ret_K X = SYM(&a, &b);              /* slot IS the destination */
+static void __madc_ret_dtor_K(struct __madc_ret_K *p) { DTOR((struct K *)p); }
+                                 /* cleanup shim: gcc requires the cleanup fn to
+                                    take a pointer to the VARIABLE's type */
+```
+
+Oracle (2026-08-11, container): gcc x86-64 `-O0 -S` passes `&c` directly in
+`%rdi`, zero memcpy; clang `--target=arm64-apple-macos13 -O0 -S` emits
+`add x8, sp, #24` before the call, zero memcpy; a hand-written C caller in this
+exact shape calls real libstdc++ `_ZStpl…` and prints `c=abcd` (rc=0). The
+arm64 leg also proves the cross `-S` gate is runnable on the container.
+
+**Where:** a `CirBuilder` method run from `madc_cir_emit` between
+`translate_module` and `cir_emit_c`, for `lang == C11` ONLY — the `.mc11` twin
+stays the faithful IR serialization, and the JIT/native lanes never see it (the
+emit path builds its own tree and tears it down; nothing shares it). Later
+`&X` uses are re-wrapped `(struct K *)&X` position-safely
+(`c2mir_op_splice_after` + `c2mir_op_remove`), which existing call-site casts
+tolerate (they cast an explicit pointer again).
+
+**IMPLEMENTED (session #79).** `CirBuilder::emitc_lower_indirect_returns`,
+invoked from `madc_cir_emit` under `lang == celC11` unless
+`MADC_XTEST_NO_SRET_LOWER` is set (that knob exists solely as the gate's
+negative control; `MADC_XTEST_SRET_LOWER=1` prints per-symbol accept/reject/
+fuse decisions to stderr, because a pass-A rejection is otherwise
+indistinguishable from "no candidates"). Findings from building it:
+
+- Module items sit inside nested `N_LIST` groups the renderer flattens
+  invisibly — the libc++ lane's `getloc` extern and `struct locale` def were
+  in one. Pass A flattens; the pads/shims splice anchor stays a DIRECT child
+  of the top list.
+- The return-spec check must tolerate `extern` riding the same spec list
+  (`[N_EXTERN, N_VOID]`) — requiring exactly one `void` spec silently
+  rejected every `need_output_extern` proto.
+- The default-lane `getloc` husk (TU-defined weak body) is correctly EXCLUDED
+  by the has-definition test — its known-wrong body (`free(): invalid
+  pointer`, recorded earlier in this doc) reproduces in emitted C exactly as
+  in the JIT lane, pre-existing and unrelated to the rewrite; the gate's
+  ≤16-byte leg uses `-stdlib=libc++`, where getloc binds the real external.
+- A pre-existing ordering defect blocked the arm64 leg: Pass 1.95's late
+  declarations landed AFTER the Pass-1.6/1.7/1.8 synthesized-dtor
+  definitions that call them (clang rejects; gcc warns). Fixed in its own
+  commit — the late lists now splice at an anchor captured before Pass 1.6.
+
+Gate: `scripts/emitc_sret_gate.sh` (wired into fulltest, ~8s): [default]
+mechanism audit (no undeclared-definition `__retbuf` extern survives) +
+non-vacuity (≥3 rewrites) + trivially-copyable negative control + gcc
+compile/RUN against libmadc == `g++ -O0` oracle byte-for-byte; [arm64] clang
+cross `-S` with an x8 setup adjacent to every rewritten call; [libc++] the
+8-byte locale pad leg compiles, links against real libc++ and runs; [negctl]
+the audit must detect the unlowered shape with the rewrite disabled.
+
+**Still owed:** RUNNING the emitted C on the Mac (the `-S` leg proves the x8
+shape, not execution) — fold into the next Mac battery session alongside the
+AOT-leg fix and the `cout << "hi"` leg.
 
 The sret fix is real and verified — but re-running the Mac probes shows the
 darwin blocker only partly cleared:
