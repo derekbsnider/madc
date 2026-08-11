@@ -625,7 +625,11 @@ pointer parameter. Its negative control is a small TRIVIAL struct, which must
 still return in a register.
 
 **Cost:** a fork commit + `MIR_COMMIT` bump in the same madc commit (pin
-discipline), and `MIR_VERSION` + a fork tag if a release ships it.
+discipline), and `MIR_VERSION` + a fork tag if a release ships it. The fork
+branch is `origin/feature/indirect-return-attr` (pushed). Note `/workspace/mir`
+carries seven remotes and `origin` — the real fork, over SSH — is not the first
+one listed; the alphabetically-first `cyanogilvie` is a third-party HTTPS mirror
+that will prompt for a password. Push `origin` explicitly.
 
 #### Attempt 2 (also reverted) — and the constraint it uncovered
 
