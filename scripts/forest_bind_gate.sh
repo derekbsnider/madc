@@ -99,6 +99,45 @@ int main() { myint x = 42; myint y = x + 3; printf("y=%d\n", y); return 0; }
 EOF
 run_case typedef "y=45"
 
+# --- case: need (glibc __need protocol vs the freeze) --------------------------
+# The producer's header protocol-includes <stdarg.h> (__need___va_list live,
+# glibc stdio.h's idiom). The serving belongs to the INCLUDER's unit and the
+# freeze must form NO unit named stdarg.h — a husk unit there would satisfy
+# the consumer's PLAIN #include <stdarg.h> by name and lose va_list/va_start
+# (the packed-lane regression of 2026-08-10: 25 varargs/ns_madc tests). The
+# consumer proves both halves: fbgate_need_valist (the serving replayed with
+# the bound includer) AND va_start (the plain include still gets the full
+# header).
+cat > tmp/fbgate_need.h <<'EOF'
+#ifndef FBGATE_NEED_H
+#define FBGATE_NEED_H
+#define __need___va_list
+#include <stdarg.h>
+typedef __gnuc_va_list fbgate_need_valist;
+#endif
+EOF
+cat > tmp/fbgate_need_producer.cpp <<'EOF'
+#include <fbgate_need.h>
+int main() { fbgate_need_valist *p = 0; (void)p; return 0; }
+EOF
+cat > tmp/fbgate_need_consumer.cpp <<'EOF'
+#include <fbgate_need.h>
+#include <stdarg.h>
+#include <cstdio>
+static int sum(int n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    int s = 0;
+    while (n--)
+        s += va_arg(ap, int);
+    va_end(ap);
+    return s;
+}
+int main() { fbgate_need_valist *p = 0; (void)p; printf("s=%d\n", sum(3, 10, 20, 12)); return 0; }
+EOF
+run_case need "s=42"
+
 # --- case: struct (slice 3a) — mixed-type padding + a union + sizeof, so the
 #     reconstruction's layout (addMember/finalize) must match g++ byte-for-byte.
 cat > tmp/fbgate_struct.h <<'EOF'
@@ -456,6 +495,127 @@ int main()
 }
 EOF
 run_case declonlymt "r=1 v=2"
+
+# --- case: fwdalias — an ALIAS to a specialization of a template that is only
+#     DECLARED at the point of the alias. libc++'s __fwd/sstream.h + __fwd/
+#     fstream.h shape in miniature: all four stream aliases are spelled ahead
+#     of the definitions in <sstream>, and a header-only producer never USES
+#     them, so the alias binds to an opaque concrete mint that nothing ever
+#     completes. Two independent defects met here, and each one alone loses the
+#     name for every consumer of the container:
+#       1. the mint had no arena record (no completion hook -> no project
+#          type-id -> outside the freeze sweep's domain), so the namespaced
+#          alias walk skipped the alias entirely while the decl INDEX still
+#          listed it -> "use of undeclared identifier 'ostringstream'";
+#       2. the husk cannot complete on the consumer side (the replay reads
+#          dependent_shell_origin, pointer-keyed parse scratch that does not
+#          serialize) -> "Unidentified member 'str'".
+#     Live parse of the same header resolves both, which is what made this a
+#     bind-only defect. It reached a SHIPPED product on darwin, whose grove set
+#     is the only one frozen from libc++.
+#     This case gates (1) ONLY: it uses the alias where an INCOMPLETE type is
+#     legal (a pointer), which is exactly what the alias declaration itself
+#     promises. Completing the husk is defect (2), still open — when it lands,
+#     tighten this consumer to touch a member and re-baseline the expectation.
+cat > tmp/fbgate_fwdalias.h <<'EOF'
+#ifndef FBGATE_FWDALIAS_H
+#define FBGATE_FWDALIAS_H
+namespace fbg {
+template <typename T, typename U = int> class fbg_holder;	/* declaration only */
+using fbg_alias = fbg_holder<char>;				/* -> opaque mint */
+template <typename T, typename U> class fbg_holder {		/* definition later */
+public:
+    U v;
+    U get() const { return v; }
+};
+}
+#endif
+EOF
+cat > tmp/fbgate_fwdalias_producer.cpp <<'EOF'
+#include <fbgate_fwdalias.h>
+int main() { return 0; }		/* deliberately never uses fbg_alias */
+EOF
+cat > tmp/fbgate_fwdalias_consumer.cpp <<'EOF'
+#include <fbgate_fwdalias.h>
+#include <cstdio>
+int main()
+{
+    fbg::fbg_alias *p = 0;		/* the NAME must resolve */
+    printf("p=%d\n", p == 0 ? 1 : 0);
+    return 0;
+}
+EOF
+run_case fwdalias "p=1"
+
+# --- case: statmem — a BOUND class's STATIC DATA MEMBER resolves to the
+#     LIBRARY's symbol. `std::use_facet<F>(loc)` odr-uses `F::id`, whose storage
+#     lives in the stdlib, not in the program. Live records that Variable while
+#     parsing the class body, with the alias its OWN owner derives
+#     (class_static_member_itanium_symbol -> the nested _ZNSt3__15ctypeIcE2idE);
+#     a bound class never parses its body, and the restore re-derived the alias
+#     with the NAMESPACE-variable owner over the flat storage key `Tag__member`,
+#     yielding one identifier component (_ZSt14ctype_char__id) that no library
+#     exports. Symptom depended on where the reference came from: a restored
+#     grove body named the real symbol nothing had declared ("undeclared
+#     identifier _ZNSt3__15ctypeIcE2idE" at locale:378 — the owner's x86-64 Mac),
+#     while a consumer-side instantiation named the invented one ("import of
+#     undefined item _ZSt14ctype_char__id"). Fixed by TRANSPORTING the
+#     producer's alias (format v39), so no derivation runs on the consumer side.
+#     Runs under -stdlib=libc++ because that flavor's facets are the ones a
+#     shipped forest binds (darwin's grove set is frozen from libc++); the
+#     libstdc++ forest reaches the same code and must stay green too.
+if printf 'int main(){return 0;}\n' > tmp/fbgate_statmem_probe.cpp \
+   && timeout 60 "$BIN" -stdlib=libc++ tmp/fbgate_statmem_probe.cpp >/dev/null 2>&1; then
+    sm_snap="tmp/fbgate_statmem.msnap"
+    sm_prod="tmp/fbgate_statmem_producer.cpp"
+    sm_cons="tmp/fbgate_statmem_consumer.cpp"
+    sm_bin="tmp/fbgate_statmem_clang"
+    sm_vlog="tmp/fbgate_statmem_v.log"
+    sm_exp="up=A"
+    cat > "$sm_prod" <<'EOF'
+#include <locale>
+int main() { return 0; }		/* header-only producer: never uses a facet */
+EOF
+    cat > "$sm_cons" <<'EOF'
+#include <cstdio>
+#include <locale>
+int main()
+{
+    std::locale loc;
+    /* use_facet<F> odr-uses F::id — the class-scope static data member whose
+       storage the LIBRARY defines. */
+    const std::ctype<char> &ct = std::use_facet<std::ctype<char> >(loc);
+    printf("up=%c\n", ct.toupper('a'));
+    return 0;
+}
+EOF
+    if ! timeout 600 "$BIN" -stdlib=libc++ --freeze="$sm_snap" "$sm_prod" >/dev/null 2>&1; then
+        fail "[statmem] --freeze (-stdlib=libc++) FAILED"
+    fi
+    [ -f "$sm_snap" ] || fail "[statmem] --freeze produced no container"
+    sm_live=$(timeout 120 "$BIN" -stdlib=libc++ "$sm_cons" 2>/dev/null)
+    [ "$sm_live" = "$sm_exp" ] || fail "[statmem] live-parse output '$sm_live' != '$sm_exp'"
+    if command -v clang++ >/dev/null 2>&1; then
+        if timeout 120 clang++ -stdlib=libc++ "$sm_cons" -o "$sm_bin" >/dev/null 2>&1; then
+            sm_or=$("$sm_bin" 2>/dev/null)
+            [ "$sm_or" = "$sm_exp" ] || fail "[statmem] clang++ -stdlib=libc++ output '$sm_or' != '$sm_exp'"
+        fi
+    fi
+    sm_out=$(timeout 120 "$BIN" -stdlib=libc++ --forest-bind="$sm_snap" "$sm_cons" 2>/dev/null)
+    [ "$sm_out" = "$sm_exp" ] \
+        || fail "[statmem] bind output '$sm_out' != '$sm_exp' (static-member alias re-derived?)"
+    # No silent live fall-through: the grove must actually have bound.
+    timeout 120 "$BIN" -v -stdlib=libc++ --forest-bind="$sm_snap" "$sm_cons" >"$sm_vlog" 2>/dev/null
+    if ! grep -aq "bound to grove unit" "$sm_vlog"; then
+        rm -f "$sm_snap" "$sm_bin" "$sm_vlog"
+        fail "[statmem] consumer did NOT bind the grove (live fall-through?)"
+    fi
+    rm -f "$sm_snap" "$sm_bin" "$sm_vlog" "$sm_prod" "$sm_cons" tmp/fbgate_statmem_probe.cpp
+    echo "forest_bind_gate: [statmem] OK — a bound class's static data member resolves to the library symbol, output == live == clang++"
+else
+    rm -f tmp/fbgate_statmem_probe.cpp
+    echo "forest_bind_gate: [statmem] SKIP — this build has no libc++ flavor"
+fi
 
 # --- case: flavorgate (v34: the stdlib FLAVOR is producer-config identity) ---
 # A container frozen under the build's default flavor (libstdc++) must NOT

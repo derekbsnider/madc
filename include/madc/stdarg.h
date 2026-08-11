@@ -15,6 +15,16 @@
 // corrupting the list; invoking the intrinsic on the user's own va_list
 // avoids the copy and the corruption.)
 
+// glibc's __need protocol, exactly like real gcc stdarg.h: a header asking
+// only for __gnuc_va_list (`#define __need___va_list` + include) gets that
+// one typedef and the request macro is CLEARED — leaving it defined would
+// mark every later include in the TU as a protocol visit
+// (need_protocol_macro_live) and defeat the once-only caches TU-wide.
+#ifdef __need___va_list
+#undef __need___va_list
+typedef __builtin_va_list __gnuc_va_list;
+#else
+
 // ONE definition: the compiler owns the type (Program::builtin_va_list_type —
 // the SysV struct __madc_va_list_tag[1] singleton, resolved from the spelling
 // __builtin_va_list). This header only aliases it, exactly like real gcc
@@ -38,3 +48,5 @@ int vsprintf(char *, const char *, va_list);
 int vsnprintf(char *, unsigned long, const char *, va_list);
 int vfprintf(void *, const char *, va_list);
 int vprintf(const char *, va_list);
+
+#endif /* __need___va_list */

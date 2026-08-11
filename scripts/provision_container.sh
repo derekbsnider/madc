@@ -102,6 +102,16 @@ report() {
 		printf '  MISSING macOS SDK (%s) — owner-supplied, never downloaded here\n' "$sdk"
 		missing=1
 	fi
+	# The open darwin libc header tree (W0.5, the embedded prelude's input) IS
+	# ours to install — self-healing via the fetch script — but its absence
+	# fails every hosted/cross darwin build, so report it beside the SDK.
+	local dprov="${DARWIN_OPEN_HEADERS_HOME:-/workspace/darwin-open-headers}/sysroot-any-darwin-any/.PROVENANCE"
+	if [ -f "$dprov" ]; then
+		printf '  ok      darwin open headers (%s)\n' "$(cat "$dprov")"
+	else
+		printf '  MISSING darwin open headers — scripts/fetch_darwin_open_headers.sh stages them\n'
+		missing=1
+	fi
 	return $missing
 }
 
@@ -118,6 +128,9 @@ sudo apt-get update -qq || exit 1
 echo "provision_container: installing"
 # One transaction: a partial install is harder to reason about than a failure.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
+
+echo "provision_container: staging darwin open headers (W0.5 prelude input)"
+bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
 
 echo "provision_container: verifying"
 report

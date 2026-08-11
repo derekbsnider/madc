@@ -156,6 +156,18 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
     static std::set<std::string> opened;
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
+    // The cross-Apple probe stand-in (empty everywhere else): the target's
+    // runtime cannot be dlopen'd on the build host, so the HOST's library of
+    // the same flavor answers the CIR-time dlsym probes — the Itanium
+    // surface is platform-neutral. See madc_sys_includes.h.
+    for (int i = 0; madc_stdlib_probe_standin_libs[i]; i++) {
+	const char *lib = madc_stdlib_probe_standin_libs[i];
+	if (!opened.insert(lib).second)
+	    continue;
+	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
+		    lib, dlerror());
+    }
     if (!flavor->link_libs)
 	return;
     for (int i = 0; flavor->link_libs[i]; i++) {
@@ -779,10 +791,11 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     // symbols the link would in fact resolve, so the tree is SHAPED
     // differently (unrecorded facet-id externs, undeclared
     // _ZNSt3__15ctypeIcE2idE family). That bit the object lane first, then
-    // the freeze lane the same way — which is why the open lives HERE, on
-    // the one translate entry every lane (run, object, project, freeze)
-    // flows through, not per caller. Idempotent; the MIR-link call site
-    // keeps its open for lanes that skip translation entirely.
+    // the freeze lane, then the emit lane the same way — which is why the
+    // open lives HERE, on the one translate entry every lane (run, object,
+    // project, freeze, emit) flows through, not per caller. Idempotent; the
+    // MIR-link call site keeps its open for lanes that skip translation
+    // entirely.
     cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
@@ -1801,6 +1814,41 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
 }
 
+#if MADC_TARGET_APPLE_P
+// ONE rule for both Mach-O emit lanes (source image + object link): a
+// program still needing the madc runtime cannot link — no target libmadc
+// exists — and the message names the fix. Returns true when the emit
+// must refuse.
+static bool cir_apple_runtime_refused(bool have_madc, bool drop_madc,
+				      const char *out_path)
+{
+    if (!have_madc || drop_madc)
+	return false;
+    fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
+	    " not exist as a library for Mach-O targets; build it into the"
+	    " image with -static-libmadc (C-lane machinery only)\n",
+	    out_path);
+    return true;
+}
+
+// The dylibs a Mach-O image must LOAD beyond the implicit libSystem,
+// decided by import CLASS: a header-less Mac has no .tbd stubs for
+// per-symbol attribution, so the writer binds flat across the load list
+// once extras are present (mir-debug.h) and membership here only has to
+// name the worlds. Itanium-mangled imports are the C++ world, whose
+// darwin install name is libc++ — a target-platform constant with the
+// same standing as the writer's own libSystem spelling.
+static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
+				   std::vector<const char *> &libs)
+{
+    for (const std::string &s : imports)
+	if (s.compare(0, 2, "_Z") == 0) {
+	    libs.push_back("/usr/lib/libc++.1.dylib");
+	    return;
+	}
+}
+#endif
+
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
@@ -1831,17 +1879,14 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 		  << std::endl);
     std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-    // Mach-O: the base C/C++ sonames are cover analysis only — the emitter
-    // links the implicit libSystem, nothing else. A program whose imports
-    // are NOT covered would need a target madc runtime that does not exist:
-    // fail at emit, not at dyld.
-    if (have_madc && !drop_madc) {
-	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-		" not exist as a library for Mach-O targets; build it into the"
-		" image with -static-libmadc (C-lane machinery only)\n",
-		out_path);
+    // Mach-O: the base C/C++ sonames are cover analysis only — never load
+    // commands. A program still needing the madc runtime fails at emit,
+    // not at dyld; a C++ program gets its real world (libc++) as an
+    // LC_LOAD_DYLIB, and with extras present the writer binds every
+    // import flat across the load list (mir-debug.h).
+    if (cir_apple_runtime_refused(have_madc, drop_madc, out_path))
 	return false;
-    }
+    cir_apple_extra_dylibs(imports, libs);
 #else
     for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
@@ -1912,8 +1957,10 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // darwin the libc surface dladdr-reports as libsystem_*.dylib pieces
     // under the libSystem umbrella; libc++/libc++abi carry the C++ runtime.
     // Prefix-matched, so the bare stems cover every versioned dylib name.
-    // (The Apple emit gate never turns these into load commands — the
-    // emitter links implicit libSystem only.)
+    // (These cover stems never become load commands. The emit lanes add
+    // the real install names separately — cir_apple_extra_dylibs puts
+    // libc++ on the load list when the import set is C++ — and the
+    // writer binds imports flat across that list.)
     (void)flavor;
     needed.push_back("libc++");
     needed.push_back("libsystem_");
@@ -2184,15 +2231,15 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 		      << std::endl);
 	std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-	// Same Mach-O rule as cir_write_native_image: covers are analysis
-	// only; a runtime-needing link fails at emit, not at dyld.
-	if (have_madc && !drop_madc) {
-	    fprintf(stderr, "madc: %s: program needs the madc runtime, which"
-		    " does not exist for Mach-O targets (runtime-free"
-		    " programs only)\n", out_path);
+	// Same Mach-O rule as cir_write_native_image — one refusal text,
+	// one extra-dylib policy (the shared helpers are the single
+	// owners; this lane's copy had already drifted to an older
+	// message once).
+	if (cir_apple_runtime_refused(have_madc, drop_madc, out_path)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
+	cir_apple_extra_dylibs(imports, libs);
 #else
 	for (const std::string &l : (drop_madc ? other : needed))
 	    libs.push_back(l.c_str());
@@ -2266,6 +2313,23 @@ int madc_cir_run_objects(const std::vector<std::string> &paths,
 // deltas, include edges, the branch-macro set, and the canonical unit order.
 // Lives HERE (not in cir_freeze.cpp) so the container layer stays
 // Program-blind (design doc 2026-07-04 §2).
+// Record-partition owner override (cir_unit_owner_fn): a node whose origin
+// token was produced by a __need protocol serving belongs to the INCLUDER's
+// unit (the same ownership the token bucketer below applies), so the freeze
+// forms no husk unit under the served header's name.
+static const char *cir_pack_protocol_owner(void *ctx, uint32_t origin_id)
+{
+    Program *prog = (Program *)ctx;
+    if (!origin_id || prog->pack_protocol_token_owner.empty())
+	return NULL;
+    TokenBase *tb = madc_token_for_slot(origin_id);
+    if (!tb)
+	return NULL;
+    std::map<TokenBase *, const char *>::const_iterator it =
+	prog->pack_protocol_token_owner.find(tb);
+    return it == prog->pack_protocol_token_owner.end() ? NULL : it->second;
+}
+
 static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !prog->pack_recording)
@@ -2293,6 +2357,12 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 
     // 1. Bucket the token stream per unit. unit_of/local_of are parallel to
     //    the absolute stream index (== the recorder's cursor positions).
+    //    A __need protocol serving's tokens keep their honest origin file
+    //    (diagnostics) but belong to the INCLUDER's translation (gcc canon) —
+    //    pack_protocol_token_owner redirects them so no husk unit forms under
+    //    the protocol header's name (packed-lane va_start regression).
+    const std::map<TokenBase *, const char *> &proto_owner =
+	prog->pack_protocol_token_owner;
     size_t n = (size_t)(prog->tokens.end() - prog->tokens.begin());
     std::vector<uint32_t> unit_of(n, 0xffffffffu), local_of(n, 0);
     std::vector<std::vector<TokenBase *> > unit_toks;
@@ -2305,7 +2375,11 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	if (!tb || !tb->file)
 	    continue;	// unbucketable: a range containing it flags SPANS_UNITS
 	uint32_t u;
-	if (tb->file == last_file)
+	std::map<TokenBase *, const char *>::const_iterator po;
+	if (!proto_owner.empty()
+	    && (po = proto_owner.find(tb)) != proto_owner.end())
+	    u = ensure_unit(po->second);	// leave the last_file cache alone
+	else if (tb->file == last_file)
 	    u = last_unit;
 	else {
 	    u = ensure_unit(tb->file);
@@ -3129,6 +3203,17 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		return t.decl && prog->forest_is_tu_root_file(t.decl->file);
 	return false;
     };
+    // v39: the emitted symbol this Variable resolves to, VERBATIM. Live derived
+    // it through whichever owner the entity's category has —
+    // namespace_cpp_variable_symbol for a namespace variable,
+    // class_static_member_itanium_symbol for a class-scope static data member —
+    // and the consumer must not re-run one derivation over all of them (it did,
+    // and mangled `ctype_char__id` as a single identifier component). Carrying
+    // it is what makes LOADED == parsed hold for the symbol too.
+    auto global_alias_id = [&](Variable *gv) -> uint32_t {
+	return gv->storage_alias_name.empty()
+		   ? 0u : pool.intern(gv->storage_alias_name);
+    };
     for (Variable *v : prog->tkProgram->variables) {
 	if (!v || !v->type)
 	    continue;
@@ -3159,6 +3244,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 		if (eo->second && prog->forest_is_tu_root_file(eo->second))
 			g.gflags |= CIR_GLOBALF_TU_ROOT;
 		g.ns_id      = global_ns_id(v);
+		g.alias_id      = global_alias_id(v);	// v39
 		g.init_value = v->get<int64_t>();
 		DBG(std::cout << "cir_forest_fill_globals: enum const "
 			  << v->name << " = " << g.init_value
@@ -3194,6 +3280,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (global_tu_root(v))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    f.globals.push_back(g);
 	    continue;
 	}
@@ -3213,6 +3300,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (global_tu_root(v))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    // v16: classify the header's initializer FORM so the load rebuilds a
 	    // TokenDecl whose emission is byte-identical to a live parse (v13 stored
 	    // NO form -> flush set decl=NULL -> collect_global_ctors' built-in path
@@ -3305,6 +3393,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	    if (prog->forest_is_tu_root_file(td->file))
 		g.gflags |= CIR_GLOBALF_TU_ROOT;
 	    g.ns_id   = global_ns_id(v);
+	    g.alias_id   = global_alias_id(v);	// v39
 	    f.globals.push_back(g);
 	    continue;
 	}
@@ -3334,6 +3423,7 @@ static void cir_forest_fill_globals(Program *prog, cir_frozen_forest &f)
 	if (td && prog->forest_is_tu_root_file(td->file))
 	    g.gflags |= CIR_GLOBALF_TU_ROOT;
 	g.ns_id      = global_ns_id(v);
+	g.alias_id      = global_alias_id(v);	// v39
 	g.init_value = rhs->ival();
 	f.globals.push_back(g);
     }
@@ -4181,8 +4271,33 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			}
 			madc::dis::defrec r;
 			if (!madc::dis::arena_id_is_project(tid) || !a.get_def_at(tid, r)
-			    || r.kind == madc::dis::DK_NONE)
+			    || r.kind == madc::dis::DK_NONE) {
+				// A namespaced alias whose TARGET has no arena record
+				// emits nothing, so the name is absent from the frozen
+				// type graph while the decl INDEX still lists it — the
+				// consumer then reports "use of undeclared identifier"
+				// for the alias and the index says it should be there.
+				// Name the skip (load-side twin: MADC_ALIAS_PROBE).
+				DBG({
+					DataDef *tdd = &it->second->definition;
+					DataDefSTRUCT *tsd =
+						dynamic_cast<DataDefSTRUCT *>(tdd);
+					DataDefCLASS *tcd =
+						dynamic_cast<DataDefCLASS *>(tdd);
+					std::cout << "cir_forest_arena_complete: ns alias "
+						  << ns << "::" << it->first
+						  << " SKIPPED - target tid=" << tid
+						  << " has no arena record [name=" << tdd->name
+						  << " complete="
+						  << (tsd ? (tsd->is_complete ? "1" : "0") : "-")
+						  << " placeholder="
+						  << (tcd ? (tcd->is_dependent_placeholder ? "1" : "0") : "-")
+						  << " opaque_tag="
+						  << (tcd ? (tcd->opaque_concrete_tag ? "1" : "0") : "-")
+						  << "]" << std::endl;
+				});
 				continue;		// type not in the arena (follow-on kind)
+			}
 			uint32_t key_id = a.strings.intern(it->first);
 			if (key_id != r.name_id) {
 				// A namespaced ALIAS whose key differs from the aggregate's
@@ -4792,6 +4907,7 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
     c2mir_init(ctx);
     c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
     bool ok = false;
+    bool mir_errored = false;
     {
 	CirFrozenForest forest;
 	do {
@@ -4807,6 +4923,7 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
 	    if (setjmp(cir_mir_error_jmp)) {
 		cir_mir_error_armed = false;
 		cir_mir_cache_sink = NULL;
+		mir_errored = true;
 		fprintf(stderr, "%s: mir cache: MIR error during module "
 			"compile: %s — blob skipped (consumers fall back)\n",
 			source_name, cir_mir_error_text);
@@ -4834,11 +4951,20 @@ static bool cir_forest_mir_cache_blob(const void *image, size_t image_len,
 	    cir_mir_error_armed = false;
 	    ok = out.size() > sizeof(mh);
 	} while (0);
-	if (c2m)
+	if (c2m && !mir_errored)
 	    cir_finish(c2m);
     }
-    c2mir_finish(ctx);
-    MIR_finish(ctx);
+    if (!mir_errored) {
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+    // else: the longjmp left the context with an UNFINISHED module/function,
+    // and MIR_finish fatals on that state ("finish when module is not
+    // finished") — killing the whole freeze this lane exists to keep
+    // error-contained (the gen-only duration<double>::operator%= drain
+    // defect did exactly this). Deliberately LEAK the one-shot context: the
+    // producer process exits after the pack, and the contract above ("the
+    // pack carries no blob, consumers fall back") holds.
     if (!ok)
 	out.clear();
     return ok;
@@ -5041,6 +5167,11 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	return -1;
     }
 
+    // Before the tree exists: finish any alias whose target is still an opaque
+    // forward tag, so the container ships the completed class rather than a
+    // husk only the producer could have completed (see the method's comment).
+    prog->forest_complete_alias_target_shells();
+
     // Translate needs the c2mir contexts but never compiles: the frozen tree
     // must be PRE-check (c2mir's do_context writes attr scratch into any tree
     // it compiles; post-check trees are single-use).
@@ -5142,7 +5273,8 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    source_name, nerr);
 	} else if (tree && gate_ok) {
 	    cir_frozen_forest f;
-	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f)) {
+	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f,
+				   cir_pack_protocol_owner, prog)) {
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
@@ -5820,10 +5952,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	return -1;
     }
 
-    CirBuilder builder(c2m);
-    node_t tree = builder.translate_module(prog);
+    // The guarded translate, NOT a bare translate_module: it owns the
+    // open-before-build (the flavor runtime must be dlopen'd before the
+    // tree build, or every CIR-time dlsym probe answers false and the
+    // alias-bound facet-id statics stay unrecorded — emitted C then
+    // references _ZNSt3__15ctypeIcE2idE undeclared under -stdlib=libc++).
+    CirBuilder *builder = NULL;
+    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
     if (!tree) {
-	fprintf(stderr, "madc_cir_emit: tree build failed\n");
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
@@ -5839,13 +5975,23 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
+	delete builder;
 	return -1;
     }
+
+    // C11 output ONLY (never the .mc11 twin — that is the faithful IR
+    // serialization): lower the mangled-direct indirect-return edge to the
+    // target-neutral struct-return shape. The env knob exists solely as the
+    // gate's negative control (scripts/emitc_sret_gate.sh runs it on every
+    // fulltest to prove the checker still detects the unlowered shape).
+    if (lang == celC11 && getenv("MADC_XTEST_NO_SRET_LOWER") == NULL)
+	builder->emitc_lower_indirect_returns(tree);
 
     cir_emit_c(out, tree, lang);
 
     cir_finish(c2m);
     c2mir_finish(ctx);
     MIR_finish(ctx);
+    delete builder;	// owns the node arena — outlives every tree read
     return 0;
 }

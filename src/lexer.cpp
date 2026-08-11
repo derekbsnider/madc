@@ -1114,6 +1114,8 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     finalize_pop1_rec(tb);
     tokens.push_back(tb);
+    if ( pack_protocol_unit )	// __need serving: the includer owns this token
+	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
 }
 
@@ -2248,6 +2250,29 @@ Program::ForestBindStats Program::forest_bind_stats() const
     return s;
 }
 
+// Is a __need request macro live right now? — the protocol by which a
+// C-library header asks the resource-dir stddef.h/stdarg.h for ONE
+// definition via re-inclusion (glibc: `#define __need_wchar_t` +
+// `#include <stddef.h>`). A live request marks the next include as a
+// protocol visit (see the include site): it must re-tokenize the
+// protocol-aware text, never a one-shot cache. The list is exactly the
+// requests madc's OWN embedded protocol headers implement
+// (include/madc/stddef.h's __need arms + stdarg's __va_list) and grows in
+// lockstep with them — only embedded-served names need the predicate;
+// filesystem headers are never name-deduped or PCH-served, so glibc's
+// other __need pairs behave as they always did.
+bool Program::need_protocol_macro_live()
+{
+    static const char *const macros[] = {
+	"__need_size_t", "__need_ptrdiff_t", "__need_wchar_t",
+	"__need_NULL", "__need_wint_t", "__need___va_list",
+    };
+    for ( size_t i = 0; i < sizeof(macros) / sizeof(macros[0]); ++i )
+	if ( define_map.count(macros[i]) )
+	    return true;
+    return false;
+}
+
 // Map a system include spelling to a frozen grove unit index (-1 = miss). Tries
 // the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
 // "stddef.h"), then the resolved filesystem path (real headers name their full
@@ -2264,7 +2289,15 @@ int Program::forest_unit_for_include(const std::string &incfile)
     std::string fp = resolve_include_path(incfile, /*is_system=*/true);
     if ( !fp.empty() && fp != incfile )
 	u = f->find_unit(fp);
-    return u;
+    if ( u >= 0 )
+	return u;
+    // Machine-portable arm: filesystem-frozen units carry the PRODUCER's
+    // full header path, which this machine's resolver may not be able to
+    // spell at all (the hosted darwin groves are frozen from the build
+    // container's libc++ tree; run-only Macs have no headers to resolve
+    // against). The include SPELLING matched against the unit name's tail
+    // components is the identity that travels.
+    return f->find_unit_path_tail(incfile);
 }
 
 // Bind a grove unit and its include closure: post-order DFS over the unit's
@@ -2615,21 +2648,14 @@ bool Program::is_system_header_path(const char *path) const
     return false;
 }
 
-// #include_next <file>: behave like a system #include, but search the
-// path list starting AFTER the directory the current file was found in.
-// Used by libstdc++ wrapper headers (cstdlib -> stdlib.h, cmath -> math.h …)
-// to reach the "real" header of the same name that sits later in the search
-// order. The embedded/curated layer is consulted first by the caller (so
-// curated libc headers still win while libc stays curated); this resolves the
-// filesystem fallback for the non-curated targets.
-std::string Program::resolve_include_next_path(const std::string &incfile)
+// The ordered #include_next walk: the same dirs <> includes search (-I paths
+// first, then the compiler-derived system include paths), with the start
+// position AFTER the directory the current file was found in. ONE builder for
+// both next-walkers — resolve_include_next_path (which filesystem dir serves
+// the name) and embedded_wins_include_next (does the embedded slot come
+// first) — so their notion of "after the current file" cannot diverge.
+size_t Program::include_next_search_list(std::vector<std::string> &search)
 {
-    if ( incfile.empty() || incfile[0] == '/' )
-	return incfile;
-
-    // Ordered system search list — the same dirs <> includes search:
-    // -I paths first, then the compiler-derived system include paths.
-    std::vector<std::string> search;
     for ( size_t i = 0; i < include_paths.size(); ++i )
 	search.push_back(include_paths[i]);
     const char *const *sys_paths = sys_include_paths();
@@ -2641,18 +2667,31 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
     std::string cur = current_source_directory();
     if ( !cur.empty() && cur.back() != '/' )
 	cur += '/';
-    size_t start = 0;
     for ( size_t i = 0; i < search.size(); ++i )
     {
 	std::string d = search[i];
 	if ( !d.empty() && d.back() != '/' )
 	    d += '/';
 	if ( d == cur )
-	{
-	    start = i + 1;
-	    break;
-	}
+	    return i + 1;
     }
+    return 0;
+}
+
+// #include_next <file>: behave like a system #include, but search the
+// path list starting AFTER the directory the current file was found in.
+// Used by libstdc++/libc++ wrapper headers (cstdlib -> stdlib.h, cmath ->
+// math.h …) to reach the "real" header of the same name that sits later in
+// the search order. The embedded set is consulted by the caller through
+// embedded_wins_include_next (position-aware, below); this resolves the
+// filesystem fallback for the non-embedded targets.
+std::string Program::resolve_include_next_path(const std::string &incfile)
+{
+    if ( incfile.empty() || incfile[0] == '/' )
+	return incfile;
+
+    std::vector<std::string> search;
+    size_t start = include_next_search_list(search);
     for ( size_t i = start; i < search.size(); ++i )
     {
 	std::string &dir = search[i];
@@ -2662,6 +2701,44 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
 	    return candidate;
     }
     return incfile; // not found — will fail at open
+}
+
+// Does #include_next <name> resolve to madc's EMBEDDED copy? The embedded
+// set occupies the compiler-resource-dir slot of the search order, and
+// embedded_header_outranked (parser.cpp) asks the ranking question from the
+// TOP of the list — right for a plain include, WRONG for #include_next,
+// whose walk starts after the current file's directory: a directory can
+// only beat the embedded copy if it sits between that position and the
+// slot AND supplies the name. The distinction is what makes the
+// hosted-darwin C++ groves work at all: libc++'s C wrappers (c++/v1's
+// stdio.h, wchar.h, …) #include_next the C library, and on an Apple target
+// the C library IS the embedded prelude — there is nothing on disk after
+// the slot. On glibc hosts the embedded set does not carry libc names (the
+// retired-shims law), so this answers false and the filesystem walk serves
+// /usr/include exactly as before.
+bool Program::embedded_wins_include_next(const std::string &incfile)
+{
+    if ( !find_embedded_header(incfile) || !is_embedded_header_allowed(incfile) )
+	return false;
+    const std::string owned = compiler_owned_include_dir();
+    // No slot recorded (no compiler at build time, or the fallback list is
+    // in use): the embedded set keeps its historical unconditional
+    // precedence — the same answer embedded_header_outranked gives.
+    if ( owned.empty() )
+	return true;
+    std::vector<std::string> search;
+    size_t start = include_next_search_list(search);
+    for ( size_t i = start; i < search.size(); ++i )
+    {
+	if ( search[i] == owned )
+	    return true;    // reached the slot before any real provider
+	std::string candidate = search[i]
+	    + (search[i].empty() || search[i].back() == '/' ? "" : "/") + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return false;   // a real directory between here and the slot wins
+    }
+    return true;   // slot not reached in the list — preserve the old order
 }
 
 // Detect the classic include guard of a header file: the first significant
@@ -2780,10 +2857,29 @@ const char *Program::pack_current_unit()
 {
     if ( !pack_recording )
 	return NULL;
+    if ( pack_protocol_unit )	// __need serving: every effect (the served
+	return pack_protocol_unit;	// #define/#undef) belongs to the includer
     const char *f = source.fname();
     if ( !f || !*f )
 	return NULL;
     return intern_file(f);
+}
+
+// __need protocol serving window (see the member comment in madc.h). begin()
+// captures the includer as the owner — call it BEFORE the source swap, while
+// the includer is still the current file — and returns the prior owner so
+// nested servings keep the OUTERMOST includer; end() restores it.
+const char *Program::pack_protocol_serving_begin()
+{
+    const char *saved = pack_protocol_unit;
+    if ( pack_recording && !pack_protocol_unit )
+	pack_protocol_unit = pack_current_unit();
+    return saved;
+}
+
+void Program::pack_protocol_serving_end(const char *saved)
+{
+    pack_protocol_unit = saved;
 }
 
 void Program::pack_note_unit(const char *interned_file)
@@ -3663,14 +3759,30 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // glibc's __need protocol: a request macro (__need_size_t,
+		    // __need_wchar_t, gcc's __need___va_list, ...) live at the
+		    // include marks a PROTOCOL VISIT — the header is DESIGNED
+		    // for repeated inclusion, serving one definition per pass
+		    // and clearing the request. Such a visit must reach the
+		    // protocol-aware TEXT: no name-level once-only skip (the
+		    // first visit served a DIFFERENT request), no baked PCH,
+		    // no forest bind (both are the full-content one-shot).
+		    // And the freeze must form NO unit for it — the serving
+		    // belongs to the INCLUDER (pack_protocol_serving_begin;
+		    // both the embedded and the filesystem arm gate on this).
+		    bool protocol_visit = need_protocol_macro_live();
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
 		    // #include_next is POSITIONAL (continue the path search after
-		    // the current header's dir) — it must never resolve through
-		    // the named PCH/embedded caches, only the filesystem walk.
-		    if ( is_system && !is_include_next )
+		    // the current header's dir) — it resolves through the named
+		    // providers ONLY when the positional walk says the embedded
+		    // set's slot is the next provider (embedded_wins_include_next:
+		    // libc++'s C wrappers reaching the hosted-darwin prelude);
+		    // otherwise it stays a pure filesystem walk.
+		    if ( is_system
+		      && (!is_include_next || embedded_wins_include_next(incfile)) )
 		    {
-			if ( !suppress_auto_include_scan
+			if ( !suppress_auto_include_scan && !protocol_visit
 			  && pending_auto_include_headers.count(incfile) )
 			{
 			    // Defer to the auto-include prelude ONLY when a
@@ -3698,7 +3810,8 @@ TokenBase *Program::_getToken()
 			// return WITHOUT re-parsing the header. Non-forest headers
 			// fall through to live parse. Gated on the policy knob
 			// so the default path is one predicted branch.
-			if ( registration_policy.enable_forest_bind )
+			if ( registration_policy.enable_forest_bind
+			  && !protocol_visit )
 			{
 			    int fu = forest_unit_for_include(incfile);
 			    if ( fu >= 0 )
@@ -3738,10 +3851,13 @@ TokenBase *Program::_getToken()
 			// deliberately guard-less header (bits/mathcalls.h, multi-
 			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
-			bool name_already_included = include_already_seen(include_key);
+			bool name_already_included = !protocol_visit
+			    && include_already_seen(include_key);
 			std::string pch_path;
 			bool resolves_named =
 			    named_include_provider_exists(*this, incfile, pch_path);
+			if ( protocol_visit )
+			    pch_path.clear();	// a baked PCH is the full one-shot
 			if ( resolves_named && name_already_included )
 			{
 			    // B4a: the include EDGE exists in the source even when
@@ -3751,8 +3867,11 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			if ( resolves_named )
+			if ( resolves_named && !protocol_visit )
 			    should_tokenize_include(include_key);   // record the name
+			// (a protocol visit records nothing: it served ONE
+			// request, not the header — the full content is
+			// still owed to a later plain include)
 			if ( !pch_path.empty() )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
@@ -3794,8 +3913,11 @@ TokenBase *Program::_getToken()
 			// dir): the real header wins and we fall through to the
 			// filesystem walk below. Shadowing libc++'s <stddef.h>
 			// here is exactly what makes it #error that its wrapper
-			// was bypassed.
-			if ( embedded && embedded_header_outranked(incfile) )
+			// was bypassed. #include_next skips this from-the-TOP
+			// test — its ranking was already decided positionally
+			// by embedded_wins_include_next at the block gate.
+			if ( embedded && !is_include_next
+			  && embedded_header_outranked(incfile) )
 			{
 			    DBG(std::cout << "#include <" << incfile
 				<< "> outranked by an earlier search dir; using the real header" << std::endl);
@@ -3804,7 +3926,14 @@ TokenBase *Program::_getToken()
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
-			    pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
+			    // B4a: a protocol visit forms no unit and no edge —
+			    // the serving belongs to the includer's unit (owner
+			    // captured pre-swap, while the includer is current).
+			    const char *_proto_saved = NULL;
+			    if ( protocol_visit )
+				_proto_saved = pack_protocol_serving_begin();
+			    else
+				pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
 			    Source saved = std::move(source);
 			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 			    suppress_auto_include_scan = true;
@@ -3814,7 +3943,8 @@ TokenBase *Program::_getToken()
 			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 			    TokenBase *itb;
 			    const char *_interned1 = intern_file(incfile);
-			    pack_note_unit(_interned1);
+			    if ( !protocol_visit )
+				pack_note_unit(_interned1);
 			    while ( (itb = getRealToken()) )
 			    {
 				itb->file = _interned1;
@@ -3822,6 +3952,8 @@ TokenBase *Program::_getToken()
 			    }
 			    source = std::move(saved);
 			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+			    if ( protocol_visit )
+				pack_protocol_serving_end(_proto_saved);
 			    // flag headers for deferred registration during parse init
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
@@ -3855,7 +3987,8 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( !should_tokenize_include(full_path) )
 		    {
-			pack_record_edge(full_path);	// B4a: edge survives the dedup skip
+			if ( !protocol_visit )	// a protocol visit records nothing
+			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -3865,7 +3998,16 @@ TokenBase *Program::_getToken()
 		    DBG(std::cout << "#include "
 			<< (is_system ? "<" : "\"") << full_path
 			<< (is_system ? ">" : "\"") << std::endl);
-		    pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
+		    // B4a: a protocol visit (a real gcc/glibc stddef.h reached
+		    // through the filesystem walk, or a stdlib wrapper on the
+		    // way to one — the request macro is still live at ITS
+		    // include site) forms no unit and no edge; the serving
+		    // belongs to the includer's unit (owner captured pre-swap).
+		    const char *_proto_saved = NULL;
+		    if ( protocol_visit )
+			_proto_saved = pack_protocol_serving_begin();
+		    else
+			pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
@@ -3876,6 +4018,8 @@ TokenBase *Program::_getToken()
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
+			if ( protocol_visit )
+			    pack_protocol_serving_end(_proto_saved);
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
@@ -3888,7 +4032,8 @@ TokenBase *Program::_getToken()
 		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
-		    pack_note_unit(_interned2);
+		    if ( !protocol_visit )
+			pack_note_unit(_interned2);
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
@@ -3896,6 +4041,8 @@ TokenBase *Program::_getToken()
 		    }
 		    source = std::move(saved);
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+		    if ( protocol_visit )
+			pack_protocol_serving_end(_proto_saved);
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )
@@ -6010,10 +6157,13 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 
     if ( op == "__has_include" || op == "__has_include_next" )
     {
-	// Answered EXACTLY, by the same resolver `#include` itself uses — so
+	// Answered EXACTLY, by the same resolution `#include` itself uses — so
 	// "can I include this?" and "will including it work?" can never
-	// disagree. resolve_include_path returns the bare name when it finds
-	// nothing, so the probe is the file opening, not the string.
+	// disagree. That resolution consults the NAMED providers (embedded
+	// text, baked PCH) before the filesystem, through the same gates; a
+	// file-open probe alone said NO to names madc itself serves (libc++'s
+	// __mbstate_t.h asks __has_include_next(<wchar.h>) and #errors on the
+	// honest-but-wrong answer — the hosted-darwin prelude is on no disk).
 	bool is_system = arg[0] == '<';
 	if ( (is_system && arg.back() != '>')
 	  || (!is_system && (arg[0] != '"' || arg.back() != '"')) )
@@ -6021,6 +6171,20 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	std::string file = arg.substr(1, arg.size() - 2);
 	if ( file.empty() )
 	    return 0;
+	if ( is_system )
+	{
+	    if ( op == "__has_include_next" )
+	    {
+		if ( embedded_wins_include_next(file) )
+		    return 1;
+	    }
+	    else
+	    {
+		std::string pch_path;
+		if ( named_include_provider_exists(*this, file, pch_path) )
+		    return 1;
+	    }
+	}
 	std::string path = op == "__has_include_next"
 			 ? resolve_include_next_path(file)
 			 : resolve_include_path(file, is_system);

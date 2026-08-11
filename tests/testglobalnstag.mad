@@ -1,0 +1,32 @@
+// A GLOBAL-scope struct definition whose tag is also a NAMESPACE-scoped
+// class's name must coexist ([basic.scope.namespace]) — the namespaced
+// definition flat-registers its bare name for madc's unqualified-visibility
+// dialect, and the global definition used to throw "Struct 'S' already
+// defined" against that convenience entry. The live shape: libc++ registers
+// std::exception, then darwin math.h's SVID `struct exception` arrives at
+// global scope (macos-release-lane W1).
+// Oracle: g++ and clang++ both accept and print 7 3.5 9.
+#include <stdio.h>
+
+namespace toolkit {
+    struct sample {
+        int ticks;
+        sample(int t) : ticks(t) {}
+    };
+}
+
+struct sample {
+    double weight;
+};
+
+int main()
+{
+    toolkit::sample ns_obj(7);
+    struct sample g_obj;
+    g_obj.weight = 3.5;
+    // The bare tag at global scope names the GLOBAL struct.
+    sample g2;
+    g2.weight = 9.0;
+    printf("%d %.1f %.0f\n", ns_obj.ticks, g_obj.weight, g2.weight);
+    return 0;
+}

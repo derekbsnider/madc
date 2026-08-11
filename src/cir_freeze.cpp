@@ -205,7 +205,9 @@ static bool cir_fill_record(cir_node *n, cir_frozen_record &r)
 struct cir_freeze_loc { uint32_t unit, idx; };
 
 static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
-				   bool by_unit, cir_frozen_forest &out)
+				   bool by_unit, cir_frozen_forest &out,
+				   cir_unit_owner_fn owner_override = NULL,
+				   void *owner_ctx = NULL)
 {
 	if (!root)
 		return false;
@@ -248,9 +250,21 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 		return true;
 	};
 
+	// A node's unit is its origin token's source file — unless the owner
+	// override reassigns it (a __need protocol serving's nodes belong to
+	// the INCLUDER's unit; see cir_unit_owner_fn in cir_freeze.h).
+	auto node_unit_file = [&](cir_node *n) -> const char * {
+		if (owner_override) {
+			const char *own = owner_override(owner_ctx, n->origin_id);
+			if (own)
+				return own;
+		}
+		return n->src_file();
+	};
+
 	// Pass 1: discovery.
 	{
-		const char *rf = by_unit ? root->src_file() : NULL;
+		const char *rf = by_unit ? node_unit_file(root) : NULL;
 		uint32_t ru = by_unit ? unit_for(rf ? rf : main_unit_name) : 0;
 		if (!place(root, ru))
 			return false;
@@ -268,7 +282,7 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 				continue;
 			uint32_t cu = nu;
 			if (by_unit) {
-				const char *cf = c->src_file();
+				const char *cf = node_unit_file(c);
 				if (cf)
 					cu = unit_for(cf);
 			}
@@ -437,7 +451,8 @@ bool cir_freeze_subtree(cir_node *root, cir_frozen_blob &out)
 }
 
 bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
-		       cir_frozen_forest &out)
+		       cir_frozen_forest &out,
+		       cir_unit_owner_fn owner_override, void *owner_ctx)
 {
 	if (!TokenBase::_active_strpool) {
 		fprintf(stderr, "madc internal: cir forest freeze with no"
@@ -446,7 +461,7 @@ bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
 	}
 	return cir_freeze_partitioned(root, main_unit_name ? main_unit_name
 							   : "<main>",
-				      true, out);
+				      true, out, owner_override, owner_ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,6 +1448,30 @@ int CirFrozenForest::find_unit(const std::string &name) const
 	std::map<std::string, uint32_t>::const_iterator it =
 		_unit_by_name.find(name);
 	return it == _unit_by_name.end() ? -1 : (int)it->second;
+}
+
+// Path-tail lookup: the unit whose (path-)name ends in "/<incfile>".
+// Filesystem-frozen units are keyed by the PRODUCER's full header path,
+// which a consumer on a different machine can never spell — the hosted
+// darwin binaries carry groves frozen from the build container's libc++
+// tree, and the Mac's resolver has nothing to resolve against (that is
+// the point: run-only Macs have no headers). The include SPELLING is the
+// machine-portable identity: match it against the name's tail component
+// path. First hit in unit order; -1 when none or when the spelling is
+// itself an absolute path.
+int CirFrozenForest::find_unit_path_tail(const std::string &incfile) const
+{
+	if (incfile.empty() || incfile[0] == '/')
+		return -1;
+	const std::string tail = "/" + incfile;
+	for (std::map<std::string, uint32_t>::const_iterator it =
+		     _unit_by_name.begin(); it != _unit_by_name.end(); ++it) {
+		const std::string &nm = it->first;
+		if (nm.size() > tail.size()
+		    && nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0)
+			return (int)it->second;
+	}
+	return -1;
 }
 
 // --- grove payload v2 readers (B4a) ----------------------------------------
@@ -2938,19 +2977,43 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 
 	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their
 	// synthetic slots) -> (name, ns, underlying).
+	//
+	// Env-gated probe (MADC_ALIAS_PROBE=<substr>): report every matching
+	// alias record with its namespace, target id and verdict — the arena-side
+	// twin of MADC_DECLIDX_PROBE. Each `continue` below drops an alias the
+	// consumer then fails to resolve with "use of undeclared identifier",
+	// naming the alias and never the target, so the drop is invisible from
+	// the outside; the probe is what makes it a measurement.
+	static const char *aliprobe = ::getenv("MADC_ALIAS_PROBE");
+	auto alias_say = [&](const madc::dis::defrec &r, const char *nm,
+			     const char *verdict) {
+		const char *ns = r.ns_id ? a.c_str(r.ns_id) : NULL;
+		fprintf(stderr, "ALIAS %s%s%s ref0=%u %s\n", ns ? ns : "",
+			ns && *ns ? "::" : "", nm, r.ref0, verdict);
+	};
 	for (uint32_t s = 0; s < nslots; ++s) {
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_TYPEDEF)
 			continue;
-		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
-			continue;	// v24: the program's own typedef — fenced
 		const char *nm = r.name_id ? a.c_str(r.name_id) : NULL;
+		const bool probed = aliprobe && *aliprobe && nm
+				  && strstr(nm, aliprobe) != NULL;
+		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN) {
+			if (probed)
+				alias_say(r, nm, "DROPPED (tu-root fence)");
+			continue;	// v24: the program's own typedef — fenced
+		}
 		if (!nm || !*nm)
 			continue;
 		DataDef *underlying = arena_swizzle(r.ref0, by_id);
-		if (!underlying)
+		if (!underlying) {
+			if (probed)
+				alias_say(r, nm, "DROPPED (target not materialized)");
 			continue;
+		}
+		if (probed)
+			alias_say(r, nm, "kept");
 		CirRestoredType rt;
 		rt.name       = nm;
 		rt.kind       = CIR_TYPEK_TYPEDEF;
@@ -3249,6 +3312,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rg.gflags     = g.gflags;
 		uint32_t nslen = 0;
 		rg.ns         = g.ns_id ? pool_cstr(g.ns_id, nslen) : NULL;	// v22
+		uint32_t allen = 0;
+		rg.alias      = g.alias_id ? pool_cstr(g.alias_id, allen) : NULL;	// v39
 		rg.init_value = g.init_value;
 		// v25: the ctor-args raw-token run (arena tokbytes span).
 		rg.ctor_bytes = NULL;

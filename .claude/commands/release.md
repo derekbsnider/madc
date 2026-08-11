@@ -87,7 +87,15 @@ Perform the full release workflow:
 14. **Report**: Print a summary of what was released, the madc version, the fork release (if one was cut), and remind the user to run `/promote` when ready to push to master
 
 ## Important
-- Run `make -C src fulltest` before starting — abort if tests fail
+- **Do NOT re-run test suites on already-validated content** (owner rule,
+  2026-08-09; fifth repeat 2026-08-11 — this file was the missed copy of
+  the fix that went into promote.md). A release commit is docs-only
+  (VERSION, CHANGELOG, README, status, notes): if every commit since the
+  last recorded green battery is docs/status-only, that battery IS the
+  release gate — cite it and move on. Only if CODE (`src/`, `include/`,
+  `tests/`, `scripts/` runners) changed since the last green battery does
+  a suite run first — via `scripts/remote_build.sh` (the container; the
+  NAS never builds), and then say why.
 - Read the actual file contents before modifying — don't guess at current state
 - Use today's date (from the system) for all date fields
 - The commit must include the Co-Authored-By trailer

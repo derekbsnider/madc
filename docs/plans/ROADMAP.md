@@ -99,6 +99,32 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.76.0 (2026-08-11): the macOS release lane — madc's first PUBLIC
+  darwin release.** Tarballs `madc-0.76.0-macos-{arm64,x86_64}.tar.gz`:
+  stripped, ad-hoc-signed hosted binaries carrying the packed C/C++
+  stdlib forest, `libmadc_rt.a` for emitted-C consumers, and native AOT
+  `-o` covering runtime-free C, C-lane-runtime static (try/catch/VLA via
+  the forest-carried AOT ledger), AND C++ programs (fork `mir-macho.c`
+  binds flat-namespace when extra dylibs ride `LC_LOAD_DYLIB`;
+  `cir_apple_extra_dylibs` adds `libc++.1.dylib` on Itanium-mangled
+  imports). Provenance-clean end to end: the darwin C prelude flattens
+  from the zig-0.16.0-pinned Apple APSL/BSD header tree
+  (`scripts/fetch_darwin_open_headers.sh`), the binary bakes its prelude
+  provenance into `.rodata`, `verify_macho_release.sh` refuses
+  sdk-private or missing markers, and `THIRD_PARTY_NOTICES/` ships the
+  240-file license audit. The deepest fix of the arc: AArch64 places the
+  hidden by-value-class-return pointer in `x8` — madc's hand-rolled
+  first-argument shape was x86-64-only; the parameter is now marked
+  (`__attribute__((ret_addr))` → `MIR_T_RBLK`) and placed by the target,
+  with `CirBuilder::retbuf_param` its single producer, plus the
+  emit-time struct-return fusion so `--emit=c11` output is
+  target-neutral too. Battery: fulltest **1019/0/9skip**, libc++ lane
+  **1015/0/13skip**, EXE/OBJ **990/0**, packed **1019/0**, on-Mac
+  evidence battery 8/2 of 10 (fails = the two named known-opens).
+  Remaining on the axis: full-runtime dynamic AOT (`libmadc.dylib`),
+  the in-process Mach-O `.o` loader
+  ([2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md)).
+
 - **v0.70.0 (2026-08-08): the data-channel streaming & process-flow
   core (Track 5A).** madcdis gains the dependency-free streaming
   framework: lazy typed `Sink`/`Flow` adapters over ABI-compatible
@@ -1620,9 +1646,9 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | Planned | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on 6.1 | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen; the next `/promote` milestone) | 4-6 wk | **ACTIVE** | [2026-07-25-macho-arm64-plan.md](2026-07-25-macho-arm64-plan.md) |
+| 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
 | 6.4 | Windows port | TBD | Not started | — |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.

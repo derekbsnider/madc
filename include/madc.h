@@ -1743,6 +1743,11 @@ public:
 void show_error_source_line(const std::string &ln, int col);
 bool madc_show_file_error(const char *fname, int row, int col);
 
+// Does a loaded native library export this symbol? ONE owner (defined in
+// cir_builder.cpp, beside the mangled-direct bind sites that ask it most) —
+// the same dlsym the MIR import resolver uses, so a yes here always links.
+bool external_symbol_available(const std::string &sym);
+
 // very simple exception container
 class Exception: public std::exception
 {
@@ -3743,6 +3748,21 @@ public:
     std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
     std::vector<PackDeclEntry> pack_decls;	// parse-time top-level decl boundaries
     std::vector<PackDeclFrame> pack_decl_stack;	// open frames (namespace bodies nest)
+    // A __need protocol serving (glibc's stddef/stdarg re-inclusion protocol,
+    // need_protocol_macro_live): tokens and PP events produced while a request
+    // macro is live belong to the INCLUDER's translation (gcc canon — the
+    // header served ONE definition, not its content), so NO unit may form
+    // under the served header's name; a consumer plain-including it would bind
+    // the husk (packed-lane va_start regression, 2026-08-10). Ownership is
+    // keyed by token IDENTITY — buffer reorders (move_tail_to) and rewrites
+    // (assign_ids_from) keep TokenBase pointers stable where absolute indices
+    // are not. pack_protocol_unit is the live owner (the OUTERMOST includer;
+    // liveness is macro-state-based, so a wrapper chain nests consistently);
+    // NULL outside a serving and whenever pack_recording is off.
+    const char *pack_protocol_unit = NULL;
+    std::map<TokenBase *, const char *> pack_protocol_token_owner;
+    const char *pack_protocol_serving_begin();	// returns the prior owner (restore token)
+    void pack_protocol_serving_end(const char *saved);
     // Recording hooks (PP side in lexer.cpp, decl side in parser.cpp; every
     // one gates on pack_recording so default builds pay one predicted branch).
     void pack_note_unit(const char *interned_file);
@@ -4475,6 +4495,10 @@ public:
     // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
     struct PendingForestGlobal {
 	std::string name; std::string ns; DataDef *type;
+	// v39: Variable::storage_alias_name as the PRODUCER derived it (empty =
+	// none). Transported, not re-derived — the consumer had one derivation
+	// for every category and mis-mangled class-scope static data members.
+	std::string alias;
 	uint32_t flags; uint32_t gflags; int64_t init_value;
 	// v25: the ctor-args raw-token run (CIR_GLOBALF_CTOR_ARG_TOKENS) — a
 	// span into the bound forest's arena tokbytes; the flush re-runs the
@@ -4595,6 +4619,9 @@ public:
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    // A __need_* request macro is live: the next include is a protocol
+    // visit (re-tokenize the protocol text; no once-only/PCH/forest).
+    bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
@@ -4645,6 +4672,14 @@ public:
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     std::string resolve_include_next_path(const std::string &incfile);
+    // The ordered #include_next walk (search list + start position after the
+    // current file's directory) — ONE builder shared by the path resolver and
+    // the embedded-ranking test so their notion of "after" cannot diverge.
+    size_t include_next_search_list(std::vector<std::string> &search);
+    // Position-aware twin of embedded_header_outranked for #include_next:
+    // from the current position, does the embedded set's resource-dir slot
+    // come before any real directory that supplies <name>?
+    bool embedded_wins_include_next(const std::string &name);
     bool is_system_header_path(const char *path) const;
     // The ONE reader of the generated include tables: every consumer asks these
     // rather than the globals, so selecting a -stdlib= flavor switches the whole
@@ -5358,6 +5393,28 @@ public:
     // diagnostics rewound, so a replay that cannot re-enter cleanly leaves the
     // caller exactly as it was. Returns NULL when the shell stays opaque.
     DataDefCLASS *complete_shell_class_type(DataDefCLASS *cls);
+    // THE silent-replay discipline (the constraint evaluator's pattern), as a
+    // scope: a SPECULATIVE instantiation that cannot re-enter cleanly must
+    // leave no stderr noise and no diagnostic behind, because the caller's
+    // opaque path is still valid. Construct to mute cerr + snapshot the
+    // diagnostic state, call rewind() when the replay did not achieve its goal,
+    // destruct to unmute. Every speculative-instantiation site shares this one
+    // implementation — a hand-rolled copy is how a freeze-time replay turns a
+    // library's SFINAE probe into a producer compile error.
+    struct SilentReplay
+    {
+	Program &pgm;
+	size_t saved_diagnostics;
+	ErrorInfo saved_error;
+	std::streambuf *saved_cerr;
+	explicit SilentReplay(Program &p);
+	~SilentReplay();
+	void rewind();
+    };
+    // Freeze prep (called before the tree build): complete namespaced aliases
+    // whose target is still an opaque forward tag, so the container carries the
+    // finished class instead of a husk a consumer cannot complete.
+    void forest_complete_alias_target_shells();
     // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
     // primitive): valid only as the entire pattern of a template-argument pack
     // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a

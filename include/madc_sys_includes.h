@@ -38,6 +38,18 @@ extern const madc_stdlib_flavor madc_stdlib_flavors[];
 // Empty when detection failed.
 extern const char *madc_default_stdlib_flavor;
 
+// CIR-probe stand-in runtime (NULL-terminated; empty except in the
+// cross-Apple modes). A cross madc runs on the BUILD HOST but its flavor's
+// runtime exists only on the TARGET, so the CIR-time symbol-availability
+// probes (facet-id recording & co) would all answer "unavailable" and shape
+// the tree differently from the hosted consumer's live parse. These are the
+// HOST's sonames for the same flavor — the Itanium surface is
+// platform-neutral — opened by cir_open_stdlib_runtime purely so dlsym can
+// answer. Deliberately NOT the flavor's link_libs: that list rides into
+// freeze containers and consumer tables, where a build-host soname would be
+// wrong.
+extern const char *const madc_stdlib_probe_standin_libs[];
+
 // Table lookup by -stdlib= spelling; NULL when unknown/unbuilt (or empty name).
 // Defined beside the Program accessors in src/lexer.cpp.
 const madc_stdlib_flavor *madc_stdlib_flavor_lookup(const std::string &name);
