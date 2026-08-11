@@ -36,7 +36,12 @@
 #      rewritten call.
 #   2. -stdlib=libc++, ≤16-byte class (std::locale, 8 bytes — the size class
 #      C would return in registers): ios_base::getloc must be rewritten to a
-#      padded return, and the binary must run against real libc++.
+#      padded return, and the binary must run against real libc++. The
+#      reducer also inserts through cout, which pulls use_facet and with it
+#      the alias-bound facet-id static (ctype<char>::id): the emit lane must
+#      open the flavor runtime before the tree build (cir_translate_guarded)
+#      or the dlsym-guarded extern recording declines every legitimate alias
+#      and the emitted C references _ZNSt3__15ctypeIcE2idE undeclared.
 #   3. negative control for the CHECKER itself: with the rewrite disabled
 #      (MADC_XTEST_NO_SRET_LOWER=1) the audit MUST report offenders —
 #      otherwise the audit is blind and this gate proves nothing.
@@ -169,6 +174,7 @@ cat > "$src2" <<'EOF'
 #include <cstdio>
 int main()
 {
+	std::cout << "x";
 	std::locale l = std::cout.getloc();
 	printf("loc ok\n");
 	return 0;
@@ -185,13 +191,16 @@ offend="$(audit "$emitted2")"
 [ -z "$offend" ] \
 	|| fail "[libc++] unfused true-extern indirect return(s):
 $offend"
-gcc -std=c11 -O0 -w -o tmp/emitc_sret_gate2.bin "$emitted2" -lc++ -lm 2> "$errlog" \
+# -lmadc: the cout insertion instantiates __put_character_sequence, whose
+# try/catch lowers to the madc exception runtime (same contract as leg 1).
+gcc -std=c11 -O0 -w -o tmp/emitc_sret_gate2.bin "$emitted2" \
+	-Llib -lmadc "-Wl,-rpath,$PWD/lib" -lc++ -lm 2> "$errlog" \
 	|| fail "[libc++] gcc rejected the emitted C: $(head -3 "$errlog")"
 got2="$(timeout 60 ./tmp/emitc_sret_gate2.bin 2>&1)" \
 	|| fail "[libc++] the emitted-C binary failed: $got2"
-[ "$got2" = "loc ok" ] \
+[ "$got2" = "xloc ok" ] \
 	|| fail "[libc++] wrong output: [$got2]"
-echo "emitc_sret_gate: [libc++] OK — 8-byte locale rides a padded return and runs"
+echo "emitc_sret_gate: [libc++] OK — 8-byte locale rides a padded return and runs (facet-id extern declared)"
 
 # ---- Leg 3: the checker's own negative control --------------------------
 # With the rewrite disabled the SAME audit must report offenders; if it

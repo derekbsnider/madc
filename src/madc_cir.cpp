@@ -791,10 +791,11 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     // symbols the link would in fact resolve, so the tree is SHAPED
     // differently (unrecorded facet-id externs, undeclared
     // _ZNSt3__15ctypeIcE2idE family). That bit the object lane first, then
-    // the freeze lane the same way — which is why the open lives HERE, on
-    // the one translate entry every lane (run, object, project, freeze)
-    // flows through, not per caller. Idempotent; the MIR-link call site
-    // keeps its open for lanes that skip translation entirely.
+    // the freeze lane, then the emit lane the same way — which is why the
+    // open lives HERE, on the one translate entry every lane (run, object,
+    // project, freeze, emit) flows through, not per caller. Idempotent; the
+    // MIR-link call site keeps its open for lanes that skip translation
+    // entirely.
     cir_open_stdlib_runtime(prog ? prog->active_stdlib_flavor() : NULL);
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
@@ -5917,10 +5918,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	return -1;
     }
 
-    CirBuilder builder(c2m);
-    node_t tree = builder.translate_module(prog);
+    // The guarded translate, NOT a bare translate_module: it owns the
+    // open-before-build (the flavor runtime must be dlopen'd before the
+    // tree build, or every CIR-time dlsym probe answers false and the
+    // alias-bound facet-id statics stay unrecorded — emitted C then
+    // references _ZNSt3__15ctypeIcE2idE undeclared under -stdlib=libc++).
+    CirBuilder *builder = NULL;
+    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
     if (!tree) {
-	fprintf(stderr, "madc_cir_emit: tree build failed\n");
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
@@ -5936,6 +5941,7 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
+	delete builder;
 	return -1;
     }
 
@@ -5945,12 +5951,13 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
     // gate's negative control (scripts/emitc_sret_gate.sh runs it on every
     // fulltest to prove the checker still detects the unlowered shape).
     if (lang == celC11 && getenv("MADC_XTEST_NO_SRET_LOWER") == NULL)
-	builder.emitc_lower_indirect_returns(tree);
+	builder->emitc_lower_indirect_returns(tree);
 
     cir_emit_c(out, tree, lang);
 
     cir_finish(c2m);
     c2mir_finish(ctx);
     MIR_finish(ctx);
+    delete builder;	// owns the node arena — outlives every tree read
     return 0;
 }
