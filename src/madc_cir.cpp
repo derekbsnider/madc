@@ -1814,6 +1814,41 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
 }
 
+#if MADC_TARGET_APPLE_P
+// ONE rule for both Mach-O emit lanes (source image + object link): a
+// program still needing the madc runtime cannot link — no target libmadc
+// exists — and the message names the fix. Returns true when the emit
+// must refuse.
+static bool cir_apple_runtime_refused(bool have_madc, bool drop_madc,
+				      const char *out_path)
+{
+    if (!have_madc || drop_madc)
+	return false;
+    fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
+	    " not exist as a library for Mach-O targets; build it into the"
+	    " image with -static-libmadc (C-lane machinery only)\n",
+	    out_path);
+    return true;
+}
+
+// The dylibs a Mach-O image must LOAD beyond the implicit libSystem,
+// decided by import CLASS: a header-less Mac has no .tbd stubs for
+// per-symbol attribution, so the writer binds flat across the load list
+// once extras are present (mir-debug.h) and membership here only has to
+// name the worlds. Itanium-mangled imports are the C++ world, whose
+// darwin install name is libc++ — a target-platform constant with the
+// same standing as the writer's own libSystem spelling.
+static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
+				   std::vector<const char *> &libs)
+{
+    for (const std::string &s : imports)
+	if (s.compare(0, 2, "_Z") == 0) {
+	    libs.push_back("/usr/lib/libc++.1.dylib");
+	    return;
+	}
+}
+#endif
+
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
@@ -1844,17 +1879,14 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 		  << std::endl);
     std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-    // Mach-O: the base C/C++ sonames are cover analysis only — the emitter
-    // links the implicit libSystem, nothing else. A program whose imports
-    // are NOT covered would need a target madc runtime that does not exist:
-    // fail at emit, not at dyld.
-    if (have_madc && !drop_madc) {
-	fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-		" not exist as a library for Mach-O targets; build it into the"
-		" image with -static-libmadc (C-lane machinery only)\n",
-		out_path);
+    // Mach-O: the base C/C++ sonames are cover analysis only — never load
+    // commands. A program still needing the madc runtime fails at emit,
+    // not at dyld; a C++ program gets its real world (libc++) as an
+    // LC_LOAD_DYLIB, and with extras present the writer binds every
+    // import flat across the load list (mir-debug.h).
+    if (cir_apple_runtime_refused(have_madc, drop_madc, out_path))
 	return false;
-    }
+    cir_apple_extra_dylibs(imports, libs);
 #else
     for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
@@ -1925,8 +1957,10 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // darwin the libc surface dladdr-reports as libsystem_*.dylib pieces
     // under the libSystem umbrella; libc++/libc++abi carry the C++ runtime.
     // Prefix-matched, so the bare stems cover every versioned dylib name.
-    // (The Apple emit gate never turns these into load commands — the
-    // emitter links implicit libSystem only.)
+    // (These cover stems never become load commands. The emit lanes add
+    // the real install names separately — cir_apple_extra_dylibs puts
+    // libc++ on the load list when the import set is C++ — and the
+    // writer binds imports flat across that list.)
     (void)flavor;
     needed.push_back("libc++");
     needed.push_back("libsystem_");
@@ -2197,15 +2231,15 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 		      << std::endl);
 	std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-	// Same Mach-O rule as cir_write_native_image: covers are analysis
-	// only; a runtime-needing link fails at emit, not at dyld.
-	if (have_madc && !drop_madc) {
-	    fprintf(stderr, "madc: %s: program needs the madc runtime, which"
-		    " does not exist for Mach-O targets (runtime-free"
-		    " programs only)\n", out_path);
+	// Same Mach-O rule as cir_write_native_image — one refusal text,
+	// one extra-dylib policy (the shared helpers are the single
+	// owners; this lane's copy had already drifted to an older
+	// message once).
+	if (cir_apple_runtime_refused(have_madc, drop_madc, out_path)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
+	cir_apple_extra_dylibs(imports, libs);
 #else
 	for (const std::string &l : (drop_madc ? other : needed))
 	    libs.push_back(l.c_str());

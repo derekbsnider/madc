@@ -29,6 +29,10 @@
 #   6c emitted-C runtime archive (W3): a try/catch-entering program's emitted
 #      C linked against the tarball's lib/libmadc_rt.a and executed (needs
 #      cc; info-skip when absent; a tarball without the archive FAILS)
+#   6d native AOT executable: madc -o -static-libmadc on a C++ program —
+#      the image loads libc++ by LC_LOAD_DYLIB, binds imports flat, and
+#      carries its madc runtime ledger-merged (no cc involved; a binary
+#      predating the dylib-binding slice emits an image that dies at dyld)
 #   7  compile latency of a <string> program (reported, not gated)
 
 MADC="$1"
@@ -302,6 +306,31 @@ else
     echo "FAIL - emitted-C runtime archive (cc rejected the emitted C or the link)"
     head -3 emitrt.cc.err | sed 's/^/    /'
     FAIL=$((FAIL + 1))
+fi
+
+# --- 6d. native AOT executable (madc -o, C++ world) ---------------------------
+# The dylib-binding slice's on-target proof, and the strongest single AOT
+# probe: madc emits a signed Mach-O executable DIRECTLY (no cc), whose C++
+# imports bind flat-namespace against the LC_LOAD_DYLIB'd libc++ and whose
+# madc runtime (try/catch via cout's __put_character_sequence) rides
+# ledger-merged inside the image. A binary predating the slice emits an
+# image whose C++ binds die at dyld (missing __ZNSt3__14coutE) — the run
+# check catches and prints that.
+cat > aotcpp.mad <<'EOF'
+#include <iostream>
+int main()
+{
+    std::cout << "aot c++ ok" << std::endl;
+    return 0;
+}
+EOF
+printf 'aot c++ ok\n' > aotcpp.expect
+if ! "$MADC" -static-libmadc -o aotcpp.bin aotcpp.mad 2> aotcpp.emit.err; then
+    echo "FAIL - native AOT executable (-static-libmadc emit failed)"
+    head -3 aotcpp.emit.err | sed 's/^/    /'
+    FAIL=$((FAIL + 1))
+else
+    check "native AOT executable (madc -o, C++ world, flat dylib binds)" aotcpp.expect ./aotcpp.bin
 fi
 
 # --- 7. compile latency (report only) ----------------------------------------

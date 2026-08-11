@@ -556,6 +556,7 @@ $(MIRDIR)/build-arm64-macos/libmir.a: FORCE
 # and it skips (rc 0) when any is missing, which would make it silent there.
 machogate: cross-arm64-macos cross-x86-64-macos
 	@cd .. && bash scripts/macho_obj_gate.sh
+	@cd .. && bash scripts/macho_exe_dylib_gate.sh
 
 # macOS release artifacts (macos-release-lane plan W1): the darwin twin of
 # `release`. The hosted binaries are ALREADY -O2 and forest-packed at link
@@ -573,6 +574,7 @@ release-macos:
 	llvm-strip-18 -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
+	cd .. && bash scripts/macho_exe_dylib_gate.sh
 
 # madc hosted on macOS (Route 1): full madc binaries for the Macs. The
 # emitted-C runtime archive (W3) builds beside each binary from the same
