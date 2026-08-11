@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **The `--emit` lane opens the stdlib-flavor runtime before the tree
+  build** — `madc_cir_emit` was the one lane still calling
+  `translate_module()` bare instead of flowing through
+  `cir_translate_guarded` (the designed owner of open-before-build; the
+  same family previously bit the object and freeze lanes). In a pure
+  `--emit` run nothing had dlopen'd the flavor runtime, so under
+  `-stdlib=libc++` every CIR-time dlsym probe answered false and the
+  alias-bound facet-id extern recording declined every legitimate alias:
+  the emitted C referenced `_ZNSt3__15ctypeIcE2idE` with no declaration
+  and gcc rejected it, while the JIT lane ran the same program fine.
+  Routing the emit lane through the guarded translate also deletes its
+  parallel bare translate and gains it the exception guard and CIR
+  timing. `emitc_sret_gate` leg 2 now inserts through cout (pulling
+  `use_facet` and the facet-id static) so the defect stays caught;
+  negative control verified against the unfixed binary. Found while
+  executing the emitted C on the arm64 Mac — which also closed the
+  owed execution proof: the locale and string specimens compile with
+  Apple cc, run, and byte-match Apple `clang++ -O0` oracles on target,
+  with the native `cc -S` showing x8 riding every rewritten call.
+
+- **`mac_battery.sh` leg 6b — emit-C indirect return ON TARGET**: the
+  battery now emits C from a locale reducer, compiles it with the Mac's own
+  `cc` against libc++, runs it, and gates the output. A binary that still
+  emits the old first-argument shape fails with the reason (that shape is
+  silently x86-64-only); a Mac without `cc` gets an info-skip. This turns
+  session #80's one-off execution proof into standing release evidence.
+
 - **`--emit=c11` is target-neutral for mangled-direct by-value class
   returns** (the owner-directed struct slice). The emitted C used to spell
   the hidden result pointer as an explicit first argument — right only on

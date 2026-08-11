@@ -922,9 +922,11 @@ cross `-S` with an x8 setup adjacent to every rewritten call; [libc++] the
 8-byte locale pad leg compiles, links against real libc++ and runs; [negctl]
 the audit must detect the unlowered shape with the rewrite disabled.
 
-**Still owed:** RUNNING the emitted C on the Mac (the `-S` leg proves the x8
-shape, not execution) — fold into the next Mac battery session alongside the
-AOT-leg fix and the `cout << "hi"` leg.
+**Still owed:** ~~RUNNING the emitted C on the Mac~~ — **DONE, session #80
+(2026-08-11)**: emitted specimens compiled with Apple cc on the arm64 Mac, ran,
+and byte-matched Apple clang++ oracles; on-target `cc -S` confirms x8. See
+"Session #80" at the end of this doc (execution proof + the emit-lane
+runtime-open defect it flushed out + the W3 runtime evidence).
 
 The sret fix is real and verified — but re-running the Mac probes shows the
 darwin blocker only partly cleared:
@@ -1077,3 +1079,84 @@ AOT leg below.
 
 Full validation at `43fe572a`: fulltest 1019/0, libc++ JIT 1015/0, unit
 9019/9019, EXE 990/0, OBJ 990/0, release + packed 1019/0, trailers GREEN.
+
+## Session #80 (2026-08-11) — Mac validation over ssh: battery confirmed, emitted C EXECUTED on arm64, emit-lane defect found+fixed
+
+Driven end-to-end from the container/NAS over ssh to the owner's arm64 Mac
+(15.3.2, Apple clang 17); staging dir `~/madc-s79`, binary = the canonical
+`dist/` 0.75.0 arm64 tarball (SHA-verified against SHA256SUMS).
+
+### Battery (script @1569e75f on the 0.75.0 binary): 5 passed / 2 failed
+
+Exactly the two KNOWN-open darwin defects and nothing else:
+
+- **groves** — `os.str()` → "Unidentified member 'str'": the husk/alias-shell
+  layer (`FEATURE_FOREST_ALIAS_SHELL_COMPLETE`, guarded off — the last C++
+  forest layer, already queued).
+- **value intrinsic** — the known darwin SIGSEGV (queued, fix direction
+  settled).
+
+Both #79 script fixes CONFIRMED on hardware: the `cout << "hi"` leg (3b)
+**passes on silicon** — the darwin sret probe is green end-to-end — and the
+AOT leg now reads the loud `.o`-load decline ("in-process loading of Mach-O
+objects is not supported yet") as known-unsupported instead of #78's false
+FAIL. Correction to #79's close-out: "expect 8/0" was wrong arithmetic — the
+battery has 7 checks; the honest ceiling with the two known-opens is 5/2, and
+a fully-fixed darwin reads 7/0.
+
+### Emitted-C execution proof (the Still-owed item) — CLOSED
+
+Specimens emitted on the container at HEAD with `-stdlib=libc++ --emit=c11`,
+compiled ON the Mac with Apple cc, run against Apple `clang++ -O0` oracles:
+
+| specimen | exercises | Mac result |
+|----------|-----------|------------|
+| locale/getloc (8-byte class) | THE extern-rewrite case (register-size in C, indirect in C++) + cleanup-shim dtor on a live libc++ refcounted object | **runs, byte-MATCH** (`loc ok`); on-target `cc -S` shows the x8 setup adjacent to the rewritten call |
+| string-only (twice/+/substr/assign) | in-file `__retbuf` convention, self-referential small-strings | **runs, byte-MATCH** (`cdab bc zz`) |
+| full sstream specimen | + ostringstream/use_facet | compiles clean with Apple cc; **cannot RUN on darwin** — see W3 below. Runs + byte-matches on Linux with `-lmadc` (`cdab bc x zz`) |
+
+### Found+fixed en route @7e484749: the emit lane never opened the flavor runtime
+
+The sstream specimen's emitted C was gcc-REJECTED: `_ZNSt3__15ctypeIcE2idE`
+undeclared. `MADC_XTEST_FACET` showed the alias-bound facet-id recording
+(class_struct_def) declining with `avail=0`: in a pure `--emit` run nothing
+had dlopen'd the flavor runtime, so `external_symbol_available`'s dlsym
+answered false for every LEGITIMATE alias. Root cause: `madc_cir_emit` was
+the one lane still calling `translate_module()` bare — outside
+`cir_translate_guarded`, whose open-before-build exists for exactly this
+(same family that bit the object lane, then the freeze lane). Fix: the emit
+lane flows through the guarded translate (also deletes the parallel bare
+translate; gains the exception guard + CIR timing). Gate: `emitc_sret_gate`
+leg 2's reducer now inserts through cout (pulls `use_facet` + the facet-id
+static) and links `-lmadc`; negative control at the unfixed binary failed
+exactly on the undeclared symbol, all legs green with the fix.
+
+### W3 evidence — the darwin runtime gap, now concrete
+
+The sstream specimen aborts on the Mac (`dyld: missing symbol called`,
+linked with `-Wl,-undefined,dynamic_lookup`): unlike the never-taken throw
+path in the string specimen, its try/catch ENTERS the madc exception runtime
+at scope entry. `nm -u` names the complete required surface — 8 symbols:
+`__madc_try_push/pop`, `__madc_cleanup_top/push_dtor/discard_to`,
+`__madc_exception_type/clear`, `__madc_throw_object`. W3 can be satisfied
+for emitted-C consumers by a small runtime-subset archive (libmadc_rt) —
+a full `libmadc.dylib` is only needed for the AOT/`-o` story.
+
+### Battery leg 6b — the execution proof becomes standing evidence
+
+`mac_battery.sh` gains leg **6b (emit-C sret on-target)**: `--emit=c11` on a
+locale reducer, compiled by the HOST `cc` against libc++, executed, output
+gated. An `info`-skip when the Mac has no `cc`; a binary that emits the old
+first-argument shape FAILS with the reason (the old shape is silently
+x86-64-only — exactly what release evidence must not pass). Verified on the
+0.75.0 tarball: the leg correctly reports "predates the indirect-return
+pass" (its own negative control). Battery on that binary now reads 5/3, all
+three fails explained; a fresh `release-macos` build at ≥7e484749 reads 6/2
+(husk layer + value intrinsic still open); a fully-fixed darwin reads 8/0.
+
+### Validation
+
+Negative control (gate vs unfixed binary): leg 2 red on the exact defect,
+other legs green. With the fix: gate green (all 4 legs). Suite results at
+7e484749: fulltest + libc++ JIT — recorded in claude_status.json (run in
+this session; see live_handoff).
