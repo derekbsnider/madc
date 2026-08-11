@@ -27,8 +27,11 @@
                        dyld slides are page-multiple), same field patchers
      internal ABS64 -> link vaddr BAKED into the file bytes + a rebase
                        entry (dyld ADDS the slide to the stored value)
-     import ABS64   -> zero slot + bind entry (two-level, libSystem
-                       ordinal, `_'-prefixed name)
+     import ABS64   -> zero slot + bind entry (`_'-prefixed name;
+                       two-level libSystem ordinal when the image loads
+                       nothing else, flat-namespace lookup when
+                       params->needed adds dylibs -- no .tbd stubs exist
+                       to attribute symbols on a header-less Mac)
      Full RELRO     -> __DATA_CONST (dyld maps it read-only after fixups)
 
    The image is always PIE (MH_PIE -- mandatory on arm64), always links
@@ -214,6 +217,10 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 
 #define MACHO_BIND_TYPE_POINTER 1u
 #define MACHO_BIND_OPCODE_SET_DYLIB_ORDINAL_IMM 0x10u
+#define MACHO_BIND_OPCODE_SET_DYLIB_SPECIAL_IMM 0x30u
+/* dyld decodes the special immediate as sign-extended low nibble
+   (imm | 0xF0 as int8): 0xE -> -2 = flat-namespace lookup. */
+#define MACHO_BIND_SPECIAL_DYLIB_FLAT_LOOKUP 0xEu
 #define MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM 0x40u
 #define MACHO_BIND_OPCODE_SET_TYPE_IMM 0x50u
 #define MACHO_BIND_OPCODE_SET_ADDEND_SLEB 0x60u
@@ -494,11 +501,23 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     while (rebase.len % 8 != 0) buf_u8 (&rebase, 0);
   }
 
-  /* ---- bind opcode stream (all imports resolve against libSystem --
-     ordinal 1; extra LC_LOAD_DYLIBs are load-time deps only) */
+  /* ---- bind opcode stream.  With no extra dylibs every import resolves
+     two-level against libSystem (ordinal 1), exactly as always.  With
+     params->needed dylibs present the emitter has no stub tables to
+     attribute a symbol to its exporter (the no-CLT posture: a header-less
+     Mac has no .tbd stubs), so every import binds with the flat-namespace
+     special ordinal instead: dyld searches the loaded images -- libSystem
+     plus the extra LC_LOAD_DYLIBs, in load order -- per symbol.  This is
+     the `-undefined dynamic_lookup' binding shape; a missing symbol still
+     fails loudly at load.  MH_TWOLEVEL stays set: the per-bind special
+     ordinal overrides it symbol-by-symbol, which is how ld64 spells the
+     same thing. */
   if (n_bind != 0) {
     int64_t cur_addend = 0;
-    buf_u8 (&bind, MACHO_BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1);
+    if (params->n_needed > 0)
+      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | MACHO_BIND_SPECIAL_DYLIB_FLAT_LOOKUP);
+    else
+      buf_u8 (&bind, MACHO_BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1);
     buf_u8 (&bind, MACHO_BIND_OPCODE_SET_TYPE_IMM | MACHO_BIND_TYPE_POINTER);
     for (size_t i = 0; i < n_bind; i++) {
       buf_u8 (&bind, MACHO_BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0);
@@ -753,8 +772,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     buf_u64 (&lc, text_off + obj->syms[entry_i].value); /* entryoff */
     buf_u64 (&lc, 0);                                   /* stacksize: default */
 
-    /* LC_LOAD_DYLIB libSystem (+ params->needed extras -- load-time deps;
-       every bind still resolves against libSystem, ordinal 1) */
+    /* LC_LOAD_DYLIB libSystem (+ params->needed extras).  With extras the
+       bind stream switches to flat-namespace lookup (see the bind stream
+       above); without them binds stay two-level against libSystem. */
     {
       const char *libs[1] = {"/usr/lib/libSystem.B.dylib"};
       for (size_t i = 0; i < 1 + params->n_needed; i++) {

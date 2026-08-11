@@ -346,7 +346,12 @@ typedef struct MIR_object_exec_params {
 /* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable
    assembles a Mach-O64 MH_EXECUTE image instead of ELF -- PIE, linked
    against /usr/lib/libSystem.B.dylib (params->needed become additional
-   LC_LOAD_DYLIBs; every import still binds against libSystem), entered
+   LC_LOAD_DYLIBs, spelled as full install names, e.g.
+   "/usr/lib/libc++.1.dylib"; with extras present every import binds
+   with the flat-namespace lookup ordinal -- dyld searches the loaded
+   images per symbol, the `-undefined dynamic_lookup' shape -- because
+   the emitter has no .tbd stubs to attribute a symbol to its exporter;
+   with no extras, binds stay two-level against libSystem), entered
    through LC_MAIN (no _start stub -- dyld's libdyld glue calls the entry
    symbol with argc/argv and exits with its return), internal address
    slots baked + rebase opcodes, imports as `_'-prefixed dyld bind
