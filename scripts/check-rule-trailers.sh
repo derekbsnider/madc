@@ -49,6 +49,14 @@ for c in $commits; do
 	touched=$(git diff-tree --no-commit-id --name-only -r "$c" \
 		| grep -E '^(src|include)/.*\.(c|cc|cpp|h|hpp)$' | head -1)
 	[ -z "$touched" ] && continue
+	# Imported third-party ancestry is not madc authorship: the MIR
+	# subtree merge (and any future subtree pull) makes upstream/fork
+	# history reachable from HEAD, and old upstream layouts also used
+	# src/ paths. A commit whose snapshot has no madc root VERSION file
+	# is that imported history — out of scope. madc commits are still
+	# checked unconditionally (VERSION has been at the root since before
+	# the epoch).
+	git cat-file -e "$c:VERSION" 2>/dev/null || continue
 	checked=$((checked + 1))
 	msg=$(git log -1 --format=%B "$c")
 	missing=""

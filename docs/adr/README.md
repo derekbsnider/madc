@@ -16,3 +16,4 @@ Mirror each ADR's gist into a KG `Decision` node (per
 | ADR | Title | Status |
 |-----|-------|--------|
 | [0001](0001-cir-c2mir-backend.md) | The CIR / c2mir backend (a C-AST IR feeding MIR), not a direct-MIR retarget | Accepted |
+| [0002](0002-mir-subtree-integration.md) | MIR lives in-tree: `third_party/mir` as a Git subtree (no pin, no fork lockstep) | Accepted |

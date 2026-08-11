@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **MIR moved into the repository: `third_party/mir` is a Git subtree**
+  (ADR 0002; plan `docs/plans/mir-into-madc-repo-2026-08-11.md`). One
+  clone builds everything — `make -C src` now builds libmir + c2m
+  itself, into `obj/mir/<variant>` (never inside the subtree; new
+  `mirclean` target removes them; `clean` leaves them). The import
+  preserved full MIR ancestry (no squash) at the exact commit
+  `MIR_COMMIT` pinned — proven by tree-hash equality — which is also
+  fork release `v1.0-madc.0.76.0` and the fork's
+  `madc-pre-subtree-migration` tag. `MIR_COMMIT`/`MIR_VERSION` and the
+  fork-lockstep branch/release ceremony are retired: the madc commit IS
+  the pin, the madc release IS the MIR release. `vnmakarov/mir` is the
+  true upstream (incoming changes = deliberate subtree pulls);
+  `derekbsnider/mir` is frozen as historical record + upstream-PR
+  transport (mir#461/#462/#463 ride there until resolved).
+  `remote_build.sh` drops its mir sync/build legs, and
+  `check-rule-trailers` skips imported third-party ancestry (madc
+  commits still checked — negative-controlled both ways).
+
 ## [v0.76.0] — 2026-08-11
 
 madc goes public on the Mac: provenance-clean macOS tarballs (arm64 +

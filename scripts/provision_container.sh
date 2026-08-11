@@ -18,8 +18,8 @@
 #   - /workspace/sdk/MacOSX.sdk — the owner's macOS SDK. NEVER committed,
 #     synced, or downloaded by us; it comes from the owner's Mac and lives on
 #     the workspace volume.
-#   - /workspace/mir, /workspace/madc — git trees, restored by
-#     scripts/remote_build.sh sync (or a clone).
+#   - /workspace/madc — the git tree (MIR included at third_party/mir),
+#     restored by scripts/remote_build.sh sync (or a clone).
 #   - /workspace/zstd — the per-target static zstd builds the hosted darwin
 #     modes link (forest-carriers S1); rebuild from that tree if lost.
 set -u

@@ -1,5 +1,19 @@
 # gcc.c-torture failset classification — the standard-C vs gcc-only dividing line
 
+**UPDATE 2026-08-11 (MIR-subtree migration validation sweep):** full
+sweep **1609/2/13/0/61** — the classified 10-name class-(b) failset is
+intact, plus **5 NEW fails**: `20000717-4` (exit 1), `20040709-1/-2/-3`
+(runtime diagnostic), `pr39339` (compile diagnostic). **Attribution:
+pre-existing, NOT the migration** — all 5 fail identically on the
+pre-migration v0.76.0 build (@16e04001, standalone `/workspace/mir`);
+the regression window is @9a48a7fc (last sweep, 2026-07-23) →
+@16e04001, in which torture never ran. v0.76.0 was promoted to master
+carrying these. Unverified hypothesis for the follow-up: the
+unprototyped-call proto change (fork e2c0ae95+731c2234, session #74) —
+the failing class is K&R/struct-passing. Classification pending; if any
+of the 5 is class-(a), the promote gate is retroactively unmet at HEAD
+and blocks the next promote until fixed.
+
 **Date:** 2026-06-11. **Input failset:** `tmp/failset_lsq.txt` (88 tests: 31
 compile-fail, 56 runtime-fail, 1 timeout) at develop `8dfa827` (binary
 baseline 1567/1685 = 93.0%).

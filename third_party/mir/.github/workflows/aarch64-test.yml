@@ -1,0 +1,15 @@
+name: aarch64-test
+
+on: [push, workflow_dispatch]
+
+jobs:
+  aarch64_job:
+    # The host should always be Linux
+    runs-on: [self-hosted, linux, ARM64]
+    name: Build on gcc117 aarch64
+    steps:
+    - uses: actions/checkout@v1
+    - name: make test
+      run: |
+         uname -a
+         make test

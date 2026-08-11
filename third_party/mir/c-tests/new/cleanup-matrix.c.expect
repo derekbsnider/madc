@@ -1,0 +1,19 @@
+iter 0
+cl 20
+cl 21
+cl 30
+cl 22
+cl 2
+cl 40
+cl 10
+=99
+iter 0
+cl 20
+cl 21
+cl 30
+cl 22
+cl 2
+tail
+cl 40
+cl 10
+=0

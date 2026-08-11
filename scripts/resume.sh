@@ -45,12 +45,18 @@ git log --oneline -5
 echo "--- reflog (last 6) ---"
 git reflog -6
 
-bar "MIR FORK (/workspace/mir)"
-if [ -d /workspace/mir/.git ]; then
-	git -C /workspace/mir log --oneline -1
-	echo "branch: $(git -C /workspace/mir rev-parse --abbrev-ref HEAD)"
+bar "MIR (third_party/mir — subtree, ordinary madc source)"
+if [ -d third_party/mir ]; then
+	echo "present; last commit touching it:"
+	git log --oneline -1 -- third_party/mir
 else
-	echo "(not a git repo / not present)"
+	echo "MISSING — the tree predates the subtree migration (2026-08-11)"
+fi
+# The old standalone fork checkout is PR-transport only (upstream PRs to
+# vnmakarov/mir ride derekbsnider/mir); it is NOT a build input anymore.
+if [ -d /workspace/mir/.git ]; then
+	echo "--- legacy fork checkout (/workspace/mir, PR transport only) ---"
+	git -C /workspace/mir log --oneline -1
 fi
 
 bar "RUNAWAY PROCESSES (test/torture/madc that survived a compaction)"

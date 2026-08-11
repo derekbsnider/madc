@@ -204,9 +204,9 @@ tokens. The same representation can execute in-process, render C11, and feed
 object or executable generation. There is no bytecode interpreter or parallel
 second compiler backend.
 
-See [docs/architecture.md](docs/architecture.md) and the pinned
-[madc MIR fork](https://github.com/derekbsnider/mir) for deeper implementation
-details.
+See [docs/architecture.md](docs/architecture.md) for deeper
+implementation details; the MIR/c2mir backend library is maintained
+in-tree at `third_party/mir`.
 
 ## Project status
 
@@ -236,16 +236,15 @@ and known gaps.
 
 ## Building from source
 
-madc currently builds against its own pinned MIR fork. The exact compatible
-revision is recorded in [`MIR_COMMIT`](MIR_COMMIT) and [`MIR_VERSION`](MIR_VERSION).
+Everything madc needs from source lives in this repository — MIR (the
+JIT/codegen library, madc's maintained downstream of
+[vnmakarov/mir](https://github.com/vnmakarov/mir)) is included at
+`third_party/mir` and builds automatically. One clone is enough:
 
 ```bash
-# Build the pinned MIR fork.
-git clone -b develop https://github.com/derekbsnider/mir /workspace/mir
-git -C /workspace/mir checkout "$(cat MIR_COMMIT)"
-make -C /workspace/mir
+git clone https://github.com/derekbsnider/madc.git
+cd madc
 
-# Configure and build madc.
 autoreconf -fi
 ./configure
 make -C src
