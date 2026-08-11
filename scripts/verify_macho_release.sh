@@ -89,7 +89,7 @@ fi
 # 4. Open-provenance prelude only. Positive match on the open stamp shape
 #    (scripts/fetch_darwin_open_headers.sh is the stamp's one owner) — an
 #    unknown or sdk-private stamp fails; so does a missing marker.
-PROV=$(grep -a -o 'MADC-DARWIN-PRELUDE-PROVENANCE: [^*]*' "$BIN" | head -1)
+PROV=$(grep -a -o 'MADC-DARWIN-PRELUDE-PROVENANCE: [^*]*' "$BIN" | head -1 | sed 's/ *$//')
 case "$PROV" in
     "MADC-DARWIN-PRELUDE-PROVENANCE: zig-"*" sha256="*)
         ;;
