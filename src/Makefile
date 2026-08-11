@@ -589,6 +589,11 @@ machogate: cross-arm64-macos cross-x86-64-macos
 # when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
 # side's job (W2, scripts/mac_battery.sh).
 release-macos:
+	# verify_macho_release.sh reads the packed forests back through the
+	# HOST bin/madc, whose freeze-context hash must match the tree that
+	# froze them (the version string rides the predefined-macro table) —
+	# so the dev binary is rebuilt first. No-op when already current.
+	$(MAKE)
 	$(MAKE) hosted-arm64-macos
 	$(MAKE) hosted-x86-64-macos
 	llvm-strip-18 -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
