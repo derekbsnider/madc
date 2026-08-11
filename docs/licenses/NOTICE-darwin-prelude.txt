@@ -1,0 +1,80 @@
+Third-party notice — the embedded darwin C prelude
+==================================================
+
+madc binaries for macOS are self-contained: they embed a flattened C
+standard/POSIX header prelude so a Mac without Xcode or the Command Line
+Tools can compile and run programs. This notice covers that embedded
+prelude text.
+
+Origin and provenance
+---------------------
+The prelude is generated (scripts/gen_darwin_prelude.sh) by preprocessing
+Apple's own C library headers. The header tree it is generated FROM is the
+openly licensed one curated and publicly shipped by the Zig project
+(lib/libc/include/any-darwin-any in the Zig source distribution,
+https://ziglang.org), pinned and SHA256-verified by
+scripts/fetch_darwin_open_headers.sh. Each binary names its exact prelude
+input in an embedded marker line (grep the binary for
+MADC-DARWIN-PRELUDE-PROVENANCE).
+
+These headers originate in Apple's open-source releases
+(https://opensource.apple.com and
+https://github.com/apple-oss-distributions — the Libc, xnu, libpthread and
+related projects), where the complete original files, including the
+license blocks the flattening step strips, are publicly available.
+
+Licenses
+--------
+A per-file audit of the exact header closure the prelude is flattened from
+(240 files across both architectures; audited 2026-08-11 at pin
+zig-0.16.0):
+
+  - 213 files: Apple Public Source License 2.0. Full text in APSL-2.0.txt
+    beside this notice. Copyright (c) Apple Inc. (Apple Computer, Inc. /
+    NeXT Computer, Inc. in older files).
+  - 21 files: BSD-style licenses (copyright notices reproduced below).
+  - 5 files: mechanical dispatch/typedef shims carrying an Apple Inc.
+    copyright line only (arm/_limits.h, arm/_param.h, arm/_types.h,
+    arm/signal.h, stdint.h); their canonical upstreams live in Apple's
+    open-source releases above.
+  - 1 file: machine/limits.h, which declares itself public domain.
+
+The flattening step (clang -E) removes comments, so the in-file license
+blocks do not appear in the embedded text itself; they are reproduced
+here and remain intact in the original files at the sources above.
+
+BSD copyright notices
+---------------------
+The BSD-licensed files carry the standard BSD conditions ("Redistribution
+and use in source and binary forms ... must reproduce the above copyright
+notice") and these copyrights:
+
+  Copyright (c) 1987, 1988, 1990, 1991, 1992, 1993
+      The Regents of the University of California. All rights reserved.
+      (assert.h, _assert.h, locale.h, _locale.h, runetype.h,
+       i386/limits.h, arm/limits.h, arm/types.h, arm/endian.h)
+
+  Copyright (c) 1999 Citrus Project. All rights reserved.
+      (wchar.h, _wchar.h, wctype.h, _wctype.h, __wctype.h)
+
+  Copyright (c) 1996, 1999, 2000 The NetBSD Foundation, Inc.
+      All rights reserved.
+      (getopt.h, nl_types.h, wchar.h, _wchar.h)
+
+  Copyright (c) 2001 Alexey Zelkin <phantom@FreeBSD.org>
+      All rights reserved.
+      (langinfo.h, _langinfo.h, monetary.h, _monetary.h)
+
+  Copyright (c) 1997 Todd C. Miller <Todd.Miller@courtesan.com>
+      All rights reserved.
+      (libgen.h)
+
+  Copyright (c) 1995-2023 Apple Inc. / NeXT Computer, Inc.
+      All rights reserved.
+      (arm/endian.h, arm/limits.h, arm/types.h — dual Apple + UCB notices)
+
+Related notices
+---------------
+The frozen C++ standard-library groves embedded in the same binaries
+derive from LLVM's libc++ headers (Apache License 2.0 with LLVM
+exceptions) — see libc++-copyright.txt beside this notice.

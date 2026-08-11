@@ -5255,16 +5255,10 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     if ( oi == dependent_shell_origin.end()
       || oi->second.raw_arg_tokens.empty() )
 	return NULL;
-    // SILENT SFINAE discipline (the constraint evaluator's pattern): a replay
-    // that cannot re-enter cleanly — a still-dependent shell, a
-    // spelling-matched-spec template — must leave no stderr noise and no
-    // diagnostic behind, because the caller's opaque path is still valid.
-    struct ShellNullBuf : std::streambuf
-    { int overflow(int c) { return c; } };
-    static ShellNullBuf shell_null_buf;
-    size_t sd = diagnostics.size();
-    Program::ErrorInfo se = last_error;
-    std::streambuf *sc = std::cerr.rdbuf(&shell_null_buf);
+    // Speculative: a replay that cannot re-enter cleanly — a still-dependent
+    // shell, a spelling-matched-spec template — must leave the caller exactly
+    // as it was (SilentReplay owns that discipline).
+    SilentReplay sr(*this);
     TokenDataType *real = NULL;
     try
     {
@@ -5272,14 +5266,164 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 					       oi->second.raw_arg_tokens);
     }
     catch ( ... ) { real = NULL; }
-    std::cerr.rdbuf(sc);
     DataDefCLASS *rc = real
 	? dynamic_cast<DataDefCLASS *>(&real->definition) : NULL;
     if ( rc && !is_incomplete_class_datadef(rc) )
 	return rc;
-    diagnostics.resize(sd);
-    last_error = se;
+    sr.rewind();
     return NULL;
+}
+
+Program::SilentReplay::SilentReplay(Program &p)
+    : pgm(p), saved_diagnostics(p.diagnostics.size()), saved_error(p.last_error)
+{
+    struct ReplayNullBuf : std::streambuf
+    { int overflow(int c) { return c; } };
+    static ReplayNullBuf replay_null_buf;
+    saved_cerr = std::cerr.rdbuf(&replay_null_buf);
+}
+
+Program::SilentReplay::~SilentReplay()
+{
+    std::cerr.rdbuf(saved_cerr);
+}
+
+void Program::SilentReplay::rewind()
+{
+    pgm.diagnostics.resize(saved_diagnostics);
+    pgm.last_error = saved_error;
+}
+
+// Freeze prep: complete every namespaced ALIAS whose target is an opaque
+// forward tag.
+//
+// `using X = T<A>;` written while T is only DECLARED (libc++'s __fwd/sstream.h
+// spells all four stream aliases ahead of <sstream>'s definitions) binds the
+// alias to an opaque concrete mint, and nothing in a header-only producer TU
+// ever forces the real instantiation because nothing USES the alias. A LIVE
+// consumer recovers on first use, by DEMANDING completeness — the pending
+// instantiation the opaque arm recorded is replayed once the pattern has a body.
+// A consumer of the FROZEN forest cannot: the pending records are parse state,
+// so it resolved the name to an empty husk ("Unidentified member 'str'" for
+// std::ostringstream).
+//
+// The producer can make that demand itself, and by end of parse it has what the
+// demand needs (`<sstream>` has defined what `__fwd/sstream.h` declared). So
+// complete the shells here, before the tree is built: the forest then carries
+// the finished class, which is both what a live consumer computes and what a
+// forest exists to precompute. A shell with no pending record, or one whose
+// pattern never got a body, stays opaque exactly as before.
+void Program::forest_complete_alias_target_shells()
+{
+#ifndef FEATURE_FOREST_ALIAS_SHELL_COMPLETE
+    // OFF — and this time not because the mechanism is missing. It WORKS; the
+    // completed class is simply not usable yet, and it fails WORSE than the husk
+    // it replaces: `os << 7; os.str()` compiles, runs, exits 0 and yields the
+    // WRONG value (empty), where the husk gave a hard "Unidentified member
+    // 'str'". A silent wrong answer never ships, so this stays compiled out
+    // until the completed class answers correctly.
+    //
+    // What the demand below achieves, measured on the 894-unit libc++ grove set
+    // (2026-08-10): of 96 opaque alias targets, 18 COMPLETE and 2 stay
+    // incomplete; the other 76 have no pending record at all — they are
+    // `__enable_if_t` SFINAE internals minted by the ALIAS-TEMPLATE arm
+    // (~line 10152), which records neither an origin nor a pending
+    // instantiation. Nobody names those, so they do not matter. Cost when on:
+    // freeze 37s -> 52s, records 1.27M -> 1.55M (+22%), container 7.05 -> 7.62MB.
+    //
+    // The remaining defect is one layer BELOW this pass, in what a completed
+    // class carries. The completed std::ostringstream is right in every way
+    // measured — sizeof 264 == live == clang++, rdbuf() non-null,
+    // good()/bad()/fail() identical to live — yet BOTH operator<< overloads
+    // (int and const char*) and str() yield nothing. So construction, layout and
+    // stream state all survive; something the class does is a no-op. Next step:
+    // split the write half from the read half (does the char reach the
+    // stringbuf?) and compare the completed class's METHOD BODIES against live.
+    // Two attempts to split it were blocked by unrelated madc gaps, both filed
+    // with reducers: `(long)os.tellp()` (pos_type conversion) and a C-style cast
+    // to a std:: class pointer, `(std::stringbuf *)os.rdbuf()` — clang++ accepts
+    // both.
+    return;
+#endif
+    // Collect BEFORE completing: a replay instantiates a template, which
+    // registers types and can rehash the very maps being walked.
+    std::vector<std::pair<std::string, std::string> > work;
+    namespace_datatype_map.for_each(
+	[&](const char *ns, datatype_map_t &m) -> bool {
+	    if ( !ns || !*ns )
+		return false;
+	    for ( datatype_map_iter it = m.begin(); it != m.end(); ++it )
+	    {
+		if ( it->first.find('<') != std::string::npos || !it->second )
+		    continue;		// template product, not an alias key
+		DataDefCLASS *cdd =
+		    dynamic_cast<DataDefCLASS *>(&it->second->definition);
+		if ( !cdd || !cdd->opaque_concrete_tag
+		  || !is_incomplete_class_datadef(cdd) )
+		    continue;
+		work.push_back(std::make_pair(std::string(ns), it->first));
+	    }
+	    return false;
+	});
+    DBG(std::cout << "forest_complete_alias_target_shells: " << work.size()
+	<< " opaque alias target(s)" << std::endl);
+    for ( size_t i = 0; i < work.size(); ++i )
+    {
+	datatype_map_t &m = namespace_datatype_map[work[i].first];
+	datatype_map_iter it = m.find(work[i].second);
+	if ( it == m.end() || !it->second )
+	    continue;
+	DataDefCLASS *cdd =
+	    dynamic_cast<DataDefCLASS *>(&it->second->definition);
+	if ( !cdd || !is_incomplete_class_datadef(cdd) )
+	    continue;		// already completed by an earlier replay
+	// Demand completeness the way a LIVE use site does. The opaque arm that
+	// minted this shell also recorded a PENDING instantiation (template name
+	// + mangled key + arg tokens) — unconditionally, unlike the dependent
+	// shell ORIGIN, which that arm records only for a dependent surface and
+	// therefore never for a concrete bodyless-declaration mint (measured:
+	// origin=NO on all 96 of the libc++ grove set's opaque alias targets;
+	// complete_shell_class_type is simply the wrong owner here). By end of
+	// the producer's parse the pattern HAS a body — `<sstream>` defines what
+	// `__fwd/sstream.h` only declared — so the existing demand entry point
+	// replays the instantiation and completes the shell IN PLACE.
+	bool demanded = false;
+	{
+	    // Speculative, exactly like the live use-site replay: a libc++
+	    // pattern that cannot instantiate here (an SFINAE probe, a
+	    // still-dependent argument) must not turn into a compile error on
+	    // the PRODUCER's TU and abort the freeze.
+	    SilentReplay sr(*this);
+	    try
+	    {
+		demanded = request_template_instantiation_completion(cdd->name);
+	    }
+	    catch ( ... ) { demanded = false; }
+	    if ( !demanded || is_incomplete_class_datadef(cdd) )
+		sr.rewind();
+	}
+	if ( !demanded )
+	{
+	    DBG(std::cout << "forest_complete_alias_target_shells: "
+		<< work[i].first << "::" << work[i].second
+		<< " no pending instantiation for " << cdd->name << std::endl);
+	    continue;
+	}
+	// Completion normally lands IN PLACE (the real instantiation reuses the
+	// registered shell), so the alias needs no rebind. Re-read the flat entry
+	// anyway: if the replay registered a different object under the mangled
+	// key, the alias would still name the husk.
+	flat_datatype_map_iter done = datatype_map.find(cdd->name);
+	DataDefCLASS *rc = done != datatype_map.end()
+	    ? dynamic_cast<DataDefCLASS *>(&(*done)->definition) : NULL;
+	if ( rc && rc != cdd )
+	    it->second = new TokenDataType(work[i].second.c_str(), *rc);
+	DBG(std::cout << "forest_complete_alias_target_shells: "
+	    << work[i].first << "::" << work[i].second << " -> "
+	    << (rc ? rc->name : cdd->name)
+	    << (is_incomplete_class_datadef(rc ? rc : cdd)
+		? " STILL INCOMPLETE" : " completed") << std::endl);
+    }
 }
 
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
@@ -5457,6 +5601,25 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
 void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
 {
     dep->opaque_concrete_tag = !dependent_parse_in_progress;
+    // B3 write-through (the ONE funnel every opaque mint passes through, and
+    // where concrete-vs-placeholder is decided). A CONCRETE opaque tag is
+    // legitimate live state and freezes in the v21 empty shape — but nothing
+    // recorded it: it is MINTED, never parsed to a `}`, so it has no completion
+    // hook and never got a project type-id, which put it outside the domain of
+    // cir_forest_arena_refresh's sweep (that walks the project TABLE). The
+    // namespaced-alias walk then minted the id itself, AFTER the arena
+    // snapshot, found no record at the slot and silently skipped the alias.
+    // Net effect: libc++'s `using ostringstream = basic_ostringstream<char>;`
+    // — an opaque mint, because __fwd/sstream.h only DECLARES the template —
+    // left std::ostringstream (and stringbuf/stringstream/istringstream/
+    // ifstream/ofstream) absent from the frozen type graph while the decl INDEX
+    // still listed them, so every consumer binding that grove reported "use of
+    // undeclared identifier". Stamping the id here is what puts the tag in the
+    // sweep's domain; refresh re-records it with its final fields (the caller
+    // sets the canonical spelling AFTER this hook). Pattern-context
+    // placeholders are unaffected — record_aggregate's own kill arm drops them.
+    if ( forest_arena_enabled && dep->opaque_concrete_tag )
+	forest_arena_record_aggregate(dep);
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every opaque class
     // mint with its context — the concrete-tag discriminator diagnostic.
     static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
@@ -21441,6 +21604,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	PendingForestGlobal pg;
 	pg.name       = rg.name;
 	pg.ns         = rg.ns ? rg.ns : "";	// v22: defining namespace
+	pg.alias      = rg.alias ? rg.alias : "";	// v39: the producer's symbol
 	pg.type       = rg.type;
 	pg.flags      = rg.flags;
 	pg.gflags     = rg.gflags;	// v14: CIR_GLOBALF_SCALAR_INIT
@@ -21973,18 +22137,37 @@ void Program::flush_forest_pending_globals()
 	    continue;			// unresolved / already present
 	// v22: an `extern T name;` REFERENCE to a library-defined object
 	// (std::cout). Rebuild live's registration exactly (parser.cpp var-decl
-	// tail): a vfEXTERN Variable (flags verbatim), the Itanium storage
-	// alias via the ONE live derivation (namespace_cpp_variable_symbol),
-	// and the namespace binding. NO TopDecl and NO ctor — the object lives
-	// in the library; emission is reference-driven, as live.
+	// tail): a vfEXTERN Variable (flags verbatim), the storage alias, and
+	// the namespace binding. NO TopDecl and NO ctor — the object lives in
+	// the library; emission is reference-driven, as live.
+	//
+	// v39: the alias is TRANSPORTED (pg.alias), not re-derived. It used to
+	// be recomputed here with namespace_cpp_variable_symbol for every
+	// record, which is the wrong owner for a class-scope STATIC DATA MEMBER:
+	// its storage key is the FLAT `Tag__member`, so one identifier component
+	// came out (_ZSt14ctype_char__id) where the nested
+	// _ZNSt3__15ctypeIcE2idE is what libc++ exports — no library defines the
+	// invented name, so `std::use_facet<F>` under a bound grove failed on an
+	// undeclared identifier / undefined MIR import. The producer already
+	// held the right symbol for every category. The derivation stays only as
+	// the fallback for a record that carries no alias at all.
 	if ( pg.gflags & CIR_GLOBALF_EXTERN_REF )
 	{
 	    Variable *xv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
 	    xv->flags = pg.flags;
+	    if ( !pg.alias.empty() )
+		xv->storage_alias_name = pg.alias;
 	    if ( !pg.ns.empty() )
 	    {
-		xv->storage_alias_name =
-		    namespace_cpp_variable_symbol(pg.ns, pg.name);
+		if ( xv->storage_alias_name.empty() )
+		{
+		    xv->storage_alias_name =
+			namespace_cpp_variable_symbol(pg.ns, pg.name);
+		    DBG(std::cout << "flush_forest_pending_globals: extern ref "
+			<< pg.ns << "::" << pg.name
+			<< " carried NO alias — derived "
+			<< xv->storage_alias_name << std::endl);
+		}
 		variable_map_t &xns = namespace_variables_for_write(pg.ns);
 		if ( xns.find(pg.name) == xns.end() )
 		    xns[pg.name] = xv;
@@ -22155,6 +22338,13 @@ void Program::flush_forest_pending_globals()
 	    << " (" << pg.type->name << ")" << std::endl);
     }
     forest_pending_globals.clear();
+
+    // A bound class's STATIC DATA MEMBER storage needs no fix-up here: the
+    // vfEXTERN Variable the extern-ref arm above rebuilds now carries the
+    // PRODUCER's symbol (v39 alias transport), which for a class static is
+    // class_static_member_itanium_symbol's nested mangling — the same name live
+    // records while parsing the class body, and the name
+    // CirBuilder::class_struct_def looks up to emit `extern <type> _ZN...E`.
 
     // v25: restored NAMESPACE-SURFACE state — after every fn/global above is
     // registered, so the bindings resolve their targets.
@@ -38252,6 +38442,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     dds->definition_origin = aggregate_definition_origin(
 	pgm, tag ? tag->file : file);
     std::string tag_store_key = tag ? tag->spelling() : "";
+    // Set when a GLOBAL-scope definition reclaims its bare tag from a
+    // relocated namespace-scoped prior (the mirror arm below): the
+    // pre-registration must then OVERWRITE the bare slot instead of
+    // skipping on "already present".
+    bool global_reclaims_bare = false;
     if ( tag )
     {
 	DataDefCLASS *owner = pgm.nested_aggregate_owner();
@@ -38292,6 +38487,39 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( ns_flat[fi] == ':' )
 			    ns_flat[fi] = '_';
 		    dds->name = ns_flat + "__" + tag->spelling();
+		}
+	    }
+	    // The MIRROR case: a GLOBAL-scope definition whose bare tag is
+	    // held by a flat-registered NAMESPACE-scoped prior (darwin
+	    // math.h's SVID `struct exception` arriving after libc++
+	    // registered std::__1::exception under the bare convenience
+	    // key). [basic.scope.namespace]: both declarations are legal,
+	    // and unqualified lookup at global scope must find ::S — so the
+	    // GLOBAL definition takes the bare key. The prior RELOCATES to
+	    // its canonical scoped key (the registry never erases; set()
+	    // overwrites, and in-namespace references resolve through the
+	    // per-namespace registries, not this flat convenience slot).
+	    // A true global redefinition still throws — its prior's
+	    // canonical spelling IS the bare tag.
+	    if ( tag_store_key == tag->spelling()
+	      && pgm.current_namespace().empty() )
+	    {
+		datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+		DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+		    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+		if ( prior_sd && prior_sd->is_complete
+		  && !prior_sd->canonical_cpp_spelling().empty()
+		  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+		{
+		    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
+		    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(),
+				       prior_sd);
+		    global_reclaims_bare = true;
+		    // Distinct EMITTED identity: two same-tag struct defs in
+		    // one c2mir TU cross-resolve member references. The
+		    // prior's records (arena, methods) already carry its
+		    // name, so the one being defined NOW takes the rename.
+		    dds->name = std::string("__madc_global__") + tag->spelling();
 		}
 	    }
 	}
@@ -38336,7 +38564,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
     bool was_pre_registered = false;
-    if ( tag && pgm.struct_map.find(tag_store_key) == pgm.struct_map.end() )
+    if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
+		 || global_reclaims_bare) )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map.set(tag_store_key, dds);
@@ -43628,7 +43857,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 	: new DataDefSTRUCT(sname, 0, DataType::dtRESERVED);
     for ( size_t i = 0; i < types.size(); ++i )
     {
-	char mname[16];
+	char mname[24];		// "v" + up to 20 size_t digits + NUL
 	snprintf(mname, sizeof mname, "v%zu", i);
 	s->addMember(mname, *types[i], 1);
     }

@@ -207,8 +207,20 @@ class CirBuilder {
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
 	// hidden first parameter of a by-value object-returning function. `retdd` is
-	// the returned class/struct type.
+	// the returned class/struct type. Always carries ret_addr_attr — being the
+	// result address is what this parameter IS, not a property of the caller.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
+	// THE one spelling of the hidden-result-address marker. A C declaration
+	// cannot say "this pointer is the indirect-result register", and C's own
+	// rule (classify the RETURN by size) is the wrong rule for a non-trivial
+	// class, which is returned indirectly at ANY size. Say it on the PARAMETER
+	// and leave the placement to the target.
+	node_t ret_addr_attr();
+	// Replace `oldc` (a direct child of `parent`) with the DETACHED node
+	// `newc`, preserving position — c2mir op lists are DLISTs and a bare
+	// remove+append would move the operand to the tail, which reorders
+	// call arguments and fixed-arity operands.
+	void replace_op(node_t parent, node_t oldc, node_t newc);
 
 	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign
 	// statement whose multi_vars holds the N receiver variables, all plain
@@ -235,6 +247,16 @@ class CirBuilder {
 	// leaked into the NEXT translated function's body.
 	void flush_pending_stmts(std::vector<node_t> &out);
 	int m_strtmp_counter = 0;
+	// Constructor-coercion cycle guard: (arg token, target class) pairs whose
+	// materializing conversion is IN PROGRESS in object_arg_addr's tail. A
+	// re-entry with an identical pair means ctor selection fell back to the
+	// copy ctor (parameter `target&`) for the same unconverted arg — the
+	// object_arg_addr <-> class_ctor_call recursion; no progress is possible
+	// by construction, so the tail refuses loudly instead of recursing to
+	// stack death (libc++ <fstream> under the freeze drain found the
+	// unguarded shape; the dependent-arg guards above it cover only
+	// template-typed args).
+	std::set<std::pair<TokenBase *, DataDefCLASS *> > m_objaddr_inprogress;
 	// File-scope class-instance globals lower to opaque
 	// struct storage at file scope plus a constructor call that must run before
 	// any user code. C++ does this via static-init; madc injects these ctor
@@ -946,6 +968,16 @@ public:
 	void append_lit_type_spec(node_t spec, DataDef *dd,
 				  const std::string &typedef_name);
 	node_t type_list(DataDef *dd, const std::string &typedef_alias = "");
+	// The append form of type_list, for a spec list that must carry a
+	// storage-class specifier ahead of the type specs.
+	void append_decl_type_specs(node_t lst, DataDef *dd,
+				    const std::string &typedef_alias);
+	// THE type-spec derivation for a VARIABLE declaration of any storage
+	// class (plain / static / extern) — anonymous aggregate inlined, else
+	// append_decl_type_specs. Callers emit their own storage class. Pass a
+	// NULL Variable to skip the typedef-alias arm (specs only).
+	void append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
+				   DataDefSTRUCT *anon_sdd);
 	node_t pointer();
 
 	// ---- Function-pointer declarators ----
@@ -1002,6 +1034,12 @@ public:
 		std::vector<c2mir_node_code_t> specs;
 		bool ptr;
 		class DataDefCLASS *cls;
+		// This pointer param is the hidden RESULT ADDRESS of a by-value
+		// non-trivial class return. Declared `struct X *` and carrying the
+		// fork's __attribute__((ret_addr)), so c2mir emits it as MIR_T_RBLK
+		// and the TARGET places it: x8 on AArch64, the first argument
+		// register on x86-64 SysV. Never spell that placement here.
+		bool ret_addr;
 	};
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
@@ -1610,6 +1648,17 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+	// --emit=c11 (celC11) ONLY: lower the mangled-direct indirect-return edge
+	// to the portable >16-byte-struct-return shape, so gcc/clang place the
+	// destination address in the target's indirect-result register themselves
+	// (x8 on AArch64, first argument register on x86-64) — the emitted C stays
+	// target-neutral. Runs on the finished tree between translate_module and
+	// cir_emit_c; the JIT/native lanes and the .mc11 twin never see it.
+	// Per-symbol all-or-nothing: a symbol retypes only when EVERY call site
+	// fuses into the `struct __madc_ret_K X = SYM(args);` initializer form;
+	// unfused residuals keep the first-argument shape and are counted (warned
+	// on stderr). See docs/plans/2026-08-07-macos-release-lane-plan.md.
+	void emitc_lower_indirect_returns(node_t module);
 	// TU identity for the object-mode per-TU init symbol; call before
 	// translate_module (harmless in JIT mode — unused there).
 	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }

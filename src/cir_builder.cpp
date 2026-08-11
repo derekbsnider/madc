@@ -359,7 +359,14 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 	return call_emit_symbol(v, fd);
 }
 
-static bool external_symbol_available(const std::string &sym)
+// The loaded-libraries symbol probe — the same dlsym the MIR import resolver
+// uses. Non-static because the parser's forest restore shares it: rebuilding a
+// bound class's static-member storage must bind ONLY to symbols a library
+// really exports, which is the identical question this answers here.
+// Declared in madc.h; keep the definition in THIS translation unit —
+// symbol_is_host_implemented() below takes its address as the host-object
+// anchor (task #69).
+bool external_symbol_available(const std::string &sym)
 {
 	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
 }
@@ -5979,6 +5986,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 				"cannot bind a non-const lvalue reference "
 				"parameter to a converted temporary", arg);
 	}
+	// Cycle guard (see m_objaddr_inprogress): re-entering this materializing
+	// tail with the identical (arg, target) pair means the ctor selection
+	// below fell back to target's copy ctor for the same unconverted arg —
+	// infinite object_arg_addr <-> class_ctor_call recursion. Refuse loudly.
+	std::pair<TokenBase *, DataDefCLASS *> coerce_key(arg, target);
+	if (arg && !m_objaddr_inprogress.insert(coerce_key).second)
+		return error_node("constructor argument coercion cycle "
+				  "(no viable converting constructor)", arg);
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
@@ -5986,7 +6001,17 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	m_pending_stmts.push_back(var_decl(tmp, arg));
 	std::vector<TokenBase *> ctor_args;
 	if (arg) ctor_args.push_back(arg);
-	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
+	node_t cc;
+	try {
+		cc = class_ctor_call(tmp, target, ctor_args, arg);
+	} catch (...) {
+		// The freeze lane catches translate errors and continues; a key
+		// left behind would refuse a later legitimate coercion.
+		if (arg) m_objaddr_inprogress.erase(coerce_key);
+		throw;
+	}
+	if (arg)
+		m_objaddr_inprogress.erase(coerce_key);
 	if (cc) m_pending_stmts.push_back(cc);
 	return object_addr(name, arg);
 }
@@ -6537,15 +6562,17 @@ std::string CirBuilder::typedef_emit_name(const std::string &alias,
 
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
-node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
+// The append form of type_list, so a site that must PREPEND a storage-class
+// specifier to the same spec list can reuse this one derivation instead of
+// hand-rolling a narrower copy of it (see append_var_type_specs).
+void CirBuilder::append_decl_type_specs(node_t lst, DataDef *dd,
+					const std::string &typedef_alias)
 {
-	node_t lst = list();
-
 	// If a typedef name is available, emit ID("alias") — matches c2m's behavior.
 	// An alias that collides across namespaces emits its unique struct tag.
 	if (!typedef_alias.empty()) {
 		append(lst, id(typedef_emit_name(typedef_alias, dd).c_str()));
-		return lst;
+		return;
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
@@ -6559,7 +6586,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 				node_t marker = ignore();
 				CIR_NODE(marker)->set_datadef(sdd);
 				append(lst, marker);
-				return lst;
+				return;
 			}
 			// Tag kind MUST match the definition (struct vs union), or
 			// c2mir rejects it ("kind of tag X unmatched"). A union-typed
@@ -6574,12 +6601,52 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 			if (m_tsubst_pattern_mode)
 				CIR_NODE(sref)->set_datadef(sdd);
 			append(lst, sref);
-			return lst;
+			return;
 		}
 	}
 
 	append_type_specs(lst, dd);
+}
+
+node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
+{
+	node_t lst = list();
+	append_decl_type_specs(lst, dd, typedef_alias);
 	return lst;
+}
+
+// THE type-specifier derivation for a VARIABLE declaration, appended to a spec
+// list the caller owns — the storage-class specifier is the only thing that
+// differs between the plain / `static` / `extern` shapes, so it stays the
+// caller's. An anonymous aggregate has no tag to forward-reference, so its body
+// inlines (a `struct anonymous` reference is never defined); everything else
+// routes through append_decl_type_specs, which preserves the typedef alias and
+// emits the struct/union TAG for an aggregate.
+//
+// A bare append_type_specs CANNOT express a tag — it falls through to `int`,
+// which is how two storage-class sites silently degraded an aggregate:
+// `static Cls g;` emitted `static int g` ("request for member x in something
+// not a structure"), and the referenced-global extern pass emitted
+// `extern int <sym>` for a class-typed alias-bound static data member — a
+// SECOND, incompatible declaration of a symbol var_decl had already typed
+// correctly ("incompatible types of _ZNSt3__15ctypeIcE2idE declarations" under
+// a libc++ forest bind). One derivation, so a fix reaches every storage class.
+void CirBuilder::append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
+				       DataDefSTRUCT *anon_sdd)
+{
+	if (anon_sdd) {
+		append(lst, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+				  ignore(), anon_members_list(anon_sdd)));
+		return;
+	}
+	// A typedef'd declaration keeps its alias spec (`static io *gp`) so the
+	// pointee resolves through the typedef's own complete definition; the
+	// alias belongs to the UNPEELED type.
+	if (v && !v->typedef_name.empty()) {
+		append_decl_type_specs(lst, v->type, v->typedef_name);
+		return;
+	}
+	append_decl_type_specs(lst, base_dd, std::string());
 }
 
 // Single function-signature owner for the __retbuf ABI decision. A by-value
@@ -6610,10 +6677,14 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	if (!fd) return node1(N_FUNC, param_list);   // unknown signature -> ()
 
 	// A by-value object-returning target uses the __retbuf ABI: a hidden
-	// leading `T* __retbuf` param (abstract/unnamed in a fn-ptr type).
+	// leading `T* __retbuf` param — abstract/unnamed here, because this is a
+	// fn-ptr TYPE, not a declaration. It still carries the result-address
+	// marker: every declaration of such a function now does, so an unmarked
+	// call THROUGH a pointer would disagree with the target it points at.
 	DataDefCLASS *retbuf_dd = function_retbuf_class(fd);
 	if (retbuf_dd) {
 		node_t pspec = type_list(retbuf_dd);
+		append(pspec, ret_addr_attr());
 		node_t pdecl = list();
 		append(pdecl, pointer());
 		append(param_list, node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)));
@@ -6852,6 +6923,12 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 	}
 }
 
+// THE one spelling of the hidden-result-address marker (see cir_builder.h).
+node_t CirBuilder::ret_addr_attr()
+{
+	return node2(N_ATTR, id("ret_addr"), list());
+}
+
 // The hidden return-slot parameter `struct <Cls> *__retbuf` of a by-value
 // object-returning function. A named pointer parameter: N_SPEC_DECL with the
 // returned class/struct spec (bare LIST, like param_decl's pspec) and a DECL
@@ -6860,6 +6937,14 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 {
 	node_t pspec = type_list(retdd ? retdd : &ddVOID);
+	// The marker rides the SPECIFIERS, so the declarator's `*` below puts it
+	// on the pointee — which is where c2mir's ret_addr_param_p reads it.
+	// UNCONDITIONAL, at every emitter: prototype, definition and typed extern
+	// must agree, and whether the module also DEFINES the symbol is not known
+	// when a declaration is emitted (a lazily-materialized body may or may not
+	// arrive). Marking everywhere also matches the platform ABI for a weak
+	// definition the linker may preempt.
+	append(pspec, ret_addr_attr());
 	node_t pdecl_list = list();
 	append(pdecl_list, pointer());
 	node_t sd = simple(N_SPEC_DECL, origin);
@@ -6869,6 +6954,655 @@ node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 	append(sd, ignore());
 	append(sd, ignore());
 	return sd;
+}
+
+void CirBuilder::replace_op(node_t parent, node_t oldc, node_t newc)
+{
+	node_t carrier = list();
+	append(carrier, newc);
+	c2mir_op_splice_after(c2m, parent, oldc, carrier);
+	c2mir_op_remove(parent, oldc);
+}
+
+// N_ID spelling, or NULL. (cir_id_spells answers "is it X"; this reads X.)
+static const char *emitc_id_str(node_t n)
+{
+	cir_node *cn = n ? CIR_NODE(n) : NULL;
+	return cn && cn->base.code == N_ID ? cn->base.u.s.s : NULL;
+}
+
+// ===== --emit=c11 indirect-return lowering ==================================
+// (entry contract in cir_builder.h; decision record in
+// docs/plans/2026-08-07-macos-release-lane-plan.md, session #79)
+//
+// Portable C cannot call a C++ function that returns a non-trivially-copyable
+// class by value through the C++ convention: the callee constructs in place
+// through the target's indirect-result register (x8 on AArch64 — OUTSIDE the
+// argument sequence), while C's own by-size return classification picks that
+// register only for a struct too large to return in registers. Spelling the
+// slot as an explicit first argument (the tree's `__retbuf` shape) is correct
+// for madc-emitted callees on any target, but for a MANGLED-DIRECT external
+// it is the x86-64 accident of "first argument register == sret register".
+//
+// So, for true externs only, declare the return as an opaque struct that BOTH
+// ABIs classify to the indirect path, and make the destination the declared
+// object itself — the one C spelling where gcc/clang pass the destination
+// address directly (oracle: gcc x86-64 -O0 `&c` in %rdi, clang arm64 -O0
+// `add x8, sp, #N`, zero memcpy in both; any assignment spelling materializes
+// a temp and block-copies, which corrupts a self-referential small-string):
+//
+//   struct __madc_ret_K { _Alignas(_Alignof(struct K)) unsigned char
+//           __pad[sizeof(struct K) > 16 ? sizeof(struct K) : 17]; };
+//   extern struct __madc_ret_K SYM(void *, void *);
+//   struct __madc_ret_K X __attribute__((cleanup(__madc_ret_dtor_K))) = SYM(&a, &b);
+//   static void __madc_ret_dtor_K(struct __madc_ret_K *__p) { DTOR((struct K *)__p); }
+//
+// unsigned char members can never form an AArch64 homogeneous float aggregate,
+// so >16 bytes is the classification that applies on both ABIs; the sizes stay
+// sizeof-computed by the C compiler, never baked-in integers (emission
+// hygiene). The shim exists because gcc requires a cleanup function to take a
+// pointer to the VARIABLE's type.
+void CirBuilder::emitc_lower_indirect_returns(node_t module)
+{
+	node_t top = module ? c2mir_node_op(module, 0) : NULL;
+	if (!top || top->code != N_LIST)
+		return;
+
+	// One candidate extern `void SYM(struct K *__retbuf <ret_addr>, ...);`
+	// and its planned fusion sites. Per-symbol all-or-nothing: the extern
+	// has ONE declaration, so it retypes only when EVERY call fused.
+	struct Site {
+		node_t stmts;      // statement N_LIST holding decl + call stmt
+		node_t decl;       // X's N_SPEC_DECL
+		node_t call_stmt;  // the N_EXPR statement wrapping the call
+		node_t call;       // the N_CALL
+		node_t arg0;       // full first argument (outermost cast kept)
+		std::string dtor;  // cleanup callee on X's decl ("" = none)
+		// later `&X` uses to re-wrap `(struct K *)&X`: (parent, N_ADDR)
+		std::vector<std::pair<node_t, node_t> > wraps;
+	};
+	struct Cand {
+		node_t proto;          // the extern N_SPEC_DECL
+		node_t param_list;     // its N_FUNC parameter N_LIST
+		node_t param0;         // the __retbuf parameter
+		std::string tag;       // K
+		bool is_union;
+		bool fusable;          // false once ANY call site cannot fuse
+		std::vector<Site> sites;
+	};
+	std::map<std::string, Cand> cands;
+
+	// Env-gated probe (MADC_XTEST_SRET_LOWER=1): why each __retbuf-shaped
+	// declaration was accepted or rejected, and what each symbol's plan
+	// resolved to. The rewrite is all-or-nothing per symbol, so a silent
+	// pass-A rejection looks identical to "no candidates" from the outside.
+	static const char *sret_probe = ::getenv("MADC_XTEST_SRET_LOWER");
+	std::function<void(const char *, const char *)> probe =
+		[&](const char *sym, const char *what) {
+		if (sret_probe && *sret_probe)
+			fprintf(stderr, "[SRET_LOWER] %s: %s\n",
+				sym ? sym : "?", what);
+	};
+
+	// ---- Pass A: candidates, defined functions, complete tags, anchor ----
+	// Module items may sit inside nested N_LIST groups (the renderer prints
+	// a nested list exactly like direct children), so item inspection
+	// FLATTENS one-or-more list levels — while `anchor`, the splice point
+	// for the pads/shims, stays a DIRECT child of `top` (splicing after a
+	// nested node would corrupt the top list). A group that contains the
+	// first function definition closes the pre-body window as a whole.
+	std::set<std::string> defined_funcs;
+	std::set<std::string> defined_tags;
+	node_t anchor = NULL;      // last DIRECT child before the first body
+	bool bodies_seen = false;
+	std::function<void(node_t)> pass_a = [&](node_t it) {
+		if (!it)
+			return;
+		if (it->code == N_LIST) {
+			for (node_t s = c2mir_node_first_op(it); s;
+			     s = c2mir_node_next_op(s))
+				pass_a(s);
+			return;
+		}
+		if (it->code == N_FUNC_DEF) {
+			bodies_seen = true;
+			node_t d = c2mir_node_op(it, 1);
+			const char *nm = d && d->code == N_DECL
+				? emitc_id_str(c2mir_node_op(d, 0)) : NULL;
+			if (nm)
+				defined_funcs.insert(nm);
+			return;
+		}
+		if (it->code != N_SPEC_DECL)
+			return;
+		node_t share = c2mir_node_op(it, 0);
+		node_t specs = share && share->code == N_SHARE
+			? c2mir_node_op(share, 0) : share;
+		// A struct/union DEFINITION completes its tag; the pad's sizeof
+		// needs the class complete before the splice anchor.
+		if (!bodies_seen && specs && specs->code == N_LIST)
+			for (node_t s = c2mir_node_first_op(specs); s;
+			     s = c2mir_node_next_op(s)) {
+				if (s->code != N_STRUCT && s->code != N_UNION)
+					continue;
+				const char *tn = emitc_id_str(c2mir_node_op(s, 0));
+				node_t mems = c2mir_node_op(s, 1);
+				if (tn && mems && mems->code == N_LIST)
+					defined_tags.insert(tn);
+			}
+		// Candidate shape: declarator `SYM` with a single N_FUNC
+		// suffix whose first parameter is named __retbuf (one pointer
+		// level, struct/union tag spec carrying the ret_addr marker);
+		// return specs exactly `void` (the storage class rides the
+		// same list — `extern void SYM(...)`).
+		node_t decl = c2mir_node_op(it, 1);
+		const char *sym = decl && decl->code == N_DECL
+			? emitc_id_str(c2mir_node_op(decl, 0)) : NULL;
+		if (!sym)
+			return;
+		node_t dsuf = c2mir_node_op(decl, 1);
+		node_t fn = dsuf && dsuf->code == N_LIST
+			? c2mir_node_first_op(dsuf) : NULL;
+		if (!fn || fn->code != N_FUNC || c2mir_node_next_op(fn))
+			return;
+		node_t params = c2mir_node_op(fn, 0);
+		node_t p0 = params && params->code == N_LIST
+			? c2mir_node_first_op(params) : NULL;
+		if (!p0 || p0->code != N_SPEC_DECL)
+			return;
+		node_t pdecl = c2mir_node_op(p0, 1);
+		if (!pdecl || pdecl->code != N_DECL
+		    || !cir_id_spells(CIR_NODE(c2mir_node_op(pdecl, 0)),
+				      RETBUF_NAME))
+			return;
+		// From here the declaration IS a __retbuf extern — every
+		// rejection below silently strands the symbol on the
+		// first-argument shape, so each one reports to the probe.
+		if (!specs || specs->code != N_LIST) {
+			probe(sym, "reject: specs not a list");
+			return;
+		}
+		bool ret_void = false, ret_other = false;
+		for (node_t s = c2mir_node_first_op(specs); s;
+		     s = c2mir_node_next_op(s)) {
+			if (s->code == N_VOID)
+				ret_void = true;
+			else if (s->code != N_EXTERN)
+				ret_other = true;
+		}
+		if (!ret_void || ret_other) {
+			probe(sym, ret_other ? "reject: non-void return spec"
+					     : "reject: no void return spec");
+			return;
+		}
+		node_t pspec = c2mir_node_op(p0, 0);
+		if (!pspec || pspec->code != N_LIST) {
+			probe(sym, "reject: __retbuf specs not a list");
+			return;
+		}
+		node_t tagref = NULL;
+		bool marked = false;
+		for (node_t s = c2mir_node_first_op(pspec); s;
+		     s = c2mir_node_next_op(s)) {
+			if (s->code == N_STRUCT || s->code == N_UNION)
+				tagref = s;
+			else if (s->code == N_ATTR
+				 && cir_id_spells(CIR_NODE(c2mir_node_op(s, 0)),
+						  "ret_addr"))
+				marked = true;
+		}
+		const char *tag = tagref
+			? emitc_id_str(c2mir_node_op(tagref, 0)) : NULL;
+		if (!tag || !marked) {
+			probe(sym, !tag ? "reject: no struct/union tag on __retbuf"
+					: "reject: no ret_addr marker on __retbuf");
+			return;
+		}
+		if (cands.count(sym))
+			return;
+		Cand c;
+		c.proto = it;
+		c.param_list = params;
+		c.param0 = p0;
+		c.tag = tag;
+		c.is_union = tagref->code == N_UNION;
+		c.fusable = true;
+		cands[sym] = c;
+		probe(sym, "candidate");
+	};
+	for (node_t it = c2mir_node_first_op(top); it;
+	     it = c2mir_node_next_op(it)) {
+		bool was_pre_body = !bodies_seen;
+		pass_a(it);
+		if (was_pre_body && !bodies_seen)
+			anchor = it;
+	}
+	for (std::map<std::string, Cand>::iterator ci = cands.begin();
+	     ci != cands.end(); ) {
+		if (defined_funcs.count(ci->first)) {       // madc emits the body:
+			probe(ci->first.c_str(),            // __retbuf both sides
+			      "drop: defined in this module");
+			cands.erase(ci++);
+		} else if (!defined_tags.count(ci->second.tag)) {
+			probe(ci->first.c_str(),
+			      "drop: class tag not complete before the anchor");
+			cands.erase(ci++);
+		} else
+			++ci;
+	}
+	if (cands.empty())
+		return;
+
+	// ---- Pass B: count every call; poison non-call uses (address taken) ----
+	std::map<std::string, size_t> call_count;
+	std::function<void(node_t)> scan_uses = [&](node_t n) {
+		if (!n)
+			return;
+		if (n->code == N_CALL) {
+			node_t callee = c2mir_node_op(n, 0);
+			const char *cn = emitc_id_str(callee);
+			if (cn && cands.count(cn))
+				++call_count[cn];
+			else if (callee && callee->code != N_ID)
+				scan_uses(callee);
+			for (node_t a = callee ? c2mir_node_next_op(callee)
+					       : NULL;
+			     a; a = c2mir_node_next_op(a))
+				scan_uses(a);
+			return;
+		}
+		if (n->code == N_ID) {
+			const char *cn = emitc_id_str(n);
+			std::map<std::string, Cand>::iterator ci =
+				cn ? cands.find(cn) : cands.end();
+			if (ci != cands.end())
+				ci->second.fusable = false;
+			return;
+		}
+		if (n->code == N_DECL) {   // op0 declares a name; not a use
+			scan_uses(c2mir_node_op(n, 1));
+			return;
+		}
+		if (n->code > N_ID)
+			for (node_t a = c2mir_node_first_op(n); a;
+			     a = c2mir_node_next_op(a))
+				scan_uses(a);
+	};
+	scan_uses(top);   // whole module: bodies, nested groups, initializers
+
+	// ---- Pass C: plan fusion sites ----
+	// A site fuses `TYPE X __attr((cleanup(D)));  ...  SYM(&X, args);` when
+	// both are DIRECT siblings in one statement list, nothing between them
+	// references X or is a jump target/jump (the moved declaration must not
+	// change what a jump can skip), the call statement is unlabeled, its
+	// remaining arguments do not reference X, and every later reference to
+	// X in the list is `&X` (re-wrappable) with no shadowing redeclaration.
+	std::function<bool(node_t)> has_jump = [&](node_t n) -> bool {
+		if (!n)
+			return false;
+		if (n->code == N_LABEL || n->code == N_CASE
+		    || n->code == N_DEFAULT || n->code == N_GOTO)
+			return true;
+		if (n->code > N_ID)
+			for (node_t a = c2mir_node_first_op(n); a;
+			     a = c2mir_node_next_op(a))
+				if (has_jump(a))
+					return true;
+		return false;
+	};
+	std::function<bool(node_t, const char *)> refs_id =
+		[&](node_t n, const char *x) -> bool {
+		if (!n)
+			return false;
+		if (n->code == N_ID) {
+			const char *s = emitc_id_str(n);
+			return s && strcmp(s, x) == 0;
+		}
+		if (n->code == N_DECL)     // op0 declares, not uses
+			return refs_id(c2mir_node_op(n, 1), x);
+		if (n->code > N_ID)
+			for (node_t a = c2mir_node_first_op(n); a;
+			     a = c2mir_node_next_op(a))
+				if (refs_id(a, x))
+					return true;
+		return false;
+	};
+	// Collect post-call uses of x under `n` into site->wraps; false = a use
+	// this pass cannot re-type (bare x, or a shadowing redeclaration).
+	std::function<bool(node_t, node_t, const char *, Site *)> collect_uses =
+		[&](node_t parent, node_t n, const char *x, Site *site) -> bool {
+		if (!n)
+			return true;
+		if (n->code == N_ADDR) {
+			node_t inner = c2mir_node_first_op(n);
+			const char *s = emitc_id_str(inner);
+			if (s && strcmp(s, x) == 0) {
+				site->wraps.push_back(
+					std::make_pair(parent, n));
+				return true;
+			}
+		}
+		if (n->code == N_ID) {
+			const char *s = emitc_id_str(n);
+			return !(s && strcmp(s, x) == 0);
+		}
+		if (n->code == N_SPEC_DECL) {
+			node_t d = c2mir_node_op(n, 1);
+			if (d && d->code == N_DECL
+			    && cir_id_spells(CIR_NODE(c2mir_node_op(d, 0)), x))
+				return false;   // shadow — later uses ambiguous
+		}
+		if (n->code == N_DECL)
+			return collect_uses(n, c2mir_node_op(n, 1), x, site);
+		if (n->code > N_ID)
+			for (node_t a = c2mir_node_first_op(n); a;
+			     a = c2mir_node_next_op(a))
+				if (!collect_uses(n, a, x, site))
+					return false;
+		return true;
+	};
+	// The cleanup dtor named on a declaration ("" = none).
+	std::function<std::string(node_t)> decl_cleanup = [&](node_t sd)
+		-> std::string {
+		node_t attrs = c2mir_node_op(sd, 2);
+		if (!attrs || attrs->code != N_LIST)
+			return "";
+		for (node_t a = c2mir_node_first_op(attrs); a;
+		     a = c2mir_node_next_op(a)) {
+			if (a->code != N_ATTR
+			    || !cir_id_spells(CIR_NODE(c2mir_node_op(a, 0)),
+					      "cleanup"))
+				continue;
+			node_t args = c2mir_node_op(a, 1);
+			const char *s = args
+				? emitc_id_str(c2mir_node_first_op(args))
+				: NULL;
+			return s ? s : "";
+		}
+		return "";
+	};
+	struct DeclInfo { size_t idx; node_t node; bool available; };
+	std::function<void(node_t)> plan_list;
+	std::function<void(node_t)> find_lists = [&](node_t n) {
+		if (!n)
+			return;
+		if (n->code == N_BLOCK) {
+			plan_list(c2mir_node_op(n, 1));
+			return;
+		}
+		if (n->code > N_ID)
+			for (node_t a = c2mir_node_first_op(n); a;
+			     a = c2mir_node_next_op(a))
+				find_lists(a);
+	};
+	plan_list = [&](node_t stmts) {
+		if (!stmts || stmts->code != N_LIST)
+			return;
+		std::vector<node_t> v;
+		for (node_t s = c2mir_node_first_op(stmts); s;
+		     s = c2mir_node_next_op(s))
+			v.push_back(s);
+		std::map<std::string, DeclInfo> decls;
+		for (size_t i = 0; i < v.size(); i++) {
+			node_t s = v[i];
+			find_lists(s);   // nested blocks plan independently
+			if (s->code == N_SPEC_DECL) {
+				// a plain, uninitialized object local
+				node_t d = c2mir_node_op(s, 1);
+				const char *nm = d && d->code == N_DECL
+					? emitc_id_str(c2mir_node_op(d, 0))
+					: NULL;
+				if (!nm)
+					continue;
+				node_t suf = c2mir_node_op(d, 1);
+				node_t init = c2mir_node_op(s, 4);
+				bool plain = suf && suf->code == N_LIST
+					&& !c2mir_node_first_op(suf)
+					&& (!init || init->code == N_IGNORE);
+				if (plain) {
+					DeclInfo di;
+					di.idx = i;
+					di.node = s;
+					di.available = true;
+					decls[nm] = di;
+				} else {
+					decls.erase(nm);
+				}
+				continue;
+			}
+			// candidate call statement: unlabeled N_EXPR around
+			// N_CALL id(SYM in cands) whose first argument peels
+			// (through casts) to &X
+			if (s->code != N_EXPR)
+				continue;
+			node_t labels = c2mir_node_op(s, 0);
+			if (labels && labels->code == N_LIST
+			    && c2mir_node_first_op(labels))
+				continue;
+			node_t call = c2mir_node_op(s, 1);
+			if (!call || call->code != N_CALL)
+				continue;
+			const char *sym = emitc_id_str(c2mir_node_op(call, 0));
+			std::map<std::string, Cand>::iterator ci =
+				sym ? cands.find(sym) : cands.end();
+			if (ci == cands.end())
+				continue;
+			node_t args = c2mir_node_op(call, 1);
+			node_t arg0 = args && args->code == N_LIST
+				? c2mir_node_first_op(args) : NULL;
+			node_t peel = arg0;
+			while (peel && peel->code == N_CAST)
+				peel = c2mir_node_op(peel, 1);
+			const char *x = peel && peel->code == N_ADDR
+				? emitc_id_str(c2mir_node_first_op(peel))
+				: NULL;
+			std::map<std::string, DeclInfo>::iterator di =
+				x ? decls.find(x) : decls.end();
+			bool ok = di != decls.end() && di->second.available;
+			for (size_t k = ok ? di->second.idx + 1 : i;
+			     ok && k < i; k++)
+				if (has_jump(v[k]) || refs_id(v[k], x))
+					ok = false;
+			for (node_t a = ok ? c2mir_node_next_op(arg0) : NULL;
+			     a; a = c2mir_node_next_op(a))
+				if (refs_id(a, x))
+					ok = false;
+			Site site;
+			for (size_t k = i + 1; ok && k < v.size(); k++)
+				ok = collect_uses(stmts, v[k], x, &site);
+			if (!ok) {
+				ci->second.fusable = false;
+				continue;
+			}
+			site.stmts = stmts;
+			site.decl = di->second.node;
+			site.call_stmt = s;
+			site.call = call;
+			site.arg0 = arg0;
+			site.dtor = decl_cleanup(di->second.node);
+			ci->second.sites.push_back(site);
+			di->second.available = false;
+		}
+	};
+	find_lists(top);   // reaches every body, nested groups included
+
+	// ---- Commit ----
+	std::function<node_t(const std::string &, bool)> tag_ref =
+		[&](const std::string &tag, bool is_union) -> node_t {
+		return node2(is_union ? N_UNION : N_STRUCT,
+			     id(tag.c_str()), ignore());
+	};
+	// `struct K` / `struct K *` as an abstract type-name (fresh per use —
+	// a cir node is single-parent).
+	std::function<node_t(const std::string &, bool, bool)> type_name =
+		[&](const std::string &tag, bool is_union, bool ptr) -> node_t {
+		node_t sfx = list();
+		if (ptr)
+			append(sfx, pointer());
+		return node2(N_TYPE, node1(N_LIST, tag_ref(tag, is_union)),
+			     node2(N_DECL, ignore(), sfx));
+	};
+	size_t residual = 0, fused = 0;
+	std::map<std::string, std::string> pad_of_tag, shim_of_tag;
+	node_t additions = list();
+	for (std::map<std::string, Cand>::iterator ci = cands.begin();
+	     ci != cands.end(); ++ci) {
+		Cand &c = ci->second;
+		size_t calls = call_count.count(ci->first)
+			? call_count[ci->first] : 0;
+		if (!c.fusable || c.sites.empty() || c.sites.size() != calls
+		    || !anchor) {
+			if (sret_probe && *sret_probe)
+				fprintf(stderr, "[SRET_LOWER] %s: residual "
+					"(fusable=%d sites=%zu calls=%zu)\n",
+					ci->first.c_str(), (int)c.fusable,
+					c.sites.size(), calls);
+			residual += calls;
+			continue;
+		}
+		probe(ci->first.c_str(), "fusing");
+		// pad struct (one per class)
+		if (!pad_of_tag.count(c.tag)) {
+			std::string pad = "__madc_ret_" + c.tag;
+			pad_of_tag[c.tag] = pad;
+			node_t mspec = list();
+			append(mspec, node1(N_ALIGNAS,
+				node1(N_ALIGNOF,
+				      type_name(c.tag, c.is_union, false))));
+			append(mspec, simple(N_UNSIGNED));
+			append(mspec, simple(N_CHAR));
+			node_t sz = node3(N_COND,
+				node2(N_GT,
+				      node1(N_SIZEOF,
+					    type_name(c.tag, c.is_union,
+						      false)),
+				      integer(16, NULL)),
+				node1(N_SIZEOF,
+				      type_name(c.tag, c.is_union, false)),
+				integer(17, NULL));
+			node_t member = simple(N_MEMBER);
+			append(member, node1(N_SHARE, mspec));
+			append(member, node2(N_DECL, id("__pad"),
+				node1(N_LIST,
+				      node3(N_ARR, ignore(), list(), sz))));
+			append(member, ignore());
+			append(member, ignore());
+			node_t members = list();
+			append(members, member);
+			node_t sd = simple(N_SPEC_DECL);
+			append(sd, node1(N_SHARE, node1(N_LIST,
+				node2(N_STRUCT, id(pad.c_str()), members))));
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, ignore());
+			append(additions, sd);
+		}
+		const std::string &pad = pad_of_tag[c.tag];
+		// cleanup shim (one per class; only when sites destruct)
+		std::string dtor;
+		for (size_t i = 0; dtor.empty() && i < c.sites.size(); i++)
+			dtor = c.sites[i].dtor;
+		if (!dtor.empty() && !shim_of_tag.count(c.tag)) {
+			std::string shim = "__madc_ret_dtor_" + c.tag;
+			shim_of_tag[c.tag] = shim;
+			node_t ret_type = list();
+			append(ret_type, simple(N_STATIC));
+			append(ret_type, simple(N_VOID));
+			node_t param = simple(N_SPEC_DECL);
+			append(param, node1(N_LIST, tag_ref(pad, false)));
+			append(param, node2(N_DECL, id("__p"),
+					    node1(N_LIST, pointer())));
+			append(param, ignore());
+			append(param, ignore());
+			append(param, ignore());
+			node_t param_list = list();
+			append(param_list, param);
+			node_t fdecl = node2(N_DECL, id(shim.c_str()),
+				node1(N_LIST, node1(N_FUNC, param_list)));
+			node_t cargs = list();
+			append(cargs, node2(N_CAST,
+				type_name(c.tag, c.is_union, true),
+				id("__p")));
+			node_t items = list();
+			append(items, node2(N_EXPR, list(),
+				node2(N_CALL, id(dtor.c_str()), cargs)));
+			append(additions, node4(N_FUNC_DEF, ret_type, fdecl,
+						list(),
+						node2(N_BLOCK, list(),
+						      items)));
+		}
+		// retype the extern: `extern struct __madc_ret_K SYM(rest...)`
+		node_t pshare = list();
+		append(pshare, simple(N_EXTERN));
+		append(pshare, tag_ref(pad, false));
+		replace_op(c.proto, c2mir_node_op(c.proto, 0),
+			   node1(N_SHARE, pshare));
+		c2mir_op_remove(c.param_list, c.param0);
+		if (!c2mir_node_first_op(c.param_list))
+			append(c.param_list,
+			       node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				     node2(N_DECL, ignore(), list())));
+		// fuse each site
+		for (size_t i = 0; i < c.sites.size(); i++) {
+			Site &st = c.sites[i];
+			c2mir_op_remove(c2mir_node_op(st.call, 1), st.arg0);
+			c2mir_op_remove(st.call_stmt, st.call);
+			replace_op(st.decl, c2mir_node_op(st.decl, 0),
+				   node1(N_SHARE, node1(N_LIST,
+							tag_ref(pad, false))));
+			if (!st.dtor.empty()) {
+				node_t attrs = c2mir_node_op(st.decl, 2);
+				for (node_t a = attrs && attrs->code == N_LIST
+						? c2mir_node_first_op(attrs)
+						: NULL;
+				     a; a = c2mir_node_next_op(a)) {
+					if (a->code != N_ATTR
+					    || !cir_id_spells(CIR_NODE(
+						c2mir_node_op(a, 0)),
+						"cleanup"))
+						continue;
+					node_t aargs = c2mir_node_op(a, 1);
+					replace_op(aargs,
+						c2mir_node_first_op(aargs),
+						id(shim_of_tag[c.tag].c_str()));
+					break;
+				}
+			}
+			replace_op(st.decl, c2mir_node_op(st.decl, 4),
+				   st.call);
+			c2mir_op_remove(st.stmts, st.decl);
+			node_t carrier = list();
+			append(carrier, st.decl);
+			c2mir_op_splice_after(c2m, st.stmts, st.call_stmt,
+					      carrier);
+			c2mir_op_remove(st.stmts, st.call_stmt);
+			for (size_t w = 0; w < st.wraps.size(); w++) {
+				node_t shell = node1(N_CAST,
+					type_name(c.tag, c.is_union, true));
+				node_t wc = list();
+				append(wc, shell);
+				c2mir_op_splice_after(c2m, st.wraps[w].first,
+						      st.wraps[w].second, wc);
+				c2mir_op_remove(st.wraps[w].first,
+						st.wraps[w].second);
+				append(shell, st.wraps[w].second);
+			}
+			fused++;
+		}
+	}
+	if (c2mir_node_first_op(additions))
+		c2mir_op_splice_after(c2m, top, anchor, additions);
+	DBG(std::cout << "emitc_lower_indirect_returns: " << fused
+		      << " fused, " << residual << " residual" << std::endl);
+	// A residual is a call the emitted C keeps on the first-argument
+	// result shape — correct only where that register IS the target's
+	// indirect-result register (x86-64). Loud, never DBG-gated.
+	if (residual)
+		fprintf(stderr, "madc: --emit=c11: %zu indirect-return "
+			"call(s) kept the first-argument result shape "
+			"(x86-64-only; see emitc_lower_indirect_returns)\n",
+			residual);
 }
 
 // Defined below (operator= selection for a class, shared with the
@@ -7196,6 +7930,17 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 		append(param_list, node2(N_TYPE, void_spec, void_decl));
 	} else {
 		for (size_t i = 0; i < params.size(); i++) {
+			// The hidden result address goes through its one owner, so
+			// this emitter cannot drift from the other three — and so it
+			// carries the same `__retbuf` name, which is what makes the
+			// slot identifiable in the IR (sret_abi_gate.sh reads it).
+			// Mixing a NAMED param into an otherwise-abstract prototype
+			// is what param_decl already does; c2mir expects it.
+			if (params[i].ret_addr && params[i].cls) {
+				append(param_list,
+				       retbuf_param((DataDef *)params[i].cls, NULL));
+				continue;
+			}
 			node_t specs = list();
 			// A by-value struct/union param: one tag-ref spec (struct X
 			// / union X per union_layout), no pointer. Otherwise the
@@ -7665,64 +8410,31 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (v->is_fixed_array())
 			fnptr_dims = v->dims;
 		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
-	} else if (anon_sdd) {
-		tl = anon_inline_spec(anon_sdd);
 	} else {
-		tl = !v->typedef_name.empty()
-				? type_list(v->type, v->typedef_name)
-				: type_list(base_dd);
+		tl = list();
+		append_var_type_specs(tl, v, base_dd, anon_sdd);
 	}
 
 	// Storage class qualifiers (fn-ptr vars handle storage class above).
+	// Both arms share ONE type-spec derivation with the plain path above
+	// (append_var_type_specs) — a hand-rolled copy per storage class is how
+	// `static Cls g;` came to emit `static int g` while the extern arm had
+	// already been widened past the btStruct-only test.
 	if (!fnptr && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
-		if (!v->typedef_name.empty()) {
-			// A typedef'd type keeps its alias spec (`static io *gp`), so
-			// the pointee resolves through the typedef's own (complete)
-			// definition. Dropping the alias to a `struct anonymous` tag left
-			// the pointee incomplete ("struct has no member" through `gp->`).
-			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
-		} else if (anon_sdd) {
-			// Anonymous aggregate: inline the body (no tag to reference).
-			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-					       ignore(), anon_members_list(anon_sdd)));
-		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-			if (sdd)
-				append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
-			else
-				append_type_specs(new_list, base_dd);
-		} else {
-			append_type_specs(new_list, base_dd);
-		}
+		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
 	if (!fnptr && (v->flags & vfEXTERN)) {
 		// An extern is a forward reference to a symbol defined elsewhere, so
 		// emit its type exactly as the definition would — preserve the typedef
-		// alias and struct tag. The old append_type_specs path dropped the
-		// alias, so `extern bool x` degraded to `extern int x` and conflicted
-		// with the `bool x` definition ("incompatible types of x declarations").
+		// alias and struct tag. Dropping the alias made `extern bool x` degrade
+		// to `extern int x`, conflicting with the `bool x` definition
+		// ("incompatible types of x declarations").
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
-		if (!v->typedef_name.empty()) {
-			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
-		} else if (anon_sdd) {
-			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-					       ignore(), anon_members_list(anon_sdd)));
-		} else if (base_dd && !base_dd->is_complex()
-			   && !base_dd->is_madc_array()
-			   && dynamic_cast<DataDefSTRUCT *>(base_dd)) {
-			// Struct OR class tag ref (a DataDefCLASS IS-A
-			// DataDefSTRUCT — the old is_struct() gate was
-			// btStruct-only, so an extern of CLASS type degraded to
-			// `extern int`, e.g. the madc::sys SysInfo instance).
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-			append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
-		} else {
-			append_type_specs(new_list, base_dd);
-		}
+		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
 
@@ -9660,8 +10372,18 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	std::vector<ExternParam> eparams;
 	node_t args = list();
 	if (retc) {
-		eparams.push_back({ {N_VOID}, true });   // sret slot (void*)
-		append(args, node2(N_CAST, void_ptr_type(),
+		// The hidden result address, declared `struct <retc> *` and marked
+		// ret_addr so it becomes MIR's RBLK and the TARGET places it (x8 on
+		// AArch64, first argument register on x86-64). It stays a PARAMETER:
+		// the callee must CONSTRUCT IN PLACE here, and a by-value return
+		// would copy the object out of a temporary — exactly what a
+		// non-trivially-copyable class forbids. Cast to the PARAMETER's
+		// type, not to void*: an opaque runtime-object destination is
+		// declared as `long[]` storage, so its bare address does not match
+		// `struct <retc> *` and c2mir would warn (the void* param used to
+		// swallow every shape).
+		eparams.push_back({ {}, true, retc, true });
+		append(args, node2(N_CAST, class_ptr_type(retc),
 				   node1(N_ADDR, id(sret_tmp, origin), origin),
 				   origin));
 	}
@@ -14854,8 +15576,12 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 			m_pending_stmts.push_back(var_decl(tmp, origin));
 			slot = node1(N_ADDR, id(objtmp, origin), origin);
 		}
-		eparams.push_back({ {N_VOID}, true });
-		append(args, slot);
+		// Same hidden-result-address shape as emit_symbol_method_call: a
+		// `struct <retc> *` parameter marked ret_addr, so MIR places it as
+		// the indirect-result register rather than the first ordinary
+		// argument. `slot` is already the destination's address.
+		eparams.push_back({ {}, true, retc, true });
+		append(args, node2(N_CAST, class_ptr_type(retc), slot, origin));
 	}
 
 	if (lhs_target) {
@@ -26203,7 +26929,14 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
-		append_type_specs(ext_list, gdd);
+		// The same derivation var_decl uses for its own extern arm — this
+		// pass declares the SAME kind of entity (a file-scope extern), and a
+		// bare append_type_specs degraded an aggregate to `extern int`,
+		// contradicting var_decl's correctly-typed declaration of the same
+		// symbol. NULL Variable: take the tag/scalar specs only, never the
+		// typedef-alias arm — this pass adds its own single `pointer()` below,
+		// which an alias that already spells the star would double.
+		append_var_type_specs(ext_list, NULL, gdd, NULL);
 		node_t share = node1(N_SHARE, ext_list);
 
 		node_t var_id = id(gname.c_str());
@@ -26386,6 +27119,17 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 
+	// Everything from Pass 1.6 on can APPEND DEFINITIONS (synth dtors,
+	// complete/deleting dtors), and their bodies call symbols whose typed
+	// declarations only exist after the Pass-1.9 fixpoint (a member dtor
+	// MATERIALIZED by that very reference). Pass 1.95's late declarations
+	// therefore splice in HERE — ahead of those definitions — or the call
+	// precedes any declaration of its callee: c2mir and the JIT tolerate
+	// that order, but it is not valid strict C11 — gcc compiles the
+	// emitted C with an implicit-declaration warning and clang (canon)
+	// REJECTS it outright ("call to undeclared function").
+	node_t late_decl_anchor = c2mir_op_tail(c2m, top_list);
+
 	// Pass 1.6: synthesized destructors for classes that need a dtor (object
 	// members and/or a base dtor) but have no user-written one. Emitted here
 	// so the symbol is in scope for the cleanup attribute in function bodies
@@ -26550,11 +27294,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	}
 
 	// Pass 1.95: late declarations — everything the fixpoint runs added after
-	// the early declaration passes had already emitted. Both lists land in
-	// top_list here, still ahead of every definition (Pass 2), so each call
-	// compiles against a real signature instead of a C implicit-int default
-	// (which truncates pointer returns and mis-wires struct args — the
-	// __madc_shim string-ctor segfault).
+	// the early declaration passes had already emitted. All three lists
+	// SPLICE IN at late_decl_anchor — ahead of the Pass-1.6/1.7/1.8
+	// definitions and of every Pass-2 definition — so each call compiles
+	// against a real signature instead of a C implicit-int default (which
+	// truncates pointer returns and mis-wires struct args — the __madc_shim
+	// string-ctor segfault; a synth aggregate dtor calling the member dtor
+	// its own reference materialized was the caller-before-declaration
+	// case: tolerated by c2mir, warned by gcc, rejected by clang).
 	// (a) Forward prototypes for fixpoint-materialized bodies: they are not in
 	//     the `funcs` snapshot Pass 1 iterates. Record their symbols so the
 	//     extern flush below skips any conflicting void* duplicate (same reason
@@ -26564,11 +27311,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     (each proto's anchor = materialized_funcs.size() when its body
 	//     materialized), exactly where a live parse's func_proto for the
 	//     equivalently-deferred TokenFunc would land.
+	node_t late_list = list();
 	size_t flp = 0;
 	auto flush_forest_lazy_protos = [&](size_t anchor) {
 		for (; flp < forest_lazy_protos.size()
 		       && forest_lazy_protos[flp].anchor <= anchor; ++flp) {
-			append(top_list, forest_lazy_protos[flp].proto);
+			append(late_list, forest_lazy_protos[flp].proto);
 			typed_proto_syms.insert(forest_lazy_protos[flp].sym);
 			// Rung 3: rides its body's conditionality (same symbol).
 			if (!forest_lazy_root.count(forest_lazy_protos[flp].sym))
@@ -26590,7 +27338,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			continue;
 		node_t proto = func_proto(tf);
 		if (proto) {
-			append(top_list, proto);
+			append(late_list, proto);
 			FuncDef *ptfd = dynamic_cast<FuncDef *>(tf->var.type);
 			if (ptfd)
 				typed_proto_syms.insert(tf->var.name);
@@ -26622,7 +27370,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		 // proto would carry) — emit nothing; residual calls sit in
 		 // visibility-dropped defs and trap-bind under --run-frozen.
 		 && !pack_defless_syms.count(kv.first)) {
-			append(top_list, kv.second);
+			append(late_list, kv.second);
 			cond_mark_sym(kv.second, kv.first);
 		}
 	// (c) Stack-array destructor wrappers demanded during body translation
@@ -26630,7 +27378,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     protos above, ahead of every function definition (Pass 2) whose
 	//     cleanup attribute names them.
 	for (auto &kv : m_array_dtor_defs)
-		append(top_list, kv.second);
+		append(late_list, kv.second);
+	c2mir_op_splice_after(c2m, top_list, late_decl_anchor, late_list);
 	m_array_dtor_defs.clear();
 	// (c2) --finstrument-functions exit thunk (task #66) — same slot: its
 	//      definition must precede every function whose cleanup attribute

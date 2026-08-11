@@ -1,0 +1,35 @@
+# forest_pack_headers_darwin.txt — the C++ grove set packed into the
+# hosted-*-macos forests, in CANONICAL ORDER (the darwin twin of
+# forest_pack_headers.txt; macos-release-lane plan W1). The C/POSIX names
+# come from the embedded prelude's .MANIFEST — this file adds ONLY the C++
+# standard headers.
+#
+# These freeze from LLVM's libc++ ($(LLVM_LIBCXX_INC), Apache-2.0 — see the
+# provenance rationale in src/Makefile), parsed by the same-arch cross madc
+# with darwin target facts. The two flavors' pack sets are deliberately
+# separate files: their blocker sets diverge (a libstdc++ parse defect does
+# not gate the libc++ grove, and vice versa), so one shared list would
+# couple the two release gates.
+#
+# LIST VERSION 1 (2026-08-10), seeded from the Linux list. Every header
+# must compile QUIETLY in this combined order behind the prelude names —
+# scripts/forest_pack_darwin.sh is the gate.
+cstddef
+climits
+cctype
+cstring
+cstdio
+cstdlib
+ctime
+cerrno
+string
+vector
+list
+map
+set
+utility
+memory
+sstream
+iostream
+fstream
+algorithm

@@ -2,6 +2,372 @@
 
 ## [Unreleased]
 
+## [v0.76.0] — 2026-08-11
+
+madc goes public on the Mac: provenance-clean macOS tarballs (arm64 +
+x86_64) with the packed C/C++ stdlib forest, native AOT `-o` for C **and**
+C++ programs, and `libmadc_rt` for emitted C — carried by the AArch64
+indirect-return ABI fix and the fork's flat-binding Mach-O executable
+writer.
+
+- **Darwin AOT for C++ programs: `madc -static-libmadc -o` now emits
+  runnable Mach-O executables whose C++ world resolves.** The fork's
+  Mach-O executable writer (mir-macho.c @fde19e17) loaded extra dylibs
+  named by the emit lane but still bound every import two-level against
+  libSystem — so `std::__1::cout` died at dyld. With extra dylibs present
+  the bind stream now uses flat-namespace lookup ordinals (the
+  `-undefined dynamic_lookup` shape; a header-less Mac has no .tbd stubs
+  for per-symbol attribution), and madc's Apple emit lanes put
+  `/usr/lib/libc++.1.dylib` on the load list whenever the import set
+  contains Itanium-mangled names (`cir_apple_extra_dylibs`; the two
+  lanes' drifted refusal messages are consolidated into
+  `cir_apple_runtime_refused`). Images with no extra dylibs keep the old
+  two-level shape exactly. Gated structurally by
+  `scripts/macho_exe_dylib_gate.sh` (llvm-otool/objdump; negative
+  controls on both the pure-C shape and the pre-slice executable) and on
+  hardware by mac_battery leg 6d. Darwin `-o` now covers runtime-free C,
+  C-lane-runtime static (try/catch, VLA — the AOT ledger rides the
+  forest into the image), and C++ programs; the full-runtime dynamic
+  class (`madc::value`/sys) stays with the deferred libmadc.dylib.
+
+- **W3 — `libmadc_rt`: the emitted-C runtime ships in the macOS tarballs.**
+  Emitted C that enters a try/catch (any `std::cout` insertion does, via
+  libc++'s stream machinery) or frees a VLA references madc's C-lane
+  runtime — the 8-symbol exception/cleanup vocabulary measured on real
+  hardware in session #80, plus `__madc_vla_free`. The tarballs now ship
+  `lib/libmadc_rt.a`: the same `scripts/ledger_sources.txt` objects libmadc
+  already holds (`src/rt/`, the dual-build strict-C11 runtime), re-archived
+  alone — no new code, one list owner. `cc program.c -L<dir>/lib -lmadc_rt
+  -lc++` is the documented link line (README-macos.txt); `<ns_madc>`
+  programs still need the full runtime, named as the limitation. Gated
+  twice: `emitc_sret_gate` leg 2b links its specimen against the subset
+  archive ALONE (with a no-runtime negative control that must fail on a
+  `__madc_` symbol), and mac_battery leg 6c does the on-target twin against
+  the tarball's archive with Apple `cc`. The full `libmadc.dylib` stays
+  deferred until darwin AOT `-o` exists.
+
+- **W0.5 — the darwin C prelude is provenance-clean; nothing gates public
+  macOS artifacts anymore.** The embedded prelude is now flattened from an
+  open-licensed header tree — Apple's own APSL/BSD libc headers as curated
+  and publicly shipped by the Zig project (`lib/libc/include/any-darwin-any`,
+  pinned at zig 0.16.0 and SHA256-verified by the new
+  `scripts/fetch_darwin_open_headers.sh`; `provision_container.sh` stages it
+  on a fresh container) — instead of the Apple SDK, which stays build-side
+  only (compiling/linking madc itself, and the never-shipped oracle for
+  prelude diffs). The first diff against the SDK oracle found ZERO missing
+  declarations on either arch (all 50 divergent lines are Apple's own
+  15.5-vs-26.4 version drift with counterparts present). The generator now
+  bakes the sysroot's `.PROVENANCE` stamp into the umbrella as a marker
+  line that rides `.rodata`, so every binary names its own prelude input;
+  `verify_macho_release.sh` authority 4 greps it back out and refuses
+  sdk-private or missing markers (negative-controlled against the
+  pre-W0.5 release binary). A failed prelude pipeline now removes
+  `embedded_headers.cpp` instead of silently reusing a stale table. License
+  notices ship in the tarball (`THIRD_PARTY_NOTICES/`: the per-file audit
+  of the 240-file closure — 213 APSL, 21 BSD with holders reproduced, 5
+  Apple-copyright shims, 1 public domain — plus the canonical APSL-2.0
+  text), and `package_release_macos.sh` drops its owner-private banner:
+  the gate now enforces what the banner could only warn about. Mac battery
+  on the rebuilt arm64 tarball: 6/2 — the two fails are the pre-existing
+  known-opens (groves husk, value intrinsic); every prelude-serving leg
+  green on hardware, leg 6b (emit-C sret on-target) passing.
+
+- **The `--emit` lane opens the stdlib-flavor runtime before the tree
+  build** — `madc_cir_emit` was the one lane still calling
+  `translate_module()` bare instead of flowing through
+  `cir_translate_guarded` (the designed owner of open-before-build; the
+  same family previously bit the object and freeze lanes). In a pure
+  `--emit` run nothing had dlopen'd the flavor runtime, so under
+  `-stdlib=libc++` every CIR-time dlsym probe answered false and the
+  alias-bound facet-id extern recording declined every legitimate alias:
+  the emitted C referenced `_ZNSt3__15ctypeIcE2idE` with no declaration
+  and gcc rejected it, while the JIT lane ran the same program fine.
+  Routing the emit lane through the guarded translate also deletes its
+  parallel bare translate and gains it the exception guard and CIR
+  timing. `emitc_sret_gate` leg 2 now inserts through cout (pulling
+  `use_facet` and the facet-id static) so the defect stays caught;
+  negative control verified against the unfixed binary. Found while
+  executing the emitted C on the arm64 Mac — which also closed the
+  owed execution proof: the locale and string specimens compile with
+  Apple cc, run, and byte-match Apple `clang++ -O0` oracles on target,
+  with the native `cc -S` showing x8 riding every rewritten call.
+
+- **`mac_battery.sh` leg 6b — emit-C indirect return ON TARGET**: the
+  battery now emits C from a locale reducer, compiles it with the Mac's own
+  `cc` against libc++, runs it, and gates the output. A binary that still
+  emits the old first-argument shape fails with the reason (that shape is
+  silently x86-64-only); a Mac without `cc` gets an info-skip. This turns
+  session #80's one-off execution proof into standing release evidence.
+
+- **`--emit=c11` is target-neutral for mangled-direct by-value class
+  returns** (the owner-directed struct slice). The emitted C used to spell
+  the hidden result pointer as an explicit first argument — right only on
+  x86-64, where that register happens to be the indirect-result register.
+  Now `CirBuilder::emitc_lower_indirect_returns` (emit-time pre-pass, C11
+  output only — the JIT/native lanes and the `.mc11` twin never see it)
+  declares each true-extern callee as returning an opaque `>16`-byte struct
+  (`struct __madc_ret_K`, `_Alignas`/`sizeof`-computed, `unsigned char`
+  members so it can never be an AArch64 float aggregate) and fuses the
+  destination's declaration with the call into the one C spelling both ABIs
+  compile to the C++ convention: `struct __madc_ret_K X = SYM(args);` —
+  gcc x86-64 passes `&X` in the first argument register, clang AArch64 sets
+  `x8 = &X`, zero copies. Assignment into an existing object and
+  return-position calls needed nothing new: the tree already routes both
+  through a temp plus the class's real `operator=`/copy-ctor. Per-symbol
+  all-or-nothing; the counted residuals (global-destination initialization,
+  address-taken symbols, fn-pointer calls) keep the old shape and warn on
+  stderr. Gated by `scripts/emitc_sret_gate.sh` in fulltest: mechanism
+  audit in the emitted text, run-vs-`g++`-oracle equality, an arm64 cross
+  `-S` x8 check, the 8-byte `std::locale` pad leg under `-stdlib=libc++`,
+  and a negative control proving the audit still detects the unlowered
+  shape.
+
+- **Late declarations now precede every definition in the emitted module.**
+  Pass 1.95's three late lists (forward prototypes for fixpoint-materialized
+  bodies, externs registered during fixpoint body translation, stack-array
+  dtor wrappers) were appended at the module tail — but Passes 1.6/1.7/1.8
+  had already emitted synthesized-dtor DEFINITIONS whose bodies call exactly
+  the symbols those lists declare (a synthesized `_Vector_impl` dtor calls
+  the `allocator<int>` dtor its own reference materialized). The call
+  textually preceded any declaration of its callee: c2mir and the JIT
+  tolerated it, gcc flagged it, clang — canon — rejects the emitted C
+  outright ("call to undeclared function"). The late lists now splice at an
+  anchor captured before Pass 1.6 (`c2mir_op_tail` +
+  `c2mir_op_splice_after`, the late-instantiated-struct precedent), making
+  the pass's own stated invariant — "ahead of every definition" — actually
+  hold.
+
+- **The hidden result pointer of a by-value class return is placed by the
+  TARGET, not spelled by madc** — the last C++-on-darwin blocker, and an
+  ABI bug rather than a darwin one. madc declared such a callee
+  `void f(void *sret, void *this)`, hand-rolling the pointer as the first
+  argument. That matches the ABI only where the indirect-result pointer is
+  the first argument register: x86-64 SysV. AArch64 passes it in `x8`,
+  outside the argument sequence, so every real argument landed one register
+  late and the callee read the caller's result slot as `this`. On an Apple
+  Mac `std::cout << "hi"` segfaulted inside `ios_base::getloc` while
+  `std::cout << 42` (a member overload, no by-value return) was fine, and
+  `std::string`/`std::vector` already worked — they clear AArch64's 16-byte
+  threshold, so only a small non-trivial class like `std::locale` (one
+  pointer) was mis-placed. Confirmed against clang
+  (`sub x8, x29, #16` before `bl __ZNKSt3__18ios_base6getlocEv`) and by an
+  independent control calling the same symbol under both declaration
+  shapes.
+  The pointer stays a PARAMETER — the callee must construct in place, and
+  returning the class by value instead would copy it out of a temporary,
+  which is exactly what a non-trivially-copyable class forbids (that
+  attempt aborted `teststringplus` with `free(): invalid size`, a bit-copied
+  self-referential small-string buffer). What changed is that the parameter
+  now says what it *is*: declared `struct X *` with the fork's new
+  `__attribute__((ret_addr))`, c2mir emits it as `MIR_T_RBLK`, and MIR
+  places it per target — `x8` on AArch64 (`mir-aarch64.c`: "First RBLK arg
+  is passed in r8"), the first argument register on x86-64, so x86-64
+  codegen is unchanged by construction. Gate: `scripts/sret_abi_gate.sh`
+  (IR-shape — behaviour cannot tell the shapes apart on x86-64), with a
+  trivially-copyable class return as its negative control.
+
+- **One owner for that hidden result parameter, so the marker cannot be
+  forgotten** — the follow-on defect, and the one that was actually still
+  breaking `std::cout << "hi"` on darwin. madc has four emitters of the
+  parameter (call-site externs, the referenced-FuncDef typed extern,
+  forward prototypes, definitions) and a fifth shape for function-pointer
+  types; the marker landed on exactly one of them. Which emitter wins is
+  decided by whether something else already declared the symbol, so a
+  forest grove supplying a declaration silently reverted a compile to the
+  x86-64-only shape — the same source, the same binary, one flag apart:
+  `call ... getloc, rblk:8(U_1), U_3` live versus `call ... getloc, U_1,
+  U_3` bound. An audit of the IR then showed it was never confined to the
+  bound lane: `basic_string::substr` and `ostringstream::str` were unmarked
+  in the live, default (libstdc++) lane too. `CirBuilder::retbuf_param` is
+  now the single producer of that parameter and marks unconditionally —
+  being the result address is what the parameter IS, not a property of the
+  caller, and whether the module will also DEFINE the symbol is not yet
+  known when a declaration is emitted. The gate went with it: it asserts a
+  MECHANISM (every prototype argument named `__retbuf` must be `rblk`),
+  keyed on no particular class, symbol or header, in both the live and
+  bound lanes.
+
+- **One owner for speculative replay** (`Program::SilentReplay`): muting
+  `cerr` and rewinding the diagnostic state around a speculative
+  instantiation was inline in `complete_shell_class_type`; it is now a
+  scope both replay sites share. A freeze-time replay needs it more than
+  the live one — without it a single libc++ SFINAE probe that will not
+  instantiate becomes a compile error on the *producer's* TU and aborts
+  the whole freeze.
+- **Located (not yet shipped): why a frozen alias target stays an empty
+  husk.** The blocker was recorded as "needs the shell origin, or a
+  canonical-spelling → (template, args) resolver that does not exist".
+  Both were the wrong question: live never completes these shells from
+  the origin — it *demands* completeness, and the pending-instantiation
+  record (template + mangled key + arg tokens) is written
+  **unconditionally** by the same opaque arm that records the origin only
+  for a dependent surface. That is why all 96 targets measured
+  `origin=NO`. Making the producer issue the same demand at freeze time
+  completes **18 of 96** (the other 76 are `__enable_if_t` internals
+  nobody names) at a cost of freeze 37s → 52s and +22% records — but it
+  turns `os << 7; os.str()` from a hard "Unidentified member 'str'" into
+  **exit 0 with an empty string**, so it stays behind
+  `FEATURE_FOREST_ALIAS_SHELL_COMPLETE`. The guard now carries the
+  mechanism, the numbers, and the one open question (the completed class
+  matches live on `sizeof`, `rdbuf()`, and `good()/bad()/fail()`, yet
+  every member call is a no-op — so the defect is in what a *completed*
+  class carries, one layer below that pass).
+- **Fixed: a file-scope `static` CLASS object declared as `static int`.**
+  The variable declarator hand-rolled its type-spec derivation once per
+  storage class, and the `static` copy tested `is_struct()` — btStruct
+  ONLY — so a class-typed file-scope static (`static Cls g;`) emitted
+  `static int g` and every member access failed with "request for member
+  x in something not a structure or union". g++ and clang++ both compile
+  it. The `extern` copy had already been widened past that same test
+  (for `madc::sys`), which is exactly how one rule with N implementations
+  rots. All three storage shapes (plain / `static` / `extern`) plus the
+  referenced-global extern pass now share ONE derivation
+  (`append_var_type_specs` over `type_list`), so the next widening
+  reaches every site. Reducer: `tests/teststaticclassglobal.mad`
+  (oracle: both canons).
+- **Fixed: a bound class's STATIC DATA MEMBER named a symbol no library
+  exports.** `std::use_facet<F>(loc)` odr-uses `F::id`, whose storage
+  lives in the stdlib. Live records that Variable while parsing the class
+  body, with the alias derived by the owner for its category
+  (`class_static_member_itanium_symbol` → the nested
+  `_ZNSt3__15ctypeIcE2idE`); a bound class never parses its body, and the
+  forest restore **re-derived** the alias with the namespace-variable
+  owner over the flat storage key `Tag__member`, producing one identifier
+  component (`_ZSt14ctype_char__id`). Symptom depended on where the
+  reference came from: a restored grove body named the real symbol
+  nothing had declared ("undeclared identifier `_ZNSt3__15ctypeIcE2idE`"
+  at `locale:378` — the error on the owner's x86-64 Mac), while a
+  consumer-side instantiation named the invented one ("import of
+  undefined item `_ZSt14ctype_char__id`"). The producer already held the
+  right symbol, so it is now **transported** in the global record
+  (container format **v39**, `alias_id`) and used verbatim — LOADED ==
+  parsed covers derived names too, and no consumer-side derivation can
+  disagree with the owner again. This retires the
+  `FEATURE_FOREST_CLASS_STATIC_ALIAS` correction pass (deleted, not
+  un-guarded: correcting a name the wrong owner wrote was a shim one
+  layer above the transport). Gate: `forest_bind_gate` case `statmem`
+  (`-stdlib=libc++`, negative-controlled).
+- **Fixed: a libc++ `__fwd` alias vanished from every frozen forest.**
+  `using ostringstream = basic_ostringstream<char>;` names a template
+  that `__fwd/sstream.h` has only *declared*, so madc mints a concrete
+  opaque forward tag. A minted tag is never parsed to a `}`, so it has
+  no completion hook, so it never got a project type-id — which put it
+  outside the domain of `cir_forest_arena_refresh` (that sweep walks the
+  project *table*). The namespaced-alias walk then minted the id itself
+  **after** the arena snapshot, found no record, and silently skipped the
+  alias: the name stayed in the decl index and disappeared from the type
+  graph, so a consumer binding the grove reported "use of undeclared
+  identifier 'ostringstream'". Fixed with the missing arena write-through
+  at the one funnel every opaque mint passes through
+  (`stamp_opaque_mint_context`, which already owns the
+  concrete-vs-placeholder verdict); placeholders are still dropped by
+  `forest_arena_record_aggregate`'s own kill arm. Whole per-unit families
+  were affected — all four `__fwd/sstream.h` aliases and both
+  `__fwd/fstream.h` ones. Gate: `forest_bind_gate` case `fwdalias`
+  (negative-controlled).
+  **Scope note:** this was filed as darwin-only. It is not — it is a
+  stdlib-FLAVOR defect that reproduces on Linux x86-64 under
+  `-stdlib=libc++` with a frozen forest, and darwin was merely the only
+  *shipped* forest frozen from libc++. Two deeper layers found while
+  reducing it (the husk not completing; a bound class's static-member
+  Itanium alias mis-derived from the flattened key) are diagnosed and
+  compiled out behind `FEATURE_FOREST_ALIAS_SHELL_COMPLETE` /
+  `FEATURE_FOREST_CLASS_STATIC_ALIAS` — see
+  `docs/plans/2026-08-07-macos-release-lane-plan.md`.
+- **Fixed (found in passing): a real `-Wformat-truncation`** in the
+  multi-return struct synthesiser — `char mname[16]` for `"v%zu"`, where
+  the widest `size_t` needs 21 bytes. Unreachable in practice (the index
+  is a member position) but the build is warning-clean again. Landed in
+  the commit above rather than its own, because it sits in the same file
+  as the fix that surfaced it; noted here so it is not invisible.
+
+- **macOS release lane (W1/W2/W4, plan 2026-08-07)**: `make -C src
+  release-macos` builds BOTH hosted darwin binaries (arm64 + x86-64,
+  `-O2`), now carrying the **C++ standard-library groves** in the
+  compressed frozen forest beside the C prelude — `<string>`,
+  containers, streams, `<algorithm>` compile on a header-less Mac
+  straight from the forest. The C++ world is LLVM's Apache-2.0
+  libc++-18 tree (provenance-clean, parity-proven), served under the
+  GCC posture (`scripts/gcc_posture_filter.sh` — one filter for the
+  baked macro table AND the flattened prelude). Stripped via
+  `llvm-strip` (re-signs arm64 ad-hoc), gated by
+  `scripts/verify_macho_release.sh` (forest bytes + signature survive
+  the strip), tarballed by `scripts/package_release_macos.sh`
+  (`madc-<ver>-macos-{arm64,x86_64}.tar.gz` + SHA256SUMS + LLVM
+  notice + quarantine README), driven by the `release-macos`
+  remote_build stage; `scripts/mac_battery.sh` is the Mac-side
+  evidence run. ⚠ Artifacts stay owner-private until the W0.5
+  provenance-clean C prelude lands.
+- **Fixed (MIR fork): an unprototyped call is not a variadic call.** c2mir
+  described a call whose callee has no parameter information (`T f();`,
+  a C89 implicit declaration) with a VARARG proto carrying zero fixed
+  args. That is invisible on x86-64 SysV, where varargs ride the same
+  registers as fixed args, and fatal on Apple arm64, where every vararg
+  goes on the stack: the callee read registers and found residue —
+  including the callee's own address arriving as argument 0. Such a call
+  now builds its proto from that call site's actual, default-promoted
+  argument types, matching gcc/clang. On darwin this was the whole
+  memory-writing C surface (the SDK rewrites `memcpy`/`memset`/`strcpy`
+  into `__builtin___*_chk`, which madc serves from undeclared runtime
+  helpers), and it would equally break C89 implicit calls there. Gate:
+  `scripts/unprototyped_call_abi_gate.sh` asserts the IR shape (behaviour
+  cannot — the JIT suite passed all 1018 either way), with a variadic
+  callee in the same TU as its negative control. The correct shape keeps
+  BOTH halves and the gate checks both: the actual args as **fixed** args
+  (AArch64-Darwin stack-banishes only what lies beyond them) **and** the
+  vararg flag (SysV x86-64 needs `%al` for a prototype-less call, since
+  the callee may be variadic — dropping it broke an undeclared `printf`,
+  which only the EXE/OBJ legs caught). `MIR_COMMIT` → `731c2234`.
+- **Fixed: darwin flavors report a runtime.** `link_libs()` read a
+  linked probe with `readelf`, so on an Apple target — Mach-O, where the
+  runtime is `LC_LOAD_DYLIB` — it reported nothing and the flavor table
+  shipped empty. A Mac then had no libc++ to dlopen, so every
+  mangled-direct C++ static failed its CIR-time dlsym probe and went
+  undeclared (`_ZNSt3__15ctypeIcE2idE`). The probe is now format-aware
+  via `-dumpmachine` + `llvm-otool -L`; no soname is hardcoded. The
+  generated tables also gained their generator as a prerequisite, so
+  editing the capture logic actually regenerates them.
+- **Fixed: `#include_next` / `__has_include(_next)` embedded-set
+  parity** — libc++'s C wrappers can reach the embedded prelude (the
+  only C library an Apple target has), and the probes answer what
+  `#include` actually does (libc++'s `__mbstate_t.h` #error'd on the
+  honest-but-wrong 0).
+- **Fixed: embedded `stdint.h` is the complete C11 7.20 surface**
+  (least/fast/intmax + limits + `INTN_C`; `stddef.h` gained its
+  promised `max_align_t`) — unblocks `<cstdint>` in BOTH stdlib
+  flavors (the long-standing pack-list blocker); resolves 102
+  known PP-parity divergences (dm-oracle baseline 305→205 lines).
+- **Fixed: the embedded resource-dir headers honour the glibc
+  `__need` protocol** (three commits): `stddef.h` serves ONE
+  requested definition per re-inclusion and CLEARS the request
+  macro; `stdarg.h` does the same for `__need___va_list` (a live
+  leak marked every later include a protocol visit); and a live
+  `__need_*` request bypasses — and is never recorded by — the
+  name-level once-only dedup, baked PCH, and forest bind, which are
+  full-content one-shots. Un-broke libc++'s `<cstddef>`→`stddef.h`
+  wrapper chain (26 lane fails), glibc `stdlib.h` under `--std=c17`
+  (`wchar_t` unfound on the second protocol visit), and 12
+  ns_madc/eval/channel tests.
+- **Fixed: the freeze forms NO unit for a `__need` protocol serving**
+  — the serving (tokens, PP events, AND cir_node records) belongs to
+  the *includer's* unit, keyed by token identity. Previously a husk
+  unit named `stdarg.h` (two 4-token typedef servings) satisfied a
+  consumer's plain `#include <stdarg.h>` by name, losing
+  `va_list`/`va_start` — 25 packed-lane test failures. Gated by the
+  new `forest_bind_gate.sh` case `need` (negative-control verified).
+- **Fixed: a global struct tag now coexists with a flat-registered
+  namespace-scoped class** (darwin math.h's SVID `struct exception`
+  vs `std::exception`); gate `testglobalnstag`.
+- **Fixed: object_arg_addr↔class_ctor_call coercion recursion**
+  (cycle-guarded; libc++ `<fstream>` under the freeze drain segfaulted)
+  and the **mir-cache blob-skip path no longer MIR-fatals** on an
+  unfinished module (the n2 `duration<double>::operator%=` class) —
+  the freeze stays error-contained as its contract always claimed.
+- **Forest binding is machine-portable**: a consumer resolves a
+  filesystem-frozen unit by include-spelling path-tail match
+  (`find_unit_path_tail`) — run-only Macs cannot spell the build
+  container's header paths.
+
 ## [v0.75.0] — 2026-08-09
 
 **madc::value is a first-class script intrinsic — `value`, `var`, and

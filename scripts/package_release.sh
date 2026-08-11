@@ -81,8 +81,16 @@ if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
 fi
 
 # ---------- 2. packed suite against the distribution binary ----------
-echo "== packed suite (distribution binary) =="
-MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+# MADC_PKG_SKIP_SUITE=1 skips the suite for a package run on content a
+# recorded green battery already validated (owner rule 2026-08-09/-11:
+# never re-run suites on already-proven content; the caller cites the
+# battery). Default: the suite runs.
+if [ -n "$MADC_PKG_SKIP_SUITE" ]; then
+    echo "== packed suite SKIPPED (MADC_PKG_SKIP_SUITE) — caller cites a recorded green battery on this content =="
+else
+    echo "== packed suite (distribution binary) =="
+    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+fi
 
 # ---------- 3. package ----------
 rm -rf tmp/pkgroot tmp/rpmtop

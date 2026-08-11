@@ -18,7 +18,12 @@
 set -u
 
 CXX="${CXX:-c++}"
-OUT="$(dirname "$0")/../src/sys_include_paths.cpp"
+# The Apple-target modes generate into their per-mode obj tree instead
+# (MADC_SYS_INCLUDES_OUT, src/Makefile): the hosted and cross tables for one
+# arch differ (only the cross madc carries the probe stand-in sonames), and
+# a shared src/ file would flip between the recursive make layers — a write
+# race under -j. The embedded_headers.cpp precedent.
+OUT="${MADC_SYS_INCLUDES_OUT:-$(dirname "$0")/../src/sys_include_paths.cpp}"
 # Optional "from=to" path-prefix rewrite for cross-built binaries whose build
 # sysroot lives elsewhere on the RUN machine (e.g. hosted-darwin modes map the
 # staged SDK to the standard CLT SDK location).
@@ -83,15 +88,36 @@ detect_flavor() {
 # names a different runtime reports it here. Empty on probe failure (no
 # linkable runtime, no readelf): the emitter then falls back.
 link_libs() {
-    command -v readelf >/dev/null 2>&1 || return 0
     local tmp
     tmp=$(mktemp) || return 0
-    if echo 'int main(){return 0;}' \
-        | "$@" -Wl,--no-as-needed -x c++ - -o "$tmp" 2>/dev/null; then
-        readelf -d "$tmp" 2>/dev/null \
-            | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p' \
-            | grep -v -e '^libc\.' -e '^libm\.' -e '^ld-'
-    fi
+    # Which container the probe will produce decides how to read it back. An
+    # Apple target emits Mach-O, where the runtime is recorded as LC_LOAD_DYLIB
+    # and readelf reports nothing at all — that silence used to leave the whole
+    # darwin flavor with NO runtime, so on a Mac madc had no libc++ to dlopen
+    # and every mangled-direct C++ static (std::__1::ctype<char>::id, cout, …)
+    # failed its CIR-time dlsym probe and went undeclared.
+    case "$("$@" -dumpmachine 2>/dev/null)" in
+        *apple*|*darwin*)
+            # ld64/lld, not ELF: --no-as-needed does not exist there, and the
+            # platform base to subtract is libSystem (libc/libm/loader in one).
+            if echo 'int main(){return 0;}' \
+                | "$@" -fuse-ld=lld -x c++ - -o "$tmp" 2>/dev/null; then
+                { llvm-otool-18 -L "$tmp" 2>/dev/null \
+                  || otool -L "$tmp" 2>/dev/null; } \
+                    | sed -n 's/^[[:space:]]*\([^[:space:]]*dylib\).*/\1/p' \
+                    | grep -v -e 'libSystem'
+            fi
+            ;;
+        *)
+            if command -v readelf >/dev/null 2>&1 \
+               && echo 'int main(){return 0;}' \
+                  | "$@" -Wl,--no-as-needed -x c++ - -o "$tmp" 2>/dev/null; then
+                readelf -d "$tmp" 2>/dev/null \
+                    | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p' \
+                    | grep -v -e '^libc\.' -e '^libm\.' -e '^ld-'
+            fi
+            ;;
+    esac
     rm -f "$tmp"
 }
 
@@ -102,6 +128,39 @@ emit_link_libs_array() {
     libs=$(link_libs "$@")
     echo "static const char *madc_stdlib_link_libs_$idx[] = {"
     if [ -n "$libs" ]; then
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            printf '    "%s",\n' "$l"
+        done <<< "$libs"
+    fi
+    echo '    (const char *)0'
+    echo '};'
+}
+
+# CIR-probe stand-in runtime (MADC_LINKLIBS_STANDIN=1, the cross-Apple
+# modes): a cross toolchain cannot link a BUILD-HOST executable, so its
+# flavor's link_libs probe yields nothing — yet the CIR-time availability
+# probes (cir_open_stdlib_runtime → dlsym) still need a runtime of the SAME
+# FLAVOR loaded in the build-host process. The Itanium-mangled surface is
+# platform-neutral, so the HOST's library of that flavor answers for the
+# target's. This is a SEPARATE array, never the flavor's link_libs: those
+# sonames ride into freeze containers and the consumer binary's table, and
+# a Linux soname must not be dlopen'd (or recorded) on a Mac.
+emit_standin_array() {
+    local flavor="$1" libs="" f cand
+    if [ "${MADC_LINKLIBS_STANDIN:-}" = "1" ] && [ -n "$flavor" ]; then
+        for cand in "c++" "g++" "clang++-18 -stdlib=libc++" \
+                    "clang++ -stdlib=libc++" "clang++-18" "clang++"; do
+            f=$(detect_flavor $cand)
+            if [ "$f" = "$flavor" ]; then
+                libs=$(link_libs $cand)
+                [ -n "$libs" ] && break
+            fi
+        done
+    fi
+    echo 'const char *const madc_stdlib_probe_standin_libs[] = {'
+    if [ -n "$libs" ]; then
+        local l
         while IFS= read -r l; do
             [ -z "$l" ] && continue
             printf '    "%s",\n' "$l"
@@ -186,6 +245,8 @@ emit() {
     echo '    { (const char *)0, (const char *const *)0, "", (const char *const *)0 }'
     echo '};'
     echo "const char *madc_default_stdlib_flavor = \"$DEFAULT_FLAVOR\";"
+    echo
+    emit_standin_array "$DEFAULT_FLAVOR"
 }
 
 # Idempotent write: rewrite only on real content change, so the parse-time

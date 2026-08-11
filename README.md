@@ -210,22 +210,24 @@ details.
 
 ## Project status
 
-The current release is **v0.75.0** (2026-08-09) — `madc::value` as a
-first-class script intrinsic (`value`, `var`, zero includes) and the
-value-first `<ns_madc>` surface: madc::-only scripts compile at the
-millisecond floor (owner's exec-channel sort script: 15ms packed, was
-~130ms). See the [changelog](CHANGELOG.md) for what each release added.
+The current release is **v0.76.0** (2026-08-11) — madc's first public
+macOS release: provenance-clean arm64 + x86_64 tarballs that JIT and
+AOT-compile C and C++ on a header-less Mac, `libmadc_rt` for linking
+emitted C, and the AArch64 indirect-return ABI fix underneath it all.
+See the [changelog](CHANGELOG.md) for what each release added.
 Headline results:
 
-- **1017** integration tests passing, with 0 failures and 0 timeouts —
+- **1019** integration tests passing, with 0 failures and 0 timeouts —
   in the live JIT lane AND in the packed-release lane (the suite run
   against the stripped, forest-packed `bin/madc-release`)
-- **1013/0** in the libc++ lane — the full suite passes under both stdlib
+- **1015/0** in the libc++ lane — the full suite passes under both stdlib
   flavors (behavior parity, zero failing tests)
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions
 - working native ELF output, Mach-O object output, multi-file linking, and a
   statically packaged madc runtime option for emitted programs
+- public macOS binaries (arm64 + x86_64) with hosted JIT and native
+  Mach-O AOT `-o` for both C and C++ programs, self-signed at emit time
 - SMAUG 1.8 booting as a live, playable server in both JIT and native modes
 
 See [test status](docs/test-status.md) and the

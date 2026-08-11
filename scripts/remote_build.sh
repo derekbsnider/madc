@@ -22,6 +22,9 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   release-macos  make -C src release-macos (both hosted darwin arches,
+#             stripped + forest-verified) + package_release_macos.sh
+#             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
 #   battery   fulltest + exe + obj + release + packed (the push gate)
@@ -63,9 +66,10 @@ stages="$*"
 if [ -z "$stages" ]; then
 	stages="sync build"
 fi
-if [ "$stages" = "battery" ]; then
-	stages="sync build fulltest exe obj release packed"
-fi
+# battery expands IN PLACE (any position — other stages may surround it,
+# e.g. "sync battery libcxxjit"; the old whole-string match silently dropped
+# it to "unknown stage" and the run lost its fulltest leg, 2026-08-10).
+stages=${stages/battery/sync build fulltest exe obj release packed}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
@@ -151,7 +155,19 @@ for stage in $stages; do
 		rc=$?
 		echo "sync madc rc=$rc"
 		note_stage "sync madc" "$rc"
+		# The container builds every MIR artifact; the NAS builds nothing
+		# (owner directive). So push SOURCE only — never build output.
+		# Objects/archives were already excluded; the linked drivers were
+		# not, and on 2026-08-10 an OLD c2m sitting in the NAS tree
+		# replaced the freshly built one and answered for a c2mir that
+		# was not under test (a gate failed against pre-fix behaviour and
+		# read as a real regression). build-*/ are the container's
+		# per-target cross trees, absent here — excluding them also ends
+		# the "cannot delete non-empty directory" spam --delete produced.
 		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
+			--exclude="build-*/" \
+			--exclude=c2m --exclude=m2b --exclude=b2m --exclude=b2ctab \
+			--exclude=mir-bin-run --exclude=run-test \
 			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
 		rc=$?
 		echo "sync mir rc=$rc"
@@ -218,6 +234,21 @@ for stage in $stages; do
 		;;
 	release)
 		run_remote "release" "make -C /workspace/madc/src -j20 release"
+		;;
+	release-macos)
+		# The two arches build SEQUENTIALLY inside the target (shared
+		# per-arch generated tables); -j parallelizes within each.
+		run_remote "release-macos" "make -C /workspace/madc/src -j20 release-macos"
+		run_remote "package-macos" "cd /workspace/madc; bash scripts/package_release_macos.sh"
+		mkdir -p "$LOCAL_MADC/dist"
+		rsync -az --no-perms --no-owner --no-group \
+			-e "ssh -p $PORT" \
+			--include='madc-*-macos-*.tar.gz' --include='SHA256SUMS' \
+			--exclude='*' \
+			"$REMOTE:/workspace/madc/dist/" "$LOCAL_MADC/dist/"
+		rc=$?
+		echo "pull macos tarballs rc=$rc"
+		note_stage "pull macos tarballs" "$rc"
 		;;
 	packed)
 		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
