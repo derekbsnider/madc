@@ -24,6 +24,8 @@
 #      known-unsupported on darwin until the Mach-O object writer lands; the
 #      leg asserts a LOUD decline at whichever stage says no (today: the .o
 #      LOAD declines; the -c step exits 0)
+#   6b emit-C indirect return ON TARGET: --emit=c11 output compiled by the
+#      HOST cc against libc++ and executed (needs cc; info-skip when absent)
 #   7  compile latency of a <string> program (reported, not gated)
 
 MADC="$1"
@@ -214,6 +216,49 @@ else
     [ -e aot.o ] && echo "    left an object behind despite failing"
     [ -s aot.compile.out ] || echo "    failed SILENTLY (no diagnostic)"
     sed 's/^/    /' aot.compile.out
+    FAIL=$((FAIL + 1))
+fi
+
+# --- 6b. emit-C indirect return, ON TARGET ------------------------------------
+# The emitted-C twin of the sret arc: --emit=c11 must spell a by-value class
+# return so that APPLE's own toolchain compiles it to the C++ convention
+# (x8 = destination address). std::locale is 8 bytes — exactly the size C
+# returns in registers — so only the __madc_ret_ pad-struct shape makes this
+# correct. Session #80 proved the shape executes here (specimen byte-matched
+# the Apple clang++ oracle); this leg keeps that proof in the standing
+# evidence. The reducer deliberately avoids stream INSERTION: inserted-through
+# paths instantiate try/catch bodies that call the madc exception runtime,
+# and no darwin libmadc exists yet (W3 — nm -u on such a binary names the
+# 8-symbol exception/cleanup vocabulary). The darwin flavor is libc++ by
+# default, so no -stdlib flag (older binaries stay invocable).
+cat > emitloc.mad <<'EOF'
+#include <iostream>
+#include <locale>
+#include <cstdio>
+int main()
+{
+    std::locale l = std::cout.getloc();
+    printf("loc ok\n");
+    return 0;
+}
+EOF
+printf 'loc ok\n' > emitloc.expect
+if ! command -v cc > /dev/null 2>&1; then
+    echo "info - emit-C sret on-target: skipped (no cc on this Mac; nothing proven)"
+elif ! "$MADC" --emit=c11 emitloc.mad > emitloc.c 2> emitloc.emit.err; then
+    echo "FAIL - emit-C sret on-target (--emit=c11 failed)"
+    head -3 emitloc.emit.err | sed 's/^/    /'
+    FAIL=$((FAIL + 1))
+elif ! grep -q "^extern struct __madc_ret_locale" emitloc.c; then
+    echo "FAIL - emit-C sret on-target (emitted C still spells the first-argument"
+    echo "       shape — this binary predates the indirect-return pass; a"
+    echo "       release-macos build at/after 7e484749 clears this)"
+    FAIL=$((FAIL + 1))
+elif cc -std=c11 -O0 -w -o emitloc.bin emitloc.c -lc++ 2> emitloc.cc.err; then
+    check "emit-C sret on-target (cc-compiled emitted C, x8 convention)" emitloc.expect ./emitloc.bin
+else
+    echo "FAIL - emit-C sret on-target (cc rejected the emitted C)"
+    head -3 emitloc.cc.err | sed 's/^/    /'
     FAIL=$((FAIL + 1))
 fi
 
