@@ -1,12 +1,15 @@
 # Plan: Integrate the MADC MIR Fork as a Git Subtree
 
-**Status (2026-08-11):** drafted by the owner; adopted into the repo the
-same day with the session-#81 review notes integrated in place. Ready to
-execute on the owner's go. The agreed release-first sequencing is
-already satisfied: v0.76.0 shipped and promoted with the fork released
-as `v1.0-madc.0.76.0` at the current pin (`fde19e17`), so the migration
-starts from a quiet, fully-released baseline and `MIR_VERSION`'s last
-bump is already behind us.
+**Status (2026-08-11): EXECUTED, same day.** Drafted by the owner;
+adopted with the session-#81 review notes integrated; executed on the
+owner's go and shipped as **v0.77.0** (develop @90508122; merge
+@713bf0f3). Every acceptance criterion in §29 is met — see ADR 0002
+(`docs/adr/0002-mir-subtree-integration.md`) for the standing policy
+and `CHANGELOG.md` [v0.77.0] for the validation record (fulltest
+1019/0 twice including a mir-less fresh clone, torture byte-identical
+to pre-migration, stale-checkout negative control, Mac battery 8/2 of
+10 on the v0.77.0 tarball). This document remains as the execution
+playbook and the §16–§20 upstream-workflow reference.
 
 ## Objective
 
