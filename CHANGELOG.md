@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.76.0] — 2026-08-11
+
+madc goes public on the Mac: provenance-clean macOS tarballs (arm64 +
+x86_64) with the packed C/C++ stdlib forest, native AOT `-o` for C **and**
+C++ programs, and `libmadc_rt` for emitted C — carried by the AArch64
+indirect-return ABI fix and the fork's flat-binding Mach-O executable
+writer.
+
 - **Darwin AOT for C++ programs: `madc -static-libmadc -o` now emits
   runnable Mach-O executables whose C++ world resolves.** The fork's
   Mach-O executable writer (mir-macho.c @fde19e17) loaded extra dylibs
