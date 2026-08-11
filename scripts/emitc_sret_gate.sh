@@ -42,6 +42,11 @@
 #      open the flavor runtime before the tree build (cir_translate_guarded)
 #      or the dlsym-guarded extern recording declines every legitimate alias
 #      and the emitted C references _ZNSt3__15ctypeIcE2idE undeclared.
+#   2b. the emitted-C runtime SUBSET (macos-release-lane W3): the same
+#      emitted C must link against lib/libmadc_rt.a ALONE — the archive the
+#      darwin tarball ships for Macs with no madc library. Its own negative
+#      control first: a link with NO madc runtime must fail on a __madc_
+#      symbol, or the specimen stopped exercising the runtime.
 #   3. negative control for the CHECKER itself: with the rewrite disabled
 #      (MADC_XTEST_NO_SRET_LOWER=1) the audit MUST report offenders —
 #      otherwise the audit is blind and this gate proves nothing.
@@ -202,6 +207,24 @@ got2="$(timeout 60 ./tmp/emitc_sret_gate2.bin 2>&1)" \
 	|| fail "[libc++] wrong output: [$got2]"
 echo "emitc_sret_gate: [libc++] OK — 8-byte locale rides a padded return and runs (facet-id extern declared)"
 
+# ---- Leg 2b: the emitted-C runtime SUBSET (libmadc_rt, W3) ---------------
+# Completeness gate for lib/libmadc_rt.a: the same emitted C must link
+# against the subset archive ALONE (static — no rpath) and run. Negative
+# control first: with no madc runtime the link must fail on a __madc_
+# symbol, or this leg exercises nothing.
+gcc -std=c11 -O0 -w -o tmp/emitc_sret_gate2rt.bin "$emitted2" -lc++ -lm 2> "$errlog" \
+	&& fail "[rt-negctl] the specimen linked with NO madc runtime — leg 2b exercises nothing"
+grep -q "__madc_" "$errlog" \
+	|| fail "[rt-negctl] link failed, but not on a __madc_ symbol: $(head -3 "$errlog")"
+gcc -std=c11 -O0 -w -o tmp/emitc_sret_gate2rt.bin "$emitted2" \
+	-Llib -lmadc_rt -lc++ -lm 2> "$errlog" \
+	|| fail "[libmadc_rt] the subset archive does not satisfy the emitted references: $(head -3 "$errlog")"
+got2rt="$(timeout 60 ./tmp/emitc_sret_gate2rt.bin 2>&1)" \
+	|| fail "[libmadc_rt] the subset-linked binary failed: $got2rt"
+[ "$got2rt" = "xloc ok" ] \
+	|| fail "[libmadc_rt] wrong output from the subset-linked binary: [$got2rt]"
+echo "emitc_sret_gate: [libmadc_rt] OK — the runtime subset alone links and runs the specimen"
+
 # ---- Leg 3: the checker's own negative control --------------------------
 # With the rewrite disabled the SAME audit must report offenders; if it
 # cannot see the unlowered shape, every green above is vacuous.
@@ -214,6 +237,6 @@ echo "emitc_sret_gate: [negctl] OK — audit detects the unlowered shape"
 
 rm -f "$src" "$src2" "$emitted" "$emitted2" "$errlog" \
 	tmp/emitc_sret_gate.bin tmp/emitc_sret_gate.oracle \
-	tmp/emitc_sret_gate2.bin tmp/emitc_sret_gate.arm64.s \
-	tmp/emitc_sret_gate.raw.c
+	tmp/emitc_sret_gate2.bin tmp/emitc_sret_gate2rt.bin \
+	tmp/emitc_sret_gate.arm64.s tmp/emitc_sret_gate.raw.c
 echo "emitc_sret_gate: OK"

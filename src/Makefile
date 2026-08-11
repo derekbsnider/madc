@@ -407,11 +407,21 @@ LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
 # Thin-CLI gate vehicle (rule far below, with the other link rules).
 THIN_CLI = $(BINDIR)/madc-thin
+# The emitted-C freestanding runtime archive (macos-release-lane W3): ONLY
+# the dual-build C-lane sources (scripts/ledger_sources.txt stays the one
+# list owner — the same membership rule that keeps those strict C11 with no
+# C++-runtime dependency is what keeps this archive self-contained). Emitted
+# C11 that enters try/catch or frees a VLA references exactly this surface;
+# the only other emitter-visible runtime symbols are <ns_madc>'s sys pair,
+# which need the FULL libmadc. Completeness is gated: emitc_sret_gate links
+# its specimen against this archive ALONE.
+LIBMADC_RT = $(LIBDIR)/libmadc_rt.a
 # Cross and hosted modes get their own archive/solib names: neither may
 # clobber the host-facing ../lib artifacts with foreign objects.
 ifneq (,$(filter cross-% hosted-%,$(MODE)))
 LIBMADC_STATIC = $(LIBDIR)/libmadc-$(MODE).a
 LIBMADC_SHARED = $(LIBDIR)/libmadc-$(MODE).so
+LIBMADC_RT = $(LIBDIR)/libmadc_rt-$(MODE).a
 endif
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
@@ -445,9 +455,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(BIN) $(LIBMADC_SHARED)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
 endif
 
 all:
@@ -564,12 +574,14 @@ release-macos:
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
 
-# madc hosted on macOS (Route 1): full madc binaries for the Macs.
+# madc hosted on macOS (Route 1): full madc binaries for the Macs. The
+# emitted-C runtime archive (W3) builds beside each binary from the same
+# per-mode objects; package_release_macos.sh ships it as lib/libmadc_rt.a.
 hosted-x86-64-macos:
-	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos
+	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a
 
 hosted-arm64-macos:
-	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos
+	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
 # detection selects the Apple arms natively — no MIR_TARGET knobs. (The
@@ -797,6 +809,14 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(LIBMADC_STATIC_OBJS)
+
+# The emitted-C runtime subset (W3): the SAME ledger objects libmadc holds,
+# re-archived alone so `cc emitted.c -lmadc_rt` links without the full
+# runtime. No separate source list — membership is ledger_sources.txt's.
+$(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP)
+	mkdir -p $(LIBDIR)
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP)
 	mkdir -p $(LIBDIR)

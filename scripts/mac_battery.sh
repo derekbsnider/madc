@@ -26,6 +26,9 @@
 #      LOAD declines; the -c step exits 0)
 #   6b emit-C indirect return ON TARGET: --emit=c11 output compiled by the
 #      HOST cc against libc++ and executed (needs cc; info-skip when absent)
+#   6c emitted-C runtime archive (W3): a try/catch-entering program's emitted
+#      C linked against the tarball's lib/libmadc_rt.a and executed (needs
+#      cc; info-skip when absent; a tarball without the archive FAILS)
 #   7  compile latency of a <string> program (reported, not gated)
 
 MADC="$1"
@@ -227,10 +230,11 @@ fi
 # correct. Session #80 proved the shape executes here (specimen byte-matched
 # the Apple clang++ oracle); this leg keeps that proof in the standing
 # evidence. The reducer deliberately avoids stream INSERTION: inserted-through
-# paths instantiate try/catch bodies that call the madc exception runtime,
-# and no darwin libmadc exists yet (W3 — nm -u on such a binary names the
-# 8-symbol exception/cleanup vocabulary). The darwin flavor is libc++ by
-# default, so no -stdlib flag (older binaries stay invocable).
+# paths instantiate try/catch bodies that call the madc exception runtime —
+# that is leg 6c's job (libmadc_rt, W3), and keeping THIS leg runtime-free
+# means it still proves the sret shape on tarballs without the archive. The
+# darwin flavor is libc++ by default, so no -stdlib flag (older binaries
+# stay invocable).
 cat > emitloc.mad <<'EOF'
 #include <iostream>
 #include <locale>
@@ -259,6 +263,44 @@ elif cc -std=c11 -O0 -w -o emitloc.bin emitloc.c -lc++ 2> emitloc.cc.err; then
 else
     echo "FAIL - emit-C sret on-target (cc rejected the emitted C)"
     head -3 emitloc.cc.err | sed 's/^/    /'
+    FAIL=$((FAIL + 1))
+fi
+
+# --- 6c. emitted-C runtime archive (libmadc_rt, W3) ----------------------------
+# The gap leg 6b steps around, closed: a program whose emitted C ENTERS a
+# try/catch (any cout insertion does, via libc++'s __put_character_sequence)
+# calls the madc exception runtime — the 8-symbol vocabulary session #80
+# measured with nm -u on exactly such a binary. The tarball ships
+# lib/libmadc_rt.a for that link; this leg emits, links against the archive,
+# runs, and gates the output. A tarball without the archive predates W3 and
+# FAILS with the reason (release evidence names what is missing; it does not
+# skip it).
+RTLIB="$(dirname "$MADC")/../lib/libmadc_rt.a"
+cat > emitrt.mad <<'EOF'
+#include <iostream>
+int main()
+{
+    std::cout << "rt ok" << std::endl;
+    return 0;
+}
+EOF
+printf 'rt ok\n' > emitrt.expect
+if ! command -v cc > /dev/null 2>&1; then
+    echo "info - emitted-C runtime archive: skipped (no cc on this Mac; nothing proven)"
+elif [ ! -f "$RTLIB" ]; then
+    echo "FAIL - emitted-C runtime archive (no lib/libmadc_rt.a beside this binary —"
+    echo "       the tarball predates W3; a release-macos build at/after the"
+    echo "       libmadc_rt change ships it)"
+    FAIL=$((FAIL + 1))
+elif ! "$MADC" --emit=c11 emitrt.mad > emitrt.c 2> emitrt.emit.err; then
+    echo "FAIL - emitted-C runtime archive (--emit=c11 failed)"
+    head -3 emitrt.emit.err | sed 's/^/    /'
+    FAIL=$((FAIL + 1))
+elif cc -std=c11 -O0 -w -o emitrt.bin emitrt.c "$RTLIB" -lc++ 2> emitrt.cc.err; then
+    check "emitted-C runtime archive (try/catch-entering program + libmadc_rt)" emitrt.expect ./emitrt.bin
+else
+    echo "FAIL - emitted-C runtime archive (cc rejected the emitted C or the link)"
+    head -3 emitrt.cc.err | sed 's/^/    /'
     FAIL=$((FAIL + 1))
 fi
 

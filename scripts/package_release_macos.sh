@@ -7,6 +7,7 @@
 #   madc-<ver>-macos-arm64.tar.gz / madc-<ver>-macos-x86_64.tar.gz
 # each containing
 #   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
+#   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
@@ -40,10 +41,20 @@ package_arch() {
         exit 1
     fi
 
+    local rtlib="lib/libmadc_rt-hosted-${bin_arch}-macos.a"
+    if [ ! -f "$rtlib" ]; then
+        echo "package_release_macos: $rtlib missing — run 'make -C src release-macos' first" >&2
+        exit 1
+    fi
+
     rm -rf "$stage"
-    mkdir -p "$stage/$root/bin" "$stage/$root/share/man/man1" \
+    mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
              "$stage/$root/THIRD_PARTY_NOTICES"
     install -m 755 "$bin" "$stage/$root/bin/madc"
+    # The emitted-C runtime (W3): programs madc emits as C11 reference the
+    # try/catch + VLA runtime when those features are used; on a Mac with no
+    # madc library installed this archive is what `cc emitted.c` links.
+    install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
@@ -82,6 +93,15 @@ standard-library groves (<string>, <vector>, <iostream>, ...) are embedded,
 so no Xcode or Command Line Tools installation is required. C++ headers
 outside the packed set are not available on a machine without headers and
 fail with a clear error.
+
+Emitted C (madc --emit=c11): if the emitted program enters a try/catch
+(any std::cout insertion does, via libc++'s stream machinery) or frees a
+VLA, it references madc's small C runtime. Link the shipped archive:
+
+    cc -std=c11 program.c -L<this-dir>/lib -lmadc_rt -lc++
+
+Programs that used <ns_madc> (the madc dialect surface) additionally need
+the full madc runtime, which this tarball does not ship.
 EOF
     tar -C "$stage" -czf "dist/$root.tar.gz" "$root"
     rm -rf "$stage"
