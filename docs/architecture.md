@@ -124,11 +124,11 @@ model); the notable shapes:
 
 ## Backend and outputs
 
-The backend dependency is the **madc MIR fork** (`libmir` + `c2mir`) at
-`/workspace/mir`, pinned by the repo-root `MIR_COMMIT` file (release name in
-`MIR_VERSION`). The fork carries native `_Complex`,
-`__attribute__((cleanup))`, ≤16-byte vector support, and ABI/codegen fixes
-the CIR path depends on.
+The backend (`libmir` + `c2mir`) lives in-tree at `third_party/mir` —
+a subtree of the former madc MIR fork, maintained as ordinary madc
+source. It carries native `_Complex`, `__attribute__((cleanup))`,
+≤16-byte vector support, the Mach-O executable writer, and ABI/codegen
+fixes the CIR path depends on.
 
 One tree serves every output:
 
