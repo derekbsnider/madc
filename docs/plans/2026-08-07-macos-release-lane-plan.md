@@ -731,3 +731,93 @@ treat the parameter as the plain pointer it already is — so dropping keeps the
 emitted C byte-compatible with its pre-fix behaviour and emits no diagnostic.
 The precedent is the same renderer's `linkonce` -> `weak` translation; the
 difference is that `ret_addr` has no portable equivalent to translate TO.
+
+#### NEXT SLICE (owner-directed): make `--emit=c11` target-neutral too, via a struct
+
+Owner 2026-08-11: c2mir-internal machinery for the JIT route is fine, but the
+emit-C lane needs to work as well — "if this can be done using a struct, then
+let's do that".
+
+It can, and it needs no `#ifdef`. **Declare the extern's return type as an
+opaque struct larger than 16 bytes.** AAPCS64 and SysV both force anything that
+big to the indirect path, so gcc/clang put the destination address in x8 on
+AArch64 and in the first argument register on x86-64 *by themselves* — the
+emitted C stays target-neutral, which is the same principle as the JIT fix
+(describe; let the target decide). Arch-conditional emitted C would violate the
+vision doc's no-hardcoded-targets invariant, so `#ifdef` is the wrong tool here
+even where it would work.
+
+**The constraint that shapes the design:** the destination must BE the object
+the compiler writes into. Verified on the Mac —
+
+```c
+struct pad32 { long long a[4]; };
+struct pad32 c = f(p);        /* clang arm64: `mov x8, sp` -> &c直接, no copy */
+```
+
+Any other spelling (`*(struct pad32 *)dst = f(...)`, a shim that assigns
+through a pointer) makes the compiler materialize a temporary and block-copy
+it, which is precisely the bit-copy that corrupts a self-referential
+small-string. So the emitted form must be an INITIALIZER whose variable is the
+result slot:
+
+```c
+struct __madc_ret32 { long long __a[4]; };                 /* >16B, 8-aligned */
+extern struct __madc_ret32 SYM(void *, void *);
+struct __madc_ret32 __madc_objtmp_7 = SYM(&a, &b);         /* slot IS the temp */
+/* the object lives at (struct basic_string *)&__madc_objtmp_7 */
+```
+
+Only needed for classes **≤16 bytes**; at 17+ the real class type already forces
+the indirect path on both ABIs, so the extern can name the real type and no
+padding is involved.
+
+**Where it goes.** This is a tree SHAPE (destination declaration fused with the
+call), not a rendering choice, so `cir_emit_c.cpp` cannot do it alone — it walks
+and prints. Either the builder emits this shape for the emit-C target, or an
+emit-C pre-pass rewrites `SYM(&dst, args...)` + the separate `dst` declaration
+into the initializer form. Prefer the pre-pass: one IR stays the source of
+truth (MC11-IR), and the JIT lane keeps the ret_addr parameter it now uses.
+
+**Gate:** compile the emitted C for arm64 and RUN it. Nothing does that today —
+the fidelity gate compiles on x86-64, where both shapes pass, so this gap is
+invisible to every existing lane. The Mac is the only place that can currently
+run it (`clang -target arm64-apple-macos` on the container can at least compile
+and check the x8 setup in the asm; running needs the Mac).
+
+#### After the fix: a THIRD defect, and it is Linux-reproducible
+
+The sret fix is real and verified — but re-running the Mac probes shows the
+darwin blocker only partly cleared:
+
+| probe | before | after |
+|-------|--------|-------|
+| `use_facet<ctype<char>>(cout.getloc())` | SIGSEGV | **works** (`up=A`) |
+| `cout.write` / `cout << 42` | works | works |
+| `cout.fill()` / `cout.widen()` | SIGSEGV @0x9548cb | SIGSEGV @0x9560a2 (same class) |
+| `cout << "hi"` | SIGSEGV @0x0 | SIGSEGV @0x0 |
+
+The darwin MIR gives it away: `call proto6, _ZNKSt3__18ios_base6getlocEv, U_1,
+U_3` — **no rblk**. The fix is not reaching that call there.
+
+Reproduced on Linux, same binary, same source, one flag apart:
+
+```
+LIVE  -stdlib=libc++              -> 2 rblk in the MIR, fill=32
+BOUND -stdlib=libc++ --forest-bind -> 0 rblk in the MIR, fill=32
+```
+
+Both print the right answer on x86-64 — the old shape coincides with the ABI
+there — which is exactly why this hid. On arm64 the bound shape is garbage.
+
+**So: a forest-RESTORED class loses its non-triviality.** `class_return_via_retbuf`
+answers from `class_needs_dtor(cdd)`, the restored `std::locale` reports no
+dtor, `function_retbuf_class` returns NULL, and madc emits getloc as an
+ordinary scalar-returning call — no hidden result pointer at all. Same family
+as the husk layer: what a restored class CARRIES.
+
+**This is the remaining darwin blocker and it now has a cheap discriminator** —
+`grep -c rblk` between a live and a bound compile of the same probe, on Linux,
+no Mac required. Next step: find where the restored class's dtor/non-triviality
+is dropped (freeze side or thaw side), which is the same question the husk
+layer asks one level up.
