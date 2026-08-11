@@ -1022,6 +1022,12 @@ public:
 		std::vector<c2mir_node_code_t> specs;
 		bool ptr;
 		class DataDefCLASS *cls;
+		// This pointer param is the hidden RESULT ADDRESS of a by-value
+		// non-trivial class return. Declared `struct X *` and carrying the
+		// fork's __attribute__((ret_addr)), so c2mir emits it as MIR_T_RBLK
+		// and the TARGET places it: x8 on AArch64, the first argument
+		// register on x86-64 SysV. Never spell that placement here.
+		bool ret_addr;
 	};
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the

@@ -626,3 +626,108 @@ still return in a register.
 
 **Cost:** a fork commit + `MIR_COMMIT` bump in the same madc commit (pin
 discipline), and `MIR_VERSION` + a fork tag if a release ships it.
+
+#### Attempt 2 (also reverted) — and the constraint it uncovered
+
+With the c2mir raise in place (`__attribute__((indirect_return))`, fork
+`bb9ae29b` on `feature/indirect-return-attr`), the madc side declared the extern
+with its real by-value struct return and stored the call into the destination.
+The IR shape came out exactly right on both targets —
+`proto2: proto rblk:8(Ret_Addr), u64:p` — `use_facet` printed `up=A`, and the
+groves probe printed `sz=5 a=25 b=1`.
+
+Then fulltest came back **1010 passed, 9 failed**, all in the operator lane
+(`teststringplus`, the three `*_realhdr` string-plus tests, `testmanip`,
+`testopinherit`, `testcstdio`, `testheaderstringops`). The failure is the
+interesting part: `teststringplus` prints all four expected lines **correctly**
+and then aborts at teardown with `free(): invalid size`.
+
+That is a bit-copy of a `std::string`. c2mir's RBLK path always materializes the
+result into the caller's call-arg scratch area and then block-copies it to the
+destination (`simple_add_call_res_op` → `target_gen_post_call_res_code`) — there
+is no copy elision. libstdc++'s small-string optimization makes `_M_p` point at
+the object's OWN internal buffer, so a bit-copy leaves the destination pointing
+into the dead scratch slot, and its destructor frees that.
+
+**So the hidden result pointer is not merely an ABI encoding — it is what makes
+construct-in-place expressible.** A non-trivially-copyable class must be
+constructed directly in the caller's slot, never copied out of a temporary;
+that is exactly why C++ returns it indirectly in the first place. Declaring the
+real by-value return hands the object back through C's value semantics, which
+for these types is precisely what must not happen.
+
+**Revised fix (next slice).** Keep the hidden pointer as a PARAMETER — madc
+already passes `&c` directly, so the callee constructs in place and nothing is
+copied — and mark it so MIR places it in the indirect-result register instead of
+the first argument register. `MIR_T_RBLK` is already exactly that: c2mir models
+its own struct returns as a leading `RET_ADDR_NAME` argument of type
+`MIR_T_RBLK` (`simple_add_res_proto`), and MIR's backends place an RBLK arg per
+the target's indirect-result rule — x8 on AArch64, the first argument register
+on x86-64. So the raise moves from the return type to the parameter: an
+attribute marking a function's leading pointer parameter as the result address,
+which c2mir emits as `MIR_T_RBLK` (size = the class's size) on both the proto
+and the call.
+
+This makes the madc side nearly a no-op: the call shape, the argument order and
+the construct-in-place semantics all stay exactly as they are today, and only
+the parameter's MIR type changes. x86-64 codegen is unchanged by construction.
+
+The fork's `feature/indirect-return-attr` commit implements the return-type
+form; it is not merged and `MIR_COMMIT` is untouched, so nothing depends on it.
+Revise it to the parameter form rather than building on it.
+`scripts/sret_abi_gate.sh` is written and stays valid for the revised fix (an
+RBLK still appears in the call's proto); it is unwired from `fulltest` until the
+fix lands.
+
+#### Found while gating: `std::locale l = std::cout.getloc();` is broken in the DEFAULT lane
+
+Independent of the sret work, and pre-existing (verified by stashing the fix and
+rebuilding — the baseline warns and aborts identically):
+
+```
+tmp/loc1.mad:3:46: warning -- incompatible argument type for pointer type parameter
+free(): invalid pointer   -> SIGABRT
+```
+
+In the libstdc++ lane `getloc` does not bind to the library symbol at all — the
+emitted C shows madc's OWN `ios_base__getloc(struct locale *__retbuf, struct
+ios_base *__this)` and a call `ios_base__getloc((&l), (&_ZSt4cout))`. So the
+warning is about madc's emitted body, not the external ABI path, and the abort
+is `l`'s cleanup destructing something that body never constructed. Under
+`-stdlib=libc++` the same source binds the real external symbol and exits 0.
+
+This is why the sret gate's reducer uses `std::string c = a + b;` instead: in
+the default lane that is a genuinely EXTERNAL non-trivial by-value return
+(libstdc++'s `_ZStplIcSt11char_traitsIcESaIcEE...`), so the gate exercises the
+path the fix changes. A `getloc` reducer would have gated a madc-emitted
+function and proved nothing.
+
+Reducer kept at `tmp/loc1.mad`; own slice, own commit.
+
+#### Known limitation: `--emit=c11` stays x86-64-only for this construct
+
+The fix corrects the JIT/native path, where madc owns the pipeline through MIR
+and can hand the placement decision to the target. It does **not** fix
+`--emit=c11`, and cannot.
+
+Emitted C declares the callee `void f(struct X *, void *this)` and calls
+`f(&c, &a, &b)`. Compiled by gcc/clang on x86-64 against real libstdc++ that
+works, because the indirect-result pointer is the first argument register there.
+The same emitted C on AArch64 is broken exactly as the JIT was. This predates
+the fix — it is the same x86-64 assumption, and the emit path never had the
+marker to hand off.
+
+It is not really a madc shortcoming: **portable C11 cannot call a C++ function
+that returns a non-trivially-copyable class by value**, for the same reason C
+cannot call C++ generally. There is no C spelling for "always returned
+indirectly", and the callee must construct in place in the caller's slot. A real
+answer would be a generated C++ shim at that boundary; the limitation is
+confined to the mangled-direct edge, since madc's own emitted functions use
+`__retbuf` on both sides and are portable anywhere.
+
+`cir_emit_c.cpp` therefore DROPS the `ret_addr` attribute rather than rendering
+it. gcc/clang do not know it, would warn "unknown attribute", and would then
+treat the parameter as the plain pointer it already is — so dropping keeps the
+emitted C byte-compatible with its pre-fix behaviour and emits no diagnostic.
+The precedent is the same renderer's `linkonce` -> `weak` translation; the
+difference is that `ret_addr` has no portable equivalent to translate TO.

@@ -7269,6 +7269,13 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 			// scalar spec list, optionally one pointer level.
 			if (params[i].cls) {
 				append(specs, class_tag_ref(params[i].cls));
+				// The hidden result address: a C declaration cannot say
+				// "this pointer is the indirect-result register", and
+				// C's own rule (classify the RETURN by size) is the
+				// wrong rule for a non-trivial class. Say it on the
+				// PARAMETER instead and leave placement to the target.
+				if (params[i].ret_addr)
+					append(specs, node2(N_ATTR, id("ret_addr"), list()));
 			} else {
 				for (size_t j = 0; j < params[i].specs.size(); j++)
 					append(specs, simple(params[i].specs[j]));
@@ -9694,8 +9701,18 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	std::vector<ExternParam> eparams;
 	node_t args = list();
 	if (retc) {
-		eparams.push_back({ {N_VOID}, true });   // sret slot (void*)
-		append(args, node2(N_CAST, void_ptr_type(),
+		// The hidden result address, declared `struct <retc> *` and marked
+		// ret_addr so it becomes MIR's RBLK and the TARGET places it (x8 on
+		// AArch64, first argument register on x86-64). It stays a PARAMETER:
+		// the callee must CONSTRUCT IN PLACE here, and a by-value return
+		// would copy the object out of a temporary — exactly what a
+		// non-trivially-copyable class forbids. Cast to the PARAMETER's
+		// type, not to void*: an opaque runtime-object destination is
+		// declared as `long[]` storage, so its bare address does not match
+		// `struct <retc> *` and c2mir would warn (the void* param used to
+		// swallow every shape).
+		eparams.push_back({ {}, true, retc, true });
+		append(args, node2(N_CAST, class_ptr_type(retc),
 				   node1(N_ADDR, id(sret_tmp, origin), origin),
 				   origin));
 	}
@@ -14888,8 +14905,12 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 			m_pending_stmts.push_back(var_decl(tmp, origin));
 			slot = node1(N_ADDR, id(objtmp, origin), origin);
 		}
-		eparams.push_back({ {N_VOID}, true });
-		append(args, slot);
+		// Same hidden-result-address shape as emit_symbol_method_call: a
+		// `struct <retc> *` parameter marked ret_addr, so MIR places it as
+		// the indirect-result register rather than the first ordinary
+		// argument. `slot` is already the destination's address.
+		eparams.push_back({ {}, true, retc, true });
+		append(args, node2(N_CAST, class_ptr_type(retc), slot, origin));
 	}
 
 	if (lhs_target) {

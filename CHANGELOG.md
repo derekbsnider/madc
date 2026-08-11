@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **The hidden result pointer of a by-value class return is placed by the
+  TARGET, not spelled by madc** — the last C++-on-darwin blocker, and an
+  ABI bug rather than a darwin one. madc declared such a callee
+  `void f(void *sret, void *this)`, hand-rolling the pointer as the first
+  argument. That matches the ABI only where the indirect-result pointer is
+  the first argument register: x86-64 SysV. AArch64 passes it in `x8`,
+  outside the argument sequence, so every real argument landed one register
+  late and the callee read the caller's result slot as `this`. On an Apple
+  Mac `std::cout << "hi"` segfaulted inside `ios_base::getloc` while
+  `std::cout << 42` (a member overload, no by-value return) was fine, and
+  `std::string`/`std::vector` already worked — they clear AArch64's 16-byte
+  threshold, so only a small non-trivial class like `std::locale` (one
+  pointer) was mis-placed. Confirmed against clang
+  (`sub x8, x29, #16` before `bl __ZNKSt3__18ios_base6getlocEv`) and by an
+  independent control calling the same symbol under both declaration
+  shapes.
+  The pointer stays a PARAMETER — the callee must construct in place, and
+  returning the class by value instead would copy it out of a temporary,
+  which is exactly what a non-trivially-copyable class forbids (that
+  attempt aborted `teststringplus` with `free(): invalid size`, a bit-copied
+  self-referential small-string buffer). What changed is that the parameter
+  now says what it *is*: declared `struct X *` with the fork's new
+  `__attribute__((ret_addr))`, c2mir emits it as `MIR_T_RBLK`, and MIR
+  places it per target — `x8` on AArch64 (`mir-aarch64.c`: "First RBLK arg
+  is passed in r8"), the first argument register on x86-64, so x86-64
+  codegen is unchanged by construction. Gate: `scripts/sret_abi_gate.sh`
+  (IR-shape — behaviour cannot tell the shapes apart on x86-64), with a
+  trivially-copyable class return as its negative control.
+
 - **One owner for speculative replay** (`Program::SilentReplay`): muting
   `cerr` and rewinding the diagnostic state around a speculative
   instantiation was inline in `complete_shell_class_type`; it is now a

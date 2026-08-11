@@ -696,6 +696,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_ledger_gate.sh
 	@cd .. && bash scripts/forest_config_gate.sh
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
+	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/libcxx_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh

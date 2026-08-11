@@ -560,7 +560,20 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		// `linkonce` is madc's internal vague-linkage marker (S4) — no such
 		// gcc attribute exists; the portable C spelling with the same
 		// link-time dedupe (STB_WEAK, first def wins) is `weak`.
+		// `ret_addr` marks the hidden result-address PARAMETER of a by-value
+		// non-trivial class return so MIR places it in the target's
+		// indirect-result register. There is no portable C spelling — C has
+		// no way to say "always return this indirectly", which is why the
+		// marker exists — and gcc/clang would warn "unknown attribute" and
+		// then treat the parameter as the plain pointer it already is. So
+		// DROP it: the emitted C keeps exactly the behaviour it had before
+		// the marker existed, with no diagnostic. (That behaviour is
+		// correct only where the indirect-result pointer is the first
+		// argument register — see docs/plans/2026-08-07-macos-release-lane-plan.md
+		// on why portable C cannot call such a function at all.)
 		node_t aname = op(n, 0);
+		if (aname && aname->code == N_ID && strcmp(aname->u.s.s, "ret_addr") == 0)
+			break;
 		if (aname && aname->code == N_ID && strcmp(aname->u.s.s, "linkonce") == 0) {
 			fputs("__attribute__((weak))", f);
 			break;
