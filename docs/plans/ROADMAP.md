@@ -99,6 +99,25 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.77.0 (2026-08-11): MIR lives in-tree — `third_party/mir` as a
+  full-history Git subtree (ADR 0002).** One clone builds everything:
+  `make -C src` builds libmir + c2m into `obj/mir/<variant>` (never
+  inside the subtree; `mirclean`); `MIR_COMMIT`/`MIR_VERSION` and the
+  fork-lockstep release ceremony are retired — the madc commit IS the
+  pin. Import tree-hash-identical to the final pin (fork
+  `v1.0-madc.0.76.0`, tagged `madc-pre-subtree-migration`).
+  `vnmakarov/mir` = upstream (deliberate subtree pulls);
+  `derekbsnider/mir` = frozen historical + upstream-PR transport.
+  Validation: fulltest 1019/0 TWICE (main tree + a mir-less fresh
+  clone), libcxxjit 1015/0, EXE/OBJ 990/0, release+packed green,
+  release-macos + Mach-O gates green, MIR suite 1145 tests green,
+  torture byte-identical to pre-migration, stale-checkout negative
+  control passed. Known-open rider (pre-existing, task #41): 5 torture
+  fails from the 2026-07-23→08-11 window, classification pending.
+  NEXT PLAN (owner): a **Windows release** (Track 6.4); GitHub-Actions
+  release automation follows once a Windows build works.
+  Plan/record: [mir-into-madc-repo-2026-08-11.md](mir-into-madc-repo-2026-08-11.md).
+
 - **v0.76.0 (2026-08-11): the macOS release lane — madc's first PUBLIC
   darwin release.** Tarballs `madc-0.76.0-macos-{arm64,x86_64}.tar.gz`:
   stripped, ad-hoc-signed hosted binaries carrying the packed C/C++
@@ -1649,7 +1668,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port | TBD | Not started | — |
+| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | TBD | **NEXT** (owner, 2026-08-11) | plan to be drafted |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 

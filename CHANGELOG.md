@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.77.0] — 2026-08-11
+
+One repository: MIR moves in-tree as a full-history Git subtree at
+`third_party/mir` — a single clone now builds everything, the pin and
+fork-lockstep release machinery are retired, and every build product
+stays out of the subtree.
+
 - **MIR moved into the repository: `third_party/mir` is a Git subtree**
   (ADR 0002; plan `docs/plans/mir-into-madc-repo-2026-08-11.md`). One
   clone builds everything — `make -C src` now builds libmir + c2m

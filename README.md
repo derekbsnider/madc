@@ -210,10 +210,12 @@ in-tree at `third_party/mir`.
 
 ## Project status
 
-The current release is **v0.76.0** (2026-08-11) — madc's first public
-macOS release: provenance-clean arm64 + x86_64 tarballs that JIT and
-AOT-compile C and C++ on a header-less Mac, `libmadc_rt` for linking
-emitted C, and the AArch64 indirect-return ABI fix underneath it all.
+The current release is **v0.77.0** (2026-08-11) — one repository: MIR
+moves in-tree at `third_party/mir` as a full-history Git subtree, so a
+single clone builds everything and the pin/fork-release machinery is
+retired. It follows v0.76.0, madc's first public macOS release
+(provenance-clean arm64 + x86_64 tarballs, darwin AOT `-o` for C and
+C++, `libmadc_rt` for emitted C).
 See the [changelog](CHANGELOG.md) for what each release added.
 Headline results:
 
