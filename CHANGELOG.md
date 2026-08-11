@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **Darwin AOT for C++ programs: `madc -static-libmadc -o` now emits
+  runnable Mach-O executables whose C++ world resolves.** The fork's
+  Mach-O executable writer (mir-macho.c @fde19e17) loaded extra dylibs
+  named by the emit lane but still bound every import two-level against
+  libSystem — so `std::__1::cout` died at dyld. With extra dylibs present
+  the bind stream now uses flat-namespace lookup ordinals (the
+  `-undefined dynamic_lookup` shape; a header-less Mac has no .tbd stubs
+  for per-symbol attribution), and madc's Apple emit lanes put
+  `/usr/lib/libc++.1.dylib` on the load list whenever the import set
+  contains Itanium-mangled names (`cir_apple_extra_dylibs`; the two
+  lanes' drifted refusal messages are consolidated into
+  `cir_apple_runtime_refused`). Images with no extra dylibs keep the old
+  two-level shape exactly. Gated structurally by
+  `scripts/macho_exe_dylib_gate.sh` (llvm-otool/objdump; negative
+  controls on both the pure-C shape and the pre-slice executable) and on
+  hardware by mac_battery leg 6d. Darwin `-o` now covers runtime-free C,
+  C-lane-runtime static (try/catch, VLA — the AOT ledger rides the
+  forest into the image), and C++ programs; the full-runtime dynamic
+  class (`madc::value`/sys) stays with the deferred libmadc.dylib.
+
 - **W3 — `libmadc_rt`: the emitted-C runtime ships in the macOS tarballs.**
   Emitted C that enters a try/catch (any `std::cout` insertion does, via
   libc++'s stream machinery) or frees a VLA references madc's C-lane

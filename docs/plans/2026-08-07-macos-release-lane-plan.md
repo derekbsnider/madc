@@ -1354,5 +1354,55 @@ C-lane-runtime programs via `-static-libmadc`; one writer slice (libc++
 dylib binding) short for C++ programs; the full-runtime dynamic case
 stays with the deferred libmadc.dylib. The battery AOT leg's
 "known-unsupported" remains about the object LOADER (`-c` + run the
-`.o`), a separate axis. Candidate follow-up (owner to call): a battery
-leg covering probes 1+4 so this becomes standing evidence.
+`.o`), a separate axis. ~~Candidate follow-up (owner to call): a battery
+leg covering probes 1+4 so this becomes standing evidence.~~ The owner
+called it the same hour — the slice below.
+
+## Darwin AOT C++ as implemented (session #81, same day)
+
+Owner: "well, let's do that libc++ dylib binding in mir-macho.c thing."
+Probe 3's gap closed at both layers, each owning its half:
+
+- **Fork `mir-macho.c` (fde19e17, `MIR_COMMIT` bumped in the same madc
+  commit)**: recon found `params->needed` already became LC_LOAD_DYLIBs
+  — the load half existed; only the BIND half was libSystem-hardwired.
+  With extras present the bind stream now opens with the flat-namespace
+  special ordinal (`BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | 0xE` → dyld
+  decodes −2 = FLAT_LOOKUP): dyld searches the loaded images per symbol,
+  the `-undefined dynamic_lookup` shape ld64 itself uses — chosen
+  because a header-less Mac has no `.tbd` stubs for per-symbol two-level
+  attribution. With NO extras the stream is unchanged (two-level
+  libSystem), so every pre-slice image shape is untouched — that
+  invariant is the gate's leg A. `MH_TWOLEVEL` stays set; the per-bind
+  special ordinal overrides it symbol-by-symbol.
+- **madc emit lanes**: `cir_apple_extra_dylibs` puts
+  `/usr/lib/libc++.1.dylib` on the load list when the import set
+  contains Itanium-mangled names — import CLASS, not a symbol list, and
+  process-independent (the same trigger answers identically from the
+  hosted madc on a Mac and the cross madc on the container, where
+  dladdr paths differ). Both Apple emit branches (source image + object
+  link) share it, and their refusal copies are consolidated into
+  `cir_apple_runtime_refused` — the object-link lane had already
+  drifted to an older message that never named `-static-libmadc`
+  (two sites, one rule: the dup-audit failure class, caught live).
+- **`scripts/macho_exe_dylib_gate.sh`** (in `machogate` + the
+  release-macos recipe): leg A = a pure-C image keeps the exact old
+  shape (one LC_LOAD_DYLIB, two-level `_printf`, zero flat binds —
+  the trigger-leak negative control); leg B = the C++ image has the
+  libc++ LC, mangled imports flat (`__ZNSt` — probe 3's own symbol
+  class), zero `__madc_` imports, and the ledger runtime DEFINED in the
+  symtab (`T ___madc_try_push`). The forest-less cross madc is handed
+  the hosted forest via `--forest-bind` for the ledger (its refusal
+  message taught the gate that spelling). NEGCTL on real bytes: the
+  pre-slice `otry2` executable (pulled back from the Mac) fails every
+  leg-B check — libSystem-only LC, 0 flat, 129 two-level binds; the
+  fixed image flips exactly those 129 binds to flat.
+- **`mac_battery.sh` leg 6d**: `madc -static-libmadc -o` on a
+  cout-inserting C++ program, run on target, output gated — the
+  execution half (no `cc` involved; madc emits + ad-hoc-signs the
+  executable itself). Battery is now 10 checks.
+
+With this, darwin AOT `-o` covers: runtime-free C, C-lane-runtime
+static, AND C++ programs. Remaining on the AOT axis: the full-runtime
+dynamic class (`madc::value`/sys → the deferred libmadc.dylib) and the
+in-process Mach-O object loader (`-c` round-trip).
