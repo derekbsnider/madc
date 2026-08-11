@@ -566,3 +566,63 @@ supported yet (emit an executable instead)`. The leg now encodes that as a
 negative-controlled known-unsupported expectation (compile must succeed; the run
 may decline loudly), and its success arm starts gating the real round-trip the
 day the Mach-O loader lands, with no edit needed.
+
+#### Why the obvious madc-only fix does not work (attempt 1, reverted)
+
+The first cut declared the extern with its REAL by-value struct return and
+stored the call into the temp, expecting c2mir/MIR to place the hidden pointer
+per target. It **broke x86-64 immediately** — `proto2: proto i64, u64:p`, a
+register return, and `std::locale`'s copy ctor faulted at 0x18 on Linux.
+
+The reason is the whole point: **c2mir only sees C, and C classifies returns by
+SIZE.** `c2mir/aarch64/caarch64-ABI-code.c: target_return_by_addr_p` is
+`(struct|union) && type_size > 2*8`; x86-64 runs the SysV classifier. C++ says a
+**non-trivially-copyable** class is returned indirectly *regardless of size*.
+`std::locale` is 8 bytes — one pointer — so every C rule puts it in a register.
+
+That also explains the darwin symptom set exactly: `std::string` (32B) and
+`std::vector` (24B) exceed the 16-byte threshold, so they were already returned
+by address and worked. Only a SMALL non-trivial class is mis-classified, and
+`std::locale` is the one on the `operator<<(const char*)` path.
+
+There is no faithful C11 spelling for "this class is always returned
+indirectly", so per `.claude/rules/lowering-vs-raising.md` this is a genuine
+**Tier-2 raise** (the `_Complex` precedent: no faithful C11 form, ABI fidelity
+at stake). The attempt is saved at `tmp/sret-attempt-1.diff`.
+
+#### The design to build
+
+The property belongs to the **type**, not to any one function: in C++ a
+non-trivial class is returned indirectly everywhere. So mark the class and let
+every ABI path read it.
+
+1. **madc** emits the marker on the struct definition it already generates for
+   such a class — an `N_ATTR` on the declaration, reusing the exact attribute
+   plumbing `__attribute__((cleanup))` already uses (`NL_EL(decl_node->u.ops, 2)`,
+   c2mir.c ~9360). `class_return_via_retbuf()` is already the single owner of
+   "is this class non-trivial", so it decides who gets marked.
+2. **c2mir** records the bit on the tag node and exposes
+   `type_forced_return_by_addr_p(type)`.
+3. **Each target ABI file** consults it at ONE point — the function that decides
+   register-returnability (`reg_aggregate_size` on aarch64, `process_ret_type`
+   on x86-64). Reporting "not register-returnable" makes every downstream path
+   (`target_add_res_proto`, the call-res op, the ret ops) fall through to the
+   `simple_*` RBLK route already used for large structs. One hook per target,
+   not five.
+4. **madc's call sites** then declare the extern with the real by-value return
+   and store the result — the single owner from `tmp/sret-attempt-1.diff`
+   (`external_object_return_call`, adopted by both `emit_symbol_method_call` and
+   `class_operator_external_call`).
+
+madc's OWN definitions keep `__retbuf`: both sides agree there, so it is correct
+on every ABI, and the callee's deep copy into `*__retbuf` is real semantics, not
+a calling convention.
+
+**Gate:** IR-shape, following `scripts/unprototyped_call_abi_gate.sh` — behaviour
+cannot distinguish the shapes on x86-64, so the gate must assert the proto: a
+small non-trivial class return declares an RBLK arg and no hand-rolled leading
+pointer parameter. Its negative control is a small TRIVIAL struct, which must
+still return in a register.
+
+**Cost:** a fork commit + `MIR_COMMIT` bump in the same madc commit (pin
+discipline), and `MIR_VERSION` + a fork tag if a release ships it.
