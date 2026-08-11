@@ -26470,6 +26470,17 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 
+	// Everything from Pass 1.6 on can APPEND DEFINITIONS (synth dtors,
+	// complete/deleting dtors), and their bodies call symbols whose typed
+	// declarations only exist after the Pass-1.9 fixpoint (a member dtor
+	// MATERIALIZED by that very reference). Pass 1.95's late declarations
+	// therefore splice in HERE — ahead of those definitions — or the call
+	// precedes any declaration of its callee: c2mir and the JIT tolerate
+	// that order, but it is not valid strict C11 — gcc compiles the
+	// emitted C with an implicit-declaration warning and clang (canon)
+	// REJECTS it outright ("call to undeclared function").
+	node_t late_decl_anchor = c2mir_op_tail(c2m, top_list);
+
 	// Pass 1.6: synthesized destructors for classes that need a dtor (object
 	// members and/or a base dtor) but have no user-written one. Emitted here
 	// so the symbol is in scope for the cleanup attribute in function bodies
@@ -26634,11 +26645,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	}
 
 	// Pass 1.95: late declarations — everything the fixpoint runs added after
-	// the early declaration passes had already emitted. Both lists land in
-	// top_list here, still ahead of every definition (Pass 2), so each call
-	// compiles against a real signature instead of a C implicit-int default
-	// (which truncates pointer returns and mis-wires struct args — the
-	// __madc_shim string-ctor segfault).
+	// the early declaration passes had already emitted. All three lists
+	// SPLICE IN at late_decl_anchor — ahead of the Pass-1.6/1.7/1.8
+	// definitions and of every Pass-2 definition — so each call compiles
+	// against a real signature instead of a C implicit-int default (which
+	// truncates pointer returns and mis-wires struct args — the __madc_shim
+	// string-ctor segfault; a synth aggregate dtor calling the member dtor
+	// its own reference materialized was the caller-before-declaration
+	// case: tolerated by c2mir, warned by gcc, rejected by clang).
 	// (a) Forward prototypes for fixpoint-materialized bodies: they are not in
 	//     the `funcs` snapshot Pass 1 iterates. Record their symbols so the
 	//     extern flush below skips any conflicting void* duplicate (same reason
@@ -26648,11 +26662,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     (each proto's anchor = materialized_funcs.size() when its body
 	//     materialized), exactly where a live parse's func_proto for the
 	//     equivalently-deferred TokenFunc would land.
+	node_t late_list = list();
 	size_t flp = 0;
 	auto flush_forest_lazy_protos = [&](size_t anchor) {
 		for (; flp < forest_lazy_protos.size()
 		       && forest_lazy_protos[flp].anchor <= anchor; ++flp) {
-			append(top_list, forest_lazy_protos[flp].proto);
+			append(late_list, forest_lazy_protos[flp].proto);
 			typed_proto_syms.insert(forest_lazy_protos[flp].sym);
 			// Rung 3: rides its body's conditionality (same symbol).
 			if (!forest_lazy_root.count(forest_lazy_protos[flp].sym))
@@ -26674,7 +26689,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			continue;
 		node_t proto = func_proto(tf);
 		if (proto) {
-			append(top_list, proto);
+			append(late_list, proto);
 			FuncDef *ptfd = dynamic_cast<FuncDef *>(tf->var.type);
 			if (ptfd)
 				typed_proto_syms.insert(tf->var.name);
@@ -26706,7 +26721,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		 // proto would carry) — emit nothing; residual calls sit in
 		 // visibility-dropped defs and trap-bind under --run-frozen.
 		 && !pack_defless_syms.count(kv.first)) {
-			append(top_list, kv.second);
+			append(late_list, kv.second);
 			cond_mark_sym(kv.second, kv.first);
 		}
 	// (c) Stack-array destructor wrappers demanded during body translation
@@ -26714,7 +26729,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	//     protos above, ahead of every function definition (Pass 2) whose
 	//     cleanup attribute names them.
 	for (auto &kv : m_array_dtor_defs)
-		append(top_list, kv.second);
+		append(late_list, kv.second);
+	c2mir_op_splice_after(c2m, top_list, late_decl_anchor, late_list);
 	m_array_dtor_defs.clear();
 	// (c2) --finstrument-functions exit thunk (task #66) — same slot: its
 	//      definition must precede every function whose cleanup attribute
