@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **W0.5 — the darwin C prelude is provenance-clean; nothing gates public
+  macOS artifacts anymore.** The embedded prelude is now flattened from an
+  open-licensed header tree — Apple's own APSL/BSD libc headers as curated
+  and publicly shipped by the Zig project (`lib/libc/include/any-darwin-any`,
+  pinned at zig 0.16.0 and SHA256-verified by the new
+  `scripts/fetch_darwin_open_headers.sh`; `provision_container.sh` stages it
+  on a fresh container) — instead of the Apple SDK, which stays build-side
+  only (compiling/linking madc itself, and the never-shipped oracle for
+  prelude diffs). The first diff against the SDK oracle found ZERO missing
+  declarations on either arch (all 50 divergent lines are Apple's own
+  15.5-vs-26.4 version drift with counterparts present). The generator now
+  bakes the sysroot's `.PROVENANCE` stamp into the umbrella as a marker
+  line that rides `.rodata`, so every binary names its own prelude input;
+  `verify_macho_release.sh` authority 4 greps it back out and refuses
+  sdk-private or missing markers (negative-controlled against the
+  pre-W0.5 release binary). A failed prelude pipeline now removes
+  `embedded_headers.cpp` instead of silently reusing a stale table. License
+  notices ship in the tarball (`THIRD_PARTY_NOTICES/`: the per-file audit
+  of the 240-file closure — 213 APSL, 21 BSD with holders reproduced, 5
+  Apple-copyright shims, 1 public domain — plus the canonical APSL-2.0
+  text), and `package_release_macos.sh` drops its owner-private banner:
+  the gate now enforces what the banner could only warn about. Mac battery
+  on the rebuilt arm64 tarball: 6/2 — the two fails are the pre-existing
+  known-opens (groves husk, value intrinsic); every prelude-serving leg
+  green on hardware, leg 6b (emit-C sret on-target) passing.
+
 - **The `--emit` lane opens the stdlib-flavor runtime before the tree
   build** — `madc_cir_emit` was the one lane still calling
   `translate_module()` bare instead of flowing through

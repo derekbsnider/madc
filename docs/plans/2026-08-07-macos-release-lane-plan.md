@@ -101,13 +101,16 @@ macOS libc header tree for years):
 
 - **W0 (owner)**: ~~settle the SDK-prelude redistribution question~~
   RESOLVED 2026-08-07 — provenance-clean prelude (section above).
-- **W0.5 — provenance-clean prelude (NEW, gates public artifacts)**:
-  assemble the open-licensed header tree (evaluate adopting Zig's
-  curated macOS libc tree + LLVM's libc++ headers, matched to the
-  target OS version), point `gen_darwin_prelude.sh` at it, and DIFF
-  the resulting prelude against the current SDK-derived output to
-  find declaration gaps (the SDK-derived prelude stays as the
-  private-use oracle, never shipped). Ship the license notices.
+- **W0.5 — provenance-clean prelude**: ~~assemble the open-licensed
+  header tree (evaluate adopting Zig's curated macOS libc tree + LLVM's
+  libc++ headers, matched to the target OS version), point
+  `gen_darwin_prelude.sh` at it, and DIFF the resulting prelude against
+  the current SDK-derived output to find declaration gaps (the
+  SDK-derived prelude stays as the private-use oracle, never shipped).
+  Ship the license notices.~~ **DONE, session #81 (2026-08-11,
+  d7ada73e)** — see "W0.5 as implemented" below. The first diff found
+  ZERO declaration gaps; public artifacts are now gated mechanically by
+  the binary's own provenance marker.
 - **W1 — release-grade hosted builds**: add packed -O2 hosted release
   targets (the darwin twin of `make release`): build hosted slice,
   strip, `forest_pack_darwin.sh`, verify read-back. Wire into
@@ -182,10 +185,11 @@ the `__GCC_ATOMIC_*` predefines, which survive the filter.
 
 **Cost accepted in v1:** the darwin containers may ship without the MIR
 cache blob when the n2 drain defect trips (consumers rebuild nodes — the
-pack still gates unit presence); the C prelude remains SDK-derived until
-W0.5, so artifacts stay owner-private; C++ names outside the packed set
-fail loudly on header-less Macs (and deliberately resolve nowhere else —
-no CLT-version mixing).
+pack still gates unit presence); ~~the C prelude remains SDK-derived until
+W0.5, so artifacts stay owner-private~~ (CLEARED session #81 — the prelude
+is open-provenance and the verify gate enforces it); C++ names outside the
+packed set fail loudly on header-less Macs (and deliberately resolve
+nowhere else — no CLT-version mixing).
 
 New pieces: `scripts/forest_pack_headers_darwin.txt` (the darwin C++
 canonical list — deliberately separate from the Linux list; the flavors'
@@ -1160,3 +1164,119 @@ Negative control (gate vs unfixed binary): leg 2 red on the exact defect,
 other legs green. With the fix: gate green (all 4 legs). Suite results at
 7e484749: fulltest + libc++ JIT — recorded in claude_status.json (run in
 this session; see live_handoff).
+
+## Session #81 (2026-08-11) — W0.5 as implemented: provenance-clean prelude
+
+Owner kickoff: "time to focus on the W0.5 lane... we likely need a bit of
+extra recon here, but time to begin." The recon collapsed the estimate:
+the candidate tree is a drop-in, and the whole item landed in one session
+(commit `d7ada73e`).
+
+### The open tree — recon findings
+
+**Source: the Zig project's curated darwin libc headers**, pinned at the
+zig 0.16.0 source release (2026-04-13), `lib/libc/include/any-darwin-any`
+— a single arch-NEUTRAL tree (7.6MB, 553 files; Zig consolidated the old
+per-arch macos dirs), macOS 26.4-SDK era, actively maintained (SDK 26.0
+refresh PR #25257 predates the release). Zig's public position since its
+0.8.0 release notes: these headers are APSL — "there is a myth that
+Apple's C header files have an encumbered license, but that is not the
+case." The standalone fetch-them-macos-headers repo is deprecated/archived
+(Nov 2025); the tool now lives in the zig repo
+(`tools/fetch_them_macos_headers.zig`), so the zig source release IS the
+canonical distribution of the curation. Bonus discovered: zig also ships a
+hand-written `lib/libc/darwin/libSystem.tbd` linker stub — a future option
+for freeing cross-LINKING from the owner's SDK too (not needed now; SDK
+linking is settled as its licensed purpose).
+
+**Coverage**: all 36 prelude header names present. Both triples
+(`{arm64,x86_64}-apple-macos12`) flatten cleanly through the unmodified
+generator; the printf gate passes.
+
+**THE FIRST DIFF (the sizing milestone): zero declaration gaps.**
+Normalized set-diff of open-tree vs SDK-oracle preludes, same triple, same
+posture filter: 50 SDK-only lines per arch — the two arches' drift sets
+are IDENTICAL — and every one is Apple's own 15.5-vs-26.4 evolution with
+the counterpart present on the open side in newer spelling:
+
+| SDK-only category | open-side counterpart |
+|---|---|
+| fortify `#define memcpy(dest,...) __builtin___memcpy_chk(...)` | same builtins behind a `__memcpy_chk_func` indirection (both defines in the flatten; chain bottoms out at the SAME builtin the SDK prelude used) |
+| `malloc_type_*` decls (macOS 14 typed malloc) | present, updated availability text |
+| `ELAST 106` | `ELAST 107` (+`ENOTCAPABLE`) |
+| DIR members `long __dd_loc/__dd_size` | `size_t` (Apple's change; DIR is opaque to user code) |
+| `__MAC_OS_X_VERSION_MAX_ALLOWED __MAC_15_5`, availability machinery | 26.4 series |
+
+**License audit (mechanical, of the exact closure)**: `clang -E -MD` over
+the umbrella lists precisely the files flattened. Union over both arches =
+240 files: **213 APSL** (`@APPLE_LICENSE_HEADER_START@` /
+`@APPLE_OSREFERENCE_LICENSE_HEADER_START@`), **20+1 BSD** (UCB, Citrus
+Project, NetBSD Foundation, Alexey Zelkin, Todd C. Miller — holders
+reproduced in the NOTICE), **5 bare Apple-copyright shims**
+(`arm/_{limits,param,types}.h`, `arm/signal.h`, `stdint.h` — mechanical
+typedef/dispatch files whose canonical upstreams are in Apple's
+open-source releases), **1 public domain** (`machine/limits.h`, says so
+itself). Re-audit is part of a pin bump, not a build (the audit is a fact
+about the pinned bytes).
+
+### What shipped (d7ada73e)
+
+- **`scripts/fetch_darwin_open_headers.sh`** — the pin's ONE owner
+  (version + SHA256 from ziglang.org's published index). Downloads,
+  verifies loudly, extracts, stages
+  `/workspace/darwin-open-headers/sysroot-any-darwin-any/usr/include`
+  (symlink into the tree), writes the `.PROVENANCE` stamp. Idempotent;
+  `provision_container.sh` runs it (disposable-container law) and
+  reports it beside the SDK check.
+- **Makefile `DARWIN_PRELUDE_SYSROOT`** (default = the open sysroot)
+  feeds the one generator call; `MACOS_SDK` stays for compiling/linking
+  madc itself. A failed prelude pipeline now REMOVES
+  `embedded_headers.cpp` — a stale table from an earlier gen can no
+  longer be silently reused (the mtime-poison class).
+- **`gen_darwin_prelude.sh`** takes a `<prelude-sysroot>`; bakes the
+  sysroot's stamp into the umbrella as
+  `/* MADC-DARWIN-PRELUDE-PROVENANCE: ... */` — embedded text rides
+  `.rodata`, so THE BINARY NAMES ITS OWN PRELUDE INPUT — and stamps
+  `sdk-private` for a stamp-less input (the SDK survives only as the
+  never-shipped oracle for future diffs).
+- **`verify_macho_release.sh` authority 4**: greps the marker from the
+  built binary; positive match on the open stamp shape; refuses
+  sdk-private or missing. The W0 resolution's "the hosted release target
+  accepts only the open-provenance prelude" is now mechanical.
+- **Notices**: `docs/licenses/APSL-2.0.txt` (SPDX canonical) +
+  `docs/licenses/NOTICE-darwin-prelude.txt` (the audit above, BSD
+  copyrights reproduced, source pointers to opensource.apple.com /
+  apple-oss-distributions / ziglang.org). `package_release_macos.sh`
+  ships both under `THIRD_PARTY_NOTICES/` and DROPS its owner-private
+  banner — the gate enforces what the banner could only warn about.
+
+### Negative controls
+
+- fetch: idempotent second run; SHA mismatch refuses (verify step is
+  `sha256sum -c` before any staging).
+- generator: missing sysroot → loud refusal naming the fetch script;
+  SDK input → `sdk-private` marker (oracle path preserved).
+- verify gate: run against the pre-W0.5 session-#74 release binary +
+  its own extracted forest — authorities 1–3 pass, authority 4 refuses
+  with "no prelude provenance marker". Real bytes, exact failure.
+
+### Hardware validation
+
+`release-macos` rebuilt both arches through the open sysroot: 835 forest
+units (identical to the SDK-prelude freeze), verify gates green with the
+zig stamp read back out of both binaries, tarballs packaged with the
+notices. Mac battery on the fresh arm64 tarball (`~/madc-s81`): **6/2**,
+exactly as predicted — the two fails are the pre-existing known-opens
+(groves `os.str()` husk, value-intrinsic SIGSEGV); the C-prelude leg
+JIT-compiles real programs against the open-flattened text on hardware,
+and leg 6b (emit-C sret on-target) now PASSES on a ≥7e484749 build.
+Latency info-leg: 231 ms (in family). Six-months-newer header text
+(15.5→26.4), zero behavioral change.
+
+### Consequence
+
+With W0.5 done, the provenance chain of a darwin tarball is fully open:
+C prelude = Apple APSL/BSD via the pinned Zig curation (marker-gated),
+C++ groves = LLVM libc++-18 (Apache-2.0), notices shipped in-artifact.
+**Nothing gates PUBLIC upload of the macOS tarballs anymore** — merge ⇒
+release can publish them alongside the .deb/.rpm.
