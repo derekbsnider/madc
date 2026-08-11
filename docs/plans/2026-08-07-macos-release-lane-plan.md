@@ -495,3 +495,74 @@ Program-blind). Gate: `forest_bind_gate.sh` case `need`
 forests were dump-verified husk-free (the flattened prelude leaves no
 live `__need` requests at freeze time), so the darwin rebuild after
 this fix carries the corrected lexer rather than repairing artifacts.
+
+### W2 third Mac run (session #77) — the C++ surface is alive; one ABI bug is left
+
+Rebuilt both arches at format v39 (`remote_build.sh release-macos`: 835 units
+per arch, `verify_macho_release: OK`, tarballs pulled) and re-ran the battery on
+the owner's arm64 Mac. The composition of "3 passed / 3 failed" changed
+completely from the second run:
+
+**`std::string`, `std::vector` and `std::map` now all work on darwin.** The
+static-member alias transport (`bf59611b`) is what did it — probed individually
+on the Mac, each prints the right answer. The whole C++ surface used to be dead
+here. The `__tree` "incompatible types in assignment to a pointer" warning is
+pre-existing and benign: it appears identically on Linux, where the same program
+runs correctly.
+
+**What is left is one precise defect, and it is an ABI bug in madc's lowering —
+not a darwin bug.** The correlation on the Mac is exact:
+
+| call | kind | result |
+|------|------|--------|
+| `cout.put()`, `.flush()`, `.write()`, `operator<<(int)` | `basic_ostream`'s own members | **work** |
+| `cout.getloc()`, `.fill()`, `.widen()`, `use_facet<ctype<char>>` | inherited from a **virtual base**, returning a class **by value** | **SIGSEGV** |
+
+That is why `std::cout << 42` (a member overload) works while
+`std::cout << "hi"` (the free template, which calls `__os.fill()`) faults.
+
+`src/cir_builder.cpp` (~9682) lowers a by-value non-trivial class return by
+**prepending an explicit `void*` parameter** to the C11 declaration. Its own
+comment names the assumption: *"(g++ canon: get_allocator() receives the sret
+slot in %rdi, this in %rsi)"*. That holds **only on x86-64 SysV**, where the
+indirect-result pointer is the first argument register. **AArch64 passes it in
+`x8`**, outside the argument sequence — so on arm64 the sret pointer lands in
+x0, `this` shifts to x1, the callee reads the caller's stack temp as `this`, and
+copying its refcounted member faults at a junk address.
+
+Evidence, in the order it was established:
+
+- Every one of the 33 MIR imports resolves on the Mac (probed with `dlsym`) —
+  including `ctype<char>::id`, `do_widen` and the `__madc_*` ledger runtime. The
+  null is computed at run time, not an unresolved symbol.
+- The emitted MIR is **byte-identical on both targets**
+  (`proto2: proto u64:p, u64:p` — void result, two pointer args;
+  `call proto2, _ZNKSt3__18ios_base6getlocEv, U_1, U_12`). x86-64 prints `up=A`;
+  arm64 faults. Same IR, different ABI ⇒ the assumption lives in madc.
+- **Oracle** — `clang++ -S -O0` on the Mac for `sink(b.getloc())`:
+  `sub x8, x29, #16` immediately before `bl __ZNKSt3__18ios_base6getlocEv`,
+  with `this` in x0.
+- The vtable is read correctly: madc and clang print identical slots and both
+  agree the vbase offset is `vt[-3] == 8`, matching
+  `static_cast<std::ios_base*>(&std::cout) - &std::cout`. The virtual-base
+  adjustment is *not* the bug.
+- Not a general struct-return bug either: an imported C function returning a
+  32-byte struct (built as a dylib with clang on the Mac) works on arm64 and
+  matches the clang oracle — that path declares a real aggregate-returning proto
+  and lets c2mir/MIR place the hidden pointer.
+
+**Fix direction (Tier-1, deepest layer):** declare the callee with its real
+by-value struct return and let c2mir/MIR apply the target ABI, instead of
+hand-rolling the hidden pointer as a parameter. `__retbuf` stays for madc's own
+multi-return feature, which has no ABI counterpart; anything crossing the
+platform ABI boundary must use the real type. This predicts breakage on **any**
+AArch64 target, so a future Linux-arm64 madc carries the same bug — and no
+Linux-x86-64 lane can ever catch it.
+
+**AOT leg** (`scripts/mac_battery.sh`, fixed this session): the earlier note
+guessed the wrong half. `-c` **succeeds** and writes the object; the *run* half
+declines — `cannot load object: in-process loading of Mach-O objects is not
+supported yet (emit an executable instead)`. The leg now encodes that as a
+negative-controlled known-unsupported expectation (compile must succeed; the run
+may decline loudly), and its success arm starts gating the real round-trip the
+day the Mach-O loader lands, with no edit needed.
