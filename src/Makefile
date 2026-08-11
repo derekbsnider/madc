@@ -141,6 +141,15 @@ endif
 # plan S1). DARWIN_ARCH names the target arch as spelled in binary/lib names.
 MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
 MACOS_MINOS ?= 12
+# The tree the embedded C prelude is FLATTENED from — open-licensed by
+# default (macos-release-lane W0.5): Apple's own APSL/BSD libc headers as
+# curated and shipped by Zig, staged once per container by
+# scripts/fetch_darwin_open_headers.sh (the pin owner). The SDK stays
+# build-side for compiling/linking madc itself (.tbd stubs — "developing
+# with the SDK", its licensed purpose); pointing THIS variable at the SDK
+# is for the never-shipped oracle diff only — gen_darwin_prelude.sh stamps
+# non-open input and verify_macho_release.sh refuses to release it.
+DARWIN_PRELUDE_SYSROOT ?= /workspace/darwin-open-headers/sysroot-any-darwin-any
 # Apple-target C++ header search, made EXPLICIT. `--sysroot`/`-isysroot` alone
 # is not enough: when the build host has its own libc++ installed (we install
 # libc++-18-dev for the Linux -stdlib=libc++ lane), clang puts its OWN
@@ -275,19 +284,21 @@ HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
 # only on real content change), so this does not churn mtimes or force rebuilds.
-# Apple-target modes (hosted AND cross): the SDK-derived flattened C prelude
-# (stdio.h & co for the run-only Macs) is generated into the per-mode obj tree
-# and embedded ALONGSIDE include/madc/; the per-mode embedded_headers.cpp lives
-# in the obj tree so SDK content never reaches the committed src/ file. stderr
-# stays visible — a failed prelude leaves no .cpp and the build stops loudly
-# (silent header degradation is exactly the G2 failure class this exists to
-# prevent). The cross madcs embed it too: an Apple-target compile resolves
+# Apple-target modes (hosted AND cross): the flattened C prelude (stdio.h &
+# co for the run-only Macs) is generated from $(DARWIN_PRELUDE_SYSROOT) into
+# the per-mode obj tree and embedded ALONGSIDE include/madc/; the per-mode
+# embedded_headers.cpp lives in the obj tree so generated prelude text never
+# reaches the committed src/ file. stderr stays visible, and a failed
+# pipeline REMOVES the .cpp — a stale table from an earlier successful gen
+# must not be silently reused (silent header degradation is exactly the G2
+# failure class this exists to prevent); with the .cpp gone the build stops
+# loudly. The cross madcs embed it too: an Apple-target compile resolves
 # Apple headers, and the darwin grove cross-freezer (forest-carriers S1) must
 # parse the IDENTICAL embedded text the hosted consumer carries.
 ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
-EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(MACOS_SDK) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null; echo done)
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 endif

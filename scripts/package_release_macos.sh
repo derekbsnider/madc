@@ -10,25 +10,22 @@
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/APSL-2.0.txt
 #   madc-<ver>-macos-<arch>/README-macos.txt  ad-hoc signing / quarantine notes
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
 #
 # Inputs are the `make -C src release-macos` artifacts, which are only
 # produced through scripts/verify_macho_release.sh — a tarball here has
-# passed the forest-carrier and signature gates by construction. In-vivo
-# evidence (AMFI, behavior) is scripts/mac_battery.sh on the owner's Macs.
-#
-# ⚠ PROVENANCE (plan W0/W0.5): the embedded C prelude in these binaries is
-# still SDK-derived. Until the provenance-clean prelude lands, these
-# tarballs are for the owner's own machines — NOT for the public GitHub
-# release. This script prints that banner; it does not (cannot) enforce it.
+# passed the forest-carrier, signature, AND prelude-provenance gates by
+# construction (W0.5: the verify script refuses a binary whose embedded
+# prelude marker is not the open-licensed tree, so an SDK-derived prelude
+# can no longer reach a tarball). In-vivo evidence (AMFI, behavior) is
+# scripts/mac_battery.sh on the owner's Macs.
 set -e
 
 VER=$(cat VERSION)
-
-echo "⚠ W0.5 provenance gate: SDK-derived prelude — owner-private artifacts" >&2
-echo "  (public release upload requires the provenance-clean prelude)" >&2
 
 mkdir -p dist
 
@@ -58,6 +55,14 @@ package_arch() {
         echo "package_release_macos: libc++ copyright text not found" >&2
         exit 1
     fi
+    # The embedded C prelude derives from Apple's APSL/BSD libc headers
+    # (W0.5, open-provenance by the verify gate): carry the notice + the
+    # APSL text (docs/licenses/NOTICE-darwin-prelude.txt records the
+    # per-file audit these ship under).
+    install -m 644 docs/licenses/NOTICE-darwin-prelude.txt \
+        "$stage/$root/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt"
+    install -m 644 docs/licenses/APSL-2.0.txt \
+        "$stage/$root/THIRD_PARTY_NOTICES/APSL-2.0.txt"
     cat > "$stage/$root/README-macos.txt" <<EOF
 madc ${VER} for macOS (${pkg_arch})
 ====================================

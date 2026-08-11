@@ -20,27 +20,43 @@
 # (struct timespec appears in several closures).
 #
 # The output feeds scripts/gen_embedded_headers.sh as an EXTRA root for
-# the per-mode embedded_headers.cpp (src/Makefile hosted MODEs). Content
-# is SDK-derived: it must NEVER be committed or synced out of the build
-# tree (the per-mode obj/ dir is the only legitimate home).
+# the per-mode embedded_headers.cpp (src/Makefile hosted MODEs). Either
+# way the generated text lives ONLY in the per-mode obj/ dir — never
+# committed or synced out of the build tree.
 #
-# Usage: gen_darwin_prelude.sh <target-triple> <sdk-path> <outdir>
+# PROVENANCE (macos-release-lane W0.5): the sysroot the prelude is
+# flattened from decides whether the artifact may ship. The default input
+# is the OPEN-LICENSED tree staged by scripts/fetch_darwin_open_headers.sh
+# (APSL/BSD Apple libc headers, Zig curation) — its .PROVENANCE stamp is
+# baked into the umbrella as a marker line, and verify_macho_release.sh
+# greps that marker out of the built binary before a release may ship.
+# A sysroot WITHOUT a stamp (e.g. the Apple SDK, kept only as the
+# never-shipped oracle for prelude diffs) is stamped "sdk-private" and
+# the release gate refuses it.
+#
+# Usage: gen_darwin_prelude.sh <target-triple> <prelude-sysroot> <outdir>
 #        CLANG overrides the compiler (default clang-18).
 
 set -e
 
 CLANG="${CLANG:-clang-18}"
 TARGET="$1"
-SDK="$2"
+SYSROOT="$2"
 OUTDIR="$3"
 
-if [ -z "$TARGET" ] || [ -z "$SDK" ] || [ -z "$OUTDIR" ]; then
-    echo "usage: $0 <target-triple> <sdk-path> <outdir>" >&2
+if [ -z "$TARGET" ] || [ -z "$SYSROOT" ] || [ -z "$OUTDIR" ]; then
+    echo "usage: $0 <target-triple> <prelude-sysroot> <outdir>" >&2
     exit 2
 fi
-if [ ! -d "$SDK/usr/include" ]; then
-    echo "Error: $SDK/usr/include not found (staged macOS SDK required)" >&2
+if [ ! -d "$SYSROOT/usr/include" ]; then
+    echo "Error: $SYSROOT/usr/include not found — run" >&2
+    echo "  scripts/fetch_darwin_open_headers.sh   (stages the open header tree)" >&2
     exit 1
+fi
+if [ -f "$SYSROOT/.PROVENANCE" ]; then
+    PROVENANCE="$(cat "$SYSROOT/.PROVENANCE")"
+else
+    PROVENANCE="sdk-private — not for redistribution"
 fi
 
 # Hosted C standard/POSIX headers baked into hosted-darwin madc binaries.
@@ -89,7 +105,7 @@ UMB_TMP="$OUTDIR/.umbrella.$$"
 # and pulls block-typed declarations (qsort_b & co, `^` syntax) that madc —
 # like gcc — does not support; the headers guard them, so this compiles
 # them out cleanly.
-if ! $CLANG -target "$TARGET" --sysroot "$SDK" -x c -std=c11 -fno-blocks \
+if ! $CLANG -target "$TARGET" --sysroot "$SYSROOT" -x c -std=c11 -fno-blocks \
         -D_Nullable= -D_Nonnull= -D_Null_unspecified= \
         -E -dD -P "$UMB_TMP.c" -o "$UMB_TMP.raw"; then
     rm -f "$UMB_TMP.c" "$UMB_TMP.raw"
@@ -103,8 +119,17 @@ rm -f "$UMB_TMP.c"
 # TU includes any prelude name before the C++ groves — libc++'s __config
 # would flip to its clang-based branches mid-TU. Same filter, same posture.
 "$(dirname "$0")/gcc_posture_filter.sh" "${MADC_PREDEF_GCC_POSTURE:-}" \
-    < "$UMB_TMP.raw" > "$UMB_TMP"
+    < "$UMB_TMP.raw" > "$UMB_TMP.flt"
 rm -f "$UMB_TMP.raw"
+# The marker verify_macho_release.sh greps out of shipped binaries: the
+# embedded umbrella rides into .rodata verbatim (gen_embedded_headers.sh
+# string tables survive llvm-strip), so the binary itself names its
+# prelude's provenance. A C comment — madc's lexer drops it at serve time.
+{
+    printf '/* MADC-DARWIN-PRELUDE-PROVENANCE: %s */\n' "$PROVENANCE"
+    cat "$UMB_TMP.flt"
+} > "$UMB_TMP"
+rm -f "$UMB_TMP.flt"
 
 # A prelude without printf is the exact silent failure this script exists
 # to prevent — refuse to install it.
@@ -132,4 +157,10 @@ MAN_TMP="$OUTDIR/.manifest.$$"
 printf '%s\n' "${HEADERS[@]}" > "$MAN_TMP"
 write_on_change "$MAN_TMP" "$OUTDIR/.MANIFEST"
 
-echo "darwin prelude: $OUTDIR (${#HEADERS[@]} header names)"
+# Build-side copy of the stamp (dot-named: stays out of the embedded table)
+# so tooling can read the prelude's provenance without parsing the umbrella.
+STAMP_TMP="$OUTDIR/.provenance.$$"
+printf '%s\n' "$PROVENANCE" > "$STAMP_TMP"
+write_on_change "$STAMP_TMP" "$OUTDIR/.PROVENANCE"
+
+echo "darwin prelude: $OUTDIR (${#HEADERS[@]} header names; $PROVENANCE)"

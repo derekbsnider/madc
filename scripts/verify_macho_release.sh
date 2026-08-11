@@ -5,7 +5,7 @@
 #
 #   bash scripts/verify_macho_release.sh <macho-binary> <expected-forest.bin>
 #
-# Three authorities, all runnable on the Linux container:
+# Four authorities, all runnable on the Linux container:
 #   1. the __MADC,__forest section exists and its BYTES equal the freeze's
 #      standalone container (extracted by load-command offset/size);
 #   2. the extracted bytes read back as a forest (the same --dump-forest
@@ -13,6 +13,10 @@
 #   3. arm64 slices carry LC_CODE_SIGNATURE (llvm-strip re-signs ad-hoc when
 #      it rewrites the file; a missing signature means AMFI kills the binary
 #      on sight). x86-64 darwin does not require one.
+#   4. the embedded C prelude is OPEN-provenance (W0.5): the umbrella's
+#      marker line rides in .rodata, so the binary names its own prelude
+#      input. An "sdk-private" stamp (the never-shipped oracle diff input)
+#      or a missing marker refuses the release here, mechanically.
 # In-vivo AMFI acceptance stays the Mac battery's job (W2).
 set -e
 
@@ -82,4 +86,21 @@ if [ "$ARCH" = "0x0100000c" ] || [ "$ARCH" = "16777228" ]; then
     fi
 fi
 
-echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact)"
+# 4. Open-provenance prelude only. Positive match on the open stamp shape
+#    (scripts/fetch_darwin_open_headers.sh is the stamp's one owner) — an
+#    unknown or sdk-private stamp fails; so does a missing marker.
+PROV=$(grep -a -o 'MADC-DARWIN-PRELUDE-PROVENANCE: [^*]*' "$BIN" | head -1)
+case "$PROV" in
+    "MADC-DARWIN-PRELUDE-PROVENANCE: zig-"*" sha256="*)
+        ;;
+    "")
+        echo "verify_macho_release: FAILED — no prelude provenance marker in $BIN" >&2
+        exit 1
+        ;;
+    *)
+        echo "verify_macho_release: FAILED — prelude is not open-provenance: $PROV" >&2
+        exit 1
+        ;;
+esac
+
+echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact, ${PROV#MADC-DARWIN-PRELUDE-PROVENANCE: })"
