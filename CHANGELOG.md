@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **W3 — `libmadc_rt`: the emitted-C runtime ships in the macOS tarballs.**
+  Emitted C that enters a try/catch (any `std::cout` insertion does, via
+  libc++'s stream machinery) or frees a VLA references madc's C-lane
+  runtime — the 8-symbol exception/cleanup vocabulary measured on real
+  hardware in session #80, plus `__madc_vla_free`. The tarballs now ship
+  `lib/libmadc_rt.a`: the same `scripts/ledger_sources.txt` objects libmadc
+  already holds (`src/rt/`, the dual-build strict-C11 runtime), re-archived
+  alone — no new code, one list owner. `cc program.c -L<dir>/lib -lmadc_rt
+  -lc++` is the documented link line (README-macos.txt); `<ns_madc>`
+  programs still need the full runtime, named as the limitation. Gated
+  twice: `emitc_sret_gate` leg 2b links its specimen against the subset
+  archive ALONE (with a no-runtime negative control that must fail on a
+  `__madc_` symbol), and mac_battery leg 6c does the on-target twin against
+  the tarball's archive with Apple `cc`. The full `libmadc.dylib` stays
+  deferred until darwin AOT `-o` exists.
+
 - **W0.5 — the darwin C prelude is provenance-clean; nothing gates public
   macOS artifacts anymore.** The embedded prelude is now flattened from an
   open-licensed header tree — Apple's own APSL/BSD libc headers as curated

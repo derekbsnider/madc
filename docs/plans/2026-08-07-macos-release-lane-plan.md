@@ -122,11 +122,17 @@ macOS libc header tree for years):
   driven by a self-contained script (`scripts/mac_battery.sh`) the
   owner can run and paste/return the log from. The release checklist
   gains "mac battery log in evidence" beside the Linux packed run.
-- **W3 — libmadc dylib question**: Linux packages ship `libmadc.so.0`
+- **W3 — libmadc dylib question**: ~~Linux packages ship `libmadc.so.0`
   because `-o` executables reference it at runtime. Verify what
   darwin AOT output references; if needed, build
   `libmadc.dylib` (`@rpath` install_name) in the hosted MODEs and
-  include it in the tarball.
+  include it in the tarball.~~ **ANSWERED + SHIPPED, session #81
+  (04b78626)** — see "W3 as implemented" below. What darwin consumers
+  actually reference today is the emitted-C runtime (the 8-symbol
+  exception/cleanup vocabulary + `__madc_vla_free`), served by a
+  `lib/libmadc_rt.a` subset archive in the tarball. The full
+  `libmadc.dylib` stays deferred until darwin AOT `-o` exists (the
+  battery's AOT leg still reads the loud decline).
 - **W4 — packaging step**: extend `scripts/package_release.sh` (or a
   sibling `package_release_macos.sh`) to stage the tarballs +
   extend SHA256SUMS; `gh release upload` alongside the .deb/.rpm.
@@ -1280,3 +1286,73 @@ C prelude = Apple APSL/BSD via the pinned Zig curation (marker-gated),
 C++ groves = LLVM libc++-18 (Apache-2.0), notices shipped in-artifact.
 **Nothing gates PUBLIC upload of the macOS tarballs anymore** — merge ⇒
 release can publish them alongside the .deb/.rpm.
+
+## W3 as implemented (session #81, same day)
+
+Owner: "W3 sounds like it should be small... maybe we should get that
+done before the release so it can be part of the package."
+
+Session #80's evidence made W3 small: the only runtime surface darwin
+emitted-C consumers reference is the exception/cleanup vocabulary plus
+`__madc_vla_free`. The recon that collapsed it further: those symbols
+already live in **`src/rt/`** — the dual-build C-lane runtime
+(forest-carriers S5), deliberately strict C11 with no C++-runtime
+dependency, membership owned by `scripts/ledger_sources.txt`. The archive
+is therefore a REPACKAGING, not new code:
+
+- **`lib/libmadc_rt.a`** = the same ledger objects libmadc holds,
+  re-archived alone (`src/Makefile`; per-mode
+  `libmadc_rt-hosted-<arch>-macos.a` builds beside each hosted darwin
+  binary, and the Linux twin builds in the default targets so the
+  container gates it per-commit).
+- **Completeness audit, mechanical**: every
+  `need_output_extern("__madc_*")` site in cir_builder.cpp = 15 symbols;
+  13 are the ledger pair's exports, and the remaining two are
+  `<ns_madc>`'s `__madc_sys_init/_once` — which call
+  `madc::sys_populate_args` (full C++ runtime) and are excluded by the
+  same membership rule that keeps the ledger sources freestanding. The
+  README names that limitation: madc-dialect (`<ns_madc>`) emitted
+  programs need the full runtime, which the tarball does not ship.
+- **Gate (container, in fulltest)**: `emitc_sret_gate.sh` leg 2b links
+  leg 2's emitted C against the subset archive ALONE and runs it; its
+  own negative control links with NO runtime and must fail on a
+  `__madc_` symbol. Green at 04b78626 (and the negctl verified the
+  specimen really references the runtime).
+- **Battery leg 6c (on-target)**: emit a cout-inserting program (enters
+  try/catch via `__put_character_sequence`), link against the tarball's
+  `lib/libmadc_rt.a` with Apple `cc`, run, gate "rt ok". A tarball
+  without the archive FAILS with the predates-reason. This turns #80's
+  dyld-abort evidence into the standing green.
+- **Packaging**: `package_release_macos.sh` ships `lib/libmadc_rt.a` +
+  the README "Emitted C" section with the exact link line.
+
+### Darwin AOT `-o` probed on-target (same session — the owner's question)
+
+Four probes on the Mac against the W3 tarball settle what the original
+W3 item left open ("verify what darwin AOT output references"):
+
+1. **Runtime-free C program, `-o`: emits and RUNS today** — the axis-B
+   Mach-O executable writer + emit-time ad-hoc signature, exercised
+   end-to-end on the Mac itself for the first time.
+2. **Runtime-needing program, bare `-o`**: loud refusal that names the
+   fix ("build it into the image with -static-libmadc (C-lane machinery
+   only)").
+3. **C++ program, `-o -static-libmadc`**: emit succeeds (static verify
+   passes — the darwin forest DOES carry the ledger modules), but dyld
+   aborts: `__ZNSt3__14coutE ... Expected in: /usr/lib/libSystem.B.dylib`.
+   The executable writer two-level-binds EVERY import to libSystem; C++
+   symbols live in libc++.1.dylib. The ONE missing slice for C++
+   programs: LC_LOAD_DYLIB for the flavor's link libs + per-import
+   binding that resolves there (fork `mir-macho.c` + exe-lane plumbing
+   to pass the flavor link libs).
+4. **C-lane try/throw/catch, `-o -static-libmadc`: `caught 42` — works
+   today.** The ledger-carried rt_except rides inside the image;
+   imports are libc-only, which the libSystem binding serves.
+
+So darwin AOT `-o` stands: DONE for runtime-free C and for
+C-lane-runtime programs via `-static-libmadc`; one writer slice (libc++
+dylib binding) short for C++ programs; the full-runtime dynamic case
+stays with the deferred libmadc.dylib. The battery AOT leg's
+"known-unsupported" remains about the object LOADER (`-c` + run the
+`.o`), a separate axis. Candidate follow-up (owner to call): a battery
+leg covering probes 1+4 so this becomes standing evidence.
