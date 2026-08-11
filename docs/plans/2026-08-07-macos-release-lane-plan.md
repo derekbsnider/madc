@@ -789,6 +789,37 @@ invisible to every existing lane. The Mac is the only place that can currently
 run it (`clang -target arm64-apple-macos` on the container can at least compile
 and check the x8 setup in the asm; running needs the Mac).
 
+**⚠️ OPEN QUESTION — settle this BEFORE implementing, not during.** The
+initializer form works because the destination *is* the object being declared.
+That covers a fresh temp. It does not cover the case where the result goes into
+an object that **already exists**:
+
+```c++
+std::string c;        /* already constructed, maybe already holding a value */
+...
+c = f();              /* no initializer to fuse the destination into */
+```
+
+Here there is no declaration to attach the call to, and every spelling that
+assigns through a pointer (`*(struct pad32 *)&c = f(...)`, a shim, a temp plus
+copy) reintroduces exactly the bit-copy that corrupts a self-referential
+small-string — the failure that killed attempt 2. So the pre-pass needs a
+defined answer for it, and the plausible ones differ a lot in cost:
+
+- emit a fresh padded temp as an initializer, then run the class's real
+  `operator=` from the temp into `c` (correct, but adds a copy-assign the JIT
+  lane does not do — and needs the assignment operator to be reachable at that
+  point in the emitted C);
+- restrict the rewrite to initialization contexts and leave assignment on the
+  old (x86-64-only) shape, which is honest but leaves emit-C partly unfixed and
+  must then SAY so rather than look complete;
+- hoist the destination's declaration to the call site so the initializer form
+  always applies (a bigger tree change, and illegal where the object's lifetime
+  must start earlier).
+
+Whichever is chosen, the answer belongs in this doc before code is written; the
+first two are the realistic candidates.
+
 #### After the fix: a THIRD defect, and it is Linux-reproducible
 
 The sret fix is real and verified — but re-running the Mac probes shows the
