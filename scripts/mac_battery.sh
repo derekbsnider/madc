@@ -16,11 +16,14 @@
 #   2  C surface from the embedded prelude (no CLT needed)
 #   3  C++ surface from the packed forest groves (string/vector/map/sstream/
 #      iostream — on a header-less Mac these can ONLY come from the forest)
+#   3b cout << "hi" as its OWN probe — the darwin sret arc's driving symptom;
+#      unmaskable by defects earlier in the chained groves probe
 #   4  the madc::value intrinsic, include-free
 #   5  exec:// channels end-to-end (spawn /usr/bin/sort, value carriers)
 #   6  AOT object round-trip (-c then run the .o through MIR's loader) —
 #      known-unsupported on darwin until the Mach-O object writer lands; the
-#      leg asserts a LOUD decline that leaves no object behind
+#      leg asserts a LOUD decline at whichever stage says no (today: the .o
+#      LOAD declines; the -c step exits 0)
 #   7  compile latency of a <string> program (reported, not gated)
 
 MADC="$1"
@@ -112,6 +115,24 @@ EOF
 printf 'sz=5 a=25 b=1\n' > groves.expect
 check "C++ groves (string/vector/map/sstream/iostream)" groves.expect "$MADC" groves.mad
 
+# --- 3b. cout << "hi", alone -------------------------------------------------
+# The single construct that drove the darwin sret arc (sessions #76-#78), as
+# its own probe. The groves leg above chains several constructs, so one
+# earlier line hitting a known-open defect masks every stream operation after
+# it — a leg a known-open defect can mask is not evidence for anything past
+# the mask, which is exactly how the #78 fix stayed invisible to this battery
+# (3 passed / 3 failed, identical composition, while direct probes all
+# passed). This leg cannot be masked.
+cat > couthi.mad <<'EOF'
+#include <iostream>
+int main() {
+    std::cout << "hi" << std::endl;
+    return 0;
+}
+EOF
+printf 'hi\n' > couthi.expect
+check "iostream alone (cout << \"hi\" — the darwin sret probe)" couthi.expect "$MADC" couthi.mad
+
 # --- 4. value intrinsic, include-free ---------------------------------------
 cat > val.mad <<'EOF'
 int main() {
@@ -155,16 +176,37 @@ printf 'aot 42\n' > aot.expect
 # Mach-O relocatables are not written or loaded yet (the MIR object seam is
 # ELF-only so far), so on darwin this leg is a KNOWN-UNSUPPORTED expectation,
 # not a failure. It is still a real check, classified by exit status: madc
-# must DECLINE loudly and leave no object behind. Exit 0 with an object that
-# will not run, a silent nonzero, or a stray .o are all genuine failures — and
-# the day the Mach-O writer lands, the success arm starts gating the real
-# round-trip with no edit here. The decline's own words are echoed rather than
-# matched, so the log records what madc actually said instead of a guess.
+# must DECLINE LOUDLY at whichever stage says no. On the 15.3.2 arm64 Mac
+# that is the RUN (the -c step exits 0; loading the .o declines) — the
+# session-#78 run proved the old shape here accepted only a compile-stage
+# decline and reported FAIL for exactly the behaviour this leg was written
+# to accept ("read the code, not the note"). A silent nonzero, or exit 0
+# with wrong output, are genuine failures — and the day the Mach-O writer
+# lands, the success arm starts gating the real round-trip with no edit
+# here. The decline's own words are echoed rather than matched, so the log
+# records what madc actually said instead of a guess.
 rm -f aot.o
 if "$MADC" -c aot.mad -o aot.o > aot.compile.out 2>&1; then
-    check "AOT object round-trip (-c then run .o)" aot.expect "$MADC" aot.o
+    AOT_OUT=$("$MADC" aot.o 2>&1); AOT_RC=$?
+    if [ $AOT_RC -eq 0 ] && [ "$AOT_OUT" = "$(cat aot.expect)" ]; then
+        echo "ok   - AOT object round-trip (-c then run .o)"
+        PASS=$((PASS + 1))
+    elif [ $AOT_RC -ne 0 ] && [ -n "$AOT_OUT" ]; then
+        echo "ok   - AOT object round-trip (known-unsupported on darwin: .o load declined)"
+        echo "       declined: $(printf '%s\n' "$AOT_OUT" | head -1)"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL - AOT object round-trip (rc=$AOT_RC)"
+        if [ $AOT_RC -ne 0 ]; then
+            echo "    .o load failed SILENTLY (no diagnostic)"
+        else
+            echo "--- got:";      printf '%s\n' "$AOT_OUT" | sed 's/^/    /'
+            echo "--- expected:"; sed 's/^/    /' aot.expect
+        fi
+        FAIL=$((FAIL + 1))
+    fi
 elif [ -s aot.compile.out ] && [ ! -e aot.o ]; then
-    echo "ok   - AOT object round-trip (known-unsupported on darwin)"
+    echo "ok   - AOT object round-trip (known-unsupported on darwin: compile declined)"
     echo "       declined: $(head -1 aot.compile.out)"
     PASS=$((PASS + 1))
 else
