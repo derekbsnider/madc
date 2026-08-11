@@ -895,3 +895,50 @@ may be plain. Negative controls: a trivially-copyable class return
 minimum marked count, so the gate cannot pass vacuously if the reducer stops
 compiling; and — verified once by hand, not shipped — suppressing the marker at
 its owner makes the gate name all three offenders and exit 1.
+
+### W2 fourth Mac run (session #78) — the blocker is gone, and the battery could not see it
+
+Rebuilt both arches at `43fe572a` (`release-macos`: tarballs pulled) and ran the
+battery on the owner's arm64 Mac. **The tally is unchanged — 3 passed, 3 failed,
+the same three legs as session #77.** That is not a null result; it is the
+finding.
+
+The five probes run directly, which the battery never reaches:
+
+| probe | session #77 | now |
+|---|---|---|
+| `cout.fill()` | SIGSEGV @0x9560a2 | `fill=32` |
+| `cout.widen('x')` | SIGSEGV | `widen=x` |
+| **`cout << "hi"`** | **SIGSEGV @0x0** | **`hi`** |
+| `use_facet<ctype<char>>(cout.getloc())` | fixed in #77 | `up=A` |
+| `std::locale l = cout.getloc()` | — | `loc ok` (+ the known warning) |
+
+**So the C++-on-darwin arc closes here**, and the remaining battery failures are
+all pre-existing layers with their own slices: the husk (`os.str()`, off behind
+`FEATURE_FOREST_ALIAS_SHELL_COMPLETE`), the `value` intrinsic SIGSEGV, and the
+AOT leg below.
+
+**Two defects in the EVIDENCE RUN itself, which is why the tally moved zero:**
+
+1. **The battery has no leg for `std::cout << "hi"`.** The single symptom that
+   drove three sessions of work was never covered by the run whose job is to be
+   the release evidence. Its C++ leg (`groves`) fails earlier, on the husk's
+   `os.str()`, so everything downstream of that line in the same probe is dark —
+   including every stream operation. A leg that a known-open defect can mask is
+   not evidence for anything past the mask. The `cout << "hi"` case needs its own
+   leg, independent of the groves probe.
+
+2. **The AOT leg's known-unsupported arm is on the wrong branch.** Session #77
+   recorded the right intent — "compile must succeed, the run may decline
+   loudly" — but the code does the opposite: the `elif` that accepts a loud
+   decline only fires when the COMPILE fails. On darwin the compile SUCCEEDS and
+   writes the object; the RUN declines ("in-process loading of Mach-O objects is
+   not supported yet"). So the leg takes the strict branch and reports FAIL for
+   precisely the behaviour it was rewritten to accept. The note and the code
+   disagree, and the code is wrong. Correct shape: compile must succeed; then
+   the run either produces `aot 42` (the real round-trip, the day the Mach-O
+   loader lands) or declines LOUDLY (nonzero + a diagnostic) — a silent nonzero,
+   or exit 0 with wrong output, stays a failure.
+
+Full validation at `43fe572a`: fulltest 1019/0, libc++ JIT 1015/0, unit
+9019/9019, EXE 990/0, OBJ 990/0, release + packed 1019/0, trailers GREEN.
