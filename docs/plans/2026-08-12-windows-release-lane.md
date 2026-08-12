@@ -164,6 +164,27 @@ Inventory from recon (session #83 greps):
 - **`madc_posix_io.cpp`**: the deliberate POSIX-IO surface — audit
   what of it is script-facing API (must work via Win32 equivalents)
   vs host plumbing.
+- **PROBED WORKLIST (session #85): 35/49 TUs already compile under
+  x86_64-w64-mingw32-g++ 13-posix** (`-fsyntax-only -D_UCRT
+  -D__USE_MINGW_ANSI_STDIO=1`; per-TU results in the container's
+  `tmp/win/compile_probe2.txt`; counts are FIRST-error for
+  fatal-include failures — e.g. parser.cpp's `<syslog.h>` hides behind
+  its readline fatal, so each fix can reveal one more). The 14:
+  - Seam owners (= the designed Win32 backends): `madc_dl.cpp`
+    (dlfcn.h), `madc_posix_io.cpp` (sys/mman.h), `madc_process.cpp`
+    (sys/wait.h).
+  - Function-level gaps: `madc_globals.cpp` (readlink → 
+    GetModuleFileName arm), `ns_madc.cpp` (gethostname → winsock),
+    `madc_datachannel.cpp` (pread ×3 → seek+read owner),
+    `cir_emit_c.cpp` (open_memstream → portable buffer writer),
+    `madc.cpp` (execinfo backtrace → CaptureStackBackTrace or stub),
+    `madc_program.cpp` (sys/resource rlimit → stub/JobObject).
+  - Dependency gaps: `lexer.cpp` + `parser.cpp` (readline → make the
+    REPL line-editor optional with an fgets fallback; native readline
+    exists in MSYS2 pacman), `pch.cpp` (zlib → Ubuntu ships
+    libz-mingw-w64-dev), `madc_socket_channel.cpp` (netdb.h →
+    winsock2/ws2tcpip), `ns_perl.cpp` (glob.h → FindFirstFile-backed
+    or vendored glob).
 - Rule discipline: every port goes through a named seam owner
   (helper-methods.md, no-parallel-implementations.md) — one
   implementation per concern, two platform backends.
