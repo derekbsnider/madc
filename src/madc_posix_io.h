@@ -90,6 +90,24 @@ void glob_paths(const std::string &pattern, std::vector<std::string> &out);
 // this signature only.
 void *map_file_readonly(const char *path, std::size_t &length);
 
+// Create + open a fresh uniquely-named temporary file: the fd (read/write,
+// binary) is returned, its path through `path_out`; -1 on failure. `prefix`
+// names the purpose ("madc_exec_stdout") — the owner owns placement and
+// uniqueness. POSIX arm = mkstemp under /tmp; the Win32 arm rides _tempnam
+// + an _O_CREAT|_O_EXCL claim loop (plain files, NOT delete-on-close —
+// callers close the fd and re-read the file by path).
+int make_temp_file(const char *prefix, std::string &path_out);
+
+// This process's accumulated CPU time, user+system, in microseconds; 0 on
+// failure. POSIX arm = getrusage(RUSAGE_SELF); Win32 arm = GetProcessTimes.
+unsigned long long process_cpu_microseconds();
+
+// This process's CURRENT resident set in bytes; 0 on failure. Linux reads
+// /proc/self/statm, macOS mach task_info, Win32 GetProcessMemoryInfo — the
+// in-process invoke-limits metric (child metering rides rusage inside the
+// POSIX-only subprocess machinery instead).
+unsigned long long process_resident_bytes();
+
 #ifdef _WIN32
 // GetLastError code -> trimmed FormatMessage text ("Windows error N" when
 // the system has no message). The one Win32-error formatter — error-path

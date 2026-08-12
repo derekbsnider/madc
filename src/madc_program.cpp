@@ -20,12 +20,16 @@
 #include <utility>
 #include <vector>
 
-#include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
-#ifdef __APPLE__
-#include <mach/mach.h>	// current_resident_bytes: task_info resident size
+#ifndef _WIN32
+// The subprocess-isolation (fork_per_invocation) machinery: fork/wait4 and
+// the child-rusage metering. win64 has no fork; the isolation contract
+// there is an open design arc (in-process vs subprocess reframing,
+// 2026-08-12) — until its spawn backend lands, requesting it fails loudly
+// at invocation time.
+#include <sys/resource.h>
+#include <sys/wait.h>
 #endif
 
 extern thread_local bool madc_verbose;
@@ -37,6 +41,7 @@ extern thread_local bool madc_verbose;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -55,11 +60,6 @@ error::phase phase_from_program(Program::DiagnosticPhase ph)
 	case Program::DiagnosticPhase::unknown:  return error::phase::unknown;
     }
     return error::phase::unknown;
-}
-
-std::string temp_source_template()
-{
-    return "/tmp/madc_program_XXXXXX";
 }
 
 std::string ensure_trailing_newline(const std::string &source)
@@ -92,17 +92,10 @@ public:
 	close_and_unlink();
     }
 
-    bool create(const char *pattern)
+    bool create(const char *prefix)
     {
-	std::vector<char> writable;
-	for ( const char *p = pattern; *p; ++p )
-	    writable.push_back(*p);
-	writable.push_back('\0');
-	fd_ = mkstemp(&writable[0]);
-	if ( fd_ < 0 )
-	    return false;
-	path_.assign(&writable[0]);
-	return true;
+	fd_ = madc::detail::make_temp_file(prefix, path_);
+	return fd_ >= 0;
     }
 
     int fd() const { return fd_; }
@@ -130,6 +123,11 @@ private:
     std::string path_;
 };
 
+#ifndef _WIN32
+// The subprocess (fork_per_invocation) report transport: the child
+// serializes result/diagnostics into a temp file, the parent reads them
+// back. POSIX-only with the fork machinery itself; the future spawn
+// backend (subprocess design arc, 2026-08-12) re-exposes it cross-platform.
 void write_u64(std::ostream &os, uint64_t value)
 {
     os.write(reinterpret_cast<const char *>(&value), sizeof(value));
@@ -350,6 +348,7 @@ bool read_exec_child_report(const std::string &path, exec_child_report &report)
 	return false;
     return true;
 }
+#endif // !_WIN32 — subprocess report transport
 
 struct expression_function_spec
 {
@@ -734,6 +733,8 @@ bool invoke_program_zero_arg_function(Program &pgm,
     }
 }
 
+#ifndef _WIN32
+// Subprocess-machinery consumer only (child stdout/stderr read-back).
 std::string read_text_file(const std::string &path)
 {
     std::ifstream is(path.c_str(), std::ios::binary);
@@ -741,6 +742,7 @@ std::string read_text_file(const std::string &path)
     os << is.rdbuf();
     return os.str();
 }
+#endif
 
 bool text_list_contains(const std::vector<std::string> &items, const std::string &value)
 {
@@ -1940,10 +1942,7 @@ public:
 	if ( saved_fd < 0 )
 	    return false;
 
-	std::string tmpl = "/tmp/madc_fd_capture_XXXXXX";
-	std::vector<char> writable(tmpl.begin(), tmpl.end());
-	writable.push_back('\0');
-	temp_fd = mkstemp(&writable[0]);
+	temp_fd = madc::detail::make_temp_file("madc_fd_capture", path);
 	if ( temp_fd < 0 )
 	{
 	    close(saved_fd);
@@ -1951,7 +1950,6 @@ public:
 	    return false;
 	}
 
-	path.assign(&writable[0]);
 	if ( dup2(temp_fd, target_fd) < 0 )
 	{
 	    restore();
@@ -1964,7 +1962,9 @@ public:
     {
 	if ( temp_fd < 0 )
 	    return 0;
-	off_t end = lseek(temp_fd, 0, SEEK_END);
+	// fd_size == end position here — the capture only ever appends.
+	// (64-bit on every arm; a raw lseek is 32-bit on mingw.)
+	long long end = madc::detail::fd_size(temp_fd);
 	return end >= 0 ? static_cast<uint64_t>(end) : 0;
     }
 
@@ -1991,43 +1991,15 @@ private:
     std::string path;
 };
 
+// In-process CPU/resident metrics live in madc_posix_io
+// (process_cpu_microseconds / process_resident_bytes — the detail owners);
+// what remains here is the CHILD-rusage metering of the POSIX-only
+// subprocess machinery.
+#ifndef _WIN32
 uint64_t timeval_to_microseconds(const timeval &tv)
 {
     return static_cast<uint64_t>(tv.tv_sec) * UINT64_C(1000000)
 	+ static_cast<uint64_t>(tv.tv_usec);
-}
-
-uint64_t current_cpu_microseconds()
-{
-    struct rusage usage;
-    if ( getrusage(RUSAGE_SELF, &usage) != 0 )
-	return 0;
-    return timeval_to_microseconds(usage.ru_utime)
-	+ timeval_to_microseconds(usage.ru_stime);
-}
-
-uint64_t current_resident_bytes()
-{
-#ifdef __APPLE__
-    mach_task_basic_info info;
-    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if ( task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-		   reinterpret_cast<task_info_t>(&info), &count)
-	 != KERN_SUCCESS )
-	return 0;
-    return info.resident_size;
-#else
-    std::ifstream statm("/proc/self/statm");
-    uint64_t pages_total = 0;
-    uint64_t pages_resident = 0;
-    statm >> pages_total >> pages_resident;
-    if ( !statm )
-	return 0;
-    long page_size = sysconf(_SC_PAGESIZE);
-    if ( page_size <= 0 )
-	return 0;
-    return pages_resident * static_cast<uint64_t>(page_size);
-#endif
 }
 
 // Peak resident set from getrusage, normalized to bytes (Linux reports
@@ -2052,6 +2024,7 @@ static std::string fd_reopen_path(int fd)
     return "/proc/self/fd/" + std::to_string(fd);
 #endif
 }
+#endif // !_WIN32 — subprocess child metering
 
 Program::RegistrationPolicy::RuntimeEvalChildPolicy
 runtime_eval_child_policy_from_public(const runtime_eval_policy &policy)
@@ -2818,10 +2791,8 @@ struct program::impl
 			  const std::string &virtual_filename,
 			  bool (impl::*fn)(const std::string &, const std::string &))
     {
-	std::string path = temp_source_template();
-	std::vector<char> writable(path.begin(), path.end());
-	writable.push_back('\0');
-	int fd = mkstemp(&writable[0]);
+	std::string path;
+	int fd = madc::detail::make_temp_file("madc_program", path);
 	if ( fd < 0 )
 	{
 	    clear_public_errors();
@@ -2833,7 +2804,6 @@ struct program::impl
 	    return false;
 	}
 
-	path.assign(&writable[0]);
 	close(fd);
 
 	std::ofstream out(path.c_str(), std::ios::binary);
@@ -2862,10 +2832,8 @@ struct program::impl
 			  bool (impl::*fn)(const std::string &, const std::string &, bool),
 			  bool have_result)
     {
-	std::string path = temp_source_template();
-	std::vector<char> writable(path.begin(), path.end());
-	writable.push_back('\0');
-	int fd = mkstemp(&writable[0]);
+	std::string path;
+	int fd = madc::detail::make_temp_file("madc_program", path);
 	if ( fd < 0 )
 	{
 	    clear_public_errors();
@@ -2877,7 +2845,6 @@ struct program::impl
 	    return false;
 	}
 
-	path.assign(&writable[0]);
 	close(fd);
 
 	std::ofstream out(path.c_str(), std::ios::binary);
@@ -2963,14 +2930,27 @@ struct program::impl
 	return ok;
     }
 
+#ifdef _WIN32
+    // No fork on win64. The isolation contract there is the subprocess
+    // design arc (in-process vs subprocess reframing, 2026-08-12): until
+    // its spawn backend lands, requesting isolation fails LOUDLY here —
+    // never a silent in-process downgrade of a sandbox the host asked for.
+    bool exec_compiled_in_child(const std::string &, const std::string &)
+    {
+	return fail_runtime("program::exec: subprocess isolation "
+			    "(security_policy.execution = fork_per_invocation) "
+			    "is not available on this platform; use "
+			    "execution_mode::in_process");
+    }
+#else
     bool exec_compiled_in_child(const std::string &path, const std::string &display_file)
     {
 	temp_file child_stdout;
 	temp_file child_stderr;
 	temp_file child_report;
-	if ( !child_stdout.create("/tmp/madc_exec_stdout_XXXXXX")
-	  || !child_stderr.create("/tmp/madc_exec_stderr_XXXXXX")
-	  || !child_report.create("/tmp/madc_exec_report_XXXXXX") )
+	if ( !child_stdout.create("madc_exec_stdout")
+	  || !child_stderr.create("madc_exec_stderr")
+	  || !child_report.create("madc_exec_report") )
 	    return fail_runtime("program::exec could not create child capture files");
 
 	pid_t pid = fork();
@@ -3111,6 +3091,7 @@ struct program::impl
 	    return fail_runtime("program::exec child did not return a report");
 	return report.ok;
     }
+#endif // _WIN32 / fork arm
 
     bool compile_file_with_display(const std::string &path, const std::string &display_file)
     {
@@ -3605,8 +3586,8 @@ struct program::impl
     invoke_snapshot capture_invoke_snapshot()
     {
 	invoke_snapshot snap;
-	snap.cpu_microseconds = current_cpu_microseconds();
-	snap.resident_bytes = current_resident_bytes();
+	snap.cpu_microseconds = madc::detail::process_cpu_microseconds();
+	snap.resident_bytes = madc::detail::process_resident_bytes();
 	return snap;
     }
 
@@ -3616,7 +3597,7 @@ struct program::impl
     {
 	if ( current_invoke_limits.cpu_ms > 0 )
 	{
-	    uint64_t after_cpu = current_cpu_microseconds();
+	    uint64_t after_cpu = madc::detail::process_cpu_microseconds();
 	    uint64_t used_cpu = after_cpu >= before.cpu_microseconds
 		? after_cpu - before.cpu_microseconds
 		: 0;
@@ -3633,7 +3614,7 @@ struct program::impl
 
 	if ( current_invoke_limits.memory_bytes > 0 )
 	{
-	    uint64_t after_resident = current_resident_bytes();
+	    uint64_t after_resident = madc::detail::process_resident_bytes();
 	    uint64_t used_resident = after_resident >= before.resident_bytes
 		? after_resident - before.resident_bytes
 		: 0;
@@ -3867,14 +3848,25 @@ struct program::impl
 	}
     }
 
+#ifdef _WIN32
+    // Same contract as exec_compiled_in_child's Win arm above: loud, never
+    // a silent in-process downgrade.
+    bool call_in_child(const std::string &, const std::vector<value> &, value *)
+    {
+	return fail_runtime("program::call: subprocess isolation "
+			    "(security_policy.execution = fork_per_invocation) "
+			    "is not available on this platform; use "
+			    "execution_mode::in_process");
+    }
+#else
     bool call_in_child(const std::string &name, const std::vector<value> &args, value *result)
     {
 	temp_file child_stdout;
 	temp_file child_stderr;
 	temp_file child_report;
-	if ( !child_stdout.create("/tmp/madc_call_stdout_XXXXXX")
-	  || !child_stderr.create("/tmp/madc_call_stderr_XXXXXX")
-	  || !child_report.create("/tmp/madc_call_report_XXXXXX") )
+	if ( !child_stdout.create("madc_call_stdout")
+	  || !child_stderr.create("madc_call_stderr")
+	  || !child_report.create("madc_call_report") )
 	    return fail_runtime("program::call could not create child capture files");
 
 	pid_t pid = fork();
@@ -4011,6 +4003,7 @@ struct program::impl
 	    return fail_runtime("program::call child did not return a report");
 	return report.ok;
     }
+#endif // _WIN32 / fork arm
 
     bool call(const std::string &name, const std::vector<value> &args, value *result)
     {

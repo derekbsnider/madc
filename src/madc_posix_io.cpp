@@ -9,18 +9,28 @@
 #ifdef _WIN32
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>	// _O_CREAT/_O_EXCL — make_temp_file's atomic claim
 #include <io.h>
 #include <limits.h>
+#include <share.h>	// _SH_DENYNO for _sopen_s
 #include <sys/stat.h>	// _fstat64 — the 64-bit stat the 32-bit CRT default hides
 #include <windows.h>
+// Version 2 = the K32* kernel32 inlines — no psapi.dll import needed.
+#define PSAPI_VERSION 2
+#include <psapi.h>
 #else
 #include <csignal>
 #include <fcntl.h>
+#include <fstream>	// process_resident_bytes: /proc/self/statm
 #include <glob.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/resource.h>	// process_cpu_microseconds: getrusage
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>	// process_resident_bytes: task_info resident size
+#endif
 #endif
 
 namespace madc {
@@ -442,6 +452,103 @@ void *map_file_readonly(const char *path, std::size_t &length)
 		return NULL;
 	length = (std::size_t)st.st_size;
 	return m;
+#endif
+}
+
+int make_temp_file(const char *prefix, std::string &path_out)
+{
+	path_out.clear();
+#ifdef _WIN32
+	// _tempnam names a fresh candidate in %TMP%; _O_CREAT|_O_EXCL makes
+	// the claim atomic — retry when a concurrent claimer wins the name.
+	// NOT delete-on-close (_O_TEMPORARY): callers close the fd and
+	// re-read the file by path.
+	for ( int attempt = 0; attempt < 16; ++attempt )
+	{
+		char *name = ::_tempnam(NULL, prefix);
+		if ( !name )
+			break;
+		int fd = -1;
+		errno_t err = ::_sopen_s(&fd, name,
+					 _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
+					 _SH_DENYNO, _S_IREAD | _S_IWRITE);
+		if ( err == 0 && fd >= 0 )
+		{
+			path_out.assign(name);
+			::free(name);
+			return fd;
+		}
+		::free(name);
+		if ( err != EEXIST )
+			break;
+	}
+	return -1;
+#else
+	std::string templ = std::string("/tmp/") + prefix + "_XXXXXX";
+	std::vector<char> writable(templ.begin(), templ.end());
+	writable.push_back('\0');
+	int fd = ::mkstemp(&writable[0]);
+	if ( fd < 0 )
+		return -1;
+	path_out.assign(&writable[0]);
+	return fd;
+#endif
+}
+
+unsigned long long process_cpu_microseconds()
+{
+#ifdef _WIN32
+	FILETIME creation, exited, kernel, user;
+	if ( !GetProcessTimes(GetCurrentProcess(), &creation, &exited,
+			      &kernel, &user) )
+		return 0;
+	ULARGE_INTEGER k, u;
+	k.LowPart = kernel.dwLowDateTime;
+	k.HighPart = kernel.dwHighDateTime;
+	u.LowPart = user.dwLowDateTime;
+	u.HighPart = user.dwHighDateTime;
+	// FILETIME ticks are 100ns.
+	return (unsigned long long)((k.QuadPart + u.QuadPart) / 10);
+#else
+	struct rusage usage;
+	if ( ::getrusage(RUSAGE_SELF, &usage) != 0 )
+		return 0;
+	unsigned long long user_us =
+		(unsigned long long)usage.ru_utime.tv_sec * 1000000ULL
+		+ (unsigned long long)usage.ru_utime.tv_usec;
+	unsigned long long sys_us =
+		(unsigned long long)usage.ru_stime.tv_sec * 1000000ULL
+		+ (unsigned long long)usage.ru_stime.tv_usec;
+	return user_us + sys_us;
+#endif
+}
+
+unsigned long long process_resident_bytes()
+{
+#if defined(_WIN32)
+	PROCESS_MEMORY_COUNTERS pmc;
+	if ( !GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)) )
+		return 0;
+	return (unsigned long long)pmc.WorkingSetSize;
+#elif defined(__APPLE__)
+	mach_task_basic_info info;
+	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+	if ( task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+		       reinterpret_cast<task_info_t>(&info), &count)
+	     != KERN_SUCCESS )
+		return 0;
+	return info.resident_size;
+#else
+	std::ifstream statm("/proc/self/statm");
+	unsigned long long pages_total = 0;
+	unsigned long long pages_resident = 0;
+	statm >> pages_total >> pages_resident;
+	if ( !statm )
+		return 0;
+	long page_size = ::sysconf(_SC_PAGESIZE);
+	if ( page_size <= 0 )
+		return 0;
+	return pages_resident * (unsigned long long)page_size;
 #endif
 }
 
