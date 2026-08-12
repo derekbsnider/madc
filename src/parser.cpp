@@ -32381,6 +32381,43 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
+		// __builtin_classify_type(expr) — GCC's typeclass query, folded
+		// to an int constant from the UNEVALUATED operand's type (the
+		// parsed operand tree is dropped, matching gcc's unevaluated
+		// context). Expression operands only, matching gcc-13 — the
+		// type-id operand form is a gcc-14 addition. Was a lexer macro
+		// expanding to 0: a macro can never see types, and 0 (void
+		// class) made every classify-gated branch lie (gcc-torture
+		// 20040709-* left long doubles unset because the real-class
+		// branch never fired).
+		if ( ident_tb->spelling_is("__builtin_classify_type") )
+		{
+		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_classify_type" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace();
+		    TokenBase *first = nextToken();
+		    TokenBase *expr = parseExpression(first, false, false, false, 0, true);
+		    skip_expression_whitespace();
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_classify_type(...)" << flush;
+		    DataDef *dd = expr ? expr->datadef() : NULL;
+		    if ( !dd )
+			Throw(tb) << "__builtin_classify_type: cannot determine operand type" << flush;
+		    // C default argument promotions: a fixed-array expression
+		    // decays to a pointer (class 5) — its datadef() is the
+		    // element type, so ask the variable, not the type.
+		    TokenVar *tv = dynamic_cast<TokenVar *>(expr);
+		    int cls = (tv && tv->var.is_fixed_array()) ? 5 : dd->gcc_type_class();
+		    TokenInt *ti = new TokenInt((int64_t)cls);
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
 		if ( ident_tb->spelling_is("va_arg") )
 		{

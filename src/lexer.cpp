@@ -1757,13 +1757,8 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_isinff"] = isinf;
 	macro_map["__builtin_isinfl"] = isinf;
     }
-    // __builtin_classify_type(x) → 0 (integer type, simplified)
-    {
-	MacroDef m;
-	m.params = {"__x"};
-	m.body = "0";
-	macro_map["__builtin_classify_type"] = m;
-    }
+    // __builtin_classify_type is a PARSER builtin (parser.cpp expression
+    // dispatch) — it must see the operand's type, which no macro can.
     // __builtin_alloca → alloca (line 930); compiler handles via stack bump pool.
     define_map["__builtin_ffs"] = "__madc_ffs";
     define_map["__builtin_ffsl"] = "__madc_ffsl";
@@ -1811,13 +1806,6 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_offsetof"] = m;
     }
 
-    // __builtin_classify_type(x) — return 0 (void type) as placeholder
-    {
-	MacroDef m;
-	m.params = {"__x"};
-	m.body = "0";
-	macro_map["__builtin_classify_type"] = m;
-    }
     {
 	MacroDef m;
 	m.body = "0";

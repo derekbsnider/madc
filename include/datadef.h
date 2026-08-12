@@ -406,6 +406,35 @@ public:
     {
 	return rawtype() == DataType::dtARRAY && !is_pointer();
     }
+    // GCC's __builtin_classify_type typeclass for an EXPRESSION of this type,
+    // after the C default argument promotions the builtin applies (values from
+    // gcc typeclass.h): void=0, integer=1 (bool/char/short/enum promote to
+    // int), pointer=5 (array/function-designator decay happens at the call
+    // site), real=8 (float promotes to double), complex=9, record=12,
+    // union=13 (DataDefSTRUCT override), no_type_class=-1 for anything with
+    // no GCC class (SIMD vectors, template params). References classify as
+    // their referred type (DataDefREF override) — there are no expressions
+    // of reference type.
+    virtual int gcc_type_class() const
+    {
+	if ( is_simd() )
+	    return -1;
+	if ( is_pointer() )
+	    return 5;
+	if ( is_function() )
+	    return 5;	// a function designator decays to a function pointer
+	if ( is_complex() )
+	    return 9;
+	if ( is_real() )
+	    return 8;
+	if ( is_integer() )
+	    return 1;
+	if ( is_struct() || is_object() )
+	    return 12;
+	if ( rawtype() == DataType::dtVOID )
+	    return 0;
+	return -1;
+    }
     virtual bool has_ostream()
     {
 	return false;
@@ -604,6 +633,8 @@ public:
     }
     virtual BaseType basetype() const { return BaseType::btStruct; }
     virtual size_t alignment() const { return max_align ? max_align : 1; }
+    // record_type_class vs union_type_class (classes inherit: a class is a record)
+    virtual int gcc_type_class() const { return union_layout ? 13 : 12; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void setReverseScalarStorage(bool reverse)
     {
@@ -1267,6 +1298,10 @@ public:
     // encodings" disagreement. This override makes the two agree. rawtype()
     // is inherited from DataDefPTR (base_type->rawtype()), unchanged.)
     virtual RefType reftype() const { return RefType::rtReference; }
+    // An expression never has reference type — it is an lvalue of the
+    // referred type, so classify as that (never DataDefPTR's pointer class).
+    virtual int gcc_type_class() const
+    { return base_type ? base_type->gcc_type_class() : -1; }
 };
 
 // `void&` — the reference-slot placeholder for MADC_TYPEID_VOID_REF. IS-A
@@ -1308,6 +1343,7 @@ public:
     virtual bool is_simd() const { return base_type->is_simd(); }
     virtual bool is_unsigned() const { return base_type->is_unsigned(); }
     virtual size_t alignment() const { return base_type->alignment(); }
+    virtual int gcc_type_class() const { return base_type->gcc_type_class(); }
 };
 
 // is_cstr() — declared in DataDef above; defined here where DataDefPTR /
