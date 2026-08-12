@@ -2497,8 +2497,10 @@ MIR_insn_t MIR_new_insn_arr (MIR_context_t ctx, MIR_insn_code_t code, size_t nop
           if (VARR_GET (MIR_var_t, proto->args, narg).type != ops[i].u.mem.type) {
             MIR_get_error_func (
               ctx) (MIR_wrong_type_error,
-                    "arg of %s is block type memory but param is not of block type",
-                    code == MIR_UNSPEC ? "unspec" : "call");
+                    "arg %lu of %s is block type memory (type %d) but param '%s' has type %d",
+                    (unsigned long) narg, code == MIR_UNSPEC ? "unspec" : "call",
+                    (int) ops[i].u.mem.type, VARR_GET (MIR_var_t, proto->args, narg).name,
+                    (int) VARR_GET (MIR_var_t, proto->args, narg).type);
           } else if (VARR_GET (MIR_var_t, proto->args, narg).size != (size_t) ops[i].u.mem.disp) {
             MIR_get_error_func (
               ctx) (MIR_wrong_type_error,

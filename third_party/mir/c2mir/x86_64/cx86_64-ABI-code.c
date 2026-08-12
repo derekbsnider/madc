@@ -465,9 +465,14 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
   var.name = name;
   if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
     var.type = MIR_T_V128;
-  } else if (complex_type_p (arg_type) || int128_type_p (arg_type)) {
-    /* __int128 params mirror the call-site classification (two INTEGER
-       eightbytes as a BLK) — the scalar branch would emit MIR_T_UNDEF. */
+  } else if (memory_value_type_p (arg_type) && !aggregate_type_p (arg_type)) {
+    /* Memory-shaped non-aggregates — complex, __int128, and win64 long
+       double — mirror the call-site classification (BLK): the scalar branch
+       would emit MIR_T_UNDEF for the first two and a bare MIR_T_LD for the
+       third, disagreeing with target_add_call_arg_op's BLK arg (the
+       "block type memory but param is not of block type" mismatch, madc win
+       lane 2026-08-12).  ONE predicate — memory_value_type_p — decides
+       memory-shape on both the proto and the call-op sides. */
     var.type = get_blk_type (n_qwords, qword_types);
     var.size = type_size (c2m_ctx, arg_type);
   } else if (!aggregate_type_p (arg_type)) {

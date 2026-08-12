@@ -141,13 +141,22 @@ Inventory from recon (session #83 greps):
      by-ref args, hidden-pointer return, by-ref varargs — exactly the
      mingw-gcc oracle. Register-resident LD values spill via the
      complex_temp ALLOCA idiom at arg/ret boundaries.
-- **W2 residuals (next session):** (a) variadic `%Lf` transport: LD value
-  reaches printf as 0.00 under wine (named-arg/return paths of the same
-  model work; suspect the BLK(16) copy source); (b) named LD arg proto
-  mismatch "arg of call is block type memory but param is not of block
-  type" (call side says BLK, callee param decl path disagrees — find the
-  func-def param typing site); (c) `long double _Complex` now green, keep
-  in the battery. Reducers: tmp/win/t_ld_b.c, t_ld_c.c.
+- **W2 residual — ONE root left (next session):** the LD proto mismatch is
+  FIXED (target_add_arg_proto's BLK branch now keys on memory_value_type_p,
+  the same predicate as the call-op side; it had a hand-spelled
+  complex||int128 copy — the classic dup-family divergence; mir.c's
+  mismatch error message now prints the actual types). What remains:
+  memory-shaped scalar LD VALUE TRANSPORT delivers 0.00 through all three
+  boundaries (named arg t_ld_c, return, variadic %Lf t_ld_b) — one root in
+  the caller-spill / callee-param-read plumbing: c2mir's callee body reads
+  a memory-value param through its pointer via the AGGREGATE machinery
+  (complex reads components with complex_load), but a scalar LD param has
+  no analogous deref-load path — the body likely reads the POINTER slot as
+  the value (and possibly the BLK copy source is wrong on the caller side
+  too). Start at c2mir's param gather / N_ID gen for memory-value params
+  (decl->param offset vs pointer), mirroring the complex handling.
+  `long double _Complex` is green — keep it in the battery.
+  Reducers: tmp/win/t_ld_b.c (variadic), t_ld_c.c (named+return).
 - Also found (platform-independent, task #43): the c2mir C-text parser
   DROPS prefix-position `__attribute__` (cleanup silently lost; suffix
   position works). madc's tree path is unaffected.
