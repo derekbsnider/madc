@@ -68,8 +68,12 @@ POSIX mmap semantics, winsock) and a third executable format (PE/COFF).
   banner, so battery legs must classify by output MARKER, not exit code).
   Gotchas: interop warns "UNC paths are not supported" when cwd is the WSL
   fs (cosmetic; cd to a /mnt/c path in the battery); exes run fine from the
-  WSL fs. NEXT: a `scripts/win_run.sh` scp+ssh runner so MADC_WIN_RUNNER
-  points the gate/battery at real Windows. Original option
+  WSL fs. DONE: `scripts/win_run.sh` is that runner (scp+ssh over the
+  channel, per-invocation dir under `/mnt/c/Users/Public/madcwin`, output
+  relayed, marker-classification documented in its header) — the full
+  4-leg `win_ucrt_gate.sh` passes on REAL Windows via
+  `MADC_WIN_RUNNER="bash /workspace/madc/scripts/win_run.sh"` (absolute
+  path — the gate cd's into its workdir). Original option
   analysis — the container cannot reach WSL
   interop (probed 2026-08-12: no /init, no WSLInterop binfmt, no
   /mnt/c inside the container namespace). Options, owner-side setup:
@@ -151,22 +155,54 @@ Inventory from recon (session #83 greps):
      by-ref args, hidden-pointer return, by-ref varargs — exactly the
      mingw-gcc oracle. Register-resident LD values spill via the
      complex_temp ALLOCA idiom at arg/ret boundaries.
-- **W2 residual — ONE root left (next session):** the LD proto mismatch is
-  FIXED (target_add_arg_proto's BLK branch now keys on memory_value_type_p,
-  the same predicate as the call-op side; it had a hand-spelled
-  complex||int128 copy — the classic dup-family divergence; mir.c's
-  mismatch error message now prints the actual types). What remains:
-  memory-shaped scalar LD VALUE TRANSPORT delivers 0.00 through all three
-  boundaries (named arg t_ld_c, return, variadic %Lf t_ld_b) — one root in
-  the caller-spill / callee-param-read plumbing: c2mir's callee body reads
-  a memory-value param through its pointer via the AGGREGATE machinery
-  (complex reads components with complex_load), but a scalar LD param has
-  no analogous deref-load path — the body likely reads the POINTER slot as
-  the value (and possibly the BLK copy source is wrong on the caller side
-  too). Start at c2mir's param gather / N_ID gen for memory-value params
-  (decl->param offset vs pointer), mirroring the complex handling.
-  `long double _Complex` is green — keep it in the battery.
-  Reducers: tmp/win/t_ld_b.c (variadic), t_ld_c.c (named+return).
+- **W2 residual — RESOLVED (2026-08-12, session #85).** The "one root"
+  turned out to be FIVE distinct sites, all of one concept — "a memory-value
+  SCALAR (win64-mingw long double) needs value materialization where the
+  aggregate machinery only hands around block pointers":
+  1. **c2mir callee param gather** (c2mir.c N_FUNC_DEF): a `reg_p` param
+     skipped the gather entirely — the arg var (`I0_x`, the block ADDRESS)
+     and the value reg var the body reads (`D0_x`, N_ID gen) were two
+     unconnected registers, so the body computed on an uninitialized local.
+     Fix: for `reg_p && memory_value_type_p` params, emit one typed load
+     through the pointer into the N_ID-named value reg.  Complex/aggregates
+     are never reg_p; SysV has no memory-value scalars — predicate-dead
+     there, no #ifdef needed.
+  2. **c2mir va_arg block path**: presented the fetched block as
+     `MIR_T_UNDEF` mem (aggregate convention); scalar consumers can't read
+     it.  Fix: typed mem for `scalar_type_p` (note: `t` is STALE there under
+     va_arg_p — compute `get_mir_type(type)` directly).
+  3. **c2mir call-result "by addr" branch**: same UNDEF presentation for the
+     hidden-pointer LD return → `ldmov: wrong type memory` MIR error.
+     Same fix shape (typed mem + `t`).
+  4. **MIR machinize_call (mir-gen-x86_64.c)**: MIR-level `MIR_T_LD` call
+     args/results (the mir.ld2i / mir.ui2ld conversion BUILTINS — native,
+     mingw-compiled) went through the SysV-shaped value path: LD arg →
+     `get_arg_reg`=NON_VAR → stack slot, while the mingw callee expects a
+     POINTER in the arg reg (`fld (%rcx)` with stale rcx — the t_ld_d crash
+     and t_ld_e's wrong-value v=3, one root, two symptoms).  Fix at the
+     convention layer, `#if defined(_WIN32) && !MIR_LD_IS_D`: LD args spill
+     into the call's block area and pass the slot ADDRESS as a pointer arg;
+     an LD RESULT reserves a 16-byte slot whose address rides a hidden FIRST
+     arg (RCX, shifting real args — the gcc oracle's convention), read back
+     via a surviving temp pseudo inserted to execute BEFORE the SP-restore
+     (no red zone on Windows).  The native helpers themselves needed ZERO
+     changes — mingw already compiles them with exactly this convention.
+  5. **c2m driver import binding** (c2mir-driver.c): win32 `std_libs` was
+     msvcrt-FIRST — JIT `printf` bound to msvcrt (`%Lf` = by-value double,
+     plus a SECOND CRT in a UCRT process: two heaps/FILE tables).  Fix: on
+     the mingw-UCRT host, std_libs = ucrtbase+kernel32 only, and the
+     printf/scanf family resolves FIRST to the host's `__mingw_*` ANSI-stdio
+     implementations (gcc parity: that is what a mingw-gcc-compiled binary
+     calls).  Guard `__MINGW32__ && _UCRT` / `__USE_MINGW_ANSI_STDIO`.
+  VERIFIED: t_ld_b `ld=3.25`, t_ld_c `t=6.50`, t_ld_d `a=325 b=650`,
+  t_ld_e `v=325`, t_ld_f exact — on wine AND real Windows (build 26200)
+  via win_run.sh; w2_core/features/varargs/cplx_full all green both ways;
+  native SysV battery byte-identical (regression control); fulltest green.
+  `long double _Complex` stays green.  Reducers: tmp/win/t_ld_{b..f}.c.
+  Known out-of-scope: the INTERP ffi path (`-ei`) does not implement the
+  win64 LD convention (gen `-eg` is the madc path); MIR-level LD args in
+  hand-written protos to JIT-to-JIT calls remain SysV-shaped on the callee
+  side (c2mir never emits them on win64 — blk instead).
 - Also found (platform-independent, task #43): the c2mir C-text parser
   DROPS prefix-position `__attribute__` (cleanup silently lost; suffix
   position works). madc's tree path is unaffected.
