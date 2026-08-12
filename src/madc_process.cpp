@@ -449,6 +449,46 @@ void Process::terminate()
 		::kill(_->child, SIGTERM);
 }
 
+int Process::run_and_wait(const std::string &executable,
+			  const std::vector<std::string> &argv,
+			  error *err)
+{
+	std::vector<char *> cargv;
+	cargv.reserve(argv.size() + 1);
+	for ( const std::string &a : argv )
+		cargv.push_back(const_cast<char *>(a.c_str()));
+	cargv.push_back(NULL);
+
+	pid_t child = ::fork();
+	if ( child < 0 )
+	{
+		set_process_errno(err, "process fork failed", errno);
+		return -1;
+	}
+	if ( child == 0 )
+	{
+		::execv(executable.c_str(), &cargv[0]);
+		// No exec-errno pipe on this arm: stdio is the caller's, so
+		// the child reports where the user is already looking.
+		perror("madc: exec failed");
+		::_exit(127);
+	}
+	int status = 0;
+	pid_t result;
+	do
+		result = ::waitpid(child, &status, 0);
+	while ( result < 0 && errno == EINTR );
+	if ( result < 0 )
+	{
+		set_process_errno(err, "process wait failed", errno);
+		return -1;
+	}
+	if ( WIFEXITED(status) )
+		return WEXITSTATUS(status);
+	set_process_error(err, "process terminated abnormally");
+	return -1;
+}
+
 bool pump_process(DataChannel &input,
 		  Process &process,
 		  DataChannel &output,

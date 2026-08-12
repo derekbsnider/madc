@@ -129,6 +129,21 @@ Inventory from recon (session #83 greps):
   W1 host-port build wiring.
 - **fork/exec** (`madc_process.cpp`, exec:// channels): CreateProcessW
   + pipe pair; the channel pump contracts (one pump loop owner) stay.
+  **Slice 3 DONE (session #85): spawn owner consolidated.** The
+  `--freeze-run` re-exec (madc.cpp's own fork/execv/waitpid) now rides
+  `Process::run_and_wait(exe, argv)` — the owner's inherited-stdio arm
+  beside the piped channel arm, so the Win32 backend (CreateProcess +
+  handle-inheritance lists) lands in src/madc_process.cpp alone. Gate:
+  `scripts/check-one-spawn-owner.sh` in fulltest (fork/vfork/exec-family/
+  posix_spawn outside the owner = RED; negative-controlled both ways).
+  system()/popen() deliberately out of scope — CRT-portable on mingw.
+  **⚠ OPEN WIN64 DESIGN DECISION — fork-as-ISOLATION** (gate-exempt,
+  different concern): madc_program.cpp `exec_compiled_in_child` /
+  `call_in_child` clone THIS process to run JIT code in a sandbox child
+  and never exec. Windows has no fork; the isolation contract there
+  must be either (a) in-process execution with a documented
+  no-isolation caveat, or (b) self-respawn + frozen-forest state
+  transport. Owner call when W1 reaches the libmadc embedding surface.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.

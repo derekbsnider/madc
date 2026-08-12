@@ -4,7 +4,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/wait.h>
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -27,6 +26,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
@@ -1745,34 +1745,25 @@ int main(int argc, char **argv)
 		return 1;
 	    }
 	    std::string opt = std::string("--run-frozen=") + tmpl;
-	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
-	    std::vector<char *> cargv;
+	    std::string selfexe = madc_self_exe_path();   // resolved pre-spawn
+	    std::vector<std::string> cargv;
 	    cargv.push_back(argv[0]);
 	    // Verbosity crosses the re-exec: the thaw side's diagnostics
 	    // (trap-bind list, link trace) are DBG-gated in the CHILD.
 	    if ( madc_verbose )
-		cargv.push_back((char *)"-v");
-	    cargv.push_back((char *)opt.c_str());
+		cargv.push_back("-v");
+	    cargv.push_back(opt);
 	    for ( int i = filearg + 1; i < argc; ++i )   // program args after the source
 		cargv.push_back(argv[i]);
-	    cargv.push_back(NULL);
-	    pid_t pid = fork();
-	    if ( pid == 0 )
-	    {
-		execv(selfexe.c_str(), cargv.data());
-		perror("madc: --freeze-run: execv");
-		_exit(127);
-	    }
-	    int status = 0;
-	    if ( pid > 0 )
-		waitpid(pid, &status, 0);
+	    madc::error rerr;
+	    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
 	    unlink(tmpl);
-	    if ( pid < 0 )
+	    if ( rc < 0 )
 	    {
-		perror("madc: --freeze-run: fork");
+		std::cerr << "madc: --freeze-run: " << rerr.message << std::endl;
 		return 1;
 	    }
-	    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+	    return rc;
 	}
 
 	// AOT: -c → .o, -shared → .so, -o → linked executable; do not run.
