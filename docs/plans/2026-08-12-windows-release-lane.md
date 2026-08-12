@@ -164,6 +164,33 @@ Inventory from recon (session #83 greps):
   private FormatMessage copy adopts it). madc_process.cpp mingw-GREEN
   (8th of 14 probed TUs); fulltest 1023/0. Run validation = the
   hosted-MODE battery, like every Win32 arm.
+  **Slice 10 DONE (session #85): datachannel Win32 arm — mingw-GREEN +
+  64-bit-correct.** Open flags arm in place (`_O_NOINHERIT` atomic
+  close-on-exec + `_O_BINARY` — the Win CRT defaults to TEXT mode, CRLF
+  would corrupt a byte channel). Fix-what-you-find: the seek/size/
+  regular-file sites COMPILED under mingw but were 32-bit-wrong
+  (mingw off_t/struct stat truncate >2GB; 32-bit _fstat FAILS on >4GB,
+  demoting big files to non-seekable) — now behind `detail::seek_fd`
+  (_lseeki64), `detail::fd_size` (_fstat64), `detail::fd_is_regular_file`.
+  9 of 14 TUs green; fulltest 1023/0.
+  **Slice 11 DONE (session #85): diagnostics arms — madc.cpp + parser.cpp
+  (the 20k-line TU) go mingw-GREEN.** ⚠ TRAP: winnt.h declares a
+  `TokenType` ENUMERATOR (TOKEN_INFORMATION_CLASS) — windows.h can NEVER
+  meet madc's tokens.h in one TU. The crash surface therefore moved to
+  its own TU `src/madc_crash.{h,cpp}` (shared JIT-aware backtrace
+  printer; POSIX sigaction/sigaltstack arm unchanged; Win32 arm =
+  SetUnhandledExceptionFilter + CaptureStackBackTrace +
+  SetThreadStackGuarantee, returns CONTINUE_SEARCH so WER/NTSTATUS still
+  happen). Resource guards = documented no-ops on Win (darwin-RLIMIT_AS
+  posture; knob-naming JobObject guard = residual). Syslog sink: policy
+  in the engine, transport = `detail::debug_log_line`
+  (OutputDebugStringA). `localtime_r` ×2 → `detail::local_time` (MS
+  localtime_s swaps the argument order). Script env/errno builtins bind
+  the host CRT's REAL names per the in-comment canon: `_putenv_s` +
+  `_errno` on Windows. Probe note: TUs including cir headers need
+  `-Ithird_party/mir` in the probe recipe. 11 of 14 TUs green — the
+  remaining 3: madc_program (fork-isolation OWNER DECISION), pch (zlib),
+  madc_socket_channel (winsock), ns_perl (glob). fulltest 1023/0.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
