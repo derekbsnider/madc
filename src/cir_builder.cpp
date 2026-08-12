@@ -5182,7 +5182,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		snprintf(tnm, sizeof(tnm), "__fmt%zu", i);
 		tnames[i] = tnm;
 		stmts.push_back(obj_storage_decl(tnm, 4, dtor_sym.c_str(),
-						 NULL, alignof(long)));
+						 NULL, alignof(long long)));
 		node_t ca = list();
 		append(ca, temp_addr(tnm));
 		append(ca, member_call1(cstr_sym, anames[i].c_str()));
@@ -5279,7 +5279,7 @@ size_t CirBuilder::object_class_words(DataDefCLASS *cdd) const
 	if (cdd->size == 0) return 0;
 	if (cdd->is_complete && cdd->size == 1 && !cdd->has_vptr_slot)
 		return 0;
-	return (cdd->size + sizeof(long) - 1) / sizeof(long);
+	return (cdd->size + sizeof(long long) - 1) / sizeof(long long);
 }
 
 // N_TYPE node for a (void*) cast: TYPE(LIST(VOID), DECL(IGNORE, LIST(POINTER))).
@@ -5527,7 +5527,7 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 	// An object whose alignment exceeds the long[] buffer's natural 8
 	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
 	// _Alignas(align) long name[words].
-	if (align > alignof(long))
+	if (align > alignof(long long))
 		append(spec, node1(N_ALIGNAS, integer((int64_t)align, origin)));
 	append_i64(spec, origin);
 	node_t share = node1(N_SHARE, spec);
@@ -5582,7 +5582,7 @@ bool CirBuilder::is_array_object(DataDef *dd)
 
 size_t CirBuilder::array_obj_words() const
 {
-	return (sizeof(madc::value) + sizeof(long) - 1) / sizeof(long);
+	return (sizeof(madc::value) + sizeof(long long) - 1) / sizeof(long long);
 }
 
 node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
@@ -9072,7 +9072,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// User dims (if any) stay outermost, as in the class-object arm above.
 	if (is_array_object(mtype)) {
 		node_t mspec = list();
-		if (alignof(madc::value) > alignof(long))
+		if (alignof(madc::value) > alignof(long long))
 			append(mspec, node1(N_ALIGNAS,
 				integer((int64_t)alignof(madc::value), m.origin)));
 		append_i64(mspec, m.origin);
@@ -20307,7 +20307,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					m_pending_stmts.push_back(
 						obj_storage_decl(tnm, 4,
 							hdtor.c_str(), tb,
-							alignof(long)));
+							alignof(long long)));
 					auto taddr = [&]() {
 						return node1(N_ADDR,
 							node2(N_IND, id(tnm, tb),
@@ -21265,8 +21265,8 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 
 	// Opaque, 8-aligned storage sized to MadcTryContext (jmp_buf + 2 ptrs). The
 	// builder is C++ so it knows the real ABI size; round up to a long[] count.
-	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long) - 1)
-			   / sizeof(long);
+	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long long) - 1)
+			   / sizeof(long long);
 	node_t ctx_spec = list();
 	append_i64(ctx_spec, tt);
 	node_t ctx_decl_list = list();

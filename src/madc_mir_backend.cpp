@@ -68,10 +68,12 @@ void madarray_destruct(void *ptr)
 // Range-for length over a script array. Intentionally NOT
 // ns_common::value_count: foreach iterates indexed elements only, so an
 // object-kind ctx must read as length 0 here.
-long madarray_size(void *ptr)
+// int64_t, never `long`: the CIR declares these thunk slots as long long
+// (the i64 spelling law), and host `long` is 32-bit on win64 (LLP64).
+int64_t madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;
-	return v->is_array() ? (long)v->as_array().size() : 0;
+	return v->is_array() ? (int64_t)v->as_array().size() : 0;
     }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
@@ -81,11 +83,11 @@ long madarray_size(void *ptr)
 // Returns the receiver: operator= yields *this.
 void *madarray_assign_cstr(void *ptr, const char *s)
     { *(madc::value *)ptr = madc::value(s ? s : ""); return ptr; }
-void *madarray_assign_int(void *ptr, long i)
-    { *(madc::value *)ptr = madc::value((int64_t)i); return ptr; }
+void *madarray_assign_int(void *ptr, int64_t i)
+    { *(madc::value *)ptr = madc::value(i); return ptr; }
 void *madarray_assign_real(void *ptr, double d)
     { *(madc::value *)ptr = madc::value(d); return ptr; }
-void *madarray_assign_bool(void *ptr, long b)
+void *madarray_assign_bool(void *ptr, int64_t b)
     { *(madc::value *)ptr = madc::value(b != 0); return ptr; }
 void *madarray_assign_value(void *ptr, void *src)
     { *(madc::value *)ptr = *(const madc::value *)src; return ptr; }
@@ -126,12 +128,12 @@ const char *madarray_cstr(void *ptr)
 // program's arguments by ld.so, and repopulating then would stomp the
 // sys.path/sys.argv mutations the running script already made.
 static bool madc_sys_populated = false;
-void __madc_sys_init(long argc, void *argv)
+void __madc_sys_init(int64_t argc, void *argv)
     {
 	madc_sys_populated = true;
 	madc::sys_populate_args((int)argc, (char **)argv);
     }
-void __madc_sys_init_once(long argc, void *argv)
+void __madc_sys_init_once(int64_t argc, void *argv)
     {
 	if (!madc_sys_populated)
 	    __madc_sys_init(argc, argv);

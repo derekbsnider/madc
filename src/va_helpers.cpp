@@ -138,7 +138,10 @@ extern "C" int __madc_vsprintf(char *buf, const char *fmt, int64_t *args)
 	switch ( spec )
 	{
 	    case 'd': case 'i': case 'o': case 'u': case 'x': case 'X': case 'c':
-		written = sprintf(out, mini_fmt, (long)args[ai++]);
+		// long long, never long: the slot is 8 bytes and host long
+		// is 32-bit on win64. The varargs register slot is 8 bytes
+		// either way; %d/%ld read their own width from it (LE).
+		written = sprintf(out, mini_fmt, (long long)args[ai++]);
 		break;
 	    case 's':
 		written = sprintf(out, mini_fmt, (const char *)args[ai++]);
@@ -346,7 +349,9 @@ extern "C" void __madc_atomic_thread_fence(int memorder) { __atomic_thread_fence
 extern "C" void __madc_atomic_signal_fence(int memorder) { __atomic_signal_fence(memorder); }
 extern "C" int  __madc_atomic_fetch_add_i(int *p, int v, int memorder)
 { return __atomic_fetch_add(p, v, memorder); }
-extern "C" long __madc_atomic_fetch_add_l(long *p, long v, int memorder)
+// int64_t, never `long`: the CIR declares the wide arm as long long (the
+// i64 spelling law) and host `long` is 32-bit on win64 (LLP64).
+extern "C" int64_t __madc_atomic_fetch_add_l(int64_t *p, int64_t v, int memorder)
 { return __atomic_fetch_add(p, v, memorder); }
 
 // __builtin_bswap*: byte-swap fixed-width integer values.
@@ -597,17 +602,17 @@ extern "C" unsigned long __madc_builtin_object_size(void *ptr, int mode)
 }
 
 // __builtin___strcpy_chk family — bounds-checked string operations
-extern "C" char *__madc_builtin_strcpy_chk(char *dst, const char *src, unsigned long size)
+extern "C" char *__madc_builtin_strcpy_chk(char *dst, const char *src, size_t size)
 {
     return __builtin___strcpy_chk(dst, src, size);
 }
 
-extern "C" char *__madc_builtin_stpcpy_chk(char *dst, const char *src, unsigned long size)
+extern "C" char *__madc_builtin_stpcpy_chk(char *dst, const char *src, size_t size)
 {
     return __builtin___stpcpy_chk(dst, src, size);
 }
 
-extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, size_t n, size_t size)
 {
 #ifdef _WIN32
     // stpncpy is absent from the MS CRT, so gcc lowers this builtin to a
@@ -616,7 +621,7 @@ extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned
     // chks the platform has — abort-on-overflow preserved: n > size trips
     // one of the two composed checks below. GNU return = dst + min(strlen
     // (src), n). (Same composition pattern as the darwin mempcpy arm.)
-    unsigned long len = 0;
+    size_t len = 0;
     while ( len < n && src[len] )
 	++len;
     __builtin___memcpy_chk(dst, src, len, size);
@@ -627,34 +632,34 @@ extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned
 #endif
 }
 
-extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, unsigned long size)
+extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, size_t size)
 {
     return __builtin___strcat_chk(dst, src, size);
 }
 
-extern "C" char *__madc_builtin_strncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+extern "C" char *__madc_builtin_strncpy_chk(char *dst, const char *src, size_t n, size_t size)
 {
     return __builtin___strncpy_chk(dst, src, n, size);
 }
 
-extern "C" char *__madc_builtin_strncat_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+extern "C" char *__madc_builtin_strncat_chk(char *dst, const char *src, size_t n, size_t size)
 {
     return __builtin___strncat_chk(dst, src, n, size);
 }
 
 // __builtin___mem*_chk family — bounds-checked memory operations
 // (glibc fortify-wrapper header inlines under _FORTIFY_SOURCE).
-extern "C" void *__madc_builtin_memcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+extern "C" void *__madc_builtin_memcpy_chk(void *dst, const void *src, size_t n, size_t size)
 {
     return __builtin___memcpy_chk(dst, src, n, size);
 }
 
-extern "C" void *__madc_builtin_memmove_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+extern "C" void *__madc_builtin_memmove_chk(void *dst, const void *src, size_t n, size_t size)
 {
     return __builtin___memmove_chk(dst, src, n, size);
 }
 
-extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, size_t n, size_t size)
 {
 #ifdef __APPLE__
     // mempcpy is a GNU extension darwin's libc lacks; compose the same
@@ -666,7 +671,7 @@ extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, unsigned
 #endif
 }
 
-extern "C" void *__madc_builtin_memset_chk(void *dst, int c, unsigned long n, unsigned long size)
+extern "C" void *__madc_builtin_memset_chk(void *dst, int c, size_t n, size_t size)
 {
     return __builtin___memset_chk(dst, c, n, size);
 }
