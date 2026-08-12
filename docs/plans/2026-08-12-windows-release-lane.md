@@ -137,13 +137,34 @@ Inventory from recon (session #83 greps):
   `scripts/check-one-spawn-owner.sh` in fulltest (fork/vfork/exec-family/
   posix_spawn outside the owner = RED; negative-controlled both ways).
   system()/popen() deliberately out of scope — CRT-portable on mingw.
-  **⚠ OPEN WIN64 DESIGN DECISION — fork-as-ISOLATION** (gate-exempt,
-  different concern): madc_program.cpp `exec_compiled_in_child` /
-  `call_in_child` clone THIS process to run JIT code in a sandbox child
-  and never exec. Windows has no fork; the isolation contract there
-  must be either (a) in-process execution with a documented
-  no-isolation caveat, or (b) self-respawn + frozen-forest state
-  transport. Owner call when W1 reaches the libmadc embedding surface.
+  **✅ WIN64 ISOLATION — OWNER-DISCUSSED AND REFRAMED (2026-08-12,
+  session #85): the user-facing axis is IN-PROCESS vs SUBPROCESS**, not
+  fork vs no-fork — fork vs CreateProcess-respawn is a platform backend
+  detail behind the seam, exactly like every other W1 owner. Settled in
+  the discussion: (1) isolation is already OPTIONAL (execution_mode
+  defaults to in_process; fork_per_invocation is host opt-in; only
+  system_locked clamps it on); (2) the interim win64 contract is a LOUD
+  invocation-time error naming the knob ("subprocess isolation ... not
+  available on this platform; use execution_mode::in_process") — never
+  a silent in-process downgrade of a sandbox the host asked for;
+  (3) the full contract (enum respelled subprocess_per_invocation with
+  the C-API fork spelling kept as alias, NO host-image re-entry on any
+  platform — a spawned child cannot resolve host symbols the way a
+  forked one can, so the portable rule must hold everywhere — spawn
+  backend = self-respawn + frozen-forest transport, also attractive on
+  POSIX where fork-in-threaded-host is hazardous, and the system_locked
+  wording for platforms without a backend) is a tracked design-doc arc
+  (task #44).
+  **Sibling posture, also settled 2026-08-12 — fork() in the LIBC
+  OFFERING to compiled programs:** madc binds the host CRT's real
+  symbols under real names; UCRT has no fork, and the platform's
+  reference compiler (x86_64-w64-mingw32-gcc) has none either, so in
+  strict C/C++ dialects on win64 `fork()` fails to resolve exactly as
+  under mingw-gcc (gcc parity; anything else would break the emit-C
+  oracle). The exec*/_spawn family binds normally (it exists in the
+  CRT, Windows semantics). The PORTABLE process story is madc's own
+  surface (Process, exec:// channels, madc::sys), which already has
+  its CreateProcess backend. No Cygwin-style fork emulation, ever.
   **Slice 9 DONE (session #85): the Process owner's Win32 arm.**
   `start()` = CreatePipe pairs (child ends alone inheritable) + a
   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` restricting inheritance to exactly
