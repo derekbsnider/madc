@@ -12,6 +12,12 @@ namespace detail {
 bool set_fd_close_on_exec(int fd);
 ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size);
 
+// Read up to `size` bytes from an fd (POSIX read, EINTR-retrying). The
+// Win32 arm is one _read capped at INT_MAX per call (the CRT takes an
+// unsigned int); both arms return bytes read, 0 at EOF, -1 with errno set.
+// Callers already handle short reads — every channel contract allows them.
+ssize_t read_fd(int fd, void *buffer, std::size_t size);
+
 // Canonical absolute form of `path` (POSIX realpath: resolves symlinks,
 // `.` and `..`); empty string when it does not resolve. The Win32 arm
 // (GetFullPathName) normalizes without following links — consumers use
@@ -52,6 +58,13 @@ std::string finish_string_capture(StringCapture &cap);
 // owner: the Win32 backend (CreateFileMapping/MapViewOfFile) lands behind
 // this signature only.
 void *map_file_readonly(const char *path, std::size_t &length);
+
+#ifdef _WIN32
+// GetLastError code -> trimmed FormatMessage text ("Windows error N" when
+// the system has no message). The one Win32-error formatter — error-path
+// composition (dlerror emulation, process errors) layers on top of it.
+std::string win_error_text(unsigned long code);
+#endif
 
 } // namespace detail
 } // namespace madc

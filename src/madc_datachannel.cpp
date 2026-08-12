@@ -62,10 +62,7 @@ public:
 			set_channel_error(err, "file read failed", "channel is not readable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::read(fd_, buffer, capacity);
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::read_fd(fd_, buffer, capacity);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file read failed", path_);

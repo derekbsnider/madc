@@ -78,6 +78,7 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 #include <mutex>
 #include <string>
 #include <vector>
+#include "madc_posix_io.h"	// win_error_text — the one Win32-error formatter
 
 static std::vector<HMODULE> &madcdl_global_modules(void)
 {
@@ -99,16 +100,9 @@ static thread_local bool madcdl_err_pending = false;
 static void madcdl_set_error(const char *op, const char *detail)
 {
 	DWORD code = GetLastError();
-	char msg[256];
-	msg[0] = '\0';
-	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-		       NULL, code, 0, msg, sizeof(msg), NULL);
-	// FormatMessage terminates with "\r\n" — trim it.
-	size_t n = strlen(msg);
-	while (n && (msg[n - 1] == '\n' || msg[n - 1] == '\r'))
-		msg[--n] = '\0';
+	std::string msg = madc::detail::win_error_text(code);
 	snprintf(madcdl_errbuf, sizeof(madcdl_errbuf), "%s%s%s: %s (error %lu)",
-		 op, detail ? " " : "", detail ? detail : "", msg,
+		 op, detail ? " " : "", detail ? detail : "", msg.c_str(),
 		 (unsigned long)code);
 	madcdl_err_pending = true;
 }

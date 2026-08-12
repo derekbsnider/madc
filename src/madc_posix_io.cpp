@@ -84,6 +84,38 @@ ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size)
 #endif
 }
 
+ssize_t read_fd(int fd, void *buffer, std::size_t size)
+{
+#ifdef _WIN32
+	unsigned int chunk = size > (std::size_t)INT_MAX ? (unsigned int)INT_MAX
+							 : (unsigned int)size;
+	return ::_read(fd, buffer, chunk);
+#else
+	ssize_t result;
+	do
+		result = ::read(fd, buffer, size);
+	while ( result < 0 && errno == EINTR );
+	return result;
+#endif
+}
+
+#ifdef _WIN32
+std::string win_error_text(unsigned long code)
+{
+	char msg[256];
+	msg[0] = '\0';
+	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+		       NULL, (DWORD)code, 0, msg, sizeof(msg), NULL);
+	// FormatMessage terminates with "\r\n" — trim it.
+	std::size_t n = std::strlen(msg);
+	while ( n && (msg[n - 1] == '\n' || msg[n - 1] == '\r') )
+		msg[--n] = '\0';
+	if ( !n )
+		return "Windows error " + std::to_string(code);
+	return std::string(msg, n);
+}
+#endif
+
 std::string resolve_real_path(const char *path)
 {
 #ifdef _WIN32

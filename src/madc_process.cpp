@@ -8,11 +8,19 @@
 #include <fcntl.h>
 #include <map>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <thread>
+#ifdef _WIN32
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <io.h>
+#include <windows.h>
+#else
+#include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
+#endif
 
 namespace madc {
 namespace {
@@ -30,10 +38,25 @@ void set_process_errno(error *err, const std::string &operation, int number)
 void close_fd(int &fd)
 {
 	if ( fd >= 0 )
+#ifdef _WIN32
+		::_close(fd);
+#else
 		::close(fd);
+#endif
 	fd = -1;
 }
 
+char **host_environ()
+{
+	// mingw's CRT spells the POSIX environ pointer _environ.
+#ifdef _WIN32
+	return _environ;
+#else
+	return environ;
+#endif
+}
+
+#ifndef _WIN32
 bool make_cloexec_pipe(int fds[2], error *err)
 {
 #ifdef __linux__
@@ -66,6 +89,7 @@ bool make_cloexec_pipe(int fds[2], error *err)
 	return true;
 #endif
 }
+#endif // !_WIN32
 
 class ProcessPipeChannel : public DataChannel
 {
@@ -101,10 +125,7 @@ public:
 			set_process_error(err, name_ + " is not readable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::read(fd_, buffer, capacity);
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::read_fd(fd_, buffer, capacity);
 		if ( result < 0 )
 		{
 			set_process_errno(err, name_ + " read failed", errno);
@@ -154,6 +175,7 @@ private:
 	bool writable_;
 };
 
+#ifndef _WIN32
 void close_pipe(int fds[2])
 {
 	close_fd(fds[0]);
@@ -166,15 +188,9 @@ bool read_exec_error(int fd, int &number)
 	std::size_t remaining = sizeof(number);
 	while ( remaining )
 	{
-		ssize_t count = ::read(fd, next, remaining);
-		if ( count == 0 )
+		ssize_t count = detail::read_fd(fd, next, remaining);
+		if ( count <= 0 )
 			return false;
-		if ( count < 0 )
-		{
-			if ( errno == EINTR )
-				continue;
-			return false;
-		}
 		next += count;
 		remaining -= static_cast<std::size_t>(count);
 	}
@@ -196,22 +212,224 @@ void report_child_error(int fd, int number)
 		remaining -= static_cast<std::size_t>(count);
 	}
 }
+#endif // !_WIN32
+
+#ifdef _WIN32
+void set_process_last_error(error *err, const std::string &operation)
+{
+	unsigned long code = GetLastError();
+	set_process_error(err, operation + ": " + detail::win_error_text(code));
+}
+
+void close_handle(HANDLE &h)
+{
+	if ( h )
+		CloseHandle(h);
+	h = NULL;
+}
+
+// An inheritable duplicate of h (caller closes it), or NULL when h is not a
+// real handle (detached stdio). Duplicating instead of flipping the
+// original's inherit flag: a redirected std handle is not guaranteed
+// inheritable, and mutating it would race concurrent spawns in an embedding
+// host.
+HANDLE duplicate_inheritable(HANDLE h)
+{
+	if ( !h || h == INVALID_HANDLE_VALUE )
+		return NULL;
+	HANDLE dup = NULL;
+	if ( !DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup,
+			      0, TRUE, DUPLICATE_SAME_ACCESS) )
+		return NULL;
+	return dup;
+}
+
+// Both ends are born non-inheritable; the CHILD end alone is flipped
+// inheritable, and spawn_windows_process's attribute list passes exactly
+// those ends — the Win32 shape of the POSIX arm's O_CLOEXEC pipes.
+bool make_process_pipe(HANDLE &parent_end, HANDLE &child_end, bool child_reads,
+		       error *err)
+{
+	HANDLE read_end = NULL;
+	HANDLE write_end = NULL;
+	if ( !CreatePipe(&read_end, &write_end, NULL, 0) )
+	{
+		set_process_last_error(err, "process pipe creation failed");
+		return false;
+	}
+	child_end = child_reads ? read_end : write_end;
+	parent_end = child_reads ? write_end : read_end;
+	if ( !SetHandleInformation(child_end, HANDLE_FLAG_INHERIT,
+				   HANDLE_FLAG_INHERIT) )
+	{
+		set_process_last_error(err, "process pipe inherit setup failed");
+		CloseHandle(read_end);
+		CloseHandle(write_end);
+		parent_end = NULL;
+		child_end = NULL;
+		return false;
+	}
+	return true;
+}
+
+// Windows has ONE command-line string; the child's CRT re-splits it under
+// the MS quoting rules (backslash-doubling before quotes). This encodes the
+// CRT argv contract only — a cmd.exe/batch target would need cmd's ^ rules
+// on top, which no madc surface spawns.
+void append_windows_argument(std::string &command_line, const std::string &argument)
+{
+	if ( !command_line.empty() )
+		command_line += ' ';
+	if ( !argument.empty()
+	  && argument.find_first_of(" \t\n\v\"") == std::string::npos )
+	{
+		command_line += argument;
+		return;
+	}
+	command_line += '"';
+	std::size_t backslashes = 0;
+	for ( std::size_t i = 0; i < argument.size(); ++i )
+	{
+		char c = argument[i];
+		if ( c == '\\' )
+		{
+			++backslashes;
+			continue;
+		}
+		// A quote needs every pending backslash doubled plus its own
+		// escape; any other character leaves them literal.
+		command_line.append(c == '"' ? backslashes * 2 + 1 : backslashes,
+				    '\\');
+		backslashes = 0;
+		command_line += c;
+	}
+	command_line.append(backslashes * 2, '\\');	// they precede the closing quote
+	command_line += '"';
+}
+
+bool environment_name_before(const std::pair<const std::string, std::string> *left,
+			     const std::pair<const std::string, std::string> *right)
+{
+	return _stricmp(left->first.c_str(), right->first.c_str()) < 0;
+}
+
+// CreateProcess environment block: NAME=value\0...\0\0, sorted
+// case-insensitively by name (the loader binary-searches the child's block).
+std::string build_environment_block(const std::map<std::string, std::string> &environment)
+{
+	std::vector<const std::pair<const std::string, std::string> *> entries;
+	entries.reserve(environment.size());
+	for ( std::map<std::string, std::string>::const_iterator it =
+		  environment.begin(); it != environment.end(); ++it )
+		entries.push_back(&*it);
+	std::sort(entries.begin(), entries.end(), environment_name_before);
+	std::string block;
+	for ( std::size_t i = 0; i < entries.size(); ++i )
+	{
+		block += entries[i]->first;
+		block += '=';
+		block += entries[i]->second;
+		block += '\0';
+	}
+	block += '\0';
+	return block;
+}
+
+// The one CreateProcess site: explicit std-handle triple + a
+// PROC_THREAD_ATTRIBUTE_HANDLE_LIST restricting inheritance to exactly those
+// handles — bInheritHandles=TRUE alone would leak every inheritable handle
+// in a threaded embedding host. A NULL application searches like the shell
+// (app dir, cwd, system dirs, PATH; .exe appended); a NULL environment
+// block inherits the parent's.
+bool spawn_windows_process(const char *application, std::vector<char> &command_line,
+			   char *environment_block, const char *working_directory,
+			   HANDLE std_in, HANDLE std_out, HANDLE std_err,
+			   HANDLE &process, error *err)
+{
+	process = NULL;
+	HANDLE inherited[3];
+	DWORD inherited_count = 0;
+	if ( std_in )
+		inherited[inherited_count++] = std_in;
+	if ( std_out )
+		inherited[inherited_count++] = std_out;
+	if ( std_err )
+		inherited[inherited_count++] = std_err;
+
+	SIZE_T attribute_size = 0;
+	InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+	std::vector<unsigned char> attribute_storage(attribute_size);
+	if ( attribute_storage.empty() )
+	{
+		set_process_error(err, "process attribute list sizing failed");
+		return false;
+	}
+	STARTUPINFOEXA startup;
+	std::memset(&startup, 0, sizeof(startup));
+	startup.StartupInfo.cb = sizeof(startup);
+	startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	startup.StartupInfo.hStdInput = std_in;
+	startup.StartupInfo.hStdOutput = std_out;
+	startup.StartupInfo.hStdError = std_err;
+	startup.lpAttributeList =
+		reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(&attribute_storage[0]);
+	if ( !InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0,
+						&attribute_size) )
+	{
+		set_process_last_error(err, "process attribute list setup failed");
+		return false;
+	}
+	if ( inherited_count
+	  && !UpdateProcThreadAttribute(startup.lpAttributeList, 0,
+					PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
+					inherited_count * sizeof(HANDLE), NULL, NULL) )
+	{
+		set_process_last_error(err, "process handle-inheritance setup failed");
+		DeleteProcThreadAttributeList(startup.lpAttributeList);
+		return false;
+	}
+	PROCESS_INFORMATION info;
+	std::memset(&info, 0, sizeof(info));
+	BOOL created = CreateProcessA(application, &command_line[0], NULL, NULL,
+				      TRUE, EXTENDED_STARTUPINFO_PRESENT,
+				      environment_block, working_directory,
+				      &startup.StartupInfo, &info);
+	if ( !created )
+		set_process_last_error(err, "process creation failed");
+	DeleteProcThreadAttributeList(startup.lpAttributeList);
+	if ( !created )
+		return false;
+	CloseHandle(info.hThread);
+	process = info.hProcess;
+	return true;
+}
+#endif // _WIN32
 
 } // namespace
 
 struct Process::impl
 {
 	impl(const DataSource &process_source, const ProcessOptions &process_options)
-		: source(process_source), options(process_options), child(-1),
+		: source(process_source), options(process_options),
 		  stdin_pipe("process stdin", false, true),
 		  stdout_pipe("process stdout", true, false),
 		  stderr_pipe("process stderr", true, false),
 		  has_started(false), has_exited(false), status(-1)
-	{}
+	{
+#ifdef _WIN32
+		child = NULL;
+#else
+		child = -1;
+#endif
+	}
 
 	DataSource source;
 	ProcessOptions options;
+#ifdef _WIN32
+	HANDLE child;	// process handle; the destructor owns closing it
+#else
 	pid_t child;
+#endif
 	ProcessPipeChannel stdin_pipe;
 	ProcessPipeChannel stdout_pipe;
 	ProcessPipeChannel stderr_pipe;
@@ -229,12 +447,23 @@ Process::~Process()
 	_->stdin_pipe.close();
 	_->stdout_pipe.close();
 	_->stderr_pipe.close();
+#ifdef _WIN32
+	if ( _->has_started && !_->has_exited && _->child )
+	{
+		// The exit code is never observed on this path (nobody waits
+		// after the dtor); 1 just marks the stop as abnormal.
+		TerminateProcess(_->child, 1);
+		WaitForSingleObject(_->child, INFINITE);
+	}
+	close_handle(_->child);
+#else
 	if ( _->has_started && !_->has_exited && _->child > 0 )
 	{
 		::kill(_->child, SIGKILL);
 		int status = 0;
 		while ( ::waitpid(_->child, &status, 0) < 0 && errno == EINTR ) {}
 	}
+#endif
 }
 
 bool Process::start(error *err)
@@ -262,13 +491,9 @@ bool Process::start(error *err)
 	std::vector<std::string> argv_storage;
 	argv_storage.push_back(_->source.path());
 	argv_storage.insert(argv_storage.end(), _->options.args.begin(), _->options.args.end());
-	std::vector<char *> argv;
-	for ( std::size_t i = 0; i < argv_storage.size(); ++i )
-		argv.push_back(const_cast<char *>(argv_storage[i].c_str()));
-	argv.push_back(nullptr);
 
 	std::map<std::string, std::string> environment;
-	for ( char **item = environ; item && *item; ++item )
+	for ( char **item = host_environ(); item && *item; ++item )
 	{
 		std::string entry(*item);
 		std::size_t equals = entry.find('=');
@@ -278,6 +503,105 @@ bool Process::start(error *err)
 	for ( std::map<std::string, std::string>::const_iterator it =
 		  _->options.environment.begin(); it != _->options.environment.end(); ++it )
 		environment[it->first] = it->second;
+
+#ifdef _WIN32
+	// One command-line string, re-split by the child's CRT under the MS
+	// quoting rules. CreateProcess owns the executable search for the
+	// first token (app dir, cwd, system dirs, PATH; .exe appended), so
+	// the POSIX arm's PATH walk has no Win32 twin.
+	std::string command_line;
+	for ( std::size_t i = 0; i < argv_storage.size(); ++i )
+		append_windows_argument(command_line, argv_storage[i]);
+	std::vector<char> command_buffer(command_line.begin(), command_line.end());
+	command_buffer.push_back('\0');	// CreateProcess may edit it in place
+	std::string environment_block = build_environment_block(environment);
+
+	HANDLE parent_stdin = NULL, child_stdin = NULL;
+	HANDLE parent_stdout = NULL, child_stdout = NULL;
+	HANDLE parent_stderr = NULL, child_stderr = NULL;
+	bool piped = make_process_pipe(parent_stdin, child_stdin, true, err)
+		  && make_process_pipe(parent_stdout, child_stdout, false, err)
+		  && (_->options.inherit_stderr
+		   || make_process_pipe(parent_stderr, child_stderr, false, err));
+	if ( !piped )
+	{
+		close_handle(parent_stdin);
+		close_handle(child_stdin);
+		close_handle(parent_stdout);
+		close_handle(child_stdout);
+		return false;
+	}
+	if ( _->options.inherit_stderr )
+	{
+		// The POSIX arm leaves the child on the parent's fd 2; a NULL
+		// duplicate (detached stderr) leaves the child slot empty, the
+		// same tolerance as a closed fd 2 there.
+		child_stderr = duplicate_inheritable(GetStdHandle(STD_ERROR_HANDLE));
+	}
+
+	// Parent ends become CRT fds so the pipe channels stay fd-shaped; a
+	// converted handle belongs to its fd from here on.
+	int stdin_fd = ::_open_osfhandle((intptr_t)parent_stdin, _O_BINARY);
+	if ( stdin_fd >= 0 )
+		parent_stdin = NULL;
+	int stdout_fd = ::_open_osfhandle((intptr_t)parent_stdout,
+					  _O_RDONLY | _O_BINARY);
+	if ( stdout_fd >= 0 )
+		parent_stdout = NULL;
+	int stderr_fd = -1;
+	if ( parent_stderr )
+	{
+		stderr_fd = ::_open_osfhandle((intptr_t)parent_stderr,
+					      _O_RDONLY | _O_BINARY);
+		if ( stderr_fd >= 0 )
+			parent_stderr = NULL;
+	}
+	if ( stdin_fd < 0 || stdout_fd < 0
+	  || (!_->options.inherit_stderr && stderr_fd < 0) )
+	{
+		set_process_error(err, "process pipe fd conversion failed");
+		close_fd(stdin_fd);
+		close_fd(stdout_fd);
+		close_fd(stderr_fd);
+		close_handle(parent_stdin);
+		close_handle(parent_stdout);
+		close_handle(parent_stderr);
+		close_handle(child_stdin);
+		close_handle(child_stdout);
+		close_handle(child_stderr);
+		return false;
+	}
+
+	HANDLE child = NULL;
+	bool spawned = spawn_windows_process(
+		NULL, command_buffer,
+		const_cast<char *>(environment_block.c_str()),
+		_->options.working_directory.empty()
+			? NULL : _->options.working_directory.c_str(),
+		child_stdin, child_stdout, child_stderr, child, err);
+	close_handle(child_stdin);
+	close_handle(child_stdout);
+	close_handle(child_stderr);
+	if ( !spawned )
+	{
+		close_fd(stdin_fd);
+		close_fd(stdout_fd);
+		close_fd(stderr_fd);
+		return false;
+	}
+
+	_->child = child;
+	_->stdin_pipe.assign(stdin_fd);
+	_->stdout_pipe.assign(stdout_fd);
+	_->stderr_pipe.assign(stderr_fd);
+	_->has_started = true;
+	return true;
+#else
+	std::vector<char *> argv;
+	for ( std::size_t i = 0; i < argv_storage.size(); ++i )
+		argv.push_back(const_cast<char *>(argv_storage[i].c_str()));
+	argv.push_back(nullptr);
+
 	std::vector<std::string> environment_storage;
 	for ( std::map<std::string, std::string>::const_iterator it =
 		  environment.begin(); it != environment.end(); ++it )
@@ -396,6 +720,7 @@ bool Process::start(error *err)
 	_->stderr_pipe.assign(error_fds[0]);
 	_->has_started = true;
 	return true;
+#endif // !_WIN32
 }
 
 DataChannel &Process::stdin_channel() { return _->stdin_pipe; }
@@ -419,6 +744,19 @@ bool Process::wait(error *err)
 	}
 	if ( _->has_exited )
 		return true;
+#ifdef _WIN32
+	DWORD code = 0;
+	if ( WaitForSingleObject(_->child, INFINITE) != WAIT_OBJECT_0
+	  || !GetExitCodeProcess(_->child, &code) )
+	{
+		set_process_last_error(err, "process wait failed");
+		return false;
+	}
+	_->has_exited = true;
+	// No exited/killed split on Windows: a crashed child's NTSTATUS exit
+	// code arrives as a (huge) nonzero int every caller already fails on.
+	_->status = (int)code;
+#else
 	int child_status = 0;
 	pid_t result;
 	do
@@ -436,6 +774,7 @@ bool Process::wait(error *err)
 		_->status = 128 + WTERMSIG(child_status);
 	else
 		_->status = -1;
+#endif
 	return true;
 }
 
@@ -445,14 +784,53 @@ int Process::exit_status() const { return _->status; }
 
 void Process::terminate()
 {
+#ifdef _WIN32
+	// Windows has no cross-process SIGTERM; TerminateProcess is the only
+	// general-purpose stop. 128+SIGTERM keeps the reported exit status
+	// shaped like the POSIX arm's signal mapping.
+	if ( _->has_started && !_->has_exited && _->child )
+		TerminateProcess(_->child, 128 + SIGTERM);
+#else
 	if ( _->has_started && !_->has_exited && _->child > 0 )
 		::kill(_->child, SIGTERM);
+#endif
 }
 
 int Process::run_and_wait(const std::string &executable,
 			  const std::vector<std::string> &argv,
 			  error *err)
 {
+#ifdef _WIN32
+	std::string command_line;
+	for ( std::size_t i = 0; i < argv.size(); ++i )
+		append_windows_argument(command_line, argv[i]);
+	std::vector<char> command_buffer(command_line.begin(), command_line.end());
+	command_buffer.push_back('\0');
+
+	// Inherited stdio: the parent's std triple travels as inheritable
+	// duplicates so harness redirections (files, pipes) reach the child.
+	HANDLE std_in = duplicate_inheritable(GetStdHandle(STD_INPUT_HANDLE));
+	HANDLE std_out = duplicate_inheritable(GetStdHandle(STD_OUTPUT_HANDLE));
+	HANDLE std_err = duplicate_inheritable(GetStdHandle(STD_ERROR_HANDLE));
+	HANDLE child = NULL;
+	// Explicit application path + the parent's environment — the execv
+	// contract (no PATH search, no .exe appending).
+	bool spawned = spawn_windows_process(executable.c_str(), command_buffer,
+					     NULL, NULL, std_in, std_out, std_err,
+					     child, err);
+	close_handle(std_in);
+	close_handle(std_out);
+	close_handle(std_err);
+	if ( !spawned )
+		return -1;
+	DWORD code = 0;
+	bool reaped = WaitForSingleObject(child, INFINITE) == WAIT_OBJECT_0
+		   && GetExitCodeProcess(child, &code) != 0;
+	if ( !reaped )
+		set_process_last_error(err, "process wait failed");
+	CloseHandle(child);
+	return reaped ? (int)code : -1;
+#else
 	std::vector<char *> cargv;
 	cargv.reserve(argv.size() + 1);
 	for ( const std::string &a : argv )
@@ -487,6 +865,7 @@ int Process::run_and_wait(const std::string &executable,
 		return WEXITSTATUS(status);
 	set_process_error(err, "process terminated abnormally");
 	return -1;
+#endif // !_WIN32
 }
 
 bool pump_process(DataChannel &input,
