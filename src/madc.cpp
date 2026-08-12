@@ -5,9 +5,10 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <signal.h>
-#include <execinfo.h>
 #include <unistd.h>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include <new>
 #include <iostream>
 #include <iomanip>
@@ -26,6 +27,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
@@ -40,126 +42,6 @@ using namespace std;
 // faulting JIT RIP back to source. Library consumers should provide
 // their own crash/error plumbing instead of relying on process globals.
 static Program *g_active_program = NULL;
-
-// Resolve a JIT (MIR-generated) code address to "func+0xoff [JIT]".
-// Defined in madc_cir.cpp where the live MIR module is in scope. Returns 1
-// if the address falls inside a generated function's code range.
-extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n);
-
-static void crash_write(const char *data, size_t size)
-{
-    while ( size > 0 )
-    {
-	ssize_t written = write(STDERR_FILENO, data, size);
-	if ( written <= 0 )
-	    return;
-	data += written;
-	size -= (size_t)written;
-    }
-}
-
-static void crash_write_formatted(const char *data, int length, size_t capacity)
-{
-    if ( length <= 0 || capacity == 0 )
-	return;
-    size_t size = (size_t)length;
-    if ( size >= capacity )
-	size = capacity - 1;
-    crash_write(data, size);
-}
-
-// Async-signal-safe crash handler: writes signal name + backtrace to fd 2
-// (stderr) using only async-signal-safe libc calls. Re-raises the signal
-// with the default handler so core files still drop if enabled.
-static void crash_handler(int sig, siginfo_t *info, void *uctx)
-{
-    const char *name = "signal";
-    switch ( sig )
-    {
-	case SIGSEGV: name = "SIGSEGV (segmentation fault)";	break;
-	case SIGABRT: name = "SIGABRT (abort)";			break;
-	case SIGFPE:  name = "SIGFPE (arithmetic error)";	break;
-	case SIGBUS:  name = "SIGBUS (bus error)";		break;
-	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
-    }
-    const char *prefix = "\nmadc: caught ";
-    crash_write(prefix, strlen(prefix));
-    crash_write(name, strlen(name));
-    if ( info && (sig == SIGSEGV || sig == SIGBUS) )
-    {
-	char addrbuf[64];
-	int n = snprintf(addrbuf, sizeof(addrbuf), " at address %p", info->si_addr);
-	crash_write_formatted(addrbuf, n, sizeof(addrbuf));
-    }
-    crash_write("\n", 1);
-
-    const char *btheader = "Backtrace:\n";
-    crash_write(btheader, strlen(btheader));
-
-    void *frames[64];
-    int nf = backtrace(frames, 64);
-    // Symbolize each frame. JIT (MIR-generated) frames are invisible to
-    // backtrace_symbols/dladdr — resolve those against the live MIR module so
-    // a crash inside transpiled code reads as `func+0xoff [JIT]` instead of a
-    // bare address. Falls back to dladdr for native (libc/madc) frames.
-    for (int i = 0; i < nf; i++)
-    {
-	char line[320], sym[200];
-	if ( madc_jit_symbolize(frames[i], sym, sizeof(sym)) )
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] %s\n", frames[i], sym);
-	    crash_write_formatted(line, n, sizeof(line));
-	    continue;
-	}
-	MadcDlInfo di;
-	if ( madcdl_addr(frames[i], di) && di.sname )
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
-			     di.sname,
-			     (unsigned long)((char *)frames[i] - (char *)di.saddr));
-	    crash_write_formatted(line, n, sizeof(line));
-	}
-	else
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] ??\n", frames[i]);
-	    crash_write_formatted(line, n, sizeof(line));
-	}
-    }
-
-    // Restore default handler and re-raise so the shell sees the real exit
-    // status (and optionally produces a core dump).
-    struct sigaction dfl;
-    memset(&dfl, 0, sizeof(dfl));
-    dfl.sa_handler = SIG_DFL;
-    sigaction(sig, &dfl, NULL);
-    raise(sig);
-}
-
-static void install_crash_handler()
-{
-    // Run the handler on a dedicated alternate stack so a STACK OVERFLOW
-    // (e.g. runaway recursion in JIT'd code) is still catchable+symbolizable —
-    // without SA_ONSTACK the handler would re-fault on the exhausted stack and
-    // the kernel would kill us silently with no backtrace.
-    static char altstack[65536];	// fixed: SIGSTKSZ is non-constant on modern glibc
-    stack_t ss;
-    memset(&ss, 0, sizeof(ss));
-    ss.ss_sp = altstack;
-    ss.ss_size = sizeof(altstack);
-    ss.ss_flags = 0;
-    sigaltstack(&ss, NULL);
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
-    sigaction(SIGFPE,  &sa, NULL);
-    sigaction(SIGBUS,  &sa, NULL);
-    sigaction(SIGILL,  &sa, NULL);
-}
 
 double time_diff(struct timeval x , struct timeval y)
 {
@@ -190,6 +72,7 @@ double time_diff(struct timeval x , struct timeval y)
 // Soft = limit, hard = limit+slop so the process can't extend itself.
 // Every trip must name its knob (never-silent): SIGXCPU via
 // cpu_guard_handler, ENOMEM/bad_alloc via mem_guard_new_handler.
+#ifndef _WIN32
 static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 {
     if ( const char *env = getenv(env_name) ) {
@@ -216,7 +99,7 @@ static void mem_guard_new_handler(void)
                      " MB address-space guard active; raise it or set"
                      " MADC_MEM_LIMIT=0 to disable\n",
                      (unsigned long long)madc_mem_guard_mb);
-    crash_write_formatted(buf, n, sizeof(buf));
+    madc_crash_write_formatted(buf, n, sizeof(buf));
     throw std::bad_alloc();
 }
 
@@ -232,17 +115,28 @@ static void cpu_guard_handler(int sig)
                      "madc: CPU time exceeded the MADC_CPU_LIMIT=%llu s guard;"
                      " raise it or unset it to disable\n",
                      (unsigned long long)madc_cpu_guard_secs);
-    crash_write_formatted(buf, n, sizeof(buf));
+    madc_crash_write_formatted(buf, n, sizeof(buf));
     struct sigaction dfl;
     memset(&dfl, 0, sizeof(dfl));
     dfl.sa_handler = SIG_DFL;
     sigaction(sig, &dfl, NULL);
     raise(sig);
 }
+#endif // !_WIN32
 
 static void install_resource_guards(size_t project_tus,
                                     const madc::config_settings &cfg)
 {
+#ifdef _WIN32
+    // Windows has no setrlimit. The JobObject equivalents
+    // (JOB_OBJECT_LIMIT_PROCESS_MEMORY, PerProcessUserTimeLimit) kill the
+    // process WITHOUT the nameable-knob message the POSIX guards guarantee,
+    // so the guards are documented no-ops here — the same posture as
+    // darwin's RLIMIT_AS below. A JobObject-based guard that still names
+    // its knob is a W-lane residual.
+    (void)project_tus;
+    (void)cfg;
+#else
     // Precedence for both guards: environment > madc.ini > baked default
     // (neither has a CLI flag, so the CLI layer of the rule is vacuous here).
     rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT",
@@ -292,7 +186,8 @@ static void install_resource_guards(size_t project_tus,
             std::set_new_handler(mem_guard_new_handler);
         }
     }
-#endif
+#endif // !__APPLE__
+#endif // !_WIN32
 }
 
 // Walk backwards from a line to include preceding comment block.
@@ -663,7 +558,7 @@ int main(int argc, char **argv)
     struct timeval _t_main;
     gettimeofday(&_t_main, NULL);
 
-    install_crash_handler();
+    madc_install_crash_handler();
 
     stringstream ss;
     MadcEngine engine;

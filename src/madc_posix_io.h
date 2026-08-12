@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <sys/types.h>
 
@@ -23,6 +24,12 @@ ssize_t read_fd(int fd, void *buffer, std::size_t size);
 // (GetFullPathName) normalizes without following links — consumers use
 // this for CONSISTENT path spellings, never for link identity.
 std::string resolve_real_path(const char *path);
+
+// Thread-safe local time (POSIX localtime_r). The Win32 arm is the MS
+// localtime_s — NOTE the two spell their argument orders opposite ways,
+// which is exactly why call sites go through this owner. False on failure,
+// `out` untouched then.
+bool local_time(time_t t, struct tm &out);
 
 // This host's name (POSIX gethostname); empty string on failure. The
 // Win32 arm rides GetComputerNameEx, NOT winsock's gethostname — callers
@@ -80,6 +87,11 @@ void *map_file_readonly(const char *path, std::size_t &length);
 // the system has no message). The one Win32-error formatter — error-path
 // composition (dlerror emulation, process errors) layers on top of it.
 std::string win_error_text(unsigned long code);
+
+// One line to the Windows debug channel (OutputDebugStringA) — the
+// syslog-analogue sink target, visible in a debugger / DebugView. The
+// caller composes the line (ident, level, message); this is transport only.
+void debug_log_line(const std::string &line);
 #endif
 
 } // namespace detail

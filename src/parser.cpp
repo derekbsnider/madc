@@ -13,7 +13,10 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include "madc_posix_io.h"	// local_time; Win: debug_log_line syslog transport
+#ifndef _WIN32
 #include <syslog.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #include <iostream>
@@ -19603,7 +19606,7 @@ std::string MadcEngine::format_log_message(LogLevel level, const std::string &me
     {
 	time_t now = time(NULL);
 	struct tm tm_now;
-	localtime_r(&now, &tm_now);
+	madc::detail::local_time(now, tm_now);
 	char tsbuf[32];
 	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_now);
 	os << tsbuf << ' ';
@@ -19651,6 +19654,7 @@ void MadcEngine::clear_log_sinks()
     log_sinks.clear();
 }
 
+#ifndef _WIN32
 int MadcEngine::syslog_priority_for(LogLevel level)
 {
     switch ( level )
@@ -19666,11 +19670,21 @@ int MadcEngine::syslog_priority_for(LogLevel level)
     }
     return LOG_INFO;
 }
+#endif
 
 void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
 {
     if ( syslog_active )
 	disable_syslog_sink();
+#ifdef _WIN32
+    // No syslog on Windows: the sink still activates, and write_syslog_sink
+    // routes to the debug channel (OutputDebugStringA — DebugView/debugger).
+    // option and facility are recorded but have no Win32 meaning.
+    syslog_active = true;
+    syslog_ident = ident ? ident : "madc";
+    syslog_option = option;
+    syslog_facility = facility;
+#else
     int resolved_option   = (option   < 0) ? LOG_PID  : option;
     int resolved_facility = (facility < 0) ? LOG_USER : facility;
     openlog(ident, resolved_option, resolved_facility);
@@ -19678,6 +19692,7 @@ void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
     syslog_ident = ident ? ident : "madc";
     syslog_option = resolved_option;
     syslog_facility = resolved_facility;
+#endif
 }
 
 void MadcEngine::disable_syslog_sink()
@@ -19685,13 +19700,26 @@ void MadcEngine::disable_syslog_sink()
     if ( !syslog_active )
 	return;
     syslog_active = false;
+#ifndef _WIN32
     closelog();
+#endif
 }
 
 void MadcEngine::write_syslog_sink(LogLevel level, const std::string &message)
 {
-    if ( syslog_active )
-	::syslog(syslog_priority_for(level), "%s", message.c_str());
+    if ( !syslog_active )
+	return;
+#ifdef _WIN32
+    std::string line = syslog_ident;
+    line += ": [";
+    line += log_level_name(level);
+    line += "] ";
+    line += message;
+    line += "\n";
+    madc::detail::debug_log_line(line);
+#else
+    ::syslog(syslog_priority_for(level), "%s", message.c_str());
+#endif
 }
 
 bool MadcEngine::enable_file_sink(const std::string &path,
@@ -19825,7 +19853,7 @@ std::string MadcEngine::format_json_log_line(LogLevel level, const std::string &
     {
 	time_t now = time(NULL);
 	struct tm tm_now;
-	localtime_r(&now, &tm_now);
+	madc::detail::local_time(now, tm_now);
 	char tsbuf[32];
 	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%dT%H:%M:%S", &tm_now);
 	os << "\"ts\":\"" << tsbuf << "\",";
@@ -20211,13 +20239,24 @@ void Program::populate_builtin_registry()
     // `string s = getenv("HOME")` ingests the char* via string's real ctor.
     builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+#ifdef _WIN32
+    // The UCRT has no setenv/unsetenv — its real name is _putenv_s (an empty
+    // value deletes). Same principle: register the host CRT's REAL function
+    // under the host's REAL name; fabricating a `setenv` here would be
+    // exactly the private dialect ruled out above.
+    builtin_registry.add_process_function("_putenv_s", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::_putenv_s);
+#else
     builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR), DataType::dtINT32}, (fVOIDFUNC)::setenv);
     builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)::unsetenv);
+#endif
     // errno accessor: the host libc's errno macro expands to a call on this
-    // symbol (glibc: (*__errno_location()); darwin: (*__error())). Register
-    // the host's own accessor under the host's own name so real <errno.h>
-    // resolves. Returns `int*` — C int is 4 bytes vs madc's 8-byte int.
-#ifdef __APPLE__
+    // symbol (glibc: (*__errno_location()); darwin: (*__error()); UCRT:
+    // (*_errno())). Register the host's own accessor under the host's own
+    // name so real <errno.h> resolves. Returns `int*` — C int is 4 bytes vs
+    // madc's 8-byte int.
+#if defined(_WIN32)
+    builtin_registry.add_process_function("_errno", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)::_errno);
+#elif defined(__APPLE__)
     builtin_registry.add_process_function("__error", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__error);
 #else
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);

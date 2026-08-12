@@ -115,6 +115,11 @@ std::string win_error_text(unsigned long code)
 		return "Windows error " + std::to_string(code);
 	return std::string(msg, n);
 }
+
+void debug_log_line(const std::string &line)
+{
+	OutputDebugStringA(line.c_str());
+}
 #endif
 
 std::string resolve_real_path(const char *path)
@@ -155,6 +160,15 @@ std::string get_host_name()
 		return std::string();
 	buf[sizeof(buf) - 1] = '\0';
 	return std::string(buf);
+#endif
+}
+
+bool local_time(time_t t, struct tm &out)
+{
+#ifdef _WIN32
+	return ::localtime_s(&out, &t) == 0;
+#else
+	return ::localtime_r(&t, &out) != NULL;
 #endif
 }
 
