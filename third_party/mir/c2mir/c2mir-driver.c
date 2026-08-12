@@ -55,6 +55,7 @@ typedef pthread_attr_t mir_thread_attr_t;
 #include "mir-gen.h"
 #include "mir-int128-helper.h"
 #include "mir-debug.h"
+#include "mir-mingw-stdio.h"
 #include "real-time.h"
 
 #include "mir-alloc-default.c"
@@ -487,33 +488,13 @@ float __nan (void) {
 }
 #endif
 
-#if defined(_WIN32) && defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
-/* gcc parity for JIT'd code: with __USE_MINGW_ANSI_STDIO (the madc win-lane
-   recipe), a mingw-gcc-compiled program's printf/scanf family is libmingwex's
-   __mingw_* implementations (C99 semantics: 80-bit %Lf long double, %a, %lld
-   on any CRT), NOT the CRT's exports.  JIT'd code must bind to the SAME
-   implementations the host was compiled against, so resolve the family to the
-   host's copies before consulting any DLL. */
-static const struct {
-  const char *name;
-  void *addr;
-} mingw_ansi_stdio_map[] = {
-  {"printf", (void *) __mingw_printf},     {"vprintf", (void *) __mingw_vprintf},
-  {"fprintf", (void *) __mingw_fprintf},   {"vfprintf", (void *) __mingw_vfprintf},
-  {"sprintf", (void *) __mingw_sprintf},   {"vsprintf", (void *) __mingw_vsprintf},
-  {"snprintf", (void *) __mingw_snprintf}, {"vsnprintf", (void *) __mingw_vsnprintf},
-  {"scanf", (void *) __mingw_scanf},       {"vscanf", (void *) __mingw_vscanf},
-  {"fscanf", (void *) __mingw_fscanf},     {"vfscanf", (void *) __mingw_vfscanf},
-  {"sscanf", (void *) __mingw_sscanf},     {"vsscanf", (void *) __mingw_vsscanf},
-};
-#endif
-
 static void *import_resolver (const char *name) {
   void *handler, *sym = NULL;
 
 #if defined(_WIN32) && defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
-  for (size_t i = 0; i < sizeof (mingw_ansi_stdio_map) / sizeof (mingw_ansi_stdio_map[0]); i++)
-    if (strcmp (name, mingw_ansi_stdio_map[i].name) == 0) return mingw_ansi_stdio_map[i].addr;
+  /* gcc parity: the host's statically bound __mingw_* printf/scanf family
+     resolves before any DLL walk -- see mir-mingw-stdio.h. */
+  if ((sym = mir_mingw_ansi_stdio_lookup (name)) != NULL) return sym;
 #endif
   for (size_t i = 0; i < sizeof (std_libs) / sizeof (struct lib); i++)
     if ((handler = std_libs[i].handler) != NULL && (sym = dlsym (handler, name)) != NULL) break;

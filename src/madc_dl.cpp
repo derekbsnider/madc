@@ -79,6 +79,7 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 #include <string>
 #include <vector>
 #include "madc_posix_io.h"	// win_error_text — the one Win32-error formatter
+#include "mir-mingw-stdio.h"	// the ONE ANSI-stdio interposer map (fork-owned)
 
 static std::vector<HMODULE> &madcdl_global_modules(void)
 {
@@ -156,6 +157,16 @@ void *madcdl_sym(void *handle, const char *name)
 
 void *madcdl_sym_default(const char *name)
 {
+	// gcc parity first: on this host flavor the process's printf/scanf
+	// family IS the statically linked __mingw_* interposer set, and no
+	// module walk can see it (UCRT doesn't export the names; PE ld
+	// excludes the mingw runtime archives from --export-all-symbols).
+	// mir-mingw-stdio.h is the one owner of that name list — both the
+	// parse-time existence probe and JIT import resolution land here.
+#if defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
+	if (void *pre = mir_mingw_ansi_stdio_lookup(name))
+		return pre;
+#endif
 	FARPROC p = GetProcAddress(GetModuleHandleA(NULL), name);
 	if (p)
 		return (void *)p;
