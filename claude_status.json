@@ -6,19 +6,20 @@
  "branch": "develop",
  "live_handoff": {
   "session": "#85 (2026-08-12)",
-  "branch": "feature/windows-release-lane-claude @8c7f2ed9 (pushed)",
+  "branch": "feature/windows-release-lane-claude @39c0fa68 (pushed)",
   "mission": "Windows release lane (Track 6.4) \u2014 plan docs/plans/2026-08-12-windows-release-lane.md",
   "state": [
    "W0 UCRT recipe + gate SHIPPED (bcb13f08); W2.1 setjmp answered (NON_SEH, gated w/ negative control)",
    "W0.2 channel LIVE: container -> ssh derek@host.docker.internal (distro sshd) -> WSL interop = REAL Windows processes",
-   "W2 win64 floor DONE incl. the LD residual (ce858be7): five sites, one concept \u2014 c2mir param-gather/va_arg/call-result value materialization for memory-value scalars, machinize_call win64 LD convention (by-ref args + hidden-ptr RCX return; native ld2i/ui2ld builtins unchanged), driver msvcrt->ucrtbase + __mingw_* stdio binding (gcc parity)",
-   "scripts/win_run.sh SHIPPED (cf7aacb3): MADC_WIN_RUNNER over the channel; win_ucrt_gate 4/4 on REAL Windows (use ABSOLUTE runner path)",
-   "Verified: t_ld_b..g byte-exact vs gcc oracle on wine + real Windows (26200) + native SysV identical; complex f/d/l green; fulltest 1023/0",
-   "task #43 FIXED (8c7f2ed9): c2mir check layer dropped prefix-position __attribute__((cleanup)) \u2014 scan_cleanup_attrs now covers both positions; gate = c-tests/new/cleanup-prefix-attr.c; fulltest 1023/0"
+   "W2 win64 floor DONE incl. the LD residual (ce858be7) + win_run.sh (cf7aacb3) + task #43 prefix-cleanup fix (8c7f2ed9) \u2014 details in the plan doc",
+   "W1 STARTED \u2014 madc_dl seam SHIPPED (f181e6ff slice 1 dl-family, 39c0fa68 slice 2 dladdr): include/madc_dl.h + src/madc_dl.cpp own EVERY host dl*/dladdr use (madcdl_open_global/open_local/open_self/probe_loaded/sym/sym_default/close/error/addr + MadcDlInfo); <dlfcn.h> included ONLY by the seam; script dlopen/dlsym builtin thunks adapt onto it; test_native_shared.cpp deliberately raw (third-party-host simulation, gate-exempt)",
+   "Gate: scripts/check-one-dl-owner.sh in fulltest (dl calls + RTLD_ + Dl_info + <dlfcn.h> outside owner = RED; negative-controlled; caught a head-truncated inventory AND an indent-variant miss)",
+   "Verified: container fulltest 1023/0 twice (slice 1 and slice 2)"
   ],
   "next": [
-   "W1: madc host port \u2014 madc_dl seam first (dlopen/dlsym -> LoadLibrary/GetProcAddress + GetModuleHandle(NULL) self-resolution w/ -Wl,--export-all-symbols), then fork/exec/mmap/winsock surfaces",
+   "W1 next surfaces: fork/exec (madc_process, exec:// -> CreateProcess) or mmap (cir_freeze) seams; then madc_dl's Win32 backend (LoadLibrary/GetProcAddress + module-walk sym_default) + -Wl,--export-all-symbols wiring",
    "W3: PE executable + COFF .o writers behind the MIR_object seam (mir-macho.c is the template)",
+   "gotcha: background remote suites \u2014 nohup + done-marker + until-file waiter; NEVER pgrep -f the make pattern (waiter self-match); local background ssh dies at the tool timeout and orphans the run",
    "out-of-scope notes: interp ffi -ei LD convention not implemented (gen -eg is the madc path)"
   ]
  },
