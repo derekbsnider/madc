@@ -1193,7 +1193,8 @@ class DataDefUINT24:    public DataDef { public: DataDefUINT24():  DataDef("uint
 class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint32_t", 4, DataType::dtUINT32) {} };
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
-// caps simple types at 8, which is correct for every other scalar).
+// caps simple types at 8, which is correct for every other scalar except
+// long double — see DataDefLDOUBLE below).
 class DataDefINT128:    public DataDef { public:
 	DataDefINT128():  DataDef("__int128", 16, DataType::dtINT128) {}
 	virtual size_t alignment() const { return 16; } };
@@ -1208,7 +1209,14 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
 // off the varargs stack and printed nan, and the mangler emitted Itanium `e`
 // for a value passed as a double.
-class DataDefLDOUBLE:   public DataDef { public: DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {} };
+class DataDefLDOUBLE:   public DataDef { public:
+	DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {}
+	// SysV x86-64 alignment IS 16 as the comment above has always said —
+	// but the base alignment() caps simple types at 8, so without this
+	// override struct layout placed long double members on 8-byte
+	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
+	// out as 32 — gcc/clang: 32).
+	virtual size_t alignment() const { return 16; } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
