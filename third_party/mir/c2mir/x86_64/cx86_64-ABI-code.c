@@ -131,6 +131,7 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
     return 2;
   }
   if (complex_type_p (type)) {
+#ifndef _WIN32
     /* _Complex (SysV AMD64): the two components occupy consecutive bytes.
        - float _Complex   = 8 bytes  -> ONE SSE eightbyte holding both floats
                             packed in the low 64 bits.  The qword's MIR type
@@ -149,15 +150,38 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
     types[0] = MIR_T_D;
     if (n_qwords >= 2) types[1] = MIR_T_D;
     return n_qwords;
+#else
+    /* _Complex (win64, mingw-gcc oracle 2026-08-12, x86_64-w64-mingw32-gcc -S):
+       - float _Complex  = 8 bytes  -> ONE GPR qword, re|im packed
+                           (returned in RAX via `salq $32,%rdx; orq %rdx,%rax`),
+                           so MIR_T_I64 -- an SSE class here would be wrong.
+       - double / long double _Complex (16/32 bytes) -> memory class: args go
+                           by reference to caller temps, returns via the hidden
+                           pointer.  Returning >0 qwords here also overflowed
+                           types[] (MAX_QWORDS is 1 on win64) -- the page fault
+                           behind the madc win-lane W2 probe. */
+    if (type->u.basic_type == TP_CFLOAT) {
+      types[0] = MIR_T_I64;
+      return 1;
+    }
+    return 0;
+#endif
   }
   assert (scalar_type_p (type));
   switch (mir_type = get_mir_type (c2m_ctx, type)) {
   case MIR_T_F:
   case MIR_T_D: types[0] = MIR_T_D; return 1;
   case MIR_T_LD:
+#ifndef _WIN32
     types[0] = MIR_T_LD;
     types[1] = (MIR_type_t) X87UP_CLASS;
     return 2;
+#else
+    /* mingw win64: long double is memory class in every position (see
+       memory_value_type_p).  Also: writing types[1] here would overflow the
+       caller's types[] — MAX_QWORDS is 1 on win64. */
+    return 0;
+#endif
   default: types[0] = MIR_T_I64; return 1;
   }
 }
@@ -343,6 +367,14 @@ static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t r
     }
   } else if (!memory_value_type_p (ret_type)) {
     VARR_PUSH (MIR_op_t, ret_ops, res.mir_op);
+  } else if (res.mir_op.mode != MIR_OP_MEM && scalar_type_p (ret_type)) {
+    /* win64 long double returned by hidden pointer while the value is in a
+       register: store it straight into the return buffer. */
+    MIR_type_t vt = get_mir_type (c2m_ctx, ret_type);
+    ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
+    insn = MIR_new_insn (ctx, tp_mov (vt), MIR_new_mem_op (ctx, vt, 0, ret_addr_reg, 0, 1),
+                         res.mir_op);
+    MIR_append_insn (ctx, curr_func, insn);
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
     var = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, ret_addr_reg, 0, 1));
@@ -479,6 +511,19 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
     else if (type != MIR_T_LD)
       arg_info->n_iregs++;
   } else {
+    if (arg.mir_op.mode != MIR_OP_MEM && scalar_type_p (arg_type)) {
+      /* win64 long double: memory-class at the call boundary but the value
+         lives in a register — spill to an alloca'd slot so it can go by
+         reference (same idiom as complex_temp). */
+      MIR_type_t vt = get_mir_type (c2m_ctx, arg_type);
+      op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+      op_t slot;
+      emit2 (c2m_ctx, MIR_ALLOCA, addr.mir_op,
+             MIR_new_int_op (ctx, type_size (c2m_ctx, arg_type)));
+      slot = new_op (NULL, MIR_new_mem_op (ctx, vt, 0, addr.mir_op.u.reg, 0, 1));
+      emit2 (c2m_ctx, tp_mov (vt), slot.mir_op, arg.mir_op);
+      arg = slot;
+    }
     assert (arg.mir_op.mode == MIR_OP_MEM);
     if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
       arg = force_v128_reg (c2m_ctx, arg);

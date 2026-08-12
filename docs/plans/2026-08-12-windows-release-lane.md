@@ -110,14 +110,50 @@ Inventory from recon (session #83 greps):
 - Upstream MIR already has: VirtualAlloc executable pages
   (mir-code-alloc-default.c), the Win64 calling convention throughout
   mir-gen-x86_64.c, `_WIN32` handling in c2mir. The JIT floor EXISTS.
-- Verify OUR fork additions under win64: native `_Complex`,
-  `__attribute__((cleanup))`, scope-depth auto-local layout, ≤16-byte
-  SIMD, the SysV-varargs fixes (win64 varargs are a DIFFERENT
-  convention — shadow space, register homing; audit what of our
-  varargs work was SysV-specific).
+- **PROBED + LARGELY FIXED (2026-08-12, session #84).** c2m.exe cross-builds
+  with the W0.1 recipe and JIT-runs probes under wine. Six win64 floor
+  defects found (several inherited from upstream, verified by building
+  upstream c2m: identical failures) and fixed in-tree:
+  1. c2mir's builtin `<stdarg.h>` mapped win32 `va_start` to the MSVC
+     vcruntime intrinsic `__va_start` (unresolvable at JIT link) — now
+     `__builtin_va_start` → MIR's native VA machinery on all targets.
+  2. `classify_node` was missing ALL fork/madc node kinds (complex,
+     defer, class, asm, attr) — assert at -O0, silent misclassification
+     under NDEBUG. All 13 codes added, default made loud.
+  3. TBAA `get_type_alias_name` lacked the complex basic types (win64's
+     typed-memory complex lowering reaches it; SysV never did).
+  4. Complex classification in `cx86_64-ABI-code.c` was SysV-only and
+     OVERFLOWED types[] on win64 (MAX_QWORDS=1 — the NDEBUG page fault).
+     win64 rules per gcc oracle: `float _Complex` = one GPR qword
+     (RAX-returned, packed re|im); double/long-double complex = memory
+     class. All three flavors now compute correctly under wine.
+  5. VA_START/VA_ARG got the va_list VARIABLE pseudo where MIR's contract
+     wants its ADDRESS (win64's scalar `char*` va_list register-allocates;
+     SysV's array never did) → generated code dereferenced ap's
+     uninitialized VALUE. Fixed win-only with `MIR_ADDR` (gen N_ADDR's own
+     mechanism); a first, ungated attempt broke SysV va (array decay) and
+     was caught by the native probe battery — the gate matters.
+  6. **long double = mingw model (x87 80-bit, sizeof/align 16)**: 
+     `mir_ldouble` now real long double except on MSVC hosts; MIR core's
+     five `_WIN32 → LD-is-D` downgrade gates replaced by one `MIR_LD_IS_D`
+     macro (mir.h) that keys on the MSVC host, not on Windows. Call
+     boundary rides the memory-class machinery (`memory_value_type_p`):
+     by-ref args, hidden-pointer return, by-ref varargs — exactly the
+     mingw-gcc oracle. Register-resident LD values spill via the
+     complex_temp ALLOCA idiom at arg/ret boundaries.
+- **W2 residuals (next session):** (a) variadic `%Lf` transport: LD value
+  reaches printf as 0.00 under wine (named-arg/return paths of the same
+  model work; suspect the BLK(16) copy source); (b) named LD arg proto
+  mismatch "arg of call is block type memory but param is not of block
+  type" (call side says BLK, callee param decl path disagrees — find the
+  func-def param typing site); (c) `long double _Complex` now green, keep
+  in the battery. Reducers: tmp/win/t_ld_b.c, t_ld_c.c.
+- Also found (platform-independent, task #43): the c2mir C-text parser
+  DROPS prefix-position `__attribute__` (cleanup silently lost; suffix
+  position works). madc's tree path is unaffected.
 - c2mir type model under our windows target: long double = 80-bit
-  (mingw model) — confirm/config c2mir's win64 target sizes match
-  mingw-gcc (`sizeof(long double)==16`, alignment 16), NOT MSVC.
+  (mingw model) — DONE, see 6 above; `sizeof(long double)==16`,
+  `_Alignof==16` verified in-JIT under wine.
 - **W2.1 RISK — PROBED AND ANSWERED (2026-08-12).** Confirmed: with
   mingw's default win64 `setjmp` (captures
   `__builtin_frame_address(0)`), a `longjmp` across a VirtualAlloc'd

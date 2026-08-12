@@ -6183,7 +6183,26 @@ static int aggregate_type_p (const struct type *type) {
 }
 
 static int memory_value_type_p (const struct type *type) {
+#if defined(_WIN32) && defined(__GNUC__)
+  /* mingw win64: long double (x87 80-bit, 16 bytes) crosses every call
+     boundary like a 16-byte aggregate — by-reference args, hidden-pointer
+     return, by-reference even in varargs (oracle: x86_64-w64-mingw32-gcc -S,
+     madc win lane 2026-08-12).  Computation inside a function still runs on
+     MIR_T_LD; only the call boundary is memory-shaped. */
+  if (type->mode == TM_BASIC && type->u.basic_type == TP_LDOUBLE) return TRUE;
+#endif
   return aggregate_type_p (type) || complex_type_p (type) || int128_type_p (type);
+}
+
+/* va_arg reads this type through the block path (a pointer-sized slot naming
+   the value's memory).  win64-mingw long double qualifies (by-reference in
+   varargs, see memory_value_type_p); SysV long double stays on the scalar
+   path (its value lives directly in the overflow area). */
+static int va_block_type_p (const struct type *type) {
+#if defined(_WIN32) && defined(__GNUC__)
+  if (type->mode == TM_BASIC && type->u.basic_type == TP_LDOUBLE) return TRUE;
+#endif
+  return aggregate_type_p (type);
 }
 
 static enum basic_type complex_component_type (enum basic_type bt) {
@@ -9893,10 +9912,13 @@ static void classify_node (node_t n, int *expr_attr_p, int *stmt_p) {
     REP8 (NODE_CASE, DIV, DIV_ASSIGN, MOD, MOD_ASSIGN, IND, FIELD, ADDR, DEREF)
     REP8 (NODE_CASE, DEREF_FIELD, COND, INC, DEC, POST_INC, POST_DEC, ALIGNOF, SIZEOF)
     REP6 (NODE_CASE, EXPR_SIZEOF, CAST, COMPOUND_LITERAL, CALL, GENERIC, GENERIC_ASSOC)
+    REP5 (NODE_CASE, REALPART, IMAGPART, CF, CD, CLD) /* _Complex exprs/literals (fork) */
     *expr_attr_p = TRUE;
     break;
     REP8 (NODE_CASE, IF, SWITCH, WHILE, DO, FOR, GOTO, INDIRECT_GOTO, CONTINUE)
     REP5 (NODE_CASE, BREAK, RETURN, EXPR, BLOCK, SPEC_DECL) /* SPEC DECL may have an initializer */
+    NODE_CASE (DEFER)    /* madc: defer statement */
+    NODE_CASE (ASM_STMT)
     *stmt_p = TRUE;
     break;
     REP8 (NODE_CASE, IGNORE, CASE, DEFAULT, LABEL, LIST, SHARE, TYPEDEF, EXTERN)
@@ -9906,8 +9928,11 @@ static void classify_node (node_t n, int *expr_attr_p, int *stmt_p) {
     REP8 (NODE_CASE, UNION, ENUM, ENUM_CONST, MEMBER, CONST, RESTRICT, VOLATILE, ATOMIC)
     REP8 (NODE_CASE, INLINE, NO_RETURN, ALIGNAS, FUNC, STAR, POINTER, DOTS, ARR)
     REP6 (NODE_CASE, INIT, FIELD_ID, TYPE, ST_ASSERT, FUNC_DEF, MODULE)
+    REP6 (NODE_CASE, COMPLEX, ATTR, ASM, ASM_OPERAND, CLASS, METHOD)
     break;
-  default: assert (FALSE);
+  default:
+    fprintf (stderr, "classify_node: unhandled node code %d\n", (int) n->code);
+    assert (FALSE);
   }
 }
 #undef REP_SEP
@@ -12465,7 +12490,24 @@ static void get_type_alias_name (c2m_ctx_t c2m_ctx, struct type *type, VARR (cha
     case TP_FLOAT: VARR_PUSH (char, name, 'f'); break;
     case TP_DOUBLE: VARR_PUSH (char, name, 'd'); break;
     case TP_LDOUBLE: VARR_PUSH (char, name, 'D'); break;
-    default: assert (FALSE);
+    /* _Complex (fork): 'C' + base-type char.  Reached when the target ABI
+       lowers complex values through typed memory (win64 hidden-pointer
+       return); SysV register-class lowering never aliases these. */
+    case TP_CFLOAT:
+      VARR_PUSH (char, name, 'C');
+      VARR_PUSH (char, name, 'f');
+      break;
+    case TP_CDOUBLE:
+      VARR_PUSH (char, name, 'C');
+      VARR_PUSH (char, name, 'd');
+      break;
+    case TP_CLDOUBLE:
+      VARR_PUSH (char, name, 'C');
+      VARR_PUSH (char, name, 'D');
+      break;
+    default:
+      fprintf (stderr, "get_type_alias_name: unhandled basic type %d\n", (int) basic_type);
+      assert (FALSE);
     }
     break;
   case TM_PTR:
@@ -18812,7 +18854,23 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
 #endif
           op2 = mem_to_address (c2m_ctx, op2, FALSE);
       }
-      if (aggregate_type_p (type)) {
+#ifdef _WIN32
+      else if (op2.mir_op.mode == MIR_OP_REG) {
+        /* MIR_VA_ARG takes the va_list's ADDRESS.  win64's scalar va_list
+           (char *) lives in a register pseudo — take its address with
+           MIR_ADDR (the same mechanism gen N_ADDR uses; the generator then
+           binds the pseudo to a stack slot).  Passing the register itself
+           made the machinized code dereference ap's uninitialized VALUE
+           (madc win-lane crash, 2026-08-12).  This branch is win-only: on
+           SysV va_list is an ARRAY, so a REG here already holds its decayed
+           ADDRESS — an extra MIR_ADDR double-indirects and corrupts va_arg
+           (caught by the native probe battery). */
+        op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+        emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op2.mir_op);
+        op2 = addr;
+      }
+#endif
+      if (va_block_type_p (type)) {
         if (desirable_dest == NULL) {
           /* A struct/union va_arg used as an rvalue (no destination object)
              still needs storage to receive the aggregate; allocate a frame
@@ -18860,6 +18918,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
 #endif
           op1 = mem_to_address (c2m_ctx, op1, FALSE);
       }
+#ifdef _WIN32
+      else if (op1.mir_op.mode == MIR_OP_REG) {
+        /* win64 scalar va_list in a register: MIR_VA_START needs its ADDRESS —
+           see the va_arg twin above (win-only for the same reason). */
+        op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+        emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op1.mir_op);
+        op1 = addr;
+      }
+#endif
       MIR_append_insn (ctx, curr_func, MIR_new_insn (ctx, MIR_VA_START, op1.mir_op));
     } else if (alloca_p) {
       res = get_new_temp (c2m_ctx, t);

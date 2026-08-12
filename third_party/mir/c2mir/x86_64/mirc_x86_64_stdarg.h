@@ -20,11 +20,13 @@ static char stdarg_str[]
     "} va_list[1];\n"
 #endif
     "\n"
-#if defined(__WIN32)
-    "#define va_start(ap, param) __va_start (ap, param)\n"
-#else
+    /* All targets use MIR's native va machinery: __builtin_va_start lowers to
+       MIR_VA_START, which mir-gen-x86_64.c implements for BOTH SysV and win64
+       (char *va_list into the homed arg area).  The old __WIN32 spelling
+       `__va_start(ap, param)` emitted a call to the MSVC vcruntime intrinsic,
+       which no import resolver provides — JIT link failed with
+       "can not load symbol __va_start" (madc win64 lane, 2026-08-12). */
     "#define va_start(ap, param) __builtin_va_start (ap)\n"
-#endif
     "#define va_arg(ap, type) __builtin_va_arg(ap, (type *) 0)\n"
     "#define va_end(ap) 0\n"
 #if MIR_TARGET_APPLE_P || defined(__WIN32)

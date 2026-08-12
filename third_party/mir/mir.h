@@ -14,6 +14,21 @@ extern "C" {
 #error "MIR does not work on 32-bit Windows"
 #endif
 
+/* Hosts where MIR cannot carry a real (80/128-bit) long double and canonizes
+   MIR_T_LD to MIR_T_D: MSVC (its long double IS double, and it defines no
+   __SIZEOF_LONG_DOUBLE__), and any host whose long double is 8 bytes.
+   mingw-w64 x86_64 has the x87 80-bit long double and the x86_64 LD machine
+   patterns work there, so _WIN32 alone must NOT trigger the downgrade
+   (madc win64 lane, 2026-08-12). */
+#ifndef MIR_LD_IS_D
+#if (defined(_WIN32) && !defined(__GNUC__)) \
+  || (defined(__SIZEOF_LONG_DOUBLE__) && __SIZEOF_LONG_DOUBLE__ == 8)
+#define MIR_LD_IS_D 1
+#else
+#define MIR_LD_IS_D 0
+#endif
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>

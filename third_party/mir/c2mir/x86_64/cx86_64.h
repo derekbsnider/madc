@@ -65,9 +65,14 @@ typedef mir_schar mir_char;
 
 typedef float mir_float;
 typedef double mir_double;
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__GNUC__)
+/* MSVC host: long double IS double (8 bytes). */
 typedef double mir_ldouble;
 #else
+/* SysV, and mingw win64: x87 80-bit long double, sizeof 16, align 16 —
+   the mingw-gcc model (madc win lane keys gcc parity on it, 2026-08-12).
+   Keying the exception on the MSVC host (not on _WIN32) keeps the front
+   end's model identical to the compiler that built us. */
 typedef long double mir_ldouble;
 #endif
 
