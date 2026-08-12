@@ -879,7 +879,7 @@ public:
 	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
 	std::map<class TokenOperator *, class FuncDef *> m_free_op_inst_by_call;
 	std::map<class TokenOperator *, class Variable *> m_free_op_body_by_call;
-	node_t integer(long val, TokenBase *origin = NULL);
+	node_t integer(int64_t val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
 	// constant (e.g. `0xffffffffull`) carries its real signedness/width
@@ -905,6 +905,16 @@ public:
 	node_t node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, node_t op4, node_t op5, TokenBase *origin = NULL);
 	node_t append(node_t parent, node_t child);
 	node_t simple(c2mir_node_code_t code, TokenBase *origin = NULL);
+
+	// ---- The i64 spelling law (LLP64) ----
+	// madc's 64-bit int kinds spell as `long long` — TWO N_LONG specs —
+	// never a lone N_LONG: c2mir models platform `long`, which is 32-bit
+	// on win64 (cx86_64.h), so a single-N_LONG spec truncates there.
+	// LP64 targets type both spellings at 64 bits. Unsigned forms prepend
+	// N_UNSIGNED at the call site. check-i64-spec-spelling.sh gates raw
+	// spellings in cir_builder.cpp.
+	node_t append_i64(node_t spec_list, TokenBase *origin = NULL);
+	node_t i64_list(TokenBase *origin = NULL);
 
 	// Build an error/incomplete node (carries a reason + origin for
 	// diagnostics). The node's code is N_IGNORE so it is harmless if it ever
