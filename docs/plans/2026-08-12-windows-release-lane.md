@@ -144,6 +144,26 @@ Inventory from recon (session #83 greps):
   must be either (a) in-process execution with a documented
   no-isolation caveat, or (b) self-respawn + frozen-forest state
   transport. Owner call when W1 reaches the libmadc embedding surface.
+  **Slice 9 DONE (session #85): the Process owner's Win32 arm.**
+  `start()` = CreatePipe pairs (child ends alone inheritable) + a
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` restricting inheritance to exactly
+  the three std handles (the O_CLOEXEC analogue); parent ends bridge to
+  CRT fds via `_open_osfhandle`, so the pipe channels and the pump loop
+  are untouched. `run_and_wait()` = explicit application path +
+  inheritable std-handle duplicates (the execv contract; duplicates, not
+  inherit-flag mutation — flag flips would race concurrent spawns in an
+  embedding host). One command-line string under the MS CRT quoting
+  rules (`append_windows_argument`; CRT argv contract only — no cmd.exe
+  ^ rules, no madc surface spawns batch files); environment block
+  ci-sorted for the loader; NTSTATUS exit codes flow through the
+  existing `int` status (no WIFEXITED split); `terminate()` =
+  `TerminateProcess(128+SIGTERM)`. Shared owners that rode along:
+  `detail::read_fd` (both raw `::read` channel sites + the exec-errno
+  reader migrated; Win arm = one `_read` capped at INT_MAX) and
+  `detail::win_error_text` (the one GetLastError formatter — madc_dl's
+  private FormatMessage copy adopts it). madc_process.cpp mingw-GREEN
+  (8th of 14 probed TUs); fulltest 1023/0. Run validation = the
+  hosted-MODE battery, like every Win32 arm.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
