@@ -35,16 +35,32 @@ POSIX mmap semantics, winsock) and a third executable format (PE/COFF).
   `binutils-mingw-w64-x86-64`) and `wine64` to
   `scripts/provision_container.sh` (container is disposable — the apt
   layer dies with rebuilds).
-- **W0.1 UCRT flavor check:** Debian/Ubuntu's mingw-w64 packages
-  historically DEFAULT to msvcrt. Determine the cleanest UCRT-defaulted
-  toolchain on the container: (a) the distro package's ucrt CRT variant
-  if shipped (`-mcrtdll=ucrtbase` / ucrt spec files), (b) llvm-mingw or
-  an MSYS2-built sysroot dropped under /opt, or (c) build the mingw-w64
-  CRT ourselves configured `--with-default-msvcrt=ucrt`. Gate: `printf`
-  of `long double` and `%lld` correct in a cross-built hello under
-  wine, and `objdump -p` shows `ucrtbase.dll` (not `msvcrt.dll`) in the
-  import table.
-- **W0.2 Windows-execution channel:** the container cannot reach WSL
+- **W0.1 UCRT flavor check — RESOLVED (2026-08-12, probed).** Ubuntu
+  noble's packages (gcc 13.2, mingw-w64 11.0.1) default to msvcrt and
+  expose no `-mcrtdll`, but ship the full UCRT import libs
+  (`libucrt.a`/`libucrtbase.a`) INCLUDING `__getmainargs`-family compat
+  shims, so option (a) works with no CRT rebuild. The recipe:
+  compile `-D_UCRT -D__USE_MINGW_ANSI_STDIO=1`, link
+  `-specs=<dumpspecs with -lmsvcrt→-lucrt>` plus
+  `src/win_ucrt_compat.S` (`_setjmp`/`_setjmpex` → `__intrinsic_setjmpex`
+  thunks — msvcrt-compiled static libs like Ubuntu's winpthreads
+  reference the msvcrt-only names). Two traps verified: `_UCRT` alone
+  turns mingw's ANSI stdio OFF and `%Lf` of 80-bit long double silently
+  prints 0.00 (UCRT treats ld as 64-bit); and `crt2u.o` is the
+  *unicode*-entry object, not a UCRT variant. Gate codified as
+  `scripts/win_ucrt_gate.sh`: UCRT-only import tables (apisets, no
+  msvcrt.dll), `%lld` + `%Lf` correctness, static-libstdc++ C++, and
+  the W2.1 probe with its negative control. Imports come out as
+  `api-ms-win-crt-*` apisets (they forward to ucrtbase — that is the
+  UCRT surface).
+- **W0.2 Windows-execution channel — WAITING ON OWNER (2026-08-12):
+  needs (1) OpenSSH Server enabled on the Windows 11 host, (2) the
+  host's address + user for the container to ssh to. Probed: the
+  container's default route is the docker bridge (172.19.0.1); the
+  Windows host is not discoverable from inside the container, so the
+  channel starts when the owner hands us the endpoint. wine64 carries
+  interim validation (all W0 gates run under it).** Original option
+  analysis — the container cannot reach WSL
   interop (probed 2026-08-12: no /init, no WSLInterop binfmt, no
   /mnt/c inside the container namespace). Options, owner-side setup:
   (a) **enable OpenSSH Server on the Windows 11 host** (Settings →
@@ -102,12 +118,21 @@ Inventory from recon (session #83 greps):
 - c2mir type model under our windows target: long double = 80-bit
   (mingw model) — confirm/config c2mir's win64 target sizes match
   mingw-gcc (`sizeof(long double)==16`, alignment 16), NOT MSVC.
-- **RISK (probe EARLY, W2.1):** mingw x64 `setjmp/longjmp` performs
-  SEH frame-consistency unwinding (RtlUnwindEx) that is known to fault
-  across JIT-allocated frames. Our exception lowering rides
-  setjmp/longjmp. Probe a try/catch/throw JIT case under wine in week
-  one; the known mitigations are __builtin_setjmp-style pairs or
-  masking the frame chain. Budget fork work if it bites.
+- **W2.1 RISK — PROBED AND ANSWERED (2026-08-12).** Confirmed: with
+  mingw's default win64 `setjmp` (captures
+  `__builtin_frame_address(0)`), a `longjmp` across a VirtualAlloc'd
+  JIT frame with no RUNTIME_FUNCTION entry faults inside ntdll
+  (`MSVCRT_longjmp → RtlUnwind → RtlUnwindEx → page fault`, wine 9.0).
+  Mitigation VERIFIED: `-D__USE_MINGW_SETJMP_NON_SEH` maps setjmp to
+  `_setjmp(buf, NULL)` — NULL frame-ctx means longjmp restores
+  registers without invoking the unwinder at all — and the same probe
+  passes cleanly. NO fork work needed; madc's exception runtime and
+  win64 prelude MUST compile setjmp as the NON-SEH variant
+  (`__intrinsic_setjmpex(buf, NULL)` under UCRT). Both legs are gated
+  in `scripts/win_ucrt_gate.sh` (the SEH leg as a negative control
+  that must keep failing). Real-ntdll confirmation rides the first
+  win_battery once W0.2 is up; the NULL-ctx semantics are CRT-level,
+  so no divergence is expected.
 
 ### W3 — PE/COFF writers (the genuinely new compiler work)
 - **mir-pe.c**: PE64 executable writer behind the SAME `MIR_object`

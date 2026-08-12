@@ -70,15 +70,23 @@ PKGS_cross="qemu-user-static"
 # is part of the base image but rpm is not — its absence 127'd the v0.69.0
 # promote's package build after a container rebuild dropped the apt layer.
 PKGS_package="rpm"
+# winlane: the windows release lane (Track 6.4). The -posix flavor is
+# deliberate — winpthreads provides the pthread/std::thread surface madc
+# uses. wine64 is the interim/isolation runner for cross-built PE binaries
+# (real-Windows runs go over the W0.2 ssh channel once the owner enables
+# it). NOTE: these packages DEFAULT TO MSVCRT; the UCRT recipe and its
+# gate live in scripts/win_ucrt_gate.sh.
+PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64"
 
-ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package"
+ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane"
 
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
 # versioned name we invoke).
 BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
-      qemu-aarch64-static"
+      qemu-aarch64-static
+      x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine"
 
 report() {
 	local missing=0
