@@ -311,6 +311,33 @@ Inventory from recon (session #83 greps):
   Linux is unaffected (both models 64-bit). ALSO fixes: malloc extern
   currently declared with a 4-byte size param on win64
   ({N_UNSIGNED, N_LONG} — cir_builder:8050).
+  **Slices (a)+(b) SHIPPED (session #85, 77094857 + 0cb1f328): the
+  truncation family is FIXED.** (a) One spelling owner —
+  CirBuilder::append_i64 / i64_list emit the two-N_LONG `long long`
+  spec; all ~80 sites respelled (native_scalar_specs /
+  append_type_specs / emit_symbol_ret_specs arms, extern shapes,
+  direct spec builders; long double keeps its {N_LONG, N_DOUBLE}
+  pair, ld-pair-tagged). 64-bit constants ride N_LL/N_ULL + u.ll/u.ull
+  — N_L's u.l storage ALSO narrowed on win64 because c2mir_node.h
+  hardcoded 64-bit c2mir_long while claiming to mirror cx86_64.h; the
+  mirror now carries the _WIN32 arm. integer() takes int64_t (host
+  long is 32-bit on the win64 build); (long) call-site casts widened.
+  N_LL added to the two constant-consumer checks. Gate:
+  scripts/check-i64-spec-spelling.sh in fulltest (three markers,
+  negative-controlled). (b) Host thunk sweep: madarray_size /
+  assign_int / assign_bool, __madc_sys_init/_once,
+  __madc_atomic_fetch_add_l → int64_t; _chk sizes + object_size →
+  size_t; packed-varargs %d-family cast → long long; cir_builder's
+  storage-word sizeof/alignof(long) → long long (alignof(long)=4 on
+  win64 under-aligned 8-byte buffer slots). VERIFIED under wine:
+  lld16 A/B and stdio15 x=%lld all print 1234567890123 in full,
+  byte-identical to Linux madc and the mingw-gcc oracle's 64-bit legs.
+  **Residual = (c), the dialect question (OWNER):** sizeof(long) still
+  folds 8 in the front end (oracle: 4) — script-long width on win64,
+  plus the platform-long-semantic helpers classified out of (b) (the
+  *l bit-scan family, the generic overflow triple,
+  __madc_try_context_size, and the consumer-less __madc_fd_/timeval
+  dead thunks noted for cruft removal).
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
