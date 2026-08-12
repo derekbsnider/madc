@@ -338,6 +338,25 @@ Inventory from recon (session #83 greps):
   *l bit-scan family, the generic overflow triple,
   __madc_try_context_size, and the consumer-less __madc_fd_/timeval
   dead thunks noted for cruft removal).
+  **First wine test sweep (session #85, post-LLP64): 3/7 real
+  integration tests PASS byte-exact** (testint, testfunc, testmath vs
+  Linux madc, CRLF-normalized). Two findings: (1) ⚠ BATTERY HARNESS
+  NOTE — win64 stdout is CRLF (Win CRT text mode; mingw-gcc programs
+  do the same, so CRLF IS gcc-parity-correct platform behavior); the
+  battery's oracle comparison must normalize `tr -d '\r'`, never
+  "fix" madc.exe to emit LF. (2) **Run-burndown defect #3 (NEXT):**
+  testif/testswitch/teststruct/testptr die at parse with
+  "swprintf.inl:68: Incorrect number of parameters for 'vswprintf':
+  expected 4 got 3" — mingw's swprintf.inl inline calls the 3-arg MS
+  vswprintf while a 4-arg ISO prototype is in scope, i.e. the SCRIPT
+  compile's preprocessor state selects INCONSISTENT
+  __USE_MINGW_ANSI_STDIO branches across the served header chain.
+  Hypothesis for next window: the script-side predefine set on the
+  win64 host must carry the binary's own posture (_UCRT +
+  __USE_MINGW_ANSI_STDIO=1 — the HOSTTAB principle); check
+  sys_include_paths / the hosted-MODE predefines, and what mingw-g++
+  itself predefines for the oracle. Repro: wine madc.exe
+  tests/testif.mad (Linux rc=0).
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
