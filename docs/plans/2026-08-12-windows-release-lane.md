@@ -191,6 +191,28 @@ Inventory from recon (session #83 greps):
   `-Ithird_party/mir` in the probe recipe. 11 of 14 TUs green — the
   remaining 3: madc_program (fork-isolation OWNER DECISION), pch (zlib),
   madc_socket_channel (winsock), ns_perl (glob). fulltest 1023/0.
+  **Slice 12 DONE (session #85): winsock + glob arms — 13 of 14 probed
+  TUs mingw-GREEN.** Socket channel Win32 arm: ONE WSAStartup owner
+  (`socket_stack_ready`, never WSACleanup), winsock errors harvested via
+  `socket_last_error()`/`set_socket_error_code()` (WSA codes are system
+  codes — win_error_text formats them), SOCKET kept in the int fd model
+  (kernel handles fit 32 bits, the documented WOW64 interop rule;
+  INVALID_SOCKET truncates to -1), stream write = `::send` (⚠ a SOCKET
+  is NOT a CRT fd — write_fd_without_sigpipe would be wrong), close =
+  closesocket, shutdown = SD_RECEIVE/SD_SEND, close-on-exec =
+  SetHandleInformation, datagram truncation = WSAEMSGSIZE (winsock has
+  no recvmsg/MSG_TRUNC), AF_UNIX via `<afunix.h>` (Win10 1803+).
+  perl::glob rides a new `detail::glob_paths` owner (POSIX ::glob /
+  Win component-wise FindFirstFile walk) — MANDATORY routing: ns_perl
+  includes tokens.h, windows.h can never enter it. pch.cpp cleared by
+  installing libz-mingw-w64-dev (+ recorded in
+  scripts/provision_container.sh PKGS_winlane). The ONE red TU left:
+  madc_program.cpp = the fork-isolation OWNER DECISION. fulltest 1023/0.
+  **NEXT: slice 14 = the hosted-x86-64-windows MODE** (Makefile;
+  hosted-darwin blocks = template; -static, -Wl,--export-all-symbols,
+  W0 UCRT recipe, -lz for pch) → linkable madc.exe, run validation via
+  wine + win_run.sh; W1's remaining code item beyond that is the
+  fork-isolation decision.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
