@@ -609,7 +609,22 @@ extern "C" char *__madc_builtin_stpcpy_chk(char *dst, const char *src, unsigned 
 
 extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
 {
+#ifdef _WIN32
+    // stpncpy is absent from the MS CRT, so gcc lowers this builtin to a
+    // glibc __stpncpy_chk libcall mingw lacks (the REST of the _chk family
+    // exists in libmingwex). Compose the same fortified semantics from the
+    // chks the platform has — abort-on-overflow preserved: n > size trips
+    // one of the two composed checks below. GNU return = dst + min(strlen
+    // (src), n). (Same composition pattern as the darwin mempcpy arm.)
+    unsigned long len = 0;
+    while ( len < n && src[len] )
+	++len;
+    __builtin___memcpy_chk(dst, src, len, size);
+    __builtin___memset_chk(dst + len, 0, n - len, size > len ? size - len : 0);
+    return dst + len;
+#else
     return __builtin___stpncpy_chk(dst, src, n, size);
+#endif
 }
 
 extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, unsigned long size)
