@@ -229,11 +229,37 @@ Inventory from recon (session #83 greps):
   installing libz-mingw-w64-dev (+ recorded in
   scripts/provision_container.sh PKGS_winlane). The ONE red TU left:
   madc_program.cpp = the fork-isolation OWNER DECISION. fulltest 1023/0.
-  **NEXT: slice 14 = the hosted-x86-64-windows MODE** (Makefile;
-  hosted-darwin blocks = template; -static, -Wl,--export-all-symbols,
-  W0 UCRT recipe, -lz for pch) → linkable madc.exe, run validation via
-  wine + win_run.sh; W1's remaining code item beyond that is the
-  fork-isolation decision.
+  **Slice 14 DONE (session #85, 4c7d94fb..e6bbfd2d): the
+  hosted-x86-64-windows MODE — madc.exe LINKS, UCRT-clean, and runs
+  under wine.** All 14 probed TUs mingw-GREEN (madc_program via the
+  loud isolation interim above; madc_globals self-path arm was probe-
+  flagged but never ported — GetModuleFileNameA arm added). The MODE:
+  mingw-w64 -posix + the W0 UCRT recipe baked into CC/CXX (host tables
+  see the binary's own posture), NON-SEH setjmp lane-wide, per-mode
+  MIRLIB variant (host detection = native _WIN32 arms), -static,
+  -Wl,--export-all-symbols, -lws2_32 -lz, .exe suffix. Link-burndown
+  facts: (1) ⚠ the C++ ABI leaks the CRT flavor via std::mbstate_t
+  (msvcrt: int / UCRT: _Mbstatet) — every fpos<mbstate_t> symbol
+  mangles differently, so the distro msvcrt-flavor libstdc++ CANNOT
+  serve -D_UCRT objects; scripts/build_win_ucrt_libstdcxx.sh stages a
+  UCRT rebuild of the same 13.2.0 libstdc++ once per container (in
+  provision_container.sh; gthr-default.h must be synthesized or
+  gthreads silently configures OFF = no std::mutex; ⚠ nm | grep -q
+  under pipefail SIGPIPEs nm on a MATCH — materialize then grep).
+  (2) PE weak externals don't compose with emutls thread_locals
+  (madc_globals plain-defines on win). (3) __madc_builtin_stpncpy_chk
+  composed from memcpy/memset chks (mingw lacks the glibc libcall).
+  Result: 17.7MB madc.exe, imports = KERNEL32 + api-ms-win-crt-* +
+  WS2_32 only; wine runs it — front end fully alive (colored caret
+  diagnostics). **Run-burndown defect #1 diagnosed to root:** plain
+  `printf` resolves NOWHERE at runtime — UCRT doesn't export it, and
+  PE ld auto-excludes the mingw runtime archives from
+  --export-all-symbols so the __mingw_printf interposer never reaches
+  the export table (puts etc. resolve fine from ucrtbase). NEXT: the
+  compiled-in runtime name→address table (darwin runtime-table
+  precedent) in the resolver — parse-time probe and JIT import
+  resolution must share it — then the battery legs under wine +
+  win_run.sh.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
