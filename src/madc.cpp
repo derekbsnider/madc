@@ -27,6 +27,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
@@ -506,7 +507,7 @@ static void print_usage(const char *prog)
 "                          it is not the same as putting the library first with -I.\n"
 "  -D<name>[=value]        define a preprocessor macro\n"
 "  -I<dir>                 add an include search directory\n"
-"  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
+"  -l<name>                load lib<name>.so into the global scope so its symbols\n"
 "                          resolve at link time (e.g. -lcrypt). Works with or\n"
 "                          without --project.\n"
 "  --no-auto-load          do not act on #load directives (e.g. an embedded\n"
@@ -1218,10 +1219,10 @@ int main(int argc, char **argv)
     {
         if ( emit_native )
             break;
-        if ( !dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL) )
+        if ( !madcdl_open_global(lib.c_str(), /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
-                      << dlerror() << std::endl;
+                      << madcdl_error() << std::endl;
             return 1;
         }
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure

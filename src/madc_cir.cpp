@@ -35,6 +35,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "madc_cir.h"
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
@@ -164,9 +165,9 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = madc_stdlib_probe_standin_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	if (!madcdl_open_global(lib))
 	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
-		    lib, dlerror());
+		    lib, madcdl_error());
     }
     if (!flavor->link_libs)
 	return;
@@ -174,9 +175,9 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = flavor->link_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	if (!madcdl_open_global(lib))
 	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
-		    flavor->name ? flavor->name : "?", lib, dlerror());
+		    flavor->name ? flavor->name : "?", lib, madcdl_error());
     }
 }
 
@@ -192,7 +193,7 @@ static void *cir_import_resolver(const char *name)
 	if (it != cir_active_dl_syms->end())
 	    return it->second;
     }
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
     return addr;
@@ -1276,9 +1277,9 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     // BEFORE materialize + link, so import resolution sees the same symbols.
     for (size_t i = 0; i < forest->libs().size(); ++i) {
 	const std::string &lib = forest->libs()[i];
-	if (!dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL)) {
+	if (!madcdl_open_global(lib.c_str())) {
 	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
-		    lib.c_str(), dlerror());
+		    lib.c_str(), madcdl_error());
 	    teardown();
 	    return false;
 	}
@@ -1615,7 +1616,7 @@ bool CirJitSession::emit_native_object(const char *out_path)
 // where a static libmadc IS the exe's text).
 static bool cir_symbol_from_madc_image(const char *name)
 {
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
     Dl_info info;
@@ -1658,15 +1659,15 @@ static bool cir_import_covered(const char *name,
 	    && c.find(".dylib") == std::string::npos)
 	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
 			// prefix cover, handled by the dladdr pass below
-	void *h = dlopen(c.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+	void *h = madcdl_probe_loaded(c.c_str());
 	if (!h)
 	    continue;
-	void *sym = dlsym(h, name);
-	dlclose(h);
+	void *sym = madcdl_sym(h, name);
+	madcdl_close(h);
 	if (sym)
 	    return true;
     }
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
     Dl_info info;

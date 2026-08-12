@@ -12,7 +12,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -31,6 +30,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
@@ -4072,10 +4072,10 @@ TokenBase *Program::_getToken()
 		    void *handle;
 		    if ( is_auto_library_loading_enabled() )
 		    {
-			handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+			handle = madcdl_open_global(libname.c_str());
 			if ( !handle )
 			{
-			    std::string err = "Failed to load library: " + libname + ": " + dlerror();
+			    std::string err = "Failed to load library: " + libname + ": " + madcdl_error();
 			    Throw << err.c_str() << flush;
 			}
 			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
@@ -4083,7 +4083,7 @@ TokenBase *Program::_getToken()
 		    }
 		    else
 		    {
-			handle = dlopen(NULL, RTLD_LAZY | RTLD_GLOBAL);
+			handle = madcdl_open_self();
 			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
 				      << " — auto-load off, bound to global scope" << std::endl);
 		    }

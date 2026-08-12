@@ -103,6 +103,21 @@ Inventory from recon (session #83 greps):
   `GetProcAddress(GetModuleHandle(NULL), ...)` needs the exe built
   `-Wl,--export-all-symbols` (or a curated .def) so its symbols are
   visible. That linker decision is part of this workstream.
+  **Slice 1 DONE (session #85, 2026-08-12): the seam EXISTS.**
+  `include/madc_dl.h` + `src/madc_dl.cpp` — `madcdl_open_global` /
+  `open_local` / `open_self` / `probe_loaded` / `sym` / `sym_default` /
+  `close` / `error`; every host call site migrated (including the
+  script-facing `dlopen()`/`dlsym()` builtin thunks in parser.cpp — the
+  plan's proposed `madc_dlopen` names were TAKEN by those thunks, hence
+  the `madcdl_` prefix — and the unit-test import resolvers;
+  `test_native_shared.cpp` stays raw deliberately: it simulates a
+  third-party C host consuming a madc-emitted .so via RTLD_DEEPBIND).
+  POSIX passthrough, fulltest 1023/0. Gate:
+  `scripts/check-one-dl-owner.sh` in fulltest (negative-controlled).
+  NEXT slice: dladdr → `madcdl_addr` + a seam info struct (sites:
+  madc.cpp backtrace, madc_globals self-path, madc_cir cover analysis,
+  cir_builder host-object anchor, parser symbol recovery ×3); then the
+  gate tightens to cover dladdr/Dl_info/`<dlfcn.h>`.
 - **fork/exec** (`madc_process.cpp`, exec:// channels): CreateProcessW
   + pipe pair; the channel pump contracts (one pump loop owner) stay.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to

@@ -19,7 +19,6 @@
 #include <queue>
 #include <stack>
 #include <stdint.h>
-#include <dlfcn.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
@@ -27,6 +26,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
 
@@ -147,7 +147,7 @@ void __madc_sys_init_once(long argc, void *argv)
 
 static void *madc_import_resolver(const char *name)
 {
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "madc_import_resolver: unresolved: "
 		      << name << std::endl);

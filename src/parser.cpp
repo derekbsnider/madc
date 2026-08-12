@@ -48,6 +48,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "spelling_delim.h"
 #include "madc_mangle.h"
 #include "ns_common.h"
@@ -19093,25 +19094,25 @@ void printfloat(float f)
 int64_t madc_dlopen(void *filename)
 {
     const char *fn = (const char *)filename;
-    void *handle = dlopen(fn, RTLD_LAZY);
+    void *handle = madcdl_open_local(fn);
     if ( !handle )
-	std::cerr << "dlopen: " << dlerror() << std::endl;
+	std::cerr << "dlopen: " << madcdl_error() << std::endl;
     return (int64_t)handle;
 }
 
 int64_t madc_dlsym(int64_t handle, void *name)
 {
     const char *n = (const char *)name;
-    void *sym = dlsym((void *)handle, n);
+    void *sym = madcdl_sym((void *)handle, n);
     if ( !sym )
-	std::cerr << "dlsym: " << dlerror() << std::endl;
+	std::cerr << "dlsym: " << madcdl_error() << std::endl;
     return (int64_t)sym;
 }
 
 void madc_dlclose(int64_t handle)
 {
     if ( handle )
-	dlclose((void *)handle);
+	madcdl_close((void *)handle);
 }
 
 int64_t madc_system(void *cmd)
@@ -20375,7 +20376,7 @@ Variable *Program::lazy_resolve(const std::string &name)
 	// stdin to a FILE* parameter mismatches.
 	void **sym = NULL;
 	if ( name == "stdin" || name == "stdout" || name == "stderr" )
-	    sym = (void **)dlsym(RTLD_DEFAULT, name.c_str());
+	    sym = (void **)madcdl_sym_default(name.c_str());
 	if ( sym )
 	{
 	    var = addGlobal(ddVOIDptr, name, 1, NULL);
@@ -26244,7 +26245,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    if ( !is_dynamic_symbol_allowed(member_name) )
 			Throw(member_tb) << "dynamic symbol '" << member_name
 					 << "' is not allowed by registration policy" << flush;
-		    void *sym = dlsym(dli->second, member_name.c_str());
+		    void *sym = madcdl_sym(dli->second, member_name.c_str());
 		    if ( sym )
 		    {
 			std::string func_id = "__dl_" + aname + "_" + member_name;
@@ -26292,7 +26293,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( !avar && is_dynamic_symbol_fallback_enabled()
       && is_dynamic_symbol_allowed(aname) )
     {
-	void *sym = dlsym(RTLD_DEFAULT, aname.c_str());
+	void *sym = madcdl_sym_default(aname.c_str());
 	if ( sym )
 	    avar = addFunction(aname,
 		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
@@ -31795,7 +31796,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	    if ( is_dynamic_symbol_fallback_enabled()
 	      && is_dynamic_symbol_allowed(dyn_name) )
 	    {
-		void *sym = dlsym(RTLD_DEFAULT, dyn_name.c_str());
+		void *sym = madcdl_sym_default(dyn_name.c_str());
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
 			datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
@@ -32103,7 +32104,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
 		  && is_dynamic_symbol_allowed(ident_tb->spelling())
-		  && dlsym(RTLD_DEFAULT, ident_tb->spelling()) )
+		  && madcdl_sym_default(ident_tb->spelling()) )
 		    ordinary_call_name = true;
 		// A name in MEMBER-ACCESS position is a member, never a type
 		// ([basic.lookup.classref]/1: the class's scope is searched
@@ -33497,9 +33498,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !is_dynamic_symbol_allowed(member_name) )
 			    Throw(member_tb) << "dynamic symbol '" << member_name
 					     << "' is not allowed by registration policy" << flush;
-			void *sym = dlsym(dli->second, member_name.c_str());
+			void *sym = madcdl_sym(dli->second, member_name.c_str());
 			if ( !sym )
-			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
+			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << madcdl_error() << flush;
 			// create function with int64 return, no declared params (variadic-like)
 			// actual args are passed through at compile time
 			std::string func_id = "__dl_" + ns_name + "_" + member_name;
@@ -33762,7 +33763,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		      && !is_implicit_complex_builtin_name(fname)
 		      && is_dynamic_symbol_allowed(fname) )
 		    {
-			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
+			void *sym = madcdl_sym_default(fname.c_str());
 			if ( sym )
 			{
 			    var = addFunction(fname,
@@ -33780,7 +33781,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // regions call __builtin_acosf etc. directly).
 			    std::string twin = fname.substr(10);
 			    void *tsym = is_dynamic_symbol_allowed(twin)
-				       ? dlsym(RTLD_DEFAULT, twin.c_str()) : NULL;
+				       ? madcdl_sym_default(twin.c_str()) : NULL;
 			    if ( tsym )
 			    {
 				var = addFunction(fname,
@@ -36606,7 +36607,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( !var && is_dynamic_symbol_fallback_enabled()
 			  && is_dynamic_symbol_allowed(gname) )
 			{
-			    void *sym = dlsym(RTLD_DEFAULT, gname.c_str());
+			    void *sym = madcdl_sym_default(gname.c_str());
 			    if ( sym )
 				var = addFunction(gname,
 				    datatype_vec_t{dynamic_symbol_fallback_return_type(gname)},

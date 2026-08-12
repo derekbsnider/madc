@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <dlfcn.h>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -37,6 +36,7 @@ extern thread_local bool madc_verbose;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "madc_cir.h"
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -412,7 +412,7 @@ Variable *ensure_expression_strcmp(Program &pgm)
     std::string id = "strcmp";
     if ( Variable *existing = pgm.findVariable(id) )
 	return existing;
-    void *sym = dlsym(RTLD_DEFAULT, "strcmp");
+    void *sym = madcdl_sym_default("strcmp");
     if ( !sym )
 	return NULL;
     // signed int return — embedded-headers.md comparison-family rule
@@ -574,7 +574,7 @@ bool register_expression_header_functions(Program &pgm,
 		continue;
 	    if ( !pgm.is_dynamic_symbol_allowed(name) )
 		continue;
-	    void *sym = dlsym(RTLD_DEFAULT, name.c_str());
+	    void *sym = madcdl_sym_default(name.c_str());
 	    if ( !sym )
 		return fail_program_runtime(pgm,
 					    std::string("program::eval_expression could not resolve symbol '")
@@ -3239,7 +3239,7 @@ struct program::impl
 		    continue;
 		if ( !pgm->is_dynamic_symbol_allowed(name) )
 		    continue;
-		void *sym = dlsym(RTLD_DEFAULT, name.c_str());
+		void *sym = madcdl_sym_default(name.c_str());
 		if ( !sym )
 		{
 		    clear_public_errors();

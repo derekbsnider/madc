@@ -44,6 +44,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "cir_builder.h"
 #include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
@@ -368,7 +369,7 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 // anchor (task #69).
 bool external_symbol_available(const std::string &sym)
 {
-	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+	return !sym.empty() && madcdl_sym_default(sym.c_str()) != NULL;
 }
 
 // task #69: a symbol qualifies for flavor marshalling ONLY when it is
@@ -381,7 +382,7 @@ bool external_symbol_available(const std::string &sym)
 // the .so build, so comparing module bases needs no path knowledge.
 static bool symbol_is_host_implemented(const std::string &sym)
 {
-	void *addr = sym.empty() ? NULL : dlsym(RTLD_DEFAULT, sym.c_str());
+	void *addr = sym.empty() ? NULL : madcdl_sym_default(sym.c_str());
 	if (!addr)
 		return false;
 	Dl_info di, anchor;
@@ -4814,7 +4815,7 @@ void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
 	static const char *probe = getenv("MADC_FLVMAR_PROBE");
 	if (!probe || sym.empty() || !flavor_marshal_candidate(fd))
 		return;
-	bool script_hit = dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+	bool script_hit = madcdl_sym_default(sym.c_str()) != NULL;
 	std::string twin = m_prog
 		? (fd->method_display_name.empty()
 		   ? m_prog->host_flavor_fn_symbol(fd->namespace_name,
@@ -4822,7 +4823,7 @@ void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
 		   : m_prog->host_flavor_method_symbol(fd))
 		: std::string();
 	bool twin_hit = !twin.empty()
-		     && dlsym(RTLD_DEFAULT, twin.c_str()) != NULL;
+		     && madcdl_sym_default(twin.c_str()) != NULL;
 	fprintf(stderr,
 		"[flvmar] ns=%s fn=%s sym=%s hit=%d twin=%s twinhit=%d\n",
 		fd->namespace_name.c_str(), fd->function_display_name.c_str(),
@@ -4921,8 +4922,8 @@ bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
 		ctor_sym = itanium_mangle_ctor_sub(hs, cps);
 		dtor_sym = itanium_mangle_dtor_sub(hs, "D1");
 	}
-	if (!dlsym(RTLD_DEFAULT, ctor_sym.c_str())
-	    || !dlsym(RTLD_DEFAULT, dtor_sym.c_str()))
+	if (!madcdl_sym_default(ctor_sym.c_str())
+	    || !madcdl_sym_default(dtor_sym.c_str()))
 		return false;
 	referenced_funcs.insert(cstr_sym);
 	referenced_funcs.insert(size_sym);

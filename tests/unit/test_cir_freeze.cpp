@@ -24,7 +24,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
-#include <dlfcn.h>
+#include "madc_dl.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -57,7 +57,7 @@ extern "C" {
 
 // Import resolver for MIR_link (mirrors test_cir.cpp).
 static void *freeze_test_import_resolver(const char *name) {
-	return dlsym(RTLD_DEFAULT, name);
+	return madcdl_sym_default(name);
 }
 
 // B2 tests that build synthetic trees (no Program/parse) still intern string
