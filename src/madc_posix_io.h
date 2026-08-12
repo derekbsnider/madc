@@ -29,6 +29,22 @@ std::string resolve_real_path(const char *path);
 // run at static-init time, before any WSAStartup.
 std::string get_host_name();
 
+// Absolute SEEK_SET reposition; the new offset, or -1 with errno set.
+// 64-bit on both arms — mingw's off_t/lseek are 32-bit, so the Win32 arm
+// rides _lseeki64 (a plain ::lseek would truncate past 2GB).
+long long seek_fd(int fd, long long offset);
+
+// Byte size of the open fd (fstat); -1 with errno set on failure. 64-bit
+// on both arms — mingw's struct stat st_size is 32-bit, so the Win32 arm
+// rides _fstat64.
+long long fd_size(int fd);
+
+// True when the open fd is a regular file (the channel seekability
+// predicate). The Win32 arm uses the 64-bit stat: the 32-bit _fstat FAILS
+// outright on >4GB files, which would silently demote a big regular file
+// to non-seekable.
+bool fd_is_regular_file(int fd);
+
 // Positioned read/write on an fd (POSIX pread/pwrite): EINTR-retrying,
 // never moves the file pointer; -1 with errno on failure. The Win32 arm
 // rides ReadFile/WriteFile with an OVERLAPPED offset behind these

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <io.h>
 #include <limits.h>
+#include <sys/stat.h>	// _fstat64 — the 64-bit stat the 32-bit CRT default hides
 #include <windows.h>
 #else
 #include <csignal>
@@ -154,6 +155,45 @@ std::string get_host_name()
 		return std::string();
 	buf[sizeof(buf) - 1] = '\0';
 	return std::string(buf);
+#endif
+}
+
+long long seek_fd(int fd, long long offset)
+{
+#ifdef _WIN32
+	return ::_lseeki64(fd, offset, SEEK_SET);
+#else
+	return (long long)::lseek(fd, (off_t)offset, SEEK_SET);
+#endif
+}
+
+long long fd_size(int fd)
+{
+#ifdef _WIN32
+	struct _stat64 st;
+	if ( ::_fstat64(fd, &st) != 0 )
+		return -1;
+	return (long long)st.st_size;
+#else
+	struct stat st;
+	if ( ::fstat(fd, &st) != 0 )
+		return -1;
+	return (long long)st.st_size;
+#endif
+}
+
+bool fd_is_regular_file(int fd)
+{
+#ifdef _WIN32
+	struct _stat64 st;
+	if ( ::_fstat64(fd, &st) != 0 )
+		return false;
+	return (st.st_mode & _S_IFMT) == _S_IFREG;
+#else
+	struct stat st;
+	if ( ::fstat(fd, &st) != 0 )
+		return false;
+	return S_ISREG(st.st_mode);
 #endif
 }
 
