@@ -53,13 +53,23 @@ POSIX mmap semantics, winsock) and a third executable format (PE/COFF).
   the W2.1 probe with its negative control. Imports come out as
   `api-ms-win-crt-*` apisets (they forward to ucrtbase — that is the
   UCRT surface).
-- **W0.2 Windows-execution channel — WAITING ON OWNER (2026-08-12):
-  needs (1) OpenSSH Server enabled on the Windows 11 host, (2) the
-  host's address + user for the container to ssh to. Probed: the
-  container's default route is the docker bridge (172.19.0.1); the
-  Windows host is not discoverable from inside the container, so the
-  channel starts when the owner hands us the endpoint. wine64 carries
-  interim validation (all W0 gates run under it).** Original option
+- **W0.2 Windows-execution channel — RESOLVED (2026-08-12, session #84),
+  design ≠ plan: NO Windows sshd, NO reboot, NO tunnel.** True topology:
+  the container runs under **Docker Desktop's own VM** (host.docker.internal
+  resolves, 192.168.65.254), not inside the owner's Ubuntu distro. Channel:
+  **container → `ssh derek@host.docker.internal` → the Ubuntu WSL distro's
+  sshd** (WSL2 localhost-forwarding puts the distro's port 22 on the Windows
+  loopback; Docker Desktop's host gateway reaches it) **→ WSL interop runs
+  `.exe`s as GENUINE Windows processes** (real PE loader/ntdll/ucrtbase —
+  real-Windows evidence, unlike wine). Container key authorized for derek.
+  PROVEN: gate_hello_c.exe on Windows build 26200 prints the exact oracle
+  (incl. 80-bit `ld=3.25` on real ucrtbase); W2.1 on real ntdll: NON_SEH
+  probe PROBE_OK, SEH negative control dies (silently — WER swallows the
+  banner, so battery legs must classify by output MARKER, not exit code).
+  Gotchas: interop warns "UNC paths are not supported" when cwd is the WSL
+  fs (cosmetic; cd to a /mnt/c path in the battery); exes run fine from the
+  WSL fs. NEXT: a `scripts/win_run.sh` scp+ssh runner so MADC_WIN_RUNNER
+  points the gate/battery at real Windows. Original option
   analysis — the container cannot reach WSL
   interop (probed 2026-08-12: no /init, no WSLInterop binfmt, no
   /mnt/c inside the container namespace). Options, owner-side setup:
