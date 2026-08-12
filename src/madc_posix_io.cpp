@@ -4,6 +4,8 @@
 #include <csignal>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace madc {
@@ -51,6 +53,27 @@ ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size)
 	pthread_sigmask(SIG_SETMASK, &previous, nullptr);
 	errno = number;
 	return result;
+}
+
+void *map_file_readonly(const char *path, std::size_t &length)
+{
+	length = 0;
+	int fd = ::open(path, O_RDONLY);
+	if ( fd < 0 )
+		return NULL;
+	struct stat st;
+	if ( ::fstat(fd, &st) != 0 || st.st_size <= 0 )
+	{
+		::close(fd);
+		return NULL;
+	}
+	void *m = ::mmap(NULL, (std::size_t)st.st_size, PROT_READ, MAP_PRIVATE,
+			 fd, 0);
+	::close(fd);
+	if ( m == MAP_FAILED )
+		return NULL;
+	length = (std::size_t)st.st_size;
+	return m;
 }
 
 } // namespace detail

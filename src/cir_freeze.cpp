@@ -14,20 +14,15 @@
 #include <utility>
 #include <vector>
 
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <sys/time.h>
-#include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
 #include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
 #endif
-// mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
-// MAP_FAILED to NULL for its own allocator; drop the glibc define so that
-// redefinition is fresh, and compare mmap() results against the real value
-// explicitly below.
-#undef MAP_FAILED
+#include "madc_posix_io.h"	// map_file_readonly — the one file-mapping owner
+				// (also why no <sys/mman.h> here: MIR's
+				// mir-code-alloc.h redefines MAP_FAILED, which
+				// used to force an #undef + (void *)-1 compare)
 
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -837,28 +832,19 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 			return false;
 		path = selfpath.c_str();
 	}
-	int fd = ::open(path, O_RDONLY);
-	if (fd < 0)
-		return false;
-	struct stat st;
-	if (fstat(fd, &st) != 0 || st.st_size <= 0) {
-		close(fd);
-		return false;
-	}
-	void *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	close(fd);
-	if (m == (void *)-1)	// the real MAP_FAILED (see #undef above)
+	size_t maplen = 0;
+	void *m = madc::detail::map_file_readonly(path, maplen);
+	if (!m)
 		return false;
 	// Deliberately never munmap'd: thawed segments read string bytes and
 	// pool blocks from the mapping for the process lifetime.
 	// Mach-O file: the container is the __MADC,__forest section slice
 	// (page-aligned in file, so 16-aligned payload offsets hold), not an
 	// EOF trailer. Anything else keeps the whole file (footer at EOF).
-	if (cir_macho_find_forest((const uint8_t *)m, (size_t)st.st_size,
-				  image, len))
+	if (cir_macho_find_forest((const uint8_t *)m, maplen, image, len))
 		return true;
 	image = m;
-	len = (size_t)st.st_size;
+	len = maplen;
 	return true;
 }
 

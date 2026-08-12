@@ -726,6 +726,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
+	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-template-thaw-choke.sh
 	@cd .. && bash scripts/check-ref-arg-lowering-owner.sh
 	@cd .. && bash scripts/check-fn-template-deduction-owner.sh

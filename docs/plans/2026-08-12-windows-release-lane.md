@@ -147,6 +147,15 @@ Inventory from recon (session #83 greps):
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
+  **Slice 4 DONE (session #85): mapping owner consolidated.**
+  `madc::detail::map_file_readonly(path, len)` in madc_posix_io owns the
+  one mmap (cir_freeze forest image; madcdis arena/id_table frozen-
+  segment plans will ride it too). Bonus: cir_freeze's `#undef
+  MAP_FAILED` + `(void *)-1` wart (MIR's mir-code-alloc.h redefines the
+  macro) is DELETED — the owner includes no MIR headers. Gate:
+  `scripts/check-one-mmap-owner.sh` in fulltest (mmap family + MAP_/
+  PROT_ tokens + `<sys/mman.h>` outside the owner = RED;
+  negative-controlled).
 - **pthreads**: covered by the `-posix` toolchain flavor (winpthreads);
   DBG's thread_local discipline unchanged.
 - **sockets** (tcp:// channels, madcdis): winsock2 — WSAStartup once,
