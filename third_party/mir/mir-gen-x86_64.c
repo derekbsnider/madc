@@ -333,7 +333,34 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     gen_add_insn_before (gen_ctx, call_insn, new_insn);
   }
 #ifdef _WIN32
-  if ((nops - start) > 4) block_offset = (nops - start) * 8;
+#if !MIR_LD_IS_D
+  /* win64-mingw ABI: a long double RESULT comes back through a hidden
+     pointer passed as the FIRST argument (RCX) -- st0 is NOT used (oracle:
+     x86_64-w64-mingw32-gcc -S; madc win lane 2026-08-12).  Reserve a 16-byte
+     slot in this call's block area, pass its address as arg 0 (shifting the
+     real args), and read the value back through a surviving temp pseudo
+     right after the call, BEFORE the SP restore pops the area. */
+  int ld_ret_p = proto->nres == 1 && proto->res_types[0] == MIR_T_LD;
+  MIR_op_t ld_ret_addr_op, ld_ret_reg_op;
+#else
+  const int ld_ret_p = 0;
+#endif
+  if ((nops - start + ld_ret_p) > 4) block_offset = (nops - start + ld_ret_p) * 8;
+#if !MIR_LD_IS_D
+  if (ld_ret_p) {
+    arg_reg = get_arg_reg (MIR_T_P, &int_arg_num, &fp_arg_num, &new_insn_code);
+    ld_ret_addr_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
+    gen_add_insn_before (gen_ctx, call_insn,
+                         MIR_new_insn (ctx, MIR_ADD, ld_ret_addr_op,
+                                       _MIR_new_var_op (ctx, SP_HARD_REG),
+                                       MIR_new_int_op (ctx, (int64_t) block_offset)));
+    gen_add_insn_before (gen_ctx, call_insn,
+                         MIR_new_insn (ctx, MIR_MOV, _MIR_new_var_op (ctx, arg_reg),
+                                       ld_ret_addr_op));
+    setup_call_hard_reg_args (gen_ctx, call_insn, arg_reg);
+    block_offset += 16;
+  }
+#endif
 #endif
   for (size_t i = start; i < nops; i++) {
     arg_op = call_insn->ops[i];
@@ -360,6 +387,41 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
       ext_insn = MIR_new_insn (ctx, ext_code, temp_op, arg_op);
       call_insn->ops[i] = arg_op = temp_op;
     }
+#if defined(_WIN32) && !MIR_LD_IS_D
+    if (type == MIR_T_LD) {
+      /* win64-mingw ABI: long double is a 16-byte memory-class value in
+         EVERY position -- named args AND varargs pass BY REFERENCE (oracle:
+         x86_64-w64-mingw32-gcc -S; madc win lane 2026-08-12).  Store the
+         value into this call's block area and pass the slot's ADDRESS as an
+         ordinary pointer arg.  The value-typed path below would leave the
+         arg register unset and the native callee (e.g. the mir.ld2i
+         builtin) dereferences garbage -- the t_ld_d/t_ld_e reducers. */
+      MIR_op_t ld_addr_op
+        = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
+      gen_assert (arg_op.mode == MIR_OP_VAR);
+      mem_op = _MIR_new_var_mem_op (ctx, MIR_T_LD, block_offset, SP_HARD_REG, MIR_NON_VAR, 1);
+      gen_add_insn_before (gen_ctx, call_insn, MIR_new_insn (ctx, MIR_LDMOV, mem_op, arg_op));
+      gen_add_insn_before (gen_ctx, call_insn,
+                           MIR_new_insn (ctx, MIR_ADD, ld_addr_op,
+                                         _MIR_new_var_op (ctx, SP_HARD_REG),
+                                         MIR_new_int_op (ctx, (int64_t) block_offset)));
+      block_offset += 16;
+      if ((arg_reg = get_arg_reg (MIR_T_P, &int_arg_num, &fp_arg_num, &new_insn_code))
+          != MIR_NON_VAR) {
+        new_arg_op = _MIR_new_var_op (ctx, arg_reg);
+        gen_add_insn_before (gen_ctx, call_insn,
+                             MIR_new_insn (ctx, MIR_MOV, new_arg_op, ld_addr_op));
+        call_insn->ops[i] = new_arg_op;
+      } else {
+        mem_op = _MIR_new_var_mem_op (ctx, MIR_T_I64, arg_stack_size, SP_HARD_REG, MIR_NON_VAR, 1);
+        gen_add_insn_before (gen_ctx, call_insn,
+                             MIR_new_insn (ctx, MIR_MOV, mem_op, ld_addr_op));
+        call_insn->ops[i] = mem_op;
+        arg_stack_size += 8;
+      }
+      continue;
+    }
+#endif
     size = 0;
     if (MIR_blk_type_p (type)) {
       gen_assert (arg_op.mode == MIR_OP_VAR_MEM);
@@ -610,9 +672,19 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
                                _MIR_new_var_op (ctx, n_xregs == 0 ? XMM0_HARD_REG : XMM1_HARD_REG));
       n_xregs++;
     } else if (proto->res_types[i] == MIR_T_LD && n_fregs < 2) {
+#if defined(_WIN32) && !MIR_LD_IS_D
+      /* Hidden-pointer return (see ld_ret_p above): the value is read back
+         from the slot at the end of machinize_call.  The call's result op
+         must still name a call-defined hard reg -- use AX. */
+      ld_ret_reg_op = ret_reg_op;
+      call_insn->ops[i + 2] = _MIR_new_var_op (ctx, AX_HARD_REG);
+      n_iregs++;
+      continue;
+#else
       new_insn = MIR_new_insn (ctx, MIR_LDMOV, ret_reg_op,
                                _MIR_new_var_op (ctx, n_fregs == 0 ? ST0_HARD_REG : ST1_HARD_REG));
       n_fregs++;
+#endif
     } else if (n_iregs < 2) {
       new_insn = MIR_new_insn (ctx, MIR_MOV, ret_reg_op,
                                _MIR_new_var_op (ctx, n_iregs == 0 ? AX_HARD_REG : DX_HARD_REG));
@@ -648,6 +720,19 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     next_insn = DLIST_NEXT (MIR_insn_t, new_insn);
     create_new_bb_insns (gen_ctx, call_insn, next_insn, call_insn);
   }
+#if defined(_WIN32) && !MIR_LD_IS_D
+  if (ld_ret_p) {
+    /* Inserted right after the call LAST, so in execution order it lands
+       BEFORE the SP-restore add above -- the slot is still inside the arg
+       area when read.  ld_ret_addr_op is a pseudo, so it survives the call
+       regardless of how RA places it. */
+    new_insn = MIR_new_insn (ctx, MIR_LDMOV, ld_ret_reg_op,
+                             _MIR_new_var_mem_op (ctx, MIR_T_LD, 0, ld_ret_addr_op.u.var,
+                                                  MIR_NON_VAR, 1));
+    MIR_insert_insn_after (ctx, curr_func_item, call_insn, new_insn);
+    create_new_bb_insns (gen_ctx, call_insn, DLIST_NEXT (MIR_insn_t, new_insn), call_insn);
+  }
+#endif
   if (arg_stack_size != 0) prohibit_omitting_fp (gen_ctx);
 }
 

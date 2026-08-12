@@ -18827,8 +18827,18 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       if (!builtin_call_p || jcall_p) update_call_arg_area_offset (c2m_ctx, type, FALSE);
       res = new_op (NULL, VARR_LAST (MIR_op_t, call_ops));
       assert (res.mir_op.mode == MIR_OP_MEM && res.mir_op.u.mem.type == MIR_T_RBLK);
-      res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.mem.base, 0, 1);
-      t = MIR_T_I64;
+      if (scalar_type_p (type)) {
+        /* Memory-value SCALAR return (win64-mingw long double): the hidden
+           return buffer holds an ordinary value -- present it as a TYPED mem
+           so scalar consumers read it.  The UNDEF block presentation below is
+           the aggregate/complex convention; a scalar load through it is a
+           'wrong type memory' MIR error. */
+        t = get_mir_type (c2m_ctx, type);
+        res.mir_op = MIR_new_mem_op (ctx, t, 0, res.mir_op.u.mem.base, 0, 1);
+      } else {
+        res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.mem.base, 0, 1);
+        t = MIR_T_I64;
+      }
     } else if (memory_value_type_p (type)) { /* passed in regs */
       if (!va_arg_p) {
         res = get_new_temp (c2m_ctx, MIR_T_I64);
@@ -18892,6 +18902,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                                               - MIR_T_BLK)));
         if (desirable_dest != NULL)
           res = *desirable_dest;
+        else if (scalar_type_p (type))
+          /* Memory-value SCALAR through the block path (win64-mingw long
+             double, see va_block_type_p): the buffer holds an ordinary value
+             now -- present it as a TYPED mem so scalar consumers read it.
+             The UNDEF block presentation below is the aggregate convention
+             and reads as garbage through a scalar load.  ('t' is NOT the
+             va_arg type here -- the memory-value branch above skips its
+             assignment under va_arg_p -- so compute the type directly.) */
+          res.mir_op = MIR_new_mem_op (ctx, get_mir_type (c2m_ctx, type), 0, res.mir_op.u.reg, 0, 1);
         else /* present the freshly allocated buffer as the aggregate lvalue */
           res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
       } else {
@@ -19204,7 +19223,26 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         assert (!param_decl->reg_p || !aggregate_type_p (param_type));
         name = get_param_name (c2m_ctx, param_type, param_id->u.s.s);
         if (target_gen_gather_arg (c2m_ctx, name, param_type, param_decl, &arg_info)) continue;
-        if (param_decl->reg_p) continue;
+        if (param_decl->reg_p) {
+          if (memory_value_type_p (param_type)) {
+            /* Memory-value SCALAR param (win64-mingw long double): the arg var
+               ('name', pointer-typed) holds the incoming block's ADDRESS, but
+               the body reads the value-typed reg var N_ID gen names below --
+               materialize it with one typed load through the pointer.
+               Complex/aggregates are never reg_p (they take the block_move
+               path); on SysV no scalar is memory-value, so this branch is
+               dead there by the predicate. */
+            MIR_type_t vt = promote_mir_int_type (get_mir_type (c2m_ctx, param_type));
+            const char *vname
+              = get_reg_var_name (c2m_ctx, vt, param_id->u.s.s,
+                                  ((struct node_scope *) param_decl->scope->attr)->func_scope_num);
+            MIR_reg_t vreg = get_reg_var (c2m_ctx, vt, vname, NULL).reg;
+            MIR_reg_t areg = get_reg_var (c2m_ctx, MIR_T_UNDEF, name, NULL).reg;
+            emit2 (c2m_ctx, tp_mov (vt), MIR_new_reg_op (ctx, vreg),
+                   MIR_new_mem_op (ctx, vt, 0, areg, 0, 1));
+          }
+          continue;
+        }
         if (memory_value_type_p (param_type)) { /* block pass for aggregates and complex */
           param_reg = get_reg_var (c2m_ctx, MIR_POINTER_TYPE, name, NULL).reg;
           val = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, param_reg, 0, 1));

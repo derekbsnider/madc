@@ -175,9 +175,20 @@ static const char *lib_suffix = ".dylib";
 #endif
 
 #ifdef _WIN32
+#if defined(__MINGW32__) && defined(_UCRT)
+/* madc UCRT lane (mingw host): resolve JIT imports against ucrtbase -- the
+   ONE CRT this process already runs on -- plus kernel32.  msvcrt.dll is
+   deliberately ABSENT: a second CRT in the process means a second heap,
+   second FILE table and second locale, and JIT code binding printf/malloc
+   there silently corrupts state (and msvcrt's %Lf reads a by-value double,
+   not the mingw by-ref 80-bit long double this backend emits). */
+static lib_t std_libs[] = {{"C:\\Windows\\System32\\ucrtbase.dll", NULL},
+                           {"C:\\Windows\\System32\\kernel32.dll", NULL}};
+#else
 static lib_t std_libs[] = {{"C:\\Windows\\System32\\msvcrt.dll", NULL},
                            {"C:\\Windows\\System32\\kernel32.dll", NULL},
                            {"C:\\Windows\\System32\\ucrtbase.dll", NULL}};
+#endif
 static const char *std_lib_dirs[] = {"C:\\Windows\\System32"};
 static const char *lib_suffix = ".dll";
 #define dlopen(n, f) LoadLibrary (n)
@@ -476,9 +487,34 @@ float __nan (void) {
 }
 #endif
 
+#if defined(_WIN32) && defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
+/* gcc parity for JIT'd code: with __USE_MINGW_ANSI_STDIO (the madc win-lane
+   recipe), a mingw-gcc-compiled program's printf/scanf family is libmingwex's
+   __mingw_* implementations (C99 semantics: 80-bit %Lf long double, %a, %lld
+   on any CRT), NOT the CRT's exports.  JIT'd code must bind to the SAME
+   implementations the host was compiled against, so resolve the family to the
+   host's copies before consulting any DLL. */
+static const struct {
+  const char *name;
+  void *addr;
+} mingw_ansi_stdio_map[] = {
+  {"printf", (void *) __mingw_printf},     {"vprintf", (void *) __mingw_vprintf},
+  {"fprintf", (void *) __mingw_fprintf},   {"vfprintf", (void *) __mingw_vfprintf},
+  {"sprintf", (void *) __mingw_sprintf},   {"vsprintf", (void *) __mingw_vsprintf},
+  {"snprintf", (void *) __mingw_snprintf}, {"vsnprintf", (void *) __mingw_vsnprintf},
+  {"scanf", (void *) __mingw_scanf},       {"vscanf", (void *) __mingw_vscanf},
+  {"fscanf", (void *) __mingw_fscanf},     {"vfscanf", (void *) __mingw_vfscanf},
+  {"sscanf", (void *) __mingw_sscanf},     {"vsscanf", (void *) __mingw_vsscanf},
+};
+#endif
+
 static void *import_resolver (const char *name) {
   void *handler, *sym = NULL;
 
+#if defined(_WIN32) && defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
+  for (size_t i = 0; i < sizeof (mingw_ansi_stdio_map) / sizeof (mingw_ansi_stdio_map[0]); i++)
+    if (strcmp (name, mingw_ansi_stdio_map[i].name) == 0) return mingw_ansi_stdio_map[i].addr;
+#endif
   for (size_t i = 0; i < sizeof (std_libs) / sizeof (struct lib); i++)
     if ((handler = std_libs[i].handler) != NULL && (sym = dlsym (handler, name)) != NULL) break;
   if (sym == NULL)
