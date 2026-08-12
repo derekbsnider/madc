@@ -22,11 +22,11 @@
 #include <iostream>
 #include <map>
 #include <vector>
-#include <unistd.h>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
+#include "madc_posix_io.h"	// get_host_name (host-facts seam)
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -48,11 +48,8 @@ static const char *sys_detect_platform()
 
 static const char *sys_detect_hostname()
 {
-    static char buf[256];
-    if ( gethostname(buf, sizeof(buf) - 1) != 0 )
-	buf[0] = '\0';
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
+    static std::string name = madc::detail::get_host_name();
+    return name.c_str();
 }
 
 // The facts initialize once at load (dynamic init of this TU); argv/path

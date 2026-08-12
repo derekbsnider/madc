@@ -3,12 +3,11 @@
 #include <stdint.h>
 #include <string>
 #include "madc_dl.h"
+#include "madc_posix_io.h"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
-#include <limits.h>
 #else
 #include <unistd.h>
-#include <limits.h>
 #endif
 
 thread_local bool madc_verbose __attribute__((weak)) = false;
@@ -24,10 +23,8 @@ std::string madc_self_exe_path()
 	uint32_t sz = sizeof(buf);
 	if (_NSGetExecutablePath(buf, &sz) != 0)
 		return std::string();
-	char real[PATH_MAX];
-	if (realpath(buf, real))
-		return std::string(real);
-	return std::string(buf);
+	std::string real = madc::detail::resolve_real_path(buf);
+	return real.empty() ? std::string(buf) : real;
 #else
 	char buf[4096];
 	ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -48,9 +45,7 @@ std::string madc_self_lib_path()
 	if (!madcdl_addr((void *)&madc_self_lib_path, info)
 	    || !info.fname || !info.fname[0])
 		return std::string();
-	char real[PATH_MAX];
-	if (realpath(info.fname, real))
-		return std::string(real);
-	return std::string(info.fname);
+	std::string real = madc::detail::resolve_real_path(info.fname);
+	return real.empty() ? std::string(info.fname) : real;
 }
 

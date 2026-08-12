@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/mman.h>
@@ -53,6 +54,25 @@ ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size)
 	pthread_sigmask(SIG_SETMASK, &previous, nullptr);
 	errno = number;
 	return result;
+}
+
+std::string resolve_real_path(const char *path)
+{
+	char *rp = ::realpath(path, NULL);
+	if ( !rp )
+		return std::string();
+	std::string out(rp);
+	::free(rp);
+	return out;
+}
+
+std::string get_host_name()
+{
+	char buf[256];
+	if ( ::gethostname(buf, sizeof(buf) - 1) != 0 )
+		return std::string();
+	buf[sizeof(buf) - 1] = '\0';
+	return std::string(buf);
 }
 
 ssize_t pread_fd(int fd, void *buffer, std::size_t size, long long offset)

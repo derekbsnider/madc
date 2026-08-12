@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <setjmp.h>
-#include <limits.h>	// PATH_MAX (cross-build cover analysis: realpath buffer)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
@@ -1621,8 +1620,9 @@ static bool cir_symbol_from_madc_image(const char *name)
     MadcDlInfo info;
     if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
-    char real[PATH_MAX];
-    std::string img = realpath(info.fname, real) ? real : info.fname;
+    std::string img = madc::detail::resolve_real_path(info.fname);
+    if (img.empty())
+	img = info.fname;
     return img == madc_self_lib_path() || img == madc_self_exe_path();
 }
 #endif

@@ -29,6 +29,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
@@ -2393,13 +2394,8 @@ void Program::forest_install_pp(uint32_t unit)
 // with their own call sites.
 static std::string canonical_path_for_compare(const std::string &path)
 {
-    if ( char *rp = realpath(path.c_str(), NULL) )
-    {
-	std::string out(rp);
-	free(rp);
-	return out;
-    }
-    return path;
+    std::string out = madc::detail::resolve_real_path(path.c_str());
+    return out.empty() ? path : out;
 }
 
 static const char *madc_fallback_include_paths[] = {

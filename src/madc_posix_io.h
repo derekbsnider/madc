@@ -12,6 +12,17 @@ namespace detail {
 bool set_fd_close_on_exec(int fd);
 ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size);
 
+// Canonical absolute form of `path` (POSIX realpath: resolves symlinks,
+// `.` and `..`); empty string when it does not resolve. The Win32 arm
+// (GetFullPathName) normalizes without following links — consumers use
+// this for CONSISTENT path spellings, never for link identity.
+std::string resolve_real_path(const char *path);
+
+// This host's name (POSIX gethostname); empty string on failure. The
+// Win32 arm rides GetComputerNameEx, NOT winsock's gethostname — callers
+// run at static-init time, before any WSAStartup.
+std::string get_host_name();
+
 // Positioned read/write on an fd (POSIX pread/pwrite): EINTR-retrying,
 // never moves the file pointer; -1 with errno on failure. The Win32 arm
 // rides ReadFile/WriteFile with an OVERLAPPED offset behind these
