@@ -6,7 +6,7 @@
  "branch": "develop",
  "live_handoff": {
   "session": "#85 (2026-08-12)",
-  "branch": "feature/windows-release-lane-claude @b7c89a65 (pushed)",
+  "branch": "feature/windows-release-lane-claude @ec43bbad (pushed)",
   "mission": "Windows release lane (Track 6.4) \u2014 plan docs/plans/2026-08-12-windows-release-lane.md",
   "state": [
    "W0 UCRT recipe + gate SHIPPED (bcb13f08); W2.1 setjmp answered (NON_SEH, gated w/ negative control)",
@@ -15,10 +15,11 @@
    "W1 STARTED \u2014 madc_dl seam SHIPPED (f181e6ff slice 1 dl-family, 39c0fa68 slice 2 dladdr): include/madc_dl.h + src/madc_dl.cpp own EVERY host dl*/dladdr use (madcdl_open_global/open_local/open_self/probe_loaded/sym/sym_default/close/error/addr + MadcDlInfo); <dlfcn.h> included ONLY by the seam; script dlopen/dlsym builtin thunks adapt onto it; test_native_shared.cpp deliberately raw (third-party-host simulation, gate-exempt)",
    "Gate: scripts/check-one-dl-owner.sh in fulltest (dl calls + RTLD_ + Dl_info + <dlfcn.h> outside owner = RED; negative-controlled; caught a head-truncated inventory AND an indent-variant miss)",
    "W1 slice 3 (b7c89a65): ONE spawn owner — Process::run_and_wait (inherited-stdio arm) added, --freeze-run re-exec migrated off raw fork/execv; gate check-one-spawn-owner.sh (system/popen CRT-portable = out of scope; madc_program.cpp fork-as-ISOLATION exempt fork-only — win64 isolation contract = OPEN OWNER DECISION recorded in plan doc)",
-   "Verified: container fulltest 1023/0 three times (slices 1, 2, 3); both new gates GREEN in-suite"
+   "W1 slice 4 (ec43bbad): ONE mapping owner — madc::detail::map_file_readonly (madc_posix_io) owns the forest-image mmap; cir_freeze's #undef MAP_FAILED + (void*)-1 wart DELETED; gate check-one-mmap-owner.sh",
+   "W1 POSIX-side seam consolidation COMPLETE: dl, spawn, mmap each behind ONE gated owner; fulltest 1023/0 four times (one per slice); all three owner gates GREEN in-suite"
   ],
   "next": [
-   "W1 next surfaces: mmap (cir_freeze) seam; then the Win32 backends (madc_dl: LoadLibrary/GetProcAddress + module-walk sym_default + -Wl,--export-all-symbols; Process: CreateProcess + handle-inheritance lists); winsock deltas; fork-isolation OWNER DECISION",
+   "W1 next: the Win32 backends behind the three owners (madc_dl: LoadLibrary/GetProcAddress + recorded-module sym_default + -Wl,--export-all-symbols; Process: CreateProcess + PROC_THREAD_ATTRIBUTE_HANDLE_LIST; mapping: CreateFileMapping/MapViewOfFile) — needs the W1 mingw host build to compile them; winsock deltas; madc_posix_io audit; fork-isolation OWNER DECISION",
    "W3: PE executable + COFF .o writers behind the MIR_object seam (mir-macho.c is the template)",
    "gotcha: background remote suites \u2014 nohup + done-marker + until-file waiter; NEVER pgrep -f the make pattern (waiter self-match); local background ssh dies at the tool timeout and orphans the run",
    "out-of-scope notes: interp ffi -ei LD convention not implemented (gen -eg is the madc path)"
