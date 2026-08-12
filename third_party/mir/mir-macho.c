@@ -1,5 +1,6 @@
-/* This file is a part of MIR project.
-   Copyright (C) 2018-2024 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+/* This file was added to the MIR fork as part of the MadC project.
+   Copyright (C) 2019-2026 Derek Snider <derekbsnider@gmail.com>.
+   Same license as the MIR project (see LICENSE).
 
    Mach-O64 executable writer (madc fork, Mach-O/ARM64 track axis B).
 

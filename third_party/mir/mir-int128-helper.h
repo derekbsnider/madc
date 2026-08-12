@@ -1,5 +1,6 @@
-/* This file is a part of MIR project.
-   Copyright (C) 2020-2024 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+/* This file was added to the MIR fork as part of the MadC project.
+   Copyright (C) 2019-2026 Derek Snider <derekbsnider@gmail.com>.
+   Same license as the MIR project (see LICENSE).
 */
 
 #ifndef MIR_INT128_HELPER_H
