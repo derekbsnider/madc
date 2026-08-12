@@ -76,7 +76,7 @@ PKGS_package="rpm"
 # (real-Windows runs go over the W0.2 ssh channel once the owner enables
 # it). NOTE: these packages DEFAULT TO MSVCRT; the UCRT recipe and its
 # gate live in scripts/win_ucrt_gate.sh.
-PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64"
+PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-mingw-w64-dev"
 
 ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane"
 

@@ -16,6 +16,7 @@
 #else
 #include <csignal>
 #include <fcntl.h>
+#include <glob.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -317,6 +318,85 @@ std::string finish_string_capture(StringCapture &cap)
 	cap.buf = NULL;
 	cap.len = 0;
 	return s;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+
+// Join a walk prefix and a component without doubling separators.
+std::string glob_join(const std::string &prefix, const std::string &name)
+{
+	if ( prefix.empty() )
+		return name;
+	char last = prefix[prefix.size() - 1];
+	if ( last == '/' || last == '\\' )
+		return prefix + name;
+	return prefix + "/" + name;
+}
+
+// Component-wise FindFirstFile expansion: each path component containing
+// a wildcard is enumerated at its level (Windows-native rules: * and ?);
+// literal components pass through, with only the LEAF existence-checked
+// (the glob contract: a literal pattern matches iff the path exists).
+void glob_walk(const std::string &prefix, const std::string &rest,
+	       std::vector<std::string> &out)
+{
+	std::size_t sep = rest.find_first_of("/\\");
+	std::string head = sep == std::string::npos ? rest : rest.substr(0, sep);
+	std::string tail = sep == std::string::npos ? std::string()
+						    : rest.substr(sep + 1);
+	if ( head.empty() )
+	{
+		// Leading or doubled separator: descend with the separator kept.
+		if ( !tail.empty() )
+			glob_walk(prefix.empty() ? "/" : prefix, tail, out);
+		return;
+	}
+	if ( head.find_first_of("*?") == std::string::npos )
+	{
+		std::string next = glob_join(prefix, head);
+		if ( tail.empty() )
+		{
+			if ( GetFileAttributesA(next.c_str()) != INVALID_FILE_ATTRIBUTES )
+				out.push_back(next);
+		}
+		else
+			glob_walk(next, tail, out);
+		return;
+	}
+	WIN32_FIND_DATAA data;
+	HANDLE h = FindFirstFileA(glob_join(prefix, head).c_str(), &data);
+	if ( h == INVALID_HANDLE_VALUE )
+		return;
+	do
+	{
+		if ( !std::strcmp(data.cFileName, ".")
+		  || !std::strcmp(data.cFileName, "..") )
+			continue;
+		std::string next = glob_join(prefix, data.cFileName);
+		if ( tail.empty() )
+			out.push_back(next);
+		else if ( (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 )
+			glob_walk(next, tail, out);
+	} while ( FindNextFileA(h, &data) );
+	FindClose(h);
+}
+
+} // namespace
+#endif
+
+void glob_paths(const std::string &pattern, std::vector<std::string> &out)
+{
+#ifdef _WIN32
+	glob_walk(std::string(), pattern, out);
+#else
+	glob_t globbuf;
+	if ( ::glob(pattern.c_str(), GLOB_NOSORT, NULL, &globbuf) != 0 )
+		return;
+	for ( size_t i = 0; i < globbuf.gl_pathc; ++i )
+		out.push_back(std::string(globbuf.gl_pathv[i]));
+	globfree(&globbuf);
 #endif
 }
 

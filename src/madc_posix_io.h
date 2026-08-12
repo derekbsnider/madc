@@ -6,6 +6,7 @@
 #include <ctime>
 #include <string>
 #include <sys/types.h>
+#include <vector>
 
 namespace madc {
 namespace detail {
@@ -73,6 +74,13 @@ struct StringCapture
 };
 bool open_string_capture(StringCapture &cap);
 std::string finish_string_capture(StringCapture &cap);
+
+// Shell-style pathname expansion (POSIX ::glob with GLOB_NOSORT). The
+// Win32 arm expands component-wise via FindFirstFile — Windows-native
+// wildcard rules per component (* and ?, no POSIX [ranges]); '/' and '\'
+// both split, results join with '/'. Matches append to `out` in
+// directory order; no match appends nothing (the glob contract).
+void glob_paths(const std::string &pattern, std::vector<std::string> &out);
 
 // Map an entire file read-only (POSIX mmap PROT_READ/MAP_PRIVATE). NULL on
 // any failure, including an empty file; the byte count comes back through
