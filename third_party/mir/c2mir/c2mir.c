@@ -9320,6 +9320,34 @@ static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type
   apply_vector_attr_list (c2m_ctx, attrs, type_ptr);
 }
 
+/* Scan one attribute list (a declarator's attrs slot OR a declaration-specs
+   list, which holds N_ATTR nodes mixed with spec nodes) for
+   __attribute__((cleanup(fn))) and record it on the decl + its block scope
+   (create_decl owns the automatic-variable-only guard). */
+static void scan_cleanup_attrs (c2m_ctx_t c2m_ctx, decl_t decl, node_t decl_node, node_t scope,
+                                node_t attrs) {
+  if (attrs == NULL || attrs->code != N_LIST) return;
+  for (node_t a = NL_HEAD (attrs->u.ops); a != NULL; a = NL_NEXT (a)) {
+    node_t aname, arglist, fn;
+    if (a->code != N_ATTR) continue;
+    aname = NL_HEAD (a->u.ops);
+    if (aname == NULL || aname->code != N_ID || strcmp (aname->u.s.s, "cleanup") != 0) continue;
+    arglist = NL_NEXT (aname);
+    fn = arglist == NULL ? NULL : NL_HEAD (arglist->u.ops);
+    if (fn == NULL || fn->code != N_ID) {
+      error (c2m_ctx, POS (a), "cleanup attribute requires a single function argument");
+      continue;
+    }
+    decl->cleanup_fn = fn;
+    {
+      struct node_scope *ns = (struct node_scope *) scope->attr;
+      MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
+      if (ns->cleanup_decls == NULL) VARR_CREATE (node_t, ns->cleanup_decls, alloc, 4);
+      VARR_PUSH (node_t, ns->cleanup_decls, decl_node);
+    }
+  }
+}
+
 static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
 
@@ -9393,33 +9421,18 @@ static void create_decl (c2m_ctx_t c2m_ctx, node_t scope, node_t decl_node,
   }
   /* __attribute__((cleanup(fn))): record the cleanup function on the decl and
      register the decl with its block scope, so process_cleanups can emit
-     fn(&var) at every scope exit. Applies to automatic variables only. */
+     fn(&var) at every scope exit. Applies to automatic variables only.
+     The attribute is legal in BOTH positions -- declarator suffix (the
+     N_SPEC_DECL attrs slot) and declaration-specs prefix (N_ATTR nodes
+     flattened into the specs list, applying to every declarator) -- so scan
+     both, the same per-position pairing vector attrs use. */
   if (decl_node->code == N_SPEC_DECL && declarator->code == N_DECL && scope != top_scope
       && !decl->decl_spec.typedef_p && !decl->decl_spec.static_p
       && decl->decl_spec.linkage != N_STATIC && decl->decl_spec.linkage != N_EXTERN) {
-    node_t attrs = NL_EL (decl_node->u.ops, 2);
-    if (attrs != NULL && attrs->code == N_LIST) {
-      for (node_t a = NL_HEAD (attrs->u.ops); a != NULL; a = NL_NEXT (a)) {
-        node_t aname, arglist, fn;
-        if (a->code != N_ATTR) continue;
-        aname = NL_HEAD (a->u.ops);
-        if (aname == NULL || aname->code != N_ID || strcmp (aname->u.s.s, "cleanup") != 0)
-          continue;
-        arglist = NL_NEXT (aname);
-        fn = arglist == NULL ? NULL : NL_HEAD (arglist->u.ops);
-        if (fn == NULL || fn->code != N_ID) {
-          error (c2m_ctx, POS (a), "cleanup attribute requires a single function argument");
-          continue;
-        }
-        decl->cleanup_fn = fn;
-        {
-          struct node_scope *ns = (struct node_scope *) scope->attr;
-          MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
-          if (ns->cleanup_decls == NULL) VARR_CREATE (node_t, ns->cleanup_decls, alloc, 4);
-          VARR_PUSH (node_t, ns->cleanup_decls, decl_node);
-        }
-      }
-    }
+    node_t specs = NL_HEAD (decl_node->u.ops);
+    if (specs != NULL && specs->code == N_SHARE) specs = NL_HEAD (specs->u.ops);
+    scan_cleanup_attrs (c2m_ctx, decl, decl_node, scope, specs);
+    scan_cleanup_attrs (c2m_ctx, decl, decl_node, scope, NL_EL (decl_node->u.ops, 2));
   }
   if (initializer == NULL || initializer->code == N_IGNORE) return;
   if (incomplete_type_p (c2m_ctx, decl->decl_spec.type)

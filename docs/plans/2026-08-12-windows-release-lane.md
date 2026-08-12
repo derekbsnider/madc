@@ -203,9 +203,17 @@ Inventory from recon (session #83 greps):
   win64 LD convention (gen `-eg` is the madc path); MIR-level LD args in
   hand-written protos to JIT-to-JIT calls remain SysV-shaped on the callee
   side (c2mir never emits them on win64 — blk instead).
-- Also found (platform-independent, task #43): the c2mir C-text parser
-  DROPS prefix-position `__attribute__` (cleanup silently lost; suffix
-  position works). madc's tree path is unaffected.
+- Also found (platform-independent, task #43) — **FIXED (session #85)**:
+  prefix-position `__attribute__((cleanup))` was silently dropped.  The
+  parser keeps specs-position N_ATTRs (flattened into the decl-specs
+  list); the CHECK layer's cleanup scan read only the declarator-suffix
+  attrs slot.  Fix: `scan_cleanup_attrs` helper run over BOTH positions
+  (the same per-position pairing vector attrs already use); specs-position
+  attrs apply to every declarator, per gcc.  Gate:
+  `third_party/mir/c-tests/new/cleanup-prefix-attr.c` (+.expect, gcc
+  oracle; multi-declarator, reverse order).  w2_cleanup.c now prints
+  cleanup=7 on native, wine, and real Windows; the cleanup-* family and
+  the LD/w2 battery stay green.  madc's tree path was never affected.
 - c2mir type model under our windows target: long double = 80-bit
   (mingw model) — DONE, see 6 above; `sizeof(long double)==16`,
   `_Alignof==16` verified in-JIT under wine.
