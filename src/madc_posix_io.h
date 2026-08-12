@@ -2,6 +2,8 @@
 #define __MADC_POSIX_IO_H 1
 
 #include <cstddef>
+#include <cstdio>
+#include <string>
 #include <sys/types.h>
 
 namespace madc {
@@ -9,6 +11,28 @@ namespace detail {
 
 bool set_fd_close_on_exec(int fd);
 ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size);
+
+// Positioned read/write on an fd (POSIX pread/pwrite): EINTR-retrying,
+// never moves the file pointer; -1 with errno on failure. The Win32 arm
+// rides ReadFile/WriteFile with an OVERLAPPED offset behind these
+// signatures.
+ssize_t pread_fd(int fd, void *buffer, std::size_t size, long long offset);
+ssize_t pwrite_fd(int fd, const void *buffer, std::size_t size,
+		  long long offset);
+
+// String-capture stream: a FILE* whose writes accumulate in memory;
+// finish_string_capture closes it and returns everything written (empty
+// string if the capture never opened). POSIX arm = open_memstream; the
+// Win32 arm rides a tmpfile read-back (Windows FILE* has no memory hook).
+// One owner so FILE*-shaped emitters stay platform-agnostic.
+struct StringCapture
+{
+	FILE *f = NULL;
+	char *buf = NULL;
+	std::size_t len = 0;
+};
+bool open_string_capture(StringCapture &cap);
+std::string finish_string_capture(StringCapture &cap);
 
 // Map an entire file read-only (POSIX mmap PROT_READ/MAP_PRIVATE). NULL on
 // any failure, including an empty file; the byte count comes back through

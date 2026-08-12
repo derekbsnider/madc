@@ -179,12 +179,21 @@ Inventory from recon (session #83 greps):
     `cir_emit_c.cpp` (open_memstream → portable buffer writer),
     `madc.cpp` (execinfo backtrace → CaptureStackBackTrace or stub),
     `madc_program.cpp` (sys/resource rlimit → stub/JobObject).
-  - Dependency gaps: `lexer.cpp` + `parser.cpp` (readline → make the
-    REPL line-editor optional with an fgets fallback; native readline
-    exists in MSYS2 pacman), `pch.cpp` (zlib → Ubuntu ships
-    libz-mingw-w64-dev), `madc_socket_channel.cpp` (netdb.h →
-    winsock2/ws2tcpip), `ns_perl.cpp` (glob.h → FindFirstFile-backed
-    or vendored glob).
+  - Dependency gaps: `lexer.cpp` + `parser.cpp` (readline → the
+    includes were DEAD, deleted in slice 5 — nothing in the tree calls
+    GNU readline), `pch.cpp` (zlib → Ubuntu ships libz-mingw-w64-dev),
+    `madc_socket_channel.cpp` (netdb.h → winsock2/ws2tcpip),
+    `ns_perl.cpp` (glob.h → FindFirstFile-backed or vendored glob).
+  - **Slice 5 DONE (session #85): POSIX-side portable sweep, round 1.**
+    Dead readline includes deleted; `emit_to_string` rides a
+    string-capture owner (`open_string_capture`/`finish_string_capture`
+    in madc_posix_io — POSIX arm = open_memstream, Win arm = tmpfile
+    read-back later) making `cir_emit_c.cpp` mingw-GREEN; pread/pwrite
+    ride `pread_fd`/`pwrite_fd` (same owner, EINTR-retry inside; Win
+    arm = OVERLAPPED-offset ReadFile/WriteFile). Peeling reveals the
+    next classified layer per TU: lexer=realpath (→_fullpath),
+    parser=syslog (→event-log/file arm), datachannel=O_CLOEXEC
+    (→_O_NOINHERIT) — all Win32-sweep items.
 - Rule discipline: every port goes through a named seam owner
   (helper-methods.md, no-parallel-implementations.md) — one
   implementation per concern, two platform backends.

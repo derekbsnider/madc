@@ -133,11 +133,8 @@ public:
 					  "channel is not readable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::pread(fd_, buffer, capacity,
-					 static_cast<off_t>(offset));
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::pread_fd(fd_, buffer, capacity,
+						  (long long)offset);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file read_at failed", path_);
@@ -159,11 +156,8 @@ public:
 					  "channel is not writable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::pwrite(fd_, buffer, size,
-					  static_cast<off_t>(offset));
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::pwrite_fd(fd_, buffer, size,
+						   (long long)offset);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file write_at failed", path_);

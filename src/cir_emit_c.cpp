@@ -36,6 +36,7 @@
 
 #include "cir_emit_c.h"
 #include "cir_node.h"
+#include "madc_posix_io.h"	// string-capture stream (the one FILE*-over-memory owner)
 #include <string>
 #include <cstdio>
 #include <cstdlib>
@@ -143,15 +144,11 @@ void emit_labels(FILE *f, node_t labels, CirEmitLang lang)
 // needs to wrap an already-rendered inner declarator in parentheses).
 std::string emit_to_string(node_t n, CirEmitLang lang)
 {
-	char *buf = NULL;
-	size_t sz = 0;
-	FILE *m = open_memstream(&buf, &sz);
-	if (!m) return std::string();
-	emit(m, n, lang);
-	fclose(m);
-	std::string s(buf ? buf : "");
-	free(buf);
-	return s;
+	madc::detail::StringCapture cap;
+	if (!madc::detail::open_string_capture(cap))
+		return std::string();
+	emit(cap.f, n, lang);
+	return madc::detail::finish_string_capture(cap);
 }
 
 // Emit a C declarator following the C "spiral rule". The builder's suffix

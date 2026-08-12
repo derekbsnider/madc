@@ -55,6 +55,46 @@ ssize_t write_fd_without_sigpipe(int fd, const void *buffer, std::size_t size)
 	return result;
 }
 
+ssize_t pread_fd(int fd, void *buffer, std::size_t size, long long offset)
+{
+	ssize_t result;
+	do
+		result = ::pread(fd, buffer, size, (off_t)offset);
+	while ( result < 0 && errno == EINTR );
+	return result;
+}
+
+ssize_t pwrite_fd(int fd, const void *buffer, std::size_t size,
+		  long long offset)
+{
+	ssize_t result;
+	do
+		result = ::pwrite(fd, buffer, size, (off_t)offset);
+	while ( result < 0 && errno == EINTR );
+	return result;
+}
+
+bool open_string_capture(StringCapture &cap)
+{
+	cap.buf = NULL;
+	cap.len = 0;
+	cap.f = ::open_memstream(&cap.buf, &cap.len);
+	return cap.f != NULL;
+}
+
+std::string finish_string_capture(StringCapture &cap)
+{
+	if ( !cap.f )
+		return std::string();
+	::fclose(cap.f);
+	std::string s = cap.buf ? std::string(cap.buf, cap.len) : std::string();
+	::free(cap.buf);
+	cap.f = NULL;
+	cap.buf = NULL;
+	cap.len = 0;
+	return s;
+}
+
 void *map_file_readonly(const char *path, std::size_t &length)
 {
 	length = 0;
