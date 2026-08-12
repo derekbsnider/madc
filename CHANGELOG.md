@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.78.0] — 2026-08-12
+
+The torture window closes: the five standard-C regressions from the
+2026-07-23→08-11 window are root-caused and fixed (long-double
+alignment, a real `__builtin_classify_type`, anonymous-aggregate
+emission after class promotion, nested-brace aggregate recursion) —
+baseline 1614 restored, promote gate met again; the Windows release
+lane (Track 6.4) is planned.
+
 - **The 5-fail torture window is closed (task #41): four root defects
   fixed, all standard-C class-(a).** The 2026-07-27 correctness work
   ("long double is its own type again" @114b13a8; "a nested type is a
