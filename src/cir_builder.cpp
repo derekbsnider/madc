@@ -8369,9 +8369,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// `struct anonymous` reference is never defined. The pointer case
 	// (`struct { int i; } *sp;`) and the static/extern overrides below all
 	// route through anon_inline_spec(), so drop the old `!is_ptr` guard.
+	// dynamic_cast, not is_struct(): a nested-type/object-member/NSDMI
+	// feature promotes the aggregate to DataDefCLASS (btClass, where
+	// is_struct() is false), and a promoted ANONYMOUS aggregate still has
+	// no tag c2mir ever defines (gcc-torture 20000717-4: `struct {
+	// struct slot { ... } slot[4]; } s;` emitted `struct __anon_1 s`
+	// against no definition). member_node's anon path already casts.
 	DataDefSTRUCT *anon_sdd = NULL;
-	if (v->typedef_name.empty() && base_dd && base_dd->is_struct()
-	    && !base_dd->is_complex()) {
+	if (v->typedef_name.empty() && base_dd && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd && sdd->is_anonymous && !sdd->members.empty())
 			anon_sdd = sdd;
