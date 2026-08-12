@@ -75,7 +75,10 @@ PKGS_package="rpm"
 # uses. wine64 is the interim/isolation runner for cross-built PE binaries
 # (real-Windows runs go over the W0.2 ssh channel once the owner enables
 # it). NOTE: these packages DEFAULT TO MSVCRT; the UCRT recipe and its
-# gate live in scripts/win_ucrt_gate.sh.
+# gate live in scripts/win_ucrt_gate.sh, and the UCRT-flavor libstdc++
+# stage (the C++ ABI leaks the CRT via std::mbstate_t, so the prebuilt
+# msvcrt-flavor archive cannot serve -D_UCRT builds) is staged by
+# scripts/build_win_ucrt_libstdcxx.sh — run below.
 PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-mingw-w64-dev"
 
 ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane"
@@ -139,6 +142,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
 
 echo "provision_container: staging darwin open headers (W0.5 prelude input)"
 bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
+
+echo "provision_container: staging UCRT-flavor libstdc++ (windows lane W1)"
+bash "$(dirname "$0")/build_win_ucrt_libstdcxx.sh" || exit 1
 
 echo "provision_container: verifying"
 report

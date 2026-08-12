@@ -62,6 +62,10 @@ else ifeq ($(MODE),hosted-arm64-macos)
 BIN = ../bin/madc-hosted-arm64-macos
 else ifeq ($(MODE),hosted-x86-64-macos)
 BIN = ../bin/madc-hosted-x86-64-macos
+else ifeq ($(MODE),hosted-x86-64-windows)
+# madc-on-Windows (Track 6.4): full madc cross-built with mingw-w64 over
+# UCRT. Host == target (JIT + native AOT); Windows names executables .exe.
+BIN = ../bin/madc-hosted-x86-64-windows.exe
 else
 BIN = ../bin/madc
 endif
@@ -234,6 +238,68 @@ MADC_STORAGE_DB_OFILES =
 LIBS = -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
+endif
+# --- hosted-on-Windows MODE (Track 6.4, docs/plans/2026-08-12-windows-release-lane.md).
+# The win64 toolchain: mingw-w64, -posix flavor (winpthreads), over UCRT.
+# The UCRT recipe (W0, scripts/win_ucrt_gate.sh is the reference): -D_UCRT
+# alone turns mingw's ANSI-stdio interposer OFF and %Lf on x87 80-bit long
+# double silently prints 0.00, so __USE_MINGW_ANSI_STDIO=1 always rides with
+# it; link-side the specs swap replaces gcc's hard-coded -lmsvcrt with -lucrt,
+# and win_ucrt_compat.S supplies the _setjmp/_setjmpex thunks that
+# msvcrt-compiled static libs (libstdc++, winpthreads) import.
+# __USE_MINGW_SETJMP_NON_SEH is mandatory lane-wide (W2.1): SEH-default
+# longjmp runs RtlUnwindEx frame-consistency unwinding, which faults crossing
+# a JIT frame with no RUNTIME_FUNCTION entry. All three defines live in
+# CC/CXX (not DEFINES) so the parse-time host-table capture (HOSTTAB_GEN)
+# sees the same posture the binary is built with.
+ifeq ($(MODE),hosted-x86-64-windows)
+WIN_MINGW = x86_64-w64-mingw32
+WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH
+WIN_SPECS = $(abspath $(OBJDIR))/ucrt.specs
+# Parse-time generation (the EMBED_GEN/HOSTTAB precedent): the specs file
+# must exist before ANY compile in this make layer, including the recursive
+# MIR variant make, whose CC carries the -specs flag too.
+WIN_SPECS_GEN := $(shell mkdir -p $(abspath $(OBJDIR)); $(WIN_MINGW)-gcc-posix -dumpspecs | sed 's/-lmsvcrt/-lucrt/g' > $(WIN_SPECS); echo done)
+# UCRT-flavor libstdc++ (scripts/build_win_ucrt_libstdcxx.sh, staged per
+# container like the zstd builds): the C++ ABI leaks the CRT flavor via
+# std::mbstate_t (msvcrt: int; UCRT: _Mbstatet), so the distro's prebuilt
+# msvcrt-flavor libstdc++ cannot satisfy -D_UCRT objects (fpos<mbstate_t>
+# symbols — seekg/seekpos — mangle differently). Headers AND archive both
+# come from the stage: bits/c++config.h is build-generated, so mixing the
+# distro headers with the staged archive would be the same mismatch again.
+# The -isystem pair rides CXX (the DARWIN_CXX_ISYS pattern) so HOSTTAB_CXX
+# inherits it — madc serves user C++ the exact header text it was built
+# against.
+WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
+WIN_CXX_ISYS = -nostdinc++ -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0 -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0/x86_64-w64-mingw32
+CC  = $(WIN_MINGW)-gcc-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
+CXX = $(WIN_MINGW)-g++-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS) $(WIN_CXX_ISYS)
+AR  = $(WIN_MINGW)-ar
+MODE_OPTFLAGS = -O2
+MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
+# The configure-probed host packages do not exist for the cross target:
+# hosted modes build as if --enable-madcdat=no (the darwin posture). zstd
+# (the forest/pch container codec) is a W4 rider — zlib alone serves pch
+# here until the groves work stages a mingw zstd.
+HAVE_MADCDAT = 0
+FEATURE_DEFINES =
+OPTIONAL_CPPFLAGS =
+OPTIONAL_LIBS =
+MADC_STORAGE_DB_OFILES =
+# win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
+# kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's
+# sym_default walk needs GetProcAddress(GetModuleHandle(NULL)) to see our
+# statics. -static freezes libstdc++/winpthreads/zlib into the image; the
+# system DLLs stay imports either way (ws2_32/kernel32/ucrt are import libs).
+LIBS = -static -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -lz -lm -lpthread
+# The compat thunks join every link via the object list (compile rule beside
+# the other per-mode rules below); riding CORE_OFILES also puts them in the
+# per-mode libmadc archives, where any downstream consumer link needs them.
+CORE_OFILES += win_ucrt_compat.o
+# Per-mode include-table source (the darwin precedent): the mingw header
+# world is captured from the cross compiler into the obj tree, never src/.
+SYS_INCLUDES_CPP = $(OBJDIR)/sys_include_paths.cpp
+export MADC_SYS_INCLUDES_OUT = $(SYS_INCLUDES_CPP)
 endif
 # The compiler whose `#include <...>` world and predefined-macro environment
 # this madc presents to the code it COMPILES. Normally $(CXX) — the compiler
@@ -621,6 +687,20 @@ $(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
 	mkdir -p $(MIRBUILD)/hosted-x86-64-macos
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-macos CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-macos/libmir.a
 
+# madc hosted on Windows (Track 6.4): the win64 twin of the darwin hosted
+# targets. Same explicit-goal shape (binary + emitted-C runtime archive);
+# forest packing is the W4 workstream, so this mode builds the dev forest
+# shape (silent live parse). Run validation: wine + scripts/win_run.sh.
+hosted-x86-64-windows:
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a
+
+# win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
+# UCRT posture + specs swap), so host detection selects the _WIN32 arms
+# natively — no MIR_TARGET knobs, same model as the darwin-host variants.
+$(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-x86-64-windows
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-windows CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-windows/libmir.a
+
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
@@ -687,7 +767,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
 
 clean:
-	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos ../obj/hosted-arm64-macos ../obj/hosted-x86-64-macos
+	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos ../obj/hosted-arm64-macos ../obj/hosted-x86-64-macos ../obj/hosted-x86-64-windows
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
@@ -901,16 +981,29 @@ $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 # Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
 # parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
 # which stays the committed include/madc/-only table for host builds.
-ifdef DARWIN_PRELUDE_TARGET
+ifdef EMBEDDED_HEADERS_CPP
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
 
 # Per-mode include-table source (see SYS_INCLUDES_CPP above): same shape as
 # embedded_headers.o — the generated .cpp lives in the obj tree, never src/.
+# Guarded by the variable, not the mode family: every mode that captures a
+# foreign header world (darwin hosted+cross, windows hosted) sets it.
+ifdef SYS_INCLUDES_CPP
 $(OBJDIR)/sys_include_paths.o: $(SYS_INCLUDES_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
+
+# UCRT setjmp compat thunks (W0): plain cpp-driven assembly, no -MMD (the
+# one include is windows-lane-frozen); assembled by the mode's own CC so a
+# future arm64-windows twin reuses the rule unchanged.
+ifeq ($(MODE),hosted-x86-64-windows)
+$(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
+	@mkdir -p $(OBJDIR)
+	$(CC) -c -o $@ $<
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
