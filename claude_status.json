@@ -6,19 +6,19 @@
  "branch": "develop",
  "live_handoff": {
   "session": "#85 (2026-08-12)",
-  "branch": "feature/windows-release-lane-claude @cf7aacb3 (pushed)",
+  "branch": "feature/windows-release-lane-claude @8c7f2ed9 (pushed)",
   "mission": "Windows release lane (Track 6.4) \u2014 plan docs/plans/2026-08-12-windows-release-lane.md",
   "state": [
    "W0 UCRT recipe + gate SHIPPED (bcb13f08); W2.1 setjmp answered (NON_SEH, gated w/ negative control)",
    "W0.2 channel LIVE: container -> ssh derek@host.docker.internal (distro sshd) -> WSL interop = REAL Windows processes",
    "W2 win64 floor DONE incl. the LD residual (ce858be7): five sites, one concept \u2014 c2mir param-gather/va_arg/call-result value materialization for memory-value scalars, machinize_call win64 LD convention (by-ref args + hidden-ptr RCX return; native ld2i/ui2ld builtins unchanged), driver msvcrt->ucrtbase + __mingw_* stdio binding (gcc parity)",
    "scripts/win_run.sh SHIPPED (cf7aacb3): MADC_WIN_RUNNER over the channel; win_ucrt_gate 4/4 on REAL Windows (use ABSOLUTE runner path)",
-   "Verified: t_ld_b..g byte-exact vs gcc oracle on wine + real Windows (26200) + native SysV identical; complex f/d/l green; fulltest 1023/0"
+   "Verified: t_ld_b..g byte-exact vs gcc oracle on wine + real Windows (26200) + native SysV identical; complex f/d/l green; fulltest 1023/0",
+   "task #43 FIXED (8c7f2ed9): c2mir check layer dropped prefix-position __attribute__((cleanup)) \u2014 scan_cleanup_attrs now covers both positions; gate = c-tests/new/cleanup-prefix-attr.c; fulltest 1023/0"
   ],
   "next": [
    "W1: madc host port \u2014 madc_dl seam first (dlopen/dlsym -> LoadLibrary/GetProcAddress + GetModuleHandle(NULL) self-resolution w/ -Wl,--export-all-symbols), then fork/exec/mmap/winsock surfaces",
    "W3: PE executable + COFF .o writers behind the MIR_object seam (mir-macho.c is the template)",
-   "task #43: c2mir C-parser drops prefix-position __attribute__ (reducers w2_cleanup.c vs w2_cleanup3.c)",
    "out-of-scope notes: interp ffi -ei LD convention not implemented (gen -eg is the madc path)"
   ]
  },
