@@ -99,6 +99,27 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **v0.78.0 (2026-08-12): the torture window closes (task #41).** The
+  5 standard-C class-(a) regressions from the 2026-07-23→08-11 window
+  are root-caused and fixed — long-double struct alignment 16
+  (`DataDefLDOUBLE::alignment()` override), `__builtin_classify_type`
+  as a real parser builtin (was a macro → 0), anonymous-aggregate
+  inline emission after nested-type class promotion, and nested-brace
+  aggregate recursion in designated inits — each with a
+  gcc+clang-oracled reducer in `tests/`. Torture restored to
+  **1614/1/9/0/61**, byte-identical to the 2026-07-23 baseline; the
+  failset is again exactly the 10 class-(b) items and the **promote
+  gate is met**. Validation: fulltest 1023/0, libcxxjit 1019/0,
+  EXE/OBJ green, release+packed green. The window's fails were
+  UNMASKED by its own correctness work (114b13a8 real long double,
+  6fec105d nested-type scope membership, 8f8f4009 loud aggregate-shape
+  gate) — the #74 unprototyped-call hypothesis was disproven. The
+  **Windows release lane plan** (Track 6.4) is drafted:
+  [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md)
+  (mingw-w64 + libstdc++ + UCRT, Win64 only, full-suite scope,
+  validated natively on the Windows 11 host carrying the build
+  container).
+
 - **v0.77.0 (2026-08-11): MIR lives in-tree — `third_party/mir` as a
   full-history Git subtree (ADR 0002).** One clone builds everything:
   `make -C src` builds libmir + c2m into `obj/mir/<variant>` (never
@@ -112,10 +133,10 @@ high-level" — the answer is both.**
   clone), libcxxjit 1015/0, EXE/OBJ 990/0, release+packed green,
   release-macos + Mach-O gates green, MIR suite 1145 tests green,
   torture byte-identical to pre-migration, stale-checkout negative
-  control passed. Known-open rider (pre-existing, task #41): 5 torture
-  fails from the 2026-07-23→08-11 window, classification pending.
-  NEXT PLAN (owner): a **Windows release** (Track 6.4); GitHub-Actions
-  release automation follows once a Windows build works.
+  control passed. The known-open rider (task #41: 5 torture fails from
+  the 2026-07-23→08-11 window) was RESOLVED in v0.78.0 — all class-(a),
+  all fixed. NEXT PLAN (owner): a **Windows release** (Track 6.4);
+  GitHub-Actions release automation follows once a Windows build works.
   Plan/record: [mir-into-madc-repo-2026-08-11.md](mir-into-madc-repo-2026-08-11.md).
 
 - **v0.76.0 (2026-08-11): the macOS release lane — madc's first PUBLIC
@@ -1668,7 +1689,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | TBD | **NEXT** (owner, 2026-08-11) | plan to be drafted |
+| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | large | **NEXT — plan drafted** (owner, 2026-08-11/12: mingw-w64 + libstdc++ + UCRT, Win64 only, full-suite scope) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 

@@ -1,5 +1,28 @@
 # HANDOFF — the 5-fail torture window (task #41) — session #82 close, 2026-08-11
 
+**RESOLVED (session #83, 2026-08-12).** All five fixed on
+`feature/torture-window-t41-claude` — four root defects, each its own
+commit with an oracle-backed reducer in `tests/`:
+
+| Fix | Commit | Tests it greens |
+|-----|--------|-----------------|
+| `DataDefLDOUBLE::alignment()` = 16 (SysV; the override its own comment promised) | 533aeae5 | 20040709-1/2/3 (with ↓) |
+| `__builtin_classify_type` = parser builtin folding gcc's typeclass (was a macro → 0) | ac1c583f | 20040709-1/2/3 |
+| Anonymous aggregate inlines its body even after nested-type class promotion | 2bb2dda1 | 20000717-4 |
+| Nested brace list = aggregate recursion, not a ctor arg; plain-struct sub-braces typed from the member | 71d83a21 | pr39339 |
+
+The §"UNVERIFIED hypothesis" below is DISPROVEN — the #74
+unprototyped-call change was innocent. The window's 2026-07-27
+type-correctness work (`114b13a8` long double became a real 16-byte
+type; `6fec105d` nested types promote the enclosing struct) unmasked
+three latent defects, and `8f8f4009` (2026-08-06) turned the fourth
+from silent init-drop into the loud shape error. All five were
+standard-C class-(a) — the promote gate WAS retroactively blocked and
+this batch unblocks it. Validation and the restored-baseline stamp:
+`docs/parity/failset-classification.md` (2026-08-12 paragraph) +
+CHANGELOG [Unreleased]. The section below is the historical mission
+brief.
+
 Read FULLY after compaction (assume cold start). **The owner's directive:
 resolve these 5 torture regressions NEXT** — before the Windows release
 plan (which follows them, and the GitHub-runner work follows Windows).

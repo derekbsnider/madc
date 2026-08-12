@@ -1,0 +1,34 @@
+// __builtin_classify_type folds the GCC typeclass constant from the
+// UNEVALUATED operand's type, with C default argument promotions:
+// integer=1 (char promotes), pointer=5 (arrays decay), real=8 (float
+// promotes to double), record=12, union=13 (gcc typeclass.h). It was a
+// lexer macro expanding to 0, so every classify-gated branch lied —
+// gcc-torture 20040709-* assign 5.25 to a random-filled long double only
+// under class 8, and the leftover bytes compared NaN != NaN (task #41).
+// Oracle: gcc -O0 / clang -O0 print the same values.
+
+struct R { int a; };
+union U { int a; float b; };
+
+int main()
+{
+	long double ld = 1.0;
+	double d = 1.0;
+	float f = 1.0f;
+	int i = 1;
+	char c = 'x';
+	int *p = &i;
+	int arr[3];
+	struct R r;
+	union U u;
+	printf("%d %d %d %d\n",
+	       __builtin_classify_type(ld), __builtin_classify_type(d),
+	       __builtin_classify_type(f), __builtin_classify_type(i));
+	printf("%d %d %d\n",
+	       __builtin_classify_type(c), __builtin_classify_type(p),
+	       __builtin_classify_type(arr));
+	printf("%d %d %d\n",
+	       __builtin_classify_type(r), __builtin_classify_type(u),
+	       __builtin_classify_type(1.5));
+	return 0;
+}

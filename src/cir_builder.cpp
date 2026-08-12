@@ -8369,9 +8369,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// `struct anonymous` reference is never defined. The pointer case
 	// (`struct { int i; } *sp;`) and the static/extern overrides below all
 	// route through anon_inline_spec(), so drop the old `!is_ptr` guard.
+	// dynamic_cast, not is_struct(): a nested-type/object-member/NSDMI
+	// feature promotes the aggregate to DataDefCLASS (btClass, where
+	// is_struct() is false), and a promoted ANONYMOUS aggregate still has
+	// no tag c2mir ever defines (gcc-torture 20000717-4: `struct {
+	// struct slot { ... } slot[4]; } s;` emitted `struct __anon_1 s`
+	// against no definition). member_node's anon path already casts.
 	DataDefSTRUCT *anon_sdd = NULL;
-	if (v->typedef_name.empty() && base_dd && base_dd->is_struct()
-	    && !base_dd->is_complex()) {
+	if (v->typedef_name.empty() && base_dd && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd && sdd->is_anonymous && !sdd->members.empty())
 			anon_sdd = sdd;
@@ -13968,6 +13973,29 @@ node_t CirBuilder::class_aggregate_init(
 			if (!arg)
 				return decline();
 			if (DataDefCLASS *mc = as_class_instance(mt)) {
+				// A nested braced list (`.m = {a, b}`) aggregate-
+				// initializes an aggregate class member RECURSIVELY
+				// ([dcl.init.aggr]p12) — it is not a ctor argument
+				// (no ctor takes a brace list, so class_ctor_call_addr
+				// declined the whole walk: gcc-torture pr39339's
+				// `.defaults = {6, {...}}` where the nested-struct
+				// member promoted the chain to classes). Same walk,
+				// one FIELD deeper; any shape it can't serve still
+				// declines the whole list to the legacy lanes.
+				if (TokenStructLit *sub =
+					dynamic_cast<TokenStructLit *>(arg)) {
+					node_t nested = class_aggregate_init(
+						[&](const std::string &m2) -> node_t {
+							return node2(N_FIELD,
+								     member_lvalue(mn),
+								     id(m2.c_str(), origin));
+						}, mc, sub->inits, origin);
+					if (!nested)
+						return decline();
+					flush_pending_stmts(stmts);
+					stmts.push_back(nested);
+					continue;
+				}
 				std::vector<TokenBase *> one(1, arg);
 				node_t cc = class_ctor_call_addr(
 					node1(N_ADDR, member_lvalue(mn), origin),
@@ -13976,6 +14004,38 @@ node_t CirBuilder::class_aggregate_init(
 					return decline();
 				flush_pending_stmts(stmts);
 				stmts.push_back(cc);
+				continue;
+			}
+			// A nested braced list for a PLAIN struct member. The
+			// parser leaves an inner brace list UNTYPED — its type
+			// is contextual ([dcl.init.aggr]/C99 6.7.8): this
+			// member's. translate_expr would emit a void-typed
+			// compound literal ("compound literal of incomplete
+			// type"); spell the member's own type instead and let
+			// init_value carry the (possibly nested) values —
+			// `member = (struct D){...}`, the same machinery as
+			// translate_struct_lit. Array members decline (their
+			// braces are element lists, not a struct value).
+			if (TokenStructLit *sub =
+				dynamic_cast<TokenStructLit *>(arg)) {
+				const DataDefSTRUCT *ms = as_plain_struct(mt);
+				if (!ms || cdd->m_is_array_decl(mn))
+					return decline();
+				node_t spec = list();
+				append_lit_type_spec(spec, mt, sub->typedef_name);
+				node_t type_node = node2(N_TYPE, spec,
+					node2(N_DECL, ignore(), list()));
+				node_t linits = list();
+				for (size_t k = 0; k < sub->inits.size(); k++)
+					append(linits, node2(N_INIT, list(),
+						init_value(sub->inits[k])));
+				node_t cl = node2(N_COMPOUND_LITERAL, type_node,
+						  linits, sub);
+				node_t asgn = node2(N_ASSIGN, member_lvalue(mn),
+						    cl, origin);
+				flush_pending_stmts(stmts);
+				stmts.push_back(node2(N_EXPR, list(), asgn,
+						      origin));
 				continue;
 			}
 			node_t init = translate_expr(arg);

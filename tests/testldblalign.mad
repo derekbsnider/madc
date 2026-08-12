@@ -1,0 +1,20 @@
+// x86-64 SysV: long double is 16 bytes and 16-ALIGNED — including as a
+// struct member. DataDef::alignment() caps simple types at 8, and
+// DataDefLDOUBLE carried no override, so madc's parse-time layout placed
+// long double members on 8-byte boundaries: sizeof(struct W) folded 24
+// while c2mir laid the same struct out as 32 (gcc/clang: 32) — a
+// parse-fold vs runtime split. Unmasked by gcc-torture 20040709-1/2/3
+// (task #41). Oracle: gcc -O0 / clang -O0 print the same values.
+
+struct W { long double l; unsigned int k : 12, j : 13, i : 7; };
+struct W arr[2];
+
+int main()
+{
+	char *p0 = (char *)&arr[0];
+	char *p1 = (char *)&arr[1];
+	printf("%d %d %d\n", (int)sizeof(struct W), (int)_Alignof(struct W),
+	       (int)(p1 - p0));
+	printf("%d %d\n", (int)sizeof(long double), (int)_Alignof(long double));
+	return 0;
+}

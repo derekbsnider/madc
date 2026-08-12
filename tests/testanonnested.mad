@@ -1,0 +1,30 @@
+// A nested NAMED struct definition promotes its enclosing aggregate to
+// DataDefCLASS (a nested type makes the aggregate a scope). When the
+// enclosing aggregate is ANONYMOUS (`struct { ... } s;`), the CIR
+// var-decl lane gated its inline-body emission on is_struct() — false
+// for the promoted class (btClass) — so c2mir received `struct __anon_N
+// s;` referencing a tag nothing ever defines: "struct has no member" +
+// "incomplete struct or union". From gcc-torture 20000717-4 (task #41).
+// Oracle: gcc -O0 / clang -O0 print the same.
+
+struct
+{
+	int offset;
+	struct slot
+	{
+		int field[6];
+	}
+	slot[4];
+} s;
+
+struct { int o; struct nest2 { int f; } m; } t;
+
+int main()
+{
+	int toggle = 0;
+	s.slot[0].field[!toggle] = 42;
+	s.offset = 7;
+	t.m.f = s.slot[0].field[1] + s.offset;
+	printf("%d %d %d\n", s.slot[0].field[1], s.offset, t.m.f);
+	return 0;
+}

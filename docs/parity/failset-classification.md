@@ -1,5 +1,22 @@
 # gcc.c-torture failset classification — the standard-C vs gcc-only dividing line
 
+**UPDATE 2026-08-12 (task #41 window CLOSED — baseline restored):** full
+sweep **1614/1/9/0/61** — byte-identical to the 2026-07-23 baseline
+(@9a48a7fc); the failset is again exactly the classified 10-name
+class-(b) set. All 5 window fails were **class-(a) standard C** and are
+FIXED on `feature/torture-window-t41-claude` (533aeae5 long-double
+struct alignment 16; ac1c583f `__builtin_classify_type` as a real
+parser builtin; 2bb2dda1 anonymous-aggregate inline emission after
+nested-type class promotion; 71d83a21 nested-brace aggregate recursion
+in designated inits) — each with a gcc+clang-oracled reducer in
+`tests/` (testldblalign, testclassifytype, testanonnested,
+testnesteddesig). The 2026-08-11 paragraph's unprototyped-call
+hypothesis is DISPROVEN: the window's own 2026-07-27 type-correctness
+work (114b13a8 long double = real 16-byte type; 6fec105d nested types
+promote the enclosing struct) unmasked three latent defects, and
+8f8f4009's loud-shape gate exposed the fourth. **The promote gate
+(zero class-(a) outstanding) is MET again at this branch.**
+
 **UPDATE 2026-08-11 (MIR-subtree migration validation sweep):** full
 sweep **1609/2/13/0/61** — the classified 10-name class-(b) failset is
 intact, plus **5 NEW fails**: `20000717-4` (exit 1), `20040709-1/-2/-3`
