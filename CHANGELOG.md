@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- **The 5-fail torture window is closed (task #41): four root defects
+  fixed, all standard-C class-(a).** The 2026-07-27 correctness work
+  ("long double is its own type again" @114b13a8; "a nested type is a
+  member of its enclosing scope" @6fec105d) had unmasked three latent
+  defects, and the 2026-08-06 loud-error gate (@8f8f4009) turned a
+  fourth from silent mis-init into a compile error:
+  - `long double` struct members now align 16 (SysV x86-64):
+    `DataDefLDOUBLE` carried the "16-byte aligned" comment but no
+    `alignment()` override, so the base cap of 8 applied — madc's
+    parse-time `sizeof` folded 24 for a struct c2mir laid out as 32
+    (gcc/clang: 32). `tests/testldblalign.mad`.
+  - `__builtin_classify_type` is a real parser builtin now, folding the
+    GCC typeclass constant from the unevaluated operand's type — it was
+    a lexer macro expanding to 0, so every classify-gated branch lied
+    (gcc-torture 20040709-1/2/3 aborted on NaN long doubles the class-8
+    branch never initialized). `tests/testclassifytype.mad`.
+  - An ANONYMOUS aggregate stays anonymous after nested-type class
+    promotion: the CIR var-decl lane's inline-body gate asked
+    `is_struct()` (false for the promoted class), emitting
+    `struct __anon_N` against a tag nothing defines (gcc-torture
+    20000717-4). `tests/testanonnested.mad`.
+  - A nested brace list in a designated initializer aggregate-
+    initializes a class-promoted member RECURSIVELY ([dcl.init.aggr]p12)
+    instead of posing as a ctor argument, and a plain-struct member's
+    inner braces get a compound literal typed from the MEMBER (the
+    parser leaves them contextually untyped) — gcc-torture pr39339's
+    "unsupported aggregate initializer shape". `tests/testnesteddesig.mad`.
+
 ## [v0.77.0] — 2026-08-11
 
 One repository: MIR moves in-tree as a full-history Git subtree at
