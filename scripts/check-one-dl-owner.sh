@@ -8,14 +8,12 @@
 # else is a site the Win32 backend cannot reach — the exact scattered-#ifdef
 # failure mode the seam exists to prevent.
 #
-# Marker note: matches CALL-shaped uses (`dlopen(`, `dlsym(`, ...) and any
-# RTLD_ flag token, with `//`- and `/*`-comment tails stripped first so prose
-# mentions of the POSIX names don't count. `madc_dlopen` (the script-facing
-# builtin thunks in parser.cpp — no word boundary before `dl`) and
-# `madcdl_*` (the seam itself) do not match.
-#
-# NOT yet covered (extends when the dladdr slice of W1 lands): dladdr /
-# Dl_info and the <dlfcn.h> includes still needed for them.
+# Marker note: matches CALL-shaped uses (`dlopen(`, `dlsym(`, `dladdr(`,
+# ...), any RTLD_ flag token, the Dl_info type, and the <dlfcn.h> include
+# itself, with `//`- and `/*`-comment tails stripped first so prose mentions
+# of the POSIX names don't count. `madc_dlopen` (the script-facing builtin
+# thunks in parser.cpp — no word boundary before `dl`), `madcdl_*` and
+# `MadcDlInfo` (the seam itself) do not match.
 #
 # EXCLUDED, deliberately:
 #   src/madc_dl.cpp                  — the seam's own POSIX backend
@@ -25,18 +23,18 @@
 set -u
 cd "$(dirname "$0")/.."
 
-hits=$(grep -rnE --include='*.cpp' --include='*.h' \
-    '\bdl(open|sym|close|error)[[:space:]]*\(|\bRTLD_[A-Z]+' \
+pat='\bdl(open|sym|close|error|addr)[[:space:]]*\(|\bRTLD_[A-Z]+|\bDl_info\b|#[[:space:]]*include[[:space:]]*<dlfcn\.h>'
+hits=$(grep -rnE --include='*.cpp' --include='*.h' "$pat" \
     src/ include/ tests/unit/ \
   | sed -E 's_(//|/\*).*__' \
-  | grep -E '\bdl(open|sym|close|error)[[:space:]]*\(|\bRTLD_[A-Z]+' \
+  | grep -E "$pat" \
   | grep -v '^src/madc_dl\.cpp:' \
   | grep -v '^tests/unit/test_native_shared\.cpp:' )
 n=$(printf '%s' "$hits" | grep -c . )
 
 if [ "$n" -ne 0 ]; then
 	echo "one-dl-owner gate: $n raw dl-family call(s) outside the madc_dl seam."
-	echo "Use madcdl_open_global/open_local/open_self/probe_loaded/sym/sym_default/close/error"
+	echo "Use madcdl_open_global/open_local/open_self/probe_loaded/sym/sym_default/close/error/addr"
 	echo "(include/madc_dl.h) instead — the Win32 backend lands behind that seam only."
 	printf '%s\n' "$hits" | sed 's/^/  /'
 	exit 1

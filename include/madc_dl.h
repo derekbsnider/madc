@@ -38,4 +38,20 @@ void madcdl_close(void *handle);
 // a consuming read; NULL when no error is pending).
 const char *madcdl_error(void);
 
+// Resolved image/symbol info for a code/data address (POSIX dladdr). The
+// Win32 backend fills fname/fbase from the owning module (VirtualQuery +
+// GetModuleFileName); sname/saddr may be NULL there — consumers already
+// guard for absent symbol names.
+struct MadcDlInfo {
+	const char *fname;	// defining image path
+	void       *fbase;	// image base address
+	const char *sname;	// nearest symbol name (may be NULL)
+	void       *saddr;	// nearest symbol address (may be NULL)
+};
+
+// False when no loaded image owns `addr`; fields are valid only on true.
+// Async-signal-safe to the same degree as the platform call (the madc
+// crash handler symbolizes through this).
+bool madcdl_addr(const void *addr, MadcDlInfo &info);
+
 #endif

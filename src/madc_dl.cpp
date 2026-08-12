@@ -45,3 +45,15 @@ const char *madcdl_error(void)
 {
 	return dlerror();
 }
+
+bool madcdl_addr(const void *addr, MadcDlInfo &info)
+{
+	Dl_info di;
+	if (!dladdr(addr, &di))
+		return false;
+	info.fname = di.dli_fname;
+	info.fbase = di.dli_fbase;
+	info.sname = di.dli_sname;
+	info.saddr = di.dli_saddr;
+	return true;
+}

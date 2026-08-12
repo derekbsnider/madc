@@ -114,10 +114,19 @@ Inventory from recon (session #83 greps):
   third-party C host consuming a madc-emitted .so via RTLD_DEEPBIND).
   POSIX passthrough, fulltest 1023/0. Gate:
   `scripts/check-one-dl-owner.sh` in fulltest (negative-controlled).
-  NEXT slice: dladdr → `madcdl_addr` + a seam info struct (sites:
-  madc.cpp backtrace, madc_globals self-path, madc_cir cover analysis,
-  cir_builder host-object anchor, parser symbol recovery ×3); then the
-  gate tightens to cover dladdr/Dl_info/`<dlfcn.h>`.
+  **Slice 2 DONE (same session): dladdr rides the seam.**
+  `madcdl_addr(addr, MadcDlInfo&)` — `MadcDlInfo{fname,fbase,sname,saddr}`
+  with the Win32 contract stated (module path/base from the loader;
+  sname/saddr may be NULL there — all consumers already guard). All 8
+  sites migrated (madc.cpp crash-handler backtrace, madc_globals
+  self-path, madc_cir cover analysis ×2, cir_builder host-object anchor,
+  parser external-symbol recovery ×3); `<dlfcn.h>` is now included ONLY
+  by src/madc_dl.cpp. Gate tightened to dladdr/Dl_info/`<dlfcn.h>` and
+  negative-controlled again — it caught a third-indent parser.cpp site a
+  replace-all had missed. fulltest 1023/0. NEXT in W1: the fork/exec
+  surface (madc_process, exec:// channels → CreateProcess) or mmap
+  (cir_freeze) — then the Win32 backend of madc_dl itself alongside the
+  W1 host-port build wiring.
 - **fork/exec** (`madc_process.cpp`, exec:// channels): CreateProcessW
   + pipe pair; the channel pump contracts (one pump loop owner) stay.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to

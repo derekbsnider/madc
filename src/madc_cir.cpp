@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <setjmp.h>
-#include <dlfcn.h>
 #include <limits.h>	// PATH_MAX (cross-build cover analysis: realpath buffer)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
@@ -1619,11 +1618,11 @@ static bool cir_symbol_from_madc_image(const char *name)
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
-    Dl_info info;
-    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+    MadcDlInfo info;
+    if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
     char real[PATH_MAX];
-    std::string img = realpath(info.dli_fname, real) ? real : info.dli_fname;
+    std::string img = realpath(info.fname, real) ? real : info.fname;
     return img == madc_self_lib_path() || img == madc_self_exe_path();
 }
 #endif
@@ -1670,11 +1669,11 @@ static bool cir_import_covered(const char *name,
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
-    Dl_info info;
-    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+    MadcDlInfo info;
+    if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
-    const char *bn = strrchr(info.dli_fname, '/');
-    bn = bn ? bn + 1 : info.dli_fname;
+    const char *bn = strrchr(info.fname, '/');
+    bn = bn ? bn + 1 : info.fname;
     for (const std::string &c : covers) {
 	size_t slash = c.rfind('/');
 	const char *cb = slash == std::string::npos ? c.c_str()

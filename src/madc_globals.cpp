@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <string>
-#include <dlfcn.h>
+#include "madc_dl.h"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <limits.h>
@@ -44,13 +44,13 @@ std::string madc_self_exe_path()
 // executable in the monolithic one (a static libmadc IS the exe's text).
 std::string madc_self_lib_path()
 {
-	Dl_info info;
-	if (!dladdr((void *)&madc_self_lib_path, &info)
-	    || !info.dli_fname || !info.dli_fname[0])
+	MadcDlInfo info;
+	if (!madcdl_addr((void *)&madc_self_lib_path, info)
+	    || !info.fname || !info.fname[0])
 		return std::string();
 	char real[PATH_MAX];
-	if (realpath(info.dli_fname, real))
+	if (realpath(info.fname, real))
 		return std::string(real);
-	return std::string(info.dli_fname);
+	return std::string(info.fname);
 }
 

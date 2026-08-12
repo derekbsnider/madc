@@ -22,7 +22,6 @@
 #include <functional>
 #include <stdint.h>
 #include <setjmp.h>
-#include <dlfcn.h>
 #include <cstdlib>
 #include <typeinfo>
 #include <cxxabi.h>
@@ -385,11 +384,11 @@ static bool symbol_is_host_implemented(const std::string &sym)
 	void *addr = sym.empty() ? NULL : madcdl_sym_default(sym.c_str());
 	if (!addr)
 		return false;
-	Dl_info di, anchor;
-	if (!dladdr(addr, &di)
-	    || !dladdr((void *)&external_symbol_available, &anchor))
+	MadcDlInfo di, anchor;
+	if (!madcdl_addr(addr, di)
+	    || !madcdl_addr((void *)&external_symbol_available, anchor))
 		return false;
-	return di.dli_fbase == anchor.dli_fbase;
+	return di.fbase == anchor.fbase;
 }
 
 // The mangled-direct link test, ONE owner for every bind site (std free fn,

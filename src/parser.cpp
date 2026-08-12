@@ -17,7 +17,6 @@
 #include <sys/time.h>
 #include <syslog.h>
 #include <time.h>
-#include <dlfcn.h>
 #include <unistd.h>
 #include <iostream>
 #include <iomanip>
@@ -24153,9 +24152,9 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    method->x86code = (void *)extfunc;
 	    if ( extfunc )
 	    {
-		Dl_info _dli;
-		if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+		MadcDlInfo _dli;
+		if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
+		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
 		else
 		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
 	    }
@@ -24203,9 +24202,9 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	method->x86code = (void *)extfunc;
 	if ( extfunc )
 	{
-	    Dl_info _dli;
-	    if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	    MadcDlInfo _dli;
+	    if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
+		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
 	    else
 		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
 	}
@@ -24227,9 +24226,9 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     method->x86code = (void *)extfunc;
     if ( extfunc )
     {
-	Dl_info _dli;
-	if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	MadcDlInfo _dli;
+	if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
 	else
 	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
     }

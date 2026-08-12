@@ -7,7 +7,6 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <execinfo.h>
-#include <dlfcn.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <new>
@@ -112,12 +111,12 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	    crash_write_formatted(line, n, sizeof(line));
 	    continue;
 	}
-	Dl_info di;
-	if ( dladdr(frames[i], &di) && di.dli_sname )
+	MadcDlInfo di;
+	if ( madcdl_addr(frames[i], di) && di.sname )
 	{
 	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
-			     di.dli_sname,
-			     (unsigned long)((char *)frames[i] - (char *)di.dli_saddr));
+			     di.sname,
+			     (unsigned long)((char *)frames[i] - (char *)di.saddr));
 	    crash_write_formatted(line, n, sizeof(line));
 	}
 	else
