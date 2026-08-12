@@ -1,0 +1,189 @@
+# Windows release lane — full-suite win64 (Track 6.4)
+
+**Status: PLAN (drafted 2026-08-12, session #83). Owner directives:
+mingw-w64 + libstdc++; UCRT (decided 2026-08-12); FULL suite support —
+JIT, AOT `-o`, `--obj`, emitted C, packed groves — "no cutting
+corners". Sequenced by the owner: this lane ships BEFORE the
+GitHub-Actions release automation (which will then cover all three
+OSes).**
+
+The macOS lane (docs/plans/ macos-release-lane, shipped v0.76.0) is the
+template: same artifact discipline (self-contained binary, packed
+forest, provenance-audited prelude, verify gate on the exact shipped
+bytes, in-vivo battery), different substrate. Windows is CLOSER to the
+Linux lane than darwin was in one big way — same stdlib flavor
+(libstdc++, GPL+runtime-exception, already our default lane) — and
+farther in another: the host OS API surface (no fork, no dlopen, no
+POSIX mmap semantics, winsock) and a third executable format (PE/COFF).
+
+## Settled decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Toolchain | **mingw-w64 cross from the build container** (`x86_64-w64-mingw32-g++`, the `-posix` thread flavor) | gcc canon end-to-end; winpthreads gives the pthread/std::thread surface for free; cross keeps QNAP/container discipline unchanged |
+| C++ stdlib | **libstdc++** | owner directive; same flavor as the Linux lane — the groves/forest machinery reuses the default-lane path, not a new flavor family like darwin's libc++ |
+| CRT | **UCRT** (owner, 2026-08-12) | C99/C11-conformant, ABI-stable, the supported modern CRT; an OS component on Windows 10+ (our floor); MSYS2's default since 2022. msvcrt is the VC6-era compat layer — wrong side of "no cutting corners" |
+| long double | **x87 80-bit (mingw-gcc model), NOT MSVC's double** | gcc parity is canon; mingw-gcc keeps 80-bit long double on win64. Neither msvcrt nor UCRT can printf it — mingw's own ANSI stdio (`__USE_MINGW_ANSI_STDIO`) formats it; the embedded prelude must route the printf family accordingly. (Session #83 just fixed 16-byte long double alignment — the Windows target keeps it.) |
+| Arch | **x86-64 only** (owner, 2026-08-12: "we only need to support Win64 — MIR is 64-bit only at the moment") | matches MIR's win64 gen support; 32-bit and AArch64-windows have no MIR floor |
+| Linking | **static libstdc++/libgcc/winpthreads in shipped binaries** | self-contained ethos of the release lanes; no DLL-hell, no redistributable step. UCRT itself stays a dynamic OS import (that is the supported model) |
+| Validation host | **The REAL Windows 11 box** — the build container runs inside WSL2 on it (topology confirmed 2026-08-12: container = a container inside the WSL distro; interop does NOT reach the container namespace, so execution goes over a channel to the host). Recommended channel: Windows' built-in OpenSSH server — the battery becomes an exact clone of the proven mac_battery ssh pattern | native-Windows evidence for EVERY batch, not just session end; no emulation layer in the loop. `wine64` stays available as an optional isolation fallback, nothing more |
+
+## Workstreams
+
+### W0 — Toolchain + provisioning
+- Add mingw-w64 cross packages (`g++-mingw-w64-x86-64-posix`,
+  `binutils-mingw-w64-x86-64`) and `wine64` to
+  `scripts/provision_container.sh` (container is disposable — the apt
+  layer dies with rebuilds).
+- **W0.1 UCRT flavor check:** Debian/Ubuntu's mingw-w64 packages
+  historically DEFAULT to msvcrt. Determine the cleanest UCRT-defaulted
+  toolchain on the container: (a) the distro package's ucrt CRT variant
+  if shipped (`-mcrtdll=ucrtbase` / ucrt spec files), (b) llvm-mingw or
+  an MSYS2-built sysroot dropped under /opt, or (c) build the mingw-w64
+  CRT ourselves configured `--with-default-msvcrt=ucrt`. Gate: `printf`
+  of `long double` and `%lld` correct in a cross-built hello under
+  wine, and `objdump -p` shows `ucrtbase.dll` (not `msvcrt.dll`) in the
+  import table.
+- **W0.2 Windows-execution channel:** the container cannot reach WSL
+  interop (probed 2026-08-12: no /init, no WSLInterop binfmt, no
+  /mnt/c inside the container namespace). Options, owner-side setup:
+  (a) **enable OpenSSH Server on the Windows 11 host** (Settings →
+  Optional features; the container then drives `ssh <user>@<host>` to
+  stage + run, mac_battery-style) — RECOMMENDED; (b) re-plumb the
+  container with interop (/init bind + binfmt + /mnt/c) — more moving
+  parts, couples the container to WSL internals; (c) a shared-volume
+  + watcher runner on the WSL distro — a bespoke moving part, last
+  resort.
+- Probe: cross-build a trivial C and C++ hello; run them over the
+  W0.2 channel on real Windows; capture the import tables
+  (`objdump -p`). This is the lane's hello-world gate.
+
+### W1 — madc host port (the POSIX surface)
+Inventory from recon (session #83 greps):
+- **dlopen/dlsym — the big one.** ~10 files, including the
+  mangled-direct architecture's `dlsym(RTLD_DEFAULT, ...)` resolution
+  of libstdc++/libc symbols at MIR link time. Windows has no
+  RTLD_DEFAULT: the equivalent is GetProcAddress over an explicit
+  module set (EnumProcessModules, or the known set: the exe itself +
+  ucrtbase + libstdc++/winpthreads statics resolve INTO the exe).
+  Design a small `madc_dl` seam (one owner: `madc_dlopen/madc_dlsym/
+  madc_dlsym_default`) implemented POSIX and Win32; NO scattered
+  `#ifdef _WIN32` at call sites. With static libstdc++ most
+  "RTLD_DEFAULT" hits resolve inside our own image —
+  `GetProcAddress(GetModuleHandle(NULL), ...)` needs the exe built
+  `-Wl,--export-all-symbols` (or a curated .def) so its symbols are
+  visible. That linker decision is part of this workstream.
+- **fork/exec** (`madc_process.cpp`, exec:// channels): CreateProcessW
+  + pipe pair; the channel pump contracts (one pump loop owner) stay.
+- **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
+  buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
+  the same seam.
+- **pthreads**: covered by the `-posix` toolchain flavor (winpthreads);
+  DBG's thread_local discipline unchanged.
+- **sockets** (tcp:// channels, madcdis): winsock2 — WSAStartup once,
+  closesocket vs close, SOCKET vs int fd. The channel layer's
+  close-on-exec atomicity note becomes HANDLE inheritance flags.
+- **`madc_posix_io.cpp`**: the deliberate POSIX-IO surface — audit
+  what of it is script-facing API (must work via Win32 equivalents)
+  vs host plumbing.
+- Rule discipline: every port goes through a named seam owner
+  (helper-methods.md, no-parallel-implementations.md) — one
+  implementation per concern, two platform backends.
+
+### W2 — MIR/c2mir win64 floor (in-tree, `third_party/mir`)
+- Upstream MIR already has: VirtualAlloc executable pages
+  (mir-code-alloc-default.c), the Win64 calling convention throughout
+  mir-gen-x86_64.c, `_WIN32` handling in c2mir. The JIT floor EXISTS.
+- Verify OUR fork additions under win64: native `_Complex`,
+  `__attribute__((cleanup))`, scope-depth auto-local layout, ≤16-byte
+  SIMD, the SysV-varargs fixes (win64 varargs are a DIFFERENT
+  convention — shadow space, register homing; audit what of our
+  varargs work was SysV-specific).
+- c2mir type model under our windows target: long double = 80-bit
+  (mingw model) — confirm/config c2mir's win64 target sizes match
+  mingw-gcc (`sizeof(long double)==16`, alignment 16), NOT MSVC.
+- **RISK (probe EARLY, W2.1):** mingw x64 `setjmp/longjmp` performs
+  SEH frame-consistency unwinding (RtlUnwindEx) that is known to fault
+  across JIT-allocated frames. Our exception lowering rides
+  setjmp/longjmp. Probe a try/catch/throw JIT case under wine in week
+  one; the known mitigations are __builtin_setjmp-style pairs or
+  masking the frame chain. Budget fork work if it bites.
+
+### W3 — PE/COFF writers (the genuinely new compiler work)
+- **mir-pe.c**: PE64 executable writer behind the SAME `MIR_object`
+  seam as the ELF writer and mir-macho.c (the AOT plan reserved this
+  slot — "Mach-O/PE assemblers later behind the same MIR_object
+  seam"). Import model: IAT + import descriptors for ucrtbase.dll,
+  kernel32.dll, ws2_32.dll (and nothing else if statics hold);
+  relocations; entry glue (mainCRTStartup contract when linking our
+  own image vs carrying mingw's crt objects — DECIDE: carrying
+  crt2.o/crtbegin from the mingw sysroot, like darwin rides the
+  platform contract, is the likely faithful path).
+- **COFF `.o` writer** for the `--obj` lane (+ the `.o`-as-cache
+  loader parity).
+- `-static-libmadc -o` parity: `madc -o prog.exe` produces a runnable,
+  self-contained PE from a .mad/.c/.cpp source, C AND C++, like darwin.
+- Emitted-C lane: `x86_64-w64-mingw32-gcc emitted.c -lmadc_rt` works —
+  ship `libmadc_rt.a` cross-built (W3.5, mirrors darwin W3).
+
+### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
+- Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
+  routing for the long-double printf family). Provenance audit before
+  ANY public artifact: mingw-w64 headers are predominantly
+  public-domain/permissive (ZPL-ish), winpthreads BSD — document
+  per-file like docs/licenses/NOTICE-darwin-prelude.txt; carry the
+  notices in the artifact.
+- C++ groves: libstdc++ headers from the mingw sysroot, packed into
+  the forest as the windows/libstdc++ flavor — the FLAVOR key work
+  (target-OS × stdlib) already exists from the darwin arc; this reuses
+  the libstdc++ half, not the libc++ lane. GPL+runtime-exception
+  notices carried as on Linux.
+- Freeze-context discipline: the windows forest is built BY the cross
+  pipeline and read by madc.exe — same freeze-context hash rules; the
+  verify gate must run the EXACT shipped bytes (packaging re-verifies
+  its inputs — the 2026-08-11 lesson is codified in
+  package_release_macos.sh; the windows packer inherits it).
+
+### W5 — Lanes, battery, artifacts
+- Suite lanes on real Windows: `run_tests.sh` gains a generic runner
+  prefix (fixture-convention rule: a `MADC_RUNNER=...` env wrapping
+  the madc invocation — the W0.2 ssh channel or wine64 — never
+  per-test branches); expect a windows skip-fixture family
+  (`.win_skip`) for genuinely-host-bound tests, each one line of why.
+- `scripts/win_battery.sh` for the in-vivo pass on the Windows 11
+  host over the W0.2 channel (mac_battery.sh is the template — same
+  stage-dir + per-leg rc discipline).
+- Artifacts: `madc-<ver>-windows-x86_64.zip` (zip, not tar.gz — native
+  extraction) with bin/madc.exe, lib/libmadc_rt.a, README-windows.txt
+  (SmartScreen/unsigned-binary note — the quarantine analog), license
+  notices; SHA256SUMS refresh discipline shared with the other
+  packagers; `verify_pe_release.sh` gate (imports table = the decided
+  set, forest carrier intact, no msvcrt.dll).
+- Release: the lane ships as a develop release with all four Linux
+  lanes green PLUS the wine suite lane; promote/GH-release artifact
+  set grows to 5 (deb, rpm, mac×2, windows zip). CI automation comes
+  AFTER this lane works (owner sequencing).
+
+## Sequencing
+
+W0 → W1 and W2 in parallel (W2.1 setjmp probe FIRST-week) → W3 →
+W4 → W5. The lane's midpoint milestone is "cross-built madc.exe JITs
+the suite on the real Windows host over the W0.2 channel"; the
+endpoint is "zip artifact passes verify + the packed suite on
+Windows + win_battery".
+
+## Open questions (owner)
+
+1. ~~In-vivo host~~ **RESOLVED 2026-08-12**: the Windows 11 box IS the
+   machine hosting the build container's WSL environment. Remaining
+   owner action: pick the W0.2 channel (recommended: enable the
+   built-in OpenSSH Server on the host).
+2. Code signing: ship unsigned (SmartScreen warning documented in the
+   README, like the Mac quarantine note) — assumed YES for v1 of the
+   lane.
+
+## Non-goals (this lane)
+
+- 32-bit Windows, AArch64-windows, MSVC-ABI interop (madc.exe is a
+  mingw-world binary; C++ interop with MSVC-built objects is
+  explicitly out), MSI/installer packaging, CI automation (next arc).
