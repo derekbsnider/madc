@@ -260,6 +260,57 @@ Inventory from recon (session #83 greps):
   precedent) in the resolver — parse-time probe and JIT import
   resolution must share it — then the battery legs under wine +
   win_run.sh.
+  **Slice 15 DONE (session #85, 1b38c948): defect #1 FIXED — the ONE
+  mingw ANSI-stdio interposer map.** The W2 driver map promoted to
+  fork-owned `third_party/mir/mir-mingw-stdio.h` (referencing __mingw_*
+  makes the host's own static link bind the addresses — no export table
+  involved); BOTH default-scope resolvers consult it first: c2m's
+  import_resolver and madcdl_sym_default's Win arm (which the parser's
+  existence probe AND madc_import_resolver already share — the slice-1
+  seam consolidation is what made this a one-site fix). Gate:
+  scripts/check-one-mingw-stdio-map.sh in fulltest (__mingw_ outside
+  the owner header = RED; negative-controlled). Validated under wine:
+  hello14 prints; stdio15 reducer %s / sscanf %lf %d / printf %.1Lf all
+  exact vs the mingw-gcc oracle. New fork-file convention (owner
+  2026-08-12): files ADDED to the fork carry MadC-project attribution
+  (Copyright 2019-2026 Derek Snider, same license as MIR) — applied to
+  mir-mingw-stdio.h, mir-macho.c, mir-int128-helper.h (cb2325a5);
+  mir-debug*.c/h are Cyan Ogilvie-added, attribution left to the owner.
+  **Run-burndown defect #2 DIAGNOSED TO ROOT (the LLP64 arc — task
+  #45, NEXT):** `printf("%lld", 1234567890123LL)` prints the low-32
+  truncation; madc.exe reports sizeof(long)=8 where the mingw-gcc
+  oracle says 4. Root: madc conflates "madc's 64-bit int" with the C
+  spelling `long` — true on LP64, false on LLP64 (the fork's c2mir
+  correctly models win64 `long` as 32-bit, cx86_64.h). THREE layers,
+  fix in this order:
+  (a) CIR spellings — cir_builder.cpp is the only speller (80 N_LONG
+  sites; cir_emit_c.cpp just renders). Every site EXCEPT the long
+  double pair {N_LONG, N_DOUBLE} means i64. Respell as `long long`
+  ({N_LONG, N_LONG}) — 64-bit in BOTH models, so a no-op on LP64 and
+  correct on LLP64: native_scalar_specs dtINT64/dtUINT64/default
+  arms + the ~40 literal `{ {N_LONG}, ... }` extern shapes (vector
+  consumers materialize verbatim, need_output_extern:7921/7951) + ~25
+  direct simple(N_LONG) sites via a small append helper. Emit-C
+  renders spec sequences token-by-token, so "long long" falls out.
+  (b) HOST thunk signatures — extern-C runtime fns spelling `long`
+  (madarray_size returns long; madarray_assign_int(void*, long);
+  __madc_sys_init(long, ...); audit madc_mir_backend.cpp + ns_*.cpp +
+  parser.cpp registrations) are 4-byte on the win64 HOST — the CIR
+  extern and the C++ definition must agree, so sweep them to
+  int64_t/uint64_t. Win64 callconv hides the mismatch (register args,
+  callee reads 32 bits) — a SILENT truncation class.
+  (c) The DIALECT question — what is script-`long` on win64? gcc
+  parity (mingw-gcc = LLP64) says 4 bytes for strict C/C++ dialects;
+  madc's DataDef model is LP64-hardcoded (front-end sizeof folds 8).
+  Front-end target-parameterized type widths are a design decision —
+  OWNER DISCUSSION before implementing; (a)+(b) are unambiguous and
+  fix the truncation family regardless.
+  Reducers: container tmp/win/lld16.mad (A literal / B variable /
+  C sizeof triple) + stdio15.mad vs mingw-gcc oracles — wine: madc
+  prints "A 1912276171 / C 8 8 8", oracle "A 1234567890123 / C 4 8 8";
+  Linux is unaffected (both models 64-bit). ALSO fixes: malloc extern
+  currently declared with a 4-byte size param on win64
+  ({N_UNSIGNED, N_LONG} — cir_builder:8050).
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
