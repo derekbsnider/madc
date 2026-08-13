@@ -591,6 +591,87 @@ Inventory from recon (session #83 greps):
   testinlinensopen, testlang, testmemchr2darraysingle,
   testnsmadcautostring, teststrcmpret, testsysobject, testtemplate,
   testtranssecondary).
+  **BURNDOWN ROUND 2 (session #87, 2026-08-13): 951/32 -> 957/24 -> the
+  final singles+width worklist. Five roots, all fixed at their deepest
+  layer:**
+  (1) **dlfcn/system thunk binding (2634e91b, ALL PLATFORMS):** script
+  dlopen/dlsym/dlclose/system emitted their SCRIPT names as MIR imports —
+  Linux bound glibc's 2-arg dlopen through madc's 1-arg signature (mode =
+  uninitialized register, worked by accident); win64 went loud undefined.
+  The registered thunk addresses were dead on the CIR path
+  (external_symbol_map was read only by a name-keyed "system" branch —
+  deleted, along with the now write-only map). Fix: FunctionRegistrationSpec
+  carries the thunk's extern-C symbol; addFunction stamps
+  FuncDef::emit_symbol (the existing extern-binding owner, madarray
+  precedent). Native exe gains libmadc.so.0 NEEDED and stays green.
+  (2) **fork map class-3 growth (2ca1048c):** ucrt "oldnames" aliases
+  (strdup/wcsdup — ucrtbase exports only _strdup; the plain name is an
+  import-lib alias invisible to GetProcAddress) + the complete <dirent.h>
+  family narrow+wide (libmingwex-only). Skip fixtures: teststrextra (no
+  strndup at any spelling — mingw-gcc rejects too), testdlcall (dlopens
+  libc.so.6, an ELF name; the dl script surface itself is now healthy).
+  (3) **win64 __int128 ABI (26056df4 + 7ea4eb7b, fork):** classify_arg_1's
+  int128 branch was SysV-only but unguarded — wrote types[1] past
+  MAX_QWORDS=1 (the W2 complex overflow class) and returned 2 qwords.
+  mingw-gcc oracle (tmp/win/i128abi.c): args = memory class (caller-temp
+  address in the GPR slot), return = XMM0. classify now returns 0 on win64
+  (the existing memory-shape plumbing already names __int128);
+  process_ret_type carves the return as ONE MIR_T_V128 qword — the exact
+  shape mir-gen's V128 machinize returns in XMM0. The hand-built int128
+  HELPER protos spelled the SysV rax:rdx trick — win64 arm: divmod +
+  float->int128 protos take a result ADDRESS first (the __mir_*oti
+  convention); mir-int128-helper.h grows _WIN32 twins whose C signatures
+  ARE the proto shapes. ⚠ on win64 the libgcc import names now mean the
+  MIR proto contract — W3 AOT must export the twins, never bind mingw
+  libgcc's native-ABI family. ⚠ the "undefined MIR import" lines beside
+  the original error were diagnostic false-positives:
+  cir_dump_undefined_imports consults only the madc resolver, not MIR's
+  load-external registry (improvement noted, not chased).
+  (4) **va_list takes the TARGET's shape (ec1e6d0b):** the varargs-struct
+  trio root. Program::builtin_va_list_type() minted the SysV
+  struct __madc_va_list_tag[1] on every target; win64's real va_list is
+  scalar char* (mingw vadefs.h), and the mismatch made every madc-compiled
+  varargs function with a STRUCT named param read garbage through va_arg
+  (testvastruct -1622874466 vs oracle 330; all four va_arg reads returned
+  the same value — ap never advanced). Proven by swapping ONLY the typedef
+  in the emitted C (tmp/win/va_bisect_emit2.c healed). LLP64 now mints
+  DataDefPTR(ddCHAR); typeid pin 34 + freeze/thaw route through the same
+  function; embedded stdarg.h's va_copy follows the shape (plain
+  assignment on win). Healed testvastruct + testvarargsstructreal/complex
+  + teststdarg2 + testmemchr2darraysingle. Rider: testbuiltinvalisttypedef
+  asserts the SysV array shape rejects `ap = 0` — mingw-gcc accepts the
+  same source (char* null store), so it carries a .win64_skip (842deb1d).
+  (5) **the wine64 domain layer (69aa2b29):** MADC_SKIP_EXT now takes a
+  whitespace-separated domain LIST — a wine run of the win64 binary is two
+  domains at once. testbuiltincomplexparts/conjf PASS on real Windows
+  (win_run.sh, output marker "ok", 2026-08-13) and die only in wine's
+  stubbed ucrtbase complex entries -> .wine64_skip fixtures. **The
+  canonical wine lane invocation is now `WINEDEBUG=-all
+  MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine
+  MADC_SKIP_EXT="win64 wine64" bash scripts/run_tests.sh`.**
+  ⚠ FLAKE NOTE: full wine suite runs show 2-4 transient fails per run
+  with DIFFERENT names each time (observed across three runs:
+  fnptrdecl/isfinal/refstream/templateanglelt, then
+  ctortemplatetrait/friendkeyword, then
+  arraytypedef/derefpreincptr/placementnewvoidp) — every one passes
+  standalone with the same binary. Wine-environment wobble, not madc;
+  verify any "new" wine fail standalone before treating it as real. The
+  real-Windows battery will not have this property.
+  **ROUND 2 CLOSED (commits 2634e91b..69aa2b29, PUSHED; gates at final
+  content: fulltest rc=0, libcxxjit 1022/0, EXE 997/0, OBJ 997/0):
+  wine lane 951/32/52 -> 958/20/57 observed = 17 STABLE fails of 969
+  in-scope (98.2%) + 3 transients.** The stable 17 = the 46b width
+  cluster x7 (testbuiltinunsignedabs, testgccunsignedlongdivneg,
+  testifdefdefinedoperand, testlimitsvals, testpredefmacros,
+  testsscanfwide, testsystemcharbuf — blocked on the 46b
+  target-type-model slice: script long = 4 bytes, wchar_t = 2, *l
+  builtin widths) + 10 singles to diagnose (testexcept,
+  testfdsetfromsystime, testgccconversionprefix, testinlinensopen,
+  testlang, testnsmadcautostring, teststrcmpret, testsysobject,
+  testtemplate, testtranssecondary). NEXT: the 46b slice (the biggest
+  cluster and a settled owner decision), then the singles, then the
+  real-Windows battery via win_run.sh, W3 PE/COFF, W4 groves, W5
+  release lanes.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
