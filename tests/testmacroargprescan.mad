@@ -1,0 +1,34 @@
+// Macro arguments used by # or ## keep their raw spelling. An ordinary use
+// receives the prescanned spelling, and a self-reference stays blue-painted
+// while a nested function-like macro expands it (the MinGW DeleteFile pattern).
+
+extern int printf(const char *, ...);
+
+#define MADC_NAME_AW(name) name##A
+#define DeleteFile MADC_NAME_AW(DeleteFile)
+
+typedef struct FileDispositionInfo {
+	int DeleteFile;
+} FileDispositionInfo;
+
+#define VALUE 17
+#define RAW_TEXT(x) #x
+#define TEXT_INNER(x) #x
+#define TEXT(x) TEXT_INNER(x)
+
+#define TOKEN stem
+#define JOIN_INNER(left, right) left##right
+#define JOIN(left, right) JOIN_INNER(left, right)
+
+int TOKENsuffix = 23;
+int stemsuffix = 29;
+
+int main(void)
+{
+	FileDispositionInfo info;
+	info.DeleteFileA = 7;
+	printf("%d %s %s %d %d\n", info.DeleteFileA,
+	       RAW_TEXT(VALUE), TEXT(VALUE),
+	       JOIN_INNER(TOKEN, suffix), JOIN(TOKEN, suffix));
+	return 0;
+}

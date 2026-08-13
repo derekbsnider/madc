@@ -1557,6 +1557,7 @@ protected:
     size_t _gpos = 0;			// read cursor into _buf
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
+    std::set<std::string> _inherited_disabled_macros;
     int _lf, _cr, _column;
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
@@ -1590,10 +1591,21 @@ public:
     }
     bool macro_disabled(const std::string &name) const
     {
+	if ( _inherited_disabled_macros.count(name) )
+	    return true;
 	for ( const PushbackFrame &frame : _pushback_frames )
 	    if ( frame.disabled_macro == name )
 		return true;
 	return false;
+    }
+    void inherit_macro_disables(const Source &from, const std::string &current)
+    {
+	_inherited_disabled_macros = from._inherited_disabled_macros;
+	for ( const PushbackFrame &frame : from._pushback_frames )
+	    if ( !frame.disabled_macro.empty() )
+		_inherited_disabled_macros.insert(frame.disabled_macro);
+	if ( !current.empty() )
+	    _inherited_disabled_macros.insert(current);
     }
     // Active macro-expansion nesting depth (one frame per live expansion).
     // A runaway recursive macro grows this without bound; the lexer guards on

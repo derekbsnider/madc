@@ -924,6 +924,49 @@ static bool decl_head_macro_args_look_like_prototype(const std::vector<std::stri
     return false;
 }
 
+static bool macro_body_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// A parameter adjacent to # or ## consumes its raw argument spelling. The
+// caller passes [start,end) for one identifier occurrence in the macro body.
+static bool macro_param_use_is_raw(const std::string &body, size_t start, size_t end)
+{
+    size_t left = start;
+    while ( left > 0 && macro_body_space(body[left - 1]) )
+	--left;
+    if ( left > 0 && body[left - 1] == '#' )
+	return true;
+
+    size_t right = end;
+    while ( right < body.size() && macro_body_space(body[right]) )
+	++right;
+    return right + 1 < body.size()
+	&& body[right] == '#' && body[right + 1] == '#';
+}
+
+static bool macro_param_has_expanded_use(const std::string &body,
+					 const std::string &param)
+{
+    for ( size_t p = 0; p < body.size(); )
+    {
+	if ( body[p] != '_' && !isalpha((unsigned char)body[p]) )
+	{
+	    ++p;
+	    continue;
+	}
+	size_t start = p++;
+	while ( p < body.size()
+	     && (body[p] == '_' || isalnum((unsigned char)body[p])) )
+	    ++p;
+	if ( body.compare(start, p - start, param) == 0
+	  && !macro_param_use_is_raw(body, start, p) )
+	    return true;
+    }
+    return false;
+}
+
 static std::string read_macro_body(Source &source)
 {
     std::string body;
@@ -5221,13 +5264,27 @@ TokenBase *Program::_getToken()
 		    // named `type` (macro's first arg), substituting
 		    // `result→type` first and `type→T` next would rewrite
 		    // the user's variable and corrupt the expansion.
-		    // C standard: pre-expand macros in arguments before
-		    // substitution (except for # and ## operands, but we
-		    // expand uniformly for simplicity). This handles nested
-		    // macro calls like UMIN(x, UMIN(y, z)).
+		    // C standard: pre-expand an argument only where its parameter
+		    // has an ordinary use. # and ## consume the raw spelling; an
+		    // argument used only by those operators is never expanded.
+		    // Keep both forms because one parameter may have both kinds of
+		    // occurrence in the same body.
+		    std::vector<std::string> raw_args = args;
+		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
+		    size_t fixed_param_count = macro.params.size();
+		    if ( has_named_varargs && fixed_param_count > 0 )
+			--fixed_param_count;
 		    for ( size_t i = 0; i < args.size(); ++i )
 		    {
 			std::string &a = args[i];
+			std::string param;
+			if ( i < fixed_param_count )
+			    param = macro.params[i];
+			else if ( macro.variadic )
+			    param = has_named_varargs ? macro.variadic_param : "__VA_ARGS__";
+			if ( param.empty()
+			  || !macro_param_has_expanded_use(macro.body, param) )
+			    continue;
 			// Quick check: does the argument contain any known macro name?
 			// A naive alpha check triggers on hex literals (0x1F) and
 			// integer suffixes (LU/ULL), whose round-trip through the
@@ -5249,6 +5306,7 @@ TokenBase *Program::_getToken()
 			Source saved = std::move(source);
 			source = Source();
 			source.str(a);
+			source.inherit_macro_disables(saved, word);
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )
@@ -5297,34 +5355,43 @@ TokenBase *Program::_getToken()
 			a = expanded_arg;
 		    }
 		    std::map<std::string, const std::string *> param_map;
-		    std::string named_varargs;
+		    std::map<std::string, const std::string *> raw_param_map;
+		    std::string expanded_varargs;
+		    std::string raw_varargs;
 		    std::string empty_macro_arg;   // for params supplied no argument
-		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
-		    size_t fixed_param_count = macro.params.size();
-		    if ( has_named_varargs && fixed_param_count > 0 )
-			--fixed_param_count;
-		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
+		    for ( size_t i = 0; i < fixed_param_count; ++i )
 		    {
-			if ( has_named_varargs && i == macro.params.size() - 1 )
+			if ( i < args.size() )
 			{
-			    named_varargs = args[i];
-			    for ( size_t j = i + 1; j < args.size(); ++j )
-			    {
-				named_varargs += ", ";
-				named_varargs += args[j];
-			    }
-			    param_map[macro.params[i]] = &named_varargs;
+			    param_map[macro.params[i]] = &args[i];
+			    raw_param_map[macro.params[i]] = &raw_args[i];
 			}
 			else
-			    param_map[macro.params[i]] = &args[i];
+			{
+			    param_map[macro.params[i]] = &empty_macro_arg;
+			    raw_param_map[macro.params[i]] = &empty_macro_arg;
+			}
 		    }
-		    // A macro called with fewer arguments than parameters binds the
-		    // missing params to EMPTY (C semantics) — e.g. `STR()` for
-		    // `#define STR(x) #x` binds x to "" so `#x` stringizes to "",
-		    // not a stray literal `#`. (glibc: __STRING(__USER_LABEL_PREFIX__)
-		    // with the prefix empty reaches the inner # with no argument.)
-		    for ( size_t i = args.size(); i < macro.params.size(); ++i )
-			param_map[macro.params[i]] = &empty_macro_arg;
+		    if ( macro.variadic )
+		    {
+			for ( size_t i = fixed_param_count; i < args.size(); ++i )
+			{
+			    if ( !expanded_varargs.empty() )
+			    {
+				expanded_varargs += ", ";
+				raw_varargs += ", ";
+			    }
+			    expanded_varargs += args[i];
+			    raw_varargs += raw_args[i];
+			}
+			param_map["__VA_ARGS__"] = &expanded_varargs;
+			raw_param_map["__VA_ARGS__"] = &raw_varargs;
+			if ( has_named_varargs )
+			{
+			    param_map[macro.variadic_param] = &expanded_varargs;
+			    raw_param_map[macro.variadic_param] = &raw_varargs;
+			}
+		    }
 		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
 			std::string out("\"");
 			bool pending_space = false;
@@ -5374,8 +5441,8 @@ TokenBase *Program::_getToken()
 				     && (macro.body[q] == '_' || isalnum((unsigned char)macro.body[q])) )
 				    ++q;
 				std::string ident = macro.body.substr(start, q - start);
-				auto it = param_map.find(ident);
-				if ( it != param_map.end() )
+				auto it = raw_param_map.find(ident);
+				if ( it != raw_param_map.end() )
 				{
 				    expanded += stringify_macro_arg(*it->second);
 				    p = q;
@@ -5395,7 +5462,14 @@ TokenBase *Program::_getToken()
 			    auto it = param_map.find(ident);
 			    if ( it != param_map.end()
 			      && !is_prefixed_literal_token(ident, macro.body, p) )
-				expanded += *it->second;
+			    {
+				auto raw_it = raw_param_map.find(ident);
+				if ( raw_it != raw_param_map.end()
+				  && macro_param_use_is_raw(macro.body, start, p) )
+				    expanded += *raw_it->second;
+				else
+				    expanded += *it->second;
+			    }
 			    else
 				expanded += ident;
 			}
@@ -5429,22 +5503,6 @@ TokenBase *Program::_getToken()
 			    fused += expanded[p++];
 			}
 			expanded.swap(fused);
-		    }
-		    if ( macro.variadic )
-		    {
-			std::string varargs;
-			for ( size_t i = fixed_param_count; i < args.size(); ++i )
-			{
-			    if ( !varargs.empty() )
-				varargs += ", ";
-			    varargs += args[i];
-			}
-			size_t pos = 0;
-			while ( (pos = expanded.find("__VA_ARGS__", pos)) != std::string::npos )
-			{
-			    expanded.replace(pos, strlen("__VA_ARGS__"), varargs);
-			    pos += varargs.size();
-			}
 		    }
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
 		    source.pushback_macro(expanded, word);
