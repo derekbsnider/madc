@@ -1,5 +1,6 @@
 #!/../bin/madc
 #include <iostream>
+#include <stdint.h>
 using namespace std;
 
 // User-defined class template, instantiated per concrete type (Borland
@@ -33,11 +34,11 @@ int main()
     a.value = 7;
     printf("a.value: %d\n", a.value);
 
-    // 8-byte type parameters: long and double, both as a stored value and a
-    // T-returning method.
-    Box<long> l;
-    l.store(1234567890123);
-    printf("l: %ld\n", l.fetch());
+    // 8-byte type parameters: fixed-width integer and double, both as a
+    // stored value and a T-returning method.  `long` is not 8 bytes on LLP64.
+    Box<int64_t> l;
+    l.store(1234567890123LL);
+    printf("l: %lld\n", (long long)l.fetch());
 
     Box<double> d;
     d.store(3.5);
