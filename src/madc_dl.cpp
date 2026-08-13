@@ -67,10 +67,16 @@ bool madcdl_addr(const void *addr, MadcDlInfo &info)
 // ---------------------------------------------------------------- Win32 ---
 // PE has no default symbol scope: madcdl_open_global RECORDS each loaded
 // module and madcdl_sym_default walks self-exe -> recorded modules ->
-// ucrtbase -> kernel32, in that order — the same resolution surface the
-// W2 c2m driver binds against (madc links -static, so the mingw CRT/libstdc++
-// surface lives in the exe and needs -Wl,--export-all-symbols to be visible
-// to GetProcAddress; that link flag is the hosted-windows MODE's job).
+// libstdc++-6.dll -> libwinpthread-1.dll -> ucrtbase -> kernel32, in that
+// order — the same resolution surface the W2 c2m driver binds against.
+// madc's own statics need -Wl,--export-all-symbols to be visible to
+// GetProcAddress (the hosted-windows MODE's job), but that flag CANNOT
+// serve the C++ runtime: PE ld auto-excludes runtime archives from it, so
+// a -static libstdc++ exposes no _Z* symbols and every script-side
+// mangled-direct std:: import goes undefined. The hosted MODE links
+// libstdc++ (and winpthread — one instance, pthread objects cross the
+// exe<->DLL boundary via std::thread) SHARED from the UCRT stage, and the
+// walk reads the DLLs' own export tables — the darwin flat-bind analogue.
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
@@ -176,7 +182,16 @@ void *madcdl_sym_default(const char *name)
 			if ((p = GetProcAddress(h, name)) != NULL)
 				return (void *)p;
 	}
-	static const char *const crt_mods[] = { "ucrtbase.dll", "kernel32.dll",
+	// Runtime DLLs before the CRT pair: libstdc++-6.dll is the whole
+	// mangled-direct std:: surface (its export table plays the role of
+	// libstdc++.so's dynsym under Linux dlsym(RTLD_DEFAULT)); winpthread
+	// gives script-side pthread_* the same way (the exe only IMPORTS
+	// those names, and GetProcAddress on self cannot see imports). No
+	// name overlaps with ucrtbase — the order is Linux load-order parity,
+	// not a tie-break.
+	static const char *const crt_mods[] = { "libstdc++-6.dll",
+						"libwinpthread-1.dll",
+						"ucrtbase.dll", "kernel32.dll",
 						NULL };
 	for (int i = 0; crt_mods[i]; i++) {
 		HMODULE h = GetModuleHandleA(crt_mods[i]);

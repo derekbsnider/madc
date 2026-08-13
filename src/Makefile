@@ -289,9 +289,24 @@ MADC_STORAGE_DB_OFILES =
 # win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
 # kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's
 # sym_default walk needs GetProcAddress(GetModuleHandle(NULL)) to see our
-# statics. -static freezes libstdc++/winpthreads/zlib into the image; the
-# system DLLs stay imports either way (ws2_32/kernel32/ucrt are import libs).
-LIBS = -static -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -lz -lm -lpthread
+# statics. libstdc++ links SHARED (the staged libstdc++-6.dll, copied
+# beside the exe by the rule below): PE ld auto-excludes runtime archives
+# from --export-all-symbols, so a -static-frozen libstdc++ exposes no _Z*
+# symbols and every script-side mangled-direct std:: import goes undefined
+# at MIR link. The DLL's export table is the resolution surface instead
+# (madcdl_sym_default walks the loaded module — the darwin flat-bind
+# analogue), and exe + scripts share ONE libstdc++ instance, the Linux
+# posture. winpthread is ALSO shared (the stage's UCRT-flavor
+# libwinpthread-1.dll): the shared libstdc++ imports it by name, and a
+# static-in-exe copy beside it would be a second winpthread instance —
+# pthread objects cross the exe<->DLL boundary (std::thread), and
+# winpthread handles are per-instance allocations. zlib stays frozen via
+# the -Bstatic window; -static-libgcc keeps the distro's msvcrt-flavor
+# libgcc DLL out of the process; the driver's trailing -lstdc++ resolves
+# in -Bdynamic mode, where ld prefers the stage's libstdc++.dll.a over
+# its .a. System DLLs stay imports either way (ws2_32/kernel32/ucrt are
+# import libs).
+LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm
 # The compat thunks join every link via the object list (compile rule beside
 # the other per-mode rules below); riding CORE_OFILES also puts them in the
 # per-mode libmadc archives, where any downstream consumer link needs them.
@@ -692,7 +707,7 @@ $(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
 # forest packing is the W4 workstream, so this mode builds the dev forest
 # shape (silent live parse). Run validation: wine + scripts/win_run.sh.
 hosted-x86-64-windows:
-	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll
 
 # win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
 # UCRT posture + specs swap), so host detection selects the _WIN32 arms
@@ -1006,6 +1021,16 @@ ifeq ($(MODE),hosted-x86-64-windows)
 $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 	@mkdir -p $(OBJDIR)
 	$(CC) -c -o $@ $<
+
+# Runtime DLLs staged beside the exe (the darwin dylib-beside-binary
+# analogue): the loader searches the exe's directory first, so wine, the
+# real-Windows runner, and the release zip all pick these UCRT-flavor
+# copies over anything else by name.
+../bin/libstdc++-6.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libstdc++-6.dll
+	cp -p $< $@
+
+../bin/libwinpthread-1.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libwinpthread-1.dll
+	cp -p $< $@
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
