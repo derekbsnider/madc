@@ -173,6 +173,28 @@ stop.
 **Disposition:** read what was recorded; narrow it to semantics if it
 reaches further.
 
+### F6 — a KG property was replaced instead of appended (history lost)
+
+`Feature{windows-release-lane}.progress` was **overwritten**, not
+appended. It measured 2893 chars after the 46b entry; it now begins "W0/W1/W2
+plus Win64 JIT full-suite burndown complete…" — i.e. the accumulated W0
+→ round-2 narrative is gone from the node.
+
+The KG is the *authoritative project-memory source* (`knowledge-graph.md`),
+so this is real data loss, caught only because the reviewer read the
+property size back after writing (the standing "read written properties
+back" rule earned its keep here).
+
+**Not lost to the project:** the same narrative is mirrored in
+`docs/plans/2026-08-12-windows-release-lane.md`, which is precisely why
+the mirror discipline exists. A recovery note now heads the property
+pointing there for anything pre-2026-08-13; the pre-existing text was
+**not** fabricated back.
+
+**Disposition:** rule for every agent — **APPEND to a KG narrative
+property (`SET f.x = f.x + '…'`), never replace**, and read the size back
+before and after. Added to handoff #2's traps.
+
 ### Not yet reviewed
 
 `include/datadef.h` (+106), `src/lexer.cpp` (+146), `src/cir_builder.cpp`
