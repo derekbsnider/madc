@@ -99,3 +99,25 @@ still covers those tests (a whole-project executable IS a single
 artifact), which is exactly why they must not use `exe_skip`. When
 multi-object loading lands (the declared future rung), these four
 fixtures are the removal checklist.
+
+## Why `<domain>_skip` and `<domain>_expect` exist (2026-08-13)
+
+The Windows lane runs the same suite against a binary targeting a
+different execution DOMAIN (win64; under wine that run is two domains
+at once, `MADC_SKIP_EXT="win64 wine64"`). Two per-domain facts are
+properties of individual tests, not of the runner:
+
+- **Structurally out of domain** — the test asserts something the
+  domain's own oracle compiler rejects or cannot express (POSIX
+  sockets, an `#if defined(__LP64__)` guard mingw-gcc also #errors on).
+  `<domain>_skip` carries the one-line reason; the summary line labels
+  the run a DOMAIN RUN so it can't be quoted as the default baseline.
+- **Correct output differs** — the test is meaningful on the domain but
+  its right answer is different there (`sizeof(long)`-derived values on
+  LLP64, `%lu` reading 4 bytes). `<domain>_expect` replaces `.expect`
+  for that run; its content MUST come from the domain's oracle compiler
+  (mingw-gcc/g++ for win64), never be reverse-engineered from madc's
+  own output — otherwise the fixture just ratifies whatever madc does.
+
+The first listed domain with a fixture wins, so layered runs (wine over
+win64) resolve deterministically.

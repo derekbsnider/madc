@@ -19,6 +19,11 @@
 #                      must produce EMPTY stderr — locks diagnostic
 #                      hygiene (no leaked warnings/errors) for tests
 #                      that compile real system headers.
+#   tests/foo.<domain>_expect — replaces foo.expect when MADC_SKIP_EXT
+#                      includes <domain> (first listed domain wins): for
+#                      tests whose CORRECT output differs on the domain
+#                      (sizeof(long)-derived values on win64); content
+#                      comes from the domain's oracle compiler.
 #
 # No test names are hard-coded here.
 #
@@ -174,6 +179,18 @@ for t in tests/*.mad; do
         DOMAIN_SKIPPED=$((DOMAIN_SKIPPED+1))
         continue
     fi
+
+    # Execution-domain expect VARIANT: a test whose CORRECT output differs on
+    # the domain (e.g. sizeof(long)-derived values on win64, oracle =
+    # mingw-gcc) carries tests/<base>.<domain>_expect; the first domain in
+    # MADC_SKIP_EXT order wins. Only consulted on a domain run, so the
+    # default lane never sees it.
+    for skip_ext in $MADC_SKIP_EXT; do
+        if [ -f "tests/$base.$skip_ext""_expect" ]; then
+            expect_file="tests/$base.$skip_ext""_expect"
+            break
+        fi
+    done
 
     args=()
     flags=()
