@@ -672,6 +672,56 @@ Inventory from recon (session #83 greps):
   cluster and a settled owner decision), then the singles, then the
   real-Windows battery via win_run.sh, W3 PE/COFF, W4 groves, W5
   release lanes.
+  **46b LANDED (session #88, 2026-08-13, commits 08d8955f..1c540b4a,
+  PUSHED): script `long` = 4 bytes and wchar_t = 2 bytes on win64 —
+  the owner's PLATFORM model, one identity owner per type.**
+  `dd_platform_long()` / `dd_platform_ulong()` return ddINT64/ddUINT64
+  on LP64 (provable no-op) and mint distinct 4-byte int-ranked
+  DataDefPlatformLONG/ULONG singletons on LLP64, named "long"/"unsigned
+  long" so the mangler keeps l/m (the subclass typeid exempts them from
+  the mangle_scalar_spelling desugar). Typeid pins 35/36 resolve NULL on
+  LP64 — the reserved-slot rule keeps ddINT64's slot 10 unstolen — and
+  PRIMITIVE_LAST 34->36 rolls the forest context hash, so a stale-width
+  forest cannot bind. `dd_platform_wchar()` = ddINT32 LP64 / ddUINT16
+  LLP64. Consumers rewired to the owners: lexer TS_LONG rows, the
+  single-L suffix arm (C11 6.4.4.1 ladders past the 4-byte long),
+  resolve_builtin_type_spelling (plain `long` split out of the
+  long long/i64 row), L'' typing, tkWCHAR_T, the wide-literal chain
+  (ONE expander, madc_wide_payload_target_units, feeds BOTH
+  addWideLiteral and the `wchar_t w[] = L"..."` initializer arm, whose
+  element predicate follows the owner instead of hardcoded dtINT32;
+  UTF-16 surrogate pairs on LLP64), the CIR __wlit_ element type, and
+  U"..." raising loudly on LLP64. Runner gained the
+  `<base>.<domain>_expect` variant capability (oracle-sourced expected
+  output where the domain's CORRECT answer differs), documented in both
+  test-fixtures files.
+  **Riders, own commits:** bare-U integer literals wider than 32 bits
+  laddered to ddUINT32 on EVERY target (gcc==clang==mingw say
+  sizeof(4294967296U)==8) — reducer tests/testunsignedliteralladder.mad;
+  and the resource-dir <stddef.h>/<stdint.h> hardcoded LP64 spellings,
+  which after 46b minted a 4-byte size_t that collided with the real
+  mingw chain ("repeated declaration size_t", 115 wine fails) — both
+  headers now spell every platform-modeled alias through the seeded
+  __*_TYPE__ macros, gcc's own resource-header model.
+  ⚠ **PROCESS LESSON (paid for this window): a win64 MODEL change
+  requires the FULL wine suite in the gate, never a subset.** A 17-test
+  subset was green while 115 tests were broken — no test in the subset
+  reached the embedded <stddef.h> __need arm.
+  **State at 1c540b4a: Linux fulltest 1027/0, libcxxjit 1023/0/13, wine
+  947/30/59.** The 30 = 3 verified wine flakes + the 9 round-2 singles +
+  18 new, classified with captured evidence in
+  `docs/plans/2026-08-13-win64-46b-burndown-CODEX-HANDOFF.md`: 14 whose
+  .expect encodes LP64 values (need mingw oracle -> .win64_expect) and 4
+  real defects — testphp (the six script-facing intrinsic ns headers
+  spell 64-bit params `long` while their host twins use int64_t:
+  invisible on LP64, undefined import on win64 — the same root round 1
+  fixed for <ns_madc> alone), testmadcevalscope (expect_quiet broken by
+  a new incompatible-pointer warning), testspaceship_realhdr
+  (strong_ordering lost in the <compare> chain), testgcclimitmacros
+  (__PTRDIFF_MAX__/__SIZE_MAX__ seed-vs-capture, or an LP64-shaped
+  test — the oracle decides). That handoff doc is the execution brief
+  for the next agent (Codex), with SETTLED facts, per-package
+  directives, the oracle recipe, gates and traps.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
