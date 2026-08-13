@@ -503,6 +503,54 @@ Inventory from recon (session #83 greps):
   MADC_WRAPPER=wine run_tests.sh) — probe first, classify the honest
   fail list, mint .win-lane skip fixtures only for structurally-POSIX
   tests, then burn down the rest.
+  **INVENTORY RAN (session #86 cont.): 913 passed / 113 failed / 0
+  timed out / 9 skipped — 89% green on the first full-suite wine run.**
+  First-error capture per failing test (tmp/logs/winclassify.log on the
+  container) clusters the 113 into:
+  (A) ~14+ setjmp SEH crashes — every exception test (testexcept_dtor*,
+  testtrycatch*, testthrow*, testcatchparam, testrethrow, testarraydtor)
+  dies at raise_status in ntdll: the JIT-side setjmp import binds a
+  SEH-unwinding flavor; W2.1 established NON_SEH is mandatory across
+  JIT frames. ONE binding fix (route the script-side setjmp import to
+  the non-SEH entry the exception runtime already uses).
+  (B) ~7 cmath "__builtin_acosl undeclared" — the lexer's __builtin_*
+  -> libm alias table lacks the l-suffixed math family the staged
+  13.2.0 cmath text calls (defect-#3 registered fabsl/sqrtl SIGNATURES
+  but the acosl/asinl/atanl/... alias rows were never present; Linux
+  glibc cmath takes a different branch).
+  (C) POSIX-structural ~15 — sys/socket.h, netdb.h, sys/select.h,
+  alloca.h, dirent d_type, fcntl/flock/O_NONBLOCK, timeradd,
+  dlopen("libc.so.6"), setenv-via-real-header: mingw-gcc rejects these
+  too (gcc parity), so they get win-lane skip fixtures with one-line
+  reasons — EXCEPT the fixable mappings hiding among them: strdup /
+  strndup (MIR import undefined; ucrtbase exports _strdup — map or
+  declare), sleep (mingw unistd.h serves it — check why undeclared).
+  (D) LLP64/46b width — testsscanfwide "%ld got -99" (scanning long =
+  4 bytes on win64 into an 8-byte slot), teststdarg2, testlimitsvals,
+  testgccunsignedlongdivneg, testbuiltinunsignedabs, testpredefmacros,
+  testifdefdefinedoperand (asserts __LP64__ — honest now that the seed
+  is LP64-only; needs a win variant or skip).
+  (E) ~22 *_libcxx flavor tests — the win lane has no libc++ stage
+  (libstdc++ was the owner decision): structural win-lane skips.
+  (F) wine-only ucrtbase stubs — testbuiltincomplexparts/conjf hit
+  __wine_spec_unimplemented_stub in wine's ucrtbase (real Windows
+  exports these); wine-environment class, verify via win_run.sh before
+  classifying further.
+  (G) ~6 madc-eval mangled imports undefined
+  (_ZN4madc15context_set_int...x) — the script header declares int64_t
+  (mangles x, 46a-correct) while the HOST C++ implementation signatures
+  still spell `long` (mingw mangles l, 32-bit). Invisible on LP64 where
+  long == int64_t == l. Fix = int64_t in the eval API impl + header
+  (the LLP64 arc (b) class, one more family).
+  (H) singles to diagnose: testint128 (win64 __int128 ABI in MIR:
+  block-type-memory arg + "multiple return values"), testlang
+  (host-side std::logic_error), testgccconversionprefix (parse),
+  testfdsetfromsystime (c2mir check), testexecchannel/testvaluesort
+  (spawn "File not found" — POSIX helper paths, likely structural).
+  (I) ~35 silent output-mismatches — re-inventory AFTER A/B/G land;
+  many are masked members of A (partial output then crash).
+  Burndown order: A, B, G (three single-root fixes, ~27 tests), then
+  E+C skip minting (~34 tests), then re-inventory for D/H/I.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
