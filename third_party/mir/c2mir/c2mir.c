@@ -13701,7 +13701,7 @@ static MIR_item_t get_int128_divmod_helper_item (c2m_ctx_t c2m_ctx, node_code_t 
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_module_t module = curr_func->module;
   MIR_type_t res_types[2];
-  MIR_var_t vars[4];
+  MIR_var_t vars[5];
   MIR_item_t *item_slot;
   const char *name;
   int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
@@ -13715,6 +13715,22 @@ static MIR_item_t get_int128_divmod_helper_item (c2m_ctx_t c2m_ctx, node_code_t 
     item_slot = signed_p ? &modti3_item : &umodti3_item;
   }
   if (int128_divmod_proto == NULL) {
+#ifdef _WIN32
+    /* win64 cannot spell a two-value MIR return, and the eightbyte-pair
+       TImode coincidence is SysV-only -- the res-addr-first shape, matching
+       the mir-int128-helper.h win twins (the __mir_*oti convention). */
+    vars[0].name = "res_addr";
+    vars[0].type = MIR_T_I64;
+    vars[1].name = "a_low";
+    vars[1].type = MIR_T_U64;
+    vars[2].name = "a_high";
+    vars[2].type = MIR_T_U64;
+    vars[3].name = "b_low";
+    vars[3].type = MIR_T_U64;
+    vars[4].name = "b_high";
+    vars[4].type = MIR_T_U64;
+    int128_divmod_proto = MIR_new_proto_arr (ctx, "int128_divmod_p", 0, res_types, 5, vars);
+#else
     res_types[0] = MIR_T_U64;
     res_types[1] = MIR_T_U64;
     vars[0].name = "a_low";
@@ -13726,6 +13742,7 @@ static MIR_item_t get_int128_divmod_helper_item (c2m_ctx_t c2m_ctx, node_code_t 
     vars[3].name = "b_high";
     vars[3].type = MIR_T_U64;
     int128_divmod_proto = MIR_new_proto_arr (ctx, "int128_divmod_p", 2, res_types, 4, vars);
+#endif
     move_item_to_module_start (module, int128_divmod_proto);
   }
   if (*item_slot == NULL) {
@@ -13770,12 +13787,23 @@ static MIR_item_t get_int128_conv_helper_item (c2m_ctx_t c2m_ctx, int to_float_p
       sprintf (pname, "i128_to_f%d_p", fi);
       *proto_slot = MIR_new_proto_arr (ctx, pname, 1, res_types, 2, vars);
     } else {
+#ifdef _WIN32
+      /* win64: no two-value MIR return -- res-addr-first, matching the
+         mir-int128-helper.h win twins. */
+      vars[0].name = "res_addr";
+      vars[0].type = MIR_T_I64;
+      vars[1].name = "a";
+      vars[1].type = ft;
+      sprintf (pname, "f%d_to_i128_p", fi);
+      *proto_slot = MIR_new_proto_arr (ctx, pname, 0, res_types, 2, vars);
+#else
       res_types[0] = MIR_T_U64;
       res_types[1] = MIR_T_U64;
       vars[0].name = "a";
       vars[0].type = ft;
       sprintf (pname, "f%d_to_i128_p", fi);
       *proto_slot = MIR_new_proto_arr (ctx, pname, 2, res_types, 1, vars);
+#endif
     }
     move_item_to_module_start (module, *proto_slot);
   }
@@ -13813,8 +13841,19 @@ static op_t float_to_int128_mem (c2m_ctx_t c2m_ctx, op_t fval, MIR_type_t ft, in
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_item_t proto;
   MIR_item_t item = get_int128_conv_helper_item (c2m_ctx, FALSE, ft, signed_p, &proto);
-  op_t low = get_new_temp (c2m_ctx, MIR_T_U64), high = get_new_temp (c2m_ctx, MIR_T_U64);
   op_t res = int128_temp (c2m_ctx);
+#ifdef _WIN32
+  /* res-addr proto: the helper writes the 16 bytes straight into res. */
+  op_t res_addr = mem_to_address (c2m_ctx, res, TRUE);
+  MIR_op_t args[4];
+
+  args[0] = MIR_new_ref_op (ctx, proto);
+  args[1] = MIR_new_ref_op (ctx, item);
+  args[2] = res_addr.mir_op;
+  args[3] = fval.mir_op;
+  emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 4, args));
+#else
+  op_t low = get_new_temp (c2m_ctx, MIR_T_U64), high = get_new_temp (c2m_ctx, MIR_T_U64);
   MIR_op_t args[5];
 
   args[0] = MIR_new_ref_op (ctx, proto);
@@ -13824,6 +13863,7 @@ static op_t float_to_int128_mem (c2m_ctx_t c2m_ctx, op_t fval, MIR_type_t ft, in
   args[4] = fval.mir_op;
   emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 5, args));
   store_int128_halves (c2m_ctx, res, low, high);
+#endif
   return res;
 }
 
@@ -13834,6 +13874,25 @@ static void emit_int128_vector_divmod_call (c2m_ctx_t c2m_ctx, node_code_t code,
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_item_t helper_item = get_int128_divmod_helper_item (c2m_ctx, code, vector_type);
+#ifdef _WIN32
+  /* res-addr proto (see get_int128_divmod_helper_item): the helper writes
+     the 16-byte result through the pointer; read the halves back so the
+     caller's low_res/high_res contract is unchanged. */
+  MIR_op_t args[7];
+  op_t buf = int128_temp (c2m_ctx);
+  op_t buf_addr = mem_to_address (c2m_ctx, buf, TRUE);
+
+  args[0] = MIR_new_ref_op (ctx, int128_divmod_proto);
+  args[1] = MIR_new_ref_op (ctx, helper_item);
+  args[2] = buf_addr.mir_op;
+  args[3] = low1.mir_op;
+  args[4] = high1.mir_op;
+  args[5] = low2.mir_op;
+  args[6] = high2.mir_op;
+  emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 7, args));
+  emit2 (c2m_ctx, MIR_MOV, low_res.mir_op, int128_half_op (c2m_ctx, buf, MIR_T_U64, 0).mir_op);
+  emit2 (c2m_ctx, MIR_MOV, high_res.mir_op, int128_half_op (c2m_ctx, buf, MIR_T_U64, 8).mir_op);
+#else
   MIR_op_t args[8];
 
   args[0] = MIR_new_ref_op (ctx, int128_divmod_proto);
@@ -13845,6 +13904,7 @@ static void emit_int128_vector_divmod_call (c2m_ctx_t c2m_ctx, node_code_t code,
   args[6] = low2.mir_op;
   args[7] = high2.mir_op;
   emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 8, args));
+#endif
 }
 
 static op_t emit_int128_vector_bin_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,

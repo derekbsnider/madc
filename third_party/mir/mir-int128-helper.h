@@ -7,8 +7,10 @@
 #define MIR_INT128_HELPER_H
 
 #include <string.h>
+#include <stdint.h>
 
 #if defined(__SIZEOF_INT128__)
+#ifndef _WIN32
 static __int128 MIR_int128_divti3 (__int128 a, __int128 b) { return a / b; }
 
 static unsigned __int128 MIR_int128_udivti3 (unsigned __int128 a, unsigned __int128 b) {
@@ -21,9 +23,11 @@ static unsigned __int128 MIR_int128_umodti3 (unsigned __int128 a, unsigned __int
   return a % b;
 }
 
-/* int128 <-> floating conversions (libgcc names).  The int128 argument /
-   result ABI is two integer eightbytes, which is exactly how the c2mir call
-   sites spell the prototypes (two u64 args / two u64 results). */
+/* int128 <-> floating conversions (libgcc names).  On SysV the int128
+   argument / result ABI is two integer eightbytes, which is exactly how the
+   c2mir call sites spell the prototypes (two u64 args / two u64 results) --
+   the native-__int128 bodies coincide with the MIR protos, and AOT ELF
+   executables may equally bind the REAL libgcc entries by these names. */
 static float MIR_int128_floattisf (__int128 a) { return (float) a; }
 static double MIR_int128_floattidf (__int128 a) { return (double) a; }
 static long double MIR_int128_floattixf (__int128 a) { return (long double) a; }
@@ -37,9 +41,142 @@ static unsigned __int128 MIR_int128_fixunssfti (float a) { return (unsigned __in
 static unsigned __int128 MIR_int128_fixunsdfti (double a) { return (unsigned __int128) a; }
 static unsigned __int128 MIR_int128_fixunsxfti (long double a) { return (unsigned __int128) a; }
 
+#else /* _WIN32 */
+
+/* win64: the two-eightbyte TImode coincidence is SysV-ONLY.  Native win64
+   __int128 passes by reference and returns in XMM0, so a native-__int128
+   body can never match a MIR proto spelled in eightbytes, and MIR cannot
+   spell a two-value return on win64 at all ("Windows x86-64 doesn't support
+   multiple return values").  These twins make the C signature BE the MIR
+   proto shape: int128 results are written through a result pointer (the
+   res-addr-first convention the __mir_*oti overflow family already uses);
+   int128 arguments arrive as explicit low/high eightbytes.  On win64 the
+   import names therefore mean "the MIR proto contract", which does NOT
+   match mingw libgcc's native-ABI __divti3 family -- a future win64 AOT
+   lane (W3) must export THESE under the import names, never bind libgcc's. */
+static __int128 mir_i128_compose_ (uint64_t low, uint64_t high) {
+  return (__int128) (((unsigned __int128) high << 64) | low);
+}
+static void mir_i128_store_ (void *res, unsigned __int128 v) { memcpy (res, &v, 16); }
+
+static void MIR_int128_divti3 (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                               uint64_t b_high) {
+  mir_i128_store_ (res, (unsigned __int128) (mir_i128_compose_ (a_low, a_high)
+                                             / mir_i128_compose_ (b_low, b_high)));
+}
+static void MIR_int128_udivti3 (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                uint64_t b_high) {
+  mir_i128_store_ (res, (unsigned __int128) mir_i128_compose_ (a_low, a_high)
+                          / (unsigned __int128) mir_i128_compose_ (b_low, b_high));
+}
+static void MIR_int128_modti3 (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                               uint64_t b_high) {
+  mir_i128_store_ (res, (unsigned __int128) (mir_i128_compose_ (a_low, a_high)
+                                             % mir_i128_compose_ (b_low, b_high)));
+}
+static void MIR_int128_umodti3 (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                uint64_t b_high) {
+  mir_i128_store_ (res, (unsigned __int128) mir_i128_compose_ (a_low, a_high)
+                          % (unsigned __int128) mir_i128_compose_ (b_low, b_high));
+}
+
+static float MIR_int128_floattisf (uint64_t low, uint64_t high) {
+  return (float) mir_i128_compose_ (low, high);
+}
+static double MIR_int128_floattidf (uint64_t low, uint64_t high) {
+  return (double) mir_i128_compose_ (low, high);
+}
+static long double MIR_int128_floattixf (uint64_t low, uint64_t high) {
+  return (long double) mir_i128_compose_ (low, high);
+}
+static float MIR_int128_floatuntisf (uint64_t low, uint64_t high) {
+  return (float) (unsigned __int128) mir_i128_compose_ (low, high);
+}
+static double MIR_int128_floatuntidf (uint64_t low, uint64_t high) {
+  return (double) (unsigned __int128) mir_i128_compose_ (low, high);
+}
+static long double MIR_int128_floatuntixf (uint64_t low, uint64_t high) {
+  return (long double) (unsigned __int128) mir_i128_compose_ (low, high);
+}
+static void MIR_int128_fixsfti (void *res, float a) {
+  mir_i128_store_ (res, (unsigned __int128) (__int128) a);
+}
+static void MIR_int128_fixdfti (void *res, double a) {
+  mir_i128_store_ (res, (unsigned __int128) (__int128) a);
+}
+static void MIR_int128_fixxfti (void *res, long double a) {
+  mir_i128_store_ (res, (unsigned __int128) (__int128) a);
+}
+static void MIR_int128_fixunssfti (void *res, float a) {
+  mir_i128_store_ (res, (unsigned __int128) a);
+}
+static void MIR_int128_fixunsdfti (void *res, double a) {
+  mir_i128_store_ (res, (unsigned __int128) a);
+}
+static void MIR_int128_fixunsxfti (void *res, long double a) {
+  mir_i128_store_ (res, (unsigned __int128) a);
+}
+#endif /* _WIN32 */
+
 /* __builtin_{add,sub,mul}_overflow with an int128 result: the host builtin
    covers every edge (INT128_MIN, -1 multipliers, ...).  The result is stored
-   through the pointer; the return value is the overflow flag. */
+   through the pointer; the return value is the overflow flag.
+   win64: same res-addr proto, but the int128 OPERANDS arrive as explicit
+   eightbytes (see the twin rationale above) — the native-__int128 parameter
+   spelling would go by reference there and shear against the MIR proto. */
+#ifdef _WIN32
+static long long MIR_int128_addoti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                    uint64_t b_high) {
+  __int128 r;
+  long long ov = __builtin_add_overflow (mir_i128_compose_ (a_low, a_high),
+                                         mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long long MIR_int128_uaddoti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                     uint64_t b_high) {
+  unsigned __int128 r;
+  long long ov
+    = __builtin_add_overflow ((unsigned __int128) mir_i128_compose_ (a_low, a_high),
+                              (unsigned __int128) mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long long MIR_int128_suboti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                    uint64_t b_high) {
+  __int128 r;
+  long long ov = __builtin_sub_overflow (mir_i128_compose_ (a_low, a_high),
+                                         mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long long MIR_int128_usuboti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                     uint64_t b_high) {
+  unsigned __int128 r;
+  long long ov
+    = __builtin_sub_overflow ((unsigned __int128) mir_i128_compose_ (a_low, a_high),
+                              (unsigned __int128) mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long long MIR_int128_muloti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                    uint64_t b_high) {
+  __int128 r;
+  long long ov = __builtin_mul_overflow (mir_i128_compose_ (a_low, a_high),
+                                         mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+static long long MIR_int128_umuloti (void *res, uint64_t a_low, uint64_t a_high, uint64_t b_low,
+                                     uint64_t b_high) {
+  unsigned __int128 r;
+  long long ov
+    = __builtin_mul_overflow ((unsigned __int128) mir_i128_compose_ (a_low, a_high),
+                              (unsigned __int128) mir_i128_compose_ (b_low, b_high), &r);
+  memcpy (res, &r, 16);
+  return ov;
+}
+#else /* !_WIN32 */
 static long MIR_int128_addoti (void *res, __int128 a, __int128 b) {
   __int128 r;
   long ov = __builtin_add_overflow (a, b, &r);
@@ -106,7 +243,8 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
   memcpy (res, &r, 16);
   return ov;
 }
-#endif
+#endif /* __APPLE__ */
+#endif /* !_WIN32 */
 
 /* AOT: the __mir_*oti overflow helpers have no libgcc equivalent (the
    __divti3 family resolves from libgcc_s in a linked process), so a linked
