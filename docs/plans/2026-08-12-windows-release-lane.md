@@ -338,7 +338,18 @@ Inventory from recon (session #83 greps):
   *l bit-scan family, the generic overflow triple,
   __madc_try_context_size, and the consumer-less __madc_fd_/timeval
   dead thunks noted for cruft removal).
-  **First wine test sweep (session #85, post-LLP64): 3/7 real
+  **✅ (c) SETTLED BY OWNER (2026-08-13): the win64 target follows the
+  PLATFORM type model (LLP64/MSVC/mingw), not Cygwin/POSIX.** Rationale:
+  madc.exe is a Win64 C/C++ compiler — "we're not necessarily trying to
+  make madc.exe act more like UN*X"; full POSIX flavor is served by
+  madc under WSL. Consequences (the target-type-model arc, to plan):
+  script `long` = 4 bytes on the win64 target (all dialects — follow
+  mingw), `wchar_t` = 2 bytes there, the *l builtin family operates on
+  32-bit long, sizeof folding + struct layout + the literal-typing
+  ladder become target-parameterized (per the vision invariants: gated
+  via the target enum, no hardcoded platform checks). The value ABI's
+  int64_t payload is unaffected. Guaranteed widths stay the int64_t
+  family names.
   integration tests PASS byte-exact** (testint, testfunc, testmath vs
   Linux madc, CRLF-normalized). Two findings: (1) ⚠ BATTERY HARNESS
   NOTE — win64 stdout is CRLF (Win CRT text mode; mingw-gcc programs
