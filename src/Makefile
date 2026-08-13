@@ -254,7 +254,13 @@ endif
 # sees the same posture the binary is built with.
 ifeq ($(MODE),hosted-x86-64-windows)
 WIN_MINGW = x86_64-w64-mingw32
-WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH
+# _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
+# __STRICT_ANSI__, which the captured -std=c++17 posture defines. On
+# glibc targets g++ always predefines _GNU_SOURCE, so the Linux lane
+# effectively always has M_PI — this is mingw's own documented knob for
+# the same surface. Rides WIN_UCRT_FLAGS so the HOSTTAB capture seeds
+# it into every script TU (and the host build, harmlessly).
+WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH -D_USE_MATH_DEFINES
 WIN_SPECS = $(abspath $(OBJDIR))/ucrt.specs
 # Parse-time generation (the EMBED_GEN/HOSTTAB precedent): the specs file
 # must exist before ANY compile in this make layer, including the recursive
