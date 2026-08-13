@@ -19098,7 +19098,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           if (param != NULL) param = NL_NEXT (param);
           continue;
         }
-        op2 = gen (c2m_ctx, arg, NULL, NULL, !memory_arg_p, NULL, NULL);
+        /* A memory-shaped ABI argument can still be a language scalar.
+           Mingw long double is the important case: evaluate it as a value
+           and perform the ordinary parameter conversion before the target
+           hook spills that value into its by-reference argument slot. */
+        op2 = gen (c2m_ctx, arg, NULL, NULL,
+                   !memory_arg_p || scalar_type_p (arg_type), NULL, NULL);
         if (!memory_arg_p && int128_type_p (e->type) && op2.mir_op.mode == MIR_OP_MEM) {
           /* __int128 argument value for a narrower parameter: convert to the
              parameter's scalar shape so the ordinary promotion below works. */
@@ -19110,7 +19115,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                         : MIR_T_I64,
                                       signed_integer_type_p (e->type));
         }
-        if (memory_arg_p) {
+        if (memory_arg_p && scalar_type_p (arg_type)) {
+          t = get_mir_type (c2m_ctx, arg_type);
+          t = promote_mir_int_type (t);
+          op2 = promote (c2m_ctx, op2, t, FALSE);
+        } else if (memory_arg_p) {
         } else if (param != NULL) {
           t = get_mir_type (c2m_ctx, arg_type);
           t = promote_mir_int_type (t);
@@ -19762,7 +19771,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     decl_t func_decl = curr_func_def->attr;
     struct type *func_type = func_decl->decl_spec.type;
     struct type *ret_type = func_type->u.func_type->ret_type;
-    int scalar_p = !memory_value_type_p (ret_type);
+    /* Scalar-ness is a language property, not an ABI storage decision.
+       In particular, mingw passes/returns long double through memory, but a
+       returned integer still has to be converted to a long-double value
+       before target_add_ret_ops stores it through the hidden result pointer. */
+    int scalar_return_p = scalar_type_p (ret_type);
     int ret_by_addr_p = target_return_by_addr_p (c2m_ctx, ret_type);
 
     assert (false_label == NULL && true_label == NULL);
@@ -19796,16 +19809,16 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                            && (!complex_type_p (ret_expr_type)
                                || ret_expr_type->u.basic_type != ret_type->u.basic_type);
       val = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL,
-                 (!ret_by_addr_p && scalar_p)
+                 scalar_return_p
                    || (complex_conv_p && !complex_type_p (ret_expr_type)),
-                 !ret_by_addr_p || scalar_p || complex_conv_p ? NULL : &var, NULL);
+                 !ret_by_addr_p || scalar_return_p || complex_conv_p ? NULL : &var, NULL);
       if (complex_conv_p)
         val = !complex_type_p (ret_expr_type)
                 ? scalar_to_complex (c2m_ctx, val, get_mir_type (c2m_ctx, ret_expr_type),
                                      ret_type->u.basic_type)
                 : complex_to_complex (c2m_ctx, val, ret_expr_type->u.basic_type,
                                       ret_type->u.basic_type);
-      if (!ret_by_addr_p && scalar_p) {
+      if (scalar_return_p) {
         if (int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
             && val.mir_op.mode == MIR_OP_MEM) {
           /* Narrower return type from a scalar __int128 value. */
