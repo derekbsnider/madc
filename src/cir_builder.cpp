@@ -4762,9 +4762,16 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
 			}
-			if (Variable *w = m_prog->find_namespace_function_overload(
+			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
-					at, &zeros, &tcf->explicit_template_args))
+					at, &zeros, &tcf->explicit_template_args);
+			if (::getenv("MADC_OVL_PROBE"))
+				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
+					fd->namespace_name.c_str(),
+					fd->function_display_name.c_str(), at.size(),
+					at.empty() || !at[0] ? "?" : at[0]->name.c_str(),
+					w ? w->name.c_str() : "(none)");
+			if (w)
 				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type)) {
 					if (fd_out)
 						*fd_out = wfd;

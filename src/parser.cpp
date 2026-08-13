@@ -62458,6 +62458,53 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	std::vector<NamespaceFnOverload> &ovset =
 	    namespace_fn_overload_sets["::" + source_id];
+	if ( ::getenv("MADC_OVL_PROBE") )
+	    fprintf(stderr, "[ovl] global tracked %s set=%zu spelling='%s' at %s:%d\n",
+		    source_id.c_str(), ovset.size(), ns_overload_spelling.c_str(),
+		    TokenBase::_parse_file ? TokenBase::_parse_file : "?",
+		    TokenBase::_parse_line);
+	// The pre-existing SOURCE-NAMED function (the untracked first — a
+	// libc import or a bodied system-header inline) joins the set the
+	// moment a second same-name declaration starts tracking. Without it
+	// the set EXCLUDES the first member: a call that parse-binds the
+	// source name has no function_display_name, can never re-rank, and
+	// hard-fails the arity check against the first signature (mingw
+	// swprintf.inl's 3-arg extern "C++" vswprintf overload beside the
+	// 4-arg ISO one — the .inl's own 3-arg call died "expected 4 got 3";
+	// invisible to the libc++ global-abs precedent, whose overloads all
+	// share arity 1). The seed only ADDS set membership + the source
+	// identity: the Variable keeps its SOURCE name as import/emit name
+	// (the decl-only dlsym contract), and the sentinel spelling never
+	// matches a peeked param list (the fn-template-placeholder pattern).
+	if ( Variable *first_named = findVariable(source_id) )
+	{
+	    FuncDef *ffd = first_named->type
+			&& first_named->type->is_function()
+			&& !first_named->type->is_numeric()
+		? dynamic_cast<FuncDef *>(first_named->type) : NULL;
+	    if ( ffd )
+	    {
+		bool seeded = false;
+		for ( size_t i = 0; i < ovset.size(); ++i )
+		    if ( ovset[i].var == first_named )
+			seeded = true;
+		if ( !seeded )
+		{
+		    if ( ffd->function_display_name.empty() )
+		    {
+			ffd->function_display_name = source_id;
+			ffd->namespace_name.clear();
+		    }
+		    NamespaceFnOverload e;
+		    e.param_spelling = "\x01preexisting-source-named";
+		    e.var = first_named;
+		    ovset.push_back(e);
+		    if ( ::getenv("MADC_OVL_PROBE") )
+			fprintf(stderr, "[ovl] global seed first '%s' params=%zu\n",
+				source_id.c_str(), ffd->parameters.size());
+		}
+	    }
+	}
 	Variable *same = NULL;
 	for ( size_t i = 0; i < ovset.size(); ++i )
 	    if ( ovset[i].param_spelling == ns_overload_spelling )
