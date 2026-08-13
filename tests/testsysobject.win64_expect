@@ -1,0 +1,7 @@
+argc_matches: 1
+argv1: alpha
+version_matches: 1
+platform: win32
+hostname_nonempty: 1
+after_push: 4
+path_nonempty: 1
