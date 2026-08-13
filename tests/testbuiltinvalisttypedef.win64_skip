@@ -1,0 +1,1 @@
+asserts the SysV array-shaped va_list rejects assignment; win64 va_list is scalar char* (mingw vadefs.h) and mingw-gcc accepts this same source
