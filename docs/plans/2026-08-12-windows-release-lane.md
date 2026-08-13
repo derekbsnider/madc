@@ -965,12 +965,25 @@ Consequences for W4:
   extra entry point — subject to the list's standing bar ("must compile
   QUIETLY, exit 0, zero diagnostics, in this combined order") and to the
   owner's size-trade rule.
-- ⚠ **W4 needs a provenance pass, the analogue of W0.5.** A packed
-  `madc.exe` distributed publicly redistributes every header text frozen
-  into it. mingw-w64's headers are permissively licensed and this is
-  very likely fine — but "very likely" is not the standard the macOS
-  lane held itself to, and the darwin prelude got W0.5 for exactly this
-  reason. Verify and attribute before any packed win64 artifact ships.
+- **Provenance: W0.5 has NO win64 analogue — verified, not assumed**
+  (owner, 2026-08-13). W0.5 existed because Apple's SDK headers are
+  proprietary, so the darwin grove freezes LLVM's libc++ instead — "the
+  openly licensed upstream the SDK copies, so frozen groves derived from
+  it are redistributable" (src/Makefile ~175). **Windows has no
+  proprietary step to route around: we never touch the Microsoft SDK,
+  and mingw-w64 IS the open upstream.** Inspected directly —
+  `/usr/x86_64-w64-mingw32/include/windows.h` and `.../stdio.h` both
+  open with *"This file has no copyright assigned and is placed in the
+  Public Domain. This file is part of the mingw-w64 runtime package."*
+  Public domain: no attribution obligation, nothing to carry.
+- The only non-trivial text in a packed win64 forest is **libstdc++**
+  (GPL-3 + GCC Runtime Library Exception), from the staged UCRT 13.2.0
+  build — and that is **pre-existing, not introduced by Windows**: the
+  shipping Linux `bin/madc-release` already freezes libstdc++ 13 header
+  text today (`--dump-forest` canon list: `/usr/include/c++/13/...`) and
+  is packaged into the .deb/.rpm on the release page. win64 inherits the
+  Linux posture unchanged; if that posture ever wants revisiting it is a
+  question about the CURRENT releases, not a win64 gate.
 - Not to be confused with the host-compile trap: "windows.h can never
   meet tokens.h in one TU" (winnt.h declares a `TokenType` enumerator)
   is about compiling madc's OWN C++ sources, not about madc parsing
