@@ -551,6 +551,46 @@ Inventory from recon (session #83 greps):
   many are masked members of A (partial output then crash).
   Burndown order: A, B, G (three single-root fixes, ~27 tests), then
   E+C skip minting (~34 tests), then re-inventory for D/H/I.
+  **ROUND 1 SHIPPED + RE-INVENTORIED (session #86 cont., commits
+  9a7754a2/effd654d/6bc2d79d/b67a9261/16bacf39): 913/113 -> 951/32/52
+  — 97% of the in-scope suite green under wine.** A = try-lowering
+  emits NON_SEH _setjmp(jbuf,NULL) on win64 (ucrtbase EXPORTS plain
+  setjmp, frame-capturing; the synthetic lowering bypassed mingw's
+  NON_SEH macro; user code was always safe). B = table-driven C99 math
+  builtin aliases (roots x ""/f/l) + the COMPLETE *l flavor-pin family
+  in the fork map (ucrtbase lacks most *l names; lgammal/cbrtl exported
+  but MSVC 8-byte). G = eval/context/channel API spells int64_t on all
+  three signature-identical copies (script x vs host l mismatch,
+  invisible on LP64). Posture = _USE_MATH_DEFINES rides WIN_UCRT_FLAGS
+  (M_PI parity; Linux g++ always has _GNU_SOURCE). Skip lane =
+  MADC_SKIP_EXT runner env (DOMAIN RUN label) + 43 .win64_skip
+  fixtures with reasons.
+  **HARNESS LESSON (cost a whole re-inventory round): wine writes its
+  winediag/systray chatter to stderr, and .expect_quiet asserts EMPTY
+  stderr — 24 tests "failed" on wine's own noise. The wine lane's
+  canonical invocation is `WINEDEBUG=-all MADC_BIN=<exe>
+  MADC_WRAPPER=wine MADC_SKIP_EXT=win64 bash scripts/run_tests.sh`.
+  Also: ad-hoc gate chains that pipe a suite through tail and echo $?
+  report TAIL's rc — use PIPESTATUS[0]; the printed summary lines are
+  the real verdict.**
+  **The final 32 (next window's worklist):** strdup mapping x3
+  (testbugbufbranch/testprintfmember/testsmaug — ucrt exports _strdup;
+  oldnames aliasing is invisible to the walk; fork-map class-3 entry),
+  dirent pins x1 (testdirtype — libmingwex opendir/closedir family),
+  dlclose script-thunk gap x1 (testdlcall), strndup x1 (teststrextra —
+  mingw lacks it entirely, likely a skip), wine-only ucrtbase stubs x2
+  (testbuiltincomplexparts/conjf — C99 complex fns unimplemented in
+  wine's ucrtbase; verify on real Windows via win_run.sh before
+  classifying), win64 __int128 ABI x2 (testint128/testint128global —
+  MIR block-arg + multiple-return errors), varargs-struct ABI x3
+  (testvarargsstructcomplex/real, testvastruct), 46b width cluster ~8
+  (testbuiltinunsignedabs, testgccunsignedlongdivneg, testlimitsvals,
+  testsscanfwide %ld, teststdarg2, testpredefmacros,
+  testifdefdefinedoperand, testsystemcharbuf), and 11 singles to
+  diagnose (testexcept, testfdsetfromsystime, testgccconversionprefix,
+  testinlinensopen, testlang, testmemchr2darraysingle,
+  testnsmadcautostring, teststrcmpret, testsysobject, testtemplate,
+  testtranssecondary).
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
