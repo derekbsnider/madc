@@ -18673,10 +18673,12 @@ void DataDefCLASS::compute_layout()
     own_block_off = mi_align_up(cur, max_align ? max_align : 1);
     cur = own_block_off + size;   // size = own packed size on entry
 
-    // 4. nvsize (Itanium) = the non-virtual data size rounded up to the
-    //    non-virtual alignment. It is what a DERIVED class adds for this class
-    //    when it uses it as a non-virtual base.
-    nvsize = mi_align_up(cur, maxalign);
+    // 4. nvsize (Itanium's "base size") excludes tail padding. A derived
+    //    class may place its next base/member in that tail; the complete
+    //    object's `size` below is still rounded to `maxalign`. This distinction
+    //    is observable whenever a pointer-aligned polymorphic base ends in a
+    //    narrower member (for example vptr + 4-byte long under LLP64).
+    nvsize = cur;
     if ( trait_is_empty(this) && nvsize == 0 )
 	nvsize = 1;
 

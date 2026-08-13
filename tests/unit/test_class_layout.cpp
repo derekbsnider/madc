@@ -108,6 +108,58 @@ TEST_SUITE("class layout — single virtual base") {
     }
 }
 
+TEST_SUITE("class layout — base tail-padding reuse") {
+    TEST_CASE("unrounded nvsize lets a derived member reuse polymorphic base padding") {
+        DataDefCLASS *vb = new DataDefCLASS("VB32", 0, DataType::dtRESERVED);
+        vb->has_vtable = true;
+        vb->addMember("v", ddINT32, 1);
+        vb->compute_layout();
+        CHECK(vb->nvsize == 12);              // vptr(8) + int(4), no tail padding
+        CHECK(vb->size == 16);                // complete object remains 8-aligned
+
+        DataDefCLASS *a = new DataDefCLASS("A32", 0, DataType::dtRESERVED);
+        a->has_vtable = true;
+        a->addMember("a", ddINT32, 1);
+        a->bases.push_back(BaseSpec{vb, 0, true, 0u, false});
+        a->compute_layout();
+        CHECK(a->nvsize == 12);
+
+        DataDefCLASS *b = new DataDefCLASS("B32", 0, DataType::dtRESERVED);
+        b->has_vtable = true;
+        b->addMember("b", ddINT32, 1);
+        b->bases.push_back(BaseSpec{vb, 0, true, 0u, false});
+        b->compute_layout();
+        CHECK(b->nvsize == 12);
+
+        DataDefCLASS *d = new DataDefCLASS("D32", 0, DataType::dtRESERVED);
+        d->has_vtable = true;
+        d->addMember("d", ddINT32, 1);
+        d->bases.push_back(BaseSpec{a, 0, false, 0u, false});
+        d->bases.push_back(BaseSpec{b, 0, false, 0u, false});
+        d->compute_layout();
+        d->member_origin.assign(d->members.size(), -1);
+        d->apply_member_layout();
+        CHECK(d->bases[0].offset == 0);
+        CHECK(d->bases[1].offset == 16);
+        CHECK(d->member_offsets[0] == 28);    // reuses B32's 4-byte tail padding
+        CHECK(d->nvsize == 32);
+        CHECK(d->vbase_offset[vb] == 32);
+        CHECK(d->size == 48);
+
+        DataDefCLASS *e = new DataDefCLASS("E32", 0, DataType::dtRESERVED);
+        e->has_vtable = true;
+        e->addMember("e", ddINT32, 1);
+        e->bases.push_back(BaseSpec{d, 0, false, 0u, false});
+        e->compute_layout();
+        e->member_origin.assign(e->members.size(), -1);
+        e->apply_member_layout();
+        CHECK(e->member_offsets[0] == 32);    // reuses D32's tail padding
+        CHECK(e->nvsize == 36);
+        CHECK(e->vbase_offset[vb] == 40);
+        CHECK(e->size == 56);
+    }
+}
+
 TEST_SUITE("class layout — MI non-virtual") {
     TEST_CASE("MIc : P1, P2 -> P1@0, P2@16, size 40") {
         DataDefCLASS *p1 = mkclass("P1", 1, true); p1->compute_layout(); // nvsize 16

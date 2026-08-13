@@ -10,9 +10,11 @@
 // insert was silently lost (str() empty) and `ss << 42` crashed in the
 // locale copy ctor (testsstream + testopinherit).
 //
-// Oracle: g++ and clang++ both print
+// LP64 oracle: g++ and clang++ both print
 //	d1=48 d2=48 v=7 7
 //	t1=96 t2=96 sb=0x1 0x1
+// MinGW LLP64 uses the same Itanium layout algorithm with 4-byte long; its
+// base-tail-padding reuse yields d1=40 and t1=64 (see .win64_expect).
 #include <cstdio>
 
 struct VB { int v; VB() : v(7) {} virtual ~VB() {} };
