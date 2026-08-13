@@ -2523,14 +2523,27 @@ DataDef *Program::madc_dialect_type_spelling(const std::string &name) const
     return NULL;
 }
 
-// The compiler-owned x86-64 SysV va_list: struct __madc_va_list_tag[1] —
-// the SAME shape gcc, glibc, and c2mir's own mirc_x86_64_linux.h use. ONE
-// process singleton so `typedef __builtin_va_list va_list;` (bare, no
+// The compiler-owned va_list, in the TARGET's shape. x86-64 SysV: struct
+// __madc_va_list_tag[1] — the SAME shape gcc, glibc, and c2mir's own
+// mirc_x86_64_linux.h use. win64 (LLP64 target): `char *` — the mingw/MSVC
+// vadefs.h scalar. The SysV array-of-struct shape on win64 was not merely
+// wrong-sized: c2mir's win64 va machinery takes the va_list's ADDRESS, and
+// the 24-byte aggregate local made every varargs function with a struct
+// named parameter read garbage (testvastruct; reducer tmp/win/va_bisect.mad
+// — swapping only this typedef in the emitted C healed it). ONE process
+// singleton either way, so `typedef __builtin_va_list va_list;` (bare, no
 // include) and the embedded <stdarg.h> (which aliases this builtin) resolve
 // to the identical type; the CIR emitter synthesizes the typedef's C when a
 // module references it (no source declaration exists to emit).
 DataDef *Program::builtin_va_list_type()
 {
+    if ( target_llp64() )
+    {
+	static DataDefPTR *win_va_list_dd = NULL;
+	if ( !win_va_list_dd )
+	    win_va_list_dd = new DataDefPTR(ddCHAR);
+	return win_va_list_dd;
+    }
     static DataDefCArray *va_list_dd = NULL;
     if ( !va_list_dd )
     {
@@ -2568,8 +2581,10 @@ DataDef *Program::complex_type_of(DataDef *elem)
 DataDef *Program::use_builtin_va_list()
 {
     DataDef *dd = builtin_va_list_type();
-    DataDefCArray *ca = static_cast<DataDefCArray *>(dd);
-    if ( ca->element_type && !struct_map.count(ca->element_type->name) )
+    // Only the SysV array-of-struct shape has a tag to register; the win64
+    // `char *` shape needs no struct emission.
+    DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd);
+    if ( ca && ca->element_type && !struct_map.count(ca->element_type->name) )
 	struct_map.set(ca->element_type->name, ca->element_type);
     return dd;
 }

@@ -39,7 +39,14 @@ typedef __builtin_va_list __gnuc_va_list;
 
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
+// va_copy follows the target's va_list shape (Program::builtin_va_list_type):
+// SysV array-of-struct copies the one element; win64's scalar `char *`
+// (mingw/MSVC vadefs.h) is a plain assignment.
+#ifdef _WIN32
+#define va_copy(dest, src) ((dest) = (src))
+#else
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
+#endif
 
 // va_list is now the real ABI struct, so the v*printf family resolve to the
 // real libc functions (which take a va_list) — not the old __madc_* helpers
