@@ -1610,7 +1610,9 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_BYTES == 32);
         CHECK(MADC_TYPEID_OBJECT == 33);
         CHECK(MADC_TYPEID_BUILTIN_VA_LIST == 34);
-        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 34);
+        CHECK(MADC_TYPEID_PLATFORM_LONG == 35);
+        CHECK(MADC_TYPEID_PLATFORM_ULONG == 36);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 36);
         CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
         CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
         CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
@@ -1650,6 +1652,45 @@ TEST_SUITE("type table (typeid) identity layer") {
             REQUIRE(va != (DataDef *)NULL);
             CHECK(va->type_id == MADC_TYPEID_BUILTIN_VA_LIST);
             CHECK(va->size == 24);
+        }
+        // Platform long/ulong (task #46b): target-shaped accessors. On LP64
+        // they ARE ddINT64/ddUINT64 (slots 10/15) and the pinned slots 35/36
+        // resolve NULL — stamping them would steal the i64 slots. On LLP64
+        // they are the distinct 4-byte int-ranked dds named for the mangler.
+        {
+            struct ModelGuard {
+                TargetDataModel saved;
+                ModelGuard() : saved(madc_target_data_model) {}
+                ~ModelGuard() { madc_target_data_model = saved; }
+            } guard;
+            madc_target_data_model = TargetDataModel::LP64;
+            CHECK(dd_platform_long() == &ddINT64);
+            CHECK(dd_platform_ulong() == &ddUINT64);
+            CHECK(dd_platform_wchar() == &ddINT32);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == (DataDef *)NULL);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == (DataDef *)NULL);
+            madc_target_data_model = TargetDataModel::LLP64;
+            DataDef *pl = dd_platform_long();
+            DataDef *pu = dd_platform_ulong();
+            REQUIRE(pl != (DataDef *)NULL);
+            REQUIRE(pu != (DataDef *)NULL);
+            CHECK(pl != &ddINT64);
+            CHECK(pu != &ddUINT64);
+            CHECK(pl->size == 4);
+            CHECK(pu->size == 4);
+            CHECK(pl->name == "long");
+            CHECK(pu->name == "unsigned long");
+            CHECK(pl->is_integer());
+            CHECK(pu->is_integer());
+            CHECK(!pl->is_unsigned());
+            CHECK(pu->is_unsigned());
+            // subclass typeid exempts them from the scalar desugar — the
+            // NAME ("long" -> 'l') stays authoritative in mangled symbols
+            CHECK(pl->mangle_scalar_spelling() == "");
+            CHECK(pu->mangle_scalar_spelling() == "");
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == pl);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == pu);
+            CHECK(dd_platform_wchar() == &ddUINT16);
         }
         // reserved-but-unbacked slots resolve NULL until their P0 slice lands
         CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);

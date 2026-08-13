@@ -47,6 +47,19 @@ extern TargetDataModel madc_target_data_model;
 inline bool target_llp64()
 { return madc_target_data_model == TargetDataModel::LLP64; }
 
+// The TARGET-shaped C types whose width the data model decides (task #46b).
+// LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
+// shape — unchanged identities. LLP64: `long`/`unsigned long` are the
+// distinct 4-byte DataDefPlatformLONG/ULONG singletons (lazily minted —
+// typeid pins MADC_TYPEID_PLATFORM_LONG/ULONG) and wchar_t is the 2-byte
+// unsigned ddUINT16 shape. Every "how wide is long / wchar_t" site consults
+// these — never a _WIN32 test. Defined in src/parser.cpp beside the dd
+// globals.
+class DataDef;
+DataDef *dd_platform_long();
+DataDef *dd_platform_ulong();
+DataDef *dd_platform_wchar();
+
 // Resolved absolute path of the running executable, empty when unresolvable.
 // The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
 // _NSGetExecutablePath on macOS.
@@ -1234,6 +1247,19 @@ class DataDefUINT16:    public DataDef { public: DataDefUINT16():  DataDef("uint
 class DataDefUINT24:    public DataDef { public: DataDefUINT24():  DataDef("uint24_t", 3, DataType::dtUINT24) {} };
 class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint32_t", 4, DataType::dtUINT32) {} };
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
+// Platform `long` / `unsigned long` on the LLP64 target (task #46b, owner
+// decision 2026-08-13: win64 = the PLATFORM type model): 4-byte, int-ranked
+// (dtINT32/dtUINT32 — every width/codegen consumer treats them as 32-bit,
+// which IS the model), but a DISTINCT type identity whose NAME feeds the
+// Itanium mangler ('l'/'m' — the subclass typeid exempts them from the
+// mangle_scalar_spelling desugar exactly like the other builtin dds).
+// NEVER instantiate directly: dd_platform_long()/dd_platform_ulong()
+// (parser.cpp) are the one owner — on LP64 they return ddINT64/ddUINT64
+// (long IS int64 there) and these classes go uninstantiated.
+class DataDefPlatformLONG:  public DataDef { public:
+	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
+class DataDefPlatformULONG: public DataDef { public:
+	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
 // caps simple types at 8, which is correct for every other scalar except
 // long double — see DataDefLDOUBLE below).

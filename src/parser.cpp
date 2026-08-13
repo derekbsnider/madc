@@ -2466,14 +2466,18 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
 	return &ddINT32;
     if ( name == "unsigned" || name == "unsigned int" )
 	return &ddUINT32;
+    // Plain `long` rows follow the target data model (4-byte on LLP64);
+    // `long long`/__int128 spellings are 8-byte on every target.
     if ( name == "long" || name == "long int"
-      || name == "signed long" || name == "signed long int"
-      || name == "long long" || name == "long long int"
+      || name == "signed long" || name == "signed long int" )
+	return dd_platform_long();
+    if ( name == "unsigned long" || name == "unsigned long int" )
+	return dd_platform_ulong();
+    if ( name == "long long" || name == "long long int"
       || name == "signed long long" || name == "signed long long int"
       || name == "__int128" || name == "signed __int128" )
 	return &ddINT64;
-    if ( name == "unsigned long" || name == "unsigned long int"
-      || name == "unsigned long long" || name == "unsigned long long int"
+    if ( name == "unsigned long long" || name == "unsigned long long int"
       || name == "unsigned __int128" )
 	return &ddUINT64;
     if ( name == "float" || name == "_Float16" || name == "_Float32" )
@@ -2492,7 +2496,7 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "uint64_t" ) return &ddUINT64;
     if ( name == "size_t" ) return &ddUINT64;
     if ( name == "ptrdiff_t" ) return &ddINT64;
-    if ( name == "wchar_t" ) return &ddINT32;
+    if ( name == "wchar_t" ) return dd_platform_wchar();
     if ( name == "char16_t" ) return &ddUINT16;
     if ( name == "char32_t" ) return &ddUINT32;
     if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
@@ -16194,6 +16198,41 @@ DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
 
+// Target-shaped `long` / `unsigned long` / wchar_t (datadef.h, task #46b).
+// Lazy singletons, NOT namespace-scope globals: the data model can be
+// reassigned after static init (future --target=), and on LP64 the platform
+// types ARE the existing pinned dds — minting parallel instances there would
+// fork `long`'s identity from int64_t, which LP64 defines as the same type.
+DataDef *dd_platform_long()
+{
+    if ( !target_llp64() )
+	return &ddINT64;
+    static DataDefPlatformLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformLONG();
+    return dd;
+}
+
+DataDef *dd_platform_ulong()
+{
+    if ( !target_llp64() )
+	return &ddUINT64;
+    static DataDefPlatformULONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformULONG();
+    return dd;
+}
+
+// wchar_t: 4-byte int-shaped on LP64 (glibc/Itanium int32), 2-byte unsigned
+// on LLP64 (mingw/MSVC unsigned short). Width identity only — both targets
+// approximate wchar_t through an existing fixed-width dd (Linux has always
+// used ddINT32); a distinct 'w'-mangling wchar dd is a separate, pre-existing
+// gap on both targets.
+DataDef *dd_platform_wchar()
+{
+    return target_llp64() ? (DataDef *)&ddUINT16 : (DataDef *)&ddINT32;
+}
+
 struct DataDefMAXAlignTInit
 {
     DataDefMAXAlignTInit()
@@ -16864,6 +16903,14 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_AUTO:		return &ddAUTO;
 		case MADC_TYPEID_BUILTIN_VA_LIST:
 			return Program::builtin_va_list_type();
+		// LLP64-only slots: on LP64 the platform accessors return the
+		// already-pinned ddINT64/ddUINT64 (slots 10/15), and re-stamping
+		// them here would steal their slot — so these resolve NULL there
+		// (the reserved-slot precedent), making a cross-model thaw loud.
+		case MADC_TYPEID_PLATFORM_LONG:
+			return target_llp64() ? dd_platform_long() : NULL;
+		case MADC_TYPEID_PLATFORM_ULONG:
+			return target_llp64() ? dd_platform_ulong() : NULL;
 		default:			return NULL;
 	}
 }
@@ -23884,6 +23931,34 @@ Variable *Program::addLiteral(const std::string &s)
     return var;
 }
 
+// ONE owner for "wide TOKEN payload -> target-wchar_t element units". The
+// token payload is always 4-byte UTF-32 codepoints (read_wide_literal); the
+// TARGET's wchar_t shape (dd_platform_wchar) decides the element units:
+// the codepoints verbatim on LP64 (4-byte), 2-byte UTF-16 units with
+// surrogate pairs for non-BMP codepoints on LLP64 — the same re-encode
+// mingw-gcc applies to L"..." there. Consumed by addWideLiteral (the
+// literal Variable's data) and the array-initializer arm
+// (`wchar_t w[] = L"...";`), so the two can never disagree.
+static void madc_wide_payload_target_units(const std::string &s, size_t unit_size,
+					   std::vector<uint32_t> &units)
+{
+    for ( size_t i = 0; i + 3 < s.size(); i += 4 )
+    {
+	uint32_t cp = (uint8_t)s[i]
+	    | ((uint32_t)(uint8_t)s[i + 1] << 8)
+	    | ((uint32_t)(uint8_t)s[i + 2] << 16)
+	    | ((uint32_t)(uint8_t)s[i + 3] << 24);
+	if ( unit_size == 2 && cp > 0xFFFF )
+	{
+	    cp -= 0x10000;
+	    units.push_back(0xD800 | (cp >> 10));
+	    units.push_back(0xDC00 | (cp & 0x3FF));
+	}
+	else
+	    units.push_back(cp);
+    }
+}
+
 Variable *Program::addWideLiteral(const std::string &s)
 {
     variable_map_iter vmi;
@@ -23895,25 +23970,29 @@ Variable *Program::addWideLiteral(const std::string &s)
     if ( (var=tkProgram->findVariable(strpool, id)) )
 	return var;
 
-    size_t chars = s.size() / 4;
-    uint32_t count = (uint32_t)chars + 1;
-    var = new Variable(id, ddINT32, count, NULL, true);
+    DataDef *wdd = dd_platform_wchar();
+    std::vector<uint32_t> units;
+    madc_wide_payload_target_units(s, wdd->size, units);
+    uint32_t count = (uint32_t)units.size() + 1;
+    var = new Variable(id, *wdd, count, NULL, true);
     var->dims.push_back(count);
     var->flags |= vfFIXEDARRAY;
     var->makeconstant();
-    var->object_size_hint = (int64_t)count * (int64_t)ddINT32.size;
-    var->data = calloc(count ? count : 1, ddINT32.size ? ddINT32.size : 4);
+    var->object_size_hint = (int64_t)count * (int64_t)wdd->size;
+    var->data = calloc(count ? count : 1, wdd->size ? wdd->size : 4);
     var->flags |= vfALLOC;
 
-    int32_t *dst = (int32_t *)var->data;
-    for ( size_t i = 0; i < chars; ++i )
+    if ( wdd->size == 2 )
     {
-	size_t p = i * 4;
-	uint32_t cp = (uint8_t)s[p]
-	    | ((uint32_t)(uint8_t)s[p + 1] << 8)
-	    | ((uint32_t)(uint8_t)s[p + 2] << 16)
-	    | ((uint32_t)(uint8_t)s[p + 3] << 24);
-	dst[i] = (int32_t)cp;
+	uint16_t *dst = (uint16_t *)var->data;
+	for ( size_t i = 0; i < units.size(); ++i )
+	    dst[i] = (uint16_t)units[i];
+    }
+    else
+    {
+	int32_t *dst = (int32_t *)var->data;
+	for ( size_t i = 0; i < units.size(); ++i )
+	    dst[i] = (int32_t)units[i];
     }
     tkProgram->variables.push_back(var);
 
@@ -61571,9 +61650,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			return false;
 		return true;
 	    };
+	    // The element must carry the TARGET wchar_t shape (dtINT32 on
+	    // LP64, dtUINT16 on LLP64 — dd_platform_wchar), the same
+	    // compatible-with-wchar_t rule gcc applies per target.
 	    bool wide_string_array_init =
 		!arr_dims.empty()
-		&& decl_type->rawtype() == DataType::dtINT32
+		&& decl_type->rawtype() == dd_platform_wchar()->rawtype()
 		&& arr_dims.size() == 1
 		&& looks_like_wide_string_payload(peek0);
 	    // String-literal array init:
@@ -61594,14 +61676,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    const std::string &s = ((TokenStr *)strtok)->str;
 		    if ( wide_string_array_init )
 		    {
-			for ( size_t i = 0; i + 3 < s.size(); i += 4 )
-			{
-			    uint32_t cp = (uint8_t)s[i]
-				| ((uint32_t)(uint8_t)s[i + 1] << 8)
-				| ((uint32_t)(uint8_t)s[i + 2] << 16)
-				| ((uint32_t)(uint8_t)s[i + 3] << 24);
-			    init_list.push_back(new TokenInt((int64_t)cp));
-			}
+			std::vector<uint32_t> units;
+			madc_wide_payload_target_units(
+			    s, dd_platform_wchar()->size, units);
+			for ( uint32_t u : units )
+			    init_list.push_back(new TokenInt((int64_t)u));
 		    }
 		    else
 		    {

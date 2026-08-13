@@ -277,6 +277,11 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	// wide model or the narrow byte model — loud, not silently wrong.
 	if ( prefix == "u" )
 	    throw "UTF-16 string literals (u\"...\") are not supported";
+	// On the LLP64 target the ONE wide model is wchar_t = 2-byte UTF-16
+	// (addWideLiteral re-encodes the UTF-32 payload), so U"..." (char32_t
+	// units) loses its element width there — same loud rule as u"...".
+	if ( prefix == "U" && target_llp64() )
+	    throw "char32_t string literals (U\"...\") are not supported on the LLP64 target";
 	std::string bytes;
 	while ( source.good() && source.peek() != '"' )
 	{
@@ -291,8 +296,11 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
 	    // u8"..." stores UTF-8 bytes (a narrow madc string IS UTF-8);
-	    // L"..." / U"..." store 4-byte units (wchar_t and char32_t share
-	    // the 32-bit layout on this ABI).
+	    // L"..." / U"..." store 4-byte UTF-32 units in the TOKEN payload
+	    // on every target (LP64: wchar_t and char32_t share the 32-bit
+	    // layout; LLP64: addWideLiteral re-encodes the payload to the
+	    // 2-byte UTF-16 wchar_t shape at Variable mint, and U"..." was
+	    // rejected above).
 	    if ( prefix == "u8" )
 		append_utf8_codepoint(bytes, cp);
 	    else
@@ -327,12 +335,13 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     }
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
-    // [lex.ccon] literal types: L'' -> wchar_t (int32 here), U'' -> char32_t
-    // (uint32), u'' -> char16_t (uint16), u8'' -> char8_t (uint8).
+    // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
+    // dd_platform_wchar()), U'' -> char32_t (uint32), u'' -> char16_t
+    // (uint16), u8'' -> char8_t (uint8).
     ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
 		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
-		  : static_cast<DataDef *>(&ddINT32));
+		  : dd_platform_wchar());
     return ti;
 }
 
@@ -3348,7 +3357,11 @@ void Program::add_datatypes()
 
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
-    static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    // wchar_t is target-shaped (int32 LP64 / uint16 LLP64). Function-static:
+    // binds the model at the FIRST Program's add_datatypes — fine while the
+    // model is fixed per process (hosted modes); a per-Program --target flip
+    // would need these statics revisited.
+    static TokenDataType tkWCHAR_T("wchar_t", *dd_platform_wchar());
     static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
@@ -4598,13 +4611,38 @@ TokenBase *Program::_getToken()
 		    }
 		};
 		auto resolve_int_suffix_type = [&](int64_t val, bool is_hex_or_octal) -> DataDef * {
-		    if ( long_count >= 1 )
+		    if ( long_count >= 2 )
 			return has_u_suffix ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
+		    if ( long_count == 1 )
+		    {
+			// A single L means platform `long` — 8-byte on LP64
+			// (dd_platform_long() IS ddINT64 there, unchanged), 4-byte
+			// on LLP64, where C11 6.4.4.1 ladders a non-fitting value
+			// past it: decimal L -> long, long long; hex/octal L adds
+			// the unsigned rungs.
+			if ( !target_llp64() )
+			    return has_u_suffix ? (DataDef *)&ddUINT64
+					        : (DataDef *)&ddINT64;
+			uint64_t uval = (uint64_t)val;
+			if ( has_u_suffix )
+			    return uval <= 0xFFFFFFFFull ? dd_platform_ulong()
+							 : (DataDef *)&ddUINT64;
+			if ( uval <= 0x7FFFFFFFull )
+			    return dd_platform_long();
+			if ( is_hex_or_octal && uval <= 0xFFFFFFFFull )
+			    return dd_platform_ulong();
+			if ( (int64_t)uval >= 0 )
+			    return &ddINT64;
+			return is_hex_or_octal ? (DataDef *)&ddUINT64
+					       : (DataDef *)&ddINT64;
+		    }
 		    if ( has_u_suffix )
 			return &ddUINT32;
 		    // C integer literal type rules (no suffix):
 		    // Hex/octal: int → unsigned int → long → unsigned long
 		    // Decimal:   int → long → long long (never unsigned)
+		    // (the >32-bit rungs land on ddINT64/ddUINT64 either way —
+		    // on LLP64 the 4-byte long rung is just skipped, same as gcc)
 		    uint64_t uval = (uint64_t)val;
 		    if ( uval <= 0x7FFFFFFF )
 			return nullptr; // fits in int32 — use default
@@ -5658,12 +5696,14 @@ TokenBase *Program::_getToken()
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long", ddINT64);
+			    // Plain `long` is target-shaped (4-byte on LLP64) —
+			    // dd_platform_long(); the LONG+LONG rows below stay i64.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_long()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long", *dd_platform_long());
 			case TS_UNSIGNED + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("unsigned long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_ulong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long", *dd_platform_ulong());
 			case TS_LONG + TS_LONG:
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:

@@ -25921,14 +25921,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	node_t top_list = list();
 
 	// Wide string literals (parser addWideLiteral): synthetic file-scope
-	// int arrays whose Variable NAME embeds the raw UTF-32 payload
+	// arrays whose Variable NAME embeds the raw UTF-32 payload
 	// (binary-safe for parse-time dedup, not a valid C identifier). c2mir
 	// has no wide literals (no wchar_t — Tier 1 per lowering-vs-raising.md),
 	// so assign each a sanitized module symbol and define it up front:
 	//   static int __wlit_<hash>[] = { code points..., 0 };
-	// (wchar_t's underlying type is int on this target; the baked data
-	// already carries the NUL terminator.) Uses resolve through
-	// var_emit_name; the array decays to int* exactly like gcc's wchar_t[].
+	// The element follows the Variable's TARGET wchar_t shape
+	// (dd_platform_wchar via addWideLiteral): int/4-byte UTF-32 on LP64,
+	// unsigned short/2-byte UTF-16 on LLP64 — the baked data already
+	// carries the NUL terminator and any surrogate pairs. Uses resolve
+	// through var_emit_name; the array decays exactly like gcc's wchar_t[].
 	// The symbol derives from the CONTENT (FNV-1a 64), not creation order,
 	// and each decl is cond_mark_sym'd: the referenced-surface filter drops
 	// UNREFERENCED literals in both the live and bound lanes — creation-
@@ -25953,16 +25955,24 @@ node_t CirBuilder::translate_module(Program *prog)
 			snprintf(sym, sizeof(sym), "__wlit_%016llx",
 				 (unsigned long long)h);
 			m_wide_literal_syms[v] = sym;
+			bool w16 = v->type && v->type->size == 2;
 			node_t spec = list();
 			append(spec, simple(N_STATIC));
-			append(spec, simple(N_INT));
+			if (w16) {
+				append(spec, simple(N_UNSIGNED));
+				append(spec, simple(N_SHORT));
+			} else
+				append(spec, simple(N_INT));
 			node_t dl = list();
 			append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] sized by init
 			node_t decl = node2(N_DECL, id(sym), dl);
 			node_t inits = list();
 			const int32_t *cp = (const int32_t *)v->data;
+			const uint16_t *cp16 = (const uint16_t *)v->data;
 			for (uint32_t i = 0; i < v->count; i++)
-				append(inits, node2(N_INIT, list(), integer(cp[i])));
+				append(inits, node2(N_INIT, list(),
+						    integer(w16 ? (int64_t)cp16[i]
+								: (int64_t)cp[i])));
 			node_t sd = simple(N_SPEC_DECL);
 			append(sd, node1(N_SHARE, spec));
 			append(sd, decl);
