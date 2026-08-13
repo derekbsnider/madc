@@ -124,11 +124,21 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
   }
 
   if (int128_type_p (type)) {
+#ifndef _WIN32
     /* SysV AMD64: __int128 is two INTEGER eightbytes (rdi:rsi-style pairs). */
     assert (n_qwords == 2);
     types[0] = MIR_T_I64;
     types[1] = MIR_T_I64;
     return 2;
+#else
+    /* win64 (mingw-gcc oracle 2026-08-13, tmp/win/i128abi.c): __int128 as an
+       ARGUMENT is memory class -- the address of a caller temp rides the GPR
+       slot, like every 16-byte value.  The RETURN comes back in XMM0;
+       classify has no position context, so process_ret_type carves that out.
+       Writing types[1] here would overflow the caller's types[] --
+       MAX_QWORDS is 1 on win64 (the complex-ABI overflow class, W2). */
+    return 0;
+#endif
   }
   if (complex_type_p (type)) {
 #ifndef _WIN32
@@ -219,6 +229,16 @@ static int process_ret_type (c2m_ctx_t c2m_ctx, struct type *ret_type,
   int n_qwords = classify_arg (c2m_ctx, ret_type, qword_types, FALSE);
 
   if (!memory_value_type_p (ret_type)) return 0;
+#ifdef _WIN32
+  /* win64 __int128 RETURN = XMM0 (mingw-gcc oracle: `movdqu -> %xmm0; ret`,
+     caller `movups %xmm0 -> temp`) -- one V128 qword, the exact shape
+     mir-gen's V128 result machinize already produces.  As an ARGUMENT it
+     stays memory class (classify_arg returned 0 above). */
+  if (int128_type_p (ret_type)) {
+    qword_types[0] = MIR_T_V128;
+    return 1;
+  }
+#endif
   if (n_qwords != 0) {
     update_last_qword_type (c2m_ctx, ret_type, qword_types, n_qwords);
     n_iregs = n_fregs = n_stregs = curr = 0;
