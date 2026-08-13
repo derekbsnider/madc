@@ -13,16 +13,22 @@
     || defined(__need_wchar_t) || defined(__need_NULL) \
     || defined(__need_wint_t)
 
+// Spelled through the toolchain-seeded __*_TYPE__ macros (gcc's own
+// resource stddef.h model): the macros carry each TARGET's shape
+// (unsigned long on LP64, unsigned long long on win64, unsigned short
+// wchar_t there), so one text serves every lane — a hardcoded LP64
+// spelling minted a 4-byte size_t on win64 and collided with the real
+// header chain's typedef ("repeated declaration size_t").
 #ifdef __need_size_t
-typedef unsigned long size_t;
+typedef __SIZE_TYPE__ size_t;
 #undef __need_size_t
 #endif
 #ifdef __need_ptrdiff_t
-typedef long ptrdiff_t;
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #undef __need_ptrdiff_t
 #endif
 #ifdef __need_wchar_t
-typedef int wchar_t;
+typedef __WCHAR_TYPE__ wchar_t;
 #undef __need_wchar_t
 #endif
 #ifdef __need_NULL
@@ -32,7 +38,7 @@ typedef int wchar_t;
 #undef __need_NULL
 #endif
 #ifdef __need_wint_t
-typedef unsigned int wint_t;
+typedef __WINT_TYPE__ wint_t;
 #undef __need_wint_t
 #endif
 
@@ -45,11 +51,12 @@ typedef unsigned int wint_t;
 #define NULL ((void *)0)
 #endif
 
-#define offsetof(type, member) ((unsigned long)&((type *)0)->member)
+#define offsetof(type, member) ((__SIZE_TYPE__)&((type *)0)->member)
 
-typedef long ptrdiff_t;
-typedef unsigned long size_t;
-typedef int wchar_t;
+// Target-shaped via the seeded __*_TYPE__ macros — see the __need arm above.
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+typedef __SIZE_TYPE__ size_t;
+typedef __WCHAR_TYPE__ wchar_t;
 
 // C11 max_align_t. The members' natural alignments (long long, long double)
 // give the platform's strictest fundamental alignment on both x86-64 (16,
