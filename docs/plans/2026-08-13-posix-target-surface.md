@@ -1,4 +1,4 @@
-# The madc POSIX target surface (Win64 first) — plan
+# The madc POSIX target surface (Win64 ONLY — the one non-POSIX target)
 
 **Owner decision, 2026-08-13:** madc should be **as POSIX compliant as
 possible** on every target it compiles for; we do **not** take a Cygwin
@@ -11,6 +11,33 @@ LLP64 type-model decision (`long` = 4 bytes on win64, plan
 library surface are orthogonal.** madc.exe stays a Win64 LLP64 compiler
 that speaks the platform's ABI; what grows is the set of *library* names
 it can serve.
+
+## 0. Scope law: this is Win64-only, by construction
+
+**Every other target madc compiles for is already POSIX.** Linux is
+POSIX; macOS/darwin is POSIX (certified UNIX, in fact). On those hosts
+madc supplies *nothing* — it serves the platform's real headers and binds
+the platform's real libc, which is exactly why `tests/testfcntl.mad`
+passes there today in all three lanes with zero madc code in the path
+(§7). **Windows is the odd one out, and it is the only one.**
+
+Three consequences, all load-bearing:
+
+1. **"Win64 first" would be the wrong framing** — there is no second.
+   This layer is not a portable abstraction being rolled out per-target;
+   it is a compatibility shim for the single non-POSIX platform in the
+   support matrix.
+2. **The arc cannot regress Linux or macOS.** L2 headers are served only
+   where the native toolchain lacks them (§8), and L3 objects compile
+   only into the win64 archive. A POSIX host never activates a line of
+   it. Reviewers should hold every slice to that standard: if a change
+   in this arc can be observed on a POSIX host, it is in the wrong layer.
+3. **A new POSIX target costs nothing.** Any future *nix port inherits
+   the platform's own libc surface, as Linux and darwin do now.
+
+The corollary for judging any proposed addition: *"which platform's
+absence forces this?"* If the answer is not "Windows", it belongs in L1
+(madc's own portable surface), not here.
 
 ---
 
@@ -77,8 +104,8 @@ a behavioural oracle, not a source derivation.
 |---|---|---|---|
 | **L0 host seams** | madc's own code calling the OS | `madc_dl.cpp`, `madc_posix_io.cpp`, `madc_process.cpp`, `madc_socket_channel.cpp` | ✅ done (W1) |
 | **L1 portable surface** | what portable *scripts* should call | channels, `Process`, `madc::sys`, `madcdl_*` | ✅ mostly; gains non-blocking (§7) |
-| **L2 POSIX headers** | POSIX spellings served only where the native toolchain lacks them | `include/madc/posix/**` (new) | ⬜ this plan |
-| **L3 POSIX shims** | the implementations L2 declares | new members of `libmadc_rt` | ⬜ this plan |
+| **L2 POSIX headers** | POSIX spellings served only where the native toolchain lacks them — **win64 only** (§0) | `include/madc/posix/**` (new) | ⬜ this plan |
+| **L3 POSIX shims** | the implementations L2 declares — **win64 only**, compiled into the win64 archive alone | new members of `libmadc_rt` | ⬜ this plan |
 | **L4 refused** | fork/signals/mounts/`/proc`/uid | — | never |
 
 **L0 is not L3.** `src/madc_posix_io.cpp` is the host-side owner —
@@ -182,20 +209,35 @@ that must stay true, so the headers are additive only.
 
 ---
 
-## 7. Non-blocking is a portable gap, not a Windows gap
+## 7. Non-blocking: two different surfaces, do not conflate them
 
-madc's channel layer has **no non-blocking support on any platform** —
-verified: zero `O_NONBLOCK` / `FIONBIO` references in
-`madc_socket_channel.cpp` or `madc_datachannel.cpp`. So this is a new L1
-capability everywhere, not a win64 port:
+**POSIX `O_NONBLOCK` already works on Linux, by default, with zero madc
+code.** madc serves the real glibc `<fcntl.h>` and binds real glibc
+`fcntl`, so a script doing `fcntl(fd, F_SETFL, flags | O_NONBLOCK)` gets
+the platform's own implementation. Evidence: `tests/testfcntl.mad` does
+exactly that and asserts `newflags & O_NONBLOCK`; its **only** skip
+fixture is `.win64_skip` (no `.exe_skip`, no `.mir_skip`), so it passes
+in the Linux JIT, EXE and OBJ lanes today.
 
-- L1 API: a non-blocking mode on the channel surface (one owner, both
-  platforms), POSIX arm `fcntl(O_NONBLOCK)`, Win arm
-  `ioctlsocket(FIONBIO)` for sockets and `SetNamedPipeHandleState`
-  for pipes.
-- L2/L3 then expose the POSIX spelling over the same primitives.
-- Ship it L1-first so the portable surface is never behind the
-  compatibility surface.
+That is the whole architecture in miniature, and it is the model this
+plan follows: **madc supplies nothing the platform already supplies.**
+Non-blocking is therefore a *pure win64 gap* — mingw has no `fcntl` and
+no `O_NONBLOCK` (both verified) — served by P3 exactly like the other
+nineteen. It is not a portable gap, and it does not need shipping
+"first".
+
+Separately and independently: **madc's own channel API has no
+non-blocking mode on either platform** — verified, zero `O_NONBLOCK` /
+`FIONBIO` references in `madc_socket_channel.cpp` or
+`madc_datachannel.cpp`. That is a question about madc's own abstraction
+(should `tcp://` / `exec://` channels expose a non-blocking mode at
+all?), not a POSIX-compliance question. It is genuinely optional, it
+gates nothing in this plan, and it is deliberately demoted to P6.
+
+The distinction generalises: **L2/L3 exist only where the target
+toolchain is missing something. L1 grows only when madc's own portable
+API is missing something.** A gap in one is not evidence of a gap in the
+other.
 
 ---
 
@@ -252,8 +294,12 @@ owner. *Gate:* `testhttpget`, `testsockaddr`, `testtcpchannel`,
 Windows is a separate product call — but after P4 the compiler no longer
 blocks it.
 
-**P6 — portable non-blocking in L1** (§7) — may land before P3 if it is
-convenient; it has no dependency on the registry.
+**P6 — a non-blocking mode on madc's own channel API** (§7) — OPTIONAL
+and independent. This is not POSIX compliance work (POSIX non-blocking
+is free on Linux and lands with P3 on win64); it is the separate
+question of whether madc's `tcp://` / `exec://` channel abstraction
+should expose one. Needs an owner call on the API shape before it is
+worth starting; nothing else in this plan waits on it.
 
 ---
 
