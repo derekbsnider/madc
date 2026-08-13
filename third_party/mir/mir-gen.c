@@ -9025,7 +9025,7 @@ static int combine_substitute (gen_ctx_t gen_ctx, bb_insn_t *bb_insn_ref, long *
        r0 = r2 op r3; ...; ... = r0  =>  ...; ... = r2 op r3 */
     var = insn->ops[1].u.var;
     if ((def_insn = get_uptodate_def_insn (gen_ctx, var)) == NULL
-        || MIR_call_code_p (def_insn->code))
+        || fixed_place_insn_p (def_insn))
       return FALSE;
     target_get_early_clobbered_hard_regs (def_insn, &early_clobbered_hard_reg1,
                                           &early_clobbered_hard_reg2);
