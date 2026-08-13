@@ -5,11 +5,11 @@ extern "C" {
     void __rb_chars(array *, const char *);
     std::string *__rb_capitalize(std::string *);
     std::string *__rb_delete(std::string *, const char *);
-    long __rb_count(const char *, const char *);
-    long __rb_include(const char *, const char *);
+    int64_t __rb_count(const char *, const char *);
+    int64_t __rb_include(const char *, const char *);
     std::string *__rb_gsub(std::string *, const char *, const char *);
     std::string *__rb_sub(std::string *, const char *, const char *);
-    void __rb_rotate(array *, long);
+    void __rb_rotate(array *, int64_t);
     void __rb_compact(array *);
     void __rb_flatten(array *, const char *);
 }
@@ -20,11 +20,11 @@ namespace ruby {
     void chars(array &out, const char *text) { __rb_chars(&out, text); }
     std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
     std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
-    long count(const char *text, const char *chars) { return __rb_count(text, chars); }
-    long include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
     std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
     std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
-    void rotate(array &values, long n) { __rb_rotate(&values, n); }
+    void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
     void compact(array &values) { __rb_compact(&values); }
     void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }
