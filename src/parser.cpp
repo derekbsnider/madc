@@ -19102,7 +19102,14 @@ void printfloat(float f)
     std::cout << std::setprecision(8) << f << std::endl;
 }
 
-int64_t madc_dlopen(void *filename)
+// Script-facing dl/system thunks. extern "C": every lane's call binds the
+// THUNK through its own stable symbol (FuncDef::emit_symbol, set at
+// registration). Emitting the script name instead binds the HOST library's
+// same-named function against the script signature — glibc's 2-arg dlopen
+// called with madc's 1-arg shape left the mode argument to an uninitialized
+// register, and on win64 nothing exports the POSIX names at all ("MIR
+// error: import of undefined item dlclose").
+extern "C" int64_t madc_dlopen(void *filename)
 {
     const char *fn = (const char *)filename;
     void *handle = madcdl_open_local(fn);
@@ -19111,7 +19118,7 @@ int64_t madc_dlopen(void *filename)
     return (int64_t)handle;
 }
 
-int64_t madc_dlsym(int64_t handle, void *name)
+extern "C" int64_t madc_dlsym(int64_t handle, void *name)
 {
     const char *n = (const char *)name;
     void *sym = madcdl_sym((void *)handle, n);
@@ -19120,13 +19127,13 @@ int64_t madc_dlsym(int64_t handle, void *name)
     return (int64_t)sym;
 }
 
-void madc_dlclose(int64_t handle)
+extern "C" void madc_dlclose(int64_t handle)
 {
     if ( handle )
 	madcdl_close((void *)handle);
 }
 
-int64_t madc_system(void *cmd)
+extern "C" int64_t madc_system(void *cmd)
 {
     return (int64_t)system((const char *)cmd);
 }
@@ -20153,17 +20160,17 @@ bool Program::load_buffer(const std::string &source_text,
 
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
-    core_functions.push_back({id, params, extfunc, is_method});
+    core_functions.push_back({id, params, extfunc, is_method, std::string()});
 }
 
-void Program::BuiltinRegistry::add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+void Program::BuiltinRegistry::add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method, const std::string &emit_symbol)
 {
-    process_functions.push_back({id, params, extfunc, is_method});
+    process_functions.push_back({id, params, extfunc, is_method, emit_symbol});
 }
 
-void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method, const std::string &emit_symbol)
 {
-    dlfcn_functions.push_back({id, params, extfunc, is_method});
+    dlfcn_functions.push_back({id, params, extfunc, is_method, emit_symbol});
 }
 
 void Program::NamespaceRegistry::add_namespace(const std::string &name, namespace_init_fn_t init)
@@ -20268,7 +20275,7 @@ void Program::populate_builtin_registry()
 	target_llp64() ? datatype_vec_t{DataType::dtINT32, DataType::dtINT32}
 		       : datatype_vec_t{DataType::dtINT64, DataType::dtINT64},
 	(fVOIDFUNC)(long(*)(long))labs);
-    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system, false, "madc_system");
     // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
     // bound to real libc. The old madc conveniences (getenv's 2-param
     // std::string result-buffer __madc_getenv, setenv's 2-param overwrite=1
@@ -20308,9 +20315,9 @@ void Program::populate_builtin_registry()
     // (return refreshed, params kept), emitting `void *dlsym(long, char *)` —
     // a hybrid prototype nothing anywhere declares, and a c2mir pointer/int
     // warning on every dlsym(RTLD_DEFAULT, ...) call.
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
-    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose);
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen, false, "madc_dlopen");
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym, false, "madc_dlsym");
+    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose, false, "madc_dlclose");
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
     builtin_registry.defaults_loaded = true;
@@ -20359,7 +20366,7 @@ void Program::add_process_functions()
     // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.process_functions.begin();
 	  it != builtin_registry.process_functions.end(); ++it )
-	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true, it->emit_symbol);
 }
 
 void Program::add_dlfcn_functions()
@@ -20369,7 +20376,7 @@ void Program::add_dlfcn_functions()
     {
 	if ( !is_dynamic_symbol_allowed(it->id) )
 	    continue;
-	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true, it->emit_symbol);
     }
 }
 
@@ -24169,7 +24176,7 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 }
 
 // add a function definition
-Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration)
+Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const std::string &emit_symbol)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -24223,18 +24230,12 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	if ( tkProgram && !(var=tkProgram->findVariable(strpool, id)) )
 	{
 	    func = fmi->second;
+	    if ( !emit_symbol.empty() && func->emit_symbol.empty() )
+		func->emit_symbol = emit_symbol;
 	    var = addVariable(NULL, *func, id, false);
 	    method = new Method(*var);
 	    var->data = (void *)method;
 	    method->x86code = (void *)extfunc;
-	    if ( extfunc )
-	    {
-		MadcDlInfo _dli;
-		if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
-		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
-		else
-		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-	    }
 	    return var;
 	}
 	return NULL;
@@ -24251,6 +24252,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     // dynamic symbols) stay false — a source declaration of those ids is a
     // definition, not a builtin override.
     func->builtin_registration = builtin_registration;
+    if ( !emit_symbol.empty() )
+	func->emit_symbol = emit_symbol;
     if ( !isMethod )
     {
 	pack_tap_name(id, pdkFunction);	// B4a: decl-index tap
@@ -24277,14 +24280,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	method = new Method(*var);
 	var->data = (void *)method;
 	method->x86code = (void *)extfunc;
-	if ( extfunc )
-	{
-	    MadcDlInfo _dli;
-	    if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
-		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
-	    else
-		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-	}
 
 	return var;
     }
@@ -24301,14 +24296,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	var->data = (void *)method;
     }
     method->x86code = (void *)extfunc;
-    if ( extfunc )
-    {
-	MadcDlInfo _dli;
-	if ( madcdl_addr((void *)extfunc, _dli) && _dli.sname && _dli.sname[0] )
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.sname;
-	else
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-    }
 
     return var;
 }

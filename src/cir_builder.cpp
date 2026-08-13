@@ -20133,22 +20133,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// local_emit_name), not the source name.
 				FuncDef *cdf = NULL;
 				std::string callee_name = call_target_emit_name(tcf, &cdf);
-				Method *native_method = (Method *)tcf->var.data;
-				if (tcf->var.name == "system" && cdf
-				    && native_method && native_method->x86code && m_prog) {
-					auto sit = m_prog->external_symbol_map.find(
-						reinterpret_cast<uintptr_t>(native_method->x86code));
-					if (sit != m_prog->external_symbol_map.end()
-					    && !sit->second.empty()) {
-						callee_name = sit->second;
-						bool ret_ptr = false;
-						std::vector<c2mir_node_code_t> ret_specs;
-						std::vector<ExternParam> eparams;
-						native_func_shape(cdf, ret_ptr, ret_specs, eparams);
-						need_output_extern(callee_name.c_str(), ret_ptr,
-								   eparams, ret_specs);
-					}
-				}
+				// A builtin registered with a host thunk (system, the
+				// dlfcn family) carries the thunk's extern-C symbol in
+				// FuncDef::emit_symbol, so call_target_emit_name already
+				// produced the thunk name; the extern proto comes from
+				// the referenced_funcs pass like any other builtin's.
+				// (The old name-keyed "system" swap through
+				// external_symbol_map is subsumed.)
 				// c2mir intrinsics (e.g. __builtin_va_start) are
 				// recognized by name and lowered in-place; emitting an
 				// extern prototype for one shadows the intrinsic and

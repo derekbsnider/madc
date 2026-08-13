@@ -2041,6 +2041,12 @@ public:
 	datatype_vec_t params;
 	fVOIDFUNC extfunc;
 	bool is_method;
+	// Non-empty = the builtin is served by a HOST THUNK under this
+	// extern-C symbol (FuncDef::emit_symbol at mint). A builtin whose id
+	// collides with a real host-library name (dlopen, system) must emit
+	// the thunk's own symbol, or every lane binds the host function
+	// against the script signature instead of the registered thunk.
+	std::string emit_symbol;
     };
 
     struct BuiltinRegistry
@@ -2051,8 +2057,8 @@ public:
 	std::vector<FunctionRegistrationSpec> dlfcn_functions;
 
 	void add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
-	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
-	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
+	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
     };
 
     typedef void (*namespace_init_fn_t)(Program &);
@@ -4391,7 +4397,6 @@ public:
     };
     std::map<uintptr_t, size_t> aot_layout_offsets;
     std::vector<AotDataRange> aot_layout_ranges;
-    std::map<uintptr_t, std::string> external_symbol_map;
     fVOIDFUNC root_fn;
 
     Program();
@@ -4722,7 +4727,7 @@ public:
 				 const std::string &display_name = "__madc_runtime_eval_expression",
 				 const madc::value *context = NULL);
 
-    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false);
+    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false, const std::string &emit_symbol=std::string());
 
     // manage compound nesting
     void pushCompound();
