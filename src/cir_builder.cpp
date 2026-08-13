@@ -21303,10 +21303,29 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	// setjmp(*(jmp_buf*)push_call) — declare setjmp returning int; the arg is the
 	// jbuf the runtime returned. c2mir takes the (void*) and treats it as the
 	// jmp_buf the libc setjmp expects (jmp_buf is an array -> a pointer in C).
+#ifdef _WIN32
+	// NON_SEH setjmp (W2.1): ucrtbase EXPORTS plain `setjmp`, and its x64
+	// flavor captures the SEH frame — the paired longjmp then RtlUnwindEx-
+	// walks JIT frames, the exact fault W2.1 gated. The safe contract is
+	// the two-arg _setjmp(jbuf, NULL): a NULL frame-ctx makes longjmp take
+	// the plain-restore path. `_setjmp` resolves to this binary's
+	// win_ucrt_compat thunk (tail-jmp to __intrinsic_setjmpex with the ctx
+	// register passed through), and MIR's returns-twice bookkeeping knows
+	// the name (SETJMP_NAME2). Host==target for the JIT; a future
+	// cross-windows mode moves this onto the target enum.
+	need_output_extern("_setjmp", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } },
+			   { N_INT });
+	node_t sj_args = list();
+	append(sj_args, push_call);
+	append(sj_args, node2(N_CAST, void_ptr_type(), integer(0, tt), tt));
+	node_t sj_call = node2(N_CALL, id("_setjmp", tt), sj_args, tt);
+#else
 	need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
 	node_t sj_args = list();
 	append(sj_args, push_call);
 	node_t sj_call = node2(N_CALL, id("setjmp", tt), sj_args, tt);
+#endif
 	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
 
 	// THEN arm: capture the cleanup-stack mark (== ctx->cleanup_mark, set by
