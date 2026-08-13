@@ -1421,9 +1421,7 @@ void Program::_tokenizer_init()
     define_map["__builtin_putchar"] = "putchar";
     define_map["__builtin_abs"] = "abs";
     define_map["__builtin_labs"] = "labs";
-    define_map["__builtin_fabs"] = "fabs";
-    define_map["__builtin_fabsf"] = "fabsf";
-    define_map["__builtin_fabsl"] = "fabsl";
+    // fabs family rows live in the C99 math table below.
     define_map["__builtin_trap"] = "abort";
     define_map["__builtin_memchr"] = "memchr";
     define_map["__builtin_mempcpy"] = "mempcpy";
@@ -1454,33 +1452,35 @@ void Program::_tokenizer_init()
     define_map["__builtin_alloca"] = "alloca";
     define_map["__builtin_bzero"] = "bzero";
     define_map["__builtin_bcopy"] = "bcopy";
-    define_map["__builtin_copysign"] = "copysign";
-    define_map["__builtin_copysignf"] = "copysignf";
-    define_map["__builtin_copysignl"] = "copysignl";
-    define_map["__builtin_sqrtf"] = "sqrtf";
-    define_map["__builtin_sqrt"] = "sqrt";
-    define_map["__builtin_sqrtl"] = "sqrtl";
-    define_map["__builtin_logf"] = "logf";
-    define_map["__builtin_log"] = "log";
-    define_map["__builtin_expf"] = "expf";
-    define_map["__builtin_exp"] = "exp";
-    define_map["__builtin_sinf"] = "sinf";
-    define_map["__builtin_sin"] = "sin";
-    define_map["__builtin_cosf"] = "cosf";
-    define_map["__builtin_cos"] = "cos";
-    define_map["__builtin_floorf"] = "floorf";
-    define_map["__builtin_floor"] = "floor";
-    define_map["__builtin_ceilf"] = "ceilf";
-    define_map["__builtin_ceil"] = "ceil";
-    define_map["__builtin_roundf"] = "roundf";
-    define_map["__builtin_round"] = "round";
-    define_map["__builtin_fmaxf"] = "fmaxf";
-    define_map["__builtin_fmax"] = "fmax";
-    define_map["__builtin_fmaxl"] = "fmaxl";
-    define_map["__builtin_powf"] = "powf";
-    define_map["__builtin_pow"] = "pow";
-    define_map["__builtin_fmaf"] = "fmaf";
-    define_map["__builtin_fma"] = "fma";
+    // C99 <math.h> family, table-driven over roots x {"", "f", "l"}:
+    // libstdc++'s cmath inline wrappers call the __builtin_* forms (its
+    // include_next <math.h> supplies the real prototypes, so the aliased
+    // names type correctly). The previous ad-hoc singles grew one cmath
+    // branch at a time and missed the whole *l family the win64 staged
+    // 13.2.0 text calls ("__builtin_acosl undeclared" across every
+    // cmath consumer); the complete family closes the class. The *l
+    // RESOLUTION on win64 is the fork map's flavor-pin job
+    // (mir-mingw-stdio.h class 3): ucrtbase lacks most *l exports and
+    // mis-flavors the rest (MSVC 8-byte long double).
+    {
+	static const char *const c99_math_roots[] = {
+	    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
+	    "cbrt", "ceil", "copysign", "cos", "cosh", "erf", "erfc",
+	    "exp", "exp2", "expm1", "fabs", "fdim", "floor", "fma",
+	    "fmax", "fmin", "fmod", "frexp", "hypot", "ilogb", "ldexp",
+	    "lgamma", "llrint", "llround", "log", "log10", "log1p",
+	    "log2", "logb", "lrint", "lround", "modf", "nearbyint",
+	    "nextafter", "nexttoward", "pow", "remainder", "remquo",
+	    "rint", "round", "scalbln", "scalbn", "sin", "sinh", "sqrt",
+	    "tan", "tanh", "tgamma", "trunc", NULL };
+	for ( int i = 0; c99_math_roots[i]; ++i )
+	{
+	    std::string root = c99_math_roots[i];
+	    define_map["__builtin_" + root] = root;
+	    define_map["__builtin_" + root + "f"] = root + "f";
+	    define_map["__builtin_" + root + "l"] = root + "l";
+	}
+    }
     define_map["__builtin_conj"] = "conj";
     define_map["__builtin_conjf"] = "conjf";
     define_map["__builtin_conjl"] = "conjl";

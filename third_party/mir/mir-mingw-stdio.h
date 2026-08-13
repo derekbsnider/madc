@@ -154,6 +154,46 @@ static const struct {
   {"fabs", (void *) (double (*) (double)) fabs}, /* C++ sees overloads */
   {"fabsf", (void *) fabsf},
   {"fabsl", (void *) fabsl},
+  /* 3 (cont.): the COMPLETE C99 long-double math family.  mingw long
+     double is x87 80-bit; ucrtbase exports NONE of most *l names (loud
+     undefined import) and the few it does export (lgammal, cbrtl) are
+     the MSVC 8-byte flavor (silent garbage).  libmingwex implements the
+     whole family; the included <math.h> is the prototype source at host
+     compile time, so a hidden or drifted declaration fails THIS build
+     loudly.  Closed as the complete standard surface rather than
+     extended one error at a time (the defect-#3 note's threshold).
+     nexttoward/nexttowardf ride along: their second parameter is long
+     double, so the unsuffixed names are flavor-sensitive too. */
+  {"acosl", (void *) acosl},           {"acoshl", (void *) acoshl},
+  {"asinl", (void *) asinl},           {"asinhl", (void *) asinhl},
+  {"atanl", (void *) atanl},           {"atanhl", (void *) atanhl},
+  {"atan2l", (void *) atan2l},         {"cbrtl", (void *) cbrtl},
+  {"ceill", (void *) ceill},           {"copysignl", (void *) copysignl},
+  {"cosl", (void *) cosl},             {"coshl", (void *) coshl},
+  {"erfl", (void *) erfl},             {"erfcl", (void *) erfcl},
+  {"expl", (void *) expl},             {"exp2l", (void *) exp2l},
+  {"expm1l", (void *) expm1l},         {"fdiml", (void *) fdiml},
+  {"floorl", (void *) floorl},         {"fmal", (void *) fmal},
+  {"fmaxl", (void *) fmaxl},           {"fminl", (void *) fminl},
+  {"fmodl", (void *) fmodl},           {"frexpl", (void *) frexpl},
+  {"hypotl", (void *) hypotl},         {"ilogbl", (void *) ilogbl},
+  {"ldexpl", (void *) ldexpl},         {"lgammal", (void *) lgammal},
+  {"llrintl", (void *) llrintl},       {"llroundl", (void *) llroundl},
+  {"logl", (void *) logl},             {"log10l", (void *) log10l},
+  {"log1pl", (void *) log1pl},         {"log2l", (void *) log2l},
+  {"logbl", (void *) logbl},           {"lrintl", (void *) lrintl},
+  {"lroundl", (void *) lroundl},       {"modfl", (void *) modfl},
+  {"nearbyintl", (void *) nearbyintl}, {"nextafterl", (void *) nextafterl},
+  {"nexttowardl", (void *) nexttowardl},
+  {"nexttoward", (void *) (double (*) (double, long double)) nexttoward},
+  {"nexttowardf", (void *) (float (*) (float, long double)) nexttowardf},
+  {"powl", (void *) powl},             {"remainderl", (void *) remainderl},
+  {"remquol", (void *) remquol},       {"rintl", (void *) rintl},
+  {"roundl", (void *) roundl},         {"scalblnl", (void *) scalblnl},
+  {"scalbnl", (void *) scalbnl},       {"sinl", (void *) sinl},
+  {"sinhl", (void *) sinhl},           {"sqrtl", (void *) sqrtl},
+  {"tanl", (void *) tanl},             {"tanhl", (void *) tanhl},
+  {"tgammal", (void *) tgammal},       {"truncl", (void *) truncl},
 };
 
 static inline void *mir_mingw_ansi_stdio_lookup (const char *name) {
