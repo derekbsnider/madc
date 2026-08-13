@@ -120,9 +120,23 @@ each exercise their own artifact rather than a stale `bin/madc`.
 
 `testvaluesort` moved from `.win64_skip` to `.wine64_skip`, its fixture
 claiming "PASSES with Windows sort.exe on the real Windows runner
-(verified 2026-08-13)". I found no corroborating `win_run.sh` invocation
-in the branch, and Codex's own summary describes wine-side work
-(`wineserver -p`), not a real-Windows battery.
+(verified 2026-08-13)".
+
+**Reviewer's correction (2026-08-13):** this finding was first written as
+"I found no corroborating `win_run.sh` invocation in the branch", based
+on `git log -S"win_run"`. **That marker cannot answer the question.**
+`-S` finds commits that CHANGE a string; *running* a script leaves no
+trace in a diff, so the search could not have found the evidence even had
+it existed. A null result from a search that cannot detect the thing is
+not evidence of absence — it is no evidence at all, and stating it as a
+finding against another agent's rigour was exactly the error this review
+is meant to catch (`dupaudit.md`: "a bad marker is worse than no marker
+— it reports a smaller family with confidence").
+
+What stands, narrowly: **the claim is unverified by me**, and Codex's
+summary describes wine-side work (`wineserver -p`) rather than a
+real-Windows battery. That is a reason to confirm, not a reason to
+doubt.
 
 The distinction is exactly what the two domains mean: `win64_skip` = "out
 of scope on Windows", `wine64_skip` = "passes on real Windows, fails only

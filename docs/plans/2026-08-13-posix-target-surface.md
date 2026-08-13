@@ -227,9 +227,12 @@ nineteen. It is not a portable gap, and it does not need shipping
 "first".
 
 Separately and independently: **madc's own channel API has no
-non-blocking mode on either platform** — verified, zero `O_NONBLOCK` /
-`FIONBIO` references in `madc_socket_channel.cpp` or
-`madc_datachannel.cpp`. That is a question about madc's own abstraction
+non-blocking mode on either platform.** Marker, recorded so a later
+sweep re-checks instead of re-deriving — the CONCEPT, not one spelling:
+`grep -rniE "nonblock|non_block|non-block|FIONBIO|MSG_DONTWAIT|SOCK_NONBLOCK|WSAEventSelect|EWOULDBLOCK|EAGAIN|set_blocking|blocking"`
+over `madc_datachannel.cpp`, `madc_socket_channel.cpp`,
+`madc_channel_stream.cpp`, `madc_process.cpp`, `madc_posix_io.cpp`,
+`madc_datachannel.h`, `madc_process.h` — zero hits (2026-08-13). That is a question about madc's own abstraction
 (should `tcp://` / `exec://` channels expose a non-blocking mode at
 all?), not a POSIX-compliance question. It is genuinely optional, it
 gates nothing in this plan, and it is deliberately demoted to P6.

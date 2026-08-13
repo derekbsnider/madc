@@ -935,6 +935,47 @@ the suite on the real Windows host over the W0.2 channel"; the
 endpoint is "zip artifact passes verify + the packed suite on
 Windows + win_battery".
 
+## W4 forest — what a forest actually CONTAINS (fact, 2026-08-13)
+
+⚠ **`scripts/forest_pack_headers.txt` is the list of ENTRY POINTS, not
+the contents.** The forest holds those entry points' full **transitive
+closure**. Measured on the packed `bin/madc-release` via
+`bin/madc-release --dump-forest`: **241 units** from 19 listed headers,
+and the canon list is dominated by system headers pulled in by
+inclusion — `/usr/include/features.h`, `sys/cdefs.h`, `bits/types.h`,
+`bits/typesizes.h`, `stdio.h`, `string.h`, `ctype.h`, the whole glibc
+substrate under libstdc++. That closure is why an uncompressed forest
+runs to ~100MB.
+
+Reading the pack LIST and concluding "no OS headers are in the forest"
+is a category error (recipe vs artifact); `--dump-forest` is the
+authority and answers it in one command.
+
+Consequences for W4:
+- The win64 forest will **already** carry a large body of Windows
+  system-header text by the same mechanism — mingw's `_mingw.h`, the
+  `corecrt*.h` family, `stdio.h`/`stddef.h` and whatever the staged
+  UCRT libstdc++ 13.2.0 drags behind it. Windows headers being in the
+  forest is not a decision; it is automatic.
+- The remaining question is narrow: **is `windows.h` (the Win32 API
+  surface — `windef.h`/`winnt.h`/`winbase.h`/`winsock2.h`) reached
+  transitively from those 19 entry points on mingw, or does the closure
+  stop at the CRT layer?** Settle it by dumping the win64 forest's canon
+  list, not by reasoning. If absent and wanted, it becomes an explicit
+  extra entry point — subject to the list's standing bar ("must compile
+  QUIETLY, exit 0, zero diagnostics, in this combined order") and to the
+  owner's size-trade rule.
+- ⚠ **W4 needs a provenance pass, the analogue of W0.5.** A packed
+  `madc.exe` distributed publicly redistributes every header text frozen
+  into it. mingw-w64's headers are permissively licensed and this is
+  very likely fine — but "very likely" is not the standard the macOS
+  lane held itself to, and the darwin prelude got W0.5 for exactly this
+  reason. Verify and attribute before any packed win64 artifact ships.
+- Not to be confused with the host-compile trap: "windows.h can never
+  meet tokens.h in one TU" (winnt.h declares a `TokenType` enumerator)
+  is about compiling madc's OWN C++ sources, not about madc parsing
+  windows.h for a script. Different concern, different mechanism.
+
 ## Open questions (owner)
 
 1. ~~In-vivo host~~ **RESOLVED 2026-08-12**: the Windows 11 box IS the
