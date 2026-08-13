@@ -1,1 +1,0 @@
-shells the POSIX `true` command through cmd.exe — a mingw-g++-built twin exits nonzero identically (oracle rc=49; no `true` on Windows), and the test's pass condition IS system()'s exit status

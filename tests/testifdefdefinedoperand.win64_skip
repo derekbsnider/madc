@@ -1,1 +1,0 @@
-asserts #if defined(__LP64__) and #errors otherwise — mingw-gcc rejects the same source identically (win64 is LLP64, __LP64__ is never defined there)

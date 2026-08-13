@@ -1,0 +1,1 @@
+wine-environment limit: this Wine installation has no sort.exe; PASSES with Windows sort.exe on the real Windows runner (verified 2026-08-13)

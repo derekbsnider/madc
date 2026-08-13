@@ -1,13 +1,14 @@
 #!/usr/bin/env madc
-#include <iostream>
-using namespace std;
-
 #include <stdlib.h>
 #include <string.h>
 
 int main()
 {
+#if defined(_WIN32)
+	char cmd[16] = "exit /b 0";
+#else
     char cmd[16] = "true";
+#endif
     strcat(&cmd[0], "");
     return system(cmd);
 }

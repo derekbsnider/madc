@@ -2,12 +2,18 @@
 #error broken defined operator handling
 #endif
 
+#if defined(_WIN32)
 #if defined(__LP64__)
+#error Win64 must use LLP64
+#endif
+#else
+#if !defined(__LP64__)
+#error non-Windows x86-64 baseline must use LP64
+#endif
+#endif
+
 int main()
 {
 	puts("ok");
 	return 0;
 }
-#else
-#error missing __LP64__
-#endif

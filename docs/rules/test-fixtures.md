@@ -108,8 +108,8 @@ at once, `MADC_SKIP_EXT="win64 wine64"`). Two per-domain facts are
 properties of individual tests, not of the runner:
 
 - **Structurally out of domain** — the test asserts something the
-  domain's own oracle compiler rejects or cannot express (POSIX
-  sockets, an `#if defined(__LP64__)` guard mingw-gcc also #errors on).
+  domain's own oracle compiler rejects or cannot express (for example,
+  POSIX sockets, which mingw-gcc rejects too).
   `<domain>_skip` carries the one-line reason; the summary line labels
   the run a DOMAIN RUN so it can't be quoted as the default baseline.
 - **Correct output differs** — the test is meaningful on the domain but
