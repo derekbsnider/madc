@@ -429,6 +429,22 @@ Inventory from recon (session #83 greps):
   math names will surface the same way; if the list grows past a
   handful, generate the table from nm (HOSTTAB-style) instead of
   hand-extending.
+  **Next-frontier probes (banked, reducers in container tmp/win/):**
+  (a) bstr37.mad — `#include <iostream>` alone PARSES but dies at MIR
+  link, "import of undefined item _ZNSt8ios_base4InitC1Ev":
+  mangled-direct std:: symbols cannot resolve on win64 because the
+  -static libstdc++ inside madc.exe is auto-excluded from
+  --export-all-symbols. This blocks the ENTIRE C++ mangled-direct
+  architecture on the lane — the real next arc. Candidate designs: a
+  build-time-generated .def export list for the staged libstdc++'s
+  defined symbols (nm-driven, HOSTTAB-style; ld requires listed
+  symbols be linked in — may need --whole-archive), or shipping the
+  staged libstdc++ as a DLL beside madc.exe (the darwin LC_LOAD_DYLIB
+  analogue; the UCRT stage script currently builds static-only).
+  (b) bstr38.mad — iostream + a GLOBAL `string test = "..."`
+  reproduces the basic_string.h:87 "undeclared identifier 'max_size'"
+  parse error (13.2.0-text instantiation issue; `#include <string>`
+  alone is green). testif needs both fixed.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
