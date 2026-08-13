@@ -60838,11 +60838,21 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else if ( inner && inner->id() == TokenID::tkMul )
 	{
+	    // Extra `*` levels declare a POINTER TO the function pointer, one
+	    // wrap per star beyond the first — `type (**name)(params)` is
+	    // winpthreads' `extern void (**_pthread_key_dest)(void *)` (glibc
+	    // never uses the shape, so it first surfaced on the win64 lane).
+	    int fnptr_extra_stars = 0;
 	    TokenBase *name_tok = nextToken();
-	    while ( name_tok && (is_restrict_token(name_tok)
+	    while ( name_tok && (name_tok->id() == TokenID::tkMul
+	                      || is_restrict_token(name_tok)
 	                      || name_tok->id() == TokenID::tkCONST
 	                      || name_tok->id() == TokenID::tkVOLATILE) )
+	    {
+		if ( name_tok->id() == TokenID::tkMul )
+		    ++fnptr_extra_stars;
 		name_tok = nextToken();
+	    }
 	    if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
 	    id = contextual_identifier_name(name_tok);
@@ -60901,6 +60911,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		decl_type = parse_ptr_array_suffix(decl_type, open,
 						   "pointer-to-array declaration",
 						   true);
+		for ( int s = 0; s < fnptr_extra_stars; ++s )
+		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
 		// spiral form `type (*name(fn-params))[N]` — see below
 		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
@@ -60915,6 +60927,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 		FuncDef *func = parseFnPtrParams(*decl_type);
 		decl_type = new DataDefFPTR(func);
+		for ( int s = 0; s < fnptr_extra_stars; ++s )
+		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
 		// Spiral declarator: decl_type is now the RETURN fnptr type;
 		// re-push the stashed fn-params so the stream reads

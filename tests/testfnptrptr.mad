@@ -1,0 +1,19 @@
+// Pointer-to-function-pointer declarator: `type (**name)(params)` — one
+// pointer wrap per star beyond the first. winpthreads declares
+// `extern void WINPTHREAD_API (**_pthread_key_dest)(void *);`
+// (pthread.h:282), which blocked every <iostream> parse on the win64
+// lane; glibc never uses the shape so Linux never saw it. This test
+// gates the DECLARATOR parse (file-scope extern + a local of the type).
+// Value semantics (&fnptr-var init, subscript-call) and the (**) cast
+// abstract declarator are the recorded Gap fnptr_ptr_value_semantics —
+// deliberately not exercised here.
+// Oracle: gcc and clang accept; prints ok.
+extern void (**ext_dest)(void *);
+int main()
+{
+    void (**local_dest)(void *);
+    local_dest = 0;
+    if ( local_dest == 0 )
+        printstr("ok\n");
+    return 0;
+}
