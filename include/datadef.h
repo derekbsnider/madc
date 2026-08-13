@@ -47,6 +47,15 @@ extern TargetDataModel madc_target_data_model;
 inline bool target_llp64()
 { return madc_target_data_model == TargetDataModel::LLP64; }
 
+// Aggregate bit-field allocation is a target ABI policy, independent of the
+// integer-width model above.  SysV may share storage across differently sized
+// declared types; the Microsoft ABI starts a new allocation unit when the
+// declared storage size changes.  Defined beside the data-model owner.
+enum class TargetBitFieldABI { SystemV, Microsoft };
+extern TargetBitFieldABI madc_target_bitfield_abi;
+inline bool target_microsoft_bitfields()
+{ return madc_target_bitfield_abi == TargetBitFieldABI::Microsoft; }
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the
@@ -772,31 +781,49 @@ public:
 	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
-	// SysV/gcc bitfield packing (task #76): a bitfield is placed at the
-	// next free BIT; the only constraint is that it must not cross a
-	// sizeof(T)-aligned window of its OWN declared type. Consecutive
-	// bitfields of DIFFERENT types share bytes when they fit —
-	// {_Bool b:1; unsigned x:5;} is ONE shared window (gcc/c2mir: 4
-	// bytes), not two allocation units (was 8). The recorded
-	// (storage_offset, storage_size, bit_offset) triple still names a
-	// naturally-aligned window of the declared type containing the
-	// field, so access consumers load/store exactly as before.
-	size_t next_bit = bitfield_active
-	    ? bitfield_unit_offset * 8 + bitfield_next_bit
-	    : size * 8;
-	if ( next_bit % storage_bits + width > storage_bits )
-	    next_bit = align_up(next_bit, storage_bits);
-	size_t window_offset = next_bit / storage_bits * storage_size;
-	size_t fa = field_align(dd);
-	if ( fa > max_align ) max_align = fa;
-	bitfield_active = true;
-	bitfield_unit_offset = window_offset;
-	bitfield_unit_size = storage_size;
-	bitfield_next_bit = next_bit - window_offset * 8;
+	if ( target_microsoft_bitfields() )
+	{
+	    // Microsoft allocation units: adjacent fields share only while their
+	    // declared storage sizes agree and the next field still fits.  The
+	    // whole declared unit contributes to sizeof, with #pragma pack merely
+	    // capping its alignment (MinGW/MS ABI oracle).
+	    if ( !bitfield_active
+	      || bitfield_unit_size != storage_size
+	      || bitfield_next_bit + width > storage_bits )
+	    {
+		size_t fa = field_align(dd);
+		size = align_up(size, fa);
+		if ( fa > max_align ) max_align = fa;
+		bitfield_active = true;
+		bitfield_unit_offset = size;
+		bitfield_unit_size = storage_size;
+		bitfield_next_bit = 0;
+		size += storage_size;
+	    }
+	}
+	else
+	{
+	    // SysV/gcc bitfield packing (task #76): a bitfield is placed at the
+	    // next free BIT; the only constraint is that it must not cross a
+	    // sizeof(T)-aligned window of its OWN declared type. Consecutive
+	    // bitfields of DIFFERENT types share bytes when they fit.
+	    size_t next_bit = bitfield_active
+		? bitfield_unit_offset * 8 + bitfield_next_bit
+		: size * 8;
+	    if ( next_bit % storage_bits + width > storage_bits )
+		next_bit = align_up(next_bit, storage_bits);
+	    size_t window_offset = next_bit / storage_bits * storage_size;
+	    size_t fa = field_align(dd);
+	    if ( fa > max_align ) max_align = fa;
+	    bitfield_active = true;
+	    bitfield_unit_offset = window_offset;
+	    bitfield_unit_size = storage_size;
+	    bitfield_next_bit = next_bit - window_offset * 8;
+	}
 
 	BitFieldInfo info;
 	info.is_bitfield = true;
-	info.storage_offset = window_offset;
+	info.storage_offset = bitfield_unit_offset;
 	info.storage_size = storage_size;
 	info.bit_offset = reverse_scalar_storage
 	    ? (storage_bits - bitfield_next_bit - width)
@@ -810,11 +837,13 @@ public:
 	    || alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
-	// Only the bytes the fields actually occupy count toward size —
-	// finalize() and the next plain member's align_up supply padding.
-	size_t end_byte = window_offset + (bitfield_next_bit + 7) / 8;
+	// SysV counts only bytes actually occupied; Microsoft already reserved
+	// the whole allocation unit above.  Taking the maximum serves both.
+	size_t end_byte = info.storage_offset + (bitfield_next_bit + 7) / 8;
 	if ( end_byte > size )
 	    size = end_byte;
+	if ( target_microsoft_bitfields() && bitfield_next_bit >= storage_bits )
+	    endBitFieldRun();
 	return info;
     }
     void addBitField(std::string n, DataDef &dd, size_t width)

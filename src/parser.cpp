@@ -16136,6 +16136,13 @@ TargetDataModel madc_target_data_model =
 	TargetDataModel::LP64;
 #endif
 
+TargetBitFieldABI madc_target_bitfield_abi =
+#ifdef _WIN32
+	TargetBitFieldABI::Microsoft;
+#else
+	TargetBitFieldABI::SystemV;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;

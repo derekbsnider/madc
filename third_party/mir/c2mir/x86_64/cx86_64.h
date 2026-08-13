@@ -6,6 +6,15 @@
 
 #define MIR_CHAR_BIT 8
 
+/* Bit-field allocation follows the target OS ABI, not the integer-width
+   model.  MinGW and MSVC use Microsoft allocation units on Win64; other
+   x86-64 targets use the SysV sharing rule. */
+#ifdef _WIN32
+#define C2M_TARGET_MS_BITFIELD_LAYOUT 1
+#else
+#define C2M_TARGET_MS_BITFIELD_LAYOUT 0
+#endif
+
 typedef int8_t mir_schar;
 typedef int16_t mir_short;
 typedef int32_t mir_int;

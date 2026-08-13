@@ -49,6 +49,10 @@
 #error "undefined or unsupported generation target for C"
 #endif
 
+#ifndef C2M_TARGET_MS_BITFIELD_LAYOUT
+#define C2M_TARGET_MS_BITFIELD_LAYOUT 0
+#endif
+
 #define SWAP(a1, a2, t) \
   do {                  \
     t = a1;             \
@@ -6931,10 +6935,48 @@ static mir_size_t var_size (c2m_ctx_t c2m_ctx, struct type *type) {
 /* BOUND_BIT is used only if BF_P and updated only if BITS >= 0  */
 static void update_field_layout (int *bf_p, mir_size_t *overall_size, mir_size_t *offset,
                                  int *bound_bit, mir_size_t prev_field_type_size,
-                                 mir_size_t field_type_size, int field_type_align, int bits) {
+                                 mir_size_t field_type_size, int field_type_align, int bits,
+                                 int union_p) {
   mir_size_t start_offset, curr_offset, prev_field_offset = *offset;
 
   assert (field_type_size > 0 && field_type_align > 0);
+#if C2M_TARGET_MS_BITFIELD_LAYOUT
+  if (bits >= 0) {
+    if (bits == 0) {
+      if (!union_p)
+        *overall_size
+          = (*overall_size + field_type_align - 1) / field_type_align * field_type_align;
+      *offset = union_p ? 0 : *overall_size;
+      *bound_bit = 0;
+      *bf_p = FALSE;
+      return;
+    }
+    if (!*bf_p || prev_field_type_size != field_type_size
+        || *bound_bit + bits > (long) field_type_size * MIR_CHAR_BIT) {
+      start_offset = union_p ? 0 : (*overall_size + field_type_align - 1) / field_type_align
+                                     * field_type_align;
+      *offset = start_offset;
+      *bound_bit = bits;
+      if (*overall_size < start_offset + field_type_size)
+        *overall_size = start_offset + field_type_size;
+    } else {
+      *offset = prev_field_offset;
+      *bound_bit += bits;
+    }
+    *bf_p = TRUE;
+    return;
+  }
+  start_offset = union_p ? 0 : (*overall_size + field_type_align - 1) / field_type_align
+                                 * field_type_align;
+  *offset = start_offset;
+  if (*overall_size < start_offset + field_type_size)
+    *overall_size = start_offset + field_type_size;
+  *bound_bit = 0;
+  *bf_p = FALSE;
+  return;
+#else
+  (void) union_p;
+#endif
   start_offset = curr_offset
     = (*overall_size + field_type_align - 1) / field_type_align * field_type_align;
   if ((long) start_offset < field_type_align && bits >= 0) *bound_bit = 0;
@@ -7066,7 +7108,7 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
           bits
             = width->code == N_IGNORE || !(expr = width->attr)->const_p ? -1 : (int) expr->c.u_val;
           update_field_layout (&bf_p, &overall_size, &offset, &bound_bit, prev_size, member_size,
-                               member_align, bits);
+                               member_align, bits, type->mode == TM_UNION);
           prev_size = member_size;
           decl->offset = offset;
           decl->bit_offset = bits < 0 ? -1 : bound_bit - bits;

@@ -1702,6 +1702,53 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);
     }
 
+    TEST_CASE("target bit-field ABI selects SysV sharing or Microsoft allocation units") {
+        struct BitFieldABIGuard {
+            TargetBitFieldABI saved;
+            BitFieldABIGuard() : saved(madc_target_bitfield_abi) {}
+            ~BitFieldABIGuard() { madc_target_bitfield_abi = saved; }
+        } guard;
+
+        madc_target_bitfield_abi = TargetBitFieldABI::SystemV;
+        DataDefSTRUCT sysv("sysv_bits", 0);
+        sysv.addBitField("small", ddBOOL, 1);
+        sysv.addBitField("wide", ddUINT32, 5);
+        sysv.finalize();
+        REQUIRE(sysv.member_bitfields.size() == 2);
+        CHECK(sysv.size == 4);
+        CHECK(sysv.member_bitfields[0].storage_offset == 0);
+        CHECK(sysv.member_bitfields[1].storage_offset == 0);
+        CHECK(sysv.member_bitfields[1].bit_offset == 1);
+
+        madc_target_bitfield_abi = TargetBitFieldABI::Microsoft;
+        DataDefSTRUCT ms("ms_bits", 0);
+        ms.addBitField("small", ddBOOL, 1);
+        ms.addBitField("wide", ddUINT32, 5);
+        ms.finalize();
+        REQUIRE(ms.member_bitfields.size() == 2);
+        CHECK(ms.size == 8);
+        CHECK(ms.member_bitfields[0].storage_offset == 0);
+        CHECK(ms.member_bitfields[1].storage_offset == 4);
+        CHECK(ms.member_bitfields[1].bit_offset == 0);
+
+        DataDefSTRUCT same_size("ms_same_size", 0);
+        same_size.addBitField("u", ddUINT32, 1);
+        same_size.addBitField("s", ddINT32, 1);
+        same_size.finalize();
+        CHECK(same_size.size == 4);
+        CHECK(same_size.member_bitfields[1].storage_offset == 0);
+        CHECK(same_size.member_bitfields[1].bit_offset == 1);
+
+        DataDefSTRUCT packed("ms_packed", 0);
+        packed.pack = 1;
+        packed.addBitField("byte", ddUINT8, 1);
+        packed.addBitField("word", ddUINT32, 1);
+        packed.finalize();
+        CHECK(packed.size == 5);
+        CHECK(packed.alignment() == 1);
+        CHECK(packed.member_bitfields[1].storage_offset == 1);
+    }
+
     TEST_CASE("project segment: lazy stamp, memoization, round trip") {
         Program pgm;
         DataDef a("UserTypeA", 4, DataType::dtINT);
