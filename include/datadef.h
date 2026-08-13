@@ -493,6 +493,33 @@ public:
     }
 };
 
+// Apply an integer cast to the parse/CIR constant-fold carrier.  This is the
+// one truncation owner for typed integer constants: the parser's constant
+// expression spine and CIR-only folds must agree on target width and
+// signedness (in particular when the host is LLP64).
+inline madc_wide_int apply_integer_cast_value(DataDef *cast_dd,
+					       madc_wide_int val,
+					       bool force_unsigned = false)
+{
+    if ( !cast_dd )
+	return val;
+    bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
+    int sz = cast_dd->size;
+    if ( sz == 1 )
+	return is_unsigned ? (madc_wide_int)(uint8_t)val : (madc_wide_int)(int8_t)val;
+    if ( sz == 2 )
+	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
+    if ( sz == 4 )
+	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
+    // 64-bit reads stay sign-carried in legacy folds, but an explicit
+    // unsigned cast zero-extends into the 128-bit carrier.
+    if ( sz == 8 )
+	return is_unsigned ? (madc_wide_int)(uint64_t)val
+			   : (madc_wide_int)(int64_t)val;
+    // A 16-byte cast is the identity on the 128-bit carrier.
+    return val;
+}
+
 // Member descriptor for struct/union/class layouts. Models a
 // std::pair<name, type> (the .first/.second names are kept for
 // backward compatibility) plus the source typedef alias used at the

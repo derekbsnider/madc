@@ -12161,35 +12161,6 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 static bool is_named_cpp_cast(const std::string &name);
 static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class);
 
-static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int val,
-					      bool force_unsigned = false)
-{
-    if ( !cast_dd )
-	return val;
-    bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
-    int sz = cast_dd->size;
-    if ( sz == 1 )
-	return is_unsigned ? (madc_wide_int)(uint8_t)val : (madc_wide_int)(int8_t)val;
-    if ( sz == 2 )
-	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
-    if ( sz == 4 )
-	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
-    // 8-byte cast truncates the wide carrier to 64 bits. UNSIGNED
-    // zero-extends back into the carrier — `(unsigned long)(-1)` is 2^64-1,
-    // so `T(-1) < T(0)` with unsigned T folds FALSE (libc++
-    // __libcpp_numeric_limits' is_signed; the old sign-carried-always arm
-    // folded it TRUE and every dependent value downstream was off by one).
-    // SIGNED keeps the sign-carried truncation: `(long)((__int128)1 << 64)`
-    // still folds to 0.
-    if ( sz == 8 )
-	return is_unsigned ? (madc_wide_int)(uint64_t)val
-			   : (madc_wide_int)(int64_t)val;
-    // 16-byte cast is the identity on the carrier: (__int128)x re-signs a
-    // 64-bit value correctly (already sign-carried); (unsigned __int128)x has
-    // the same 128-bit pattern.
-    return val;
-}
-
 madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 						     const std::string &cast_name)
 {

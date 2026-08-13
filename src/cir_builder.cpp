@@ -17940,12 +17940,51 @@ static std::string overflow_helper_name(const std::string &generic,
 // Expression translation
 // -----------------------------------------------------------------------
 
+// Compile-time integer value for the constant-real operand fold below.
+// The expression parser deliberately retains operator trees, so `~0U` is a
+// TokenBnot rather than a TokenInt even though it is an integer constant
+// expression.  Keep this evaluator narrow and side-effect-free; unsupported
+// shapes fall back to ordinary c2mir lowering.
+static bool constant_integer_operand(TokenBase *t, madc_wide_int &out)
+{
+	if (!t)
+		return false;
+	if (t->type() == TokenType::ttInteger && t->is_constant()) {
+		out = t->wival();
+		return true;
+	}
+	if (TokenCast *c = dynamic_cast<TokenCast *>(t)) {
+		DataDef *ct = c->cast_type ? unqualified_type(c->cast_type) : NULL;
+		madc_wide_int v;
+		if (!ct || !ct->is_integer() || ct->is_pointer()
+		    || !constant_integer_operand(c->expr, v))
+			return false;
+		out = apply_integer_cast_value(ct, v);
+		return true;
+	}
+	TokenOperator *op = dynamic_cast<TokenOperator *>(t);
+	if (!op || op->argc() != 1 || !op->right
+	    || !constant_integer_operand(op->right, out))
+		return false;
+	switch (t->id()) {
+	case TokenID::tkNeg:  out = -out; break;
+	case TokenID::tkBnot: out = ~out; break;
+	case TokenID::tkLnot: out = !out; break;
+	default: return false;
+	}
+	DataDef *dt = t->datadef() ? unqualified_type(t->datadef()) : NULL;
+	if (!dt || !dt->is_integer())
+		return false;
+	out = apply_integer_cast_value(dt, out);
+	return true;
+}
+
 // Compile-time floating value of a cast operand, for the gcc-parity
 // float->int saturating fold in the TokenCast arm (task #65). Recurses
 // through nested REAL casts re-rounding at each precision — the rounding
 // is load-bearing: (float)2147483647 rounds UP to 2^31, and that rounded
 // value is what makes the outer int cast overflow — and admits integer
-// literals under a real cast. Returns false for any other operand shape.
+// constant expressions under a real cast. Returns false for any other shape.
 static bool constant_real_operand(TokenBase *t, long double &out)
 {
 	if (!t) return false;
@@ -17965,11 +18004,10 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 			return false;
 		long double v;
 		if (!constant_real_operand(c->expr, v)) {
-			if (c->expr && c->expr->type() == TokenType::ttInteger
-			    && c->expr->is_constant())
-				v = (long double)c->expr->wival();
-			else
+			madc_wide_int iv;
+			if (!constant_integer_operand(c->expr, iv))
 				return false;
+			v = (long double)iv;
 		}
 		switch (ct->rawtype()) {
 		case DataType::dtFLOAT:  out = (long double)(float)v; break;
@@ -19454,28 +19492,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				    && cv - cv == 0.0L) {   // finite only
 					bool uns = cast_dd->is_unsigned();
 					unsigned bits = (unsigned)cast_dd->size * 8;
-					long slo = 0, shi = 0;
-					unsigned long uhi = 0;
+					int64_t slo = 0, shi = 0;
+					uint64_t uhi = 0;
 					long double lo, hi;
 					if (uns) {
-						uhi = (bits == 64) ? ~0UL
-						      : ((1UL << bits) - 1);
+						uhi = (bits == 64) ? UINT64_MAX
+						      : ((UINT64_C(1) << bits) - 1);
 						lo = 0.0L;
 						hi = (long double)uhi;
 					} else {
-						shi = (bits == 64)
-						      ? (long)((~0UL) >> 1)
-						      : (long)((1L << (bits - 1)) - 1);
-						slo = (bits == 64)
-						      ? -(long)((~0UL) >> 1) - 1
-						      : -(long)(1L << (bits - 1));
+						shi = (bits == 64) ? INT64_MAX
+						      : (int64_t)((UINT64_C(1) << (bits - 1)) - 1);
+						slo = (bits == 64) ? INT64_MIN
+						      : -(int64_t)(UINT64_C(1) << (bits - 1));
 						lo = (long double)slo;
 						hi = (long double)shi;
 					}
 					if (cv < lo || cv > hi) {
-						long sat = (cv < lo)
-							   ? (uns ? 0L : slo)
-							   : (uns ? (long)uhi : shi);
+						int64_t sat = (cv < lo)
+							      ? (uns ? 0 : slo)
+							      : (uns ? -1 : shi);
 						node_t stl = type_list(cast_dd);
 						node_t stn = node2(N_TYPE, stl,
 							node2(N_DECL, ignore(), list()));
