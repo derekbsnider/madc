@@ -79,7 +79,7 @@ extern "C" {
     std::string *__js_atob(std::string *, const char *);
     std::string *__js_encodeURIComponent(std::string *, const char *);
     std::string *__js_decodeURIComponent(std::string *, const char *);
-    long __js_parseInt(const char *, long);
+    int64_t __js_parseInt(const char *, int64_t);
     std::string *__js_stringify(std::string *, array *);
 }
 
@@ -88,7 +88,7 @@ namespace js {
     std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
     std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
     std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
-    long parseInt(const char *text, long radix) { return __js_parseInt(text, radix); }
+    int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
     std::string &stringify(std::string &result, array &values) { return *__js_stringify(&result, &values); }
 }
 )EMBED"},
@@ -148,14 +148,14 @@ namespace madc {
     // result text as a string-kind value ("42", "4.000000", "echo").
     value &eval_unit(value &out, const char *source);
     bool eval_bool(const char *source);
-    long eval_int(const char *source);
+    int64_t eval_int(const char *source);
     double eval_double(const char *source);
     value &eval_string(value &out, const char *source);
 
     // Expression eval: a single expression, no function calls unless the
     // engine's expression policy allows them.
     bool eval_expression_bool(const char *expr);
-    long eval_expression_int(const char *expr);
+    int64_t eval_expression_int(const char *expr);
     double eval_expression_double(const char *expr);
     value &eval_expression_string(value &out, const char *expr);
 
@@ -163,17 +163,17 @@ namespace madc {
     // value-destination form RENDERS any result type into a string-kind
     // value; eval_expression_string above is the strict string-typed
     // coercion.
-    void eval_expression(long &out, const char *expr);
+    void eval_expression(int64_t &out, const char *expr);
     void eval_expression(double &out, const char *expr);
     void eval_expression(value &out, const char *expr);
 
     // Context-carrying expression forms: `ctx` is a madc value of nested
     // key/value entries built with the context_set_* helpers below.
     bool eval_expression_bool_ctx(const char *expr, value &ctx);
-    long eval_expression_int_ctx(const char *expr, value &ctx);
+    int64_t eval_expression_int_ctx(const char *expr, value &ctx);
     double eval_expression_double_ctx(const char *expr, value &ctx);
     value &eval_expression_string_ctx(value &out, const char *expr, value &ctx);
-    void eval_expression_ctx(long &out, const char *expr, value &ctx);
+    void eval_expression_ctx(int64_t &out, const char *expr, value &ctx);
     void eval_expression_ctx(double &out, const char *expr, value &ctx);
     void eval_expression_ctx(value &out, const char *expr, value &ctx);
 
@@ -181,11 +181,11 @@ namespace madc {
     // scope capture.
     value &eval_unit_ctx(value &out, const char *source, value &ctx);
     bool eval_bool_ctx(const char *source, value &ctx);
-    long eval_int_ctx(const char *source, value &ctx);
+    int64_t eval_int_ctx(const char *source, value &ctx);
     double eval_double_ctx(const char *source, value &ctx);
     value &eval_string_ctx(value &out, const char *source, value &ctx);
 
-    void context_set_int(value &ctx, const char *key, long v);
+    void context_set_int(value &ctx, const char *key, int64_t v);
     void context_set_real(value &ctx, const char *key, double v);
     void context_set_string(value &ctx, const char *key, const char *v);
     void context_set_array(value &ctx, const char *key, value &v);
@@ -195,7 +195,7 @@ namespace madc {
     // this header in this translation unit (libstdc++/libc++ guard).
     std::string &eval_unit(std::string &out, std::string &source);
     bool eval_bool(std::string &source);
-    long eval_int(std::string &source);
+    int64_t eval_int(std::string &source);
     double eval_double(std::string &source);
     std::string &eval_string(std::string &out, std::string &source);
     std::string &eval_expression_string(std::string &out, const char *expr);
@@ -204,10 +204,10 @@ namespace madc {
     std::string &eval_expression_string_ctx(std::string &out, const char *expr, value &ctx);
     std::string &eval_unit_ctx(std::string &out, std::string &source, value &ctx);
     bool eval_bool_ctx(std::string &source, value &ctx);
-    long eval_int_ctx(std::string &source, value &ctx);
+    int64_t eval_int_ctx(std::string &source, value &ctx);
     double eval_double_ctx(std::string &source, value &ctx);
     std::string &eval_string_ctx(std::string &out, std::string &source, value &ctx);
-    void context_set_int(value &ctx, std::string &key, long v);
+    void context_set_int(value &ctx, std::string &key, int64_t v);
     void context_set_real(value &ctx, std::string &key, double v);
     void context_set_string(value &ctx, std::string &key, const char *v);
     void context_set_array(value &ctx, std::string &key, value &v);
@@ -248,13 +248,13 @@ namespace madc {
 	bool ok() const;
 	const char *last_error() const;
 
-	long read(void *buffer, long capacity);
+	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;
 	// write() sends the value's text view.
 	bool readline(value &out);
 	bool readall(value &out);
 	bool write(const char *text);
-	bool write(const char *buffer, long size);
+	bool write(const char *buffer, int64_t size);
 	bool write(value &text);
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
 	// std::string conveniences — <string> must precede this header.
@@ -275,11 +275,11 @@ namespace madc {
 )EMBED"},
     {"ns_perl", R"EMBED(#include <string>
 extern "C" {
-    long __perl_chop(std::string *);
-    long __perl_chomp(std::string *);
+    int64_t __perl_chop(std::string *);
+    int64_t __perl_chomp(std::string *);
     void __perl_grep(array *, const char *, array *);
     void __perl_glob(array *, const char *);
-    long __perl_scalar(array *);
+    int64_t __perl_scalar(array *);
     void __perl_push(array *, const char *);
     std::string *__perl_pop(std::string *, array *);
     std::string *__perl_shift(std::string *, array *);
@@ -291,18 +291,18 @@ extern "C" {
     std::string *__perl_uc(std::string *);
     std::string *__perl_ucfirst(std::string *);
     std::string *__perl_lcfirst(std::string *);
-    long __perl_index(const char *, const char *);
-    long __perl_rindex(const char *, const char *);
-    long __perl_length(const char *);
-    std::string *__perl_substr(std::string *, const char *, long, long);
+    int64_t __perl_index(const char *, const char *);
+    int64_t __perl_rindex(const char *, const char *);
+    int64_t __perl_length(const char *);
+    std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
 }
 
 namespace perl {
-    long chop(std::string &s) { return __perl_chop(&s); }
-    long chomp(std::string &s) { return __perl_chomp(&s); }
+    int64_t chop(std::string &s) { return __perl_chop(&s); }
+    int64_t chomp(std::string &s) { return __perl_chomp(&s); }
     void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
     void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
-    long scalar(array &values) { return __perl_scalar(&values); }
+    int64_t scalar(array &values) { return __perl_scalar(&values); }
     void push(array &values, const char *text) { __perl_push(&values, text); }
     std::string &pop(std::string &result, array &values) { return *__perl_pop(&result, &values); }
     std::string &shift(std::string &result, array &values) { return *__perl_shift(&result, &values); }
@@ -314,10 +314,10 @@ namespace perl {
     std::string &uc(std::string &s) { return *__perl_uc(&s); }
     std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
     std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
-    long index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
-    long rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
-    long length(const char *text) { return __perl_length(text); }
-    std::string &substr(std::string &result, const char *text, long offset, long length) { return *__perl_substr(&result, text, offset, length); }
+    int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+    int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+    int64_t length(const char *text) { return __perl_length(text); }
+    std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *__perl_substr(&result, text, offset, length); }
 }
 )EMBED"},
     {"ns_perl.h", R"EMBED(#ifndef MADC_NS_PERL_H
@@ -387,37 +387,37 @@ extern "C" {
     std::string *__php_chop(std::string *);
     std::string *__php_ucfirst(std::string *);
     std::string *__php_lcfirst(std::string *);
-    std::string *__php_str_repeat(std::string *, long);
+    std::string *__php_str_repeat(std::string *, int64_t);
     std::string *__php_str_replace(std::string *, std::string *, std::string *);
-    std::string *__php_str_pad(std::string *, long, std::string *);
-    long __php_str_word_count(std::string *);
+    std::string *__php_str_pad(std::string *, int64_t, std::string *);
+    int64_t __php_str_word_count(std::string *);
     std::string *__php_nl2br(std::string *);
     std::string *__php_str_rot13(std::string *);
-    std::string *__php_chunk_split(std::string *, long, std::string *);
-    std::string *__php_number_format(std::string *, long, std::string *);
-    std::string *__php_wordwrap(std::string *, long, std::string *);
+    std::string *__php_chunk_split(std::string *, int64_t, std::string *);
+    std::string *__php_number_format(std::string *, int64_t, std::string *);
+    std::string *__php_wordwrap(std::string *, int64_t, std::string *);
 
     void __php_explode(array *, const char *, const char *);
     std::string *__php_implode(std::string *, const char *, array *);
-    long __php_count(array *);
+    int64_t __php_count(array *);
     void __php_array_push(array *, const char *);
-    void __php_array_push_int(array *, long);
+    void __php_array_push_int(array *, int64_t);
     void __php_array_push_array(array *, array *);
     std::string *__php_array_pop(std::string *, array *);
-    std::string *__php_array_get(std::string *, array *, long);
-    long __php_array_get_int(array *, long);
-    const char *__php_array_get_cstr(array *, long);
+    std::string *__php_array_get(std::string *, array *, int64_t);
+    int64_t __php_array_get_int(array *, int64_t);
+    const char *__php_array_get_cstr(array *, int64_t);
     void __php_array_reverse(array *);
-    long __php_in_array(const char *, array *);
-    long __php_array_search(const char *, array *);
+    int64_t __php_in_array(const char *, array *);
+    int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
     std::string *__php_array_shift(std::string *, array *);
     void __php_array_unshift(array *, const char *);
     void __php_sort(array *);
     void __php_rsort(array *);
-    void __php_array_slice(array *, array *, long, long);
+    void __php_array_slice(array *, array *, int64_t, int64_t);
     void __php_array_merge(array *, array *);
-    void __php_array_column(array *, array *, long);
+    void __php_array_column(array *, array *, int64_t);
 }
 
 namespace php {
@@ -427,37 +427,37 @@ namespace php {
     std::string &chop(std::string &s);
     std::string &ucfirst(std::string &s);
     std::string &lcfirst(std::string &s);
-    std::string &str_repeat(std::string &s, long count);
+    std::string &str_repeat(std::string &s, int64_t count);
     std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
-    std::string &str_pad(std::string &s, long length, std::string &pad);
-    long str_word_count(std::string &s);
+    std::string &str_pad(std::string &s, int64_t length, std::string &pad);
+    int64_t str_word_count(std::string &s);
     std::string &nl2br(std::string &s);
     std::string &str_rot13(std::string &s);
-    std::string &chunk_split(std::string &s, long chunklen, std::string &separator);
-    std::string &number_format(std::string &result, long number, std::string &separator);
-    std::string &wordwrap(std::string &s, long width, std::string &separator);
+    std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator);
+    std::string &number_format(std::string &result, int64_t number, std::string &separator);
+    std::string &wordwrap(std::string &s, int64_t width, std::string &separator);
 
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
     std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
-    long count(array &values) { return __php_count(&values); }
+    int64_t count(array &values) { return __php_count(&values); }
     void array_push(array &values, const char *text) { __php_array_push(&values, text); }
-    void array_push_int(array &values, long value) { __php_array_push_int(&values, value); }
+    void array_push_int(array &values, int64_t value) { __php_array_push_int(&values, value); }
     void array_push_array(array &values, array &nested) { __php_array_push_array(&values, &nested); }
     std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
-    std::string &array_get(std::string &result, array &values, long index) { return *__php_array_get(&result, &values, index); }
-    long array_get_int(array &values, long index) { return __php_array_get_int(&values, index); }
-    const char *array_get_cstr(array &values, long index) { return __php_array_get_cstr(&values, index); }
+    std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+    int64_t array_get_int(array &values, int64_t index) { return __php_array_get_int(&values, index); }
+    const char *array_get_cstr(array &values, int64_t index) { return __php_array_get_cstr(&values, index); }
     void array_reverse(array &values) { __php_array_reverse(&values); }
-    long in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
-    long array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
+    int64_t in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
     std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
     void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
     void sort(array &values) { __php_sort(&values); }
     void rsort(array &values) { __php_rsort(&values); }
-    void array_slice(array &dest, array &src, long offset, long length) { __php_array_slice(&dest, &src, offset, length); }
+    void array_slice(array &dest, array &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
     void array_merge(array &dest, array &src) { __php_array_merge(&dest, &src); }
-    void array_column(array &dest, array &src, long column_index) { __php_array_column(&dest, &src, column_index); }
+    void array_column(array &dest, array &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
 }
 )EMBED"},
     {"ns_php.h", R"EMBED(#ifndef MADC_NS_PHP_H
@@ -555,17 +555,17 @@ inline void array_column(madc::value &dest, madc::value &src, int64_t column_ind
 extern "C" {
     std::string *__py_title(std::string *);
     std::string *__py_swapcase(std::string *);
-    std::string *__py_center(std::string *, long, const char *);
-    std::string *__py_ljust(std::string *, long, const char *);
-    std::string *__py_rjust(std::string *, long, const char *);
-    std::string *__py_zfill(std::string *, long);
-    long __py_count(const char *, const char *);
-    long __py_startswith(const char *, const char *);
-    long __py_endswith(const char *, const char *);
-    long __py_isdigit(const char *);
-    long __py_isalpha(const char *);
-    long __py_isalnum(const char *);
-    long __py_isspace(const char *);
+    std::string *__py_center(std::string *, int64_t, const char *);
+    std::string *__py_ljust(std::string *, int64_t, const char *);
+    std::string *__py_rjust(std::string *, int64_t, const char *);
+    std::string *__py_zfill(std::string *, int64_t);
+    int64_t __py_count(const char *, const char *);
+    int64_t __py_startswith(const char *, const char *);
+    int64_t __py_endswith(const char *, const char *);
+    int64_t __py_isdigit(const char *);
+    int64_t __py_isalpha(const char *);
+    int64_t __py_isalnum(const char *);
+    int64_t __py_isspace(const char *);
     std::string *__py_replace(std::string *, const char *, const char *);
     std::string *__py_format(std::string *, const char *, array *);
 }
@@ -573,17 +573,17 @@ extern "C" {
 namespace python {
     std::string &title(std::string &s) { return *__py_title(&s); }
     std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
-    std::string &center(std::string &s, long width, const char *fill) { return *__py_center(&s, width, fill); }
-    std::string &ljust(std::string &s, long width, const char *fill) { return *__py_ljust(&s, width, fill); }
-    std::string &rjust(std::string &s, long width, const char *fill) { return *__py_rjust(&s, width, fill); }
-    std::string &zfill(std::string &s, long width) { return *__py_zfill(&s, width); }
-    long count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
-    long startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
-    long endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
-    long isdigit(const char *text) { return __py_isdigit(text); }
-    long isalpha(const char *text) { return __py_isalpha(text); }
-    long isalnum(const char *text) { return __py_isalnum(text); }
-    long isspace(const char *text) { return __py_isspace(text); }
+    std::string &center(std::string &s, int64_t width, const char *fill) { return *__py_center(&s, width, fill); }
+    std::string &ljust(std::string &s, int64_t width, const char *fill) { return *__py_ljust(&s, width, fill); }
+    std::string &rjust(std::string &s, int64_t width, const char *fill) { return *__py_rjust(&s, width, fill); }
+    std::string &zfill(std::string &s, int64_t width) { return *__py_zfill(&s, width); }
+    int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    int64_t isdigit(const char *text) { return __py_isdigit(text); }
+    int64_t isalpha(const char *text) { return __py_isalpha(text); }
+    int64_t isalnum(const char *text) { return __py_isalnum(text); }
+    int64_t isspace(const char *text) { return __py_isspace(text); }
     std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
     std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
 }
@@ -644,11 +644,11 @@ extern "C" {
     void __rb_chars(array *, const char *);
     std::string *__rb_capitalize(std::string *);
     std::string *__rb_delete(std::string *, const char *);
-    long __rb_count(const char *, const char *);
-    long __rb_include(const char *, const char *);
+    int64_t __rb_count(const char *, const char *);
+    int64_t __rb_include(const char *, const char *);
     std::string *__rb_gsub(std::string *, const char *, const char *);
     std::string *__rb_sub(std::string *, const char *, const char *);
-    void __rb_rotate(array *, long);
+    void __rb_rotate(array *, int64_t);
     void __rb_compact(array *);
     void __rb_flatten(array *, const char *);
 }
@@ -659,11 +659,11 @@ namespace ruby {
     void chars(array &out, const char *text) { __rb_chars(&out, text); }
     std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
     std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
-    long count(const char *text, const char *chars) { return __rb_count(text, chars); }
-    long include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
     std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
     std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
-    void rotate(array &values, long n) { __rb_rotate(&values, n); }
+    void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
     void compact(array &values) { __rb_compact(&values); }
     void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }
@@ -713,43 +713,43 @@ inline void flatten(madc::value &values, const char *text) { __rb_flatten(&value
 )EMBED"},
     {"ns_rust", R"EMBED(#include <string>
 extern "C" {
-    long __rust_contains(const char *, const char *);
-    long __rust_starts_with(const char *, const char *);
-    long __rust_ends_with(const char *, const char *);
+    int64_t __rust_contains(const char *, const char *);
+    int64_t __rust_starts_with(const char *, const char *);
+    int64_t __rust_ends_with(const char *, const char *);
     std::string *__rust_trim(std::string *);
     std::string *__rust_trim_start(std::string *);
     std::string *__rust_trim_end(std::string *);
     std::string *__rust_replace(std::string *, const char *, const char *);
-    std::string *__rust_repeat(std::string *, long);
-    long __rust_len(const char *);
-    long __rust_is_empty(const char *);
+    std::string *__rust_repeat(std::string *, int64_t);
+    int64_t __rust_len(const char *);
+    int64_t __rust_is_empty(const char *);
     void __rust_split(array *, const char *, const char *);
     void __rust_split_whitespace(array *, const char *);
     std::string *__rust_join(std::string *, array *, const char *);
     std::string *__rust_first(std::string *, array *);
     std::string *__rust_last(std::string *, array *);
-    std::string *__rust_get(std::string *, array *, long);
+    std::string *__rust_get(std::string *, array *, int64_t);
     void __rust_push(array *, const char *);
     std::string *__rust_pop(std::string *, array *);
 }
 
 namespace rust {
-    long contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
-    long starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
-    long ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+    int64_t contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
+    int64_t starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
+    int64_t ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
     std::string &trim(std::string &s) { return *__rust_trim(&s); }
     std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
     std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
     std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
-    std::string &repeat(std::string &s, long count) { return *__rust_repeat(&s, count); }
-    long len(const char *text) { return __rust_len(text); }
-    long is_empty(const char *text) { return __rust_is_empty(text); }
+    std::string &repeat(std::string &s, int64_t count) { return *__rust_repeat(&s, count); }
+    int64_t len(const char *text) { return __rust_len(text); }
+    int64_t is_empty(const char *text) { return __rust_is_empty(text); }
     void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
     void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
     std::string &join(std::string &result, array &values, const char *sep) { return *__rust_join(&result, &values, sep); }
     std::string &first(std::string &result, array &values) { return *__rust_first(&result, &values); }
     std::string &last(std::string &result, array &values) { return *__rust_last(&result, &values); }
-    std::string &get(std::string &result, array &values, long idx) { return *__rust_get(&result, &values, idx); }
+    std::string &get(std::string &result, array &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
     void push(array &values, const char *value) { __rust_push(&values, value); }
     std::string &pop(std::string &result, array &values) { return *__rust_pop(&result, &values); }
 }
@@ -826,6 +826,16 @@ inline std::string &pop(std::string &result, madc::value &values) { return *__ru
 // corrupting the list; invoking the intrinsic on the user's own va_list
 // avoids the copy and the corruption.)
 
+// glibc's __need protocol, exactly like real gcc stdarg.h: a header asking
+// only for __gnuc_va_list (`#define __need___va_list` + include) gets that
+// one typedef and the request macro is CLEARED — leaving it defined would
+// mark every later include in the TU as a protocol visit
+// (need_protocol_macro_live) and defeat the once-only caches TU-wide.
+#ifdef __need___va_list
+#undef __need___va_list
+typedef __builtin_va_list __gnuc_va_list;
+#else
+
 // ONE definition: the compiler owns the type (Program::builtin_va_list_type —
 // the SysV struct __madc_va_list_tag[1] singleton, resolved from the spelling
 // __builtin_va_list). This header only aliases it, exactly like real gcc
@@ -840,7 +850,14 @@ typedef __builtin_va_list __gnuc_va_list;
 
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
+// va_copy follows the target's va_list shape (Program::builtin_va_list_type):
+// SysV array-of-struct copies the one element; win64's scalar `char *`
+// (mingw/MSVC vadefs.h) is a plain assignment.
+#ifdef _WIN32
+#define va_copy(dest, src) ((dest) = (src))
+#else
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
+#endif
 
 // va_list is now the real ABI struct, so the v*printf family resolve to the
 // real libc functions (which take a va_list) — not the old __madc_* helpers
@@ -849,6 +866,8 @@ int vsprintf(char *, const char *, va_list);
 int vsnprintf(char *, unsigned long, const char *, va_list);
 int vfprintf(void *, const char *, va_list);
 int vprintf(const char *, va_list);
+
+#endif /* __need___va_list */
 )EMBED"},
     {"stdbool.h", R"EMBED(// madc embedded stdbool.h
 
@@ -861,6 +880,48 @@ int vprintf(const char *, va_list);
 // size_t and ptrdiff_t are already native madc types via typedef
 // This header provides NULL, offsetof, and max_align_t
 
+// glibc's __need protocol FIRST, like every real resource-dir stddef.h
+// (clang's and gcc's both implement it): a glibc header asking for one
+// definition gets it, and the request macros are CLEARED. Leaving them
+// defined re-routes libc++'s stddef.h wrapper away from its
+// _LIBCPP_STDDEF_H arm on every later visit — <cstddef> #errors that its
+// wrapper was bypassed. A __need visit must NOT set the full-content
+// guard: the next plain include still owes the whole surface.
+#if defined(__need_size_t) || defined(__need_ptrdiff_t) \
+    || defined(__need_wchar_t) || defined(__need_NULL) \
+    || defined(__need_wint_t)
+
+// Spelled through the toolchain-seeded __*_TYPE__ macros (gcc's own
+// resource stddef.h model): the macros carry each TARGET's shape
+// (unsigned long on LP64, unsigned long long on win64, unsigned short
+// wchar_t there), so one text serves every lane — a hardcoded LP64
+// spelling minted a 4-byte size_t on win64 and collided with the real
+// header chain's typedef ("repeated declaration size_t").
+#ifdef __need_size_t
+typedef __SIZE_TYPE__ size_t;
+#undef __need_size_t
+#endif
+#ifdef __need_ptrdiff_t
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+#undef __need_ptrdiff_t
+#endif
+#ifdef __need_wchar_t
+typedef __WCHAR_TYPE__ wchar_t;
+#undef __need_wchar_t
+#endif
+#ifdef __need_NULL
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+#undef __need_NULL
+#endif
+#ifdef __need_wint_t
+typedef __WINT_TYPE__ wint_t;
+#undef __need_wint_t
+#endif
+
+#else /* the full header */
+
 #ifndef __MADC_STDDEF_H
 #define __MADC_STDDEF_H 1
 
@@ -868,39 +929,149 @@ int vprintf(const char *, va_list);
 #define NULL ((void *)0)
 #endif
 
-#define offsetof(type, member) ((unsigned long)&((type *)0)->member)
+#define offsetof(type, member) ((__SIZE_TYPE__)&((type *)0)->member)
 
-typedef long ptrdiff_t;
-typedef unsigned long size_t;
-typedef int wchar_t;
+// Target-shaped via the seeded __*_TYPE__ macros — see the __need arm above.
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+typedef __SIZE_TYPE__ size_t;
+typedef __WCHAR_TYPE__ wchar_t;
 
+// C11 max_align_t. The members' natural alignments (long long, long double)
+// give the platform's strictest fundamental alignment on both x86-64 (16,
+// x87 long double) and arm64 (long double == double) without needing
+// __attribute__((aligned)) — <cstddef>'s `using ::max_align_t` needs the
+// declaration to exist. Guarded by the guard macros clang's and gcc's own
+// stddef.h set when THEY define it: the hosted-darwin prelude is flattened
+// clang output whose kept #defines include __CLANG_MAX_ALIGN_T_DEFINED, and
+// an anonymous-struct typedef can never pass the repeated-identical-typedef
+// dedup. (Prelude-first ordering is the packed groves' canonical order; an
+// embedded-first live parse would still collide with the prelude's
+// unconditional flattened copy — flattened text cannot re-gain its guard.)
+#if !defined(__CLANG_MAX_ALIGN_T_DEFINED) && !defined(_GCC_MAX_ALIGN_T)
+typedef struct {
+	long long __madc_max_align_ll;
+	long double __madc_max_align_ld;
+} max_align_t;
+#define __CLANG_MAX_ALIGN_T_DEFINED 1
+#define _GCC_MAX_ALIGN_T 1
 #endif
-)EMBED"},
-    {"stdint.h", R"EMBED(// madc embedded stdint.h — exact-width integer types
-// Note: int8_t through uint64_t are native madc types
-// This header provides the min/max constants for completeness
 
-#define INT8_MIN    -128
+#endif /* __MADC_STDDEF_H */
+
+#endif /* __need protocol */
+)EMBED"},
+    {"stdint.h", R"EMBED(// madc embedded stdint.h — the resource-dir copy of C11 7.20, complete.
+// int8_t..uint64_t, size_t, intptr_t are native madc types; everything else
+// a conforming stdint.h declares is defined here IN TERMS of the exact-width
+// natives, so the file is target-neutral by construction. This header sits
+// at madc's compiler-resource-dir slot: standard-library wrappers
+// (libc++/libstdc++ <cstdint> -> stdint.h) reach it by #include_next and
+// `using ::int_least8_t` & co need REAL declarations — a stub that only
+// carried the limit macros made every cstdint fail with "not a declaration
+// in '::'".
+
+#ifndef __MADC_STDINT_H
+#define __MADC_STDINT_H 1
+
+typedef int8_t  int_least8_t;   typedef uint8_t  uint_least8_t;
+typedef int16_t int_least16_t;  typedef uint16_t uint_least16_t;
+typedef int32_t int_least32_t;  typedef uint32_t uint_least32_t;
+typedef int64_t int_least64_t;  typedef uint64_t uint_least64_t;
+
+// Fast types, intmax, intptr: spelled through the toolchain-seeded
+// __*_TYPE__ macros, which carry each TARGET's model (Darwin's
+// exact-width fast types, glibc's register-word widening, win64's
+// short/int/long-long shapes) — the header's target-neutral-by-
+// construction rule, now for the platform-modeled aliases too. The
+// old hardcoded `long` rows minted 4-byte intmax_t/intptr_t on win64
+// and collided with the real header chain's typedefs.
+typedef __INT_FAST8_TYPE__  int_fast8_t;   typedef __UINT_FAST8_TYPE__  uint_fast8_t;
+typedef __INT_FAST16_TYPE__ int_fast16_t;  typedef __UINT_FAST16_TYPE__ uint_fast16_t;
+typedef __INT_FAST32_TYPE__ int_fast32_t;  typedef __UINT_FAST32_TYPE__ uint_fast32_t;
+typedef __INT_FAST64_TYPE__ int_fast64_t;  typedef __UINT_FAST64_TYPE__ uint_fast64_t;
+
+typedef __INTMAX_TYPE__ intmax_t;
+typedef __UINTMAX_TYPE__ uintmax_t;
+typedef __INTPTR_TYPE__ intptr_t;
+typedef __UINTPTR_TYPE__ uintptr_t;
+
+#define INT8_MIN    (-128)
 #define INT8_MAX    127
 #define UINT8_MAX   255
-#define INT16_MIN   -32768
+#define INT16_MIN   (-32768)
 #define INT16_MAX   32767
 #define UINT16_MAX  65535
-#define INT32_MIN   -2147483648
+#define INT32_MIN   (-2147483647-1)
 #define INT32_MAX   2147483647
-#define UINT32_MAX  4294967295
-#define INT64_MIN   -9223372036854775807
-#define INT64_MAX   9223372036854775807
-#define UINT64_MAX  0xFFFFFFFFFFFFFFFF
-#define SIZE_MAX    0xFFFFFFFFFFFFFFFF
-#define INTMAX_MIN  -9223372036854775807
-#define INTMAX_MAX  9223372036854775807
-#define UINTMAX_MAX 0xFFFFFFFFFFFFFFFF
-#define PTRDIFF_MIN -9223372036854775807
-#define PTRDIFF_MAX 9223372036854775807
+#define UINT32_MAX  4294967295U
+#define INT64_MIN   (-9223372036854775807L-1)
+#define INT64_MAX   9223372036854775807L
+#define UINT64_MAX  18446744073709551615UL
 
-typedef long int intptr_t;
-typedef unsigned long int uintptr_t;
+#define INT_LEAST8_MIN    INT8_MIN
+#define INT_LEAST8_MAX    INT8_MAX
+#define UINT_LEAST8_MAX   UINT8_MAX
+#define INT_LEAST16_MIN   INT16_MIN
+#define INT_LEAST16_MAX   INT16_MAX
+#define UINT_LEAST16_MAX  UINT16_MAX
+#define INT_LEAST32_MIN   INT32_MIN
+#define INT_LEAST32_MAX   INT32_MAX
+#define UINT_LEAST32_MAX  UINT32_MAX
+#define INT_LEAST64_MIN   INT64_MIN
+#define INT_LEAST64_MAX   INT64_MAX
+#define UINT_LEAST64_MAX  UINT64_MAX
+
+#define INT_FAST8_MIN     INT8_MIN
+#define INT_FAST8_MAX     INT8_MAX
+#define UINT_FAST8_MAX    UINT8_MAX
+#if defined(__APPLE__)
+#define INT_FAST16_MIN    INT16_MIN
+#define INT_FAST16_MAX    INT16_MAX
+#define UINT_FAST16_MAX   UINT16_MAX
+#define INT_FAST32_MIN    INT32_MIN
+#define INT_FAST32_MAX    INT32_MAX
+#define UINT_FAST32_MAX   UINT32_MAX
+#else
+#define INT_FAST16_MIN    INT64_MIN
+#define INT_FAST16_MAX    INT64_MAX
+#define UINT_FAST16_MAX   UINT64_MAX
+#define INT_FAST32_MIN    INT64_MIN
+#define INT_FAST32_MAX    INT64_MAX
+#define UINT_FAST32_MAX   UINT64_MAX
+#endif
+#define INT_FAST64_MIN    INT64_MIN
+#define INT_FAST64_MAX    INT64_MAX
+#define UINT_FAST64_MAX   UINT64_MAX
+
+#define INTPTR_MIN   INT64_MIN
+#define INTPTR_MAX   INT64_MAX
+#define UINTPTR_MAX  UINT64_MAX
+#define INTMAX_MIN   INT64_MIN
+#define INTMAX_MAX   INT64_MAX
+#define UINTMAX_MAX  UINT64_MAX
+
+#define PTRDIFF_MIN  INT64_MIN
+#define PTRDIFF_MAX  INT64_MAX
+#define SIZE_MAX     UINT64_MAX
+#define SIG_ATOMIC_MIN INT32_MIN
+#define SIG_ATOMIC_MAX INT32_MAX
+#define WCHAR_MIN    INT32_MIN
+#define WCHAR_MAX    INT32_MAX
+#define WINT_MIN     0U
+#define WINT_MAX     4294967295U
+
+#define INT8_C(v)    v
+#define INT16_C(v)   v
+#define INT32_C(v)   v
+#define INT64_C(v)   v ## L
+#define UINT8_C(v)   v
+#define UINT16_C(v)  v
+#define UINT32_C(v)  v ## U
+#define UINT64_C(v)  v ## UL
+#define INTMAX_C(v)  v ## L
+#define UINTMAX_C(v) v ## UL
+
+#endif
 )EMBED"}
 };
 
