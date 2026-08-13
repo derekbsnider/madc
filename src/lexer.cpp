@@ -6187,8 +6187,80 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 bool Program::evaluateIfCondition()
 {
     std::string raw_expr;
-    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	raw_expr += source.get();
+    // Translation-phase-3 comment replacement ON the captured condition: each
+    // comment becomes one space BEFORE the string evaluator runs. A trailing
+    // `/* in libmingwex.a */` otherwise reaches the expression parser as
+    // division-and-garbage and the condition silently evaluates FALSE —
+    // mingw's wchar.h/stdlib.h guard their ISO-C-ext declarations (wcstold,
+    // strtold, llabs) with exactly that shape, and the dropped declarations
+    // surface as "not a declaration in '::'" a thousand lines later. It also
+    // keeps comment words out of pack_record_branch_macro (B4a). A block
+    // comment may span physical lines (the <stddef.h> #endif precedent —
+    // consume through `*/` wherever it closes); char/string literals shield
+    // both comment introducers.
+    bool in_str = false, in_chr = false;
+    while ( source.good() && !source.eof() )
+    {
+	int ch = source.peek();
+	if ( ch == '\n' || ch == '\r' )
+	    break;
+	if ( !in_str && !in_chr && ch == '/' )
+	{
+	    source.get();
+	    int nx = source.peek();
+	    if ( nx == '*' )
+	    {
+		source.get();
+		int prev = 0;
+		while ( source.good() && !source.eof() )
+		{
+		    int c2 = source.get();
+		    if ( prev == '*' && c2 == '/' )
+			break;
+		    prev = c2;
+		}
+		raw_expr += ' ';
+		continue;
+	    }
+	    if ( nx == '/' )
+	    {
+		while ( source.good() && !source.eof()
+		     && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		break;
+	    }
+	    raw_expr += '/';
+	    continue;
+	}
+	source.get();
+	if ( in_str )
+	{
+	    if ( ch == '\\' && source.good() && !source.eof()
+	      && source.peek() != '\n' && source.peek() != '\r' )
+	    {
+		raw_expr += (char)ch;
+		ch = source.get();
+	    }
+	    else if ( ch == '"' )
+		in_str = false;
+	}
+	else if ( in_chr )
+	{
+	    if ( ch == '\\' && source.good() && !source.eof()
+	      && source.peek() != '\n' && source.peek() != '\r' )
+	    {
+		raw_expr += (char)ch;
+		ch = source.get();
+	    }
+	    else if ( ch == '\'' )
+		in_chr = false;
+	}
+	else if ( ch == '"' )
+	    in_str = true;
+	else if ( ch == '\'' )
+	    in_chr = true;
+	raw_expr += (char)ch;
+    }
 
     // Expand macros before evaluation so expressions like
     // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
