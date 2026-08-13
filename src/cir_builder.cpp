@@ -9353,7 +9353,11 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 			     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 	};
 	auto void_ptr_to = [&](node_t e) { return node2(N_CAST, vptr_t(), e); };
-	auto void_ptr_int = [&](long v) { return node2(N_CAST, vptr_t(), integer(v)); };
+	// long long, never long: HOST long is 32-bit on the win64 build, and
+	// the VMI word below packs base_count into bits 32+ — a `long`
+	// parameter truncates it AT THE CALL (the CirBuilder::integer(long)
+	// lesson from the LLP64 arc).
+	auto void_ptr_int = [&](long long v) { return node2(N_CAST, vptr_t(), integer(v)); };
 
 	node_t out = list();
 
@@ -9440,15 +9444,18 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 		append(inits, node2(N_INIT, list(), base_ti_ref(cdd->bases[0].base)));
 	} else if (cdd->typeinfo_flavor() == DataDefCLASS::TI_VMI) {
 		// [2] = (void*)( flags | (base_count << 32) )  (.long flags; .long count;)
-		unsigned long flags = 0;   // 0 is always runtime-safe
-		unsigned long count = cdd->bases.size();
+		// 64-bit types throughout: with 32-bit HOST long (win64 build)
+		// `count << 32` is shift-count-overflow UB (x86 shifts by 0),
+		// silently corrupting the __vmi_class_type_info word.
+		unsigned long long flags = 0;   // 0 is always runtime-safe
+		unsigned long long count = cdd->bases.size();
 		append(inits, node2(N_INIT, list(),
-			void_ptr_int((long)(flags | (count << 32)))));
+			void_ptr_int((long long)(flags | (count << 32)))));
 		for (const BaseSpec &bs : cdd->bases) {
 			append(inits, node2(N_INIT, list(), base_ti_ref(bs.base)));
-			long offflags = ((long)bs.offset << 8)
-				| (bs.access == 0 ? 0x2L : 0L)   // __public_mask
-				| (bs.is_virtual ? 0x1L : 0L);   // __virtual_mask
+			long long offflags = ((long long)bs.offset << 8)
+				| (bs.access == 0 ? 0x2LL : 0LL) // __public_mask
+				| (bs.is_virtual ? 0x1LL : 0LL); // __virtual_mask
 			append(inits, node2(N_INIT, list(), void_ptr_int(offflags)));
 		}
 	}
