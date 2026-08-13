@@ -99,6 +99,20 @@ high-level" — the answer is both.**
 
 ## Current State
 
+- **Track 6.4 Win64 JIT full-suite burndown is complete on
+  `feature/win64-46b-burndown-codex` (2026-08-13, code/test head
+  `0bc84193`).** The MinGW+UCRT binary's Wine domain moved from
+  **947/30/59skip** at the 46b handoff to
+  **981/0/0TO/57skip** after LLP64 ABI/type/layout, c2mir/MIR boundary,
+  exception, preprocessor, and platform-fixture fixes. The skip audit
+  leaves 25 libc++-flavor exclusions, 20 structural Win64/POSIX
+  exclusions, 3 Wine-only exclusions, and 9 known MIR gaps. Wine's
+  rotating false failures were captured as a client/server connection
+  reset and disappear with one persistent `wineserver`; this is now a
+  documented gate precondition. Final-content regression gates:
+  fulltest **1029/0/9skip**, libc++ JIT **1025/0/13skip**. Next:
+  W3 PE/COFF writers, W4 Windows header groves, W5 artifacts/battery.
+
 - **v0.78.0 (2026-08-12): the torture window closes (task #41).** The
   5 standard-C class-(a) regressions from the 2026-07-23→08-11 window
   are root-caused and fixed — long-double struct alignment 16

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **The Win64 JIT suite reaches zero failures.** The 46b LLP64
+  burndown fixes script/host namespace width agreement, unary integer
+  folding, Microsoft bit-field units, memory-shaped c2mir scalar
+  boundaries, C++ base tail-padding reuse, Win64 setjmp/longjmp stack
+  preservation in MIR, and conforming macro argument prescan/blue paint.
+  MinGW-oracled platform fixtures replace LP64/POSIX assumptions. The
+  final Wine result is **981 passed / 0 failed / 0 timed out / 57
+  skipped**, from **947/30/0/59** at handoff; the audited skips are 25
+  libc++-flavor, 20 structural Win64/POSIX, 3 Wine-only, and 9 known
+  MIR gaps. Linux fulltest is **1029/0/9**, libc++ JIT
+  **1025/0/13**.
+- **Windows oracle policy is platform-authentic.** MinGW GCC remains
+  the first Win64 oracle, with Clang as the required fallback opinion;
+  documented MSVC behavior may override MinGW where native Windows
+  authenticity demands it. Linux remains GCC+libstdc++ first and macOS
+  Clang+libc++ first. Matching neither GCC nor Clang is unacceptable.
+
 ## [v0.78.0] — 2026-08-12
 
 The torture window closes: the five standard-C regressions from the

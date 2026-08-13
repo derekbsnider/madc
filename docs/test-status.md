@@ -1,5 +1,19 @@
 # Test Status
 
+> **Current (2026-08-13,
+> `feature/win64-46b-burndown-codex` @`0bc84193` — Win64 46b JIT
+> burndown close):** Wine domain suite **981/0/0TO/57skip**, down from
+> the handoff baseline **947/30/0TO/59skip**. The 57 audited skips are
+> 25 libc++-flavor tests outside the Win64 libstdc++ lane, 20
+> structural Win64/POSIX exclusions, 3 Wine-only environment
+> exclusions, and 9 known MIR gaps. Wine 9.0's rotating failures were
+> traced to `wine client error: recvmsg: Connection reset by peer`;
+> keeping one `wineserver -p` instance alive produced the zero-failure
+> full runs. Final-content deferred gates, each run once: Linux
+> fulltest **1029/0/0TO/9skip**, libc++ JIT
+> **1025/0/0TO/13skip**, both rc=0. Full log for those two gates:
+> `tmp/logs/rb-20260813-211415.log`.
+>
 > **Current (2026-08-07, `feature/data-channel-flow-codex` @cd1f19c6 -
 > session #70 close):** clean enabled remote fulltest
 > **999/0/0TO/9skip**, total rc=0; all warning, forest, rule-trailer,

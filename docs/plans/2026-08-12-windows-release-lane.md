@@ -1,6 +1,7 @@
 # Windows release lane — full-suite win64 (Track 6.4)
 
-**Status: PLAN (drafted 2026-08-12, session #83). Owner directives:
+**Status: IN PROGRESS (drafted 2026-08-12, session #83; Win64 JIT
+full-suite burndown reached zero failures 2026-08-13). Owner directives:
 mingw-w64 + libstdc++; UCRT (decided 2026-08-12); FULL suite support —
 JIT, AOT `-o`, `--obj`, emitted C, packed groves — "no cutting
 corners". Sequenced by the owner: this lane ships BEFORE the
@@ -21,6 +22,7 @@ POSIX mmap semantics, winsock) and a third executable format (PE/COFF).
 | Decision | Choice | Why |
 |----------|--------|-----|
 | Toolchain | **mingw-w64 cross from the build container** (`x86_64-w64-mingw32-g++`, the `-posix` thread flavor) | gcc canon end-to-end; winpthreads gives the pthread/std::thread surface for free; cross keeps QNAP/container discipline unchanged |
+| Oracle order | **Platform-local first:** Linux GCC+libstdc++ then Clang+libc++; macOS Clang+libc++ then GCC+libstdc++; Windows starts with MinGW GCC, but MSVC wins where native Win64 authenticity requires it | Matching neither GCC nor Clang is never acceptable. A Windows departure from MinGW must be documented with MSVC evidence; WSL MadC remains available for Linux/POSIX behavior. Owner decision, 2026-08-13 |
 | C++ stdlib | **libstdc++** | owner directive; same flavor as the Linux lane — the groves/forest machinery reuses the default-lane path, not a new flavor family like darwin's libc++ |
 | CRT | **UCRT** (owner, 2026-08-12) | C99/C11-conformant, ABI-stable, the supported modern CRT; an OS component on Windows 10+ (our floor); MSYS2's default since 2022. msvcrt is the VC6-era compat layer — wrong side of "no cutting corners" |
 | long double | **x87 80-bit (mingw-gcc model), NOT MSVC's double** | gcc parity is canon; mingw-gcc keeps 80-bit long double on win64. Neither msvcrt nor UCRT can printf it — mingw's own ANSI stdio (`__USE_MINGW_ANSI_STDIO`) formats it; the embedded prelude must route the printf family accordingly. (Session #83 just fixed 16-byte long double alignment — the Windows target keeps it.) |
@@ -838,6 +840,37 @@ Inventory from recon (session #83 greps):
   that must keep failing). Real-ntdll confirmation rides the first
   win_battery once W0.2 is up; the NULL-ctx semantics are CRT-level,
   so no divergence is expected.
+
+### Win64 JIT full-suite burndown — DONE (2026-08-13)
+
+The 46b handoff was executed on
+`feature/win64-46b-burndown-codex` in 15 implementation/test commits
+through `0bc84193`. The Wine domain moved from **947 passed / 30 failed /
+59 skipped** to **981 passed / 0 failed / 57 skipped**.
+
+The deepest fixes were: fixed-width script namespace declarations on
+LLP64; integer unary-folding before real saturation; Microsoft bit-field
+allocation units; c2mir memory-shaped scalar conversions; C++ base tail-
+padding reuse; MIR alloca immobility during combine (the Win64 setjmp/
+longjmp crash); and preprocessor raw-argument plus inherited blue-paint
+semantics. MinGW-oracled LLP64 fixtures and platform-authentic test sources
+cover the output differences. The final skip audit classifies the 57 as
+25 libc++-flavor tests outside this lane, 20 structural Win64/POSIX
+exclusions, 3 Wine-environment exclusions, and 9 known MIR gaps.
+
+Wine 9.0's prior rotating 2–4-test "flake" was traced to the process
+boundary, not test semantics: the captured failing client said
+`recvmsg: Connection reset by peer`. Start one persistent server with
+`wineserver -p` before the thousand-invocation suite. With that server,
+the unchanged canonical runner completed twice without a test failure;
+the final-content result is the **981/0/0TO/57skip** figure above. This is
+an execution-environment precondition, not a retry policy.
+
+Deferred regression validation was then paid once at final content:
+Linux fulltest **1029/0/0TO/9skip**, libc++ JIT
+**1025/0/0TO/13skip**, both rc=0. The next compiler work is W3, followed
+by the W4 header forest/groves required to run header-using tests through
+the bare genuine-Windows staging channel, then W5 packaging/battery.
 
 ### W3 — PE/COFF writers (the genuinely new compiler work)
 - **mir-pe.c**: PE64 executable writer behind the SAME `MIR_object`
