@@ -42,6 +42,14 @@
 # MADC_BIN (env): the madc binary to test (default bin/madc). Generic
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
+#
+# MADC_WRAPPER (env): command prefix that runs the binary on its execution
+# domain — `wine` for the PE madc.exe on the build container. Word-split
+# deliberately (a wrapper may carry flags). Same generic-capability rule
+# as MADC_BIN: never a per-test hook. CRLF note: win64 stdout is CRLF in
+# text mode (gcc-parity-correct platform behavior); the .expect model is
+# per-line SUBSTRING match (grep -F), which tolerates the trailing \r —
+# fixtures stay LF, no normalization layer needed.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
@@ -59,6 +67,7 @@ HERMETIC_FLAGS="--no-config"
 STDLIB_NAME=""
 STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
+MADC_WRAPPER="${MADC_WRAPPER:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
@@ -151,9 +160,9 @@ for t in tests/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -177,9 +186,9 @@ for t in tests/*.mad; do
         # assert it is empty; without the fixture it is simply discarded.
         errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -243,11 +252,11 @@ for t in tests/*.mad; do
             run_flags+=("$fl")
         done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -284,7 +293,7 @@ for t in tests/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
