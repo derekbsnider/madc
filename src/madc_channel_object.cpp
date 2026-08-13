@@ -114,7 +114,7 @@ const char *channel::last_error() const
 	return state(impl_)->last_error.message.c_str();
 }
 
-long channel::read(void *buffer, long capacity)
+int64_t channel::read(void *buffer, int64_t capacity)
 {
 	ChannelState *s = state(impl_);
 	if ( !buffer || capacity <= 0 )
@@ -218,7 +218,7 @@ bool channel::write(const char *text)
 	return write(text, static_cast<long>(std::strlen(text)));
 }
 
-bool channel::write(const char *buffer, long size)
+bool channel::write(const char *buffer, int64_t size)
 {
 	ChannelState *s = state(impl_);
 	if ( !s->channel )
