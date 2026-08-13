@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+// A bare-U integer literal wider than unsigned int must ladder to the
+// 64-bit unsigned rungs (C11 6.4.4.1), not stay a 4-byte unsigned:
+// sizeof(4294967296U) is 8 on every target. Oracle: gcc == clang ==
+// mingw-gcc print the three lines below (target-independent — the
+// 64-bit rungs are 8 bytes on LP64 and LLP64 alike).
+int main(void)
+{
+    printf("%zu %zu\n", sizeof(4294967295U), sizeof(4294967296U));
+    printf("%llu\n", 4294967296U + 0ULL);
+    unsigned long long v = 18446744073709551615U;
+    printf("%llu\n", v);
+    return 0;
+}

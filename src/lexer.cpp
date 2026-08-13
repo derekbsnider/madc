@@ -4636,8 +4636,13 @@ TokenBase *Program::_getToken()
 			return is_hex_or_octal ? (DataDef *)&ddUINT64
 					       : (DataDef *)&ddINT64;
 		    }
+		    // Bare U ladders past unsigned int when the value doesn't
+		    // fit 32 bits (C11 6.4.4.1: unsigned int -> unsigned long
+		    // -> unsigned long long; both 64-bit rungs are ddUINT64).
+		    // gcc == clang == mingw-gcc: sizeof(4294967296U) is 8.
 		    if ( has_u_suffix )
-			return &ddUINT32;
+			return (uint64_t)val <= 0xFFFFFFFFull
+			     ? (DataDef *)&ddUINT32 : (DataDef *)&ddUINT64;
 		    // C integer literal type rules (no suffix):
 		    // Hex/octal: int → unsigned int → long → unsigned long
 		    // Decimal:   int → long → long long (never unsigned)
