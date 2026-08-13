@@ -1,0 +1,1 @@
+includes fcntl.h and uses O_NONBLOCK — mingw fcntl.h has no O_NONBLOCK (mingw-gcc rejects this source too)

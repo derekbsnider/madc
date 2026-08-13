@@ -1,0 +1,1 @@
+uses timeradd/timersub macros — mingw sys/time.h does not define them (mingw-gcc rejects this source too)

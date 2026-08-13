@@ -1,0 +1,1 @@
+spawns exec://sort expecting POSIX sort collation — Windows sort.exe differs (case folding, CRLF) and wine ships none

@@ -1,0 +1,1 @@
+tests real-header setenv/getenv — UCRT stdlib.h has no setenv (mingw-gcc rejects this source too); the script env builtins bind _putenv_s instead

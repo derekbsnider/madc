@@ -87,6 +87,15 @@ if [ -n "$STDLIB_NAME" ]; then
     STDLIB_SKIP_EXT=$(printf '%s' "$STDLIB_NAME" | tr '+' 'x')
 fi
 
+# MADC_SKIP_EXT (env): the execution-DOMAIN twin of the stdlib skip lane —
+# tests/<base>.${MADC_SKIP_EXT}_skip marks a test structurally out of scope
+# for the domain the binary under test targets (win64 lanes run with
+# MADC_SKIP_EXT=win64; a fixture's one line says why, e.g. "POSIX sockets —
+# mingw-gcc rejects sys/socket.h too"). Same convention rules as every
+# fixture: never a per-test branch in the runner, and the summary is
+# labelled so a domain run can't be quoted as the default-lane baseline.
+MADC_SKIP_EXT="${MADC_SKIP_EXT:-}"
+
 # Remaining positional arguments are basename GLOBS selecting a SUBSET of the
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
 # hard-coded here — the caller supplies the pattern, so this stays a generic
@@ -108,6 +117,7 @@ OBJ_PASS=0
 OBJ_FAIL=0
 SELECTED=0
 STDLIB_SKIPPED=0
+DOMAIN_SKIPPED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
@@ -141,6 +151,15 @@ for t in tests/*.mad; do
     if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "tests/$base.$STDLIB_SKIP_EXT""_skip" ]; then
         SKIP=$((SKIP+1))
         STDLIB_SKIPPED=$((STDLIB_SKIPPED+1))
+        continue
+    fi
+
+    # Execution-domain lane (MADC_SKIP_EXT, e.g. win64): same contract as the
+    # flavored skip; only consulted when the caller selected a domain, so
+    # every default-lane run is untouched.
+    if [ -n "$MADC_SKIP_EXT" ] && [ -f "tests/$base.$MADC_SKIP_EXT""_skip" ]; then
+        SKIP=$((SKIP+1))
+        DOMAIN_SKIPPED=$((DOMAIN_SKIPPED+1))
         continue
     fi
 
@@ -335,6 +354,9 @@ if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes
     # measure different libraries and legitimately have different skip sets.
     echo "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
+fi
+if [ -n "$MADC_SKIP_EXT" ]; then
+    echo "DOMAIN RUN — $MADC_SKIP_EXT ($DOMAIN_SKIPPED test(s) carry a .${MADC_SKIP_EXT}_skip); NOT the default-lane baseline"
 fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then

@@ -1,0 +1,1 @@
+dlopens libc.so.6 — no glibc soname exists on win64; the dl surface itself is covered by madcdl tests

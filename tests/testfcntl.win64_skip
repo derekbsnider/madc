@@ -1,0 +1,1 @@
+calls POSIX fcntl() — mingw has no fcntl (mingw-gcc rejects this source too)

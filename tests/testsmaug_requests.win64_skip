@@ -1,0 +1,1 @@
+includes fcntl.h and uses O_NONBLOCK via smaug_requests_source.mad — mingw-gcc rejects the source too
