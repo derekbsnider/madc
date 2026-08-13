@@ -368,6 +368,67 @@ Inventory from recon (session #83 greps):
   sys_include_paths / the hosted-MODE predefines, and what mingw-g++
   itself predefines for the oracle. Repro: wine madc.exe
   tests/testif.mad (Linux rc=0).
+  **Defect #3 burndown (session #86, 2026-08-13): the banked hypothesis
+  was WRONG; five distinct roots fixed (four Linux-latent madc bugs),
+  original error gone; testif still red at the NEXT frontier —
+  "basic_string.h:87: use of undeclared identifier 'max_size'" in the
+  staged UCRT libstdc++ 13.2.0 (13.3-on-Linux never showed it; fresh
+  diagnosis next window).** The predefine posture was already correct
+  (probe: script TU sees _UCRT, __USE_MINGW_ANSI_STDIO=1, NONSEH,
+  _WIN64, SZL=4, SZW=2 — the HOSTTAB capture works; note the stale
+  hardcoded __LP64__=1 seed survives for task #46, and __STRICT_ANSI__
+  is seeded on BOTH lanes, established posture, suites green). The
+  real chain, in burndown order:
+  (1) **Global overload sets excluded the untracked FIRST declaration**
+  — mingw swprintf.inl declares 4-arg ISO vswprintf then a 3-arg
+  extern "C++" overload; the first (source-named, dlsym-import
+  contract) never joined the "::name" set and carried no
+  function_display_name, so the .inl's own 3-arg call could never
+  re-rank ("expected 4 got 3"). Invisible to the libc++ global-abs
+  precedent (all arity 1) — and on the libc++ LINUX lane abs(-2.5)
+  silently truncated through int abs. Fix: parseDeclaration seeds the
+  pre-existing source-named global into the set when tracking starts
+  (sentinel spelling; Variable/import name untouched). Gate:
+  tests/testglobaloverload_libcxx.mad (clang++ -stdlib=libc++ oracle
+  2/25/7/3).
+  (2) **#if/#elif capture lacked phase-3 comment replacement** —
+  `#if !defined __NO_ISOCEXT /* in libmingwex.a */` (mingw wchar.h /
+  stdlib.h guard for wcstold/strtold/llabs) reached the expression
+  evaluator as `/ * garbage` and silently read FALSE, dropping the
+  declarations ("'wcstold' is not a declaration in '::'" at cwchar).
+  Fix: evaluateIfCondition strips comments at capture (block comments
+  may span lines; literals shield the introducers). Gate:
+  tests/testifcomment.mad.
+  (3) **`(**name)(params)` declarator unsupported** — winpthreads'
+  `extern void WINPTHREAD_API (**_pthread_key_dest)(void *);`
+  (pthread.h:282). Fix: extra stars in the fn-ptr declarator arm wrap
+  the DataDefFPTR in pointer levels. Gate: tests/testfnptrptr.mad.
+  Residual = Gap{fnptr_ptr_value_semantics} (CIR renders the ptr-to-
+  fnptr as long long*, &fnptr-var init drops the &, subscript-call
+  fails c2mir check; reducers tmp/win/fpp31/32/33.mad; no live
+  consumer — the shape was unparseable before).
+  (4) **Unary minus typed as int over real/wide operands** — TokenNeg
+  already propagated unsigned/complex but not real/wide-int, so
+  abs(-2.5) RANKED as int even with the set fixed. Fix: TokenNeg
+  datadef propagates real + wider-than-int integer operands.
+  (5) **Lexer-aliased libm builtins lacked real signatures** —
+  bits/std_abs.h calls __builtin_fabs with deliberately no <math.h>
+  ("Use builtins to prevent needing math.h"); the aliased bare `fabs`
+  fell to the i64 dlsym default and the xmm0 double read back as
+  garbage (abs(2.5) -> 1.0). Fix: register the whole aliased family's
+  real signatures beside the copysign precedent (fabs/sqrt/sin/cos/pow
+  families + labs/llabs — labs is dtINT32 on _WIN32, the LLP64
+  returns-long class).
+  Plus the fork map extension: mir-mingw-stdio.h grew (a) direct
+  __mingw_* spellings the served headers' inline bodies call (narrow
+  twins + the wide printf/scanf family + strtox), (b) libmingwex plain
+  names whose ucrtbase export is the wrong LD flavor or absent
+  (strtold/wcstof/wcstold, fabs/fabsf/fabsl). Wide PLAIN names
+  deliberately have no entries (__mingw_swprintf's 3-arg variadic
+  shape is NOT ISO swprintf). NOTE for the battery: further libmingwex
+  math names will surface the same way; if the list grows past a
+  handful, generate the table from nm (HOSTTAB-style) instead of
+  hand-extending.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
