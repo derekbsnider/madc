@@ -44,6 +44,18 @@ for a in "$@"; do
 	if [ -f "$a" ]; then
 		files+=("$a")
 		cmd+=("$(basename "$a")")
+		# A PE loads DLLs from the exe's own directory first — mirror
+		# that rule: shipping an .exe ships its adjacent DLLs (the
+		# UCRT-flavor libstdc++-6/libwinpthread-1 the hosted MODE
+		# stages beside madc.exe). Generic by convention, never a
+		# per-binary list.
+		case "$a" in
+		*.exe)
+			for dll in "$(dirname "$a")"/*.dll; do
+				[ -f "$dll" ] && files+=("$dll")
+			done
+			;;
+		esac
 	else
 		cmd+=("$a")
 	fi

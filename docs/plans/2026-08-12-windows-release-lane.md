@@ -445,6 +445,36 @@ Inventory from recon (session #83 greps):
   reproduces the basic_string.h:87 "undeclared identifier 'max_size'"
   parse error (13.2.0-text instantiation issue; `#include <string>`
   alone is green). testif needs both fixed.
+  **Mangled-direct arc SHIPPED (session #86 cont., commit 0eea1ae5):
+  the DLL design (darwin flat-bind analogue), not the .def export
+  list** — a .def would need --whole-archive libstdc++ (a >2x exe-size
+  trade needing an owner YES) plus the PE 64k-ordinal risk, and mingw's
+  own posture IS shared libstdc++. Three pieces: (1) the stage script
+  builds libstdc++-6.dll through the same ucrt.specs swap (a plain
+  -shared link would pull -lmsvcrt = second CRT) AND builds winpthreads
+  from mingw-w64 11.0.1 source as a UCRT-flavor libwinpthread-1.dll —
+  the distro's DLL imports msvcrt.dll, and a static-in-exe +
+  shared-in-DLL winpthread split would put TWO instances in one process
+  (pthread objects cross the exe<->DLL boundary: std::thread's
+  _M_start_thread/join are compiled in the DLL; madc_process pump
+  threads are host-side; winpthread handles are per-instance
+  allocations). Gates in-script: DLL present, UCRT-mangled fpos export
+  surface, no msvcrt.dll import in either DLL. (2) hosted MODE links
+  libstdc++ + winpthread SHARED from the stage (zlib stays in the
+  -Bstatic window, -static-libgcc), both DLLs copied beside the exe.
+  (3) madcdl_sym_default walks self -> recorded -> libstdc++-6.dll ->
+  libwinpthread-1.dll -> ucrtbase -> kernel32; the DLL export table
+  plays libstdc++.so-dynsym's role under Linux dlsym(RTLD_DEFAULT);
+  one-site fix (every resolver rides the slice-1 seam). RESULTS:
+  bstr37 prints iostream-ok; bstr38's max_size parse error is GONE —
+  same root (failed _Z existence probes had forced a
+  pattern-instantiation path); wine sweep 3/7 -> 6/7 byte-exact
+  (testswitch/teststruct/testptr green); madc.exe 17.9 -> 14.7MB.
+  Remaining red: testif == bstr38 residual, undefined _Znwm — madc
+  mangles size_t with LP64 'm' where win64 libstdc++ exports 'y'
+  (win64 size_t = unsigned long long). That is task #46's type model;
+  slice 46a (mangling letters + __LP64__ seed rider, no width changes)
+  follows this entry.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
