@@ -20228,6 +20228,34 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysign",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))copysign);
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
+    // The REST of the lexer-aliased libm builtins, same class as copysign:
+    // every __builtin_X the lexer maps to a bare libm name must carry X's
+    // real signature, because system-header inline bodies call the builtins
+    // with deliberately NO <math.h> in scope — libstdc++/libc++
+    // bits/std_abs.h ("Use builtins to prevent needing math.h") returns
+    // __builtin_fabs(__x), and the i64 dlsym default read the xmm0 double
+    // as garbage (abs(2.5) -> 1.0 once the global abs overload set ranked
+    // correctly). labs/llabs are the returns-long class (embedded-headers
+    // rule): the i64 fallback was only accidentally right on LP64.
+    builtin_registry.add_core_function("fabs",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))fabs);
+    builtin_registry.add_core_function("fabsf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))fabsf);
+    builtin_registry.add_core_function("fabsl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double))fabsl);
+    builtin_registry.add_core_function("sqrt",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))sqrt);
+    builtin_registry.add_core_function("sqrtf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))sqrtf);
+    builtin_registry.add_core_function("sqrtl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double))sqrtl);
+    builtin_registry.add_core_function("sin",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))sin);
+    builtin_registry.add_core_function("sinf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))sinf);
+    builtin_registry.add_core_function("cos",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))cos);
+    builtin_registry.add_core_function("cosf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))cosf);
+    builtin_registry.add_core_function("pow",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))pow);
+    builtin_registry.add_core_function("powf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))powf);
+    builtin_registry.add_core_function("llabs", datatype_vec_t{DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)(long long(*)(long long))llabs);
+#ifdef _WIN32
+    // Platform long is 4 bytes on win64 (LLP64) — labs returns eax.
+    builtin_registry.add_core_function("labs",  datatype_vec_t{DataType::dtINT32, DataType::dtINT32}, (fVOIDFUNC)(long(*)(long))labs);
+#else
+    builtin_registry.add_core_function("labs",  datatype_vec_t{DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)(long(*)(long))labs);
+#endif
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
     // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
     // bound to real libc. The old madc conveniences (getenv's 2-param
