@@ -38,6 +38,43 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_type("size_t") == "m");
 	}
 
+	// Task #46: the width-carrying rows follow the target data model.
+	// x86_64-w64-mingw32-g++ mangles f(size_t) as _Z1fy (size_t is
+	// unsigned long long there) where Linux g++ says _Z1fm; the 64-bit
+	// dds desugar through `long long` on LLP64 (_Znwy, never _Znwm).
+	TEST_CASE("LLP64 target model flips width-carrying rows only") {
+		struct ModelGuard {
+			TargetDataModel saved;
+			ModelGuard() : saved(madc_target_data_model) {}
+			~ModelGuard() { madc_target_data_model = saved; }
+		} guard;
+		madc_target_data_model = TargetDataModel::LLP64;
+		CHECK(itanium_encode_type("size_t") == "y");
+		CHECK(itanium_encode_type("std::size_t") == "y");
+		CHECK(itanium_encode_type("int64_t") == "x");
+		CHECK(itanium_encode_type("uint64_t") == "y");
+		CHECK(itanium_encode_type("ssize_t") == "x");
+		CHECK(itanium_encode_type("ptrdiff_t") == "x");
+		// Plain long/long long letters are TYPE identity, not width —
+		// they never move with the model.
+		CHECK(itanium_encode_type("long") == "l");
+		CHECK(itanium_encode_type("unsigned long") == "m");
+		CHECK(itanium_encode_type("long long") == "x");
+		CHECK(itanium_encode_type("unsigned long long") == "y");
+		// The 64-bit desugar follows the model too. The desugar fires
+		// only for PLAIN DataDef instances (the typeid guard) — the
+		// parser-minted scalar-typedef alias shape — never for the
+		// builtin dd subclasses, so test the shape the real path sees.
+		DataDef off_alias("streamoff", 8, DataType::dtINT64);
+		DataDef sz_alias("streamsize_u", 8, DataType::dtUINT64);
+		CHECK(off_alias.mangle_scalar_spelling() == "long long");
+		CHECK(sz_alias.mangle_scalar_spelling() == "unsigned long long");
+		// Negative control: LP64 restores the Linux letters.
+		madc_target_data_model = TargetDataModel::LP64;
+		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(off_alias.mangle_scalar_spelling() == "long");
+	}
+
 	TEST_CASE("Pointer types") {
 		CHECK(itanium_encode_type("int*") == "Pi");
 		CHECK(itanium_encode_type("char*") == "Pc");

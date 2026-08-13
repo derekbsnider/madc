@@ -36,6 +36,17 @@ extern thread_local bool madc_debug_info;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// The TARGET's 64-bit data model (task #46, owner decision 2026-08-13:
+// win64 = the PLATFORM model, LLP64). ONE owner for every "how wide is
+// long / which Itanium letter is size_t on this target" question — never
+// re-test _WIN32 at a consumer. Defaults to the host's model (hosted
+// modes compile for the host); cross-target machinery assigns it.
+// Defined in src/parser.cpp beside the dd globals.
+enum class TargetDataModel { LP64, LLP64 };
+extern TargetDataModel madc_target_data_model;
+inline bool target_llp64()
+{ return madc_target_data_model == TargetDataModel::LLP64; }
+
 // Resolved absolute path of the running executable, empty when unresolvable.
 // The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
 // _NSGetExecutablePath on macOS.

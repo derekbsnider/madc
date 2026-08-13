@@ -16135,6 +16135,17 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
 
+// The target's 64-bit data model (datadef.h) — host-derived default: the
+// hosted modes compile for the compiler that built them (the win64 madc.exe
+// serves mingw's LLP64 world), so the build target IS the script target.
+// Cross-target machinery reassigns this when it grows a --target= knob.
+TargetDataModel madc_target_data_model =
+#ifdef _WIN32
+	TargetDataModel::LLP64;
+#else
+	TargetDataModel::LP64;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -20250,12 +20261,13 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("pow",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))pow);
     builtin_registry.add_core_function("powf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))powf);
     builtin_registry.add_core_function("llabs", datatype_vec_t{DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)(long long(*)(long long))llabs);
-#ifdef _WIN32
-    // Platform long is 4 bytes on win64 (LLP64) — labs returns eax.
-    builtin_registry.add_core_function("labs",  datatype_vec_t{DataType::dtINT32, DataType::dtINT32}, (fVOIDFUNC)(long(*)(long))labs);
-#else
-    builtin_registry.add_core_function("labs",  datatype_vec_t{DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)(long(*)(long))labs);
-#endif
+    // Platform long is 4 bytes on LLP64 (labs returns eax there) — the
+    // one width owner is madc_target_data_model (datadef.h); hosted modes
+    // have host == target, and cross builds never execute the bound ptr.
+    builtin_registry.add_core_function("labs",
+	target_llp64() ? datatype_vec_t{DataType::dtINT32, DataType::dtINT32}
+		       : datatype_vec_t{DataType::dtINT64, DataType::dtINT64},
+	(fVOIDFUNC)(long(*)(long))labs);
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
     // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
     // bound to real libc. The old madc conveniences (getenv's 2-param

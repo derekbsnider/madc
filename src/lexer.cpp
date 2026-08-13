@@ -1387,7 +1387,13 @@ void Program::_tokenizer_init()
     define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
     define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
     define_map["__x86_64__"] = "1";
-    define_map["__LP64__"] = "1";
+    // __LP64__ follows the target data model: gcc defines it on Linux and
+    // darwin, mingw never does — and because mingw doesn't, the baked
+    // predefine capture cannot overwrite a stale seed on win64 the way it
+    // fixes __SIZEOF_LONG__ and friends; an unconditional seed leaks LP64
+    // into every served mingw header (task #46 rider).
+    if ( !target_llp64() )
+	define_map["__LP64__"] = "1";
     define_map["__BYTE_ORDER__"] = std::to_string(__BYTE_ORDER__);
     define_map["__ORDER_LITTLE_ENDIAN__"] = std::to_string(__ORDER_LITTLE_ENDIAN__);
     define_map["__ORDER_BIG_ENDIAN__"] = std::to_string(__ORDER_BIG_ENDIAN__);
