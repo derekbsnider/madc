@@ -27,10 +27,12 @@
         deliberately have NO entries: plain swprintf/vswprintf are inline
         bodies the compiler compiles itself, and __mingw_swprintf's 3-arg
         variadic shape is NOT ISO 4-arg swprintf.
-     3. libmingwex-implemented PLAIN names whose CRT-walk hit is the WRONG
-        FLAVOR: ucrtbase exports wcstold/strtold with MSVC 8-byte long
-        double; mingw-gcc statically binds libmingwex's 80-bit ones (and
-        libmingwex's plain wcstof), so the resolver must too.
+     3. Statically-bound PLAIN names the walk resolves WRONG or not at all:
+        wrong-flavor libmingwex math (ucrtbase exports wcstold/strtold with
+        MSVC 8-byte long double; mingw-gcc statically binds libmingwex's
+        80-bit ones), ucrt "oldnames" aliases (strdup is an import-lib
+        alias for _strdup -- link-time only, invisible to GetProcAddress),
+        and libmingwex-only POSIX-compat surfaces (<dirent.h>).
    Signatures below are declared explicitly (extern-C) rather than trusting
    header guard states -- a drift from the real libmingwex prototypes fails
    the host build loudly instead of corrupting calls at run time.
@@ -49,6 +51,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <math.h>
+#include <dirent.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -194,6 +197,24 @@ static const struct {
   {"sinhl", (void *) sinhl},           {"sqrtl", (void *) sqrtl},
   {"tanl", (void *) tanl},             {"tanhl", (void *) tanhl},
   {"tgammal", (void *) tgammal},       {"truncl", (void *) truncl},
+  /* 3 (cont.): ucrt "oldnames" aliases.  ucrtbase exports only the
+     underscore spellings (_strdup, _wcsdup); the plain POSIX names exist
+     purely as import-library aliases resolved at LINK time, so no module
+     walk can ever see them.  Only the names the suite has hit so far --
+     if this class keeps growing, generate the full oldnames list from nm
+     (the HOSTTAB approach) instead of extending it one name at a time. */
+  {"strdup", (void *) strdup},
+  {"wcsdup", (void *) wcsdup},
+  /* 3 (cont.): the <dirent.h> family -- implemented entirely in
+     libmingwex (no CRT export at any spelling).  The complete surface of
+     the served header, narrow and wide, same closure rule as the math
+     family above. */
+  {"opendir", (void *) opendir},       {"readdir", (void *) readdir},
+  {"closedir", (void *) closedir},     {"rewinddir", (void *) rewinddir},
+  {"telldir", (void *) telldir},       {"seekdir", (void *) seekdir},
+  {"_wopendir", (void *) _wopendir},   {"_wreaddir", (void *) _wreaddir},
+  {"_wclosedir", (void *) _wclosedir}, {"_wrewinddir", (void *) _wrewinddir},
+  {"_wtelldir", (void *) _wtelldir},   {"_wseekdir", (void *) _wseekdir},
 };
 
 static inline void *mir_mingw_ansi_stdio_lookup (const char *name) {

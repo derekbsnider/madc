@@ -1,0 +1,1 @@
+dlopens libc.so.6 (an ELF library name) at run time — POSIX-structural test asset; mingw-gcc has no dlfcn.h either
