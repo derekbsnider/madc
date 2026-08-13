@@ -475,6 +475,34 @@ Inventory from recon (session #83 greps):
   (win64 size_t = unsigned long long). That is task #46's type model;
   slice 46a (mangling letters + __LP64__ seed rider, no width changes)
   follows this entry.
+  **46a SHIPPED (commit 27415fd8) + VMI typeinfo host-long fix
+  (e91d2a70) + runner DLL-shipping (3e989795): the 7-test wine sweep is
+  7/7 byte-exact.** 46a = ONE owner `TargetDataModel`
+  (madc_target_data_model, datadef.h, host-derived default) consumed by
+  DataDef::mangle_scalar_spelling (dtINT64/dtUINT64 desugar through
+  `long long` on LLP64), builtin_code's width-carrying rows
+  (size_t/uint64_t -> y, int64_t/ssize_t/ptrdiff_t -> x), the lexer's
+  __LP64__ seed (LP64-only now — mingw never defines it so the baked
+  capture could not overwrite the stale seed), and the labs
+  registration (adopted the owner, replacing its private #ifdef).
+  Unit-gated in test_mangle.cpp (LLP64 flip + LP64 negative control;
+  note the desugar's typeid guard means only PLAIN DataDef instances —
+  the parser-minted alias shape — desugar; the builtin dd subclasses
+  never do). bstr37 iostream-ok, bstr38 globstr-ok, testif green.
+  The VMI find (mingw -Wshift-count-overflow, analyzed not ignored):
+  __vmi_class_type_info packed flags|(base_count<<32) in 32-bit host
+  `long` through void_ptr_int(long) — silently wrong MI RTTI on win64
+  only; all three widths now explicit 64-bit; concept sweep (`<< 32`
+  on host-long types) found no other live site. Runner gained
+  MADC_WRAPPER (generic prefix knob, negative-controlled 0/1026 with
+  /bin/false; .expect matching is per-line SUBSTRING so CRLF needs no
+  normalization layer). **46b still open** (script long = 4-byte width
+  on win64, wchar_t internals, *l builtin widths — the lexer TS_LONG
+  mapping and sizeof folding still say 8).
+  **NEXT: the full-suite wine inventory** (MADC_BIN=madc.exe
+  MADC_WRAPPER=wine run_tests.sh) — probe first, classify the honest
+  fail list, mint .win-lane skip fixtures only for structurally-POSIX
+  tests, then burn down the rest.
 - **mmap** (`cir_freeze.cpp` — forest packing): reads can fall back to
   buffered IO; if mapping stays, CreateFileMapping/MapViewOfFile behind
   the same seam.
