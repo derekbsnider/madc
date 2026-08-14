@@ -267,10 +267,41 @@ other.
 
 ## 9. Slices (execution order; each lands with a gate)
 
-**P1 — leaves.** `strndup`, `setenv`/`unsetenv`, `sleep`/`usleep`,
-`timeradd`/`timersub`/`timerclear`, `dirent.d_type` (map
-`dwFileAttributes` → `DT_DIR`/`DT_REG`/`DT_LNK`). No state, no registry.
-Clears 5 skips. *Gate:* those tests drop their `.win64_skip` and pass.
+**P1 — leaves.** `strndup`, `setenv`/`unsetenv`, the `timer*` macros,
+`sleep`, `dirent.d_type`. No state, no registry. Clears 5 skips.
+*Gate:* those tests drop their `.win64_skip` and pass.
+
+> **Corrected 2026-08-14 (verified against the container's mingw root,
+> `/usr/share/mingw-w64/include`).** "Leaves" was right for three of the
+> five and wrong for two, and the mechanism assumption was wrong for all
+> of them:
+>
+> | item | mingw state | real cost |
+> |---|---|---|
+> | `strndup` | `string.h` **ships**, symbol absent | declaration delta + shim |
+> | `setenv`/`unsetenv` | `stdlib.h` **ships**, absent | delta + shim over `_putenv_s` |
+> | `timer*` | `sys/time.h` **ships**, absent | macro delta, header-only |
+> | `dirent.d_type` | `dirent.h` **ships**, no such member | **not a leaf** — see below |
+> | `sleep`/`usleep` | `unistd.h` **ships and declares `sleep`** | not a header problem at all |
+>
+> 1. **Every P1 header already exists on mingw**, so none can be served
+>    whole (§8 forbids shadowing). The dominant P1 mechanism is
+>    *augmenting* a real header — a supplement served immediately after
+>    it, keyed by filename convention under `include/madc/posix/`, gated
+>    on target + `--no-posix-compat`, additive-only. That mechanism did
+>    not exist and is P1's first task.
+> 2. **`d_type` cannot be a supplement.** It is a struct member, and
+>    mingw's `readdir` fills mingw's `struct dirent`. Serving it means
+>    madc owns `dirent.h` *and* `opendir`/`readdir`/`closedir` over
+>    `FindFirstFileW` — its own slice, not a leaf. Half-serving it (a
+>    shadowed struct the CRT never fills) would be a silent wrong answer.
+> 3. **`sleep` is a symbol-resolution question**, not a header one:
+>    `testlibc` includes nothing and tests the bare-name dlsym fallback
+>    through `madcdl_sym_default`. Note that an archive member is linked
+>    into `madc.exe` only if referenced — verify presence with `nm` on the
+>    built binary, not from the Makefile.
+>
+> The per-task form is `docs/plans/2026-08-14-codex-handoff-3-posix-p1-p2.md`.
 
 **P2 — `<dlfcn.h>`.** The backend already exists (`madc_dl.cpp`,
 `LoadLibrary`/`GetProcAddress`, the `sym_default` walk). This is a header
