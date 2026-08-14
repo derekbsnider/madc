@@ -21,6 +21,10 @@ class holder
 public:
 	enum part { none, space, symbol, sign, value };
 	static int pick() { return (int)symbol; }	// unqualified INSIDE is fine
+	// [dcl.enum]p11 relative spelling, from inside the class that owns the
+	// enum. This resolves through the pseudo-namespace keyed under the
+	// OWNER (holder::part) — see resolve_class_scoped_ns().
+	static int rel()  { return (int)part::sign; }
 };
 
 int main()
@@ -39,6 +43,7 @@ int main()
 	holder::part p = holder::value;
 	cout << "qual " << (int)p << endl;
 	cout << "memb " << holder::pick() << endl;
+	cout << "rel " << holder::rel() << endl;
 
 	return 0;
 }

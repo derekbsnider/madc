@@ -5294,6 +5294,9 @@ public:
     Variable *find_namespace_member_in_scope_chain(const std::string &ns_name,
 						   const std::string &member_name);
     std::string resolve_namespace_name_in_scope(const std::string &name);
+    // `<class-in-scope>::name` when that names a registered pseudo-namespace —
+    // how a CLASS-nested enum's relative `Tag::Value` spelling resolves.
+    std::string resolve_class_scoped_ns(const std::string &name);
     std::string active_cpp_lookup_namespace();
     // static_assert: parse the statement form (folds the constant condition,
     // throws with the message on failure), consume the deferred form inside an

@@ -23664,7 +23664,48 @@ std::string Program::resolve_namespace_name_in_scope(
 	    cur = cur.substr(0, pos);
 	}
     }
+    // Class scope is part of the current scope too ([basic.lookup.unqual]): a
+    // CLASS-nested enum's pseudo-namespace is keyed under its owner
+    // (`holder::part`), so the relative spelling `part::sign` used INSIDE the
+    // class — or inside one of its methods — must find it there. Probing the
+    // composed key means this only ever fires for a name that really is a
+    // pseudo-namespace of a class in scope; an ordinary namespace name is
+    // untouched, and nothing resolves that did not resolve before.
+    const std::string class_scoped = resolve_class_scoped_ns(name);
+    if ( !class_scoped.empty() )
+	return class_scoped;
     return canonical_namespace_path("", name);
+}
+
+// Walk the classes that are in scope — the current method's owner first, then
+// the class-scope stack innermost-first, each through its enclosing-class
+// chain — and return `<class>::<name>` if that names a registered
+// pseudo-namespace. Mirrors resolve_current_class_type_alias's scope order.
+std::string Program::resolve_class_scoped_ns(const std::string &name)
+{
+    if ( name.empty() )
+	return std::string();
+    std::vector<DataDefCLASS *> scopes;
+    if ( !compounds.empty() && compounds.top()
+      && compounds.top()->method
+      && compounds.top()->method->owner_class )
+	scopes.push_back(compounds.top()->method->owner_class);
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_scope_stack.rbegin();
+	  it != class_scope_stack.rend(); ++it )
+	scopes.push_back(*it);
+    for ( size_t i = 0; i < scopes.size(); ++i )
+	for ( DataDefCLASS *cls = scopes[i]; cls; cls = cls->enclosing_class )
+	{
+	    const std::string spelling = cls->canonical_cpp_spelling().empty()
+		? cls->name : cls->canonical_cpp_spelling();
+	    if ( spelling.empty() )
+		continue;
+	    const std::string composed = spelling + "::" + name;
+	    if ( namespace_map.find(composed) != namespace_map.end() )
+		return composed;
+	}
+    return std::string();
 }
 
 std::string Program::active_cpp_lookup_namespace()
@@ -45882,6 +45923,21 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
+    // A CLASS-nested enum's pseudo-namespace is keyed under its owner, for the
+    // same reason the tag itself is (08a76f43): the bare key made `part::sign`
+    // resolve from ANYWHERE — madc printed 3 where g++ says "'part' has not
+    // been declared" — while the spelling C++ actually gives it,
+    // `holder::part::sign`, resolved nowhere. Keying it Owner::tag fixes both
+    // ends at once. The in-class relative spelling still works because
+    // resolve_class_scoped_enum_ns() below consults the enclosing classes.
+    else if ( !pgm.class_scope_stack.empty() )
+    {
+	DataDefCLASS *owner = pgm.class_scope_stack.back();
+	const std::string owner_spelling =
+	    owner->canonical_cpp_spelling().empty()
+	    ? owner->name : owner->canonical_cpp_spelling();
+	scoped_ns_key = owner_spelling + "::" + enum_tag;
+    }
     // [dcl.enum]p11: `Tag::enumerator` names an enumerator of an UNSCOPED
     // enum too (C++11), so every TAGGED C++ enum gets the pseudo-namespace.
     // Scoped enumerators live ONLY here (no bare-name leak); unscoped ones

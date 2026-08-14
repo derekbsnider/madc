@@ -1,0 +1,25 @@
+// A class-nested enum's TAG must not be reachable from outside the class, so
+// `part::sign` out here names nothing. This is the SILENT half of the leak
+// that 08a76f43 fixed for the tag itself: the enumerator pseudo-namespace was
+// keyed on the BARE tag when the enum was declared in a class, so madc
+// compiled this file and printed 3.
+//
+// Oracle: g++ -std=c++11 and clang++ -std=c++11 both REJECT this source
+//   g++:   error: 'part' has not been declared
+//   clang: error: use of undeclared identifier 'part'
+// so madc must reject it too. The valid spellings are covered by
+// tests/testnestedenumscope.mad.
+
+#include <iostream>
+
+class holder
+{
+public:
+	enum part { none, space, symbol, sign, value };
+};
+
+int main()
+{
+	std::cout << (int)part::sign << std::endl;
+	return 0;
+}
