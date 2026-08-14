@@ -14,10 +14,12 @@
   MIR gaps. Linux fulltest is **1029/0/9**, libc++ JIT
   **1025/0/13**.
 - **Windows oracle policy is platform-authentic.** MinGW GCC remains
-  the first Win64 oracle, with Clang as the required fallback opinion;
-  documented MSVC behavior may override MinGW where native Windows
-  authenticity demands it. Linux remains GCC+libstdc++ first and macOS
-  Clang+libc++ first. Matching neither GCC nor Clang is unacceptable.
+  the first Win64 oracle, with Clang as the required second opinion.
+  MSVC is evidence only for native Windows API/UCRT semantics where no
+  ABI question is involved; it never overrides MinGW for ABI, object
+  model, calling convention, layout, or mangling. Linux remains
+  GCC+libstdc++ first and macOS Clang+libc++ first. Matching neither GCC
+  nor Clang is unacceptable.
 
 ## [v0.78.0] — 2026-08-12
 
