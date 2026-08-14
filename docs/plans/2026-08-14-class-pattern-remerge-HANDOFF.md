@@ -54,6 +54,34 @@
 > thread worth pulling is WHERE those 56M go: serve costing more than parse has
 > the same shape as the despace defect, which was worth 2%.
 >
+> **PROFILE-DIFF — where the 56M goes** (both sides relinked unstripped and
+> re-packed; totals reproduce the stripped measurement to 0.07%):
+>
+> The branch DOES save real work — about 25M — and pays about 81M for it.
+>
+> | saves | Ir | costs | Ir |
+> |---|---:|---|---:|
+> | RTTI (`__dynamic_cast`, `__do_dyncast`, `__do_find_public_src`) | -12.4M | allocator family | **+52.0M** |
+> | `memcmp` / `strcmp` | -7.4M | `memcpy` | +11.6M |
+> | `intern`, `TokenDataType` ctor, `call_emit_symbol` | -3.3M | `findVariable*` family | +8.4M |
+> | | | `_Rb_tree<string,TokenDataType*>` `_M_copy`+`_M_erase` | +3.5M |
+> | | | `instantiate_template_use` (756K -> 2.2M, **3x**) | +1.45M |
+> | | | `register_outofline_member_instantiations` (+64%) | +1.13M |
+>
+> **93% of the deficit is heap churn, not compute.** The reading: serving a
+> captured pattern avoids the PARSE but not the REGISTRATION. The branch admits
+> ~72 more templates to the pattern lane (292 vs 220), and each one still runs
+> the full instantiate/register path — allocation-heavy, and more expensive than
+> the parse it displaced. `_M_copy` appearing at all is the sharpest tell: that
+> symbol only shows up when a `std::map<string, TokenDataType*>` is
+> COPY-CONSTRUCTED, so something on that path is deep-copying a datatype map
+> per instantiation.
+>
+> **This is a defect, not a law of nature.** If registration on the serve path
+> stopped copying and re-registering, the ~25M of genuine savings would land as
+> a net win. That is the next investigation if the branch is ever revived — it
+> is NOT a reason to merge it today.
+>
 > Also corrected: hazard #4.1 below ("forest version MUST become 40") is WRONG.
 > The branch never touched `CIR_FOREST_FORMAT_VERSION` (38 -> 39 was develop
 > alone); it bumped `CIR_CLASS_PATTERN_PAYLOAD_VERSION` 4 -> 6. Different
