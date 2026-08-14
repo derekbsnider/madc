@@ -51962,19 +51962,30 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	static const char *isplit = ::getenv("MADC_DEBUG_INTSPLIT");
 	if ( isplit )
 	{
+	    // The dd is hoisted to a local before typeid: the operand of typeid
+	    // on a POLYMORPHIC type is evaluated, and iterator operator-> /
+	    // vector operator[] are calls, so spelling it inline is an operand
+	    // with side effects (-Wpotentially-evaluated-expression). A plain
+	    // pointer deref has none.
 	    for ( std::map<std::string, DataDef *>::const_iterator
 		    b = binding.begin(); b != binding.end(); ++b )
-		if ( b->second && b->second->name == "int" )
+	    {
+		DataDef *bdd = b->second;
+		if ( bdd && bdd->name == "int" )
 		    fprintf(stderr, "[INTSPLIT] %s param=%s dd=%p ddINT=%p kind=%s canon='%s'\n",
-			    inst_key.c_str(), b->first.c_str(), (void*)b->second,
-			    (void*)&ddINT, typeid(*b->second).name(),
-			    b->second->canonical_cpp_spelling().c_str());
+			    inst_key.c_str(), b->first.c_str(), (void*)bdd,
+			    (void*)&ddINT, typeid(*bdd).name(),
+			    bdd->canonical_cpp_spelling().c_str());
+	    }
 	    for ( size_t e = 0; e < pack_elems.size(); ++e )
-		if ( pack_elems[e] && pack_elems[e]->name == "int" )
+	    {
+		DataDef *edd = pack_elems[e];
+		if ( edd && edd->name == "int" )
 		    fprintf(stderr, "[INTSPLIT] %s pack[%zu] dd=%p ddINT=%p kind=%s canon='%s'\n",
-			    inst_key.c_str(), e, (void*)pack_elems[e],
-			    (void*)&ddINT, typeid(*pack_elems[e]).name(),
-			    pack_elems[e]->canonical_cpp_spelling().c_str());
+			    inst_key.c_str(), e, (void*)edd,
+			    (void*)&ddINT, typeid(*edd).name(),
+			    edd->canonical_cpp_spelling().c_str());
+	    }
 	}
     }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
