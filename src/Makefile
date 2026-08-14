@@ -825,6 +825,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-one-macro-expander.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh

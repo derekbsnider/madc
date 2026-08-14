@@ -87,18 +87,6 @@ static DataDef *get_complex_compat_type(DataDef *base_type)
     return Program::complex_type_of(base_type);
 }
 
-static bool is_prefixed_literal_token(const std::string &ident,
-				      const std::string &body,
-				      size_t pos)
-{
-    if ( pos >= body.size() )
-	return false;
-    char next = body[pos];
-    if ( next != '\'' && next != '"' )
-	return false;
-    return ident == "L" || ident == "u" || ident == "U" || ident == "u8";
-}
-
 static bool is_binary_prefix(int ch, Source &source)
 {
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
@@ -1066,47 +1054,364 @@ static bool macro_body_space(char c)
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-// A parameter adjacent to # or ## consumes its raw argument spelling. The
-// caller passes [start,end) for one identifier occurrence in the macro body.
-static bool macro_param_use_is_raw(const std::string &body, size_t start, size_t end)
-{
-    size_t left = start;
-    while ( left > 0 && macro_body_space(body[left - 1]) )
-	--left;
-    if ( left > 0 && body[left - 1] == '#' )
-	return true;
+typedef Program::MacroDef::ReplacementToken MacroReplacementToken;
 
-    size_t right = end;
-    while ( right < body.size() && macro_body_space(body[right]) )
-	++right;
-    return right + 1 < body.size()
-	&& body[right] == '#' && body[right + 1] == '#';
-}
-
-static bool macro_param_has_expanded_use(const std::string &body,
-					 const std::string &param)
+static bool pp_literal_start(const std::string &text, size_t pos,
+			     size_t &quote, bool &raw)
 {
-    for ( size_t p = 0; p < body.size(); )
+    static const char *const raw_prefixes[] = { "u8R", "uR", "UR", "LR", "R" };
+    static const char *const prefixes[] = { "u8", "u", "U", "L", "" };
+
+    for ( size_t i = 0; i < sizeof(raw_prefixes) / sizeof(raw_prefixes[0]); ++i )
     {
-	if ( body[p] != '_' && !isalpha((unsigned char)body[p]) )
+	size_t n = strlen(raw_prefixes[i]);
+	if ( text.compare(pos, n, raw_prefixes[i]) == 0
+	  && pos + n < text.size() && text[pos + n] == '"' )
 	{
-	    ++p;
-	    continue;
-	}
-	size_t start = p++;
-	while ( p < body.size()
-	     && (body[p] == '_' || isalnum((unsigned char)body[p])) )
-	    ++p;
-	if ( body.compare(start, p - start, param) == 0
-	  && !macro_param_use_is_raw(body, start, p) )
+	    quote = pos + n;
+	    raw = true;
 	    return true;
+	}
+    }
+    for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
+    {
+	size_t n = strlen(prefixes[i]);
+	if ( text.compare(pos, n, prefixes[i]) != 0 || pos + n >= text.size() )
+	    continue;
+	char q = text[pos + n];
+	if ( q == '"' || q == '\'' )
+	{
+	    quote = pos + n;
+	    raw = false;
+	    return true;
+	}
     }
     return false;
+}
+
+static std::vector<MacroReplacementToken>
+tokenize_macro_spelling(const std::string &text)
+{
+    typedef MacroReplacementToken T;
+    std::vector<T> tokens;
+    for ( size_t i = 0; i < text.size(); )
+    {
+	size_t start = i;
+	if ( macro_body_space(text[i]) )
+	{
+	    while ( i < text.size() && macro_body_space(text[i]) )
+		++i;
+	    tokens.push_back(T(T::rtWhitespace, start, i));
+	    continue;
+	}
+	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/' )
+	{
+	    i += 2;
+	    while ( i < text.size() && text[i] != '\n' && text[i] != '\r' )
+		++i;
+	    tokens.push_back(T(T::rtComment, start, i));
+	    continue;
+	}
+	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*' )
+	{
+	    i += 2;
+	    while ( i < text.size()
+		 && !(text[i - 1] == '*' && text[i] == '/') )
+		++i;
+	    if ( i < text.size() )
+		++i;
+	    tokens.push_back(T(T::rtComment, start, i));
+	    continue;
+	}
+
+	size_t quote = 0;
+	bool raw = false;
+	if ( pp_literal_start(text, i, quote, raw) )
+	{
+	    if ( raw )
+	    {
+		size_t open = text.find('(', quote + 1);
+		if ( open != std::string::npos && open - quote - 1 <= 16 )
+		{
+		    std::string close = ")" + text.substr(quote + 1,
+							 open - quote - 1) + "\"";
+		    size_t end = text.find(close, open + 1);
+		    i = end == std::string::npos ? text.size() : end + close.size();
+		}
+		else
+		    i = text.size();
+	    }
+	    else
+	    {
+		char q = text[quote];
+		i = quote + 1;
+		bool escaped = false;
+		while ( i < text.size() )
+		{
+		    char c = text[i++];
+		    if ( escaped )
+			escaped = false;
+		    else if ( c == '\\' )
+			escaped = true;
+		    else if ( c == q )
+			break;
+		}
+	    }
+	    tokens.push_back(T(T::rtLiteral, start, i));
+	    continue;
+	}
+	if ( text[i] == '_' || isalpha((unsigned char)text[i]) )
+	{
+	    ++i;
+	    while ( i < text.size()
+		 && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+		++i;
+	    tokens.push_back(T(T::rtIdentifier, start, i));
+	    continue;
+	}
+	if ( isdigit((unsigned char)text[i])
+	  || (text[i] == '.' && i + 1 < text.size()
+	      && isdigit((unsigned char)text[i + 1])) )
+	{
+	    ++i;
+	    while ( i < text.size() )
+	    {
+		char c = text[i];
+		if ( c == '_' || c == '.' || c == '\''
+		  || isalnum((unsigned char)c) )
+		{
+		    ++i;
+		    continue;
+		}
+		if ( (c == '+' || c == '-') && i > start
+		  && (text[i - 1] == 'e' || text[i - 1] == 'E'
+		      || text[i - 1] == 'p' || text[i - 1] == 'P') )
+		{
+		    ++i;
+		    continue;
+		}
+		break;
+	    }
+	    tokens.push_back(T(T::rtPpNumber, start, i));
+	    continue;
+	}
+	if ( text[i] == '#' )
+	{
+	    if ( i + 1 < text.size() && text[i + 1] == '#' )
+	    {
+		i += 2;
+		tokens.push_back(T(T::rtPaste, start, i));
+	    }
+	    else
+	    {
+		++i;
+		tokens.push_back(T(T::rtHash, start, i));
+	    }
+	    continue;
+	}
+	++i;
+	tokens.push_back(T(T::rtPunct, start, i));
+    }
+    return tokens;
+}
+
+static bool macro_token_space(const MacroReplacementToken &token)
+{
+    return token.kind == MacroReplacementToken::rtWhitespace
+	|| token.kind == MacroReplacementToken::rtComment;
+}
+
+static std::string macro_token_text(const std::string &text,
+				    const MacroReplacementToken &token)
+{
+    return text.substr(token.begin, token.end - token.begin);
+}
+
+static const std::vector<MacroReplacementToken> &
+macro_replacement_tokens(const Program::MacroDef &macro)
+{
+    if ( macro.replacement_tokens_for != macro.body )
+    {
+	macro.replacement_tokens = tokenize_macro_spelling(macro.body);
+	macro.replacement_tokens_for = macro.body;
+    }
+    return macro.replacement_tokens;
+}
+
+static bool macro_param_use_is_raw(const std::vector<MacroReplacementToken> &tokens,
+				   size_t use)
+{
+    size_t left = use;
+    while ( left > 0 && macro_token_space(tokens[left - 1]) )
+	--left;
+    if ( left > 0
+	 && (tokens[left - 1].kind == MacroReplacementToken::rtHash
+	     || tokens[left - 1].kind == MacroReplacementToken::rtPaste) )
+	return true;
+
+    size_t right = use + 1;
+    while ( right < tokens.size() && macro_token_space(tokens[right]) )
+	++right;
+    return right < tokens.size()
+	&& tokens[right].kind == MacroReplacementToken::rtPaste;
+}
+
+static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
+					 const std::string &param)
+{
+    const std::vector<MacroReplacementToken> &tokens =
+	macro_replacement_tokens(macro);
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i].kind == MacroReplacementToken::rtIdentifier
+	  && macro_token_text(macro.body, tokens[i]) == param
+	  && !macro_param_use_is_raw(tokens, i) )
+	    return true;
+    return false;
+}
+
+static std::string stringify_macro_arg(const std::string &raw)
+{
+    std::vector<MacroReplacementToken> tokens = tokenize_macro_spelling(raw);
+    std::string out("\"");
+    bool pending_space = false;
+    bool wrote = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( macro_token_space(tokens[i]) )
+	{
+	    if ( wrote )
+		pending_space = true;
+	    continue;
+	}
+	if ( pending_space )
+	{
+	    out += ' ';
+	    pending_space = false;
+	}
+	std::string spelling = macro_token_text(raw, tokens[i]);
+	for ( size_t j = 0; j < spelling.size(); ++j )
+	{
+	    if ( spelling[j] == '"' || spelling[j] == '\\' )
+		out += '\\';
+	    out += spelling[j];
+	}
+	wrote = true;
+    }
+    out += '"';
+    return out;
+}
+
+static size_t macro_fixed_param_count(const Program::MacroDef &macro)
+{
+    if ( macro.variadic && !macro.variadic_param.empty()
+	 && !macro.params.empty() )
+	return macro.params.size() - 1;
+    return macro.params.size();
+}
+
+static std::string expand_function_macro_body(
+	const Program::MacroDef &macro,
+	const std::vector<std::string> &raw_args,
+	const std::vector<std::string> &expanded_args)
+{
+    std::map<std::string, std::string> raw_params;
+    std::map<std::string, std::string> expanded_params;
+    size_t fixed = macro_fixed_param_count(macro);
+    for ( size_t i = 0; i < fixed; ++i )
+    {
+	raw_params[macro.params[i]] = i < raw_args.size() ? raw_args[i] : "";
+	expanded_params[macro.params[i]] =
+	    i < expanded_args.size() ? expanded_args[i] : "";
+    }
+    if ( macro.variadic )
+    {
+	std::string raw_varargs;
+	std::string expanded_varargs;
+	for ( size_t i = fixed; i < raw_args.size(); ++i )
+	{
+	    if ( i > fixed )
+	    {
+		raw_varargs += ", ";
+		expanded_varargs += ", ";
+	    }
+	    raw_varargs += raw_args[i];
+	    expanded_varargs += i < expanded_args.size() ? expanded_args[i] : raw_args[i];
+	}
+	raw_params["__VA_ARGS__"] = raw_varargs;
+	expanded_params["__VA_ARGS__"] = expanded_varargs;
+	if ( !macro.variadic_param.empty() )
+	{
+	    raw_params[macro.variadic_param] = raw_varargs;
+	    expanded_params[macro.variadic_param] = expanded_varargs;
+	}
+    }
+
+    const std::vector<MacroReplacementToken> &tokens =
+	macro_replacement_tokens(macro);
+    std::string expanded;
+    expanded.reserve(macro.body.size());
+    for ( size_t i = 0; i < tokens.size(); )
+    {
+	const MacroReplacementToken &token = tokens[i];
+	if ( token.kind == MacroReplacementToken::rtHash )
+	{
+	    size_t param = i + 1;
+	    while ( param < tokens.size() && macro_token_space(tokens[param]) )
+		++param;
+	    if ( param < tokens.size()
+	      && tokens[param].kind == MacroReplacementToken::rtIdentifier )
+	    {
+		std::string name = macro_token_text(macro.body, tokens[param]);
+		std::map<std::string, std::string>::const_iterator raw =
+		    raw_params.find(name);
+		if ( raw != raw_params.end() )
+		{
+		    expanded += stringify_macro_arg(raw->second);
+		    i = param + 1;
+		    continue;
+		}
+	    }
+	}
+	if ( token.kind == MacroReplacementToken::rtPaste )
+	{
+	    while ( !expanded.empty() && macro_body_space(expanded.back()) )
+		expanded.pop_back();
+	    ++i;
+	    while ( i < tokens.size() && macro_token_space(tokens[i]) )
+		++i;
+	    continue;
+	}
+	if ( token.kind == MacroReplacementToken::rtIdentifier )
+	{
+	    std::string name = macro_token_text(macro.body, token);
+	    std::map<std::string, std::string>::const_iterator value =
+		expanded_params.find(name);
+	    if ( value != expanded_params.end() )
+	    {
+		if ( macro_param_use_is_raw(tokens, i) )
+		    expanded += raw_params[name];
+		else
+		    expanded += value->second;
+		++i;
+		continue;
+	    }
+	}
+	if ( token.kind == MacroReplacementToken::rtComment )
+	    expanded += ' ';
+	else
+	    expanded += macro_token_text(macro.body, token);
+	++i;
+    }
+    return expanded;
 }
 
 static std::string read_macro_body(Source &source)
 {
     std::string body;
+
+    enum LiteralMode { lmNone, lmString, lmCharacter };
+    LiteralMode literal = lmNone;
+    bool escaped = false;
 
     while ( source.good() && !source.eof() )
     {
@@ -1122,10 +1427,28 @@ static std::string read_macro_body(Source &source)
 		source.get();
 		if ( source.peek() == '\n' )
 		    source.get();
-		body += ' ';
 		continue;
 	    }
 	    body += '\\';
+	    if ( literal != lmNone )
+		escaped = !escaped;
+	    continue;
+	}
+	if ( literal != lmNone )
+	{
+	    body += source.get();
+	    if ( escaped )
+		escaped = false;
+	    else if ( (literal == lmString && ch == '"')
+		   || (literal == lmCharacter && ch == '\'') )
+		literal = lmNone;
+	    continue;
+	}
+	if ( ch == '"' || ch == '\'' )
+	{
+	    literal = ch == '"' ? lmString : lmCharacter;
+	    escaped = false;
+	    body += source.get();
 	    continue;
 	}
 	if ( ch == '/' )
@@ -5155,8 +5478,8 @@ TokenBase *Program::_getToken()
 		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
 		// Prefixed literals ([lex.ccon]/[lex.string]): L / u / U / u8
-		// ahead of a quote — the same prefix set the preprocessor's
-		// is_prefixed_literal_token accepts (libc++ unicode.h:
+		// ahead of a quote — the same prefix set the replacement-list
+		// tokenizer accepts (libc++ unicode.h:
 		// `U'�'`). Gate the C++11/20 prefixes on the dialect so a
 		// C89 identifier `u` before a string stays two tokens.
 		if ( source.good()
@@ -5389,9 +5712,7 @@ TokenBase *Program::_getToken()
 		    // occurrence in the same body.
 		    std::vector<std::string> raw_args = args;
 		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
-		    size_t fixed_param_count = macro.params.size();
-		    if ( has_named_varargs && fixed_param_count > 0 )
-			--fixed_param_count;
+		    size_t fixed_param_count = macro_fixed_param_count(macro);
 		    for ( size_t i = 0; i < args.size(); ++i )
 		    {
 			std::string &a = args[i];
@@ -5401,7 +5722,7 @@ TokenBase *Program::_getToken()
 			else if ( macro.variadic )
 			    param = has_named_varargs ? macro.variadic_param : "__VA_ARGS__";
 			if ( param.empty()
-			  || !macro_param_has_expanded_use(macro.body, param) )
+			  || !macro_param_has_expanded_use(macro, param) )
 			    continue;
 			// Quick check: does the argument contain any known macro name?
 			// A naive alpha check triggers on hex literals (0x1F) and
@@ -5409,16 +5730,15 @@ TokenBase *Program::_getToken()
 			// tokenizer loses the original representation.  Scan for
 			// actual identifier words and see if any match a define.
 			bool has_macro = false;
-			for ( size_t j = 0; j < a.size() && !has_macro; ++j )
-			{
-			    if ( !(isalpha((unsigned char)a[j]) || a[j] == '_') )
-				continue;
-			    std::string id;
-			    while ( j < a.size() && (isalnum((unsigned char)a[j]) || a[j] == '_') )
-				id += a[j++];
-			    if ( define_map.count(id) || macro_map.count(id) )
-				has_macro = true;
-			}
+			std::vector<MacroReplacementToken> arg_tokens =
+			    tokenize_macro_spelling(a);
+			for ( size_t j = 0; j < arg_tokens.size() && !has_macro; ++j )
+			    if ( arg_tokens[j].kind == MacroReplacementToken::rtIdentifier )
+			    {
+				std::string id = macro_token_text(a, arg_tokens[j]);
+				if ( define_map.count(id) || macro_map.count(id) )
+				    has_macro = true;
+			    }
 			if ( !has_macro ) continue;
 			// Push arg text through the tokenizer to expand macros
 			Source saved = std::move(source);
@@ -5472,156 +5792,8 @@ TokenBase *Program::_getToken()
 			source = std::move(saved);
 			a = expanded_arg;
 		    }
-		    std::map<std::string, const std::string *> param_map;
-		    std::map<std::string, const std::string *> raw_param_map;
-		    std::string expanded_varargs;
-		    std::string raw_varargs;
-		    std::string empty_macro_arg;   // for params supplied no argument
-		    for ( size_t i = 0; i < fixed_param_count; ++i )
-		    {
-			if ( i < args.size() )
-			{
-			    param_map[macro.params[i]] = &args[i];
-			    raw_param_map[macro.params[i]] = &raw_args[i];
-			}
-			else
-			{
-			    param_map[macro.params[i]] = &empty_macro_arg;
-			    raw_param_map[macro.params[i]] = &empty_macro_arg;
-			}
-		    }
-		    if ( macro.variadic )
-		    {
-			for ( size_t i = fixed_param_count; i < args.size(); ++i )
-			{
-			    if ( !expanded_varargs.empty() )
-			    {
-				expanded_varargs += ", ";
-				raw_varargs += ", ";
-			    }
-			    expanded_varargs += args[i];
-			    raw_varargs += raw_args[i];
-			}
-			param_map["__VA_ARGS__"] = &expanded_varargs;
-			raw_param_map["__VA_ARGS__"] = &raw_varargs;
-			if ( has_named_varargs )
-			{
-			    param_map[macro.variadic_param] = &expanded_varargs;
-			    raw_param_map[macro.variadic_param] = &raw_varargs;
-			}
-		    }
-		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
-			std::string out("\"");
-			bool pending_space = false;
-			bool wrote = false;
-			for ( char c : raw )
-			{
-			    if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
-			    {
-				if ( wrote )
-				    pending_space = true;
-				continue;
-			    }
-			    if ( pending_space )
-			    {
-				out += ' ';
-				pending_space = false;
-			    }
-			    if ( c == '"' || c == '\\' )
-				out += '\\';
-			    out += c;
-			    wrote = true;
-			}
-			out += '"';
-			return out;
-		    };
-		    std::string expanded;
-		    expanded.reserve(macro.body.size());
-		    for ( size_t p = 0; p < macro.body.size(); )
-		    {
-			char bc = macro.body[p];
-			if ( bc == '#' && p + 1 < macro.body.size() && macro.body[p+1] == '#' )
-			{
-			    expanded += "##";
-			    p += 2;
-			}
-			else if ( bc == '#' )
-			{
-			    size_t q = p + 1;
-			    while ( q < macro.body.size()
-				 && (macro.body[q] == ' ' || macro.body[q] == '\t') )
-				++q;
-			    if ( q < macro.body.size()
-			      && (macro.body[q] == '_' || isalpha((unsigned char)macro.body[q])) )
-			    {
-				size_t start = q;
-				while ( q < macro.body.size()
-				     && (macro.body[q] == '_' || isalnum((unsigned char)macro.body[q])) )
-				    ++q;
-				std::string ident = macro.body.substr(start, q - start);
-				auto it = raw_param_map.find(ident);
-				if ( it != raw_param_map.end() )
-				{
-				    expanded += stringify_macro_arg(*it->second);
-				    p = q;
-				    continue;
-				}
-			    }
-			    expanded += bc;
-			    ++p;
-			}
-			else if ( bc == '_' || isalpha((unsigned char)bc) )
-			{
-			    size_t start = p;
-			    while ( p < macro.body.size()
-				 && (macro.body[p] == '_' || isalnum((unsigned char)macro.body[p])) )
-				++p;
-			    std::string ident = macro.body.substr(start, p - start);
-			    auto it = param_map.find(ident);
-			    if ( it != param_map.end()
-			      && !is_prefixed_literal_token(ident, macro.body, p) )
-			    {
-				auto raw_it = raw_param_map.find(ident);
-				if ( raw_it != raw_param_map.end()
-				  && macro_param_use_is_raw(macro.body, start, p) )
-				    expanded += *raw_it->second;
-				else
-				    expanded += *it->second;
-			    }
-			    else
-				expanded += ident;
-			}
-			else
-			{
-			    expanded += bc;
-			    ++p;
-			}
-		    }
-		    // C token-pasting: `A##B` after parameter substitution
-		    // fuses the two identifiers into one. Strip every `##`
-		    // (and optional whitespace around it) so the lexer sees
-		    // a single identifier when it re-tokenizes the
-		    // expansion. Required for IMC's COL(x) → C_##x pattern.
-		    {
-			std::string fused;
-			fused.reserve(expanded.size());
-			for ( size_t p = 0; p < expanded.size(); )
-			{
-			    if ( p + 1 < expanded.size() && expanded[p] == '#' && expanded[p+1] == '#' )
-			    {
-				// Drop trailing whitespace already in fused.
-				while ( !fused.empty() && (fused.back() == ' ' || fused.back() == '\t') )
-				    fused.pop_back();
-				p += 2;
-				// Drop leading whitespace after the ##.
-				while ( p < expanded.size() && (expanded[p] == ' ' || expanded[p] == '\t') )
-				    ++p;
-				continue;
-			    }
-			    fused += expanded[p++];
-			}
-			expanded.swap(fused);
-		    }
+		    std::string expanded =
+			expand_function_macro_body(macro, raw_args, args);
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
 		    source.pushback_macro(expanded, word);
 		    return getToken();
@@ -6051,20 +6223,22 @@ std::string Program::expandIfMacros(const std::string &raw)
     {
 	std::string out;
 	bool changed = false;
-	size_t i = 0;
 	bool preserve_defined_operand = false;
-	while ( i < expr.size() )
+	std::vector<MacroReplacementToken> expression_tokens =
+	    tokenize_macro_spelling(expr);
+	for ( size_t ti = 0; ti < expression_tokens.size(); )
 	{
-	    // Copy non-identifier characters
-	    if ( !isalpha((unsigned char)expr[i]) && expr[i] != '_' )
+	    const MacroReplacementToken &token = expression_tokens[ti];
+	    if ( token.kind != MacroReplacementToken::rtIdentifier )
 	    {
-		out += expr[i++];
+		if ( token.kind == MacroReplacementToken::rtComment )
+		    out += ' ';
+		else
+		    out += macro_token_text(expr, token);
+		++ti;
 		continue;
 	    }
-	    // Extract identifier
-	    std::string word;
-	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
-		word += expr[i++];
+	    std::string word = macro_token_text(expr, token);
 	    // `defined` and the clang `__has_*` family are #if OPERATORS, not
 	    // macros, and their operands are NOT macro-expanded. That is not a
 	    // fine point for madc: it aliases 138 builtins in define_map
@@ -6082,6 +6256,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    {
 		out += word;
 		preserve_defined_operand = true;
+		++ti;
 		continue;
 	    }
 	    if ( is_has_op )
@@ -6090,24 +6265,33 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// Copy the whole parenthesized operand through verbatim — one
 		// group, so `<a/b.h>`, `"a.h"` and `clang::foo` all survive
 		// intact for the operator to interpret.
-		size_t j = i;
-		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
-		    ++j;
-		if ( j < expr.size() && expr[j] == '(' )
+		size_t group_token = ti + 1;
+		while ( group_token < expression_tokens.size()
+		     && macro_token_space(expression_tokens[group_token]) )
+		    ++group_token;
+		if ( group_token < expression_tokens.size()
+		  && expression_tokens[group_token].kind == MacroReplacementToken::rtPunct
+		  && macro_token_text(expr, expression_tokens[group_token]) == "(" )
 		{
-		    size_t end = pp_group_end(expr, j);
+		    size_t end = pp_group_end(expr,
+			expression_tokens[group_token].begin);
 		    if ( end != std::string::npos )
 		    {
-			out += expr.substr(i, end - i);
-			i = end;
+			out += expr.substr(token.end, end - token.end);
+			while ( ti < expression_tokens.size()
+			     && expression_tokens[ti].begin < end )
+			    ++ti;
+			continue;
 		    }
 		}
+		++ti;
 		continue;
 	    }
 	    if ( preserve_defined_operand )
 	    {
 		out += word;
 		preserve_defined_operand = false;
+		++ti;
 		continue;
 	    }
 	    // Look up in define_map
@@ -6116,6 +6300,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    {
 		out += it->empty() ? "1" : *it;
 		changed = true;
+		++ti;
 	    }
 	    else if ( macro_map.count(word) > 0 )
 	    {
@@ -6128,15 +6313,19 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// derailing the evaluator so the defined-operator tail
 		// produced the wrong branch (glibc's floatn-common.h
 		// __HAVE_FLOATN_NOT_TYPEDEF condition).
-		size_t j = i;
-		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
-		    ++j;
-		if ( j < expr.size() && expr[j] == '(' )
+		size_t group_token = ti + 1;
+		while ( group_token < expression_tokens.size()
+		     && macro_token_space(expression_tokens[group_token]) )
+		    ++group_token;
+		if ( group_token < expression_tokens.size()
+		  && expression_tokens[group_token].kind == MacroReplacementToken::rtPunct
+		  && macro_token_text(expr, expression_tokens[group_token]) == "(" )
 		{
 		    const MacroDef &m = macro_map[word];
 		    std::vector<std::string> margs;
 		    std::string marg;
 		    PpGroupScan mgroup;
+		    size_t j = expression_tokens[group_token].begin;
 		    mgroup.step('(', j + 1 < expr.size() ? expr[j + 1] : '\0');
 		    ++j; // consume '('
 		    for ( ; j < expr.size(); ++j )
@@ -6161,77 +6350,40 @@ std::string Program::expandIfMacros(const std::string &raw)
 			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
 		    };
 		    for ( auto &a : margs ) trim(a);
-		    // Substitute params in a single pass over the body so an
-		    // argument matching a later parameter name isn't cascaded.
-		    const std::string &body = m.body;
-		    std::string expanded;
-		    size_t b = 0;
-		    while ( b < body.size() )
+		    std::vector<std::string> expanded_args = margs;
+		    size_t fixed = macro_fixed_param_count(m);
+		    for ( size_t ai = 0; ai < expanded_args.size(); ++ai )
 		    {
-			if ( !isalpha((unsigned char)body[b]) && body[b] != '_' )
-			{ expanded += body[b++]; continue; }
-			std::string bw;
-			while ( b < body.size()
-			     && (isalnum((unsigned char)body[b]) || body[b] == '_') )
-			    bw += body[b++];
-			bool subst = false;
-			for ( size_t pi2 = 0; pi2 < m.params.size(); ++pi2 )
-			    if ( bw == m.params[pi2] )
-			    {
-				expanded += pi2 < margs.size() ? margs[pi2] : "";
-				subst = true;
-				break;
-			    }
-			if ( !subst && m.variadic
-			  && (bw == "__VA_ARGS__"
-			      || (!m.variadic_param.empty() && bw == m.variadic_param)) )
-			{
-			    for ( size_t va = m.params.size(); va < margs.size(); ++va )
-			    {
-				if ( va > m.params.size() ) expanded += ", ";
-				expanded += margs[va];
-			    }
-			    subst = true;
-			}
-			if ( !subst )
-			    expanded += bw;
+			std::string param;
+			if ( ai < fixed )
+			    param = m.params[ai];
+			else if ( m.variadic )
+			    param = m.variadic_param.empty()
+				? "__VA_ARGS__" : m.variadic_param;
+			if ( !param.empty() && macro_param_has_expanded_use(m, param) )
+			    expanded_args[ai] = expandIfMacros(margs[ai]);
 		    }
-		    // Token pasting: `A ## B` joins into ONE token after
-		    // parameter substitution — glibc's #if-consulted macros
-		    // are built this way (`__GLIBC_USE(F)` -> `__GLIBC_USE_
-		    // ## F`); without the join the evaluator saw two
-		    // undefined halves (0) and glibc feature conditions
-		    // (__GLIBC_USE (DEPRECATED_GETS)) took the wrong branch.
-		    // The joined name resolves on the next expansion pass.
-		    size_t hh;
-		    while ( (hh = expanded.find("##")) != std::string::npos )
-		    {
-			size_t lend = hh;
-			while ( lend > 0 && (expanded[lend-1] == ' '
-					  || expanded[lend-1] == '\t') )
-			    --lend;
-			size_t rstart = hh + 2;
-			while ( rstart < expanded.size()
-			     && (expanded[rstart] == ' '
-			      || expanded[rstart] == '\t') )
-			    ++rstart;
-			expanded = expanded.substr(0, lend)
-				 + expanded.substr(rstart);
-		    }
+		    std::string expanded =
+			expand_function_macro_body(m, margs, expanded_args);
 		    out += "(" + expanded + ")";
-		    i = j;
+		    while ( ti < expression_tokens.size()
+			 && expression_tokens[ti].begin < j )
+			++ti;
 		    changed = true;
 		}
 		else
 		{
-		    // Function-like macro name with NO argument list: keep the
-		    // historical behavior (treated as 1 in #if context).
-		    out += "1";
-		    changed = true;
+		    // A function-like macro name without an invocation is not
+		    // expanded. It may become callable after parameter substitution.
+		    out += word;
+		    ++ti;
 		}
 	    }
 	    else
+	    {
 		out += word; // leave as-is (will become 0 in the evaluator)
+		++ti;
+	    }
 	}
 	expr = out;
 	if ( !changed ) break;

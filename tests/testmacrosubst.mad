@@ -8,10 +8,9 @@
 // then the next pass rewrote that `type` into `NEWS_TYPE`, killing
 // the expansion.
 //
-// Fix: substitute all parameters in a single pass, walking the
-// original macro body by character. Each identifier is looked up
-// once in the param map; substituted strings are emitted verbatim
-// and never re-scanned.
+// Fix: tokenize the replacement list once, then substitute each
+// parameter token in one shared pass. Substituted strings are emitted
+// verbatim and never re-scanned by that pass.
 
 #include <iostream>
 using namespace std;

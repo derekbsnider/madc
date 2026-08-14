@@ -1,0 +1,45 @@
+#include <stdio.h>
+
+#define BAD expanded
+#define KEEP(x) "x"
+#define HASHES(x) "##"
+#define URL "http://example.invalid/a//b"
+#define STRINGIZE_I(x) #x
+
+#define X 1
+#define V1 7
+#define JOIN_INNER(a, b) a ## b
+#define JOIN(a, b) JOIN_INNER(a, b)
+#define Z 1
+#define FUNCTION_NAME(x) 7
+#define CALL_FUNCTION(f) f(1)
+
+#if JOIN(V, X) == 7
+# define CONDITIONAL_RESULT "good"
+#else
+# define CONDITIONAL_RESULT "bad"
+#endif
+
+#if 'Z' == 90
+# define LITERAL_RESULT "literal"
+#else
+# define LITERAL_RESULT "expanded"
+#endif
+
+#if CALL_FUNCTION(FUNCTION_NAME) == 7
+# define FUNCTION_NAME_RESULT "function-name"
+#else
+# define FUNCTION_NAME_RESULT "rewritten"
+#endif
+
+int main(void)
+{
+	puts(KEEP(BAD));
+	puts(HASHES(0));
+	puts(URL);
+	puts(STRINGIZE_I(/* comment *//));
+	puts(CONDITIONAL_RESULT);
+	puts(LITERAL_RESULT);
+	puts(FUNCTION_NAME_RESULT);
+	return 0;
+}

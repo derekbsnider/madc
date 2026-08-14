@@ -3696,10 +3696,25 @@ public:
 						// closure a frozen forest re-loads
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
+	struct ReplacementToken {
+	    enum Kind {
+		rtWhitespace, rtComment, rtIdentifier, rtPpNumber,
+		rtLiteral, rtHash, rtPaste, rtPunct
+	    };
+	    Kind kind;
+	    size_t begin;
+	    size_t end;
+	    ReplacementToken(Kind k, size_t b, size_t e)
+		: kind(k), begin(b), end(e) {}
+	};
 	std::vector<std::string> params;  // parameter names
 	bool variadic = false;           // trailing ... / __VA_ARGS__
 	std::string variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
+	// Lexer-private lazy cache. The spelling mirror makes direct body writes
+	// and forest thaw self-invalidating without widening the wire format.
+	mutable std::string replacement_tokens_for;
+	mutable std::vector<ReplacementToken> replacement_tokens;
     };
     madc::dis::intern_keyed_map<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
