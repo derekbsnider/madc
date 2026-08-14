@@ -892,6 +892,58 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
     return replacement;
 }
 
+void Program::tokenize_synthetic_system_include(const std::string &header,
+						 const char *origin_name)
+{
+	Source saved = std::move(source);
+	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	suppress_auto_include_scan = true;
+	source = Source();
+	source.fname(origin_name);
+	std::string directive = std::string("#include <") + header + ">\n";
+	{ ReadTimer _rt(_read_seconds); source.str(directive); }
+	TokenBase *itb;
+	while ( (itb = getRealToken()) )
+		push_token_with_literal_concat(itb);
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+}
+
+void Program::tokenize_embedded_header_text(const std::string &name,
+					    const std::string &text,
+					    bool protocol_visit)
+{
+	// A protocol visit forms no unit and no edge: its serving belongs to the
+	// includer. A normal embedded header is a distinct forest unit reached by
+	// the includer's edge.
+	const char *protocol_saved = NULL;
+	if ( protocol_visit )
+		protocol_saved = pack_protocol_serving_begin();
+	else
+		pack_record_edge(name);
+	Source saved = std::move(source);
+	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	suppress_auto_include_scan = true;
+	source = Source();
+	source.fname(name.c_str());
+	{ ReadTimer _rt(_read_seconds); source.str(text); }
+	_input_bytes += text.size();
+	TokenBase *itb;
+	const char *interned = intern_file(name);
+	if ( !protocol_visit )
+		pack_note_unit(interned);
+	while ( (itb = getRealToken()) )
+	{
+		itb->file = interned;
+		push_token_with_literal_concat(itb);
+	}
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	if ( protocol_visit )
+		pack_protocol_serving_end(protocol_saved);
+	mark_embedded_include_flag(name);
+}
+
 void Program::expand_pending_auto_include_macros(size_t original_start)
 {
     if ( pending_auto_include_identifiers.empty() )
@@ -961,15 +1013,7 @@ void Program::inject_pending_auto_includes()
 	    // arms silently dropped every header without a named provider,
 	    // which is how retiring the embedded <string>/<sstream> twins
 	    // broke the C++ arm of auto-include unnoticed.
-	    Source saved = std::move(source);
-	    source = Source();
-	    source.fname("<auto-include>");
-	    std::string directive = std::string("#include <") + header + ">\n";
-	    { ReadTimer _rt(_read_seconds); source.str(directive); }
-	    TokenBase *itb;
-	    while ( (itb = getRealToken()) )
-		push_token_with_literal_concat(itb);
-	    source = std::move(saved);
+	    tokenize_synthetic_system_include(header, "<auto-include>");
 	}
     }
 
@@ -2802,7 +2846,30 @@ int Program::forest_unit_for_include(const std::string &incfile)
     // container's libc++ tree; run-only Macs have no headers to resolve
     // against). The include SPELLING matched against the unit name's tail
     // components is the identity that travels.
-    return f->find_unit_path_tail(incfile);
+    u = f->find_unit_path_tail(incfile);
+    // posix/<name> is an internal storage key, never an alternate tail match
+    // for an ordinary native header. Whole providers map to it explicitly at
+    // the include site after proving that the native provider is absent.
+    if ( u >= 0 )
+    {
+	const char *matched = f->unit_name((uint32_t)u);
+	if ( matched && is_posix_compat_header_name(matched)
+	  && !is_posix_compat_header_name(incfile) )
+	    u = -1;
+	else
+	    return u;
+    }
+    // A filesystem PCH freezes under its .madh provider identity, while the
+    // source include still names <header>. A headerless consumer cannot probe
+    // that file, so the portable tail mapping must try the PCH spelling too.
+    u = f->find_unit_path_tail(incfile + ".madh");
+    if ( u >= 0 )
+    {
+	const char *matched = f->unit_name((uint32_t)u);
+	if ( matched && is_posix_compat_header_name(matched) )
+	    return -1;
+    }
+    return u;
 }
 
 // Bind a grove unit and its include closure: post-order DFS over the unit's
@@ -2815,7 +2882,17 @@ int Program::forest_unit_for_include(const std::string &incfile)
 void Program::forest_bind_include(uint32_t unit)
 {
     if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
+    {
 	return;
+    }
+	const char *unit_name = bind_forest->unit_name(unit);
+	if ( unit_name && is_posix_compat_header_name(unit_name) )
+	{
+		const std::string base = std::string(unit_name).substr(
+			sizeof("posix/") - 1);
+		if ( !is_posix_compat_header_allowed(base) )
+			return;
+	}
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
@@ -2930,6 +3007,63 @@ const char *const *Program::sys_include_paths() const
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
     return f->paths;
+}
+
+bool Program::posix_compat_enabled() const
+{
+#ifdef _WIN32
+	return registration_policy.enable_posix_compat;
+#else
+	return false;
+#endif
+}
+
+bool Program::is_posix_compat_header_name(const std::string &name) const
+{
+	return name.compare(0, sizeof("posix/") - 1, "posix/") == 0;
+}
+
+bool Program::is_posix_compat_header_allowed(const std::string &name) const
+{
+	if ( !posix_compat_enabled() )
+		return false;
+	if ( !registration_policy.restrict_headers_to_allowlist
+	  && registration_policy.allowed_headers.empty() )
+		return true;
+	for ( size_t i = 0; i < registration_policy.allowed_headers.size(); ++i )
+		if ( registration_policy.allowed_headers[i] == name )
+			return true;
+	return false;
+}
+
+void Program::tokenize_posix_header_supplement(const std::string &incfile)
+{
+	if ( !is_posix_compat_header_allowed(incfile) )
+		return;
+	const std::string supplement = std::string("posix/") + incfile;
+	const std::string *embedded = find_embedded_header(supplement);
+	if ( !embedded )
+		return;
+	// A grove stores the real header and its supplement as ordered sibling
+	// edges. An explicit bind of the real header therefore still owes the
+	// supplement; bind that existing unit too so a later parent bind cannot
+	// restore the supplement's declarations a second time. Forests stamped
+	// before this policy bit are rejected by the config-word check.
+	if ( registration_policy.enable_forest_bind )
+	{
+		CirFrozenForest *forest = ensure_bind_forest();
+		int fu = forest ? forest->find_unit(supplement) : -1;
+		if ( fu >= 0 )
+		{
+			forest_bind_include((uint32_t)fu);
+			mark_embedded_include_flag(supplement);
+			return;
+		}
+	}
+	// This is compiler-owned delta text, not another ordinary include lookup:
+	// no -I/PCH provider may outrank it. Serving from the restored includer
+	// records the real header and its supplement as ordered sibling edges.
+	tokenize_embedded_header_text(supplement, *embedded, false);
 }
 
 const char *Program::compiler_owned_include_dir() const
@@ -4263,6 +4397,11 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // posix/<name> is a compiler-internal storage namespace. A
+		    // user include must name the public native header; otherwise a
+		    // supplement could be served without its required real provider.
+		    if ( is_system && is_posix_compat_header_name(incfile) )
+			Throw << "Failed to open include file: " << incfile.c_str() << flush;
 		    // glibc's __need protocol: a request macro (__need_size_t,
 		    // __need_wchar_t, gcc's __need___va_list, ...) live at the
 		    // include marks a PROTOCOL VISIT — the header is DESIGNED
@@ -4332,18 +4471,37 @@ TokenBase *Program::_getToken()
 				// freeze — re-run the one live side effect. A
 				// REAL-header unit (path name) never marks, exactly
 				// like the live filesystem branch.
-				{
-				    const char *un = bind_forest->unit_name(fu);
-				    if ( un && incfile == un
-				      && find_embedded_header(incfile) )
-					mark_embedded_include_flag(incfile);
-				}
+				const char *bound_unit_name = bind_forest->unit_name(fu);
+				const bool bound_embedded = bound_unit_name
+				    && find_embedded_header(bound_unit_name);
+				if ( bound_embedded )
+				    mark_embedded_include_flag(bound_unit_name);
 				// Item 5 (lazy defrost): the decl-record restore
 				// moved to flush_forest_pending_globals — the
 				// post-tokenize point where forest_chain_set is
 				// COMPLETE, so registration filters to the TU's
 				// actual bound-include closure (live parity: a
 				// header you never include declares nothing).
+				bool bound_real_provider = bound_unit_name
+				    && !bound_embedded
+				    && is_system_header_path(bound_unit_name);
+				if ( bound_unit_name && !bound_real_provider
+				  && !bound_embedded )
+				{
+				    const std::string bound_name(bound_unit_name);
+				    const std::string suffix = ".madh";
+				    if ( bound_name.size() > suffix.size()
+				      && bound_name.compare(bound_name.size() - suffix.size(),
+						    suffix.size(), suffix) == 0 )
+					bound_real_provider = is_system_header_path(
+					    bound_name.substr(0, bound_name.size()
+							      - suffix.size()).c_str());
+				    else if ( bound_name == incfile
+					   && find_precompiled_header(incfile) )
+					bound_real_provider = true;
+				}
+				if ( bound_real_provider )
+				    tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			}
@@ -4384,6 +4542,10 @@ TokenBase *Program::_getToken()
 			    if ( load_precompiled_header_file(pch_path, pch_tokens) )
 			    {
 				push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+				std::string pch_source_path = pch_path.substr(
+				    0, pch_path.size() - sizeof(".madh") + 1);
+				if ( is_system_header_path(pch_source_path.c_str()) )
+				    tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			    DBG(std::cout << "#include <" << incfile
@@ -4397,6 +4559,7 @@ TokenBase *Program::_getToken()
 			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
 			    {
 				push_precompiled_header_tokens(*this, incfile, pch_tokens);
+				tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
@@ -4430,36 +4593,8 @@ TokenBase *Program::_getToken()
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
-			    // B4a: a protocol visit forms no unit and no edge —
-			    // the serving belongs to the includer's unit (owner
-			    // captured pre-swap, while the includer is current).
-			    const char *_proto_saved = NULL;
-			    if ( protocol_visit )
-				_proto_saved = pack_protocol_serving_begin();
-			    else
-				pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
-			    Source saved = std::move(source);
-			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-			    suppress_auto_include_scan = true;
-			    source = Source();
-			    source.fname(incfile.c_str());
-			    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
-			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
-			    TokenBase *itb;
-			    const char *_interned1 = intern_file(incfile);
-			    if ( !protocol_visit )
-				pack_note_unit(_interned1);
-			    while ( (itb = getRealToken()) )
-			    {
-				itb->file = _interned1;
-				push_token_with_literal_concat(itb);
-			    }
-			    source = std::move(saved);
-			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
-			    if ( protocol_visit )
-				pack_protocol_serving_end(_proto_saved);
-			    // flag headers for deferred registration during parse init
-			    mark_embedded_include_flag(incfile);
+			    tokenize_embedded_header_text(incfile, *embedded,
+							  protocol_visit);
 			    return getToken();
 			}
 		    }
@@ -4484,6 +4619,9 @@ TokenBase *Program::_getToken()
 				<< "\" bound to grove unit " << fu << " ("
 				<< bind_forest->unit_name(fu) << ")" << std::endl);
 			    forest_bind_include((uint32_t)fu);
+			    if ( is_system
+			      && is_system_header_path(full_path.c_str()) )
+				tokenize_posix_header_supplement(incfile);
 			    // Item 5: decl restore rides the post-tokenize
 			    // flush (see the system-include bind site).
 			    return getToken();
@@ -4547,6 +4685,12 @@ TokenBase *Program::_getToken()
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    if ( protocol_visit )
 			pack_protocol_serving_end(_proto_saved);
+		    // A supplement augments the REAL system header after its tokens
+		    // and macros have been served. It is injected from the restored
+		    // includer so forest edges retain source order: real, then delta.
+		    if ( is_system && !protocol_visit
+		      && is_system_header_path(full_path.c_str()) )
+			tokenize_posix_header_supplement(incfile);
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )
@@ -6503,6 +6647,8 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	    return 0;
 	std::string file = arg.substr(1, arg.size() - 2);
 	if ( file.empty() )
+	    return 0;
+	if ( is_system && is_posix_compat_header_name(file) )
 	    return 0;
 	if ( is_system )
 	{

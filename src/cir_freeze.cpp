@@ -105,6 +105,7 @@ uint64_t madc_cir_context_hash()
 uint32_t madc_forest_config_word(const Program *prog)
 {
 	uint32_t word = (uint32_t)prog->language_std
+		      | ((uint32_t)(prog->posix_compat_enabled() ? 1 : 0) << 15)
 		      | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
 	// The EFFECTIVE flavor name, not the CLI spelling: an explicit
 	// -stdlib=<build default> is the same config as no flag at all.

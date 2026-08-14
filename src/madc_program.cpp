@@ -2093,6 +2093,7 @@ runtime_eval_registration_policy_for_source_child(const Program::RegistrationPol
     child.enable_external_forest = parent.enable_external_forest;
     child.enable_forest_bind = parent.enable_forest_bind;
     child.forest_config_path = parent.forest_config_path;
+	child.enable_posix_compat = parent.enable_posix_compat;
     child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
     return child;
 }
@@ -2134,6 +2135,7 @@ Program::RegistrationPolicy registration_policy_from_compile_options(const compi
     }
     policy.enable_external_forest = options.enable_external_forest;
     policy.enable_forest_bind = options.enable_forest_bind;
+	policy.enable_posix_compat = options.enable_posix_compat;
     policy.allowed_headers = options.allowed_headers;
     policy.allowed_dlfcn_symbols = options.allowed_dlfcn_symbols;
     append_unique_strings(policy.allowed_dlfcn_symbols,

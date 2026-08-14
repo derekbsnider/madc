@@ -43,6 +43,10 @@ struct compile_options
     /// libmadc gets grove-backed system headers (the precompiled-header
     /// model) for free. Turn it off to force live parsing.
     bool enable_forest_bind = true;
+    /// Enable target-owned additive POSIX header compatibility.
+    /// This is effective only for targets that need the layer (currently
+    /// Win64); POSIX targets always use their native surface.
+    bool enable_posix_compat = true;
     /// Frozen-forest discovery: what happens when no container is found.
     forest_policy forest_missing = forest_policy::silent_fallback;
     /// Allow the discovery arms that read frozen state from OUTSIDE the

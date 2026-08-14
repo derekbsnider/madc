@@ -23145,10 +23145,16 @@ bool Program::embedded_header_outranked(const std::string &name) const
 
 bool Program::is_embedded_header_allowed(const std::string &name) const
 {
+	const bool posix_compat_header = is_posix_compat_header_name(name);
+	// posix/<name> is an internal storage key, never a public named provider.
+	// The post-native supplement / absent-native whole-header paths consult it
+	// through their dedicated policy gate.
+	if ( posix_compat_header )
+		return false;
     // Bypass an embedded SYSTEM-library shim so the real header is used, while
     // keeping madc-own (ns_*/__madc__) and freestanding (bucket-1/2) headers.
-    if ( registration_policy.bypass_system_library_headers
-      && embedded_header_is_system_library_shim(name) )
+	if ( registration_policy.bypass_system_library_headers
+	  && embedded_header_is_system_library_shim(name) )
 	return false;
     if ( !registration_policy.restrict_headers_to_allowlist
       && registration_policy.allowed_headers.empty() )

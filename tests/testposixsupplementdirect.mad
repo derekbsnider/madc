@@ -1,0 +1,8 @@
+// posix/<name> is a compiler-internal storage key. Serving it directly would
+// violate the real-header-first invariant of an additive supplement.
+#include <posix/string.h>
+
+int main()
+{
+	return 0;
+}

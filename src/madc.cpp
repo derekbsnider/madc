@@ -409,6 +409,7 @@ static void print_usage(const char *prog)
 "                          via -l instead. The namespace binds to global scope.\n"
 "  --no-includes           do not process #include directives\n"
 "  --no-embedded-headers   disable baked-in headers; use real system headers\n"
+"  --no-posix-compat       disable Win64's additive POSIX header supplements\n"
 "\n"
 "Codegen:\n"
 "  -O, -O0 .. -O3          JIT optimization level (bare -O = -O1)\n"
@@ -696,6 +697,12 @@ int main(int argc, char **argv)
             // shim-retirement lever; it replaces the old disallow-everything gate,
             // which wrongly also dropped ns_php etc.
             prog->registration_policy.bypass_system_library_headers = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
+            // This policy rides the engine as well as the current Program so
+            // --project translation units inherit the same target surface.
+            engine.registration_policy.enable_posix_compat = false;
+            prog->registration_policy.enable_posix_compat = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-auto-load") == 0) {
             // Do not act on #load directives: the named library is not loaded

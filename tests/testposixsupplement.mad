@@ -1,0 +1,24 @@
+// The Win64 POSIX layer augments a real platform header; it never replaces
+// that header and never activates on a POSIX host.
+#include <stdio.h>
+#include <string.h>
+
+#if __has_include(<posix/string.h>)
+#error compiler-internal POSIX supplement key is publicly includable
+#endif
+
+#ifdef _WIN32
+#ifndef _INC_STRING
+#error Win64 supplement replaced the real MinGW string.h
+#endif
+#endif
+
+int main()
+{
+#ifdef __MADC_POSIX_STRING_H
+	printf("supplement\n");
+#else
+	printf("native\n");
+#endif
+	return 0;
+}

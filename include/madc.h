@@ -2139,6 +2139,11 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
+	// system header may be followed by the convention-keyed embedded supplement
+	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
+	// --no-posix-compat.
+	bool enable_posix_compat = true;
 	// Frozen-forest discovery + failure policy (forest-carriers S3).
 	// enable_external_forest gates the probe-chain arms that read frozen
 	// state from OUTSIDE the binary/library images (the <exe>.forest and
@@ -4666,6 +4671,9 @@ public:
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
     bool is_embedded_header_allowed(const std::string &name) const;
+	bool posix_compat_enabled() const;
+	bool is_posix_compat_header_name(const std::string &name) const;
+	bool is_posix_compat_header_allowed(const std::string &name) const;
     // True iff a real system header named `name` exists in a glibc/libstdc++
     // include dir (i.e. NOT the compiler-owned freestanding dir, and not a
     // madc-own header with no real twin). Used to bypass embedded system-library
@@ -4737,6 +4745,12 @@ public:
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);
     void inject_pending_auto_includes();
+	void tokenize_synthetic_system_include(const std::string &header,
+					       const char *origin_name);
+	void tokenize_embedded_header_text(const std::string &name,
+					 const std::string &text,
+					 bool protocol_visit);
+	void tokenize_posix_header_supplement(const std::string &incfile);
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);
