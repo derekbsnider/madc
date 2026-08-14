@@ -459,10 +459,10 @@ public:
 	: _rows_loaded(false), _opened(false)
     {}
 
-    const char *name() const { return "dsv"; }
-    const char *scheme() const { return "dsv"; }
+    const char *name() const override { return "dsv"; }
+    const char *scheme() const override { return "dsv"; }
 
-    DriverCapabilities capabilities() const
+    DriverCapabilities capabilities() const override
     {
 	DriverCapabilities caps;
 	caps.read = true;
@@ -472,7 +472,7 @@ public:
 	return caps;
     }
 
-    bool bind_schema(const SchemaInfo &schema, error *err = nullptr)
+    bool bind_schema(const SchemaInfo &schema, error *err = nullptr) override
     {
 	_schema = schema;
 	if ( _schema.fields().empty() )
@@ -486,7 +486,7 @@ public:
 	return true;
     }
 
-    bool open(const DataSource &source, error *err = nullptr)
+    bool open(const DataSource &source, error *err = nullptr) override
     {
 	if ( source.scheme() != "dsv" )
 	{
@@ -544,7 +544,7 @@ public:
 	return true;
     }
 
-    void close()
+    void close() override
     {
 	_rows.clear();
 	_header.clear();
@@ -553,9 +553,9 @@ public:
 	_opened = false;
     }
 
-    bool is_open() const { return _opened; }
+    bool is_open() const override { return _opened; }
 
-    bool can_bind_schema(const SchemaInfo &schema) const
+    bool can_bind_schema(const SchemaInfo &schema) const override
     {
 	if ( schema.fields().empty() )
 	    return false;
@@ -569,12 +569,12 @@ public:
 	return true;
     }
 
-    bool can_execute(const Query &query) const
+    bool can_execute(const Query &query) const override
     {
 	return query.query_kind() == Query::kind::builder;
     }
 
-    bool insert_record(const value &record, error *err = nullptr)
+    bool insert_record(const value &record, error *err = nullptr) override
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
@@ -592,7 +592,7 @@ public:
     bool update_record(const std::string &key_field,
 		       const value &key,
 		       const value &record,
-		       error *err = nullptr)
+		       error *err = nullptr) override
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
@@ -617,7 +617,7 @@ public:
 
     bool erase_record(const std::string &key_field,
 		      const value &key,
-		      error *err = nullptr)
+		      error *err = nullptr) override
     {
 	if ( !ensure_rows_loaded(err) )
 	    return false;
@@ -640,7 +640,7 @@ public:
 
     bool restore_record(const std::string &key_field,
 			const value &key,
-			error *err = nullptr)
+			error *err = nullptr) override
     {
 	(void)key_field;
 	(void)key;
@@ -651,7 +651,7 @@ public:
 	return false;
     }
 
-    bool compact_records(error *err = nullptr)
+    bool compact_records(error *err = nullptr) override
     {
 	if ( err )
 	    *err = error(error::severity::error,
@@ -663,7 +663,7 @@ public:
     bool get_record(const std::string &key_field,
 		    const value &key,
 		    value &out,
-		    error *err = nullptr) const
+		    error *err = nullptr) const override
     {
 	if ( !ensure_rows_loaded(err) )
 	    return false;
@@ -675,7 +675,7 @@ public:
     }
 
     bool scan_records(std::vector<value> &out,
-		      error *err = nullptr) const
+		      error *err = nullptr) const override
     {
 	out.clear();
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
@@ -1130,10 +1130,10 @@ public:
 	  _external_channel(false), _record_count(0), _opened(false)
     {}
 
-    const char *name() const { return "flr"; }
-    const char *scheme() const { return "flr"; }
+    const char *name() const override { return "flr"; }
+    const char *scheme() const override { return "flr"; }
 
-    DriverCapabilities capabilities() const
+    DriverCapabilities capabilities() const override
     {
 	DriverCapabilities caps;
 	caps.read = true;
@@ -1145,7 +1145,7 @@ public:
 	return caps;
     }
 
-    bool bind_schema(const SchemaInfo &schema, error *err = nullptr)
+    bool bind_schema(const SchemaInfo &schema, error *err = nullptr) override
     {
 	_schema = schema;
 	if ( !can_bind_schema(schema) )
@@ -1162,7 +1162,7 @@ public:
     // Lazy open: geometry (stat + size-multiple validation) and the small
     // tombstone bitmap only — zero records are read here. The byte channel
     // itself attaches lazily in the access mode the first operation needs.
-    bool open(const DataSource &source, error *err = nullptr)
+    bool open(const DataSource &source, error *err = nullptr) override
     {
 	if ( source.scheme() != "flr" )
 	{
@@ -1227,15 +1227,15 @@ public:
 	return true;
     }
 
-    void close()
+    void close() override
     {
 	reset_state();
 	_opened = false;
     }
 
-    bool is_open() const { return _opened; }
+    bool is_open() const override { return _opened; }
 
-    bool can_bind_schema(const SchemaInfo &schema) const
+    bool can_bind_schema(const SchemaInfo &schema) const override
     {
 	if ( schema.record_layout() != SchemaInfo::layout_mode::fixed_record )
 	    return false;
@@ -1259,12 +1259,12 @@ public:
 	return true;
     }
 
-    bool can_execute(const Query &query) const
+    bool can_execute(const Query &query) const override
     {
 	return query.query_kind() == Query::kind::builder;
     }
 
-    bool insert_record(const value &record, error *err = nullptr)
+    bool insert_record(const value &record, error *err = nullptr) override
     {
 	std::size_t index = 0;
 	return insert_record_appending(record, index, err);
@@ -1272,7 +1272,7 @@ public:
 
     bool insert_record_with_locator(const value &record,
 				    RecordLocator &locator,
-				    error *err = nullptr)
+				    error *err = nullptr) override
     {
 	locator = RecordLocator::none();
 	std::size_t index = 0;
@@ -1285,7 +1285,7 @@ public:
     bool update_record(const std::string &key_field,
 		       const value &key,
 		       const value &record,
-		       error *err = nullptr)
+		       error *err = nullptr) override
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
@@ -1306,7 +1306,7 @@ public:
 
     bool update_record_by_locator(const RecordLocator &locator,
 				  const value &record,
-				  error *err = nullptr)
+				  error *err = nullptr) override
     {
 	if ( !ensure_record_shape(record, err) )
 	    return false;
@@ -1319,7 +1319,7 @@ public:
 
     bool erase_record(const std::string &key_field,
 		      const value &key,
-		      error *err = nullptr)
+		      error *err = nullptr) override
     {
 	long idx = 0;
 	if ( !find_record_index(key_field, key, false, idx, nullptr, err) )
@@ -1358,7 +1358,7 @@ public:
 
     bool restore_record(const std::string &key_field,
 			const value &key,
-			error *err = nullptr)
+			error *err = nullptr) override
     {
 	if ( !uses_tombstones() )
 	{
@@ -1446,7 +1446,7 @@ public:
 	return false;
     }
 
-    bool compact_records(error *err = nullptr)
+    bool compact_records(error *err = nullptr) override
     {
 	if ( !uses_tombstones() )
 	{
@@ -1611,7 +1611,7 @@ public:
     bool get_record(const std::string &key_field,
 		    const value &key,
 		    value &out,
-		    error *err = nullptr) const
+		    error *err = nullptr) const override
     {
 	long idx = 0;
 	if ( !find_record_index(key_field, key, false, idx, &out, err) )
@@ -1621,7 +1621,7 @@ public:
 
     bool get_record_by_locator(const RecordLocator &locator,
 			       value &out,
-			       error *err = nullptr) const
+			       error *err = nullptr) const override
     {
 	std::size_t index = 0;
 	if ( !resolve_locator_index(locator, "flr get_record_by_locator failed",
@@ -1632,7 +1632,7 @@ public:
 
     // Legacy vector API: delegates to the streaming cursor.
     bool scan_records(std::vector<value> &out,
-		      error *err = nullptr) const
+		      error *err = nullptr) const override
     {
 	out.clear();
 	std::unique_ptr<Cursor<value> > cursor = scan_stream(err);
