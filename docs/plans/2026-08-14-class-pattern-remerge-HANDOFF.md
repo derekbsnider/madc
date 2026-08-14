@@ -35,10 +35,29 @@
 > on both sides (develop already has `fname = intern_file(fname)`), so take
 > develop's. Only `claude_status.json` and `remote_build.sh` need real work.
 >
-> **What to do with the branch is now an OPEN owner decision**, not a
-> re-land-it-safely task: merging it as-is is a measured net loss until the
-> invalidation fix removes the penalty. Re-measure after that fix lands before
-> deciding.
+> **FINAL, measured after the cache fix landed (59e72065):** the branch was
+> merged onto develop+fix (`feature/class-pattern-remerge-claude` @ 6de72c50,
+> branch code verified live at 292 pattern / 189 parse) and measured:
+>
+> | binary | Ir | vs develop+fix |
+> |---|---:|---:|
+> | develop + cache fix | 2,388,527,461 | — |
+> | + branch merged | 2,444,717,788 | **+56,190,327 (+2.35%)** |
+>
+> The cache fix absorbed ~26M of the branch's penalty (it was +82.7M against
+> its own base, now +56.2M), confirming that part WAS the extra rebuilds. The
+> remaining 56M is the serve path itself costing more than the 93 parses it
+> eliminates. **Merging it would leave madc slower than v0.80.0 is today.**
+>
+> **Disposition: do NOT merge for performance.** Salvage separately — the two
+> reducers, the `sizeof(placeholder)` fix, the unit-test additions. The open
+> thread worth pulling is WHERE those 56M go: serve costing more than parse has
+> the same shape as the despace defect, which was worth 2%.
+>
+> Also corrected: hazard #4.1 below ("forest version MUST become 40") is WRONG.
+> The branch never touched `CIR_FOREST_FORMAT_VERSION` (38 -> 39 was develop
+> alone); it bumped `CIR_CLASS_PATTERN_PAYLOAD_VERSION` 4 -> 6. Different
+> constants, no collision — the auto-merge already produces the right values.
 
 **Read this fully before acting. Assume a cold start.** Run
 `bash scripts/resume.sh` first — it prints live git state and any orphaned
