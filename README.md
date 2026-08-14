@@ -210,24 +210,28 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.79.0** (2026-08-14) — the Win64 JIT
-milestone closes. The hosted MinGW+UCRT compiler runs every eligible
-integration test without a failure; exec-channel fixtures now spawn the
-exact madc artifact under test; and preprocessing plus aggregate layout
-each have one implementation guarded by negative controls. This is the
-JIT milestone: PE/COFF output, Windows groves, and the public zip artifact
-remain W3–W5.
+The current release is **v0.80.0** (2026-08-14) — the POSIX target
+surface lands for Win64, and the build stops tolerating warnings. madc
+serves `setenv`/`unsetenv`, `strndup`, the `timer*` gaps and `<dlfcn.h>`
+on a target whose toolchain ships none of them, through a target-tagged
+runtime archive whose ownership is gated. The pre-merge duplication audit
+caught `__has_include` disagreeing with `#include` before it shipped, and
+a compile break in the cross-build modes — the ones the macOS artifacts are
+built through — is fixed and now gated.
 
-Branch state: v0.79.0 is released from
-`feature/win64-46b-burndown-codex` into `develop`; POSIX target-surface
-P1/P2 is next on its own feature branch before Windows W3 resumes.
+Branch state: v0.80.0 is released from `feature/posix-p1p2-codex` into
+`develop`. POSIX T6 (`dirent`) is scheduled as its own release; Windows
+W3–W5 (PE/COFF output, groves, packaging) resume after that.
 
 Headline results:
 
-- Linux JIT: **1033 passed / 0 failed / 0 timed out / 9 skipped**
-- libc++ JIT: **1029/0/0/13**; native EXE: **1004/0**; OBJ: **1004/0**
-- hosted Win64 under persistent Wine: **987/0/0/55**, improved from
-  **947/30/0/59** at handoff
+- Linux JIT: **1040 passed / 0 failed / 0 timed out / 9 skipped**
+- libc++ JIT: **1036/0/0/13**; native EXE: **1009/0**; OBJ: **1009/0**
+- hosted Win64 under persistent Wine: **998/0/0/51**
+- **zero compiler warnings on every build lane**, enforced by `-Werror`
+  (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
+  macOS hosted/cross pairs), with the emitted-code warning ratchet at an
+  all-zero baseline
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions
 - working native ELF output, Mach-O object output, multi-file linking, and a
@@ -242,6 +246,8 @@ and known gaps.
 
 ### Recent Releases
 
+- [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
+  lands for Win64, and the build stops tolerating warnings.
 - [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
   failures; exec fixtures, preprocessing, and aggregate layout converge.
 - [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
@@ -250,8 +256,6 @@ and known gaps.
   clone and one version identify the complete compiler.
 - [v0.76.0](docs/release-notes/v0.76.0.md) — the first public macOS
   release ships hosted JIT and native Mach-O AOT.
-- [v0.75.0](docs/release-notes/v0.75.0.md) — `madc::value` becomes a
-  first-class intrinsic with a value-first `<ns_madc>` API.
 
 ## Building from source
 

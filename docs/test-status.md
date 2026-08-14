@@ -1,6 +1,29 @@
 # Test Status
 
-> **Current (2026-08-14, validated code head `3d5bd90c` — v0.79.0
+> **Current (2026-08-14, validated code head `63f008ad` — v0.80.0 POSIX
+> target surface + the zero-warnings law):** authoritative Linux fulltest
+> **1040 passed / 0 failed / 0 timed out / 9 skipped**, libc++ JIT
+> **1036/0/0TO/13skip**, EXE **1009/0**, OBJ **1009/0**, and the
+> persistent-Wine hosted Win64 domain **998/0/0TO/51skip**.
+>
+> **Zero compiler warnings on every build lane, now enforced.** Clean
+> rebuilds of host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`,
+> `hosted-arm64-macos` and `hosted-x86-64-macos` each returned rc=0 with
+> **0 warnings**, including 39 unit-test binaries, with `-Werror` active
+> (escape hatch `WERROR=0`). The emitted-code ratchet
+> (`scripts/warn_census.sh`) is back to an **all-zero baseline** — its last
+> entry was stale, and because a ratchet only forbids increases it had been
+> reporting GREEN over a goal already met, printing `tests improved : 1`
+> every run.
+>
+> Two gates were added and negative-controlled in both directions:
+> `check-cross-mode-compiles.sh` (the `cross-*` modes were in NO validation
+> lane and had been uncompilable for two days across a release — the mode
+> the macOS artifacts build through), and `-Werror` itself, whose presence
+> on both the C++ and `rt/*.c` compile lines was verified with `make -Bn`
+> because a plain `make -n` prints nothing for an up-to-date target.
+>
+> **Previous (2026-08-14, validated code head `3d5bd90c` — v0.79.0
 > Win64 JIT milestone):** authoritative Linux fulltest **1033 passed /
 > 0 failed / 0 timed out / 9 skipped**, libc++ JIT
 > **1029/0/0TO/13skip**, EXE **1004/0**, and OBJ **1004/0**; every

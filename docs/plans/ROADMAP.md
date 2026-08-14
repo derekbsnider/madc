@@ -44,12 +44,13 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-14 (v0.79.0 — the
-Win64 JIT milestone closes at 987/0/55, exec-channel fixtures become
-self-contained, and preprocessing plus aggregate-layout duplication is
-consolidated and gated; previous: v0.78.0 — the torture window closes;
-v0.77.0 — MIR moves in-tree; v0.76.0 — the public macOS lane; v0.75.0
-— the value intrinsic + value-first `<ns_madc>`):
+Master plan linking all workstreams. Updated 2026-08-14 (v0.80.0 — the
+POSIX target surface lands for Win64, the pre-merge dupaudit catches an
+`__has_include` vs `#include` divergence, a two-day cross-build break is
+fixed and gated, and zero warnings is enforced with `-Werror`; previous:
+v0.79.0 — the Win64 JIT milestone closes at 987/0/55; v0.78.0 — the
+torture window closes; v0.77.0 — MIR moves in-tree; v0.76.0 — the public
+macOS lane):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
 flavor. At the release HEAD: fulltest **997/0/9skip**, lane
@@ -97,6 +98,31 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **v0.80.0 (2026-08-14): the POSIX target surface lands for Win64, and
+  warnings stop being tolerated, at validated code head `63f008ad`.**
+  P1/P2 serve `setenv`/`unsetenv` (over the CRT's `_putenv_s`, not
+  `SetEnvironmentVariableA`), `strndup`, `timeradd`/`timersub`, a
+  lowercase `sleep`, and `<dlfcn.h>` as the first **whole provider** —
+  mingw ships no such header, so madc's `posix/` entry is the header
+  itself. `TargetOS` / `target_windows()` becomes the third
+  target-property owner beside `target_llp64()` and
+  `target_microsoft_bitfields()`. T6 (`dirent`) is deliberately deferred
+  to its own release: mingw ships `dirent.h` and its `readdir` fills
+  mingw's `struct dirent`, so serving `d_type` means owning the header
+  AND `opendir`/`readdir`/`closedir` over `FindFirstFileW`.
+  The pre-merge `/dupaudit` found `__has_include(<dlfcn.h>)` answering 0
+  on Win64 while the include served fine — a silent wrong answer in the
+  canonical portability idiom — now one predicate with two consumers.
+  Separately, `madc_cir.cpp`'s cross arm had been uncompilable since
+  2026-08-12, across a release, because no validation lane builds the
+  `cross-*` modes; that is the mode the macOS artifacts build through,
+  and it is now gated. Zero warnings holds on both surfaces: the
+  emitted-code ratchet is back to an all-zero baseline and `-Werror`
+  covers madc's own TUs. Lanes: fulltest **1040/0/0TO/9skip**, libc++ JIT
+  **1036/0/0TO/13skip**, EXE **1009/0**, OBJ **1009/0**, Wine
+  **998/0/0TO/51skip**, and six build lanes clean at zero warnings.
+  Next: T6 `dirent` as its own release, then Windows W3–W5.
 
 - **v0.79.0 (2026-08-14): Track 6.4's Win64 JIT milestone is closed at
   validated code head `3d5bd90c`.** The MinGW+UCRT Wine domain moved

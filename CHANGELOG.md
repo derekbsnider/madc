@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+## [v0.80.0] — 2026-08-14
+
+The POSIX target surface lands for Win64, a pre-merge duplication audit
+catches a silent wrong answer before it ships, and the build stops
+tolerating warnings anywhere — on either surface, with a mechanism rather
+than a comment.
+
+- **POSIX target surface, P1 and P2.** `setenv`/`unsetenv` over the CRT's
+  `_putenv_s` (not `SetEnvironmentVariableA`, which updates the Win32 block
+  without the CRT's view), `strndup`, `timeradd`/`timersub`, a lowercase
+  `sleep`, and `<dlfcn.h>` as the first **whole provider** — mingw ships no
+  such header, so madc's `posix/` entry *is* the header rather than a
+  supplement to one. A new `TargetOS` / `target_windows()` joins
+  `target_llp64()` and `target_microsoft_bitfields()` as the third
+  target-property owner, so nothing re-tests `_WIN32` at a consumer.
+  `libmadc_rt` membership is now target-tagged, and
+  `win_posix_archive_gate.sh` proves the archive's POSIX symbols are
+  project-owned with no madc DLL import.
+- **`__has_include` and `#include` can no longer disagree.** The
+  whole-provider arm decided "no native provider ⇒ serve `posix/<name>`"
+  *after* the filesystem walk, at a position `__has_include` did not mirror
+  — so on Win64 `__has_include(<dlfcn.h>)` answered 0 while the include
+  served fine, and the canonical `#if __has_include(<dlfcn.h>)` idiom took
+  the no-dlfcn branch on a target that has dlfcn. The decision is now a
+  predicate with one owner and two consumers. Found by the `/dupaudit`
+  that `branching.md` requires before a feature branch merges.
+- **A two-day cross-build break, fixed and gated.** `madc_cir.cpp` used
+  `resolve_real_path` inside an `MADC_CROSS_TARGET` block without including
+  its declaring header. Host builds never compile that block, so every
+  validation lane stayed green while `make hosted-arm64-macos` failed —
+  and that is the mode the macOS release artifacts build through.
+  `check-cross-mode-compiles.sh` now compiles the cross arms from a
+  *derived* TU list, negative-controlled in both directions.
+- **Zero warnings, everywhere, enforced.** Both surfaces are clear and both
+  are held: the `warn_census` ratchet returns to an all-zero baseline (its
+  last entry was stale — a ratchet only forbids increases, so it had been
+  reporting GREEN over a goal already met), and `-Werror` now covers madc's
+  own translation units with a documented `WERROR=0` escape hatch. Cleared
+  along the way: undersized `%zu` identifier buffers, an unguarded
+  `NOMINMAX` redefinition, C++-only header flags riding the `-x c` runtime
+  compiles (where a C++ standard library's include dir on a C compile's
+  *system* path can shadow real C headers), 35 missing `override` markers,
+  side-effecting `typeid` operands, deprecated `sprintf`, and an
+  unused-on-Apple OOM handler.
+- **`ARFLAGS ?= rcs` never took effect.** `?=` silently no-ops on variables
+  make itself predefines, so every archive had been built `rv`. Fixed with
+  an `origin`-guarded assignment that still lets an explicit override win.
+  The same trap still hides `CC ?= clang` / `CXX ?= clang++`, which is why
+  the host builds with g++ and clang-only diagnostics never appear there.
+
 ## [v0.79.0] — 2026-08-14
 
 The Win64 JIT milestone closes: the hosted MinGW+UCRT compiler runs its
