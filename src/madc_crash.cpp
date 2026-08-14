@@ -9,7 +9,12 @@
 #include <string.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+// libstdc++'s mingw os_defines.h already defines NOMINMAX (as 1) and reaches
+// us through madc_crash.h's includes, so an unguarded re-#define here is a
+// redefinition with a DIFFERENT token sequence — a warning, not a no-op.
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>	// SetUnhandledExceptionFilter, CaptureStackBackTrace
 #include <io.h>
 #else

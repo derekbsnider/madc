@@ -88,6 +88,10 @@ static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 // otherwise the failure surfaces as a bare std::bad_alloc with no
 // actionable cause. An OOM handler must not allocate, so the message goes
 // out via the crash handler's write(2) plumbing.
+// Guarded to match the ONE place it is armed (the !__APPLE__ RLIMIT_AS arm
+// below): darwin does not enforce RLIMIT_AS, so on Apple targets this handler
+// is never installed and a definition here is simply unused.
+#ifndef __APPLE__
 static rlim_t madc_mem_guard_mb = 0;
 
 static void mem_guard_new_handler(void)
@@ -102,6 +106,7 @@ static void mem_guard_new_handler(void)
     madc_crash_write_formatted(buf, n, sizeof(buf));
     throw std::bad_alloc();
 }
+#endif // !__APPLE__
 
 // Armed with the (opt-in) RLIMIT_CPU guard: the default SIGXCPU disposition
 // kills silently, which reads as a mystery death instead of the guard doing
