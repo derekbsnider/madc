@@ -1011,6 +1011,42 @@ via win_run.sh; suites at batch boundaries per the cadence law):
   `libmadc_rt.dll` + import lib (AOT import world). Membership audit =
   the darwin rt manifest + the win64 additions above.
 
+**W3.0 RESULTS (2026-08-14, container tmp/win/w3/, wine + REAL Windows via
+win_run.sh — all green):**
+
+- **(a) COFF oracle** (`oracle.o`, mingw-gcc 13): REL32 relocs name the
+  SECTION symbol with the addend folded into the field bytes; the
+  convention is `field = A_elf + 4` (REL32 is relative to the byte after
+  the field; a trailing imm32 bakes a further −4 into the field, which
+  the +4 rule absorbs since the ELF addend already carries it).
+  Same-section PC-rel references resolve at assembly — NO reloc emitted.
+  ADDR64 in data sections = field holds the target offset, reloc names
+  the section symbol. Section flags/alignment captured in the dump.
+  mingw also emits .pdata/.xdata (SEH RUNTIME_FUNCTION unwind info);
+  **DECIDED: our writer emits NONE in v1** — it matches the JIT posture
+  (JIT frames have no RUNTIME_FUNCTION entries either; NON_SEH setjmp is
+  the lane law precisely because nothing unwinds through our frames).
+- **(a2) init sections**: a `.CRT$XCU` function-pointer slot in a plain
+  `.o` RUNS before main under a normal mingw+UCRT link (probe printed
+  xcu=7 ctors=8 — both models live). The writer emits `.CRT$XCU` for
+  init-array slots on the external-link lane.
+- **(b) synthesized entry CONFIRMED on real Windows**: a
+  `-nostartfiles -Wl,--entry=__madc_entry` exe whose stub does
+  `_configure_narrow_argv(1)` → `_initialize_narrow_environment()` →
+  `*__p___argc()` / `*__p___argv()` / `_get_initial_narrow_environment()`
+  → walk our init slots (argc, argv, envp) → `main` → `exit` prints
+  argv, envp, and the init-slot marker correctly on BOTH wine and
+  genuine ntdll/ucrtbase. Imports: api-ms-win-crt-* only. ⚠️ mingw 13
+  headers do NOT declare the startup trio (corecrt_startup.h needs
+  corecrt.h first and still lacks them) — the probe declares them
+  manually; all are present in libucrt.a (verified by nm). ⚠️ gcc
+  inserts `call __main` into any function literally named `main` on
+  mingw (drags gccmain.o → atexit) — irrelevant to our writer (we
+  generate the code), but probe mains must be renamed.
+- **(c) trailer tolerance CONFIRMED on real Windows**: 100KB of garbage
+  appended after the PE image — loader unaffected. The forest carrier
+  rides the ELF placement-2 trailer model on PE.
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
