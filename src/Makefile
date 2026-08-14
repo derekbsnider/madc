@@ -72,7 +72,15 @@ endif
 CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
-ARFLAGS ?= rcs
+# ARFLAGS needs `ifeq ($(origin ...),default)`, NOT `?=`. make DEFINES ARFLAGS
+# itself (built-in value `rv`), so its origin is `default` — never `undefined`
+# — and a `?=` here silently no-ops: every archive was built `rv`, which has
+# no `c` (so ar warns "creating <archive>" on a fresh tree) and has `v` (so it
+# narrates every member). This guard still lets an explicit command-line or
+# environment ARFLAGS win, which is what the `?=` was reaching for.
+ifeq ($(origin ARFLAGS),default)
+ARFLAGS = rcs
+endif
 INSTALL ?= install
 INSTALL_DATA ?= $(INSTALL) -m 644
 INSTALL_PROGRAM ?= $(INSTALL) -m 755
@@ -228,8 +236,12 @@ DARWIN_ARCH = x86-64
 endif
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
-CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
-CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS) -fuse-ld=lld
+# -fuse-ld=lld is a LINK flag and rides $(LIBS) below, not the driver: on a
+# compile-only invocation clang warns "argument unused during compilation"
+# once per TU, which is every object in the mode.
+CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX_BASE = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX = $(CXX_BASE) $(DARWIN_CXX_ISYS)
 AR  = llvm-ar-18
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
@@ -248,7 +260,7 @@ MADC_STORAGE_DB_OFILES =
 # export their globals to dlsym without -rdynamic, and --whole-archive is
 # spelled -force_load <archive> (two ld64 args: the bare archive path that
 # follows WHOLE_ARCHIVE_BEGIN on the link line is its operand).
-LIBS = -lz -lm $(OPTIONAL_LIBS)
+LIBS = -fuse-ld=lld -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
 endif
@@ -292,7 +304,8 @@ WIN_SPECS_GEN := $(shell mkdir -p $(abspath $(OBJDIR)); $(WIN_MINGW)-gcc-posix -
 WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
 WIN_CXX_ISYS = -nostdinc++ -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0 -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0/x86_64-w64-mingw32
 CC  = $(WIN_MINGW)-gcc-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
-CXX = $(WIN_MINGW)-g++-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS) $(WIN_CXX_ISYS)
+CXX_BASE = $(WIN_MINGW)-g++-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
+CXX = $(CXX_BASE) $(WIN_CXX_ISYS)
 AR  = $(WIN_MINGW)-ar
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
@@ -1014,10 +1027,18 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 # (the hosted-darwin CXX carries -target/--sysroot) apply unchanged; the
 # C++ standard flag from CXXFLAGS must NOT come along, hence its own flag set.
 RT_CFLAGS = -x c -std=c11 -Wall -ffunction-sections -fdata-sections $(MODE_OPTFLAGS)
+# ...but the C++-ONLY header flags in CXX (-nostdinc++ plus the C++ -isystem
+# pair) must not ride a `-x c` compile. gcc says so out loud ("valid for
+# C++/ObjC++ but not for C"), and the quiet half is worse: a C++ standard
+# library's include dir on a C compile's SYSTEM path lets its wrappers for C
+# header names shadow the real ones. CXX_BASE is the same driver carrying the
+# same target/sysroot flags WITHOUT that block — the two cross modes define it
+# beside their CXX; every other mode adds no C++-only flags, so it is just CXX.
+CXX_BASE ?= $(CXX)
 # -MMD cannot see command-line flag changes. Bump this version whenever
 # RT_CFLAGS or the PIC-only runtime flags change; both runtime object families
 # depend on the per-mode stamp so neither can silently retain the old flags.
-RT_FLAGS_VERSION = 1
+RT_FLAGS_VERSION = 2
 RT_FLAGS_STAMP = $(OBJDIR)/.rt-flags-v$(RT_FLAGS_VERSION)
 $(RT_FLAGS_STAMP):
 	@mkdir -p $(OBJDIR)
@@ -1027,7 +1048,7 @@ $(addprefix $(OBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
 $(addprefix $(PICOBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
 $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
-	$(CXX) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
 # parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
@@ -1087,7 +1108,7 @@ $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 
 $(PICOBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)
-	$(CXX) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Auto-generated per-object header dependencies (from -MMD -MP above). A changed
 # .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.
