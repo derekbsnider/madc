@@ -908,6 +908,109 @@ W3–W5 remain the public-artifact endpoint after that slice.
 - Emitted-C lane: `x86_64-w64-mingw32-gcc emitted.c -lmadc_rt` works —
   ship `libmadc_rt.a` cross-built (W3.5, mirrors darwin W3).
 
+### W3 execution plan (recon 2026-08-14, session #90)
+
+**Recon facts the slices stand on** (all verified in-tree):
+
+- The seam is real and reserved: `mir-debug.c` `#include`s `mir-macho.c`
+  under `MIR_TARGET_APPLE_P` and dispatches at exactly three points —
+  `MIR_object_emit` (l.1462, object container), `MIR_object_emit_executable`
+  (l.1864, image container), and the merge-reader front (l.3200,
+  `objin_from_macho` fills the format-neutral `objin_t` view). `mir-pe.c`
+  clones that shape under a new `MIR_TARGET_WINDOWS_P`.
+- `mir-target.h` extends per its own pattern: `MIR_TARGET_WINDOWS` OS knob
+  + `MIR_TARGET_X86_64_WINDOWS` pair helper + derived
+  `MIR_TARGET_WINDOWS_P` (`defined(_WIN32)` when no override — the hosted
+  madc.exe build turns the PE writer on natively, same as darwin hosted).
+- The builder's reloc currency is two kinds on x86-64 — ABS64 + PC32 —
+  and both have exact COFF spellings (`IMAGE_REL_AMD64_ADDR64`,
+  `IMAGE_REL_AMD64_REL32`; addend folding differs — COFF carries addends
+  in the field bytes, fix against the mingw-gcc oracle `.o`).
+- The capture side (mir-gen-x86_64.c object mode) is downstream of
+  machinize and convention-agnostic — it records what the win64-green
+  generator produced. No capture changes expected.
+- **Today madc.exe would emit an ELF container on Windows**:
+  `OBJ_TARGET_SUPPORTED_P` gates by arch only. The wine suite never ran
+  `--exe`/`--obj` lanes, so nothing caught it. W3 makes the dispatch
+  target-OS-keyed.
+
+**DECIDED — entry glue: synthesize, do NOT carry mingw crt objects.**
+The plan's earlier "carrying crt2.o/crtbegin is the likely faithful path"
+guess is reversed by the precedent recon: NEITHER existing writer carries
+platform CRT objects — ELF synthesizes `_start` → `__libc_start_main`,
+Mach-O rides `LC_MAIN` + dyld glue. Carrying crt2.o would require linking
+foreign COFF objects (a real COFF linker: COMDAT, section merging,
+archives) — an order of magnitude more machinery than a ~50-byte stub.
+The PE stub follows the documented UCRT init contract (MSDN surface,
+provenance-clean): `_configure_narrow_argv` → `_initialize_narrow_environment`
+→ `__p___argc`/`__p___argv`/`_get_initial_narrow_environment` → walk our
+init array (nobody else will: glibc runs an exe's own DT_INIT_ARRAY,
+the PE loader has no such contract — the stub calls each slot with
+argc/argv/envp) → `main` → `exit`. No `__security_init_cookie` (that is
+MSVC /GS, not our codegen).
+
+**DECIDED — import attribution + the printf problem: libmadc_rt.dll.**
+PE has no flat namespace: every import must name its providing DLL
+(two-level, always). And ucrtbase does not export plain `printf`
+(run-defect #1) — the JIT solved that with the fork's interposer map
+binding madc.exe's statically-linked `__mingw_*` at host addresses, which
+cannot serve an AOT image. One artifact solves both: **libmadc_rt.dll**
+(cross-built once, mingw + ucrt.specs) exports the madc runtime surface
+(`__madc_*`, mir builtin exports, the win64 `__mir_*` int128 twins — the
+W2 note "W3 AOT must export the twins, never bind mingw libgcc" lands
+here) AND the ANSI-stdio family under the PLAIN names (`printf` → the
+`__mingw_printf`-flavored implementation, so attribution needs no
+writer-side name games — the probe walk simply finds `printf` there).
+It is the exact win64 twin of `libmadc.so.0` DT_NEEDED on Linux: the
+runtime-need analysis (`cir_import_covered`, already madcdl-seamed) drops
+it for runtime-free programs; kept otherwise. Attribution itself is the
+hosted probe walk (`madcdl_probe_loaded`/`madcdl_sym` over the needed
+list — the emitter runs hosted, same as darwin's hosted lane).
+
+**DECIDED — forest carrier: PE rides the ELF trailer model.** PE loaders
+ignore trailing bytes (unsigned images; we do not sign). `extra_*` params
+stay Apple-only. Verified by probe before relied on (W3.0c).
+
+**Slices** (each = fork code + reducer + wine AND real-Windows evidence
+via win_run.sh; suites at batch boundaries per the cadence law):
+
+- **W3.0 — oracle probes (container, tmp/win/):** (a) mingw-gcc reducer
+  `.o` dumped with `x86_64-w64-mingw32-objdump -h -r -t` = the COFF shapes
+  the writer must produce (esp. REL32 addend convention vs ELF's
+  explicit-addend PC32); (b) a `-nostartfiles -e our_entry` mingw link
+  whose entry calls the UCRT init contract above, run on wine + real
+  Windows = validates the synthesized-entry model BEFORE the writer
+  exists; (c) append garbage bytes to a green mingw exe, rerun = trailer
+  tolerance for the forest carrier.
+- **W3.1 — COFF `.o` writer:** mir-target.h knob; mir-pe.c
+  `pe_emit_object` behind the `MIR_object_emit` dispatch. Sections
+  .text/.data/.bss/.mir.addrpool + init-array slots as `.CRT$XCU`
+  (the COFF init section mingw's CRT collects natively — external links
+  run our initializers with zero glue); COFF symbol + string tables;
+  the two reloc mappings. Validation: `--obj` under wine, then
+  `x86_64-w64-mingw32-gcc our.o` links and the exe runs (runtime-free
+  C reducer first).
+- **W3.2 — `objin_from_pe`:** the COFF front for the neutral input view —
+  `.o`-as-cache load-back and `--project` multi-`.o` merge parity.
+- **W3.3 — PE64 executable writer:** `pe_emit_executable` — DOS stub +
+  PE32+ headers + section table; ImageBase 0x140000000, DYNAMICBASE with
+  a `.reloc` section of DIR64 entries for internal ABS64 slots (the
+  Mach-O rebase-opcode analogue); imports as per-DLL descriptors whose
+  FirstThunk arrays point INTO the addrpool (the addrpool slot IS the IAT
+  entry — the loader fills it eagerly, the exact PE spelling of "MIR's
+  call model already routes imports through address slots"; addrpool
+  lives in a RW section, no RELRO analogue); the synthesized entry stub;
+  trailer-appended forest carrier.
+- **W3.4 — driver wiring:** `cir_native_link_env` win64 arm (ucrtbase,
+  kernel32, ws2_32, libmadc_rt.dll, staged libstdc++-6.dll +
+  libwinpthread-1.dll for C++); runtime-need analysis hosted via madcdl;
+  `-static-libmadc` contract decision for win64; `--exe`/`--obj` lanes
+  live on the wine suite.
+- **W3.5 — libmadc_rt DLL + archive:** one cross-build recipe emits BOTH
+  `libmadc_rt.a` (emitted-C lane, mirrors darwin task #38) and
+  `libmadc_rt.dll` + import lib (AOT import world). Membership audit =
+  the darwin rt manifest + the win64 additions above.
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
