@@ -1,5 +1,45 @@
 # HANDOFF — re-land the lost class-pattern optimization (2026-08-14)
 
+> **CORRECTED 2026-08-14, after actually measuring. Read this box before §1.**
+>
+> §1 and §2 below assert as SETTLED that this branch carries a speed win, and
+> instruct the reader not to open a regression hunt. **The first half is wrong.**
+> It was written from the branch's own claims plus the owner's recollection,
+> and never verified — the exact mistake `feedback_verify_over_stale_handoff`
+> exists to prevent.
+>
+> Three same-recipe builds (base 19fc704e, branch d88421c8, develop 186c8242),
+> callgrind Ir, reproducible to the instruction across independent runs:
+>
+> | binary | Ir | vs base |
+> |---|---:|---:|
+> | v0.74.0 base | 3,001,916,892 | — |
+> | develop v0.80.0 | 3,031,303,672 | +1.0% |
+> | **branch** | **3,084,612,697** | **+2.8%** |
+>
+> The branch hits its parse target exactly (282 -> 189 parses, 273 -> 206 body)
+> and is **the most expensive of the three**. Wall clock cannot see this: the
+> same binary measured 0.565 and 0.515 in two runs, a swing as large as any
+> difference being argued about.
+>
+> **Why:** it triggers 11 more canonical-spelling rewrites, and each one bumps a
+> GLOBAL generation counter that discards the whole despaced index, forcing a
+> full O(entries) rebuild (26 rebuilds / 36,240 sweeps vs 16 / 22,649). The
+> saved parses are handed straight back. That pathology is in `develop` too,
+> costing 2-3% of testsubscript there, and is being fixed FIRST (owner
+> direction) — see the despace-cache work and `scripts/despace_cache_gate.sh`.
+>
+> **What still stands:** §3's inventory, and §4/§5's merge mechanics — though
+> the merge is far cheaper than feared: `parser.cpp` **auto-merges**, and the
+> `src/lexer.cpp` conflict is the same use-after-free fix landed independently
+> on both sides (develop already has `fname = intern_file(fname)`), so take
+> develop's. Only `claude_status.json` and `remote_build.sh` need real work.
+>
+> **What to do with the branch is now an OPEN owner decision**, not a
+> re-land-it-safely task: merging it as-is is a measured net loss until the
+> invalidation fix removes the penalty. Re-measure after that fix lands before
+> deciding.
+
 **Read this fully before acting. Assume a cold start.** Run
 `bash scripts/resume.sh` first — it prints live git state and any orphaned
 background jobs, which a compaction summary cannot.
