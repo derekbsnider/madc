@@ -45840,11 +45840,24 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	}
 	else if ( !pgm.current_namespace().empty() )
 	    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
-	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
-	pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
-	pgm.datatype_map[enum_tag] = tdt;
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
+	// [basic.scope.class]/1: a class-nested enum's TAG is a MEMBER of that
+	// class. set_class_type_alias above IS its whole registration — also
+	// writing the bare tag into datatype_map (and into the enclosing
+	// namespace) publishes it at a scope C++ never gives it, and any later
+	// `(tag == x)` then reads as a parenthesized CAST to the leaked type
+	// ("Missing operand"). libc++'s money_base::part is the live case: it
+	// leaked `part`, `std::part` and `std::__1::part`, so a user variable
+	// named `part` broke under -stdlib=libc++ and worked under libstdc++.
+	// The enumerator arm below already scopes its names to the class for
+	// exactly this reason; the tag must match it.
+	if ( pgm.class_scope_stack.empty() )
+	{
+	    TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+	    pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
+	    pgm.datatype_map[enum_tag] = tdt;
+	    if ( !pgm.current_namespace().empty() )
+		pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
+	}
 	DBG(std::cout << "TokenENUM::parse() enum type " << enum_tag << std::endl);
     }
 
