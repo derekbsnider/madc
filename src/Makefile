@@ -69,7 +69,24 @@ BIN = ../bin/madc-hosted-x86-64-windows.exe
 else
 BIN = ../bin/madc
 endif
-CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
+# The zero-warnings law (owner directive 2026-08-14): a warning is a defect
+# report from a second compiler, so the build refuses one instead of printing
+# it. Every lane is at ZERO as of this commit — host -O0, release -O2,
+# hosted-x86-64-windows, both hosted/cross macOS pairs, and the unit-test
+# compiles — so holding the line costs nothing now; letting warnings
+# accumulate again is what costs.
+#
+# Scope is madc's OWN translation units. MIR builds through its own Makefile
+# with its own flags and is unaffected.
+#
+# Escape hatch for a surprise toolchain (a newer compiler inventing a warning
+# mid-release, say): `make WERROR=0`. Use it to get UNBLOCKED, then fix the
+# warning — the flag is never the fix, and it is not a way to land code that
+# warns. Note this rides CXXFLAGS, so an explicit `make CXXFLAGS=...` also
+# drops it; WERROR=0 is the supported spelling.
+WERROR ?= 1
+WERROR_FLAG = $(if $(filter 0,$(WERROR)),,-Werror)
+CXXFLAGS ?= -std=c++11 -Wall $(WERROR_FLAG) $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 # ARFLAGS needs `ifeq ($(origin ...),default)`, NOT `?=`. make DEFINES ARFLAGS
@@ -1027,7 +1044,7 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 # `-x c` rather than a separate $(CC) so every MODE's target/sysroot flags
 # (the hosted-darwin CXX carries -target/--sysroot) apply unchanged; the
 # C++ standard flag from CXXFLAGS must NOT come along, hence its own flag set.
-RT_CFLAGS = -x c -std=c11 -Wall -ffunction-sections -fdata-sections $(MODE_OPTFLAGS)
+RT_CFLAGS = -x c -std=c11 -Wall $(WERROR_FLAG) -ffunction-sections -fdata-sections $(MODE_OPTFLAGS)
 # ...but the C++-ONLY header flags in CXX (-nostdinc++ plus the C++ -isystem
 # pair) must not ride a `-x c` compile. gcc says so out loud ("valid for
 # C++/ObjC++ but not for C"), and the quiet half is worse: a C++ standard
