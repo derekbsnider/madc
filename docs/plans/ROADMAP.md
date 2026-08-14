@@ -44,13 +44,12 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-09 (v0.75.0 — the
-value intrinsic + value-first `<ns_madc>`; previous: v0.72.0 — the
-script-facing channel surface; v0.71.0 — FLR
-random access S1+S2; v0.70.0 — the
-data-channel core; v0.69.0 — the release-lane restoration +
-script-mode completion; v0.68.0 —
-the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
+Master plan linking all workstreams. Updated 2026-08-14 (v0.79.0 — the
+Win64 JIT milestone closes at 987/0/55, exec-channel fixtures become
+self-contained, and preprocessing plus aggregate-layout duplication is
+consolidated and gated; previous: v0.78.0 — the torture window closes;
+v0.77.0 — MIR moves in-tree; v0.76.0 — the public macOS lane; v0.75.0
+— the value intrinsic + value-first `<ns_madc>`):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
 flavor. At the release HEAD: fulltest **997/0/9skip**, lane
@@ -99,19 +98,23 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Track 6.4 Win64 JIT full-suite burndown is complete on
-  `feature/win64-46b-burndown-codex` (2026-08-13, code/test head
-  `0bc84193`).** The MinGW+UCRT binary's Wine domain moved from
-  **947/30/59skip** at the 46b handoff to
-  **981/0/0TO/57skip** after LLP64 ABI/type/layout, c2mir/MIR boundary,
-  exception, preprocessor, and platform-fixture fixes. The skip audit
-  leaves 25 libc++-flavor exclusions, 20 structural Win64/POSIX
-  exclusions, 3 Wine-only exclusions, and 9 known MIR gaps. Wine's
-  rotating false failures were captured as a client/server connection
-  reset and disappear with one persistent `wineserver`; this is now a
-  documented gate precondition. Final-content regression gates:
-  fulltest **1029/0/9skip**, libc++ JIT **1025/0/13skip**. Next:
-  W3 PE/COFF writers, W4 Windows header groves, W5 artifacts/battery.
+- **v0.79.0 (2026-08-14): Track 6.4's Win64 JIT milestone is closed at
+  validated code head `3d5bd90c`.** The MinGW+UCRT Wine domain moved
+  from **947/30/59skip** at handoff to **987/0/0TO/55skip**; the 55 are
+  25 libc++-flavor, 19 structural Win64/POSIX, 2 Wine-only, and 9 known
+  MIR exclusions. The branch closes review findings T1–T5: `exec://`
+  tests spawn the exact madc artifact instead of external `sort`; the
+  other Wine-only fixtures have real-Windows evidence; MSVC is limited
+  to non-ABI semantics; the remaining review surface is read; and the
+  layout/packing plus macro-expansion duplication audit leaves three
+  consolidated, negative-controlled gates. The deepest final fix makes
+  `DataDefSTRUCT` the one aggregate-layout owner and carries its answer
+  through versioned MC11 records to c2mir and emitted C. Final gates:
+  fulltest **1033/0/0TO/9skip**, libc++ JIT **1029/0/0TO/13skip**,
+  EXE **1004/0**, OBJ **1004/0**, persistent-Wine hosted Win64
+  **987/0/0TO/55skip**. Next, by owner sequence: POSIX target-surface P1
+  leaves + P2 `<dlfcn.h>` on a new branch; then resume Windows W3
+  PE/COFF, W4 groves, and W5 artifacts/battery.
 
 - **v0.78.0 (2026-08-12): the torture window closes (task #41).** The
   5 standard-C class-(a) regressions from the 2026-07-23→08-11 window

@@ -1,5 +1,25 @@
 # Test Status
 
+> **Current (2026-08-14, validated code head `3d5bd90c` — v0.79.0
+> Win64 JIT milestone):** authoritative Linux fulltest **1033 passed /
+> 0 failed / 0 timed out / 9 skipped**, libc++ JIT
+> **1029/0/0TO/13skip**, EXE **1004/0**, and OBJ **1004/0**; every
+> `remote_build.sh` stage returned 0. Log:
+> `tmp/logs/rb-20260814-051011.log`. The hosted MinGW+UCRT executable
+> built successfully and the complete persistent-Wine domain passed
+> **987/0/0TO/55skip** (46 domain fixtures + 9 MIR fixtures), from the
+> 46b handoff's **947/30/0TO/59skip**. A first run without the documented
+> persistent wineserver produced one rotating
+> `testderefpostincstore` failure; that specimen immediately passed its
+> capped 1/1 rerun, and the full run with `wineserver -p` passed 987/0.
+> The three scoped duplication families are gated at zero divergent
+> implementations. The aggregate gate measures one definition owner / 7
+> references, one owner-to-contract edge, one aggregate and one member
+> contract builder, one c2mir aggregate and member consumer, and one
+> emit-C pack reader; its negative control is rejected. Focused units:
+> CIR freeze **36/36 cases, 761 assertions**; DataDef **85/85 cases, 555
+> assertions, 9 skipped**. Rule trailers: **390 code commits, 0 missing**.
+>
 > **Current (2026-08-13,
 > `feature/win64-46b-burndown-codex` @`0bc84193` — Win64 46b JIT
 > burndown close):** Wine domain suite **981/0/0TO/57skip**, down from

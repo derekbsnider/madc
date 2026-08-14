@@ -208,24 +208,26 @@ See [docs/architecture.md](docs/architecture.md) for deeper
 implementation details; the MIR/c2mir backend library is maintained
 in-tree at `third_party/mir`.
 
-## Project status
+## Current Release
 
-The current release is **v0.78.0** (2026-08-12) — the torture window
-closes: the five standard-C regressions from the 2026-07-23→08-11
-window are root-caused and fixed (long-double struct alignment, a real
-`__builtin_classify_type`, anonymous-aggregate emission after class
-promotion, nested-brace aggregate recursion), restoring the 1614
-gcc-torture baseline and re-meeting the promote gate. It follows
-v0.77.0 (MIR in-tree as a Git subtree — one clone builds everything)
-and v0.76.0, madc's first public macOS release.
-See the [changelog](CHANGELOG.md) for what each release added.
+The current release is **v0.79.0** (2026-08-14) — the Win64 JIT
+milestone closes. The hosted MinGW+UCRT compiler runs every eligible
+integration test without a failure; exec-channel fixtures now spawn the
+exact madc artifact under test; and preprocessing plus aggregate layout
+each have one implementation guarded by negative controls. This is the
+JIT milestone: PE/COFF output, Windows groves, and the public zip artifact
+remain W3–W5.
+
+Branch state: v0.79.0 is released from
+`feature/win64-46b-burndown-codex` into `develop`; POSIX target-surface
+P1/P2 is next on its own feature branch before Windows W3 resumes.
+
 Headline results:
 
-- **1023** integration tests passing, with 0 failures and 0 timeouts —
-  in the live JIT lane AND in the packed-release lane (the suite run
-  against the stripped, forest-packed `bin/madc-release`)
-- **1019/0** in the libc++ lane — the full suite passes under both stdlib
-  flavors (behavior parity, zero failing tests)
+- Linux JIT: **1033 passed / 0 failed / 0 timed out / 9 skipped**
+- libc++ JIT: **1029/0/0/13**; native EXE: **1004/0**; OBJ: **1004/0**
+- hosted Win64 under persistent Wine: **987/0/0/55**, improved from
+  **947/30/0/59** at handoff
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions
 - working native ELF output, Mach-O object output, multi-file linking, and a
@@ -237,6 +239,19 @@ Headline results:
 See [test status](docs/test-status.md) and the
 [libc++ parity history](docs/parity/libcxx-failset.txt) for current results
 and known gaps.
+
+### Recent Releases
+
+- [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
+  failures; exec fixtures, preprocessing, and aggregate layout converge.
+- [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
+  regression window closes and the 1614 baseline is restored.
+- [v0.77.0](docs/release-notes/v0.77.0.md) — MIR moves in-tree, so one
+  clone and one version identify the complete compiler.
+- [v0.76.0](docs/release-notes/v0.76.0.md) — the first public macOS
+  release ships hosted JIT and native Mach-O AOT.
+- [v0.75.0](docs/release-notes/v0.75.0.md) — `madc::value` becomes a
+  first-class intrinsic with a value-first `<ns_madc>` API.
 
 ## Building from source
 

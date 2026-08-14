@@ -2,17 +2,43 @@
 
 ## [Unreleased]
 
+## [v0.79.0] — 2026-08-14
+
+The Win64 JIT milestone closes: the hosted MinGW+UCRT compiler runs its
+entire eligible suite without a failure, exec-channel tests are
+self-contained, and one settled aggregate layout now drives semantics,
+JIT execution, and emitted C.
+
 - **The Win64 JIT suite reaches zero failures.** The 46b LLP64
   burndown fixes script/host namespace width agreement, unary integer
   folding, Microsoft bit-field units, memory-shaped c2mir scalar
   boundaries, C++ base tail-padding reuse, Win64 setjmp/longjmp stack
   preservation in MIR, and conforming macro argument prescan/blue paint.
   MinGW-oracled platform fixtures replace LP64/POSIX assumptions. The
-  final Wine result is **981 passed / 0 failed / 0 timed out / 57
-  skipped**, from **947/30/0/59** at handoff; the audited skips are 25
-  libc++-flavor, 20 structural Win64/POSIX, 3 Wine-only, and 9 known
-  MIR gaps. Linux fulltest is **1029/0/9**, libc++ JIT
-  **1025/0/13**.
+  final persistent-Wine result is **987 passed / 0 failed / 0 timed out /
+  55 skipped**, from **947/30/0/59** at handoff; the audited skips are 25
+  libc++-flavor, 19 structural Win64/POSIX, 2 Wine-only, and 9 known MIR
+  gaps.
+- **The `exec://` channel tests now spawn madc itself.** A deterministic
+  child script replaces the platform/locale-dependent external `sort`,
+  and the runner exports the exact artifact under test through
+  `MADC_BIN`. `testexecchannel`, `testvaluesort`, and
+  `testnsmadcautostring` therefore exercise the same child on Linux,
+  macOS, Wine, and native Windows; the latter again covers the channel's
+  `std::string` read/write overloads.
+- **Preprocessing has one balanced-group scanner and one replacement
+  expander.** Quote-aware preprocessing groups delegate to the shared
+  delimiter tracker, and macro replacement, prescan, blue-paint, token
+  paste, and variadic substitution flow through one owner. Both
+  consolidation gates are negative-controlled and part of `fulltest`.
+- **Aggregate layout is settled once and carried through MC11-IR.**
+  `DataDefSTRUCT` owns target-aware offsets, bit positions, size,
+  alignment, and pack; versioned aggregate/member records feed c2mir
+  verbatim and let emitted C recover `#pragma pack`. This fixes independent
+  union bit-fields, unnamed and zero-width bit-fields under SystemV and
+  Microsoft rules, forest round-trips, and class layout. The new contract
+  also exposed and fixed object-member struct promotion leaving class-only
+  base-layout metadata uninitialized.
 - **Windows oracle policy is platform-authentic.** MinGW GCC remains
   the first Win64 oracle, with Clang as the required second opinion.
   MSVC is evidence only for native Windows API/UCRT semantics where no
@@ -20,6 +46,11 @@
   model, calling convention, layout, or mangling. Linux remains
   GCC+libstdc++ first and macOS Clang+libc++ first. Matching neither GCC
   nor Clang is unacceptable.
+- **Release gates at validated code head `3d5bd90c`:** Linux fulltest
+  **1033 passed / 0 failed / 0 timed out / 9 skipped**; libc++ JIT
+  **1029/0/0/13**; native EXE **1004/0**; OBJ **1004/0**; hosted Win64
+  under persistent Wine **987/0/0/55**. The rule-trailer audit covers
+  390 code commits with 0 missing trailers.
 
 ## [v0.78.0] — 2026-08-12
 

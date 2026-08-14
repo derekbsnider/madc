@@ -872,6 +872,25 @@ Linux fulltest **1029/0/0TO/9skip**, libc++ JIT
 by the W4 header forest/groves required to run header-using tests through
 the bare genuine-Windows staging channel, then W5 packaging/battery.
 
+**Handoff #2 close (2026-08-14, released as v0.79.0):** review tasks
+T1–T5 are complete at validated code head `3d5bd90c`. The three
+`exec://sort` consumers now spawn the exact madc artifact under test and
+the former domain skips dissolve on their merits; all remaining
+`.wine64_skip` fixtures have genuine-Windows evidence; MSVC is explicitly
+limited to API/UCRT semantics where no ABI question is involved; the
+remaining review surface contains no higher-layer shim; and the scoped
+duplication audit leaves delimiter grouping, macro replacement expansion,
+and aggregate layout consolidated behind negative-controlled `fulltest`
+gates. The final family made `DataDefSTRUCT` the one semantic layout owner
+and carries a versioned size/alignment/pack plus member offset/bit record
+through MC11-IR to c2mir and emitted C. It also exposed and fixed
+object-member struct promotion leaving class-only base-layout metadata
+uninitialized. Exact gates: Linux fulltest **1033/0/0TO/9skip**, libc++
+JIT **1029/0/0TO/13skip**, EXE **1004/0**, OBJ **1004/0**, and hosted
+Win64 with a persistent wineserver **987/0/0TO/55skip**. Per the owner's
+sequence, POSIX target-surface P1/P2 runs next on its own branch; Windows
+W3–W5 remain the public-artifact endpoint after that slice.
+
 ### W3 — PE/COFF writers (the genuinely new compiler work)
 - **mir-pe.c**: PE64 executable writer behind the SAME `MIR_object`
   seam as the ELF writer and mir-macho.c (the AOT plan reserved this
