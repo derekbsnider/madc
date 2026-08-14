@@ -1455,12 +1455,22 @@ static void dwsref_record (void *env, int src, size_t pos, int tgt, uint32_t val
 #include "mir-macho.c"
 #endif
 
+#if MIR_TARGET_WINDOWS_P
+/* Windows targets swap in the PE/COFF assembler the same way: a COFF
+   object for MIR_object_emit (mir-pe.c; the PE64 image writer is the
+   W3.3 slice of the madc windows release lane). */
+#include "mir-pe.c"
+#endif
+
 int MIR_object_emit (MIR_object_t obj, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   if (obj == NULL || buf == NULL || size == NULL || !OBJ_TARGET_SUPPORTED_P) return -1;
 #if MIR_TARGET_APPLE_P
   return macho_emit_object (obj, buf, size); /* MH_OBJECT, not ET_REL */
+#endif
+#if MIR_TARGET_WINDOWS_P
+  return pe_emit_object (obj, buf, size); /* COFF, not ET_REL */
 #endif
 
   /* DWARF relocations bind to the .text section symbol -- make sure it
@@ -1863,6 +1873,13 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
     return -1;
 #if MIR_TARGET_APPLE_P
   return macho_emit_executable (obj, params, buf, size); /* Mach-O container */
+#endif
+#if MIR_TARGET_WINDOWS_P
+  /* The PE64 image writer is the W3.3 slice (madc windows release lane).
+     Refuse loudly rather than fall through: the ELF emitter below would
+     produce a well-formed ELF image under a .exe name -- a silent wrong
+     artifact on a Windows target. */
+  return -1;
 #endif
   int shared_p = params->shared_p != 0;
   int pie_p = !shared_p && params->pie_p != 0;
