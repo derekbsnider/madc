@@ -5,7 +5,8 @@
 // These C functions are compiled by clang++ and linked into the madc     //
 // binary.
 // They bridge madc's packed int64_t[] varargs buffer to libc's printf    //
-// family by parsing the format string and calling sprintf per-specifier. //
+// family by parsing the format string and formatting per-specifier via   //
+// fmt_one (snprintf-backed; sprintf(3) is deprecated on Apple SDKs).     //
 //                                                                       //
 ///////////////////////////////////////////////////////////////////////////
 
@@ -118,6 +119,29 @@ static char parse_spec(const char **pp, char *mini_fmt, size_t mini_size)
     return spec;
 }
 
+// Format ONE conversion the way sprintf(3) would, without calling it: Apple's
+// SDK marks sprintf deprecated and this file must build warning-free on every
+// target. There is no bound to hand snprintf here — __madc_vsprintf implements
+// C's UNBOUNDED sprintf, so the caller supplies no size — so format into a
+// stack temp and copy when it fits (the overwhelmingly common case, one
+// formatting pass), and fall back to snprintf's measure-then-write idiom only
+// when the conversion is larger than the temp. Both paths write exactly the
+// bytes sprintf would, and return the same count.
+template <typename T>
+static int fmt_one(char *out, const char *mini_fmt, T arg)
+{
+	char tmp[512];
+	int need = snprintf(tmp, sizeof(tmp), mini_fmt, arg);
+	if ( need < 0 )
+		return need;
+	if ( (size_t)need < sizeof(tmp) )
+	{
+		memcpy(out, tmp, (size_t)need + 1);
+		return need;
+	}
+	return snprintf(out, (size_t)need + 1, mini_fmt, arg);
+}
+
 // vsprintf replacement: takes args as a packed int64_t array.
 // The format string drives unpacking — each %d/%s/%f etc. consumes one slot.
 extern "C" int __madc_vsprintf(char *buf, const char *fmt, int64_t *args)
@@ -141,26 +165,26 @@ extern "C" int __madc_vsprintf(char *buf, const char *fmt, int64_t *args)
 		// long long, never long: the slot is 8 bytes and host long
 		// is 32-bit on win64. The varargs register slot is 8 bytes
 		// either way; %d/%ld read their own width from it (LE).
-		written = sprintf(out, mini_fmt, (long long)args[ai++]);
+		written = fmt_one(out, mini_fmt, (long long)args[ai++]);
 		break;
 	    case 's':
-		written = sprintf(out, mini_fmt, (const char *)args[ai++]);
+		written = fmt_one(out, mini_fmt, (const char *)args[ai++]);
 		break;
 	    case 'f': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
 	    {
 		double d;
 		memcpy(&d, &args[ai++], sizeof(double));
-		written = sprintf(out, mini_fmt, d);
+		written = fmt_one(out, mini_fmt, d);
 		break;
 	    }
 	    case 'p':
-		written = sprintf(out, mini_fmt, (void *)args[ai++]);
+		written = fmt_one(out, mini_fmt, (void *)args[ai++]);
 		break;
 	    case 'n':
 		if ( args ) *(int *)(intptr_t)args[ai++] = (int)(out - buf);
 		break;
 	    default:
-		written = sprintf(out, mini_fmt, args[ai++]);
+		written = fmt_one(out, mini_fmt, args[ai++]);
 		break;
 	}
 	out += written;
