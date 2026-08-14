@@ -27511,16 +27511,26 @@ static std::string despace_spelling(const std::string &s)
     return out;
 }
 
+// Re-derive every cached despaced key and compare, instead of trusting it.
+// Read once: this sits inside the per-entry sweep.
+static bool despace_cache_verify()
+{
+    static const bool on = getenv("MADC_DESPACE_VERIFY") != NULL;
+    return on;
+}
+
 StructRegistry::~StructRegistry()
 {
     if ( getenv("MADC_DESPACE_PROBE") )
 	fprintf(stderr, "DESPACEPROBE lookups=%llu rebuilds=%llu swept=%llu "
-		"entries=%zu index=%zu gen=%llu\n",
+		"entries=%zu index=%zu gen=%llu verify=%d\n",
 		(unsigned long long)probe_lookups_,
 		(unsigned long long)probe_rebuilds_,
 		(unsigned long long)probe_swept_,
 		map_.size(), index_.size(),
-		(unsigned long long)DataDef::canonical_spelling_gen);
+		(unsigned long long)DataDef::canonical_spelling_gen,
+		despace_cache_verify() ? 1 : 0);	// so the gate can prove
+							// the check actually ran
 }
 
 void StructRegistry::set(const std::string &key, DataDef *dd)
@@ -29910,8 +29920,32 @@ void StructRegistry::topup_index_()
 	dd->canonical_swept = true;	// its rewrites must bump the gen from now on
 	if ( dd->canonical_cpp_spelling().empty() )
 	    continue;
-	std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
-	std::vector<Hit> &hits = index_[d];
+	// The despaced key is a pure function of this dd's own spelling, and
+	// set_canonical_spelling drops the cache whenever that spelling
+	// changes — so a rebuild triggered by some OTHER dd re-uses it instead
+	// of rebuilding ~1,600 keys from scratch (three string temporaries
+	// each) for the sake of the one that moved.
+	if ( !dd->has_despaced_canonical() )
+	    dd->set_despaced_canonical(
+		despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling())));
+	else if ( despace_cache_verify() )
+	{
+	    // The failure mode this cache can have is a SILENT one: a spelling
+	    // rewritten behind set_canonical_spelling's back leaves a key that
+	    // still looks plausible, and find_despaced then answers with the
+	    // wrong DataDef instead of failing. MADC_DESPACE_VERIFY re-derives
+	    // and compares, so that is loud. Gated by scripts/despace_cache_gate.sh.
+	    const std::string fresh =
+		despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
+	    if ( fresh != dd->despaced_canonical() )
+	    {
+		fprintf(stderr, "DESPACECACHE STALE key='%s' cached='%s' fresh='%s'\n",
+			it->first.c_str(), dd->despaced_canonical().c_str(),
+			fresh.c_str());
+		abort();
+	    }
+	}
+	std::vector<Hit> &hits = index_[dd->despaced_canonical()];
 	// Keep map-key order within a despaced key: a top-up can visit a
 	// later-inserted node whose key sorts BEFORE the current entries, and
 	// the linear scan this index replaces answered in key order (the

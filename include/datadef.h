@@ -231,6 +231,23 @@ public:
     // only write channel.
 private:
     std::string	 canonical_cpp_spelling_;
+    // The despaced, namespace-stripped rendering of the spelling above — the
+    // key StructRegistry's despaced index files this dd under. It is a PURE
+    // function of canonical_cpp_spelling_ (parser.cpp's strip_type_namespace
+    // and despace_spelling read nothing else), so it is derived ONCE and
+    // survives index rebuilds rather than being re-derived per entry on every
+    // rebuild.
+    //
+    // That re-derivation was the whole cost: invalidation is GLOBAL, so one
+    // dd's rewrite bumps canonical_spelling_gen and discards the entire index,
+    // and the resweep then rebuilds ~1,600 keys from scratch — three string
+    // temporaries apiece. tests/testsubscript.mad: 16 rebuilds, 22,649 sweeps,
+    // ~50M instructions in despace_spelling alone, re-deriving keys that had
+    // not changed. Caching here is orthogonal to WHEN the index rebuilds; it
+    // makes each rebuild cheap. parser.cpp owns the derivation (both helpers
+    // are static there); this is storage plus its invalidation.
+    std::string	 despaced_canonical_;
+    bool	 despaced_canonical_valid_;
 public:
     // Despaced-canonical index invalidation counter (defined in parser.cpp).
     static uint64_t canonical_spelling_gen;
@@ -239,11 +256,25 @@ public:
     // top-up sees it fresh).
     bool	 canonical_swept;
     const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    // Derived-key cache. Only StructRegistry's sweep fills it; every reader
+    // must treat !has_despaced_canonical() as "derive it yourself", never as
+    // "this dd has no key".
+    bool has_despaced_canonical() const { return despaced_canonical_valid_; }
+    const std::string &despaced_canonical() const { return despaced_canonical_; }
+    void set_despaced_canonical(const std::string &s)
+    {
+	despaced_canonical_ = s;
+	despaced_canonical_valid_ = true;
+    }
     void set_canonical_spelling(const std::string &s)
     {
-	if ( canonical_swept && canonical_cpp_spelling_ != s )
+	if ( canonical_cpp_spelling_ == s )
+	    return;			// not a rewrite: index and cache stand
+	if ( canonical_swept )
 	    ++canonical_spelling_gen;
 	canonical_cpp_spelling_ = s;
+	despaced_canonical_.clear();	// derived from the spelling that just died
+	despaced_canonical_valid_ = false;
     }
     // Marshalling-boundary predicate (libmadc value kinds): true when this
     // type is the class that carries madc::value's TEXT kind, i.e. a value
@@ -284,15 +315,21 @@ public:
     bool	 speculative_class_capture;
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
+	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(std::string n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
+	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
+    // The derived key travels WITH the spelling it was derived from: copying
+    // one without the other is what would make the cache lie.
     DataDef(const DataDef &other)
 	: _type(other._type), name(other.name), size(other.size),
 	  canonical_cpp_spelling_(other.canonical_cpp_spelling_),
+	  despaced_canonical_(other.despaced_canonical_),
+	  despaced_canonical_valid_(other.despaced_canonical_valid_),
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
 	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
@@ -305,6 +342,8 @@ public:
 	    name = other.name;
 	    size = other.size;
 	    canonical_cpp_spelling_ = other.canonical_cpp_spelling_;
+	    despaced_canonical_ = other.despaced_canonical_;
+	    despaced_canonical_valid_ = other.despaced_canonical_valid_;
 	    canonical_swept = other.canonical_swept;
 	    type_id = other.type_id;
 	    scalar_alias_of = other.scalar_alias_of;
