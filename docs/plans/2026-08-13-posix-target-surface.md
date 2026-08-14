@@ -280,7 +280,7 @@ other.
 > |---|---|---|
 > | `strndup` | `string.h` **ships**, symbol absent | declaration delta + shim |
 > | `setenv`/`unsetenv` | `stdlib.h` **ships**, absent | delta + shim over `_putenv_s` |
-> | `timer*` | `sys/time.h` **ships**, absent | macro delta, header-only |
+> | `timer*` | `sys/time.h` **ships**; see the re-correction below | macro delta, header-only |
 > | `dirent.d_type` | `dirent.h` **ships**, no such member | **not a leaf** — see below |
 > | `sleep`/`usleep` | `unistd.h` **ships and declares `sleep`** | not a header problem at all |
 >
@@ -300,6 +300,24 @@ other.
 >    through `madcdl_sym_default`. Note that an archive member is linked
 >    into `madc.exe` only if referenced — verify presence with `nm` on the
 >    built binary, not from the Makefile.
+>
+> **Re-corrected 2026-08-14, later the same day — the `timer*` row above was
+> WRONG, and the error was mine (Claude).** I ran
+> `grep -cE 'timeradd|timerisset' $R/sys/time.h`, got 0, and wrote "absent".
+> **The macros are not written in `sys/time.h`; they are in
+> `_timeval.h`, which `sys/time.h` includes** (`_timeval.h:16-20`, alongside
+> `winsock2.h`, `winsock.h`, `time.h` and `psdk_inc/_ip_types.h` as the other
+> includers). Grepping one file cannot answer a question about a header's
+> include closure — the same "the marker could not have found it" failure the
+> forest pack-list error was, one day earlier.
+>
+> The verified truth: mingw provides **`timerisset`, `timercmp`,
+> `timerclear`** natively; only **`timeradd` and `timersub`** are absent. The
+> delta is two macros, not five, and Codex's narrower supplement
+> (`include/madc/posix/sys/time.h`, `timeradd` + `timersub` only) is correct.
+> Everything else in the correction above stands — including the point it
+> exists to make, since `sys/time.h` shipping is exactly why a supplement is
+> needed rather than a whole header.
 >
 > The per-task form is `docs/plans/2026-08-14-codex-handoff-3-posix-p1-p2.md`.
 

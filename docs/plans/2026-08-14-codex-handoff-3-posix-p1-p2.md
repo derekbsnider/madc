@@ -45,7 +45,12 @@ has no mingw toolchain — a null result there proves nothing):
 R=/usr/share/mingw-w64/include
 grep -c strndup           $R/string.h      -> 0
 grep -cE '\bsetenv\b'     $R/stdlib.h      -> 0
-grep -cE 'timeradd|timerisset' $R/sys/time.h -> 0
+grep -cE 'timeradd|timersub'   $R/sys/time.h -> 0   # and not in its closure either
+    # ^ CORRECTED: my original marker here also named timerisset, and read 0.
+    #   That was WRONG — timerisset/timercmp/timerclear ARE provided, from
+    #   _timeval.h:16-20, which sys/time.h INCLUDES. Grepping one file cannot
+    #   answer a question about a header's include closure. The delta is two
+    #   macros (timeradd, timersub), not five.
 grep -c d_type            $R/dirent.h      -> 0
 grep -c O_NONBLOCK        $R/fcntl.h       -> 0
 grep -nE '\bsleep\b'      $R/unistd.h      -> line 46: unsigned int __cdecl sleep(unsigned int);
@@ -58,7 +63,7 @@ So:
 |---|---|---|
 | `strndup` | `string.h` **ships**, symbol absent | declaration **delta** + shim |
 | `setenv`/`unsetenv` | `stdlib.h` **ships**, absent | declaration **delta** + shim over `_putenv_s` |
-| `timeradd`/`timersub`/`timerclear`/`timerisset`/`timercmp` | `sys/time.h` **ships**, absent | macro **delta**, header-only |
+| `timeradd`/`timersub` | `sys/time.h` **ships**, both absent | macro **delta**, header-only |
 | `dirent.d_type` | `dirent.h` **ships**, no such member | **NOT a leaf** — see D2 |
 | `sleep`/`usleep` | `unistd.h` **ships and declares `sleep`** | **not a header problem at all** — see D3 |
 | `dlfcn.h` | **ABSENT entirely** | whole header + shim (P2) |
@@ -165,8 +170,9 @@ val, overwrite=0)` must not overwrite, and `unsetenv` removes rather
 than setting empty — `_putenv_s(name, "")` is the removal spelling on
 Windows and the two are easy to conflate.
 
-**T4 — the `timer*` macros** (`testtimermacros`). Header-only
-supplement, no archive member. Note `timercmp(&a, &b, <)` takes an
+**T4 — `timeradd`/`timersub`** (`testtimermacros`) — those two only;
+`timerisset`/`timercmp`/`timerclear` come from mingw's `_timeval.h`.
+Header-only supplement, no archive member. Note `timercmp(&a, &b, <)` takes an
 **operator token** as its third argument; write it the way POSIX
 specifies or the test's `cmp_lt/cmp_gt/cmp_eq` line will not compile.
 
