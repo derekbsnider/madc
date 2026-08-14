@@ -567,7 +567,14 @@ static int run_object_file (char *env[]) {
     return 1;
   }
   fflush (stdout);
-  return entry ((int) VARR_LENGTH (char_ptr_t, exec_argv), VARR_ADDR (char_ptr_t, exec_argv), env);
+  /* main's contract is `char **argv`, but the driver stores its argv as
+     char_ptr_t (= const char *), so VARR_ADDR yields `const char **`. Drop the
+     qualifier here rather than widening main_t to match our storage: the loaded
+     symbol IS a C main, and calling it through a differently-typed pointer is a
+     worse trade than an explicit const cast on the data. (The interp path at
+     the other call site sidesteps this only by typing argv as void *.) */
+  return entry ((int) VARR_LENGTH (char_ptr_t, exec_argv),
+                (char **) VARR_ADDR (char_ptr_t, exec_argv), env);
 }
 
 /* -fobject: AOT object emission consumes no import addresses (imports become
