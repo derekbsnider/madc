@@ -77,10 +77,40 @@
 > COPY-CONSTRUCTED, so something on that path is deep-copying a datatype map
 > per instantiation.
 >
-> **This is a defect, not a law of nature.** If registration on the serve path
-> stopped copying and re-registering, the ~25M of genuine savings would land as
-> a net win. That is the next investigation if the branch is ever revived — it
-> is NOT a reason to merge it today.
+> **This is a defect, not a law of nature.** If the serve path stopped paying
+> that overhead, the ~25M of genuine savings would land as a net win. That is
+> the next investigation if the branch is ever revived — it is NOT a reason to
+> merge it today.
+>
+> **Narrowed further, 2026-08-14 (two hypotheses in, one dead):**
+>
+> 1. **DEAD — whole-map undo copies.** `intern_keyed_map::save_transaction_value`
+>    stores the WHOLE value as undo state, and `namespace_datatype_map`'s value
+>    is an entire `datatype_map_t`, so registering one type under the
+>    ClassRegistrationJournal *looked* like it deep-copied a whole namespace.
+>    A probe (counting saves by value SHAPE, armed unconditionally so a zero is
+>    believable) reported **scalar_saves=0 container_saves=0** on both
+>    testsubscript and test.mad. It never fires: the guard returns early when
+>    `_slot[id] < 0`, and registering a type is an INSERT, which rollback undoes
+>    by truncating. Only OVERWRITES save. Do not re-derive this — the fix that
+>    suggested itself would have optimized code that never runs. (Probe was
+>    reverted after answering; it touched a header every TU includes and had no
+>    consumer left.)
+>
+> 2. **LIVE — ~100k extra allocations at ONE site.** Diffing `operator new`
+>    callers between the two binaries: every site matches within a few hundred
+>    calls except one, at **+99,492 calls** in the merged binary
+>    (`token_from_id`, `deserialize_tokens` and all the `clone()`s are flat).
+>    At typical malloc+free cost that is 20-40M — the right order for most of
+>    the +52M allocator delta.
+>
+>    `addr2line` maps that address into `synthesize_defaulted_comparison()`
+>    (parser.cpp, local symbol at 0x1dbef0; the hot address is 0x290 into it,
+>    and the neighbouring `nm` symbols are on the same scale). **NOT CONFIRMED:**
+>    callgrind recorded the site only as a bare address, and another hot address
+>    in the same list (0x4d31cc0, ~81MB) sits far outside the text segment, so
+>    the profile is mixing address spaces. Confirm with a NAMED counter in the
+>    candidate function, not with address arithmetic against a PIE binary.
 >
 > Also corrected: hazard #4.1 below ("forest version MUST become 40") is WRONG.
 > The branch never touched `CIR_FOREST_FORMAT_VERSION` (38 -> 39 was develop
