@@ -417,12 +417,25 @@ class CirBuilder {
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
-	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
-	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
+	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL,
+			   size_t member_index = (size_t)-1);
+	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon,
+					  size_t settled_offset = 0);
 	// A `char __pad<index>[bytes]` synthetic member — layout filler shared by
 	// the class emitter (vptr/base gaps, tail pad) and the empty-aggregate
 	// definition (C++ sizeof-1 empty struct must not emit a size-0 body).
-	node_t char_pad_member(int index, size_t bytes);
+	node_t char_pad_member(int index, size_t bytes, size_t settled_offset = 0);
+	// MC11 settled-layout contract. DataDefSTRUCT is the semantic owner;
+	// c2mir consumes these positional records instead of independently laying
+	// out a MadC-built aggregate. Plain c2mir-parsed C has no contract and
+	// keeps c2mir's native layout path.
+	node_t aggregate_layout_contract(DataDefSTRUCT *owner);
+	node_t member_layout_contract(size_t offset, int64_t bit_offset,
+				      int64_t bit_width);
+	node_t finish_member_layout(node_t member, DataDefSTRUCT *owner,
+				    size_t member_index,
+				    size_t settled_offset = (size_t)-1);
+	node_t aggregate_def_node(DataDefSTRUCT *owner, node_t tag, node_t members);
 
 	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
 	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.

@@ -631,6 +631,12 @@ public:
 				// being a real, emittable, referenceable C tag.
     bool reverse_scalar_storage;
     bool bitfield_active;
+    // The immediately preceding declaration was a NONZERO bit-field.  This is
+    // distinct from bitfield_active: a field that exactly fills its allocation
+    // unit ends the active run, but under the Microsoft ABI a following
+    // zero-width field still has the documented alignment effect.  A
+    // zero-width field itself must not arm a second zero-width field.
+    bool previous_was_nonzero_bitfield;
     AggregateDefinitionOrigin definition_origin;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
@@ -671,13 +677,13 @@ public:
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false),
+	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false),
+	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
@@ -731,6 +737,7 @@ public:
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
+	previous_was_nonzero_bitfield = false;
 	size_t fa = field_align(dd);
 	if ( union_layout )
 	{
@@ -781,6 +788,12 @@ public:
 	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
+	// Every union member starts a fresh allocation run at byte/bit zero.
+	// Retaining the previous member's cursor makes semantic metadata disagree
+	// with both C compilers and c2mir even though c2mir's independent union
+	// reset can hide the error at runtime.
+	if ( union_layout )
+	    endBitFieldRun();
 	if ( target_microsoft_bitfields() )
 	{
 	    // Microsoft allocation units: adjacent fields share only while their
@@ -792,13 +805,14 @@ public:
 	      || bitfield_next_bit + width > storage_bits )
 	    {
 		size_t fa = field_align(dd);
-		size = align_up(size, fa);
+		size_t start = union_layout ? 0 : align_up(size, fa);
 		if ( fa > max_align ) max_align = fa;
 		bitfield_active = true;
-		bitfield_unit_offset = size;
+		bitfield_unit_offset = start;
 		bitfield_unit_size = storage_size;
 		bitfield_next_bit = 0;
-		size += storage_size;
+		if ( size < start + storage_size )
+		    size = start + storage_size;
 	    }
 	}
 	else
@@ -807,7 +821,7 @@ public:
 	    // next free BIT; the only constraint is that it must not cross a
 	    // sizeof(T)-aligned window of its OWN declared type. Consecutive
 	    // bitfields of DIFFERENT types share bytes when they fit.
-	    size_t next_bit = bitfield_active
+	    size_t next_bit = union_layout ? 0 : bitfield_active
 		? bitfield_unit_offset * 8 + bitfield_next_bit
 		: size * 8;
 	    if ( next_bit % storage_bits + width > storage_bits )
@@ -844,10 +858,18 @@ public:
 	    size = end_byte;
 	if ( target_microsoft_bitfields() && bitfield_next_bit >= storage_bits )
 	    endBitFieldRun();
+	if ( union_layout )
+	    endBitFieldRun();
+	previous_was_nonzero_bitfield = true;
 	return info;
     }
     void addBitField(std::string n, DataDef &dd, size_t width)
     {
+	if ( n.empty() )
+	{
+	    addUnnamedBitField(dd, width);
+	    return;
+	}
 	BitFieldInfo info = allocateBitField(dd, width);
 	members.emplace_back(n, &dd);
 	member_counts.push_back(1);
@@ -856,23 +878,55 @@ public:
 	member_bitfields.push_back(info);
 	member_dims.push_back(std::vector<carray_dim_t>());
 	member_count_exprs.push_back(NULL);
+	member_access.push_back(0);
     }
     void addUnnamedBitField(DataDef &dd, size_t width)
     {
+	BitFieldInfo info;
 	if ( width == 0 )
 	{
 	    endBitFieldRun();
-	    size_t fa = field_align(dd);
-	    size = align_up(size, fa);
-	    if ( fa > max_align ) max_align = fa;
-	    return;
+	    info.is_bitfield = true;
+	    info.storage_size = bitfield_storage_size(dd);
+	    info.bit_width = 0;
+	    info.is_unsigned = dd.is_unsigned();
+	    info.reverse_storage = reverse_scalar_storage;
+	    if ( !union_layout )
+	    {
+		size_t fa = field_align(dd);
+		// SysV uses the zero-width field's declared type as a boundary for
+		// the NEXT member, but it does not raise the aggregate alignment.
+		// Microsoft applies the boundary/alignment only when the preceding
+		// declaration was itself a bit-field (MinGW/MS layout oracle).
+		if ( !target_microsoft_bitfields() || previous_was_nonzero_bitfield )
+		{
+		    size = align_up(size, fa);
+		    if ( target_microsoft_bitfields() && fa > max_align )
+			max_align = fa;
+		}
+		info.storage_offset = size;
+	    }
 	}
-	(void)allocateBitField(dd, width);
+	else
+	    info = allocateBitField(dd, width);
+	// Unnamed bit-fields are real ordered C members.  Keeping them in the
+	// member stream lets MC11-IR preserve `:N` and `:0` instead of relying on
+	// a later named field's already-folded offset to remember an absent node.
+	members.emplace_back(std::string(), &dd);
+	member_counts.push_back(1);
+	member_array_flags.push_back(false);
+	member_offsets.push_back(info.storage_offset);
+	member_bitfields.push_back(info);
+	member_dims.push_back(std::vector<carray_dim_t>());
+	member_count_exprs.push_back(NULL);
+	member_access.push_back(0);
+	previous_was_nonzero_bitfield = width != 0;
     }
     void addAnonymousAggregate(const DataDefSTRUCT &agg)
     {
 	has_anon_aggregate = true;
 	endBitFieldRun();
+	previous_was_nonzero_bitfield = false;
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);
 	size_t first_member = members.size();

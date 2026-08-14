@@ -81,6 +81,7 @@ int main()
 
     ctor_calls = 0;
     dtor_calls = 0;
+    printf("plainlayout %zu %zu\n", sizeof(Plain), sizeof(FromPlain));
     {
 	FromPlain f;
 	printf("fromplain %d\n", f.tag);

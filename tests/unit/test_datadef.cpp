@@ -1715,6 +1715,7 @@ TEST_SUITE("type table (typeid) identity layer") {
         sysv.addBitField("wide", ddUINT32, 5);
         sysv.finalize();
         REQUIRE(sysv.member_bitfields.size() == 2);
+        CHECK(sysv.member_access.size() == sysv.members.size());
         CHECK(sysv.size == 4);
         CHECK(sysv.member_bitfields[0].storage_offset == 0);
         CHECK(sysv.member_bitfields[1].storage_offset == 0);
@@ -1726,6 +1727,7 @@ TEST_SUITE("type table (typeid) identity layer") {
         ms.addBitField("wide", ddUINT32, 5);
         ms.finalize();
         REQUIRE(ms.member_bitfields.size() == 2);
+        CHECK(ms.member_access.size() == ms.members.size());
         CHECK(ms.size == 8);
         CHECK(ms.member_bitfields[0].storage_offset == 0);
         CHECK(ms.member_bitfields[1].storage_offset == 4);
@@ -1747,6 +1749,69 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(packed.size == 5);
         CHECK(packed.alignment() == 1);
         CHECK(packed.member_bitfields[1].storage_offset == 1);
+
+        DataDefSTRUCT ms_union("ms_union_bits", 0);
+        ms_union.union_layout = true;
+        ms_union.addBitField("a", ddUINT32, 3);
+        ms_union.addBitField("b", ddUINT32, 5);
+        ms_union.finalize();
+        REQUIRE(ms_union.member_bitfields.size() == 2);
+        CHECK(ms_union.size == 4);
+        CHECK(ms_union.member_bitfields[0].storage_offset == 0);
+        CHECK(ms_union.member_bitfields[0].bit_offset == 0);
+        CHECK(ms_union.member_bitfields[1].storage_offset == 0);
+        CHECK(ms_union.member_bitfields[1].bit_offset == 0);
+
+        DataDefSTRUCT ms_zero_union("ms_zero_union", 0);
+        ms_zero_union.union_layout = true;
+        ms_zero_union.addMember("c", ddUINT8, 1);
+        ms_zero_union.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_union.finalize();
+        REQUIRE(ms_zero_union.members.size() == 2);
+        CHECK(ms_zero_union.size == 1);
+        CHECK(ms_zero_union.alignment() == 1);
+
+        DataDefSTRUCT ms_zero_after_plain("ms_zero_after_plain", 0);
+        ms_zero_after_plain.addMember("c", ddUINT8, 1);
+        ms_zero_after_plain.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_after_plain.addUnnamedBitField(ddUINT16, 0);
+        ms_zero_after_plain.addMember("d", ddUINT8, 1);
+        ms_zero_after_plain.finalize();
+        REQUIRE(ms_zero_after_plain.members.size() == 4);
+        CHECK(ms_zero_after_plain.member_offsets[3] == 1);
+        CHECK(ms_zero_after_plain.size == 2);
+        CHECK(ms_zero_after_plain.alignment() == 1);
+
+        DataDefSTRUCT ms_zero_after_bits("ms_zero_after_bits", 0);
+        ms_zero_after_bits.addBitField("a", ddUINT8, 1);
+        ms_zero_after_bits.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_after_bits.addBitField("b", ddUINT8, 1);
+        ms_zero_after_bits.finalize();
+        REQUIRE(ms_zero_after_bits.member_bitfields.size() == 3);
+        CHECK(ms_zero_after_bits.member_bitfields[2].storage_offset == 4);
+        CHECK(ms_zero_after_bits.size == 8);
+        CHECK(ms_zero_after_bits.alignment() == 4);
+
+        madc_target_bitfield_abi = TargetBitFieldABI::SystemV;
+        DataDefSTRUCT sysv_zero_after_plain("sysv_zero_after_plain", 0);
+        sysv_zero_after_plain.addMember("c", ddUINT8, 1);
+        sysv_zero_after_plain.addUnnamedBitField(ddUINT32, 0);
+        sysv_zero_after_plain.addMember("d", ddUINT8, 1);
+        sysv_zero_after_plain.finalize();
+        REQUIRE(sysv_zero_after_plain.members.size() == 3);
+        CHECK(sysv_zero_after_plain.member_offsets[2] == 4);
+        CHECK(sysv_zero_after_plain.size == 5);
+        CHECK(sysv_zero_after_plain.alignment() == 1);
+
+        DataDefSTRUCT sysv_union("sysv_union_bits", 0);
+        sysv_union.union_layout = true;
+        sysv_union.addBitField("a", ddUINT32, 3);
+        sysv_union.addBitField("b", ddUINT32, 5);
+        sysv_union.finalize();
+        REQUIRE(sysv_union.member_bitfields.size() == 2);
+        CHECK(sysv_union.member_bitfields[0].bit_offset == 0);
+        CHECK(sysv_union.member_bitfields[1].bit_offset == 0);
+        CHECK(sysv_union.size == 4);
     }
 
     TEST_CASE("project segment: lazy stamp, memoization, round trip") {

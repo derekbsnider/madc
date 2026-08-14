@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <climits>
 
 extern "C" {
 #include "c2mir/c2mir_api.h"   // c2mir_node_op, c2mir_node_code_name
@@ -49,6 +50,65 @@ extern "C" {
 namespace {
 
 inline node_t op(node_t n, int i) { return c2mir_node_op(n, i); }
+
+bool layout_integer(node_t n, long long &value)
+{
+	if (!n) return false;
+	switch (n->code) {
+	case N_I: case N_L: value = (long long)n->u.l; return true;
+	case N_LL: value = (long long)n->u.ll; return true;
+	case N_U: case N_UL: value = (long long)n->u.ul; return true;
+	case N_ULL:
+		if (n->u.ull > (c2mir_ullong)LLONG_MAX) return false;
+		value = (long long)n->u.ull;
+		return true;
+	default: return false;
+	}
+}
+
+int aggregate_pack(node_t aggregate)
+{
+	node_t contract = op(aggregate, 2);
+	long long version = 0, pack = 0;
+	if (!contract || contract->code != N_LIST
+	    || !layout_integer(op(contract, 0), version) || version != 1
+	    || !layout_integer(op(contract, 3), pack) || pack <= 0
+	    || pack > INT_MAX)
+		return 0;
+	return (int)pack;
+}
+
+int declaration_pack(node_t specs)
+{
+	if (!specs) return 0;
+	if (specs->code == N_SHARE)
+		return declaration_pack(op(specs, 0));
+	if (specs->code == N_STRUCT || specs->code == N_UNION) {
+		node_t members = op(specs, 1);
+		return members && members->code != N_IGNORE
+			? aggregate_pack(specs) : 0;
+	}
+	if (specs->code != N_LIST) return 0;
+	for (int i = 0; ; i++) {
+		node_t spec = op(specs, i);
+		if (!spec) break;
+		int pack = declaration_pack(spec);
+		if (pack > 0) return pack;
+	}
+	return 0;
+}
+
+void emit_pack_push(FILE *f, int pack)
+{
+	if (pack > 0)
+		fprintf(f, "#pragma pack(push, %d)\n", pack);
+}
+
+void emit_pack_pop(FILE *f, int pack)
+{
+	if (pack > 0)
+		fputs("\n#pragma pack(pop)", f);
+}
 
 void emit(FILE *f, node_t n, CirEmitLang lang);
 void emit_initializer(FILE *f, node_t n, CirEmitLang lang);
@@ -271,6 +331,9 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_SPEC_DECL:
 		// [0]=specifiers (often N_SHARE-wrapped) [1]=declarator
 		// [2]=attribute list (N_LIST of N_ATTR) or N_IGNORE  [3]=asm  [4]=initializer
+		{
+		int pack = declaration_pack(op(n, 0));
+		emit_pack_push(f, pack);
 		emit(f, op(n, 0), lang);
 		fputc(' ', f);
 		emit_declarator(f, op(n, 1), lang);
@@ -285,6 +348,8 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 			emit_initializer(f, op(n, 4), lang);
 		}
 		fputc(';', f);
+		emit_pack_pop(f, pack);
+		}
 		break;
 	case N_SHARE:
 		// single-operand wrapper around a type-specifier list
@@ -293,11 +358,14 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_STRUCT:
 	case N_UNION: {
 		// [0]=tag id (N_ID or N_IGNORE) [1]=member list (N_LIST of N_MEMBER),
-		// or N_IGNORE for an incomplete/forward reference.
+		// or N_IGNORE for an incomplete/forward reference. [2], when present,
+		// is MadC's settled-layout contract [version,size,align,pack]. The
+		// enclosing declaration/member emits the matching #pragma pack pair so
+		// recompiling --emit=c11 cannot silently restore natural alignment.
+		node_t members = op(n, 1);
 		fputs(n->code == N_UNION ? "union" : "struct", f);
 		node_t tag = op(n, 0);
 		if (tag && tag->code != N_IGNORE) { fputc(' ', f); emit(f, tag, lang); }
-		node_t members = op(n, 1);
 		if (members && members->code != N_IGNORE) {
 			fputs(" {\n", f);
 			for (int i = 0; ; i++) {
@@ -318,6 +386,8 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		// basic_string rep measured 32 bytes under gcc against the real 24),
 		// which sent a whole debugging arc chasing a layout bug that only
 		// existed in the rendering.
+		int pack = declaration_pack(op(n, 0));
+		emit_pack_push(f, pack);
 		emit(f, op(n, 0), lang);
 		fputc(' ', f);
 		emit_declarator(f, op(n, 1), lang);
@@ -327,6 +397,7 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 			emit(f, w, lang);
 		}
 		fputc(';', f);
+		emit_pack_pop(f, pack);
 		break;
 	}
 	case N_FIELD:

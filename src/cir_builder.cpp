@@ -6686,8 +6686,8 @@ void CirBuilder::append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd
 				       DataDefSTRUCT *anon_sdd)
 {
 	if (anon_sdd) {
-		append(lst, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-				  ignore(), anon_members_list(anon_sdd)));
+		append(lst, aggregate_def_node(anon_sdd, ignore(),
+					       anon_members_list(anon_sdd)));
 		return;
 	}
 	// A typedef'd declaration keeps its alias spec (`static io *gp`) so the
@@ -8253,9 +8253,8 @@ void CirBuilder::append_lit_type_spec(node_t spec, DataDef *dd,
 		// member definition, matching var_decl's anon_sdd path.
 		node_t ml = list();
 		for (size_t i = 0; i < sdd->members.size(); i++)
-			append(ml, member_node(sdd->members[i], sdd));
-		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   ignore(), ml));
+			append(ml, member_node(sdd->members[i], sdd, i));
+		append(spec, aggregate_def_node(sdd, ignore(), ml));
 	} else {
 		// Scalar / builtin element type.
 		append_type_specs(spec, dd);
@@ -8917,7 +8916,59 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	return stars;
 }
 
-node_t CirBuilder::char_pad_member(int index, size_t bytes)
+node_t CirBuilder::aggregate_layout_contract(DataDefSTRUCT *owner)
+{
+	node_t contract = list();
+	append(contract, integer(1));
+	append(contract, integer((int64_t)(owner ? owner->size : 0)));
+	append(contract, integer((int64_t)(owner ? owner->alignment() : 1)));
+	append(contract, integer((int64_t)(owner ? owner->pack : 0)));
+	return contract;
+}
+
+node_t CirBuilder::member_layout_contract(size_t offset, int64_t bit_offset,
+					   int64_t bit_width)
+{
+	node_t contract = list();
+	append(contract, integer(1));
+	append(contract, integer((int64_t)offset));
+	append(contract, integer(bit_offset));
+	append(contract, integer(bit_width));
+	return contract;
+}
+
+node_t CirBuilder::finish_member_layout(node_t member, DataDefSTRUCT *owner,
+					 size_t member_index,
+					 size_t settled_offset)
+{
+	size_t offset = settled_offset;
+	int64_t bit_offset = -1;
+	int64_t bit_width = -1;
+	if (owner && member_index < owner->members.size()) {
+		if (offset == (size_t)-1 && member_index < owner->member_offsets.size())
+			offset = owner->member_offsets[member_index];
+		if (member_index < owner->member_bitfields.size()
+		    && owner->member_bitfields[member_index].is_bitfield) {
+			const DataDefSTRUCT::BitFieldInfo &bf =
+				owner->member_bitfields[member_index];
+			bit_offset = (int64_t)bf.bit_offset;
+			bit_width = (int64_t)bf.bit_width;
+		}
+	}
+	if (offset == (size_t)-1)
+		offset = 0;
+	append(member, member_layout_contract(offset, bit_offset, bit_width));
+	return member;
+}
+
+node_t CirBuilder::aggregate_def_node(DataDefSTRUCT *owner, node_t tag,
+					 node_t members)
+{
+	return node3(owner && owner->union_layout ? N_UNION : N_STRUCT,
+		     tag, members, aggregate_layout_contract(owner));
+}
+
+node_t CirBuilder::char_pad_member(int index, size_t bytes, size_t settled_offset)
 {
 	std::string pn = "__pad" + std::to_string(index);
 	node_t pspec = list(); append(pspec, simple(N_CHAR));
@@ -8927,6 +8978,7 @@ node_t CirBuilder::char_pad_member(int index, size_t bytes)
 	append(pm, node1(N_SHARE, pspec));
 	append(pm, node2(N_DECL, id(pn.c_str()), pdl));
 	append(pm, ignore()); append(pm, ignore());
+	append(pm, member_layout_contract(settled_offset, -1, -1));
 	return pm;
 }
 
@@ -8948,15 +9000,22 @@ node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 	for (size_t i = 0; i < anon->members.size(); i++) {
 		auto gi = anon_group_starts.find(i);
 		if (gi != anon_group_starts.end()) {
+			size_t settled_offset = 0;
+			for (const DataDefSTRUCT::AnonymousAggregateInfo &ag
+			     : anon->anonymous_aggregates)
+				if (ag.first_member == i && ag.aggregate == gi->second) {
+					settled_offset = ag.offset;
+					break;
+				}
 			append(ml, anonymous_aggregate_member_node(
-				const_cast<DataDefSTRUCT *>(gi->second)));
+				const_cast<DataDefSTRUCT *>(gi->second), settled_offset));
 			size_t cnt = anon_group_counts[i];
 			if (cnt > 0) i += cnt - 1;
 			continue;
 		}
 		if (anon_grouped_members.count(i))
 			continue;
-		append(ml, member_node(anon->members[i], anon));
+		append(ml, member_node(anon->members[i], anon, i));
 	}
 	// An EMPTY aggregate whose parsed layout carries a nonzero size (the
 	// C++ sizeof-1 empty struct, datadef.h finalize()) must not emit a
@@ -8969,21 +9028,24 @@ node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 
 node_t CirBuilder::anon_inline_spec(DataDefSTRUCT *anon)
 {
-	return node1(N_LIST, node2(anon->union_layout ? N_UNION : N_STRUCT,
-				   ignore(), anon_members_list(anon)));
+	return node1(N_LIST, aggregate_def_node(anon, ignore(),
+					       anon_members_list(anon)));
 }
 
-node_t CirBuilder::anonymous_aggregate_member_node(DataDefSTRUCT *anon)
+node_t CirBuilder::anonymous_aggregate_member_node(DataDefSTRUCT *anon,
+						     size_t settled_offset)
 {
 	node_t member = simple(N_MEMBER);
 	append(member, node1(N_SHARE, anon_inline_spec(anon)));
 	append(member, ignore());
 	append(member, ignore());
 	append(member, ignore());
+	append(member, member_layout_contract(settled_offset, -1, -1));
 	return member;
 }
 
-node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
+node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
+			       size_t member_index)
 {
 	DataDef *mtype = m.second;            // full member type, stars included
 	const std::string &mtypedef = m.typedef_name;
@@ -9044,7 +9106,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdl));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// A class object member embeds the lowered class struct directly. Its
@@ -9067,7 +9129,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// A madc `array` (madc::value) member: the member-field form of
@@ -9095,7 +9157,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// Type specifier. A member declared via a typedef emits ID("alias")
@@ -9147,7 +9209,9 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// N_UNSIGNED themselves and are skipped.)
 	{
 		const DataDefSTRUCT::BitFieldInfo *bfsign =
-			owner ? owner->m_bitfield(m.first) : NULL;
+			owner && member_index < owner->member_bitfields.size()
+			&& owner->member_bitfields[member_index].is_bitfield
+			? &owner->member_bitfields[member_index] : NULL;
 		if (bfsign && bfsign->is_bitfield && bfsign->is_unsigned) {
 			bool has_sign_spec = false;
 			for (int i = 0; ; i++) {
@@ -9184,9 +9248,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// member here too (c2mir derives the aggregate's alignment from its
 	// strictest member): the tag attribute over-aligns the type without moving
 	// any member offset, matching GCC.
-	if (owner && !owner->members.empty() && &m >= &owner->members[0]
-	    && &m <= &owner->members[owner->members.size() - 1]) {
-		size_t midx = (size_t)(&m - &owner->members[0]);
+	if (owner && member_index < owner->members.size()) {
+		size_t midx = member_index;
 		size_t want_align = 0;
 		auto ai = owner->member_explicit_align.find(midx);
 		if (ai != owner->member_explicit_align.end())
@@ -9207,7 +9270,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	}
 
 	node_t mshare = node1(N_SHARE, mspec);
-	node_t mid = id(m.first.c_str(), m.origin);
+	node_t mid = m.first.empty() ? ignore() : id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
 	// c2m declarator order: in `T *m[N]` the `[]` binds tighter than `*`
 	// (array of pointers), so the N_ARR dims must PRECEDE the pointer stars
@@ -9231,7 +9294,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		for (int s = 0; s < (depth > 0 ? depth : 1); s++)
 			append(mdecl_list, pointer());
 	}
-	node_t mdecl = node2(N_DECL, mid, mdecl_list);
+	node_t mdecl = m.first.empty() ? ignore() : node2(N_DECL, mid, mdecl_list);
 
 	node_t member = simple(N_MEMBER, m.origin);
 	append(member, mshare);
@@ -9244,12 +9307,14 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// sign-or-zero-extend-on-load itself (matching GCC). Without this, madc
 	// emitted a full-width member and bit-field values were wrong.
 	const DataDefSTRUCT::BitFieldInfo *bf =
-		owner ? owner->m_bitfield(m.first) : NULL;
+		owner && member_index < owner->member_bitfields.size()
+		&& owner->member_bitfields[member_index].is_bitfield
+		? &owner->member_bitfields[member_index] : NULL;
 	if (bf && bf->is_bitfield)
 		append(member, integer((int64_t)bf->bit_width, m.origin));
 	else
 		append(member, ignore());
-	return member;
+	return finish_member_layout(member, owner, member_index);
 }
 
 node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
@@ -9262,8 +9327,7 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	// anonymous-inline paths already branch on union_layout — the DEFINITION
 	// emitter must too, else `union U {..}` is laid out as a struct (distinct
 	// offsets) and member aliasing silently breaks.
-	node_t struct_node = node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   struct_id, member_list);
+	node_t struct_node = aggregate_def_node(sdd, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -9792,6 +9856,7 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		append(member, node2(N_DECL, id("_w"), mdecl_list));
 		append(member, ignore());
 		append(member, ignore());
+		append(member, member_layout_contract(0, -1, -1));
 		append(member_list, member);
 	} else {
 		struct Field {
@@ -9852,6 +9917,8 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::set<std::string> own_member_names;
 		for (size_t i = 0; i < cdd->members.size(); i++) {
 			const std::string &mn = cdd->members[i].first;
+			if (mn.empty())
+				continue; // unnamed bit-fields never participate in name hiding
 			member_name_counts[mn]++;
 			int origin = (i < cdd->member_origin.size()) ? cdd->member_origin[i] : -1;
 			if (origin < 0 && !cdd->member_vbase.count(i))
@@ -9860,14 +9927,17 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::sort(fields.begin(), fields.end(),
 			  [](const Field &a, const Field &b){
 				  if (a.off != b.off) return a.off < b.off;
-				  return a.kind < b.kind;
+				  if (a.kind != b.kind) return a.kind < b.kind;
+				  // Equal-offset bit-fields must retain declaration order:
+				  // unnamed padding changes the following field's bit position.
+				  return a.kind == 1 && a.midx < b.midx;
 			  });
 		size_t cursor = 0; int synth = 0;
 		std::set<std::string> emitted_member_names;
 		for (const Field &f : fields) {
 			if (f.off > cursor) { // fill the gap with a char pad so the next field lands at f.off
 				append(member_list,
-				       char_pad_member(synth++, f.off - cursor));
+				       char_pad_member(synth++, f.off - cursor, cursor));
 				cursor = f.off;
 			}
 			if (f.kind == 0) { // vptr (primary keeps __vptr; secondaries __vptr_<offset>)
@@ -9878,13 +9948,15 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 				append(vm, node1(N_SHARE, vspec));
 				append(vm, node2(N_DECL, id(vn.c_str()), vdl));
 				append(vm, ignore()); append(vm, ignore());
+				append(vm, member_layout_contract(f.off, -1, -1));
 				append(member_list, vm);
 				cursor += 8;
 			} else {
 				if (f.kind == 2) {
 					append(member_list,
 					       anonymous_aggregate_member_node(
-						   const_cast<DataDefSTRUCT *>(f.anon)));
+						   const_cast<DataDefSTRUCT *>(f.anon),
+						   f.off));
 					cursor += f.sz;
 					continue;
 				}
@@ -9892,23 +9964,25 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 				int origin = (f.midx < cdd->member_origin.size())
 					? cdd->member_origin[f.midx] : -1;
 				bool inherited = origin >= 0 || cdd->member_vbase.count(f.midx);
-				bool duplicate = member_name_counts[out.first] > 1;
-				bool hidden_by_own = own_member_names.count(out.first) && inherited;
-				if ((duplicate && hidden_by_own)
-				    || emitted_member_names.count(out.first)) {
-					std::string base = out.first;
-					out.first += "__flat" + std::to_string(f.midx);
-					while (emitted_member_names.count(out.first))
-						out.first = base + "__flat" + std::to_string(++synth);
+				if (!out.first.empty()) {
+					bool duplicate = member_name_counts[out.first] > 1;
+					bool hidden_by_own = own_member_names.count(out.first) && inherited;
+					if ((duplicate && hidden_by_own)
+					    || emitted_member_names.count(out.first)) {
+						std::string base = out.first;
+						out.first += "__flat" + std::to_string(f.midx);
+						while (emitted_member_names.count(out.first))
+							out.first = base + "__flat" + std::to_string(++synth);
+					}
+					emitted_member_names.insert(out.first);
 				}
-				emitted_member_names.insert(out.first);
-				append(member_list, member_node(out, cdd));
+				append(member_list, member_node(out, cdd, f.midx));
 				cursor += f.sz;
 			}
 		}
 		if (cdd->size > cursor) // tail pad to the full computed size
 			append(member_list,
-			       char_pad_member(synth++, cdd->size - cursor));
+			       char_pad_member(synth++, cdd->size - cursor, cursor));
 	}
 
 	return member_list;
@@ -9970,8 +10044,7 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	// delegates to the class parser) must DEFINE as N_UNION — every
 	// reference site (class_tag_ref) already follows union_layout, and a
 	// struct-kind definition mismatches them all.
-	node_t struct_node = node2(cdd->union_layout ? N_UNION : N_STRUCT,
-				   struct_id, member_list);
+	node_t struct_node = aggregate_def_node(cdd, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -17678,7 +17751,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				node_t mbrs = (cdd_inline && cdd_inline->has_vptr_slot)
 					    ? class_member_list(cdd_inline)
 					    : anon_members_list(sdd);
-				append(tl, node2(agg, id(sdd->name.c_str()), mbrs));
+				append(tl, aggregate_def_node(sdd,
+					id(sdd->name.c_str()), mbrs));
 			}
 		}
 	} else {

@@ -2432,7 +2432,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			madc::dis::memberrec mr;
 			if (!a.get_payload(r.members_begin, m, mr)) { ok = false; break; }
 			DataDef *mdd = arena_swizzle(mr.type_id, by_id);
-			const char *mnm = mr.name_id ? a.c_str(mr.name_id) : NULL;
+			// String id zero is both the arena's empty-string sentinel and the
+			// correct C spelling of an unnamed bit-field.  Admit that exact
+			// structural case; a non-bit-field member still requires a name.
+			const char *mnm = mr.name_id ? a.c_str(mr.name_id)
+				: ((mr.bf_flags & 1u) ? "" : NULL);
 			if (!mdd || !mnm) { ok = false; break; }
 			sdd->members.push_back(memberpair_t(std::string(mnm), mdd));
 			sdd->member_offsets.push_back(mr.offset);

@@ -39534,6 +39534,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	  && !dynamic_cast<DataDefCLASS *>(dds) ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
+	    // This is the point where a completed DataDefSTRUCT becomes a class.
+	    // Initialize the class-only layout fields now; otherwise a later use as
+	    // a base sees nvsize == 0, because the base-clause promotion helper
+	    // correctly declines an object that is already a DataDefCLASS.
+	    ddc->compute_layout();
 	    if ( was_pre_registered && tag )
 		pgm.struct_map.set(tag_store_key, ddc);   // repoint the self-ref pre-registration
 	    // The old DataDefSTRUCT is left alive (not deleted): a self-reference
@@ -43283,8 +43288,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		<< "Unsupported parenthesized member declarator in class definition" << flush;
 	}
 
-	// expect member name — may be an identifier or 'operator' keyword
+	// Expect a member name, an operator-id, or an unnamed bit-field's ':'.
+	// The colon is already consumed into tn here; the data-member arm below
+	// shares the normal width parser and records an empty-name ordered member.
 	tn = pgm.nextToken();
+	bool is_unnamed_bitfield = tn && tn->id() == TokenID::tkColon;
 	// A no-op decl-specifier (constexpr/consteval/constinit/inline) may appear
 	// AFTER the return type, before the member name — the decl-specifier-seq is
 	// unordered, so `void constexpr operator=(...)` is valid (uses_allocator.h:81
@@ -43301,6 +43309,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Contextual, not ttIdentifier-only: dialect type spellings are valid
 	// member names (`static constexpr _Tp value = __v;` — every std trait;
 	// same shadow rule the statement lane applies to array/value/var).
+	else if ( is_unnamed_bitfield )
+	    mname.clear();
 	else if ( !is_contextual_identifier_token(tn) )
 	{
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
@@ -43452,7 +43462,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // `unsigned a : 3, b : 5;` (parity with TokenSTRUCT::parse; a
 	    // bit-field is never an array). The shared Program::parse_bitfield_width
 	    // validates the integer type and width.
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+	    if ( is_unnamed_bitfield
+	      || (pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon) )
 	    {
 		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`
 		// or the brace form `m:1 {v}` — [class.mem] brace-or-equal-init,
@@ -43482,8 +43493,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    }
 		    return t;
 		};
-		pgm.nextToken(); // consume ':'
-		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd, true, *ddc);
+		if ( !is_unnamed_bitfield )
+		    pgm.nextToken(); // consume ':'
+		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd,
+			!is_unnamed_bitfield, *ddc);
 		ddc->addBitField(mname, *cmember_dd, bf_width);
 		unsigned long long bitfield_count = 1;
 		if ( access_flags && !ddc->member_access.empty() )

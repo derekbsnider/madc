@@ -1283,18 +1283,22 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	CHECK(fl->member_bitfields[1].bit_width == 5);
 	CHECK(fl->members[2].first == "c");
 	CHECK(fl->member_offsets[2] == 4);
-	// Gap binds too, with its true bit layout: a@bit0 w3, then the unnamed :2
-	// gap, so b@bit5 w5 (verbatim offsets preserve the gap a rebuild would lose).
+	// Gap binds too, with its true ordered member stream: a@bit0 w3, the
+	// unnamed :2 gap, then b@bit5 w5.  The unnamed member now reaches MC11-IR
+	// as well as preserving the verbatim frozen layout.
 	datadef_map_citer git = progB->struct_map.find("Gap");
 	REQUIRE(git != progB->struct_map.end());
 	DataDefSTRUCT *gp = dynamic_cast<DataDefSTRUCT *>(git->second);
 	REQUIRE(gp != nullptr);
-	REQUIRE(gp->members.size() == 2);
-	REQUIRE(gp->member_bitfields.size() == 2);
+	REQUIRE(gp->members.size() == 3);
+	REQUIRE(gp->member_bitfields.size() == 3);
 	CHECK(gp->member_bitfields[0].bit_offset == 0);
 	CHECK(gp->member_bitfields[0].bit_width == 3);
-	CHECK(gp->member_bitfields[1].bit_offset == 5);
-	CHECK(gp->member_bitfields[1].bit_width == 5);
+	CHECK(gp->members[1].first.empty());
+	CHECK(gp->member_bitfields[1].bit_offset == 3);
+	CHECK(gp->member_bitfields[1].bit_width == 2);
+	CHECK(gp->member_bitfields[2].bit_offset == 5);
+	CHECK(gp->member_bitfields[2].bit_width == 5);
 }
 
 // Phase 6 slice 3c: a non-polymorphic class serializes as a CLASS record —

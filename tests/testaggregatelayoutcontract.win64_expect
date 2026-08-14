@@ -1,0 +1,4 @@
+p4 16 4 4 12 p2 8 2 2 6
+union 4 4 5 21 15 zero 1 1
+tail 1 1 middle 2 1 1 chain 2 1 1 gap 4 4 225 after 8 4
+class 2 1 1 4 4 225

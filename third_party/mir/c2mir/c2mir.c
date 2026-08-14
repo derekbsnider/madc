@@ -566,10 +566,13 @@ sc_spec: N_TYPEDEF|N_EXTERN|N_STATIC|N_AUTO|N_REGISTER|N_THREAD_LOCAL
 type_qual: N_CONST|N_RESTRICT|N_VOLATILE|N_ATOMIC
 func_spec: N_INLINE|N_NO_RETURN
 type_spec: N_VOID|N_CHAR|N_SHORT|N_INT|N_LONG|N_FLOAT|N_DOUBLE|N_SIGNED|N_UNSIGNED|N_BOOL
-         | (N_STRUCT|N_UNION) (N_ID?, struct_declaration_list?)
+         | (N_STRUCT|N_UNION) (N_ID?, struct_declaration_list?, settled_layout?)
          | N_ENUM(N_ID?, N_LIST?: N_ENUM_COST(N_ID, const_expr?)*) | typedef_name
 struct_declaration_list: N_LIST: struct_declaration*
-struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, attrs?, const_expr?)
+struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, attrs?, const_expr?,
+                                        settled_member_layout?)
+settled_layout: N_LIST:(version, size, align, pack)
+settled_member_layout: N_LIST:(version, byte_offset, bit_offset, bit_width)
 spec_qual_list: N_LIST:(type_qual|type_spec|attr)*
 declarator: the same as direct declarator
 direct_declarator: N_DECL(N_ID,
@@ -6932,6 +6935,79 @@ static mir_size_t var_size (c2m_ctx_t c2m_ctx, struct type *type) {
   return round_size (size, var_align (c2m_ctx, type));
 }
 
+/* MadC's external MC11 tree may carry a settled aggregate layout.  The
+   contract is positional so it survives the generic tree copier/freezer and
+   stays invisible to source-parsed C: STRUCT/UNION operand 2 is
+   [version,size,align,pack], MEMBER operand 4 is
+   [version,byte-offset,bit-offset,bit-width].  A tree without these operands
+   follows c2mir's ordinary C layout path below. */
+static node_t settled_layout_op (node_t n, unsigned index) {
+  node_t op;
+
+  if (n == NULL || n->code <= N_ID) return NULL;
+  op = NL_HEAD (n->u.ops);
+  while (op != NULL && index-- != 0) op = NL_NEXT (op);
+  return op;
+}
+
+static int settled_layout_integer (node_t n, mir_llong *value) {
+  if (n == NULL) return FALSE;
+  switch (n->code) {
+  case N_I:
+  case N_L: *value = n->u.l; return TRUE;
+  case N_LL: *value = n->u.ll; return TRUE;
+  case N_U:
+  case N_UL:
+    if ((mir_ulong) n->u.ul > (mir_ulong) MIR_LLONG_MAX) return FALSE;
+    *value = (mir_llong) n->u.ul;
+    return TRUE;
+  case N_ULL:
+    if (n->u.ull > (mir_ullong) MIR_LLONG_MAX) return FALSE;
+    *value = (mir_llong) n->u.ull;
+    return TRUE;
+  default: return FALSE;
+  }
+}
+
+static int settled_layout_record (node_t owner, unsigned operand,
+                                  mir_llong values[4]) {
+  node_t record = settled_layout_op (owner, operand), el;
+  unsigned i;
+
+  if (record == NULL || record->code != N_LIST) return FALSE;
+  el = NL_HEAD (record->u.ops);
+  for (i = 0; i < 4; i++) {
+    if (el == NULL || !settled_layout_integer (el, &values[i])) return FALSE;
+    el = NL_NEXT (el);
+  }
+  return el == NULL && values[0] == 1;
+}
+
+static int settled_aggregate_layout (node_t tag, mir_size_t *size, int *align, int *pack) {
+  mir_llong v[4];
+
+  if (!settled_layout_record (tag, 2, v)) return FALSE;
+  if (v[1] < 0 || v[2] <= 0 || v[2] > INT_MAX || v[3] < 0 || v[3] > INT_MAX) return FALSE;
+  *size = (mir_size_t) v[1];
+  *align = (int) v[2];
+  *pack = (int) v[3];
+  return TRUE;
+}
+
+static int settled_member_layout (node_t member, mir_size_t *offset, int *bit_offset,
+                                  int *width) {
+  mir_llong v[4];
+
+  if (!settled_layout_record (member, 4, v)) return FALSE;
+  if (v[1] < 0 || v[2] < -1 || v[2] > INT_MAX
+      || v[3] < -1 || v[3] > INT_MAX)
+    return FALSE;
+  *offset = (mir_size_t) v[1];
+  *bit_offset = (int) v[2];
+  *width = (int) v[3];
+  return TRUE;
+}
+
 /* BOUND_BIT is used only if BF_P and updated only if BITS >= 0  */
 static void update_field_layout (int *bf_p, mir_size_t *overall_size, mir_size_t *offset,
                                  int *bound_bit, mir_size_t prev_field_type_size,
@@ -7065,10 +7141,44 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
   } else {
     int bf_p = FALSE, bits = -1, bound_bit = 0;
     mir_size_t offset = 0, prev_size = 0;
+    mir_size_t settled_size = 0;
+    int settled_align = 0, settled_pack = 0;
+    int settled_p;
 
     assert (type->mode == TM_STRUCT || type->mode == TM_UNION);
+    settled_p = settled_aggregate_layout (type->u.tag_type, &settled_size, &settled_align,
+                                          &settled_pack);
     if (incomplete_type_p (c2m_ctx, type)) {
       overall_size = MIR_SIZE_MAX;
+    } else if (settled_p) {
+      /* MadC already resolved this target's semantic layout before building
+         MC11-IR.  Consume that one answer verbatim: recomputing here was the
+         divergent second owner for #pragma pack, union bit-fields, unnamed
+         gaps, reverse scalar storage, and class padding. */
+      for (node_t el = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); el != NULL;
+           el = NL_NEXT (el))
+        if (el->code == N_MEMBER) {
+          decl_t decl = el->attr;
+          mir_size_t member_offset = 0;
+          int member_bit_offset = -1, member_width = -1;
+          int anon_process_p = (!type->unnamed_anon_struct_union_member_type_p
+                                && decl->decl_spec.type->unnamed_anon_struct_union_member_type_p
+                                && decl->decl_spec.type->raw_size == MIR_SIZE_MAX);
+
+          if (anon_process_p) update_members_offset (decl->decl_spec.type, MIR_SIZE_MAX);
+          set_type_layout (c2m_ctx, decl->decl_spec.type);
+          if (!settled_member_layout (el, &member_offset, &member_bit_offset, &member_width)) {
+            error (c2m_ctx, POS (el), "missing or malformed MadC settled member layout");
+          } else {
+            decl->offset = member_offset;
+            decl->bit_offset = member_bit_offset;
+            decl->width = member_width;
+          }
+          if (anon_process_p) update_members_offset (decl->decl_spec.type, decl->offset);
+        }
+      overall_size = settled_size;
+      type->align = settled_align;
+      (void) settled_pack; /* carried for the C renderer; offsets are already settled here */
     } else {
       for (node_t el = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); el != NULL;
            el = NL_NEXT (el))
