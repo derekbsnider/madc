@@ -22,6 +22,15 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   win       make -C src hosted-x86-64-windows (the MinGW+UCRT PE the wine
+#             lane tests; the mingw toolchain exists ONLY on the container)
+#   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
+#             parameter is load-bearing — see the stage body; without the
+#             persistent server a first run yields rotating phantom failures
+#   warnscan  scripts/warn_scan_lanes.sh — wipe each build mode's object tree
+#             and rebuild it, reporting warnings per lane. The zero-warnings
+#             law needs a CLEAN build per lane: an incremental one compiles
+#             only what it touches, so it reports a different subset each run
 #   release-macos  make -C src release-macos (both hosted darwin arches,
 #             stripped + forest-verified) + package_release_macos.sh
 #             (tarballs into dist/), then pull the tarballs back
@@ -239,6 +248,32 @@ for stage in $stages; do
 		;;
 	packed)
 		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		;;
+	win)
+		# The hosted MinGW+UCRT PE. Named for its make target so there is
+		# one spelling to remember, and it lives here because the mingw
+		# toolchain exists ONLY on the container — a toolchain query on the
+		# NAS answers "absent" for things that are installed.
+		run_remote "win build" "make -C /workspace/madc/src -j20 hosted-x86-64-windows"
+		;;
+	wine)
+		# The Win64 DOMAIN suite. Every argument here was re-derived from
+		# docs more than once before it lived in a script:
+		#   wineserver -p      PERSISTENT server. Without it the first run
+		#                      produces rotating phantom failures (a
+		#                      testderefpostincstore that passes on rerun).
+		#   MADC_BIN           the hosted PE, not bin/madc.
+		#   MADC_WRAPPER=wine  how the runner launches a non-native artifact.
+		#   MADC_SKIP_EXT      BOTH domains, so .win64_skip AND .wine64_skip
+		#                      fixtures apply (it is a whitespace-split LIST).
+		#   WINEDEBUG=-all     otherwise wine's chatter buries the summary.
+		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		;;
+	warnscan)
+		# Accepts lane labels: remote_build.sh 'warnscan host win64'
+		# is not expressible through the stage loop, so scan all lanes here
+		# and select with WARN_LANES=... when a subset is wanted.
+		run_remote "warnscan" "cd /workspace/madc; bash scripts/warn_scan_lanes.sh ${WARN_LANES:-}"
 		;;
 	pull)
 		# Bring the container-built binaries back to the NAS: the two
