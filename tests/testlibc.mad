@@ -4,17 +4,28 @@ using namespace std;
 
 int main()
 {
+#ifndef _WIN32
     // getpid() — always returns a positive int
     int pid;
     pid = getpid();
     if ( pid > 0 )
         cout << "pid ok" << endl;   // pid ok
+#endif
 
-    // sleep(0) — returns 0 on success
+    // The Win64 arm uses a nonzero duration so the runtime conversion and
+    // finite-timeout path execute; POSIX hosts keep this fast fallback probe.
     int r;
+#ifdef _WIN32
+    r = sleep(1);
+#else
     r = sleep(0);
+#endif
     cout << r << endl;              // 0
 
+    // Process and user identity are outside this Win64 POSIX slice. Keep
+    // exercising their bare-name fallback on POSIX hosts; the Win64 arm of
+    // this test owns only the lowercase sleep resolution settled by D3.
+#ifndef _WIN32
     // getuid — returns current user id
     int uid;
     uid = getuid();
@@ -26,6 +37,7 @@ int main()
     ppid = getppid();
     if ( ppid > 0 )
         cout << "ppid ok" << endl;  // ppid ok
+#endif
 
     return 0;
 }

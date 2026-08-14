@@ -7,4 +7,9 @@ Dup
 red
 grn
 blu
-abc
+strndup-bound=abc
+strndup-bound-nul
+strndup-independent=abc
+strndup-whole=xy
+strndup-source-nul
+strndup-empty

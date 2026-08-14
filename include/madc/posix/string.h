@@ -12,4 +12,14 @@
 #error madc POSIX supplements are Win64-only
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+char *strndup(const char *s, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

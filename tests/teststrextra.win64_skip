@@ -1,1 +1,0 @@
-strndup: mingw-w64 provides no strndup at any spelling — mingw-gcc rejects the same source (undeclared identifier)

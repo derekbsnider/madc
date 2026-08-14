@@ -10,8 +10,9 @@
 // cross-function variant too.
 //
 // This test confirms strrchr / strstr / strdup / strpbrk / strtok /
-// strndup all return `char *` correctly with their typed extern decls
-// in embedded <string.h>, exercising idioms used in MadSMAUG.
+// strndup all return `char *` correctly with their typed declarations from
+// the real <string.h> surface (plus the Win64 supplement), exercising idioms
+// used in MadSMAUG.
 
 #include <iostream>
 using namespace std;
@@ -80,13 +81,31 @@ int main()
         tok = strtok(NULL, delim);
     }
 
-    // strndup — bounded heap-copy.
+    // strndup — bounded, independently allocated, NUL-terminated copy.
     char long_src[16];
     long_src[0]='a'; long_src[1]='b'; long_src[2]='c';
     long_src[3]='d'; long_src[4]='e'; long_src[5]='\0';
     char *part = strndup(long_src, 3);
-    cout << part << endl;                // abc
+    cout << "strndup-bound=" << part << endl;
+    cout << (part[3] == '\0' ? "strndup-bound-nul" : "strndup-bound-open") << endl;
+    long_src[0] = 'X';
+    cout << "strndup-independent=" << part << endl;
     free(part);
+
+    // A bound beyond the source terminator copies only the string itself.
+    char short_src[8];
+    short_src[0]='x'; short_src[1]='y'; short_src[2]='\0';
+    short_src[3]='z'; short_src[4]='\0';
+    char *whole = strndup(short_src, 7);
+    cout << "strndup-whole=" << whole << endl;
+    cout << (whole[2] == '\0' ? "strndup-source-nul" : "strndup-source-open") << endl;
+    free(whole);
+
+    // A zero bound still returns a separately allocated empty C string.
+    char *empty = strndup(short_src, 0);
+    cout << (empty != NULL && empty[0] == '\0'
+             ? "strndup-empty" : "strndup-empty-bad") << endl;
+    free(empty);
 
     return 0;
 }
