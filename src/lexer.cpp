@@ -33,6 +33,7 @@
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
+#include "spelling_delim.h"
 
 // Out-of-line anchor for intern_keyed_map's env-gated write trap
 // (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
@@ -385,6 +386,142 @@ static bool consume_macro_call_open(Source &source)
     if ( !spacing.empty() )
 	source.pushback(spacing);
     return false;
+}
+
+// Raw preprocessing spellings have not reached the token stream yet.  Shield
+// quotes and comments here, then let SpellingDelimDepth remain the sole owner
+// of delimiter bookkeeping.  Callers keep their own policy (argument commas,
+// copied text, query operands) on top of this state.
+class PpLexicalShield
+{
+    enum class Mode {
+	Code, String, Character, LineComment, BlockComment, BlockCommentClose
+    };
+
+    Mode mode = Mode::Code;
+    bool escaped = false;
+
+public:
+    bool structural(char c, char next)
+    {
+	if ( mode == Mode::LineComment )
+	{
+	    if ( c == '\n' || c == '\r' )
+		mode = Mode::Code;
+	    return false;
+	}
+	if ( mode == Mode::BlockComment )
+	{
+	    if ( c == '*' && next == '/' )
+		mode = Mode::BlockCommentClose;
+	    return false;
+	}
+	if ( mode == Mode::BlockCommentClose )
+	{
+	    // This byte is the `/` already paired with the preceding `*`.
+	    // Resume code only AFTER it, so `*//` is a closed comment followed
+	    // by one slash rather than the start of a line comment.
+	    mode = Mode::Code;
+	    return false;
+	}
+	if ( mode == Mode::String || mode == Mode::Character )
+	{
+	    if ( escaped )
+	    {
+		escaped = false;
+		return false;
+	    }
+	    if ( c == '\\' )
+	    {
+		escaped = true;
+		return false;
+	    }
+	    if ( (mode == Mode::String && c == '"')
+	      || (mode == Mode::Character && c == '\'') )
+		mode = Mode::Code;
+	    return false;
+	}
+	if ( c == '"' )
+	{
+	    mode = Mode::String;
+	    return false;
+	}
+	if ( c == '\'' )
+	{
+	    mode = Mode::Character;
+	    return false;
+	}
+	if ( c == '/' && next == '/' )
+	{
+	    mode = Mode::LineComment;
+	    return false;
+	}
+	if ( c == '/' && next == '*' )
+	{
+	    mode = Mode::BlockComment;
+	    return false;
+	}
+	return true;
+    }
+};
+
+class PpGroupScan
+{
+    SpellingDelimDepth depth;
+    PpLexicalShield shield;
+    bool started = false;
+    bool finished = false;
+
+public:
+    bool step(char c, char next)
+    {
+	if ( !shield.structural(c, next) )
+	    return false;
+	int before = depth.paren;
+	depth.update(c);
+	if ( !started && c == '(' && depth.paren == 1 )
+	    started = true;
+	if ( started && c == ')' && before == 1 && depth.paren == 0 )
+	    finished = true;
+	return true;
+    }
+
+    bool at_argument_level() const { return started && depth.paren == 1; }
+    bool closed() const { return finished; }
+};
+
+// Consume one parenthesized preprocessing group, including its delimiters.
+static bool consume_pp_group(Source &source, std::string *copy = NULL)
+{
+    if ( !source.good() || source.peek() != '(' )
+	return false;
+    PpGroupScan group;
+    while ( source.good() )
+    {
+	char c = source.get();
+	if ( copy )
+	    *copy += c;
+	group.step(c, source.good() ? source.peek() : '\0');
+	if ( group.closed() )
+	    return true;
+    }
+    return false;
+}
+
+// Return the first byte after a balanced preprocessing group in text.
+static size_t pp_group_end(const std::string &text, size_t open)
+{
+    if ( open >= text.size() || text[open] != '(' )
+	return std::string::npos;
+    PpGroupScan group;
+    for ( size_t i = open; i < text.size(); ++i )
+    {
+	char next = i + 1 < text.size() ? text[i + 1] : '\0';
+	group.step(text[i], next);
+	if ( group.closed() )
+	    return i + 1;
+    }
+    return std::string::npos;
 }
 
 static bool is_identifier_spelling(const std::string &s)
@@ -5043,11 +5180,12 @@ TokenBase *Program::_getToken()
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
 		    std::string arg;
-		    int depth = 1;
+		    PpGroupScan group;
+		    group.step('(', source.good() ? source.peek() : '\0');
 		    bool at_line_start = false; // track whether next non-ws char is start of line
 		    int macro_ifdef_skip = 0; // >0 means we're skipping a false #ifdef/#else branch
 		    int macro_ifdef_depth = 0; // tracks #ifdef nesting inside macro args
-		    while ( source.good() && depth > 0 )
+		    while ( source.good() && !group.closed() )
 		    {
 			char mc = source.get();
 			// Handle #ifdef/#ifndef/#else/#endif inside macro args
@@ -5134,39 +5272,19 @@ TokenBase *Program::_getToken()
 			    // Still need to track nested #ifdef/#endif in skipped text
 			    continue;
 			}
-			if ( mc == '(' ) { ++depth; arg += mc; }
-			else if ( mc == ')' ) { --depth; if (depth > 0) arg += mc; }
-			else if ( mc == ',' && depth == 1 )
+			bool structural = group.step(
+			    mc, source.good() ? source.peek() : '\0');
+			if ( structural && group.closed() )
+			{
+			    // The invocation's closing parenthesis is not argument text.
+			}
+			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
 			    // trim whitespace from arg
 			    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
 			    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
 			    args.push_back(arg);
 			    arg.clear();
-			}
-			else if ( mc == '"' )
-			{
-			    arg += mc;
-			    while ( source.good() && source.peek() != '"' )
-			    {
-				if ( source.peek() == '\\' ) arg += source.get();
-				arg += source.get();
-			    }
-			    if ( source.peek() == '"' ) arg += source.get();
-			}
-			else if ( mc == '\'' )
-			{
-			    // Char literal — copy verbatim through the closing
-			    // `'` so any `(`, `)`, `,`, `"` inside the literal
-			    // (e.g. `')'`, `','`, `'"'`) doesn't disturb the
-			    // macro arg parser. Honour `\\` escapes.
-			    arg += mc;
-			    while ( source.good() && source.peek() != '\'' )
-			    {
-				if ( source.peek() == '\\' ) arg += source.get();
-				arg += source.get();
-			    }
-			    if ( source.peek() == '\'' ) arg += source.get();
 			}
 			else arg += mc;
 		    }
@@ -5579,12 +5697,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == '(' )
 		    {
-			int depth = 0;
-			do {
-			    char c = source.get();
-			    if ( c == '(' ) ++depth;
-			    else if ( c == ')' ) --depth;
-			} while ( source.good() && depth > 0 );
+			consume_pp_group(source);
 			return getToken();
 		    }
 		    // An UNCONDITIONAL `noexcept` re-lexes as its token
@@ -5605,15 +5718,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string attr_text;
 		    if ( source.peek() == '(' )
-		    {
-			int depth = 0;
-			do {
-			    char c = source.get();
-			    attr_text += c;
-			    if ( c == '(' ) ++depth;
-			    else if ( c == ')' ) --depth;
-			} while ( source.good() && depth > 0 );
-		    }
+			consume_pp_group(source, &attr_text);
 		    if ( gnu_attribute_text_has_name(attr_text, "packed")
 		      || gnu_attribute_text_has_name(attr_text, "aligned")
 		      || gnu_attribute_text_has_name(attr_text, "mode")
@@ -5990,20 +6095,12 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    ++j;
 		if ( j < expr.size() && expr[j] == '(' )
 		{
-		    int pdepth = 0;
-		    while ( j < expr.size() )
+		    size_t end = pp_group_end(expr, j);
+		    if ( end != std::string::npos )
 		    {
-			if ( expr[j] == '(' )
-			    ++pdepth;
-			else if ( expr[j] == ')' && --pdepth == 0 )
-			{
-			    ++j;
-			    break;
-			}
-			++j;
+			out += expr.substr(i, end - i);
+			i = end;
 		    }
-		    out += expr.substr(i, j - i);
-		    i = j;
 		}
 		continue;
 	    }
@@ -6039,18 +6136,21 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    const MacroDef &m = macro_map[word];
 		    std::vector<std::string> margs;
 		    std::string marg;
-		    int mdepth = 0;
+		    PpGroupScan mgroup;
+		    mgroup.step('(', j + 1 < expr.size() ? expr[j + 1] : '\0');
 		    ++j; // consume '('
 		    for ( ; j < expr.size(); ++j )
 		    {
 			char mc = expr[j];
-			if ( mc == '(' ) { ++mdepth; marg += mc; }
-			else if ( mc == ')' )
+			char next = j + 1 < expr.size() ? expr[j + 1] : '\0';
+			bool structural = mgroup.step(mc, next);
+			if ( structural && mgroup.closed() )
 			{
-			    if ( mdepth == 0 ) { ++j; break; }
-			    --mdepth; marg += mc;
+			    ++j;
+			    break;
 			}
-			else if ( mc == ',' && mdepth == 0 )
+			else if ( structural && mc == ','
+			       && mgroup.at_argument_level() )
 			{ margs.push_back(marg); marg.clear(); }
 			else marg += mc;
 		    }
@@ -6218,25 +6318,15 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	++pos;
     if ( pos >= expr.size() || expr[pos] != '(' )
 	return 0;	// bare identifier: no query to answer
-    ++pos;
     // Take the argument as raw text to the matching ')': the forms differ per
     // operator (`<a/b.h>`, `"a.h"`, `clang::foo`, a bare identifier), so the
     // shape belongs to the operator, not to this scanner.
-    std::string arg;
-    int depth = 1;
-    while ( pos < expr.size() )
-    {
-	char c = expr[pos];
-	if ( c == '(' )
-	    ++depth;
-	else if ( c == ')' && --depth == 0 )
-	{
-	    ++pos;
-	    break;
-	}
-	arg += c;
-	++pos;
-    }
+    size_t open = pos;
+    size_t end = pp_group_end(expr, open);
+    if ( end == std::string::npos )
+	return 0;
+    std::string arg = expr.substr(open + 1, end - open - 2);
+    pos = end;
     size_t b = arg.find_first_not_of(" \t");
     size_t e = arg.find_last_not_of(" \t");
     arg = (b == std::string::npos) ? std::string() : arg.substr(b, e - b + 1);

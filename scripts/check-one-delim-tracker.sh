@@ -25,15 +25,22 @@
 # parser.cpp, one of them (22581) the very unguarded `++angle` on every tkLT
 # that this whole campaign exists to eliminate.
 #
-# The marker now matches any local int whose NAME CONTAINS a delimiter word,
-# including the `int depth = 0, angle = 0, square = 0;` multi-declarator form.
-# If you find yourself narrowing it to make the count go down, you are doing
-# the thing this comment is about.
+# The marker now combines the name check with a behavior check: a character
+# comparison against `(` followed by incrementing a counter and a matching `)`
+# decrement of that SAME counter.  The back-reference catches plain `depth`,
+# `pdepth`, `mdepth`, or whatever the next copy is called.  If you find yourself
+# narrowing either half to make the count go down, you are doing the thing this
+# comment is about.
 #
 # Ratchet: the count must never rise. Target is 0. Lower BASELINE whenever a
 # scanner is migrated; never raise it.
 set -u
 cd "$(dirname "$0")/.."
+
+if ! command -v perl >/dev/null 2>&1; then
+	echo "REGRESSION — perl is required for the name-independent delimiter gate."
+	exit 1
+fi
 
 BASELINE=0
 
@@ -56,6 +63,22 @@ hits=$(grep -rnE '\bint +[a-z_]*(angle|paren|square|brace)[a-z_]* *= *0|, *[a-z_
   | grep -vE '^include/spelling_delim\.h:' \
   | grep -vE '^src/parser\.cpp:[0-9]+:    int paren = 0, square = 0, brace = 0, angle = 0;$' \
   | grep -vE 'size_t' )        # `size_t lparen = 0` is an INDEX, not a counter
+
+# Name-independent raw-spelling form.  Match the open and close arms together,
+# with the counter captured and back-referenced, so an unrelated `++pos` after
+# seeing an opening parenthesis is not classified as nesting bookkeeping.
+behavior_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+  | xargs -0 perl -0777 -ne '
+      next if $ARGV eq "src/madc_program.cpp"
+           || $ARGV eq "include/spelling_delim.h";
+      while (/(?:if|else if)\s*\(\s*[^\n]+?==\s*\x27\(\x27\s*\)\s*(?:\{\s*)?\+\+([A-Za-z_][A-Za-z0-9_]*).{0,500}?(?:if|else if)\s*\(\s*[^\n]+?==\s*\x27\)\x27.{0,100}?--\1/sg) {
+          my $line = 1 + (substr($_, 0, $-[0]) =~ tr/\n/\n/);
+          print "$ARGV:$line:raw balanced-parenthesis counter\n";
+      }' )
+
+if [ -n "$behavior_hits" ]; then
+	hits="${hits}${hits:+$'\n'}${behavior_hits}"
+fi
 n=$(printf '%s' "$hits" | grep -c . )
 
 echo "one-delim-tracker ratchet: $n hand-rolled delimiter-depth locals (baseline $BASELINE, target 0)"
