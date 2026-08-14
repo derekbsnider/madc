@@ -5156,7 +5156,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	node_t param_list = list();
 	std::vector<std::string> anames;
 	for (size_t i = 0; i < kind.size(); ++i) {
-		char an[24];
+		char an[32];
 		snprintf(an, sizeof(an), "__fma%zu", i);
 		anames.push_back(an);
 		append(param_list, param_node(an, kind[i]));
@@ -5185,7 +5185,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	for (size_t i = 0; i < kind.size(); ++i) {
 		if (kind[i] != 3)
 			continue;
-		char tnm[24];
+		char tnm[32];
 		snprintf(tnm, sizeof(tnm), "__fmt%zu", i);
 		tnames[i] = tnm;
 		stmts.push_back(obj_storage_decl(tnm, 4, dtor_sym.c_str(),
@@ -13201,6 +13201,12 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		}
 		{
 			static const char *csel = ::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			// Hoisted for typeid below: its operand on a POLYMORPHIC
+			// type IS evaluated, and vector operator[] is a call, so
+			// typeid(*ctor_args[0]) is an operand with side effects
+			// (-Wpotentially-evaluated-expression). Deref of a plain
+			// pointer has none.
+			TokenBase *a0 = ctor_args.empty() ? NULL : ctor_args[0];
 			if (csel && *csel
 			    && cdd->name.find(csel) != std::string::npos)
 				fprintf(stderr, "[CTORSEL] cls=%s cand=%s ok=%d "
@@ -13218,14 +13224,9 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					    ? "-"
 					    : ctor_arg_datadef(ctor_args[0])
 						      ->name.c_str(),
-					ctor_args.empty() || !ctor_args[0]
-					    ? "-"
-					    : typeid(*ctor_args[0]).name(),
-					!ctor_args.empty() && ctor_args[0]
-					    && ctor_args[0]->file
-					    ? ctor_args[0]->file : "?",
-					!ctor_args.empty() && ctor_args[0]
-					    ? ctor_args[0]->line : 0,
+					!a0 ? "-" : typeid(*a0).name(),
+					a0 && a0->file ? a0->file : "?",
+					a0 ? a0->line : 0,
 					m_cur_method
 					    ? m_cur_method->returns.name.c_str()
 					    : "?");
