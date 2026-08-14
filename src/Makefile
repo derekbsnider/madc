@@ -84,10 +84,23 @@ HFILES	= madc.h datadef.h tokens.h datatokens.h
 # (rule below, via $(CXX) -x c so every MODE's target/sysroot flags apply), and
 # madc compiles the SAME sources through c2mir at pack time into AOT ledger
 # modules, so -static-libmadc programs carry this machinery in their own image.
-# One list, both consumers: scripts/ledger_sources.txt is its single owner,
-# read here and by scripts/forest_pack.sh (repo-root-relative paths there).
-RT_LEDGER_SRCS = $(patsubst src/%,%,$(shell grep -vE '^[[:space:]]*(#|$$)' ../scripts/ledger_sources.txt))
-RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
+# One tagged list, every consumer: scripts/ledger_sources.txt is its single
+# owner. The selector projects that list for the platform this C compiler is
+# actually targeting. Cross-madc modes stay Linux here because their C lane
+# is host-built; forest_pack_darwin.sh separately selects darwin sources for
+# the target MIR ledger it cross-freezes.
+RT_LEDGER_TARGET = linux
+ifneq ($(filter hosted-arm64-macos hosted-x86-64-macos,$(MODE)),)
+RT_LEDGER_TARGET = darwin
+endif
+ifeq ($(MODE),hosted-x86-64-windows)
+RT_LEDGER_TARGET = win64
+endif
+RT_LEDGER_MANIFEST = ../scripts/ledger_sources.txt
+RT_LEDGER_SELECTOR = ../scripts/select_ledger_sources.sh
+RT_LEDGER_INPUTS = $(RT_LEDGER_MANIFEST) $(RT_LEDGER_SELECTOR)
+RT_LEDGER_SRCS := $(patsubst src/%,%,$(shell bash $(RT_LEDGER_SELECTOR) $(RT_LEDGER_TARGET) $(RT_LEDGER_MANIFEST)))
+RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 # An empty list would link a madc whose try/catch and VLA runtime is simply
 # ABSENT — it builds and then dies at run time. Fail the build instead.
 ifeq ($(strip $(RT_OFILES)),)
@@ -941,7 +954,7 @@ $(LIBMODE_STAMP):
 	@rm -f $(LIBDIR)/.libmode-*
 	@touch $@
 
-$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
+$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(LIBMADC_STATIC_OBJS)
@@ -949,12 +962,12 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 # The emitted-C runtime subset (W3): the SAME ledger objects libmadc holds,
 # re-archived alone so `cc emitted.c -lmadc_rt` links without the full
 # runtime. No separate source list — membership is ledger_sources.txt's.
-$(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP)
+$(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
-$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP)
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 # A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
@@ -999,7 +1012,18 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 # `-x c` rather than a separate $(CC) so every MODE's target/sysroot flags
 # (the hosted-darwin CXX carries -target/--sysroot) apply unchanged; the
 # C++ standard flag from CXXFLAGS must NOT come along, hence its own flag set.
-RT_CFLAGS = -x c -std=c11 -Wall $(MODE_OPTFLAGS)
+RT_CFLAGS = -x c -std=c11 -Wall -ffunction-sections -fdata-sections $(MODE_OPTFLAGS)
+# -MMD cannot see command-line flag changes. Bump this version whenever
+# RT_CFLAGS or the PIC-only runtime flags change; both runtime object families
+# depend on the per-mode stamp so neither can silently retain the old flags.
+RT_FLAGS_VERSION = 1
+RT_FLAGS_STAMP = $(OBJDIR)/.rt-flags-v$(RT_FLAGS_VERSION)
+$(RT_FLAGS_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.rt-flags-v*
+	@touch $@
+$(addprefix $(OBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
+$(addprefix $(PICOBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
 $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
@@ -1052,7 +1076,7 @@ ifdef HOSTED_DARWIN_TARGET
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 
-$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt
+$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
 	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
