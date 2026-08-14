@@ -25,6 +25,7 @@
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -159,6 +160,7 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
     // runtime cannot be dlopen'd on the build host, so the HOST's library of
     // the same flavor answers the CIR-time dlsym probes — the Itanium
     // surface is platform-neutral. See madc_sys_includes.h.
+    const bool have_standin = madc_stdlib_probe_standin_libs[0] != NULL;
     for (int i = 0; madc_stdlib_probe_standin_libs[i]; i++) {
 	const char *lib = madc_stdlib_probe_standin_libs[i];
 	if (!opened.insert(lib).second)
@@ -167,6 +169,15 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
 		    lib, madcdl_error());
     }
+    // A stand-in IS the substitute for the target's runtime, so where one
+    // exists the flavor's own link_libs name the TARGET's libraries — which
+    // cannot open on this host BY CONSTRUCTION. Attempting them anyway is a
+    // guaranteed-failing dlopen plus a warning on every single run: the
+    // cross-darwin freeze printed "stdlib flavor libc++ runtime
+    // /usr/lib/libc++.1.dylib: cannot open shared object file" every time.
+    // Keyed on the stand-in table being populated, not on a platform macro.
+    if (have_standin)
+	return;
     if (!flavor->link_libs)
 	return;
     for (int i = 0; flavor->link_libs[i]; i++) {
