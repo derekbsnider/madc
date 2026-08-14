@@ -60,6 +60,10 @@ for a in "$@"; do
 		cmd+=("$a")
 	fi
 done
+# Keep the copied basename for a native CreateProcess child.  The WSL shell
+# launch below needs ./ to select the current-directory executable, but that
+# POSIX spelling is not a native Windows application path.
+child_executable="${cmd[0]}"
 case "${cmd[0]}" in
 */*) ;;
 *) cmd[0]="./${cmd[0]}" ;;
@@ -75,7 +79,10 @@ if [ ${#files[@]} -gt 0 ]; then
 		exit 3
 	fi
 fi
-timeout "$TIMEOUT" ssh -o BatchMode=yes "$WIN_SSH" "cd '$dir' && ${cmd[*]}"
+# The copied executable is the artifact actually running on Windows.  Publish
+# that rewritten path to child processes so an exec:// self-child never falls
+# back to a stale or nonexistent build-tree binary.
+timeout "$TIMEOUT" ssh -o BatchMode=yes "$WIN_SSH" "cd '$dir' && WSLENV=\"\${WSLENV:+\$WSLENV:}MADC_BIN\" MADC_BIN='$child_executable' ${cmd[*]}"
 rc=$?
 if [ "${MADC_WIN_KEEP:-0}" != 1 ]; then
 	ssh -o BatchMode=yes "$WIN_SSH" "rm -rf '$dir'" >/dev/null 2>&1

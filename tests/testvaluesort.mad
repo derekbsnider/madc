@@ -1,17 +1,29 @@
-// Slice V1 acceptance — the owner's testsort shape verbatim: script mode,
-// no includes, `value line;` receiving channel lines, printf %s coercion.
-madc::channel sorter("exec://sort");
-
-if ( !sorter.ok() )
+// Slice V1 acceptance — script mode with no explicit includes, `value line;`
+// receiving channel lines, and printf %s coercion.
+// argc/argv belong to script mode's synthesized main, so the outer statement
+// keeps this setup local to that main rather than a file-scope initializer.
+if ( argc > 0 )
 {
-    printf("open failed: %s\n", sorter.last_error());
-    return 1;
+    const char *madc_bin = getenv("MADC_BIN");
+    const char *child_source = argc > 1 ? argv[1] : "tests/testexecchild.mad";
+    if ( !madc_bin || !*madc_bin )
+        madc_bin = "bin/madc";
+    char child_uri[1024];
+    snprintf(child_uri, sizeof(child_uri), "exec://%s --no-config %s",
+             madc_bin, child_source);
+    madc::channel child(child_uri);
+
+    if ( !child.ok() )
+    {
+        printf("open failed: %s\n", child.last_error());
+        return 1;
+    }
+
+    child.write("pear\napple\nmango\n");
+    child.close_write();
+
+    value line;
+    while ( child.readline(line) )
+        printf("received: %s\n", line);
+    child.close();
 }
-
-sorter.write("pear\napple\nmango\n");
-sorter.close_write();
-
-value line;
-while ( sorter.readline(line) )
-    printf("sorted: %s\n", line);
-sorter.close();

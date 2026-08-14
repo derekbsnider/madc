@@ -72,6 +72,10 @@ HERMETIC_FLAGS="--no-config"
 STDLIB_NAME=""
 STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
+# Export the resolved default too: exec-channel fixtures that spawn madc as
+# their child must exercise this lane's artifact, including the default lane
+# where the caller did not need to set MADC_BIN explicitly.
+export MADC_BIN="$MADC"
 MADC_WRAPPER="${MADC_WRAPPER:-}"
 while [ $# -gt 0 ]; do
     case "$1" in

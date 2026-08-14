@@ -1,12 +1,25 @@
-// Slice V2 — no explicit includes: `string` and `madc` auto-include
-// <string> before <ns_madc>, so its gated std::string overloads are present.
-// Exercise the convenience directly without depending on a platform's
-// external command set (Wine does not ship a POSIX `sort`).
-int main()
+// Slice V2 — the auto-include lane provides the std::string conveniences:
+// no explicit includes; the `string` and `madc` identifiers auto-include
+// <string> and <ns_madc>, and the canonical auto-include order puts
+// <string> FIRST, so <ns_madc>'s gated string overloads are present.
+// The outer statement keeps argc/argv-dependent setup inside script mode's
+// synthesized main rather than turning it into a file-scope initializer.
+if ( argc > 0 )
 {
-    string result;
-    madc::eval_expression_string(result, "\"apple\"");
-    printf("evaluated: %s\n", result.c_str());
+    const char *madc_bin = getenv("MADC_BIN");
+    const char *child_source = argc > 1 ? argv[1] : "tests/testexecchild.mad";
+    if ( !madc_bin || !*madc_bin )
+        madc_bin = "bin/madc";
+    char child_uri[1024];
+    snprintf(child_uri, sizeof(child_uri), "exec://%s --no-config %s",
+             madc_bin, child_source);
+    madc::channel child(child_uri);
+    child.write("pear\n");
+    string fruit = "apple\n";
+    child.write(fruit);
+    child.close_write();
+    string line;
+    while ( child.readline(line) )
+        printf("received: %s\n", line.c_str());
     printf("done\n");
-    return 0;
 }
