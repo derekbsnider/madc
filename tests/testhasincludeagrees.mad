@@ -1,0 +1,57 @@
+// __has_include must agree with what #include actually SERVES.
+//
+// Regression: the POSIX whole-provider arm (tokenize_posix_whole_provider)
+// serves <dlfcn.h> from madc's own posix/ entry on a target whose toolchain
+// ships no such header — but it decided that AFTER the filesystem walk, at a
+// position __has_include did not mirror. The embedded text is keyed
+// "posix/dlfcn.h", so find_embedded_header("dlfcn.h") missed and the file-open
+// probe answered honestly-but-wrongly NO for a header madc serves. The
+// canonical portability idiom below then took the no-dlfcn branch on a target
+// that has dlfcn — a silent wrong answer, exit 0.
+//
+// This is a CROSS-PLATFORM contract, so the expected output is the same
+// everywhere: on a POSIX host <dlfcn.h> is a real header and the native walk
+// finds it; on win64 madc's posix/ entry is the provider. Either way the probe
+// and the include must agree.
+//
+// Oracle (both agree, and this file compiles as C unchanged):
+//   gcc -std=c11    -> has_dlfcn 1 / has_string 1 / has_bogus 0 / served 1
+//   clang -std=c11  -> has_dlfcn 1 / has_string 1 / has_bogus 0 / served 1
+
+#include <stdio.h>
+
+#if __has_include(<dlfcn.h>)
+#define HAVE_DLFCN 1
+#else
+#define HAVE_DLFCN 0
+#endif
+
+// Negative control #1: a header every target really does ship. If this ever
+// reads 0 the probe is broken outright, not merely blind to posix/ providers.
+#if __has_include(<string.h>)
+#define HAVE_STRING 1
+#else
+#define HAVE_STRING 0
+#endif
+
+// Negative control #2: nothing serves this name, so a probe that simply
+// answers 1 for everything fails here.
+#if __has_include(<madc_no_such_header_xyz.h>)
+#define HAVE_BOGUS 1
+#else
+#define HAVE_BOGUS 0
+#endif
+
+// The probe above claimed this would work. Prove it does.
+#include <dlfcn.h>
+
+int main(void)
+{
+	void *h = dlopen(0, RTLD_LAZY);		// the running program itself
+
+	printf("has_dlfcn %d\n", HAVE_DLFCN);
+	printf("has_string %d\n", HAVE_STRING);
+	printf("has_bogus %d\n", HAVE_BOGUS);
+	printf("served %d\n", h != 0);
+	return 0;
+}

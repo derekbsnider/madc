@@ -3076,17 +3076,41 @@ bool madc_lexer_file_exists(const std::string &path);
 // the resolved path names no readable file — so §8's "serve only where the
 // native toolchain lacks it" is decided by evidence, not prediction. On a
 // POSIX host the native header always resolves, so this never fires there.
-bool Program::tokenize_posix_whole_provider(const std::string &incfile,
-					   const std::string &resolved)
+// The DECISION above is a predicate of its own because TWO consumers need it:
+// the serve arm below acts on it, and __has_include answers with it. They sit
+// at the same position in the resolution order — after the filesystem walk —
+// so "can I include this?" and "will including it work?" cannot disagree. A
+// file-open probe alone cannot see a provider that is on no disk, and it
+// answered NO for <dlfcn.h> while the include below served it: the canonical
+// `#if __has_include(<dlfcn.h>)` idiom then took the no-dlfcn branch on a
+// target that has it. `text`, when given, receives the embedded provider so
+// the caller that serves does not repeat the lookup.
+bool Program::posix_whole_provider_serves(const std::string &incfile,
+					  const std::string &resolved,
+					  const std::string **text) const
 {
 	if ( !is_posix_compat_header_allowed(incfile) )
 		return false;
 	if ( !resolved.empty() && madc_lexer_file_exists(resolved) )
 		return false;
-	const std::string provider = std::string("posix/") + incfile;
-	const std::string *embedded = find_embedded_header(provider);
+	const std::string *embedded =
+		find_embedded_header(std::string("posix/") + incfile);
 	if ( !embedded )
 		return false;
+	if ( text )
+		*text = embedded;
+	return true;
+}
+
+// Serve it: the predicate decided, this acts. Prefer the frozen forest unit
+// when forest-bind is on, else tokenize the embedded text.
+bool Program::tokenize_posix_whole_provider(const std::string &incfile,
+					   const std::string &resolved)
+{
+	const std::string *embedded = NULL;
+	if ( !posix_whole_provider_serves(incfile, resolved, &embedded) )
+		return false;
+	const std::string provider = std::string("posix/") + incfile;
 	if ( registration_policy.enable_forest_bind )
 	{
 	    CirFrozenForest *forest = ensure_bind_forest();
@@ -6713,7 +6737,16 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 			 ? resolve_include_next_path(file)
 			 : resolve_include_path(file, is_system);
 	std::ifstream probe(path.c_str());
-	return probe.good() ? 1 : 0;
+	if ( probe.good() )
+	    return 1;
+	// LAST position in the executor's resolution order, mirrored here: a
+	// POSIX name the native toolchain ships no header for at all is served
+	// by the posix/ entry AFTER the walk fails. Same predicate, same
+	// position, so the answer matches what #include will do.
+	if ( is_system && op == "__has_include"
+	  && posix_whole_provider_serves(file, path) )
+	    return 1;
+	return 0;
     }
 
     // __has_attribute / __has_cpp_attribute / __has_declspec_attribute /

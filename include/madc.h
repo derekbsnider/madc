@@ -4751,6 +4751,9 @@ public:
 					 const std::string &text,
 					 bool protocol_visit);
 	void tokenize_posix_header_supplement(const std::string &incfile);
+	bool posix_whole_provider_serves(const std::string &incfile,
+					 const std::string &resolved,
+					 const std::string **text = NULL) const;
 	bool tokenize_posix_whole_provider(const std::string &incfile,
 					   const std::string &resolved);
     void expand_pending_auto_include_macros(size_t original_start);
