@@ -3011,11 +3011,11 @@ const char *const *Program::sys_include_paths() const
 
 bool Program::posix_compat_enabled() const
 {
-#ifdef _WIN32
-	return registration_policy.enable_posix_compat;
-#else
-	return false;
-#endif
+	// The TARGET owns this, not the host (datadef.h: "never re-test _WIN32 at
+	// a consumer"). target_windows() is the third member of the target-property
+	// family beside target_llp64() / target_microsoft_bitfields(), so a future
+	// --target= knob reaches this predicate the same way it reaches the widths.
+	return target_windows() && registration_policy.enable_posix_compat;
 }
 
 bool Program::is_posix_compat_header_name(const std::string &name) const
@@ -3064,6 +3064,42 @@ void Program::tokenize_posix_header_supplement(const std::string &incfile)
 	// no -I/PCH provider may outrank it. Serving from the restored includer
 	// records the real header and its supplement as ordered sibling edges.
 	tokenize_embedded_header_text(supplement, *embedded, false);
+}
+
+// "Does this path name a readable file" — one owner, defined further down with
+// the PCH candidate walk that is its other caller.
+bool madc_lexer_file_exists(const std::string &path);
+
+// <dlfcn.h> is the case the SUPPLEMENT model cannot serve: mingw-w64 ships no
+// such header at all, so there is no real provider to augment and nothing to
+// shadow. posix/<name> IS the provider. Gated on the walk's ACTUAL outcome —
+// the resolved path names no readable file — so §8's "serve only where the
+// native toolchain lacks it" is decided by evidence, not prediction. On a
+// POSIX host the native header always resolves, so this never fires there.
+bool Program::tokenize_posix_whole_provider(const std::string &incfile,
+					   const std::string &resolved)
+{
+	if ( !is_posix_compat_header_allowed(incfile) )
+		return false;
+	if ( !resolved.empty() && madc_lexer_file_exists(resolved) )
+		return false;
+	const std::string provider = std::string("posix/") + incfile;
+	const std::string *embedded = find_embedded_header(provider);
+	if ( !embedded )
+		return false;
+	if ( registration_policy.enable_forest_bind )
+	{
+	    CirFrozenForest *forest = ensure_bind_forest();
+	    int fu = forest ? forest->find_unit(provider) : -1;
+	    if ( fu >= 0 )
+	    {
+		forest_bind_include((uint32_t)fu);
+		mark_embedded_include_flag(provider);
+		return true;
+	    }
+	}
+	tokenize_embedded_header_text(provider, *embedded, false);
+	return true;
 }
 
 const char *Program::compiler_owned_include_dir() const
@@ -3657,7 +3693,9 @@ bool Program::should_tokenize_include(const std::string &path)
 	&& macro_map.find(guard) == macro_map.end();
 }
 
-static bool file_exists(const std::string &path)
+// Defined here, used from tokenize_posix_whole_provider above too (declared
+// with it). "Does this path name a readable file" has ONE owner in this file.
+bool madc_lexer_file_exists(const std::string &path)
 {
     std::ifstream probe(path.c_str(), std::ios::binary);
     return probe.good();
@@ -3696,7 +3734,7 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 
     for ( size_t i = 0; i < candidates.size(); ++i )
     {
-	if ( file_exists(candidates[i]) )
+	if ( madc_lexer_file_exists(candidates[i]) )
 	{
 	    outpath = candidates[i];
 	    return true;
@@ -4601,6 +4639,13 @@ TokenBase *Program::_getToken()
 		    std::string full_path = is_include_next
 			? resolve_include_next_path(incfile)
 			: resolve_include_path(incfile, is_system);
+		    // A POSIX header the native toolchain does not ship AT ALL
+		    // has no real provider to augment, so the posix/ entry is
+		    // the provider itself. Decided here, after the walk, on its
+		    // actual outcome rather than a predicted one.
+		    if ( is_system && !is_include_next
+		      && tokenize_posix_whole_provider(incfile, full_path) )
+			return getToken();
 		    // Phase 6 (--forest-bind), v25: a grove-backed QUOTED /
 		    // filesystem include BINDS instead of tokenizing, exactly like
 		    // the angle branch above — the forest holds EVERY #include's

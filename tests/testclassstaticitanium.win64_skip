@@ -1,1 +1,1 @@
-includes dlfcn.h directly — mingw ships no dlfcn.h (mingw-gcc rejects this source too)
+asserts dlsym(RTLD_DEFAULT) can see libstdc++'s own numpunct<char>::id — a PE built with static libstdc++ does not export _Z* names (objdump -p: 5873 exported names, 0 matching numpunctIcE2id), so matches_itanium cannot be 1 there. NOT a <dlfcn.h> gap: dlfcn.h is served on win64 (include/madc/posix/dlfcn.h) and testdlfcnportable covers the API.

@@ -809,6 +809,84 @@ inline std::string &pop(std::string &result, madc::value &values) { return *__ru
 
 #endif
 )EMBED"},
+    {"posix/dlfcn.h", R"EMBED(// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////
+//                                                                       //
+// Win64 POSIX <dlfcn.h>. Unlike the other members of this directory this //
+// is a WHOLE provider, not a supplement: mingw-w64 ships no <dlfcn.h> at  //
+// all, so there is no native header to augment and nothing to shadow.    //
+//                                                                       //
+///////////////////////////////////////////////////////////////////////////
+#ifndef __MADC_POSIX_DLFCN_H
+#define __MADC_POSIX_DLFCN_H 1
+
+#ifndef _WIN32
+#error madc POSIX supplements are Win64-only
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Win32's loader has no lazy/eager distinction and no per-object symbol
+// visibility, so these are accepted and documented rather than emulated:
+// LAZY/NOW are equivalent, and GLOBAL/LOCAL do not change what dlsym() can
+// reach. They exist so POSIX source compiles unchanged.
+#define RTLD_LAZY	0x0001
+#define RTLD_NOW	0x0002
+#define RTLD_GLOBAL	0x0100
+#define RTLD_LOCAL	0x0000
+
+// dlsym()'s pseudo-handles. RTLD_DEFAULT is a null handle, as on glibc, so
+// `dlsym(RTLD_DEFAULT, name)` searches every module loaded in the process.
+#define RTLD_DEFAULT	((void *)0)
+
+void *dlopen(const char *__file, int __mode);
+void *dlsym(void *__handle, const char *__name);
+int   dlclose(void *__handle);
+char *dlerror(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+)EMBED"},
+    {"posix/stdlib.h", R"EMBED(// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////
+//                                                                       //
+// Win64 POSIX supplement for the platform's real <stdlib.h>.            //
+// Additive declarations only; the native header is always served first. //
+//                                                                       //
+///////////////////////////////////////////////////////////////////////////
+#ifndef __MADC_POSIX_STDLIB_H
+#define __MADC_POSIX_STDLIB_H 1
+
+#ifndef _WIN32
+#error madc POSIX supplements are Win64-only
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// POSIX.1-2008 environment mutators. UCRT ships neither name; both are
+// implemented in src/rt/rt_posix_env.c over the CRT's own _putenv_s, so a
+// setenv() is visible to a later getenv() in the same process.
+//
+// One documented divergence: the Win32 environment block cannot hold a
+// variable whose value is the empty string, so setenv(name, "", 1) REMOVES
+// name instead of defining it empty. Representing it would need a shadow
+// environment, which is the Cygwin-shaped cost this layer refuses.
+int setenv(const char *__name, const char *__value, int __overwrite);
+int unsetenv(const char *__name);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+)EMBED"},
     {"posix/string.h", R"EMBED(// SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////
 //                                                                       //

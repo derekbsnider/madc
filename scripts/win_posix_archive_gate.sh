@@ -91,6 +91,8 @@ specs="$repo_root/obj/hosted-x86-64-windows/ucrt.specs"
 runtime_bindings=(
 	"strndup:rt_posix_str.o"
 	"sleep:rt_posix_time.o"
+	"setenv:rt_posix_env.o"
+	"dlopen:rt_posix_dl.o"
 )
 
 source_file="$work/specimen.c"
@@ -102,10 +104,14 @@ cat >"$source_file" <<'EOF'
 #include <string.h>
 #include <unistd.h>
 #include <madc/posix/string.h>
+#include <madc/posix/stdlib.h>
+#include <madc/posix/dlfcn.h>
 
 int main(void)
 {
 	char *copy = strndup("abcdef", 3U);
+	const char *readback;
+	void *self;
 
 	if (copy == NULL)
 		return 10;
@@ -116,6 +122,39 @@ int main(void)
 	free(copy);
 	if (sleep(0U) != 0U)
 		return 12;
+
+	/* setenv/getenv must round-trip through the CRT's own view. */
+	if (setenv("MADC_ARCHIVE_GATE", "set", 1) != 0)
+		return 13;
+	readback = getenv("MADC_ARCHIVE_GATE");
+	if (readback == NULL || strcmp(readback, "set") != 0)
+		return 14;
+	/* overwrite == 0 must not replace an existing value. */
+	if (setenv("MADC_ARCHIVE_GATE", "other", 0) != 0)
+		return 15;
+	readback = getenv("MADC_ARCHIVE_GATE");
+	if (readback == NULL || strcmp(readback, "set") != 0)
+		return 16;
+	if (unsetenv("MADC_ARCHIVE_GATE") != 0)
+		return 17;
+	if (getenv("MADC_ARCHIVE_GATE") != NULL)
+		return 18;
+
+	/* dlopen(NULL) names the main program; RTLD_DEFAULT reaches the CRT. */
+	self = dlopen(NULL, RTLD_LAZY);
+	if (self == NULL)
+		return 19;
+	if (dlsym(RTLD_DEFAULT, "getenv") == NULL)
+		return 20;
+	if (dlsym(RTLD_DEFAULT, "madc_no_such_symbol_exists") != NULL)
+		return 21;
+	if (dlerror() == NULL)		/* the failed lookup must be reportable */
+		return 22;
+	if (dlerror() != NULL)		/* and consumed by the read */
+		return 23;
+	if (dlclose(self) != 0)
+		return 24;
+
 	puts("win-posix-archive-ok");
 	return 0;
 }

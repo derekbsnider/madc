@@ -15,3 +15,5 @@ all src/rt/rt_except.c
 all src/rt/rt_vla.c
 win64 src/rt/rt_posix_str.c
 win64 src/rt/rt_posix_time.c
+win64 src/rt/rt_posix_env.c
+win64 src/rt/rt_posix_dl.c

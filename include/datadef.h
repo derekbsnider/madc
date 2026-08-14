@@ -56,6 +56,17 @@ extern TargetBitFieldABI madc_target_bitfield_abi;
 inline bool target_microsoft_bitfields()
 { return madc_target_bitfield_abi == TargetBitFieldABI::Microsoft; }
 
+// The TARGET's OS personality — the third target property, same shape and same
+// rule as the two above: ONE owner for every "is this target the non-POSIX
+// one" question, and never re-test _WIN32 at a consumer. This is what decides
+// whether the POSIX compatibility layer (docs/plans/2026-08-13-posix-target-
+// surface.md) is even eligible, so it must follow the target and not the host.
+// Defined beside the data-model owner.
+enum class TargetOS { Posix, Windows };
+extern TargetOS madc_target_os;
+inline bool target_windows()
+{ return madc_target_os == TargetOS::Windows; }
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the

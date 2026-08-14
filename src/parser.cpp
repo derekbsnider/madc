@@ -16143,6 +16143,15 @@ TargetBitFieldABI madc_target_bitfield_abi =
 	TargetBitFieldABI::SystemV;
 #endif
 
+// Same host-derived default, same reassignment story as its two siblings: this
+// is the ONE place _WIN32 decides the target's OS personality.
+TargetOS madc_target_os =
+#ifdef _WIN32
+	TargetOS::Windows;
+#else
+	TargetOS::Posix;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;

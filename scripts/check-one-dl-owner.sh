@@ -20,6 +20,21 @@
 #   tests/unit/test_native_shared.cpp — simulates a THIRD-PARTY C host
 #     dlopen'ing a madc-emitted .so (RTLD_DEEPBIND isolation); the test's
 #     whole point is the raw external-consumer view, not the madc host.
+#   include/madc/**                  — the TARGET's own surface, plus
+#   src/embedded_headers.cpp           its GENERATED mirror (every byte of
+#     that file is produced verbatim from include/madc/** by
+#     scripts/gen_embedded_headers.sh; nothing is hand-written there).
+#     This is a SCOPE statement, not a hole: the gate's rule is about the
+#     HOST's call sites, and these two paths contain no host code by
+#     construction. include/madc/posix/dlfcn.h is the live case — mingw-w64
+#     ships no <dlfcn.h>, so that header declares the names for COMPILED
+#     USER PROGRAMS and src/rt/rt_posix_dl.c implements them (L3, strict
+#     C11 over Win32). It deliberately does NOT route through madcdl_*:
+#     that seam is madc's own C++, and an emitted-C program links
+#     libmadc_rt.a alone, so the forward would be an unresolved symbol
+#     (docs/plans/2026-08-13-posix-target-surface.md §3).
+#     Verify after changing either line: drop a raw `dlopen(` into a host
+#     .cpp and confirm this gate still exits 1.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -29,7 +44,9 @@ hits=$(grep -rnE --include='*.cpp' --include='*.h' "$pat" \
   | sed -E 's_(//|/\*).*__' \
   | grep -E "$pat" \
   | grep -v '^src/madc_dl\.cpp:' \
-  | grep -v '^tests/unit/test_native_shared\.cpp:' )
+  | grep -v '^tests/unit/test_native_shared\.cpp:' \
+  | grep -v '^include/madc/' \
+  | grep -v '^src/embedded_headers\.cpp:' )
 n=$(printf '%s' "$hits" | grep -c . )
 
 if [ "$n" -ne 0 ]; then

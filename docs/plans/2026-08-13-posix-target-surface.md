@@ -327,6 +327,41 @@ plus a strict-C11 shim forwarding to it. *Gate:* `testclassstaticitanium`
 passes; `testdlcall`/`testdlopen` need their `libc.so.6` asset made
 portable first (they are test-asset problems, §10).
 
+> **Corrected 2026-08-14 on implementation — two things above are wrong.**
+>
+> 1. **It must NOT forward to `madcdl_*`.** That seam is L0 (madc's own C++
+>    calling the OS); this is L3, and §3 already settled it: *"they never
+>    share code paths, because L3 must link into an emitted-C program that
+>    contains no madc C++ at all."* An emitted-C program links
+>    `libmadc_rt.a` ALONE, so a forward would be an unresolved symbol
+>    there. `src/rt/rt_posix_dl.c` therefore implements
+>    `dlopen`/`dlsym`/`dlclose`/`dlerror` over `LoadLibraryA` /
+>    `GetProcAddress` / `FreeLibrary` directly, with `RTLD_DEFAULT` over
+>    `EnumProcessModules` (which resolves to `K32EnumProcessModules` in
+>    kernel32 — no psapi link). Same technique, separate owner, by design.
+> 2. **`testclassstaticitanium` is NOT the gate and does NOT unskip.** It
+>    asserts `dlsym(RTLD_DEFAULT, …)` can see libstdc++'s own
+>    `numpunct<char>::id`. Measured on the actual artifact: the hosted PE
+>    exports **5873** names and **0** matching `numpunctIcE2id`, because
+>    libstdc++ is linked statically and PE `ld` does not export `_Z*` from
+>    those archives (`sleep` IS in that table, which is the positive
+>    control for the marker). So the test cannot print `matches_itanium=1`
+>    on win64 no matter what `<dlfcn.h>` does. Its skip stays, with the
+>    reason corrected from "mingw ships no dlfcn.h" to the real one.
+>
+> The gate is instead `tests/testdlfcnportable.mad` — the API contract with
+> no library filename anywhere, so it runs on all three targets (that
+> filename dependency is exactly what makes `testdlopen`/`testdlcall`
+> structurally POSIX-only). **Net skip arithmetic: P2 clears 0 of the
+> pre-existing skips and adds one new cross-platform test.** `<dlfcn.h>`
+> is still worth having on its own merits — a user program can now
+> `dlopen` a DLL — but the handoff's "clears 1 skip" was wrong.
+>
+> `include/madc/posix/dlfcn.h` is also the first WHOLE provider: mingw
+> ships no such header, so there is nothing to augment. That needed a new
+> lexer arm (`Program::tokenize_posix_whole_provider`), gated on the
+> include walk's actual outcome — the resolved path names no readable file.
+
 **P3 — the fd registry + `fcntl` + `flock`.** §4. `F_GETFL`/`F_SETFL`
 (`O_NONBLOCK`), `F_GETFD`/`F_SETFD` (`FD_CLOEXEC`), `F_DUPFD`; `flock`
 over `LockFileEx`/`UnlockFileEx`. *Gate:* `testfcntl`, `testflock`, and a
