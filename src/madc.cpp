@@ -1677,6 +1677,21 @@ int main(int argc, char **argv)
 	// (gcc CLI vocabulary; --emit-object/--emit-executable are aliases.)
 	if ( emit_native )
 	{
+	    // Positionals after the source are the SCRIPT's argv — but no script
+	    // runs on this lane, so they can only be misplaced flags (madc's
+	    // convention puts flags BEFORE the source, unlike gcc). Dropping
+	    // them silently turned `-c foo.c -o bar.o` into a derived-name .o
+	    // with exit 0 — a silent wrong answer. Refuse loudly instead.
+	    if ( filearg + 1 < argc )
+	    {
+		std::cerr << "madc: unconsumed arguments after '" << argv[filearg]
+			  << "' in AOT mode (flags go before the source"
+			     " file):";
+		for ( int i = filearg + 1; i < argc; i++ )
+		    std::cerr << " " << argv[i];
+		std::cerr << std::endl;
+		return 1;
+	    }
 	    MadcNativeKind kind;
 	    const char *explicit_out = NULL;
 	    const char *dflt_suffix = NULL;
