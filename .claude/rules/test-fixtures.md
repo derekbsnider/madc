@@ -32,6 +32,9 @@
     `MADC_SKIP_EXT` includes `<domain>`; for tests whose `.o` lane is
     structurally out of that domain's scope while the JIT (and other
     domains' `.o` lanes) still cover them; content = one line saying why
+  - `tests/foo.<domain>_exe_skip` — the domain twin of `.exe_skip`: skip
+    BOTH native-artifact passes (`--exe` and `--obj`), only when
+    `MADC_SKIP_EXT` includes `<domain>`; content = one line saying why
 - When a test needs stdin, use a `.input` fixture file with shell
   redirection (`prog < foo.input`). Never use `echo ... | prog` inline in
   the runner.

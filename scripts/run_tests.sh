@@ -29,6 +29,9 @@
 #                      .o lane is structurally out of that domain's scope
 #                      while the JIT (and other domains' .o lanes) still
 #                      cover them; content = one line saying why.
+#   tests/foo.<domain>_exe_skip — the domain twin of .exe_skip: skip BOTH
+#                      native-artifact passes (exe and obj), only when
+#                      MADC_SKIP_EXT includes <domain>.
 #
 # No test names are hard-coded here.
 #
@@ -298,16 +301,22 @@ for t in tests/*.mad; do
     # dlopen happens before the .o dispatch); --project is compile-only
     # (the run executes the finished artifact) so it is dropped from the
     # replayed run flags.
+    # Domain twins of .obj_skip/.exe_skip: same pass coverage, scoped to a
+    # MADC_SKIP_EXT domain. <domain>_exe_skip covers BOTH native-artifact
+    # passes (the .exe_skip rule); <domain>_obj_skip the obj pass only.
     domain_obj_skip=0
+    domain_exe_skip=0
     for skip_ext in $MADC_SKIP_EXT; do
         if [ -f "tests/$base.${skip_ext}_obj_skip" ]; then
             domain_obj_skip=1
-            break
+        fi
+        if [ -f "tests/$base.${skip_ext}_exe_skip" ]; then
+            domain_exe_skip=1
         fi
     done
     if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
        && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ] \
-       && [ $domain_obj_skip -eq 0 ]; then
+       && [ $domain_obj_skip -eq 0 ] && [ $domain_exe_skip -eq 0 ]; then
         obj_path="/tmp/madc_test_obj_${base}.o"
         run_flags=()
         skip_next=0
@@ -353,7 +362,7 @@ for t in tests/*.mad; do
     # as structurally JIT-only (freeze re-exec machinery, in-process host
     # callbacks) — skipped here, not counted as an exe failure.
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ]; then
+       && [ ! -f "tests/$base.exe_skip" ] && [ $domain_exe_skip -eq 0 ]; then
         exe_path="/tmp/madc_test_exe_${base}"
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the

@@ -1,1 +1,1 @@
-DWARF-in-COFF .o carriage not yet implemented — mir-pe's object writer refuses -g loudly (same posture as the Mach-O writer); the win64 -g JIT lane covers this test.
+DWARF-in-COFF/PE carriage not yet implemented — mir-pe refuses -g loudly on both the .o and image writers (the Mach-O writers' posture); the win64 -g JIT lane covers this test.
