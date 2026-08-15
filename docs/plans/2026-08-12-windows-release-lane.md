@@ -1342,6 +1342,60 @@ freeze takes ~11s (the 1800s cap is generous).
   exclude list) — repackage after any sync, or add dist/ to the
   excludes when the packaging flow stabilizes.
 
+#### Task #57 burndown, session #91 (2026-08-15)
+
+Two slices landed (33036e06 + fe88af34), both gate-green with
+`MADC_FOREST_ENV_CHECK=1`:
+
+- **Cross-instance redecl tolerance + live-wins at the typedef arm.**
+  `DataDef::denotes_same_type` (C11 6.7p3 identity across DataDef
+  instances); a shape-DIVERGENT restored alias is OVERWRITTEN by the
+  live declaration (provenance `forest_restored_datatype_names`). Root
+  record: the frozen FILE twin is the UCRT placeholder `struct _iobuf
+  { char *_Placeholder; }` (size 8, stdio.h-first freeze order); the
+  TU's wchar.h-first order makes the classic 48-byte layout correct —
+  verified against `x86_64-w64-mingw32-gcc-posix -D_UCRT
+  -specs=ucrt.specs` vs the msvcrt-default driver: **mingw headers
+  genuinely make FILE's shape include-order-dependent**, so live wins.
+- **Class-arm live-wins** (`DataDefSTRUCT::forest_restored` instance
+  provenance): a declined root's live re-definition of a restored
+  class (ios_base) re-parses fresh and overwrites; skip-and-reuse was
+  tried and reverted — the twin is INCOMPLETE for live needs (nested
+  `ios_base::Init` demand-filtered out with its pruned declaring unit;
+  the freeze transports no enclosing_class linkage).
+- Gate: `forest_bind_gate` **[redecl] leg** — two corpora pinning the
+  prune boundary (sub-block-guard prune + tolerance; genuine
+  live-evidence prune). Infrastructure landed for the NEXT slice:
+  `forest_live_tokenized` (recorded at should_tokenize_include
+  true-verdicts, one owner `live_tokenize_record`).
+- Tried and reverted with evidence (recorded in the commit): the k==0
+  first-dep guard test (stddef.h is a multi-entry `__need_*` header —
+  its NULL prune is load-bearing for the libc++ lane) and restore-side
+  name suppression (glibc stdio.h live-present RE-EXPORTS FILE whose
+  defining unit bits/types/FILE.h was legitimately bound).
+- teststod's residual decomposed into TWO more root defects, both fixed
+  (commits 9329a56e + ea140b68, all gates green): the parser hoisted
+  block-scope function PROTOTYPES as GNU nested functions (C11 6.2.2p5
+  — mingw stdlib.h declares __mingw_strtof INSIDE strtof's inline body;
+  `function_declarator_has_body()` DelimDepth lookahead now splits
+  declaration from definition; tests/testblockfndecl.mad), and the
+  forest arg-ref collector resolved address-referenced siblings ONLY
+  through the extern-decl index, silently dropping static-inline
+  DEFINITIONS (`__stoa(&strtof, ...)`); index misses now route through
+  referenced_funcs so the m&l fixpoint materializes them (gate leg
+  [silbody] = the shape verbatim).
+- **Packed wine suite: 1002/2** (was 999/4). The remaining pair =
+  errno, which passes with `MADC_FOREST_ENV_CHECK=1`.
+- **Knob-ON measured: 987/17** — the env check fixes errno but its
+  decline cascade exposes 17 mixed-state failures (teststod itself
+  regresses knob-on: declines re-mix the bind/live split). The knob
+  stays PARKED; the 17-test list (s91-packedwine-env.log) is the prune
+  redesign's worklist: value-EQUAL inert-guard mismatches must BIND
+  instead of declining (stddef NULL, _SECIMP, __USE_MINGW_STRTOX;
+  forest_unit_file_live_tokenized evidence infra landed), plus the
+  remaining mixed-decl frontiers, plus the packed-lane latency check
+  (#25) before any flip.
+
 Remaining W5: task #57 burndown to a clean packed wine suite; the
 real-Windows full-suite lane (MADC_RUNNER + the test tree staged on
 the box); the release itself (merge = owner decision, ships WITH a
