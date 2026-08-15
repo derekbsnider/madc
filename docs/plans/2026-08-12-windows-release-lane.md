@@ -1121,6 +1121,26 @@ GREEN Linux .o lane, `.<domain>_skip` the GREEN win64 JIT lane.
 DWARF-in-COFF stays a W-lane roadmap item (writer+reader+loader,
 SECREL-class relocs — not on the release critical path).
 
+**W3.5 SHIPPED (2026-08-15, commits e40e687a + 409c001b):
+`bin/libmadc_rt.dll` + `lib/libmadc_rt.dll.a` — the win64 runtime
+provider.** The DLL = whole-archive per-mode libmadc + libmir,
+`--export-all-symbols` for plain names, PLUS a .def generated from the
+one mingw-stdio map owner (`scripts/gen_win_rt_exports.sh`): the map's
+symbols are statically-linked libmingwex/oldnames code PE ld
+auto-excludes from auto-export (the W1-slice-15 rule again), and AOT
+images import them (`__mingw_vfprintf` et al.) from the rt DLL since
+they exist in no system DLL (or only in the wrong LD flavor). Driver:
+`cir_windows_import_dlls` (ONE owner, both emit lanes) puts the rt DLL
+FIRST in the writer's attribution order when the runtime is needed;
+the PE refusal is LIFTED (Mach-O keeps it). Validated on wine AND real
+Windows: printing program (`puts`+`printf`) → `madc -o` → imports
+libmadc_rt.dll + ucrtbase.dll → runs; `.o` external link via the
+import lib resolves W3.1's undefined set and runs. **Deployment set
+for a runtime-needing exe: libmadc_rt.dll + libstdc++-6.dll +
+libwinpthread-1.dll adjacent or on PATH (the rt DLL links the staged
+C++ runtime shared, same as madc.exe); the suite's wine --exe lane
+spells this WINEPATH='Z:\\workspace\\madc\\bin'.**
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
