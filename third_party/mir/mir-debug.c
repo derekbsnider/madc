@@ -1883,11 +1883,7 @@ int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *
   return macho_emit_executable (obj, params, buf, size); /* Mach-O container */
 #endif
 #if MIR_TARGET_WINDOWS_P
-  /* The PE64 image writer is the W3.3 slice (madc windows release lane).
-     Refuse loudly rather than fall through: the ELF emitter below would
-     produce a well-formed ELF image under a .exe name -- a silent wrong
-     artifact on a Windows target. */
-  return -1;
+  return pe_emit_executable (obj, params, buf, size); /* PE32+ container */
 #endif
   int shared_p = params->shared_p != 0;
   int pie_p = !shared_p && params->pie_p != 0;

@@ -112,6 +112,14 @@ std::string madc_self_lib_path();
 #define MADC_TARGET_APPLE_P 0
 #endif
 
+// The native-emit TARGET is Windows/PE (same shape as the Apple predicate:
+// an emit-only cross madc configured for win64, or a madc hosted there).
+#if defined(MADC_CROSS_WINDOWS) || defined(_WIN32)
+#define MADC_TARGET_WINDOWS_P 1
+#else
+#define MADC_TARGET_WINDOWS_P 0
+#endif
+
 class TokenBase;
 
 // C fixed-size array dimension. 64-bit: huge dims like
