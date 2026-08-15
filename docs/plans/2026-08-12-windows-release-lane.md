@@ -1306,6 +1306,46 @@ freeze takes ~11s (the 1800s cap is generous).
   lane correctly fails loud on the same class.
 
 ### W5 — Lanes, battery, artifacts
+
+#### W5 artifact chain SHIPPED (2026-08-15, session #90 cont.)
+
+- `scripts/verify_pe_release.sh` (wired into `release-windows`):
+  import-table policy (UCRT api-sets + KERNEL32 + WS2_32 + the two
+  staged runtime DLLs; msvcrt.dll refuses), forest read-back through
+  the exact shipped bytes under wine (directory pin + per-module win64
+  ledger + --run-frozen), stripped check, DLL adjacency.
+- `scripts/package_release_windows.sh` → `dist/madc-<ver>-windows-x86_64.zip`
+  (bin/madc.exe + the three DLLs ADJACENT, libmadc_rt.dll.a +
+  libmadc_rt.a, README-windows.txt, GCC COPYING3/RUNTIME-EXCEPTION from
+  the exact staged gcc source + mingw-w64 copyright + zstd BSD).
+  Clean-extract validation: JIT (sum=6), -o emit + run — no repo.
+- `scripts/win_battery.sh` — **ALL LEGS OK on the real Windows box**:
+  extract (Windows' own tar.exe), jit (forest-served C++ on a
+  compiler-less box), aot (emit + run beside the shipped DLLs), ledger
+  (-static-libmadc VLA exe runs without libmadc_rt.dll), refuse
+  (negative control).
+- First packed-exe wine suite: **999/4** — the four = ONE root, task
+  #57 (order-conditional frozen unit state binds without an
+  environment check: cstdlib-before-cerrno put errno's define event on
+  stdlib.h's unit; branch-macro data is recorded but bind eligibility
+  never consults it; strtod cross-unit decl same family).
+- Task #58 (owner-visible product decision): the forest is
+  single-config, so `--std=gnu17` on a headerless real-Windows box
+  cannot compile (bind declines by config, live parse has no headers;
+  wine masks via Z:\). Multi-config containers vs documented C-lane
+  toolchain requirement.
+- Task #56 rider (all platforms, zero coverage): std::vector
+  INITIALIZER-LIST construction broken (direct-init → undefined
+  allocator __o3 replay; copy-init → c2mir check errors in
+  stl_vector.h:428).
+- ⚠️ `remote_build.sh sync` CLOBBERS the container's dist/ (not in the
+  exclude list) — repackage after any sync, or add dist/ to the
+  excludes when the packaging flow stabilizes.
+
+Remaining W5: task #57 burndown to a clean packed wine suite; the
+real-Windows full-suite lane (MADC_RUNNER + the test tree staged on
+the box); the release itself (merge = owner decision, ships WITH a
+release per the cadence rule).
 - Suite lanes on real Windows: `run_tests.sh` gains a generic runner
   prefix (fixture-convention rule: a `MADC_RUNNER=...` env wrapping
   the madc invocation — the W0.2 ssh channel or wine64 — never

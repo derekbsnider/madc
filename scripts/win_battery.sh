@@ -74,7 +74,7 @@ esac
 # printf survives it).
 remote "printf '#include <iostream>\n#include <vector>\nint main(){ std::vector<int> v; v.push_back(1); v.push_back(2); v.push_back(3); int s=0; for(size_t i=0;i<v.size();++i) s+=v[i]; std::cout << \"sum=\" << s << std::endl; return 0; }\n' > hello.cpp" \
     || leg stage FAIL "could not write test sources"
-remote "printf '#include <stdio.h>\nint main(void){ int n=3; int a[n]; a[2]=7; if (a[2]==7) puts(\"vla-ok\"); return 0; }\n' > vla.c" || true
+remote "printf '#include <iostream>\nint main(){ int n=3; int a[n]; a[2]=7; if (a[2]==7) std::cout << \"vla-ok\" << std::endl; return 0; }\n' > vla.cpp" || true
 remote "printf 'int main(void){ return undeclared_symbol; }\n' > bad.c" || true
 
 # --- jit: forest-served headers, genuine PE process. -----------------------
@@ -91,9 +91,14 @@ case "$out" in
 *)       leg aot FAIL "$out" ;;
 esac
 
-# --- ledger: -static-libmadc from the embedded AOT ledger; the exe runs
-# --- from an EMPTY directory (no madc DLL anywhere near it). ---------------
-out=$(remote "bin/madc.exe -o vla.exe -static-libmadc vla.c && mkdir -p alone && cp vla.exe alone/ && cd alone && ./vla.exe" 2>&1)
+# --- ledger: -static-libmadc from the embedded AOT ledger (the VLA free
+# --- rides rt_vla's ledger module). The emitted exe runs from a directory
+# --- holding ONLY the C++ runtime DLLs — deliberately NOT libmadc_rt.dll:
+# --- the madc runtime dependency is what the flag removes, and cout's
+# --- mangled-direct libstdc++ imports are outside that promise. (The
+# --- C-lane spelling of this leg is blocked on task #58 — the forest is
+# --- single-config, so --std=gnu17 cannot compile on a headerless box.)
+out=$(remote "bin/madc.exe -o vla.exe -static-libmadc vla.cpp && mkdir -p alone && cp vla.exe bin/libstdc++-6.dll bin/libwinpthread-1.dll alone/ && cd alone && ./vla.exe" 2>&1)
 case "$out" in
 *vla-ok*) leg ledger ok ;;
 *)        leg ledger FAIL "$out" ;;
