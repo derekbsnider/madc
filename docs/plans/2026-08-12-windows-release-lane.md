@@ -1236,6 +1236,75 @@ Four roots, each at depth:
    runtime-needing AOT output). The pack script sets
    WINEPATH='Z:\workspace\madc\bin' for the packer copy in tmp/.
 
+#### W4 SHIPPED (2026-08-15, session #90 cont.) — the packed win64 exe + ledger
+
+`make -C src release-windows` produces `bin/madc-release-x86-64-windows.exe`
+(stripped, PE-trailer-packed: **196 forest units + 6 win64 ledger modules +
+MIR cache blob**), every pack verify leg green under wine (dump-forest,
+run-frozen, per-module ledger presence, unit presence, default-lane product
+smoke). Validated: the packed exe serves headers from its forest (testif);
+plain `-o` runtime-needing AOT emits + runs (try/catch+printf → libmadc_rt
+attribution); **`-static-libmadc` end-to-end** — a VLA program pulls the
+rt_vla ledger module and emits an exe whose ONLY import is ucrtbase.dll,
+running rc=0.
+
+**The freeze burndown found ELEVEN defects, ALL Linux-latent madc bugs the
+win64 header chain exposed** (each with an oracle-verified reducer):
+1. 40f227c8 — typedef accepts specifier-position `__attribute__`
+   (mingw setjmp.h `_CRT_ALIGN(16)`); aligned(N) rides tag_explicit_align.
+2. 9f283f21 — decl-head macro suppression narrowed to ALL-args-prototype-
+   shaped (intrin-impl.h `__buildstos(__stosq, unsigned __int64, "q|q")`
+   after `extern __inline__` must expand; SMAUG protection cases retained).
+3. a690d5e0 — `find_embedded_header` serves the `<madc/X>` compiler-owned
+   spelling (rt_posix_dl.c's one-owner `<madc/posix/dlfcn.h>` RTLD_* header;
+   dual-build: mingw resolves via -I../include, madc via the embedded map).
+4. 3aa24f90 — typedef parses C declarator LISTS (`typedef signed char
+   INT8,*PINT8;` basetsd.h — tail was silently DROPPED everywhere) + the
+   top-level PROGRESS GUARD: a statement parse that restores the stream
+   throws loudly instead of spinning at 100% CPU (how the windows.h hang
+   presented; the truncation-EOF spins were the same loop).
+5. 6a7ec1a5 — typedef ENUM lists ride the one tail owner
+   (`typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` winnt.h:480).
+6. 688e5aba — `_FloatN` combines with `_Complex` in the type-spec
+   accumulator (avx512fp16intrin.h `_Float16 _Complex`) and `__bf16`
+   registered (~float posture) — **the full gcc-13 <immintrin.h> tree now
+   parses quietly** (winnt.h includes <x86intrin.h> unconditionally).
+7. ea5dad5a — bodyless struct-tag typedef lists (`typedef struct _X X,*PX;`
+   winnt.h:5386) + adopt the one array-suffix owner
+   (Program::parse_typedef_array_suffix; the inline copy deleted).
+8. (same commit) — redecl-tolerant list walking (a matching redecl skips
+   its own registration but keeps walking).
+9. 40f227c8-family rider — `typedef PVOID (ENCLAVE_TARGET_FUNCTION)(PVOID);`
+   starless paren'd FUNCTION form (winnt.h:5870) parses as Form 1.
+10. (same) — `typedef ENCLAVE_TARGET_FUNCTION (*P...);` pointer-to-function-
+   typedef with no parameter list reuses the base's FuncDef (winnt.h:5871).
+11. ae746250 — extern-proto mints never shadow c2mir intrinsics: the
+   forest-BOUND lane materialized mingw's inline printf body and minted
+   `extern void __builtin_va_start(...)` (a LOADED != parsed divergence);
+   both mints (need_output_extern + the referenced-funcs proto loop) now
+   enforce the rule themselves.
+
+Also: W4.1 zstd (LIBS carries OPTIONAL_LIBS — ed285488; the first cut's
+flag-only rebuild was a no-op green, caught on the artifact); the wine
+freeze takes ~11s (the 1800s cap is generous).
+
+**W4 residuals (all loud, none silent):**
+- `-static-libmadc` + try/catch blocks on `_setjmp` cover classification
+  (ucrtbase exports it; the verifier calls it Tier-B) and printf blocks on
+  `__mingw_vfprintf` (genuinely Tier-B today — the mingw interposer set
+  exists only as host objects; a UCRT-native `__stdio_common_vfprintf`
+  route or a ledger-carried formatter is the W4.6/W5 design question).
+- Task #55: the opt-in MADC_MIR_CACHE_BIND lane crashes on win64
+  (ILLEGAL_INSTRUCTION in a JIT frame after the cache trap prebind); the
+  win pack gate runs the default-lane product smoke instead and names the
+  task; restore the equivalence leg when fixed.
+- The freeze prints c2mir warnings with CORRUPTED filenames ("ostreamn_s",
+  "ostreamcwd" — the ostream unit + trailing garbage): the warning itself
+  AND the filename corruption need chasing (zero-warnings law).
+- CLI include-chain errors print but exit 0 on the JIT lane (seen twice
+  during the immintrin bisect) — a silent-degradation smell; the ledger
+  lane correctly fails loud on the same class.
+
 ### W5 — Lanes, battery, artifacts
 - Suite lanes on real Windows: `run_tests.sh` gains a generic runner
   prefix (fixture-convention rule: a `MADC_RUNNER=...` env wrapping
