@@ -328,12 +328,14 @@ MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 # The configure-probed host packages do not exist for the cross target:
 # hosted modes build as if --enable-madcdat=no (the darwin posture). zstd
-# (the forest/pch container codec) is a W4 rider — zlib alone serves pch
-# here until the groves work stages a mingw zstd.
+# (the forest/pch container codec) comes from the per-target static stage
+# in the container, beside the darwin twins (W4.1; the release pack must
+# carry the zstd profile — the freeze path's zlib arm is a loud fallback).
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
-OPTIONAL_CPPFLAGS =
-OPTIONAL_LIBS =
+WIN_ZSTD_DIR ?= /workspace/zstd
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib
+OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a
 MADC_STORAGE_DB_OFILES =
 # win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
 # kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's

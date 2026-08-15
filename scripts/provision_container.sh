@@ -21,7 +21,9 @@
 #   - /workspace/madc — the git tree (MIR included at third_party/mir),
 #     restored by scripts/remote_build.sh sync (or a clone).
 #   - /workspace/zstd — the per-target static zstd builds the hosted darwin
-#     modes link (forest-carriers S1); rebuild from that tree if lost.
+#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1);
+#     the darwin twins rebuild from that tree by hand if lost, the win64 one
+#     is staged below.
 set -u
 
 CHECK_ONLY=0
@@ -123,6 +125,16 @@ report() {
 		printf '  MISSING darwin open headers — scripts/fetch_darwin_open_headers.sh stages them\n'
 		missing=1
 	fi
+	# The win64 zstd stage (W4.1): the hosted-windows MODE links it, and its
+	# absence fails that build loudly at link — but report it here so a lost
+	# stage is visible before a build is attempted.
+	local wzstd="${WIN_ZSTD_DIR:-/workspace/zstd}/libzstd-x86-64-windows.a"
+	if [ -f "$wzstd" ]; then
+		printf '  ok      win64 zstd stage (%s)\n' "$wzstd"
+	else
+		printf '  MISSING win64 zstd stage (%s) — staged below from /workspace/zstd\n' "$wzstd"
+		missing=1
+	fi
 	return $missing
 }
 
@@ -145,6 +157,26 @@ bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
 
 echo "provision_container: staging UCRT-flavor libstdc++ (windows lane W1)"
 bash "$(dirname "$0")/build_win_ucrt_libstdcxx.sh" || exit 1
+
+# win64 zstd stage (windows lane W4.1): the per-target static build the
+# hosted-windows MODE links, beside the darwin twins. /workspace/zstd is the
+# v1.5.5 source tree the header comment names; idempotent — the .a survives
+# container rebuilds on the persistent volume.
+WZSTD_A="${WIN_ZSTD_DIR:-/workspace/zstd}/libzstd-x86-64-windows.a"
+if [ ! -f "$WZSTD_A" ]; then
+	echo "provision_container: staging win64 zstd (windows lane W4.1)"
+	if [ ! -d /workspace/zstd/lib ]; then
+		echo "provision_container: /workspace/zstd source tree missing (clone facebook/zstd v1.5.5 there)" >&2
+		exit 1
+	fi
+	make -C /workspace/zstd/lib -j8 BUILD_DIR=obj-win64 \
+		CC='x86_64-w64-mingw32-gcc-posix -D_UCRT -D__USE_MINGW_ANSI_STDIO=1' \
+		AR=x86_64-w64-mingw32-ar libzstd.a || exit 1
+	cp -p /workspace/zstd/lib/libzstd.a "$WZSTD_A" || exit 1
+	# never leave a target-flavored libzstd.a in lib/ for another target's
+	# build to pick up stale
+	rm -f /workspace/zstd/lib/libzstd.a
+fi
 
 echo "provision_container: verifying"
 report
