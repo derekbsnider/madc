@@ -754,11 +754,13 @@ static const char *VA_ARG = "mir.va_arg";
 static const char *VA_BLOCK_ARG_P = "mir.va_block_arg.p";
 static const char *VA_BLOCK_ARG = "mir.va_block_arg";
 
-#if defined(__ELF__) && defined(__GNUC__)
+#if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__)
 /* AOT object mode: generated code calls these builtins through the "mir.*"
    import items above, which become undefined symbols in an emitted .o --
-   export them from libmir under those exact ELF names so the link resolves.
-   (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c.) */
+   export them from libmir under those exact names so the link resolves.
+   (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c;
+   mingw/PE takes the same shape -- dotted asm labels + alias are
+   probe-verified on gas/COFF.) */
 extern __typeof (mir_ui2f) mir_ui2f_obj_export asm ("mir.ui2f")
   __attribute__ ((alias ("mir_ui2f"), used));
 extern __typeof (mir_ui2d) mir_ui2d_obj_export asm ("mir.ui2d")

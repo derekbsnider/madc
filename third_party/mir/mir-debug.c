@@ -20,6 +20,10 @@
 #define MIR_DEBUG_HAVE_MMAP 1 /* the in-process object loader (MIR_object_load) */
 #endif
 #endif
+#if defined(_WIN32) /* the loader's VirtualAlloc/VirtualProtect mapping arm */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #ifndef ELFMAG0 /* hosts without <elf.h> (macOS, Windows): local ELF64 ABI defs */
 #include "mir-elf-defs.h"
 #endif
@@ -1207,12 +1211,16 @@ typedef struct {
   size_t n_rels;
   objin_dbgrel_t *dbgrels;
   size_t n_dbgrels;
+  char *namebuf; /* the COFF front's arena for inline symbol names (an 8-char
+                    COFF name is not NUL-terminated in the record, so it
+                    cannot be borrowed); ELF/Mach-O fronts leave it NULL */
 } objin_t;
 
 static void objin_free (objin_t *v) {
   free (v->syms);
   free (v->rels);
   free (v->dbgrels);
+  free (v->namebuf);
   memset (v, 0, sizeof (*v));
 }
 
@@ -2520,12 +2528,14 @@ struct MIR_object_loaded {
   size_t n_init;
 };
 
-#if defined(__ELF__) && defined(__GNUC__) && defined(__x86_64__)
+#if (defined(__ELF__) || defined(_WIN32)) && defined(__GNUC__) && defined(__x86_64__)
 /* The dotted AOT builtin exports (asm-aliased in mir-x86_64.c /
    mir-gen-x86_64.c) -- extern-declared by asm label because '.' is not a C
    identifier character, and weak so that linking mir-debug alone (the
    GDB-JIT-only embedder case) stays possible: absent aliases resolve to
-   NULL and the name simply falls through to the caller's resolver. */
+   NULL and the name simply falls through to the caller's resolver.
+   mingw/PE takes the same shape: gas accepts dotted asm labels, COFF
+   symbol names allow dots, and GNU ld resolves the weak references. */
 extern char mir_objload_va_arg asm ("mir.va_arg") __attribute__ ((weak));
 extern char mir_objload_va_block_arg asm ("mir.va_block_arg") __attribute__ ((weak));
 extern char mir_objload_arg_memcpy asm ("mir.arg_memcpy") __attribute__ ((weak));
@@ -2903,10 +2913,61 @@ fail:
 }
 #endif /* !MIR_TARGET_APPLE_P */
 
+/* This build's container front for the neutral input view (defined with the
+   merge reader below; the loader consumes the same parse). */
+static int objin_parse (objin_t *v, const void *buf, size_t size, char *err_msg, size_t err_len);
+
+/* The loader's mapping primitives, per OS: anonymous R+W pages, an
+   RX-protect for the text region, and teardown.  POSIX spells them
+   mmap/mprotect/munmap; Windows VirtualAlloc/VirtualProtect/VirtualFree
+   (+ FlushInstructionCache -- x86 hygiene per the code-allocator's own
+   convention in mir-code-alloc-default.c). */
+#if defined(MIR_DEBUG_HAVE_MMAP) || defined(_WIN32)
+static size_t objload_page_size (void) {
+#if defined(_WIN32)
+  SYSTEM_INFO si;
+  GetSystemInfo (&si);
+  return si.dwPageSize;
+#else
+  long ps = sysconf (_SC_PAGESIZE);
+  return ps > 0 ? (size_t) ps : 4096;
+#endif
+}
+
+static uint8_t *objload_map_rw (size_t size) {
+#if defined(_WIN32)
+  return VirtualAlloc (NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+  uint8_t *p = mmap (NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  return p == MAP_FAILED ? NULL : p;
+#endif
+}
+
+static int objload_text_rx (uint8_t *p, size_t len) {
+#if defined(_WIN32)
+  DWORD old;
+  if (!VirtualProtect (p, len, PAGE_EXECUTE_READ, &old)) return -1;
+  FlushInstructionCache (GetCurrentProcess (), p, len);
+  return 0;
+#else
+  return mprotect (p, len, PROT_READ | PROT_EXEC);
+#endif
+}
+
+static void objload_unmap (uint8_t *p, size_t size) {
+#if defined(_WIN32)
+  (void) size;
+  VirtualFree (p, 0, MEM_RELEASE);
+#else
+  munmap (p, size);
+#endif
+}
+#endif /* MIR_DEBUG_HAVE_MMAP || _WIN32 */
+
 MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
                                      MIR_object_resolver_t resolver, void *env, char *err_msg,
                                      size_t err_len) {
-#if !defined(MIR_DEBUG_HAVE_MMAP)
+#if !defined(MIR_DEBUG_HAVE_MMAP) && !defined(_WIN32)
   (void) vbuf;
   (void) size;
   (void) resolver;
@@ -2915,214 +2976,155 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
   return NULL;
 #else
 #if MIR_TARGET_APPLE_P
-  /* Apple targets: the emitted .o is MH_OBJECT (MIR_object_emit), which the
-     ELF-shaped mapper below cannot read -- and mapping text would still need
-     MAP_JIT + pthread_jit_write_protect_np on Apple Silicon, which only
-     MIR's code allocator does.  Both halves are one follow-on step; refuse
-     with the reason rather than mis-parse the caller's object.  (The mapper
-     stays compiled: it is the same code on every ELF target, and building it
-     here keeps it honest.) */
+  /* Apple targets: mapping text would need MAP_JIT +
+     pthread_jit_write_protect_np on Apple Silicon, which only MIR's code
+     allocator does.  Refuse with the reason rather than mis-map the
+     caller's object.  (The mapper stays compiled: it is the same code on
+     every target, and building it here keeps it honest.) */
   OBJLOAD_ERR ("in-process loading of Mach-O objects is not supported yet"
                " (emit an executable instead)");
   return NULL;
 #endif
-  objx_scan_t sc;
-  if (objx_scan (&sc, vbuf, size, err_msg, err_len) != 0) return NULL;
-  const uint8_t *buf = sc.buf;
-  const Elf64_Ehdr *eh = sc.eh;
-  const Elf64_Shdr *sh = sc.sh;
-  int i_text = sc.i_text, i_data = sc.i_data, i_bss = sc.i_bss, i_pool = sc.i_pool,
-      i_init = sc.i_init, i_symtab = sc.i_symtab;
-  const Elf64_Sym *syms = sc.syms;
-  size_t n_file_syms = sc.n_file_syms;
-  const char *strtab = sc.strtab;
-  size_t strtab_size = sc.strtab_size;
+  /* The container front fills the format-neutral view (ELF, Mach-O or COFF
+     -- one per compiled stack); everything below is container-blind. */
+  objin_t v;
+  if (objin_parse (&v, vbuf, size, err_msg, err_len) != 0) return NULL;
+  /* A -g object's debug sections (v.dbg / v.dbgrels) are irrelevant
+     in-process -- GDB-JIT is the in-process debug story; the alloc
+     sections load as usual. */
 
   /* One mapping, page-aligned regions: [text][data][bss][pool][init].  Page
      alignment dominates the emitter's section alignments (16 / data_align)
      and lets the text region change protection independently. */
-  long ps = sysconf (_SC_PAGESIZE);
-  size_t pg = ps > 0 ? (size_t) ps : 4096;
+  size_t pg = objload_page_size ();
 #define OBJLOAD_PGALIGN(x) (((x) + pg - 1) & ~(pg - 1))
-  size_t text_size = i_text >= 0 ? sh[i_text].sh_size : 0;
-  size_t data_size = i_data >= 0 ? sh[i_data].sh_size : 0;
-  size_t bss_size = i_bss >= 0 ? sh[i_bss].sh_size : 0;
-  size_t pool_size = i_pool >= 0 ? sh[i_pool].sh_size : 0;
-  size_t init_size = i_init >= 0 ? sh[i_init].sh_size : 0;
-  if ((i_text >= 0 && sh[i_text].sh_addralign > pg) || (i_data >= 0 && sh[i_data].sh_addralign > pg)
-      || (i_bss >= 0 && sh[i_bss].sh_addralign > pg)
-      || (i_pool >= 0 && sh[i_pool].sh_addralign > pg)
-      || (i_init >= 0 && sh[i_init].sh_addralign > pg)) {
-    OBJLOAD_ERR ("section alignment exceeds the page size");
-    return NULL;
+  uint8_t *map = NULL;
+  MIR_object_loaded_t lo = NULL;
+  size_t reg_off[5], map_size = 0;
+  for (int s = 0; s < 5; s++) {
+    if (v.sec[s].align > pg) {
+      OBJLOAD_ERR ("section alignment exceeds the page size");
+      goto fail;
+    }
+    reg_off[s] = 0;
   }
-  if (init_size % 8 != 0) {
-    OBJLOAD_ERR (".init_array size is not an 8-multiple");
-    return NULL;
+  if (v.sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {
+    OBJLOAD_ERR ("init-array size is not an 8-multiple");
+    goto fail;
   }
-  size_t data_off = OBJLOAD_PGALIGN (text_size);
-  size_t bss_off = data_off + OBJLOAD_PGALIGN (data_size);
-  size_t pool_off = bss_off + OBJLOAD_PGALIGN (bss_size);
-  size_t init_off = pool_off + OBJLOAD_PGALIGN (pool_size);
-  size_t map_size = init_off + OBJLOAD_PGALIGN (init_size);
-  if (map_size == 0) map_size = pg;
-  uint8_t *map
-    = mmap (NULL, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (map == MAP_FAILED) {
-    OBJLOAD_ERR ("mmap of %zu bytes failed", map_size);
-    return NULL;
+  {
+    /* region order is fixed: text, data, bss, pool, init */
+    static const int order[5] = {MIR_OBJ_SEC_TEXT, MIR_OBJ_SEC_DATA, MIR_OBJ_SEC_BSS,
+                                 MIR_OBJ_SEC_ADDRPOOL, MIR_OBJ_SEC_INITARR};
+    size_t off = 0;
+    for (int i = 0; i < 5; i++) {
+      reg_off[order[i]] = off;
+      off += OBJLOAD_PGALIGN ((size_t) v.sec[order[i]].size);
+    }
+    map_size = off != 0 ? off : pg;
   }
-  if (text_size != 0) memcpy (map, buf + sh[i_text].sh_offset, text_size);
-  if (data_size != 0) memcpy (map + data_off, buf + sh[i_data].sh_offset, data_size);
-  if (pool_size != 0) memcpy (map + pool_off, buf + sh[i_pool].sh_offset, pool_size);
-  if (init_size != 0) memcpy (map + init_off, buf + sh[i_init].sh_offset, init_size);
-  /* .bss is zero by mmap. */
+  map = objload_map_rw (map_size);
+  if (map == NULL) {
+    OBJLOAD_ERR ("mapping %zu bytes failed", map_size);
+    goto fail;
+  }
+  for (int s = 0; s < 5; s++) /* .bss has no body and stays zero-filled */
+    if (v.sec[s].body != NULL && v.sec[s].size != 0)
+      memcpy (map + reg_off[s], v.sec[s].body, (size_t) v.sec[s].size);
 
-  /* Region base for a symbol defined in file section index shndx. */
-#define OBJLOAD_REGION(shndx, out_base, out_size) \
-  ((int) (shndx) == i_text  ? (*(out_base) = map, *(out_size) = text_size, 1) \
-   : (int) (shndx) == i_data ? (*(out_base) = map + data_off, *(out_size) = data_size, 1) \
-   : (int) (shndx) == i_bss  ? (*(out_base) = map + bss_off, *(out_size) = bss_size, 1) \
-   : (int) (shndx) == i_pool ? (*(out_base) = map + pool_off, *(out_size) = pool_size, 1) \
-   : (int) (shndx) == i_init ? (*(out_base) = map + init_off, *(out_size) = init_size, 1) \
-                             : 0)
-
-  /* Relocation pass over every SHT_RELA section targeting text or data.
-     Unresolved imports are counted through to the end -- the resolver is
-     consulted for every name, so a logging resolver reports the full miss
-     list -- then the load fails as a whole. */
+  /* Relocation pass.  Unresolved imports are counted through to the end --
+     the resolver is consulted for every name, so a logging resolver reports
+     the full miss list -- then the load fails as a whole. */
   size_t unresolved = 0;
   char first_unresolved[128] = "";
-  for (int ri = 1; ri < eh->e_shnum; ri++) {
-    if (sh[ri].sh_type != SHT_RELA) continue;
-    if (sh[ri].sh_info >= eh->e_shnum) {
-      OBJLOAD_ERR ("relocation section %d targets an out-of-range section", ri);
-      goto fail_unmap;
+  for (size_t k = 0; k < v.n_rels; k++) {
+    const objin_rel_t *r = &v.rels[k];
+    size_t slot_size = obj_kind_slot_size (r->kind);
+    if (r->sec < 0 || r->sec > 4 || r->sym >= v.n_syms || r->offset > v.sec[r->sec].size
+        || v.sec[r->sec].size - r->offset < slot_size) {
+      OBJLOAD_ERR ("malformed relocation %zu", k);
+      goto fail;
     }
-    /* Relocations against sections the loader does not map -- the .debug_*
-       sections of a -g object -- are irrelevant in-process (GDB-JIT is the
-       in-process debug story); skip them.  Only an unmapped ALLOC target is
-       an error. */
-    if ((sh[sh[ri].sh_info].sh_flags & SHF_ALLOC) == 0) continue;
-    uint8_t *tgt_base;
-    size_t tgt_size;
-    if (!OBJLOAD_REGION (sh[ri].sh_info, &tgt_base, &tgt_size)) {
-      OBJLOAD_ERR ("relocation section %d targets an unsupported section", ri);
-      goto fail_unmap;
+    uint8_t *slot = map + reg_off[r->sec] + r->offset;
+    const objin_sym_t *s = &v.syms[r->sym];
+    uint64_t sval;
+    if (s->undef_p) {
+      const char *nm = s->name != NULL ? s->name : "";
+      void *a = objload_builtin (nm);
+      if (a == NULL && resolver != NULL) a = resolver (nm, env);
+      if (a == NULL) {
+        if (unresolved++ == 0) snprintf (first_unresolved, sizeof (first_unresolved), "%s", nm);
+        continue;
+      }
+      sval = (uint64_t) (uintptr_t) a;
+    } else if (s->sec >= 0 && s->sec <= 4) {
+      sval = (uint64_t) (uintptr_t) (map + reg_off[s->sec]) + s->value;
+    } else {
+      OBJLOAD_ERR ("relocation %zu against an unplaceable symbol", k);
+      goto fail;
     }
-    if (sh[ri].sh_entsize != sizeof (Elf64_Rela) || (int) sh[ri].sh_link != i_symtab
-        || syms == NULL) {
-      OBJLOAD_ERR ("malformed relocation section %d", ri);
-      goto fail_unmap;
-    }
-    const Elf64_Rela *ra = (const Elf64_Rela *) (buf + sh[ri].sh_offset);
-    size_t n_rel = sh[ri].sh_size / sizeof (Elf64_Rela);
-    for (size_t k = 0; k < n_rel; k++) {
-      unsigned rtype = (unsigned) ELF64_R_TYPE (ra[k].r_info);
-      int kind = obj_rtype_kind (rtype);
-      if (kind < 0) {
-        OBJLOAD_ERR ("unsupported relocation type %u (loader handles the emitter's "
-                     "own subset)",
-                     rtype);
-        goto fail_unmap;
+    if (r->kind != MIR_OBJ_RELOC_ABS64) {
+      if (obj_apply_field_reloc (r->kind, slot, sval + (uint64_t) r->addend,
+                                 (uint64_t) (uintptr_t) slot)
+          != 0) {
+        OBJLOAD_ERR ("relocation %zu out of range", k);
+        goto fail;
       }
-      size_t slot_size = obj_kind_slot_size (kind);
-      size_t si = ELF64_R_SYM (ra[k].r_info);
-      if (si >= n_file_syms || ra[k].r_offset > tgt_size
-          || tgt_size - ra[k].r_offset < slot_size) {
-        OBJLOAD_ERR ("malformed relocation %zu in section %d", k, ri);
-        goto fail_unmap;
-      }
-      const Elf64_Sym *s = syms + si;
-      uint64_t sval;
-      if (s->st_shndx == SHN_UNDEF) {
-        if (s->st_name >= strtab_size) {
-          OBJLOAD_ERR ("symbol %zu name out of bounds", si);
-          goto fail_unmap;
-        }
-        const char *nm = strtab + s->st_name;
-        void *a = objload_builtin (nm);
-        if (a == NULL && resolver != NULL) a = resolver (nm, env);
-        if (a == NULL) {
-          if (unresolved++ == 0) snprintf (first_unresolved, sizeof (first_unresolved), "%s", nm);
-          continue;
-        }
-        sval = (uint64_t) a;
-      } else {
-        uint8_t *rbase;
-        size_t rsize;
-        if (!OBJLOAD_REGION (s->st_shndx, &rbase, &rsize)) {
-          OBJLOAD_ERR ("relocation against a symbol in an unsupported section (%u)",
-                       (unsigned) s->st_shndx);
-          goto fail_unmap;
-        }
-        sval = (uint64_t) rbase + s->st_value;
-      }
-      if (kind != MIR_OBJ_RELOC_ABS64) {
-        if (obj_apply_field_reloc (kind, tgt_base + ra[k].r_offset,
-                                   sval + (uint64_t) ra[k].r_addend,
-                                   (uint64_t) (uintptr_t) (tgt_base + ra[k].r_offset))
-            != 0) {
-          OBJLOAD_ERR ("relocation %zu in section %d out of range", k, ri);
-          goto fail_unmap;
-        }
-      } else {
-        uint64_t v = sval + (uint64_t) ra[k].r_addend;
-        memcpy (tgt_base + ra[k].r_offset, &v, 8);
-      }
+    } else {
+      uint64_t val = sval + (uint64_t) r->addend;
+      memcpy (slot, &val, 8);
     }
   }
   if (unresolved != 0) {
     OBJLOAD_ERR ("%zu unresolved symbol(s), first: %s", unresolved, first_unresolved);
-    goto fail_unmap;
+    goto fail;
   }
 
-  if (text_size != 0 && mprotect (map, OBJLOAD_PGALIGN (text_size), PROT_READ | PROT_EXEC) != 0) {
-    OBJLOAD_ERR ("mprotect of the text region failed");
-    goto fail_unmap;
+  if (v.sec[MIR_OBJ_SEC_TEXT].size != 0
+      && objload_text_rx (map, OBJLOAD_PGALIGN ((size_t) v.sec[MIR_OBJ_SEC_TEXT].size)) != 0) {
+    OBJLOAD_ERR ("protecting the text region read+execute failed");
+    goto fail;
   }
 
   /* Export table: defined global/weak named symbols, sorted for bsearch. */
-  MIR_object_loaded_t lo = calloc (1, sizeof (struct MIR_object_loaded));
-  if (lo == NULL) goto fail_unmap;
+  lo = calloc (1, sizeof (struct MIR_object_loaded));
+  if (lo == NULL) goto fail;
   lo->map = map;
   lo->map_size = map_size;
-  if (init_size != 0) { /* relocated in place above; entries are 8-byte fn ptrs */
-    lo->init_arr = (void **) (map + init_off);
-    lo->n_init = init_size / 8;
+  if (v.sec[MIR_OBJ_SEC_INITARR].size != 0) { /* relocated in place above */
+    lo->init_arr = (void **) (map + reg_off[MIR_OBJ_SEC_INITARR]);
+    lo->n_init = (size_t) v.sec[MIR_OBJ_SEC_INITARR].size / 8;
   }
   size_t n_exp = 0;
-  for (size_t si = 0; si < n_file_syms; si++) {
-    unsigned bind = ELF64_ST_BIND (syms[si].st_info);
-    if (syms[si].st_name != 0 && syms[si].st_name < strtab_size
-        && (bind == STB_GLOBAL || bind == STB_WEAK) && syms[si].st_shndx != SHN_UNDEF)
+  for (size_t si = 0; si < v.n_syms; si++) {
+    const objin_sym_t *s = &v.syms[si];
+    if (s->name != NULL && !s->local_p && !s->undef_p && !s->section_p && s->sec >= 0
+        && s->sec <= 4)
       n_exp++;
   }
   if (n_exp != 0 && (lo->syms = calloc (n_exp, sizeof (objload_sym_t))) != NULL) {
-    for (size_t si = 0; si < n_file_syms; si++) {
-      unsigned bind = ELF64_ST_BIND (syms[si].st_info);
-      uint8_t *rbase;
-      size_t rsize;
-      if (syms[si].st_name == 0 || syms[si].st_name >= strtab_size
-          || (bind != STB_GLOBAL && bind != STB_WEAK) || syms[si].st_shndx == SHN_UNDEF
-          || !OBJLOAD_REGION (syms[si].st_shndx, &rbase, &rsize))
+    for (size_t si = 0; si < v.n_syms; si++) {
+      const objin_sym_t *s = &v.syms[si];
+      if (s->name == NULL || s->local_p || s->undef_p || s->section_p || s->sec < 0 || s->sec > 4)
         continue;
-      char *nm = obj_strdup (strtab + syms[si].st_name);
+      char *nm = obj_strdup (s->name);
       if (nm == NULL) continue;
       lo->syms[lo->n_syms].name = nm;
-      lo->syms[lo->n_syms].addr = rbase + syms[si].st_value;
+      lo->syms[lo->n_syms].addr = map + reg_off[s->sec] + s->value;
       lo->n_syms++;
     }
     qsort (lo->syms, lo->n_syms, sizeof (objload_sym_t), objload_sym_cmp);
   }
+  objin_free (&v);
   return lo;
 
-fail_unmap:
-  munmap (map, map_size);
+fail:
+  free (lo);
+  if (map != NULL) objload_unmap (map, map_size);
+  objin_free (&v);
   return NULL;
-#undef OBJLOAD_REGION
 #undef OBJLOAD_PGALIGN
-#endif /* MIR_DEBUG_HAVE_MMAP */
+#endif /* MIR_DEBUG_HAVE_MMAP || _WIN32 */
 }
 
 void *MIR_object_loaded_sym (MIR_object_loaded_t lo, const char *name) {
@@ -3215,6 +3217,8 @@ static int objdbg_add_rel (MIR_object_t obj, int src, int tgt, uint64_t off, int
 static int objin_parse (objin_t *v, const void *buf, size_t size, char *err_msg, size_t err_len) {
 #if MIR_TARGET_APPLE_P
   return objin_from_macho (v, buf, size, err_msg, err_len);
+#elif MIR_TARGET_WINDOWS_P
+  return objin_from_pe (v, buf, size, err_msg, err_len);
 #else
   return objin_from_elf (v, buf, size, err_msg, err_len);
 #endif

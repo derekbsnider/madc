@@ -130,7 +130,8 @@ void va_start_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p, void *a) {
    "mir.va_block_arg" import items (mir-gen-x86_64.c), which become undefined
    symbols in an emitted .o -- export them from libmir under those exact ELF
    names so the link resolves (the mir.ui2f family gets the same treatment in
-   mir-gen-x86_64.c). */
+   mir-gen-x86_64.c).  The _WIN32 half below carries its own copy for ITS
+   va_arg_builtin: this whole half never compiles on Windows. */
 extern __typeof (va_arg_builtin) mir_va_arg_obj_export asm ("mir.va_arg")
   __attribute__ ((alias ("va_arg_builtin"), used));
 extern __typeof (va_block_arg_builtin) mir_va_block_arg_obj_export asm ("mir.va_block_arg")
@@ -164,6 +165,17 @@ void va_start_interp_builtin (MIR_context_t ctx, void *p, void *a) {
   assert (sizeof (struct x86_64_va_list) == sizeof (va_list));
   *va = (struct x86_64_va_list *) vap;
 }
+
+#if defined(__GNUC__)
+/* AOT object mode, the win64 twin of the ELF half's exports: the loader and
+   an external link resolve the "mir.va_arg" / "mir.va_block_arg" imports
+   against THESE win64-convention builtins.  gas accepts the dotted asm
+   labels and the alias attribute on COFF (probe-verified). */
+extern __typeof (va_arg_builtin) mir_va_arg_obj_export asm ("mir.va_arg")
+  __attribute__ ((alias ("va_arg_builtin"), used));
+extern __typeof (va_block_arg_builtin) mir_va_block_arg_obj_export asm ("mir.va_block_arg")
+  __attribute__ ((alias ("va_block_arg_builtin"), used));
+#endif
 
 #endif
 

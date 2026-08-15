@@ -426,3 +426,310 @@ done:
   for (int s = 0; s < PE_OSEC_N; s++) free (rel[s].p);
   return rc;
 }
+
+/* ===== the .o reader (COFF -> the neutral input view) ====================
+   The exact inverse of the writer above, and no more: this reads MIR's OWN
+   COFF shape (the same scope statement the ELF and Mach-O fronts make --
+   objects from other compilers are out of scope).  Symbols keep their RAW
+   record indices -- aux records occupy index slots in COFF, so the view
+   carries inert placeholders for them and relocations index the view
+   directly.  The WEAK_EXTERNAL + STATIC-companion pair decodes back to one
+   weak DEFINED symbol at the companion's location; in-field addends decode
+   back to explicit ones (REL32's +4 removed). */
+
+static uint32_t pe_rd32 (const uint8_t *p) {
+  uint32_t v;
+  memcpy (&v, p, 4);
+  return v;
+}
+
+static uint16_t pe_rd16 (const uint8_t *p) {
+  uint16_t v;
+  memcpy (&v, p, 2);
+  return v;
+}
+
+/* section-header name -> MIR_OBJ_SEC_*, or -1 when it is not one of ours */
+static int pe_sec_of_name (const char *nm) {
+  for (int s = 0; s < PE_OSEC_N; s++)
+    if (strcmp (nm, pe_osec_name (s)) == 0)
+      return s == PE_OSEC_TEXT   ? MIR_OBJ_SEC_TEXT
+             : s == PE_OSEC_POOL ? MIR_OBJ_SEC_ADDRPOOL
+             : s == PE_OSEC_INIT ? MIR_OBJ_SEC_INITARR
+             : s == PE_OSEC_DATA ? MIR_OBJ_SEC_DATA
+                                 : MIR_OBJ_SEC_BSS;
+  return -1;
+}
+
+static int objin_from_pe (objin_t *v, const void *vbuf, size_t size, char *err_msg,
+                          size_t err_len) {
+  const uint8_t *buf = vbuf;
+  uint32_t reloff[5] = {0, 0, 0, 0, 0}, nreloc[5] = {0, 0, 0, 0, 0};
+  int ovfl[5] = {0, 0, 0, 0, 0}, seen[5] = {0, 0, 0, 0, 0};
+  int sec_of_ord[256]; /* 1-based SectionNumber -> MIR_OBJ_SEC_* */
+
+  memset (v, 0, sizeof (*v));
+  for (int s = 0; s < 5; s++) v->sec[s].align = 1;
+  for (int i = 0; i < 256; i++) sec_of_ord[i] = -1;
+  if (buf == NULL || size < 20) {
+    OBJLOAD_ERR ("truncated or empty object");
+    return -1;
+  }
+  if (pe_rd16 (buf) != PE_FILE_MACHINE_AMD64) {
+    OBJLOAD_ERR ("object's machine 0x%x is not x86-64 COFF (0x%x)", (unsigned) pe_rd16 (buf),
+                 (unsigned) PE_FILE_MACHINE_AMD64);
+    return -1;
+  }
+  uint32_t nsects = pe_rd16 (buf + 2);
+  uint64_t symoff = pe_rd32 (buf + 8);
+  uint64_t n_records = pe_rd32 (buf + 12);
+  if (pe_rd16 (buf + 16) != 0) {
+    OBJLOAD_ERR ("relocatable COFF with an optional header (not this emitter's shape)");
+    return -1;
+  }
+  if (20 + (uint64_t) nsects * 40 > size || symoff + n_records * 18 > size) {
+    OBJLOAD_ERR ("section or symbol table lies outside the file");
+    return -1;
+  }
+  /* the string table sits right after the symbol table: u32 total size */
+  uint64_t stroff = symoff + n_records * 18;
+  const char *strtab = NULL;
+  uint64_t strsize = 0;
+  if (stroff + 4 <= size) {
+    strsize = pe_rd32 (buf + stroff);
+    if (strsize < 4 || stroff + strsize > size) {
+      OBJLOAD_ERR ("malformed string table");
+      return -1;
+    }
+    strtab = (const char *) buf + stroff;
+  }
+
+  /* ---- section headers, mapped by name */
+  char secnm[256]; /* long names resolve through the string table */
+  for (uint32_t s = 0; s < nsects; s++) {
+    const uint8_t *sh = buf + 20 + (uint64_t) s * 40;
+    if (sh[0] == '/') { /* "/<decimal offset>" */
+      char digits[8];
+      memcpy (digits, sh + 1, 7);
+      digits[7] = 0;
+      uint64_t noff = strtoull (digits, NULL, 10);
+      if (strtab == NULL || noff < 4 || noff >= strsize) {
+        OBJLOAD_ERR ("section %u long name out of bounds", s);
+        return -1;
+      }
+      snprintf (secnm, sizeof secnm, "%s", strtab + noff);
+    } else {
+      memcpy (secnm, sh, 8);
+      secnm[8] = 0;
+    }
+    int sec = pe_sec_of_name (secnm);
+    if (sec < 0) {
+      OBJLOAD_ERR ("unsupported section %s", secnm);
+      return -1;
+    }
+    if (seen[sec]) {
+      OBJLOAD_ERR ("duplicate section %s", secnm);
+      return -1;
+    }
+    seen[sec] = 1;
+    uint32_t ssize = pe_rd32 (sh + 16), soff = pe_rd32 (sh + 20);
+    uint32_t chars = pe_rd32 (sh + 36);
+    unsigned al = (chars >> 20) & 0xf;
+    v->sec[sec].size = ssize;
+    if (al != 0) v->sec[sec].align = (uint64_t) 1 << (al - 1);
+    int nobits_p = (chars & PE_SCN_CNT_UNINIT_DATA) != 0;
+    if (!nobits_p && ssize != 0) {
+      if (soff > size || ssize > size - soff) {
+        OBJLOAD_ERR ("section %s body lies outside the file", secnm);
+        return -1;
+      }
+      v->sec[sec].body = buf + soff;
+    }
+    reloff[sec] = pe_rd32 (sh + 24);
+    nreloc[sec] = pe_rd16 (sh + 32);
+    ovfl[sec] = (chars & PE_SCN_LNK_NRELOC_OVFL) != 0;
+    if (s + 1 < 256) sec_of_ord[s + 1] = sec;
+  }
+  if (v->sec[MIR_OBJ_SEC_TEXT].align > 16) {
+    OBJLOAD_ERR ("text alignment %llu unsupported (the emitter's is 16)",
+                 (unsigned long long) v->sec[MIR_OBJ_SEC_TEXT].align);
+    return -1;
+  }
+  if (v->sec[MIR_OBJ_SEC_INITARR].size % 8 != 0) {
+    OBJLOAD_ERR (".CRT$XCU is not 8-byte slots");
+    return -1;
+  }
+
+  /* ---- symbols: RAW record order IS the view's order (aux slots become
+     inert local placeholders no relocation may reference).  String-table
+     names are borrowed; INLINE names (8-byte field, not NUL-terminated at
+     8 chars) are copied into the view's own arena -- sized up front so the
+     pointers never move. */
+  char *arena = NULL;
+  if (n_records != 0) {
+    v->syms = calloc ((size_t) n_records, sizeof (objin_sym_t));
+    v->namebuf = malloc ((size_t) n_records * 9);
+    if (v->syms == NULL || v->namebuf == NULL) {
+      OBJLOAD_ERR ("out of memory");
+      goto fail;
+    }
+    arena = v->namebuf;
+  }
+  for (uint64_t i = 0; i < n_records; i++) {
+    const uint8_t *sr = buf + symoff + i * 18;
+    uint32_t value = pe_rd32 (sr + 8);
+    int sec_number = (int16_t) pe_rd16 (sr + 12);
+    uint16_t type = pe_rd16 (sr + 14);
+    uint8_t storage_class = sr[16], n_aux = sr[17];
+    objin_sym_t *d = &v->syms[v->n_syms++];
+    d->sec = MIR_OBJ_SEC_UNDEF;
+    d->dbg = -1;
+    const char *nm;
+    if (pe_rd32 (sr) == 0) { /* long name via the string table */
+      uint32_t noff = pe_rd32 (sr + 4);
+      if (strtab == NULL || noff < 4 || noff >= strsize) {
+        OBJLOAD_ERR ("symbol %llu name out of bounds", (unsigned long long) i);
+        goto fail;
+      }
+      nm = strtab + noff;
+    } else {
+      memcpy (arena, sr, 8);
+      arena[8] = 0;
+      nm = arena;
+      arena += 9;
+    }
+    if (storage_class == PE_SYM_CLASS_WEAK_EXTERNAL) {
+      /* aux TagIndex names the STATIC companion carrying the definition */
+      if (n_aux < 1 || i + 1 >= n_records) {
+        OBJLOAD_ERR ("weak external '%s' has no aux record", nm);
+        goto fail;
+      }
+      uint32_t tag = pe_rd32 (buf + symoff + (i + 1) * 18);
+      if (tag + 1 > i) { /* the companion precedes its weak symbol */
+        OBJLOAD_ERR ("weak external '%s' tags a bad companion %u", nm, (unsigned) tag);
+        goto fail;
+      }
+      objin_sym_t *c = &v->syms[tag];
+      if (c->sec == MIR_OBJ_SEC_UNDEF) {
+        OBJLOAD_ERR ("weak external '%s' tags an undefined companion", nm);
+        goto fail;
+      }
+      d->name = nm;
+      d->sec = c->sec;
+      d->value = c->value;
+      d->func_p = c->func_p;
+      d->weak_p = 1;
+    } else if (sec_number == 0) {
+      if (storage_class == PE_SYM_CLASS_EXTERNAL) {
+        d->name = nm;
+        d->undef_p = 1;
+      } else {
+        d->local_p = 1; /* an inert record (a file symbol etc.) */
+      }
+    } else if (sec_number > 0 && sec_number < 256 && sec_of_ord[sec_number] >= 0) {
+      int sec = sec_of_ord[sec_number];
+      if (storage_class == PE_SYM_CLASS_STATIC && value == 0 && pe_sec_of_name (nm) == sec) {
+        d->sec = sec; /* the section's own symbol (a C name cannot start '.') */
+        d->section_p = 1;
+        d->local_p = 1;
+      } else if (storage_class == PE_SYM_CLASS_STATIC || storage_class == PE_SYM_CLASS_EXTERNAL) {
+        if (value > v->sec[sec].size) {
+          OBJLOAD_ERR ("symbol '%s' lies outside its section", nm);
+          goto fail;
+        }
+        d->name = nm;
+        d->sec = sec;
+        d->value = value;
+        d->func_p = (type & 0xf0) == PE_SYM_TYPE_FUNCTION;
+        d->local_p = storage_class == PE_SYM_CLASS_STATIC;
+      } else {
+        OBJLOAD_ERR ("symbol '%s' has unsupported storage class %u", nm,
+                     (unsigned) storage_class);
+        goto fail;
+      }
+    } else {
+      OBJLOAD_ERR ("symbol '%s' is not defined in one of this object's sections", nm);
+      goto fail;
+    }
+    /* aux records occupy index slots: keep them as inert local placeholders */
+    for (uint8_t a = 0; a < n_aux && i + 1 < n_records; a++) {
+      i++;
+      objin_sym_t *x = &v->syms[v->n_syms++];
+      x->sec = MIR_OBJ_SEC_UNDEF;
+      x->dbg = -1;
+      x->local_p = 1;
+    }
+  }
+
+  /* ---- relocations, per section */
+  for (int sec = 0; sec < 5; sec++) {
+    uint64_t count = nreloc[sec];
+    uint64_t roff = reloff[sec];
+    if (count == 0) continue;
+    if (roff + count * 10 > size) {
+      OBJLOAD_ERR ("section %d relocations lie outside the file", sec);
+      goto fail;
+    }
+    if (ovfl[sec]) { /* real count in the first record's VirtualAddress */
+      count = pe_rd32 (buf + roff);
+      if (count == 0 || roff + count * 10 > size) {
+        OBJLOAD_ERR ("section %d overflow relocation count is malformed", sec);
+        goto fail;
+      }
+      roff += 10;
+      count -= 1; /* the binutils convention counts the overflow record */
+    }
+    if (v->sec[sec].body == NULL) {
+      OBJLOAD_ERR ("section %d carries relocations but no body", sec);
+      goto fail;
+    }
+    objin_rel_t *nv = realloc (v->rels, (v->n_rels + count) * sizeof (objin_rel_t));
+    if (nv == NULL) {
+      OBJLOAD_ERR ("out of memory");
+      goto fail;
+    }
+    v->rels = nv;
+    for (uint64_t k = 0; k < count; k++) {
+      const uint8_t *re = buf + roff + k * 10;
+      uint32_t r_addr = pe_rd32 (re), symnum = pe_rd32 (re + 4);
+      uint16_t rtype = pe_rd16 (re + 8);
+      if (symnum >= v->n_syms) {
+        OBJLOAD_ERR ("relocation %llu in section %d against a bad symbol index",
+                     (unsigned long long) k, sec);
+        goto fail;
+      }
+      int kind = rtype == PE_REL_AMD64_ADDR64  ? MIR_OBJ_RELOC_ABS64
+                 : rtype == PE_REL_AMD64_REL32 ? MIR_OBJ_RELOC_PC32
+                                               : -1;
+      if (kind < 0) {
+        OBJLOAD_ERR ("unsupported relocation type %u in section %d", (unsigned) rtype, sec);
+        goto fail;
+      }
+      uint32_t slot = kind == MIR_OBJ_RELOC_ABS64 ? 8 : 4;
+      if (r_addr > v->sec[sec].size || v->sec[sec].size - r_addr < slot) {
+        OBJLOAD_ERR ("relocation %llu in section %d lies outside the section",
+                     (unsigned long long) k, sec);
+        goto fail;
+      }
+      objin_rel_t *d = &v->rels[v->n_rels++];
+      d->sec = sec;
+      d->offset = r_addr;
+      d->sym = symnum;
+      d->kind = kind;
+      if (kind == MIR_OBJ_RELOC_ABS64) {
+        uint64_t a;
+        memcpy (&a, v->sec[sec].body + r_addr, 8);
+        d->addend = (int64_t) a;
+      } else {
+        int32_t a32;
+        memcpy (&a32, v->sec[sec].body + r_addr, 4);
+        d->addend = (int64_t) a32 - 4; /* REL32's base is P + 4, ELF's is P */
+      }
+    }
+  }
+  return 0;
+
+fail:
+  objin_free (v); /* the name arena is the view's own (namebuf) */
+  return -1;
+}
