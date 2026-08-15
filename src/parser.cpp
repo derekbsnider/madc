@@ -39764,6 +39764,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		delete dds;
 		dds = existing;
 	    }
+	    else if ( existing->forest_restored )
+	    {
+		// task #57 mixed seam, restored-before-live: the registered
+		// complete struct is a bound unit's restored twin of a shared
+		// guarded block whose live copy parses HERE — a live re-include
+		// would have guard-skipped the bound copy, so the live parse is
+		// the TU's truth and wins the registration. The twin instance
+		// stays alive for arena-internal references (same tag, same
+		// emission — the self-reference model at the class-promotion
+		// note above; denotes_same_type keeps C11-identical twins
+		// compatible). Mirror of the class arm's live-wins. No pack
+		// tap: a freeze is a plain live parse with no bound forest, so
+		// this arm is unreachable while recording.
+		pgm.struct_map.set(tag_store_key, dds);
+		DBG(cout << "TokenSTRUCT::parse() live-wins: re-registered struct "
+		    << tag_store_key << " over forest-restored twin" << endl);
+	    }
 	    else
 		pgm.Throw(tag) << "Struct '" << tag->spelling() << "' already defined" << flush;
 	}

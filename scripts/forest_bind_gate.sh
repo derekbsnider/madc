@@ -26,9 +26,10 @@ ulimit -t 300 2>/dev/null
 
 BIN=bin/madc
 # v40 (task #57): this gate is the branch-dep environment check's keeper —
-# the check ships default-OFF until the identical-redeclaration tolerance
-# lands (the mixed bind/live decl frontier), and running the whole battery
-# WITH it on keeps the parked mechanism from rotting.
+# the redecl tolerance and the three-way prune/inert-bind/decline redesign
+# are in; the check ships default-OFF until the knob-on packed-suite
+# burndown reaches 0 and the #25 latency check passes. Running the whole
+# battery WITH it on keeps the parked mechanism from rotting.
 export MADC_FOREST_ENV_CHECK=1
 if [ ! -x "$BIN" ]; then
     echo "forest_bind_gate: missing $BIN"
@@ -1132,21 +1133,22 @@ echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad fr
 # --- case: redecl — the v40 mixed bind/live redeclaration seam (task #57) ----
 # The wchar.h/stdio.h FILE shape. A shared `#ifndef FBG_T_DEFINED` block lives
 # in BOTH a.h and b.h; c.h re-exports the typedef cstdio-style (`using ::fbgT`).
-# Corpus 1 (sub-block guard prune + tolerance): the freeze parses a.h's copy
-# first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer a.h)".
-# The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h DECLINES and
-# live-parses the block: live struct fbg_T + typedef fbgT), then c.h: a.h's
-# FBG_T_DEFINED mismatch is self-defined ⇒ the (documented-over-claiming)
-# guard prune marks a.h live-present and c.h BINDS, restoring its re-exported
-# fbgT — a DIFFERENT DataDef instance of the same tag. The main parse's live
-# `typedef struct fbg_T fbgT;` must TOLERATE the twin
-# (DataDef::denotes_same_type, C11 6.7p3), never throw.
+# Corpus 1 (sub-block guard MASKED-BIND + tolerance): the freeze parses a.h's
+# copy first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer
+# a.h)". The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h
+# DECLINES and live-parses the block: live struct fbg_T + typedef fbgT), then
+# c.h: a.h's FBG_T_DEFINED mismatch is a guard a.h itself defines, but a.h's
+# file is NOT on the live-tokenized record ⇒ the redesign takes the
+# MASKED-BIND arm: a.h BINDS (never pruned — that would lose its non-shared
+# content; never declined — that cascades) with its own FBG_T_DEFINED define
+# masked at install (the live arm won), restoring struct fbg_T + typedef fbgT
+# twins beside the live copies. The main parse's live decls must TOLERATE the
+# twins (DataDef::denotes_same_type, C11 6.7p3), never throw.
 # Corpus 2 (real include-once guard, genuine live evidence): a.h consults
 # FBG_SPICE (defined at freeze by spice.h, absent live) so root a.h declines
 # and live-parses — its file IS on the live-tokenized record. c.h then binds
-# with a.h pruned on its REAL guard; same tolerance tail. When the next
-# slice tightens the prune to require live evidence, corpus 1 flips to the
-# decline path and corpus 2 stays a prune — the pair pins that boundary.
+# with a.h pruned on its REAL guard (the honest-evidence prune); same
+# tolerance tail. The pair pins the prune/inert-bind boundary.
 cat > tmp/fbgate_redecl_a.h <<'EOF'
 #ifndef FBG_REDECL_A_H
 #define FBG_REDECL_A_H
@@ -1227,14 +1229,21 @@ timeout 120 "$BIN" --freeze="$rd_snap" tmp/fbgate_redecl_producer.cpp -I tmp >/d
     || fail "[redecl] --freeze corpus 1 FAILED"
 timeout 120 "$BIN" --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.cpp -I tmp >/dev/null 2>&1 \
     || fail "[redecl] --freeze corpus 2 FAILED"
-# Corpus 1: sub-block-guard mismatch declines BOTH roots; output still exact.
+# Corpus 1: b.h declines; a.h's sub-block-guard mismatch MASKED-BINDS (never
+# pruned, never declined; its own guard define masked); output still exact.
 rd_bind=$(timeout 60 "$BIN" --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp 2>/dev/null)
 [ "$rd_bind" = "v=7" ] || fail "[redecl] corpus-1 bind output '$rd_bind' != 'v=7'"
 timeout 60 "$BIN" -v --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp >"$rd_vlog" 2>&1
 grep -aq "DECLINE root tmp/fbgate_redecl_b.h" "$rd_vlog" \
     || fail "[redecl] root b.h did NOT decline — the seam was never exercised"
-grep -aq "fbgate_redecl_a.h already present ('FBG_T_DEFINED' guard live)" "$rd_vlog" \
-    || fail "[redecl] corpus-1 a.h was NOT guard-pruned"
+grep -aq "fbgate_redecl_a.h dep 'FBG_T_DEFINED' self-defined guard, live arm wins" "$rd_vlog" \
+    || fail "[redecl] corpus-1 a.h's sub-block guard did NOT take the masked-bind arm"
+grep -aq "fbgate_redecl_a.h define 'FBG_T_DEFINED' masked at install" "$rd_vlog" \
+    || fail "[redecl] corpus-1 a.h's guard define was NOT masked at install"
+grep -aq "fbgate_redecl_a.h already present" "$rd_vlog" \
+    && fail "[redecl] corpus-1 a.h was PRUNED without live-tokenize evidence (over-claim regressed)"
+grep -aq "DECLINE root tmp/fbgate_redecl_c.h" "$rd_vlog" \
+    && fail "[redecl] corpus-1 root c.h DECLINED — the masked-bind arm did not bind"
 grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog" \
     || fail "[redecl] corpus-1 c.h did NOT bind"
 grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog" \
@@ -1256,7 +1265,7 @@ grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog2" \
 grep -aq "Identifier already defined" "$rd_vlog2" \
     && fail "[redecl] corpus 2 hit the redeclaration throw"
 rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
-echo "forest_bind_gate: [redecl] OK — guard-pruned twin restored + tolerated (denotes_same_type); live-evidence prune pinned; output == live == g++"
+echo "forest_bind_gate: [redecl] OK — masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == g++"
 
 # --- case: silbody — a static-inline header fn passed BY ADDRESS through a
 # bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a

@@ -2954,15 +2954,15 @@ bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
 
 bool Program::forest_bind_env_ok(uint32_t root)
 {
-    // v40 rollout knob (task #57): the decline path exposes the mixed
-    // bind/live DECL frontier — a declined root's live parse re-declares
-    // identical typedefs/structs beside a bound sibling's restored decls
-    // (wchar.h's `typedef struct _iobuf FILE;` vs cstdio's restored FILE),
-    // and madc does not yet tolerate identical C redeclarations there (a
-    // gcc-parity gap of its own). Until that tolerance lands the check
-    // ships default-OFF; MADC_FOREST_ENV_CHECK=1 turns it on, and the
-    // Linux forest_bind_gate runs its whole battery WITH it on, so the
-    // mechanism cannot rot while parked.
+    // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
+    // decline path exposes is now absorbed (denotes_same_type tolerance +
+    // typedef/class live-wins), and the mismatch handling below is the
+    // three-way prune/inert-bind/decline redesign. The check still ships
+    // default-OFF until the knob-on packed-suite burndown reaches 0 and the
+    // #25 packed-lane latency check passes (declines add live parsing).
+    // MADC_FOREST_ENV_CHECK=1 turns it on, and the Linux forest_bind_gate
+    // runs its whole battery WITH it on, so the mechanism cannot rot while
+    // parked.
     static int enabled = -1;
     if ( enabled < 0 )
     {
@@ -2977,6 +2977,10 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	  ui != closure.end(); ++ui )
     {
 	uint32_t unit = *ui;
+	// Mask verdicts are rebuilt on every check of this unit — an earlier
+	// root's declined check may have recorded masks against live tables
+	// that its own live parse then changed.
+	forest_pp_install_mask.erase(unit);
 	std::vector<uint32_t> deps;
 	if ( !bind_forest->unit_branch_deps(unit, deps) )
 	    continue;
@@ -2995,35 +2999,59 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	    bool have_defined = macro_name_defined(nm);
 	    if ( want_defined != have_defined )
 	    {
-		// Include-once prune: the unit's own guard is defined here
-		// (an earlier declined root live-parsed this header) — the
-		// unit is already present; skip it like a live re-include.
-		// forest_live_present keeps forest_bind_include from
-		// installing its PP events — but stays OUT of
-		// forest_chain_set, whose membership the decl-restore
-		// filter reads: restoring this unit's decls BESIDE the
-		// live-parsed copy double-defines them (struct _iobuf).
-		// KNOWN OVER-CLAIM (task #57 next slice): a live guard macro
-		// alone is weak evidence — a shared SUB-BLOCK guard (mingw
-		// stdio.h's _FILE_DEFINED, live from wchar.h's copy of the
-		// block) also satisfies this, pruning a unit whose OTHER
-		// content is not live. The honest test is
-		// forest_unit_file_live_tokenized(unit) — but enforcing it
-		// alone cascades libc++ roots into live parses (statmem's
-		// nexttoward frontier): the complete rule must first BIND
-		// value-equal inert-guard mismatches instead of declining
-		// them. Until that slice, the typedef arm's live-wins +
-		// denotes_same_type tolerance absorb the resurrection this
-		// over-claim causes (the FILE twin).
+		// A want-undefined dep the unit ITSELF defines is the unit's
+		// own GUARDED FALLBACK (task #57 prune redesign). Two
+		// dispositions, decline is not one of them:
+		// 1. PRUNE — only with honest include-once evidence: the
+		//    unit's FILE was live-tokenized here (an earlier
+		//    declined root live-parsed this header), so its whole
+		//    content is already present; skip it like a live
+		//    re-include. forest_live_present keeps
+		//    forest_bind_include from installing its PP events —
+		//    but stays OUT of forest_chain_set, whose membership
+		//    the decl-restore filter reads: restoring this unit's
+		//    decls BESIDE the live-parsed copy double-defines them
+		//    (struct _iobuf).
+		// 2. MASKED-BIND — no whole-file evidence: a shared
+		//    SUB-BLOCK guard (mingw stdio.h's _FILE_DEFINED live
+		//    from wchar.h's copy; stddef NULL; glibc wchar.h's
+		//    __attr_dealloc_fclose fallback). The dep record proves
+		//    a live-order parse of this unit would take the DEFINED
+		//    arm and skip the unit's own define, so the bind
+		//    installs everything EXCEPT this macro's define events
+		//    (forest_pp_install_mask) — live-true PP state, no
+		//    clobber of the live value. The unit's OTHER content —
+		//    which is NOT live — installs; decl twins at the shared
+		//    block are the mixed seam the typedef/class live-wins +
+		//    denotes_same_type tolerance absorb. Pruning here LOSES
+		//    that other content; declining cascades libc++ roots
+		//    into live parses (the statmem frontier — both were
+		//    tried, both broke it).
+		// The remaining mismatches DECLINE: want-defined/have-
+		// undefined (the unit froze with its own block SKIPPED — an
+		// errno.h husk missing decls no bind can conjure) and
+		// non-self-defined (an external configuration consult whose
+		// state genuinely changed). Extra content binds and is
+		// arbitrated; missing content declines.
 		if ( !want_defined && have_defined
 		  && forest_unit_defines_macro(unit, nm) )
 		{
+		    if ( forest_unit_file_live_tokenized(unit) )
+		    {
+			DBG(std::cout << "forest bind: unit "
+			    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			    << " already present ('" << nm
+			    << "' guard live) — pruned" << std::endl);
+			forest_live_present.insert(unit);
+			goto next_unit;	// a pruned unit's other deps are moot
+		    }
+		    forest_pp_install_mask[unit].insert(nm);
 		    DBG(std::cout << "forest bind: unit "
 			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
-			<< " already present ('" << nm
-			<< "' guard live) — pruned" << std::endl);
-		    forest_live_present.insert(unit);
-		    goto next_unit;	// a pruned unit's other deps are moot
+			<< " dep '" << nm
+			<< "' self-defined guard, live arm wins — binds with define masked"
+			<< std::endl);
+		    continue;	// this dep only; the unit's other deps still gate
 		}
 		DBG(std::cout << "forest bind: DECLINE root "
 		    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
@@ -3114,12 +3142,29 @@ void Program::forest_install_pp(uint32_t unit)
     std::vector<uint32_t> ev;
     if ( !bind_forest->unit_pp_events(unit, ev) )
 	return;
+    // Masked-bind (task #57): a define event for a macro forest_bind_env_ok
+    // masked on this unit is the unit's own guarded fallback whose guard is
+    // live-defined — a live-order parse would skip it, so the install does
+    // too (the live value survives; undef events still apply).
+    std::map<uint32_t, std::set<std::string> >::const_iterator mask_it =
+	forest_pp_install_mask.find(unit);
+    const std::set<std::string> *mask =
+	mask_it == forest_pp_install_mask.end() ? NULL : &mask_it->second;
     for ( size_t k = 0; k + 5 <= ev.size(); )
     {
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
 	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
 	const char *nm = bind_forest->pool_str(name_id);
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	if ( nm && mask && tag != PackMacroEvent::peUndef && mask->count(nm) )
+	{
+	    DBG(std::cout << "forest bind: unit "
+		<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		<< " define '" << nm << "' masked at install (live guard wins)"
+		<< std::endl);
+	    k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
+	    continue;
+	}
 	if ( nm )
 	{
 	    std::string name(nm);

@@ -4699,6 +4699,10 @@ public:
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
+    // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
+    // live-defined; forest_install_pp skips those define events (live-order
+    // parity — the live arm skipped them). Rebuilt per env check of the unit.
+    std::map<uint32_t, std::set<std::string> > forest_pp_install_mask;
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
