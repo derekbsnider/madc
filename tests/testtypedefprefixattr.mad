@@ -1,0 +1,26 @@
+// Specifier-position __attribute__ between `typedef` and the type — the
+// mingw setjmp.h shape (`typedef _CRT_ALIGN(16) struct _SETJMP_FLOAT128
+// {...} SETJMP_FLOAT128;`), which the win64 forest freeze parses live.
+// Oracle (gcc == clang == mingw-gcc): the alias observables are
+// sizeof(S)==16, alignof(S)==16, and an array of S strides at 16.
+// (The elaborated-tag corner _Alignof(struct _S) is deliberately not
+// asserted: gcc appertains the specifier-position attribute to the alias
+// alone, while madc carries it on the shared tag DataDef — every consumer
+// reads through the alias.)
+#include <stdio.h>
+
+typedef __attribute__ ((__aligned__ (16))) struct _S {
+    unsigned long long p[2];
+} S;
+
+typedef S SB;
+typedef SB sb_pair[2];
+
+int main()
+{
+    printf("size=%d\n", (int)sizeof(S));
+    printf("align=%d\n", (int)alignof(S));
+    printf("chain=%d\n", (int)alignof(SB));
+    printf("arr=%d\n", (int)sizeof(sb_pair));
+    return 0;
+}

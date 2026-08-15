@@ -38447,7 +38447,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
-    size_t explicit_align = 0;
+    // Seed from a typedef-prefix aligned(N) (`typedef _CRT_ALIGN(16) struct
+    // ...` — mingw setjmp.h) and consume it ONCE: nested member structs and
+    // later sibling parses must never inherit the outer typedef's alignment.
+    size_t explicit_align = pgm.typedef_prefix_align;
+    pgm.typedef_prefix_align = 0;
     bool have_scalar_storage_order = false;
     bool reverse_scalar_storage = false;
     auto consume_attribute = [&]()
@@ -45146,12 +45150,34 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return new TokenTypedefDecl(alias, dd);
     };
 
-    // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
+    // skip const/restrict qualifiers and consume specifier-position
+    // __attribute__ groups: `typedef const struct X *const_ptr;`,
+    // `typedef __attribute__((__aligned__(16))) struct S {...} T;` (mingw
+    // setjmp.h's _CRT_ALIGN on _SETJMP_FLOAT128). gcc/clang/mingw-gcc all
+    // appertain a specifier-position aligned(N) to the declared ALIAS
+    // (oracle: _Alignof(struct _S)==8, _Alignof(T)==16, sizeof both 16);
+    // madc's typedef-of-aggregate shares the aggregate's DataDef, so the
+    // alignment is carried on the tag instead — every alias-side observable
+    // matches the oracle, and the elaborated-tag corner gains the alignment
+    // (the MSVC __declspec(align) model this mingw spelling mirrors).
+    // vector_size feeds the same DataDefSIMD application point as the
+    // post-type position below; prefix-position mode()/aligned-on-scalar
+    // stay unapplied like the post-type position (no known consumer).
+    size_t prefix_align = 0, prefix_vector = 0;
     while ( tn && (tn->id() == TokenID::tkCONST
 		|| tn->id() == TokenID::tkRESTRICT
-		|| tn->id() == TokenID::tkVOLATILE) )
+		|| tn->id() == TokenID::tkVOLATILE
+		|| is_attribute_identifier_token(tn)) )
     {
-	pgm.nextToken();
+	if ( is_attribute_identifier_token(tn) )
+	{
+	    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken(), NULL, NULL,
+							  &prefix_align, &prefix_vector);
+	    if ( after )
+		pgm.pushToken(after);
+	}
+	else
+	    pgm.nextToken();
 	tn = pgm.peekToken();
     }
 
@@ -45161,8 +45187,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkUNION )
     {
 	pgm.parsing_typedef_decl = true;
+	pgm.typedef_prefix_align = prefix_align;
 	TokenBase *result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
 	pgm.parsing_typedef_decl = false;
+	pgm.typedef_prefix_align = 0;	// TokenSTRUCT consumed it; the class path never reads it
 	return result;
     }
     if ( tn->id() == TokenID::tkENUM )
@@ -45316,7 +45344,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     std::string gnu_mode_name;
-    size_t gnu_vector_bytes = 0;
+    size_t gnu_vector_bytes = prefix_vector;	// specifier-position vector_size, same application point
     if ( is_attribute_identifier_token(pgm.peekToken()) )
     {
 	pgm.consume_typedef_gnu_attributes(&gnu_mode_name, &gnu_vector_bytes);
