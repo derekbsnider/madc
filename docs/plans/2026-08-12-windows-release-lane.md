@@ -1141,6 +1141,33 @@ libwinpthread-1.dll adjacent or on PATH (the rt DLL links the staged
 C++ runtime shared, same as madc.exe); the suite's wine --exe lane
 spells this WINEPATH='Z:\\workspace\\madc\\bin'.**
 
+**Wine --exe first-run burndown (2026-08-15, commits 0a8a873e /
+1b380d7f / 8eba92fe / 441c3041): 926/43 → 963/5 → 968/0 expected.**
+Four roots, each at depth:
+1. **Import-addend fixup prologue** (0a8a873e): Itanium RTTI's
+   typeinfo-vptr = cxxabi-vtable + 16 is an S+A import reloc with no
+   static PE form (the loader writes S only). The data word stays a
+   normal per-slot import; a 48-byte entry prologue walks an .rdata
+   {DIR64-fixed word-pointer, addend} table adding each addend before
+   CRT init. ⚠️ pad with NOPs — execution falls through into the stub
+   (int3 pad faulted 0x80000003). Cleared ~38 virtual/RTTI tests.
+2. **int128 twins export via .def RENAMES** (1b380d7f): ⚠️⚠️ the first
+   cut aliased the twins under the libgcc names — a global `__divti3`
+   in c2mir.o HIJACKED the name from libgcc inside EVERY madc binary
+   (mingw's own runtime called a res-addr-first body with the native
+   ABI) and every `<ns_madc>` parse on win64 died silently (rc=1, no
+   output; `nm | grep 'T __divti3'` is the tell; Linux immune). The
+   aliases carry `__mir_*` internal spellings; the generated .def
+   renames them to the import names at the export table alone.
+3. **`<domain>_exe_skip`** (8eba92fe): testdebuginfo's -g refusal
+   covers both native passes on win64; JIT -g lane keeps covering it.
+4. **The resolver walk includes the runtime's OWN module** (441c3041):
+   eval-in-AOT resolves through madcdl_sym_default inside
+   libmadc_rt.dll, where 'self' is the exporting-nothing host exe and
+   the rt DLL (loaded as an import) was in no walk arm. The defining
+   module of the resolver joins the walk — the dlsym(RTLD_DEFAULT)
+   twin. Cleared the five eval-runtime tests.
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
