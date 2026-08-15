@@ -688,6 +688,11 @@ public:
     // DataDefSTRUCT. The class head's `final` is consumed so the body parses;
     // this records it so __is_final can answer.
     bool struct_is_final = false;
+    // v40 (task #57): this instance was MATERIALIZED from a frozen forest
+    // arena, not live-parsed. The mixed bind/live seam reads it: a live
+    // re-definition of a restored complete class reuses this instance
+    // (skip-and-reuse) instead of throwing "already defined".
+    bool forest_restored = false;
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members

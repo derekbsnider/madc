@@ -42567,6 +42567,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.nextToken();
 	    return NULL;
 	}
+	else if ( fwd && fwd->is_complete && fwd->forest_restored )
+	{
+	    // v40 mixed bind/live seam (task #57): a DECLINED root's live
+	    // parse re-defines a class a bound sibling RESTORED (ios_base).
+	    // The restored twin is INCOMPLETE for live-parse needs — the
+	    // demand filter drops nested records whose only declaring unit
+	    // was pruned (ios_base::Init), and the freeze does not transport
+	    // enclosing_class linkage. The live body is this TU's truth —
+	    // fall through to a fresh definition; registration overwrites
+	    // the twin, which stays alive (same layout) for the restored
+	    // records that reference it.
+	    DBG(cout << "class live-wins: re-defining forest-restored '"
+		<< tag->spelling() << "'" << endl);
+	}
 	else
 	    pgm.Throw(tag) << "Class '" << tag->spelling() << "' already defined" << flush;
     }

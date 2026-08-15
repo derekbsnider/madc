@@ -2267,6 +2267,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		sdd->definition_origin = (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 		? AggregateDefinitionOrigin::TranslationUnitRoot
 		: AggregateDefinitionOrigin::Included;
+		sdd->forest_restored = true;	// mixed bind/live seam provenance (task #57)
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
 	}
