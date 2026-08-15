@@ -1080,6 +1080,47 @@ va_arg_builtin half now carries its own alias block). Reducers:
 Linux ELF load-back 36/36 (refactor regression-proof), win64 COFF
 load-back 36/36 incl. varargs (mir.va_arg) on wine AND real Windows.
 
+**W3.3 SHIPPED (2026-08-15, commits b3195b00 + 75608fbe): the PE64 image
+writer, validated on wine AND real Windows.** `madc.exe -o prog.exe`
+emits a runnable PE32+ image: per-SLOT import descriptors (FirstThunk =
+the individual pool/data slot; ILT `[hint/name, 0]` terminates each
+walk), `.reloc` DIR64 page blocks for internal ABS64 slots, the
+synthesized 112-byte entry stub (UCRT contract + init-array walk +
+main + exit), sections .text/.mirpool/.mirinit/.data(+bss virtual
+tail)/.rdata/.reloc, trailer-carrier clean. The w3ob2.c reducer exits
+36 on wine, real Windows, and with a 50KB appended trailer; Linux `-o`
+regression unchanged. **THE bug (one-command find, five-hour class):
+the real Windows loader snaps imports by walking the IAT CONTENTS —
+each on-disk FirstThunk entry must carry its hint/name RVA (the
+IAT-equals-ILT-copy every linker emits) and a ZERO entry reads as a
+terminator, so zero-filled slots load fine and CRASH at first call
+(0xC0000005), while wine walks the ILT and masks it entirely.**
+Diagnosed by artifact-level bisect (patched exit-stubs; slot-content
+probe exes; `full_exit` via powershell since bash truncates NTSTATUS
+to 8 bits: 0xC0000005 & 0xff == 5). Slots stay base-reloc-free (an RVA
+is base-independent; the loader overwrites wholesale). Fix 75608fbe:
+the IAT-prefill pass in `pe_emit_executable`.
+
+**Wine-obj first-run burndown (2026-08-15): 966/999 → 968 + 1 scoped
+skip = the leg is clean.** The FIRST-EVER wine `--obj` suite run gave
+966 passed / 3 failed: (1+2) testint128 + testint128global — the .o
+load-back left `__divti3`-family/`__mir_*oti` names to the caller's
+process-symbol probe; the JIT never shows this because c2mir
+pre-registers `MIR_int128_helper_resolver` addresses at compile time;
+on win64 the probe CANNOT find them (mingw auto-export excludes
+libgcc; the `__mir_*` alias block is `!_WIN32`) and libgcc's would be
+the wrong ABI anyway (win64 twins are res-addr-first BY DESIGN — the
+helper header's own contract). Fixed 70c65427: the objload chain
+consults the helper owner before the caller resolver, all platforms
+(= what the JIT binds). (3) testdebuginfo — DWARF-in-COFF `.o`
+carriage unimplemented; mir-pe refuses `-g` loudly (the shipped
+Mach-O writer's accepted posture). Scoped honestly with the NEW
+generic fixture `tests/foo.<domain>_obj_skip` (718f7765): skips the
+--obj pass only, only in that domain — `.obj_skip` would drop the
+GREEN Linux .o lane, `.<domain>_skip` the GREEN win64 JIT lane.
+DWARF-in-COFF stays a W-lane roadmap item (writer+reader+loader,
+SECREL-class relocs — not on the release critical path).
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
