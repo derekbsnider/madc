@@ -1047,6 +1047,39 @@ win_run.sh — all green):**
   appended after the PE image — loader unaffected. The forest carrier
   rides the ELF placement-2 trailer model on PE.
 
+**W3.1 SHIPPED (2026-08-14, commit cac4e4b8): the COFF `.o` writer.**
+`madc.exe -c` emits a well-formed COFF object on the FIRST try —
+objdump parses sections (long `.mir.addrpool` name via the string
+table), relocs, symtab (aux records, the weak-external pair matching
+the gas oracle); mingw ld links it; the w3ob2.c reducer (data/bss/
+fn-pointer/pool relocs) exits 36 on wine AND real Windows == the
+mingw-gcc oracle == the Linux ELF twin. Discovered en route, all
+platform-neutral facts: (1) the `.o` EXTERNAL-link lane needs madc's
+value-bridge symbols (`madc_value_get_type_id` etc. from the module
+init) — the Linux ELF .o has the IDENTICAL undefined set at identical
+pool offsets, resolved on Linux by `-lmadc`/load-back; on win64 this
+lands in W3.5 libmadc_rt.dll. (2) `madc -c src -o out.o` with -o AFTER
+the source silently dropped the -o (script-argv convention; no script
+runs in AOT) — now a loud error + reducer testaottrailingargv
+(31c2be8f). Rider: MIR_object_emit_executable refuses loudly on
+Windows targets until W3.3 (the fall-through wrote a well-formed ELF
+image under a .exe name).
+
+**W3.2 SHIPPED (2026-08-15, commit 7d3f70e7): `.o`-as-cache load-back.**
+`objin_from_pe` fills the neutral input view (aux records keep their
+index slots as inert placeholders; inline 8-char COFF names copy into
+a view-owned arena — `objin_t.namebuf`; weak pairs decode to one weak
+defined symbol), and `MIR_object_load` was REBASED onto the one
+neutral view (`objin_parse`) instead of carrying its own second ELF
+parse — mapping primitives split per OS (mmap/mprotect vs
+VirtualAlloc/VirtualProtect + FlushInstructionCache). Dotted `mir.*`
+builtin exports gained the win64 arm — ⚠️ mir-x86_64.c is split into
+SysV/_WIN32 file HALVES and the first guard fix landed in the half
+that never compiles on Windows (nm of mir.o exposed it; the win64
+va_arg_builtin half now carries its own alias block). Reducers:
+Linux ELF load-back 36/36 (refactor regression-proof), win64 COFF
+load-back 36/36 incl. varargs (mir.va_arg) on wine AND real Windows.
+
 ### W4 — Embedded prelude + groves (provenance-clean, W0.5 style)
 - Windows C prelude = mingw-w64 UCRT headers (+ the mingw ANSI stdio
   routing for the long-double printf family). Provenance audit before
