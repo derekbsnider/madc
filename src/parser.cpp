@@ -2480,7 +2480,8 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "unsigned long long" || name == "unsigned long long int"
       || name == "unsigned __int128" )
 	return &ddUINT64;
-    if ( name == "float" || name == "_Float16" || name == "_Float32" )
+    if ( name == "float" || name == "_Float16" || name == "_Float32"
+      || name == "__bf16" )
 	return &ddFLOAT;
     if ( name == "double" || name == "long double"
       || name == "_Float64" || name == "_Float128"

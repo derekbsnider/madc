@@ -1,0 +1,24 @@
+// C23 _FloatN + _Complex (either order) and __bf16 — the constructs gcc's
+// own intrinsics tree uses (avx512fp16intrin.h `_Float16 _Complex __A`;
+// avx512bf16vlintrin.h `typedef __bf16 __v16bf ...`), reached by mingw
+// winnt.h's unconditional `#include <x86intrin.h>` on win64.
+//
+// madc's _FloatN posture is the documented nearest-supported approximation
+// (add_datatypes: _Float16/_Float32/__bf16 ~ float, wider ~ double), so
+// the complex carriers are complex float/double — the sizes assert THAT
+// approximation, not gcc's native half (gcc: sizeof(_Float16 _Complex)==4).
+// ABI fidelity for real half-floats is the Tier-3 floor gap, roadmapped.
+#include <stdio.h>
+
+static _Float16 _Complex g;
+static _Complex _Float16 h;
+static _Float64 _Complex w;
+static __bf16 b;
+
+int main()
+{
+    printf("f16c=%d %d\n", (int)sizeof(g), (int)sizeof(h));
+    printf("f64c=%d\n", (int)sizeof(w));
+    printf("bf16=%d\n", (int)sizeof(b));
+    return 0;
+}

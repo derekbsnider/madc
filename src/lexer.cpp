@@ -580,6 +580,12 @@ static int compound_type_specifier_flag(const std::string &w)
 	TS_UNSIGNED = 1 << 16,
 	TS_COMPLEX  = 1 << 18,
 	TS_INT128   = 1 << 20,
+	// C23 _FloatN family, combinable with _Complex only (gcc's
+	// avx512fp16intrin.h: `_Float16 _Complex __A`). Two flags, one per
+	// approximation class (float / double) — the exact SPELLING for the
+	// minted token comes from the words themselves, not the bit.
+	TS_FLOATN_F = 1 << 22,	// _Float16, _Float32  (~float)
+	TS_FLOATN_D = 1 << 24,	// _Float64/_Float128/_Float32x/_Float64x (~double)
     };
     if ( w == "char" ) return TS_CHAR;
     if ( w == "short" ) return TS_SHORT;
@@ -591,6 +597,9 @@ static int compound_type_specifier_flag(const std::string &w)
     if ( w == "unsigned" ) return TS_UNSIGNED;
     if ( w == "__int128" ) return TS_INT128;
     if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
+    if ( w == "_Float16" || w == "_Float32" ) return TS_FLOATN_F;
+    if ( w == "_Float64" || w == "_Float128"
+      || w == "_Float32x" || w == "_Float64x" ) return TS_FLOATN_D;
     return 0;
 }
 
@@ -4079,6 +4088,9 @@ void Program::add_datatypes()
     // _FloatN spellings use (MIR has no half-float): declarations parse;
     // half-precision ABI fidelity is a MIR floor gap (SIMD-class, Tier 3).
     static TokenDataType tkFLOAT16("_Float16", ddFLOAT);
+    // __bf16 (bfloat16 — gcc's avx512bf16 headers typedef vectors of it):
+    // the same nearest-supported approximation posture as _Float16.
+    static TokenDataType tkBF16("__bf16", ddFLOAT);
     static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
     static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
@@ -4137,6 +4149,7 @@ void Program::add_datatypes()
     }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
     datatype_map[tkFLOAT16.str] = &tkFLOAT16;
+    datatype_map[tkBF16.str] = &tkBF16;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
     datatype_map[tkFLOAT128.str] = &tkFLOAT128;
@@ -6156,7 +6169,10 @@ TokenBase *Program::_getToken()
 		  || word == "double"     || word == "float"
 		  || word == "__int128"
 		  || word == "_Complex"   || word == "__complex__"
-		  || word == "__complex" )
+		  || word == "__complex"
+		  || word == "_Float16"   || word == "_Float32"
+		  || word == "_Float64"   || word == "_Float128"
+		  || word == "_Float32x"  || word == "_Float64x" )
 		{
 		    enum {
 			TS_VOID     = 1 << 0,
@@ -6170,6 +6186,8 @@ TokenBase *Program::_getToken()
 			TS_UNSIGNED = 1 << 16,
 			TS_COMPLEX  = 1 << 18,
 			TS_INT128   = 1 << 20,
+			TS_FLOATN_F = 1 << 22,	// _Float16/_Float32 (~float)
+			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
 		    };
 		    int counter = compound_type_specifier_flag(word);
 		    // Accumulate subsequent type-specifier keywords
@@ -6298,6 +6316,20 @@ TokenBase *Program::_getToken()
 			    // value passed as a double.
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddLDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
 			    return make_datatype("long double", ddLDOUBLE);
+			// C23 _FloatN + _Complex, either order (gcc's
+			// avx512fp16intrin.h: `_Float16 _Complex __A`). The complex
+			// carrier rides the same nearest-supported approximation the
+			// bare spellings use (add_datatypes: _Float16/_Float32 ~
+			// float, the rest ~ double; ABI fidelity = the Tier-3 half-
+			// float floor gap). BARE _FloatN breaks to the default's
+			// fall-through, where the datatype_map's own spelling-named
+			// token serves it exactly as before.
+			case TS_FLOATN_F:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return make_datatype(dd->name.c_str(), *dd); }
+			    break;
+			case TS_FLOATN_D:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    break;
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
