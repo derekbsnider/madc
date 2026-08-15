@@ -27,6 +27,9 @@
 #ifndef ELFMAG0 /* hosts without <elf.h> (macOS, Windows): local ELF64 ABI defs */
 #include "mir-elf-defs.h"
 #endif
+#include "mir-int128-helper.h" /* objload: the int128 libcall names bind MIR's
+                                  helpers (on win64 they MEAN the MIR proto
+                                  contract, never libgcc's native ABI) */
 
 /* ===== growable byte buffer + LEB128 ===================================== */
 typedef struct {
@@ -3047,6 +3050,12 @@ MIR_object_loaded_t MIR_object_load (const void *vbuf, size_t size,
     if (s->undef_p) {
       const char *nm = s->name != NULL ? s->name : "";
       void *a = objload_builtin (nm);
+      /* int128 libcalls bind MIR's helpers before the caller's resolver:
+         c2mir pre-registers exactly these addresses in the JIT lane, and on
+         win64 the names MEAN the MIR proto contract (res-addr-first) -- a
+         process-symbol probe finding libgcc's native-ABI __divti3 would be
+         an ABI mismatch, and mingw exports neither family from the host. */
+      if (a == NULL) a = MIR_int128_helper_resolver (nm);
       if (a == NULL && resolver != NULL) a = resolver (nm, env);
       if (a == NULL) {
         if (unresolved++ == 0) snprintf (first_unresolved, sizeof (first_unresolved), "%s", nm);
