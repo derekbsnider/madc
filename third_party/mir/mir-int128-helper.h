@@ -257,6 +257,47 @@ static long MIR_int128_umuloti (void *res, unsigned __int128 a, unsigned __int12
    and runtime-needing emits are refused; the JIT resolves these through
    MIR_int128_helper_resolver in-process.  Revisit with the Mach-O runtime
    dylib story (note the writer's `_` symbol-prefix convention then). */
+/* win64 (W3 AOT): a PE image's int128 libcalls import from libmadc_rt.dll,
+   and the names MUST bind these twins -- mingw libgcc's native-ABI family
+   would be a call-shape mismatch (the note above).  ⚠️ The aliases must
+   NOT carry the libgcc import names themselves: c2mir.o links into every
+   madc binary, and a global `__divti3` definition HIJACKS the name from
+   libgcc for the binary's OWN mingw-runtime code -- native-ABI callers
+   into a res-addr-first body (silent corruption; broke every <ns_madc>
+   parse on win64 when tried).  So the twins export under __mir_-prefixed
+   internal spellings, and libmadc_rt.dll's generated .def RENAMES them to
+   the import names at the export table alone (`__divti3 = __mir_divti3`)
+   -- the name exists on the DLL's surface, never in any link namespace.
+   The __mir_*oti overflow family collides with nothing and aliases
+   directly.  Same asm-alias mechanism as the dotted mir.* exports. */
+#if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && defined(_WIN32)
+#define MIR_INT128_ALIAS_(fn, imp) \
+  extern __typeof (fn) fn##_obj_export asm (imp) __attribute__ ((alias (#fn), used))
+MIR_INT128_ALIAS_ (MIR_int128_divti3, "__mir_divti3");
+MIR_INT128_ALIAS_ (MIR_int128_udivti3, "__mir_udivti3");
+MIR_INT128_ALIAS_ (MIR_int128_modti3, "__mir_modti3");
+MIR_INT128_ALIAS_ (MIR_int128_umodti3, "__mir_umodti3");
+MIR_INT128_ALIAS_ (MIR_int128_floattisf, "__mir_floattisf");
+MIR_INT128_ALIAS_ (MIR_int128_floattidf, "__mir_floattidf");
+MIR_INT128_ALIAS_ (MIR_int128_floattixf, "__mir_floattixf");
+MIR_INT128_ALIAS_ (MIR_int128_floatuntisf, "__mir_floatuntisf");
+MIR_INT128_ALIAS_ (MIR_int128_floatuntidf, "__mir_floatuntidf");
+MIR_INT128_ALIAS_ (MIR_int128_floatuntixf, "__mir_floatuntixf");
+MIR_INT128_ALIAS_ (MIR_int128_fixsfti, "__mir_fixsfti");
+MIR_INT128_ALIAS_ (MIR_int128_fixdfti, "__mir_fixdfti");
+MIR_INT128_ALIAS_ (MIR_int128_fixxfti, "__mir_fixxfti");
+MIR_INT128_ALIAS_ (MIR_int128_fixunssfti, "__mir_fixunssfti");
+MIR_INT128_ALIAS_ (MIR_int128_fixunsdfti, "__mir_fixunsdfti");
+MIR_INT128_ALIAS_ (MIR_int128_fixunsxfti, "__mir_fixunsxfti");
+MIR_INT128_ALIAS_ (MIR_int128_addoti, "__mir_addoti");
+MIR_INT128_ALIAS_ (MIR_int128_uaddoti, "__mir_uaddoti");
+MIR_INT128_ALIAS_ (MIR_int128_suboti, "__mir_suboti");
+MIR_INT128_ALIAS_ (MIR_int128_usuboti, "__mir_usuboti");
+MIR_INT128_ALIAS_ (MIR_int128_muloti, "__mir_muloti");
+MIR_INT128_ALIAS_ (MIR_int128_umuloti, "__mir_umuloti");
+#undef MIR_INT128_ALIAS_
+#endif
+
 #if defined(MIR_INT128_EXPORT_ALIASES) && defined(__GNUC__) && !defined(_WIN32) \
   && !defined(__APPLE__)
 extern __typeof (MIR_int128_addoti) MIR_int128_addoti_export asm ("__mir_addoti")

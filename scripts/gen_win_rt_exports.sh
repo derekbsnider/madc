@@ -10,10 +10,17 @@
 # exported symbol = the entry's final identifier (plain-name rows become
 # `name = __mingw_name` aliases, identity rows plain exports).
 #
-# Usage: gen_win_rt_exports.sh <mir-mingw-stdio.h> <out.def>
+# The int128 import surface rides the same .def: the helper's resolver
+# lines are the one list of import names; libgcc-named imports become
+# RENAMES onto the __mir_* alias exports (defining the libgcc names in a
+# link would hijack them from the binary's own mingw runtime — wrong ABI),
+# and the __mir_* overflow family exports plainly.
+#
+# Usage: gen_win_rt_exports.sh <mir-mingw-stdio.h> <out.def> <mir-int128-helper.h>
 set -u
 map=$1
 out=$2
+i128=$3
 tmp=$out.tmp
 {
 	echo "EXPORTS"
@@ -25,6 +32,15 @@ tmp=$out.tmp
 		else
 			echo "$name = $sym"
 		fi
+	done
+	grep -o 'strcmp (name, "__[a-z0-9_]*")' "$i128" \
+	| sed -e 's/.*"\(__[a-z0-9_]*\)".*/\1/' \
+	| sort -u \
+	| while read -r name; do
+		case "$name" in
+		__mir_*) echo "$name" ;;
+		__*) echo "$name = __mir_${name#__}" ;;
+		esac
 	done
 } > "$tmp"
 n=$(grep -c . "$tmp")

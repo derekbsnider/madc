@@ -1123,8 +1123,8 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 # .def re-adds exactly the map's names, generated from the one map owner
 # so the lists can never drift. --export-all-symbols stays on the line:
 # with a .def present ld would otherwise export ONLY the .def names.
-../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h
-	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def
+../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
+	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def $(MIRDIR)/mir-int128-helper.h
 	$(CXX) -shared -o $@ $(OBJDIR)/libmadc_rt.def -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
