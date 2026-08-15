@@ -45315,6 +45315,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    << "' (next: " << upcoming << ")" << flush;
     }
 
+    // The UNDECORATED base type: each declarator in a C typedef list
+    // (`typedef signed char INT8,*PINT8;` — mingw basetsd.h/winnt.h) restarts
+    // from here and takes its own pointer/array shape.
+    DataDef *list_base_dd = base_dd;
+
     // handle pointer + interleaved CV-qualifiers between the base type and the
     // alias name: `typedef int *intptr;`, east-const `typedef int const X;`,
     // `typedef T * const p;`, `typedef T const * X;`. CV-qualifiers are no-ops
@@ -45443,9 +45448,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
-    // array extent instead of collapsing immediately to a pointer.
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-    {
+    // array extent instead of collapsing immediately to a pointer. Shared by
+    // every declarator in a list (`typedef int A[4], *B;`).
+    auto parse_alias_array_suffix = [&](DataDef *dd,
+					const std::string &alias_name) -> DataDef * {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpSqr )
+	    return dd;
 	size_t alias_count = 1;
 	TokenBase *alias_count_expr = NULL;
 	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
@@ -45477,56 +45485,98 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    else
 		alias_count *= (size_t)n;
 	}
-	base_dd = new DataDefCArray(*base_dd, alias, alias_count, alias_count_expr);
+	dd = new DataDefCArray(*dd, alias_name, alias_count, alias_count_expr);
 	if ( pgm.forest_arena_enabled )
-	    pgm.forest_arena_record_unary(base_dd);	// v25: DK_CARRAY write-through
-    }
+	    pgm.forest_arena_record_unary(dd);	// v25: DK_CARRAY write-through
+	return dd;
+    };
 
-    // register in datatype_map
-    if ( gnu_vector_bytes > 0 )
-	base_dd = new DataDefSIMD(base_dd, alias, gnu_vector_bytes);
-    // An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
-    // itself, exactly like a class typedef: wrapping it in a plain DataDef
-    // alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
-    // integer DataType is indistinguishable from a scalar typedef — the
-    // mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
-    else if ( !pgm.class_scope_stack.empty()
-	   && base_dd && !base_dd->is_pointer()
-	   && base_dd->basetype() == BaseType::btSimple
-	   && !dynamic_cast<DataDefENUM *>(base_dd)
-	   && !base_source_spelling.empty()
-	   && base_source_spelling != base_dd->name )
+    // Wrap + register + record ONE alias — shared by the head declarator and
+    // every tail declarator of a C typedef list.
+    auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
+			    DataDef *dd, size_t vec_bytes) -> TokenBase * {
+	// register in datatype_map
+	if ( vec_bytes > 0 )
+	    dd = new DataDefSIMD(dd, alias_name, vec_bytes);
+	// An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
+	// itself, exactly like a class typedef: wrapping it in a plain DataDef
+	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
+	// integer DataType is indistinguishable from a scalar typedef — the
+	// mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
+	else if ( !pgm.class_scope_stack.empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd)
+	       && !base_source_spelling.empty()
+	       && base_source_spelling != dd->name )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(base_source_spelling);
+	    dd = alias_dd;
+	}
+	else if ( pgm.class_scope_stack.empty()
+	       && !pgm.current_namespace().empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd) )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias_name);
+	    // [temp.type]: the alias carries its underlying so template-argument
+	    // identity can desugar (std::streamsize must select the spec keyed
+	    // on long) — see template_type_arg_spelling.
+	    alias_dd->scalar_alias_of = dd;
+	    dd = alias_dd;
+	}
+	if ( dd && is_incomplete_class_datadef(dd) )
+	    pgm.template_completion_requested.insert(dd->name);
+	TokenDataType *tdt = new TokenDataType(alias_name.c_str(), *dd);
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.register_scoped_typedef(alias_name, tdt);
+	DBG(std::cout << "TokenTYPEDEF::parse() " << alias_name << " = " << dd->name << std::endl);
+	return record_typedef(alias_name, dd, tdt, atok);
+    };
+
+    base_dd = parse_alias_array_suffix(base_dd, alias);
+    TokenBase *node = finish_alias(alias, alias_tok, base_dd, gnu_vector_bytes);
+
+    // C declarator lists: `typedef signed char INT8,*PINT8;` (mingw
+    // basetsd.h, winnt.h's PWCHAR family). Each tail declarator restarts
+    // from the UNDECORATED base and takes its own pointer/array shape.
+    // Before this loop the tail was silently DROPPED (`,*PINT8` never
+    // registered) and the leftover comma spun parseStatement forever.
+    // Every alias records through the same finish_alias owner; at block
+    // scope the non-final nodes join the compound's statement stream
+    // directly (the caller only appends the RETURNED node).
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
     {
-	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->set_canonical_spelling(base_source_spelling);
-	base_dd = alias_dd;
+	pgm.nextToken(); // consume ','
+	DataDef *decl_dd = list_base_dd;
+	while ( pgm.peekToken()
+	     && (pgm.peekToken()->id() == TokenID::tkMul
+	      || is_cv_qualifier_token(pgm.peekToken())) )
+	{
+	    if ( pgm.peekToken()->id() == TokenID::tkMul )
+		decl_dd = pgm.getPointerType(decl_dd);
+	    pgm.nextToken();
+	}
+	TokenBase *ntok = pgm.nextToken();
+	const char *nsp = ntok ? typedef_alias_spelling(ntok) : NULL;
+	if ( !nsp )
+	    pgm.Throw(ntok ? ntok : tn)
+		<< "Expecting alias name in typedef declarator list" << flush;
+	std::string tail_alias = nsp;
+	decl_dd = parse_alias_array_suffix(decl_dd, tail_alias);
+	if ( node && !pgm.compounds.empty() )
+	    pgm.compounds.top()->statements.push_back((TokenStmt *)node);
+	node = finish_alias(tail_alias, ntok, decl_dd, 0);
     }
-    else if ( pgm.class_scope_stack.empty()
-	   && !pgm.current_namespace().empty()
-	   && base_dd && !base_dd->is_pointer()
-	   && base_dd->basetype() == BaseType::btSimple
-	   && !dynamic_cast<DataDefENUM *>(base_dd) )
-    {
-	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
-	// [temp.type]: the alias carries its underlying so template-argument
-	// identity can desugar (std::streamsize must select the spec keyed
-	// on long) — see template_type_arg_spelling.
-	alias_dd->scalar_alias_of = base_dd;
-	base_dd = alias_dd;
-    }
-    if ( base_dd && is_incomplete_class_datadef(base_dd) )
-	pgm.template_completion_requested.insert(base_dd->name);
-    TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
-    if ( pgm.class_scope_stack.empty() )
-	pgm.register_scoped_typedef(alias, tdt);
-    DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
 
     // consume semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
 
-    return record_typedef(alias, base_dd, tdt, alias_tok);
+    return node;
 }
 
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
@@ -64369,6 +64419,15 @@ bool Program::parse(TokenProgram *tp)
 	while ( !tokens.empty() )
 	{
 	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
+	    // Progress guard: a parseStatement that restores the stream to
+	    // exactly this state (its dispatchee consumed nothing and pushed
+	    // the head token back — e.g. a stray ',' handed to parseExprStmt,
+	    // whose expression parse re-feeds the comma for argument-list
+	    // callers) would spin this loop forever at 100% CPU with no
+	    // output. Detected below; the throw is the loud twin of gcc's
+	    // "expected identifier" here.
+	    TokenBase *loop_head = tokens.front();
+	    size_t loop_size = tokens.size();
 	    tb = nextToken();
 //	    printt(tb);
 	    // Skip C23 [[...]] attributes at top level.
@@ -64393,6 +64452,11 @@ bool Program::parse(TokenProgram *tp)
 	    ts = parseStatement(tb);
 	    parsing_script_statement = false;
 	    pack_close_toplevel_decl();
+	    if ( !tokens.empty() && tokens.front() == loop_head
+	      && tokens.size() == loop_size )
+		Throw(loop_head) << "Unexpected '"
+		    << overload_token_spelling(loop_head)
+		    << "' at file scope (parser made no progress)" << flush;
 	    if ( ts )
 	    {
 		if ( (script_stmt || script_statement_result(ts))
