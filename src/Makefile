@@ -756,7 +756,7 @@ $(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
 # forest packing is the W4 workstream, so this mode builds the dev forest
 # shape (silent live parse). Run validation: wine + scripts/win_run.sh.
 hosted-x86-64-windows:
-	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc_rt.dll
 
 # win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
 # UCRT posture + specs swap), so host detection selects the _WIN32 arms
@@ -1105,6 +1105,20 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 
 ../bin/libwinpthread-1.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libwinpthread-1.dll
 	cp -p $< $@
+
+# libmadc_rt.dll (W3.5): the win64 twin of libmadc.so — the runtime
+# provider AOT images (madc -o prog.exe) import madc_puts / the
+# madc_value_* bridge / the __madc_* helpers from, and the DLL half of
+# the external-link story (the import lib serves
+# `x86_64-w64-mingw32-gcc prog.o -lmadc_rt.dll`). Whole-archive: loaded
+# programs reference these symbols, the DLL itself does not, so plain
+# archive semantics would drop their objects. --export-all-symbols (in
+# LIBS) is the export surface — plain names, the darwin flat-bind
+# analogue. Staged in bin/ beside madc.exe: the PE loader's app-dir rule
+# serves madc.exe's own LoadLibrary probe, wine, win_run.sh's
+# adjacent-DLL shipping, and the release zip alike.
+../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -shared -o $@ -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the

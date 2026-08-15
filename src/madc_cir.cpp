@@ -1826,11 +1826,12 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
 }
 
-#if MADC_TARGET_APPLE_P || MADC_TARGET_WINDOWS_P
-// ONE rule for the Mach-O and PE emit lanes (source image + object link):
-// a program still needing the madc runtime cannot link — no target libmadc
-// library exists on either — and the message names the fix. Returns true
-// when the emit must refuse.
+#if MADC_TARGET_APPLE_P
+// ONE rule for the Mach-O emit lanes (source image + object link): a
+// program still needing the madc runtime cannot link — no target libmadc
+// dylib exists — and the message names the fix. Returns true when the
+// emit must refuse. (The PE lanes used to share this refusal; W3.5's
+// libmadc_rt.dll lifted it — see cir_windows_import_dlls.)
 static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
 				       const char *out_path)
 {
@@ -1841,6 +1842,25 @@ static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
 	    " into the image with -static-libmadc (C-lane machinery only)\n",
 	    out_path);
     return true;
+}
+#endif
+
+#if MADC_TARGET_WINDOWS_P
+// ONE rule for the PE emit lanes (source image + object link): the
+// writer's import-attribution DLL order. A runtime-needing program
+// imports the madc surface (madc_puts, the madc_value_* bridge, __madc_*
+// helpers) from libmadc_rt.dll — the win64 twin of libmadc.so.0, staged
+// beside madc.exe (W3.5) — placed FIRST: specific before general, the
+// madcdl walk's rule, so madc-runtime names can never mis-attribute to a
+// base DLL. The base set (`other`) follows.
+static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
+				    const std::vector<std::string> &other,
+				    std::vector<const char *> &libs)
+{
+    if (have_madc && !drop_madc)
+	libs.push_back("libmadc_rt.dll");
+    for (const std::string &l : other)
+	libs.push_back(l.c_str());
 }
 #endif
 
@@ -1903,12 +1923,9 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	return false;
     cir_apple_extra_dylibs(imports, libs);
 #elif MADC_TARGET_WINDOWS_P
-    // PE: no libmadc DLL exists yet (same refusal as Mach-O); the needed
-    // list flows to the writer as its import-attribution DLL order.
-    if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
-	return false;
-    for (const std::string &l : (drop_madc ? other : needed))
-	libs.push_back(l.c_str());
+    // PE: runtime-needing programs import from libmadc_rt.dll; the list
+    // flows to the writer as its import-attribution DLL order.
+    cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
     for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
@@ -2275,14 +2292,10 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	}
 	cir_apple_extra_dylibs(imports, libs);
 #elif MADC_TARGET_WINDOWS_P
-	// Same PE rule as cir_write_native_image: refusal + the needed
-	// list as the writer's import-attribution DLL order.
-	if (cir_target_runtime_refused(have_madc, drop_madc, out_path)) {
-	    MIR_object_destroy(obj);
-	    return -1;
-	}
-	for (const std::string &l : (drop_madc ? other : needed))
-	    libs.push_back(l.c_str());
+	// Same PE rule as cir_write_native_image: libmadc_rt.dll first
+	// when the runtime is needed, then the base DLL order (the one
+	// owner is cir_windows_import_dlls).
+	cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
 	for (const std::string &l : (drop_madc ? other : needed))
 	    libs.push_back(l.c_str());
