@@ -1117,8 +1117,15 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 # analogue. Staged in bin/ beside madc.exe: the PE loader's app-dir rule
 # serves madc.exe's own LoadLibrary probe, wine, win_run.sh's
 # adjacent-DLL shipping, and the release zip alike.
-../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB)
-	$(CXX) -shared -o $@ -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+# The .def rides the link: PE ld auto-excludes libmingwex/oldnames code
+# from --export-all-symbols, but AOT images import the mingw-stdio map's
+# surface (__mingw_printf family, *l math, dirent) from THIS DLL — the
+# .def re-adds exactly the map's names, generated from the one map owner
+# so the lists can never drift. --export-all-symbols stays on the line:
+# with a .def present ld would otherwise export ONLY the .def names.
+../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h
+	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def
+	$(CXX) -shared -o $@ $(OBJDIR)/libmadc_rt.def -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
