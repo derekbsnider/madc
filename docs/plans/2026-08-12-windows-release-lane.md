@@ -1186,6 +1186,56 @@ Four roots, each at depth:
   its inputs — the 2026-08-11 lesson is codified in
   package_release_macos.sh; the windows packer inherits it).
 
+#### W4 execution decisions (settled 2026-08-15, session #90)
+
+1. **The freezer is madc.exe itself, under wine — the Linux
+   forest_pack.sh model, NOT the darwin cross-freezer.** A packer COPY
+   of the release exe runs `--freeze-append` onto the artifact (the
+   copy exists because an executing image cannot be written — same
+   reason as Linux ETXTBSY). The darwin cross-freeze exists only
+   because darwin binaries cannot execute on the container; wine
+   removes that constraint here, and producer == consumer makes
+   LOADED == parsed exact by construction (identical embedded text,
+   target keys, config word — the same binary). No cross-x86-64-windows
+   MODE is built.
+2. **Carrier = PE EOF trailer** (the ELF model). Probe-verified in
+   W3.3: the 50KB-trailer exe runs on wine AND real Windows.
+   Machinery already in place, verified this session:
+   `madc_self_exe_path()` has its GetModuleFileNameA arm;
+   `cir_forest_map_image` is format-agnostic outside Mach-O (maps the
+   whole file via the one mmap owner, footer at EOF);
+   `select_ledger_sources.sh` already speaks win64 and
+   `ledger_sources.txt` carries the win64 rows (rt_posix_* from the
+   POSIX-surface arc); `cir_ledger_pull` is platform-neutral MIR.
+   Ledger modules frozen by the win exe's own c2mir carry win64-target
+   MIR by construction.
+3. **Strip-before-pack** holds (`x86_64-w64-mingw32-strip`; PE export
+   tables are sections and survive strip — only the COFF symbol table
+   goes). New goal `release-windows` produces
+   `bin/madc-release-x86-64-windows.exe`: build hosted mode → copy →
+   strip → `forest_pack_windows.sh` (wine self-freeze append) →
+   verify (`--dump-forest` + `--run-frozen` + bind-cache equivalence,
+   all under wine). The suite-facing `hosted-x86-64-windows` goal and
+   its live-parse baselines stay untouched.
+4. **zstd is a W4.1 gate, not a rider to defer**: the hosted MODE
+   builds --without-zstd today and the freeze path's zlib fallback is
+   a loud WARNING by design — the shipped artifact must carry the
+   release codec (zstd-15 appended profile, task #37 trade). Stage =
+   mingw static build in /workspace/zstd (`libzstd-x86-64-windows.a`,
+   beside the darwin twins), wired via OPTIONAL_CPPFLAGS/OPTIONAL_LIBS
+   in the MODE block + provision_container.sh recipe.
+5. **MADC_FOREST_EXPECT_EMBEDDED is NOT baked in v1** (the win exe
+   stays out of the line-450 expectation filter): on a run-only
+   Windows box the live-parse fallback is inherently loud — the
+   sys-include table names container paths that do not exist there, so
+   a missing forest cannot silently succeed. The packed-exe
+   real-Windows spot check in W4.5 is the negative control. Revisit
+   with W5's verify_pe_release.sh if the posture needs the bake.
+6. **DLL adjacency**: the release exe keeps the W3.5 deployment set
+   (libstdc++-6.dll, libwinpthread-1.dll adjacent; libmadc_rt.dll for
+   runtime-needing AOT output). The pack script sets
+   WINEPATH='Z:\workspace\madc\bin' for the packer copy in tmp/.
+
 ### W5 — Lanes, battery, artifacts
 - Suite lanes on real Windows: `run_tests.sh` gains a generic runner
   prefix (fixture-convention rule: a `MADC_RUNNER=...` env wrapping
