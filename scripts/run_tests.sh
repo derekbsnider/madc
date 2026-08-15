@@ -24,6 +24,11 @@
 #                      tests whose CORRECT output differs on the domain
 #                      (sizeof(long)-derived values on win64); content
 #                      comes from the domain's oracle compiler.
+#   tests/foo.<domain>_obj_skip — skip the OBJ pass only, only when
+#                      MADC_SKIP_EXT includes <domain>: for tests whose
+#                      .o lane is structurally out of that domain's scope
+#                      while the JIT (and other domains' .o lanes) still
+#                      cover them; content = one line saying why.
 #
 # No test names are hard-coded here.
 #
@@ -293,8 +298,16 @@ for t in tests/*.mad; do
     # dlopen happens before the .o dispatch); --project is compile-only
     # (the run executes the finished artifact) so it is dropped from the
     # replayed run flags.
+    domain_obj_skip=0
+    for skip_ext in $MADC_SKIP_EXT; do
+        if [ -f "tests/$base.${skip_ext}_obj_skip" ]; then
+            domain_obj_skip=1
+            break
+        fi
+    done
     if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ]; then
+       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ] \
+       && [ $domain_obj_skip -eq 0 ]; then
         obj_path="/tmp/madc_test_obj_${base}.o"
         run_flags=()
         skip_next=0
