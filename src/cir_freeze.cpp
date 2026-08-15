@@ -735,7 +735,10 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 				fu.pp_events.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 7, SNAP_KIND_CIR_UNIT_EDGES,
 				fu.edges.data(),
-				fu.edges.size() * sizeof(uint32_t), codec))
+				fu.edges.size() * sizeof(uint32_t), codec)
+		    || !add_seg(w, base + 8, SNAP_KIND_CIR_BRANCH_DEPS,
+				fu.branch_deps.data(),
+				fu.branch_deps.size() * sizeof(uint32_t), codec))
 			return false;
 	}
 	return true;
@@ -1627,6 +1630,20 @@ bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 7, SNAP_KIND_CIR_UNIT_EDGES, raw)
 	    || raw.size() % sizeof(uint32_t))
+		return false;
+	out.resize(raw.size() / sizeof(uint32_t));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
+	return true;
+}
+
+// v40: [name_id, flags, value_id, definer_unit] tuples — see
+// SNAP_KIND_CIR_BRANCH_DEPS.
+bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out)
+{
+	madc::dis::decode_bytes raw;
+	if (!read_unit_seg(unit, 8, SNAP_KIND_CIR_BRANCH_DEPS, raw)
+	    || raw.size() % (4 * sizeof(uint32_t)))
 		return false;
 	out.resize(raw.size() / sizeof(uint32_t));
 	if (!raw.empty())

@@ -941,11 +941,22 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	const char *interned = intern_file(name);
 	if ( !protocol_visit )
 		pack_note_unit(interned);
+	// v40 (task #57): the embedded twin of the filesystem include's
+	// unit-stack tracking — embedded units freeze too.
+	if ( pack_recording && !protocol_visit )
+	{
+		for ( size_t si = 0; si < pack_unit_stack.size(); ++si )
+			pack_unit_subtree[pack_unit_stack[si]].insert(interned);
+		pack_unit_subtree[interned].insert(interned);
+		pack_unit_stack.push_back(interned);
+	}
 	while ( (itb = getRealToken()) )
 	{
 		itb->file = interned;
 		push_token_with_literal_concat(itb);
 	}
+	if ( pack_recording && !protocol_visit )
+		pack_unit_stack.pop_back();
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
 	if ( protocol_visit )
@@ -2891,6 +2902,150 @@ int Program::forest_unit_for_include(const std::string &incfile)
     return u;
 }
 
+// v40 bind eligibility (task #57): every unit in the root's closure must
+// find its frozen EXTERNAL branch dependencies reproduced by the consumer's
+// live macro tables. A mismatch means the frozen unit's PP conditionals took
+// different arms than a live parse here would — binding it silently loses
+// (or gains) declarations: mingw stdlib.h defined errno before errno.h
+// parsed in the pack TU, so errno.h froze with its own errno define SKIPPED;
+// a consumer including <errno.h> alone must live-parse it instead. Units
+// already bound by an earlier include pass trivially — their state IS the
+// live state their own check ran against.
+// Does this unit's own frozen PP-event stream (re)define `nm`? The
+// include-once prune's test: an undefined-at-freeze dep that is defined HERE
+// and that the unit itself defines is the unit's own GUARD — the consumer
+// already holds this unit's content (an earlier declined root live-parsed
+// it), so the unit prunes as satisfied exactly like a live re-include.
+bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
+{
+    std::vector<uint32_t> ev;
+    if ( !bind_forest->unit_pp_events(unit, ev) )
+	return false;
+    for ( size_t k = 0; k + 5 <= ev.size(); )
+    {
+	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
+	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	const char *enm = bind_forest->pool_str(name_id);
+	if ( enm && tag != PackMacroEvent::peUndef && strcmp(enm, nm) == 0 )
+	    return true;
+	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
+    }
+    return false;
+}
+
+// Pass 1: collect the root's closure (units a bind would install — the
+// already-bound are excluded exactly as forest_bind_include excludes them).
+void Program::forest_env_collect(uint32_t unit, std::set<uint32_t> &closure)
+{
+    if ( forest_chain_set.count(unit) || forest_live_present.count(unit)
+      || !closure.insert(unit).second )
+	return;
+    std::vector<uint32_t> edges;
+    if ( bind_forest->unit_edges(unit, edges) )
+	for ( size_t i = 0; i < edges.size(); ++i )
+	    forest_env_collect(edges[i], closure);
+}
+
+bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
+{
+    (void)visited;
+    return forest_bind_env_ok(unit);
+}
+
+bool Program::forest_bind_env_ok(uint32_t root)
+{
+    // v40 rollout knob (task #57): the decline path exposes the mixed
+    // bind/live DECL frontier — a declined root's live parse re-declares
+    // identical typedefs/structs beside a bound sibling's restored decls
+    // (wchar.h's `typedef struct _iobuf FILE;` vs cstdio's restored FILE),
+    // and madc does not yet tolerate identical C redeclarations there (a
+    // gcc-parity gap of its own). Until that tolerance lands the check
+    // ships default-OFF; MADC_FOREST_ENV_CHECK=1 turns it on, and the
+    // Linux forest_bind_gate runs its whole battery WITH it on, so the
+    // mechanism cannot rot while parked.
+    static int enabled = -1;
+    if ( enabled < 0 )
+    {
+	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
+	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    if ( !enabled )
+	return true;
+    std::set<uint32_t> closure;
+    forest_env_collect(root, closure);
+    for ( std::set<uint32_t>::iterator ui = closure.begin();
+	  ui != closure.end(); ++ui )
+    {
+	uint32_t unit = *ui;
+	std::vector<uint32_t> deps;
+	if ( !bind_forest->unit_branch_deps(unit, deps) )
+	    continue;
+	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+	{
+	    // A dep whose DEFINER is inside this closure is replay-internal:
+	    // the bind installs the definer's events too (sys/cdefs.h
+	    // consulting _FEATURES_H under a root that carries features.h).
+	    uint32_t definer = deps[k + 3];
+	    if ( definer != 0xffffffffu && closure.count(definer) )
+		continue;
+	    const char *nm = bind_forest->pool_str(deps[k]);
+	    if ( !nm )
+		continue;
+	    bool want_defined = (deps[k + 1] & 1u) != 0;
+	    bool have_defined = macro_name_defined(nm);
+	    if ( want_defined != have_defined )
+	    {
+		// Include-once prune: the unit's own guard is defined here
+		// (an earlier declined root live-parsed this header) — the
+		// unit is already present; skip it like a live re-include.
+		// forest_live_present keeps forest_bind_include from
+		// installing its PP events — but stays OUT of
+		// forest_chain_set, whose membership the decl-restore
+		// filter reads: restoring this unit's decls BESIDE the
+		// live-parsed copy double-defines them (struct _iobuf).
+		if ( !want_defined && have_defined
+		  && forest_unit_defines_macro(unit, nm) )
+		{
+		    DBG(std::cout << "forest bind: unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " already present ('" << nm
+			<< "' guard live) — pruned" << std::endl);
+		    forest_live_present.insert(unit);
+		    goto next_unit;	// a pruned unit's other deps are moot
+		}
+		DBG(std::cout << "forest bind: DECLINE root "
+		    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+		    << " — unit "
+		    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		    << " branch dep '" << nm << "' "
+		    << (want_defined ? "defined" : "undefined")
+		    << " at freeze, opposite here" << std::endl);
+		return false;
+	    }
+	    if ( want_defined && (deps[k + 1] & 2u) )
+	    {
+		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
+		std::string have;
+		if ( std::string *dv = define_map.find(nm) )
+		    have = *dv;
+		else if ( MacroDef *mv = macro_map.find(nm) )
+		    have = mv->body;
+		if ( have != std::string(v ? v : "") )
+		{
+		    DBG(std::cout << "forest bind: DECLINE root "
+			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< " — unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " branch dep '" << nm << "' value differs" << std::endl);
+		    return false;
+		}
+	    }
+	}
+	next_unit:;
+    }
+    return true;
+}
+
 // Bind a grove unit and its include closure: post-order DFS over the unit's
 // frozen edges so an includee's PP delta installs before the includer's own
 // (matching the common "includes at top, defines after" header shape). The
@@ -2900,7 +3055,8 @@ int Program::forest_unit_for_include(const std::string &incfile)
 // (symbol tables) restore ONCE per compile at the call site — never re-parse.
 void Program::forest_bind_include(uint32_t unit)
 {
-    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
+    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit)
+      || forest_live_present.count(unit) )
     {
 	return;
     }
@@ -3072,7 +3228,7 @@ void Program::tokenize_posix_header_supplement(const std::string &incfile)
 	{
 		CirFrozenForest *forest = ensure_bind_forest();
 		int fu = forest ? forest->find_unit(supplement) : -1;
-		if ( fu >= 0 )
+		if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
 		{
 			forest_bind_include((uint32_t)fu);
 			mark_embedded_include_flag(supplement);
@@ -3134,7 +3290,7 @@ bool Program::tokenize_posix_whole_provider(const std::string &incfile,
 	{
 	    CirFrozenForest *forest = ensure_bind_forest();
 	    int fu = forest ? forest->find_unit(provider) : -1;
-	    if ( fu >= 0 )
+	    if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
 	    {
 		forest_bind_include((uint32_t)fu);
 		mark_embedded_include_flag(provider);
@@ -3613,6 +3769,7 @@ void Program::pack_record_define(const std::string &name, const std::string &val
 	ev.name = name;
 	ev.tag = PackMacroEvent::peDefine;
 	ev.value = value;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, true };
     }
 }
 
@@ -3626,6 +3783,7 @@ void Program::pack_record_define_fn(const std::string &name, const MacroDef &m)
 	ev.name = name;
 	ev.tag = PackMacroEvent::peDefineFn;
 	ev.macro = m;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, true };
     }
 }
 
@@ -3638,6 +3796,7 @@ void Program::pack_record_undef(const std::string &name)
 	PackMacroEvent &ev = pack_pp_exports[unit].back();
 	ev.name = name;
 	ev.tag = PackMacroEvent::peUndef;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, false };
     }
 }
 
@@ -3650,10 +3809,70 @@ void Program::pack_record_edge(const std::string &includee)
     }
 }
 
-void Program::pack_record_branch_macro(const std::string &name)
+void Program::pack_record_branch_macro(const std::string &name,
+				       bool include_probe)
 {
-    if ( pack_recording && !name.empty() )
-	pack_branch_macros.insert(name);
+    if ( !pack_recording || name.empty() )
+	return;
+    pack_branch_macros.insert(name);
+    // An include-once GUARD PROBE (should_tokenize_include asking "is the
+    // includee's guard defined") is an EDGE decision — reproduced by the
+    // frozen edges + include-once semantics at bind, never a branch
+    // dependency of the includer's CONTENT. Recording it made every libc++
+    // header carry its includees' guards as deps and decline on re-binds.
+    if ( include_probe )
+	return;
+    // v40 (task #57): record the consult as an EXTERNAL branch dependency of
+    // the current unit when the macro's state was NOT established within the
+    // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
+    // sibling under the same top-level include (mingw stdlib.h defining
+    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is just as
+    // external as an earlier root. Self/subtree definitions are reproduced by
+    // the unit's own bind replay; a defined macro with NO recorded origin is
+    // predefine/-D state, pinned by the v27 config word — neither is a
+    // dependency. The DEFINER travels with the dep: the bind walk skips any
+    // dep whose definer is inside the closure being bound (an ANCESTOR's
+    // guard — sys/cdefs.h consulting _FEATURES_H under features.h — is
+    // replay-internal there, and a real external elsewhere).
+    const char *unit = pack_current_unit();
+    if ( !unit )
+	return;
+    bool defined_now = macro_name_defined(name);
+    std::map<std::string, PackMacroOrigin>::iterator oi =
+	pack_macro_origin.find(name);
+    if ( defined_now && oi == pack_macro_origin.end() )
+	return;				// predefine / -D: config-word-pinned
+    if ( oi != pack_macro_origin.end() && oi->second.unit )
+    {
+	if ( oi->second.unit == unit )
+	    return;			// self: the unit's own replay decides
+	std::map<const char *, std::set<const char *> >::iterator sti =
+	    pack_unit_subtree.find(unit);
+	if ( sti != pack_unit_subtree.end()
+	  && sti->second.count(oi->second.unit) )
+	    return;			// subtree: edges install it before us
+    }
+    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
+	return;
+    PackBranchDep dep;
+    dep.name = name;
+    dep.defined = defined_now;
+    dep.has_value = false;
+    dep.definer = oi != pack_macro_origin.end() ? oi->second.unit : NULL;
+    if ( defined_now )
+    {
+	if ( std::string *dv = define_map.find(name) )
+	{
+	    dep.has_value = true;
+	    dep.value = *dv;
+	}
+	else if ( MacroDef *mv = macro_map.find(name) )
+	{
+	    dep.has_value = true;
+	    dep.value = mv->body;
+	}
+    }
+    pack_unit_branch_deps[unit].push_back(dep);
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -3725,13 +3944,23 @@ bool Program::should_tokenize_include(const std::string &path)
     auto gi = include_guard_by_file.find(canonical);
     if ( gi == include_guard_by_file.end() )
     {
-	include_guard_by_file[canonical] = detect_include_guard(canonical);
-	return true;
+	const std::string guard = detect_include_guard(canonical);
+	include_guard_by_file[canonical] = guard;
+	if ( guard.empty() )
+	    return true;
+	// A FIRST live visit can still be a re-include: a forest bind may
+	// already have installed this header's guard (v40 mixed bind/live
+	// TUs — a bound <cstdio> then a declined <locale> live-parsing
+	// bits/types.h beside the restored decls). Same gcc rule as the
+	// repeat path below: guard defined = skip.
+	pack_record_branch_macro(guard, true /* include probe */);
+	return define_map.find(guard) == define_map.end()
+	    && macro_map.find(guard) == macro_map.end();
     }
     const std::string &guard = gi->second;
     if ( guard.empty() )
 	return true;
-    pack_record_branch_macro(guard);	// B4a: guard definedness gates inclusion
+    pack_record_branch_macro(guard, true /* include probe */);	// B4a: guard definedness gates inclusion
     return define_map.find(guard) == define_map.end()
 	&& macro_map.find(guard) == macro_map.end();
 }
@@ -4542,6 +4771,11 @@ TokenBase *Program::_getToken()
 			  && !protocol_visit )
 			{
 			    int fu = forest_unit_for_include(incfile);
+			    // v40 (task #57): a unit whose frozen branch
+			    // decisions assumed a different macro environment
+			    // declines here and live-parses below.
+			    if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+				fu = -1;
 			    if ( fu >= 0 )
 			    {
 				DBG(std::cout << "#include <" << incfile
@@ -4705,6 +4939,10 @@ TokenBase *Program::_getToken()
 		      && !full_path.empty() )
 		    {
 			int fu = forest_unit_for_include(full_path);
+			// v40 (task #57): environment mismatch declines to
+			// live parse.
+			if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			    fu = -1;
 			if ( fu >= 0 )
 			{
 			    DBG(std::cout << "#include \"" << full_path
@@ -4768,11 +5006,25 @@ TokenBase *Program::_getToken()
 		    const char *_interned2 = intern_file(full_path);
 		    if ( !protocol_visit )
 			pack_note_unit(_interned2);
+		    // v40 (task #57): unit-stack tracking — every unit entered
+		    // beneath a stack member joins that member's SUBTREE set,
+		    // the "reproduced by this unit's own bind replay" domain
+		    // the branch-dep recorder tests against. Protocol visits
+		    // form no unit and never touch the stack.
+		    if ( pack_recording && !protocol_visit )
+		    {
+			for ( size_t si = 0; si < pack_unit_stack.size(); ++si )
+			    pack_unit_subtree[pack_unit_stack[si]].insert(_interned2);
+			pack_unit_subtree[_interned2].insert(_interned2);
+			pack_unit_stack.push_back(_interned2);
+		    }
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
 			push_token_with_literal_concat(itb);
 		    }
+		    if ( pack_recording && !protocol_visit )
+			pack_unit_stack.pop_back();
 		    source = std::move(saved);
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    if ( protocol_visit )

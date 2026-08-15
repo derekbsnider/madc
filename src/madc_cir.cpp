@@ -2527,6 +2527,28 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	f.branch_macros.push_back(pool->intern(*bm));
     std::sort(f.branch_macros.begin(), f.branch_macros.end());
 
+    // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
+    // environment (task #57): [name_id, flags, value_id] triplets.
+    for (std::map<const char *, std::vector<Program::PackBranchDep> >::const_iterator
+	     bd = prog->pack_unit_branch_deps.begin();
+	 bd != prog->pack_unit_branch_deps.end(); ++bd) {
+	uint32_t u = ensure_unit(bd->first);
+	for (size_t k = 0; k < bd->second.size(); ++k) {
+	    const Program::PackBranchDep &d = bd->second[k];
+	    // ensure_unit may reallocate f.units — resolve the definer BEFORE
+	    // taking the output reference.
+	    uint32_t definer = d.definer ? ensure_unit(d.definer) : 0xffffffffu;
+	    std::vector<uint32_t> &out = f.units[u].branch_deps;
+	    uint32_t flags = (d.defined ? 1u : 0u)
+			   | (d.has_value ? 2u : 0u);
+	    out.push_back(pool->intern(d.name));
+	    out.push_back(flags);
+	    out.push_back(d.has_value && !d.value.empty()
+			  ? pool->intern(d.value) : 0);
+	    out.push_back(definer);
+	}
+    }
+
     // 6. Canonical unit order = first-tokenization order (the pack driver's
     //    include list IS the canonical system order; design doc §6).
     for (size_t k = 0; k < prog->pack_unit_order.size(); ++k)

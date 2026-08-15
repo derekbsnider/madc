@@ -3784,6 +3784,34 @@ public:
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
     std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
     std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
+    // v40 (task #57): per-unit EXTERNAL branch dependencies — a PP-conditional
+    // consult whose macro state was established OUTSIDE the current top-level
+    // include's closure (an earlier sibling's #define, or undefined). Bind
+    // eligibility compares them to the consumer's live tables; mismatch
+    // declines the root bind to live parse. Same-root state is reproduced by
+    // the post-order replay and is deliberately NOT recorded; predefine/-D
+    // state (defined, no recorded origin root) is pinned by the v27 config
+    // word and skipped too.
+    struct PackBranchDep {
+	std::string name;
+	bool defined;			// state observed at the consult
+	bool has_value;			// object-like body captured below
+	std::string value;
+	const char *definer;		// unit that established the state (NULL = none)
+    };
+    struct PackMacroOrigin {
+	const char *unit;		// innermost unit whose parse defined it
+	bool defined;			// false after #undef
+    };
+    std::map<std::string, PackMacroOrigin> pack_macro_origin;
+    std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
+    std::map<const char *, std::set<std::string> > pack_unit_branch_dep_seen;
+    // Consumers bind ANY unit directly, so "reproduced by the replay" means
+    // the definer sits in the CONSULTING unit's own edge subtree — a sibling
+    // under the same top-level include (mingw stdlib.h defining
+    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is external.
+    std::vector<const char *> pack_unit_stack;	// include nesting, unit names
+    std::map<const char *, std::set<const char *> > pack_unit_subtree; // unit -> units entered beneath it (self included)
     std::vector<PackDeclEntry> pack_decls;	// parse-time top-level decl boundaries
     std::vector<PackDeclFrame> pack_decl_stack;	// open frames (namespace bodies nest)
     // A __need protocol serving (glibc's stddef/stdarg re-inclusion protocol,
@@ -3808,7 +3836,8 @@ public:
     void pack_record_define_fn(const std::string &name, const MacroDef &m);
     void pack_record_undef(const std::string &name);
     void pack_record_edge(const std::string &includee);	// includer = current source
-    void pack_record_branch_macro(const std::string &name);
+    void pack_record_branch_macro(const std::string &name,
+				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
@@ -4661,6 +4690,11 @@ public:
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
+    std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+    bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
+    bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
+    void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
+    bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();

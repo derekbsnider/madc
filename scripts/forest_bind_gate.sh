@@ -25,6 +25,11 @@ cd "$(dirname "$0")/.."
 ulimit -t 300 2>/dev/null
 
 BIN=bin/madc
+# v40 (task #57): this gate is the branch-dep environment check's keeper —
+# the check ships default-OFF until the identical-redeclaration tolerance
+# lands (the mixed bind/live decl frontier), and running the whole battery
+# WITH it on keeps the parked mechanism from rotting.
+export MADC_FOREST_ENV_CHECK=1
 if [ ! -x "$BIN" ]; then
     echo "forest_bind_gate: missing $BIN"
     exit 1
