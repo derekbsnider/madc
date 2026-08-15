@@ -346,10 +346,12 @@ for t in tests/*.mad; do
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
         if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+            # The produced ARTIFACT runs under the same wrapper as the
+            # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
             fi
             exe_rc=$?
             exe_ok=1
