@@ -1396,6 +1396,62 @@ Two slices landed (33036e06 + fe88af34), both gate-green with
   remaining mixed-decl frontiers, plus the packed-lane latency check
   (#25) before any flip.
 
+#### Task #57 burndown, session #92 (2026-08-15) — the prune redesign landed; the flip re-scoped
+
+Commit 5d1a4b5a (`forest bind: prune needs live evidence; self-defined
+guard mismatches masked-bind`), gate-green (bind gate 23/23 knob-on,
+fulltest 1046/0, libc++ JIT 1042/0):
+
+- **The three-way disposition in `forest_bind_env_ok`.** A
+  want-undefined/have-defined dep on a macro the unit ITSELF defines is
+  the unit's own guarded fallback and never declines: with whole-file
+  evidence (`forest_unit_file_live_tokenized`) the unit PRUNES as a
+  genuine live re-include; without it the unit **MASKED-BINDS** —
+  everything installs except that macro's define events
+  (`forest_pp_install_mask`, consumed by `forest_install_pp`), because
+  the dep record proves a live-order parse would take the defined arm
+  and skip them. The live PP value survives (knob-off clobbers it).
+  Want-defined/have-undefined (the errno husk — content missing, no
+  bind can conjure it) and non-self-defined consults still decline.
+- **The recorded value-equal-only design was tried and REVERTED
+  in-slice**: continuing past an inert dep exposes the unit's LATER
+  deps, which the old prune's `goto next_unit` had been shielding —
+  glibc wchar.h's `__attr_dealloc_fclose` fallback (value-different by
+  include order) then declined root `<locale>` and broke [statmem].
+  Also learned: the old over-claiming prune was silently dropping
+  `/usr/include/wchar.h`'s ENTIRE decl surface to keep statmem green.
+  Masking subsumes value-equal (a same-value define mask is a no-op).
+- **One layer down, restored-before-live struct twins** ([redecl]
+  corpus 1 found it): restore runs at end-of-tokenize and the parse
+  phase follows, so a masked-bound unit's restored `struct fbg_T`
+  pre-existed the live twin's parse and `TokenSTRUCT::parse` threw
+  "already defined". New live-wins arm: a complete `forest_restored`
+  twin yields registration to the live re-definition (mirror of the
+  class arm); the twin instance survives for arena-internal refs.
+- **Measurements at 5d1a4b5a** (container tmp/logs/s92-packedwine-*):
+  knob-OFF **1002/2 HELD** (errno pair only — the shipping default is
+  unregressed with strictly better machinery). Knob-ON **721/283** —
+  WORSE than s91's 987/17, and the mechanism is understood: masked-bind
+  honestly checks each unit's REMAINING deps, and win64's frozen units
+  carry many genuinely order-conditional consults, so roots mass-decline
+  and the packed exe live-parses win-ucrt libstdc++ from text, which
+  breaks (`'vsnprintf' is not a member of namespace 'std'` at
+  basic_string.h:4233 on tests/test.mad). s91's 987/17 was an artifact
+  of the shield, not a nearly-done burndown.
+- **The flip is re-scoped.** A GLOBAL root-decline can never ship on
+  win64: honest dep checking + decline-to-live-parse means live-parsing
+  the packed lane's own grove headers, which is exactly what the pack
+  exists to avoid (and impossible on real Windows — task #58's Z:\
+  masking). The errno-pair endgame is a **unit-granular decline**: a
+  husk unit (want-defined/have-undefined dep, definer outside the
+  closure) gets individually excluded from the bind and live-parsed
+  from disk/embedded text while its closure siblings still bind —
+  errno.h is tiny and C-only, so the mixed frontier stays small. Design
+  sketch recorded in task #57; the mixed bind/live frontier work
+  ([statmem]'s ios_base loss under declines — root not yet isolated —
+  and the Linux knob-on cascade) remains the deeper arc behind any
+  global flip.
+
 Remaining W5: task #57 burndown to a clean packed wine suite; the
 real-Windows full-suite lane (MADC_RUNNER + the test tree staged on
 the box); the release itself (merge = owner decision, ships WITH a
