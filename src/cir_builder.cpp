@@ -7944,6 +7944,15 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 				    DataDefCLASS *ret_cls, DataDef *ret_dd)
 {
 	if (m_output_externs.count(symbol)) return;
+	// c2mir intrinsics (__builtin_va_*, alloca, the overflow set) are
+	// recognized BY NAME and lowered in-place; an extern prototype SHADOWS
+	// the intrinsic and turns every call into an undefined import at
+	// MIR-link. The per-caller referenced_funcs guards catch the live
+	// paths, but the packed win64 lane materialized mingw's inline printf
+	// body whose recorded callee protos reached this mint directly — so
+	// the rule is enforced HERE, at the one owner, where no caller can
+	// drift past it.
+	if (is_c2mir_builtin_call_name(symbol)) return;
 
 	node_t ext_list = list();
 	append(ext_list, simple(N_EXTERN));
@@ -27040,6 +27049,17 @@ node_t CirBuilder::translate_module(Program *prog)
 			}
 		}
 		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
+			continue;
+		// c2mir intrinsics (__builtin_va_*, alloca, the overflow set)
+		// are lowered BY NAME; an extern proto SHADOWS the intrinsic
+		// and turns every call into an undefined import at MIR-link.
+		// The live call arm guards its referenced_funcs insert, but
+		// the forest-bound lane re-feeds this set from frozen unit
+		// connectors (mingw's inline printf body carries a
+		// __builtin_va_start callee) — so the rule is enforced at
+		// this mint too, exactly like need_output_extern's guard.
+		if (is_c2mir_builtin_call_name(symbol)
+		    || is_c2mir_builtin_call_name(fname))
 			continue;
 
 		DataDef *ret_dd = &fd->return_value_type();

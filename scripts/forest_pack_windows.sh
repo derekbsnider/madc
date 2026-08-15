@@ -135,4 +135,4 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # equivalence leg (forest_pack.sh's shape) when #55 is fixed.
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
-echo "forest_pack_windows: OK ($units units appended to $BIN; bind cache == no-cache)"
+echo "forest_pack_windows: OK ($units units appended to $BIN; default-lane product smoke green)"
