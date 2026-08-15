@@ -781,6 +781,7 @@ release-windows:
 	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
 	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
 	cd .. && bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
+	cd .. && bash scripts/verify_pe_release.sh bin/madc-release-x86-64-windows.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
