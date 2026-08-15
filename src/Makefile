@@ -767,6 +767,21 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 	mkdir -p $(MIRBUILD)/hosted-x86-64-windows
 	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-windows CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-windows/libmir.a
 
+# Windows release artifact (windows lane W4): the win64 twin of `release`.
+# Same strip-before-pack law (strip rewrites the PE image and discards
+# appended bytes; PE export tables are sections and survive it). The
+# freezer is the exe ITSELF under wine — the Linux self-freeze model, not
+# the darwin cross-freezer (W4 execution decisions in the lane plan):
+# producer == consumer, so LOADED == parsed is exact by construction. The
+# pack script's verify legs (--dump-forest, --run-frozen, bind-cache
+# equivalence) run the EXACT shipped bytes under wine. The suite-facing
+# hosted exe stays live-parse; this is the packed product twin.
+release-windows:
+	$(MAKE) hosted-x86-64-windows
+	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
+	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
+	cd .. && bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
+
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
 # build failure; the verify step proves the appended blob reads back (pin OK)
