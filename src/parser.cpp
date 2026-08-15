@@ -45493,10 +45493,22 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	TokenBase *rbrk = pgm.nextToken();
 	if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
 	    pgm.Throw(rbrk ? rbrk : tn) << "Expecting ')' after function pointer name" << flush;
-	TokenBase *open = pgm.nextToken();
-	if ( !open || open->id() != TokenID::tkOpBrk )
-	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
-	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
+	// No parameter list after `(*NAME)` when the BASE is itself a
+	// function typedef: `typedef ENCLAVE_TARGET_FUNCTION
+	// (*PENCLAVE_TARGET_FUNCTION);` (winnt.h:5871) — the base carries
+	// the whole signature; the alias is a pointer to it.
+	DataDefFPTR *base_fn = dynamic_cast<DataDefFPTR *>(base_dd);
+	FuncDef *func;
+	if ( base_fn && !paren_fn_form
+	  && !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk) )
+	    func = base_fn->target;
+	else
+	{
+	    TokenBase *open = pgm.nextToken();
+	    if ( !open || open->id() != TokenID::tkOpBrk )
+		pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
+	    func = pgm.parseFnPtrParams(*base_dd);
+	}
 	DataDefFPTR *fptr = new DataDefFPTR(func);
 	// Form 2 `(*NAME)` = pointer typedef; the starless paren'd form
 	// `(NAME)` = a FUNCTION type, exactly Form 1's posture.
