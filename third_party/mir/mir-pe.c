@@ -817,10 +817,41 @@ fail:
 /* base-relocation entry type in the high nibble */
 #define PEX_REL_DIR64 0xAu
 
+/* Import-addend fixup prologue, ahead of the stub at the entry point.
+   PE's loader writes S into an IAT slot, never S+A — an ELF R_X86_64_64
+   import with a nonzero addend (Itanium RTTI: typeinfo vptr = cxxabi
+   vtable symbol + 16) has no static PE spelling.  The equivalent is
+   computed HERE, before the CRT init and the init-array walk: each
+   affected data word is a normal per-slot import (the loader snaps S),
+   and this loop adds the addend in place.  The table lives in .rdata as
+   {u64 word-pointer (internal ABS64, so .reloc rebases it), u64 addend}
+   pairs; an empty table falls straight through. */
+static const uint8_t pex_fixup_prologue[48]
+  = {0x48, 0x8d, 0x05, 0, 0, 0, 0, /* lea  fixtab(%rip),%rax @0x03 */
+     0x48, 0x8d, 0x15, 0, 0, 0, 0, /* lea  fixend(%rip),%rdx @0x0a */
+     0x48, 0x39, 0xd0,             /* loop: cmp %rdx,%rax */
+     0x73, 0x10,                   /* jae  done */
+     0x48, 0x8b, 0x08,             /* mov  (%rax),%rcx */
+     0x4c, 0x8b, 0x40, 0x08,       /* mov  8(%rax),%r8 */
+     0x4c, 0x01, 0x01,             /* add  %r8,(%rcx) */
+     0x48, 0x83, 0xc0, 0x10,       /* add  $16,%rax */
+     0xeb, 0xeb,                   /* jmp  loop */
+     0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, /* done: NOP pad to 48 (the
+                                                  stub stays 16-aligned);
+                                                  execution FALLS THROUGH
+                                                  into the stub -- int3
+                                                  here would fault */
+     0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+#define PEX_FIX_SIZE 48
+#define PEX_FIX_TAB_AT 0x03
+#define PEX_FIX_END_AT 0x0a
+
 /* The entry stub (gas-oracle encodings, tmp/win/w3/stub.s).  112 bytes,
    16-aligned so the captured text keeps its own alignment right after.
    Patch points are disp32 fields, each relative to the END of its
-   instruction (rip-relative), except MAIN which is a call rel32. */
+   instruction (rip-relative), except MAIN which is a call rel32.
+   Offsets below are stub-relative; the fixup prologue precedes it, so
+   every patch lands at PEX_FIX_SIZE + offset in the image. */
 static const uint8_t pex_stub[112]
   = {0x48, 0x83, 0xec, 0x28,             /* sub  $0x28,%rsp */
      0xb9, 0x01, 0x00, 0x00, 0x00,       /* mov  $1,%ecx */
@@ -862,6 +893,8 @@ static const char *const pex_stub_import[6]
 #define PEX_STUB_MAIN_AT 0x5d
 #define PEX_STUB_INITARR_AT 0x32
 #define PEX_STUB_INITEND_AT 0x39
+/* prologue + stub = the synthesized entry region ahead of captured text */
+#define PEX_ENTRY_SIZE (PEX_FIX_SIZE + PEX_STUB_SIZE)
 
 /* one import-slot record: the address slot the loader must fill */
 typedef struct {
@@ -906,6 +939,12 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   size_t n_imports = 0;
   uint32_t *fixups = NULL; /* RVAs of internal ABS64 slots (base relocations) */
   size_t n_fixups = 0, cap_fixups = 0;
+  /* import-addend fixups: the data word is a normal IAT slot (loader
+     writes S); the entry prologue adds the addend in place (see
+     pex_fixup_prologue).  Parallel to the imports[] records. */
+  uint32_t *afix_words = NULL;
+  int64_t *afix_addends = NULL;
+  size_t n_afix = 0, cap_afix = 0;
   dwbuf_t rdata = {0}, relsec = {0};
 
 #define PEX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
@@ -924,7 +963,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
      .reloc, whose content depends on the import/fixup sets -- both are
      built into side buffers first, then placed. */
   uint64_t text_rva = PEX_SEC_ALIGN;
-  uint64_t text_size = PEX_STUB_SIZE + obj->text.len;
+  uint64_t text_size = PEX_ENTRY_SIZE + obj->text.len;
   /* the six stub slots ride the pool's tail (8-aligned) */
   uint64_t pool_stub_off = PEX_ALIGN (obj->pool.len, 8);
   uint64_t pool_size = pool_stub_off + 6 * 8;
@@ -955,7 +994,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
 
   /* region base RVA for a defined symbol */
 #define PEX_SEC_RVA(sec) \
-  ((sec) == MIR_OBJ_SEC_TEXT       ? text_rva + PEX_STUB_SIZE \
+  ((sec) == MIR_OBJ_SEC_TEXT       ? text_rva + PEX_ENTRY_SIZE \
    : (sec) == MIR_OBJ_SEC_ADDRPOOL ? pool_rva \
    : (sec) == MIR_OBJ_SEC_INITARR  ? init_rva \
    : (sec) == MIR_OBJ_SEC_DATA     ? data_rva \
@@ -987,10 +1026,23 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       fixups[n_fixups++] = (uint32_t) slot_rva;
     } else {
       if (s->name == NULL) goto done;
-      if (r->addend != 0) { /* the loader writes S, never S+A: unexpressible */
-        fprintf (stderr, "madc: PE emit: import '%s' + addend %lld has no IAT form\n", s->name,
-                 (long long) r->addend);
-        goto done;
+      if (r->addend != 0) {
+        /* the loader writes S, never S+A: the word stays a normal IAT
+           slot and the entry prologue adds the addend before anything
+           runs (Itanium RTTI's cxxabi-vtable+16 is the live case) */
+        if (n_afix == cap_afix) {
+          size_t c = cap_afix ? cap_afix * 2 : 16;
+          void *nw = realloc (afix_words, c * sizeof (uint32_t));
+          if (nw == NULL) goto done;
+          afix_words = nw;
+          void *na = realloc (afix_addends, c * sizeof (int64_t));
+          if (na == NULL) goto done;
+          afix_addends = na;
+          cap_afix = c;
+        }
+        afix_words[n_afix] = (uint32_t) slot_rva;
+        afix_addends[n_afix] = r->addend;
+        n_afix++;
       }
       void *np = realloc (imports, (n_imports + 1) * sizeof (pex_import_t));
       if (np == NULL) goto done;
@@ -1090,6 +1142,24 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   }
   for (int k = 0; k < 5; k++) buf_u32 (&rdata, 0); /* terminator */
   uint32_t idt_size = (uint32_t) (n_imports + 1) * 20;
+  /* import-addend fixup table: {u64 word-pointer, u64 addend} pairs.  The
+     pointer fields are internal ABS64s -- baked at the preferred base and
+     listed for .reloc, so the prologue's walk is rebase-correct. */
+  while (rdata.len % 8 != 0) buf_u8 (&rdata, 0);
+  uint32_t fixtab_rva = (uint32_t) (rdata_rva + rdata.len);
+  for (size_t i = 0; i < n_afix; i++) {
+    if (n_fixups == cap_fixups) {
+      size_t c = cap_fixups ? cap_fixups * 2 : 64;
+      void *np = realloc (fixups, c * sizeof (uint32_t));
+      if (np == NULL) goto done;
+      fixups = np;
+      cap_fixups = c;
+    }
+    fixups[n_fixups++] = (uint32_t) (rdata_rva + rdata.len);
+    buf_u64 (&rdata, PEX_IMAGE_BASE + afix_words[i]);
+    buf_u64 (&rdata, (uint64_t) afix_addends[i]);
+  }
+  uint32_t fixend_rva = (uint32_t) (rdata_rva + rdata.len);
   uint64_t rdata_size = rdata.len;
   uint64_t reloc_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
 
@@ -1134,8 +1204,15 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   if (p == NULL) goto done;
 
   /* ---- bodies */
-  memcpy (p + text_fo, pex_stub, PEX_STUB_SIZE);
-  if (obj->text.len != 0) memcpy (p + text_fo + PEX_STUB_SIZE, obj->text.p, obj->text.len);
+  memcpy (p + text_fo, pex_fixup_prologue, PEX_FIX_SIZE);
+  memcpy (p + text_fo + PEX_FIX_SIZE, pex_stub, PEX_STUB_SIZE);
+  if (obj->text.len != 0) memcpy (p + text_fo + PEX_ENTRY_SIZE, obj->text.p, obj->text.len);
+  { /* the prologue's fixup-table bounds (rip = end of each lea) */
+    int32_t d32 = (int32_t) ((int64_t) fixtab_rva - (int64_t) (text_rva + PEX_FIX_TAB_AT + 4));
+    memcpy (p + text_fo + PEX_FIX_TAB_AT, &d32, 4);
+    d32 = (int32_t) ((int64_t) fixend_rva - (int64_t) (text_rva + PEX_FIX_END_AT + 4));
+    memcpy (p + text_fo + PEX_FIX_END_AT, &d32, 4);
+  }
   if (obj->pool.len != 0) memcpy (p + pool_fo, obj->pool.p, obj->pool.len);
   if (init_size != 0) memcpy (p + init_fo, obj->initarr.p, init_size);
   if (data_size != 0) memcpy (p + data_fo, obj->data.p, data_size);
@@ -1146,26 +1223,27 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   for (int k = 0; k < 6; k++) {
     uint64_t slot_rva = pool_rva + pool_stub_off + (uint64_t) k * 8;
     int64_t d = (int64_t) slot_rva
-                - (int64_t) (text_rva + pex_stub_slots[k].at + 4); /* rip = end of insn */
+                - (int64_t) (text_rva + PEX_FIX_SIZE + pex_stub_slots[k].at + 4); /* rip = insn end */
     int32_t d32 = (int32_t) d;
-    memcpy (p + text_fo + pex_stub_slots[k].at, &d32, 4);
+    memcpy (p + text_fo + PEX_FIX_SIZE + pex_stub_slots[k].at, &d32, 4);
   }
   {
-    int32_t d32 = (int32_t) ((int64_t) init_rva - (int64_t) (text_rva + PEX_STUB_INITARR_AT + 4));
-    memcpy (p + text_fo + PEX_STUB_INITARR_AT, &d32, 4);
+    int32_t d32 = (int32_t) ((int64_t) init_rva
+                             - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_INITARR_AT + 4));
+    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_INITARR_AT, &d32, 4);
     d32 = (int32_t) ((int64_t) (init_rva + init_size)
-                     - (int64_t) (text_rva + PEX_STUB_INITEND_AT + 4));
-    memcpy (p + text_fo + PEX_STUB_INITEND_AT, &d32, 4);
-    d32 = (int32_t) ((int64_t) (text_rva + PEX_STUB_SIZE + obj->syms[entry_i].value)
-                     - (int64_t) (text_rva + PEX_STUB_MAIN_AT + 4));
-    memcpy (p + text_fo + PEX_STUB_MAIN_AT, &d32, 4);
+                     - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_INITEND_AT + 4));
+    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_INITEND_AT, &d32, 4);
+    d32 = (int32_t) ((int64_t) (text_rva + PEX_ENTRY_SIZE + obj->syms[entry_i].value)
+                     - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_MAIN_AT + 4));
+    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_MAIN_AT, &d32, 4);
   }
 
   /* ---- apply relocations into the copied bodies */
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     objsym_t *s = &obj->syms[r->sym];
-    uint64_t sec_fo = r->sec == MIR_OBJ_SEC_TEXT       ? text_fo + PEX_STUB_SIZE
+    uint64_t sec_fo = r->sec == MIR_OBJ_SEC_TEXT       ? text_fo + PEX_ENTRY_SIZE
                       : r->sec == MIR_OBJ_SEC_ADDRPOOL ? pool_fo
                       : r->sec == MIR_OBJ_SEC_INITARR  ? init_fo
                                                        : data_fo;
@@ -1175,7 +1253,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
          PC32 from text (rip-relative pool references). */
       if (r->sec != MIR_OBJ_SEC_TEXT) goto done;
       uint64_t s_rva = PEX_SEC_RVA (s->sec) + s->value;
-      uint64_t p_rva = text_rva + PEX_STUB_SIZE + r->offset;
+      uint64_t p_rva = text_rva + PEX_ENTRY_SIZE + r->offset;
       int64_t d = (int64_t) (s_rva + (uint64_t) r->addend) - (int64_t) p_rva;
       int32_t d32 = (int32_t) d;
       if (d != (int64_t) d32) goto done;
@@ -1316,6 +1394,8 @@ done:
   free (p);
   free (imports);
   free (fixups);
+  free (afix_words);
+  free (afix_addends);
   free (rdata.p);
   free (relsec.p);
   return rc;
