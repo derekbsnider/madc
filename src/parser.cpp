@@ -45468,12 +45468,23 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     // Function-pointer typedef Form 2: typedef RET (*NAME)(params);
+    // A missing star is the parenthesized FUNCTION-type spelling
+    // `typedef RET (NAME)(params);` — winnt.h:5870's
+    // ENCLAVE_TARGET_FUNCTION — identical to Form 1 modulo the parens
+    // (ptr_syntax stays false, like Form 1's).
     TokenBase *peek = pgm.peekToken();
     if ( peek && peek->id() == TokenID::tkOpBrk )
     {
 	pgm.nextToken(); // consume '('
 	TokenBase *star = pgm.nextToken();
-	if ( !star || star->id() != TokenID::tkMul )
+	bool paren_fn_form = false;
+	if ( star && star->id() != TokenID::tkMul
+	  && star->type() == TokenType::ttIdentifier )
+	{
+	    paren_fn_form = true;
+	    pgm.pushToken(star);	// the identifier IS the alias name
+	}
+	else if ( !star || star->id() != TokenID::tkMul )
 	    pgm.Throw(star ? star : tn) << "Expecting '*' in function pointer typedef" << flush;
 	TokenBase *name_tok = pgm.nextToken();
 	if ( !name_tok || name_tok->type() != TokenType::ttIdentifier )
@@ -45487,7 +45498,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
 	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
-	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
+	// Form 2 `(*NAME)` = pointer typedef; the starless paren'd form
+	// `(NAME)` = a FUNCTION type, exactly Form 1's posture.
+	fptr->ptr_syntax = !paren_fn_form;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.register_scoped_typedef(alias, tdt);
