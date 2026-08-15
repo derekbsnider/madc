@@ -4692,6 +4692,7 @@ public:
     bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+    std::set<uint32_t> forest_husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter forest_chain_set
     std::set<std::string> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
     bool live_tokenize_record(const std::string &canonical, bool tok);	// one recording owner for the set above
     bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
@@ -4699,6 +4700,8 @@ public:
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
     bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
+    bool forest_unit_is_standalone_husk(uint32_t unit,
+					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
     // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
     // live-defined; forest_install_pp skips those define events (live-order
     // parity — the live arm skipped them). Rebuilt per env check of the unit.

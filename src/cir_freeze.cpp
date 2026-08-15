@@ -1603,6 +1603,21 @@ bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payl
 bool CirFrozenForest::unit_decl_index(uint32_t unit,
 				      std::vector<cir_forest_decl_entry> &out)
 {
+	out.clear();
+	if (unit >= _units.size())
+		return false;
+	uint32_t base = CIR_FOREST_SEG_UNIT_BASE
+		      + unit * CIR_FOREST_SEGS_PER_UNIT;
+	const madc::dis::snapshot_segment *s = _reader.find(base + 5);
+	if (!s || s->kind != SNAP_KIND_CIR_DECL_INDEX)
+		return false;
+	// An empty declaration surface is a valid grove unit (macro-only /
+	// edge-only headers and task #57's conditional husks). read_unit_seg
+	// deliberately treats zero raw bytes as "no payload" for its other
+	// callers; this API must distinguish that valid EMPTY index from a
+	// missing or wrong-kind segment so bind eligibility can classify it.
+	if (!s->raw_size)
+		return true;
 	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 5, SNAP_KIND_CIR_DECL_INDEX, raw)
 	    || raw.size() % sizeof(cir_forest_decl_entry))

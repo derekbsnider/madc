@@ -1267,6 +1267,109 @@ grep -aq "Identifier already defined" "$rd_vlog2" \
 rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
 echo "forest_bind_gate: [redecl] OK — masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == g++"
 
+# --- case: husk — unit-granular missing-content recovery (task #57) ----------
+# The mingw stdlib.h -> errno.h shape in miniature. pre.h defines the shared
+# sub-block guard BEFORE first including husk.h, so that frozen unit contains
+# only its file guard: its typedef/value block is absent. root.h later records
+# an edge to that already-included husk beside an independently bindable
+# sibling. On the consumer the shared guard is absent. Binding the frozen husk
+# would silently lose content; declining the WHOLE root throws away the sibling
+# and root too. The only faithful disposition is to bind the root + sibling and
+# live-tokenize just the husk. This recovery is correctness-critical and must
+# work with the broad MADC_FOREST_ENV_CHECK rollout knob both OFF and ON.
+cat > tmp/fbgate_husk_pre.h <<'EOF'
+#ifndef FBG_HUSK_PRE_H
+#define FBG_HUSK_PRE_H
+#define FBG_HUSK_SHARED_GUARD 1
+#include <fbgate_husk.h>
+#endif
+EOF
+cat > tmp/fbgate_husk.h <<'EOF'
+#ifndef FBG_HUSK_H
+#define FBG_HUSK_H
+#ifndef FBG_HUSK_SHARED_GUARD
+#define FBG_HUSK_SHARED_GUARD 1
+typedef int fbg_husk_t;
+#define FBG_HUSK_VALUE 7
+#endif
+#endif
+EOF
+cat > tmp/fbgate_husk_sibling.h <<'EOF'
+#ifndef FBG_HUSK_SIBLING_H
+#define FBG_HUSK_SIBLING_H
+typedef int fbg_husk_sibling_t;
+static int fbg_husk_sibling(void) { return 5; }
+#endif
+EOF
+cat > tmp/fbgate_husk_root.h <<'EOF'
+#ifndef FBG_HUSK_ROOT_H
+#define FBG_HUSK_ROOT_H
+#include <fbgate_husk_sibling.h>
+#include <fbgate_husk.h>
+typedef int fbg_husk_root_t;
+#endif
+EOF
+cat > tmp/fbgate_husk_producer.cpp <<'EOF'
+#include <fbgate_husk_pre.h>
+#include <fbgate_husk_root.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_husk_consumer.cpp <<'EOF'
+#include <fbgate_husk_root.h>
+#include <cstdio>
+int main()
+{
+    fbg_husk_t n = FBG_HUSK_VALUE;
+    fbg_husk_root_t r = 0;
+    fbg_husk_sibling_t s = fbg_husk_sibling();
+    printf("v=%d\n", n + r + s);
+    return 0;
+}
+EOF
+hs_snap="tmp/fbgate_husk.msnap"
+hs_gcc="tmp/fbgate_husk_gcc"
+hs_vlog_off="tmp/fbgate_husk_off_v.log"
+hs_vlog_on="tmp/fbgate_husk_on_v.log"
+hs_exp="v=12"
+hs_live=$(timeout 60 "$BIN" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
+[ "$hs_live" = "$hs_exp" ] || fail "[husk] live-parse output '$hs_live' != '$hs_exp'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ -I tmp tmp/fbgate_husk_consumer.cpp -o "$hs_gcc" >/dev/null 2>&1; then
+	hs_or=$("$hs_gcc" 2>/dev/null)
+	[ "$hs_or" = "$hs_exp" ] || fail "[husk] g++ output '$hs_or' != '$hs_exp'"
+    else
+	fail "[husk] g++ compile FAILED"
+    fi
+fi
+timeout 120 "$BIN" --freeze="$hs_snap" tmp/fbgate_husk_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[husk] --freeze FAILED"
+[ -f "$hs_snap" ] || fail "[husk] --freeze produced no container"
+for hs_knob in 0 1; do
+    if [ "$hs_knob" = 0 ]; then
+	hs_vlog="$hs_vlog_off"
+    else
+	hs_vlog="$hs_vlog_on"
+    fi
+    hs_bind=$(MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
+    [ "$hs_bind" = "$hs_exp" ] \
+	|| fail "[husk] knob-$hs_knob bind output '$hs_bind' != '$hs_exp'"
+    MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" -v --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp >"$hs_vlog" 2>&1
+    grep -aq "missing-content husk.*fbgate_husk.h.*live-tokenizing" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob did NOT select unit-granular live tokenization"
+    grep -aq "DECLINE root.*fbgate_husk_root.h" "$hs_vlog" \
+	&& fail "[husk] knob-$hs_knob declined the whole root"
+    grep -aq "bound to grove unit.*fbgate_husk_root.h" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob root did NOT bind"
+    grep -aq "forest_restore_decls: typedef fbg_husk_sibling_t" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob sibling decl did NOT restore"
+    grep -aq "forest_restore_decls: typedef fbg_husk_root_t" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob root decl did NOT restore"
+    grep -aq "forest_restore_decls: typedef fbg_husk_t" "$hs_vlog" \
+	&& fail "[husk] knob-$hs_knob restored the frozen husk decl instead of using live tokens"
+done
+rm -f "$hs_snap" "$hs_gcc" "$hs_vlog_off" "$hs_vlog_on"
+echo "forest_bind_gate: [husk] OK — only the missing-content unit live-tokenized; root + sibling bound with rollout knob OFF and ON; output == live == g++"
+
 # --- case: silbody — a static-inline header fn passed BY ADDRESS through a
 # bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a
 # static __inline__ DEFINITION carrying a BLOCK-SCOPE prototype of its
@@ -1325,5 +1428,5 @@ sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer
 rm -f "$sb_snap" "$sb_gcc"
 echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + silbody grove headers bound (no re-parse), output == live == g++"
+echo "forest_bind_gate: GREEN 24/24 — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
 exit 0

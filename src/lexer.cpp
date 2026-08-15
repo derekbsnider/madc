@@ -2933,11 +2933,37 @@ bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
     return false;
 }
 
+// A unit-granular live include is safe only for a standalone HEADER husk, not
+// for a contextual fragment such as glibc bits/libc-header-start.h or
+// bits/mathcalls.h. The format already carries both facts needed to tell them
+// apart without names or thresholds: a husk has no frozen declaration surface,
+// and a standalone header consulted an undefined-at-entry macro that its own PP
+// stream defines (its include guard). Context-only fragments have no such guard;
+// non-husks have a non-empty declaration index and stay on the broad rollout
+// path even when one conditional branch was absent at freeze.
+bool Program::forest_unit_is_standalone_husk(
+	uint32_t unit, const std::vector<uint32_t> &deps)
+{
+    std::vector<cir_forest_decl_entry> decls;
+    if ( !bind_forest->unit_decl_index(unit, decls) || !decls.empty() )
+	return false;
+    for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+    {
+	if ( deps[k + 1] & 1u )
+	    continue;
+	const char *nm = bind_forest->pool_str(deps[k]);
+	if ( nm && forest_unit_defines_macro(unit, nm) )
+	    return true;
+    }
+    return false;
+}
+
 // Pass 1: collect the root's closure (units a bind would install — the
 // already-bound are excluded exactly as forest_bind_include excludes them).
 void Program::forest_env_collect(uint32_t unit, std::set<uint32_t> &closure)
 {
     if ( forest_chain_set.count(unit) || forest_live_present.count(unit)
+      || forest_husk_live_pending.count(unit)
       || !closure.insert(unit).second )
 	return;
     std::vector<uint32_t> edges;
@@ -2960,18 +2986,19 @@ bool Program::forest_bind_env_ok(uint32_t root)
     // three-way prune/inert-bind/decline redesign. The check still ships
     // default-OFF until the knob-on packed-suite burndown reaches 0 and the
     // #25 packed-lane latency check passes (declines add live parsing).
-    // MADC_FOREST_ENV_CHECK=1 turns it on, and the Linux forest_bind_gate
-    // runs its whole battery WITH it on, so the mechanism cannot rot while
-    // parked.
+    // MADC_FOREST_ENV_CHECK=1 turns the BROAD checks on, and the Linux
+    // forest_bind_gate runs its whole battery WITH them on, so the parked
+    // mechanism cannot rot. Missing-content units are different: a frozen
+    // want-defined/live-undefined branch cannot be supplied by any bind, so
+    // their exact-unit live recovery is always enabled.
     static int enabled = -1;
     if ( enabled < 0 )
     {
 	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
 	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
     }
-    if ( !enabled )
-	return true;
     std::set<uint32_t> closure;
+    std::set<uint32_t> husk_live;
     forest_env_collect(root, closure);
     for ( std::set<uint32_t>::iterator ui = closure.begin();
 	  ui != closure.end(); ++ui )
@@ -2999,6 +3026,39 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	    bool have_defined = macro_name_defined(nm);
 	    if ( want_defined != have_defined )
 	    {
+		// Missing content is not a rollout choice. The producer saw an
+		// EXTERNAL definition and skipped this unit's conditional block;
+		// the consumer does not, so the frozen unit cannot supply what a
+		// live parse would expose. If the mismatch is below the root,
+		// schedule only that unit for the production include tokenizer and
+		// keep the root's other units bindable. If it IS the root, ordinary
+		// root fall-through already is the exact-unit live parse.
+		if ( want_defined && !have_defined
+		  && definer != 0xffffffffu
+		  && forest_unit_is_standalone_husk(unit, deps) )
+		{
+		    if ( unit == root )
+		    {
+			DBG(std::cout << "forest bind: DECLINE root "
+			    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			    << " — root is a missing-content husk (branch dep '"
+			    << nm << "' defined at freeze, undefined here); live-tokenizing root"
+			    << std::endl);
+			return false;
+		    }
+		    husk_live.insert(unit);
+		    DBG(std::cout << "forest bind: unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " is a missing-content husk (branch dep '" << nm
+			<< "' defined at freeze, undefined here); root "
+			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< " remains bindable" << std::endl);
+		    goto next_unit;	// every frozen dep of this live unit is moot
+		}
+		// Knob OFF preserves the shipping bind behavior for every broad
+		// mismatch. Only the missing-content case above bypasses it.
+		if ( !enabled )
+		    continue;
 		// A want-undefined dep the unit ITSELF defines is the unit's
 		// own GUARDED FALLBACK (task #57 prune redesign). Two
 		// dispositions, decline is not one of them:
@@ -3027,12 +3087,11 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		//    that other content; declining cascades libc++ roots
 		//    into live parses (the statmem frontier — both were
 		//    tried, both broke it).
-		// The remaining mismatches DECLINE: want-defined/have-
-		// undefined (the unit froze with its own block SKIPPED — an
-		// errno.h husk missing decls no bind can conjure) and
-		// non-self-defined (an external configuration consult whose
-		// state genuinely changed). Extra content binds and is
-		// arbitrated; missing content declines.
+		// The remaining broad mismatches DECLINE: non-self-defined
+		// external configuration consults whose state genuinely
+		// changed. Want-defined/have-undefined missing content was
+		// isolated to an exact live unit above; extra content binds and
+		// is arbitrated through the prune/masked-bind split here.
 		if ( !want_defined && have_defined
 		  && forest_unit_defines_macro(unit, nm) )
 		{
@@ -3062,7 +3121,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		    << " at freeze, opposite here" << std::endl);
 		return false;
 	    }
-	    if ( want_defined && (deps[k + 1] & 2u) )
+	    if ( enabled && want_defined && (deps[k + 1] & 2u) )
 	    {
 		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
 		std::string have;
@@ -3083,6 +3142,7 @@ bool Program::forest_bind_env_ok(uint32_t root)
 	}
 	next_unit:;
     }
+    forest_husk_live_pending.insert(husk_live.begin(), husk_live.end());
     return true;
 }
 
@@ -3108,6 +3168,45 @@ void Program::forest_bind_include(uint32_t unit)
 		if ( !is_posix_compat_header_allowed(base) )
 			return;
 	}
+    // A missing-content child is the one unit a bind cannot reconstruct: its
+    // producer-side external macro hid declarations that are live here. Feed
+    // its portable header spelling through the ONE production include path;
+    // that path owns search order, disk/embedded selection, preprocessing,
+    // include guards, and token provenance. Keep it out of forest_chain_set so
+    // forest_restore_decls cannot restore the husk's incomplete frozen surface.
+    if ( forest_husk_live_pending.count(unit) )
+    {
+	if ( !unit_name || !*unit_name )
+	    Throw << "Frozen missing-content unit has no source identity" << flush;
+	std::string live_header(unit_name);
+	const std::string madh_suffix = ".madh";
+	if ( live_header.size() > madh_suffix.size()
+	  && live_header.compare(live_header.size() - madh_suffix.size(),
+				 madh_suffix.size(), madh_suffix) == 0 )
+	    live_header.erase(live_header.size() - madh_suffix.size());
+	size_t slash = live_header.find_last_of("/\\");
+	if ( slash != std::string::npos )
+	    live_header.erase(0, slash + 1);
+	if ( live_header.empty() )
+	    Throw << "Frozen missing-content unit has no live include spelling: "
+		  << unit_name << flush;
+	DBG(std::cout << "forest bind: missing-content husk " << unit_name
+	    << " — live-tokenizing <" << live_header << "> only" << std::endl);
+	forest_bind_walking.insert(unit);
+	try
+	{
+	    tokenize_synthetic_system_include(live_header, unit_name);
+	}
+	catch (...)
+	{
+	    forest_bind_walking.erase(unit);
+	    throw;
+	}
+	forest_bind_walking.erase(unit);
+	forest_husk_live_pending.erase(unit);
+	forest_live_present.insert(unit);
+	return;
+    }
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
@@ -4861,6 +4960,12 @@ TokenBase *Program::_getToken()
 			  && !protocol_visit )
 			{
 			    int fu = forest_unit_for_include(incfile);
+			    // A parent bind selected this exact child for live
+			    // tokenization. Its recursive synthetic include must pass
+			    // through the normal provider path, never re-bind the husk.
+			    if ( fu >= 0
+			      && forest_husk_live_pending.count((uint32_t)fu) )
+				fu = -1;
 			    // v40 (task #57): a unit whose frozen branch
 			    // decisions assumed a different macro environment
 			    // declines here and live-parses below.
@@ -5027,8 +5132,11 @@ TokenBase *Program::_getToken()
 		    // the unit under). #include_next keeps its positional walk.
 		    if ( registration_policy.enable_forest_bind && !is_include_next
 		      && !full_path.empty() )
-		    {
+			{
 			int fu = forest_unit_for_include(full_path);
+			if ( fu >= 0
+			  && forest_husk_live_pending.count((uint32_t)fu) )
+			    fu = -1;
 			// v40 (task #57): environment mismatch declines to
 			// live parse.
 			if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
