@@ -26834,8 +26834,24 @@ node_t CirBuilder::translate_module(Program *prog)
 						if (m_output_externs.count(*ai))
 							continue;
 						uint32_t xu = 0, xi = 0;
-						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi))
+						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
+							// Not an extern DECL in the producer: the
+							// argument may name a forest-BODIED sibling
+							// (mingw's static-inline strtof passed as
+							// __stoa's converter) — odr-use by address
+							// needs its DEFINITION, exactly as live's
+							// value-use lowering records it. Route it
+							// through referenced_funcs so this same
+							// fixpoint materializes the saved body /
+							// deferred derivation next round; a local or
+							// parameter name is inert there (no funcdef,
+							// no lazy body — nothing keys on it).
+							if (!referenced_funcs.count(*ai)) {
+								referenced_funcs.insert(*ai);
+								grew = true;
+							}
 							continue;
+						}
 						cir_node *xd = prog->bind_forest->node_for(xu, xi);
 						if (xd) {
 							m_output_externs[*ai] = xd->as_node();

@@ -1258,5 +1258,63 @@ grep -aq "Identifier already defined" "$rd_vlog2" \
 rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
 echo "forest_bind_gate: [redecl] OK — guard-pruned twin restored + tolerated (denotes_same_type); live-evidence prune pinned; output == live == g++"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl grove headers bound (no re-parse), output == live == g++"
+# --- case: silbody — a static-inline header fn passed BY ADDRESS through a
+# bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a
+# static __inline__ DEFINITION carrying a BLOCK-SCOPE prototype of its
+# delegate (mingw stdlib.h's exact layout); fbg_stof passes &fbg_strtof as a
+# template call argument. At bind, both ride forest bodies; the arg-ref
+# collector must route the address-referenced sibling through
+# referenced_funcs so its DEFINITION materializes (it is not an extern DECL,
+# so the extern-index lookup alone drops it: "undeclared identifier").
+cat > tmp/fbgate_silbody.h <<'EOF'
+#ifndef FBG_SILBODY_H
+#define FBG_SILBODY_H
+static __inline__ float fbgsb_conv(const char *s, char **e)
+{
+    float fbgsb_delegate(const char *, char **);
+    return fbgsb_delegate(s, e);
+}
+template <typename _TRet, typename _Ret = _TRet>
+_Ret fbgsb_stoa(_TRet (*conv)(const char *, char **), const char *s)
+{
+    char *e = 0;
+    return conv(s, &e);
+}
+inline float fbgsb_stof(const char *s)
+{
+    return fbgsb_stoa(&fbgsb_conv, s);
+}
+#endif
+EOF
+cat > tmp/fbgate_silbody_producer.cpp <<'EOF'
+#include <fbgate_silbody.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_silbody_consumer.cpp <<'EOF'
+#include <fbgate_silbody.h>
+#include <cstdio>
+float fbgsb_delegate(const char *s, char **e) { (void)s; (void)e; return 9.0f; }
+int main() { printf("t=%d\n", (int)fbgsb_stof("2.5")); return 0; }
+EOF
+sb_snap="tmp/fbgate_silbody.msnap"
+sb_gcc="tmp/fbgate_silbody_gcc"
+sb_live=$(timeout 60 "$BIN" tmp/fbgate_silbody_consumer.cpp -I tmp 2>/dev/null)
+[ "$sb_live" = "t=9" ] || fail "[silbody] live-parse output '$sb_live' != 't=9'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ -I tmp tmp/fbgate_silbody_consumer.cpp -o "$sb_gcc" >/dev/null 2>&1; then
+        sb_or=$("$sb_gcc" 2>/dev/null)
+        [ "$sb_or" = "t=9" ] || fail "[silbody] g++ output '$sb_or' != 't=9'"
+    else
+        fail "[silbody] g++ compile FAILED"
+    fi
+fi
+timeout 120 "$BIN" --freeze="$sb_snap" tmp/fbgate_silbody_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[silbody] --freeze FAILED"
+[ -f "$sb_snap" ] || fail "[silbody] --freeze produced no container"
+sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer.cpp -I tmp 2>/dev/null)
+[ "$sb_bind" = "t=9" ] || fail "[silbody] bind output '$sb_bind' != 't=9' (address-referenced static-inline sibling not materialized?)"
+rm -f "$sb_snap" "$sb_gcc"
+echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + silbody grove headers bound (no re-parse), output == live == g++"
 exit 0
