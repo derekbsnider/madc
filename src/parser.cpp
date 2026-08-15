@@ -38649,46 +38649,64 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
-	// typedef struct tag alias
+	// typedef struct tag alias — a C declarator LIST like every other
+	// typedef arm (`typedef struct _X X, *PX;` — winnt.h's dominant
+	// shape for previously-defined tags). Each declarator restarts from
+	// the struct dd; a redeclaration that matches silently skips its own
+	// registration but keeps walking the list. At block scope non-final
+	// nodes join the compound's statement stream directly (the caller
+	// appends only the returned node).
 	if ( do_typedef )
 	{
-	    DataDef *alias_dd = dmi->second;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    TokenBase *node = NULL;
+	    while ( true )
 	    {
-		pgm.nextToken();
-		alias_dd = pgm.getPointerType(alias_dd);
-	    }
-	    tn = pgm.nextToken(); // consume the alias identifier
-	    if ( !is_contextual_identifier_token(tn) )
-		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
-	    std::string alias_name = contextual_identifier_name(tn);
-	    alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
-	    if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
-	    {
-		// C allows identical typedef redeclarations — silently accept
-		// when the alias maps to the same underlying type.
-		DataDef *existing = &(*bmi)->definition;
-		if ( existing == alias_dd
-		  || (existing->is_pointer() && alias_dd->is_pointer()
-		      && existing->rawtype() == alias_dd->rawtype()) )
+		DataDef *alias_dd = dmi->second;
+		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 		{
-		    // consume trailing ';' and return
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-			pgm.nextToken();
-		    return NULL;
+		    pgm.nextToken();
+		    alias_dd = pgm.getPointerType(alias_dd);
 		}
-		pgm.Throw(tn) << "Identifier already defined" << flush;
+		tn = pgm.nextToken(); // consume the alias identifier
+		if ( !is_contextual_identifier_token(tn) )
+		    pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
+		std::string alias_name = contextual_identifier_name(tn);
+		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
+		bool redecl = false;
+		if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
+		{
+		    // C allows identical typedef redeclarations — silently accept
+		    // when the alias maps to the same underlying type.
+		    DataDef *existing = &(*bmi)->definition;
+		    if ( existing == alias_dd
+		      || (existing->is_pointer() && alias_dd->is_pointer()
+			  && existing->rawtype() == alias_dd->rawtype()) )
+			redecl = true;
+		    else
+			pgm.Throw(tn) << "Identifier already defined" << flush;
+		}
+		if ( !redecl )
+		{
+		    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
+		    pgm.register_scoped_typedef(alias_name, tdt);
+		    // also register tag in struct_map so "struct tag" works
+		    if ( !alias_dd->is_pointer() )
+		    {
+			pgm.pack_tap_struct(alias_name);	// B4a tap
+			pgm.struct_map.set(alias_name, dmi->second);
+		    }
+		    record_typedef(alias_name, alias_dd, tdt, tn);
+		    if ( node && !pgm.compounds.empty() )
+			pgm.compounds.top()->statements.push_back((TokenStmt *)node);
+		    node = new TokenTypedefDecl(alias_name, alias_dd);
+		}
+		if ( !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma) )
+		    break;
+		pgm.nextToken(); // consume ','
 	    }
-	    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
-	    pgm.register_scoped_typedef(alias_name, tdt);
-	    // also register tag in struct_map so "struct tag" works
-	    if ( !alias_dd->is_pointer() )
-	    {
-		pgm.pack_tap_struct(alias_name);	// B4a tap
-		pgm.struct_map.set(alias_name, dmi->second);
-	    }
-	    record_typedef(alias_name, alias_dd, tdt, tn);
-	    return new TokenTypedefDecl(alias_name, alias_dd);
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    return node;
 	}
 
 	// struct tag variable; — declare variable of existing struct type
@@ -45200,50 +45218,6 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // from those wraps by type.
     std::string base_source_spelling;
 
-    // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
-    // array extent instead of collapsing immediately to a pointer. Shared by
-    // every declarator in a list (`typedef int A[4], *B;`).
-    auto parse_alias_array_suffix = [&](DataDef *dd,
-					const std::string &alias_name) -> DataDef * {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpSqr )
-	    return dd;
-	size_t alias_count = 1;
-	TokenBase *alias_count_expr = NULL;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-	{
-	    pgm.nextToken(); // consume '['
-	    TokenBase *cl = pgm.nextToken();
-	    if ( cl && cl->id() == TokenID::tkClSqr )
-	    {
-		alias_count = 0;
-		continue;
-	    }
-	    pgm.pushToken(cl);
-	    if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
-	    {
-		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-		cl = pgm.nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-		continue;
-	    }
-	    int64_t n = pgm.parse_constant_integer_expression();
-	    if ( n < 0 )
-		pgm.Throw(tn) << "Typedef array dimension must be non-negative" << flush;
-	    cl = pgm.nextToken();
-	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-	    if ( n == 0 )
-		alias_count = 0;
-	    else
-		alias_count *= (size_t)n;
-	}
-	dd = new DataDefCArray(*dd, alias_name, alias_count, alias_count_expr);
-	if ( pgm.forest_arena_enabled )
-	    pgm.forest_arena_record_unary(dd);	// v25: DK_CARRAY write-through
-	return dd;
-    };
-
     // Wrap + register + record ONE alias — shared by the head declarator and
     // every tail declarator of a C typedef list, in every arm.
     auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
@@ -45319,7 +45293,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.Throw(ntok ? ntok : tn)
 		    << "Expecting alias name in typedef declarator list" << flush;
 	    std::string tail_alias = nsp;
-	    decl_dd = parse_alias_array_suffix(decl_dd, tail_alias);
+	    decl_dd = pgm.parse_typedef_array_suffix(decl_dd, tail_alias, ntok);
 	    if ( node && !pgm.compounds.empty() )
 		pgm.compounds.top()->statements.push_back((TokenStmt *)node);
 	    node = finish_alias(tail_alias, ntok, decl_dd, 0);
@@ -45584,7 +45558,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return record_typedef(alias, fptr, tdt);
     }
 
-    base_dd = parse_alias_array_suffix(base_dd, alias);
+    // Array suffix through the ONE owner (Program::parse_typedef_array_suffix
+    // — the bodyless struct-typedef arm already used it; the inline copy this
+    // function carried is deleted).
+    base_dd = pgm.parse_typedef_array_suffix(base_dd, alias, tn);
     TokenBase *node = finish_alias(alias, alias_tok, base_dd, gnu_vector_bytes);
     node = parse_typedef_list_tail(list_base_dd, node);
 
