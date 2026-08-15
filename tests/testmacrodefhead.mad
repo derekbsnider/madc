@@ -39,6 +39,19 @@ static int baz(int n)
     return n * 2;
 }
 
+// The OTHER side of the heuristic: after a decl head, an invocation whose
+// argument list could never be a prototype (a plain-identifier or
+// string-literal argument) MUST still expand — mingw's intrin-impl.h
+// defines whole function bodies through exactly this shape:
+//   __INTRINSICS_USEINLINE
+//   __buildstos(__stosq, unsigned __int64, "q|q")
+// where __INTRINSICS_USEINLINE is `extern __inline__ __attribute__(...)`.
+// gcc always expands these; suppression applies only to argument lists
+// where every parameter is type-shaped (the bug/foo/baz cases above).
+#define B1(x, y, z) int x(y v) { (void)sizeof(z); return (int)v + 1; }
+extern __inline__ __attribute__((__always_inline__, __gnu_inline__))
+B1(quux, unsigned long long, "q|q")
+
 int main()
 {
     // At the call site, the macro expansion still fires
@@ -53,6 +66,9 @@ int main()
     typedef int (*BAZFN)(int);
     BAZFN pb = baz;
     cout << pb(7) << endl;   // 14
+
+    // The macro-built gnu_inline function really exists and is callable.
+    cout << quux(41) << endl;   // 42
 
     cout << "end" << endl;
     return 0;

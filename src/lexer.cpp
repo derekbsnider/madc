@@ -1078,6 +1078,16 @@ static bool decl_head_macro_args_look_like_prototype(const std::vector<std::stri
 	    || word == "static" || word == "typedef";
     };
 
+    // EVERY argument must be parameter-declaration-shaped (a type word or
+    // `...`), not just one: a real prototype has no plain-identifier or
+    // string-literal parameter. mingw intrin-impl.h's `__INTRINSICS_USEINLINE
+    // __buildstos(__stosq, unsigned __int64, "q|q")` follows a decl head
+    // (extern __inline__ ...) yet MUST expand — its first and third
+    // arguments can never appear in a declarator's parameter list. The
+    // any-arg reading suppressed it and the parse died at the unexpanded
+    // macro name. (gcc always expands here; suppression is madc's deliberate
+    // leniency for the SMAUG `#define bug(...)` + later-real-definition
+    // pattern, so it must stay confined to arg lists gcc could reject.)
     for ( const std::string &arg : args )
     {
 	size_t i = 0;
@@ -1086,11 +1096,11 @@ static bool decl_head_macro_args_look_like_prototype(const std::vector<std::stri
 	if ( i >= arg.size() )
 	    continue;
 	if ( arg.compare(i, 3, "...") == 0 )
-	    return true;
-	if ( starts_with_type_word(arg) )
-	    return true;
+	    continue;
+	if ( !starts_with_type_word(arg) )
+	    return false;
     }
-    return false;
+    return true;
 }
 
 static bool macro_body_space(char c)
