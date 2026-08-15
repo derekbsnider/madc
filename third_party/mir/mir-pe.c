@@ -756,10 +756,17 @@ fail:
                           address slot (pool or data), so the slots ARE the
                           IAT, scattered as they come -- no PLT, no copy
                           code.  Duplicate-DLL descriptors are the
-                          documented tolerated shape.  Import slots hold
-                          zero in the file and get NO base relocation
-                          (rebase runs before import resolution; the loader
-                          overwrites the slot wholesale).
+                          documented tolerated shape.  Each slot's FILE
+                          bytes carry its ILT-entry value (the hint/name
+                          RVA -- the IAT-equals-ILT-copy shape every
+                          linker emits): the real Windows loader snaps by
+                          walking the IAT contents and reads a zero entry
+                          as a terminator, silently leaving the slot
+                          unfilled (wine walks the ILT, which masks it;
+                          session #90 real-Windows AV bisect).  An RVA is
+                          base-independent, so slots still get NO base
+                          relocation (rebase runs before import
+                          resolution; the loader overwrites wholesale).
      _start ->            a synthesized entry stub (the W3.0(b)-probed UCRT
                           contract, byte encodings from the gas oracle):
                           _configure_narrow_argv(1),
@@ -859,6 +866,8 @@ static const char *const pex_stub_import[6]
 /* one import-slot record: the address slot the loader must fill */
 typedef struct {
   uint32_t slot_rva;  /* where the resolved address lands (pool or data) */
+  int sec;            /* MIR_OBJ_SEC_* holding the slot */
+  uint64_t off;       /* slot offset within that section body */
   const char *name;   /* the imported symbol */
   const char *dll;    /* its provider (attributed) */
   uint32_t hint_rva;  /* filled while building .rdata */
@@ -988,6 +997,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       imports = np;
       memset (&imports[n_imports], 0, sizeof (pex_import_t));
       imports[n_imports].slot_rva = (uint32_t) slot_rva;
+      imports[n_imports].sec = r->sec;
+      imports[n_imports].off = r->offset;
       imports[n_imports].name = s->name;
       n_imports++;
     }
@@ -1000,6 +1011,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     for (int k = 0; k < 6; k++) {
       memset (&imports[n_imports], 0, sizeof (pex_import_t));
       imports[n_imports].slot_rva = (uint32_t) (pool_rva + pool_stub_off + (uint64_t) k * 8);
+      imports[n_imports].sec = MIR_OBJ_SEC_ADDRPOOL;
+      imports[n_imports].off = pool_stub_off + (uint64_t) k * 8;
       imports[n_imports].name = pex_stub_import[k];
       imports[n_imports].dll = "ucrtbase.dll";
       n_imports++;
@@ -1170,10 +1183,24 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     } else if (s->defined_p) { /* internal ABS64: bake base + RVA */
       uint64_t val = PEX_IMAGE_BASE + PEX_SEC_RVA (s->sec) + s->value + (uint64_t) r->addend;
       memcpy (slot, &val, 8);
-    } else { /* import slot: zero in the file; the loader writes it */
-      uint64_t z = 0;
-      memcpy (slot, &z, 8);
+    } else {
+      /* import slot: the IAT-prefill pass below owns these bytes */
     }
+  }
+
+  /* ---- IAT prefill: every import slot's file bytes carry its ILT-entry
+     value (the hint/name RVA), exactly as link.exe and ld emit an IAT.
+     The real Windows loader snaps by walking the IAT contents -- a zero
+     entry reads as a terminator and the slot is silently left unfilled
+     (wine walks the ILT instead, which masked this).  An RVA is
+     image-base-independent, so the slot still needs no base reloc; the
+     loader overwrites it with the resolved address. */
+  for (size_t i = 0; i < n_imports; i++) {
+    uint64_t sec_fo = imports[i].sec == MIR_OBJ_SEC_ADDRPOOL  ? pool_fo
+                      : imports[i].sec == MIR_OBJ_SEC_INITARR ? init_fo
+                                                              : data_fo;
+    uint64_t v = imports[i].hint_rva;
+    memcpy (p + sec_fo + imports[i].off, &v, 8);
   }
 
   /* ---- headers */
