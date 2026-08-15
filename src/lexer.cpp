@@ -3003,6 +3003,18 @@ bool Program::forest_bind_env_ok(uint32_t root)
 		// forest_chain_set, whose membership the decl-restore
 		// filter reads: restoring this unit's decls BESIDE the
 		// live-parsed copy double-defines them (struct _iobuf).
+		// KNOWN OVER-CLAIM (task #57 next slice): a live guard macro
+		// alone is weak evidence — a shared SUB-BLOCK guard (mingw
+		// stdio.h's _FILE_DEFINED, live from wchar.h's copy of the
+		// block) also satisfies this, pruning a unit whose OTHER
+		// content is not live. The honest test is
+		// forest_unit_file_live_tokenized(unit) — but enforcing it
+		// alone cascades libc++ roots into live parses (statmem's
+		// nexttoward frontier): the complete rule must first BIND
+		// value-equal inert-guard mismatches instead of declining
+		// them. Until that slice, the typedef arm's live-wins +
+		// denotes_same_type tolerance absorb the resurrection this
+		// over-claim causes (the FILE twin).
 		if ( !want_defined && have_defined
 		  && forest_unit_defines_macro(unit, nm) )
 		{
@@ -3923,7 +3935,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	if ( include_already_seen(canonical) )
 	    return false;
 	included_files[canonical] = true;
-	return true;
+	return live_tokenize_record(canonical, true);
     }
     // User ("...") includes keep madc's dialect require-once semantics
     // (pinned by tests/testincludeonce.mad). SYSTEM headers get gcc's
@@ -3934,7 +3946,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	if ( include_already_seen(canonical) )
 	    return false;
 	included_files[canonical] = true;
-	return true;
+	return live_tokenize_record(canonical, true);
     }
     // System headers: gcc's multiple-include optimization. Skip a
     // repeat inclusion ONLY when the file is fully wrapped in an include
@@ -3947,22 +3959,55 @@ bool Program::should_tokenize_include(const std::string &path)
 	const std::string guard = detect_include_guard(canonical);
 	include_guard_by_file[canonical] = guard;
 	if ( guard.empty() )
-	    return true;
+	    return live_tokenize_record(canonical, true);
 	// A FIRST live visit can still be a re-include: a forest bind may
 	// already have installed this header's guard (v40 mixed bind/live
 	// TUs — a bound <cstdio> then a declined <locale> live-parsing
 	// bits/types.h beside the restored decls). Same gcc rule as the
 	// repeat path below: guard defined = skip.
 	pack_record_branch_macro(guard, true /* include probe */);
-	return define_map.find(guard) == define_map.end()
-	    && macro_map.find(guard) == macro_map.end();
+	return live_tokenize_record(canonical,
+	    define_map.find(guard) == define_map.end()
+	    && macro_map.find(guard) == macro_map.end());
     }
     const std::string &guard = gi->second;
     if ( guard.empty() )
-	return true;
+	return live_tokenize_record(canonical, true);
     pack_record_branch_macro(guard, true /* include probe */);	// B4a: guard definedness gates inclusion
-    return define_map.find(guard) == define_map.end()
-	&& macro_map.find(guard) == macro_map.end();
+    return live_tokenize_record(canonical,
+	define_map.find(guard) == define_map.end()
+	&& macro_map.find(guard) == macro_map.end());
+}
+
+// One recording owner: a TRUE verdict from should_tokenize_include means the
+// file's tokens enter THIS TU's live stream now. The v40 prune's honest
+// "already present" test (forest_unit_file_live_tokenized) reads the set —
+// a live guard macro alone is NOT sufficient evidence (a shared sub-block
+// guard or a bound sibling's replay also defines it: mingw stdio.h's
+// _FILE_DEFINED, the embedded stddef's NULL).
+bool Program::live_tokenize_record(const std::string &canonical, bool tok)
+{
+    if ( tok )
+	forest_live_tokenized.insert(canonical);
+    return tok;
+}
+
+// v40 prune evidence: was this frozen unit's FILE live-tokenized earlier in
+// this TU? Filesystem units freeze under their resolved (possibly ../-laden)
+// paths — compare canonically, the same owner the live record used. Embedded
+// units freeze under bare names ("stddef.h"); their live record is the
+// angle-bracket named key ("<stddef.h>").
+bool Program::forest_unit_file_live_tokenized(uint32_t unit)
+{
+    const char *uname = bind_forest->unit_name(unit);
+    if ( !uname || !*uname )
+	return false;
+    if ( *uname == '<' )
+	return forest_live_tokenized.count(uname) != 0;
+    if ( !strchr(uname, '/') )
+	return forest_live_tokenized.count("<" + std::string(uname) + ">") != 0
+	    || forest_live_tokenized.count(uname) != 0;
+    return forest_live_tokenized.count(canonical_path_for_compare(uname)) != 0;
 }
 
 // Defined here, used from tokenize_posix_whole_provider above too (declared

@@ -4591,6 +4591,7 @@ public:
     // Namespace/struct/template maps stay eager — the lexer never reads them.
     std::vector<std::pair<std::string, TokenDataType *> > forest_pending_datatypes;
     std::set<std::string> forest_pending_datatype_names;	// staged-key guard
+    std::set<std::string> forest_restored_datatype_names;	// v40: aliases whose datatype_map entry came from a forest RESTORE — persists the whole TU (the typedef arm's live-wins provenance, task #57)
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
     // (funcdef_map + addVariable + Method, the parseFunction prototype shape)
@@ -4691,6 +4692,9 @@ public:
     bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
     std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+    std::set<std::string> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
+    bool live_tokenize_record(const std::string &canonical, bool tok);	// one recording owner for the set above
+    bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
     bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
     bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
     void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);

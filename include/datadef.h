@@ -368,6 +368,14 @@ public:
 
 	return false;
     }
+    // C11 6.7p3 type identity across DataDef INSTANCES: true when this and
+    // d denote the same file-scope C type. Instance equality is the base
+    // answer; aggregates override — the forest-restore/live seam holds a
+    // restored twin and a live re-declaration of ONE tag as two objects.
+    virtual bool denotes_same_type(DataDef &d)
+    {
+	return &d == this;
+    }
     virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
     {
@@ -718,6 +726,22 @@ public:
 	  && dd.basetype() == BaseType::btClass )
 	    return 1;
 	return dd.size;
+    }
+
+    // Same C TYPE across distinct instances (see DataDef::denotes_same_type):
+    // same aggregate kind, same non-synthetic tag, both complete, identical
+    // size and member count.
+    virtual bool denotes_same_type(DataDef &d)
+    {
+	if ( &d == this )
+	    return true;
+	DataDefSTRUCT *o = dynamic_cast<DataDefSTRUCT *>(&d);
+	return o && !is_anonymous && !o->is_anonymous
+	    && union_layout == o->union_layout
+	    && is_complete && o->is_complete
+	    && size == o->size
+	    && members.size() == o->members.size()
+	    && name == o->name;
     }
 
     // The VIRTUAL base hosting the named member (member_vbase provenance), or

@@ -22082,8 +22082,17 @@ void Program::flush_forest_pending_globals()
     // Applied in restore order — a later same-named alias wins, the live
     // registration semantics.
     for ( size_t i = 0; i < forest_pending_datatypes.size(); ++i )
+    {
 	datatype_map[forest_pending_datatypes[i].first] =
 	    forest_pending_datatypes[i].second;
+	// v40 (task #57): PERSISTENT provenance — the main parse's typedef
+	// arm lets a live re-declaration overwrite a shape-divergent
+	// RESTORED alias (the frozen twin encodes the freeze's include
+	// order, not this TU's), but must still throw on a genuine live
+	// conflict. forest_pending_datatype_names clears below; this set
+	// survives the whole TU.
+	forest_restored_datatype_names.insert(forest_pending_datatypes[i].first);
+    }
     forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
@@ -38677,13 +38686,48 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		{
 		    // C allows identical typedef redeclarations — silently accept
 		    // when the alias maps to the same underlying type.
+		    // denotes_same_type matches across DataDef instances: the
+		    // forest-restore/live seam registers a restored twin of a tag
+		    // the live parse re-declares (C11 6.7p3).
 		    DataDef *existing = &(*bmi)->definition;
-		    if ( existing == alias_dd
+		    if ( existing->denotes_same_type(*alias_dd)
 		      || (existing->is_pointer() && alias_dd->is_pointer()
 			  && existing->rawtype() == alias_dd->rawtype()) )
 			redecl = true;
+		    else if ( pgm.forest_restored_datatype_names.count(alias_name) )
+		    {
+			// Shape-divergent RESTORED alias: the frozen twin
+			// encodes the FREEZE's include order (ucrt stdio.h's
+			// placeholder FILE), the live declaration this TU's
+			// (wchar.h's classic FILE) — which is what gcc sees.
+			// Fall through and let the live registration
+			// overwrite (register_scoped_typedef is last-wins).
+			DBG(cout << "typedef redecl: live '" << alias_name
+			    << "' overwrites shape-divergent restored alias ("
+			    << existing->name << "#" << existing->size
+			    << " -> " << alias_dd->name << "#" << alias_dd->size
+			    << ")" << endl);
+		    }
 		    else
+		    {
+			DBG(cout << "typedef redecl mismatch " << alias_name
+			    << ": existing '" << existing->name
+			    << "' size=" << existing->size
+			    << " bt=" << (int)existing->basetype()
+			    << " members=" << (dynamic_cast<DataDefSTRUCT *>(existing)
+				? (long)dynamic_cast<DataDefSTRUCT *>(existing)->members.size() : -1L)
+			    << " complete=" << (dynamic_cast<DataDefSTRUCT *>(existing)
+				? (int)dynamic_cast<DataDefSTRUCT *>(existing)->is_complete : -1)
+			    << " vs live '" << alias_dd->name
+			    << "' size=" << alias_dd->size
+			    << " bt=" << (int)alias_dd->basetype()
+			    << " members=" << (dynamic_cast<DataDefSTRUCT *>(alias_dd)
+				? (long)dynamic_cast<DataDefSTRUCT *>(alias_dd)->members.size() : -1L)
+			    << " complete=" << (dynamic_cast<DataDefSTRUCT *>(alias_dd)
+				? (int)dynamic_cast<DataDefSTRUCT *>(alias_dd)->is_complete : -1)
+			    << endl);
 			pgm.Throw(tn) << "Identifier already defined" << flush;
+		    }
 		}
 		if ( !redecl )
 		{

@@ -1129,5 +1129,134 @@ fi
 rm -f "$sub_snap" "$sub_vlog"
 echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind grove headers bound (no re-parse), output == live == g++"
+# --- case: redecl — the v40 mixed bind/live redeclaration seam (task #57) ----
+# The wchar.h/stdio.h FILE shape. A shared `#ifndef FBG_T_DEFINED` block lives
+# in BOTH a.h and b.h; c.h re-exports the typedef cstdio-style (`using ::fbgT`).
+# Corpus 1 (sub-block guard prune + tolerance): the freeze parses a.h's copy
+# first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer a.h)".
+# The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h DECLINES and
+# live-parses the block: live struct fbg_T + typedef fbgT), then c.h: a.h's
+# FBG_T_DEFINED mismatch is self-defined ⇒ the (documented-over-claiming)
+# guard prune marks a.h live-present and c.h BINDS, restoring its re-exported
+# fbgT — a DIFFERENT DataDef instance of the same tag. The main parse's live
+# `typedef struct fbg_T fbgT;` must TOLERATE the twin
+# (DataDef::denotes_same_type, C11 6.7p3), never throw.
+# Corpus 2 (real include-once guard, genuine live evidence): a.h consults
+# FBG_SPICE (defined at freeze by spice.h, absent live) so root a.h declines
+# and live-parses — its file IS on the live-tokenized record. c.h then binds
+# with a.h pruned on its REAL guard; same tolerance tail. When the next
+# slice tightens the prune to require live evidence, corpus 1 flips to the
+# decline path and corpus 2 stays a prune — the pair pins that boundary.
+cat > tmp/fbgate_redecl_a.h <<'EOF'
+#ifndef FBG_REDECL_A_H
+#define FBG_REDECL_A_H
+#ifndef FBG_T_DEFINED
+#define FBG_T_DEFINED
+struct fbg_T { int x; int y; };
+typedef struct fbg_T fbgT;
+#endif
+#ifdef FBG_SPICE
+typedef int fbg_spice_seen;
+#endif
+#endif
+EOF
+cat > tmp/fbgate_redecl_b.h <<'EOF'
+#ifndef FBG_REDECL_B_H
+#define FBG_REDECL_B_H
+#ifndef FBG_T_DEFINED
+#define FBG_T_DEFINED
+struct fbg_T { int x; int y; };
+typedef struct fbg_T fbgT;
+#endif
+static int fbg_b_use(fbgT *p) { return p ? p->x : 0; }
+#endif
+EOF
+cat > tmp/fbgate_redecl_c.h <<'EOF'
+#ifndef FBG_REDECL_C_H
+#define FBG_REDECL_C_H
+#include <fbgate_redecl_a.h>
+namespace fbgns { using ::fbgT; }
+#endif
+EOF
+cat > tmp/fbgate_redecl_spice.h <<'EOF'
+#ifndef FBG_REDECL_SPICE_H
+#define FBG_REDECL_SPICE_H
+#define FBG_SPICE 1
+#endif
+EOF
+cat > tmp/fbgate_redecl_producer.cpp <<'EOF'
+#include <fbgate_redecl_c.h>
+#include <fbgate_redecl_b.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_redecl_consumer.cpp <<'EOF'
+#include <fbgate_redecl_b.h>
+#include <fbgate_redecl_c.h>
+#include <cstdio>
+int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", fbg_b_use(&t) + t.y); return 0; }
+EOF
+cat > tmp/fbgate_redecl2_producer.cpp <<'EOF'
+#include <fbgate_redecl_spice.h>
+#include <fbgate_redecl_c.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_redecl2_consumer.cpp <<'EOF'
+#include <fbgate_redecl_a.h>
+#include <fbgate_redecl_c.h>
+#include <cstdio>
+int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", t.x + t.y); return 0; }
+EOF
+rd_snap="tmp/fbgate_redecl.msnap"
+rd_snap2="tmp/fbgate_redecl2.msnap"
+rd_vlog="tmp/fbgate_redecl_v.log"
+rd_vlog2="tmp/fbgate_redecl2_v.log"
+rd_gcc="tmp/fbgate_redecl_gcc"
+for c in tmp/fbgate_redecl_consumer.cpp tmp/fbgate_redecl2_consumer.cpp; do
+    rd_live=$(timeout 60 "$BIN" "$c" -I tmp 2>/dev/null)
+    [ "$rd_live" = "v=7" ] || fail "[redecl] live-parse of $c gave '$rd_live' != 'v=7'"
+    if command -v g++ >/dev/null 2>&1; then
+        if timeout 120 g++ -I tmp "$c" -o "$rd_gcc" >/dev/null 2>&1; then
+            rd_gcc_out=$("$rd_gcc" 2>/dev/null)
+            [ "$rd_gcc_out" = "v=7" ] || fail "[redecl] g++ output for $c '$rd_gcc_out' != 'v=7'"
+        else
+            fail "[redecl] g++ compile of $c FAILED"
+        fi
+    fi
+done
+timeout 120 "$BIN" --freeze="$rd_snap" tmp/fbgate_redecl_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[redecl] --freeze corpus 1 FAILED"
+timeout 120 "$BIN" --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[redecl] --freeze corpus 2 FAILED"
+# Corpus 1: sub-block-guard mismatch declines BOTH roots; output still exact.
+rd_bind=$(timeout 60 "$BIN" --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp 2>/dev/null)
+[ "$rd_bind" = "v=7" ] || fail "[redecl] corpus-1 bind output '$rd_bind' != 'v=7'"
+timeout 60 "$BIN" -v --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp >"$rd_vlog" 2>&1
+grep -aq "DECLINE root tmp/fbgate_redecl_b.h" "$rd_vlog" \
+    || fail "[redecl] root b.h did NOT decline — the seam was never exercised"
+grep -aq "fbgate_redecl_a.h already present ('FBG_T_DEFINED' guard live)" "$rd_vlog" \
+    || fail "[redecl] corpus-1 a.h was NOT guard-pruned"
+grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog" \
+    || fail "[redecl] corpus-1 c.h did NOT bind"
+grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog" \
+    || fail "[redecl] corpus-1 restored fbgT twin never registered — the collision precondition is gone"
+grep -aq "Identifier already defined" "$rd_vlog" \
+    && fail "[redecl] corpus 1 hit the redeclaration throw (denotes_same_type tolerance regressed)"
+# Corpus 2: real-guard prune fires; the pruned unit's flat re-export suppresses.
+rd_bind2=$(timeout 60 "$BIN" --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp 2>/dev/null)
+[ "$rd_bind2" = "v=7" ] || fail "[redecl] corpus-2 bind output '$rd_bind2' != 'v=7'"
+timeout 60 "$BIN" -v --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp >"$rd_vlog2" 2>&1
+grep -aq "DECLINE root tmp/fbgate_redecl_a.h" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 root a.h did NOT decline (FBG_SPICE dep lost?)"
+grep -aq "fbgate_redecl_a.h already present ('FBG_REDECL_A_H' guard live)" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 a.h was NOT pruned on its REAL include-once guard"
+grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 c.h did NOT bind"
+grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 restored fbgT twin never registered — the collision precondition is gone"
+grep -aq "Identifier already defined" "$rd_vlog2" \
+    && fail "[redecl] corpus 2 hit the redeclaration throw"
+rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
+echo "forest_bind_gate: [redecl] OK — guard-pruned twin restored + tolerated (denotes_same_type); live-evidence prune pinned; output == live == g++"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl grove headers bound (no re-parse), output == live == g++"
 exit 0
