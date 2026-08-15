@@ -357,7 +357,7 @@ MADC_STORAGE_DB_OFILES =
 # in -Bdynamic mode, where ld prefers the stage's libstdc++.dll.a over
 # its .a. System DLLs stay imports either way (ws2_32/kernel32/ucrt are
 # import libs).
-LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm
+LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
 # The compat thunks join every link via the object list (compile rule beside
 # the other per-mode rules below); riding CORE_OFILES also puts them in the
 # per-mode libmadc archives, where any downstream consumer link needs them.
