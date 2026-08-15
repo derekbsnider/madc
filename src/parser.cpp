@@ -58408,6 +58408,48 @@ static TokenBase *drop_captured_dim_exprs(TokenBase *chain,
     return l ? l : r;
 }
 
+// Block-scope hoist discriminator (task #57 / gcc parity, C11 6.2.2p5 and
+// C++ [dcl.stc]): a block-scope function DECLARATION declares the file-scope
+// name with EXTERNAL linkage whether or not `extern` is spelled — only a
+// DEFINITION (a GNU nested function) is a hoistable local entity. mingw's
+// stdlib.h declares `__mingw_strtof` INSIDE strtof's inline body; hoisting
+// that prototype orphaned the real name ("use of undeclared identifier").
+// Called with the stream INSIDE the parameter list (the caller consumed the
+// opening '('): scan the balanced remainder plus the declarator suffix
+// (cv/ref-qualifiers, noexcept(...), __attribute__((...)), asm labels,
+// trailing return) to the first TOP-LEVEL '{' (definition) or ';' / ','
+// (declaration). Pure lookahead — every consumed token is pushed back.
+// A block-scope K&R-style DEFINITION (param decls between ')' and '{')
+// reads as a declaration here; that GNU-nested C arcana is out of scope.
+bool Program::function_declarator_has_body()
+{
+    std::vector<TokenBase *> seen;
+    DelimDepth d;
+    d.paren = 1;			// caller already consumed the '('
+    bool body = false;
+    while ( TokenBase *t = peekToken() )
+    {
+	if ( d.top() )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		{ body = true; break; }
+	    if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkComma )
+		break;
+	}
+	t = nextToken();
+	seen.push_back(t);
+	std::vector<TokenBase *> optail;
+	delimStepStream(t, d, &optail);
+	for ( size_t k = 0; k < optail.size(); ++k )
+	    if ( optail[k] )
+		seen.push_back(optail[k]);
+    }
+    for ( std::vector<TokenBase *>::reverse_iterator it = seen.rbegin();
+	  it != seen.rend(); ++it )
+	pushToken(*it);
+    return body;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
@@ -58471,18 +58513,21 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
     std::map<std::string, TokenBase *> param_vla_side_effects;
-    // A block-scope `extern` FUNCTION DECLARATION is not a nested function —
-    // it declares the file-scope name with external linkage (C11 6.2.2p5).
-    // Mangling it nested (main__fabs__1) orphans the real name: the call
-    // then falls to the 64-bit dlsym default and a double return is read as
-    // a long (fabs(-2.5) -> 1.0). GNU nested functions are non-extern.
+    // A block-scope FUNCTION DECLARATION is not a nested function — it
+    // declares the file-scope name with external linkage (C11 6.2.2p5),
+    // WHETHER OR NOT `extern` is spelled. Mangling it nested (main__fabs__1,
+    // strtof__nested_fn___mingw_strtof__1) orphans the real name: the call
+    // then falls to the 64-bit dlsym default (C) or errors "undeclared
+    // identifier" (C++). Only a DEFINITION — a GNU nested function, which
+    // always has a body — hoists; function_declarator_has_body() looks ahead.
     // A method of a block-local class is still a CLASS method, not a GNU
     // nested function. Treating it as nested prefixed its real class symbol
     // with the temporary dependent-pattern function id and was the source of
     // the frozen `__patN__...Guard__N` imports.
     bool is_nested_function = !owner_class && !compounds.empty()
 			      && compounds.top() && compounds.top()->method
-			      && !parsing_extern_decl;
+			      && !parsing_extern_decl
+			      && function_declarator_has_body();
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
     bool has_hidden_this = owner_class && !static_class_method;

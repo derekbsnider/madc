@@ -5026,6 +5026,10 @@ public:
     // a token-collecting caller can re-emit the full operator-function-id).
     void delimStepStream(TokenBase *t, DelimDepth &d,
 			 std::vector<TokenBase *> *extra = NULL);
+    // Block-scope hoist discriminator (task #57 / gcc parity): with the stream
+    // INSIDE a function declarator's parameter list, answers whether a BODY
+    // follows the declarator. Pure lookahead — every token is pushed back.
+    bool function_declarator_has_body();
     // Constant-expression evaluator (recursive descent over the token stream).
     // Each rung consumes from the stream via nextToken()/peekToken() and folds
     // an integer-constant-expression — used for array dimensions, bit-field

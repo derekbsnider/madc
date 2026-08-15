@@ -1,0 +1,31 @@
+// Block-scope function DECLARATION has external linkage (C11 6.2.2p5 /
+// C++ [dcl.stc]): it declares the FILE-SCOPE name — it is never a GNU
+// nested function (those are definitions). mingw's stdlib.h declares
+// __mingw_strtof INSIDE strtof's inline body; hoisting the prototype to a
+// uniqued nested symbol orphaned the real name ("undeclared identifier"
+// in C++ mode, a silent 64-bit dlsym fallback in C mode).
+// Oracle: g++ and clang++ both print v=2 p=3.
+#include <cstdio>
+
+static __inline__ float tb_strtof(const char *s, char **e)
+{
+    float tb_mingw_strtof(const char *, char **);
+    return tb_mingw_strtof(s, e);
+}
+
+// A plain inline enclosing function exercises the same path.
+inline int tb_wrap(int x)
+{
+    int tb_mingw_add(int, int);
+    return tb_mingw_add(x, 1);
+}
+
+float tb_mingw_strtof(const char *s, char **e) { (void)s; (void)e; return 2.5f; }
+int tb_mingw_add(int a, int b) { return a + b; }
+
+int main()
+{
+    char *e = 0;
+    printf("v=%d p=%d\n", (int)tb_strtof("x", &e), tb_wrap(2));
+    return 0;
+}
