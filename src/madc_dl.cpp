@@ -176,6 +176,20 @@ void *madcdl_sym_default(const char *name)
 	FARPROC p = GetProcAddress(GetModuleHandleA(NULL), name);
 	if (p)
 		return (void *)p;
+	// The module the madc runtime itself lives in. In bin/madc.exe that
+	// is the self handle above; hosted inside libmadc_rt.dll (an AOT
+	// image running eval) the process exe exports NOTHING of ours and
+	// every madc runtime symbol lives HERE — the Linux twin is
+	// dlsym(RTLD_DEFAULT) seeing libmadc.so.0 in the global scope.
+	{
+		HMODULE own = NULL;
+		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+				       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				       (LPCSTR)(void *)&madcdl_sym_default, &own)
+		    && own != GetModuleHandleA(NULL)
+		    && (p = GetProcAddress(own, name)) != NULL)
+			return (void *)p;
+	}
 	{
 		std::lock_guard<std::mutex> g(madcdl_lock());
 		for (HMODULE h : madcdl_global_modules())
