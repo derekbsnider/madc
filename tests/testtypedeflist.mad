@@ -9,6 +9,9 @@
 
 typedef signed char INT8, *PINT8;
 typedef int ARR[3], *PI, PLAIN;
+// The enum arm's list (winnt.h: `typedef enum {...} COMPARTMENT_ID,
+// *PCOMPARTMENT_ID;`) rides the same tail owner.
+typedef enum { CID_A = 4, CID_B } CID, *PCID;
 
 int main()
 {
@@ -20,5 +23,8 @@ int main()
     printf("v=%d p=%d\n", (int)v, (int)*p);
     printf("arr=%d last=%d\n", (int)sizeof(ARR), a[2]);
     printf("x=%d q=%d\n", x, *q);
+    CID c = CID_B;
+    PCID pc = &c;
+    printf("cid=%d pcid=%d\n", (int)c, (int)*pc);
     return 0;
 }

@@ -45193,6 +45193,139 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.typedef_prefix_align = 0;	// TokenSTRUCT consumed it; the class path never reads it
 	return result;
     }
+
+    // Spelling of the base type as written (drives the class/namespace scalar
+    // alias wraps below); the enum arm leaves it empty — enum dds are excluded
+    // from those wraps by type.
+    std::string base_source_spelling;
+
+    // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
+    // array extent instead of collapsing immediately to a pointer. Shared by
+    // every declarator in a list (`typedef int A[4], *B;`).
+    auto parse_alias_array_suffix = [&](DataDef *dd,
+					const std::string &alias_name) -> DataDef * {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpSqr )
+	    return dd;
+	size_t alias_count = 1;
+	TokenBase *alias_count_expr = NULL;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken(); // consume '['
+	    TokenBase *cl = pgm.nextToken();
+	    if ( cl && cl->id() == TokenID::tkClSqr )
+	    {
+		alias_count = 0;
+		continue;
+	    }
+	    pgm.pushToken(cl);
+	    if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
+	    {
+		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
+		cl = pgm.nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
+		continue;
+	    }
+	    int64_t n = pgm.parse_constant_integer_expression();
+	    if ( n < 0 )
+		pgm.Throw(tn) << "Typedef array dimension must be non-negative" << flush;
+	    cl = pgm.nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClSqr )
+		pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
+	    if ( n == 0 )
+		alias_count = 0;
+	    else
+		alias_count *= (size_t)n;
+	}
+	dd = new DataDefCArray(*dd, alias_name, alias_count, alias_count_expr);
+	if ( pgm.forest_arena_enabled )
+	    pgm.forest_arena_record_unary(dd);	// v25: DK_CARRAY write-through
+	return dd;
+    };
+
+    // Wrap + register + record ONE alias — shared by the head declarator and
+    // every tail declarator of a C typedef list, in every arm.
+    auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
+			    DataDef *dd, size_t vec_bytes) -> TokenBase * {
+	// register in datatype_map
+	if ( vec_bytes > 0 )
+	    dd = new DataDefSIMD(dd, alias_name, vec_bytes);
+	// An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
+	// itself, exactly like a class typedef: wrapping it in a plain DataDef
+	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
+	// integer DataType is indistinguishable from a scalar typedef — the
+	// mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
+	else if ( !pgm.class_scope_stack.empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd)
+	       && !base_source_spelling.empty()
+	       && base_source_spelling != dd->name )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(base_source_spelling);
+	    dd = alias_dd;
+	}
+	else if ( pgm.class_scope_stack.empty()
+	       && !pgm.current_namespace().empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd) )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias_name);
+	    // [temp.type]: the alias carries its underlying so template-argument
+	    // identity can desugar (std::streamsize must select the spec keyed
+	    // on long) — see template_type_arg_spelling.
+	    alias_dd->scalar_alias_of = dd;
+	    dd = alias_dd;
+	}
+	if ( dd && is_incomplete_class_datadef(dd) )
+	    pgm.template_completion_requested.insert(dd->name);
+	TokenDataType *tdt = new TokenDataType(alias_name.c_str(), *dd);
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.register_scoped_typedef(alias_name, tdt);
+	DBG(std::cout << "TokenTYPEDEF::parse() " << alias_name << " = " << dd->name << std::endl);
+	return record_typedef(alias_name, dd, tdt, atok);
+    };
+
+    // C typedef declarator lists — ONE owner for every arm:
+    // `typedef signed char INT8,*PINT8;` (basetsd.h),
+    // `typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` (winnt.h).
+    // Each tail declarator restarts from the UNDECORATED base and takes its
+    // own pointer/array shape. Before this loop the tail was silently
+    // DROPPED and the leftover comma tripped the top-level progress guard
+    // (or, before the guard, spun the parse forever). At block scope the
+    // non-final nodes join the compound's statement stream directly — the
+    // caller only appends the RETURNED node.
+    auto parse_typedef_list_tail = [&](DataDef *undecorated_base,
+				       TokenBase *node) -> TokenBase * {
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+	{
+	    pgm.nextToken(); // consume ','
+	    DataDef *decl_dd = undecorated_base;
+	    while ( pgm.peekToken()
+		 && (pgm.peekToken()->id() == TokenID::tkMul
+		  || is_cv_qualifier_token(pgm.peekToken())) )
+	    {
+		if ( pgm.peekToken()->id() == TokenID::tkMul )
+		    decl_dd = pgm.getPointerType(decl_dd);
+		pgm.nextToken();
+	    }
+	    TokenBase *ntok = pgm.nextToken();
+	    const char *nsp = ntok ? typedef_alias_spelling(ntok) : NULL;
+	    if ( !nsp )
+		pgm.Throw(ntok ? ntok : tn)
+		    << "Expecting alias name in typedef declarator list" << flush;
+	    std::string tail_alias = nsp;
+	    decl_dd = parse_alias_array_suffix(decl_dd, tail_alias);
+	    if ( node && !pgm.compounds.empty() )
+		pgm.compounds.top()->statements.push_back((TokenStmt *)node);
+	    node = finish_alias(tail_alias, ntok, decl_dd, 0);
+	}
+	return node;
+    };
+
     if ( tn->id() == TokenID::tkENUM )
     {
 	pgm.nextToken(); // consume enum
@@ -45239,14 +45372,17 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
+	// `typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` (winnt.h) —
+	// tail declarators are pointers/aliases of THIS enum dd.
+	TokenBase *enum_node = record_typedef(alias, enum_alias_dd, tdt);
+	enum_node = parse_typedef_list_tail(enum_alias_dd, enum_node);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return record_typedef(alias, enum_alias_dd, tdt);
+	return enum_node;
     }
 
     // typedef TYPE alias; — primitive type alias
     DataDef *base_dd = NULL;
-    std::string base_source_spelling;
     if ( tn->type() == TokenType::ttDataType )
     {
 	pgm.nextToken();
@@ -45447,130 +45583,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return record_typedef(alias, fptr, tdt);
     }
 
-    // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
-    // array extent instead of collapsing immediately to a pointer. Shared by
-    // every declarator in a list (`typedef int A[4], *B;`).
-    auto parse_alias_array_suffix = [&](DataDef *dd,
-					const std::string &alias_name) -> DataDef * {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpSqr )
-	    return dd;
-	size_t alias_count = 1;
-	TokenBase *alias_count_expr = NULL;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-	{
-	    pgm.nextToken(); // consume '['
-	    TokenBase *cl = pgm.nextToken();
-	    if ( cl && cl->id() == TokenID::tkClSqr )
-	    {
-		alias_count = 0;
-		continue;
-	    }
-	    pgm.pushToken(cl);
-	    if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
-	    {
-		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-		cl = pgm.nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-		continue;
-	    }
-	    int64_t n = pgm.parse_constant_integer_expression();
-	    if ( n < 0 )
-		pgm.Throw(tn) << "Typedef array dimension must be non-negative" << flush;
-	    cl = pgm.nextToken();
-	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-	    if ( n == 0 )
-		alias_count = 0;
-	    else
-		alias_count *= (size_t)n;
-	}
-	dd = new DataDefCArray(*dd, alias_name, alias_count, alias_count_expr);
-	if ( pgm.forest_arena_enabled )
-	    pgm.forest_arena_record_unary(dd);	// v25: DK_CARRAY write-through
-	return dd;
-    };
-
-    // Wrap + register + record ONE alias — shared by the head declarator and
-    // every tail declarator of a C typedef list.
-    auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
-			    DataDef *dd, size_t vec_bytes) -> TokenBase * {
-	// register in datatype_map
-	if ( vec_bytes > 0 )
-	    dd = new DataDefSIMD(dd, alias_name, vec_bytes);
-	// An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
-	// itself, exactly like a class typedef: wrapping it in a plain DataDef
-	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
-	// integer DataType is indistinguishable from a scalar typedef — the
-	// mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
-	else if ( !pgm.class_scope_stack.empty()
-	       && dd && !dd->is_pointer()
-	       && dd->basetype() == BaseType::btSimple
-	       && !dynamic_cast<DataDefENUM *>(dd)
-	       && !base_source_spelling.empty()
-	       && base_source_spelling != dd->name )
-	{
-	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
-	    alias_dd->set_canonical_spelling(base_source_spelling);
-	    dd = alias_dd;
-	}
-	else if ( pgm.class_scope_stack.empty()
-	       && !pgm.current_namespace().empty()
-	       && dd && !dd->is_pointer()
-	       && dd->basetype() == BaseType::btSimple
-	       && !dynamic_cast<DataDefENUM *>(dd) )
-	{
-	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
-	    alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias_name);
-	    // [temp.type]: the alias carries its underlying so template-argument
-	    // identity can desugar (std::streamsize must select the spec keyed
-	    // on long) — see template_type_arg_spelling.
-	    alias_dd->scalar_alias_of = dd;
-	    dd = alias_dd;
-	}
-	if ( dd && is_incomplete_class_datadef(dd) )
-	    pgm.template_completion_requested.insert(dd->name);
-	TokenDataType *tdt = new TokenDataType(alias_name.c_str(), *dd);
-	if ( pgm.class_scope_stack.empty() )
-	    pgm.register_scoped_typedef(alias_name, tdt);
-	DBG(std::cout << "TokenTYPEDEF::parse() " << alias_name << " = " << dd->name << std::endl);
-	return record_typedef(alias_name, dd, tdt, atok);
-    };
-
     base_dd = parse_alias_array_suffix(base_dd, alias);
     TokenBase *node = finish_alias(alias, alias_tok, base_dd, gnu_vector_bytes);
-
-    // C declarator lists: `typedef signed char INT8,*PINT8;` (mingw
-    // basetsd.h, winnt.h's PWCHAR family). Each tail declarator restarts
-    // from the UNDECORATED base and takes its own pointer/array shape.
-    // Before this loop the tail was silently DROPPED (`,*PINT8` never
-    // registered) and the leftover comma spun parseStatement forever.
-    // Every alias records through the same finish_alias owner; at block
-    // scope the non-final nodes join the compound's statement stream
-    // directly (the caller only appends the RETURNED node).
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
-    {
-	pgm.nextToken(); // consume ','
-	DataDef *decl_dd = list_base_dd;
-	while ( pgm.peekToken()
-	     && (pgm.peekToken()->id() == TokenID::tkMul
-	      || is_cv_qualifier_token(pgm.peekToken())) )
-	{
-	    if ( pgm.peekToken()->id() == TokenID::tkMul )
-		decl_dd = pgm.getPointerType(decl_dd);
-	    pgm.nextToken();
-	}
-	TokenBase *ntok = pgm.nextToken();
-	const char *nsp = ntok ? typedef_alias_spelling(ntok) : NULL;
-	if ( !nsp )
-	    pgm.Throw(ntok ? ntok : tn)
-		<< "Expecting alias name in typedef declarator list" << flush;
-	std::string tail_alias = nsp;
-	decl_dd = parse_alias_array_suffix(decl_dd, tail_alias);
-	if ( node && !pgm.compounds.empty() )
-	    pgm.compounds.top()->statements.push_back((TokenStmt *)node);
-	node = finish_alias(tail_alias, ntok, decl_dd, 0);
-    }
+    node = parse_typedef_list_tail(list_base_dd, node);
 
     // consume semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
