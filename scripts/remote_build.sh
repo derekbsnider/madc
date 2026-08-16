@@ -22,6 +22,10 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   headerless-win  the win64 profile of the lane below (the shipped PE under
+#             wine with every include root masked, so Z: cannot stand in for
+#             the mingw headers). Run it with `wine`, as `headerless` runs
+#             with `packed`
 #   headerless the packed suite with NO headers on disk (private mount
 #             namespace, tmpfs over every system include root). The only lane
 #             that can SEE a forest decline — every other lane has the headers
@@ -42,7 +46,7 @@
 #             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
-#   battery   fulltest + exe + obj + release + packed (the push gate)
+#   battery   fulltest + exe + obj + release + packed + headerless (the push gate)
 #   shell     print the ssh command and exit
 #
 # Every remote invocation is one ssh call running a generated script, so
@@ -83,7 +87,14 @@ fi
 # battery expands IN PLACE (any position — other stages may surround it,
 # e.g. "sync battery libcxxjit"; the old whole-string match silently dropped
 # it to "unknown stage" and the run lost its fulltest leg, 2026-08-10).
-stages=${stages/battery/sync build fulltest exe obj release packed}
+# `headerless` is IN the battery, right after `packed` (it runs the packed
+# binary). It is the only lane that can observe the artifact failing to serve a
+# standard header from its own frozen corpus — every other lane has the headers
+# on disk, so a decline is silently rescued by live parse and the run stays
+# GREEN. Task #58 broke that promise on real Windows and unrelated work fixed it
+# days later, and NO lane noticed either event, because this one was
+# hand-invoked. A lane nobody runs is a lane that does not exist.
+stages=${stages/battery/sync build fulltest exe obj release packed headerless}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
@@ -257,6 +268,13 @@ for stage in $stages; do
 		;;
 	headerless)
 		run_remote "headerless" "cd /workspace/madc; bash scripts/headerless_suite.sh"
+		;;
+	headerless-win)
+		# The win64 profile of the same lane: the shipped PE under wine
+		# with every include root masked, so `Z:` cannot stand in for the
+		# mingw headers the artifact is supposed to be serving itself.
+		# Paired with `wine` the way `headerless` is paired with `packed`.
+		run_remote "headerless-win" "cd /workspace/madc; bash scripts/headerless_suite.sh win64"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is
