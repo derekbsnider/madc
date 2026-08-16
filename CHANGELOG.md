@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+- **The Windows W3–W5 release lane is implementation-complete.** MadC now
+  builds and verifies a stripped MinGW+UCRT PE release, carries a
+  dual-standard-library packed forest with exact target raw-source fallbacks,
+  packages adjacent runtime DLLs and the emitted-code runtime, and runs the
+  complete eligible suite through both persistent Wine and the genuine
+  Windows 11 PE loader over the stage-once WSL channel. Task #57's errno
+  endgame uses unit-granular husk decline, so one missing-content unit can
+  live-parse without discarding the rest of its bound closure. Snapshot
+  discovery supports stacked profile containers, and the carrier selects raw
+  sources only from the matching standard-library flavor.
+- **Windows full-suite execution exposed and closed the remaining portable
+  language gaps.** GNU `using_if_exists`, linkage-block function bodies,
+  floating-literal suffixes through macro expansion, and one-shot CLI runtime
+  scope are covered by reducers. Native test cleanup uses relative paths and
+  C++ `std::remove`, without POSIX `rm` children.
+- **A libc++ regression from that cleanup is fixed at namespace lookup.** A
+  `using ::fn` declaration now performs strict global lookup and registers
+  both the existing destination declaration and the imported function in the
+  destination overload set. This matches GCC and Clang and prevents an older
+  inline-namespace template placeholder from winning over libc++'s imported
+  C function (`std::__1::remove`). `testusingglobalfnoverload` locks the
+  general rule.
+- **Final W5 validation:** Linux fulltest **1050/0/0TO/9skip**, warning
+  census **1059 compiles / 0 warnings**, libc++ JIT
+  **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**, packed Win64 under
+  persistent Wine **1008/0/0TO/51skip**, and the exact packed PE on genuine
+  Windows **1010/0/0TO/49skip**. `release-windows` and
+  `verify_pe_release.sh` are green. Merge and release remain an owner
+  decision.
+
 ## [v0.80.0] — 2026-08-14
 
 The POSIX target surface lands for Win64, a pre-merge duplication audit

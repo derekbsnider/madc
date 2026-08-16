@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-14, validated code head `63f008ad` — v0.80.0 POSIX
+> **Current (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
+> authoritative Linux fulltest **1050 passed / 0 failed / 0 timed out /
+> 9 skipped**; emitted-code warning census **1059 compiles / 0 warnings**;
+> libc++ JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.
+> The exact rebuilt packed Win64 release passed `verify_pe_release.sh`, the
+> persistent-Wine packed-product domain at **1008/0/0TO/51skip**, and the
+> genuine-Windows stage-once domain at **1010/0/0TO/49skip**. Fulltest's
+> post-suite forest bind gate is **24/24**, and every remaining structural,
+> carrier, ABI, and packaging gate returned success. Logs:
+> `tmp/logs/rb-20260816-005957.log` (fulltest) and
+> `tmp/logs/rb-20260816-011436.log` (full libc++ battery).
+>
+> **Previous (2026-08-14, validated code head `63f008ad` — v0.80.0 POSIX
 > target surface + the zero-warnings law):** authoritative Linux fulltest
 > **1040 passed / 0 failed / 0 timed out / 9 skipped**, libc++ JIT
 > **1036/0/0TO/13skip**, EXE **1009/0**, OBJ **1009/0**, and the

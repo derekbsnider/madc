@@ -44,10 +44,11 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-14 (v0.80.0 — the
-POSIX target surface lands for Win64, the pre-merge dupaudit catches an
-`__has_include` vs `#include` divergence, a two-day cross-build break is
-fixed and gated, and zero warnings is enforced with `-Werror`; previous:
+Master plan linking all workstreams. Updated 2026-08-16 (unreleased Windows
+W3–W5 implementation and full-suite validation complete; v0.80.0 — the POSIX
+target surface lands for Win64, the pre-merge dupaudit catches an
+`__has_include` vs `#include` divergence, a two-day cross-build break is fixed
+and gated, and zero warnings is enforced with `-Werror`; previous:
 v0.79.0 — the Win64 JIT milestone closes at 987/0/55; v0.78.0 — the
 torture window closes; v0.77.0 — MIR moves in-tree; v0.76.0 — the public
 macOS lane):
@@ -98,6 +99,21 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **Unreleased Windows W3–W5 close (2026-08-16): implementation and every
+  release-lane gate are green on `feature/win3-pe-coff-codex`.** The stripped
+  MinGW+UCRT PE carries a dual-profile forest, exact target raw-source
+  fallbacks, a complete ledger, and adjacent runtime DLLs; task #57 closes via
+  unit-granular husk decline. The generic stage-once runner executes the full
+  eligible suite through the real Windows 11 PE loader, while the same packed
+  product runs under persistent Wine. Final gates: Linux fulltest
+  **1050/0/0TO/9skip**, warning census **1059/0 warnings**, libc++ JIT
+  **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**, packed Wine
+  **1008/0/0TO/51skip**, genuine Windows **1010/0/0TO/49skip**; PE verifier
+  green. The inherited `std::remove` libc++ regression was fixed generically
+  at `using ::fn` global lookup/overload registration. Remaining lane action:
+  owner decision to merge and ship the Windows artifact; tasks #55, #56, and
+  #58 remain non-blocking follow-ups.
 
 - **v0.80.0 (2026-08-14): the POSIX target surface lands for Win64, and
   warnings stop being tolerated, at validated code head `63f008ad`.**
@@ -1732,7 +1748,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | large | **NEXT — plan drafted** (owner, 2026-08-11/12: mingw-w64 + libstdc++ + UCRT, Win64 only, full-suite scope) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
+| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | large | **Implementation complete; merge/release is an owner decision** (2026-08-16: verified packed PE, Wine 1008/0, genuine Windows 1010/0) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 

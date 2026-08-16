@@ -219,15 +219,18 @@ caught `__has_include` disagreeing with `#include` before it shipped, and
 a compile break in the cross-build modes — the ones the macOS artifacts are
 built through — is fixed and now gated.
 
-Branch state: v0.80.0 is released from `feature/posix-p1p2-codex` into
-`develop`. POSIX T6 (`dirent`) is scheduled as its own release; Windows
-W3–W5 (PE/COFF output, groves, packaging) resume after that.
+Branch state: v0.80.0 is on `develop`. The unreleased Windows W3–W5 lane is
+implementation- and validation-complete on `feature/win3-pe-coff-codex`:
+native PE/COFF output, dual-profile packed groves, packaging, persistent-Wine
+and genuine-Windows full-suite lanes are green. Merge and release remain an
+owner decision.
 
-Headline results:
+Latest validated branch results (unreleased W5 content):
 
-- Linux JIT: **1040 passed / 0 failed / 0 timed out / 9 skipped**
-- libc++ JIT: **1036/0/0/13**; native EXE: **1009/0**; OBJ: **1009/0**
-- hosted Win64 under persistent Wine: **998/0/0/51**
+- Linux JIT: **1050 passed / 0 failed / 0 timed out / 9 skipped**
+- libc++ JIT: **1046/0/0/13**; native EXE: **1013/0**; OBJ: **1013/0**
+- packed Win64 under persistent Wine: **1008/0/0/51**
+- packed Win64 on genuine Windows 11: **1010/0/0/49**
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
   (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
   macOS hosted/cross pairs), with the emitted-code warning ratchet at an

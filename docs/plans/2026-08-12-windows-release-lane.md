@@ -1452,28 +1452,53 @@ fulltest 1046/0, libc++ JIT 1042/0):
   and the Linux knob-on cascade) remains the deeper arc behind any
   global flip.
 
-Remaining W5: task #57 burndown to a clean packed wine suite; the
-real-Windows full-suite lane (MADC_RUNNER + the test tree staged on
-the box); the release itself (merge = owner decision, ships WITH a
-release per the cadence rule).
-- Suite lanes on real Windows: `run_tests.sh` gains a generic runner
-  prefix (fixture-convention rule: a `MADC_RUNNER=...` env wrapping
-  the madc invocation — the W0.2 ssh channel or wine64 — never
-  per-test branches); expect a windows skip-fixture family
-  (`.win_skip`) for genuinely-host-bound tests, each one line of why.
-- `scripts/win_battery.sh` for the in-vivo pass on the Windows 11
-  host over the W0.2 channel (mac_battery.sh is the template — same
-  stage-dir + per-leg rc discipline).
-- Artifacts: `madc-<ver>-windows-x86_64.zip` (zip, not tar.gz — native
-  extraction) with bin/madc.exe, lib/libmadc_rt.a, README-windows.txt
-  (SmartScreen/unsigned-binary note — the quarantine analog), license
-  notices; SHA256SUMS refresh discipline shared with the other
-  packagers; `verify_pe_release.sh` gate (imports table = the decided
-  set, forest carrier intact, no msvcrt.dll).
-- Release: the lane ships as a develop release with all four Linux
-  lanes green PLUS the wine suite lane; promote/GH-release artifact
-  set grows to 5 (deb, rpm, mac×2, windows zip). CI automation comes
-  AFTER this lane works (owner sequencing).
+#### W5 implementation close (2026-08-16, Codex takeover)
+
+W5 is implementation- and validation-complete. Task #57 closed at the
+designed layer: unit-granular husk decline excludes only a missing-content
+unit while the rest of its closure binds, and the packed target carries an
+exact embedded `errno.h` fallback for compiler-less Windows. The final lane
+also added:
+
+- a two-profile Windows forest carrier with same-flavor raw-source
+  selection and guarded C++20 libstdc++ mini-closure;
+- target raw-source/provider support and stacked-container snapshot
+  discovery;
+- the generic stage-once `win_suite.sh` runner over the W0.2 channel, with
+  the complete test tree and adjacent runtime DLLs copied once;
+- the remaining Windows-driven language fixes: GNU `using_if_exists`,
+  linkage-block function bodies, macro literal suffix preservation, and a
+  runtime scope around one-shot CLI JIT execution.
+
+The inherited final validation found four libc++ regressions in tests whose
+cleanup changed to `std::remove`. Root cause: `using ::fn` looked through the
+active namespace instead of strictly at global scope and registered only the
+imported function, leaving the existing destination placeholder outside the
+overload set. `TokenUSING::parse` now performs strict global lookup and
+registers both declarations; `testusingglobalfnoverload` is the standard C++
+reducer. `testmanipview` keeps its original literal-constructor shape while
+using a relative path, so the test remains about stream-view/manipulator
+semantics rather than libc++ path-template overload selection.
+
+Final exact gates on the same content:
+
+- Linux `fulltest`: **1050 passed / 0 failed / 0 timed out / 9 skipped**;
+  warning census: **1059 compiles / 0 warnings**; every structural and forest
+  gate green, including bind **24/24**.
+- libc++ parity: JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.
+- `release-windows`: dual-profile pack and `verify_pe_release.sh` green
+  (234 default-profile units, complete ledger, clean imports, stripped PE,
+  adjacent DLL set).
+- Exact packed PE under persistent Wine: **1008/0/0TO/51skip**.
+- Exact packed PE on genuine Windows 11 through WSL interop:
+  **1010/0/0TO/49skip**.
+
+Remaining W5 work is an owner decision only: merge the feature branch and
+ship the Windows artifact with a release per the cadence rule. Tasks #55
+(opt-in MIR-cache bind crash), #56 (vector initializer-list support), and #58
+(single-config C-lane policy) remain explicit follow-ups; none blocks the
+validated compiler-less C++ release lane. CI automation remains sequenced
+after the first release.
 
 ## Sequencing
 
