@@ -5,7 +5,7 @@
 #
 #   bash scripts/verify_pe_release.sh [bin/madc-release-x86-64-windows.exe]
 #
-# Four authorities, all runnable on the Linux container:
+# Five authorities, all runnable on the Linux container:
 #   1. the import table is the DECIDED set — UCRT api-sets + KERNEL32 +
 #      WS2_32 + the two staged runtime DLLs — and NEVER msvcrt.dll (a
 #      msvcrt import means the ucrt.specs swap was lost: two CRTs in one
@@ -15,7 +15,9 @@
 #      selection present per module, and --run-frozen executes;
 #   3. the binary is stripped (no COFF symbol table);
 #   4. the runtime DLLs the exe binds by name exist beside it (the
-#      deployment set the zip stages).
+#      deployment set the zip stages);
+#   5. the artifact carries EXACTLY ONE stdlib-flavor profile (owner policy:
+#      Linux and Windows ship libstdc++, macOS ships libc++, never both).
 # In-vivo evidence on real Windows stays scripts/win_battery.sh's job.
 set -e
 cd "$(dirname "$0")/.."
@@ -86,4 +88,35 @@ for dll in libstdc++-6.dll libwinpthread-1.dll libmadc_rt.dll; do
     fi
 done
 
-echo "verify_pe_release: OK ($BIN: $UNITS units, ledger complete, imports clean, stripped, DLL set adjacent)"
+# 5. EXACTLY ONE stdlib-flavor profile (owner policy 2026-08-16: Linux and
+#    Windows ship libstdc++, macOS ships libc++, no product ships both). A
+#    host-capability probe once appended the build container's own libc++
+#    corpus — 845 units of /usr/include/c++/v1 — into this PE, where no
+#    libc++ runtime exists and only wine's Z:\ mapping made it look
+#    serviceable. Asking the shipped bytes for the OTHER flavor must find no
+#    second container to open.
+#    Negative control for this negative assertion: the same run MUST report
+#    the producer-config mismatch. That proves the request actually reached
+#    the profile-stack walk, so a silently-failed probe cannot false-green
+#    the "no second profile" claim.
+#    The probe must actually INCLUDE something: a TU with no #include never
+#    reaches a forest bind, so the walk never runs and both greps are
+#    meaningless (that vacuum is what the control below caught in review).
+#    tests/teststdunversioned.mad is the exerciser the removed pack leg used.
+PROFILE_LOG=tmp/verify_pe_profile.log
+timeout 300 "$WINE" "$BIN" -v -stdlib=libc++ \
+    tests/teststdunversioned.mad > "$PROFILE_LOG" 2>&1 || true
+if ! grep -aq 'producer config mismatch' "$PROFILE_LOG"; then
+    echo "verify_pe_release: FAILED — alternate-flavor probe never reached the profile stack;" >&2
+    echo "  the 'no second profile' check below would be vacuous (see $PROFILE_LOG)" >&2
+    exit 1
+fi
+if grep -aq 'opened container' "$PROFILE_LOG"; then
+    echo "verify_pe_release: FAILED — $BIN carries a SECOND stdlib-flavor profile" >&2
+    grep -a 'opened container' "$PROFILE_LOG" >&2
+    echo "  owner policy: one flavor per artifact (win64 ships libstdc++ only)" >&2
+    exit 1
+fi
+rm -f "$PROFILE_LOG"
+
+echo "verify_pe_release: OK ($BIN: $UNITS units, ONE stdlib profile, ledger complete, imports clean, stripped, DLL set adjacent)"

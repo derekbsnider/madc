@@ -80,20 +80,16 @@ TU=tmp/forest_pack_tu_win.cpp
 cp -p "$BIN" tmp/forest_packer_madc.exe
 
 ulimit -t 1800
-# Profile stacks are newest-first at read time, so append every non-default
-# stdlib profile first and the MinGW build default last. Keep the alternate
-# optional: gen_sys_includes.sh only publishes a flavor when this build host
-# can actually probe it. The tiny compile asks the packed compiler's generated
-# flavor table rather than duplicating that detection here.
-PROFILE_PROBE=tmp/forest_profile_probe_win.cpp
-printf 'int main() { return 0; }\n' > "$PROFILE_PROBE"
-LIBCXX_PROFILE=0
-if timeout 60 "$WINE" tmp/forest_packer_madc.exe --no-config \
-        -stdlib=libc++ "$PROFILE_PROBE" >/dev/null 2>&1; then
-    timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config \
-        -stdlib=libc++ --freeze-append="$BIN" "$TU"
-    LIBCXX_PROFILE=1
-fi
+# ONE STDLIB FLAVOR PER SHIPPED ARTIFACT (owner policy 2026-08-16): Linux and
+# Windows products carry libstdc++, macOS carries libc++, and no product
+# carries both. The flavor a pack embeds is a property of the TARGET, not of
+# what the build host happens to have installed — a host-capability probe put
+# the container's own /usr/include/c++/v1 headers inside a Windows PE, where
+# no libc++ runtime exists to resolve them and only wine's Z:\ mapping made it
+# look serviceable. So this pack appends exactly one profile: the MinGW build
+# default. `-stdlib=` remains a compile-time choice on a host that has both
+# installed; it is not a licence to ship both corpora in one binary.
+# verify_pe_release.sh gates the shipped artifact against a second profile.
 
 # --no-config for the same reason as the native pack: an ambient madc.ini
 # must never change the frozen corpus's producer config. The wall cap is
@@ -160,18 +156,6 @@ out_frozen=$(timeout 300 "$WINE" "$BIN" tests/testfreezerun.mad 2>&1 | tr -d '\r
 grep -q 'sum=55 count=5' <<<"$out_frozen"
 grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 
-# When libc++ was available to the build, prove the shipped self-image walks
-# past the newest (default libstdc++) profile and binds the older matching
-# profile. The real-Windows suite separately proves the carrier has no
-# accidental dependency on the producer's absolute filesystem paths.
-if [ "$LIBCXX_PROFILE" -eq 1 ]; then
-    timeout 300 "$WINE" "$BIN" -v -stdlib=libc++ \
-        tests/teststdunversioned.mad > tmp/forest_pack_win_libcxx.log 2>&1
-    grep -q 'trying older profile' tmp/forest_pack_win_libcxx.log
-    grep -q 'opened container' tmp/forest_pack_win_libcxx.log
-    grep -q '^ok' tmp/forest_pack_win_libcxx.log
-fi
-
 # The Linux pack's rung-3 MIR-cache bind-equivalence leg is DELIBERATELY
 # absent here: the opt-in MADC_MIR_CACHE_BIND=1 lane crashes on win64
 # (EXCEPTION_ILLEGAL_INSTRUCTION in a JIT frame right after the cache
@@ -181,5 +165,4 @@ fi
 # equivalence leg (forest_pack.sh's shape) when #55 is fixed.
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
-profiles=$((1 + LIBCXX_PROFILE))
-echo "forest_pack_windows: OK ($profiles profile(s), $units default-profile units appended to $BIN; product smokes green)"
+echo "forest_pack_windows: OK (1 profile, $units units appended to $BIN; product smokes green)"
