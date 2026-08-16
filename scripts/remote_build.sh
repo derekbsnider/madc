@@ -22,6 +22,12 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   headerless the packed suite with NO headers on disk (private mount
+#             namespace, tmpfs over every system include root). The only lane
+#             that can SEE a forest decline — every other lane has the headers
+#             on disk (or, under wine, through Z:) so live parse silently
+#             rescues one and the run stays green. Carries its own two-sided
+#             negative control; refuses to run if the mask did not bite
 #   win       make -C src hosted-x86-64-windows (the MinGW+UCRT PE the wine
 #             lane tests; the mingw toolchain exists ONLY on the container)
 #   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
@@ -248,6 +254,9 @@ for stage in $stages; do
 		;;
 	packed)
 		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		;;
+	headerless)
+		run_remote "headerless" "cd /workspace/madc; bash scripts/headerless_suite.sh"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is

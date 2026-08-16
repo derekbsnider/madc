@@ -22,6 +22,9 @@
 #             ledger; the emitted exe runs with no madc DLL
 #   errno     a direct <errno.h> include works on the compiler-less host;
 #             this is the standalone missing-content-husk fallback
+#   clane     the C dialect compiles on the compiler-less host: the grove
+#             bind DECLINES a C TU by producer config, so this proves the
+#             raw-source arm serves the header text for re-tokenization
 #   refuse    a program with an error must FAIL (negative control: a
 #             battery that cannot see failures proves nothing)
 #
@@ -79,6 +82,7 @@ remote "printf '#include <iostream>\n#include <vector>\nint main(){ std::vector<
 remote "printf '#include <iostream>\nint main(){ int n=3; int a[n]; a[2]=7; if (a[2]==7) std::cout << \"vla-ok\" << std::endl; return 0; }\n' > vla.cpp" || true
 remote "printf '#include <errno.h>\n#include <stdio.h>\nint main(){ FILE *fp=fopen(\"C:/this/path/cannot/exist/madc-errno\",\"r\"); if(fp) return 2; printf(\"errno=%%d\\n\",errno); return errno==ENOENT?0:3; }\n' > errno.cpp" || true
 remote "printf 'int main(void){ return undeclared_symbol; }\n' > bad.c" || true
+remote "printf '#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\nint main(void){ char *p = malloc(8); strcpy(p, \"c-ok\"); printf(\"%%s\\n\", p); free(p); return 0; }\n' > clane.c" || true
 
 # --- jit: forest-served headers, genuine PE process. -----------------------
 out=$(remote "bin/madc.exe hello.cpp" 2>&1)
@@ -98,9 +102,7 @@ esac
 # --- rides rt_vla's ledger module). The emitted exe runs from a directory
 # --- holding ONLY the C++ runtime DLLs — deliberately NOT libmadc_rt.dll:
 # --- the madc runtime dependency is what the flag removes, and cout's
-# --- mangled-direct libstdc++ imports are outside that promise. (The
-# --- C-lane spelling of this leg is blocked on task #58 — the forest is
-# --- single-config, so --std=gnu17 cannot compile on a headerless box.)
+# --- mangled-direct libstdc++ imports are outside that promise.
 out=$(remote "bin/madc.exe -o vla.exe -static-libmadc vla.cpp && mkdir -p alone && cp vla.exe bin/libstdc++-6.dll bin/libwinpthread-1.dll alone/ && cd alone && ./vla.exe" 2>&1)
 case "$out" in
 *vla-ok*) leg ledger ok ;;
@@ -114,6 +116,23 @@ out=$(remote "bin/madc.exe errno.cpp" 2>&1)
 case "$out" in
 *errno=2*) leg errno ok ;;
 *)         leg errno FAIL "$out" ;;
+esac
+
+# --- clane: the C dialect on a compiler-less box. The grove bind DECLINES a
+# --- C TU on producer config and that is CORRECT — the frozen parse is C++,
+# --- and a C++ parse of stdio.h is not a C parse of it. What makes the lane
+# --- work anyway is the RAW-SOURCE arm: the container carries the header
+# --- TEXT, which requires only a matching stdlib flavor and is re-tokenized
+# --- under the live std/-D policy (src/lexer.cpp, probe_forest_chain). So the
+# --- bytes are shared across dialects and only the parse was ever specific.
+# --- This was task #58, filed 2026-08-15 when it genuinely failed here; the
+# --- raw-source provider fixed it days later and NOTHING re-tested, because
+# --- no lane existed that could tell. This leg is that lane on real hardware
+# --- (scripts/headerless_suite.sh is its container-side twin).
+out=$(remote "bin/madc.exe --std=gnu17 clane.c" 2>&1)
+case "$out" in
+*c-ok*) leg clane ok ;;
+*)      leg clane FAIL "$out" ;;
 esac
 
 # --- refuse: the negative control. -----------------------------------------
