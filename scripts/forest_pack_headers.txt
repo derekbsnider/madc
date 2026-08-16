@@ -27,10 +27,11 @@
 # locale math.h sys/stat.h sys/time.h. This list predates that lesson and
 # had drifted behind it.
 #
-# The other five are the LINUX side of the libc cell and have no win64 twin
-# (UCRT has no such headers; the Windows equivalent surface is task #48's
-# POSIX work): unistd.h fcntl.h dlfcn.h sys/socket.h netdb.h. sys/socket.h
-# precedes netdb.h because netdb's declarations depend on it.
+# The others are the LINUX side of the libc cell and have no win64 twin (UCRT
+# has no such headers; the Windows equivalent surface is task #48's POSIX
+# work): unistd.h fcntl.h dlfcn.h sys/file.h sys/socket.h netdb.h arpa/inet.h.
+# sys/socket.h precedes netdb.h and arpa/inet.h because their declarations
+# depend on it.
 #
 # NOTE math.h, not cmath — the C header is clean here; cmath remains on the
 # blocker list above.
@@ -61,8 +62,10 @@ dirent.h
 dlfcn.h
 sys/stat.h
 sys/time.h
+sys/file.h
 sys/socket.h
 netdb.h
+arpa/inet.h
 string
 vector
 list
