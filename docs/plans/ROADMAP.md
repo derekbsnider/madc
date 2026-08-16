@@ -1,5 +1,24 @@
 # madc Roadmap
 
+**✅ WINDOWS RELEASE LANE + HEADERLESS LANES + LIST-INIT LANDED
+(2026-08-16, v0.81.0):** the Windows W3–W5 lane merges (PE/COFF writers,
+packed hosted PE, adjacent runtime DLLs, the genuine-Windows battery over
+the WSL channel), the HEADERLESS lanes prove every artifact serves its own
+C++ AND C header surface with no headers on disk (private mount namespace +
+tmpfs over every discovered include root, three-legged negative control) and
+now run WITH the battery instead of by hand, and C++ list-initialization
+lands — madc had none, so `std::vector<int> v{1,2,3}` compiled as
+`v(1,2,3)` and `= {1,2,3}` silently produced a ONE-ELEMENT vector through
+`--emit=c11`. Three defects that shipped in v0.80.0 are fixed: that silent
+vector, a `std::vector<int> e{}` SIGSEGV (`T x{}` is spelled internally as
+`x = x`), and `<iomanip>` being unparseable on its first line of content.
+Task #58 closed IN VIVO on the owner's Windows box. Plans:
+`docs/plans/2026-08-12-windows-release-lane.md`. Follow-ups: class element
+types in a braced list (constructed backing array), braced lists as CALL
+arguments and range-for containers, pointer-to-member-function (the
+remaining half of #61), the macOS headerless cell, and per-unit lazy
+decompression (#25's `-> C-path scale` goal).
+
 **✅ VALUE INTRINSIC V1+V2 LANDED (2026-08-09, v0.75.0):** `madc::value`
 as a first-class script intrinsic — `value` / `var` / `madc::value`
 spellings of the ONE DataDef, `--std=madc`-gated, typedef-lane resolution

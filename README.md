@@ -210,27 +210,32 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.80.0** (2026-08-14) — the POSIX target
-surface lands for Win64, and the build stops tolerating warnings. madc
-serves `setenv`/`unsetenv`, `strndup`, the `timer*` gaps and `<dlfcn.h>`
-on a target whose toolchain ships none of them, through a target-tagged
-runtime archive whose ownership is gated. The pre-merge duplication audit
-caught `__has_include` disagreeing with `#include` before it shipped, and
-a compile break in the cross-build modes — the ones the macOS artifacts are
-built through — is fixed and now gated.
+The current release is **v0.81.0** (2026-08-16) — the Windows release lane
+merges, the headerless lanes prove every artifact serves its own header
+surface with no headers on disk, and C++ list-initialization lands. madc did
+not have it at all: a braced list on a class type was lowered as a
+parenthesised constructor-argument list, so `std::vector<int> v{1,2,3}`
+compiled as `v(1,2,3)`, and `= {1,2,3}` selected `vector(size_type)` with
+`n == 1` — clean through `--emit=c11`, and silently a one-element vector.
+Three defects that shipped in v0.80.0 are fixed with it: that silent vector,
+a `std::vector<int> e{}` crash, and `<iomanip>` being unparseable on its
+first line of content.
 
-Branch state: v0.80.0 is on `develop`. The unreleased Windows W3–W5 lane is
-implementation- and validation-complete on `feature/win3-pe-coff-codex`:
-native PE/COFF output, dual-profile packed groves, packaging, persistent-Wine
-and genuine-Windows full-suite lanes are green. Merge and release remain an
-owner decision.
+Branch state: v0.81.0 is on `develop`, and the Windows W3–W5 lane merged with
+it — native PE/COFF output, dual-profile packed groves, packaging, and both
+the persistent-Wine and genuine-Windows full-suite lanes. `master` remains at
+v0.76.0 pending `/promote`.
 
-Latest validated branch results (unreleased W5 content):
+Latest validated results:
 
-- Linux JIT: **1050 passed / 0 failed / 0 timed out / 9 skipped**
-- libc++ JIT: **1046/0/0/13**; native EXE: **1013/0**; OBJ: **1013/0**
-- packed Win64 under persistent Wine: **1008/0/0/51**
-- packed Win64 on genuine Windows 11: **1010/0/0/49**
+- Linux JIT: **1053 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE and OBJ lanes green; packed suite **1053/0/0/9**
+- headerless (no headers on disk anywhere): Linux **1027/0/0/35**,
+  Win64 **1010/0/0/52** — the only lanes that can see an artifact fail
+  to serve a standard header from its own frozen corpus
+- packed Win64 under persistent Wine green; on genuine Windows 11 all
+  seven battery legs pass, including compiling a C translation unit on a
+  host with no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
   (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
   macOS hosted/cross pairs), with the emitted-code warning ratchet at an
@@ -249,6 +254,8 @@ and known gaps.
 
 ### Recent Releases
 
+- [v0.81.0](docs/release-notes/v0.81.0.md) — the Windows lane merges, the
+  headerless lanes land, and C++ list-initialization arrives.
 - [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
   lands for Win64, and the build stops tolerating warnings.
 - [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
@@ -257,8 +264,6 @@ and known gaps.
   regression window closes and the 1614 baseline is restored.
 - [v0.77.0](docs/release-notes/v0.77.0.md) — MIR moves in-tree, so one
   clone and one version identify the complete compiler.
-- [v0.76.0](docs/release-notes/v0.76.0.md) — the first public macOS
-  release ships hosted JIT and native Mach-O AOT.
 
 ## Building from source
 

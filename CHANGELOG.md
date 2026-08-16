@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.81.0] — 2026-08-16
+
+The Windows release lane merges, the headerless lanes prove every artifact
+serves its own header surface with no headers on disk, and C++
+list-initialization lands — which madc did not have at all.
+
 - **`std::vector<int> v{1,2,3}` compiled as `std::vector<int> v(1,2,3)`.** madc had
   no C++ list-initialization at all: a braced list on a class type was lowered
   as a parenthesised constructor-argument list, so the first element became the
