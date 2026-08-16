@@ -3860,6 +3860,9 @@ public:
     void pack_record_define_fn(const std::string &name, const MacroDef &m);
     void pack_record_undef(const std::string &name);
     void pack_record_edge(const std::string &includee);	// includer = current source
+    // A dedup-SKIPPED include still needs its bytes in the corpus — see the
+    // definition. Freeze-time only, at most one read per unit.
+    void pack_record_skipped_source(const std::string &path);
     void pack_record_branch_macro(const std::string &name,
 				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
@@ -4846,6 +4849,11 @@ public:
 	bool tokenize_posix_whole_provider(const std::string &incfile,
 					   const std::string &resolved);
 	bool resolved_include_provider_exists(const std::string &path);
+	// The READING twin of the predicate above — same provider order, one
+	// owner. Every consumer that needs a resolved include's BYTES goes
+	// through it, so none can see a header the others cannot.
+	bool read_resolved_include(const std::string &path, std::string &text);
+	std::string detect_include_guard(const std::string &file_path);
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);

@@ -3922,11 +3922,17 @@ bool Program::embedded_wins_include_next(const std::string &incfile)
 // name, or "" when the file is NOT fully guard-wrapped (e.g. glibc's
 // bits/mathcalls.h, which is INTENTIONALLY included multiple times with a
 // different _Mdouble_ each pass).
-static std::string detect_include_guard(const std::string &file_path)
+// Reads through read_resolved_include(), NOT the filesystem: on a compiler-less
+// target the header exists only in the packed forest, and a detector that could
+// not see it reported "no guard" — indistinguishable from a genuinely
+// guard-less header, which inverts gcc's multiple-include optimization. See the
+// reader's comment for the failure this caused.
+std::string Program::detect_include_guard(const std::string &file_path)
 {
-    std::ifstream in(file_path.c_str());
-    if ( !in )
+    std::string file_text;
+    if ( !read_resolved_include(file_path, file_text) )
 	return std::string();
+    std::istringstream in(file_text);
     std::string guard;
     int depth = 0;
     bool seen_open = false;     // saw the opening #ifndef
@@ -4075,6 +4081,34 @@ void Program::pack_record_source(const char *interned_file,
     // bytes are immutable during one freeze; first-wins keeps the original
     // provider and avoids copying the same header on every visit.
     pack_unit_sources.emplace(interned_file, text);
+}
+
+// A header reached again through its include guard is SKIPPED, and the skip
+// path records the edge — the reference — without ever reading the file. When
+// the very FIRST encounter is such a skip, that mints a unit with no content:
+// something the corpus points at but can never serve.
+//
+// It happens whenever madc predefines a guard so the header can be skipped
+// wholesale, which is exactly what it does for <stdc-predef.h> (gcc preincludes
+// that header; madc defines _STDC_PREDEF_H instead). A consumer whose --std=
+// differs from the producer's declines the grove, live-parses features.h from
+// the corpus, walks its unconditional `#include <stdc-predef.h>`, and finds a
+// husk. On a compiler-less target there is no disk to fall back to. That was 67
+// suite failures, and 46 of the Linux corpus's 241 units were such husks.
+//
+// So the reference and the content are recorded TOGETHER: an edge without bytes
+// is not a smaller corpus, it is a broken one. Freeze-time only (pack_recording
+// gates it) and at most one read per unit, so ordinary compiles pay nothing.
+void Program::pack_record_skipped_source(const std::string &path)
+{
+    if ( !pack_recording )
+	return;
+    const char *interned = intern_file(path);
+    if ( !interned || pack_unit_sources.count(interned) )
+	return;		// already captured by a real tokenization — first wins
+    std::string text;
+    if ( read_resolved_include(path, text) )
+	pack_record_source(interned, text);
 }
 
 void Program::pack_record_define(const std::string &name, const std::string &value)
@@ -4336,6 +4370,36 @@ bool Program::resolved_include_provider_exists(const std::string &path)
 	return true;
     std::string frozen_path;
     return forest_source_path(path, /*allow_tail=*/false, frozen_path);
+}
+
+// The READING twin of resolved_include_provider_exists(): a resolved include's
+// BYTES come from ordinary storage or the packed forest's raw-source slot, in
+// that order. Both facts live here so no consumer can disagree with another
+// about whether a header is readable.
+//
+// That disagreement was a real defect, not a hypothetical. detect_include_guard()
+// read only from disk and returned "" when it could not open the file — and ""
+// is also how it spells "this header has no include guard" (glibc's
+// bits/mathcalls.h, deliberately multi-included). On a compiler-less target the
+// two became indistinguishable, so gcc's multiple-include optimization inverted:
+// every forest-served header looked guard-less, got re-tokenized instead of
+// skipped, and the re-tokenize then failed to open it. 67 suite tests died on
+// one header (<stdc-predef.h>, whose guard madc predefines exactly so it can be
+// skipped). Read failure and absent-guard are different answers; only a shared
+// reader keeps them apart.
+bool Program::read_resolved_include(const std::string &path, std::string &text)
+{
+    if ( path.empty() )
+	return false;
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if ( in )
+    {
+	std::ostringstream tmp;
+	tmp << in.rdbuf();
+	text = tmp.str();
+	return true;
+    }
+    return forest_source_text(path, text);
 }
 
 static void add_pch_candidate(std::vector<std::string> &candidates,
@@ -5334,7 +5398,10 @@ TokenBase *Program::_getToken()
 		    if ( !should_tokenize_include(full_path) )
 		    {
 			if ( !protocol_visit )	// a protocol visit records nothing
+			{
 			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
+			    pack_record_skipped_source(full_path);	// ...and so must its CONTENT
+			}
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -5359,11 +5426,13 @@ TokenBase *Program::_getToken()
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 		    suppress_auto_include_scan = true;
 		    source = Source();
-		    std::ifstream incf(full_path.c_str());
-		    std::string frozen_source;
-		    const bool source_from_forest = !incf
-			&& forest_source_text(full_path, frozen_source);
-		    if ( !incf && !source_from_forest )
+		    // ONE owner for "this resolved include's bytes" (disk,
+		    // then the forest's raw-source slot) — the same reader
+		    // detect_include_guard() uses, so the tokenizer and the
+		    // multiple-include optimization can never disagree about
+		    // which headers are readable.
+		    std::string include_text;
+		    if ( !read_resolved_include(full_path, include_text) )
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
@@ -5375,18 +5444,8 @@ TokenBase *Program::_getToken()
 		    const char *_interned2 = intern_file(full_path);
 		    {
 			ReadTimer _rt(_read_seconds);
-			if ( source_from_forest )
-			{
-			    _input_bytes += frozen_source.size();
-			    source.str(frozen_source);
-			}
-			else
-			{
-			    incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
-			    if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
-			    incf.seekg(0);
-			    source.copybuf(incf.rdbuf());
-			}
+			_input_bytes += include_text.size();	// --show-stats: header bytes
+			source.str(include_text);
 		    }
 		    TokenBase *itb;
 		    if ( !protocol_visit )
