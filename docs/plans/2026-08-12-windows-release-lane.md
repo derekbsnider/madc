@@ -1460,8 +1460,9 @@ unit while the rest of its closure binds, and the packed target carries an
 exact embedded `errno.h` fallback for compiler-less Windows. The final lane
 also added:
 
-- a two-profile Windows forest carrier with same-flavor raw-source
-  selection and guarded C++20 libstdc++ mini-closure;
+- a Windows forest carrier with same-flavor raw-source selection and a
+  guarded C++20 libstdc++ mini-closure (as landed it appended TWO stdlib
+  profiles; the second was removed by task #59 — see session #93 below);
 - target raw-source/provider support and stacked-container snapshot
   discovery;
 - the generic stage-once `win_suite.sh` runner over the W0.2 channel, with
@@ -1486,9 +1487,10 @@ Final exact gates on the same content:
   warning census: **1059 compiles / 0 warnings**; every structural and forest
   gate green, including bind **24/24**.
 - libc++ parity: JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.
-- `release-windows`: dual-profile pack and `verify_pe_release.sh` green
-  (234 default-profile units, complete ledger, clean imports, stripped PE,
-  adjacent DLL set).
+- `release-windows`: pack and `verify_pe_release.sh` green (234
+  default-profile units, complete ledger, clean imports, stripped PE,
+  adjacent DLL set). This pack was dual-profile; task #59 below cut it to
+  one, and the verifier gained an authority that keeps it there.
 - Exact packed PE under persistent Wine: **1008/0/0TO/51skip**.
 - Exact packed PE on genuine Windows 11 through WSL interop:
   **1010/0/0TO/49skip**.
@@ -1499,6 +1501,44 @@ ship the Windows artifact with a release per the cadence rule. Tasks #55
 (single-config C-lane policy) remain explicit follow-ups; none blocks the
 validated compiler-less C++ release lane. CI automation remains sequenced
 after the first release.
+
+#### Session #93 review (2026-08-16) — one stdlib flavor per artifact (#59)
+
+Reviewing the W5 close against the actual diffs turned up a third commit
+(`6684a612`, omitted from the hand-off summary and the real #57 closer) and
+two corrections:
+
+- **#58 was NOT closed.** "Dual-profile" in the summary names the two C++
+  STDLIB FLAVORS, not a C profile beside the C++ one; the C-lane policy on a
+  compiler-less Windows box is still an open owner decision. #58 reopened,
+  untouched.
+- **Task #59 — OWNER RULING 2026-08-16: one stdlib flavor per artifact.**
+  Linux and Windows ship libstdc++, macOS ships libc++, and no product ships
+  both. `forest_pack_windows.sh` had been choosing its flavor set by HOST
+  CAPABILITY: it probed the packed exe under wine with `-stdlib=libc++` and,
+  when the build container happened to have libc++, appended a second whole
+  profile. Measured on the shipped bytes: `-v -stdlib=libc++` opened an
+  845-unit container and bound `<new>` to `/usr/include/c++/v1/new` — the
+  build CONTAINER's Linux headers inside a Windows PE, with no libc++
+  runtime on the target to resolve them. Only wine's `Z:\` mapping (the same
+  masking behind #58) made it look serviceable; the genuine-Windows suite
+  skips the libc++ tests, so nothing on the real box exercised it.
+  Fixed at `2797621c`: the pack appends exactly one profile (the MinGW build
+  default, matching `forest_pack.sh`), `verify_pe_release.sh` gains
+  **authority 5** — ask the shipped bytes for the OTHER flavor and require
+  that no second container opens, with its own negative control (the same
+  run must still report the producer-config mismatch, proving the request
+  reached the profile-stack walk) — and `teststdunversioned`, whose `.flags`
+  pin `-stdlib=libc++`, gains a `.win64_skip`. The consumer-side
+  profile-stack walk is correct and untouched; it simply has one profile to
+  walk. Shipped PE 22,642,328 → 14,390,568 bytes (−8.25MB, 36%).
+  Packed wine 1007/0/0TO/52skip (the single delta from 1008/51 is
+  `teststdunversioned` moving pass → skip; 1059 accounted either way).
+
+**⚠️ Before the release: re-measure #25 packed-lane latency.** `6684a612`
+removed the knob-OFF early-out from `forest_bind_env_ok`, so the SHIPPING
+path now walks every root's include closure and decodes branch-deps on every
+bind. That has never been timed since the change.
 
 ## Sequencing
 
