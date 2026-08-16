@@ -31,15 +31,20 @@
   vivo — all seven `win_battery` legs green on the owner's Windows box,
   including the `clane` leg that compiles a C translation unit on a
   compiler-less host.
-- **Packed-lane startup is measured, not assumed.** `#include <string>` startup
-  is 0.164s → 0.214s against the v0.80.0 archive binary (+50ms), reproducible
-  to the millisecond, with instruction count +14%. The suspected cause — a
-  closure walk reaching the default path untimed — is refuted: both callgrind
-  profiles have the same shape with every entry scaled 10-20%. The cost is the
-  deliberate pack expansion that made the headerless promise hold (241 → 339
-  units). Roughly a quarter of startup instructions are decompression and unit
-  segmentation for a program that includes only `<string>`, which is the lever
-  for per-unit lazy decompression.
+- **Packed-lane startup is measured, not assumed — and binding beats parsing.**
+  On `#include <string>`, serving the frozen corpus costs 138ms against 196ms
+  for a live parse of the same headers by the same binary: the pack is ~30%
+  faster, which is what it is for. Carrying a bigger corpus is not free,
+  though. Against v0.80.0 the new artifact is +22ms bound, of which ~11ms is
+  simply the larger image (12.47 -> 14.66MB, measurable with forest binding
+  switched OFF) and ~11ms is the 98 extra units. Instruction count is +14%,
+  and both callgrind profiles have the same shape with every entry scaled
+  10-20% — no new hotspot, so the suspicion that a closure walk had reached the
+  default path untimed is refuted. Startup should be flat in pack size and is
+  instead mildly proportional to it: roughly a quarter of startup instructions
+  are decompression and unit segmentation for a program that includes only
+  `<string>`. Per-unit lazy decompression would make the pack's advantage grow
+  with the corpus instead of eroding.
 
 - **The Windows W3–W5 release lane is implementation-complete.** MadC now
   builds and verifies a stripped MinGW+UCRT PE release, carries a
