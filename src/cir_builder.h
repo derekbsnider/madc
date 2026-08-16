@@ -1329,6 +1329,45 @@ public:
 	// shared by every construction-emission site.
 	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
+	// [dcl.init.list]/3-4 — LIST-initialization of a class that has an
+	// initializer-list constructor: the WHOLE braced list is ONE
+	// std::initializer_list<E> argument and only initializer-list ctors are
+	// candidates. Returns that ctor and writes the materialized argument
+	// node to *arg_out; NULL when the class has no such ctor (the caller
+	// then treats the elements as ordinary ctor arguments, which is the
+	// remainder of that same rule). `elems` is the braced list.
+	class FuncDef *initializer_list_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems,
+			       TokenBase *origin, node_t *arg_out);
+	// The SEARCH half of the rule above, without materializing anything:
+	// which initializer-list ctor (if any) would serve this list. The
+	// declaration lanes ask this BEFORE they decide how to thread a braced
+	// initializer, so the answer cannot come from a function that also
+	// builds nodes.
+	class FuncDef *find_initializer_list_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems,
+			       DataDefCLASS **ilc_out = NULL,
+			       DataDef **elem_out = NULL,
+			       Variable **var_out = NULL);
+	// True when `cdd` consumes a braced list AS A LIST — via an
+	// initializer-list ctor, or by BEING std::initializer_list. The one
+	// question the declaration lanes ask before threading an initializer.
+	bool takes_whole_braced_list(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems);
+	// The braced-list argument itself: `(IL){ (E[N]){e0,...}, N }`. The
+	// backing array is a compound literal, so it has automatic storage in
+	// the enclosing block — which outlives the initializer_list temporary,
+	// as [dcl.init.list]/6 requires.
+	node_t initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
+			       const std::vector<TokenBase *> &elems,
+			       TokenBase *origin);
+	// True when `origin` is a declaration whose ctor arguments came from a
+	// BRACED list. The one reader of TokenDecl::ctor_args_braced, so both
+	// construction assemblers ask the same question the same way.
+	bool ctor_args_are_braced(TokenBase *origin);
+	// Record a selected non-default ctor's own emit name (see the body).
+	void note_ctor_emit_name(DataDefCLASS *cdd, class FuncDef *best,
+			       Variable *best_var);
 	// Select the operator overload (operator= / operator+=) matching the RHS by
 	// generic argument scoring. Falls back to the first by-name match. NULL when
 	// the class has no such operator.

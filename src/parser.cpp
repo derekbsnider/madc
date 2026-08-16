@@ -18925,6 +18925,52 @@ void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
     }
 }
 
+DataDef *DataDef::unqualified()
+{
+    DataDefCONST *cd = dynamic_cast<DataDefCONST *>(this);
+    return cd && cd->base_type ? cd->base_type : this;
+}
+
+const DataDef *DataDef::unqualified() const
+{
+    const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(this);
+    return cd && cd->base_type ? cd->base_type : this;
+}
+
+void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) const
+{
+    for ( Variable *cv : ctors )
+    {
+	FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	if ( !fd || fd->parameters.size() < 2 || !fd->parameters[1] )
+	    continue;
+	// Callable with EXACTLY ONE user argument: the hidden __this plus the
+	// list, everything after it defaulted (libstdc++'s trailing allocator).
+	// required_param_count counts __this.
+	if ( fd->required_param_count() > 2 )
+	    continue;
+	DataDef *pt = fd->parameters[1];
+	// By value, or through a reference (references lower to a pointer type
+	// here, so unwrap one level either way).
+	DataDef *behind = pt->unqualified();
+	if ( DataDefREF *rd = dynamic_cast<DataDefREF *>(behind) )
+	    behind = rd->base_type;
+	else if ( fd->is_ref_param(1) )
+	    if ( DataDefPTR *pd = dynamic_cast<DataDefPTR *>(behind) )
+		behind = pd->base_type;
+	if ( behind ) behind = behind->unqualified();
+	if ( behind && behind->is_std_initializer_list() )
+	    out.push_back(cv);
+    }
+}
+
+bool DataDefCLASS::has_initializer_list_ctor() const
+{
+    std::vector<Variable *> ils;
+    collect_initializer_list_ctors(ils);
+    return !ils.empty();
+}
+
 bool DataDefCLASS::is_externally_defined() const
 {
     // Only a polymorphic class with a known Itanium spelling can be deferred to
@@ -61841,6 +61887,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    td->file = tb->file;
 	    td->line = tb->line;
 	    td->column = tb->column;
+	    // Which spelling opened the list SURVIVES to construction: a braced
+	    // list whose class has an initializer-list ctor is ONE
+	    // std::initializer_list argument, not N ctor arguments
+	    // ([dcl.init.list]/3-4). Recorded here because this is where the
+	    // distinction still exists.
+	    td->ctor_args_braced = ctor_close_id == TokenID::tkClBrc;
 	    // Parse constructor arguments. Under a --freeze parse, ALSO capture
 	    // the args list's raw source token run (v25 forest SAVE state — the
 	    // parsed trees cannot serialize; the flush re-runs this loop over the
@@ -61863,7 +61915,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
-	    instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
+	    // NOT for a braced list the class consumes AS a list: those tokens are
+	    // the list's ELEMENTS, never an argument list, so deducing from them
+	    // picks a ctor the program never calls. `vector<double> d{1.5, 2.5}`
+	    // deduced vector(_InputIterator, _InputIterator) from the two doubles
+	    // and died in its tsubst — while the initializer-list ctor sat right
+	    // there ([dcl.init.list]/4 makes it the ONLY candidate).
+	    if ( !(td->ctor_args_braced && ddc->has_initializer_list_ctor()) )
+		instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
 	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )

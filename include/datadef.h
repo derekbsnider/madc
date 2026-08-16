@@ -292,6 +292,26 @@ public:
     // knowledge (scripts/check-no-std-hardcoding.sh); callers ask the
     // marshalling question and never name the type.
     bool marshals_value_text() const;
+    // LANGUAGE predicate, not a library one: true when this type is an
+    // instantiation of std::initializer_list. [dcl.init.list]/5 gives a
+    // braced-init-list the type std::initializer_list<E> BY NAME and makes the
+    // program ill-formed when <initializer_list> was not included, so a
+    // conforming front end has to look this one type up by name — g++ does
+    // exactly this in cp/tree.cc (is_std_init_list). That is the ONLY reason a
+    // type-identity predicate is allowed here at all: the retire-std-hardcoding
+    // campaign forbids asking "is this type the standard string / stream /
+    // container", because production code can ask a generic question instead.
+    // There is no generic question that gives a braced list its type. It still
+    // lives in src/madc_mangle.cpp with the rest of the std:: symbol knowledge;
+    // scripts/check-no-std-hardcoding.sh gates any second copy.
+    bool is_std_initializer_list() const;
+    // This type with any top-level `const` peeled off (a DataDefCONST wrapper
+    // returns its base_type; everything else returns itself). Defined in
+    // parser.cpp — DataDefCONST is not complete at this point in the header.
+    // The CIR builder's unqualified_type() helpers delegate here, so the rule
+    // has one home.
+    DataDef *unqualified();
+    const DataDef *unqualified() const;
     // Itanium desugaring for a PLAIN SCALAR (a typedef alias dd like
     // std::streamoff, or a builtin scalar dd): the builtin C spelling for
     // its DataType ("long", "unsigned int", ...), or "" when this dd is not
@@ -1293,6 +1313,18 @@ public:
     // Purely data-driven (declaration_only/emit_symbol aggregation) — never a
     // namespace or class-name test. Defined in parser.cpp (needs FuncDef).
     bool is_externally_defined() const;
+    // The class's INITIALIZER-LIST constructors ([dcl.init.list]/4): those
+    // callable with exactly one user argument whose type is
+    // std::initializer_list<E> (by value or by reference). Existence and
+    // membership only — choosing among several by element type is overload
+    // resolution's job, in the CIR builder. Both phases read this one list:
+    // the parser must NOT deduce a member-template ctor from a braced list
+    // that will be consumed AS a list (`vector<double> d{1.5,2.5}` deduced
+    // the iterator-range ctor from two doubles), and the builder ranks the
+    // candidates. Defined in parser.cpp (needs FuncDef), like
+    // is_externally_defined() above.
+    void collect_initializer_list_ctors(std::vector<Variable *> &out) const;
+    bool has_initializer_list_ctor() const;
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
     // Subobject offset of `target` within this class (direct/transitive base), or

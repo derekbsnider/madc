@@ -4234,23 +4234,21 @@ cir_node *CirBuilder::tsubst_cir(cir_node *src,
 // Type builders
 // -----------------------------------------------------------------------
 
-// A class instance (`class Foo { ... };`, including header-defined std classes)
-// lowers to a plain C struct, matching the Cfront C++->C model. Returns the
-// class DataDef when `dd` denotes a non-pointer value class, else NULL.
+// NULL-tolerant wrappers over DataDef::unqualified() — the const-stripping rule
+// itself lives on the type (datadef.h) so the parser can ask it too.
 static DataDef *unqualified_type(DataDef *dd)
 {
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
-		return cd->base_type ? cd->base_type : dd;
-	return dd;
+	return dd ? dd->unqualified() : dd;
 }
 
 static const DataDef *unqualified_type(const DataDef *dd)
 {
-	if (const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(dd))
-		return cd->base_type ? cd->base_type : dd;
-	return dd;
+	return dd ? dd->unqualified() : dd;
 }
 
+// A class instance (`class Foo { ... };`, including header-defined std classes)
+// lowers to a plain C struct, matching the Cfront C++->C model. Returns the
+// class DataDef when `dd` denotes a non-pointer value class, else NULL.
 static DataDefCLASS *as_user_class(DataDef *dd)
 {
 	dd = unqualified_type(dd);
@@ -13193,7 +13191,27 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
 		size_t req = fd->required_param_count();
 		size_t req_user = req > 0 ? req - 1 : 0;   // exclude hidden __this
-		if (ctor_args.size() < req_user || ctor_args.size() > pn) continue;
+		if (ctor_args.size() < req_user || ctor_args.size() > pn) {
+			// The arity filter used to drop a candidate BEFORE the
+			// trace below, so a dump of "the candidates" silently
+			// omitted every ctor of the wrong arity — which is the
+			// set you are looking at when the question is "why did
+			// it not pick the initializer-list one".
+			static const char *csk =
+				::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			if (csk && *csk
+			    && cdd->name.find(csk) != std::string::npos)
+				fprintf(stderr, "[CTORSEL] cls=%s cand=%s "
+					"SKIP=arity nargs=%zu req=%zu pn=%zu "
+					"p1=%s\n",
+					cdd->name.c_str(), cv->name.c_str(),
+					ctor_args.size(), req_user, pn,
+					fd->parameters.size() > 1
+					    && fd->parameters[1]
+					    ? fd->parameters[1]->name.c_str()
+					    : "-");
+			continue;
+		}
 		int total = 0;
 		bool ok = true;
 		for (size_t i = 0; i < ctor_args.size(); i++) {
@@ -13297,12 +13315,215 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			}
 		}
 	}
-	if (best && best_var && best->local_emit_name.empty()) {
-		std::string default_sym = cdd->name + "__" + cdd->name;
-		if (best_var->name != default_sym)
-			best->local_emit_name = best_var->name;
-	}
+	note_ctor_emit_name(cdd, best, best_var);
 	return best;
+}
+
+// A selected NON-DEFAULT ctor overload is emitted under its own variable's
+// name, not the class default `C__C`. Extracted so every selector records it
+// identically — the initializer-list selector below is a second one, and a
+// selector that forgot this emitted a call to a symbol nothing defines.
+void CirBuilder::note_ctor_emit_name(DataDefCLASS *cdd, FuncDef *best,
+				     Variable *best_var)
+{
+	if (!cdd || !best || !best_var || !best->local_emit_name.empty())
+		return;
+	std::string default_sym = cdd->name + "__" + cdd->name;
+	if (best_var->name != default_sym)
+		best->local_emit_name = best_var->name;
+}
+
+bool CirBuilder::ctor_args_are_braced(TokenBase *origin)
+{
+	TokenDecl *td = dynamic_cast<TokenDecl *>(origin);
+	// Both spellings are list-initialization ([dcl.init.list]/1): the DIRECT
+	// form `T v{...}` arrives as braced ctor args, the COPY form
+	// `T v = {...}` as a brace init. Only the direct form kept a flag before,
+	// so the copy form silently took a different route.
+	return td && (td->ctor_args_braced || td->has_brace_init);
+}
+
+// The element type E of std::initializer_list<E>, read off the LAYOUT: the
+// first member is `const E *` in both stdlibs (libstdc++ `_M_array`, libc++
+// `__begin_`). Reading the layout rather than a member NAME is deliberate —
+// the two libraries spell the members differently and a name test would serve
+// one and silently mis-serve the other.
+static DataDef *initializer_list_element_type(DataDefCLASS *ilc)
+{
+	if (!ilc || ilc->members.size() != 2)
+		return NULL;
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(ilc->members[0].second);
+	return p ? p->base_type : NULL;
+}
+
+FuncDef *CirBuilder::find_initializer_list_ctor(DataDefCLASS *cdd,
+					   const std::vector<TokenBase *> &elems,
+					   DataDefCLASS **ilc_out,
+					   DataDef **elem_out, Variable **var_out)
+{
+	if (!cdd || elems.empty())
+		return NULL;
+	FuncDef *best = NULL;
+	Variable *best_var = NULL;
+	DataDefCLASS *best_il = NULL;
+	DataDef *best_elem = NULL;
+	int best_score = -1;
+	// WHICH ctors qualify is the class's own rule (DataDefCLASS::
+	// collect_initializer_list_ctors) — the parser reads the same list to
+	// decide not to deduce a member-template ctor from these tokens. Only
+	// the RANKING below belongs here.
+	std::vector<Variable *> il_ctors;
+	cdd->collect_initializer_list_ctors(il_ctors);
+	for (Variable *cv : il_ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd) continue;
+		bool refp = fd->is_ref_param(1);
+		DataDefCLASS *ilc = as_class_instance(fd->parameters[1]);
+		if (!ilc) ilc = param_object_class(fd->parameters[1], refp);
+		DataDef *elem = ilc ? initializer_list_element_type(ilc) : NULL;
+		// A CLASS element type needs its backing array CONSTRUCTED
+		// element by element (and destroyed at scope exit); an aggregate
+		// initializer of `std::string[2]` from two `const char *` is not
+		// that: the emitted code faulted inside
+		// basic_string::_M_construct for `vector<string> v{"a","b"}`.
+		// Declining here leaves such a list on the pre-existing path —
+		// a loud diagnostic, never a crash — until the constructed-array
+		// slice lands (recorded on task #56).
+		if (elem && as_class_instance(elem)) elem = NULL;
+		{
+			// Same env knob as the ctor-overload trace: when a braced
+			// list picks the wrong ctor the question is always "was
+			// there an initializer-list one, and why was it not it".
+			static const char *cil = ::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			if (cil && *cil && cdd->name.find(cil) != std::string::npos)
+				fprintf(stderr, "[CTORIL] cls=%s cand=%s p1=%s"
+					" spell=%s il=%d elem=%s\n",
+					cdd->name.c_str(), cv->name.c_str(),
+					fd->parameters[1]
+					    ? fd->parameters[1]->name.c_str() : "-",
+					fd->parameters[1]
+					    ? fd->parameters[1]
+						->canonical_cpp_spelling().c_str()
+					    : "-",
+					ilc ? (int)ilc->is_std_initializer_list() : -1,
+					elem ? elem->name.c_str() : "-");
+		}
+		if (!elem) continue;
+		// Several initializer-list ctors can coexist
+		// (initializer_list<int> vs <double>): rank them on the ELEMENTS,
+		// the same generic scoring every other overload choice uses. A
+		// list none of them accepts declines the whole rule rather than
+		// forcing a bad conversion.
+		int total = 0;
+		bool ok = true;
+		for (TokenBase *e : elems) {
+			int s = score_arg_to_param(ctor_arg_datadef(e), elem,
+						   false, true,
+						   is_zero_integer_literal(e),
+						   false);
+			if (s < 0) { ok = false; break; }
+			total += s;
+		}
+		if (!ok || total <= best_score) continue;
+		best_score = total;
+		best = fd;
+		best_var = cv;
+		best_il = ilc;
+		best_elem = elem;
+	}
+	if (!best) return NULL;
+	if (ilc_out) *ilc_out = best_il;
+	if (elem_out) *elem_out = best_elem;
+	if (var_out) *var_out = best_var;
+	return best;
+}
+
+bool CirBuilder::takes_whole_braced_list(DataDefCLASS *cdd,
+					 const std::vector<TokenBase *> &elems)
+{
+	if (!cdd || elems.empty())
+		return false;
+	// Either the class consumes the list through an initializer-list ctor,
+	// or it IS std::initializer_list and is built from the list directly
+	// ([dcl.init.list]/5). Both mean the declaration lanes must thread the
+	// WHOLE list rather than its first element.
+	return cdd->is_std_initializer_list()
+	    || find_initializer_list_ctor(cdd, elems) != NULL;
+}
+
+FuncDef *CirBuilder::initializer_list_ctor(DataDefCLASS *cdd,
+					   const std::vector<TokenBase *> &elems,
+					   TokenBase *origin, node_t *arg_out)
+{
+	if (!arg_out) return NULL;
+	DataDefCLASS *ilc = NULL;
+	DataDef *elem = NULL;
+	Variable *ctor_var = NULL;
+	FuncDef *best = find_initializer_list_ctor(cdd, elems, &ilc, &elem,
+						   &ctor_var);
+	if (!best) return NULL;
+	node_t lit = initializer_list_literal(ilc, elem, elems, origin);
+	if (!lit) return NULL;
+	// A by-(const)ref initializer_list parameter takes the literal's ADDRESS
+	// — references lower to pointers here as everywhere else.
+	if (best->is_ref_param(1))
+		lit = node1(N_ADDR, lit, origin);
+	note_ctor_emit_name(cdd, best, ctor_var);
+	*arg_out = lit;
+	return best;
+}
+
+node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
+					    const std::vector<TokenBase *> &elems,
+					    TokenBase *origin)
+{
+	if (!ilc || !elem) return NULL;
+	// (E[]){e0, e1, ...} — an UNSIZED array declarator, so c2mir sizes it
+	// from the initializer count (the same shape translate_struct_lit emits
+	// for a C99 array compound literal).
+	node_t aspec = list();
+	append_lit_type_spec(aspec, elem, std::string());
+	node_t adecl = list();
+	append(adecl, node3(N_ARR, ignore(), list(), ignore()));
+	node_t atype = node2(N_TYPE, aspec, node2(N_DECL, ignore(), adecl));
+	node_t ainits = list();
+	for (size_t i = 0; i < elems.size(); i++)
+		append(ainits, node2(N_INIT, list(), init_value(elems[i])));
+	node_t arr = node2(N_COMPOUND_LITERAL, atype, ainits, origin);
+
+	// An array compound literal used as a VALUE decays to a pointer, and
+	// c2mir wants that decay spelled: initializing the `const E *` member
+	// from a bare array literal makes its checker read the literal's braces
+	// against the SCALAR member ("braces around scalar initializer" for one
+	// element, "excess elements in scalar initializer" for more). The parser
+	// wraps its own `(E[]){...}` in exactly this cast for the same reason
+	// (parser.cpp: `Array compound literals decay to pointer`) — this is the
+	// node-level twin of that rule, not a second rule.
+	// Searched: "ptr_type(" in cir_builder.h for an existing pointer-type
+	// node builder — void_ptr_type / char_ptr_type / class_ptr_type are all
+	// fixed-target, so the element-typed one is spelled here.
+	{
+		node_t pspec = list();
+		append_lit_type_spec(pspec, elem, std::string());
+		node_t pdecl = list();
+		append(pdecl, pointer());
+		arr = node2(N_CAST,
+			    node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)),
+			    arr, origin);
+	}
+
+	// (std::initializer_list<E>){ <the array>, N } — the two members in
+	// layout order, matching initializer_list_element_type's contract.
+	node_t ispec = list();
+	append_lit_type_spec(ispec, ilc, std::string());
+	node_t itype = node2(N_TYPE, ispec, node2(N_DECL, ignore(), list()));
+	node_t iinits = list();
+	append(iinits, node2(N_INIT, list(), arr));
+	append(iinits, node2(N_INIT, list(),
+			     integer((int64_t)elems.size(), origin)));
+	node_t lit = node2(N_COMPOUND_LITERAL, itype, iinits, origin);
+	CIR_NODE(lit)->set_datadef(ilc);
+	return lit;
 }
 
 FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
@@ -13717,6 +13938,22 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
+	// LIST-initialization first ([dcl.init.list]/4): when the braces were
+	// written and the class has an initializer-list ctor, that ctor is the
+	// ONLY candidate and the whole list is its single argument. Falls
+	// through to ordinary overload scoring for every other class, so a
+	// braced list on a class without one still means "these arguments".
+	{
+		node_t il_arg = NULL;
+		if (ctor_args_are_braced(origin))
+			if (FuncDef *ilc = initializer_list_ctor(cdd, ctor_args,
+								 origin, &il_arg)) {
+				std::vector<node_t> one(1, il_arg);
+				return ctor_call_assemble(this_addr, cdd, ilc,
+							  one, origin,
+							  vbase_forward);
+			}
+	}
 	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		node_t dst = node1(N_DEREF,
@@ -14298,6 +14535,43 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// a reference to a name nothing defines. Locals resolve to v->name.
 	const std::string vname = var_emit_name(*v);
 
+	// CONSTRUCTION FROM SELF is value-initialization, never a copy. `T x{}`
+	// is spelled internally as `x = x`: the parser's brace-init injection
+	// builds it (the `{` is not an expression, so the wrap arm pairs the
+	// variable with itself), and the v16 freeze both DETECTS and REBUILDS
+	// that shape as its CLASS_VALUE_INIT marker. For an empty trivially-
+	// copyable tag class (std::in_place_t) the self-copy emits nothing and
+	// the encoding is harmless; for anything with a real copy constructor it
+	// is fatal — `std::vector<int> e{};` emitted `vector__o5(&e, &e)`, so the
+	// copy ctor read its own uninitialized storage and called operator new on
+	// a garbage size (SIGSEGV, on every release to date). Value-initializing
+	// a class means its DEFAULT constructor ([dcl.init]/8), so drop the
+	// argument here — at the construction site both the live and the
+	// forest-restored lane pass through.
+	if (ctor_args.size() == 1)
+		if (TokenVar *selftv = dynamic_cast<TokenVar *>(ctor_args[0]))
+			if (&selftv->var == v)
+				return class_ctor_call(v, cdd,
+						       std::vector<TokenBase *>(),
+						       origin);
+
+	// The declared type IS std::initializer_list<E> ([dcl.init.list]/5):
+	// the object is initialized from the backing array DIRECTLY — there is
+	// no constructor call, and the one the library declares for this is
+	// private to the implementation precisely because only the compiler may
+	// use it. Assign the same literal every other list site builds.
+	if (cdd->is_std_initializer_list() && !ctor_args.empty()
+	    && ctor_args_are_braced(origin))
+		if (DataDef *elem = initializer_list_element_type(cdd))
+			if (node_t lit = initializer_list_literal(cdd, elem,
+								 ctor_args,
+								 origin))
+				return node2(N_EXPR, list(),
+					     node2(N_ASSIGN,
+						   id(vname.c_str(), origin),
+						   lit, origin),
+					     origin);
+
 	// ABSTRACT class: declaring a variable of a type with an unoverridden
 	// pure virtual is a compile error (matches g++'s "cannot declare
 	// variable ... to be of abstract type"). The array/heap/member sites
@@ -14364,10 +14638,17 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
-	// Resolve the ctor: prefer the overload matching the initializer (the
-	// general path; a user class has one ctor so this is a no-op). Fall back
-	// to the single ctor keyed under the class name.
-	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
+	// Resolve the ctor. LIST-initialization first ([dcl.init.list]/4): the
+	// braces were written and the class has an initializer-list ctor, so
+	// that ctor is the only candidate and the whole list is its single
+	// argument (`il_arg` then stands in for every element below). The twin
+	// decision in class_ctor_call_addr asks the same owner.
+	node_t il_arg = NULL;
+	FuncDef *ctor = NULL;
+	if (ctor_args_are_braced(origin))
+		ctor = initializer_list_ctor(cdd, ctor_args, origin, &il_arg);
+	if (!ctor)
+		ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching
 		// ctor (see try_implicit_copy_construct).
@@ -14396,6 +14677,13 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	append(args, external_ctor
 		     ? node2(N_CAST, void_ptr_type(), self_addr, origin)
 		     : self_addr); // &v
+	// A braced list served by an initializer-list ctor is ONE argument, so
+	// the per-element loop is skipped entirely and the default-argument
+	// filler below starts after that single parameter.
+	size_t user_arg_count = il_arg ? 1 : ctor_args.size();
+	if (il_arg)
+		append(args, il_arg);
+	else
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		TokenBase *arg = ctor_args[i];
 		size_t pi = i + 1;   // skip __this
@@ -14419,7 +14707,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// C++ default arguments: fill omitted trailing parameters from their default
 	// expressions (param_defaults is index-aligned with parameters). Same arg
 	// shaping as the user args above.
-	for (size_t pi = ctor_args.size() + 1;
+	for (size_t pi = user_arg_count + 1;
 	     ctor && pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
 	     && ctor->param_defaults[pi]; pi++) {
 		TokenBase *darg = ctor->param_defaults[pi];
@@ -22339,6 +22627,16 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	// already populated ctor_args.)
 	std::vector<TokenBase *> ctor_args = sdcl->ctor_args;
 	if (ctor_args.empty()) {
+		// COPY-list-initialization `T v = {a, b, c}` on a class with an
+		// initializer-list ctor is the WHOLE list ([dcl.init.list]/1 —
+		// the two spellings differ only in explicit-ctor viability, not
+		// in what the list means). Threading init_list[0] alone made
+		// `vector<int> v = {1,2,3}` select vector(size_type) with n=1 and
+		// DROP 2 and 3 — silently, with exit 0, down the emit-C lane.
+		if (takes_whole_braced_list(cdcl, sdcl->init_list))
+			ctor_args = sdcl->init_list;
+	}
+	if (ctor_args.empty()) {
 		TokenBase *initexpr = sdcl->initialize;
 		if (TokenAssign *as =
 		    dynamic_cast<TokenAssign *>(initexpr))
@@ -24839,6 +25137,11 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 			if (agg)
 				return agg;
 		}
+		// Copy-list-initialization of a file-scope global — the same
+		// whole-list rule as the block-scope lane above.
+		if (ctor_args.empty()
+		    && takes_whole_braced_list(cdd, decl->init_list))
+			ctor_args = decl->init_list;
 		if (ctor_args.empty()) {
 			TokenBase *initexpr = decl->initialize;
 			if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))

@@ -696,6 +696,14 @@ public:
     // like FuncDef::param_default_tokens). The parsed ctor_args trees cannot
     // serialize; the flush re-runs the args-list parse over these tokens.
     std::vector<TokenBase *> ctor_arg_src;
+    // The ctor_args above came from a BRACED list (`T v{a, b}` / `T v = {a, b}`),
+    // not a paren list. [dcl.init.list]/3 makes the two differ for exactly one
+    // reason worth carrying this bit: a class with an initializer-list
+    // constructor takes the WHOLE braced list as one std::initializer_list<E>
+    // argument, and considers no other constructor. Dropping the braces at parse
+    // (which is what happened before) makes `vector<int> v{1,2,3}` indistinguishable
+    // from `vector<int> v(1,2,3)` — it selected vector(n, value, alloc).
+    bool ctor_args_braced = false;
     bool has_brace_init;               // true when `= { ... }` syntax was used
     bool is_const_decl;                // true when declared with `const` qualifier
     // True when this declaration carried a constant initializer that the parser

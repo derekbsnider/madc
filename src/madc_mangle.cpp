@@ -1250,6 +1250,29 @@ bool DataDef::marshals_value_text() const
 	return itanium_encode_type_sub(spelling) == text_carrier;
 }
 
+// std::initializer_list<E> — see the contract on the declaration in datadef.h.
+// It is spelled with the UNTAGGED prefix under both stdlibs: libstdc++ declares
+// it directly in std, and libc++'s <initializer_list> opens a plain
+// `namespace std` too (not _LIBCPP_BEGIN_NAMESPACE_STD) precisely because the
+// compiler has to find this name. Matching on the OPEN TEMPLATE-ID prefix, not
+// a full encoded type, is deliberate: the question is "is this SOME
+// initializer_list", asked before the element type is known — that element type
+// is what the caller is trying to recover.
+bool DataDef::is_std_initializer_list() const
+{
+	const std::string &spelling =
+		canonical_cpp_spelling().empty() ? name : canonical_cpp_spelling();
+	if (spelling.empty())
+		return false;
+	const std::string bare = "std::initializer_list<";
+	if (spelling.compare(0, bare.size(), bare) == 0)
+		return true;
+	// LLVM spells everything through the ABI namespace when one is
+	// configured; ask the same owner every other spelling here asks.
+	const std::string tagged = std_prefix_tagged() + "initializer_list<";
+	return spelling.compare(0, tagged.size(), tagged) == 0;
+}
+
 std::string std_vector_type(const std::string &elem)
 {
 	const std::string ns = std_prefix_untagged();
