@@ -20,6 +20,8 @@
 #   aot       madc.exe -o emits hello.exe; it runs beside the shipped DLLs
 #   ledger    -static-libmadc covers a VLA program from the embedded AOT
 #             ledger; the emitted exe runs with no madc DLL
+#   errno     a direct <errno.h> include works on the compiler-less host;
+#             this is the standalone missing-content-husk fallback
 #   refuse    a program with an error must FAIL (negative control: a
 #             battery that cannot see failures proves nothing)
 #
@@ -75,6 +77,7 @@ esac
 remote "printf '#include <iostream>\n#include <vector>\nint main(){ std::vector<int> v; v.push_back(1); v.push_back(2); v.push_back(3); int s=0; for(size_t i=0;i<v.size();++i) s+=v[i]; std::cout << \"sum=\" << s << std::endl; return 0; }\n' > hello.cpp" \
     || leg stage FAIL "could not write test sources"
 remote "printf '#include <iostream>\nint main(){ int n=3; int a[n]; a[2]=7; if (a[2]==7) std::cout << \"vla-ok\" << std::endl; return 0; }\n' > vla.cpp" || true
+remote "printf '#include <errno.h>\n#include <stdio.h>\nint main(){ FILE *fp=fopen(\"C:/this/path/cannot/exist/madc-errno\",\"r\"); if(fp) return 2; printf(\"errno=%%d\\n\",errno); return errno==ENOENT?0:3; }\n' > errno.cpp" || true
 remote "printf 'int main(void){ return undeclared_symbol; }\n' > bad.c" || true
 
 # --- jit: forest-served headers, genuine PE process. -----------------------
@@ -102,6 +105,15 @@ out=$(remote "bin/madc.exe -o vla.exe -static-libmadc vla.cpp && mkdir -p alone 
 case "$out" in
 *vla-ok*) leg ledger ok ;;
 *)        leg ledger FAIL "$out" ;;
+esac
+
+# --- errno: task #57's unit-granular decline must have a native provider.
+# --- Wine can see the build container's mingw headers through Z:, so only
+# --- this real-Windows, compiler-less leg proves the embedded fallback.
+out=$(remote "bin/madc.exe errno.cpp" 2>&1)
+case "$out" in
+*errno=2*) leg errno ok ;;
+*)         leg errno FAIL "$out" ;;
 esac
 
 # --- refuse: the negative control. -----------------------------------------

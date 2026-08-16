@@ -6,7 +6,7 @@
 # UCRT chain + the staged UCRT-flavor libstdc++ 13.2.0 (the exact text
 # madc.exe was built against and serves).
 #
-# LIST VERSION 1 (2026-08-15). Grow deliberately: every header here must
+# LIST VERSION 3 (2026-08-15). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order under
 # `wine bin/madc-hosted-x86-64-windows.exe` — the pack step is a release
 # gate. Seeded from the Linux list v2; any name that fails the quiet bar on
@@ -19,13 +19,22 @@ cstdio
 cstdlib
 ctime
 cerrno
+math.h
+dirent.h
+sys/stat.h
+sys/time.h
 string
 vector
 list
 map
 set
 utility
+concepts
+compare
 memory
+limits
+iterator
+locale
 sstream
 iostream
 fstream

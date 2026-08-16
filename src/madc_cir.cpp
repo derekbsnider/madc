@@ -1467,7 +1467,23 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return stop ? 0 : -1;
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok, &prog->_exec_seconds);
+    // main() is a host-call boundary just like program::call and the
+    // one-shot eval entry.  Keep the Program that produced this JIT module
+    // active while its code runs so script-facing runtime services inherit
+    // the compile policy and frozen-forest provider from that Program.
+    // Without this scope, madc::eval_* falls back to a fresh default engine;
+    // a compilerless packaged target then cannot serve even a header that is
+    // present in its own forest.
+    prog->push_runtime_scope();
+    int result;
+    try {
+	result = session.run_main(user_argc, user_argv, &ok,
+				  &prog->_exec_seconds);
+    } catch (...) {
+	prog->pop_runtime_scope();
+	throw;
+    }
+    prog->pop_runtime_scope();
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
 	return -1;
@@ -2547,6 +2563,16 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 			  ? pool->intern(d.value) : 0);
 	    out.push_back(definer);
 	}
+    }
+
+    // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
+    // Semantic forest state remains config-pinned; these bytes are the
+    // compiler-less target's live-parse provider for a different config.
+    for (std::map<const char *, std::string>::const_iterator
+	 si = prog->pack_unit_sources.begin();
+	 si != prog->pack_unit_sources.end(); ++si) {
+	uint32_t u = ensure_unit(si->first);
+	f.units[u].source_payload.assign(si->second.begin(), si->second.end());
     }
 
     // 6. Canonical unit order = first-tokenization order (the pack driver's

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <cstdio>
 
 int main()
 {
@@ -15,13 +16,15 @@ int main()
 	std::cout << std::hex << 255 << std::dec << " " << 255 << std::endl;
 	// ostream& over an ofstream: the manipulator must mutate the REAL
 	// ios_base subobject and the chain must continue on the SAME stream.
-	std::ofstream f("/tmp/madc_testmanipview.txt");
+	std::ofstream f("madc_testmanipview.txt");
 	std::ostream &os = f;
 	os << std::hex << 255 << " " << 256;
 	f.close();
-	std::ifstream in("/tmp/madc_testmanipview.txt");
+	std::ifstream in("madc_testmanipview.txt");
 	std::string s;
 	std::getline(in, s);
 	std::cout << "file:" << s << std::endl;
+	in.close();
+	std::remove("madc_testmanipview.txt");
 	return 0;
 }

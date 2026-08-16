@@ -53,6 +53,23 @@ class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 // parse-once tsubst use this owner so dependent and concrete queries agree.
 size_t query_datadef_measure(const DataDef *dd, bool want_alignof);
 
+// GNU attribute identity shared by lexer preservation, __has_attribute, and
+// declaration semantics.  External spellings may use either bare or
+// double-underscore names; callers compare the enum, never the spelling.
+enum class GnuAttributeKind : uint8_t {
+    Unsupported,
+    Packed,
+    Aligned,
+    Mode,
+    ScalarStorageOrder,
+    VectorSize,
+    Alias,
+    NoInstrumentFunction,
+    Optimize,
+    UsingIfExists
+};
+GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -1578,6 +1595,7 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
     void str(const std::string &s) { _buf = s; _gpos = 0; }
+    const std::string &text() const { return _buf; }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
     // source characters were already counted on the first read, so re-reading
@@ -3806,6 +3824,11 @@ public:
     std::map<std::string, PackMacroOrigin> pack_macro_origin;
     std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
     std::map<const char *, std::set<std::string> > pack_unit_branch_dep_seen;
+    // v41: exact pre-preprocessor source text for every packed unit. A
+    // compiler-less target whose consumer config cannot bind the producer's
+    // semantic grove (another --std=, -D set, or POSIX posture) tokenizes this
+    // text under the CONSUMER config instead of chasing build-host paths.
+    std::map<const char *, std::string> pack_unit_sources;
     // Consumers bind ANY unit directly, so "reproduced by the replay" means
     // the definer sits in the CONSULTING unit's own edge subtree — a sibling
     // under the same top-level include (mingw stdlib.h defining
@@ -3832,6 +3855,7 @@ public:
     // Recording hooks (PP side in lexer.cpp, decl side in parser.cpp; every
     // one gates on pack_recording so default builds pay one predicted branch).
     void pack_note_unit(const char *interned_file);
+    void pack_record_source(const char *interned_file, const std::string &text);
     void pack_record_define(const std::string &name, const std::string &value);
     void pack_record_define_fn(const std::string &name, const MacroDef &m);
     void pack_record_undef(const std::string &name);
@@ -4548,6 +4572,14 @@ public:
     // dialect-agnostic, so a --std=c99 compile must still link it.
     CirFrozenForest *ledger_forest = NULL;
     bool ledger_forest_tried = false;	// one-shot open attempt (success or fail)
+    // Raw-source view of the same carrier. Unlike bind_forest, this ignores
+    // producer-config identity: the stored bytes are re-preprocessed under
+    // this Program's live config. It is consulted only after the ordinary
+    // filesystem search misses, so development hosts keep their normal path
+    // providers while compiler-less packaged targets remain multi-dialect.
+    CirFrozenForest *source_forest = NULL;
+    bool source_forest_tried = false;
+    std::map<uint32_t, std::string> forest_source_cache;
     // MIR module cache, rung 3 (JIT bind lane ONLY — the emit/dump lanes never
     // populate this, keeping their output byte-identical to live). Func names
     // exported by the container's MIR cache module: the m&l fixpoint emits a
@@ -4667,15 +4699,22 @@ public:
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
+    enum ForestConfigMatch {
+	forestMatchExact,
+	forestMatchStdlibFlavor,
+	forestMatchAny
+    };
     // The ordered carrier discovery chain (explicit → self-image → library
-    // image → sidecars → $MADC_FOREST). Walked by BOTH forest consumers;
-    // require_config_match applies the v27 producer-config gate (grove bind
-    // yes, AOT ledger no). Sets config_mismatch when an arm was rejected for
-    // that reason alone. header_only stops at the container directory —
+    // image → sidecars → $MADC_FOREST). Within each carrier, newest-to-
+    // oldest appended profiles are searched under `config_match`: exact for
+    // semantic grove bind, same stdlib flavor for live-tokenized source, any
+    // for the dialect-independent AOT ledger. Sets config_mismatch when an
+    // exact-match candidate was rejected for config alone. header_only stops
+    // at the container directory —
     // enough for the container-global segments (the AOT ledger), and it does
     // NOT need a live string pool, which a no-parse lane has no reason to own.
     // Implemented in lexer.cpp.
-    CirFrozenForest *probe_forest_chain(bool require_config_match,
+    CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
 					bool header_only = false);
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
@@ -4684,9 +4723,13 @@ public:
     // with the producer-config gate off and stopping at the directory (the
     // ledger is a container-global segment). NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
+    CirFrozenForest *ensure_source_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    bool forest_source_path(const std::string &candidate,
+			    bool allow_tail, std::string &resolved);
+    bool forest_source_text(const std::string &path, std::string &text);
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
@@ -4799,9 +4842,10 @@ public:
 	void tokenize_posix_header_supplement(const std::string &incfile);
 	bool posix_whole_provider_serves(const std::string &incfile,
 					 const std::string &resolved,
-					 const std::string **text = NULL) const;
+					 const std::string **text = NULL);
 	bool tokenize_posix_whole_provider(const std::string &incfile,
 					   const std::string &resolved);
+	bool resolved_include_provider_exists(const std::string &path);
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);

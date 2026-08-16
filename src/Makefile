@@ -294,6 +294,10 @@ endif
 # a JIT frame with no RUNTIME_FUNCTION entry. All three defines live in
 # CC/CXX (not DEFINES) so the parse-time host-table capture (HOSTTAB_GEN)
 # sees the same posture the binary is built with.
+# The release pack also needs this root while the outer make has no hosted
+# MODE selected, so keep the stage owner outside the mode conditional.
+WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
+
 ifeq ($(MODE),hosted-x86-64-windows)
 WIN_MINGW = x86_64-w64-mingw32
 # _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
@@ -318,7 +322,6 @@ WIN_SPECS_GEN := $(shell mkdir -p $(abspath $(OBJDIR)); $(WIN_MINGW)-gcc-posix -
 # The -isystem pair rides CXX (the DARWIN_CXX_ISYS pattern) so HOSTTAB_CXX
 # inherits it — madc serves user C++ the exact header text it was built
 # against.
-WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
 WIN_CXX_ISYS = -nostdinc++ -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0 -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0/x86_64-w64-mingw32
 CC  = $(WIN_MINGW)-gcc-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
 CXX_BASE = $(WIN_MINGW)-g++-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
@@ -366,6 +369,13 @@ CORE_OFILES += win_ucrt_compat.o
 # world is captured from the cross compiler into the obj tree, never src/.
 SYS_INCLUDES_CPP = $(OBJDIR)/sys_include_paths.cpp
 export MADC_SYS_INCLUDES_OUT = $(SYS_INCLUDES_CPP)
+# A packed, compiler-less Windows install normally serves headers from its
+# forest. A deliberately live-tokenized conditional husk still needs the
+# exact target header text, though (task #57: standalone errno.h). Stage the
+# file from the SAME mingw-w64 header tree this mode compiles against and add
+# it only to this mode's embedded table; host/Linux tables stay untouched.
+WIN_MINGW_HEADERS ?= /usr/share/mingw-w64/include
+WIN_EMBED_FALLBACKS = 1
 endif
 # The compiler whose `#include <...>` world and predefined-macro environment
 # this madc presents to the code it COMPILES. Normally $(CXX) — the compiler
@@ -438,6 +448,10 @@ ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
 EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
+else ifdef WIN_EMBED_FALLBACKS
+WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_win_header_fallbacks.sh $(WIN_MINGW_HEADERS) $(WIN_EMBED_FALLBACK_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(WIN_EMBED_FALLBACK_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 endif
@@ -780,7 +794,7 @@ release-windows:
 	$(MAKE) hosted-x86-64-windows
 	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
 	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
-	cd .. && bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
+	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/madc-release-x86-64-windows.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
@@ -1087,9 +1101,10 @@ $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
-# Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
-# parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
-# which stays the committed include/madc/-only table for host builds.
+# Target modes with an extra header root compile the PER-MODE
+# embedded_headers.cpp (generated at parse time into the obj tree, EMBED_GEN
+# above) — never src/embedded_headers.cpp, which stays the committed
+# include/madc/-only table for host builds.
 ifdef EMBEDDED_HEADERS_CPP
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)

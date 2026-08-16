@@ -738,7 +738,10 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 				fu.edges.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 8, SNAP_KIND_CIR_BRANCH_DEPS,
 				fu.branch_deps.data(),
-				fu.branch_deps.size() * sizeof(uint32_t), codec))
+				fu.branch_deps.size() * sizeof(uint32_t), codec)
+		    || !add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
+				fu.source_payload.data(),
+				fu.source_payload.size(), codec))
 			return false;
 	}
 	return true;
@@ -1664,6 +1667,25 @@ bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out
 	if (!raw.empty())
 		memcpy(out.data(), raw.data(), raw.size());
 	return true;
+}
+
+bool CirFrozenForest::unit_source(uint32_t unit, std::string &out) const
+{
+	madc::dis::decode_bytes raw;
+	if (!read_unit_seg(unit, 9, SNAP_KIND_CIR_UNIT_SOURCE, raw))
+		return false;
+	out.assign((const char *)raw.data(), raw.size());
+	return true;
+}
+
+bool CirFrozenForest::unit_has_source(uint32_t unit) const
+{
+	if (unit >= _units.size())
+		return false;
+	uint32_t base = CIR_FOREST_SEG_UNIT_BASE
+		      + unit * CIR_FOREST_SEGS_PER_UNIT;
+	const madc::dis::snapshot_segment *s = _reader.find(base + 9);
+	return s && s->kind == SNAP_KIND_CIR_UNIT_SOURCE && s->raw_size != 0;
 }
 
 const char *CirFrozenForest::pool_cstr(uint32_t id, uint32_t &len) const

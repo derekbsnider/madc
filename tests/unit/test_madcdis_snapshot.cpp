@@ -242,6 +242,51 @@ TEST_CASE("placement 2: blob appended to a host binary is found from EOF")
     std::remove(path.c_str());
 }
 
+TEST_CASE("placement 2 profile stack walks valid blobs newest to oldest")
+{
+    const std::string path = tmp_path("stacked");
+    std::remove(path.c_str());
+    {
+	std::ofstream os(path.c_str(), std::ios::binary);
+	std::vector<char> junk(4099, 'P');
+	os.write(junk.data(), (std::streamsize)junk.size());
+    }
+
+    const uint32_t older_value = 11;
+    snapshot_writer older;
+    older.set_context_hash(0x1111u);
+    REQUIRE(older.add_segment(11, madc::dis::SNAP_KIND_RAW,
+			      &older_value, sizeof(older_value),
+			      PchCompression::None));
+    REQUIRE(older.append_file(path.c_str()));
+
+    const uint32_t newer_value = 22;
+    snapshot_writer newer;
+    newer.set_context_hash(0x2222u);
+    REQUIRE(newer.add_segment(22, madc::dis::SNAP_KIND_RAW,
+			      &newer_value, sizeof(newer_value),
+			      PchCompression::None));
+    REQUIRE(newer.append_file(path.c_str()));
+
+    std::vector<uint8_t> image;
+    REQUIRE(slurp(path, image));
+    snapshot_reader latest;
+    REQUIRE(latest.open(image.data(), image.size()));
+    CHECK(latest.context_hash() == 0x2222u);
+    CHECK(latest.find(22) != nullptr);
+
+    size_t previous_len = 0;
+    REQUIRE(latest.previous_image_len(previous_len));
+    CHECK(previous_len < image.size());
+    snapshot_reader previous;
+    REQUIRE(previous.open(image.data(), previous_len));
+    CHECK(previous.context_hash() == 0x1111u);
+    CHECK(previous.find(11) != nullptr);
+    CHECK_FALSE(previous.previous_image_len(previous_len));
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("a file with no blob, or a corrupt one, is rejected cleanly")
 {
     snapshot_reader r;

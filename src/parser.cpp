@@ -11018,6 +11018,19 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     if ( tname == "typename" )
 	return resolve_typename_type_token(nextToken(),
 					   allow_lazy_types, tb);
+    // GNU typeof is a type-yielding specifier everywhere a declared type is
+    // accepted, including a template type-argument. Keep it on the same
+    // generic resolver spine as decltype; declaration/cast callers should not
+    // have to special-case the spelling to make `T<__typeof__(expr)>` work.
+    if ( is_typeof_identifier(tname) )
+    {
+	TokenDataType *tdt = parse_typeof_datatype(tb);
+	tdt->file = tb->file;
+	tdt->line = tb->line;
+	tdt->column = tb->column;
+	return resolve_member_chain_or_type(tdt, tb,
+					    consume_class_member_chain);
+    }
     if ( is_decltype_identifier(tname) )
     {
 	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
@@ -22964,6 +22977,12 @@ void Program::activate_token_pools()
 // already handle the no-pool state (spelling_id 0 / "").
 Program::~Program()
 {
+    if ( source_forest && source_forest != bind_forest
+	 && source_forest != ledger_forest )
+	delete source_forest;
+    if ( ledger_forest && ledger_forest != bind_forest )
+	delete ledger_forest;
+    delete bind_forest;
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )
@@ -37418,6 +37437,57 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	pgm.tkProgram->variables.push_back(src);
     };
+    // A using-declaration imports one declaration into the destination
+    // namespace's lookup set.  Functions must join its OVERLOAD set as well
+    // as its first-wins name map; otherwise an older template placeholder can
+    // still win CIR-time re-ranking even after `using ::fn` introduces the
+    // concrete global overload (libc++ <cstdio>: std::__1::remove).
+    auto import_using_variable = [&](const std::string &name, Variable *src)
+    {
+	if ( !src )
+	    return;
+	if ( pgm.current_namespace().empty() )
+	{
+	    if ( !pgm.findVariable(name) )
+		import_namespace_member(name, src);
+	    return;
+	}
+	variable_map_t &dst_map = pgm.namespace_variables_for_write(
+	    pgm.current_namespace());
+	FuncDef *src_fd = src->type
+	    ? dynamic_cast<FuncDef *>(src->type) : NULL;
+	if ( !src_fd )
+	{
+	    dst_map[name] = src;
+	    return;
+	}
+	Variable *dst_var = NULL;
+	variable_map_iter di = dst_map.find(name);
+	if ( di == dst_map.end() )
+	    dst_map[name] = src;
+	else
+	    dst_var = di->second;
+	std::vector<Program::NamespaceFnOverload> &ovset =
+	    pgm.namespace_fn_overload_sets[
+		pgm.current_namespace() + "::" + name];
+	Variable *candidates[2] = { dst_var, src };
+	for ( size_t ci = 0; ci < 2; ++ci )
+	{
+	    Variable *candidate = candidates[ci];
+	    if ( !candidate || !(candidate->type
+		&& candidate->type->is_function()) )
+		continue;
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == candidate )
+		    known = true;
+	    if ( known )
+		continue;
+	    Program::NamespaceFnOverload entry;
+	    entry.var = candidate;
+	    ovset.push_back(entry);
+	}
+    };
     auto import_namespace_type = [&](const std::string &name, TokenDataType *src)
     {
 	if ( !src )
@@ -37463,6 +37533,22 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( is_contextual_identifier_token(tok) )
 	    return contextual_identifier_name(tok);
 	return "";
+    };
+    // Clang's using_if_exists is a trailing attribute on a using-declaration.
+    // Consume all trailing GNU attributes at the declaration boundary, then
+    // report whether this declaration may omit a source member.  Ordinary
+    // missing imports must keep the diagnostic below.
+    auto consume_using_attributes = [&](TokenBase *&end) -> bool
+    {
+	std::set<std::string> attrs;
+	end = pgm.nextToken();
+	if ( is_attribute_identifier_token(end) )
+	    end = pgm.consume_gnu_attributes(end, &attrs);
+	for ( std::set<std::string>::const_iterator ai = attrs.begin();
+	      ai != attrs.end(); ++ai )
+	    if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::UsingIfExists )
+		return true;
+	return false;
     };
 
     // using namespace std;
@@ -37535,6 +37621,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		pgm.Throw(member ? member : tn) << "Expecting member name in using declaration" << flush;
 	    parts.push_back(part_name);
 	}
+	TokenBase *using_end = NULL;
+	bool using_if_exists = consume_using_attributes(using_end);
 	std::string name = parts.back();
 	std::string source_ns;
 	for ( size_t i = 0; i + 1 < parts.size(); ++i )
@@ -37549,7 +37637,11 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.end();
 	if ( source_ns.empty() )
 	{
-	    v = pgm.findVariable(name);
+	    // The leading `::` requires GLOBAL lookup.  Program::findVariable()
+	    // starts at the active namespace/compound, which can return the stale
+	    // destination placeholder this declaration is meant to supplement.
+	    v = pgm.tkProgram
+	      ? pgm.tkProgram->findVariable(pgm.strpool, name) : NULL;
 	    dti = pgm.datatype_map.find(name);
 	}
 	else
@@ -37563,7 +37655,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		       ? (dti != pgm.datatype_map.end())
 		       : (nti != pgm.namespace_datatype_map.end()
 			  && ns_dti != nti->end());
-	if ( !v && !have_type )
+	if ( !v && !have_type && !using_if_exists )
 	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
 			      << (source_ns.empty() ? std::string("::") : source_ns)
 			      << "'" << flush;
@@ -37574,8 +37666,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		if ( !(v->type && v->type->is_function()) )
 		    pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				      Program::pdkVariable);	// B4a tap
-		pgm.namespace_variables_for_write(
-		    pgm.current_namespace())[name] = v;
+		import_using_variable(name, v);
 	    }
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
 	    {
@@ -37592,8 +37683,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    if ( v && !pgm.findVariable(name) )
-		import_namespace_member(name, v);
+	    if ( v )
+		import_using_variable(name, v);
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
 		import_namespace_type(name, (*dti));
 	    else if ( !source_ns.empty()
@@ -37601,7 +37692,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		   && ns_dti != nti->end() )
 		import_namespace_type(name, ns_dti->second);
 	}
-	tn = pgm.nextToken();
+	tn = using_end;
 	if ( !tn || tn->id() != TokenID::tkSemi )
 	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
 	return NULL;
@@ -37757,6 +37848,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	if ( useg.size() < 2 )
 	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
+	TokenBase *using_end = NULL;
+	bool using_if_exists = consume_using_attributes(using_end);
 	std::string member_name = useg.back();
 	std::string requested_ns_name = useg[0];
 	for ( size_t i = 1; i + 1 < useg.size(); ++i )
@@ -37785,7 +37878,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    pgm.find_template_alias(member_name_id, ns_name, NULL)
 	 || pgm.find_template(member_name_id, ns_name, NULL)
 	 || pgm.var_template_map.count(ns_name + "::" + member_name);
-	if ( !have_var && !have_type && !have_template )
+	if ( !have_var && !have_type && !have_template && !using_if_exists )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 	// import into the current namespace, or global scope outside a namespace
 	std::string name = member_name;
@@ -37795,39 +37888,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
-		variable_map_t &dst_map = pgm.namespace_variables_for_write(
-		    pgm.current_namespace());
-		FuncDef *use_fd = use_var->type
-		    ? dynamic_cast<FuncDef *>(use_var->type) : NULL;
-		if ( use_fd )
-		{
-		    // [namespace.udecl]: an imported FUNCTION becomes a member
-		    // of the target namespace's OVERLOAD SET — the same two
-		    // registrations a declaration written in this namespace
-		    // gets. It must NOT clobber an existing name binding: the
-		    // map entry is first-wins (the fn-template placeholder is
-		    // the qualified-call resolution chokepoint; libstdc++'s
-		    // `using __exception_ptr::swap;` overwrote it and every
-		    // `std::swap(a, b)` bound the exception_ptr overload —
-		    // 'no matching constructor for exception_ptr(int32_t)').
-		    if ( dst_map.find(name) == dst_map.end() )
-			dst_map[name] = use_var;
-		    std::vector<Program::NamespaceFnOverload> &ovset =
-			pgm.namespace_fn_overload_sets[
-			    pgm.current_namespace() + "::" + name];
-		    bool known = false;
-		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
-			if ( ovset[oi].var == use_var )
-			    known = true;
-		    if ( !known )
-		    {
-			Program::NamespaceFnOverload e;
-			e.var = use_var;
-			ovset.push_back(e);
-		    }
-		}
-		else
-		    dst_map[name] = use_var;
+		import_using_variable(name, use_var);
 	    }
 	    if ( have_type )
 	    {
@@ -37837,8 +37898,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    if ( have_var && !pgm.findVariable(name) )
-		import_namespace_member(name, use_var);
+	    if ( have_var )
+		import_using_variable(name, use_var);
 	    if ( have_type )
 		import_namespace_type(name, dti->second);
 	}
@@ -37877,7 +37938,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    }
 	}
 	// expect semicolon
-	tn = pgm.nextToken();
+	tn = using_end;
 	if ( !tn || tn->id() != TokenID::tkSemi )
 	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
 	return NULL;
@@ -46466,6 +46527,14 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    handled = true;
 	    if ( after->id() == TokenID::tkOpBrc )
 	    {
+		// A braced linkage specification changes the language linkage of
+		// the declarations it contains; it is not an `extern` storage-class
+		// specifier for each member.  In particular,
+		// `extern "C++" { int object; }` defines object, while the direct
+		// form `extern "C++" int object;` is only a declaration.  Keep the
+		// direct form on the declaration-head state established above, but
+		// let each block member determine its own storage class.
+		pgm.parsing_extern_decl = false;
 		for ( ;; )
 		{
 		    pgm.pack_open_toplevel_decl();	// B4a: linkage-block members
@@ -57816,15 +57885,11 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 TokenBase *Program::parseCompound()
 {
     if ( compounds.empty() ) { throw "Internal error -- compound stack empty"; }
-    // A compound is its own declarative region: the declaration-HEAD extern
-    // context must not leak onto block-scope locals. The reachable leak is a
-    // linkage block ([dcl.link]p7 makes extern apply to the block's DIRECTLY
-    // contained declarations, so TokenEXTERN holds the flag across its whole
-    // statement loop): libstdc++ wraps <bits/exception_ptr.h> in
-    // `extern "C++" { }`, and exception_ptr::swap's local `void *__tmp`
-    // emitted as `extern void *__tmp = ...` — a c2mir check error.
-    // Namespace bodies parse via parse_namespace_block's own loop, never
-    // through here, so their members correctly keep the linkage-block flag.
+    // A compound is its own declarative region: a declaration-head `extern`
+    // context must not leak onto block-scope locals while a function body is
+    // parsed.  TokenEXTERN's braced-linkage arm also clears that state before
+    // parsing members; retain this guard for direct extern-qualified function
+    // declarations and for exception-safe isolation at the compound boundary.
     struct ExternDeclScope {
 	Program &p; bool saved;
 	ExternDeclScope(Program &pg)

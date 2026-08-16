@@ -11,6 +11,9 @@
 # $(CXX) uses; an alternate is recorded whenever a probe reports a different one.
 # No path or library name is hardcoded here: the flavor NAMES come from the
 # libraries' own version macros, and the paths from each probe's own search list.
+# Automatic alternate probes always use the DEFAULT compiler's target triple:
+# a cross-built madc must never advertise the build host's headers or runtime as
+# a target flavor (a Win64 binary used to record Linux libc++ + glibc here).
 # MADC_STDLIB_ALT_CXX overrides the alternate-flavor probe command.
 #
 # Host-specific: gitignored, regenerated on build. `make clean` forces a refresh
@@ -189,6 +192,7 @@ emit_paths_array() {
 }
 
 DEFAULT_FLAVOR=$(detect_flavor $CXX)
+DEFAULT_TARGET=$($CXX -dumpmachine 2>/dev/null)
 
 # Find an alternate flavor: a probe that resolves to a DIFFERENT library than
 # the default. Candidates are tool spellings, not answers — each one is asked
@@ -206,8 +210,12 @@ if [ -n "$ALT_CXX" ]; then
         ALT_CXX=""
     fi
 elif [ -n "$DEFAULT_FLAVOR" ]; then
-    for cand in "$CXX -stdlib=libc++" "$CXX -stdlib=libstdc++" \
-                "clang++-18 -stdlib=libc++" "clang++ -stdlib=libc++"; do
+    candidates=("$CXX -stdlib=libc++" "$CXX -stdlib=libstdc++")
+    if [ -n "$DEFAULT_TARGET" ]; then
+        candidates+=("clang++-18 --target=$DEFAULT_TARGET -stdlib=libc++"
+                     "clang++ --target=$DEFAULT_TARGET -stdlib=libc++")
+    fi
+    for cand in "${candidates[@]}"; do
         f=$(detect_flavor $cand)
         if [ -n "$f" ] && [ "$f" != "$DEFAULT_FLAVOR" ]; then
             ALT_CXX="$cand"

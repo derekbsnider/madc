@@ -15,6 +15,10 @@
 #     a per-invocation directory under a Windows-visible /mnt/c path (a WSL
 #     cwd would be a UNC path Windows rejects); those args are rewritten to
 #     their basenames.
+#   - when MADC_WIN_STAGE names an existing Windows-visible tree, no files are
+#     copied: the executable and arguments are resolved inside that tree. This
+#     is the full-suite lane's stage-once mode; the same execution-channel
+#     owner serves both batteries and the suite.
 #   - stdout/stderr are relayed; the remote exit code is returned when the
 #     channel delivers one.  A crashed Windows process dies SILENTLY (WER
 #     swallows the banner) and interop exit codes are unreliable — callers
@@ -24,6 +28,7 @@
 #
 # Knobs: MADC_WIN_SSH (default derek@host.docker.internal),
 #        MADC_WIN_DIR (default /mnt/c/Users/Public/madcwin),
+#        MADC_WIN_STAGE (pre-staged tree; disables per-invocation copying),
 #        MADC_WIN_TIMEOUT (seconds, default 120),
 #        MADC_WIN_KEEP=1 to keep the per-invocation directory for debugging.
 set -u
@@ -35,6 +40,27 @@ TIMEOUT="${MADC_WIN_TIMEOUT:-120}"
 if [ $# -lt 1 ]; then
 	echo "usage: win_run.sh prog.exe [args...]" >&2
 	exit 2
+fi
+
+# Stage-once suite mode. The first argument is run_tests.sh's configured
+# MADC_BIN; the staged product always lives at bin/madc.exe. All remaining
+# paths retain their repo-relative spelling because win_suite.sh stages the
+# complete tests tree at the same root. `%q` constructs one WSL-shell-safe
+# command without imposing a per-test path table.
+if [ -n "${MADC_WIN_STAGE:-}" ]; then
+	stage_cmd=(./bin/madc.exe)
+	shift
+	for arg in "$@"; do
+		stage_cmd+=("$arg")
+	done
+	printf -v remote_cmd 'env -C %q WSLENV=MADC_BIN:MADC_FOREST_ENV_CHECK MADC_BIN=bin/madc.exe MADC_FOREST_ENV_CHECK=%q' \
+		"$MADC_WIN_STAGE" "${MADC_FOREST_ENV_CHECK:-0}"
+	for arg in "${stage_cmd[@]}"; do
+		printf -v quoted_arg ' %q' "$arg"
+		remote_cmd+="$quoted_arg"
+	done
+	timeout "$TIMEOUT" ssh -o BatchMode=yes "$WIN_SSH" "$remote_cmd"
+	exit $?
 fi
 
 dir="$WIN_BASE/run.$$.$RANDOM"

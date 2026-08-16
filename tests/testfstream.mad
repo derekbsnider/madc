@@ -6,13 +6,14 @@
 #include <string>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 using namespace std;
 
 int main()
 {
     // write a file
     ofstream outf;
-    string fname = "/tmp/madc_fstream_test.txt";
+    string fname = "madc_fstream_test.txt";
     outf.open(fname);
     outf << "Hello from madc!" << endl;
     outf << "Line 2" << endl;
@@ -42,7 +43,6 @@ int main()
     cout << "strlen: " << n << endl;
 
     // cleanup
-    string rm = "rm -f /tmp/madc_fstream_test.txt";
-    system(rm.c_str());
+    std::remove(fname.c_str());
     return 0;
 }

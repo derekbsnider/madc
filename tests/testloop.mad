@@ -4,13 +4,14 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <cstdio>
 using namespace std;
 
 int main()
 {
     // write test file
     ofstream outf;
-    string fname = "/tmp/madc_loop_test.txt";
+    string fname = "madc_loop_test.txt";
     outf.open(fname);
     outf << "line1" << endl;
     outf << "line2" << endl;
@@ -35,8 +36,7 @@ int main()
     cout << "lines: " << count << endl;
 
     // cleanup
-    string rm = "rm -f /tmp/madc_loop_test.txt";
-    system(rm.c_str());
+    std::remove(fname.c_str());
 
     return 0;
 }

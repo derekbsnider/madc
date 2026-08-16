@@ -139,9 +139,9 @@ for stage in $stages; do
 	case "$stage" in
 	sync)
 		echo "=== sync ==="
-		# bin/ obj/ lib/ tmp/ are excluded from the transfer, so the
+		# bin/ obj/ lib/ tmp/ dist/ are excluded from the transfer, so the
 		# directories themselves never arrive — make sure they exist.
-		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp"
+		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp /workspace/madc/dist"
 		# HOST-PROBED generated sources must NEVER cross the tunnel.
 		# They are written by probing the LOCAL compiler ($CXX -E -v for
 		# the include search list and stdlib flavor table, $CXX -dM -E
@@ -155,7 +155,7 @@ for stage in $stages; do
 		# fails to link madc_stdlib_flavors. rsync does not delete
 		# excluded files on the receiver, so the container keeps its own.
 		rsync -az --delete \
-			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ \
+			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \

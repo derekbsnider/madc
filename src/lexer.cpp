@@ -530,8 +530,30 @@ static bool identifier_matches_gnu_attribute_name(const std::string &id,
     return id == name || id == "__" + name + "__";
 }
 
-static bool gnu_attribute_text_has_name(const std::string &text,
-					const std::string &name)
+GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
+{
+    struct Entry {
+	const char *name;
+	GnuAttributeKind kind;
+    };
+    static const Entry entries[] = {
+	{ "packed", GnuAttributeKind::Packed },
+	{ "aligned", GnuAttributeKind::Aligned },
+	{ "mode", GnuAttributeKind::Mode },
+	{ "scalar_storage_order", GnuAttributeKind::ScalarStorageOrder },
+	{ "vector_size", GnuAttributeKind::VectorSize },
+	{ "alias", GnuAttributeKind::Alias },
+	{ "no_instrument_function", GnuAttributeKind::NoInstrumentFunction },
+	{ "optimize", GnuAttributeKind::Optimize },
+	{ "using_if_exists", GnuAttributeKind::UsingIfExists }
+    };
+    for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
+	if ( identifier_matches_gnu_attribute_name(name, entries[i].name) )
+	    return entries[i].kind;
+    return GnuAttributeKind::Unsupported;
+}
+
+static bool gnu_attribute_text_has_supported_name(const std::string &text)
 {
     for ( size_t i = 0; i < text.size(); )
     {
@@ -561,7 +583,7 @@ static bool gnu_attribute_text_has_name(const std::string &text,
 	while ( i < text.size()
 	     && (text[i] == '_' || isalnum((unsigned char)text[i])) )
 	    id += text[i++];
-	if ( identifier_matches_gnu_attribute_name(id, name) )
+	if ( madc_gnu_attribute_kind(id) != GnuAttributeKind::Unsupported )
 	    return true;
     }
     return false;
@@ -940,7 +962,10 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	TokenBase *itb;
 	const char *interned = intern_file(name);
 	if ( !protocol_visit )
+	{
 		pack_note_unit(interned);
+		pack_record_source(interned, text);
+	}
 	// v40 (task #57): the embedded twin of the filesystem include's
 	// unit-stack tracking — embedded units freeze too.
 	if ( pack_recording && !protocol_visit )
@@ -1342,6 +1367,11 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
 	    return true;
     return false;
 }
+
+// The one token-to-source spelling owner lives with reconstruct_source below.
+// Macro argument pre-expansion also needs it: its temporary token stream must
+// round-trip literals without changing their value or type.
+static std::string token_spelling(TokenBase *tb);
 
 static std::string stringify_macro_arg(const std::string &raw)
 {
@@ -2536,7 +2566,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
 					 double &map_secs, double &open_secs,
-					 bool require_config_match = true,
+					 Program::ForestConfigMatch config_match,
 					 bool header_only = false)
 {
     double _t0 = forest_stat_now();
@@ -2550,47 +2580,67 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	return NULL;
     }
     map_secs += forest_stat_now() - _t0;
-    CirFrozenForest *f = new CirFrozenForest();
-    double _t1 = forest_stat_now();
-    if ( !f->open_header(image, image_len, quiet_missing) )
+    size_t candidate_len = image_len;
+    for (;;)
     {
-	open_secs += forest_stat_now() - _t1;
-	delete f;
-	return NULL;
+	CirFrozenForest *f = new CirFrozenForest();
+	double _t1 = forest_stat_now();
+	if ( !f->open_header(image, candidate_len, quiet_missing) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    delete f;
+	    return NULL;
+	}
+	size_t previous_len = 0;
+	const bool have_previous = f->previous_image_len(previous_len);
+	const uint32_t producer_config = f->language_std();
+	const uint32_t consumer_config = madc_forest_config_word(prog);
+	bool matches = config_match == Program::forestMatchAny;
+	if ( config_match == Program::forestMatchExact )
+	    matches = producer_config == consumer_config
+		   && f->defines_hash() == madc_forest_defines_hash(prog);
+	else if ( config_match == Program::forestMatchStdlibFlavor )
+	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
+		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
+
+	if ( !matches )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] producer config"
+		" mismatch — trying older profile" << std::endl);
+	    if ( config_match == Program::forestMatchExact )
+		config_mismatch = true;
+	    delete f;
+	}
+	else if ( header_only || f->complete_open(/*c2m=*/NULL) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
+		<< (header_only ? "directory only"
+				: std::to_string(f->unit_count()) + " units") << ")"
+		<< std::endl);
+	    return f;
+	}
+	else
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    delete f;
+	}
+
+	if ( !have_previous )
+	    return NULL;
+	candidate_len = previous_len;
     }
-    if ( require_config_match
-      && ( f->language_std() != madc_forest_config_word(prog)
-	|| f->defines_hash() != madc_forest_defines_hash(prog) ) )
-    {
-	open_secs += forest_stat_now() - _t1;
-	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
-	    " mismatch (std/defines) — skipped" << std::endl);
-	config_mismatch = true;
-	delete f;
-	return NULL;
-    }
-    if ( !header_only && !f->complete_open(/*c2m=*/NULL) )
-    {
-	open_secs += forest_stat_now() - _t1;
-	delete f;
-	return NULL;
-    }
-    open_secs += forest_stat_now() - _t1;
-    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
-	<< (header_only ? "directory only"
-			: std::to_string(f->unit_count()) + " units") << ")"
-	<< std::endl);
-    return f;
 }
 
 // The ordered carrier discovery chain (forest-carriers plan: one format, one
 // loader, N carriers). Returns the first arm that yields a usable container,
-// or NULL. TWO consumers walk it: the grove bind (require_config_match — a C
-// compile must not bind a C++-parsed corpus, the v27 contract) and the AOT
-// ledger (S5: madc's OWN runtime, target-specific but dialect-agnostic, so it
-// binds regardless of the producer's std/-D). Keeping ONE walker keeps the arm
-// ORDER — the thing carriers are actually about — in a single place.
-CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
+// or NULL. All three consumers walk it: the grove bind requires the exact
+// producer config; raw source requires the selected stdlib flavor but is
+// re-tokenized under the live std/-D policy; the AOT ledger is dialect-
+// agnostic. Each arm may carry a newest-first stack of profiles. Keeping ONE
+// walker keeps both arm order and within-arm profile order in one place.
+CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					     bool &cfg_mismatch,
 					     bool header_only)
 {
@@ -2600,7 +2650,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	return forest_probe_arm(this, forest_bind_path.c_str(),
 				"explicit", /*quiet_missing=*/false,
 				cfg_mismatch, _forest_map_seconds,
-				_forest_open_seconds, require_config_match,
+				_forest_open_seconds, config_match,
 				header_only);
 
     // Arm 1: self-image — the running binary's own carrier (ELF trailer /
@@ -2608,7 +2658,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
     CirFrozenForest *f = forest_probe_arm(this, NULL, "self-image",
 					  /*quiet_missing=*/true, cfg_mismatch,
 					  _forest_map_seconds, _forest_open_seconds,
-					  require_config_match,
+					  config_match,
 					  header_only);
     // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
     // forest rides libmadc's own image, so ONE container serves the thin CLI
@@ -2625,7 +2675,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	f = forest_probe_arm(this, lib.c_str(), "library-image",
 			     /*quiet_missing=*/true, cfg_mismatch,
 			     _forest_map_seconds, _forest_open_seconds,
-			     require_config_match,
+			     config_match,
 			     header_only);
     if ( !f && registration_policy.enable_external_forest )
     {
@@ -2637,13 +2687,13 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, (exe + ".forest").c_str(),
 				 "sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
 	if ( !f && have_lib_image )
 	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
 				 "lib-sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
 	// outranks the madc.ini key per the config precedence rule
@@ -2653,7 +2703,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, env, "MADC_FOREST",
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
-				 require_config_match,
+				 config_match,
 				 header_only);
 	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
 	// arm, because a configured default must lose to everything more
@@ -2664,7 +2714,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 				 registration_policy.forest_config_path.c_str(),
 				 "madc.ini", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
     }
     return f;
@@ -2693,7 +2743,7 @@ CirFrozenForest *Program::ensure_bind_forest()
     // loads, materialize, template payload) accumulate on the same clock.
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     bool cfg_mismatch = false;
-    bind_forest = probe_forest_chain(/*require_config_match=*/true, cfg_mismatch);
+    bind_forest = probe_forest_chain(forestMatchExact, cfg_mismatch);
     if ( bind_forest )
     {
 	bind_forest->_work_secs = &_forest_work_seconds;
@@ -2745,11 +2795,79 @@ CirFrozenForest *Program::ensure_ledger_forest()
     // is the whole requirement — binding the frozen string pool and arena is
     // grove work, and it needs live parse state this consumer may not have
     // (the .o link lane links precompiled objects: no lexer, no pool).
-    ledger_forest = probe_forest_chain(/*require_config_match=*/false,
+    ledger_forest = probe_forest_chain(forestMatchAny,
 				       cfg_mismatch, /*header_only=*/true);
     DBG(std::cout << "ledger: carrier "
 	<< (ledger_forest ? "opened" : "not found") << std::endl);
     return ledger_forest;
+}
+
+CirFrozenForest *Program::ensure_source_forest()
+{
+    if ( source_forest_tried )
+	return source_forest;
+    source_forest_tried = true;
+    if ( bind_forest )
+    {
+	source_forest = bind_forest;
+	return source_forest;
+    }
+
+    // Raw source ignores producer std/-D/posix config because these bytes are
+    // re-tokenized under THIS Program's live policy, but it must match the
+    // selected stdlib flavor: libc++ and libstdc++ own different header text.
+    // The same carrier walker remains the one owner of discovery/profile order.
+    bool cfg_mismatch = false;
+    source_forest = probe_forest_chain(forestMatchStdlibFlavor,
+				       cfg_mismatch, /*header_only=*/false);
+    if ( source_forest )
+    {
+	source_forest->_work_secs = &_forest_work_seconds;
+	source_forest->_work_depth = &_forest_work_depth;
+    }
+    return source_forest;
+}
+
+bool Program::forest_source_path(const std::string &candidate,
+				 bool allow_tail, std::string &resolved)
+{
+    CirFrozenForest *forest = ensure_source_forest();
+    if ( !forest )
+	return false;
+    int unit = forest->find_unit(candidate);
+    if ( unit < 0 && allow_tail )
+	unit = forest->find_unit_path_tail(candidate);
+    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
+	return false;
+    const char *name = forest->unit_name((uint32_t)unit);
+    if ( !name || !*name )
+	return false;
+    resolved = name;
+    return true;
+}
+
+bool Program::forest_source_text(const std::string &path, std::string &text)
+{
+    CirFrozenForest *forest = ensure_source_forest();
+    if ( !forest )
+	return false;
+    int unit = forest->find_unit(path);
+    if ( unit < 0 )
+	unit = forest->find_unit_path_tail(path);
+    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
+	return false;
+    std::map<uint32_t, std::string>::iterator cached =
+	forest_source_cache.find((uint32_t)unit);
+    if ( cached == forest_source_cache.end() )
+    {
+	std::string source_text;
+	if ( !forest->unit_source((uint32_t)unit, source_text) )
+	    return false;
+	cached = forest_source_cache.emplace((uint32_t)unit,
+					     std::move(source_text)).first;
+    }
+    text = cached->second;
+    return true;
 }
 
 // The discovery chain ended with no usable container: apply the failure
@@ -2856,7 +2974,9 @@ bool Program::need_protocol_macro_live()
 // the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
 // "stddef.h"), then the resolved filesystem path (real headers name their full
 // path) — the same resolution the live path would use, so a hit binds the exact
-// grove the pack froze.
+// grove the pack froze.  A compilerless consumer cannot stat() the producer's
+// paths, but it still carries their ordered search table: consult those exact
+// frozen provider names before falling back to an ambiguous path-tail match.
 int Program::forest_unit_for_include(const std::string &incfile)
 {
     CirFrozenForest *f = ensure_bind_forest();
@@ -2870,6 +2990,24 @@ int Program::forest_unit_for_include(const std::string &incfile)
 	u = f->find_unit(fp);
     if ( u >= 0 )
 	return u;
+    // Preserve the producer toolchain's include precedence even when none of
+    // its paths exists on the run-only machine.  include_next_search_list is
+    // the one builder for the ordered -I + selected-stdlib search list; its
+    // stored spellings are also the exact names used by filesystem-frozen
+    // units.  This matters when both a C++ wrapper and its C provider share a
+    // basename (libstdc++ <math.h> before mingw's native <math.h>).
+    std::vector<std::string> search;
+    include_next_search_list(search);
+    for ( size_t i = 0; i < search.size(); ++i )
+    {
+	std::string candidate = search[i];
+	if ( !candidate.empty() && candidate.back() != '/' )
+	    candidate += '/';
+	candidate += incfile;
+	u = f->find_unit(candidate);
+	if ( u >= 0 )
+	    return u;
+    }
     // Machine-portable arm: filesystem-frozen units carry the PRODUCER's
     // full header path, which this machine's resolver may not be able to
     // spell at all (the hosted darwin groves are frozen from the build
@@ -3418,11 +3556,11 @@ bool madc_lexer_file_exists(const std::string &path);
 // the caller that serves does not repeat the lookup.
 bool Program::posix_whole_provider_serves(const std::string &incfile,
 					  const std::string &resolved,
-					  const std::string **text) const
+					  const std::string **text)
 {
 	if ( !is_posix_compat_header_allowed(incfile) )
 		return false;
-	if ( !resolved.empty() && madc_lexer_file_exists(resolved) )
+	if ( resolved_include_provider_exists(resolved) )
 		return false;
 	const std::string *embedded =
 		find_embedded_header(std::string("posix/") + incfile);
@@ -3593,6 +3731,9 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    std::ifstream probe(candidate.c_str());
 	    if ( probe.good() )
 		return candidate;
+	    std::string frozen_path;
+	    if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
+		return frozen_path;
 	}
 	// Fall back to current source directory — handles local header
 	// copies (e.g. libpq-fe.h sitting next to the .c that includes it)
@@ -3604,6 +3745,9 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    if ( probe.good() )
 		return local;
 	}
+	std::string frozen_path;
+	if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
+	    return frozen_path;
 	return incfile; // not found — will fail at open
     }
 
@@ -3724,7 +3868,13 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
 	std::ifstream probe(candidate.c_str());
 	if ( probe.good() )
 	    return candidate;
+	std::string frozen_path;
+	if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
+	    return frozen_path;
     }
+	std::string frozen_path;
+	if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
+	    return frozen_path;
     return incfile; // not found — will fail at open
 }
 
@@ -3913,6 +4063,18 @@ void Program::pack_note_unit(const char *interned_file)
 	return;
     if ( pack_units_seen.insert(interned_file).second )
 	pack_unit_order.push_back(interned_file);
+}
+
+void Program::pack_record_source(const char *interned_file,
+				 const std::string &text)
+{
+    if ( !pack_recording || !interned_file )
+	return;
+    pack_note_unit(interned_file);
+    // A file can be reached repeatedly through its include guard. Its raw
+    // bytes are immutable during one freeze; first-wins keeps the original
+    // provider and avoids copying the same header on every visit.
+    pack_unit_sources.emplace(interned_file, text);
 }
 
 void Program::pack_record_define(const std::string &name, const std::string &value)
@@ -4160,6 +4322,20 @@ bool madc_lexer_file_exists(const std::string &path)
 {
     std::ifstream probe(path.c_str(), std::ios::binary);
     return probe.good();
+}
+
+// A resolved include can be readable from either ordinary storage or the raw
+// source slot in a packed forest.  This is the one existence predicate AFTER
+// resolution: consumers must not mistake a carrier-backed native header for a
+// missing provider and let a lower-priority compatibility header replace it.
+bool Program::resolved_include_provider_exists(const std::string &path)
+{
+    if ( path.empty() )
+	return false;
+    if ( madc_lexer_file_exists(path) )
+	return true;
+    std::string frozen_path;
+    return forest_source_path(path, /*allow_tail=*/false, frozen_path);
 }
 
 static void add_pch_candidate(std::vector<std::string> &candidates,
@@ -5184,7 +5360,10 @@ TokenBase *Program::_getToken()
 		    suppress_auto_include_scan = true;
 		    source = Source();
 		    std::ifstream incf(full_path.c_str());
-		    if ( !incf )
+		    std::string frozen_source;
+		    const bool source_from_forest = !incf
+			&& forest_source_text(full_path, frozen_source);
+		    if ( !incf && !source_from_forest )
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
@@ -5193,17 +5372,28 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
+		    const char *_interned2 = intern_file(full_path);
 		    {
 			ReadTimer _rt(_read_seconds);
-			incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
-			if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
-			incf.seekg(0);
-			source.copybuf(incf.rdbuf());
+			if ( source_from_forest )
+			{
+			    _input_bytes += frozen_source.size();
+			    source.str(frozen_source);
+			}
+			else
+			{
+			    incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
+			    if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
+			    incf.seekg(0);
+			    source.copybuf(incf.rdbuf());
+			}
 		    }
 		    TokenBase *itb;
-		    const char *_interned2 = intern_file(full_path);
 		    if ( !protocol_visit )
+		    {
 			pack_note_unit(_interned2);
+			pack_record_source(_interned2, source.text());
+		    }
 		    // v40 (task #57): unit-stack tracking — every unit entered
 		    // beneath a stack member joins that member's SUBTREE set,
 		    // the "reproduced by this unit's own bind replay" domain
@@ -5964,6 +6154,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			tr->source_text = lit_text;
 			return tr;
 		    }
 		    }
@@ -6050,7 +6241,13 @@ TokenBase *Program::_getToken()
 			    tr->source_text = full;
 			    return tr;
 			}
-			return make_real(num);
+			TokenReal *tr = (TokenReal *)make_real(num);
+			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			    tr->setDataType(&ddFLOAT);
+			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			    tr->setDataType(&ddLDOUBLE);
+			tr->source_text = lit_text;
+			return tr;
 		    }
 		    if ( eat_imag_suffix() )
 		    {
@@ -6090,10 +6287,9 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && isdigit(source.peek()) )
 			lit_text += (char)source.get();
 		}
-		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
-		// real); madc doesn't currently distinguish float-vs-double
-		// literals at lex time (TokenReal is always double-precision),
-		// so we just consume the suffix char.
+		// C float literal suffixes (f/F, l/L). Preserve the spelling and stamp
+		// the TokenReal type below; macro prescan and later lowering both need
+		// the suffix to survive rather than silently widening it to double.
 		char real_type_suffix = 0;
 		if ( source.good() )
 		{
@@ -6135,6 +6331,7 @@ TokenBase *Program::_getToken()
 		    // value was parsed at full precision and then typed as a double.
 		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			tr->setDataType(&ddLDOUBLE);
+		    tr->source_text = lit_text;
 		    return tr;
 		}
 	    }
@@ -6440,38 +6637,8 @@ TokenBase *Program::_getToken()
 				case TokenType::ttSpace: expanded_arg += ' '; break;
 				case TokenType::ttTab:   expanded_arg += '\t'; break;
 				case TokenType::ttEOL:   expanded_arg += '\n'; break;
-				case TokenType::ttOperator:
-				case TokenType::ttSymbol:
-				    expanded_arg += (char)at->get(); break;
-				case TokenType::ttMultiOp:
-				    expanded_arg += ((TokenMultiOp *)at)->str; break;
-				case TokenType::ttString:
-				    expanded_arg += '"';
-				    expanded_arg += ((TokenIdent *)at)->spelling();
-				    expanded_arg += '"';
-				    break;
-				case TokenType::ttChar:
-				    expanded_arg += '\'';
-				    expanded_arg += (char)at->get();
-				    expanded_arg += '\'';
-				    break;
 				default:
-				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
-					expanded_arg += ti->spelling();
-				    else if ( at->type() == TokenType::ttInteger )
-				    {
-					TokenInt *tki = static_cast<TokenInt *>(at);
-					if ( !tki->source_text.empty() )
-					    expanded_arg += tki->source_text;
-					else
-					{
-					    char buf[32];
-					    snprintf(buf, sizeof(buf), "%ld", (long)at->get());
-					    expanded_arg += buf;
-					}
-				    }
-				    else
-					expanded_arg += (char)at->get();
+				    expanded_arg += token_spelling(at);
 				    break;
 			    }
 			}
@@ -6568,7 +6735,7 @@ TokenBase *Program::_getToken()
 		    return getToken();
 		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
-		// layout/type-shaping ones the parser understands and skip
+		// layout/type/lookup-shaping ones the parser understands and skip
 		// the rest.
 		if ( word == "__attribute__" || word == "__attribute" )
 		{
@@ -6577,14 +6744,7 @@ TokenBase *Program::_getToken()
 		    std::string attr_text;
 		    if ( source.peek() == '(' )
 			consume_pp_group(source, &attr_text);
-		    if ( gnu_attribute_text_has_name(attr_text, "packed")
-		      || gnu_attribute_text_has_name(attr_text, "aligned")
-		      || gnu_attribute_text_has_name(attr_text, "mode")
-		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
-		      || gnu_attribute_text_has_name(attr_text, "vector_size")
-		      || gnu_attribute_text_has_name(attr_text, "alias")
-		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function")
-		      || gnu_attribute_text_has_name(attr_text, "optimize") )
+		    if ( gnu_attribute_text_has_supported_name(attr_text) )
 		    {
 			source.pushback(attr_text);
 			return make_ident(word);
@@ -7150,12 +7310,13 @@ bool Program::has_builtin(const std::string &name)
 // libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in exactly that ifdef
 // (c++config.h:830), so every guard below it silently evaluated to 0 and the
 // default lane quietly lost LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and their
-// siblings. The operators madc cannot back (__has_attribute, __has_feature,
-// …) stay OFF this list and thus invisible: claiming them would be the
-// unbacked yes this file refuses.
+// siblings. __has_attribute now answers from gnu_attribute_kind; operators
+// with no truthful registry (__has_feature, …) stay OFF this list and thus
+// invisible.
 bool Program::has_query_operator_implemented(const std::string &op)
 {
     return op == "__has_builtin"
+	|| op == "__has_attribute"
 	|| op == "__has_include"
 	|| op == "__has_include_next";
 }
@@ -7193,6 +7354,14 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
     if ( op == "__has_builtin" )
 	return has_builtin(arg) ? 1 : 0;
 
+    if ( op == "__has_attribute" )
+    {
+	// Preserving an attribute is not enough to advertise the complete
+	// compiler contract for it.  Grow this truth set only with an
+	// oracle-backed semantic gate; using_if_exists has both.
+	return madc_gnu_attribute_kind(arg) == GnuAttributeKind::UsingIfExists ? 1 : 0;
+    }
+
     if ( op == "__has_include" || op == "__has_include_next" )
     {
 	// Answered EXACTLY, by the same resolution `#include` itself uses — so
@@ -7228,8 +7397,7 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	std::string path = op == "__has_include_next"
 			 ? resolve_include_next_path(file)
 			 : resolve_include_path(file, is_system);
-	std::ifstream probe(path.c_str());
-	if ( probe.good() )
+	if ( resolved_include_provider_exists(path) )
 	    return 1;
 	// LAST position in the executor's resolution order, mirrored here: a
 	// POSIX name the native toolchain ships no header for at all is served
@@ -7241,13 +7409,9 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	return 0;
     }
 
-    // __has_attribute / __has_cpp_attribute / __has_declspec_attribute /
-    // __has_feature / __has_extension / __has_keyword: madc supports a real
-    // subset of each (cleanup, vector_size, the C++11 keyword set the
-    // LanguageStd gate already knows), but there is no registry to ask yet, so
-    // claiming any of it would be exactly the unbacked yes this file refuses.
-    // 0 keeps every library on its portable path — the same answer they got
-    // before these operators existed, now given deliberately.
+    // __has_cpp_attribute / __has_declspec_attribute / __has_feature /
+    // __has_extension / __has_keyword: there is no truthful registry to ask
+    // yet.  0 keeps every library on its portable path.
     return 0;
 }
 
@@ -8095,8 +8259,18 @@ static std::string token_spelling(TokenBase *tb)
 	case TokenType::ttVariable:
 	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
 	    return std::string();
-	case TokenType::ttInteger: return std::to_string(tb->ival());
-	case TokenType::ttReal:    return std::to_string(tb->dval());
+	case TokenType::ttInteger:
+	{
+	    TokenInt *ti = static_cast<TokenInt *>(tb);
+	    return ti->source_text.empty() ? std::to_string(tb->ival())
+					   : ti->source_text;
+	}
+	case TokenType::ttReal:
+	{
+	    TokenReal *tr = static_cast<TokenReal *>(tb);
+	    return tr->source_text.empty() ? std::to_string(tb->dval())
+					   : tr->source_text;
+	}
 	case TokenType::ttChar:
 	{
 	    // Reconstruct a char literal that re-lexes to the same value.

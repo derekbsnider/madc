@@ -28,6 +28,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
+#include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
@@ -1637,21 +1638,21 @@ int main(int argc, char **argv)
 	// no parser state, token arena, or live pool carries over).
 	if ( freeze_run )
 	{
-	    char tmpl[] = "/tmp/madc_frozen_XXXXXX";
-	    int tfd = mkstemp(tmpl);
+	    std::string snapshot_path;
+	    int tfd = madc::detail::make_temp_file("madc_frozen", snapshot_path);
 	    if ( tfd < 0 )
 	    {
-		perror("madc: --freeze-run: mkstemp");
+		perror("madc: --freeze-run: temporary file");
 		return 1;
 	    }
 	    close(tfd);
-	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false,
+	    if ( madc_cir_freeze(prog.get(), argv[filearg], snapshot_path.c_str(), false,
 				 freeze_mir_cache) != 0 )
 	    {
-		unlink(tmpl);
+		unlink(snapshot_path.c_str());
 		return 1;
 	    }
-	    std::string opt = std::string("--run-frozen=") + tmpl;
+	    std::string opt = std::string("--run-frozen=") + snapshot_path;
 	    std::string selfexe = madc_self_exe_path();   // resolved pre-spawn
 	    std::vector<std::string> cargv;
 	    cargv.push_back(argv[0]);
@@ -1664,7 +1665,7 @@ int main(int argc, char **argv)
 		cargv.push_back(argv[i]);
 	    madc::error rerr;
 	    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
-	    unlink(tmpl);
+	    unlink(snapshot_path.c_str());
 	    if ( rc < 0 )
 	    {
 		std::cerr << "madc: --freeze-run: " << rerr.message << std::endl;

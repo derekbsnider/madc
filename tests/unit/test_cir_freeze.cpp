@@ -777,6 +777,15 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	for (size_t i = 0; i < toks.size(); ++i)
 		delete toks[i];
 
+	// v41 source fallback: the semantic grove stays config-pinned, while the
+	// exact pre-PP bytes remain available for a differently configured,
+	// compiler-less consumer to tokenize live.
+	std::string raw_source;
+	REQUIRE(forest.unit_has_source(u_inc));
+	REQUIRE(forest.unit_source(u_inc, raw_source));
+	CHECK(raw_source.find("typedef int b4a_alias_t;") != std::string::npos);
+	CHECK(raw_source.find("#if B4A_MISSING > 0") == std::string::npos);
+
 	// Decl index: the include's exports, with in-range unit-local slices.
 	std::vector<cir_forest_decl_entry> di;
 	REQUIRE(forest.unit_decl_index(u_inc, di));
@@ -1847,7 +1856,12 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 			      + std::to_string((long)getpid()) + ".msnap";
 	{
 		std::ofstream mn(main_path.c_str());
-		mn << "#include <string>\n"
+		// Match <cmath>'s `extern "C++" { #include ... }` shape without
+		// pulling its unrelated special-function corpus into this unit gate.
+		// A linkage block must not stamp <string>'s inline globals vfEXTERN.
+		mn << "extern \"C++\" {\n"
+		      "#include <string>\n"
+		      "}\n"
 		      "int main() { std::string s; return (int)s.size(); }\n";
 	}
 
@@ -1891,7 +1905,10 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 			CHECK(c->nvsize > 0);		// v16: nvsize serialized (was 0)
 		} else if (!strcmp(globals[i].name, "piecewise_construct")) {
 			saw_piecewise = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_EXTERN_REF) == 0);
 			CHECK((globals[i].gflags & CIR_GLOBALF_CLASS_COPY_TEMP) != 0);
+			CHECK((globals[i].flags & vfEXTERN) == 0);
+			CHECK((globals[i].flags & vfLINKONCE) != 0);
 			REQUIRE(c != nullptr);
 			CHECK(c->nvsize > 0);
 		}

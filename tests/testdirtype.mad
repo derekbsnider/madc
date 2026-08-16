@@ -1,7 +1,6 @@
-// Linux glibc exposes `DIR` as a typedef for an opaque struct. madc's
-// embedded <dirent.h> now provides that typedef (`typedef struct
-// __dir_opaque DIR;`) so C code can declare `DIR *dp;` and pass it to
-// opendir/readdir/closedir.
+// Native libc providers expose `DIR` as a typedef for an opaque struct.
+// madc's POSIX compatibility surface provides the same type so C code can
+// declare `DIR *dp;` and pass it to opendir/readdir/closedir.
 
 #include <stdio.h>
 #include <dirent.h>
@@ -19,8 +18,8 @@ int count_entries(char *path)
 
 int main()
 {
-    int n = count_entries("/tmp");
-    printf("tmp>0: %d\n", n > 0 ? 1 : 0);
+    int n = count_entries(".");
+    printf("cwd>0: %d\n", n > 0 ? 1 : 0);
 
     int m = count_entries("/definitely/does/not/exist/anywhere");
     printf("missing<0: %d\n", m < 0 ? 1 : 0);

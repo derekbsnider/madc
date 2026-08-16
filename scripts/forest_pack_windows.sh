@@ -26,7 +26,9 @@ cd "$(dirname "$0")/.."
 
 BIN="${1:-bin/madc-release-x86-64-windows.exe}"
 LIST=scripts/forest_pack_headers_windows.txt
+GUARDED_LIST=scripts/forest_pack_guarded_windows.txt
 LEDGER_LIST=scripts/ledger_sources.txt
+WIN_CXX_INCLUDE="${MADC_WIN_CXX_INCLUDE:?missing MinGW libstdc++ include root}"
 mkdir -p tmp
 
 if [ ! -f "$BIN" ]; then
@@ -63,6 +65,13 @@ TU=tmp/forest_pack_tu_win.cpp
     grep -vE '^[[:space:]]*(#|$)' "$LIST" | while read -r h; do
         echo "#include <$h>"
     done
+    # A default-standard preprocess cannot discover these C++20-guarded
+    # edges. Absolute roots preserve their canonical sysroot names while
+    # their guarded bodies stay semantically empty in this profile; v41 still
+    # records the exact raw text for live C++20 re-tokenization.
+    grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST" | while read -r h; do
+        echo "#include \"$WIN_CXX_INCLUDE/$h\""
+    done
     echo "int main() { return 0; }"
 } > "$TU"
 
@@ -71,6 +80,21 @@ TU=tmp/forest_pack_tu_win.cpp
 cp -p "$BIN" tmp/forest_packer_madc.exe
 
 ulimit -t 1800
+# Profile stacks are newest-first at read time, so append every non-default
+# stdlib profile first and the MinGW build default last. Keep the alternate
+# optional: gen_sys_includes.sh only publishes a flavor when this build host
+# can actually probe it. The tiny compile asks the packed compiler's generated
+# flavor table rather than duplicating that detection here.
+PROFILE_PROBE=tmp/forest_profile_probe_win.cpp
+printf 'int main() { return 0; }\n' > "$PROFILE_PROBE"
+LIBCXX_PROFILE=0
+if timeout 60 "$WINE" tmp/forest_packer_madc.exe --no-config \
+        -stdlib=libc++ "$PROFILE_PROBE" >/dev/null 2>&1; then
+    timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config \
+        -stdlib=libc++ --freeze-append="$BIN" "$TU"
+    LIBCXX_PROFILE=1
+fi
+
 # --no-config for the same reason as the native pack: an ambient madc.ini
 # must never change the frozen corpus's producer config. The wall cap is
 # wider than the Linux pack's — the freeze pays the wine translation tax.
@@ -115,6 +139,16 @@ while IFS= read -r h; do
         missing=1
     fi
 done < <(grep -vE '^[[:space:]]*(#|$)' "$LIST")
+# The guarded roots are not public entry points, but their raw source must be
+# in the same default-flavor profile selected by a C++20 live fallback.
+while IFS= read -r guarded; do
+    [ -n "$guarded" ] || continue
+    guarded_pattern=$'^unit\t[0-9]+\t.*'"$guarded"$'\t'
+    if ! grep -Eq "$guarded_pattern" tmp/forest_pack_win_dump.txt; then
+        echo "forest_pack_windows: MISSING guarded source unit: $guarded" >&2
+        missing=1
+    fi
+done < <(grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST")
 if [ "$missing" -ne 0 ]; then
     echo "forest_pack_windows: FAILED - see missing units above" >&2
     exit 1
@@ -126,6 +160,18 @@ out_frozen=$(timeout 300 "$WINE" "$BIN" tests/testfreezerun.mad 2>&1 | tr -d '\r
 grep -q 'sum=55 count=5' <<<"$out_frozen"
 grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 
+# When libc++ was available to the build, prove the shipped self-image walks
+# past the newest (default libstdc++) profile and binds the older matching
+# profile. The real-Windows suite separately proves the carrier has no
+# accidental dependency on the producer's absolute filesystem paths.
+if [ "$LIBCXX_PROFILE" -eq 1 ]; then
+    timeout 300 "$WINE" "$BIN" -v -stdlib=libc++ \
+        tests/teststdunversioned.mad > tmp/forest_pack_win_libcxx.log 2>&1
+    grep -q 'trying older profile' tmp/forest_pack_win_libcxx.log
+    grep -q 'opened container' tmp/forest_pack_win_libcxx.log
+    grep -q '^ok' tmp/forest_pack_win_libcxx.log
+fi
+
 # The Linux pack's rung-3 MIR-cache bind-equivalence leg is DELIBERATELY
 # absent here: the opt-in MADC_MIR_CACHE_BIND=1 lane crashes on win64
 # (EXCEPTION_ILLEGAL_INSTRUCTION in a JIT frame right after the cache
@@ -135,4 +181,5 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # equivalence leg (forest_pack.sh's shape) when #55 is fixed.
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
-echo "forest_pack_windows: OK ($units units appended to $BIN; default-lane product smoke green)"
+profiles=$((1 + LIBCXX_PROFILE))
+echo "forest_pack_windows: OK ($profiles profile(s), $units default-profile units appended to $BIN; product smokes green)"
