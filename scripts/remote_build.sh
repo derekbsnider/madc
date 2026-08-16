@@ -274,7 +274,10 @@ for stage in $stages; do
 		# with every include root masked, so `Z:` cannot stand in for the
 		# mingw headers the artifact is supposed to be serving itself.
 		# Paired with `wine` the way `headerless` is paired with `packed`.
-		run_remote "headerless-win" "cd /workspace/madc; bash scripts/headerless_suite.sh win64"
+		# The profile is an ENV knob; a positional argument is a
+		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
+		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
+		run_remote "headerless-win" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is

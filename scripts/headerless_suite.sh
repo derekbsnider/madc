@@ -172,4 +172,22 @@ export MADC_BIN
 export MADC_SKIP_EXT="$PROFILE_DOMAINS${MADC_SKIP_EXT:+ $MADC_SKIP_EXT}"
 [ -n "$PROFILE_WRAPPER" ] && export MADC_WRAPPER="$PROFILE_WRAPPER"
 export WINEDEBUG=-all
-exec bash scripts/run_tests.sh "$@"
+
+# A run that executed NOTHING is not a pass. The profile is selected by
+# MADC_HEADERLESS_PROFILE; a positional argument is a run_tests.sh FILTER, so
+# `headerless_suite.sh win64` silently ran the NATIVE profile with a filter
+# matching 0 of 1063 tests — and exited 0. That is the exact failure this lane
+# exists to catch, committed by the lane itself, so it is checked here rather
+# than trusted: no output line claiming at least one test passed = exit 1.
+# (Not delegated to run_tests.sh: every lane would need the same guard, and
+# this is the lane whose whole value is refusing to be vacuously green.)
+set -o pipefail
+bash scripts/run_tests.sh "$@" 2>&1 | tee "$CTL/suite.out"
+suite_rc=${PIPESTATUS[0]}
+if ! grep -qE '^[1-9][0-9]* passed,' "$CTL/suite.out"; then
+	echo "headerless_suite: VACUOUS RUN — the suite executed no tests." >&2
+	echo "  profile=$PROFILE (set MADC_HEADERLESS_PROFILE, not a positional arg;" >&2
+	echo "  a positional argument is passed to run_tests.sh as a test filter)." >&2
+	exit 1
+fi
+exit "$suite_rc"
