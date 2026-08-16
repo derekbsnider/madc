@@ -3353,11 +3353,35 @@ void Program::forest_bind_include(uint32_t unit)
     std::vector<uint32_t> edges;
     bool have_edges = bind_forest->unit_edges(unit, edges);
     double _self = forest_stat_now() - _t0;
+    // Children before this unit's own PP delta is right while children are
+    // merely BOUND — a bind evaluates no #if, so install order cannot change
+    // what it sees. A missing-content husk child is different: it is LIVE-
+    // PARSED (see forest_husk_live_pending above), and a live parse DOES
+    // evaluate #if, against whatever the macro tables hold at that moment.
+    // With this unit's exports still uninstalled, an internal header gets
+    // parsed as if its public front had never run — glibc's bits/stat.h then
+    // hits its own `#if !defined _SYS_STAT_H && !defined _FCNTL_H` guard and
+    // #errors, because sys/stat.h had bound but not yet defined _SYS_STAT_H.
+    //
+    // So when any child is a pending husk, this unit's PP lands FIRST. That is
+    // an APPROXIMATION of live order, not a reproduction of it: the event
+    // stream carries no position for the child's include site, so the whole
+    // export set installs rather than the prefix that preceded the child. It
+    // is strictly closer to a live parse than installing nothing, and the
+    // headers this affects define their guard before including their internals
+    // — which is the whole reason the guard exists.
+    bool husk_child = false;
+    if ( have_edges )
+	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
+	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
+    if ( husk_child )
+	forest_install_pp(unit);
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
 	    forest_bind_include(edges[i]);
     double _t1 = forest_stat_now();
-    forest_install_pp(unit);
+    if ( !husk_child )
+	forest_install_pp(unit);
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);

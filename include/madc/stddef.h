@@ -32,9 +32,21 @@ typedef __WCHAR_TYPE__ wchar_t;
 #undef __need_wchar_t
 #endif
 #ifdef __need_NULL
-#ifndef NULL
+// gcc's stddef.h spells this `#undef NULL` + an UNCONDITIONAL `#define`, with
+// the comment "in case <stdio.h> has defined it" — a __need_NULL request must
+// PRODUCE NULL, not merely leave it produced. An `#ifndef NULL` guard here
+// diverges from that oracle and makes the definition conditional on whatever
+// ran earlier in the translation unit.
+//
+// That divergence is invisible live and fatal frozen. The pack's canonical
+// order puts <cstddef> first, so by the time glibc's <stdlib.h> issued its
+// __need_NULL request the guard was already false: the freeze recorded
+// stdlib.h's `define __need_NULL` and `undef __need_NULL` and NO `define NULL`,
+// leaving a unit that cannot define NULL when bound on its own. A TU reaching
+// stddef.h ONLY through the __need protocol then got no NULL at all
+// (tests/smaug_requests_mud.mah, on the headerless lane).
+#undef NULL
 #define NULL ((void *)0)
-#endif
 #undef __need_NULL
 #endif
 #ifdef __need_wint_t
