@@ -1,0 +1,52 @@
+#!/../bin/madc
+// Declarations in a switch body BEFORE the first case label ([stmt.switch] —
+// unreachable, but valid declarations). madc kept them only when the statement
+// began with a datatype or an identifier; a declaration that leads with a
+// QUALIFIER or a tag keyword (`const char *cs;`) starts with a KEYWORD token,
+// so the token-TYPE test rejected it and the whole switch failed to parse.
+//
+// This is how libstdc++'s time_get::_M_extract_via_format dies —
+//   switch (__c) { const char* __cs; _CharT __wcs[10]; case 'a': ... }
+// which is parsed by the pack freeze (task #61) but is reachable by ordinary
+// user code too: the reducer below needs no headers beyond <cstdio>.
+//
+// Oracle: g++ 13 and clang++, both -std=c++17 -> "111 22 -1 5"
+#include <cstdio>
+
+static int pick(int c)
+{
+	switch (c)
+	{
+		const char *cs;		// leads with `const` — a keyword
+		int n[4];		// leads with a datatype (already worked)
+	case 1:
+		cs = "one";
+		return (int)cs[0];	// 'o' == 111
+	case 2:
+		n[0] = 22;
+		return n[0];
+	default:
+		return -1;
+	}
+}
+
+struct Tag { int v; };
+
+static int tagged(int c)
+{
+	switch (c)
+	{
+		struct Tag t;		// leads with `struct`
+	case 1:
+		t.v = 5;
+		return t.v;
+	default:
+		return 0;
+	}
+}
+
+int main()
+{
+	printf("%d %d %d %d\n", pick(1), pick(2), pick(9), tagged(1));
+	return 0;
+}

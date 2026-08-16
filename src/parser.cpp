@@ -10794,6 +10794,39 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     return owner_type;
 }
 
+DataDef *Program::fold_class_qualified_nested_type(DataDef *base_type,
+						   TokenBase *type_tok)
+{
+    // Contract on the declaration in madc.h. Resolution is via type_aliases
+    // only, so a static-member or template-id chain falls through to the
+    // caller's existing paths (and its existing diagnostics), consuming
+    // nothing.
+    if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
+	return NULL;
+    DataDefCLASS *qcls = dynamic_cast<DataDefCLASS *>(base_type);
+    if ( !qcls )
+	return NULL;
+    DataDef *chain_dd = NULL;
+    size_t chain_consume = 0;
+    std::string chain_leaf;
+    if ( peek_class_member_type_chain(qcls, tokens, 0, chain_dd,
+				      chain_consume, chain_leaf)
+      && chain_dd )
+    {
+	for ( size_t ci = 0; ci < chain_consume; ++ci )
+	    nextToken();
+	return chain_dd;
+    }
+    // A member-TEMPLATE-id leaf (`Sel<true>::type<int,double>` — a member alias
+    // template instantiated with args) needs the CONSUMING chain-walker; the
+    // peek helper above bails on the trailing `<`. Same resolution
+    // resolve_typename_type_token uses.
+    if ( TokenDataType *member =
+		resolve_class_member_type_chain(qcls, type_tok) )
+	return &member->definition;
+    return NULL;
+}
+
 TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 						      TokenBase *owner_tb,
 						      bool committed_type_context)
@@ -39509,6 +39542,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
+		// A member whose type is a class-qualified NESTED type
+		// (`ios_base::fmtflags _M_mask;` — <iomanip>'s
+		// _Resetiosflags). Folded HERE, after every arm above has
+		// produced `mtype`, because which arm recognized the scope
+		// name is irrelevant to the rule: `Outer::flags m;` means the
+		// same thing wherever it is written, and the C++ CLASS-body
+		// parser already accepted it. Only this data-only struct
+		// parser left the `::` for the member-NAME expectation, which
+		// then rejected the whole declaration.
+		if ( DataDef *nested = pgm.fold_class_qualified_nested_type(
+					    &mtype->definition, mtype) )
+		    mtype = new TokenDataType(nested->name.c_str(), *nested);
 		DataDef *base_member_dd = &mtype->definition;
 		// Member declared via a user typedef alias (not a builtin or
 		// "struct tag"): record it so CIR emits ID("alias") for this
@@ -47175,6 +47220,32 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
     return target;
 }
 
+// A DECLARATION-SPECIFIER keyword. These arrive with KEYWORD token ids, not as
+// ttDataType or ttIdentifier, so any "does a declaration start here" test that
+// looks only at those two token TYPES silently misses every declaration that
+// leads with a qualifier or a tag — `const char *p;`, `static int n;`,
+// `struct S s;`. Named because the concept is asked in more than one place (the
+// member-template return-token scan skips the same set).
+bool is_decl_specifier_keyword(TokenID id)
+{
+    switch ( id )
+    {
+    case TokenID::tkCONST:
+    case TokenID::tkVOLATILE:
+    case TokenID::tkSTATIC:
+    case TokenID::tkEXTERN:
+    case TokenID::tkREGISTER:
+    case TokenID::tkRESTRICT:
+    case TokenID::tkTYPEDEF:
+    case TokenID::tkSTRUCT:
+    case TokenID::tkUNION:
+    case TokenID::tkENUM:
+	return true;
+    default:
+	return false;
+    }
+}
+
 TokenBase *TokenSWITCH::parse(Program &pgm)
 {
     DBG(std::cout << "TokenSWITCH::parse()" << std::endl);
@@ -47229,7 +47300,8 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	if ( !active_case )
 	{
 	    if ( tn->type() == TokenType::ttDataType
-	      || tn->type() == TokenType::ttIdentifier )
+	      || tn->type() == TokenType::ttIdentifier
+	      || is_decl_specifier_keyword(tn->id()) )
 	    {
 		// C allows variable declarations in a switch body before any
 		// case label — they're unreachable (no case path enters
@@ -47238,6 +47310,11 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		// is a common form. Keep them so the CIR emits the declaration
 		// (it carries the type for uses later in the switch); discarding
 		// left the variable undeclared in the emitted C.
+		// A declaration that leads with a QUALIFIER or a tag keyword
+		// (`const char *__cs;`) is the same case: the token type test
+		// alone rejected it, which is how libstdc++'s
+		// time_get::_M_extract_via_format — `switch (__c) { const char*
+		// __cs; _CharT __wcs[10]; case 'a': ... }` — failed to parse.
 		DBG(std::cout << "TokenSWITCH::parse() keeping pre-case declaration" << std::endl);
 		TokenBase *pre = pgm.parseStatement(tn);
 		if ( pre )
@@ -56262,9 +56339,10 @@ static void stamp_member_template_pattern(
 	    TokenID sid = st->id();
 	    // Specifier KEYWORD tokens (static/const/extern/volatile/friend are
 	    // keyword IDs, not identifiers) — skip them so the return-type range
-	    // starts at the actual type.
-	    bool is_spec = sid == TokenID::tkSTATIC || sid == TokenID::tkCONST
-			|| sid == TokenID::tkEXTERN || sid == TokenID::tkVOLATILE
+	    // starts at the actual type. `friend` is a declaration specifier
+	    // only here (it cannot lead a block-scope declaration), so it stays
+	    // beside the shared predicate rather than inside it.
+	    bool is_spec = is_decl_specifier_keyword(sid)
 			|| sid == TokenID::tkFRIEND;
 	    if ( !is_spec && is_contextual_identifier_token(st) )
 	    {
@@ -61238,37 +61316,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *base_type = &tb->definition;
     DataDef *decl_type = base_type;
     // Class-qualified NESTED type in a declaration: `ios_base::Init __ioinit;`
-    // / `static Outer::Inner obj;` — fold the `:: name [:: name …]` chain
-    // into the nested type before declarator parsing. Resolution is via
-    // type_aliases only, so a static-member or template-id chain falls
-    // through to the existing paths (and the existing diagnostics).
-    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    // / `static Outer::Inner obj;`. The struct-MEMBER parser folds the same
+    // chain through the same owner.
+    if ( DataDef *nested = fold_class_qualified_nested_type(base_type, tb) )
     {
-	if ( DataDefCLASS *qcls = dynamic_cast<DataDefCLASS *>(base_type) )
-	{
-	    DataDef *chain_dd = NULL;
-	    size_t chain_consume = 0;
-	    std::string chain_leaf;
-	    if ( peek_class_member_type_chain(qcls, tokens, 0, chain_dd,
-					      chain_consume, chain_leaf)
-	      && chain_dd )
-	    {
-		for ( size_t ci = 0; ci < chain_consume; ++ci )
-		    nextToken();
-		base_type = chain_dd;
-		decl_type = chain_dd;
-	    }
-	    else if ( TokenDataType *member =
-			  resolve_class_member_type_chain(qcls, tb) )
-	    {
-		// A member-TEMPLATE-id leaf (`Sel<true>::type<int,double>` — a
-		// member alias template instantiated with args) needs the
-		// CONSUMING chain-walker; the peek helper above bails on the
-		// trailing `<`. Same resolution resolve_typename_type_token uses.
-		base_type = &member->definition;
-		decl_type = base_type;
-	    }
-	}
+	base_type = nested;
+	decl_type = nested;
     }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer

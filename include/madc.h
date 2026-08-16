@@ -5652,6 +5652,16 @@ public:
     TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
 						   TokenBase *owner_tb,
 						   bool committed_type_context = false);
+    // Fold a class-qualified NESTED-TYPE chain onto a type token that was just
+    // consumed, when `::` follows: `Outer::Inner`, `ios_base::Init`. Returns
+    // the nested type and consumes the chain, or NULL (consuming nothing) when
+    // the chain is not a nested type, so callers keep their existing paths and
+    // diagnostics. Every declaration position must agree on this — a struct
+    // MEMBER declared `Outer::flags m;` is the same construct as a local, and
+    // the member site not folding it is what stopped <iomanip> dead on
+    // `ios_base::fmtflags _M_mask;`.
+    DataDef *fold_class_qualified_nested_type(DataDef *base_type,
+					      TokenBase *type_tok);
     TokenDataType *resolve_member_chain_or_type(TokenDataType *type_tok,
 						TokenBase *tb,
 						bool consume_class_member_chain);
