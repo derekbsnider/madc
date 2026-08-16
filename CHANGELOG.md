@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- **`std::vector<int> v{1,2,3}` compiled as `std::vector<int> v(1,2,3)`.** madc had
+  no C++ list-initialization at all: a braced list on a class type was lowered
+  as a parenthesised constructor-argument list, so the first element became the
+  size and the third was handed to `allocator<int>`. The copy form
+  `= {1,2,3}` threaded only the first element, selecting `vector(size_type)`
+  with `n == 1` — which compiled clean through `--emit=c11` and silently
+  produced a one-element vector. Direct- and copy-list-initialization, non-`int`
+  element types, `std::initializer_list` as the declared type, and user
+  initializer-list constructors now all match g++ and clang++. Class element
+  types decline to the pre-existing path pending the constructed-backing-array
+  slice.
+- **Three defects that shipped in v0.80.0 are fixed.** `std::vector<int> e{}`
+  crashed: `T x{}` is spelled internally as `x = x`, so the copy constructor
+  read its own uninitialized storage and called `operator new` on a garbage
+  size — invisible for empty tag classes like `std::in_place_t`, fatal for
+  anything with a real copy constructor. Declarations before a switch's first
+  `case` label were rejected when they led with a qualifier or tag keyword
+  (`const char *cs;`). And a struct member declared with a class-qualified
+  nested type (`ios_base::fmtflags _M_mask;`) was rejected, which stopped
+  `<iomanip>` on its first line of content — every other declaration position
+  already folded that chain.
+- **The headerless lane runs with the battery, not by hand.** It is the only
+  lane that can observe an artifact failing to serve a standard header from its
+  own frozen corpus; every other lane has the headers on disk, or reaches them
+  through Wine's `Z:`. Task #58 broke that promise on real Windows and unrelated
+  work fixed it days later with neither event noticed. `#58` is now closed in
+  vivo — all seven `win_battery` legs green on the owner's Windows box,
+  including the `clane` leg that compiles a C translation unit on a
+  compiler-less host.
+- **Packed-lane startup is measured, not assumed.** `#include <string>` startup
+  is 0.164s → 0.214s against the v0.80.0 archive binary (+50ms), reproducible
+  to the millisecond, with instruction count +14%. The suspected cause — a
+  closure walk reaching the default path untimed — is refuted: both callgrind
+  profiles have the same shape with every entry scaled 10-20%. The cost is the
+  deliberate pack expansion that made the headerless promise hold (241 → 339
+  units). Roughly a quarter of startup instructions are decompression and unit
+  segmentation for a program that includes only `<string>`, which is the lever
+  for per-unit lazy decompression.
+
 - **The Windows W3–W5 release lane is implementation-complete.** MadC now
   builds and verifies a stripped MinGW+UCRT PE release, carries a
   dual-standard-library packed forest with exact target raw-source fallbacks,

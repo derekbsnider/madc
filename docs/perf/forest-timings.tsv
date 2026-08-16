@@ -34,3 +34,4 @@ date	commit	live_s	bound_s	live_derives	bound_derives	load1	note
 2026-07-17	945c12b9	2.270	0.626	217	184	0.89	R5 slice 2 @434f7f2c: pattern-served ctor Itanium fidelity (serve qualifier carry-over + restore spelling round-trip + mangle fence); packed suite re-green 697/0/0/16
 2026-07-17	9685e748	2.270	0.665	217	184	1.13	metrics v2 seed: rusage (cpu/maxrss/flt/nivcsw) + callgrind Ir anchor (owner-directed after box-drift finding)
 2026-07-17	f11b0762	2.269	0.665	217	184	1.42	R5 s4 @2ccb63b7 + s5 @f11b0762: deferred nested-demand capture + friend-decl serve (3 depth fixes); default lanes FLAT; opt-in A/B 2.261/2.396 (+135ms, capture cost of big classes)
+2026-08-16	d01ed890	1.518	0.565	222	198	0.43	session #95: pack v3 (headerless, 241->339 units) + list-init + 2 parser fixes; <string> latency 0.164->0.214s vs v0.80.0 (+50ms, +30%), Ir 747M->854M (+14%), profile SHAPE unchanged
