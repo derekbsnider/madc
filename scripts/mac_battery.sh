@@ -18,6 +18,11 @@
 #      iostream — on a header-less Mac these can ONLY come from the forest)
 #   3b cout << "hi" as its OWN probe — the darwin sret arc's driving symptom;
 #      unmaskable by defects earlier in the chained groves probe
+#   3c forest degradation, consumer side (task #63): a -v bind of the packed
+#      groves must lose NOTHING it admitted — no unfillable record, no
+#      mis-kinded restore. The DK_NONE / closure-drop census is reported, not
+#      gated. The cross-freeze cannot check any of this on the build container,
+#      so this Mac is the only place it can be measured
 #   4  the madc::value intrinsic, include-free
 #   5  exec:// channels end-to-end (spawn this madc, value carriers)
 #   6  AOT object round-trip (-c then run the .o through MIR's loader) —
@@ -141,6 +146,56 @@ int main() {
 EOF
 printf 'hi\n' > couthi.expect
 check "iostream alone (cout << \"hi\" — the darwin sret probe)" couthi.expect "$MADC" couthi.mad
+
+# --- 3c. forest degradation, consumer side (task #63) ------------------------
+# The darwin pack is a CROSS freeze, so the build container cannot run the
+# consumer that materializes the container — this Mac is the only place the
+# load side can be measured, which is why the check lives here and not in
+# scripts/forest_pack_darwin.sh.
+#
+# Two diagnostics name a bind that LOST something, and neither has a legitimate
+# instance: a record ADMITTED but not fillable, and a restored record that was
+# not the DataDef kind it claimed. Task #64 was the first: std::ios_base could
+# not be filled, the bind dropped it silently, and the whole iostream family
+# went with it. `cout << "hi"` failing (leg 3b) was the symptom a layer later.
+# Those two are the pass/fail here.
+#
+# The DK_NONE census (UNRESOLVED with kind=0 — an id the freeze stamped that no
+# record walk wrote) is REPORTED, not gated: most instances are dependent
+# operands, where a pointer to a template parameter has no concrete record by
+# construction. The repo side ratchets it per profile; on darwin there is no
+# baseline to ratchet against, because a cross-freeze cannot run its own
+# consumer — so the number goes in the pasted output and is recorded in
+# docs/plans/2026-08-17-pack-degradation-gate.md. UNRESOLVED *without* kind=0 is
+# routine (an operand outside the bound closure) and is not counted at all.
+#
+# All the strings below are DBG-gated: with no materialization the counts would
+# be zero for the wrong reason, so the marker is checked FIRST. The token list
+# is enforced on the repo side by `scripts/forest_pack_gate.sh --selftest`,
+# which fails if this copy drifts (it must stay duplicated: this script runs on
+# a Mac from an unpacked tarball, with no repo beside it).
+"$MADC" -v groves.mad > groves_v.log 2>&1
+tr -d '\000\r' < groves_v.log > groves_v.txt
+FD_MARK=$(grep -c 'materialize filter:' groves_v.txt)
+FD_FILL=$(grep -c 'materialize fill: DROPPED' groves_v.txt)
+FD_SKIP=$(grep -c 'forest_restore_decls: SKIPPED' groves_v.txt)
+FD_DKNONE=$(grep 'materialize derived: UNRESOLVED' groves_v.txt | grep -c 'kind=0')
+FD_CLOSURE=$(grep -c 'materialize closure: DROPPED' groves_v.txt)
+FD_LOST=$((FD_FILL + FD_SKIP))
+if [ "$FD_MARK" -eq 0 ]; then
+    echo "FAIL - forest degradation (no 'materialize filter:' — nothing bound,"
+    echo "       so every count below would be zero for the wrong reason)"
+    FAIL=$((FAIL + 1))
+elif [ "$FD_LOST" -eq 0 ]; then
+    echo "ok   - forest degradation (fill-dropped 0, restore-skipped 0)"
+    echo "       census, not gated: DK_NONE=$FD_DKNONE closure-dropped=$FD_CLOSURE"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL - forest degradation: fill-dropped=$FD_FILL restore-skipped=$FD_SKIP"
+    grep -e 'materialize fill: DROPPED' -e 'forest_restore_decls: SKIPPED' groves_v.txt | sed 's/^/    /'
+    echo "       census: DK_NONE=$FD_DKNONE closure-dropped=$FD_CLOSURE"
+    FAIL=$((FAIL + 1))
+fi
 
 # --- 4. value intrinsic, include-free ---------------------------------------
 cat > val.mad <<'EOF'

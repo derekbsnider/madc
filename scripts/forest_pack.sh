@@ -120,7 +120,19 @@ fi
 # developer config dir, system config dir) carrying a `std` or `include` key
 # would silently change the frozen corpus's PRODUCER CONFIG, after which every
 # ordinary compile would fall through the v27 config gate.
-timeout 900 tmp/forest_packer_madc --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU"
+#
+# The output is CAPTURED for the degradation gate (task #63): the pack's
+# tolerated parse errors live in it, and a pack that exits 0 while a header
+# class stopped parsing is exactly the silent loss the ratchet catches.
+# Redirect-then-cat, never `| tee` — without pipefail a pipeline's status is
+# tee's, so a pack FAILURE would read as success.
+PACK_LOG=tmp/forest_pack_freeze.log
+if ! timeout 900 tmp/forest_packer_madc --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
+    cat "$PACK_LOG"
+    echo "forest_pack: FAILED - freeze-append exited nonzero" >&2
+    exit 1
+fi
+cat "$PACK_LOG"
 if [ "$APPEND_TO" != "$OUT" ]; then
     mv -f "$APPEND_TO" "$OUT"
 fi
@@ -169,6 +181,17 @@ grep -aq 'mir cache: bind module staged' <<<"$v"
 out_cache=$(MADC_MIR_CACHE_BIND=1 timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 [ "$out_cache" = "$out_nocache" ]
+
+# Degradation gate (task #63) — the consumer half. A -v run of the PACKED
+# product over a real C++ program (iostream/string/vector: the exact closure
+# task #64 destroyed) so the bind MATERIALIZES the container; the gate then
+# hard-zeroes the losses that have no legitimate instance. It refuses to render
+# a verdict on a log with no materialization, so this leg cannot pass by
+# binding nothing. Separate from the cache-equivalence run above on purpose:
+# that one tests the opt-in cache lane, this one tests what the bind LOST.
+LOAD_LOG=tmp/forest_pack_load.log
+timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+bash scripts/forest_pack_gate.sh --profile linux --pack-log "$PACK_LOG" --load-log "$LOAD_LOG"
 
 units=$(grep -c '^unit	' tmp/forest_pack_dump.txt)
 if [ "$SIDECAR" = 1 ]; then

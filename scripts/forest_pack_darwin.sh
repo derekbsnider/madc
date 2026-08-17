@@ -87,7 +87,17 @@ TU="$OUT.tu.cpp"
 ulimit -t 900
 # --no-config for the same reason as the native pack: an ambient madc.ini must
 # never change the frozen corpus's producer config (see scripts/forest_pack.sh).
-timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU"
+#
+# Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
+# why this is redirect-then-cat and never `| tee`. The log lands beside the
+# container (a build product, caller-relative like every path here).
+PACK_LOG="$OUT.freeze.log"
+if ! timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
+    cat "$PACK_LOG"
+    echo "forest_pack_darwin: FAILED - freeze-append exited nonzero" >&2
+    exit 1
+fi
+cat "$PACK_LOG"
 
 # Verify: the container reads back (context-hash pin + directory), and every
 # manifest name is a directory unit — a missing stub unit means a consumer's
@@ -147,5 +157,17 @@ if [ "$missing" -ne 0 ]; then
     echo "forest_pack_darwin: FAILED — container dropped (see missing units above)" >&2
     exit 1
 fi
+
+# Degradation gate (task #63) — the PRODUCER half only. Both arches check
+# against the same `darwin pack-errors` key, each on its own log, so a
+# divergence between them still fails loudly (58 apiece today).
+#
+# There is no --load-log here, and that is structural, not an omission: this is
+# a CROSS freeze, so the build container cannot execute the consumer that would
+# materialize the container. Darwin's consumer half runs where the artifact
+# runs — scripts/mac_battery.sh's forest-degradation leg, on a Mac, against the
+# exact shipped binary. That is the same split task #60 (the macOS headerless
+# cell) exists to close.
+bash "$(dirname "$0")/forest_pack_gate.sh" --profile darwin --pack-log "$PACK_LOG"
 
 echo "forest_pack_darwin: OK ($(grep -c '^unit	' "$DUMP") units in $OUT for $(basename "$CROSS"))"

@@ -94,7 +94,16 @@ ulimit -t 1800
 # --no-config for the same reason as the native pack: an ambient madc.ini
 # must never change the frozen corpus's producer config. The wall cap is
 # wider than the Linux pack's — the freeze pays the wine translation tax.
-timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$BIN" "$TU"
+#
+# Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
+# why this is redirect-then-cat and never `| tee`.
+PACK_LOG=tmp/forest_pack_win_freeze.log
+if ! timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$BIN" "$TU" > "$PACK_LOG" 2>&1; then
+    cat "$PACK_LOG"
+    echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
+    exit 1
+fi
+cat "$PACK_LOG"
 
 # Verify through the PACKED exe itself (self-image arm: the running
 # executable's own trailer). Wine's CRT writes CRLF: the greps below are
@@ -163,6 +172,15 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # is default-off, so the shipped artifact's default path is unaffected
 # and verified above + by the packed suite lanes. Restore the
 # equivalence leg (forest_pack.sh's shape) when #55 is fixed.
+
+# Degradation gate (task #63) — producer ratchet + consumer hard zero, the
+# same two halves as the Linux pack. The load probe is its own -v run of the
+# shipped exe (the smoke above compares OUTPUT, which a degraded bind can still
+# get right); the wall cap is wider than Linux's because every line of the -v
+# trace pays the wine translation tax.
+LOAD_LOG=tmp/forest_pack_win_load.log
+timeout 900 "$WINE" "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+bash scripts/forest_pack_gate.sh --profile win64 --pack-log "$PACK_LOG" --load-log "$LOAD_LOG"
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
 echo "forest_pack_windows: OK (1 profile, $units units appended to $BIN; product smokes green)"
