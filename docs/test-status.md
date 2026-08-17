@@ -2,9 +2,10 @@
 
 > **Current (2026-08-17, php::print_r / php::var_dump over ANY madc type —
 > merged to `develop`, UNRELEASED; VERSION stays 0.84.0 until the arc is
-> complete):** authoritative Linux fulltest **1070 passed / 0 failed / 0
-> timed out / 9 skipped** (six new tests: four for the dump intrinsics, two for
-> the range-for protocol fix); zero warnings under `-Werror`. The dump tests are
+> complete):** authoritative Linux fulltest **1071 passed / 0 failed / 0
+> timed out / 9 skipped** (eight new tests: four for the dump intrinsics, two for
+> the range-for protocol fix, one for print_r's $return, one for madc::value
+> initializers); zero warnings under `-Werror`. The dump tests are
 > oracled against **php-cli 8.3.6** — every `print_r` block is byte-identical to
 > PHP's for the corresponding PHP value, captured with `cat -A` (the captures
 > live in `docs/plans/2026-08-17-php-print-r-var-dump-plan.md` §2). `php-cli` is

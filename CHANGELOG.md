@@ -3,7 +3,31 @@
 ## [Unreleased]
 
 php::print_r and php::var_dump over ANY madc type — the compiler is their
-implementation, and PHP is the oracle to the byte. **Merged to `develop`,
+implementation, and PHP is the oracle to the byte.
+
+- **`php::print_r($x, true)` — PHP's `$return` parameter.** PHP's own signature:
+  ONE function, a default second parameter, and a `string|true` return, which is
+  what `madc::value` models — the captured text when `$return` is true, boolean
+  `true` when it is not. Declared
+  `template<class T> madc::value &print_r(const T &v, bool ret = false)`. Every
+  `rt_dump.c` primitive now takes a leading `void *sink` routed through one
+  writer: NULL prints to stdout, non-NULL appends to an opaque growable buffer.
+  A runtime flag costs one walk, not two. **When the result is unused — every
+  call before this — nothing changes:** no sink, no `madc::value`, pure C11
+  runtime, still ledger-clean for a `-static-libmadc` image.
+  `tests/testphpprintrreturn.mad`, PHP-oracled.
+- **Fixed: a `madc::value` declared with an initializer silently dropped it.**
+  Block scope got storage and a constructor and then skipped the initializer;
+  file scope returned before the dynamic-init queueing, so it never reached
+  `__madc_global_init` (and destructed unconstructed storage). `value a = "x";`
+  came out EMPTY while `value a; a = "x";` worked, which is why it went unnoticed.
+  `tests/testvalueinit.mad`.
+- **Fixed: a qualified return type on a bodyless namespace template silently
+  became `int64`.** The backward scan tried each token as a standalone identifier
+  against the flat datatype map, so `madc::value &` fell through to the
+  `ddINT64` fallback — and the call site then assigned an ADDRESS through the
+  integer path, printing a decimal. Qualified return types now route through the
+  canonical resolver the template-id branch already used. **Merged to `develop`,
 deliberately UNRELEASED:** the arc is incomplete (pointers, the `begin()`/`end()`
 protocol, associative containers, `madc::value`, and `print_r($x, true)` are all
 still refused by name), and the owner's call on 2026-08-17 was no version bump
