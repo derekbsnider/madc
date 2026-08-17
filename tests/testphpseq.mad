@@ -1,0 +1,75 @@
+#!/../bin/madc
+// php::print_r / php::var_dump over POSITIONAL CONTAINERS — the owner's own two
+// examples: "a std::vector<int> would display its contents the same way in php a
+// print_r() of an array of integers would display, and a std::string would
+// display a string".
+//
+// Both fall out of ONE structural test — the type-checked size()+operator[]
+// predicate the range-for shares — plus the element type: a sequence whose
+// element is a character type is TEXT, anything else is an ARRAY. No method is
+// matched by name (no c_str, no length): a name match is exactly the weakness
+// that made `for (int v : map)` SIGSEGV.
+//
+// ORACLE — php-cli 8.3.6 on tmp/or_seq.php. Every print_r block below is
+// IDENTICAL to PHP's for the corresponding PHP value:
+//   print_r([1,4,9])        -> Array ( [0] => 1 [1] => 4 [2] => 9 )
+//   print_r("hi")           -> hi
+//   print_r(Person)         -> Person Object ( [name] => alice [age] => 30 )
+//   print_r(["bob","carol"])-> Array ( [0] => bob [1] => carol )
+// var_dump keeps PHP's frame — array(3) { [0]=> int(1) ... }, string(2) "hi" —
+// and names the real type instead: a container reports its CANONICAL C++
+// spelling (a template instantiation's internal tag is a mangled name no user
+// wrote), so std::string reads as
+// std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>
+// and std::vector<int> as std::vector<int32_t,std::allocator<int32_t>>. That
+// spelling is FLAVOR-DEPENDENT (libc++ says std::__1::basic_string<...>), which
+// is why the fixture asserts those value lines by their flavor-stable tail
+// (">(2) \"hi\"") and pins the print_r blocks — the PHP-fidelity claim — in
+// full.
+#include <iostream>
+#include <string>
+#include <vector>
+#include <ns_php>
+using namespace std;
+
+struct Person {
+	string name;
+	int age;
+};
+
+int main()
+{
+	vector<int> v;
+	v.push_back(1);
+	v.push_back(4);
+	v.push_back(9);
+	php::print_r(v);
+	cout << "===" << endl;
+	php::var_dump(v);
+	cout << "===" << endl;
+
+	// A string is text, not an array of small integers.
+	string s = "hi";
+	php::print_r(s);
+	cout << "|" << endl;
+	php::var_dump(s);
+	cout << "===" << endl;
+
+	// A string MEMBER inside a struct takes the same path.
+	Person p;
+	p.name = "alice";
+	p.age = 30;
+	php::print_r(p);
+	cout << "===" << endl;
+	php::var_dump(p);
+	cout << "===" << endl;
+
+	// A sequence OF sequences: each element is itself text.
+	vector<string> names;
+	names.push_back("bob");
+	names.push_back("carol");
+	php::print_r(names);
+	cout << "===" << endl;
+	php::var_dump(names);
+	return 0;
+}

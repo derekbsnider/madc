@@ -708,15 +708,39 @@ private:
 			std::string &why);
 	// The output primitives, one builder each.
 	node_t dump_call_stmt(const char *sym, node_t args, TokenBase *origin);
+	bool dump_sequence(DumpFlavor fl, const DumpAccess &acc,
+			   DataDefCLASS *cls, int depth, bool nested,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
 	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
 			 size_t count, TokenBase *origin);
+	node_t dump_head_node(DumpFlavor fl, int depth, const std::string &word,
+			      node_t count, TokenBase *origin);
 	node_t dump_key(DumpFlavor fl, int depth, const std::string &key,
 			TokenBase *origin);
 	node_t dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 			    TokenBase *origin);
 	node_t dump_tail(DumpFlavor fl, int depth, bool nested, TokenBase *origin);
+	node_t dump_vd_text_open(int depth, const std::string &word, node_t len,
+				 TokenBase *origin);
+	node_t dump_vd_text_close(TokenBase *origin);
 	node_t dump_pr_nl(TokenBase *origin);
 
+	// The POSITIONAL index-iteration protocol — `size()` plus
+	// `operator[](integral)`, TYPE-CHECKED (see the definition for why naming
+	// the two members is not enough). The range-for and the dumper share this
+	// ONE predicate; a by-name version of it in either place is the bug it was
+	// written to fix. Static: it asks only about the class.
+	static bool class_index_iteration_protocol(DataDefCLASS *cls,
+						   class Variable *&szmv,
+						   class Variable *&opmv);
+	// Call a NULLARY class method (`obj.size()`) and yield its value.
+	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
+	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),
+	// the extern declaration and the reference-return deref. NULL when the
+	// class has no such method.
+	node_t class_nullary_call(DataDefCLASS *cls, const char *name,
+				  node_t recv_addr, TokenBase *origin);
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	// `index_lvalue` is a SYNTHESIZED index (a range-for's loop counter) that
@@ -1755,9 +1779,11 @@ public:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the
 	// enclosing scope by the parser.
+	// `opmv` is the validated operator[]; the size() call goes through
+	// class_nullary_call, so no size Variable is threaded here.
 	node_t translate_foreach_class(class TokenFOREACH *fe,
 				       class DataDefCLASS *cls,
-				       class Variable *szmv, class Variable *opmv);
+				       class Variable *opmv);
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
 	// subscript `a[__i]`. (No madc-array runtime helper.)

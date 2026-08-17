@@ -17806,6 +17806,39 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 // ADDRESS node (value object -> &obj, pointer receiver -> its value). Shared
 // by the named-variable (TokenSubscript) and expression-receiver
 // (TokenSubscriptExpr) subscript paths.
+// A nullary class method call (`obj.size()`), value-yielding. The ONE owner of
+// the symbol choice for such a call: class_method_symbol routes an externally
+// bound method to its real emit_symbol, which the hand-rolled `Class__size` the
+// range-for used to build could not do. The extern for that case is declared
+// from the method's own return type (ret_dd), so a size_t return does not
+// collapse to void*.
+node_t CirBuilder::class_nullary_call(DataDefCLASS *cls, const char *name,
+				      node_t recv_addr, TokenBase *origin)
+{
+	FuncDef *fd = class_method_def(cls, name);
+	if (!cls || !fd || !recv_addr)
+		return NULL;
+	std::string sym = class_method_symbol(cls, name);
+	if (sym.empty())
+		return NULL;
+	node_t a = list();
+	if (!fd->emit_symbol.empty()) {
+		need_output_extern(sym.c_str(), false, { { {N_VOID}, true } },
+				   std::vector<c2mir_node_code_t>(), NULL,
+				   &fd->return_value_type());
+		append(a, node2(N_CAST, void_ptr_type(), recv_addr, origin));
+	} else {
+		referenced_funcs.insert(sym);
+		append(a, recv_addr);
+	}
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	// A reference-returning nullary yields the address; deref to the value.
+	if (fd->returns_reference())
+		return node1(N_DEREF, call, origin);
+	return call;
+}
+
 node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 					   TokenBase *index, TokenBase *origin,
 					   node_t index_lvalue)
@@ -21939,8 +21972,9 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 //     keys on. A keyed container has no index protocol at all.
 // A class that fails this is not index-iterable, and translate_foreach_loop says
 // so out loud rather than falling through to the madc-array reader.
-static bool class_index_iteration_protocol(DataDefCLASS *cls, Variable *&szmv,
-					   Variable *&opmv)
+/*static*/ bool CirBuilder::class_index_iteration_protocol(DataDefCLASS *cls,
+							  Variable *&szmv,
+							  Variable *&opmv)
 {
 	szmv = opmv = NULL;
 	if (!cls)
@@ -22042,7 +22076,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	if (DataDefCLASS *ccls = class_behind(cdd)) {
 		Variable *szmv = NULL, *opmv = NULL;
 		if (class_index_iteration_protocol(ccls, szmv, opmv))
-			return translate_foreach_class(fe, ccls, szmv, opmv);
+			return translate_foreach_class(fe, ccls, opmv);
 		// A class object with no index protocol must NOT fall through to
 		// the madc-array reader below: that reads the object's own bytes as
 		// a madc::value header (garbage length -> out-of-bounds element
@@ -22162,7 +22196,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 }
 
 node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
-					   Variable *szmv, Variable *opmv)
+					   Variable *opmv)
 {
 	FuncDef *opfd = dynamic_cast<FuncDef *>(opmv->type);
 	bool recv_is_ptr = fe->container->datadef()
@@ -22172,8 +22206,6 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		node_t c = translate_expr(fe->container);
 		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
 	};
-	std::string szsym = cls->name + "__size";
-
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
 
@@ -22187,11 +22219,11 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	append(init, ignore());
 	append(init, integer(0, fe));
 
-	// __fe_i < c.size()
-	referenced_funcs.insert(szsym);
-	node_t sz_args = list();
-	append(sz_args, recv_addr());
-	node_t sz_call = node2(N_CALL, id(szsym.c_str(), fe), sz_args, fe);
+	// __fe_i < c.size(), through the ONE nullary-call owner (which knows about
+	// an externally bound size(); the hand-rolled `Class__size` did not).
+	node_t sz_call = class_nullary_call(cls, "size", recv_addr(), fe);
+	if (!sz_call)
+		return error_node("range-for: container has no callable size()", fe);
 	node_t cond = node2(N_LT, id(idx, fe), sz_call, fe);
 
 	// __fe_i += 1

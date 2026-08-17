@@ -271,6 +271,21 @@ void __madc_dump_vd_cstr(int col, const char *ty, const char *s)
     printf("%s(%llu) \"%s\"\n", ty ? ty : "", (unsigned long long)strlen(s), s);
 }
 
+// A CONTAINER rendered as text (std::string, vector<char>): the frame only —
+// the characters between the quotes are written one at a time by the generated
+// loop, through __madc_dump_pr_char. The length comes from the container's own
+// size(), so nothing here scans for a NUL.
+void __madc_dump_vd_text_open(int col, const char *ty, long long len)
+{
+    dump_indent(col);
+    printf("%s(%lld) \"", ty ? ty : "", len);
+}
+
+void __madc_dump_vd_text_close(void)
+{
+    printf("\"\n");
+}
+
 void __madc_dump_vd_cstr_n(int col, const char *ty, const char *s, long long n)
 {
     long long len = 0;

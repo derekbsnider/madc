@@ -142,6 +142,20 @@ static std::string dump_array_type_word(DataDef *elem, size_t count)
 	return dump_scalar_type_word(elem) + n;
 }
 
+// A CONTAINER's type word for var_dump. A template instantiation's madc `name`
+// is a mangled tag no user wrote (vector_int32_t_std__allocator_int32_t_), so
+// prefer the type's own canonical C++ spelling when it has one. A union keeps
+// its keyword: with every member reading the same storage, "this is a union" is
+// the most important thing the line can say.
+static std::string dump_class_type_word(DataDefCLASS *cls)
+{
+	if (cls->union_layout)
+		return "union " + cls->name;
+	if (!cls->canonical_cpp_spelling().empty())
+		return cls->canonical_cpp_spelling();
+	return "struct " + cls->name;
+}
+
 // PHP's key spelling for a member, per flavor. print_r writes
 // "[prot:protected]" and "[priv:Foo:private]"; var_dump quotes the name and the
 // class: ["prot":protected] and ["priv":"Foo":private].
@@ -174,6 +188,16 @@ node_t CirBuilder::dump_call_stmt(const char *sym, node_t args, TokenBase *origi
 node_t CirBuilder::dump_head(DumpFlavor fl, int depth, const std::string &word,
 			     size_t count, TokenBase *origin)
 {
+	return dump_head_node(fl, depth, word, integer((int64_t)count, origin),
+			      origin);
+}
+
+// A container's element count is a RUNTIME value (`c.size()`), so the count
+// arrives as a node. A compile-time count is the same call with a literal.
+node_t CirBuilder::dump_head_node(DumpFlavor fl, int depth,
+				  const std::string &word, node_t count,
+				  TokenBase *origin)
+{
 	node_t a = list();
 	append(a, integer(dump_frame_col(fl, depth), origin));
 	append(a, str(word.c_str(), word.size() + 1, origin));
@@ -182,7 +206,7 @@ node_t CirBuilder::dump_head(DumpFlavor fl, int depth, const std::string &word,
 		need_output_extern("__madc_dump_vd_head", false,
 				   { { {N_INT}, false }, { {N_CHAR}, true },
 				     { {N_LONG, N_LONG}, false } });
-		append(a, integer((int64_t)count, origin));
+		append(a, count);
 		return dump_call_stmt("__madc_dump_vd_head", a, origin);
 	}
 	need_output_extern("__madc_dump_pr_head", false,
@@ -231,6 +255,27 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 			   { { {N_INT}, false }, { {N_INT}, false } });
 	append(a, integer(nested ? 1 : 0, origin));
 	return dump_call_stmt("__madc_dump_pr_tail", a, origin);
+}
+
+// var_dump's text form: `<type>(<len>) "` ... `"` with the characters between.
+// The length is the container's own size(), a runtime value.
+node_t CirBuilder::dump_vd_text_open(int depth, const std::string &word,
+				     node_t len, TokenBase *origin)
+{
+	need_output_extern("__madc_dump_vd_text_open", false,
+			   { { {N_INT}, false }, { {N_CHAR}, true },
+			     { {N_LONG, N_LONG}, false } });
+	node_t a = list();
+	append(a, integer(dump_frame_col(dfVarDump, depth), origin));
+	append(a, str(word.c_str(), word.size() + 1, origin));
+	append(a, len);
+	return dump_call_stmt("__madc_dump_vd_text_open", a, origin);
+}
+
+node_t CirBuilder::dump_vd_text_close(TokenBase *origin)
+{
+	need_output_extern("__madc_dump_vd_text_close", false, {});
+	return dump_call_stmt("__madc_dump_vd_text_close", list(), origin);
 }
 
 node_t CirBuilder::dump_pr_nl(TokenBase *origin)
@@ -513,6 +558,126 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// A POSITIONAL container (std::string, std::vector, std::array, ...)
+// ---------------------------------------------------------------------------
+// The owner's rule decides the rendering: a std::vector<int> prints the way PHP
+// prints an array of ints, and a std::string prints as its text. Both fall out
+// of ONE structural test — class_index_iteration_protocol, the type-checked
+// size()+operator[] predicate the range-for shares — plus the element type:
+// a sequence whose element is a CHARACTER type is text, anything else is an
+// array. No method is matched by name here (no c_str, no length): a name match
+// is exactly the weakness that made `for (int v : map)` SIGSEGV.
+bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
+			       DataDefCLASS *cls, int depth, bool nested,
+			       std::vector<node_t> &out, TokenBase *origin,
+			       std::string &why)
+{
+	Variable *szmv = NULL, *opmv = NULL;
+	if (!class_index_iteration_protocol(cls, szmv, opmv))
+		return false;
+	FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL;
+	if (!opfd)
+		return false;
+	DataDef *elem = &opfd->return_value_type();
+	if (!elem)
+		return false;
+
+	// The count ONCE, into a local: the head line and the loop bound must
+	// agree, and size() is a real call.
+	char nm[40], ix[40];
+	snprintf(nm, sizeof(nm), "__dmp_n_%d", m_strtmp_counter++);
+	snprintf(ix, sizeof(ix), "__dmp_i_%d", m_strtmp_counter++);
+	std::string nname = nm, idxname = ix;
+
+	node_t szcall = class_nullary_call(cls, "size",
+					   node1(N_ADDR, acc(), origin), origin);
+	if (!szcall) {
+		why = std::string("container '") + cls->name
+		    + "' has no callable size()";
+		return false;
+	}
+	node_t nspec = list();
+	append_i64(nspec, origin);
+	node_t ndecl = simple(N_SPEC_DECL, origin);
+	append(ndecl, node1(N_SHARE, nspec));
+	append(ndecl, node2(N_DECL, id(nname.c_str(), origin), list()));
+	append(ndecl, ignore());
+	append(ndecl, ignore());
+	append(ndecl, szcall);
+	out.push_back(ndecl);
+
+	// One element access, rebuilt per use: the operator[] call through the ONE
+	// call owner, deref'd when it returns T& (which is a T* at this level).
+	DumpAccess eacc = [this, acc, idxname, cls, opfd, origin]() -> node_t {
+		node_t call = class_subscript_addr_on(cls,
+						      node1(N_ADDR, acc(), origin),
+						      NULL, origin,
+						      id(idxname.c_str(), origin));
+		if (opfd->returns_reference())
+			return node1(N_DEREF, call, origin);
+		return call;
+	};
+
+	bool is_text = elem->rawtype() == DataType::dtINT8
+		    || elem->rawtype() == DataType::dtUINT8;
+	std::string word = fl == dfVarDump
+			 ? dump_class_type_word(cls)
+			 : (is_text ? std::string() : std::string("Array"));
+
+	std::vector<node_t> body;
+	if (is_text) {
+		// Text: the characters, in order, with no per-element framing.
+		// var_dump still states the type and the length first.
+		if (fl == dfVarDump)
+			out.push_back(dump_vd_text_open(depth, word,
+							id(nname.c_str(), origin),
+							origin));
+		need_output_extern("__madc_dump_pr_char", false,
+				   { { {N_INT}, false } });
+		node_t ca = list();
+		append(ca, eacc());
+		body.push_back(dump_call_stmt("__madc_dump_pr_char", ca, origin));
+	} else {
+		out.push_back(dump_head_node(fl, depth, word,
+					     id(nname.c_str(), origin), origin));
+		body.push_back(dump_key_idx(fl, depth,
+					    id(idxname.c_str(), origin), origin));
+		if (!dump_any(fl, eacc, elem, 1, false, depth + 1, true, body,
+			      origin, why))
+			return false;
+	}
+
+	// for (long i = 0; i < n; i += 1) { ... }
+	node_t ispec = list();
+	append_i64(ispec, origin);
+	node_t init = simple(N_SPEC_DECL, origin);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, origin));
+	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
+			    id(nname.c_str(), origin), origin);
+	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
+			    integer(1, origin), origin);
+	node_t items = list();
+	for (size_t i = 0; i < body.size(); i++)
+		append(items, body[i]);
+	out.push_back(node5(N_FOR, list(), init, cond, incr,
+			    node2(N_BLOCK, list(), items, origin), origin));
+
+	if (is_text) {
+		if (fl == dfVarDump)
+			out.push_back(dump_vd_text_close(origin));
+		else if (depth > 0)
+			out.push_back(dump_pr_nl(origin));
+	} else {
+		out.push_back(dump_tail(fl, depth, nested, origin));
+	}
+	return true;
+}
+
 // The one dispatch: array framing, then aggregate framing, then scalar.
 bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			  size_t count, bool is_array, int depth, bool nested,
@@ -532,6 +697,37 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// whose pointee is a struct is NOT this case: following it is the pointer
 	// slice, and dump_scalar refuses it by name until then.
 	if (!dd->is_pointer() && !dd->is_reference()) {
+		// A class that is a POSITIONAL SEQUENCE renders as one (an array,
+		// or text when its element is a character) rather than as its
+		// members: a std::vector<int>'s private pointers are not what a PHP
+		// developer asked to see. Tried BEFORE the member walk, and only a
+		// structural test decides it.
+		// The intrinsic value carrier (madc::value == ddARRAY) is a class
+		// WITH registered methods (its c_str is madarray_cstr), so it would
+		// pass a structural sequence test and then be called through the
+		// wrong runtime. Its rendering is its own slice; exclude it here.
+		// is_class_object IS the shared predicate (as_class_instance behind
+		// it, which already excludes ddARRAY by rawtype); the cast only
+		// recovers the pointer it validated, so no condition is duplicated.
+		DataDefCLASS *ccls = is_class_object(dd) && !is_array_object(dd)
+				   ? dynamic_cast<DataDefCLASS *>(dd->unqualified())
+				   : NULL;
+		if (ccls) {
+			// Built into a LOCAL first: a sequence that turns out not
+			// to be dumpable must leave `out` untouched.
+			std::vector<node_t> seq;
+			std::string seq_why;
+			if (dump_sequence(fl, acc, ccls, depth, nested, seq,
+					  origin, seq_why)) {
+				out.insert(out.end(), seq.begin(), seq.end());
+				return true;
+			}
+			// A class that IS positional but whose element has no
+			// dumper yet (a row pointer from a Matrix::operator[], say)
+			// falls back to the member walk below rather than failing
+			// the call: those members are real, and an enhancement must
+			// not turn a working dump into an error.
+		}
 		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
 			// The intrinsic value carrier (madc::value) is a DDClass
 			// with no madc members: its rendering is its own slice.
@@ -644,5 +840,10 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 	node_t items = list();
 	for (size_t i = 0; i < stmts.size(); i++)
 		append(items, stmts[i]);
+	// c2mir requires a statement expression's LAST statement to be an
+	// EXPRESSION, and a dump legitimately ends with a for-loop (print_r of a
+	// text container at top level emits only the character loop). Close with a
+	// discarded 0 so no shape has to remember.
+	append(items, node2(N_EXPR, list(), integer(0, origin), origin));
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
 }
