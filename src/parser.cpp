@@ -32384,16 +32384,30 @@ static bool template_id_is_type_expression_context(Program &pgm)
 // TokenCallFunc, and every later stage — arity check, overload pick, CIR,
 // --emit=c11 — sees a call with nothing special about it. By emission time no
 // trace of the syntax survives (Tier 1, lowering-vs-raising.md).
+// The ONE owner of "would UFCS be attempted at this point?" — the dialect gate,
+// the operator-function-id exclusion, and "a call actually follows".
+//
+// It is shared deliberately. Both fallbacks need it, and so does the combined
+// diagnostic: if the diagnostic asked the question separately, the two could
+// drift and it would claim a UFCS form was tried when it never was (or stay
+// silent when it was). An operator-function-id is a NAME, never a candidate;
+// and `x.f` with no argument list has no ordinary-call form to fall back TO,
+// so it must keep its original error.
+bool Program::ufcs_attempts_here(bool operator_id)
+{
+    return ufcs_enabled()
+	&& !operator_id
+	&& peekToken()
+	&& peekToken()->id() == TokenID::tkOpBrk;
+}
+
 bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+				bool operator_id,
 				std::stack<TokenBase *> &exStack,
 				std::stack<TokenBase *> &opStack,
 				TokenBase *&tb, bool &done)
 {
-    if ( !ufcs_enabled() || !receiver || !ident_tb )
-	return false;
-    // Call syntax only: `x.f` with no argument list has no ordinary-call form
-    // to fall back TO, and must keep raising the plain no-such-member error.
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+    if ( !receiver || !ident_tb || !ufcs_attempts_here(operator_id) )
 	return false;
     // Ordinary unqualified lookup — the SAME resolver a hand-written `f(x, y)`
     // gets from this position (the receiver already occupies the expression
@@ -32451,13 +32465,11 @@ bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 // indexing count_queued_call_arguments already uses). That covers the
 // motivating shapes; a call whose first argument is a compound expression keeps
 // its old behaviour rather than guessing.
-bool Program::ufcs_call_fallback(TokenIdent *ident_tb,
+bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
 				 std::stack<TokenBase *> &opStack,
 				 TokenBase *&tb, bool &done, TokenCpnd *code)
 {
-    if ( !ufcs_enabled() || !ident_tb )
-	return false;
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+    if ( !ident_tb || !ufcs_attempts_here(operator_id) )
 	return false;
     // `(` ident `,`   or   `(` ident `)`
     if ( tokens.size() < 3 || !tokens[1] || !tokens[2] )
@@ -33209,9 +33221,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				// Try the ordinary free call `f(receiver, args)` before
 				// rejecting. The receiver is passed EXACTLY as written —
 				// no implicit & and no implicit * (owner rule, 2026-08-17).
-				if ( !parsed_operator_name
-				  && ufcs_access_fallback(lhs_dot, ident_tb,
-							  exStack, opStack, tb, done) )
+				if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+							 exStack, opStack, tb, done) )
 				    return done ? ExprStep::Done : ExprStep::Break;
 				Throw(tb) << "member reference is not a structure or union" << flush;
 			    }
@@ -33246,9 +33257,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// Try the ordinary free call `f(receiver, args)` before
 			// rejecting. The receiver is passed EXACTLY as written —
 			// no implicit & and no implicit * (owner rule, 2026-08-17).
-			if ( !parsed_operator_name
-			  && ufcs_access_fallback(lhs_dot, ident_tb,
-						  exStack, opStack, tb, done) )
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
 			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    }
@@ -33448,14 +33458,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// data member (the offset lookup here). Try the ordinary
 			// free call `id(receiver, args)` before giving up. An
 			// operator-function-id is a NAME, never a candidate.
-			if ( !parsed_operator_name
-			  && ufcs_access_fallback(lhs_dot, ident_tb,
-						  exStack, opStack, tb, done) )
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
 			    return done ? ExprStep::Done : ExprStep::Break;
 			// ONE error naming BOTH attempts — a UFCS miss must never
 			// read like a plain typo.
-			if ( ufcs_enabled() && !parsed_operator_name
-			  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			if ( ufcs_attempts_here(parsed_operator_name) )
 			    Throw(tb) << "Unidentified member '" << id << "' in '"
 				      << struct_type->name << "', and no function '"
 				      << id << "' in scope for the UFCS form '"
@@ -33648,9 +33656,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// Try the ordinary free call `f(receiver, args)` before
 			// rejecting. The receiver is passed EXACTLY as written —
 			// no implicit & and no implicit * (owner rule, 2026-08-17).
-			if ( !parsed_operator_name
-			  && ufcs_access_fallback(lhs, ident_tb,
-						  exStack, opStack, tb, done) )
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
 			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
@@ -33819,9 +33826,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// Try the ordinary free call `f(receiver, args)` before
 			// rejecting. The receiver is passed EXACTLY as written —
 			// no implicit & and no implicit * (owner rule, 2026-08-17).
-			if ( !parsed_operator_name
-			  && ufcs_access_fallback(lhs, ident_tb,
-						  exStack, opStack, tb, done) )
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
 			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "no member named '" << id << "'" << flush;
 		    }
@@ -34309,8 +34315,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// guesses below (dlsym, C89 implicit int) — the owner's order is
 		// declared free -> member -> existing unresolved-symbol
 		// behaviour, and tests/testufcscall.mad pins it.
-		if ( !var && !parsed_operator_name
-		  && ufcs_call_fallback(ident_tb, opStack, tb, done, code) )
+		if ( !var
+		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
+					opStack, tb, done, code) )
 		    return done ? ExprStep::Done : ExprStep::Break;
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{

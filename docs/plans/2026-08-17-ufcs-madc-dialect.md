@@ -299,6 +299,36 @@ k)`) — it keeps its old behaviour rather than being guessed at. Widening that
 means parsing the argument before choosing the callee, which is a real design
 step, not an increment.
 
+## Pre-merge duplication audit (branching.md: run it scoped, before merging)
+
+Scope: the UFCS surface added by U1–U4 in `src/parser.cpp`. Done by hand, not
+fanned out.
+
+**Finding, and it was on my own work.** The question "would UFCS be attempted at
+this point?" was written out THREE times — both fallbacks' entry conditions and
+U1's combined diagnostic — and its operator-function-id half was restated at
+SEVEN sites (`grep -n parsed_operator_name`).
+
+Tie-breaker ("would a change to the rule require editing more than one site?"):
+**yes** — so it is duplication, not two concerns that look alike.
+
+The live hazard was not the redundancy, it was the **diagnostic drifting from
+the fallbacks**. The diagnostic decides whether to say "and no function 'f' in
+scope for the UFCS form"; if its copy of the test diverged, it would claim a
+UFCS form had been tried when it never was, or stay silent when it had. That is
+a wrong error message, which is the class of bug that wastes a debugging session.
+
+Consolidated to `Program::ufcs_attempts_here(bool operator_id)` — dialect gate +
+operator-id exclusion + "a call actually follows". Both fallbacks and the
+diagnostic now ask it. `ufcs_enabled()` appears **exactly once** in `src/`.
+
+**Gate left behind** (a rule without a gate decays): `scripts/ufcs_gate.sh`
+leg 4 asserts `ufcs_enabled()` occurs exactly once in `src/` and that the one
+occurrence is inside `ufcs_attempts_here()`. A new hand-rolled entry condition
+raises the count and fails the build — the only way this family can regrow.
+Negative-controlled: a second `ufcs_enabled()` site anywhere in `src/` gives
+`rc=1` and names the sites; removing it returns `rc=0`.
+
 ## Risks, stated
 
 - **U3 changes existing behavior, U1/U2 do not.** Today an undeclared `f(x, y)`

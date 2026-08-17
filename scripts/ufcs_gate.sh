@@ -112,5 +112,31 @@ nc=$(echo $C_STDS | wc -w)
 np=$(echo $CPP_STDS | wc -w)
 echo "  ok   UFCS absent from every strict standard ($nc C + $np C++ modes x 3 probes)"
 
+# ---- leg 4: ONE owner for "would UFCS be attempted here?".
+#
+# The dot fallback, the call fallback and the combined diagnostic all need that
+# question answered, and a pre-merge duplication audit found it written out
+# three times, with the operator-function-id half restated at seven sites. The
+# live hazard was the DIAGNOSTIC drifting from the fallbacks: it would then
+# claim a UFCS form had been tried when it never was, or stay silent when it
+# had. Program::ufcs_attempts_here() is now the single owner.
+#
+# A rule without a gate decays, so: ufcs_enabled() must appear EXACTLY ONCE in
+# src/ — inside that owner. A new hand-rolled entry condition anywhere else
+# raises the count and fails here, which is the only way this family can regrow.
+owner_hits=$(grep -rn 'ufcs_enabled()' src/ | wc -l)
+if [ "$owner_hits" -ne 1 ]; then
+    echo "ufcs_gate: ufcs_enabled() appears $owner_hits times in src/, expected 1"
+    echo "  The entry condition has ONE owner: Program::ufcs_attempts_here()."
+    echo "  Call it instead of re-testing ufcs_enabled() at a new site:"
+    grep -rn 'ufcs_enabled()' src/
+    exit 1
+fi
+if ! grep -q 'ufcs_enabled()' <(sed -n '/^bool Program::ufcs_attempts_here/,/^}/p' src/parser.cpp); then
+    echo "ufcs_gate: the single ufcs_enabled() call is no longer inside ufcs_attempts_here()"
+    exit 1
+fi
+echo "  ok   one owner for the UFCS entry condition (ufcs_attempts_here)"
+
 echo "ufcs_gate: OK"
 exit 0

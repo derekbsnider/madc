@@ -5389,7 +5389,14 @@ public:
     // when it fired: the receiver has moved off exStack into argument 0, the
     // access operator is off opStack, the call is on opStack, and `tb`/`done`
     // are left as any other call site in the arm leaves them.
+    // The ONE owner of "would UFCS be attempted at this point?": the dialect
+    // gate, the operator-function-id exclusion (an operator-id is a NAME, never
+    // a UFCS candidate), and the requirement that a call actually follows.
+    // Both fallbacks AND the combined diagnostic ask this — if the diagnostic
+    // asked separately it could claim a UFCS form was tried when it was not.
+    bool ufcs_attempts_here(bool operator_id);
     bool ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+			      bool operator_id,
 			      std::stack<TokenBase *> &exStack,
 			      std::stack<TokenBase *> &opStack,
 			      TokenBase *&tb, bool &done);
@@ -5398,7 +5405,7 @@ public:
     // arity-viable member. Runs BEFORE the unresolved-symbol guesses (dlsym,
     // C89 implicit int) — a member of the argument's own type beats a blind
     // guess at a libc symbol of the same name.
-    bool ufcs_call_fallback(TokenIdent *ident_tb,
+    bool ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
 			    std::stack<TokenBase *> &opStack,
 			    TokenBase *&tb, bool &done, TokenCpnd *code);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
