@@ -5382,15 +5382,25 @@ public:
 				     std::stack<TokenBase *> &exStack,
 				     std::stack<TokenBase *> &opStack,
 				     TokenCpnd *code);
-    // UFCS (--std=madc): re-form `receiver.f(args)` as the ordinary call
-    // `f(receiver, args)` when the receiver type has no member `f`. Returns
-    // true when it fired — the receiver has moved off exStack into argument 0,
-    // the access operator is off opStack, the call is on opStack, and
-    // `tb` / `done` are left as any other call site in the arm leaves them.
+    // UFCS (--std=madc): re-form `receiver.f(args)` / `receiver->f(args)` as
+    // the ordinary call `f(receiver, args)` when the receiver has no member
+    // `f`. `.` and `->` are the same operator here — the receiver is argument
+    // 0 EXACTLY as written, with no implicit & and no implicit *. Returns true
+    // when it fired: the receiver has moved off exStack into argument 0, the
+    // access operator is off opStack, the call is on opStack, and `tb`/`done`
+    // are left as any other call site in the arm leaves them.
     bool ufcs_dot_fallback(TokenBase *receiver, TokenIdent *ident_tb,
-			   std::stack<TokenBase *> &exStack,
-			   std::stack<TokenBase *> &opStack,
-			   TokenBase *&tb, bool &done);
+			      std::stack<TokenBase *> &exStack,
+			      std::stack<TokenBase *> &opStack,
+			      TokenBase *&tb, bool &done);
+    // UFCS (--std=madc), the other direction: re-form `f(x, args)` as
+    // `x.f(args)` when no free `f` is declared and x's type has an
+    // arity-viable member. Runs BEFORE the unresolved-symbol guesses (dlsym,
+    // C89 implicit int) — a member of the argument's own type beats a blind
+    // guess at a libc symbol of the same name.
+    bool ufcs_call_fallback(TokenIdent *ident_tb,
+			    std::stack<TokenBase *> &opStack,
+			    TokenBase *&tb, bool &done, TokenCpnd *code);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
     // shunting-yard core (precedence climbing, unary/binary disambiguation,
     // parentheses/subscript/ternary/cast/comma). Mutates `brackets` (by ref)

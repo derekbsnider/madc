@@ -1,7 +1,9 @@
 # UFCS for the madc dialect (`--std=madc` only)
 
-**Status:** design, awaiting owner go-ahead. Owner supplied the ruleset
-2026-08-17; the decisions below are mine unless marked ⚠️.
+**Status:** U1 + U3 **LANDED** on branch `feature/ufcs-madc-claude`; U2 + U4
+open. Owner supplied the ruleset 2026-08-17 and confirmed the direction against
+Stroustrup's unified-call background note; the decisions below are mine unless
+marked ⚠️.
 
 ## The ruleset (owner, verbatim intent)
 
@@ -105,9 +107,15 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
    `php::`/`perl::` helpers become extension methods when — and only when —
    they are already visible. No per-namespace special-casing
    (`design-principles.md` #7).
-7. **One shot, no recursion.** The fallback sets a flag so a UFCS-formed call
-   cannot itself trigger UFCS. Without it, phase 3's `f(x,y)` → `x.f(y)` →
-   no viable member → `f(x,y)` loops.
+7. ~~**One shot, no recursion.** The fallback sets a flag…~~ **NOT NEEDED — and
+   the reason matters.** The feared loop (`f(x,y)` → `x.f(y)` → no member →
+   `f(x,y)` → …) can only happen if a fallback *rewrites tokens and re-parses*.
+   Neither does: each helper resolves its target first and builds the finished
+   call node directly (`TokenCallFunc` / `TokenCallMethod`), so a fallback that
+   fires has already succeeded, and one that cannot find its target returns
+   false without entering the other arm. No flag, no re-entry, by construction.
+   **If a future slice ever re-parses to implement a fallback, this decision
+   comes back.**
 8. **Diagnostics name both attempts.** `no member 'f' in 'T', and no function
    'f' taking (T, U)` — a single error, not two. A UFCS miss must never read
    like a plain typo.
@@ -141,7 +149,7 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
 |---|---|---|
 | **U1** ✅ | `ufcs_enabled()` + dot fallback for **class** receivers with no viable member | reducers: free fn found; member wins over free; both miss → one clear error; `--std=c++17` negative control |
 | **U2** | dot fallback for **non-class** receivers (primitives, pointers, arrays); the `->` rule from decision 4 | reducers per receiver kind, incl. `fp->fclose()` |
-| **U3** | call syntax `f(x,y)` → `x.f(y)`, inserted **before** the dlsym fallback | reducers + the ordering test below |
+| **U3** ✅ | call syntax `f(x,y)` → `x.f(y)`, inserted **before** the dlsym fallback | reducers + the ordering test below |
 | **U4** | docs (`docs/language/`), `--std=` matrix test, `scripts/ufcs_gate.sh` wired into `fulltest` | the gate is the deliverable |
 
 Each slice is its own commit with trailers, its own reducers in `tests/`, and
@@ -176,6 +184,67 @@ Not yet covered by U1, deliberately: `x.f<T>(y)` (explicit template arguments �
 `peekToken()` is `<`, not `(`, so it takes the old error path), and receivers
 whose class has an unresolved dependent surface (the dependent-call placeholder
 at the same site consumes those first).
+
+## What U3 landed — and what measuring first changed
+
+**Measured before building** (`bin/madc` at U1, probes in `tmp/ufcs/`):
+
+| call | today, before UFCS |
+|---|---|
+| `size(v)` on `std::vector<int>` | **works** — `3` |
+| `begin(v)` | **works** — `7` |
+| `empty(v)` | **works** — `1` |
+| `count(m, 3)` on `std::map` | **hard error**, `use of undeclared identifier 'count'`, rc=1 |
+
+Three of the four motivating calls already worked, because libstdc++ really
+does declare `std::size` / `std::begin` / `std::empty` — which is precisely the
+duplication the proposal complains about ("why do we/someone have to write
+both?"). Only the member-only operation, `count`, had no free counterpart.
+
+That reshaped the trigger. **U3 fires only when NO free `f` is declared at
+all** — not the stronger "declared but not arity-viable". The stronger trigger
+would require judging a whole namespace overload set, which risks stealing a
+call that resolves today, and the evidence says it buys nothing: the one call
+that fails, fails because the name is entirely undeclared.
+
+- `Program::ufcs_call_fallback()` — `src/parser.cpp`, above its only caller.
+  Receiver is read by **lookahead, not by parsing**: the first argument must be
+  a single identifier naming a class-typed variable (`tokens[0]` is the `(` —
+  the indexing `count_queued_call_arguments()` already uses). Arity viability
+  goes through the adopted owner `find_method_by_callable_arity()` with
+  `argc - 1` (argc counts the receiver; the member call does not).
+- Hooked after `lazy_resolve` / expression-context and **before** the
+  unresolved-symbol guesses, giving the owner's order: declared free → member →
+  dlsym → C89 implicit `int`.
+- **Access control is enforced on the selected overload** — UFCS must never
+  become a way to reach a private member from outside its class.
+- **A STATIC member declines the fallback** — and the negative control
+  *corrected the reason*. A static has no `this` slot, so a method call built
+  around it passes the receiver as a real argument. I claimed removing the guard
+  would make `reading(g)` compile and silently print `-1`. **Measured, it does
+  not:** it dies at the downstream arity check with `Incorrect number of
+  parameters for 'Gauge__reading': expected 0 got 1`. So this is a DIAGNOSTIC
+  guard, not a silent-wrong-answer guard — it keeps a mangled internal name out
+  of a message about source that never mentioned it, and declines to build a
+  node already known to be mis-shaped. Still worth keeping; the justification
+  was just weaker than written. `tests/testufcsstatic.mad` pins it, and the
+  message differs with and without the guard, which is what makes it able to
+  fail.
+- A **pointer** receiver (`Bag *p; tally(p)`) does not engage: a pointer is not
+  a class, so the fallback declines. That is the same question as U2's `->`
+  rule and belongs there, not here.
+- Reducers: `tests/testufcscall.mad` (user class, `count(m,k)` on a real
+  `std::map`, `size(m)` still resolving to `std::size`, free-beats-member, and
+  a `char *` receiver left untouched), `tests/testufcsorder.mad`
+  (member-beats-dlsym, with `<string.h>` deliberately absent so `strlen` really
+  is undeclared), `tests/testufcscallstrict.mad` (`--std=c++17` negative
+  control). Oracle: g++ 13 and clang++ 18 agree on all eight values via the
+  written-out calls, and both reject `tally(b)`.
+
+Not covered: a first argument that is a compound expression (`count(get_map(),
+k)`) — it keeps its old behaviour rather than being guessed at. Widening that
+means parsing the argument before choosing the callee, which is a real design
+step, not an increment.
 
 ## Risks, stated
 

@@ -1,0 +1,27 @@
+// UFCS ordering control: a member of the argument's own type must beat the
+// blind dlsym guess at a libc symbol of the same name.
+//
+// This is the ONE behaviour UFCS changes for code that used to compile: an
+// undeclared f(x) previously reached the dlsym fallback and called a libc
+// symbol through a generic `long` return. Now the member is found first.
+//
+// <string.h> is deliberately NOT included, so `strlen` is undeclared here and
+// the dlsym fallback is what would otherwise resolve it. The companion test
+// tests/testufcscall.mad DOES include <string.h> and pins the other side:
+// a declared free function wins, and a char* receiver is untouched.
+#include <stdio.h>
+
+class Rope
+{
+public:
+	int len;
+	int strlen() { return 4242; }
+};
+
+int main()
+{
+	Rope r;
+	r.len = 0;
+	printf("member-beats-dlsym=%d\n", strlen(r));
+	return 0;
+}
