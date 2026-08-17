@@ -4793,6 +4793,65 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	}
 }
 
+// Record ONE enum tag as DK_ENUM at its project slot: the enumerators ride a
+// constvalrec run and the pseudo-namespace key derives from
+// canonical_cpp_spelling() exactly as the live registration built it. The ONE
+// writer — both the datatype_map walk (file/namespace-scope tags) and the
+// class-nested sweep go through it, so the two surfaces cannot drift.
+static void forest_record_enum(Program *prog, DataDefENUM *edd,
+			       bool tu_root, bool class_nested)
+{
+	uint32_t tid = madc_type_id_for(edd);
+	if (!madc::dis::arena_id_is_project(tid) || prog->forest_arena.has_def(tid))
+		return;
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind    = madc::dis::DK_ENUM;
+	if (tu_root)
+		r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	if (class_nested)
+		r.flags |= madc::dis::DF_ENUM_CLASS_NESTED;
+	r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
+	r.canon_id = edd->canonical_cpp_spelling().empty() ? 0u
+		   : prog->forest_arena.strings.intern(
+			edd->canonical_cpp_spelling().c_str());
+	r.size    = (uint32_t)edd->size;
+	// A FIXED underlying base drives the enum's layout AND its lowered C type
+	// ([dcl.enum]p8, DataDefENUM::set_underlying); the restore must re-adopt
+	// both, so carry the base's type-id in ref0 (free for DK_ENUM; primitives
+	// are pinned ids).
+	r.ref0    = edd->underlying
+		  ? forest_serialize_type_id(edd->underlying) : 0u;
+	// Scoped enumerators: the pseudo-namespace key is the canonical spelling
+	// when namespaced (std::__cmp_cat::_Ord) or class-nested
+	// (std::__1::ios_base::event), else the bare tag.
+	const std::string &pk = edd->canonical_cpp_spelling().empty()
+			      ? edd->name : edd->canonical_cpp_spelling();
+	std::map<std::string, variable_map_t>::iterator ni =
+		prog->namespace_map.find(pk);
+	std::vector<madc::dis::constvalrec> evs;
+	if (ni != prog->namespace_map.end())
+		for (variable_map_iter vi = ni->second.begin();
+		     vi != ni->second.end(); ++vi) {
+			Variable *ev = vi->second;
+			if (!ev || !ev->is_constant())
+				continue;
+			madc::dis::constvalrec cv;
+			memset(&cv, 0, sizeof(cv));
+			cv.name_id = prog->forest_arena.strings.intern(
+				vi->first.c_str());
+			uint64_t uv = (uint64_t)ev->get<int64_t>();
+			cv.val_lo = (uint32_t)(uv & 0xffffffffu);
+			cv.val_hi = (uint32_t)(uv >> 32);
+			evs.push_back(cv);
+		}
+	r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
+	r.constval_count = (uint32_t)evs.size();
+	for (size_t e = 0; e < evs.size(); ++e)
+		prog->forest_arena.add_payload(evs[e]);
+	prog->forest_arena.set_def_at(tid, r);
+}
+
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
 // freeze time. The parse-time write-throughs capture an aggregate at its
 // COMPLETION hook, but state keeps mutating afterwards — a method's emit_symbol
@@ -4850,57 +4909,56 @@ static void cir_forest_arena_refresh(Program *prog,
 		DataDefENUM *edd = dynamic_cast<DataDefENUM *>(&tdt->definition);
 		if (!edd || edd->name != key)
 			return false;	// an alias entry records at its tag only
-		uint32_t tid = madc_type_id_for(edd);
-		if (!madc::dis::arena_id_is_project(tid)
-		    || prog->forest_arena.has_def(tid))
-			return false;
-		madc::dis::defrec r;
-		memset(&r, 0, sizeof(r));
-		r.kind    = madc::dis::DK_ENUM;
 		// v24: an enum tag defined in the TU's root file is fenced from
 		// the bind restore (provenance = its registered token's file).
-		if (prog->forest_is_tu_root_file(tdt->file))
-			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
-		r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
-		r.canon_id = edd->canonical_cpp_spelling().empty() ? 0u
-			   : prog->forest_arena.strings.intern(
-				edd->canonical_cpp_spelling().c_str());
-		r.size    = (uint32_t)edd->size;
-		// A FIXED underlying base drives the enum's layout AND its
-		// lowered C type ([dcl.enum]p8, DataDefENUM::set_underlying);
-		// the restore must re-adopt both, so carry the base's type-id
-		// in ref0 (free for DK_ENUM; primitives are pinned ids).
-		r.ref0    = edd->underlying
-			  ? forest_serialize_type_id(edd->underlying) : 0u;
-		// Scoped enumerators: the pseudo-namespace key is the canonical
-		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
-		const std::string &pk = edd->canonical_cpp_spelling().empty()
-				      ? edd->name : edd->canonical_cpp_spelling();
-		std::map<std::string, variable_map_t>::iterator ni =
-			prog->namespace_map.find(pk);
-		std::vector<madc::dis::constvalrec> evs;
-		if (ni != prog->namespace_map.end())
-			for (variable_map_iter vi = ni->second.begin();
-			     vi != ni->second.end(); ++vi) {
-				Variable *ev = vi->second;
-				if (!ev || !ev->is_constant())
-					continue;
-				madc::dis::constvalrec cv;
-				memset(&cv, 0, sizeof(cv));
-				cv.name_id = prog->forest_arena.strings.intern(
-					vi->first.c_str());
-				uint64_t uv = (uint64_t)ev->get<int64_t>();
-				cv.val_lo = (uint32_t)(uv & 0xffffffffu);
-				cv.val_hi = (uint32_t)(uv >> 32);
-				evs.push_back(cv);
-			}
-		r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
-		r.constval_count = (uint32_t)evs.size();
-		for (size_t e = 0; e < evs.size(); ++e)
-			prog->forest_arena.add_payload(evs[e]);
-		prog->forest_arena.set_def_at(tid, r);
+		forest_record_enum(prog, edd,
+				   prog->forest_is_tu_root_file(tdt->file), false);
 		return false;
 	});
+
+	// A CLASS-NESTED enum tag has NO datatype_map entry — a live parse keeps
+	// it out on purpose ([basic.scope.class]/1; TokenENUM::parse registers it
+	// solely as the owner's class type-alias, after money_base::part leaked
+	// `part` to file scope). The walk above therefore never saw one, yet
+	// forest_serialize_type_id had already STAMPED each a project id as a
+	// member / param / fn-ptr-signature cross-ref — leaving a referenced id
+	// with a DK_NONE record. At load that id cannot swizzle, so its whole
+	// owning aggregate is dropped: std::ios_base died on the `event_callback
+	// *__fn_` whose signature takes `ios_base::event`, and every class that
+	// flattens ios_base's members (basic_ios / basic_istream / basic_ostream /
+	// basic_iostream, char + wchar_t) went with it — the darwin `cout << "hi"`
+	// break (task #64). Every stamped id must carry a record; the enum walk is
+	// keyed on the project-type registry — the same slot walk the aggregate
+	// fixpoint above uses — so reachability through a name map cannot gate it.
+	// The record is flagged DF_ENUM_CLASS_NESTED so the restore re-attaches it
+	// as its owner's type alias ONLY, never as a flat name (LOADED == parsed).
+	{
+		uint32_t ebase = madc_active_project_types->base();
+		uint32_t en = (uint32_t)madc_active_project_types->size();
+		// Nested-ness is read where the live parse WROTE it — the owner's
+		// type_aliases (set_class_type_alias) — not guessed from a name.
+		// The owner's own provenance carries the TU-root fence with it.
+		std::map<DataDef *, bool> nested_tu_root;
+		for (uint32_t i = 0; i < en; ++i) {
+			DataDefCLASS *ocdd = dynamic_cast<DataDefCLASS *>(
+				madc_active_project_types->get(ebase + i));
+			if (!ocdd)
+				continue;
+			bool oroot = ocdd->definition_origin
+				   == AggregateDefinitionOrigin::TranslationUnitRoot;
+			for (std::map<std::string, DataDef *>::const_iterator ai =
+				     ocdd->type_aliases.begin();
+			     ai != ocdd->type_aliases.end(); ++ai)
+				if (dynamic_cast<DataDefENUM *>(ai->second))
+					nested_tu_root[ai->second] = oroot;
+		}
+		for (std::map<DataDef *, bool>::const_iterator ni =
+			     nested_tu_root.begin();
+		     ni != nested_tu_root.end(); ++ni)
+			forest_record_enum(prog,
+					   static_cast<DataDefENUM *>(ni->first),
+					   ni->second, true);
+	}
 
 	// RC2: FREE FUNCTIONS — record each file-scope free function (the
 	// funcdef_map surface a live header parse leaves behind) as its own

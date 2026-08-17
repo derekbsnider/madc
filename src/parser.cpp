@@ -21730,7 +21730,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.dd);
 	    if ( !sdd )
+	    {
+		DBG(std::cout << "forest_restore_decls: SKIPPED struct " << name
+		    << " (restored object is not a DataDefSTRUCT)" << std::endl);
 		continue;
+	    }
 	    struct_map.set(name, sdd);
 	    // Live parity: a parsed tag is ALSO a bare type name (struct≡class
 	    // — `union myu {...};` makes `myu v;` resolve with no typedef), so
@@ -21773,7 +21777,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // (binding to real Itanium symbols) is the follow-on.
 	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(rt.dd);
 	    if ( !cdd )
+	    {
+		// A CLASS record whose object is not a DataDefCLASS never
+		// registers — and a bound unit is CLAIMED served either way, so
+		// no live parse rescues it. Silence here cost task #64 a day.
+		DBG(std::cout << "forest_restore_decls: SKIPPED class " << name
+		    << " (restored object is not a DataDefCLASS)" << std::endl);
 		continue;
+	    }
 	    struct_map.set(name, cdd);
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));

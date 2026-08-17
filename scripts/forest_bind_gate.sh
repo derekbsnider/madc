@@ -399,6 +399,52 @@ int main()
 EOF
 run_case ptr "v=10 dv=2.5 nv=20 px=3 sz=32"
 
+# --- case: nestedenumfn (task #64) — a CLASS-NESTED enum reached only through a
+#     member's type chain. [basic.scope.class]/1 makes the tag a MEMBER, so a
+#     live parse deliberately keeps it OUT of datatype_map and the namespace
+#     (TokenENUM::parse — it used to leak money_base::part to file scope). The
+#     freeze's enum walk read datatype_map, so a nested tag got NO DK_ENUM record
+#     while forest_serialize_type_id had already stamped it a project id: the
+#     fn-ptr signature's param then pointed at a DK_NONE slot, the fn-ptr never
+#     rebuilt, and pass 2 SILENTLY dropped the whole owning aggregate. That is
+#     std::ios_base's `event_callback *__fn_` — it took the entire iostream
+#     family with it, so a bound darwin (libc++) `cout << "hi"` died on
+#     `struct has no member __vptr`. Members flatten from bases, so one lost
+#     member kills every derived class too.
+#     The `int event` local is the other half of the gate: the tag must still
+#     NOT be visible at file scope after the restore.
+cat > tmp/fbgate_nestedenumfn.h <<'EOF'
+#ifndef FBGATE_NESTEDENUMFN_H
+#define FBGATE_NESTEDENUMFN_H
+class Callbacks {
+public:
+    enum event { erase_event, imbue_event, copyfmt_event };
+    typedef void (*event_callback)(event, Callbacks &, int);
+    int n;
+    event_callback *fn;
+};
+#endif
+EOF
+cat > tmp/fbgate_nestedenumfn_producer.cpp <<'EOF'
+#include <fbgate_nestedenumfn.h>
+int main() { Callbacks c; c.n = 0; c.fn = 0; return c.n; }
+EOF
+cat > tmp/fbgate_nestedenumfn_consumer.cpp <<'EOF'
+#include <fbgate_nestedenumfn.h>
+#include <cstdio>
+int main()
+{
+    int event = 7;			/* the nested tag must NOT leak here */
+    Callbacks c;
+    c.n = 1;
+    c.fn = 0;
+    Callbacks::event e = Callbacks::imbue_event;
+    printf("n=%d e=%d ev=%d sz=%zu\n", c.n, (int)e, event, sizeof(Callbacks));
+    return 0;
+}
+EOF
+run_case nestedenumfn "n=1 e=1 ev=7 sz=16"
+
 # --- case: ns (namespace-qualified type restoration) — a struct defined inside a
 #     user namespace. Before v10 the loaded type registered ONLY in the flat
 #     struct_map/datatype_map, so a bound `N::P` failed "Unknown namespace 'N'". v10
@@ -1428,5 +1474,5 @@ sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer
 rm -f "$sb_snap" "$sb_gcc"
 echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
 
-echo "forest_bind_gate: GREEN 24/24 — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
+echo "forest_bind_gate: GREEN 25/25 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
 exit 0
