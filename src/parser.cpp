@@ -32365,6 +32365,58 @@ static bool template_id_is_type_expression_context(Program &pgm)
 // casts, new/sizeof-family, etc. `tb` advances through the stream; arm-level
 // breaks map to Break, `done = true` paths to Done. ttKeyword falls through
 // into the dispatch for keyword tokens that are contextual identifiers.
+// ---- UFCS (madc dialect): the dot-syntax fallback -------------------------
+// `x.f(args)` on a receiver type with NO member `f` re-forms as the ordinary
+// call `f(x, args)`. Member lookup runs FIRST and wins outright, so the only
+// programs this can affect are ones the parser was about to reject — that is
+// the safety property the slice's negative control pins.
+//
+// One fallback, one direction, no merged overload set and no cross-kind
+// ranking (the D/Nim rule, deliberately not C++ N4165). That is why this needs
+// no overload-resolution surgery: what it produces is an ORDINARY
+// TokenCallFunc, and every later stage — arity check, overload pick, CIR,
+// --emit=c11 — sees a call with nothing special about it. By emission time no
+// trace of the syntax survives (Tier 1, lowering-vs-raising.md).
+bool Program::ufcs_dot_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+				std::stack<TokenBase *> &exStack,
+				std::stack<TokenBase *> &opStack,
+				TokenBase *&tb, bool &done)
+{
+    if ( !ufcs_enabled() || !receiver || !ident_tb )
+	return false;
+    // Call syntax only: `x.f` with no argument list has no ordinary-call form
+    // to fall back TO, and must keep raising the plain no-such-member error.
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	return false;
+    // Ordinary unqualified lookup — the SAME resolver a hand-written `f(x, y)`
+    // gets from this position (the receiver already occupies the expression
+    // head, so expression_head is false exactly as it would be there). No new
+    // lookup rule: a php:: / perl:: helper becomes an extension method when,
+    // and only when, it is already visible.
+    Variable *fvar = resolve_preferred_identifier(ident_tb, false);
+    if ( !fvar || !dynamic_cast<FuncDef *>(fvar->type) )
+	return false;
+
+    TokenCallFunc *tc = new TokenCallFunc(*fvar);
+    // The receiver is argument 0, passed EXACTLY as written — no implicit `&`,
+    // no implicit `*`. Existing overload resolution and reference binding
+    // decide everything else; UFCS contributes syntax, not conversions.
+    exStack.pop();		// receiver moves into the argument list
+    tc->parameters.push_back(receiver);
+    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+	opStack.pop();
+    tb = nextToken();		// the '('
+    tc->line = tb->line;
+    tc->column = tb->column;
+    tb = parseCallFunc(tc);
+    DBG(cout << "UFCS: '." << ident_tb->spelling() << "(...)' re-formed as '"
+	     << fvar->name << "(receiver, ...)'" << endl);
+    opStack.push(tc);
+    if ( tb->id() == TokenID::tkSemi )
+	done = true;
+    return true;
+}
+
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				 std::stack<TokenBase *> &exStack,
 				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
@@ -33262,6 +33314,24 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    done = true;
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
+			// UFCS (--std=madc): the receiver type has no member `id`
+			// of ANY kind — neither a method (the lookup above) nor a
+			// data member (the offset lookup here). Try the ordinary
+			// free call `id(receiver, args)` before giving up. An
+			// operator-function-id is a NAME, never a candidate.
+			if ( !parsed_operator_name
+			  && ufcs_dot_fallback(lhs_dot, ident_tb,
+					       exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
+			// ONE error naming BOTH attempts — a UFCS miss must never
+			// read like a plain typo.
+			if ( ufcs_enabled() && !parsed_operator_name
+			  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			    Throw(tb) << "Unidentified member '" << id << "' in '"
+				      << struct_type->name << "', and no function '"
+				      << id << "' in scope for the UFCS form '"
+				      << id << '(' << struct_type->name << ", ...)'"
+				      << flush;
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }

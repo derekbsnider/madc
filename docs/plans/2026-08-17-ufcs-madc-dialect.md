@@ -64,6 +64,16 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
 `grep -rn STD_MADC src include` → 24 sites, all `language_std == STD_MADC`;
 `madc_dialect_type_spelling` is the model. No UFCS machinery exists.**
 
+## Owners to ADOPT (Rule #4 — searched, do not re-invent)
+
+| concept | grep | existing owner |
+|---|---|---|
+| can this callable take N args (defaults + varargs aware) | `callable_arity\|accepts_arity\|arity_matches\|_arity(` | **`method_callable_with_arg_count()`** parser.cpp:16356 — generic over any `Variable` holding a `FuncDef`; `hidden` is 0 for a free function, so despite the name it serves BOTH sides. Misnamed, not missing. |
+| member lookup filtered by callable arity | `find_method_by_callable_arity` | parser.cpp:16383 (8 call sites) — delegates to the above; deliberate `any_named` short-circuit stops base-class search |
+| count the args queued at a call site | `count_queued_call_arguments` | parser.cpp:24854 — **heuristic**; its comment at :24874 records a real miscount (template-argument commas), which is WHY the by-name recovery exists behind it |
+| select a free-function overload from arg TYPES | `findFunctionOverload\|select_overload\|best_overload\|resolve_overload` | **absent** — only `findMethodOverload` (class-scoped) and `namespace_overload_set_accepts_more` (parser.cpp:24799). This bounds the call side to ARITY viability. |
+| fallback chain when a call name won't resolve | the dlsym region | an existing ordered chain at ~34140: `lazy_resolve` → expression-context → implicit-complex-builtin → dlsym → `__builtin_` twin → implicit `int`. **U3 inserts a link into this chain; it does not build a parallel one.** |
+
 ## Decisions
 
 1. **Gate.** `Program::ufcs_enabled() const { return language_std == STD_MADC; }`.
@@ -101,12 +111,35 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
 8. **Diagnostics name both attempts.** `no member 'f' in 'T', and no function
    'f' taking (T, U)` — a single error, not two. A UFCS miss must never read
    like a plain typo.
+9. **The two sides test viability DIFFERENTLY, and the asymmetry is forced by
+   what the code already does — not by taste.**
+   - **Dot side: BY NAME.** The site already runs
+     `find_method_by_callable_arity()` (arity-viable, default-argument aware)
+     and, on a miss, falls back to a by-name `findMethod()`. That second lookup
+     is a **recovery net**, not sloppiness: `count_queued_call_arguments()`
+     carries a comment at parser.cpp:24874 recording that it once counted
+     *template-argument* commas as call arguments, which broke the arity lookup
+     and made libc++ calls report themselves undeclared. UFCS inserted ahead of
+     that net would silently re-form as a free call something that recovers
+     today — breakage. So UFCS sits BEHIND both member attempts. Consequence to
+     accept: `p.x(3)` where `x` is an `int` member and a free `x(T&, int)`
+     exists still errors.
+   - **Call side: BY ARITY.** There is no recovery net to preempt, and the free
+     candidate pool is the whole preference chain (`c`, `std`, `php`, …), so
+     name-presence is meaningless there — `std::count` would swallow
+     `count(m, k)` and the motivating example would never reach `m.count(k)`.
+     Arity is also exactly enough: `count(m,k)` is 2 args vs `std::count`'s 3
+     (not viable → falls back); `begin(v)` is 1 vs `std::begin`'s 1 (viable →
+     uses `std::begin`, which is the right answer anyway).
+
+   This is Stroustrup's "try the other syntax if the first one failed" made as
+   precise as madc's existing predicates allow — no new judgment invented.
 
 ## Slices
 
 | slice | scope | gate |
 |---|---|---|
-| **U1** | `ufcs_enabled()` + dot fallback for **class** receivers with no viable member | reducers: free fn found; member wins over free; both miss → one clear error; `--std=c++17` negative control |
+| **U1** ✅ | `ufcs_enabled()` + dot fallback for **class** receivers with no viable member | reducers: free fn found; member wins over free; both miss → one clear error; `--std=c++17` negative control |
 | **U2** | dot fallback for **non-class** receivers (primitives, pointers, arrays); the `->` rule from decision 4 | reducers per receiver kind, incl. `fp->fclose()` |
 | **U3** | call syntax `f(x,y)` → `x.f(y)`, inserted **before** the dlsym fallback | reducers + the ordering test below |
 | **U4** | docs (`docs/language/`), `--std=` matrix test, `scripts/ufcs_gate.sh` wired into `fulltest` | the gate is the deliverable |
@@ -115,6 +148,34 @@ Each slice is its own commit with trailers, its own reducers in `tests/`, and
 g++/clang++ oracles where the construct is legal C++ (the member-wins case is;
 the fallback case is madc-only and its oracle is "g++ rejects it", which is the
 point of the dialect gate).
+
+## What U1 landed
+
+- `Program::ufcs_enabled()` (`include/madc.h`, beside `auto_includes_enabled()`)
+  — the gate, same shape as `madc_dialect_type_spelling`.
+- `Program::ufcs_dot_fallback()` (`src/parser.cpp`, immediately above its only
+  caller `parseExpr_identifierArm`) — resolves `f` through
+  `resolve_preferred_identifier(ident_tb, false)` (the SAME resolver a
+  hand-written `f(x, y)` gets from that position: the receiver already occupies
+  the expression head), builds an ordinary `TokenCallFunc` with the receiver as
+  `parameters[0]`, then lets `parseCallFunc` read the rest of the argument list.
+  Requires a `(` to follow — `x.f` with no argument list keeps its old error.
+- The hook is the **data-member-miss throw** (`Unidentified member '<id>' in
+  '<T>'`). Both misses funnel there: a class with no such method leaves `var`
+  NULL and falls through to the offset lookup, so ONE hook covers method and
+  data-member misses for class *and* plain-struct receivers.
+- Reducers: `tests/testufcs.mad` (+`.expect`) — free fn at 1 and 2 args, plain
+  `struct` receiver, member-wins-over-free; `tests/testufcsmiss.mad`
+  (+`.expect_err`) — the combined diagnostic; `tests/testufcsstrict.mad`
+  (+`.flags` = `--std=c++17`, +`.expect_err`) — the negative control.
+- Oracle: g++ and clang++ both print `magsq=25 / scaled=70 / member wins: 42` for the
+  written-out calls, and both REJECT `p.magsq()` (`has no member named 'magsq'`
+  / `no member named 'magsq' in 'Point'`) — which is the whole point of the gate.
+
+Not yet covered by U1, deliberately: `x.f<T>(y)` (explicit template arguments —
+`peekToken()` is `<`, not `(`, so it takes the old error path), and receivers
+whose class has an unresolved dependent surface (the dependent-call placeholder
+at the same site consumes those first).
 
 ## Risks, stated
 

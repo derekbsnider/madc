@@ -4429,6 +4429,13 @@ public:
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // Uniform function call syntax is a madc-DIALECT feature: `x.f(y)` falls
+    // back to the ordinary call `f(x, y)` when the receiver type has no member
+    // named `f`. Member lookup runs first and wins outright, so the fallback
+    // only ever fires where the parser was about to raise a hard error — every
+    // strict --std=c*/c++* mode stays byte-identical. Same gating shape as
+    // madc_dialect_type_spelling() (parser.cpp), the other STD_MADC feature.
+    bool ufcs_enabled() const { return language_std == STD_MADC; }
     // A C++ reserved keyword introduced in `min_std` is active iff we are in the
     // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
     // at/after that standard. The C++ enumerators are contiguous and ordered
@@ -5375,6 +5382,15 @@ public:
 				     std::stack<TokenBase *> &exStack,
 				     std::stack<TokenBase *> &opStack,
 				     TokenCpnd *code);
+    // UFCS (--std=madc): re-form `receiver.f(args)` as the ordinary call
+    // `f(receiver, args)` when the receiver type has no member `f`. Returns
+    // true when it fired — the receiver has moved off exStack into argument 0,
+    // the access operator is off opStack, the call is on opStack, and
+    // `tb` / `done` are left as any other call site in the arm leaves them.
+    bool ufcs_dot_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+			   std::stack<TokenBase *> &exStack,
+			   std::stack<TokenBase *> &opStack,
+			   TokenBase *&tb, bool &done);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
     // shunting-yard core (precedence climbing, unary/binary disambiguation,
     // parentheses/subscript/ternary/cast/comma). Mutates `brackets` (by ref)

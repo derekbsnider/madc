@@ -1,0 +1,32 @@
+// UFCS negative control: the SAME shape tests/testufcs.mad compiles and runs
+// under the madc dialect must FAIL under an explicit C++ standard. UFCS is a
+// --std=madc feature; every strict --std=c*/c++* mode stays byte-identical to
+// what it was before UFCS existed.
+//
+// The .flags fixture selects --std=c++17. If UFCS ever leaked into a strict
+// mode this source would COMPILE and exit 0, and .expect_err (which requires a
+// nonzero exit) would fail — that is the control, not the message text.
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 both reject `p.magsq()`
+// ("has no member named 'magsq'" / "no member named 'magsq' in 'Point'").
+#include <stdio.h>
+
+class Point
+{
+public:
+	int x;
+	int y;
+};
+
+int magsq(Point &p)
+{
+	return p.x * p.x + p.y * p.y;
+}
+
+int main()
+{
+	Point p;
+	p.x = 3;
+	p.y = 4;
+	printf("magsq=%d\n", p.magsq());
+	return 0;
+}
