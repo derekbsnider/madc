@@ -1,6 +1,31 @@
 # Test Status
 
-> **Current (2026-08-17, v0.83.0 on `develop` — UFCS):** authoritative Linux
+> **Current (2026-08-17, v0.84.0 on `develop` — the pack degradation gate,
+> task #63):** authoritative Linux fulltest **1064 passed / 0 failed / 0 timed
+> out / 9 skipped**; native **EXE 1026/0** and **OBJ 1026/0**; zero warnings
+> under `-Werror`. Two new gates inside fulltest: `forest_pack_gate --selftest`
+> **17 legs** (hermetic, both directions of every boundary) and
+> `forest_bind_gate` **26/26** — up from 25/25 with the new `[ldouble]` case,
+> which pins the `long double`-member-lost-at-bind fix against g++/clang.
+> Suite counts are unchanged because the release adds gates and a bind case, not
+> `.mad` tests.
+>
+> All three packs re-measured with the gate wired in, and every number is now a
+> baseline in `docs/parity/pack-degradation-baseline.txt`:
+> **linux** 93 pack parse errors, 0 mir-blob-skips, dk-none 55, closure-drops 0,
+> 41 listed headers checked / 0 missing; **win64** 93, 0, 55, 0, 34/0;
+> **darwin** 58 + 1 mir-blob-skip and 55/0 headers on EACH arch. The load-side
+> hard-zero halves (`materialize fill: DROPPED`, `forest_restore_decls: SKIPPED`)
+> are 0 on both profiles that can run a consumer. Trailer gate 438/0.
+> Logs: `tmp/logs/rb-20260817-142741.log` (fulltest/exe/obj) and
+> `tmp/logs/rb-20260817-142423.log` (release/release-win/release-macos).
+>
+> Known and now GATED rather than silent: both macOS packs ship with **no MIR
+> cache blob** (linux packs 467 KB, win64 497 KB), baselined at
+> `darwin mir-blob-skips 1`. Pre-existing — byte-identical before and after this
+> release's code changes.
+>
+> **Previous (2026-08-17, v0.83.0 on `develop` — UFCS):** authoritative Linux
 > fulltest **1064 passed / 0 failed / 0 timed out / 9 skipped**; native
 > **EXE 1026/0** and **OBJ 1026/0**; zero warnings under `-Werror` on every
 > lane. `ufcs_gate` green inside fulltest (12 C + 9 C++ `--std=` modes x 3
