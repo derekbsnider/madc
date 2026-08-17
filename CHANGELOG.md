@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [v0.85.0] — 2026-08-17
+
+php::print_r and php::var_dump over ANY madc type — the compiler is their
+implementation, and PHP is the oracle to the byte.
+
 - **`php::print_r(v)` and `php::var_dump(v, ...)` render any madc value the way a
   PHP developer expects PHP to render it.** Not just `array` / `value`: a
   `struct`, a `class` with private and protected members, a base-flattened
