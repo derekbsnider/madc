@@ -34,6 +34,8 @@
 #             negative control; refuses to run if the mask did not bite
 #   win       make -C src hosted-x86-64-windows (the MinGW+UCRT PE the wine
 #             lane tests; the mingw toolchain exists ONLY on the container)
+#   release-win  make -C src release-windows — the stripped, forest-packed PE
+#             that headerless-win runs and the Windows zip ships
 #   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
 #             parameter is load-bearing — see the stage body; without the
 #             persistent server a first run yields rotating phantom failures
@@ -264,10 +266,17 @@ for stage in $stages; do
 		note_stage "pull macos tarballs" "$rc"
 		;;
 	packed)
-		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		# Build what this lane VALIDATES. Every artifact lane below does
+		# the same: make is idempotent (a no-op when up to date), so the
+		# Makefile's dependencies decide freshness instead of the caller
+		# remembering to put `release` earlier in the stage list. Ordering
+		# is not a guarantee — `headerless-win` validated an EIGHT-HOUR-OLD
+		# madc-release-x86-64-windows.exe and reported 1010/1, a failure
+		# that belonged to a binary the fix under test was never built into.
+		run_remote "packed" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
 		;;
 	headerless)
-		run_remote "headerless" "cd /workspace/madc; bash scripts/headerless_suite.sh"
+		run_remote "headerless" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; bash scripts/headerless_suite.sh"
 		;;
 	headerless-win)
 		# The win64 profile of the same lane: the shipped PE under wine
@@ -277,7 +286,14 @@ for stage in $stages; do
 		# The profile is an ENV knob; a positional argument is a
 		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
 		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
-		run_remote "headerless-win" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		run_remote "headerless-win" "make -C /workspace/madc/src -j20 release-windows; cd /workspace/madc; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		;;
+	release-win)
+		# The stripped, forest-packed PE the Windows zip ships — the
+		# artifact headerless-win and package_release_windows.sh both
+		# consume. It had no stage of its own, so the only way to refresh
+		# it was to remember the make target.
+		run_remote "release-win" "make -C /workspace/madc/src -j20 release-windows"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is
