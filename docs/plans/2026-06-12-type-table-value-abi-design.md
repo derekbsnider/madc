@@ -312,3 +312,99 @@ variables) and the host API (for engine-side values) share this one mechanism.
 - Whether `std::type_info` gets backed by table ids (RTTI unification).
 - Host-visible table introspection API surface (id → name/size/kind queries)
   — likely wanted for package C's host callbacks; size it there.
+
+---
+
+## 9. Recon, 2026-08-17 — what it would take to make the SCRIPT `value` BE the
+## 32-byte struct (measured, NOT scheduled)
+
+Owner: *"I don't believe it's necessary to take on now, but you should make note
+of these details."* So this section is a record, not a plan. It exists because
+the same question was answered WRONGLY once already (see below), and the next
+person to ask deserves the measurement rather than the guess.
+
+### 9.1 The question, and why it comes up
+
+`php::print_r($x, true)` returns `madc::value &` rather than `madc::value`
+because a value **cannot** be returned by value: `func_def`'s return-type chain
+ends at `type_list(ret_dd)` → `append_type_specs`, which has no `dtARRAY` case
+and falls through to `int`. So `value f() { … return v; }` compiles, runs, prints
+nothing and exits 0 — a silent wrong answer (recorded as D1 in
+`2026-08-17-php-print-r-var-dump-plan.md` §13.6).
+
+**The earlier claim that there is "no C type for a value" was WRONG, and so was
+the cost estimate attached to it ("a representation arc, 23 `is_array_object`
+sites").** The owner remembered correctly: the type exists and is declared.
+
+### 9.2 What actually exists today
+
+- **`madc_value` — `include/madc_api.h:52`** — is a real, tagged, 32-byte
+  `__attribute__((aligned(16)))` C struct: `type_id`, `flags`, `size`, and a
+  16-byte payload union (integer / real / `text_value` / `data_ptr` /
+  `inline_text[16]` SSO / `wide_value[2]`). It is returnable by value from C
+  today.
+- **`madc::value` — `include/libmadc/value.h`** — the C++ class the SCRIPT
+  `value` type maps to (`DataDefARRAY` is sized `sizeof(madc::value)`)
+  **contains** it:
+
+  ```cpp
+  madc_value                                    _v;       // 32
+  std::unique_ptr<std::vector<value>>           _array;   //  8
+  std::unique_ptr<std::map<std::string, value>> _object;  //  8   -> 48
+  ```
+
+  48 bytes is the `long long[6]` the CIR builder emits. The class has a
+  user-declared copy ctor, copy-assign and destructor, which is WHY it is
+  lowered as opaque storage plus `madarray_construct` / `madarray_destruct`
+  (`new(ptr) madc::value` / `->~value()`) instead of a named struct. The reason
+  was never a missing type; it was the two owning C++ members.
+- **The cell is designed AND wired.** `madc_cell` (`include/madc_value_cell.h`)
+  carries `refcount`, `cell_flags`, and a **payload finalizer**
+  (`void (*destroy)(void *payload)`) documented for exactly this use: *"A
+  typed-instance cell carries the instance type's own destructor here."*
+  `madc_value_make_instance()` allocates through `madc_cell_alloc_dtor` and
+  parks the payload in `data_ptr` with `MADC_VF_HEAP` — and **generated code
+  already calls it** (`src/cir_builder.cpp:25789` declares the extern,
+  `:25797` emits the call). `madc_value_copy` already retains/releases with the
+  aliasing order handled.
+
+### 9.3 Measured scope
+
+- **`_array` / `_object` are confined to ONE file.** They are `private`, the
+  class declares **no friends**, and all 40 references live in
+  `src/madc_value.cpp`. Nothing outside it depends on them being direct members.
+- Of those 40: **12 are mutations** (the sites that would need a copy-on-write
+  clone check) and 28 are reads.
+- The `is_array_object` sites in `cir_builder.cpp` are about the LOWERING and
+  would mostly be RETIRED by this change, not edited — the opposite of the
+  earlier estimate.
+
+### 9.4 The part that is not mechanical — copy semantics
+
+`madc::value`'s copy constructor **deep-copies**:
+
+```cpp
+if (other._array)  _array.reset(new std::vector<value>(*other._array));
+if (other._object) _object.reset(new std::map<std::string, value>(*other._object));
+```
+
+while the cell path gives **shared refcount** semantics. Moving the containers
+behind `data_ptr` therefore converts array/object copies from independent to
+shared — a change that passes a suite and breaks a program. Preserving observable
+behaviour needs **copy-on-write**: retain on copy, clone before mutation when
+`refcount > 1`, at those 12 sites.
+
+That is the right end state for this language (PHP arrays ARE CoW
+value-semantics, and the cell's non-atomic saturating refcount with
+`MADC_CELL_PERMANENT` for the literal tier was built for it), but it is a
+SEMANTIC decision with its own oracled tests, not an implementation detail to
+fold into something else.
+
+### 9.5 What lands if it is ever done
+
+`madc::value` becomes exactly `madc_value` (32 bytes, no C++ members) →
+`value` gets a real emitted C struct type → **D1 disappears** (returnable by
+value, so `php::print_r` could drop the reference and return `madc::value`
+outright, matching PHP's `string|true` even more directly) → the opaque-buffer
+lowering and its `is_array_object` special-casing retire → array/object copies
+become CoW.

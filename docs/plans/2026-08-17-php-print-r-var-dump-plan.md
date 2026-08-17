@@ -675,8 +675,12 @@ nothing to render: **a `value` has no C type.** It lowers to opaque storage —
 `_Alignas(16) long long v[6] __attribute__((cleanup(madarray_destruct)))` plus an
 explicit `madarray_construct` — and `is_array_object`'s own comment says argument
 passing DEPENDS on that buffer decaying to a pointer. Giving `value` a real
-`struct` tag is therefore a representation arc (23 `is_array_object` sites plus
-every decay-dependent call), not a slice inside this one.
+`struct` tag is therefore not a one-line arm — but the cost stated here when this
+section was written ("23 `is_array_object` sites plus every decay-dependent
+call") is WRONG, and so is the implication that no C type exists. See
+`docs/plans/2026-06-12-type-table-value-abi-design.md` §9 for the measured
+answer: the 32-byte `madc_value` struct is already declared and `madc::value`
+contains it; the real work is copy-on-write at 12 mutation sites in ONE file.
 
 ### 13.2 The signature, and why it needs no representation change
 
@@ -810,11 +814,22 @@ running rather than reasoning:
 
 - **D1 — `value` returned by value silently returns nothing.** Layer chain:
   `func_def` return-type arm → `type_list` → `append_decl_type_specs` →
-  `append_type_specs` (no `dtARRAY` case → `int`). The full fix is §13.1's
-  representation arc. The immediate fix is to make the fall-through **LOUD** —
-  an error naming the type — because exit 0 with empty output is the worst
-  outcome available, and refusing by name is this subsystem's established
-  discipline. Reducer: `tmp/r1.mad`.
+  `append_type_specs` (no `dtARRAY` case → `int`). The immediate fix is to make
+  the fall-through **LOUD** — an error naming the type — because exit 0 with
+  empty output is the worst outcome available, and refusing by name is this
+  subsystem's established discipline. Reducer: `tmp/r1.mad`.
+
+  ⚠️ **§13.1's "no C type for a value / 23 `is_array_object` sites" estimate was
+  WRONG — do not plan from it.** The owner remembered otherwise and was right:
+  `madc_value` (`include/madc_api.h:52`) is a real tagged 32-byte C struct, and
+  `madc::value` merely CONTAINS it plus two `unique_ptr` members (32+8+8 = the
+  emitted `long long[6]`). The corrected, MEASURED recon —
+  the two members confined to one file (40 refs, 12 of them mutations, no
+  friends), the cell finalizer already wired and called from generated code, and
+  copy-on-write as the one genuinely non-mechanical part because the class
+  deep-copies today while the cell path shares — is
+  `docs/plans/2026-06-12-type-table-value-abi-design.md` §9. Read that, not
+  §13.1, before touching this. Owner 2026-08-17: not to be taken on now.
 - **D2 — assigning to a `value &` is rejected** ("assignment of incompatible
   value") while assigning to a plain `value` local works. Reducer: `tmp/r3.mad`.
   Not on this slice's path (generated code calls the runtime setters directly),
