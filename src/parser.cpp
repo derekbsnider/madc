@@ -32365,6 +32365,181 @@ static bool template_id_is_type_expression_context(Program &pgm)
 // casts, new/sizeof-family, etc. `tb` advances through the stream; arm-level
 // breaks map to Break, `done = true` paths to Done. ttKeyword falls through
 // into the dispatch for keyword tokens that are contextual identifiers.
+// ---- UFCS (madc dialect): the member-access fallback ----------------------
+// `x.f(args)` / `p->f(args)` on a receiver with NO member `f` re-forms as the
+// ordinary call `f(x, args)` / `f(p, args)`. Member lookup runs FIRST and wins
+// outright, so the only programs this can affect are ones the parser was about
+// to reject — that is the safety property the slice's negative control pins.
+//
+// `.` and `->` are the SAME operator here, because the rule is "the receiver is
+// argument 0, EXACTLY as written": no implicit `&`, no implicit `*`, types
+// unchanged. So `fp->fclose()` is `fclose(fp)` and `s->strlen()` is
+// `strlen(s)` — the C spelling, which is the point. The C++ identity
+// `p->f()` == `(*p).f()` still holds for the MEMBER leg, which runs first; it
+// simply does not extend to a fallback leg that is a hard error in C++ at all.
+//
+// One fallback, one direction, no merged overload set and no cross-kind
+// ranking (the D/Nim rule, deliberately not C++ N4165). That is why this needs
+// no overload-resolution surgery: what it produces is an ORDINARY
+// TokenCallFunc, and every later stage — arity check, overload pick, CIR,
+// --emit=c11 — sees a call with nothing special about it. By emission time no
+// trace of the syntax survives (Tier 1, lowering-vs-raising.md).
+// The ONE owner of "would UFCS be attempted at this point?" — the dialect gate,
+// the operator-function-id exclusion, and "a call actually follows".
+//
+// It is shared deliberately. Both fallbacks need it, and so does the combined
+// diagnostic: if the diagnostic asked the question separately, the two could
+// drift and it would claim a UFCS form was tried when it never was (or stay
+// silent when it was). An operator-function-id is a NAME, never a candidate;
+// and `x.f` with no argument list has no ordinary-call form to fall back TO,
+// so it must keep its original error.
+bool Program::ufcs_attempts_here(bool operator_id)
+{
+    return ufcs_enabled()
+	&& !operator_id
+	&& peekToken()
+	&& peekToken()->id() == TokenID::tkOpBrk;
+}
+
+bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+				bool operator_id,
+				std::stack<TokenBase *> &exStack,
+				std::stack<TokenBase *> &opStack,
+				TokenBase *&tb, bool &done)
+{
+    if ( !receiver || !ident_tb || !ufcs_attempts_here(operator_id) )
+	return false;
+    // Ordinary unqualified lookup — the SAME resolver a hand-written `f(x, y)`
+    // gets from this position (the receiver already occupies the expression
+    // head, so expression_head is false exactly as it would be there). No new
+    // lookup rule: a php:: / perl:: helper becomes an extension method when,
+    // and only when, it is already visible.
+    Variable *fvar = resolve_preferred_identifier(ident_tb, false);
+    if ( !fvar || !dynamic_cast<FuncDef *>(fvar->type) )
+	return false;
+
+    TokenCallFunc *tc = new TokenCallFunc(*fvar);
+    // The receiver is argument 0, passed EXACTLY as written — no implicit `&`,
+    // no implicit `*`. Existing overload resolution and reference binding
+    // decide everything else; UFCS contributes syntax, not conversions.
+    exStack.pop();		// receiver moves into the argument list
+    tc->parameters.push_back(receiver);
+    if ( !opStack.empty()
+      && (opStack.top()->id() == TokenID::tkDot
+       || opStack.top()->id() == TokenID::tkDeRef) )
+	opStack.pop();		// `.` or `->` — same operator in this leg
+    tb = nextToken();		// the '('
+    tc->line = tb->line;
+    tc->column = tb->column;
+    tb = parseCallFunc(tc);
+    DBG(cout << "UFCS: member access '" << ident_tb->spelling()
+	     << "(...)' re-formed as '" << fvar->name << "(receiver, ...)'" << endl);
+    opStack.push(tc);
+    if ( tb->id() == TokenID::tkSemi )
+	done = true;
+    return true;
+}
+
+// ---- UFCS (madc dialect): the call-syntax fallback ------------------------
+// `f(x, args)` with NO declared free `f` visible re-forms as `x.f(args)`. This
+// is the direction Stroustrup's unified-call note is actually about — "Note
+// begin(c) and c.begin() ... Why do we/someone have to write both?" — and the
+// one the committee did not object to.
+//
+// It fires BEFORE the unresolved-symbol guesses (dlsym, the C89 implicit `int`
+// declaration): a member of the argument's own type beats a blind guess at a
+// libc symbol of the same name. That ordering is the one behaviour this slice
+// changes, and tests/testufcscall.mad pins it.
+//
+// TRIGGER: no declared free `f` at all. NOT "declared but not arity-viable" —
+// measured, that stronger trigger is not needed. Of the four motivating calls,
+// `size(v)`, `begin(v)` and `empty(v)` ALREADY work today (libstdc++ really
+// does declare std::size/std::begin/std::empty, which is the very duplication
+// the proposal complains about), and only `count(m, k)` fails — with "use of
+// undeclared identifier", i.e. no declaration at all. Widening the trigger to
+// arity would mean judging a whole namespace overload set, which risks stealing
+// a call that resolves today; there is no evidence it buys anything.
+//
+// The receiver is read by LOOKAHEAD, not by parsing: the first argument must be
+// a single identifier naming a class-typed variable. tokens[0] is the `(` (the
+// indexing count_queued_call_arguments already uses). That covers the
+// motivating shapes; a call whose first argument is a compound expression keeps
+// its old behaviour rather than guessing.
+bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
+				 std::stack<TokenBase *> &opStack,
+				 TokenBase *&tb, bool &done, TokenCpnd *code)
+{
+    if ( !ident_tb || !ufcs_attempts_here(operator_id) )
+	return false;
+    // `(` ident `,`   or   `(` ident `)`
+    if ( tokens.size() < 3 || !tokens[1] || !tokens[2] )
+	return false;
+    if ( tokens[1]->type() != TokenType::ttIdentifier )
+	return false;
+    if ( tokens[2]->id() != TokenID::tkComma
+      && tokens[2]->id() != TokenID::tkClBrk )
+	return false;
+
+    TokenIdent *recv_ident = static_cast<TokenIdent *>(tokens[1]);
+    // Resolved exactly as the first argument would be if parsed: a nested
+    // parseExpression starts with empty stacks, so expression_head is true.
+    Variable *recv = resolve_preferred_identifier(recv_ident, true);
+    if ( !recv )
+	return false;
+    DataDefCLASS *cls =
+	dynamic_cast<DataDefCLASS *>(referent_if_reference(recv->type));
+    if ( !cls )
+	return false;
+
+    size_t argc = count_queued_call_arguments();
+    if ( argc == 0 )
+	return false;			// `f()` has no receiver to move
+    const std::string &id = ident_tb->spelling();
+    // Arity viability through the ONE owner (defaults- and varargs-aware);
+    // argc counts the receiver, the member call does not.
+    Variable *mvar = find_method_by_callable_arity(cls, id, argc - 1, false);
+    if ( !mvar )
+	return false;
+    // A STATIC member has no `this` slot, so a TokenCallMethod built around it
+    // passes the receiver as a REAL argument. Measured with the guard removed,
+    // `reading(g)` on a static then dies at the downstream arity check with
+    // "Incorrect number of parameters for 'Gauge__reading': expected 0 got 1"
+    // — an error either way, so this is NOT a silent-wrong-answer guard, it is
+    // a diagnostic one: it keeps a mangled internal name out of a message about
+    // source that never mentioned it, and declines to build a node whose shape
+    // is already known to be wrong. The dot arm splits statics off into a
+    // TokenCallFunc for the same reason; rather than duplicate that split for a
+    // form whose whole point is passing the receiver, UFCS declines.
+    if ( mvar->flags & vfSTATIC )
+	return false;
+
+    TokenCallMethod *tc = new TokenCallMethod(*recv, *mvar);
+    tb = nextToken();			// the '('
+    tc->line = tb->line;
+    tc->column = tb->column;
+    nextToken();			// the receiver identifier
+    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	nextToken();			// the comma that followed it
+    tb = parseCallMethod(tc);
+    tc = reselect_method_overload(tc, *recv, cls, id);
+    // Access control on the SELECTED overload ([class.access]). UFCS must
+    // never become a way to reach a private member from outside the class.
+    {
+	DataDefCLASS *cur_class =
+	    (code && code->method) ? code->method->owner_class : NULL;
+	std::string av = method_access_violation(cls, &tc->var, id, cur_class,
+						 current_function_friend_name(code));
+	if ( !av.empty() )
+	    Throw(tc) << av << flush;
+    }
+    DBG(cout << "UFCS: '" << id << "(" << recv->name << ", ...)' re-formed as '"
+	     << recv->name << '.' << id << "(...)'" << endl);
+    opStack.push(tc);
+    if ( tb->id() == TokenID::tkSemi )
+	done = true;
+    return true;
+}
+
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				 std::stack<TokenBase *> &exStack,
 				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
@@ -33042,6 +33217,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
 				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
 				    << std::endl);
+				// UFCS (--std=madc): an operator-result rvalue that is not a class.
+				// Try the ordinary free call `f(receiver, args)` before
+				// rejecting. The receiver is passed EXACTLY as written —
+				// no implicit & and no implicit * (owner rule, 2026-08-17).
+				if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+							 exStack, opStack, tb, done) )
+				    return done ? ExprStep::Done : ExprStep::Break;
 				Throw(tb) << "member reference is not a structure or union" << flush;
 			    }
 			    struct_type = op_type;
@@ -33070,7 +33252,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return ExprStep::Break;
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
+		    {
+			// UFCS (--std=madc): a non-class receiver (int, char *, array).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference is not a structure or union" << flush;
+		    }
 		    var = NULL;
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`__p.operator->()`) was
@@ -33262,6 +33453,22 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    done = true;
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
+			// UFCS (--std=madc): the receiver type has no member `id`
+			// of ANY kind — neither a method (the lookup above) nor a
+			// data member (the offset lookup here). Try the ordinary
+			// free call `id(receiver, args)` before giving up. An
+			// operator-function-id is a NAME, never a candidate.
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
+			// ONE error naming BOTH attempts — a UFCS miss must never
+			// read like a plain typo.
+			if ( ufcs_attempts_here(parsed_operator_name) )
+			    Throw(tb) << "Unidentified member '" << id << "' in '"
+				      << struct_type->name << "', and no function '"
+				      << id << "' in scope for the UFCS form '"
+				      << id << '(' << struct_type->name << ", ...)'"
+				      << flush;
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }
@@ -33444,9 +33651,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			base = ptr_type->base_type;
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
+		    {
+			// UFCS (--std=madc): `->` on a non-struct pointee (char *, int *).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
 			    << ident_tb->spelling() << "')" << flush;
+		    }
 
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`p->operator*()`) was
@@ -33605,7 +33821,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 		    }
 		    if ( ofs == -1 )
+		    {
+			// UFCS (--std=madc): the pointee has no member `id` of any kind.
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "no member named '" << id << "'" << flush;
+		    }
 		    // Access control (P2.5): reject private/protected member access
 		    // via `->` from outside the (derived) class.
 		    {
@@ -34085,6 +34310,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		}
+		// UFCS (--std=madc): no declared free `f` is visible. Try the
+		// member form `arg0.f(rest)` BEFORE the unresolved-symbol
+		// guesses below (dlsym, C89 implicit int) — the owner's order is
+		// declared free -> member -> existing unresolved-symbol
+		// behaviour, and tests/testufcscall.mad pins it.
+		if ( !var
+		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
+					opStack, tb, done, code) )
+		    return done ? ExprStep::Done : ExprStep::Break;
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    std::string fname = ident_tb->spelling();

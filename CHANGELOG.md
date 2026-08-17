@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+- **UFCS — uniform function call syntax, in the madc dialect only.** `x.f(y)`
+  and `f(x, y)` are now interchangeable spellings under `--std=madc`:
+
+  ```
+  x.f(y)   -> viable member f?         use it  -> otherwise f(x, y)
+  f(x, y)  -> viable declared free f?  use it  -> otherwise x.f(y)
+                                               -> otherwise the usual
+                                                  unresolved-symbol handling
+  ```
+
+  Two separate ordered fallbacks, never a merged overload set — Stroustrup's
+  unified-call model (N4174 / the 2016 background note), which C++ did not
+  adopt. **A fallback fires only where the code was already a hard error**, so
+  no program that compiled before can change meaning, and every explicit
+  `--std=c*` / `--std=c++*` mode is byte-identical to before. Receivers of any
+  kind participate — classes, plain structs, `int`, `char *`, arrays, operator
+  results — and the receiver is passed **exactly as written**: no implicit `&`,
+  no implicit `*`, no type change. That makes `.` and `->` the same operator in
+  the fallback leg, so `fp->fclose()` is `fclose(fp)`. Calls chain
+  (`n.twice().inc().twice()`), mixing members and free functions in either
+  order, with no machinery added for it: both fallbacks resolve into ordinary
+  call nodes, so the existing call-result path carries the chain. Member-only
+  container operations gain the free spelling (`count(m, k)` → `m.count(k)`);
+  `size`/`begin`/`end`/`empty` need no help, since the standard library already
+  declares free versions and those keep resolving to the real `std::` ones.
+  A static member never captures a call, access control is enforced on the
+  selected overload, and both misses produce one error naming both attempts.
+  Docs: [docs/language/ufcs.md](docs/language/ufcs.md). Gated by
+  `scripts/ufcs_gate.sh` (in `fulltest`), which sweeps the whole `--std=` matrix
+  — 12 C and 9 C++ modes — to keep the feature inside the dialect.
+- `madc --version` / `-V` reports the version, with `scripts/version_flag_gate.sh`
+  asserting the CLI flag, the `MADC_VERSION` macro and `madc::sys.version` all
+  agree with the `VERSION` file.
+
 ## [v0.82.0] — 2026-08-17
 
 The three-platform release: Linux, macOS and Windows ship together from one

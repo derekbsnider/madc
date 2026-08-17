@@ -1,0 +1,75 @@
+// UFCS (uniform function call syntax) — madc dialect only (--std=madc).
+//
+//	x.f(y)  ->  viable member f?  use it
+//		->  otherwise         ordinary f(x, y)
+//
+// Member lookup runs FIRST and wins outright, so the fallback fires only where
+// madc would otherwise raise "Unidentified member 'f' in 'T'". The strict-mode
+// negative control is tests/testufcsstrict.mad: this same shape must FAIL under
+// --std=c++17. The oracle for the written-out calls is g++/clang++ (both agree:
+// magsq=25, scaled=70, member wins: 42) — and both REJECT the `p.magsq()`
+// spelling, which is exactly what the dialect gate exists to allow.
+#include <stdio.h>
+
+class Point
+{
+public:
+	int x;
+	int y;
+};
+
+// Free functions. Neither is a member of Point.
+int magsq(Point &p)
+{
+	return p.x * p.x + p.y * p.y;
+}
+
+int scaled(Point &p, int k)
+{
+	return (p.x + p.y) * k;
+}
+
+// A plain struct receiver takes the same path (no method table at all).
+struct Pair
+{
+	int a;
+	int b;
+};
+
+int total(struct Pair &q)
+{
+	return q.a + q.b;
+}
+
+// A class that HAS the member: the member must win over the free function.
+class Box
+{
+public:
+	int v;
+	int get() { return this.v * 2; }
+};
+
+int get(Box &b)
+{
+	return 999;			// must never be selected
+}
+
+int main()
+{
+	Point p;
+	p.x = 3;
+	p.y = 4;
+	printf("magsq=%d\n", p.magsq());	// -> magsq(p)
+	printf("scaled=%d\n", p.scaled(10));	// -> scaled(p, 10)
+
+	struct Pair q;
+	q.a = 11;
+	q.b = 31;
+	printf("total=%d\n", q.total());	// -> total(q)
+
+	Box b;
+	b.v = 21;
+	printf("member wins: %d\n", b.get());	// the MEMBER, not the free get
+
+	return 0;
+}
