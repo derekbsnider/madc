@@ -2,6 +2,91 @@
 
 ## [Unreleased]
 
+- **`php::print_r(v)` and `php::var_dump(v, ...)` render any madc value the way a
+  PHP developer expects PHP to render it.** Not just `array` / `value`: a
+  `struct`, a `class` with private and protected members, a base-flattened
+  derived class, a `union`, an anonymous union, a bit-field, a fixed array and a
+  `char[]` all work today. Both are declared in `<ns_php>` as function templates
+  with **no definition anywhere** — "any type" has no signature a host could
+  satisfy, so the CIR builder generates a dumper for whatever type the argument
+  has (`src/cir_dump.cpp`), and the runtime carries only output primitives
+  (`src/rt/rt_dump.c`, strict C11, ledger-registered so a `-static-libmadc`
+  program that dumps links on Mach-O too). A program that never dumps carries
+  nothing: no runtime type-descriptor table exists.
+- **Positional containers are sequences, decided structurally.** A
+  `std::vector<int>` prints the way PHP prints an array of ints, a `std::string`
+  prints as its text (a sequence whose ELEMENT is a character type is text), and a
+  `std::string` member inside a struct takes the same path — the owner's own two
+  examples. The predicate is `class_index_iteration_protocol`, the type-checked
+  `size()`+`operator[]` test S0 wrote for the range-for, now shared as one owner;
+  `operator[]`'s return type answers "of what". Nothing is matched by name: no
+  `c_str`, no `length`, no container allow-list, which is why an associative
+  container fails the same predicate and falls back to its members instead of
+  being iterated wrongly. Two supporting consolidations: new `class_nullary_call`
+  is the one owner for an `obj.size()`-shaped call and routes an externally bound
+  method to its real `emit_symbol` (the hand-rolled `Class__size` in
+  `translate_foreach_class` could not, a latent undefined import), and the element
+  access goes through `class_subscript_addr_on` like the range-for's. A container
+  count is a runtime value, evaluated ONCE into a local so the printed count and
+  the loop bound cannot disagree; and a class that is positional but whose element
+  has no dumper yet falls BACK to the member walk, because an enhancement must not
+  turn a working dump into an error.
+- **A type is named what the SOURCE calls it, by identity and never by pattern.**
+  `std::string(2) "hi"`, not
+  `std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>(2) "hi"`.
+  `Program::namespace_datatype_map` maps `name -> TokenDataType`, and a
+  `TokenDataType` carries `DataDef &definition` — so a `typedef` already binds the
+  spelling the source wrote to the type it names, and inverting that table by
+  DataDef IDENTITY answers the question. Two keys are the type's own registration
+  rather than a name anybody wrote and are skipped: the template-id spelling and
+  the mangled tag madc registers the instantiation under (without the second, the
+  "alias" found for `std::vector<int>` was
+  `std::vector_int32_t_std__allocator_int32_t_` — worse than the spelling it
+  replaced, and the probe caught it before it shipped). `std::vector` has no alias,
+  so a second rule finishes it: a SEQUENCE's word is the template's own name plus
+  its ELEMENT type — `std::vector<int>`, `std::vector<std::string>` — where the
+  element is `operator[]`'s return type and the defaulted allocator/traits
+  arguments are dropped as implementation detail. A plain aggregate still prints
+  `struct Point` (already the source's spelling) and a union still keeps its
+  keyword. Because an alias is flavor-stable where the canonical spelling is not
+  (`std::__cxx11::` vs `std::__1::`), the fixture pins these lines in full.
+- **PHP is the oracle, to the byte.** Every shape PHP can express was captured
+  from php-cli 8.3.6 with `cat -A` and matched exactly: the 4-space entry indent,
+  the 8-space step of a nested `(`, the blank line after a nested block,
+  `[prot:protected]` and `[priv:Foo:private]`, `1` for `true` and the empty
+  string for `false`, and PHP's 14-significant-digit float — including the `.0`
+  mantissa PHP puts in an exponent form (`1.0E+25`) that C's `%G` drops.
+  `var_dump` keeps PHP's frame and makes exactly one deliberate change, the one
+  the owner asked for: it names the REAL C/C++/madc type. `double(3.5)` not
+  `float(3.5)`, `long(42)` not `int(42)`, `char *(2) "hi"` not `string(2) "hi"`,
+  `struct Point(2)` not `object(Point)#1 (2)`.
+- **The walk never computes — or even reads — a layout fact.** Members are
+  emitted as `obj.member` ACCESS nodes, so c2mir resolves them against the same
+  struct the rest of the compiler emits: bit-field shift/mask, anonymous-aggregate
+  transparency and base flattening all keep their single owner and the dumper
+  cannot drift from them. Arrays get a real loop, never an unrolled one, so
+  `char buf[4096]` costs one element dumper. Nesting depth is a compile-time
+  constant, so PHP's columns are literals with no runtime depth counter.
+- **Refusals are by NAME of the type, never a guess.** `is_integer()` is true for
+  a pointer, for a pointer-to-data-member and for a function pointer, and a SIMD
+  vector's follows its element — any of those in the integer arm would print an
+  address as a decimal. Pointers, enums, ASSOCIATIVE containers and `value`
+  itself each say "no dumper for type 'X' yet" until their slice lands. A
+  multidimensional array is refused too: `member_counts` holds the flattened
+  total, so walking it flat would index past the first row.
+- **A range-for crash fixed on the way in (prerequisite).** `for (int v :
+  std::map<int,int>)` SIGSEGV'd at (nil) where g++ and clang both REJECT the
+  source, because the iteration protocol matched `size()` and `operator[]` by
+  NAME and then handed the loop counter to `map::operator[](const key_type &)` —
+  a pointer parameter fed an integer. The match is type-checked now (integral
+  index, integral `size()`, and no `key_type`: a keyed container has no index
+  protocol), and the element accessor delegates to `class_subscript_addr_on`, the
+  ONE `operator[]` call builder, which reads the index argument's shape from the
+  parameter. That also fixed a second live crash: a container whose positional
+  `operator[]` takes `const long &` now iterates correctly instead of
+  dereferencing an integer. `std::set` says why it cannot be iterated instead of
+  failing inside c2mir.
+
 ## [v0.84.0] — 2026-08-17
 
 The forest pack stops degrading silently: one gate over all three packs, and the

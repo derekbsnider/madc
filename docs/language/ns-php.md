@@ -165,11 +165,18 @@ change: it names the **real** type instead of simulating PHP's.
 | `char name[8]` = "hi" | — | `char[8](2) "hi"` |
 | a `Point` | `object(Point)#1 (2)` | `struct Point(2)` |
 | `int v[3]` | `array(3)` | `int[3](3)` |
-| a `std::vector<int>` | `array(3)` | `std::vector<int32_t,std::allocator<int32_t>>(3)` |
-| a `std::string` | `string(2) "hi"` | `std::__cxx11::basic_string<char,...>(2) "hi"` |
+| a `std::vector<int>` | `array(3)` | `std::vector<int>(3)` |
+| a `std::string` | `string(2) "hi"` | `std::string(2) "hi"` |
 
-The type word is the CANONICAL type, not the typedef the source wrote — the same
-thing `typeid` reports in g++ — so a `size_t` shows as `unsigned long`. An
+The type word is the name the SOURCE gives the type. For a template
+instantiation that is the alias the standard library declared —
+`typedef basic_string<char> string;` makes the word `std::string`, not
+`std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>` —
+found by looking the type up in madc's own type-name tables, so it is stable
+across standard-library flavors. A container adds its ELEMENT type and drops the
+defaulted allocator and traits: `std::vector<std::string>`. For a plain scalar the
+word is the canonical type rather than a typedef of it (a `size_t` shows as
+`unsigned long`, the same thing `typeid` reports in g++). An
 aggregate is always spelled `struct X` (or `union X`): madc promotes a plain
 struct to a class internally when it earns class-hood, so `class` would be a
 claim about your source that the compiler cannot support.
@@ -207,9 +214,9 @@ name.
   `Matrix::operator[]` returning a row pointer) also falls back to its members:
   the sequence rendering is an enhancement and never removes information.
 
-`var_dump` names a container by its canonical C++ spelling, which for a template
-instantiation is long (`std::vector<int32_t,std::allocator<int32_t>>`) and
-depends on the standard-library flavor. `print_r` is the readable form.
+`var_dump` names a container the way you would write it: `std::vector<int>`,
+`std::vector<std::string>`, `std::string`. A `std::array`'s extent is not in the
+word — it is the count in parentheses.
 
 ### Limits
 

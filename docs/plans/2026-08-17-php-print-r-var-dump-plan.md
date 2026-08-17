@@ -562,10 +562,13 @@ Two consequences, both accepted deliberately:
   var_dump value lines by their flavor-stable tail (`>(2) "hi"`) and pins the
   print_r blocks — the PHP-fidelity claim — in full. A test that spelled
   `__cxx11` would fail the libc++ lane, which runs the whole suite.
-- A shorter alias form is WANTED (owner, 2026-08-17: "I really don't think anyone
-  wants to see std::__cxx11::basic_string<...>"), and the mechanism exists.
+- A shorter alias form was WANTED (owner, 2026-08-17: "I really don't think anyone
+  wants to see std::__cxx11::basic_string<...>") and is **DONE** — see §12.10,
+  which is now an implementation record, not a proposal. This §12.9 text about
+  fixtures asserting flavor-stable tails is SUPERSEDED: the fixture pins whole
+  lines, because an alias is flavor-stable.
 
-### 12.10 How to get to `std::string` — invert the datatype map (NOT a name match)
+### 12.10 Getting to `std::string` — invert the datatype map (DONE in v0.85.0)
 
 **Correction to §12.9's first draft: a type -> alias map DOES exist.**
 `Program::namespace_datatype_map` is `namespace -> (name -> TokenDataType *)`, and
@@ -574,7 +577,9 @@ source used, bound to the DataDef it names (`include/datatokens.h:11`). `<string
 says `typedef basic_string<char> string;`, so `std["string"]->definition` IS the
 basic_string instantiation.
 
-So the type word for a class becomes: **search the datatype maps for an entry
+IMPLEMENTED as `CirBuilder::type_alias_spelling` + `dump_class_type_word` +
+`dump_sequence_type_word` + the `dump_type_word` dispatcher (src/cir_dump.cpp).
+The rule: **search the datatype maps for an entry
 whose `definition` denotes THIS DataDef, and use the shortest qualified spelling
 found; fall back to `canonical_cpp_spelling()`, then `struct <name>`.** That is a
 type-IDENTITY inversion of the table the source's own `typedef` filled — the
@@ -589,13 +594,20 @@ Notes for whoever implements it:
   careful that an alias may name a TYPEDEF of the class rather than the class.
 - A union must still keep its `union` keyword (§12.9) — the alias, if any, wins
   for the NAME, not for dropping the kind.
-- `std::vector<int>` has NO alias, so it still prints
-  `std::vector<int32_t,std::allocator<int32_t>>`. Shortening THAT is a separate
-  question: it needs the instantiation's own argument list plus its template's
-  defaults, to drop trailing defaulted args (`std::allocator<int32_t>`) and to
-  render `int` rather than madc's canonicalized `int32_t`. No such record was
-  found on DataDefCLASS — `template_arg_names` lives on the namespace-overload
-  entry, not the class — so DO NOT assume it is available; measure first.
+- **A SECOND filter is required and was found only by probing:** madc also
+  registers the instantiation under its MANGLED tag as a datatype-map key, so the
+  first cut returned `std::vector_int32_t_std__allocator_int32_t_` as the "alias" —
+  worse than the spelling it replaced. Skip any key equal to the DataDef's own
+  `name`.
+- `std::vector<int>` has NO alias. It is finished by a second, separable rule: a
+  SEQUENCE's word is the template's own name (everything before the first `<`)
+  plus its ELEMENT type, which is `operator[]`'s return type — the same one the
+  walk dumps. The defaulted allocator and char_traits arguments are dropped
+  because they are implementation detail. NOTE what this does NOT do: it never
+  parses the canonical argument list, and no per-class template-argument record
+  exists to consult (`template_arg_names` lives on the namespace-overload entry,
+  not the class). A `std::array`'s extent therefore drops out of the word — the
+  count in parentheses carries it.
 - Changing the type word changes `tests/testphpseq.expect` (whose var_dump lines
   are currently asserted by their flavor-stable tail precisely BECAUSE the
   spelling was unstable). With `std::string` the fixture can pin the whole line,
