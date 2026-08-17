@@ -1,5 +1,29 @@
 # madc Roadmap
 
+**✅ THREE-PLATFORM RELEASE (2026-08-17, v0.82.0):** Linux, macOS and
+Windows ship together from one tree, each validated on its own terms, and
+`master` moves off v0.76.0. The macOS regression that blocked it is fixed
+where the defect was, not where it showed: a CLASS-NESTED enum tag was
+STAMPED a forest type-id but never RECORDED — `[basic.scope.class]/1` makes
+such a tag a member, so `TokenENUM::parse` keeps it out of `datatype_map` on
+purpose, and the freeze's enum walk read exactly that map. `std::ios_base`
+carries `event_callback *__fn_`, whose signature takes `ios_base::event`, so
+at bind the fn-ptr could not be rebuilt, `__fn_` would not swizzle, and the
+aggregate fill dropped the whole class SILENTLY. Members flatten from bases,
+so one lost member killed ELEVEN aggregates (the entire iostream family over
+`char`/`wchar_t`/`int32_t`) — hence no vptr slot, no `__vptr`, unresolved
+`operator<<`, and a darwin `cout << "hi"` that would not compile. Shipping
+with it: the embedded `<stdarg.h>` no longer declares the `v*printf` family
+(darwin's `_FORTIFY_SOURCE=2` rewrote them mid-header and killed every macOS
+pack), three previously-silent load-side losses are now MEASURED
+(`materialize fill: DROPPED`, `materialize derived: UNRESOLVED`,
+`forest_restore_decls: SKIPPED`), and every artifact lane builds the binary
+it validates — `headerless-win` had been testing an eight-hour-old PE.
+Gate: `forest_bind_gate` `[nestedenumfn]`, negative-controlled, reproduces
+the darwin defect on Linux. Follow-ups: the pack's tolerated parse errors
+still exit 0 (#63), `madc` has no `--version` flag (#65), the macOS
+headerless cell (#60), and per-unit lazy decompression (#25).
+
 **✅ WINDOWS RELEASE LANE + HEADERLESS LANES + LIST-INIT LANDED
 (2026-08-16, v0.81.0):** the Windows W3–W5 lane merges (PE/COFF writers,
 packed hosted PE, adjacent runtime DLLs, the genuine-Windows battery over

@@ -1,5 +1,16 @@
 # HANDOFF — the three-platform release (session #96, 2026-08-16)
 
+> **CLOSED 2026-08-17 — shipped as v0.82.0.** #64 is fixed at the freeze, not
+> the binder: a CLASS-NESTED enum tag was STAMPED a forest type-id but never
+> RECORDED, so `std::ios_base`'s `event_callback *__fn_` could not swizzle and
+> the aggregate fill dropped the whole class (and, through member flattening,
+> the entire iostream family). §2's chain below is **superseded** — it blamed an
+> `<iosfwd>`-only forward declaration, which the forest dump disproved:
+> `ios_base`'s full definition was recorded from `.../v1/ios` all along, and only
+> the FIRST dump rows are `iosfwd`. Everything else here stands. Fix `b27c8ed4`,
+> gate `forest_bind_gate [nestedenumfn]`, Mac battery back to 7/3.
+> Live state: `claude_status.json`.
+
 **Read this fully before acting. Assume a cold start.** Run `bash scripts/resume.sh`
 first — it prints live git state and orphaned background jobs, which a compaction
 summary cannot.

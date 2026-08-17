@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [v0.82.0] — 2026-08-17
+
+The three-platform release: Linux, macOS and Windows ship together from one
+tree, and the macOS regression that blocked it is fixed at its root.
+
+- **A class-nested enum tag was stamped a forest type-id but never recorded.**
+  `[basic.scope.class]/1` makes such a tag a member, so `TokenENUM::parse`
+  deliberately keeps it out of `datatype_map` and the namespace — registering it
+  only as its owner's class type-alias (the guard that stopped `money_base::part`
+  leaking `part` to file scope). The freeze's enum-recording walk read
+  `datatype_map`, so a nested tag never got a `DK_ENUM` record, while
+  `forest_serialize_type_id` had already stamped it a project id as a member,
+  param or function-pointer-signature cross-reference. A referenced id with no
+  record is `DK_NONE`. `std::ios_base` carries `event_callback *__fn_`, whose
+  signature takes `ios_base::event`, so at bind the function pointer could not be
+  rebuilt, `__fn_` would not swizzle, and the aggregate fill dropped the entire
+  class — silently, because `arena_chain_ok` admits a function-pointer chain
+  unconditionally and the fill's own bail had no diagnostic. Members flatten from
+  bases, so one lost member killed eleven aggregates: `ios_base` plus
+  `basic_ios`, `basic_istream`, `basic_ostream` and `basic_iostream` over `char`,
+  `wchar_t` and `int32_t`. With no `ios_base` there is no vptr slot, so no
+  `__vptr` was emitted and `operator<<` never resolved: a bound darwin
+  `std::cout << "hi"` failed with `shift operands should be of an integer type`
+  and six `struct has no member __vptr`. Darwin is the only libc++ forest, which
+  is why no other lane could see it — libstdc++ keeps its `event_callback` inside
+  the nested `_Callback_list`, so Linux and Windows never lost `ios_base` itself.
+  Enums reached through a class's `type_aliases` are now recorded through one
+  shared writer, carrying the owner's translation-unit-root fence and a
+  `DF_ENUM_CLASS_NESTED` flag so the restore re-attaches them as the owner's alias
+  only, never as a flat name.
+- **madc's embedded `<stdarg.h>` declared the `v*printf` family.** gcc's and
+  clang's own `stdarg.h` declare zero stdio functions; `<stdio.h>` owns those
+  names. It was also actively wrong against a libc that macro-ises them: darwin
+  builds its prelude at `_FORTIFY_SOURCE=2`, so `#define vsprintf(str,...)`
+  is live as soon as anything pulls the stdio chain in, and the declaration
+  expanded mid-header into `__builtin___vsprintf_chk (char *, 0,
+  __darwin_obsz(...), ...)`. That failed to parse and killed every
+  `hosted-*-macos` forest pack, reported misleadingly as an error inside
+  `stdarg.h`. Latent on Windows too, where mingw's `strsafe.h` poisons the same
+  names.
+- **Three silent load-side losses are now measured.** A bound forest reports
+  `materialize fill: DROPPED <aggregate> (member X | base Y)` — the fill-side
+  twin of the existing closure diagnostic — plus `materialize derived:
+  UNRESOLVED <kind> <name> (param #N tid=… kind=…)` for every derived type the
+  materialisation fixpoint could not build, and `forest_restore_decls: SKIPPED`
+  when a restored object is not the class it was recorded as. Each of the three
+  was a `continue` with no output; together they turned a week-long hunt into
+  minutes.
+- **Every artifact lane now builds the binary it validates.** `headerless-win`
+  consumed `bin/madc-release-x86-64-windows.exe` without building it and spent a
+  run validating an eight-hour-old PE — one compiled before the fix under test —
+  reporting a real failure against the wrong artifact. `packed` and `headerless`
+  had the same latent trap, fresh only because the battery happens to list
+  `release` earlier. Freshness is now the Makefile's dependencies rather than the
+  caller's memory, and `release-windows` gets a stage of its own.
+- **New gate.** `forest_bind_gate` case `[nestedenumfn]` is a synthetic reducer
+  of the same shape that reproduces on Linux, negative-controlled by reverting
+  `src/madc_cir.cpp`. Its `int event` local asserts the other half: a nested tag
+  must still not be visible at file scope after a restore.
+
 ## [v0.81.0] — 2026-08-16
 
 The Windows release lane merges, the headerless lanes prove every artifact

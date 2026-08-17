@@ -210,29 +210,33 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.81.0** (2026-08-16) — the Windows release lane
-merges, the headerless lanes prove every artifact serves its own header
-surface with no headers on disk, and C++ list-initialization lands. madc did
-not have it at all: a braced list on a class type was lowered as a
-parenthesised constructor-argument list, so `std::vector<int> v{1,2,3}`
-compiled as `v(1,2,3)`, and `= {1,2,3}` selected `vector(size_type)` with
-`n == 1` — clean through `--emit=c11`, and silently a one-element vector.
-Three defects that shipped in v0.80.0 are fixed with it: that silent vector,
-a `std::vector<int> e{}` crash, and `<iomanip>` being unparseable on its
-first line of content.
+The current release is **v0.82.0** (2026-08-17) — the three-platform release:
+Linux, macOS and Windows ship together from one tree. The macOS regression that
+blocked it is fixed at its root. A class-nested enum tag was stamped a forest
+type-id but never given a record, so `std::ios_base`'s `event_callback *__fn_`
+could not be rebuilt when a forest was bound, and the fill silently dropped the
+whole class — eleven aggregates in all, because members flatten from bases.
+Without `ios_base` there was no vptr slot, so `__vptr` was never emitted and
+`operator<<` never resolved: a bound darwin `std::cout << "hi"` did not compile.
+Shipping with it: madc's embedded `<stdarg.h>` no longer declares the `v*printf`
+family (under darwin's `_FORTIFY_SOURCE=2` those declarations expanded into
+fortify builtins mid-header and killed every macOS forest pack), three
+previously-silent load-side losses are now measured, and every artifact lane
+builds the binary it validates.
 
-Branch state: v0.81.0 is on `develop`, and the Windows W3–W5 lane merged with
-it — native PE/COFF output, dual-profile packed groves, packaging, and both
-the persistent-Wine and genuine-Windows full-suite lanes. `master` remains at
-v0.76.0 pending `/promote`.
+Branch state: v0.82.0 is on `develop` and promoted to `master`, which carried
+v0.76.0 before it. Public binaries are published for all three platforms.
 
 Latest validated results:
 
-- Linux JIT: **1053 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE and OBJ lanes green; packed suite **1053/0/0/9**
-- headerless (no headers on disk anywhere): Linux **1027/0/0/35**,
-  Win64 **1010/0/0/52** — the only lanes that can see an artifact fail
+- Linux JIT: **1054 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE and OBJ lanes **1021/0**; packed suite **1054/0/0/9**
+- headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
+  Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
+- macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
+  with v0.77.0; both arches packed at 835 units with the Mach-O release
+  verifier green
 - packed Win64 under persistent Wine green; on genuine Windows 11 all
   seven battery legs pass, including compiling a C translation unit on a
   host with no toolchain installed
@@ -254,6 +258,8 @@ and known gaps.
 
 ### Recent Releases
 
+- [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;
+  the macOS iostream regression is fixed where the type-id was stamped.
 - [v0.81.0](docs/release-notes/v0.81.0.md) — the Windows lane merges, the
   headerless lanes land, and C++ list-initialization arrives.
 - [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
@@ -262,8 +268,6 @@ and known gaps.
   failures; exec fixtures, preprocessing, and aggregate layout converge.
 - [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
   regression window closes and the 1614 baseline is restored.
-- [v0.77.0](docs/release-notes/v0.77.0.md) — MIR moves in-tree, so one
-  clone and one version identify the complete compiler.
 
 ## Building from source
 
