@@ -5389,7 +5389,7 @@ public:
     // when it fired: the receiver has moved off exStack into argument 0, the
     // access operator is off opStack, the call is on opStack, and `tb`/`done`
     // are left as any other call site in the arm leaves them.
-    bool ufcs_dot_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+    bool ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 			      std::stack<TokenBase *> &exStack,
 			      std::stack<TokenBase *> &opStack,
 			      TokenBase *&tb, bool &done);

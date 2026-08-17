@@ -1,0 +1,19 @@
+// UFCS non-class-receiver negative control: the shape tests/testufcsprim.mad
+// compiles and runs under the madc dialect must FAIL under an explicit C++
+// standard. Oracle: g++ -std=c++17 and clang++ -std=c++17 both reject
+// `n.twice()` on an int ("request for member 'twice' in 'n', which is of
+// non-class type 'int'" / "member reference base type 'int' is not a
+// structure or union").
+#include <stdio.h>
+
+int twice(int n)
+{
+	return n * 2;
+}
+
+int main()
+{
+	int n = 21;
+	printf("int=%d\n", n.twice());
+	return 0;
+}

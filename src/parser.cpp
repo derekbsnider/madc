@@ -32384,7 +32384,7 @@ static bool template_id_is_type_expression_context(Program &pgm)
 // TokenCallFunc, and every later stage — arity check, overload pick, CIR,
 // --emit=c11 — sees a call with nothing special about it. By emission time no
 // trace of the syntax survives (Tier 1, lowering-vs-raising.md).
-bool Program::ufcs_dot_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 				std::stack<TokenBase *> &exStack,
 				std::stack<TokenBase *> &opStack,
 				TokenBase *&tb, bool &done)
@@ -33205,6 +33205,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
 				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
 				    << std::endl);
+				// UFCS (--std=madc): an operator-result rvalue that is not a class.
+				// Try the ordinary free call `f(receiver, args)` before
+				// rejecting. The receiver is passed EXACTLY as written —
+				// no implicit & and no implicit * (owner rule, 2026-08-17).
+				if ( !parsed_operator_name
+				  && ufcs_access_fallback(lhs_dot, ident_tb,
+							  exStack, opStack, tb, done) )
+				    return done ? ExprStep::Done : ExprStep::Break;
 				Throw(tb) << "member reference is not a structure or union" << flush;
 			    }
 			    struct_type = op_type;
@@ -33233,7 +33241,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return ExprStep::Break;
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
+		    {
+			// UFCS (--std=madc): a non-class receiver (int, char *, array).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( !parsed_operator_name
+			  && ufcs_access_fallback(lhs_dot, ident_tb,
+						  exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference is not a structure or union" << flush;
+		    }
 		    var = NULL;
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`__p.operator->()`) was
@@ -33431,7 +33449,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// free call `id(receiver, args)` before giving up. An
 			// operator-function-id is a NAME, never a candidate.
 			if ( !parsed_operator_name
-			  && ufcs_dot_fallback(lhs_dot, ident_tb,
+			  && ufcs_access_fallback(lhs_dot, ident_tb,
 						  exStack, opStack, tb, done) )
 			    return done ? ExprStep::Done : ExprStep::Break;
 			// ONE error naming BOTH attempts — a UFCS miss must never
@@ -33625,9 +33643,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			base = ptr_type->base_type;
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
+		    {
+			// UFCS (--std=madc): `->` on a non-struct pointee (char *, int *).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( !parsed_operator_name
+			  && ufcs_access_fallback(lhs, ident_tb,
+						  exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
 			    << ident_tb->spelling() << "')" << flush;
+		    }
 
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`p->operator*()`) was
@@ -33786,7 +33814,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 		    }
 		    if ( ofs == -1 )
+		    {
+			// UFCS (--std=madc): the pointee has no member `id` of any kind.
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( !parsed_operator_name
+			  && ufcs_access_fallback(lhs, ident_tb,
+						  exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "no member named '" << id << "'" << flush;
+		    }
 		    // Access control (P2.5): reject private/protected member access
 		    // via `->` from outside the (derived) class.
 		    {

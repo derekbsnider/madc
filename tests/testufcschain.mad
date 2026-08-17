@@ -1,0 +1,65 @@
+// UFCS CHAINING — the pipeline form the unified-call proposal is really for.
+//
+//	n.twice().inc().twice()   ==   twice(inc(twice(n)))
+//
+// Each fallback produces an ordinary call node, so the NEXT `.` sees a call
+// result exactly as it would after a hand-written call — the parser's existing
+// "call result member access" path carries the chain; UFCS adds no machinery
+// for it. That is the payoff of resolving into ordinary calls instead of
+// rewriting syntax.
+//
+// Mixed chains matter as much as pure ones: a member call feeding a UFCS
+// fallback, and a UFCS fallback feeding a member call, must both work.
+#include <stdio.h>
+
+int twice(int n)
+{
+	return n * 2;
+}
+
+int inc(int n)
+{
+	return n + 1;
+}
+
+class Bag
+{
+public:
+	int n;
+	int doubled() { return this.n * 2; }
+};
+
+// Takes and returns BY VALUE: chaining feeds each result straight into the
+// next call, and a by-value parameter keeps that independent of reference
+// binding rules.
+Bag bump(Bag b)
+{
+	Bag r;
+	r.n = b.n + 1;
+	return r;
+}
+
+int value(Bag b)
+{
+	return b.n;
+}
+
+int main()
+{
+	// Pure UFCS chain on a primitive: twice(inc(twice(5))) = 22
+	int n = 5;
+	printf("chain-int=%d\n", n.twice().inc().twice());
+
+	// Pure UFCS chain on a class: value(bump(bump(b))) = 3
+	Bag b;
+	b.n = 1;
+	printf("chain-class=%d\n", b.bump().bump().value());
+
+	// UFCS fallback feeding a real MEMBER call: bump(b).doubled() = 4
+	printf("chain-mixed-fm=%d\n", b.bump().doubled());
+
+	// A real MEMBER call feeding a UFCS fallback: twice(b.doubled()) = 4
+	printf("chain-mixed-mf=%d\n", b.doubled().twice());
+
+	return 0;
+}

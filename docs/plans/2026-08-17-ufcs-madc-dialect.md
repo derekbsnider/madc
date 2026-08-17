@@ -1,9 +1,9 @@
 # UFCS for the madc dialect (`--std=madc` only)
 
-**Status:** U1 + U3 **LANDED** on branch `feature/ufcs-madc-claude`; U2 + U4
-open. Owner supplied the ruleset 2026-08-17 and confirmed the direction against
-Stroustrup's unified-call background note; the decisions below are mine unless
-marked ⚠️.
+**Status:** U1 + U2 + U3 + U4 **LANDED** on branch `feature/ufcs-madc-claude`.
+Owner supplied the ruleset 2026-08-17, confirmed the direction against
+Stroustrup's unified-call background note, and confirmed the no-auto-dereference
+rule. Decisions below are mine unless marked ⚠️.
 
 ## The ruleset (owner, verbatim intent)
 
@@ -60,6 +60,12 @@ if ( ofs == -1 ) { ... Throw "Unidentified member" ... }                    // <
 The call path's fallback ordering lives at ~34091, `dlsym fallback: resolve
 known libc/system functions early` — phase 3 must land **before** it.
 
+⚠️ **The sketch above is what was believed at design time, and its U2 hook count
+is WRONG.** There is not one non-class rejection site but FOUR, all reachable
+from ordinary source — see "What U2 landed" below. Hooking only the site named
+here would have shipped `->` support that did not work for `fp->fclose()`, the
+exact C-pointer idiom that motivated the rule.
+
 Gate helper follows `Program::madc_dialect_type_spelling` (parser.cpp:2522),
 the existing STD_MADC owner: a named predicate that returns early outside the
 dialect. **`Searched:` "a madc-dialect feature gate" →
@@ -88,15 +94,17 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
 3. **The receiver is argument 0, passed EXACTLY as written.** No implicit `&`,
    no implicit `*`. Existing overload resolution and reference binding decide
    everything else — UFCS contributes syntax, not conversions.
-4. ⚠️ **`p->f(y)` lowers to `f(p, y)`, not `f(*p, y)`.** This is the one place
-   I made a call a reader could dispute. It breaks the C++ identity
+4. ✅ **`p->f(y)` lowers to `f(p, y)`, not `f(*p, y)`** — CONFIRMED by the owner
+   2026-08-17 ("we shouldn't auto-dereference anything, so keep the types the
+   same"). It breaks the C++ identity
    `p->f(y)` ≡ `(*p).f(y)` for the *fallback* leg only (member lookup, tried
    first, keeps the identity). I chose it because one rule — "the receiver
    expression is argument 0, unmodified" — is predictable, and because it is
    what makes C APIs read well: `fp->fclose()` → `fclose(fp)`,
    `s->strlen()` → `strlen(s)`. Under `f(*p, y)` every pointer-taking C
    function would need `&` back at the call site, which defeats the point.
-   Say so if you want the other rule; it is a one-line change in U2.
+   Because the receiver is unmodified either way, `.` and `->` end up being the
+   SAME operator in the fallback leg — one rule, not two.
 5. **Non-class receivers participate** (U2): `int`, `char *`, arrays, enums.
    This is most of the value in a scripting dialect — `n.abs()`,
    `s.strlen()`, `buf.memset(0, n)` — and it is exactly the case that is a hard
@@ -148,9 +156,9 @@ dialect. **`Searched:` "a madc-dialect feature gate" →
 | slice | scope | gate |
 |---|---|---|
 | **U1** ✅ | `ufcs_enabled()` + dot fallback for **class** receivers with no viable member | reducers: free fn found; member wins over free; both miss → one clear error; `--std=c++17` negative control |
-| **U2** | dot fallback for **non-class** receivers (primitives, pointers, arrays); the `->` rule from decision 4 | reducers per receiver kind, incl. `fp->fclose()` |
+| **U2** ✅ | dot fallback for **non-class** receivers (primitives, pointers, arrays); the `->` rule from decision 4 | reducers per receiver kind + chaining |
 | **U3** ✅ | call syntax `f(x,y)` → `x.f(y)`, inserted **before** the dlsym fallback | reducers + the ordering test below |
-| **U4** | docs (`docs/language/`), `--std=` matrix test, `scripts/ufcs_gate.sh` wired into `fulltest` | the gate is the deliverable |
+| **U4** ✅ | docs (`docs/language/ufcs.md`), `--std=` matrix, `scripts/ufcs_gate.sh` wired into `fulltest` | the gate is the deliverable |
 
 Each slice is its own commit with trailers, its own reducers in `tests/`, and
 g++/clang++ oracles where the construct is legal C++ (the member-wins case is;
@@ -184,6 +192,51 @@ Not yet covered by U1, deliberately: `x.f<T>(y)` (explicit template arguments �
 `peekToken()` is `<`, not `(`, so it takes the old error path), and receivers
 whose class has an unresolved dependent surface (the dependent-call placeholder
 at the same site consumes those first).
+
+## What U2 landed — and the hook count the design got wrong
+
+The design named ONE non-class rejection site. There are **four**, and every one
+is reachable from ordinary source:
+
+| site (`src/parser.cpp`) | reached by |
+|---|---|
+| dot, receiver type is neither struct nor object | `n.twice()`, `s.shout()`, `a.sum2()` |
+| dot, operator-result rvalue that is not a class | `(n + 1).twice()` |
+| arrow, pointee is neither struct nor object | `ip->sum2()` |
+| arrow, pointee has no member of that name | `np->nodeval()`, **and `fp->fclose()`** |
+
+That last row is the one the design would have missed: `FILE *` **is** a struct,
+so it sails past the non-struct check and dies further down at `no member named
+'fclose'`. Hooking only the site the design named would have shipped `->`
+support that did not work for the exact C-pointer idiom that motivated the rule.
+
+Because the receiver is passed exactly as written, **`.` and `->` are the same
+operator in the fallback leg** — so this is ONE helper serving both, not two
+paths. `ufcs_dot_fallback` was renamed `ufcs_access_fallback` and now pops
+either access operator.
+
+**`-Werror=misleading-indentation` caught a real bug here, not a style nit.** At
+three of the four sites the `Throw` was the body of a brace-less `if`; inserting
+the hook before it made the throw UNCONDITIONAL — every dot access would have
+thrown. The zero-warnings law earned its keep. All three guards are now braced.
+
+Reducers: `tests/testufcsprim.mad` (all four sites, one line each),
+`tests/testufcschain.mad`, `tests/testufcsprimstrict.mad` (negative control).
+Oracle: g++ 13 and clang++ 18 agree on all ten values and both reject
+`n.twice()` ("request for member 'twice' in 'n', which is of non-class type
+'int'" / "member reference base type 'int' is not a structure or union").
+
+## Chaining — free, and here is why
+
+`n.twice().inc().twice()` == `twice(inc(twice(n)))` works with **no machinery
+added for it**. Both fallbacks resolve into ordinary call nodes rather than
+rewriting syntax, so the next `.` sees a call result exactly as it would after a
+hand-written call, and the parser's existing "call result member access" path
+carries the chain. Verified in all four shapes — pure UFCS on a primitive, pure
+UFCS on a class, UFCS feeding a member call, and a member call feeding UFCS.
+
+This is the same property that made the recursion guard unnecessary (decision
+7): resolving into finished nodes, instead of re-parsing, is what buys both.
 
 ## What U3 landed — and what measuring first changed
 
