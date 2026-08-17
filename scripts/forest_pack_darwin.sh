@@ -131,36 +131,17 @@ while IFS= read -r src; do
         exit 1
     fi
 done <<<"$LEDGER_SOURCES"
-# A unit is named by its bare spelling (embedded headers) OR by the
-# producer's full path (filesystem headers — the C++ groves); consumers
-# match the latter by path tail (find_unit_path_tail), so the gate accepts
-# either form.
-unit_present() {
-    grep -Eq "^unit	[0-9]+	([^	]*/)?$1	" "$DUMP"
-}
-missing=0
-while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    if ! unit_present "$h"; then
-        echo "forest_pack_darwin: MISSING unit for <$h>" >&2
-        missing=1
-    fi
-done < "$MANIFEST"
-for h in $CXXNAMES; do
-    if ! unit_present "$h"; then
-        echo "forest_pack_darwin: MISSING unit for <$h>" >&2
-        missing=1
-    fi
-done
-if [ "$missing" -ne 0 ]; then
-    rm -f "$OUT"
-    echo "forest_pack_darwin: FAILED — container dropped (see missing units above)" >&2
-    exit 1
-fi
-
-# Degradation gate (task #63) — the PRODUCER half only. Both arches check
-# against the same `darwin pack-errors` key, each on its own log, so a
+# Degradation gate (task #63) — the PRODUCER and DIRECTORY halves. Both arches
+# check against the same `darwin pack-errors` key, each on its own log, so a
 # divergence between them still fails loudly (58 apiece today).
+#
+# The unit-presence loops that used to live here moved into the gate
+# (--dump / --units-from): a /dupaudit found the same rule implemented here and
+# in forest_pack_windows.sh while the LINUX pack had none. A unit is named by its
+# bare spelling (embedded headers) OR by the producer's full path (filesystem
+# headers — the C++ groves), which consumers match by path tail
+# (find_unit_path_tail); the gate accepts either form, literally rather than
+# through an interpolated regex.
 #
 # There is no --load-log here, and that is structural, not an omission: this is
 # a CROSS freeze, so the build container cannot execute the consumer that would
@@ -168,6 +149,15 @@ fi
 # runs — scripts/mac_battery.sh's forest-degradation leg, on a Mac, against the
 # exact shipped binary. That is the same split task #60 (the macOS headerless
 # cell) exists to close.
-bash "$(dirname "$0")/forest_pack_gate.sh" --profile darwin --pack-log "$PACK_LOG"
+#
+# A gate failure drops the container, as the inlined loops did: leaving a
+# known-degraded $OUT on disk invites a later make step to consume it.
+if ! bash "$(dirname "$0")/forest_pack_gate.sh" --profile darwin \
+	--pack-log "$PACK_LOG" --dump "$DUMP" \
+	--units-from "$MANIFEST" --units-from "$CXXLIST"; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED — container dropped (see gate output above)" >&2
+    exit 1
+fi
 
 echo "forest_pack_darwin: OK ($(grep -c '^unit	' "$DUMP") units in $OUT for $(basename "$CROSS"))"

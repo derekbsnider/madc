@@ -41,7 +41,10 @@ BASELINE="$ROOT/docs/parity/pack-degradation-baseline.txt"
 PROFILE=
 PACK_LOG=
 LOAD_LOG=
+DUMP=
 SELFTEST=0
+UNITS_LISTS=()
+SOURCES_LISTS=()
 
 # ---------------------------------------------------------------------------
 # The token contract. These four strings ARE the interface between the
@@ -66,7 +69,9 @@ TOK_CLOSURE='materialize closure: DROPPED'
 TOK_BLOB='blob skipped'
 
 usage() {
-	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE] [--baseline FILE]" >&2
+	echo "usage: $0 --profile <key> [--pack-log FILE] [--load-log FILE]" >&2
+	echo "         [--dump FILE [--units-from FILE]... [--sources-from FILE]...]" >&2
+	echo "         [--baseline FILE]" >&2
 	echo "       $0 --selftest" >&2
 }
 
@@ -75,6 +80,9 @@ while [ $# -gt 0 ]; do
 		--profile)  [ $# -ge 2 ] || { usage; exit 2; }; PROFILE="$2"; shift 2 ;;
 		--pack-log) [ $# -ge 2 ] || { usage; exit 2; }; PACK_LOG="$2"; shift 2 ;;
 		--load-log) [ $# -ge 2 ] || { usage; exit 2; }; LOAD_LOG="$2"; shift 2 ;;
+		--dump)     [ $# -ge 2 ] || { usage; exit 2; }; DUMP="$2"; shift 2 ;;
+		--units-from)   [ $# -ge 2 ] || { usage; exit 2; }; UNITS_LISTS+=("$2"); shift 2 ;;
+		--sources-from) [ $# -ge 2 ] || { usage; exit 2; }; SOURCES_LISTS+=("$2"); shift 2 ;;
 		--baseline) [ $# -ge 2 ] || { usage; exit 2; }; BASELINE="$2"; shift 2 ;;
 		--selftest) SELFTEST=1; shift ;;
 		-h|--help)  usage; exit 0 ;;
@@ -259,6 +267,104 @@ check_load_log() {
 }
 
 # ---------------------------------------------------------------------------
+# DIRECTORY half — every listed entry point actually became a unit.
+#
+# A missing unit is the G2 silent-degradation class: a consumer's #include of
+# that name falls through to a LIVE parse, which looks fine on a build host with
+# the headers on disk and cannot succeed at all on a run-only Windows box or a
+# headerless Mac.
+#
+# This is the /dupaudit finding that came with the gate. The rule was stated
+# TWICE — forest_pack_windows.sh and forest_pack_darwin.sh each carried their own
+# `unit_present()` plus a loop — and the LINUX pack, the primary lane every other
+# lane is measured against, had no such check at all. Two implementations, one
+# absence: the divergence is the bug. One owner here, three callers.
+#
+# Matching is LITERAL, not regex. A unit is named either by its bare spelling
+# (embedded headers) or by the producer's full path (filesystem groves), and
+# consumers match the latter by path tail — so `x` matches `x` or `.../x`. The
+# inherited patterns interpolated the name into an ERE, where a `c++config.h`
+# style entry would have been read as a repetition operator; no current entry
+# has one, which is exactly how that stays true until it isn't.
+#
+# `--sources-from` is the looser guarded-root test: those are not public entry
+# points, so any unit whose path CONTAINS the spelling satisfies it.
+#
+# A list that matched nothing is reported as a failure, not a pass: a mistyped
+# list path would otherwise verify zero headers and call it green.
+# ---------------------------------------------------------------------------
+check_dump() {
+	local dump="$1" f total=0 missing=0 out
+	if [ ! -f "$dump" ]; then
+		fail "[$PROFILE] forest dump is missing: $dump"
+		return
+	fi
+	scan_list() {
+		# scan_list <list> <mode: tail|substr>
+		local list="$1" mode="$2"
+		if [ ! -f "$list" ]; then
+			fail "[$PROFILE] header list is missing: $list"
+			return
+		fi
+		out=$(awk -F'\t' -v mode="$mode" '
+			NR == FNR {
+				if ($0 ~ /^[ \t]*$/ || $0 ~ /^[ \t]*#/) next
+				need[$0] = 1; total++
+				next
+			}
+			$1 == "unit" {
+				n = $3
+				if (n in need) { delete need[n]; next }
+				for (w in need) {
+					if (mode == "substr") {
+						if (index(n, w)) { delete need[w]; break }
+					} else {
+						l = length(n) - length(w)
+						if (l > 0 && substr(n, l + 1) == w \
+						    && substr(n, l, 1) == "/") {
+							delete need[w]; break
+						}
+					}
+				}
+			}
+			END {
+				miss = 0
+				for (w in need) { print "MISS " w; miss++ }
+				print "TOTAL " total " " miss
+			}' "$list" "$dump")
+		local line
+		while IFS= read -r line; do
+			case "$line" in
+			MISS\ *)
+				echo "forest_pack_gate: [$PROFILE] MISSING unit for <${line#MISS }>" >&2
+				;;
+			TOTAL\ *)
+				set -- ${line#TOTAL }
+				total=$((total + $1))
+				missing=$((missing + $2))
+				;;
+			esac
+		done <<<"$out"
+	}
+	if [ ${#UNITS_LISTS[@]} -gt 0 ]; then
+		for f in "${UNITS_LISTS[@]}"; do scan_list "$f" tail; done
+	fi
+	if [ ${#SOURCES_LISTS[@]} -gt 0 ]; then
+		for f in "${SOURCES_LISTS[@]}"; do scan_list "$f" substr; done
+	fi
+	if [ "$total" -eq 0 ]; then
+		fail "[$PROFILE] dump check verified ZERO headers — a list path is wrong,"
+		echo "       and a check that examines nothing passes for the wrong reason." >&2
+		return
+	fi
+	say "[$PROFILE] dump: $total listed header(s) checked, $missing missing — $dump"
+	if [ "$missing" -gt 0 ]; then
+		fail "[$PROFILE] $missing listed header(s) are NOT units — a consumer's"
+		echo "       #include of each silently live-parses instead of binding." >&2
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # --selftest — the gate's own negative control, hermetic (no madc, no pack).
 #
 # A gate nobody has ever seen go RED is a gate that reports success for a test
@@ -338,6 +444,32 @@ selftest() {
 	printf 'materialize filter: 10 admitted\nmaterialize closure: DROPPED a (member p)\nmaterialize closure: DROPPED b (base q)\n' > "$dir/fpgate_st_closure.log"
 	leg "closure drops over baseline" fail --load-log "$dir/fpgate_st_closure.log"
 
+	# 9b: the directory half — the /dupaudit finding's gate. A unit named by
+	#     its bare spelling, one named by a producer path (matched by tail),
+	#     and a guarded root matched by substring all satisfy their lists; a
+	#     listed header with no unit fails; and a list path that matches
+	#     nothing fails instead of verifying zero headers and passing.
+	printf 'forest\tunits=3\n' > "$dir/fpgate_st_dump.txt"
+	printf 'unit\t1\tstdio.h\tx\n' >> "$dir/fpgate_st_dump.txt"
+	printf 'unit\t2\t/usr/include/c++/13/vector\tx\n' >> "$dir/fpgate_st_dump.txt"
+	printf 'unit\t3\t/usr/include/c++/13/bits/stl_algo.h\tx\n' >> "$dir/fpgate_st_dump.txt"
+	printf '# a comment\n\nstdio.h\nvector\n' > "$dir/fpgate_st_units.txt"
+	printf 'bits/stl_algo.h\n' > "$dir/fpgate_st_sources.txt"
+	leg "dump units present" pass --dump "$dir/fpgate_st_dump.txt" \
+		--units-from "$dir/fpgate_st_units.txt" \
+		--sources-from "$dir/fpgate_st_sources.txt"
+	printf 'stdio.h\nvector\nmissing_header.h\n' > "$dir/fpgate_st_units_bad.txt"
+	leg "dump unit missing" fail --dump "$dir/fpgate_st_dump.txt" \
+		--units-from "$dir/fpgate_st_units_bad.txt"
+	printf '# only comments\n\n' > "$dir/fpgate_st_units_empty.txt"
+	leg "dump check with nothing to verify" fail --dump "$dir/fpgate_st_dump.txt" \
+		--units-from "$dir/fpgate_st_units_empty.txt"
+	# A bare spelling must NOT be satisfied by a mid-path coincidence: `vector`
+	# is a unit here, but `tor` is not, and a substring test would say it is.
+	printf 'tor\n' > "$dir/fpgate_st_units_sub.txt"
+	leg "entry point is not a substring match" fail --dump "$dir/fpgate_st_dump.txt" \
+		--units-from "$dir/fpgate_st_units_sub.txt"
+
 	# 10: the token contract has ONE owner. scripts/mac_battery.sh must stay
 	#     self-contained (it runs on a Mac from a tarball), so it carries its
 	#     own copy of these strings — the only way that copy cannot rot into a
@@ -377,8 +509,13 @@ if [ -z "$PROFILE" ]; then
 	usage
 	exit 2
 fi
-if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ]; then
-	echo "forest_pack_gate: nothing to check — pass --pack-log and/or --load-log" >&2
+if [ -z "$PACK_LOG" ] && [ -z "$LOAD_LOG" ] && [ -z "$DUMP" ]; then
+	echo "forest_pack_gate: nothing to check — pass --pack-log, --load-log and/or --dump" >&2
+	exit 2
+fi
+if [ -z "$DUMP" ] \
+   && { [ ${#UNITS_LISTS[@]} -gt 0 ] || [ ${#SOURCES_LISTS[@]} -gt 0 ]; }; then
+	echo "forest_pack_gate: --units-from/--sources-from need --dump to check against" >&2
 	exit 2
 fi
 
@@ -399,6 +536,9 @@ if [ -n "$LOAD_LOG" ]; then
 		normalize "$LOAD_LOG" "$ROOT/tmp/fpgate_${PROFILE}_load.norm"
 		check_load_log "$LOAD_LOG" "$ROOT/tmp/fpgate_${PROFILE}_load.norm"
 	fi
+fi
+if [ -n "$DUMP" ]; then
+	check_dump "$DUMP"
 fi
 
 if [ "$RED" -ne 0 ]; then

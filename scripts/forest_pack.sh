@@ -189,9 +189,17 @@ out_nocache=$(timeout 120 "$BIN" tests/testfreezerun.mad 2>&1)
 # a verdict on a log with no materialization, so this leg cannot pass by
 # binding nothing. Separate from the cache-equivalence run above on purpose:
 # that one tests the opt-in cache lane, this one tests what the bind LOST.
+#
+# --dump/--units-from close a /dupaudit finding that came with the gate: the
+# win64 and darwin packs each carried their own "every listed entry point must
+# be a unit" loop, and THIS pack — the primary lane — had none, so a dropped
+# unit here was invisible until the headerless lane. One owner, three callers.
 LOAD_LOG=tmp/forest_pack_load.log
 timeout 300 "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
-bash scripts/forest_pack_gate.sh --profile linux --pack-log "$PACK_LOG" --load-log "$LOAD_LOG"
+bash scripts/forest_pack_gate.sh --profile linux \
+    --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
+    --dump tmp/forest_pack_dump.txt \
+    --units-from "$LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_dump.txt)
 if [ "$SIDECAR" = 1 ]; then

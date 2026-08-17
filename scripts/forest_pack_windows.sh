@@ -131,33 +131,15 @@ while IFS= read -r src; do
     fi
 done <<<"$LEDGER_SOURCES"
 # Every listed entry point must be a directory unit — a missing unit means a
-# consumer's #include of that name silently live-parses (the G2 class), and
-# on a run-only Windows box live parse cannot succeed at all.
-unit_present() {
-    grep -Eq "^unit	[0-9]+	([^	]*/)?$1	" tmp/forest_pack_win_dump.txt
-}
-missing=0
-while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    if ! unit_present "$h"; then
-        echo "forest_pack_windows: MISSING unit for <$h>" >&2
-        missing=1
-    fi
-done < <(grep -vE '^[[:space:]]*(#|$)' "$LIST")
-# The guarded roots are not public entry points, but their raw source must be
-# in the same default-flavor profile selected by a C++20 live fallback.
-while IFS= read -r guarded; do
-    [ -n "$guarded" ] || continue
-    guarded_pattern=$'^unit\t[0-9]+\t.*'"$guarded"$'\t'
-    if ! grep -Eq "$guarded_pattern" tmp/forest_pack_win_dump.txt; then
-        echo "forest_pack_windows: MISSING guarded source unit: $guarded" >&2
-        missing=1
-    fi
-done < <(grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST")
-if [ "$missing" -ne 0 ]; then
-    echo "forest_pack_windows: FAILED - see missing units above" >&2
-    exit 1
-fi
+# consumer's #include of that name silently live-parses (the G2 class), and on a
+# run-only Windows box live parse cannot succeed at all. The guarded roots are
+# not public entry points, but their raw source must be in the same
+# default-flavor profile a C++20 live fallback selects.
+#
+# Both checks now belong to scripts/forest_pack_gate.sh (--dump / --units-from /
+# --sources-from), together with the linux and darwin packs: a /dupaudit found
+# this loop reimplemented here and in forest_pack_darwin.sh while the LINUX pack
+# had no such check at all. The gate call at the end of this script runs it.
 
 # Default-lane product smoke: the PACKED exe compiles and runs a real
 # C++ test through its forest-served include world, byte-correct.
@@ -180,7 +162,10 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # trace pays the wine translation tax.
 LOAD_LOG=tmp/forest_pack_win_load.log
 timeout 900 "$WINE" "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
-bash scripts/forest_pack_gate.sh --profile win64 --pack-log "$PACK_LOG" --load-log "$LOAD_LOG"
+bash scripts/forest_pack_gate.sh --profile win64 \
+    --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
+    --dump tmp/forest_pack_win_dump.txt \
+    --units-from "$LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
 echo "forest_pack_windows: OK (1 profile, $units units appended to $BIN; product smokes green)"
