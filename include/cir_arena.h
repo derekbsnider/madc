@@ -215,6 +215,17 @@ enum DefFlags : uint32_t {
 						// (neither bit -> NxNone); consumed by the
 						// __is_nothrow_constructible trait so a thawed
 						// class folds it exactly as live (LOADED==PARSED)
+	DF_ENUM_CLASS_NESTED = 1u << 31,	// DK_ENUM-scoped: the tag is a MEMBER of a class
+						// ([basic.scope.class]/1), so a live parse keeps
+						// it OUT of datatype_map / the namespace and
+						// registers it ONLY as the owner's type alias
+						// (parser.cpp TokenENUM::parse — money_base::part
+						// leaked `part` at file scope before that fix).
+						// The record exists so the tag's project id
+						// resolves as a member / param / fn-ptr signature
+						// type; the restore must NOT flat-register it
+						// (LOADED == parsed) — the owner's type_aliases
+						// restore is its whole registration
 	DF_NSBIND_OVERLOAD_MEMBER = 1u << 0,	// DK_NSBIND-scoped: the imported fn is a MEMBER
 						// of ns::name's overload set ([namespace.udecl]
 						// join — the using-arm's second registration);

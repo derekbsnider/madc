@@ -1,13 +1,12 @@
-// A linkage-specification block applies extern to its DIRECTLY-contained
-// declarations only ([dcl.link]p7) — never to block-scope locals of a
-// function defined inside it. libstdc++ wraps <bits/exception_ptr.h> in
-// `extern "C++" { }`, and the leaked declaration-head flag stamped vfEXTERN
-// on exception_ptr::swap's local: `extern void *__tmp = ...` — a c2mir
-// check error ("initialization of __tmp in block scope with external
-// linkage") on every std::swap(exception_ptr, exception_ptr).
+// A braced linkage specification sets language linkage; it does not apply the
+// `extern` storage class to each directly-contained declaration.  Therefore
+// the two namespace-scope objects below are definitions, and the locals in
+// the enclosed function definitions are ordinary automatic variables.
 #include <cstdio>
 
 extern "C++" {
+int cpp_linkage_object;
+
 int addup(int a, int b)
 {
 	int t = a;
@@ -17,6 +16,8 @@ int addup(int a, int b)
 }
 
 extern "C" {
+int c_linkage_object;
+
 int cadd(int a, int b)
 {
 	int u = a + b;
@@ -26,6 +27,9 @@ int cadd(int a, int b)
 
 int main()
 {
-	printf("%d %d\n", addup(3, 4), cadd(5, 6));
+	cpp_linkage_object = 13;
+	c_linkage_object = 17;
+	printf("%d %d %d %d\n", addup(3, 4), cadd(5, 6),
+		cpp_linkage_object, c_linkage_object);
 	return 0;
 }

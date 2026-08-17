@@ -24,7 +24,7 @@ set -u
 CHECKED=0
 if [ "${1:-}" = "--checked" ]; then CHECKED=1; shift; fi
 src="${1:?usage: cir_diff.sh [--checked] <file.c>}"
-C2M="${C2M:-/workspace/mir/c2m}"
+C2M="${C2M:-obj/mir/host/c2m}"
 MADC="${MADC:-bin/madc}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 

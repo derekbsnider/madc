@@ -5,7 +5,7 @@
 # off it. Foundational/config headers first, containers, then streams —
 # the same discipline glibc/libstdc++'s internal ordering encodes.
 #
-# LIST VERSION 2 (2026-07-08). Grow deliberately: every header here must
+# LIST VERSION 3 (2026-08-16). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
 # pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
 # streams; the B4a istreambuf_iterator arity blocker is gone). Known
@@ -15,6 +15,38 @@
 #   cmath       — `Expecting a type argument to __promote<>` (exits 0 but
 #                 not quiet) in combination with stream headers
 #   iomanip     — `Expecting member name in class definition`
+#
+# v3 added 14 roots. Serving the standard headers from the artifact's own
+# corpus is a headline feature (owner 2026-08-16: every version, C++ AND C,
+# no external includes), and scripts/headerless_suite.sh — the first lane
+# that can actually SEE a header the pack fails to serve — measured 41
+# failures here, every one of them a root simply absent from this list.
+#
+# Nine of them are pure PARITY with the win64 list, which was curated later
+# and had already learned this: concepts compare dirent.h iterator limits
+# locale math.h sys/stat.h sys/time.h. This list predates that lesson and
+# had drifted behind it.
+#
+# The others are the LINUX side of the libc cell and have no win64 twin (UCRT
+# has no such headers; the Windows equivalent surface is task #48's POSIX
+# work): unistd.h fcntl.h dlfcn.h sys/file.h sys/socket.h netdb.h arpa/inet.h.
+# sys/socket.h precedes netdb.h and arpa/inet.h because their declarations
+# depend on it.
+#
+# NOTE math.h, not cmath — the C header is clean here; cmath remains on the
+# blocker list above.
+#
+# ⚠ locale IS NOT QUIET, and is carried anyway pending a fix. It adds four
+# diagnostics, all one defect in one facet (bits/locale_facets_nonio.h):
+#   time_get<..>::do_get — "Expecting case or default in switch body" (x2) and
+#   "'do_get' is not a static data member of time_get_char_..." (x2)
+# so the frozen <locale> is INCOMPLETE around time_get. It is listed because
+# the owner requires every artifact to serve its C++ and C headers with no
+# external includes (2026-08-16) and locale is part of that surface, and
+# because the pack CHECK gate's drop count is unchanged (12 defs, identical to
+# the pre-v3 freezes) — this parse failure adds no dropped definitions. That is
+# a reason to proceed, NOT a reason to call it clean. Tracked as its own defect;
+# when time_get parses, delete this note rather than the header.
 cstddef
 climits
 cctype
@@ -23,13 +55,29 @@ cstdio
 cstdlib
 ctime
 cerrno
+math.h
+unistd.h
+fcntl.h
+dirent.h
+dlfcn.h
+sys/stat.h
+sys/time.h
+sys/file.h
+sys/socket.h
+netdb.h
+arpa/inet.h
 string
 vector
 list
 map
 set
 utility
+concepts
+compare
 memory
+limits
+iterator
+locale
 sstream
 iostream
 fstream

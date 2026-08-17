@@ -25,10 +25,16 @@ int main()
     a.tv_usec = 900000;
     b.tv_sec = 2;
     b.tv_usec = 200000;
-    timeradd(&a, &b, &r);
+    if (a.tv_sec)
+        timeradd(&a, &b, &r);
+    else
+        r.tv_sec = -1;
     printf("add %ld %ld\n", r.tv_sec, r.tv_usec);
 
-    timersub(&r, &a, &b);
+    if (r.tv_sec)
+        timersub(&r, &a, &b);
+    else
+        b.tv_sec = -1;
     printf("sub %ld %ld\n", b.tv_sec, b.tv_usec);
 
     timerclear(&r);

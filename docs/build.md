@@ -3,14 +3,16 @@
 ## Requirements
 
 - `clang++` or `g++` with C++11 support
-- The **madc MIR fork** (libmir + c2mir) at `/workspace/mir` —
-  [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
-  `develop`. This is **not** upstream MIR: the fork carries native C99
-  `_Complex`, `__attribute__((cleanup))`, ≤16-byte SIMD/vector support, and
-  ABI/codegen fixes the CIR backend depends on. The exact commit is pinned by
-  the repo-root `MIR_COMMIT` file and the fork release it corresponds to by
-  `MIR_VERSION`; see `.claude/rules/build.md` for the pin and release
-  discipline.
+- MIR (libmir + c2mir) ships **in this repository** at `third_party/mir`
+  and builds automatically with `make -C src` (products land in
+  `obj/mir/`, never inside the subtree) — nothing to clone or pin. It is
+  **not** stock upstream MIR: madc's version carries native C99
+  `_Complex`, `__attribute__((cleanup))`, ≤16-byte SIMD/vector support,
+  the Mach-O executable writer, and ABI/codegen fixes the CIR backend
+  depends on. `vnmakarov/mir` is the upstream project;
+  `github.com/derekbsnider/mir` is the historical former downstream,
+  kept for provenance and upstream-PR transport (see
+  `.claude/rules/build.md`).
 - `libzstd-dev` (the packed forest's codec). `./configure --without-zstd`
   accepts a zlib fallback, which produces much larger packed binaries and
   slower binds — not recommended.

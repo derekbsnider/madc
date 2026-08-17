@@ -7,7 +7,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
 
@@ -62,10 +61,7 @@ public:
 			set_channel_error(err, "file read failed", "channel is not readable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::read(fd_, buffer, capacity);
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::read_fd(fd_, buffer, capacity);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file read failed", path_);
@@ -99,13 +95,13 @@ public:
 		out = 0;
 		if ( !ensure_seekable("file size failed", err) )
 			return false;
-		struct stat st;
-		if ( ::fstat(fd_, &st) != 0 )
+		long long result = detail::fd_size(fd_);
+		if ( result < 0 )
 		{
 			set_channel_errno(err, "file size failed", path_);
 			return false;
 		}
-		out = static_cast<uint64_t>(st.st_size);
+		out = static_cast<uint64_t>(result);
 		return true;
 	}
 
@@ -113,7 +109,7 @@ public:
 	{
 		if ( !ensure_seekable("file seek failed", err) )
 			return false;
-		if ( ::lseek(fd_, static_cast<off_t>(offset), SEEK_SET) < 0 )
+		if ( detail::seek_fd(fd_, static_cast<long long>(offset)) < 0 )
 		{
 			set_channel_errno(err, "file seek failed", path_);
 			return false;
@@ -133,11 +129,8 @@ public:
 					  "channel is not readable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::pread(fd_, buffer, capacity,
-					 static_cast<off_t>(offset));
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::pread_fd(fd_, buffer, capacity,
+						  (long long)offset);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file read_at failed", path_);
@@ -159,11 +152,8 @@ public:
 					  "channel is not writable");
 			return false;
 		}
-		ssize_t result;
-		do
-			result = ::pwrite(fd_, buffer, size,
-					  static_cast<off_t>(offset));
-		while ( result < 0 && errno == EINTR );
+		ssize_t result = detail::pwrite_fd(fd_, buffer, size,
+						   (long long)offset);
 		if ( result < 0 )
 		{
 			set_channel_errno(err, "file write_at failed", path_);
@@ -235,9 +225,16 @@ std::unique_ptr<DataChannel> open_file_channel(const std::string &path,
 		break;
 	}
 
+#ifdef _WIN32
+	// _O_NOINHERIT is the CRT's atomic-at-open close-on-exec; _O_BINARY
+	// keeps the channel byte-exact (the Win CRT defaults to text mode,
+	// and CRLF translation would silently corrupt a byte channel).
+	flags |= _O_NOINHERIT | _O_BINARY;
+#else
 	// O_CLOEXEC is POSIX-2008 (Linux and darwin both have it):
 	// close-on-exec is atomic at open, no post-hoc fcntl window.
 	flags |= O_CLOEXEC;
+#endif
 
 	int fd;
 	do
@@ -254,9 +251,8 @@ std::unique_ptr<DataChannel> open_file_channel(const std::string &path,
 	// keeps seek=false and the seekable surface refuses cleanly. An
 	// O_APPEND channel is a sequential appender by construction (Linux
 	// pwrite ignores the offset on O_APPEND), so it never claims seek.
-	struct stat st;
 	capabilities.seek = mode != ChannelOpenMode::append
-		&& ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+		&& detail::fd_is_regular_file(fd);
 
 	return std::unique_ptr<DataChannel>(
 		new FileDataChannel(fd, path, capabilities));

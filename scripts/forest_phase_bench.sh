@@ -4,6 +4,15 @@
 # than a per-sitting claim.
 #
 #   bash scripts/forest_phase_bench.sh [note]
+#   bash scripts/forest_phase_bench.sh --compare <bin> [<bin> ...]
+#
+# --compare measures ARBITRARY binaries side by side and appends NOTHING to
+# the trend files. The trend answers "is this tree improving over time"; the
+# comparison answers "which of these binaries is faster, right now" — e.g. an
+# archived tmp/release-bins/madc-release-vX.Y.Z against a candidate build.
+# Both questions share ONE measurement implementation (metrics5 / ir_count /
+# derive_count) so a methodology change lands in a single place; only the
+# lane labelling differs, and the trend's lane names keep their meaning.
 #
 # Measures tests/testsubscript.mad (the phase plan's headline test):
 #   live  = bin/madc          (develop -O0 dev binary, live parse)
@@ -17,19 +26,33 @@ cd "$(dirname "$0")/.."
 
 TEST=tests/testsubscript.mad
 OUT=docs/perf/forest-timings.tsv
+COMPARE=0
+if [ "${1:-}" = "--compare" ]; then
+    COMPARE=1
+    shift
+    [ $# -ge 1 ] || { echo "forest_phase_bench: --compare needs at least one binary" >&2; exit 2; }
+    # The workload is overridable for a comparison ONLY. The trend's whole
+    # value is that every row measures the same thing, so trend mode keeps
+    # testsubscript nailed down; a comparison legitimately asks about other
+    # workloads (a small script's startup latency answers a different
+    # question than a template-heavy TU, and users feel the small one).
+    TEST="${MADC_BENCH_TEST:-$TEST}"
+    [ -f "$TEST" ] || { echo "forest_phase_bench: no such workload: $TEST" >&2; exit 2; }
+fi
 NOTE="${1:-}"
 LIVE=bin/madc
 BOUND=bin/madc-release
 
-if [ ! -x "$LIVE" ]; then
+if [ "$COMPARE" = 0 ] && [ ! -x "$LIVE" ]; then
     echo "forest_phase_bench: $LIVE missing — build with: make -C src" >&2
     exit 1
 fi
-if [ ! -x "$BOUND" ]; then
+if [ "$COMPARE" = 0 ] && [ ! -x "$BOUND" ]; then
     echo "forest_phase_bench: $BOUND missing — build with: make -C src release" >&2
     exit 1
 fi
-if ! timeout 30 "$BOUND" --dump-forest 2>/dev/null | grep -q '^forest	units='; then
+if [ "$COMPARE" = 0 ] \
+   && ! timeout 30 "$BOUND" --dump-forest 2>/dev/null | grep -q '^forest	units='; then
     echo "forest_phase_bench: $BOUND carries no forest blob — re-run: make -C src release" >&2
     exit 1
 fi
@@ -104,6 +127,32 @@ ir_count() {
         "$bin" "$TEST" > /dev/null 2>&1 || true
     awk '/^summary:/ {print $2; found=1} END {if (!found) print "-"}' tmp/bench_cg.out
 }
+
+if [ "$COMPARE" = 1 ]; then
+    # One moment, N binaries, identical workload. Nothing is appended to the
+    # trend files: these rows describe OTHER trees (an archived release, a
+    # candidate build), and the trend's lane names mean one tree's two lanes.
+    #
+    # ir is the field that decides. Wall time on this host moves ±15% with
+    # neighbour contention and no loadavg signal, so a wall-clock A/B can
+    # invert a real difference; the callgrind instruction count cannot.
+    # Run with MADC_BENCH_IR=1 whenever the answer matters.
+    echo "# workload: $TEST"
+    printf 'binary\twall_s\tcpu_s\tmaxrss_kb\tminflt\tmajflt\tnivcsw\tir\tderives\tunits\n'
+    for bin in "$@"; do
+        if [ ! -x "$bin" ]; then
+            echo "forest_phase_bench: not executable: $bin" >&2
+            exit 1
+        fi
+        units=$(timeout 30 "$bin" --dump-forest 2>/dev/null \
+                | sed -n 's/^forest	units=\([0-9]*\).*/\1/p' | head -1)
+        [ -n "$units" ] || units="-"
+        printf '%s\t%s\t%s\t%s\n' \
+            "$bin" "$(metrics5 "$bin" | tr ' ' '\t')" \
+            "$(ir_count "$bin")" "$(derive_count "$bin")	$units"
+    done
+    exit 0
+fi
 
 if [ ! -f "$OUT" ]; then
     printf '# forest phase timing trend — one row per measurement (append-only).\n' > "$OUT"

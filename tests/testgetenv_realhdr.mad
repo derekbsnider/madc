@@ -10,7 +10,13 @@
 
 int main()
 {
-	char *p = getenv("HOME");
+	// PATH, not HOME: HOME is not set on Windows (USERPROFILE is), and this
+	// probe is about getenv's SHAPE — the real 1-param prototype replacing
+	// madc's 2-param wrapper builtin — not about which variables a host
+	// happens to define. PATH is set on Linux, macOS and Windows alike, so
+	// the assertion is the same everywhere and nothing about the Linux
+	// coverage changes.
+	char *p = getenv("PATH");
 	printf("%d\n", p != 0);
 	setenv("MADC_GETENV_TEST", "roundtrip", 1);
 	printf("%s\n", getenv("MADC_GETENV_TEST"));

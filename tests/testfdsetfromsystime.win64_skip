@@ -1,0 +1,1 @@
+POSIX <sys/time.h> does not define struct fd_set on Win64: MinGW rejects this source, and MSVC does not provide sys/time.h; native WinSock code uses <winsock2.h> and fd_set.

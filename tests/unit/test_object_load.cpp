@@ -28,7 +28,7 @@ thread_local bool madc_verbose = false;
 
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
+#include "madc_dl.h"
 #include <elf.h>
 #include <unistd.h>
 
@@ -91,7 +91,7 @@ std::string emit_object(const char *src)
 // the same reach the CLI resolver has.
 void *dlsym_resolver(const char *name, void *)
 {
-    return dlsym(RTLD_DEFAULT, name);
+    return madcdl_sym_default(name);
 }
 
 // Two import targets deliberately invisible to dlsym (static, not in the
@@ -107,7 +107,7 @@ void *two_import_resolver(const char *name, void *)
 	return (void *)&r6_ext_a_impl;
     if (std::strcmp(name, "r6_test_ext_b") == 0)
 	return (void *)&r6_ext_b_impl;
-    return dlsym(RTLD_DEFAULT, name);
+    return madcdl_sym_default(name);
 }
 
 // ELF binding of a DEFINED symbol in an object file's SHT_SYMTAB

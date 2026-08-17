@@ -1,0 +1,200 @@
+M0:	module
+a:	u64 8589934593, 17179869187
+b:	u64 85899345930, 171798691870
+qa:	u64 4294967296, 9
+qb:	u64 5, 4
+qsh:	u64 4294967296, 7
+qshu:	u64 1152921504606846976, 16
+qcnt:	u64 2, 0
+qeq:	u64 4294967296, 5
+r:	u64 0, 0
+main:	func i64
+	local i64:pa, i64:pb, i64:pr, i64:p, i64:x, v128:va, v128:vb, v128:vc
+	mov pa, a
+	mov pb, b
+	mov pr, r
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vaddi32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 33
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	vsubi32 vc, vb, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 9
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 18
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 27
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 36
+	mov pa, qa
+	mov pb, qb
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vaddi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 4294967301
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 13
+	vsubi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 4294967291
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 5
+	mov pa, qsh
+	mov pb, qcnt
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vlshi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 17179869184
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 28
+	mov pa, qshu
+	vmov va, v128:(pa)
+	vurshi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 288230376151711744
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 4
+	mov pa, qsh
+	mov pb, qeq
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	veqi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, -1
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 0
+	vgti64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, -1
+	mov pa, a
+	mov pb, b
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vmuli32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 10
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 40
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 90
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 160
+	vand vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 0
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 2
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 0
+	vor vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 31
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	vxor vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 29
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	veqi32 vc, va, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, -1
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, -1
+	vgti32 vc, vb, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, -1
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, -1
+	vgti32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 0
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 0
+	ret 0
+fail:
+	ret 1
+	endfunc
+	export main
+	endmodule

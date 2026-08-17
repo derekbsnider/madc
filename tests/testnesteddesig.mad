@@ -1,0 +1,32 @@
+// gcc-torture pr39339 shape (task #41): a designated initializer whose
+// member is itself brace-initialized, where the member chain got
+// class-promoted (struct D defined INLINE inside struct C promotes C to
+// a class scope; C as a by-value member promotes E). The aggregate walk
+// treated the nested brace list as a ctor argument (no ctor takes one —
+// whole-list decline, "unsupported aggregate initializer shape"), and a
+// plain-struct member's inner braces translated to a VOID-typed compound
+// literal. Now: class members recurse the walk ([dcl.init.aggr]p12);
+// plain-struct members get a compound literal typed from the MEMBER
+// (the brace list itself is contextual). Oracle: gcc -O0 / clang -O0.
+
+struct C
+{
+	unsigned int c;
+	struct D
+	{
+		unsigned int a : 4;
+		unsigned int b : 12;
+		unsigned int fragment : 1;
+	} attr;
+};
+
+struct E { long row, col; struct C defaults; };
+
+int main()
+{
+	struct E e = {.row = 5,.col = 0,.defaults = {6, {1, 2, 1}} };
+	struct D d = e.defaults.attr;
+	printf("%d %d %u\n", (int)e.row, (int)e.col, e.defaults.c);
+	printf("%u %u %u\n", d.a, d.b, d.fragment);
+	return 0;
+}

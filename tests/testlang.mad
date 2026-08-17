@@ -95,7 +95,8 @@ int main()
     cout << "js stringify: " << json << endl;
 
     // --- C globals ---
-    string path = getenv("HOME");
+    const char *home = getenv("HOME");
+    string path = home ? home : "";
     cout << "HOME: " << path << endl;
 
     return 0;

@@ -17,13 +17,13 @@
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
 #
-# Inputs are the `make -C src release-macos` artifacts, which are only
-# produced through scripts/verify_macho_release.sh — a tarball here has
-# passed the forest-carrier, signature, AND prelude-provenance gates by
-# construction (W0.5: the verify script refuses a binary whose embedded
-# prelude marker is not the open-licensed tree, so an SDK-derived prelude
-# can no longer reach a tarball). In-vivo evidence (AMFI, behavior) is
-# scripts/mac_battery.sh on the owner's Macs.
+# Inputs are the `make -C src release-macos` artifacts. This script
+# re-runs scripts/verify_macho_release.sh on each binary it packages —
+# forest-carrier, signature, AND prelude-provenance gates (W0.5) hold
+# for the EXACT bytes tarred, not by construction: the recipe strips
+# binaries before its own verify step, so a failed verify still leaves
+# fresh binaries on disk (bitten 2026-08-11). In-vivo evidence (AMFI,
+# behavior) is scripts/mac_battery.sh on the owner's Macs.
 set -e
 
 VER=$(cat VERSION)
@@ -38,6 +38,16 @@ package_arch() {
 
     if [ ! -f "$bin" ]; then
         echo "package_release_macos: $bin missing — run 'make -C src release-macos' first" >&2
+        exit 1
+    fi
+
+    # Defense in depth: re-run the release gate on the exact input.
+    # 2026-08-11 proved the "inputs passed the gate by construction"
+    # assumption wrong — the recipe strips the binaries BEFORE its
+    # verify step, so a failed verify still leaves fresh binaries on
+    # disk for a later packaging pass to pick up.
+    if ! bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/forest.bin"; then
+        echo "package_release_macos: $bin failed verify_macho_release — refusing to package" >&2
         exit 1
     fi
 

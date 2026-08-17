@@ -14,11 +14,12 @@
 #include <fstream>
 #include <string>
 #include <cstdlib>
+#include <cstdio>
 using namespace std;
 
 int main()
 {
-	string fname = "/tmp/madc_ofswrite_test.txt";
+	string fname = "madc_ofswrite_test.txt";
 	ofstream outf;
 	outf.open(fname);
 	string s = "swrite";
@@ -32,7 +33,6 @@ int main()
 	cout << line << endl;
 	inf.close();
 
-	string rm = "rm -f /tmp/madc_ofswrite_test.txt";
-	system(rm.c_str());
+	std::remove(fname.c_str());
 	return 0;
 }

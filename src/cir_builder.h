@@ -417,12 +417,25 @@ class CirBuilder {
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
-	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
-	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
+	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL,
+			   size_t member_index = (size_t)-1);
+	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon,
+					  size_t settled_offset = 0);
 	// A `char __pad<index>[bytes]` synthetic member — layout filler shared by
 	// the class emitter (vptr/base gaps, tail pad) and the empty-aggregate
 	// definition (C++ sizeof-1 empty struct must not emit a size-0 body).
-	node_t char_pad_member(int index, size_t bytes);
+	node_t char_pad_member(int index, size_t bytes, size_t settled_offset = 0);
+	// MC11 settled-layout contract. DataDefSTRUCT is the semantic owner;
+	// c2mir consumes these positional records instead of independently laying
+	// out a MadC-built aggregate. Plain c2mir-parsed C has no contract and
+	// keeps c2mir's native layout path.
+	node_t aggregate_layout_contract(DataDefSTRUCT *owner);
+	node_t member_layout_contract(size_t offset, int64_t bit_offset,
+				      int64_t bit_width);
+	node_t finish_member_layout(node_t member, DataDefSTRUCT *owner,
+				    size_t member_index,
+				    size_t settled_offset = (size_t)-1);
+	node_t aggregate_def_node(DataDefSTRUCT *owner, node_t tag, node_t members);
 
 	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
 	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.
@@ -879,7 +892,7 @@ public:
 	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
 	std::map<class TokenOperator *, class FuncDef *> m_free_op_inst_by_call;
 	std::map<class TokenOperator *, class Variable *> m_free_op_body_by_call;
-	node_t integer(long val, TokenBase *origin = NULL);
+	node_t integer(int64_t val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
 	// constant (e.g. `0xffffffffull`) carries its real signedness/width
@@ -905,6 +918,16 @@ public:
 	node_t node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, node_t op4, node_t op5, TokenBase *origin = NULL);
 	node_t append(node_t parent, node_t child);
 	node_t simple(c2mir_node_code_t code, TokenBase *origin = NULL);
+
+	// ---- The i64 spelling law (LLP64) ----
+	// madc's 64-bit int kinds spell as `long long` — TWO N_LONG specs —
+	// never a lone N_LONG: c2mir models platform `long`, which is 32-bit
+	// on win64 (cx86_64.h), so a single-N_LONG spec truncates there.
+	// LP64 targets type both spellings at 64 bits. Unsigned forms prepend
+	// N_UNSIGNED at the call site. check-i64-spec-spelling.sh gates raw
+	// spellings in cir_builder.cpp.
+	node_t append_i64(node_t spec_list, TokenBase *origin = NULL);
+	node_t i64_list(TokenBase *origin = NULL);
 
 	// Build an error/incomplete node (carries a reason + origin for
 	// diagnostics). The node's code is N_IGNORE so it is harmless if it ever
@@ -1306,6 +1329,45 @@ public:
 	// shared by every construction-emission site.
 	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
+	// [dcl.init.list]/3-4 — LIST-initialization of a class that has an
+	// initializer-list constructor: the WHOLE braced list is ONE
+	// std::initializer_list<E> argument and only initializer-list ctors are
+	// candidates. Returns that ctor and writes the materialized argument
+	// node to *arg_out; NULL when the class has no such ctor (the caller
+	// then treats the elements as ordinary ctor arguments, which is the
+	// remainder of that same rule). `elems` is the braced list.
+	class FuncDef *initializer_list_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems,
+			       TokenBase *origin, node_t *arg_out);
+	// The SEARCH half of the rule above, without materializing anything:
+	// which initializer-list ctor (if any) would serve this list. The
+	// declaration lanes ask this BEFORE they decide how to thread a braced
+	// initializer, so the answer cannot come from a function that also
+	// builds nodes.
+	class FuncDef *find_initializer_list_ctor(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems,
+			       DataDefCLASS **ilc_out = NULL,
+			       DataDef **elem_out = NULL,
+			       Variable **var_out = NULL);
+	// True when `cdd` consumes a braced list AS A LIST — via an
+	// initializer-list ctor, or by BEING std::initializer_list. The one
+	// question the declaration lanes ask before threading an initializer.
+	bool takes_whole_braced_list(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elems);
+	// The braced-list argument itself: `(IL){ (E[N]){e0,...}, N }`. The
+	// backing array is a compound literal, so it has automatic storage in
+	// the enclosing block — which outlives the initializer_list temporary,
+	// as [dcl.init.list]/6 requires.
+	node_t initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
+			       const std::vector<TokenBase *> &elems,
+			       TokenBase *origin);
+	// True when `origin` is a declaration whose ctor arguments came from a
+	// BRACED list. The one reader of TokenDecl::ctor_args_braced, so both
+	// construction assemblers ask the same question the same way.
+	bool ctor_args_are_braced(TokenBase *origin);
+	// Record a selected non-default ctor's own emit name (see the body).
+	void note_ctor_emit_name(DataDefCLASS *cdd, class FuncDef *best,
+			       Variable *best_var);
 	// Select the operator overload (operator= / operator+=) matching the RHS by
 	// generic argument scoring. Falls back to the first by-name match. NULL when
 	// the class has no such operator.

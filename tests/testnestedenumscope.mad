@@ -1,0 +1,49 @@
+// A class-nested unscoped enum's TAG is a member of that class
+// ([basic.scope.class]/1). It must NOT be published into the enclosing
+// namespace or the global scope.
+//
+// Regression: TokenENUM::parse() applied set_class_type_alias for the class
+// case AND then wrote the bare tag into datatype_map (plus the enclosing
+// namespace) unconditionally. libc++'s money_base::part leaked as `part`,
+// `std::part` and `std::__1::part`, so a user variable named `part` failed to
+// compile under -stdlib=libc++ ("Missing operand") while working under
+// libstdc++ — a parenthesized comparison read as a cast to the leaked type.
+//
+// Oracle (both agree, and this file compiles as C++ unchanged):
+//   g++ -std=c++11      -> bare 1 / enumerator-name 1 / qual 4 / memb 2
+//   clang++ -std=c++11  -> bare 1 / enumerator-name 1 / qual 4 / memb 2
+
+#include <iostream>
+using namespace std;
+
+class holder
+{
+public:
+	enum part { none, space, symbol, sign, value };
+	static int pick() { return (int)symbol; }	// unqualified INSIDE is fine
+	// [dcl.enum]p11 relative spelling, from inside the class that owns the
+	// enum. This resolves through the pseudo-namespace keyed under the
+	// OWNER (holder::part) — see resolve_class_scoped_ns().
+	static int rel()  { return (int)part::sign; }
+};
+
+int main()
+{
+	// A local may take the nested tag's name. A parenthesized comparison on
+	// it must stay a comparison, not become a cast to the nested type.
+	int part = 7;
+	cout << "bare " << (part == 7) << endl;
+
+	// Same for a name that matches one of the enumerators.
+	char *value = (char *)0;
+	cout << "enumerator-name " << (value == 0) << endl;
+
+	// The qualified spellings still reach the member type and its
+	// enumerators, which is what the class alias registration is for.
+	holder::part p = holder::value;
+	cout << "qual " << (int)p << endl;
+	cout << "memb " << holder::pick() << endl;
+	cout << "rel " << holder::rel() << endl;
+
+	return 0;
+}

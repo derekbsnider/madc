@@ -49,13 +49,19 @@ fi
 # one more container segment. This is what makes -static-libmadc work on
 # Mach-O at all: there is no libmadc dylib to fall back to, so a hosted madc
 # whose container has no ledger can never emit a try/catch program.
-# scripts/ledger_sources.txt is the single owner of the list.
+# scripts/ledger_sources.txt is the single owner of the tagged list.
 LEDGER_LIST="$(dirname "$0")/ledger_sources.txt"
 LEDGER_ROOT="$(dirname "$0")/.."
+if ! LEDGER_SOURCES=$(bash "$(dirname "$0")/select_ledger_sources.sh" darwin "$LEDGER_LIST"); then
+    echo "forest_pack_darwin: could not select Darwin ledger sources" >&2
+    exit 1
+fi
 LEDGER_ARGS=()
-while read -r src; do
+while IFS= read -r src; do
+    [ -n "$src" ] || continue
     LEDGER_ARGS+=("--freeze-ledger=$LEDGER_ROOT/$src")
-done < <(grep -vE '^[[:space:]]*(#|$)' "$LEDGER_LIST")
+done <<<"$LEDGER_SOURCES"
+LEDGER_MODULE_COUNT=${#LEDGER_ARGS[@]}
 
 # The C++ grove set (macos-release-lane plan W1): the darwin canonical-order
 # list, frozen from LLVM's libc++ behind the prelude's C names. One combined
@@ -89,14 +95,32 @@ timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze
 # class this gate exists to catch).
 DUMP="$OUT.dump.txt"
 timeout 120 "$CROSS" --dump-forest="$OUT" > "$DUMP"
-grep -q '^forest	units=' "$DUMP"
-# The ledger must be THERE: a hosted darwin madc without one cannot emit a
-# runtime-needing program at all (no dylib fallback exists on Mach-O).
-if ! grep -q '^ledger	modules=' "$DUMP"; then
+if ! grep -q '^forest	units=' "$DUMP"; then
     rm -f "$OUT"
-    echo "forest_pack_darwin: FAILED - no AOT ledger in the container" >&2
+    echo "forest_pack_darwin: FAILED - packed image has no forest directory" >&2
     exit 1
 fi
+# The exact selected ledger must be THERE: a hosted darwin madc without it
+# cannot emit a runtime-needing program at all (no dylib fallback exists on
+# Mach-O), and accepting merely "some ledger" hides target-selection loss.
+if ! grep -q "^ledger	modules=$LEDGER_MODULE_COUNT	symbols=" "$DUMP"; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED - expected $LEDGER_MODULE_COUNT selected ledger modules" >&2
+    if ! grep -a '^ledger' "$DUMP" >&2; then
+        echo "forest_pack_darwin: dump has no ledger record" >&2
+    fi
+    exit 1
+fi
+while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    LEDGER_MODULE_PATH=$LEDGER_ROOT/$src
+    LEDGER_MODULE_PREFIX=$'ledgermod\t'"$LEDGER_MODULE_PATH"$'\t'
+    if ! grep -Fq "$LEDGER_MODULE_PREFIX" "$DUMP"; then
+        rm -f "$OUT"
+        echo "forest_pack_darwin: FAILED - selected ledger module is missing: $LEDGER_MODULE_PATH" >&2
+        exit 1
+    fi
+done <<<"$LEDGER_SOURCES"
 # A unit is named by its bare spelling (embedded headers) OR by the
 # producer's full path (filesystem headers — the C++ groves); consumers
 # match the latter by path tail (find_unit_path_tail), so the gate accepts

@@ -22,11 +22,10 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <setjmp.h>
-#include <dlfcn.h>
-#include <limits.h>	// PATH_MAX (cross-build cover analysis: realpath buffer)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -35,6 +34,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "madc_cir.h"
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
@@ -160,23 +160,33 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
     // runtime cannot be dlopen'd on the build host, so the HOST's library of
     // the same flavor answers the CIR-time dlsym probes — the Itanium
     // surface is platform-neutral. See madc_sys_includes.h.
+    const bool have_standin = madc_stdlib_probe_standin_libs[0] != NULL;
     for (int i = 0; madc_stdlib_probe_standin_libs[i]; i++) {
 	const char *lib = madc_stdlib_probe_standin_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	if (!madcdl_open_global(lib))
 	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
-		    lib, dlerror());
+		    lib, madcdl_error());
     }
+    // A stand-in IS the substitute for the target's runtime, so where one
+    // exists the flavor's own link_libs name the TARGET's libraries — which
+    // cannot open on this host BY CONSTRUCTION. Attempting them anyway is a
+    // guaranteed-failing dlopen plus a warning on every single run: the
+    // cross-darwin freeze printed "stdlib flavor libc++ runtime
+    // /usr/lib/libc++.1.dylib: cannot open shared object file" every time.
+    // Keyed on the stand-in table being populated, not on a platform macro.
+    if (have_standin)
+	return;
     if (!flavor->link_libs)
 	return;
     for (int i = 0; flavor->link_libs[i]; i++) {
 	const char *lib = flavor->link_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!dlopen(lib, RTLD_LAZY | RTLD_GLOBAL))
+	if (!madcdl_open_global(lib))
 	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
-		    flavor->name ? flavor->name : "?", lib, dlerror());
+		    flavor->name ? flavor->name : "?", lib, madcdl_error());
     }
 }
 
@@ -192,7 +202,7 @@ static void *cir_import_resolver(const char *name)
 	if (it != cir_active_dl_syms->end())
 	    return it->second;
     }
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
     return addr;
@@ -1276,9 +1286,9 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
     // BEFORE materialize + link, so import resolution sees the same symbols.
     for (size_t i = 0; i < forest->libs().size(); ++i) {
 	const std::string &lib = forest->libs()[i];
-	if (!dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL)) {
+	if (!madcdl_open_global(lib.c_str())) {
 	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
-		    lib.c_str(), dlerror());
+		    lib.c_str(), madcdl_error());
 	    teardown();
 	    return false;
 	}
@@ -1457,7 +1467,23 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return stop ? 0 : -1;
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok, &prog->_exec_seconds);
+    // main() is a host-call boundary just like program::call and the
+    // one-shot eval entry.  Keep the Program that produced this JIT module
+    // active while its code runs so script-facing runtime services inherit
+    // the compile policy and frozen-forest provider from that Program.
+    // Without this scope, madc::eval_* falls back to a fresh default engine;
+    // a compilerless packaged target then cannot serve even a header that is
+    // present in its own forest.
+    prog->push_runtime_scope();
+    int result;
+    try {
+	result = session.run_main(user_argc, user_argv, &ok,
+				  &prog->_exec_seconds);
+    } catch (...) {
+	prog->pop_runtime_scope();
+	throw;
+    }
+    prog->pop_runtime_scope();
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
 	return -1;
@@ -1615,14 +1641,15 @@ bool CirJitSession::emit_native_object(const char *out_path)
 // where a static libmadc IS the exe's text).
 static bool cir_symbol_from_madc_image(const char *name)
 {
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
-    Dl_info info;
-    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+    MadcDlInfo info;
+    if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
-    char real[PATH_MAX];
-    std::string img = realpath(info.dli_fname, real) ? real : info.dli_fname;
+    std::string img = madc::detail::resolve_real_path(info.fname);
+    if (img.empty())
+	img = info.fname;
     return img == madc_self_lib_path() || img == madc_self_exe_path();
 }
 #endif
@@ -1655,25 +1682,26 @@ static bool cir_import_covered(const char *name,
     // interrogating them, never loading anything new.
     for (const std::string &c : covers) {
 	if (c.find(".so") == std::string::npos
-	    && c.find(".dylib") == std::string::npos)
+	    && c.find(".dylib") == std::string::npos
+	    && c.find(".dll") == std::string::npos)
 	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
 			// prefix cover, handled by the dladdr pass below
-	void *h = dlopen(c.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+	void *h = madcdl_probe_loaded(c.c_str());
 	if (!h)
 	    continue;
-	void *sym = dlsym(h, name);
-	dlclose(h);
+	void *sym = madcdl_sym(h, name);
+	madcdl_close(h);
 	if (sym)
 	    return true;
     }
-    void *addr = dlsym(RTLD_DEFAULT, name);
+    void *addr = madcdl_sym_default(name);
     if (!addr)
 	return false;
-    Dl_info info;
-    if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fname[0])
+    MadcDlInfo info;
+    if (!madcdl_addr(addr, info) || !info.fname || !info.fname[0])
 	return false;
-    const char *bn = strrchr(info.dli_fname, '/');
-    bn = bn ? bn + 1 : info.dli_fname;
+    const char *bn = strrchr(info.fname, '/');
+    bn = bn ? bn + 1 : info.fname;
     for (const std::string &c : covers) {
 	size_t slash = c.rfind('/');
 	const char *cb = slash == std::string::npos ? c.c_str()
@@ -1815,21 +1843,44 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 }
 
 #if MADC_TARGET_APPLE_P
-// ONE rule for both Mach-O emit lanes (source image + object link): a
+// ONE rule for the Mach-O emit lanes (source image + object link): a
 // program still needing the madc runtime cannot link — no target libmadc
-// exists — and the message names the fix. Returns true when the emit
-// must refuse.
-static bool cir_apple_runtime_refused(bool have_madc, bool drop_madc,
-				      const char *out_path)
+// dylib exists — and the message names the fix. Returns true when the
+// emit must refuse. (The PE lanes used to share this refusal; W3.5's
+// libmadc_rt.dll lifted it — see cir_windows_import_dlls.)
+static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
+				       const char *out_path)
 {
     if (!have_madc || drop_madc)
 	return false;
     fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-	    " not exist as a library for Mach-O targets; build it into the"
-	    " image with -static-libmadc (C-lane machinery only)\n",
+	    " not exist as a library for this native-emit target; build it"
+	    " into the image with -static-libmadc (C-lane machinery only)\n",
 	    out_path);
     return true;
 }
+#endif
+
+#if MADC_TARGET_WINDOWS_P
+// ONE rule for the PE emit lanes (source image + object link): the
+// writer's import-attribution DLL order. A runtime-needing program
+// imports the madc surface (madc_puts, the madc_value_* bridge, __madc_*
+// helpers) from libmadc_rt.dll — the win64 twin of libmadc.so.0, staged
+// beside madc.exe (W3.5) — placed FIRST: specific before general, the
+// madcdl walk's rule, so madc-runtime names can never mis-attribute to a
+// base DLL. The base set (`other`) follows.
+static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
+				    const std::vector<std::string> &other,
+				    std::vector<const char *> &libs)
+{
+    if (have_madc && !drop_madc)
+	libs.push_back("libmadc_rt.dll");
+    for (const std::string &l : other)
+	libs.push_back(l.c_str());
+}
+#endif
+
+#if MADC_TARGET_APPLE_P
 
 // The dylibs a Mach-O image must LOAD beyond the implicit libSystem,
 // decided by import CLASS: a header-less Mac has no .tbd stubs for
@@ -1884,9 +1935,13 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // not at dyld; a C++ program gets its real world (libc++) as an
     // LC_LOAD_DYLIB, and with extras present the writer binds every
     // import flat across the load list (mir-debug.h).
-    if (cir_apple_runtime_refused(have_madc, drop_madc, out_path))
+    if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
 	return false;
     cir_apple_extra_dylibs(imports, libs);
+#elif MADC_TARGET_WINDOWS_P
+    // PE: runtime-needing programs import from libmadc_rt.dll; the list
+    // flows to the writer as its import-attribution DLL order.
+    cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
     for (const std::string &l : (drop_madc ? other : needed))
 	libs.push_back(l.c_str());
@@ -1965,6 +2020,18 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libc++");
     needed.push_back("libsystem_");
     needed.push_back("libSystem");
+#elif defined(_WIN32)
+    // Hosted win64: the process's own runtime DLLs, in the madcdl walk's
+    // order (specific before general — first provider wins). This list is
+    // BOTH the cover set for the runtime-need analysis AND the PE writer's
+    // import-attribution list (PE binds two-level: every import names its
+    // DLL; the writer probes these in order).
+    (void)flavor;
+    needed.push_back("libstdc++-6.dll");
+    needed.push_back("libwinpthread-1.dll");
+    needed.push_back("ucrtbase.dll");
+    needed.push_back("kernel32.dll");
+    needed.push_back("ws2_32.dll");
 #else
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
@@ -2235,11 +2302,16 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	// one extra-dylib policy (the shared helpers are the single
 	// owners; this lane's copy had already drifted to an older
 	// message once).
-	if (cir_apple_runtime_refused(have_madc, drop_madc, out_path)) {
+	if (cir_target_runtime_refused(have_madc, drop_madc, out_path)) {
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
 	cir_apple_extra_dylibs(imports, libs);
+#elif MADC_TARGET_WINDOWS_P
+	// Same PE rule as cir_write_native_image: libmadc_rt.dll first
+	// when the runtime is needed, then the base DLL order (the one
+	// owner is cir_windows_import_dlls).
+	cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
 	for (const std::string &l : (drop_madc ? other : needed))
 	    libs.push_back(l.c_str());
@@ -2470,6 +2542,38 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 	 bm != prog->pack_branch_macros.end(); ++bm)
 	f.branch_macros.push_back(pool->intern(*bm));
     std::sort(f.branch_macros.begin(), f.branch_macros.end());
+
+    // 5b (v40). Per-unit EXTERNAL branch dependencies — the bind-eligibility
+    // environment (task #57): [name_id, flags, value_id] triplets.
+    for (std::map<const char *, std::vector<Program::PackBranchDep> >::const_iterator
+	     bd = prog->pack_unit_branch_deps.begin();
+	 bd != prog->pack_unit_branch_deps.end(); ++bd) {
+	uint32_t u = ensure_unit(bd->first);
+	for (size_t k = 0; k < bd->second.size(); ++k) {
+	    const Program::PackBranchDep &d = bd->second[k];
+	    // ensure_unit may reallocate f.units — resolve the definer BEFORE
+	    // taking the output reference.
+	    uint32_t definer = d.definer ? ensure_unit(d.definer) : 0xffffffffu;
+	    std::vector<uint32_t> &out = f.units[u].branch_deps;
+	    uint32_t flags = (d.defined ? 1u : 0u)
+			   | (d.has_value ? 2u : 0u);
+	    out.push_back(pool->intern(d.name));
+	    out.push_back(flags);
+	    out.push_back(d.has_value && !d.value.empty()
+			  ? pool->intern(d.value) : 0);
+	    out.push_back(definer);
+	}
+    }
+
+    // 5c (v41). Preserve each unit's exact pre-preprocessor source text.
+    // Semantic forest state remains config-pinned; these bytes are the
+    // compiler-less target's live-parse provider for a different config.
+    for (std::map<const char *, std::string>::const_iterator
+	 si = prog->pack_unit_sources.begin();
+	 si != prog->pack_unit_sources.end(); ++si) {
+	uint32_t u = ensure_unit(si->first);
+	f.units[u].source_payload.assign(si->second.begin(), si->second.end());
+    }
 
     // 6. Canonical unit order = first-tokenization order (the pack driver's
     //    include list IS the canonical system order; design doc §6).
@@ -4689,6 +4793,65 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 	}
 }
 
+// Record ONE enum tag as DK_ENUM at its project slot: the enumerators ride a
+// constvalrec run and the pseudo-namespace key derives from
+// canonical_cpp_spelling() exactly as the live registration built it. The ONE
+// writer — both the datatype_map walk (file/namespace-scope tags) and the
+// class-nested sweep go through it, so the two surfaces cannot drift.
+static void forest_record_enum(Program *prog, DataDefENUM *edd,
+			       bool tu_root, bool class_nested)
+{
+	uint32_t tid = madc_type_id_for(edd);
+	if (!madc::dis::arena_id_is_project(tid) || prog->forest_arena.has_def(tid))
+		return;
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind    = madc::dis::DK_ENUM;
+	if (tu_root)
+		r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
+	if (class_nested)
+		r.flags |= madc::dis::DF_ENUM_CLASS_NESTED;
+	r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
+	r.canon_id = edd->canonical_cpp_spelling().empty() ? 0u
+		   : prog->forest_arena.strings.intern(
+			edd->canonical_cpp_spelling().c_str());
+	r.size    = (uint32_t)edd->size;
+	// A FIXED underlying base drives the enum's layout AND its lowered C type
+	// ([dcl.enum]p8, DataDefENUM::set_underlying); the restore must re-adopt
+	// both, so carry the base's type-id in ref0 (free for DK_ENUM; primitives
+	// are pinned ids).
+	r.ref0    = edd->underlying
+		  ? forest_serialize_type_id(edd->underlying) : 0u;
+	// Scoped enumerators: the pseudo-namespace key is the canonical spelling
+	// when namespaced (std::__cmp_cat::_Ord) or class-nested
+	// (std::__1::ios_base::event), else the bare tag.
+	const std::string &pk = edd->canonical_cpp_spelling().empty()
+			      ? edd->name : edd->canonical_cpp_spelling();
+	std::map<std::string, variable_map_t>::iterator ni =
+		prog->namespace_map.find(pk);
+	std::vector<madc::dis::constvalrec> evs;
+	if (ni != prog->namespace_map.end())
+		for (variable_map_iter vi = ni->second.begin();
+		     vi != ni->second.end(); ++vi) {
+			Variable *ev = vi->second;
+			if (!ev || !ev->is_constant())
+				continue;
+			madc::dis::constvalrec cv;
+			memset(&cv, 0, sizeof(cv));
+			cv.name_id = prog->forest_arena.strings.intern(
+				vi->first.c_str());
+			uint64_t uv = (uint64_t)ev->get<int64_t>();
+			cv.val_lo = (uint32_t)(uv & 0xffffffffu);
+			cv.val_hi = (uint32_t)(uv >> 32);
+			evs.push_back(cv);
+		}
+	r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
+	r.constval_count = (uint32_t)evs.size();
+	for (size_t e = 0; e < evs.size(); ++e)
+		prog->forest_arena.add_payload(evs[e]);
+	prog->forest_arena.set_def_at(tid, r);
+}
+
 // B3 flip (Chunk 2): RE-RECORD every live project aggregate into the arena at
 // freeze time. The parse-time write-throughs capture an aggregate at its
 // COMPLETION hook, but state keeps mutating afterwards — a method's emit_symbol
@@ -4746,57 +4909,56 @@ static void cir_forest_arena_refresh(Program *prog,
 		DataDefENUM *edd = dynamic_cast<DataDefENUM *>(&tdt->definition);
 		if (!edd || edd->name != key)
 			return false;	// an alias entry records at its tag only
-		uint32_t tid = madc_type_id_for(edd);
-		if (!madc::dis::arena_id_is_project(tid)
-		    || prog->forest_arena.has_def(tid))
-			return false;
-		madc::dis::defrec r;
-		memset(&r, 0, sizeof(r));
-		r.kind    = madc::dis::DK_ENUM;
 		// v24: an enum tag defined in the TU's root file is fenced from
 		// the bind restore (provenance = its registered token's file).
-		if (prog->forest_is_tu_root_file(tdt->file))
-			r.flags |= madc::dis::DF_TU_ROOT_ORIGIN;
-		r.name_id = prog->forest_arena.strings.intern(edd->name.c_str());
-		r.canon_id = edd->canonical_cpp_spelling().empty() ? 0u
-			   : prog->forest_arena.strings.intern(
-				edd->canonical_cpp_spelling().c_str());
-		r.size    = (uint32_t)edd->size;
-		// A FIXED underlying base drives the enum's layout AND its
-		// lowered C type ([dcl.enum]p8, DataDefENUM::set_underlying);
-		// the restore must re-adopt both, so carry the base's type-id
-		// in ref0 (free for DK_ENUM; primitives are pinned ids).
-		r.ref0    = edd->underlying
-			  ? forest_serialize_type_id(edd->underlying) : 0u;
-		// Scoped enumerators: the pseudo-namespace key is the canonical
-		// spelling when namespaced (std::__cmp_cat::_Ord), else the tag.
-		const std::string &pk = edd->canonical_cpp_spelling().empty()
-				      ? edd->name : edd->canonical_cpp_spelling();
-		std::map<std::string, variable_map_t>::iterator ni =
-			prog->namespace_map.find(pk);
-		std::vector<madc::dis::constvalrec> evs;
-		if (ni != prog->namespace_map.end())
-			for (variable_map_iter vi = ni->second.begin();
-			     vi != ni->second.end(); ++vi) {
-				Variable *ev = vi->second;
-				if (!ev || !ev->is_constant())
-					continue;
-				madc::dis::constvalrec cv;
-				memset(&cv, 0, sizeof(cv));
-				cv.name_id = prog->forest_arena.strings.intern(
-					vi->first.c_str());
-				uint64_t uv = (uint64_t)ev->get<int64_t>();
-				cv.val_lo = (uint32_t)(uv & 0xffffffffu);
-				cv.val_hi = (uint32_t)(uv >> 32);
-				evs.push_back(cv);
-			}
-		r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
-		r.constval_count = (uint32_t)evs.size();
-		for (size_t e = 0; e < evs.size(); ++e)
-			prog->forest_arena.add_payload(evs[e]);
-		prog->forest_arena.set_def_at(tid, r);
+		forest_record_enum(prog, edd,
+				   prog->forest_is_tu_root_file(tdt->file), false);
 		return false;
 	});
+
+	// A CLASS-NESTED enum tag has NO datatype_map entry — a live parse keeps
+	// it out on purpose ([basic.scope.class]/1; TokenENUM::parse registers it
+	// solely as the owner's class type-alias, after money_base::part leaked
+	// `part` to file scope). The walk above therefore never saw one, yet
+	// forest_serialize_type_id had already STAMPED each a project id as a
+	// member / param / fn-ptr-signature cross-ref — leaving a referenced id
+	// with a DK_NONE record. At load that id cannot swizzle, so its whole
+	// owning aggregate is dropped: std::ios_base died on the `event_callback
+	// *__fn_` whose signature takes `ios_base::event`, and every class that
+	// flattens ios_base's members (basic_ios / basic_istream / basic_ostream /
+	// basic_iostream, char + wchar_t) went with it — the darwin `cout << "hi"`
+	// break (task #64). Every stamped id must carry a record; the enum walk is
+	// keyed on the project-type registry — the same slot walk the aggregate
+	// fixpoint above uses — so reachability through a name map cannot gate it.
+	// The record is flagged DF_ENUM_CLASS_NESTED so the restore re-attaches it
+	// as its owner's type alias ONLY, never as a flat name (LOADED == parsed).
+	{
+		uint32_t ebase = madc_active_project_types->base();
+		uint32_t en = (uint32_t)madc_active_project_types->size();
+		// Nested-ness is read where the live parse WROTE it — the owner's
+		// type_aliases (set_class_type_alias) — not guessed from a name.
+		// The owner's own provenance carries the TU-root fence with it.
+		std::map<DataDef *, bool> nested_tu_root;
+		for (uint32_t i = 0; i < en; ++i) {
+			DataDefCLASS *ocdd = dynamic_cast<DataDefCLASS *>(
+				madc_active_project_types->get(ebase + i));
+			if (!ocdd)
+				continue;
+			bool oroot = ocdd->definition_origin
+				   == AggregateDefinitionOrigin::TranslationUnitRoot;
+			for (std::map<std::string, DataDef *>::const_iterator ai =
+				     ocdd->type_aliases.begin();
+			     ai != ocdd->type_aliases.end(); ++ai)
+				if (dynamic_cast<DataDefENUM *>(ai->second))
+					nested_tu_root[ai->second] = oroot;
+		}
+		for (std::map<DataDef *, bool>::const_iterator ni =
+			     nested_tu_root.begin();
+		     ni != nested_tu_root.end(); ++ni)
+			forest_record_enum(prog,
+					   static_cast<DataDefENUM *>(ni->first),
+					   ni->second, true);
+	}
 
 	// RC2: FREE FUNCTIONS — record each file-scope free function (the
 	// funcdef_map surface a live header parse leaves behind) as its own

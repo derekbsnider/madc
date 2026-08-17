@@ -5,8 +5,6 @@
 //////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,9 +13,11 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include "madc_posix_io.h"	// local_time; Win: debug_log_line syslog transport
+#ifndef _WIN32
 #include <syslog.h>
+#endif
 #include <time.h>
-#include <dlfcn.h>
 #include <unistd.h>
 #include <iostream>
 #include <iomanip>
@@ -48,6 +48,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "spelling_delim.h"
 #include "madc_mangle.h"
 #include "ns_common.h"
@@ -2465,17 +2466,22 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
 	return &ddINT32;
     if ( name == "unsigned" || name == "unsigned int" )
 	return &ddUINT32;
+    // Plain `long` rows follow the target data model (4-byte on LLP64);
+    // `long long`/__int128 spellings are 8-byte on every target.
     if ( name == "long" || name == "long int"
-      || name == "signed long" || name == "signed long int"
-      || name == "long long" || name == "long long int"
+      || name == "signed long" || name == "signed long int" )
+	return dd_platform_long();
+    if ( name == "unsigned long" || name == "unsigned long int" )
+	return dd_platform_ulong();
+    if ( name == "long long" || name == "long long int"
       || name == "signed long long" || name == "signed long long int"
       || name == "__int128" || name == "signed __int128" )
 	return &ddINT64;
-    if ( name == "unsigned long" || name == "unsigned long int"
-      || name == "unsigned long long" || name == "unsigned long long int"
+    if ( name == "unsigned long long" || name == "unsigned long long int"
       || name == "unsigned __int128" )
 	return &ddUINT64;
-    if ( name == "float" || name == "_Float16" || name == "_Float32" )
+    if ( name == "float" || name == "_Float16" || name == "_Float32"
+      || name == "__bf16" )
 	return &ddFLOAT;
     if ( name == "double" || name == "long double"
       || name == "_Float64" || name == "_Float128"
@@ -2491,7 +2497,7 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "uint64_t" ) return &ddUINT64;
     if ( name == "size_t" ) return &ddUINT64;
     if ( name == "ptrdiff_t" ) return &ddINT64;
-    if ( name == "wchar_t" ) return &ddINT32;
+    if ( name == "wchar_t" ) return dd_platform_wchar();
     if ( name == "char16_t" ) return &ddUINT16;
     if ( name == "char32_t" ) return &ddUINT32;
     if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
@@ -2522,14 +2528,27 @@ DataDef *Program::madc_dialect_type_spelling(const std::string &name) const
     return NULL;
 }
 
-// The compiler-owned x86-64 SysV va_list: struct __madc_va_list_tag[1] —
-// the SAME shape gcc, glibc, and c2mir's own mirc_x86_64_linux.h use. ONE
-// process singleton so `typedef __builtin_va_list va_list;` (bare, no
+// The compiler-owned va_list, in the TARGET's shape. x86-64 SysV: struct
+// __madc_va_list_tag[1] — the SAME shape gcc, glibc, and c2mir's own
+// mirc_x86_64_linux.h use. win64 (LLP64 target): `char *` — the mingw/MSVC
+// vadefs.h scalar. The SysV array-of-struct shape on win64 was not merely
+// wrong-sized: c2mir's win64 va machinery takes the va_list's ADDRESS, and
+// the 24-byte aggregate local made every varargs function with a struct
+// named parameter read garbage (testvastruct; reducer tmp/win/va_bisect.mad
+// — swapping only this typedef in the emitted C healed it). ONE process
+// singleton either way, so `typedef __builtin_va_list va_list;` (bare, no
 // include) and the embedded <stdarg.h> (which aliases this builtin) resolve
 // to the identical type; the CIR emitter synthesizes the typedef's C when a
 // module references it (no source declaration exists to emit).
 DataDef *Program::builtin_va_list_type()
 {
+    if ( target_llp64() )
+    {
+	static DataDefPTR *win_va_list_dd = NULL;
+	if ( !win_va_list_dd )
+	    win_va_list_dd = new DataDefPTR(ddCHAR);
+	return win_va_list_dd;
+    }
     static DataDefCArray *va_list_dd = NULL;
     if ( !va_list_dd )
     {
@@ -2567,8 +2586,10 @@ DataDef *Program::complex_type_of(DataDef *elem)
 DataDef *Program::use_builtin_va_list()
 {
     DataDef *dd = builtin_va_list_type();
-    DataDefCArray *ca = static_cast<DataDefCArray *>(dd);
-    if ( ca->element_type && !struct_map.count(ca->element_type->name) )
+    // Only the SysV array-of-struct shape has a tag to register; the win64
+    // `char *` shape needs no struct emission.
+    DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd);
+    if ( ca && ca->element_type && !struct_map.count(ca->element_type->name) )
 	struct_map.set(ca->element_type->name, ca->element_type);
     return dd;
 }
@@ -10773,6 +10794,39 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     return owner_type;
 }
 
+DataDef *Program::fold_class_qualified_nested_type(DataDef *base_type,
+						   TokenBase *type_tok)
+{
+    // Contract on the declaration in madc.h. Resolution is via type_aliases
+    // only, so a static-member or template-id chain falls through to the
+    // caller's existing paths (and its existing diagnostics), consuming
+    // nothing.
+    if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
+	return NULL;
+    DataDefCLASS *qcls = dynamic_cast<DataDefCLASS *>(base_type);
+    if ( !qcls )
+	return NULL;
+    DataDef *chain_dd = NULL;
+    size_t chain_consume = 0;
+    std::string chain_leaf;
+    if ( peek_class_member_type_chain(qcls, tokens, 0, chain_dd,
+				      chain_consume, chain_leaf)
+      && chain_dd )
+    {
+	for ( size_t ci = 0; ci < chain_consume; ++ci )
+	    nextToken();
+	return chain_dd;
+    }
+    // A member-TEMPLATE-id leaf (`Sel<true>::type<int,double>` — a member alias
+    // template instantiated with args) needs the CONSUMING chain-walker; the
+    // peek helper above bails on the trailing `<`. Same resolution
+    // resolve_typename_type_token uses.
+    if ( TokenDataType *member =
+		resolve_class_member_type_chain(qcls, type_tok) )
+	return &member->definition;
+    return NULL;
+}
+
 TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 						      TokenBase *owner_tb,
 						      bool committed_type_context)
@@ -10997,6 +11051,19 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     if ( tname == "typename" )
 	return resolve_typename_type_token(nextToken(),
 					   allow_lazy_types, tb);
+    // GNU typeof is a type-yielding specifier everywhere a declared type is
+    // accepted, including a template type-argument. Keep it on the same
+    // generic resolver spine as decltype; declaration/cast callers should not
+    // have to special-case the spelling to make `T<__typeof__(expr)>` work.
+    if ( is_typeof_identifier(tname) )
+    {
+	TokenDataType *tdt = parse_typeof_datatype(tb);
+	tdt->file = tb->file;
+	tdt->line = tb->line;
+	tdt->column = tb->column;
+	return resolve_member_chain_or_type(tdt, tb,
+					    consume_class_member_chain);
+    }
     if ( is_decltype_identifier(tname) )
     {
 	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
@@ -12140,35 +12207,6 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 
 static bool is_named_cpp_cast(const std::string &name);
 static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class);
-
-static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int val,
-					      bool force_unsigned = false)
-{
-    if ( !cast_dd )
-	return val;
-    bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
-    int sz = cast_dd->size;
-    if ( sz == 1 )
-	return is_unsigned ? (madc_wide_int)(uint8_t)val : (madc_wide_int)(int8_t)val;
-    if ( sz == 2 )
-	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
-    if ( sz == 4 )
-	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
-    // 8-byte cast truncates the wide carrier to 64 bits. UNSIGNED
-    // zero-extends back into the carrier — `(unsigned long)(-1)` is 2^64-1,
-    // so `T(-1) < T(0)` with unsigned T folds FALSE (libc++
-    // __libcpp_numeric_limits' is_signed; the old sign-carried-always arm
-    // folded it TRUE and every dependent value downstream was off by one).
-    // SIGNED keeps the sign-carried truncation: `(long)((__int128)1 << 64)`
-    // still folds to 0.
-    if ( sz == 8 )
-	return is_unsigned ? (madc_wide_int)(uint64_t)val
-			   : (madc_wide_int)(int64_t)val;
-    // 16-byte cast is the identity on the carrier: (__int128)x re-signs a
-    // 64-bit value correctly (already sign-carried); (unsigned __int128)x has
-    // the same 128-bit pattern.
-    return val;
-}
 
 madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 						     const std::string &cast_name)
@@ -16134,6 +16172,33 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 uint64_t DataDef::canonical_spelling_gen = 0;
 thread_local bool madc_class_pattern_capture_active = false;
 
+// The target's 64-bit data model (datadef.h) — host-derived default: the
+// hosted modes compile for the compiler that built them (the win64 madc.exe
+// serves mingw's LLP64 world), so the build target IS the script target.
+// Cross-target machinery reassigns this when it grows a --target= knob.
+TargetDataModel madc_target_data_model =
+#ifdef _WIN32
+	TargetDataModel::LLP64;
+#else
+	TargetDataModel::LP64;
+#endif
+
+TargetBitFieldABI madc_target_bitfield_abi =
+#ifdef _WIN32
+	TargetBitFieldABI::Microsoft;
+#else
+	TargetBitFieldABI::SystemV;
+#endif
+
+// Same host-derived default, same reassignment story as its two siblings: this
+// is the ONE place _WIN32 decides the target's OS personality.
+TargetOS madc_target_os =
+#ifdef _WIN32
+	TargetOS::Windows;
+#else
+	TargetOS::Posix;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -16166,6 +16231,41 @@ DataDefVOIDref::DataDefVOIDref() : DataDefREF(ddVOID) { name = "void&"; }
 DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
+
+// Target-shaped `long` / `unsigned long` / wchar_t (datadef.h, task #46b).
+// Lazy singletons, NOT namespace-scope globals: the data model can be
+// reassigned after static init (future --target=), and on LP64 the platform
+// types ARE the existing pinned dds — minting parallel instances there would
+// fork `long`'s identity from int64_t, which LP64 defines as the same type.
+DataDef *dd_platform_long()
+{
+    if ( !target_llp64() )
+	return &ddINT64;
+    static DataDefPlatformLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformLONG();
+    return dd;
+}
+
+DataDef *dd_platform_ulong()
+{
+    if ( !target_llp64() )
+	return &ddUINT64;
+    static DataDefPlatformULONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformULONG();
+    return dd;
+}
+
+// wchar_t: 4-byte int-shaped on LP64 (glibc/Itanium int32), 2-byte unsigned
+// on LLP64 (mingw/MSVC unsigned short). Width identity only — both targets
+// approximate wchar_t through an existing fixed-width dd (Linux has always
+// used ddINT32); a distinct 'w'-mangling wchar dd is a separate, pre-existing
+// gap on both targets.
+DataDef *dd_platform_wchar()
+{
+    return target_llp64() ? (DataDef *)&ddUINT16 : (DataDef *)&ddINT32;
+}
 
 struct DataDefMAXAlignTInit
 {
@@ -16837,6 +16937,14 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_AUTO:		return &ddAUTO;
 		case MADC_TYPEID_BUILTIN_VA_LIST:
 			return Program::builtin_va_list_type();
+		// LLP64-only slots: on LP64 the platform accessors return the
+		// already-pinned ddINT64/ddUINT64 (slots 10/15), and re-stamping
+		// them here would steal their slot — so these resolve NULL there
+		// (the reserved-slot precedent), making a cross-model thaw loud.
+		case MADC_TYPEID_PLATFORM_LONG:
+			return target_llp64() ? dd_platform_long() : NULL;
+		case MADC_TYPEID_PLATFORM_ULONG:
+			return target_llp64() ? dd_platform_ulong() : NULL;
 		default:			return NULL;
 	}
 }
@@ -18621,10 +18729,12 @@ void DataDefCLASS::compute_layout()
     own_block_off = mi_align_up(cur, max_align ? max_align : 1);
     cur = own_block_off + size;   // size = own packed size on entry
 
-    // 4. nvsize (Itanium) = the non-virtual data size rounded up to the
-    //    non-virtual alignment. It is what a DERIVED class adds for this class
-    //    when it uses it as a non-virtual base.
-    nvsize = mi_align_up(cur, maxalign);
+    // 4. nvsize (Itanium's "base size") excludes tail padding. A derived
+    //    class may place its next base/member in that tail; the complete
+    //    object's `size` below is still rounded to `maxalign`. This distinction
+    //    is observable whenever a pointer-aligned polymorphic base ends in a
+    //    narrower member (for example vptr + 4-byte long under LLP64).
+    nvsize = cur;
     if ( trait_is_empty(this) && nvsize == 0 )
 	nvsize = 1;
 
@@ -18846,6 +18956,52 @@ void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
 	if ( bs.is_virtual && seen.insert(bs.base).second )
 	    out.push_back(bs.base);
     }
+}
+
+DataDef *DataDef::unqualified()
+{
+    DataDefCONST *cd = dynamic_cast<DataDefCONST *>(this);
+    return cd && cd->base_type ? cd->base_type : this;
+}
+
+const DataDef *DataDef::unqualified() const
+{
+    const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(this);
+    return cd && cd->base_type ? cd->base_type : this;
+}
+
+void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) const
+{
+    for ( Variable *cv : ctors )
+    {
+	FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	if ( !fd || fd->parameters.size() < 2 || !fd->parameters[1] )
+	    continue;
+	// Callable with EXACTLY ONE user argument: the hidden __this plus the
+	// list, everything after it defaulted (libstdc++'s trailing allocator).
+	// required_param_count counts __this.
+	if ( fd->required_param_count() > 2 )
+	    continue;
+	DataDef *pt = fd->parameters[1];
+	// By value, or through a reference (references lower to a pointer type
+	// here, so unwrap one level either way).
+	DataDef *behind = pt->unqualified();
+	if ( DataDefREF *rd = dynamic_cast<DataDefREF *>(behind) )
+	    behind = rd->base_type;
+	else if ( fd->is_ref_param(1) )
+	    if ( DataDefPTR *pd = dynamic_cast<DataDefPTR *>(behind) )
+		behind = pd->base_type;
+	if ( behind ) behind = behind->unqualified();
+	if ( behind && behind->is_std_initializer_list() )
+	    out.push_back(cv);
+    }
+}
+
+bool DataDefCLASS::has_initializer_list_ctor() const
+{
+    std::vector<Variable *> ils;
+    collect_initializer_list_ctors(ils);
+    return !ils.empty();
 }
 
 bool DataDefCLASS::is_externally_defined() const
@@ -19090,31 +19246,38 @@ void printfloat(float f)
     std::cout << std::setprecision(8) << f << std::endl;
 }
 
-int64_t madc_dlopen(void *filename)
+// Script-facing dl/system thunks. extern "C": every lane's call binds the
+// THUNK through its own stable symbol (FuncDef::emit_symbol, set at
+// registration). Emitting the script name instead binds the HOST library's
+// same-named function against the script signature — glibc's 2-arg dlopen
+// called with madc's 1-arg shape left the mode argument to an uninitialized
+// register, and on win64 nothing exports the POSIX names at all ("MIR
+// error: import of undefined item dlclose").
+extern "C" int64_t madc_dlopen(void *filename)
 {
     const char *fn = (const char *)filename;
-    void *handle = dlopen(fn, RTLD_LAZY);
+    void *handle = madcdl_open_local(fn);
     if ( !handle )
-	std::cerr << "dlopen: " << dlerror() << std::endl;
+	std::cerr << "dlopen: " << madcdl_error() << std::endl;
     return (int64_t)handle;
 }
 
-int64_t madc_dlsym(int64_t handle, void *name)
+extern "C" int64_t madc_dlsym(int64_t handle, void *name)
 {
     const char *n = (const char *)name;
-    void *sym = dlsym((void *)handle, n);
+    void *sym = madcdl_sym((void *)handle, n);
     if ( !sym )
-	std::cerr << "dlsym: " << dlerror() << std::endl;
+	std::cerr << "dlsym: " << madcdl_error() << std::endl;
     return (int64_t)sym;
 }
 
-void madc_dlclose(int64_t handle)
+extern "C" void madc_dlclose(int64_t handle)
 {
     if ( handle )
-	dlclose((void *)handle);
+	madcdl_close((void *)handle);
 }
 
-int64_t madc_system(void *cmd)
+extern "C" int64_t madc_system(void *cmd)
 {
     return (int64_t)system((const char *)cmd);
 }
@@ -19605,7 +19768,7 @@ std::string MadcEngine::format_log_message(LogLevel level, const std::string &me
     {
 	time_t now = time(NULL);
 	struct tm tm_now;
-	localtime_r(&now, &tm_now);
+	madc::detail::local_time(now, tm_now);
 	char tsbuf[32];
 	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_now);
 	os << tsbuf << ' ';
@@ -19653,6 +19816,7 @@ void MadcEngine::clear_log_sinks()
     log_sinks.clear();
 }
 
+#ifndef _WIN32
 int MadcEngine::syslog_priority_for(LogLevel level)
 {
     switch ( level )
@@ -19668,11 +19832,21 @@ int MadcEngine::syslog_priority_for(LogLevel level)
     }
     return LOG_INFO;
 }
+#endif
 
 void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
 {
     if ( syslog_active )
 	disable_syslog_sink();
+#ifdef _WIN32
+    // No syslog on Windows: the sink still activates, and write_syslog_sink
+    // routes to the debug channel (OutputDebugStringA — DebugView/debugger).
+    // option and facility are recorded but have no Win32 meaning.
+    syslog_active = true;
+    syslog_ident = ident ? ident : "madc";
+    syslog_option = option;
+    syslog_facility = facility;
+#else
     int resolved_option   = (option   < 0) ? LOG_PID  : option;
     int resolved_facility = (facility < 0) ? LOG_USER : facility;
     openlog(ident, resolved_option, resolved_facility);
@@ -19680,6 +19854,7 @@ void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
     syslog_ident = ident ? ident : "madc";
     syslog_option = resolved_option;
     syslog_facility = resolved_facility;
+#endif
 }
 
 void MadcEngine::disable_syslog_sink()
@@ -19687,13 +19862,26 @@ void MadcEngine::disable_syslog_sink()
     if ( !syslog_active )
 	return;
     syslog_active = false;
+#ifndef _WIN32
     closelog();
+#endif
 }
 
 void MadcEngine::write_syslog_sink(LogLevel level, const std::string &message)
 {
-    if ( syslog_active )
-	::syslog(syslog_priority_for(level), "%s", message.c_str());
+    if ( !syslog_active )
+	return;
+#ifdef _WIN32
+    std::string line = syslog_ident;
+    line += ": [";
+    line += log_level_name(level);
+    line += "] ";
+    line += message;
+    line += "\n";
+    madc::detail::debug_log_line(line);
+#else
+    ::syslog(syslog_priority_for(level), "%s", message.c_str());
+#endif
 }
 
 bool MadcEngine::enable_file_sink(const std::string &path,
@@ -19827,7 +20015,7 @@ std::string MadcEngine::format_json_log_line(LogLevel level, const std::string &
     {
 	time_t now = time(NULL);
 	struct tm tm_now;
-	localtime_r(&now, &tm_now);
+	madc::detail::local_time(now, tm_now);
 	char tsbuf[32];
 	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%dT%H:%M:%S", &tm_now);
 	os << "\"ts\":\"" << tsbuf << "\",";
@@ -20116,17 +20304,17 @@ bool Program::load_buffer(const std::string &source_text,
 
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
-    core_functions.push_back({id, params, extfunc, is_method});
+    core_functions.push_back({id, params, extfunc, is_method, std::string()});
 }
 
-void Program::BuiltinRegistry::add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+void Program::BuiltinRegistry::add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method, const std::string &emit_symbol)
 {
-    process_functions.push_back({id, params, extfunc, is_method});
+    process_functions.push_back({id, params, extfunc, is_method, emit_symbol});
 }
 
-void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method, const std::string &emit_symbol)
 {
-    dlfcn_functions.push_back({id, params, extfunc, is_method});
+    dlfcn_functions.push_back({id, params, extfunc, is_method, emit_symbol});
 }
 
 void Program::NamespaceRegistry::add_namespace(const std::string &name, namespace_init_fn_t init)
@@ -20202,7 +20390,36 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysign",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))copysign);
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
-    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
+    // The REST of the lexer-aliased libm builtins, same class as copysign:
+    // every __builtin_X the lexer maps to a bare libm name must carry X's
+    // real signature, because system-header inline bodies call the builtins
+    // with deliberately NO <math.h> in scope — libstdc++/libc++
+    // bits/std_abs.h ("Use builtins to prevent needing math.h") returns
+    // __builtin_fabs(__x), and the i64 dlsym default read the xmm0 double
+    // as garbage (abs(2.5) -> 1.0 once the global abs overload set ranked
+    // correctly). labs/llabs are the returns-long class (embedded-headers
+    // rule): the i64 fallback was only accidentally right on LP64.
+    builtin_registry.add_core_function("fabs",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))fabs);
+    builtin_registry.add_core_function("fabsf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))fabsf);
+    builtin_registry.add_core_function("fabsl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double))fabsl);
+    builtin_registry.add_core_function("sqrt",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))sqrt);
+    builtin_registry.add_core_function("sqrtf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))sqrtf);
+    builtin_registry.add_core_function("sqrtl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double))sqrtl);
+    builtin_registry.add_core_function("sin",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))sin);
+    builtin_registry.add_core_function("sinf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))sinf);
+    builtin_registry.add_core_function("cos",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double))cos);
+    builtin_registry.add_core_function("cosf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float))cosf);
+    builtin_registry.add_core_function("pow",   datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))pow);
+    builtin_registry.add_core_function("powf",  datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))powf);
+    builtin_registry.add_core_function("llabs", datatype_vec_t{DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)(long long(*)(long long))llabs);
+    // Platform long is 4 bytes on LLP64 (labs returns eax there) — the
+    // one width owner is madc_target_data_model (datadef.h); hosted modes
+    // have host == target, and cross builds never execute the bound ptr.
+    builtin_registry.add_core_function("labs",
+	target_llp64() ? datatype_vec_t{DataType::dtINT32, DataType::dtINT32}
+		       : datatype_vec_t{DataType::dtINT64, DataType::dtINT64},
+	(fVOIDFUNC)(long(*)(long))labs);
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system, false, "madc_system");
     // getenv/setenv/unsetenv are the REAL C/POSIX functions — the real shapes,
     // bound to real libc. The old madc conveniences (getenv's 2-param
     // std::string result-buffer __madc_getenv, setenv's 2-param overwrite=1
@@ -20213,13 +20430,24 @@ void Program::populate_builtin_registry()
     // `string s = getenv("HOME")` ingests the char* via string's real ctor.
     builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+#ifdef _WIN32
+    // The UCRT has no setenv/unsetenv — its real name is _putenv_s (an empty
+    // value deletes). Same principle: register the host CRT's REAL function
+    // under the host's REAL name; fabricating a `setenv` here would be
+    // exactly the private dialect ruled out above.
+    builtin_registry.add_process_function("_putenv_s", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)::_putenv_s);
+#else
     builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR), ptr_of(ddCHAR), DataType::dtINT32}, (fVOIDFUNC)::setenv);
     builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)::unsetenv);
+#endif
     // errno accessor: the host libc's errno macro expands to a call on this
-    // symbol (glibc: (*__errno_location()); darwin: (*__error())). Register
-    // the host's own accessor under the host's own name so real <errno.h>
-    // resolves. Returns `int*` — C int is 4 bytes vs madc's 8-byte int.
-#ifdef __APPLE__
+    // symbol (glibc: (*__errno_location()); darwin: (*__error()); UCRT:
+    // (*_errno())). Register the host's own accessor under the host's own
+    // name so real <errno.h> resolves. Returns `int*` — C int is 4 bytes vs
+    // madc's 8-byte int.
+#if defined(_WIN32)
+    builtin_registry.add_process_function("_errno", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)::_errno);
+#elif defined(__APPLE__)
     builtin_registry.add_process_function("__error", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__error);
 #else
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
@@ -20231,9 +20459,9 @@ void Program::populate_builtin_registry()
     // (return refreshed, params kept), emitting `void *dlsym(long, char *)` —
     // a hybrid prototype nothing anywhere declares, and a c2mir pointer/int
     // warning on every dlsym(RTLD_DEFAULT, ...) call.
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
-    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose);
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen, false, "madc_dlopen");
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym, false, "madc_dlsym");
+    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)madc_dlclose, false, "madc_dlclose");
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
     builtin_registry.defaults_loaded = true;
@@ -20282,7 +20510,7 @@ void Program::add_process_functions()
     // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.process_functions.begin();
 	  it != builtin_registry.process_functions.end(); ++it )
-	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true, it->emit_symbol);
 }
 
 void Program::add_dlfcn_functions()
@@ -20292,7 +20520,7 @@ void Program::add_dlfcn_functions()
     {
 	if ( !is_dynamic_symbol_allowed(it->id) )
 	    continue;
-	addFunction(it->id, it->params, it->extfunc, it->is_method, true);
+	addFunction(it->id, it->params, it->extfunc, it->is_method, true, it->emit_symbol);
     }
 }
 
@@ -20375,7 +20603,7 @@ Variable *Program::lazy_resolve(const std::string &name)
 	// stdin to a FILE* parameter mismatches.
 	void **sym = NULL;
 	if ( name == "stdin" || name == "stdout" || name == "stderr" )
-	    sym = (void **)dlsym(RTLD_DEFAULT, name.c_str());
+	    sym = (void **)madcdl_sym_default(name.c_str());
 	if ( sym )
 	{
 	    var = addGlobal(ddVOIDptr, name, 1, NULL);
@@ -21502,7 +21730,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	{
 	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.dd);
 	    if ( !sdd )
+	    {
+		DBG(std::cout << "forest_restore_decls: SKIPPED struct " << name
+		    << " (restored object is not a DataDefSTRUCT)" << std::endl);
 		continue;
+	    }
 	    struct_map.set(name, sdd);
 	    // Live parity: a parsed tag is ALSO a bare type name (struct≡class
 	    // — `union myu {...};` makes `myu v;` resolve with no typedef), so
@@ -21545,7 +21777,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // (binding to real Itanium symbols) is the follow-on.
 	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(rt.dd);
 	    if ( !cdd )
+	    {
+		// A CLASS record whose object is not a DataDefCLASS never
+		// registers — and a bound unit is CLAIMED served either way, so
+		// no live parse rescues it. Silence here cost task #64 a day.
+		DBG(std::cout << "forest_restore_decls: SKIPPED class " << name
+		    << " (restored object is not a DataDefCLASS)" << std::endl);
 		continue;
+	    }
 	    struct_map.set(name, cdd);
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
 	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
@@ -21946,8 +22185,17 @@ void Program::flush_forest_pending_globals()
     // Applied in restore order — a later same-named alias wins, the live
     // registration semantics.
     for ( size_t i = 0; i < forest_pending_datatypes.size(); ++i )
+    {
 	datatype_map[forest_pending_datatypes[i].first] =
 	    forest_pending_datatypes[i].second;
+	// v40 (task #57): PERSISTENT provenance — the main parse's typedef
+	// arm lets a live re-declaration overwrite a shape-divergent
+	// RESTORED alias (the frozen twin encodes the freeze's include
+	// order, not this TU's), but must still throw on a genuine live
+	// conflict. forest_pending_datatype_names clears below; this set
+	// survives the whole TU.
+	forest_restored_datatype_names.insert(forest_pending_datatypes[i].first);
+    }
     forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
@@ -22819,6 +23067,12 @@ void Program::activate_token_pools()
 // already handle the no-pool state (spelling_id 0 / "").
 Program::~Program()
 {
+    if ( source_forest && source_forest != bind_forest
+	 && source_forest != ledger_forest )
+	delete source_forest;
+    if ( ledger_forest && ledger_forest != bind_forest )
+	delete ledger_forest;
+    delete bind_forest;
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )
@@ -23019,10 +23273,16 @@ bool Program::embedded_header_outranked(const std::string &name) const
 
 bool Program::is_embedded_header_allowed(const std::string &name) const
 {
+	const bool posix_compat_header = is_posix_compat_header_name(name);
+	// posix/<name> is an internal storage key, never a public named provider.
+	// The post-native supplement / absent-native whole-header paths consult it
+	// through their dedicated policy gate.
+	if ( posix_compat_header )
+		return false;
     // Bypass an embedded SYSTEM-library shim so the real header is used, while
     // keeping madc-own (ns_*/__madc__) and freestanding (bucket-1/2) headers.
-    if ( registration_policy.bypass_system_library_headers
-      && embedded_header_is_system_library_shim(name) )
+	if ( registration_policy.bypass_system_library_headers
+	  && embedded_header_is_system_library_shim(name) )
 	return false;
     if ( !registration_policy.restrict_headers_to_allowlist
       && registration_policy.allowed_headers.empty() )
@@ -23523,7 +23783,48 @@ std::string Program::resolve_namespace_name_in_scope(
 	    cur = cur.substr(0, pos);
 	}
     }
+    // Class scope is part of the current scope too ([basic.lookup.unqual]): a
+    // CLASS-nested enum's pseudo-namespace is keyed under its owner
+    // (`holder::part`), so the relative spelling `part::sign` used INSIDE the
+    // class — or inside one of its methods — must find it there. Probing the
+    // composed key means this only ever fires for a name that really is a
+    // pseudo-namespace of a class in scope; an ordinary namespace name is
+    // untouched, and nothing resolves that did not resolve before.
+    const std::string class_scoped = resolve_class_scoped_ns(name);
+    if ( !class_scoped.empty() )
+	return class_scoped;
     return canonical_namespace_path("", name);
+}
+
+// Walk the classes that are in scope — the current method's owner first, then
+// the class-scope stack innermost-first, each through its enclosing-class
+// chain — and return `<class>::<name>` if that names a registered
+// pseudo-namespace. Mirrors resolve_current_class_type_alias's scope order.
+std::string Program::resolve_class_scoped_ns(const std::string &name)
+{
+    if ( name.empty() )
+	return std::string();
+    std::vector<DataDefCLASS *> scopes;
+    if ( !compounds.empty() && compounds.top()
+      && compounds.top()->method
+      && compounds.top()->method->owner_class )
+	scopes.push_back(compounds.top()->method->owner_class);
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_scope_stack.rbegin();
+	  it != class_scope_stack.rend(); ++it )
+	scopes.push_back(*it);
+    for ( size_t i = 0; i < scopes.size(); ++i )
+	for ( DataDefCLASS *cls = scopes[i]; cls; cls = cls->enclosing_class )
+	{
+	    const std::string spelling = cls->canonical_cpp_spelling().empty()
+		? cls->name : cls->canonical_cpp_spelling();
+	    if ( spelling.empty() )
+		continue;
+	    const std::string composed = spelling + "::" + name;
+	    if ( namespace_map.find(composed) != namespace_map.end() )
+		return composed;
+	}
+    return std::string();
 }
 
 std::string Program::active_cpp_lookup_namespace()
@@ -23785,6 +24086,34 @@ Variable *Program::addLiteral(const std::string &s)
     return var;
 }
 
+// ONE owner for "wide TOKEN payload -> target-wchar_t element units". The
+// token payload is always 4-byte UTF-32 codepoints (read_wide_literal); the
+// TARGET's wchar_t shape (dd_platform_wchar) decides the element units:
+// the codepoints verbatim on LP64 (4-byte), 2-byte UTF-16 units with
+// surrogate pairs for non-BMP codepoints on LLP64 — the same re-encode
+// mingw-gcc applies to L"..." there. Consumed by addWideLiteral (the
+// literal Variable's data) and the array-initializer arm
+// (`wchar_t w[] = L"...";`), so the two can never disagree.
+static void madc_wide_payload_target_units(const std::string &s, size_t unit_size,
+					   std::vector<uint32_t> &units)
+{
+    for ( size_t i = 0; i + 3 < s.size(); i += 4 )
+    {
+	uint32_t cp = (uint8_t)s[i]
+	    | ((uint32_t)(uint8_t)s[i + 1] << 8)
+	    | ((uint32_t)(uint8_t)s[i + 2] << 16)
+	    | ((uint32_t)(uint8_t)s[i + 3] << 24);
+	if ( unit_size == 2 && cp > 0xFFFF )
+	{
+	    cp -= 0x10000;
+	    units.push_back(0xD800 | (cp >> 10));
+	    units.push_back(0xDC00 | (cp & 0x3FF));
+	}
+	else
+	    units.push_back(cp);
+    }
+}
+
 Variable *Program::addWideLiteral(const std::string &s)
 {
     variable_map_iter vmi;
@@ -23796,25 +24125,29 @@ Variable *Program::addWideLiteral(const std::string &s)
     if ( (var=tkProgram->findVariable(strpool, id)) )
 	return var;
 
-    size_t chars = s.size() / 4;
-    uint32_t count = (uint32_t)chars + 1;
-    var = new Variable(id, ddINT32, count, NULL, true);
+    DataDef *wdd = dd_platform_wchar();
+    std::vector<uint32_t> units;
+    madc_wide_payload_target_units(s, wdd->size, units);
+    uint32_t count = (uint32_t)units.size() + 1;
+    var = new Variable(id, *wdd, count, NULL, true);
     var->dims.push_back(count);
     var->flags |= vfFIXEDARRAY;
     var->makeconstant();
-    var->object_size_hint = (int64_t)count * (int64_t)ddINT32.size;
-    var->data = calloc(count ? count : 1, ddINT32.size ? ddINT32.size : 4);
+    var->object_size_hint = (int64_t)count * (int64_t)wdd->size;
+    var->data = calloc(count ? count : 1, wdd->size ? wdd->size : 4);
     var->flags |= vfALLOC;
 
-    int32_t *dst = (int32_t *)var->data;
-    for ( size_t i = 0; i < chars; ++i )
+    if ( wdd->size == 2 )
     {
-	size_t p = i * 4;
-	uint32_t cp = (uint8_t)s[p]
-	    | ((uint32_t)(uint8_t)s[p + 1] << 8)
-	    | ((uint32_t)(uint8_t)s[p + 2] << 16)
-	    | ((uint32_t)(uint8_t)s[p + 3] << 24);
-	dst[i] = (int32_t)cp;
+	uint16_t *dst = (uint16_t *)var->data;
+	for ( size_t i = 0; i < units.size(); ++i )
+	    dst[i] = (uint16_t)units[i];
+    }
+    else
+    {
+	int32_t *dst = (int32_t *)var->data;
+	for ( size_t i = 0; i < units.size(); ++i )
+	    dst[i] = (int32_t)units[i];
     }
     tkProgram->variables.push_back(var);
 
@@ -24092,7 +24425,7 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 }
 
 // add a function definition
-Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration)
+Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const std::string &emit_symbol)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -24146,18 +24479,12 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	if ( tkProgram && !(var=tkProgram->findVariable(strpool, id)) )
 	{
 	    func = fmi->second;
+	    if ( !emit_symbol.empty() && func->emit_symbol.empty() )
+		func->emit_symbol = emit_symbol;
 	    var = addVariable(NULL, *func, id, false);
 	    method = new Method(*var);
 	    var->data = (void *)method;
 	    method->x86code = (void *)extfunc;
-	    if ( extfunc )
-	    {
-		Dl_info _dli;
-		if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
-		else
-		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-	    }
 	    return var;
 	}
 	return NULL;
@@ -24174,6 +24501,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     // dynamic symbols) stay false — a source declaration of those ids is a
     // definition, not a builtin override.
     func->builtin_registration = builtin_registration;
+    if ( !emit_symbol.empty() )
+	func->emit_symbol = emit_symbol;
     if ( !isMethod )
     {
 	pack_tap_name(id, pdkFunction);	// B4a: decl-index tap
@@ -24200,14 +24529,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	method = new Method(*var);
 	var->data = (void *)method;
 	method->x86code = (void *)extfunc;
-	if ( extfunc )
-	{
-	    Dl_info _dli;
-	    if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
-	    else
-		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-	}
 
 	return var;
     }
@@ -24224,14 +24545,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	var->data = (void *)method;
     }
     method->x86code = (void *)extfunc;
-    if ( extfunc )
-    {
-	Dl_info _dli;
-	if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
-	else
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
-    }
 
     return var;
 }
@@ -26244,7 +26557,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    if ( !is_dynamic_symbol_allowed(member_name) )
 			Throw(member_tb) << "dynamic symbol '" << member_name
 					 << "' is not allowed by registration policy" << flush;
-		    void *sym = dlsym(dli->second, member_name.c_str());
+		    void *sym = madcdl_sym(dli->second, member_name.c_str());
 		    if ( sym )
 		    {
 			std::string func_id = "__dl_" + aname + "_" + member_name;
@@ -26292,7 +26605,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( !avar && is_dynamic_symbol_fallback_enabled()
       && is_dynamic_symbol_allowed(aname) )
     {
-	void *sym = dlsym(RTLD_DEFAULT, aname.c_str());
+	void *sym = madcdl_sym_default(aname.c_str());
 	if ( sym )
 	    avar = addFunction(aname,
 		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
@@ -27317,16 +27630,26 @@ static std::string despace_spelling(const std::string &s)
     return out;
 }
 
+// Re-derive every cached despaced key and compare, instead of trusting it.
+// Read once: this sits inside the per-entry sweep.
+static bool despace_cache_verify()
+{
+    static const bool on = getenv("MADC_DESPACE_VERIFY") != NULL;
+    return on;
+}
+
 StructRegistry::~StructRegistry()
 {
     if ( getenv("MADC_DESPACE_PROBE") )
 	fprintf(stderr, "DESPACEPROBE lookups=%llu rebuilds=%llu swept=%llu "
-		"entries=%zu index=%zu gen=%llu\n",
+		"entries=%zu index=%zu gen=%llu verify=%d\n",
 		(unsigned long long)probe_lookups_,
 		(unsigned long long)probe_rebuilds_,
 		(unsigned long long)probe_swept_,
 		map_.size(), index_.size(),
-		(unsigned long long)DataDef::canonical_spelling_gen);
+		(unsigned long long)DataDef::canonical_spelling_gen,
+		despace_cache_verify() ? 1 : 0);	// so the gate can prove
+							// the check actually ran
 }
 
 void StructRegistry::set(const std::string &key, DataDef *dd)
@@ -29716,8 +30039,32 @@ void StructRegistry::topup_index_()
 	dd->canonical_swept = true;	// its rewrites must bump the gen from now on
 	if ( dd->canonical_cpp_spelling().empty() )
 	    continue;
-	std::string d = despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
-	std::vector<Hit> &hits = index_[d];
+	// The despaced key is a pure function of this dd's own spelling, and
+	// set_canonical_spelling drops the cache whenever that spelling
+	// changes — so a rebuild triggered by some OTHER dd re-uses it instead
+	// of rebuilding ~1,600 keys from scratch (three string temporaries
+	// each) for the sake of the one that moved.
+	if ( !dd->has_despaced_canonical() )
+	    dd->set_despaced_canonical(
+		despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling())));
+	else if ( despace_cache_verify() )
+	{
+	    // The failure mode this cache can have is a SILENT one: a spelling
+	    // rewritten behind set_canonical_spelling's back leaves a key that
+	    // still looks plausible, and find_despaced then answers with the
+	    // wrong DataDef instead of failing. MADC_DESPACE_VERIFY re-derives
+	    // and compares, so that is loud. Gated by scripts/despace_cache_gate.sh.
+	    const std::string fresh =
+		despace_spelling(strip_type_namespace(dd->canonical_cpp_spelling()));
+	    if ( fresh != dd->despaced_canonical() )
+	    {
+		fprintf(stderr, "DESPACECACHE STALE key='%s' cached='%s' fresh='%s'\n",
+			it->first.c_str(), dd->despaced_canonical().c_str(),
+			fresh.c_str());
+		abort();
+	    }
+	}
+	std::vector<Hit> &hits = index_[dd->despaced_canonical()];
 	// Keep map-key order within a despaced key: a top-up can visit a
 	// later-inserted node whose key sorts BEFORE the current entries, and
 	// the linear scan this index replaces answered in key order (the
@@ -31795,7 +32142,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	    if ( is_dynamic_symbol_fallback_enabled()
 	      && is_dynamic_symbol_allowed(dyn_name) )
 	    {
-		void *sym = dlsym(RTLD_DEFAULT, dyn_name.c_str());
+		void *sym = madcdl_sym_default(dyn_name.c_str());
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
 			datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
@@ -32103,7 +32450,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
 		  && is_dynamic_symbol_allowed(ident_tb->spelling())
-		  && dlsym(RTLD_DEFAULT, ident_tb->spelling()) )
+		  && madcdl_sym_default(ident_tb->spelling()) )
 		    ordinary_call_name = true;
 		// A name in MEMBER-ACCESS position is a member, never a type
 		// ([basic.lookup.classref]/1: the class's scope is searched
@@ -32374,6 +32721,43 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
 			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
 		    TokenInt *ti = new TokenInt(lhs_sig == rhs_sig ? 1 : 0);
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// __builtin_classify_type(expr) — GCC's typeclass query, folded
+		// to an int constant from the UNEVALUATED operand's type (the
+		// parsed operand tree is dropped, matching gcc's unevaluated
+		// context). Expression operands only, matching gcc-13 — the
+		// type-id operand form is a gcc-14 addition. Was a lexer macro
+		// expanding to 0: a macro can never see types, and 0 (void
+		// class) made every classify-gated branch lie (gcc-torture
+		// 20040709-* left long doubles unset because the real-class
+		// branch never fired).
+		if ( ident_tb->spelling_is("__builtin_classify_type") )
+		{
+		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_classify_type" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace();
+		    TokenBase *first = nextToken();
+		    TokenBase *expr = parseExpression(first, false, false, false, 0, true);
+		    skip_expression_whitespace();
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_classify_type(...)" << flush;
+		    DataDef *dd = expr ? expr->datadef() : NULL;
+		    if ( !dd )
+			Throw(tb) << "__builtin_classify_type: cannot determine operand type" << flush;
+		    // C default argument promotions: a fixed-array expression
+		    // decays to a pointer (class 5) — its datadef() is the
+		    // element type, so ask the variable, not the type.
+		    TokenVar *tv = dynamic_cast<TokenVar *>(expr);
+		    int cls = (tv && tv->var.is_fixed_array()) ? 5 : dd->gcc_type_class();
+		    TokenInt *ti = new TokenInt((int64_t)cls);
 		    ti->setDataType(&ddINT);
 		    ti->file = tb->file;
 		    ti->line = tb->line;
@@ -33460,9 +33844,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !is_dynamic_symbol_allowed(member_name) )
 			    Throw(member_tb) << "dynamic symbol '" << member_name
 					     << "' is not allowed by registration policy" << flush;
-			void *sym = dlsym(dli->second, member_name.c_str());
+			void *sym = madcdl_sym(dli->second, member_name.c_str());
 			if ( !sym )
-			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
+			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << madcdl_error() << flush;
 			// create function with int64 return, no declared params (variadic-like)
 			// actual args are passed through at compile time
 			std::string func_id = "__dl_" + ns_name + "_" + member_name;
@@ -33725,7 +34109,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		      && !is_implicit_complex_builtin_name(fname)
 		      && is_dynamic_symbol_allowed(fname) )
 		    {
-			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
+			void *sym = madcdl_sym_default(fname.c_str());
 			if ( sym )
 			{
 			    var = addFunction(fname,
@@ -33743,7 +34127,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // regions call __builtin_acosf etc. directly).
 			    std::string twin = fname.substr(10);
 			    void *tsym = is_dynamic_symbol_allowed(twin)
-				       ? dlsym(RTLD_DEFAULT, twin.c_str()) : NULL;
+				       ? madcdl_sym_default(twin.c_str()) : NULL;
 			    if ( tsym )
 			    {
 				var = addFunction(fname,
@@ -36569,7 +36953,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( !var && is_dynamic_symbol_fallback_enabled()
 			  && is_dynamic_symbol_allowed(gname) )
 			{
-			    void *sym = dlsym(RTLD_DEFAULT, gname.c_str());
+			    void *sym = madcdl_sym_default(gname.c_str());
 			    if ( sym )
 				var = addFunction(gname,
 				    datatype_vec_t{dynamic_symbol_fallback_return_type(gname)},
@@ -37143,6 +37527,57 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	pgm.tkProgram->variables.push_back(src);
     };
+    // A using-declaration imports one declaration into the destination
+    // namespace's lookup set.  Functions must join its OVERLOAD set as well
+    // as its first-wins name map; otherwise an older template placeholder can
+    // still win CIR-time re-ranking even after `using ::fn` introduces the
+    // concrete global overload (libc++ <cstdio>: std::__1::remove).
+    auto import_using_variable = [&](const std::string &name, Variable *src)
+    {
+	if ( !src )
+	    return;
+	if ( pgm.current_namespace().empty() )
+	{
+	    if ( !pgm.findVariable(name) )
+		import_namespace_member(name, src);
+	    return;
+	}
+	variable_map_t &dst_map = pgm.namespace_variables_for_write(
+	    pgm.current_namespace());
+	FuncDef *src_fd = src->type
+	    ? dynamic_cast<FuncDef *>(src->type) : NULL;
+	if ( !src_fd )
+	{
+	    dst_map[name] = src;
+	    return;
+	}
+	Variable *dst_var = NULL;
+	variable_map_iter di = dst_map.find(name);
+	if ( di == dst_map.end() )
+	    dst_map[name] = src;
+	else
+	    dst_var = di->second;
+	std::vector<Program::NamespaceFnOverload> &ovset =
+	    pgm.namespace_fn_overload_sets[
+		pgm.current_namespace() + "::" + name];
+	Variable *candidates[2] = { dst_var, src };
+	for ( size_t ci = 0; ci < 2; ++ci )
+	{
+	    Variable *candidate = candidates[ci];
+	    if ( !candidate || !(candidate->type
+		&& candidate->type->is_function()) )
+		continue;
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == candidate )
+		    known = true;
+	    if ( known )
+		continue;
+	    Program::NamespaceFnOverload entry;
+	    entry.var = candidate;
+	    ovset.push_back(entry);
+	}
+    };
     auto import_namespace_type = [&](const std::string &name, TokenDataType *src)
     {
 	if ( !src )
@@ -37188,6 +37623,22 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( is_contextual_identifier_token(tok) )
 	    return contextual_identifier_name(tok);
 	return "";
+    };
+    // Clang's using_if_exists is a trailing attribute on a using-declaration.
+    // Consume all trailing GNU attributes at the declaration boundary, then
+    // report whether this declaration may omit a source member.  Ordinary
+    // missing imports must keep the diagnostic below.
+    auto consume_using_attributes = [&](TokenBase *&end) -> bool
+    {
+	std::set<std::string> attrs;
+	end = pgm.nextToken();
+	if ( is_attribute_identifier_token(end) )
+	    end = pgm.consume_gnu_attributes(end, &attrs);
+	for ( std::set<std::string>::const_iterator ai = attrs.begin();
+	      ai != attrs.end(); ++ai )
+	    if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::UsingIfExists )
+		return true;
+	return false;
     };
 
     // using namespace std;
@@ -37260,6 +37711,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		pgm.Throw(member ? member : tn) << "Expecting member name in using declaration" << flush;
 	    parts.push_back(part_name);
 	}
+	TokenBase *using_end = NULL;
+	bool using_if_exists = consume_using_attributes(using_end);
 	std::string name = parts.back();
 	std::string source_ns;
 	for ( size_t i = 0; i + 1 < parts.size(); ++i )
@@ -37274,7 +37727,11 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.end();
 	if ( source_ns.empty() )
 	{
-	    v = pgm.findVariable(name);
+	    // The leading `::` requires GLOBAL lookup.  Program::findVariable()
+	    // starts at the active namespace/compound, which can return the stale
+	    // destination placeholder this declaration is meant to supplement.
+	    v = pgm.tkProgram
+	      ? pgm.tkProgram->findVariable(pgm.strpool, name) : NULL;
 	    dti = pgm.datatype_map.find(name);
 	}
 	else
@@ -37288,7 +37745,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		       ? (dti != pgm.datatype_map.end())
 		       : (nti != pgm.namespace_datatype_map.end()
 			  && ns_dti != nti->end());
-	if ( !v && !have_type )
+	if ( !v && !have_type && !using_if_exists )
 	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
 			      << (source_ns.empty() ? std::string("::") : source_ns)
 			      << "'" << flush;
@@ -37299,8 +37756,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		if ( !(v->type && v->type->is_function()) )
 		    pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				      Program::pdkVariable);	// B4a tap
-		pgm.namespace_variables_for_write(
-		    pgm.current_namespace())[name] = v;
+		import_using_variable(name, v);
 	    }
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
 	    {
@@ -37317,8 +37773,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    if ( v && !pgm.findVariable(name) )
-		import_namespace_member(name, v);
+	    if ( v )
+		import_using_variable(name, v);
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
 		import_namespace_type(name, (*dti));
 	    else if ( !source_ns.empty()
@@ -37326,7 +37782,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		   && ns_dti != nti->end() )
 		import_namespace_type(name, ns_dti->second);
 	}
-	tn = pgm.nextToken();
+	tn = using_end;
 	if ( !tn || tn->id() != TokenID::tkSemi )
 	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
 	return NULL;
@@ -37482,6 +37938,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	if ( useg.size() < 2 )
 	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
+	TokenBase *using_end = NULL;
+	bool using_if_exists = consume_using_attributes(using_end);
 	std::string member_name = useg.back();
 	std::string requested_ns_name = useg[0];
 	for ( size_t i = 1; i + 1 < useg.size(); ++i )
@@ -37510,7 +37968,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    pgm.find_template_alias(member_name_id, ns_name, NULL)
 	 || pgm.find_template(member_name_id, ns_name, NULL)
 	 || pgm.var_template_map.count(ns_name + "::" + member_name);
-	if ( !have_var && !have_type && !have_template )
+	if ( !have_var && !have_type && !have_template && !using_if_exists )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 	// import into the current namespace, or global scope outside a namespace
 	std::string name = member_name;
@@ -37520,39 +37978,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
 				  Program::pdkVariable);	// B4a tap
-		variable_map_t &dst_map = pgm.namespace_variables_for_write(
-		    pgm.current_namespace());
-		FuncDef *use_fd = use_var->type
-		    ? dynamic_cast<FuncDef *>(use_var->type) : NULL;
-		if ( use_fd )
-		{
-		    // [namespace.udecl]: an imported FUNCTION becomes a member
-		    // of the target namespace's OVERLOAD SET — the same two
-		    // registrations a declaration written in this namespace
-		    // gets. It must NOT clobber an existing name binding: the
-		    // map entry is first-wins (the fn-template placeholder is
-		    // the qualified-call resolution chokepoint; libstdc++'s
-		    // `using __exception_ptr::swap;` overwrote it and every
-		    // `std::swap(a, b)` bound the exception_ptr overload —
-		    // 'no matching constructor for exception_ptr(int32_t)').
-		    if ( dst_map.find(name) == dst_map.end() )
-			dst_map[name] = use_var;
-		    std::vector<Program::NamespaceFnOverload> &ovset =
-			pgm.namespace_fn_overload_sets[
-			    pgm.current_namespace() + "::" + name];
-		    bool known = false;
-		    for ( size_t oi = 0; oi < ovset.size(); ++oi )
-			if ( ovset[oi].var == use_var )
-			    known = true;
-		    if ( !known )
-		    {
-			Program::NamespaceFnOverload e;
-			e.var = use_var;
-			ovset.push_back(e);
-		    }
-		}
-		else
-		    dst_map[name] = use_var;
+		import_using_variable(name, use_var);
 	    }
 	    if ( have_type )
 	    {
@@ -37562,8 +37988,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	else
 	{
-	    if ( have_var && !pgm.findVariable(name) )
-		import_namespace_member(name, use_var);
+	    if ( have_var )
+		import_using_variable(name, use_var);
 	    if ( have_type )
 		import_namespace_type(name, dti->second);
 	}
@@ -37602,7 +38028,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    }
 	}
 	// expect semicolon
-	tn = pgm.nextToken();
+	tn = using_end;
 	if ( !tn || tn->id() != TokenID::tkSemi )
 	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
 	return NULL;
@@ -38182,7 +38608,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
-    size_t explicit_align = 0;
+    // Seed from a typedef-prefix aligned(N) (`typedef _CRT_ALIGN(16) struct
+    // ...` — mingw setjmp.h) and consume it ONCE: nested member structs and
+    // later sibling parses must never inherit the outer typedef's alignment.
+    size_t explicit_align = pgm.typedef_prefix_align;
+    pgm.typedef_prefix_align = 0;
     bool have_scalar_storage_order = false;
     bool reverse_scalar_storage = false;
     auto consume_attribute = [&]()
@@ -38379,46 +38809,99 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
-	// typedef struct tag alias
+	// typedef struct tag alias — a C declarator LIST like every other
+	// typedef arm (`typedef struct _X X, *PX;` — winnt.h's dominant
+	// shape for previously-defined tags). Each declarator restarts from
+	// the struct dd; a redeclaration that matches silently skips its own
+	// registration but keeps walking the list. At block scope non-final
+	// nodes join the compound's statement stream directly (the caller
+	// appends only the returned node).
 	if ( do_typedef )
 	{
-	    DataDef *alias_dd = dmi->second;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    TokenBase *node = NULL;
+	    while ( true )
 	    {
-		pgm.nextToken();
-		alias_dd = pgm.getPointerType(alias_dd);
-	    }
-	    tn = pgm.nextToken(); // consume the alias identifier
-	    if ( !is_contextual_identifier_token(tn) )
-		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
-	    std::string alias_name = contextual_identifier_name(tn);
-	    alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
-	    if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
-	    {
-		// C allows identical typedef redeclarations — silently accept
-		// when the alias maps to the same underlying type.
-		DataDef *existing = &(*bmi)->definition;
-		if ( existing == alias_dd
-		  || (existing->is_pointer() && alias_dd->is_pointer()
-		      && existing->rawtype() == alias_dd->rawtype()) )
+		DataDef *alias_dd = dmi->second;
+		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 		{
-		    // consume trailing ';' and return
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-			pgm.nextToken();
-		    return NULL;
+		    pgm.nextToken();
+		    alias_dd = pgm.getPointerType(alias_dd);
 		}
-		pgm.Throw(tn) << "Identifier already defined" << flush;
+		tn = pgm.nextToken(); // consume the alias identifier
+		if ( !is_contextual_identifier_token(tn) )
+		    pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
+		std::string alias_name = contextual_identifier_name(tn);
+		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
+		bool redecl = false;
+		if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
+		{
+		    // C allows identical typedef redeclarations — silently accept
+		    // when the alias maps to the same underlying type.
+		    // denotes_same_type matches across DataDef instances: the
+		    // forest-restore/live seam registers a restored twin of a tag
+		    // the live parse re-declares (C11 6.7p3).
+		    DataDef *existing = &(*bmi)->definition;
+		    if ( existing->denotes_same_type(*alias_dd)
+		      || (existing->is_pointer() && alias_dd->is_pointer()
+			  && existing->rawtype() == alias_dd->rawtype()) )
+			redecl = true;
+		    else if ( pgm.forest_restored_datatype_names.count(alias_name) )
+		    {
+			// Shape-divergent RESTORED alias: the frozen twin
+			// encodes the FREEZE's include order (ucrt stdio.h's
+			// placeholder FILE), the live declaration this TU's
+			// (wchar.h's classic FILE) — which is what gcc sees.
+			// Fall through and let the live registration
+			// overwrite (register_scoped_typedef is last-wins).
+			DBG(cout << "typedef redecl: live '" << alias_name
+			    << "' overwrites shape-divergent restored alias ("
+			    << existing->name << "#" << existing->size
+			    << " -> " << alias_dd->name << "#" << alias_dd->size
+			    << ")" << endl);
+		    }
+		    else
+		    {
+			DBG(cout << "typedef redecl mismatch " << alias_name
+			    << ": existing '" << existing->name
+			    << "' size=" << existing->size
+			    << " bt=" << (int)existing->basetype()
+			    << " members=" << (dynamic_cast<DataDefSTRUCT *>(existing)
+				? (long)dynamic_cast<DataDefSTRUCT *>(existing)->members.size() : -1L)
+			    << " complete=" << (dynamic_cast<DataDefSTRUCT *>(existing)
+				? (int)dynamic_cast<DataDefSTRUCT *>(existing)->is_complete : -1)
+			    << " vs live '" << alias_dd->name
+			    << "' size=" << alias_dd->size
+			    << " bt=" << (int)alias_dd->basetype()
+			    << " members=" << (dynamic_cast<DataDefSTRUCT *>(alias_dd)
+				? (long)dynamic_cast<DataDefSTRUCT *>(alias_dd)->members.size() : -1L)
+			    << " complete=" << (dynamic_cast<DataDefSTRUCT *>(alias_dd)
+				? (int)dynamic_cast<DataDefSTRUCT *>(alias_dd)->is_complete : -1)
+			    << endl);
+			pgm.Throw(tn) << "Identifier already defined" << flush;
+		    }
+		}
+		if ( !redecl )
+		{
+		    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
+		    pgm.register_scoped_typedef(alias_name, tdt);
+		    // also register tag in struct_map so "struct tag" works
+		    if ( !alias_dd->is_pointer() )
+		    {
+			pgm.pack_tap_struct(alias_name);	// B4a tap
+			pgm.struct_map.set(alias_name, dmi->second);
+		    }
+		    record_typedef(alias_name, alias_dd, tdt, tn);
+		    if ( node && !pgm.compounds.empty() )
+			pgm.compounds.top()->statements.push_back((TokenStmt *)node);
+		    node = new TokenTypedefDecl(alias_name, alias_dd);
+		}
+		if ( !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma) )
+		    break;
+		pgm.nextToken(); // consume ','
 	    }
-	    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
-	    pgm.register_scoped_typedef(alias_name, tdt);
-	    // also register tag in struct_map so "struct tag" works
-	    if ( !alias_dd->is_pointer() )
-	    {
-		pgm.pack_tap_struct(alias_name);	// B4a tap
-		pgm.struct_map.set(alias_name, dmi->second);
-	    }
-	    record_typedef(alias_name, alias_dd, tdt, tn);
-	    return new TokenTypedefDecl(alias_name, alias_dd);
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    return node;
 	}
 
 	// struct tag variable; — declare variable of existing struct type
@@ -39070,6 +39553,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
+		// A member whose type is a class-qualified NESTED type
+		// (`ios_base::fmtflags _M_mask;` — <iomanip>'s
+		// _Resetiosflags). Folded HERE, after every arm above has
+		// produced `mtype`, because which arm recognized the scope
+		// name is irrelevant to the rule: `Outer::flags m;` means the
+		// same thing wherever it is written, and the C++ CLASS-body
+		// parser already accepted it. Only this data-only struct
+		// parser left the `::` for the member-NAME expectation, which
+		// then rejected the whole declaration.
+		if ( DataDef *nested = pgm.fold_class_qualified_nested_type(
+					    &mtype->definition, mtype) )
+		    mtype = new TokenDataType(nested->name.c_str(), *nested);
 		DataDef *base_member_dd = &mtype->definition;
 		// Member declared via a user typedef alias (not a builtin or
 		// "struct tag"): record it so CIR emits ID("alias") for this
@@ -39359,6 +39854,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	  && !dynamic_cast<DataDefCLASS *>(dds) ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
+	    // This is the point where a completed DataDefSTRUCT becomes a class.
+	    // Initialize the class-only layout fields now; otherwise a later use as
+	    // a base sees nvsize == 0, because the base-clause promotion helper
+	    // correctly declines an object that is already a DataDefCLASS.
+	    ddc->compute_layout();
 	    if ( was_pre_registered && tag )
 		pgm.struct_map.set(tag_store_key, ddc);   // repoint the self-ref pre-registration
 	    // The old DataDefSTRUCT is left alive (not deleted): a self-reference
@@ -39426,6 +39926,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->spelling() << " size=" << existing->size << endl);
 		delete dds;
 		dds = existing;
+	    }
+	    else if ( existing->forest_restored )
+	    {
+		// task #57 mixed seam, restored-before-live: the registered
+		// complete struct is a bound unit's restored twin of a shared
+		// guarded block whose live copy parses HERE — a live re-include
+		// would have guard-skipped the bound copy, so the live parse is
+		// the TU's truth and wins the registration. The twin instance
+		// stays alive for arena-internal references (same tag, same
+		// emission — the self-reference model at the class-promotion
+		// note above; denotes_same_type keeps C11-identical twins
+		// compatible). Mirror of the class arm's live-wins. No pack
+		// tap: a freeze is a plain live parse with no bound forest, so
+		// this arm is unreachable while recording.
+		pgm.struct_map.set(tag_store_key, dds);
+		DBG(cout << "TokenSTRUCT::parse() live-wins: re-registered struct "
+		    << tag_store_key << " over forest-restored twin" << endl);
 	    }
 	    else
 		pgm.Throw(tag) << "Struct '" << tag->spelling() << "' already defined" << flush;
@@ -42230,6 +42747,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.nextToken();
 	    return NULL;
 	}
+	else if ( fwd && fwd->is_complete && fwd->forest_restored )
+	{
+	    // v40 mixed bind/live seam (task #57): a DECLINED root's live
+	    // parse re-defines a class a bound sibling RESTORED (ios_base).
+	    // The restored twin is INCOMPLETE for live-parse needs — the
+	    // demand filter drops nested records whose only declaring unit
+	    // was pruned (ios_base::Init), and the freeze does not transport
+	    // enclosing_class linkage. The live body is this TU's truth —
+	    // fall through to a fresh definition; registration overwrites
+	    // the twin, which stays alive (same layout) for the restored
+	    // records that reference it.
+	    DBG(cout << "class live-wins: re-defining forest-restored '"
+		<< tag->spelling() << "'" << endl);
+	}
 	else
 	    pgm.Throw(tag) << "Class '" << tag->spelling() << "' already defined" << flush;
     }
@@ -43108,8 +43639,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		<< "Unsupported parenthesized member declarator in class definition" << flush;
 	}
 
-	// expect member name — may be an identifier or 'operator' keyword
+	// Expect a member name, an operator-id, or an unnamed bit-field's ':'.
+	// The colon is already consumed into tn here; the data-member arm below
+	// shares the normal width parser and records an empty-name ordered member.
 	tn = pgm.nextToken();
+	bool is_unnamed_bitfield = tn && tn->id() == TokenID::tkColon;
 	// A no-op decl-specifier (constexpr/consteval/constinit/inline) may appear
 	// AFTER the return type, before the member name — the decl-specifier-seq is
 	// unordered, so `void constexpr operator=(...)` is valid (uses_allocator.h:81
@@ -43126,6 +43660,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Contextual, not ttIdentifier-only: dialect type spellings are valid
 	// member names (`static constexpr _Tp value = __v;` — every std trait;
 	// same shadow rule the statement lane applies to array/value/var).
+	else if ( is_unnamed_bitfield )
+	    mname.clear();
 	else if ( !is_contextual_identifier_token(tn) )
 	{
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
@@ -43277,7 +43813,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // `unsigned a : 3, b : 5;` (parity with TokenSTRUCT::parse; a
 	    // bit-field is never an array). The shared Program::parse_bitfield_width
 	    // validates the integer type and width.
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+	    if ( is_unnamed_bitfield
+	      || (pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon) )
 	    {
 		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`
 		// or the brace form `m:1 {v}` — [class.mem] brace-or-equal-init,
@@ -43307,8 +43844,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    }
 		    return t;
 		};
-		pgm.nextToken(); // consume ':'
-		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd, true, *ddc);
+		if ( !is_unnamed_bitfield )
+		    pgm.nextToken(); // consume ':'
+		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd,
+			!is_unnamed_bitfield, *ddc);
 		ddc->addBitField(mname, *cmember_dd, bf_width);
 		unsigned long long bitfield_count = 1;
 		if ( access_flags && !ddc->member_access.empty() )
@@ -44868,12 +45407,34 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return new TokenTypedefDecl(alias, dd);
     };
 
-    // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
+    // skip const/restrict qualifiers and consume specifier-position
+    // __attribute__ groups: `typedef const struct X *const_ptr;`,
+    // `typedef __attribute__((__aligned__(16))) struct S {...} T;` (mingw
+    // setjmp.h's _CRT_ALIGN on _SETJMP_FLOAT128). gcc/clang/mingw-gcc all
+    // appertain a specifier-position aligned(N) to the declared ALIAS
+    // (oracle: _Alignof(struct _S)==8, _Alignof(T)==16, sizeof both 16);
+    // madc's typedef-of-aggregate shares the aggregate's DataDef, so the
+    // alignment is carried on the tag instead — every alias-side observable
+    // matches the oracle, and the elaborated-tag corner gains the alignment
+    // (the MSVC __declspec(align) model this mingw spelling mirrors).
+    // vector_size feeds the same DataDefSIMD application point as the
+    // post-type position below; prefix-position mode()/aligned-on-scalar
+    // stay unapplied like the post-type position (no known consumer).
+    size_t prefix_align = 0, prefix_vector = 0;
     while ( tn && (tn->id() == TokenID::tkCONST
 		|| tn->id() == TokenID::tkRESTRICT
-		|| tn->id() == TokenID::tkVOLATILE) )
+		|| tn->id() == TokenID::tkVOLATILE
+		|| is_attribute_identifier_token(tn)) )
     {
-	pgm.nextToken();
+	if ( is_attribute_identifier_token(tn) )
+	{
+	    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken(), NULL, NULL,
+							  &prefix_align, &prefix_vector);
+	    if ( after )
+		pgm.pushToken(after);
+	}
+	else
+	    pgm.nextToken();
 	tn = pgm.peekToken();
     }
 
@@ -44883,10 +45444,101 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkUNION )
     {
 	pgm.parsing_typedef_decl = true;
+	pgm.typedef_prefix_align = prefix_align;
 	TokenBase *result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
 	pgm.parsing_typedef_decl = false;
+	pgm.typedef_prefix_align = 0;	// TokenSTRUCT consumed it; the class path never reads it
 	return result;
     }
+
+    // Spelling of the base type as written (drives the class/namespace scalar
+    // alias wraps below); the enum arm leaves it empty — enum dds are excluded
+    // from those wraps by type.
+    std::string base_source_spelling;
+
+    // Wrap + register + record ONE alias — shared by the head declarator and
+    // every tail declarator of a C typedef list, in every arm.
+    auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
+			    DataDef *dd, size_t vec_bytes) -> TokenBase * {
+	// register in datatype_map
+	if ( vec_bytes > 0 )
+	    dd = new DataDefSIMD(dd, alias_name, vec_bytes);
+	// An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
+	// itself, exactly like a class typedef: wrapping it in a plain DataDef
+	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
+	// integer DataType is indistinguishable from a scalar typedef — the
+	// mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
+	else if ( !pgm.class_scope_stack.empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd)
+	       && !base_source_spelling.empty()
+	       && base_source_spelling != dd->name )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(base_source_spelling);
+	    dd = alias_dd;
+	}
+	else if ( pgm.class_scope_stack.empty()
+	       && !pgm.current_namespace().empty()
+	       && dd && !dd->is_pointer()
+	       && dd->basetype() == BaseType::btSimple
+	       && !dynamic_cast<DataDefENUM *>(dd) )
+	{
+	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
+	    alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias_name);
+	    // [temp.type]: the alias carries its underlying so template-argument
+	    // identity can desugar (std::streamsize must select the spec keyed
+	    // on long) — see template_type_arg_spelling.
+	    alias_dd->scalar_alias_of = dd;
+	    dd = alias_dd;
+	}
+	if ( dd && is_incomplete_class_datadef(dd) )
+	    pgm.template_completion_requested.insert(dd->name);
+	TokenDataType *tdt = new TokenDataType(alias_name.c_str(), *dd);
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.register_scoped_typedef(alias_name, tdt);
+	DBG(std::cout << "TokenTYPEDEF::parse() " << alias_name << " = " << dd->name << std::endl);
+	return record_typedef(alias_name, dd, tdt, atok);
+    };
+
+    // C typedef declarator lists — ONE owner for every arm:
+    // `typedef signed char INT8,*PINT8;` (basetsd.h),
+    // `typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` (winnt.h).
+    // Each tail declarator restarts from the UNDECORATED base and takes its
+    // own pointer/array shape. Before this loop the tail was silently
+    // DROPPED and the leftover comma tripped the top-level progress guard
+    // (or, before the guard, spun the parse forever). At block scope the
+    // non-final nodes join the compound's statement stream directly — the
+    // caller only appends the RETURNED node.
+    auto parse_typedef_list_tail = [&](DataDef *undecorated_base,
+				       TokenBase *node) -> TokenBase * {
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+	{
+	    pgm.nextToken(); // consume ','
+	    DataDef *decl_dd = undecorated_base;
+	    while ( pgm.peekToken()
+		 && (pgm.peekToken()->id() == TokenID::tkMul
+		  || is_cv_qualifier_token(pgm.peekToken())) )
+	    {
+		if ( pgm.peekToken()->id() == TokenID::tkMul )
+		    decl_dd = pgm.getPointerType(decl_dd);
+		pgm.nextToken();
+	    }
+	    TokenBase *ntok = pgm.nextToken();
+	    const char *nsp = ntok ? typedef_alias_spelling(ntok) : NULL;
+	    if ( !nsp )
+		pgm.Throw(ntok ? ntok : tn)
+		    << "Expecting alias name in typedef declarator list" << flush;
+	    std::string tail_alias = nsp;
+	    decl_dd = pgm.parse_typedef_array_suffix(decl_dd, tail_alias, ntok);
+	    if ( node && !pgm.compounds.empty() )
+		pgm.compounds.top()->statements.push_back((TokenStmt *)node);
+	    node = finish_alias(tail_alias, ntok, decl_dd, 0);
+	}
+	return node;
+    };
+
     if ( tn->id() == TokenID::tkENUM )
     {
 	pgm.nextToken(); // consume enum
@@ -44933,14 +45585,17 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
+	// `typedef enum {...} COMPARTMENT_ID,*PCOMPARTMENT_ID;` (winnt.h) —
+	// tail declarators are pointers/aliases of THIS enum dd.
+	TokenBase *enum_node = record_typedef(alias, enum_alias_dd, tdt);
+	enum_node = parse_typedef_list_tail(enum_alias_dd, enum_node);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return record_typedef(alias, enum_alias_dd, tdt);
+	return enum_node;
     }
 
     // typedef TYPE alias; — primitive type alias
     DataDef *base_dd = NULL;
-    std::string base_source_spelling;
     if ( tn->type() == TokenType::ttDataType )
     {
 	pgm.nextToken();
@@ -45009,6 +45664,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    << "' (next: " << upcoming << ")" << flush;
     }
 
+    // The UNDECORATED base type: each declarator in a C typedef list
+    // (`typedef signed char INT8,*PINT8;` — mingw basetsd.h/winnt.h) restarts
+    // from here and takes its own pointer/array shape.
+    DataDef *list_base_dd = base_dd;
+
     // handle pointer + interleaved CV-qualifiers between the base type and the
     // alias name: `typedef int *intptr;`, east-const `typedef int const X;`,
     // `typedef T * const p;`, `typedef T const * X;`. CV-qualifiers are no-ops
@@ -45038,7 +45698,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     std::string gnu_mode_name;
-    size_t gnu_vector_bytes = 0;
+    size_t gnu_vector_bytes = prefix_vector;	// specifier-position vector_size, same application point
     if ( is_attribute_identifier_token(pgm.peekToken()) )
     {
 	pgm.consume_typedef_gnu_attributes(&gnu_mode_name, &gnu_vector_bytes);
@@ -45046,12 +45706,23 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     // Function-pointer typedef Form 2: typedef RET (*NAME)(params);
+    // A missing star is the parenthesized FUNCTION-type spelling
+    // `typedef RET (NAME)(params);` — winnt.h:5870's
+    // ENCLAVE_TARGET_FUNCTION — identical to Form 1 modulo the parens
+    // (ptr_syntax stays false, like Form 1's).
     TokenBase *peek = pgm.peekToken();
     if ( peek && peek->id() == TokenID::tkOpBrk )
     {
 	pgm.nextToken(); // consume '('
 	TokenBase *star = pgm.nextToken();
-	if ( !star || star->id() != TokenID::tkMul )
+	bool paren_fn_form = false;
+	if ( star && star->id() != TokenID::tkMul
+	  && star->type() == TokenType::ttIdentifier )
+	{
+	    paren_fn_form = true;
+	    pgm.pushToken(star);	// the identifier IS the alias name
+	}
+	else if ( !star || star->id() != TokenID::tkMul )
 	    pgm.Throw(star ? star : tn) << "Expecting '*' in function pointer typedef" << flush;
 	TokenBase *name_tok = pgm.nextToken();
 	if ( !name_tok || name_tok->type() != TokenType::ttIdentifier )
@@ -45060,12 +45731,26 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	TokenBase *rbrk = pgm.nextToken();
 	if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
 	    pgm.Throw(rbrk ? rbrk : tn) << "Expecting ')' after function pointer name" << flush;
-	TokenBase *open = pgm.nextToken();
-	if ( !open || open->id() != TokenID::tkOpBrk )
-	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
-	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
+	// No parameter list after `(*NAME)` when the BASE is itself a
+	// function typedef: `typedef ENCLAVE_TARGET_FUNCTION
+	// (*PENCLAVE_TARGET_FUNCTION);` (winnt.h:5871) — the base carries
+	// the whole signature; the alias is a pointer to it.
+	DataDefFPTR *base_fn = dynamic_cast<DataDefFPTR *>(base_dd);
+	FuncDef *func;
+	if ( base_fn && !paren_fn_form
+	  && !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk) )
+	    func = base_fn->target;
+	else
+	{
+	    TokenBase *open = pgm.nextToken();
+	    if ( !open || open->id() != TokenID::tkOpBrk )
+		pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
+	    func = pgm.parseFnPtrParams(*base_dd);
+	}
 	DataDefFPTR *fptr = new DataDefFPTR(func);
-	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
+	// Form 2 `(*NAME)` = pointer typedef; the starless paren'd form
+	// `(NAME)` = a FUNCTION type, exactly Form 1's posture.
+	fptr->ptr_syntax = !paren_fn_form;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.register_scoped_typedef(alias, tdt);
@@ -45136,91 +45821,18 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return record_typedef(alias, fptr, tdt);
     }
 
-    // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
-    // array extent instead of collapsing immediately to a pointer.
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-    {
-	size_t alias_count = 1;
-	TokenBase *alias_count_expr = NULL;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-	{
-	    pgm.nextToken(); // consume '['
-	    TokenBase *cl = pgm.nextToken();
-	    if ( cl && cl->id() == TokenID::tkClSqr )
-	    {
-		alias_count = 0;
-		continue;
-	    }
-	    pgm.pushToken(cl);
-	    if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
-	    {
-		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-		cl = pgm.nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-		continue;
-	    }
-	    int64_t n = pgm.parse_constant_integer_expression();
-	    if ( n < 0 )
-		pgm.Throw(tn) << "Typedef array dimension must be non-negative" << flush;
-	    cl = pgm.nextToken();
-	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
-	    if ( n == 0 )
-		alias_count = 0;
-	    else
-		alias_count *= (size_t)n;
-	}
-	base_dd = new DataDefCArray(*base_dd, alias, alias_count, alias_count_expr);
-	if ( pgm.forest_arena_enabled )
-	    pgm.forest_arena_record_unary(base_dd);	// v25: DK_CARRAY write-through
-    }
-
-    // register in datatype_map
-    if ( gnu_vector_bytes > 0 )
-	base_dd = new DataDefSIMD(base_dd, alias, gnu_vector_bytes);
-    // An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
-    // itself, exactly like a class typedef: wrapping it in a plain DataDef
-    // alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
-    // integer DataType is indistinguishable from a scalar typedef — the
-    // mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
-    else if ( !pgm.class_scope_stack.empty()
-	   && base_dd && !base_dd->is_pointer()
-	   && base_dd->basetype() == BaseType::btSimple
-	   && !dynamic_cast<DataDefENUM *>(base_dd)
-	   && !base_source_spelling.empty()
-	   && base_source_spelling != base_dd->name )
-    {
-	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->set_canonical_spelling(base_source_spelling);
-	base_dd = alias_dd;
-    }
-    else if ( pgm.class_scope_stack.empty()
-	   && !pgm.current_namespace().empty()
-	   && base_dd && !base_dd->is_pointer()
-	   && base_dd->basetype() == BaseType::btSimple
-	   && !dynamic_cast<DataDefENUM *>(base_dd) )
-    {
-	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
-	// [temp.type]: the alias carries its underlying so template-argument
-	// identity can desugar (std::streamsize must select the spec keyed
-	// on long) — see template_type_arg_spelling.
-	alias_dd->scalar_alias_of = base_dd;
-	base_dd = alias_dd;
-    }
-    if ( base_dd && is_incomplete_class_datadef(base_dd) )
-	pgm.template_completion_requested.insert(base_dd->name);
-    TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
-    if ( pgm.class_scope_stack.empty() )
-	pgm.register_scoped_typedef(alias, tdt);
-    DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
+    // Array suffix through the ONE owner (Program::parse_typedef_array_suffix
+    // — the bodyless struct-typedef arm already used it; the inline copy this
+    // function carried is deleted).
+    base_dd = pgm.parse_typedef_array_suffix(base_dd, alias, tn);
+    TokenBase *node = finish_alias(alias, alias_tok, base_dd, gnu_vector_bytes);
+    node = parse_typedef_list_tail(list_base_dd, node);
 
     // consume semicolon
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
 
-    return record_typedef(alias, base_dd, tdt, alias_tok);
+    return node;
 }
 
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
@@ -45646,11 +46258,24 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	}
 	else if ( !pgm.current_namespace().empty() )
 	    enum_dd->set_canonical_spelling(pgm.current_namespace() + "::" + enum_tag);
-	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
-	pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
-	pgm.datatype_map[enum_tag] = tdt;
-	if ( !pgm.current_namespace().empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
+	// [basic.scope.class]/1: a class-nested enum's TAG is a MEMBER of that
+	// class. set_class_type_alias above IS its whole registration — also
+	// writing the bare tag into datatype_map (and into the enclosing
+	// namespace) publishes it at a scope C++ never gives it, and any later
+	// `(tag == x)` then reads as a parenthesized CAST to the leaked type
+	// ("Missing operand"). libc++'s money_base::part is the live case: it
+	// leaked `part`, `std::part` and `std::__1::part`, so a user variable
+	// named `part` broke under -stdlib=libc++ and worked under libstdc++.
+	// The enumerator arm below already scopes its names to the class for
+	// exactly this reason; the tag must match it.
+	if ( pgm.class_scope_stack.empty() )
+	{
+	    TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+	    pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
+	    pgm.datatype_map[enum_tag] = tdt;
+	    if ( !pgm.current_namespace().empty() )
+		pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
+	}
 	DBG(std::cout << "TokenENUM::parse() enum type " << enum_tag << std::endl);
     }
 
@@ -45666,6 +46291,21 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
 	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
+    // A CLASS-nested enum's pseudo-namespace is keyed under its owner, for the
+    // same reason the tag itself is (08a76f43): the bare key made `part::sign`
+    // resolve from ANYWHERE — madc printed 3 where g++ says "'part' has not
+    // been declared" — while the spelling C++ actually gives it,
+    // `holder::part::sign`, resolved nowhere. Keying it Owner::tag fixes both
+    // ends at once. The in-class relative spelling still works because
+    // resolve_class_scoped_enum_ns() below consults the enclosing classes.
+    else if ( !pgm.class_scope_stack.empty() )
+    {
+	DataDefCLASS *owner = pgm.class_scope_stack.back();
+	const std::string owner_spelling =
+	    owner->canonical_cpp_spelling().empty()
+	    ? owner->name : owner->canonical_cpp_spelling();
+	scoped_ns_key = owner_spelling + "::" + enum_tag;
+    }
     // [dcl.enum]p11: `Tag::enumerator` names an enumerator of an UNSCOPED
     // enum too (C++11), so every TAGGED C++ enum gets the pseudo-namespace.
     // Scoped enumerators live ONLY here (no bare-name leak); unscoped ones
@@ -45989,6 +46629,14 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    handled = true;
 	    if ( after->id() == TokenID::tkOpBrc )
 	    {
+		// A braced linkage specification changes the language linkage of
+		// the declarations it contains; it is not an `extern` storage-class
+		// specifier for each member.  In particular,
+		// `extern "C++" { int object; }` defines object, while the direct
+		// form `extern "C++" int object;` is only a declaration.  Keep the
+		// direct form on the declaration-head state established above, but
+		// let each block member determine its own storage class.
+		pgm.parsing_extern_decl = false;
 		for ( ;; )
 		{
 		    pgm.pack_open_toplevel_decl();	// B4a: linkage-block members
@@ -46583,6 +47231,32 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
     return target;
 }
 
+// A DECLARATION-SPECIFIER keyword. These arrive with KEYWORD token ids, not as
+// ttDataType or ttIdentifier, so any "does a declaration start here" test that
+// looks only at those two token TYPES silently misses every declaration that
+// leads with a qualifier or a tag — `const char *p;`, `static int n;`,
+// `struct S s;`. Named because the concept is asked in more than one place (the
+// member-template return-token scan skips the same set).
+bool is_decl_specifier_keyword(TokenID id)
+{
+    switch ( id )
+    {
+    case TokenID::tkCONST:
+    case TokenID::tkVOLATILE:
+    case TokenID::tkSTATIC:
+    case TokenID::tkEXTERN:
+    case TokenID::tkREGISTER:
+    case TokenID::tkRESTRICT:
+    case TokenID::tkTYPEDEF:
+    case TokenID::tkSTRUCT:
+    case TokenID::tkUNION:
+    case TokenID::tkENUM:
+	return true;
+    default:
+	return false;
+    }
+}
+
 TokenBase *TokenSWITCH::parse(Program &pgm)
 {
     DBG(std::cout << "TokenSWITCH::parse()" << std::endl);
@@ -46637,7 +47311,8 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	if ( !active_case )
 	{
 	    if ( tn->type() == TokenType::ttDataType
-	      || tn->type() == TokenType::ttIdentifier )
+	      || tn->type() == TokenType::ttIdentifier
+	      || is_decl_specifier_keyword(tn->id()) )
 	    {
 		// C allows variable declarations in a switch body before any
 		// case label — they're unreachable (no case path enters
@@ -46646,6 +47321,11 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		// is a common form. Keep them so the CIR emits the declaration
 		// (it carries the type for uses later in the switch); discarding
 		// left the variable undeclared in the emitted C.
+		// A declaration that leads with a QUALIFIER or a tag keyword
+		// (`const char *__cs;`) is the same case: the token type test
+		// alone rejected it, which is how libstdc++'s
+		// time_get::_M_extract_via_format — `switch (__c) { const char*
+		// __cs; _CharT __wcs[10]; case 'a': ... }` — failed to parse.
 		DBG(std::cout << "TokenSWITCH::parse() keeping pre-case declaration" << std::endl);
 		TokenBase *pre = pgm.parseStatement(tn);
 		if ( pre )
@@ -51690,19 +52370,30 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	static const char *isplit = ::getenv("MADC_DEBUG_INTSPLIT");
 	if ( isplit )
 	{
+	    // The dd is hoisted to a local before typeid: the operand of typeid
+	    // on a POLYMORPHIC type is evaluated, and iterator operator-> /
+	    // vector operator[] are calls, so spelling it inline is an operand
+	    // with side effects (-Wpotentially-evaluated-expression). A plain
+	    // pointer deref has none.
 	    for ( std::map<std::string, DataDef *>::const_iterator
 		    b = binding.begin(); b != binding.end(); ++b )
-		if ( b->second && b->second->name == "int" )
+	    {
+		DataDef *bdd = b->second;
+		if ( bdd && bdd->name == "int" )
 		    fprintf(stderr, "[INTSPLIT] %s param=%s dd=%p ddINT=%p kind=%s canon='%s'\n",
-			    inst_key.c_str(), b->first.c_str(), (void*)b->second,
-			    (void*)&ddINT, typeid(*b->second).name(),
-			    b->second->canonical_cpp_spelling().c_str());
+			    inst_key.c_str(), b->first.c_str(), (void*)bdd,
+			    (void*)&ddINT, typeid(*bdd).name(),
+			    bdd->canonical_cpp_spelling().c_str());
+	    }
 	    for ( size_t e = 0; e < pack_elems.size(); ++e )
-		if ( pack_elems[e] && pack_elems[e]->name == "int" )
+	    {
+		DataDef *edd = pack_elems[e];
+		if ( edd && edd->name == "int" )
 		    fprintf(stderr, "[INTSPLIT] %s pack[%zu] dd=%p ddINT=%p kind=%s canon='%s'\n",
-			    inst_key.c_str(), e, (void*)pack_elems[e],
-			    (void*)&ddINT, typeid(*pack_elems[e]).name(),
-			    pack_elems[e]->canonical_cpp_spelling().c_str());
+			    inst_key.c_str(), e, (void*)edd,
+			    (void*)&ddINT, typeid(*edd).name(),
+			    edd->canonical_cpp_spelling().c_str());
+	    }
 	}
     }
     DBG_PACK("inst_key %s memo=%d vars=%d var_out=%d\n", inst_key.c_str(),
@@ -55659,9 +56350,10 @@ static void stamp_member_template_pattern(
 	    TokenID sid = st->id();
 	    // Specifier KEYWORD tokens (static/const/extern/volatile/friend are
 	    // keyword IDs, not identifiers) — skip them so the return-type range
-	    // starts at the actual type.
-	    bool is_spec = sid == TokenID::tkSTATIC || sid == TokenID::tkCONST
-			|| sid == TokenID::tkEXTERN || sid == TokenID::tkVOLATILE
+	    // starts at the actual type. `friend` is a declaration specifier
+	    // only here (it cannot lead a block-scope declaration), so it stays
+	    // beside the shared predicate rather than inside it.
+	    bool is_spec = is_decl_specifier_keyword(sid)
 			|| sid == TokenID::tkFRIEND;
 	    if ( !is_spec && is_contextual_identifier_token(st) )
 	    {
@@ -57328,15 +58020,11 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 TokenBase *Program::parseCompound()
 {
     if ( compounds.empty() ) { throw "Internal error -- compound stack empty"; }
-    // A compound is its own declarative region: the declaration-HEAD extern
-    // context must not leak onto block-scope locals. The reachable leak is a
-    // linkage block ([dcl.link]p7 makes extern apply to the block's DIRECTLY
-    // contained declarations, so TokenEXTERN holds the flag across its whole
-    // statement loop): libstdc++ wraps <bits/exception_ptr.h> in
-    // `extern "C++" { }`, and exception_ptr::swap's local `void *__tmp`
-    // emitted as `extern void *__tmp = ...` — a c2mir check error.
-    // Namespace bodies parse via parse_namespace_block's own loop, never
-    // through here, so their members correctly keep the linkage-block flag.
+    // A compound is its own declarative region: a declaration-head `extern`
+    // context must not leak onto block-scope locals while a function body is
+    // parsed.  TokenEXTERN's braced-linkage arm also clears that state before
+    // parsing members; retain this guard for direct extern-qualified function
+    // declarations and for exception-safe isolation at the compound boundary.
     struct ExternDeclScope {
 	Program &p; bool saved;
 	ExternDeclScope(Program &pg)
@@ -57937,6 +58625,48 @@ static TokenBase *drop_captured_dim_exprs(TokenBase *chain,
     return l ? l : r;
 }
 
+// Block-scope hoist discriminator (task #57 / gcc parity, C11 6.2.2p5 and
+// C++ [dcl.stc]): a block-scope function DECLARATION declares the file-scope
+// name with EXTERNAL linkage whether or not `extern` is spelled — only a
+// DEFINITION (a GNU nested function) is a hoistable local entity. mingw's
+// stdlib.h declares `__mingw_strtof` INSIDE strtof's inline body; hoisting
+// that prototype orphaned the real name ("use of undeclared identifier").
+// Called with the stream INSIDE the parameter list (the caller consumed the
+// opening '('): scan the balanced remainder plus the declarator suffix
+// (cv/ref-qualifiers, noexcept(...), __attribute__((...)), asm labels,
+// trailing return) to the first TOP-LEVEL '{' (definition) or ';' / ','
+// (declaration). Pure lookahead — every consumed token is pushed back.
+// A block-scope K&R-style DEFINITION (param decls between ')' and '{')
+// reads as a declaration here; that GNU-nested C arcana is out of scope.
+bool Program::function_declarator_has_body()
+{
+    std::vector<TokenBase *> seen;
+    DelimDepth d;
+    d.paren = 1;			// caller already consumed the '('
+    bool body = false;
+    while ( TokenBase *t = peekToken() )
+    {
+	if ( d.top() )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		{ body = true; break; }
+	    if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkComma )
+		break;
+	}
+	t = nextToken();
+	seen.push_back(t);
+	std::vector<TokenBase *> optail;
+	delimStepStream(t, d, &optail);
+	for ( size_t k = 0; k < optail.size(); ++k )
+	    if ( optail[k] )
+		seen.push_back(optail[k]);
+    }
+    for ( std::vector<TokenBase *>::reverse_iterator it = seen.rbegin();
+	  it != seen.rend(); ++it )
+	pushToken(*it);
+    return body;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
@@ -58000,18 +58730,21 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
     std::map<std::string, TokenBase *> param_vla_side_effects;
-    // A block-scope `extern` FUNCTION DECLARATION is not a nested function —
-    // it declares the file-scope name with external linkage (C11 6.2.2p5).
-    // Mangling it nested (main__fabs__1) orphans the real name: the call
-    // then falls to the 64-bit dlsym default and a double return is read as
-    // a long (fabs(-2.5) -> 1.0). GNU nested functions are non-extern.
+    // A block-scope FUNCTION DECLARATION is not a nested function — it
+    // declares the file-scope name with external linkage (C11 6.2.2p5),
+    // WHETHER OR NOT `extern` is spelled. Mangling it nested (main__fabs__1,
+    // strtof__nested_fn___mingw_strtof__1) orphans the real name: the call
+    // then falls to the 64-bit dlsym default (C) or errors "undeclared
+    // identifier" (C++). Only a DEFINITION — a GNU nested function, which
+    // always has a body — hoists; function_declarator_has_body() looks ahead.
     // A method of a block-local class is still a CLASS method, not a GNU
     // nested function. Treating it as nested prefixed its real class symbol
     // with the temporary dependent-pattern function id and was the source of
     // the frozen `__patN__...Guard__N` imports.
     bool is_nested_function = !owner_class && !compounds.empty()
 			      && compounds.top() && compounds.top()->method
-			      && !parsing_extern_decl;
+			      && !parsing_extern_decl
+			      && function_declarator_has_body();
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
     bool has_hidden_this = owner_class && !static_class_method;
@@ -60594,37 +61327,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *base_type = &tb->definition;
     DataDef *decl_type = base_type;
     // Class-qualified NESTED type in a declaration: `ios_base::Init __ioinit;`
-    // / `static Outer::Inner obj;` — fold the `:: name [:: name …]` chain
-    // into the nested type before declarator parsing. Resolution is via
-    // type_aliases only, so a static-member or template-id chain falls
-    // through to the existing paths (and the existing diagnostics).
-    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    // / `static Outer::Inner obj;`. The struct-MEMBER parser folds the same
+    // chain through the same owner.
+    if ( DataDef *nested = fold_class_qualified_nested_type(base_type, tb) )
     {
-	if ( DataDefCLASS *qcls = dynamic_cast<DataDefCLASS *>(base_type) )
-	{
-	    DataDef *chain_dd = NULL;
-	    size_t chain_consume = 0;
-	    std::string chain_leaf;
-	    if ( peek_class_member_type_chain(qcls, tokens, 0, chain_dd,
-					      chain_consume, chain_leaf)
-	      && chain_dd )
-	    {
-		for ( size_t ci = 0; ci < chain_consume; ++ci )
-		    nextToken();
-		base_type = chain_dd;
-		decl_type = chain_dd;
-	    }
-	    else if ( TokenDataType *member =
-			  resolve_class_member_type_chain(qcls, tb) )
-	    {
-		// A member-TEMPLATE-id leaf (`Sel<true>::type<int,double>` — a
-		// member alias template instantiated with args) needs the
-		// CONSUMING chain-walker; the peek helper above bails on the
-		// trailing `<`. Same resolution resolve_typename_type_token uses.
-		base_type = &member->definition;
-		decl_type = base_type;
-	    }
-	}
+	base_type = nested;
+	decl_type = nested;
     }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
@@ -60736,11 +61444,21 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else if ( inner && inner->id() == TokenID::tkMul )
 	{
+	    // Extra `*` levels declare a POINTER TO the function pointer, one
+	    // wrap per star beyond the first — `type (**name)(params)` is
+	    // winpthreads' `extern void (**_pthread_key_dest)(void *)` (glibc
+	    // never uses the shape, so it first surfaced on the win64 lane).
+	    int fnptr_extra_stars = 0;
 	    TokenBase *name_tok = nextToken();
-	    while ( name_tok && (is_restrict_token(name_tok)
+	    while ( name_tok && (name_tok->id() == TokenID::tkMul
+	                      || is_restrict_token(name_tok)
 	                      || name_tok->id() == TokenID::tkCONST
 	                      || name_tok->id() == TokenID::tkVOLATILE) )
+	    {
+		if ( name_tok->id() == TokenID::tkMul )
+		    ++fnptr_extra_stars;
 		name_tok = nextToken();
+	    }
 	    if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
 	    id = contextual_identifier_name(name_tok);
@@ -60799,6 +61517,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		decl_type = parse_ptr_array_suffix(decl_type, open,
 						   "pointer-to-array declaration",
 						   true);
+		for ( int s = 0; s < fnptr_extra_stars; ++s )
+		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
 		// spiral form `type (*name(fn-params))[N]` — see below
 		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
@@ -60813,6 +61533,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 		FuncDef *func = parseFnPtrParams(*decl_type);
 		decl_type = new DataDefFPTR(func);
+		for ( int s = 0; s < fnptr_extra_stars; ++s )
+		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
 		// Spiral declarator: decl_type is now the RETURN fnptr type;
 		// re-push the stashed fn-params so the stream reads
@@ -61229,6 +61951,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    td->file = tb->file;
 	    td->line = tb->line;
 	    td->column = tb->column;
+	    // Which spelling opened the list SURVIVES to construction: a braced
+	    // list whose class has an initializer-list ctor is ONE
+	    // std::initializer_list argument, not N ctor arguments
+	    // ([dcl.init.list]/3-4). Recorded here because this is where the
+	    // distinction still exists.
+	    td->ctor_args_braced = ctor_close_id == TokenID::tkClBrc;
 	    // Parse constructor arguments. Under a --freeze parse, ALSO capture
 	    // the args list's raw source token run (v25 forest SAVE state — the
 	    // parsed trees cannot serialize; the flush re-runs this loop over the
@@ -61251,7 +61979,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
-	    instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
+	    // NOT for a braced list the class consumes AS a list: those tokens are
+	    // the list's ELEMENTS, never an argument list, so deducing from them
+	    // picks a ctor the program never calls. `vector<double> d{1.5, 2.5}`
+	    // deduced vector(_InputIterator, _InputIterator) from the two doubles
+	    // and died in its tsubst — while the initializer-list ctor sat right
+	    // there ([dcl.init.list]/4 makes it the ONLY candidate).
+	    if ( !(td->ctor_args_braced && ddc->has_initializer_list_ctor()) )
+		instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
 	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )
@@ -61441,9 +62176,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			return false;
 		return true;
 	    };
+	    // The element must carry the TARGET wchar_t shape (dtINT32 on
+	    // LP64, dtUINT16 on LLP64 — dd_platform_wchar), the same
+	    // compatible-with-wchar_t rule gcc applies per target.
 	    bool wide_string_array_init =
 		!arr_dims.empty()
-		&& decl_type->rawtype() == DataType::dtINT32
+		&& decl_type->rawtype() == dd_platform_wchar()->rawtype()
 		&& arr_dims.size() == 1
 		&& looks_like_wide_string_payload(peek0);
 	    // String-literal array init:
@@ -61464,14 +62202,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    const std::string &s = ((TokenStr *)strtok)->str;
 		    if ( wide_string_array_init )
 		    {
-			for ( size_t i = 0; i + 3 < s.size(); i += 4 )
-			{
-			    uint32_t cp = (uint8_t)s[i]
-				| ((uint32_t)(uint8_t)s[i + 1] << 8)
-				| ((uint32_t)(uint8_t)s[i + 2] << 16)
-				| ((uint32_t)(uint8_t)s[i + 3] << 24);
-			    init_list.push_back(new TokenInt((int64_t)cp));
-			}
+			std::vector<uint32_t> units;
+			madc_wide_payload_target_units(
+			    s, dd_platform_wchar()->size, units);
+			for ( uint32_t u : units )
+			    init_list.push_back(new TokenInt((int64_t)u));
 		    }
 		    else
 		    {
@@ -62342,6 +63077,53 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    ns_overload_spelling += "\x01@" + pending_fn_instantiation_identity;
 	std::vector<NamespaceFnOverload> &ovset =
 	    namespace_fn_overload_sets["::" + source_id];
+	if ( ::getenv("MADC_OVL_PROBE") )
+	    fprintf(stderr, "[ovl] global tracked %s set=%zu spelling='%s' at %s:%d\n",
+		    source_id.c_str(), ovset.size(), ns_overload_spelling.c_str(),
+		    TokenBase::_parse_file ? TokenBase::_parse_file : "?",
+		    TokenBase::_parse_line);
+	// The pre-existing SOURCE-NAMED function (the untracked first — a
+	// libc import or a bodied system-header inline) joins the set the
+	// moment a second same-name declaration starts tracking. Without it
+	// the set EXCLUDES the first member: a call that parse-binds the
+	// source name has no function_display_name, can never re-rank, and
+	// hard-fails the arity check against the first signature (mingw
+	// swprintf.inl's 3-arg extern "C++" vswprintf overload beside the
+	// 4-arg ISO one — the .inl's own 3-arg call died "expected 4 got 3";
+	// invisible to the libc++ global-abs precedent, whose overloads all
+	// share arity 1). The seed only ADDS set membership + the source
+	// identity: the Variable keeps its SOURCE name as import/emit name
+	// (the decl-only dlsym contract), and the sentinel spelling never
+	// matches a peeked param list (the fn-template-placeholder pattern).
+	if ( Variable *first_named = findVariable(source_id) )
+	{
+	    FuncDef *ffd = first_named->type
+			&& first_named->type->is_function()
+			&& !first_named->type->is_numeric()
+		? dynamic_cast<FuncDef *>(first_named->type) : NULL;
+	    if ( ffd )
+	    {
+		bool seeded = false;
+		for ( size_t i = 0; i < ovset.size(); ++i )
+		    if ( ovset[i].var == first_named )
+			seeded = true;
+		if ( !seeded )
+		{
+		    if ( ffd->function_display_name.empty() )
+		    {
+			ffd->function_display_name = source_id;
+			ffd->namespace_name.clear();
+		    }
+		    NamespaceFnOverload e;
+		    e.param_spelling = "\x01preexisting-source-named";
+		    e.var = first_named;
+		    ovset.push_back(e);
+		    if ( ::getenv("MADC_OVL_PROBE") )
+			fprintf(stderr, "[ovl] global seed first '%s' params=%zu\n",
+				source_id.c_str(), ffd->parameters.size());
+		}
+	    }
+	}
 	Variable *same = NULL;
 	for ( size_t i = 0; i < ovset.size(); ++i )
 	    if ( ovset[i].param_spelling == ns_overload_spelling )
@@ -63963,6 +64745,15 @@ bool Program::parse(TokenProgram *tp)
 	while ( !tokens.empty() )
 	{
 	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
+	    // Progress guard: a parseStatement that restores the stream to
+	    // exactly this state (its dispatchee consumed nothing and pushed
+	    // the head token back — e.g. a stray ',' handed to parseExprStmt,
+	    // whose expression parse re-feeds the comma for argument-list
+	    // callers) would spin this loop forever at 100% CPU with no
+	    // output. Detected below; the throw is the loud twin of gcc's
+	    // "expected identifier" here.
+	    TokenBase *loop_head = tokens.front();
+	    size_t loop_size = tokens.size();
 	    tb = nextToken();
 //	    printt(tb);
 	    // Skip C23 [[...]] attributes at top level.
@@ -63987,6 +64778,11 @@ bool Program::parse(TokenProgram *tp)
 	    ts = parseStatement(tb);
 	    parsing_script_statement = false;
 	    pack_close_toplevel_decl();
+	    if ( !tokens.empty() && tokens.front() == loop_head
+	      && tokens.size() == loop_size )
+		Throw(loop_head) << "Unexpected '"
+		    << overload_token_spelling(loop_head)
+		    << "' at file scope (parser made no progress)" << flush;
 	    if ( ts )
 	    {
 		if ( (script_stmt || script_statement_result(ts))

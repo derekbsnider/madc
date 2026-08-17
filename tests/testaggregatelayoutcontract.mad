@@ -1,0 +1,93 @@
+// Aggregate layout is settled once by DataDefSTRUCT and carried through the
+// MC11 tree to both c2mir and --emit=c11.  These cases distinguish that
+// contract from either backend independently recomputing native layout.
+// Oracles: GCC/Clang on Linux and MinGW GCC on Win64.
+#include <stddef.h>
+#include <stdio.h>
+
+#pragma pack(push, 4)
+struct p4 {
+	char c;
+	long long x;
+	short y;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 2)
+struct p2 {
+	char c;
+	int x;
+	char d;
+};
+#pragma pack(pop)
+
+union named_bits {
+	unsigned int a : 3;
+	unsigned int b : 5;
+};
+
+union zero_union {
+	unsigned char c;
+	unsigned int : 0;
+};
+
+struct zero_tail { unsigned char c; unsigned int : 0; };
+struct zero_middle { unsigned char c; unsigned int : 0; unsigned char d; };
+struct zero_chain {
+	unsigned char c;
+	unsigned int : 0;
+	unsigned short : 0;
+	unsigned char d;
+};
+struct unnamed_gap { unsigned int a : 3; unsigned int : 2; unsigned int b : 5; };
+struct zero_after_bits { unsigned char a : 1; unsigned int : 0; unsigned char b : 1; };
+
+class class_zero_chain {
+public:
+	unsigned char c;
+	unsigned int : 0;
+	unsigned short : 0;
+	unsigned char d;
+};
+
+class class_unnamed_gap {
+public:
+	unsigned int a : 3, : 2, b : 5;
+};
+
+int main(void)
+{
+	printf("p4 %zu %zu %zu %zu p2 %zu %zu %zu %zu\n",
+	       sizeof(struct p4), _Alignof(struct p4),
+	       offsetof(struct p4, x), offsetof(struct p4, y),
+	       sizeof(struct p2), _Alignof(struct p2),
+	       offsetof(struct p2, x), offsetof(struct p2, d));
+
+	union named_bits u = {0};
+	u.b = 21;
+	printf("union %zu %zu %u %u %02x zero %zu %zu\n",
+	       sizeof(u), _Alignof(union named_bits), u.a, u.b,
+	       *(unsigned char *)&u,
+	       sizeof(union zero_union), _Alignof(union zero_union));
+
+	struct unnamed_gap g = {0};
+	g.a = 5;
+	g.b = 17;
+	printf("tail %zu %zu middle %zu %zu %zu chain %zu %zu %zu gap %zu %zu %x after %zu %zu\n",
+	       sizeof(struct zero_tail), _Alignof(struct zero_tail),
+	       sizeof(struct zero_middle), _Alignof(struct zero_middle),
+	       offsetof(struct zero_middle, d),
+	       sizeof(struct zero_chain), _Alignof(struct zero_chain),
+	       offsetof(struct zero_chain, d),
+	       sizeof(g), _Alignof(struct unnamed_gap), *(unsigned int *)&g,
+	       sizeof(struct zero_after_bits), _Alignof(struct zero_after_bits));
+
+	class_unnamed_gap cg = {0};
+	cg.a = 5;
+	cg.b = 17;
+	printf("class %zu %zu %zu %zu %zu %x\n",
+	       sizeof(class_zero_chain), alignof(class_zero_chain),
+	       offsetof(class_zero_chain, d), sizeof(cg),
+	       alignof(class_unnamed_gap), *(unsigned int *)&cg);
+	return 0;
+}

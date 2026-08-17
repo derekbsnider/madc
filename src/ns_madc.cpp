@@ -22,11 +22,11 @@
 #include <iostream>
 #include <map>
 #include <vector>
-#include <unistd.h>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
+#include "madc_posix_io.h"	// get_host_name (host-facts seam)
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -48,11 +48,8 @@ static const char *sys_detect_platform()
 
 static const char *sys_detect_hostname()
 {
-    static char buf[256];
-    if ( gethostname(buf, sizeof(buf) - 1) != 0 )
-	buf[0] = '\0';
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
+    static std::string name = madc::detail::get_host_name();
+    return name.c_str();
 }
 
 // The facts initialize once at load (dynamic init of this TU); argv/path
@@ -88,9 +85,9 @@ std::string &eval_unit(std::string &out, std::string &source)
 	{ return *(std::string *)madc_runtime_eval(&out, &source); }
 bool eval_bool(std::string &source)
 	{ return madc_runtime_eval_bool(&source); }
-long eval_int(std::string &source)
+int64_t eval_int(std::string &source)
 	{ return madc_runtime_eval_int(&source); }
-long eval_int(const char *source)
+int64_t eval_int(const char *source)
 	{ std::string s = source ? source : ""; return madc_runtime_eval_int(&s); }
 double eval_double(std::string &source)
 	{ return madc_runtime_eval_double(&source); }
@@ -115,7 +112,7 @@ value &eval_string(value &out, const char *source)
 // engine's expression policy allows them.
 bool eval_expression_bool(const char *expr)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_bool(&e); }
-long eval_expression_int(const char *expr)
+int64_t eval_expression_int(const char *expr)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_int(&e); }
 double eval_expression_double(const char *expr)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_double(&e); }
@@ -128,7 +125,7 @@ value &eval_expression_string(value &out, const char *expr)
 // string-destination form RENDERS any result type ("42", "4.000000",
 // "echo") via the untyped runtime; eval_expression_string above is the
 // strict string-typed coercion.
-void eval_expression(long &out, const char *expr)
+void eval_expression(int64_t &out, const char *expr)
 	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_int(&e); }
 void eval_expression(double &out, const char *expr)
 	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_double(&e); }
@@ -144,7 +141,7 @@ std::string &eval_expression_ctx(std::string &out, const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; return *(std::string *)madc_runtime_eval_expression_ctx(&out, &e, &ctx); }
 bool eval_expression_bool_ctx(const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_bool_ctx(&e, &ctx); }
-long eval_expression_int_ctx(const char *expr, value &ctx)
+int64_t eval_expression_int_ctx(const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_int_ctx(&e, &ctx); }
 double eval_expression_double_ctx(const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; return madc_runtime_eval_expression_double_ctx(&e, &ctx); }
@@ -157,7 +154,7 @@ value &eval_expression_string_ctx(value &out, const char *expr, value &ctx)
 // _ctx sibling or the call-site scope-capture rebind has no target (the
 // std::string& destination is covered by the render form above, which
 // the rebind's overload re-rank already selects).
-void eval_expression_ctx(long &out, const char *expr, value &ctx)
+void eval_expression_ctx(int64_t &out, const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_int_ctx(&e, &ctx); }
 void eval_expression_ctx(double &out, const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_double_ctx(&e, &ctx); }
@@ -171,9 +168,9 @@ std::string &eval_unit_ctx(std::string &out, std::string &source, value &ctx)
 	{ return *(std::string *)madc_runtime_eval_ctx(&out, &source, &ctx); }
 bool eval_bool_ctx(std::string &source, value &ctx)
 	{ return madc_runtime_eval_bool_ctx(&source, &ctx); }
-long eval_int_ctx(std::string &source, value &ctx)
+int64_t eval_int_ctx(std::string &source, value &ctx)
 	{ return madc_runtime_eval_int_ctx(&source, &ctx); }
-long eval_int_ctx(const char *source, value &ctx)
+int64_t eval_int_ctx(const char *source, value &ctx)
 	{ std::string s = source ? source : ""; return madc_runtime_eval_int_ctx(&s, &ctx); }
 double eval_double_ctx(std::string &source, value &ctx)
 	{ return madc_runtime_eval_double_ctx(&source, &ctx); }
@@ -194,7 +191,7 @@ value &eval_string_ctx(value &out, const char *source, value &ctx)
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a
 // diagnosed no-op instead of throwing across the JIT boundary.
-void context_set_int(value &ctx, std::string &key, long v)
+void context_set_int(value &ctx, std::string &key, int64_t v)
 	{ ns_common::value_object_for_write(ctx, "madc::context_set_int")[key] = value(int64_t(v)); }
 void context_set_real(value &ctx, std::string &key, double v)
 	{ ns_common::value_object_for_write(ctx, "madc::context_set_real")[key] = value(v); }
@@ -205,7 +202,7 @@ void context_set_array(value &ctx, std::string &key, value &v)
 
 // Value-first context builders: const char* keys, so building a context
 // never requires <string> in the script.
-void context_set_int(value &ctx, const char *key, long v)
+void context_set_int(value &ctx, const char *key, int64_t v)
 	{ std::string k = key ? key : ""; ns_common::value_object_for_write(ctx, "madc::context_set_int")[k] = value(int64_t(v)); }
 void context_set_real(value &ctx, const char *key, double v)
 	{ std::string k = key ? key : ""; ns_common::value_object_for_write(ctx, "madc::context_set_real")[k] = value(v); }

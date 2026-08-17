@@ -1,8 +1,8 @@
-// Bitfield allocation units, SysV/gcc packing (task #76): a bitfield is
-// placed at the next free bit and may share bytes with a preceding
-// bitfield of a DIFFERENT declared type, constrained only by not crossing
-// a sizeof(T)-aligned window of its own type. Value semantics were already
-// locked by testboolbitfield; this locks the LAYOUT. Oracle: gcc -O0.
+// Bitfield allocation units: SysV/gcc places a field at the next free bit
+// and may share bytes across differently sized declared types.  Win64 uses
+// Microsoft allocation units: adjacent fields share only while their
+// declared storage sizes agree.  The native .expect/.win64_expect pair locks
+// both layouts and the shared value semantics.  Oracles: Linux and MinGW gcc.
 #include <stdio.h>
 
 struct A { _Bool b:1; unsigned x:5; };            /* shared window */

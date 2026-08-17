@@ -24,7 +24,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
-#include <dlfcn.h>
+#include "madc_dl.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -57,7 +57,7 @@ extern "C" {
 
 // Import resolver for MIR_link (mirrors test_cir.cpp).
 static void *freeze_test_import_resolver(const char *name) {
-	return dlsym(RTLD_DEFAULT, name);
+	return madcdl_sym_default(name);
 }
 
 // B2 tests that build synthetic trees (no Program/parse) still intern string
@@ -777,6 +777,15 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 	for (size_t i = 0; i < toks.size(); ++i)
 		delete toks[i];
 
+	// v41 source fallback: the semantic grove stays config-pinned, while the
+	// exact pre-PP bytes remain available for a differently configured,
+	// compiler-less consumer to tokenize live.
+	std::string raw_source;
+	REQUIRE(forest.unit_has_source(u_inc));
+	REQUIRE(forest.unit_source(u_inc, raw_source));
+	CHECK(raw_source.find("typedef int b4a_alias_t;") != std::string::npos);
+	CHECK(raw_source.find("#if B4A_MISSING > 0") == std::string::npos);
+
 	// Decl index: the include's exports, with in-range unit-local slices.
 	std::vector<cir_forest_decl_entry> di;
 	REQUIRE(forest.unit_decl_index(u_inc, di));
@@ -1283,18 +1292,22 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	CHECK(fl->member_bitfields[1].bit_width == 5);
 	CHECK(fl->members[2].first == "c");
 	CHECK(fl->member_offsets[2] == 4);
-	// Gap binds too, with its true bit layout: a@bit0 w3, then the unnamed :2
-	// gap, so b@bit5 w5 (verbatim offsets preserve the gap a rebuild would lose).
+	// Gap binds too, with its true ordered member stream: a@bit0 w3, the
+	// unnamed :2 gap, then b@bit5 w5.  The unnamed member now reaches MC11-IR
+	// as well as preserving the verbatim frozen layout.
 	datadef_map_citer git = progB->struct_map.find("Gap");
 	REQUIRE(git != progB->struct_map.end());
 	DataDefSTRUCT *gp = dynamic_cast<DataDefSTRUCT *>(git->second);
 	REQUIRE(gp != nullptr);
-	REQUIRE(gp->members.size() == 2);
-	REQUIRE(gp->member_bitfields.size() == 2);
+	REQUIRE(gp->members.size() == 3);
+	REQUIRE(gp->member_bitfields.size() == 3);
 	CHECK(gp->member_bitfields[0].bit_offset == 0);
 	CHECK(gp->member_bitfields[0].bit_width == 3);
-	CHECK(gp->member_bitfields[1].bit_offset == 5);
-	CHECK(gp->member_bitfields[1].bit_width == 5);
+	CHECK(gp->members[1].first.empty());
+	CHECK(gp->member_bitfields[1].bit_offset == 3);
+	CHECK(gp->member_bitfields[1].bit_width == 2);
+	CHECK(gp->member_bitfields[2].bit_offset == 5);
+	CHECK(gp->member_bitfields[2].bit_width == 5);
 }
 
 // Phase 6 slice 3c: a non-polymorphic class serializes as a CLASS record —
@@ -1843,7 +1856,12 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 			      + std::to_string((long)getpid()) + ".msnap";
 	{
 		std::ofstream mn(main_path.c_str());
-		mn << "#include <string>\n"
+		// Match <cmath>'s `extern "C++" { #include ... }` shape without
+		// pulling its unrelated special-function corpus into this unit gate.
+		// A linkage block must not stamp <string>'s inline globals vfEXTERN.
+		mn << "extern \"C++\" {\n"
+		      "#include <string>\n"
+		      "}\n"
 		      "int main() { std::string s; return (int)s.size(); }\n";
 	}
 
@@ -1887,7 +1905,10 @@ TEST_CASE("Phase 6 v16: class-typed file-scope globals restore their init form +
 			CHECK(c->nvsize > 0);		// v16: nvsize serialized (was 0)
 		} else if (!strcmp(globals[i].name, "piecewise_construct")) {
 			saw_piecewise = true;
+			CHECK((globals[i].gflags & CIR_GLOBALF_EXTERN_REF) == 0);
 			CHECK((globals[i].gflags & CIR_GLOBALF_CLASS_COPY_TEMP) != 0);
+			CHECK((globals[i].flags & vfEXTERN) == 0);
+			CHECK((globals[i].flags & vfLINKONCE) != 0);
 			REQUIRE(c != nullptr);
 			CHECK(c->nvsize > 0);
 		}

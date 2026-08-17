@@ -18,10 +18,12 @@
 #   - /workspace/sdk/MacOSX.sdk — the owner's macOS SDK. NEVER committed,
 #     synced, or downloaded by us; it comes from the owner's Mac and lives on
 #     the workspace volume.
-#   - /workspace/mir, /workspace/madc — git trees, restored by
-#     scripts/remote_build.sh sync (or a clone).
+#   - /workspace/madc — the git tree (MIR included at third_party/mir),
+#     restored by scripts/remote_build.sh sync (or a clone).
 #   - /workspace/zstd — the per-target static zstd builds the hosted darwin
-#     modes link (forest-carriers S1); rebuild from that tree if lost.
+#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1);
+#     the darwin twins rebuild from that tree by hand if lost, the win64 one
+#     is staged below.
 set -u
 
 CHECK_ONLY=0
@@ -70,15 +72,26 @@ PKGS_cross="qemu-user-static"
 # is part of the base image but rpm is not — its absence 127'd the v0.69.0
 # promote's package build after a container rebuild dropped the apt layer.
 PKGS_package="rpm"
+# winlane: the windows release lane (Track 6.4). The -posix flavor is
+# deliberate — winpthreads provides the pthread/std::thread surface madc
+# uses. wine64 is the interim/isolation runner for cross-built PE binaries
+# (real-Windows runs go over the W0.2 ssh channel once the owner enables
+# it). NOTE: these packages DEFAULT TO MSVCRT; the UCRT recipe and its
+# gate live in scripts/win_ucrt_gate.sh, and the UCRT-flavor libstdc++
+# stage (the C++ ABI leaks the CRT via std::mbstate_t, so the prebuilt
+# msvcrt-flavor archive cannot serve -D_UCRT builds) is staged by
+# scripts/build_win_ucrt_libstdcxx.sh — run below.
+PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-mingw-w64-dev"
 
-ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package"
+ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane"
 
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
 # versioned name we invoke).
 BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
-      qemu-aarch64-static"
+      qemu-aarch64-static
+      x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine"
 
 report() {
 	local missing=0
@@ -112,6 +125,16 @@ report() {
 		printf '  MISSING darwin open headers — scripts/fetch_darwin_open_headers.sh stages them\n'
 		missing=1
 	fi
+	# The win64 zstd stage (W4.1): the hosted-windows MODE links it, and its
+	# absence fails that build loudly at link — but report it here so a lost
+	# stage is visible before a build is attempted.
+	local wzstd="${WIN_ZSTD_DIR:-/workspace/zstd}/libzstd-x86-64-windows.a"
+	if [ -f "$wzstd" ]; then
+		printf '  ok      win64 zstd stage (%s)\n' "$wzstd"
+	else
+		printf '  MISSING win64 zstd stage (%s) — staged below from /workspace/zstd\n' "$wzstd"
+		missing=1
+	fi
 	return $missing
 }
 
@@ -131,6 +154,29 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
 
 echo "provision_container: staging darwin open headers (W0.5 prelude input)"
 bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
+
+echo "provision_container: staging UCRT-flavor libstdc++ (windows lane W1)"
+bash "$(dirname "$0")/build_win_ucrt_libstdcxx.sh" || exit 1
+
+# win64 zstd stage (windows lane W4.1): the per-target static build the
+# hosted-windows MODE links, beside the darwin twins. /workspace/zstd is the
+# v1.5.5 source tree the header comment names; idempotent — the .a survives
+# container rebuilds on the persistent volume.
+WZSTD_A="${WIN_ZSTD_DIR:-/workspace/zstd}/libzstd-x86-64-windows.a"
+if [ ! -f "$WZSTD_A" ]; then
+	echo "provision_container: staging win64 zstd (windows lane W4.1)"
+	if [ ! -d /workspace/zstd/lib ]; then
+		echo "provision_container: /workspace/zstd source tree missing (clone facebook/zstd v1.5.5 there)" >&2
+		exit 1
+	fi
+	make -C /workspace/zstd/lib -j8 BUILD_DIR=obj-win64 \
+		CC='x86_64-w64-mingw32-gcc-posix -D_UCRT -D__USE_MINGW_ANSI_STDIO=1' \
+		AR=x86_64-w64-mingw32-ar libzstd.a || exit 1
+	cp -p /workspace/zstd/lib/libzstd.a "$WZSTD_A" || exit 1
+	# never leave a target-flavored libzstd.a in lib/ for another target's
+	# build to pick up stale
+	rm -f /workspace/zstd/lib/libzstd.a
+fi
 
 echo "provision_container: verifying"
 report

@@ -1,0 +1,41 @@
+# forest_pack_headers_windows.txt — the win64 packaged standard-header set,
+# in CANONICAL ORDER (the versioned pack-order artifact; windows lane W4,
+# docs/plans/2026-08-12-windows-release-lane.md). The win64 twin of
+# forest_pack_headers.txt: same discipline — foundational/config headers
+# first, containers, then streams. The names resolve through the mingw-w64
+# UCRT chain + the staged UCRT-flavor libstdc++ 13.2.0 (the exact text
+# madc.exe was built against and serves).
+#
+# LIST VERSION 3 (2026-08-15). Grow deliberately: every header here must
+# compile QUIETLY (exit 0, zero diagnostics) in this combined order under
+# `wine bin/madc-hosted-x86-64-windows.exe` — the pack step is a release
+# gate. Seeded from the Linux list v2; any name that fails the quiet bar on
+# the win64 chain gets dropped here with a comment naming the blocker.
+cstddef
+climits
+cctype
+cstring
+cstdio
+cstdlib
+ctime
+cerrno
+math.h
+dirent.h
+sys/stat.h
+sys/time.h
+string
+vector
+list
+map
+set
+utility
+concepts
+compare
+memory
+limits
+iterator
+locale
+sstream
+iostream
+fstream
+algorithm

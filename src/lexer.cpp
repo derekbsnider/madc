@@ -5,14 +5,11 @@
 //////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -31,9 +28,12 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
+#include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
+#include "spelling_delim.h"
 
 // Out-of-line anchor for intern_keyed_map's env-gated write trap
 // (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
@@ -85,18 +85,6 @@ static bool named_include_provider_exists(Program &pgm,
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
     return Program::complex_type_of(base_type);
-}
-
-static bool is_prefixed_literal_token(const std::string &ident,
-				      const std::string &body,
-				      size_t pos)
-{
-    if ( pos >= body.size() )
-	return false;
-    char next = body[pos];
-    if ( next != '\'' && next != '"' )
-	return false;
-    return ident == "L" || ident == "u" || ident == "U" || ident == "u8";
 }
 
 static bool is_binary_prefix(int ch, Source &source)
@@ -278,6 +266,11 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	// wide model or the narrow byte model — loud, not silently wrong.
 	if ( prefix == "u" )
 	    throw "UTF-16 string literals (u\"...\") are not supported";
+	// On the LLP64 target the ONE wide model is wchar_t = 2-byte UTF-16
+	// (addWideLiteral re-encodes the UTF-32 payload), so U"..." (char32_t
+	// units) loses its element width there — same loud rule as u"...".
+	if ( prefix == "U" && target_llp64() )
+	    throw "char32_t string literals (U\"...\") are not supported on the LLP64 target";
 	std::string bytes;
 	while ( source.good() && source.peek() != '"' )
 	{
@@ -292,8 +285,11 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
 	    // u8"..." stores UTF-8 bytes (a narrow madc string IS UTF-8);
-	    // L"..." / U"..." store 4-byte units (wchar_t and char32_t share
-	    // the 32-bit layout on this ABI).
+	    // L"..." / U"..." store 4-byte UTF-32 units in the TOKEN payload
+	    // on every target (LP64: wchar_t and char32_t share the 32-bit
+	    // layout; LLP64: addWideLiteral re-encodes the payload to the
+	    // 2-byte UTF-16 wchar_t shape at Variable mint, and U"..." was
+	    // rejected above).
 	    if ( prefix == "u8" )
 		append_utf8_codepoint(bytes, cp);
 	    else
@@ -328,12 +324,13 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     }
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
-    // [lex.ccon] literal types: L'' -> wchar_t (int32 here), U'' -> char32_t
-    // (uint32), u'' -> char16_t (uint16), u8'' -> char8_t (uint8).
+    // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
+    // dd_platform_wchar()), U'' -> char32_t (uint32), u'' -> char16_t
+    // (uint16), u8'' -> char8_t (uint8).
     ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
 		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
-		  : static_cast<DataDef *>(&ddINT32));
+		  : dd_platform_wchar());
     return ti;
 }
 
@@ -379,6 +376,142 @@ static bool consume_macro_call_open(Source &source)
     return false;
 }
 
+// Raw preprocessing spellings have not reached the token stream yet.  Shield
+// quotes and comments here, then let SpellingDelimDepth remain the sole owner
+// of delimiter bookkeeping.  Callers keep their own policy (argument commas,
+// copied text, query operands) on top of this state.
+class PpLexicalShield
+{
+    enum class Mode {
+	Code, String, Character, LineComment, BlockComment, BlockCommentClose
+    };
+
+    Mode mode = Mode::Code;
+    bool escaped = false;
+
+public:
+    bool structural(char c, char next)
+    {
+	if ( mode == Mode::LineComment )
+	{
+	    if ( c == '\n' || c == '\r' )
+		mode = Mode::Code;
+	    return false;
+	}
+	if ( mode == Mode::BlockComment )
+	{
+	    if ( c == '*' && next == '/' )
+		mode = Mode::BlockCommentClose;
+	    return false;
+	}
+	if ( mode == Mode::BlockCommentClose )
+	{
+	    // This byte is the `/` already paired with the preceding `*`.
+	    // Resume code only AFTER it, so `*//` is a closed comment followed
+	    // by one slash rather than the start of a line comment.
+	    mode = Mode::Code;
+	    return false;
+	}
+	if ( mode == Mode::String || mode == Mode::Character )
+	{
+	    if ( escaped )
+	    {
+		escaped = false;
+		return false;
+	    }
+	    if ( c == '\\' )
+	    {
+		escaped = true;
+		return false;
+	    }
+	    if ( (mode == Mode::String && c == '"')
+	      || (mode == Mode::Character && c == '\'') )
+		mode = Mode::Code;
+	    return false;
+	}
+	if ( c == '"' )
+	{
+	    mode = Mode::String;
+	    return false;
+	}
+	if ( c == '\'' )
+	{
+	    mode = Mode::Character;
+	    return false;
+	}
+	if ( c == '/' && next == '/' )
+	{
+	    mode = Mode::LineComment;
+	    return false;
+	}
+	if ( c == '/' && next == '*' )
+	{
+	    mode = Mode::BlockComment;
+	    return false;
+	}
+	return true;
+    }
+};
+
+class PpGroupScan
+{
+    SpellingDelimDepth depth;
+    PpLexicalShield shield;
+    bool started = false;
+    bool finished = false;
+
+public:
+    bool step(char c, char next)
+    {
+	if ( !shield.structural(c, next) )
+	    return false;
+	int before = depth.paren;
+	depth.update(c);
+	if ( !started && c == '(' && depth.paren == 1 )
+	    started = true;
+	if ( started && c == ')' && before == 1 && depth.paren == 0 )
+	    finished = true;
+	return true;
+    }
+
+    bool at_argument_level() const { return started && depth.paren == 1; }
+    bool closed() const { return finished; }
+};
+
+// Consume one parenthesized preprocessing group, including its delimiters.
+static bool consume_pp_group(Source &source, std::string *copy = NULL)
+{
+    if ( !source.good() || source.peek() != '(' )
+	return false;
+    PpGroupScan group;
+    while ( source.good() )
+    {
+	char c = source.get();
+	if ( copy )
+	    *copy += c;
+	group.step(c, source.good() ? source.peek() : '\0');
+	if ( group.closed() )
+	    return true;
+    }
+    return false;
+}
+
+// Return the first byte after a balanced preprocessing group in text.
+static size_t pp_group_end(const std::string &text, size_t open)
+{
+    if ( open >= text.size() || text[open] != '(' )
+	return std::string::npos;
+    PpGroupScan group;
+    for ( size_t i = open; i < text.size(); ++i )
+    {
+	char next = i + 1 < text.size() ? text[i + 1] : '\0';
+	group.step(text[i], next);
+	if ( group.closed() )
+	    return i + 1;
+    }
+    return std::string::npos;
+}
+
 static bool is_identifier_spelling(const std::string &s)
 {
     if ( s.empty() )
@@ -397,8 +530,30 @@ static bool identifier_matches_gnu_attribute_name(const std::string &id,
     return id == name || id == "__" + name + "__";
 }
 
-static bool gnu_attribute_text_has_name(const std::string &text,
-					const std::string &name)
+GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
+{
+    struct Entry {
+	const char *name;
+	GnuAttributeKind kind;
+    };
+    static const Entry entries[] = {
+	{ "packed", GnuAttributeKind::Packed },
+	{ "aligned", GnuAttributeKind::Aligned },
+	{ "mode", GnuAttributeKind::Mode },
+	{ "scalar_storage_order", GnuAttributeKind::ScalarStorageOrder },
+	{ "vector_size", GnuAttributeKind::VectorSize },
+	{ "alias", GnuAttributeKind::Alias },
+	{ "no_instrument_function", GnuAttributeKind::NoInstrumentFunction },
+	{ "optimize", GnuAttributeKind::Optimize },
+	{ "using_if_exists", GnuAttributeKind::UsingIfExists }
+    };
+    for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
+	if ( identifier_matches_gnu_attribute_name(name, entries[i].name) )
+	    return entries[i].kind;
+    return GnuAttributeKind::Unsupported;
+}
+
+static bool gnu_attribute_text_has_supported_name(const std::string &text)
 {
     for ( size_t i = 0; i < text.size(); )
     {
@@ -428,7 +583,7 @@ static bool gnu_attribute_text_has_name(const std::string &text,
 	while ( i < text.size()
 	     && (text[i] == '_' || isalnum((unsigned char)text[i])) )
 	    id += text[i++];
-	if ( identifier_matches_gnu_attribute_name(id, name) )
+	if ( madc_gnu_attribute_kind(id) != GnuAttributeKind::Unsupported )
 	    return true;
     }
     return false;
@@ -447,6 +602,12 @@ static int compound_type_specifier_flag(const std::string &w)
 	TS_UNSIGNED = 1 << 16,
 	TS_COMPLEX  = 1 << 18,
 	TS_INT128   = 1 << 20,
+	// C23 _FloatN family, combinable with _Complex only (gcc's
+	// avx512fp16intrin.h: `_Float16 _Complex __A`). Two flags, one per
+	// approximation class (float / double) — the exact SPELLING for the
+	// minted token comes from the words themselves, not the bit.
+	TS_FLOATN_F = 1 << 22,	// _Float16, _Float32  (~float)
+	TS_FLOATN_D = 1 << 24,	// _Float64/_Float128/_Float32x/_Float64x (~double)
     };
     if ( w == "char" ) return TS_CHAR;
     if ( w == "short" ) return TS_SHORT;
@@ -458,6 +619,9 @@ static int compound_type_specifier_flag(const std::string &w)
     if ( w == "unsigned" ) return TS_UNSIGNED;
     if ( w == "__int128" ) return TS_INT128;
     if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
+    if ( w == "_Float16" || w == "_Float32" ) return TS_FLOATN_F;
+    if ( w == "_Float64" || w == "_Float128"
+      || w == "_Float32x" || w == "_Float64x" ) return TS_FLOATN_D;
     return 0;
 }
 
@@ -759,6 +923,72 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
     return replacement;
 }
 
+void Program::tokenize_synthetic_system_include(const std::string &header,
+						 const char *origin_name)
+{
+	Source saved = std::move(source);
+	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	suppress_auto_include_scan = true;
+	source = Source();
+	source.fname(origin_name);
+	std::string directive = std::string("#include <") + header + ">\n";
+	{ ReadTimer _rt(_read_seconds); source.str(directive); }
+	TokenBase *itb;
+	while ( (itb = getRealToken()) )
+		push_token_with_literal_concat(itb);
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+}
+
+void Program::tokenize_embedded_header_text(const std::string &name,
+					    const std::string &text,
+					    bool protocol_visit)
+{
+	// A protocol visit forms no unit and no edge: its serving belongs to the
+	// includer. A normal embedded header is a distinct forest unit reached by
+	// the includer's edge.
+	const char *protocol_saved = NULL;
+	if ( protocol_visit )
+		protocol_saved = pack_protocol_serving_begin();
+	else
+		pack_record_edge(name);
+	Source saved = std::move(source);
+	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	suppress_auto_include_scan = true;
+	source = Source();
+	source.fname(name.c_str());
+	{ ReadTimer _rt(_read_seconds); source.str(text); }
+	_input_bytes += text.size();
+	TokenBase *itb;
+	const char *interned = intern_file(name);
+	if ( !protocol_visit )
+	{
+		pack_note_unit(interned);
+		pack_record_source(interned, text);
+	}
+	// v40 (task #57): the embedded twin of the filesystem include's
+	// unit-stack tracking — embedded units freeze too.
+	if ( pack_recording && !protocol_visit )
+	{
+		for ( size_t si = 0; si < pack_unit_stack.size(); ++si )
+			pack_unit_subtree[pack_unit_stack[si]].insert(interned);
+		pack_unit_subtree[interned].insert(interned);
+		pack_unit_stack.push_back(interned);
+	}
+	while ( (itb = getRealToken()) )
+	{
+		itb->file = interned;
+		push_token_with_literal_concat(itb);
+	}
+	if ( pack_recording && !protocol_visit )
+		pack_unit_stack.pop_back();
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	if ( protocol_visit )
+		pack_protocol_serving_end(protocol_saved);
+	mark_embedded_include_flag(name);
+}
+
 void Program::expand_pending_auto_include_macros(size_t original_start)
 {
     if ( pending_auto_include_identifiers.empty() )
@@ -828,15 +1058,7 @@ void Program::inject_pending_auto_includes()
 	    // arms silently dropped every header without a named provider,
 	    // which is how retiring the embedded <string>/<sstream> twins
 	    // broke the C++ arm of auto-include unnoticed.
-	    Source saved = std::move(source);
-	    source = Source();
-	    source.fname("<auto-include>");
-	    std::string directive = std::string("#include <") + header + ">\n";
-	    { ReadTimer _rt(_read_seconds); source.str(directive); }
-	    TokenBase *itb;
-	    while ( (itb = getRealToken()) )
-		push_token_with_literal_concat(itb);
-	    source = std::move(saved);
+	    tokenize_synthetic_system_include(header, "<auto-include>");
 	}
     }
 
@@ -901,6 +1123,16 @@ static bool decl_head_macro_args_look_like_prototype(const std::vector<std::stri
 	    || word == "static" || word == "typedef";
     };
 
+    // EVERY argument must be parameter-declaration-shaped (a type word or
+    // `...`), not just one: a real prototype has no plain-identifier or
+    // string-literal parameter. mingw intrin-impl.h's `__INTRINSICS_USEINLINE
+    // __buildstos(__stosq, unsigned __int64, "q|q")` follows a decl head
+    // (extern __inline__ ...) yet MUST expand — its first and third
+    // arguments can never appear in a declarator's parameter list. The
+    // any-arg reading suppressed it and the parse died at the unexpanded
+    // macro name. (gcc always expands here; suppression is madc's deliberate
+    // leniency for the SMAUG `#define bug(...)` + later-real-definition
+    // pattern, so it must stay confined to arg lists gcc could reject.)
     for ( const std::string &arg : args )
     {
 	size_t i = 0;
@@ -909,16 +1141,381 @@ static bool decl_head_macro_args_look_like_prototype(const std::vector<std::stri
 	if ( i >= arg.size() )
 	    continue;
 	if ( arg.compare(i, 3, "...") == 0 )
+	    continue;
+	if ( !starts_with_type_word(arg) )
+	    return false;
+    }
+    return true;
+}
+
+static bool macro_body_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+typedef Program::MacroDef::ReplacementToken MacroReplacementToken;
+
+static bool pp_literal_start(const std::string &text, size_t pos,
+			     size_t &quote, bool &raw)
+{
+    static const char *const raw_prefixes[] = { "u8R", "uR", "UR", "LR", "R" };
+    static const char *const prefixes[] = { "u8", "u", "U", "L", "" };
+
+    for ( size_t i = 0; i < sizeof(raw_prefixes) / sizeof(raw_prefixes[0]); ++i )
+    {
+	size_t n = strlen(raw_prefixes[i]);
+	if ( text.compare(pos, n, raw_prefixes[i]) == 0
+	  && pos + n < text.size() && text[pos + n] == '"' )
+	{
+	    quote = pos + n;
+	    raw = true;
 	    return true;
-	if ( starts_with_type_word(arg) )
+	}
+    }
+    for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
+    {
+	size_t n = strlen(prefixes[i]);
+	if ( text.compare(pos, n, prefixes[i]) != 0 || pos + n >= text.size() )
+	    continue;
+	char q = text[pos + n];
+	if ( q == '"' || q == '\'' )
+	{
+	    quote = pos + n;
+	    raw = false;
 	    return true;
+	}
     }
     return false;
+}
+
+static std::vector<MacroReplacementToken>
+tokenize_macro_spelling(const std::string &text)
+{
+    typedef MacroReplacementToken T;
+    std::vector<T> tokens;
+    for ( size_t i = 0; i < text.size(); )
+    {
+	size_t start = i;
+	if ( macro_body_space(text[i]) )
+	{
+	    while ( i < text.size() && macro_body_space(text[i]) )
+		++i;
+	    tokens.push_back(T(T::rtWhitespace, start, i));
+	    continue;
+	}
+	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '/' )
+	{
+	    i += 2;
+	    while ( i < text.size() && text[i] != '\n' && text[i] != '\r' )
+		++i;
+	    tokens.push_back(T(T::rtComment, start, i));
+	    continue;
+	}
+	if ( text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*' )
+	{
+	    i += 2;
+	    while ( i < text.size()
+		 && !(text[i - 1] == '*' && text[i] == '/') )
+		++i;
+	    if ( i < text.size() )
+		++i;
+	    tokens.push_back(T(T::rtComment, start, i));
+	    continue;
+	}
+
+	size_t quote = 0;
+	bool raw = false;
+	if ( pp_literal_start(text, i, quote, raw) )
+	{
+	    if ( raw )
+	    {
+		size_t open = text.find('(', quote + 1);
+		if ( open != std::string::npos && open - quote - 1 <= 16 )
+		{
+		    std::string close = ")" + text.substr(quote + 1,
+							 open - quote - 1) + "\"";
+		    size_t end = text.find(close, open + 1);
+		    i = end == std::string::npos ? text.size() : end + close.size();
+		}
+		else
+		    i = text.size();
+	    }
+	    else
+	    {
+		char q = text[quote];
+		i = quote + 1;
+		bool escaped = false;
+		while ( i < text.size() )
+		{
+		    char c = text[i++];
+		    if ( escaped )
+			escaped = false;
+		    else if ( c == '\\' )
+			escaped = true;
+		    else if ( c == q )
+			break;
+		}
+	    }
+	    tokens.push_back(T(T::rtLiteral, start, i));
+	    continue;
+	}
+	if ( text[i] == '_' || isalpha((unsigned char)text[i]) )
+	{
+	    ++i;
+	    while ( i < text.size()
+		 && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+		++i;
+	    tokens.push_back(T(T::rtIdentifier, start, i));
+	    continue;
+	}
+	if ( isdigit((unsigned char)text[i])
+	  || (text[i] == '.' && i + 1 < text.size()
+	      && isdigit((unsigned char)text[i + 1])) )
+	{
+	    ++i;
+	    while ( i < text.size() )
+	    {
+		char c = text[i];
+		if ( c == '_' || c == '.' || c == '\''
+		  || isalnum((unsigned char)c) )
+		{
+		    ++i;
+		    continue;
+		}
+		if ( (c == '+' || c == '-') && i > start
+		  && (text[i - 1] == 'e' || text[i - 1] == 'E'
+		      || text[i - 1] == 'p' || text[i - 1] == 'P') )
+		{
+		    ++i;
+		    continue;
+		}
+		break;
+	    }
+	    tokens.push_back(T(T::rtPpNumber, start, i));
+	    continue;
+	}
+	if ( text[i] == '#' )
+	{
+	    if ( i + 1 < text.size() && text[i + 1] == '#' )
+	    {
+		i += 2;
+		tokens.push_back(T(T::rtPaste, start, i));
+	    }
+	    else
+	    {
+		++i;
+		tokens.push_back(T(T::rtHash, start, i));
+	    }
+	    continue;
+	}
+	++i;
+	tokens.push_back(T(T::rtPunct, start, i));
+    }
+    return tokens;
+}
+
+static bool macro_token_space(const MacroReplacementToken &token)
+{
+    return token.kind == MacroReplacementToken::rtWhitespace
+	|| token.kind == MacroReplacementToken::rtComment;
+}
+
+static std::string macro_token_text(const std::string &text,
+				    const MacroReplacementToken &token)
+{
+    return text.substr(token.begin, token.end - token.begin);
+}
+
+static const std::vector<MacroReplacementToken> &
+macro_replacement_tokens(const Program::MacroDef &macro)
+{
+    if ( macro.replacement_tokens_for != macro.body )
+    {
+	macro.replacement_tokens = tokenize_macro_spelling(macro.body);
+	macro.replacement_tokens_for = macro.body;
+    }
+    return macro.replacement_tokens;
+}
+
+static bool macro_param_use_is_raw(const std::vector<MacroReplacementToken> &tokens,
+				   size_t use)
+{
+    size_t left = use;
+    while ( left > 0 && macro_token_space(tokens[left - 1]) )
+	--left;
+    if ( left > 0
+	 && (tokens[left - 1].kind == MacroReplacementToken::rtHash
+	     || tokens[left - 1].kind == MacroReplacementToken::rtPaste) )
+	return true;
+
+    size_t right = use + 1;
+    while ( right < tokens.size() && macro_token_space(tokens[right]) )
+	++right;
+    return right < tokens.size()
+	&& tokens[right].kind == MacroReplacementToken::rtPaste;
+}
+
+static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
+					 const std::string &param)
+{
+    const std::vector<MacroReplacementToken> &tokens =
+	macro_replacement_tokens(macro);
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i].kind == MacroReplacementToken::rtIdentifier
+	  && macro_token_text(macro.body, tokens[i]) == param
+	  && !macro_param_use_is_raw(tokens, i) )
+	    return true;
+    return false;
+}
+
+// The one token-to-source spelling owner lives with reconstruct_source below.
+// Macro argument pre-expansion also needs it: its temporary token stream must
+// round-trip literals without changing their value or type.
+static std::string token_spelling(TokenBase *tb);
+
+static std::string stringify_macro_arg(const std::string &raw)
+{
+    std::vector<MacroReplacementToken> tokens = tokenize_macro_spelling(raw);
+    std::string out("\"");
+    bool pending_space = false;
+    bool wrote = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( macro_token_space(tokens[i]) )
+	{
+	    if ( wrote )
+		pending_space = true;
+	    continue;
+	}
+	if ( pending_space )
+	{
+	    out += ' ';
+	    pending_space = false;
+	}
+	std::string spelling = macro_token_text(raw, tokens[i]);
+	for ( size_t j = 0; j < spelling.size(); ++j )
+	{
+	    if ( spelling[j] == '"' || spelling[j] == '\\' )
+		out += '\\';
+	    out += spelling[j];
+	}
+	wrote = true;
+    }
+    out += '"';
+    return out;
+}
+
+static size_t macro_fixed_param_count(const Program::MacroDef &macro)
+{
+    if ( macro.variadic && !macro.variadic_param.empty()
+	 && !macro.params.empty() )
+	return macro.params.size() - 1;
+    return macro.params.size();
+}
+
+static std::string expand_function_macro_body(
+	const Program::MacroDef &macro,
+	const std::vector<std::string> &raw_args,
+	const std::vector<std::string> &expanded_args)
+{
+    std::map<std::string, std::string> raw_params;
+    std::map<std::string, std::string> expanded_params;
+    size_t fixed = macro_fixed_param_count(macro);
+    for ( size_t i = 0; i < fixed; ++i )
+    {
+	raw_params[macro.params[i]] = i < raw_args.size() ? raw_args[i] : "";
+	expanded_params[macro.params[i]] =
+	    i < expanded_args.size() ? expanded_args[i] : "";
+    }
+    if ( macro.variadic )
+    {
+	std::string raw_varargs;
+	std::string expanded_varargs;
+	for ( size_t i = fixed; i < raw_args.size(); ++i )
+	{
+	    if ( i > fixed )
+	    {
+		raw_varargs += ", ";
+		expanded_varargs += ", ";
+	    }
+	    raw_varargs += raw_args[i];
+	    expanded_varargs += i < expanded_args.size() ? expanded_args[i] : raw_args[i];
+	}
+	raw_params["__VA_ARGS__"] = raw_varargs;
+	expanded_params["__VA_ARGS__"] = expanded_varargs;
+	if ( !macro.variadic_param.empty() )
+	{
+	    raw_params[macro.variadic_param] = raw_varargs;
+	    expanded_params[macro.variadic_param] = expanded_varargs;
+	}
+    }
+
+    const std::vector<MacroReplacementToken> &tokens =
+	macro_replacement_tokens(macro);
+    std::string expanded;
+    expanded.reserve(macro.body.size());
+    for ( size_t i = 0; i < tokens.size(); )
+    {
+	const MacroReplacementToken &token = tokens[i];
+	if ( token.kind == MacroReplacementToken::rtHash )
+	{
+	    size_t param = i + 1;
+	    while ( param < tokens.size() && macro_token_space(tokens[param]) )
+		++param;
+	    if ( param < tokens.size()
+	      && tokens[param].kind == MacroReplacementToken::rtIdentifier )
+	    {
+		std::string name = macro_token_text(macro.body, tokens[param]);
+		std::map<std::string, std::string>::const_iterator raw =
+		    raw_params.find(name);
+		if ( raw != raw_params.end() )
+		{
+		    expanded += stringify_macro_arg(raw->second);
+		    i = param + 1;
+		    continue;
+		}
+	    }
+	}
+	if ( token.kind == MacroReplacementToken::rtPaste )
+	{
+	    while ( !expanded.empty() && macro_body_space(expanded.back()) )
+		expanded.pop_back();
+	    ++i;
+	    while ( i < tokens.size() && macro_token_space(tokens[i]) )
+		++i;
+	    continue;
+	}
+	if ( token.kind == MacroReplacementToken::rtIdentifier )
+	{
+	    std::string name = macro_token_text(macro.body, token);
+	    std::map<std::string, std::string>::const_iterator value =
+		expanded_params.find(name);
+	    if ( value != expanded_params.end() )
+	    {
+		if ( macro_param_use_is_raw(tokens, i) )
+		    expanded += raw_params[name];
+		else
+		    expanded += value->second;
+		++i;
+		continue;
+	    }
+	}
+	if ( token.kind == MacroReplacementToken::rtComment )
+	    expanded += ' ';
+	else
+	    expanded += macro_token_text(macro.body, token);
+	++i;
+    }
+    return expanded;
 }
 
 static std::string read_macro_body(Source &source)
 {
     std::string body;
+
+    enum LiteralMode { lmNone, lmString, lmCharacter };
+    LiteralMode literal = lmNone;
+    bool escaped = false;
 
     while ( source.good() && !source.eof() )
     {
@@ -934,10 +1531,28 @@ static std::string read_macro_body(Source &source)
 		source.get();
 		if ( source.peek() == '\n' )
 		    source.get();
-		body += ' ';
 		continue;
 	    }
 	    body += '\\';
+	    if ( literal != lmNone )
+		escaped = !escaped;
+	    continue;
+	}
+	if ( literal != lmNone )
+	{
+	    body += source.get();
+	    if ( escaped )
+		escaped = false;
+	    else if ( (literal == lmString && ch == '"')
+		   || (literal == lmCharacter && ch == '\'') )
+		literal = lmNone;
+	    continue;
+	}
+	if ( ch == '"' || ch == '\'' )
+	{
+	    literal = ch == '"' ? lmString : lmCharacter;
+	    escaped = false;
+	    body += source.get();
 	    continue;
 	}
 	if ( ch == '/' )
@@ -1388,7 +2003,13 @@ void Program::_tokenizer_init()
     define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
     define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
     define_map["__x86_64__"] = "1";
-    define_map["__LP64__"] = "1";
+    // __LP64__ follows the target data model: gcc defines it on Linux and
+    // darwin, mingw never does — and because mingw doesn't, the baked
+    // predefine capture cannot overwrite a stale seed on win64 the way it
+    // fixes __SIZEOF_LONG__ and friends; an unconditional seed leaks LP64
+    // into every served mingw header (task #46 rider).
+    if ( !target_llp64() )
+	define_map["__LP64__"] = "1";
     define_map["__BYTE_ORDER__"] = std::to_string(__BYTE_ORDER__);
     define_map["__ORDER_LITTLE_ENDIAN__"] = std::to_string(__ORDER_LITTLE_ENDIAN__);
     define_map["__ORDER_BIG_ENDIAN__"] = std::to_string(__ORDER_BIG_ENDIAN__);
@@ -1416,9 +2037,7 @@ void Program::_tokenizer_init()
     define_map["__builtin_putchar"] = "putchar";
     define_map["__builtin_abs"] = "abs";
     define_map["__builtin_labs"] = "labs";
-    define_map["__builtin_fabs"] = "fabs";
-    define_map["__builtin_fabsf"] = "fabsf";
-    define_map["__builtin_fabsl"] = "fabsl";
+    // fabs family rows live in the C99 math table below.
     define_map["__builtin_trap"] = "abort";
     define_map["__builtin_memchr"] = "memchr";
     define_map["__builtin_mempcpy"] = "mempcpy";
@@ -1449,33 +2068,35 @@ void Program::_tokenizer_init()
     define_map["__builtin_alloca"] = "alloca";
     define_map["__builtin_bzero"] = "bzero";
     define_map["__builtin_bcopy"] = "bcopy";
-    define_map["__builtin_copysign"] = "copysign";
-    define_map["__builtin_copysignf"] = "copysignf";
-    define_map["__builtin_copysignl"] = "copysignl";
-    define_map["__builtin_sqrtf"] = "sqrtf";
-    define_map["__builtin_sqrt"] = "sqrt";
-    define_map["__builtin_sqrtl"] = "sqrtl";
-    define_map["__builtin_logf"] = "logf";
-    define_map["__builtin_log"] = "log";
-    define_map["__builtin_expf"] = "expf";
-    define_map["__builtin_exp"] = "exp";
-    define_map["__builtin_sinf"] = "sinf";
-    define_map["__builtin_sin"] = "sin";
-    define_map["__builtin_cosf"] = "cosf";
-    define_map["__builtin_cos"] = "cos";
-    define_map["__builtin_floorf"] = "floorf";
-    define_map["__builtin_floor"] = "floor";
-    define_map["__builtin_ceilf"] = "ceilf";
-    define_map["__builtin_ceil"] = "ceil";
-    define_map["__builtin_roundf"] = "roundf";
-    define_map["__builtin_round"] = "round";
-    define_map["__builtin_fmaxf"] = "fmaxf";
-    define_map["__builtin_fmax"] = "fmax";
-    define_map["__builtin_fmaxl"] = "fmaxl";
-    define_map["__builtin_powf"] = "powf";
-    define_map["__builtin_pow"] = "pow";
-    define_map["__builtin_fmaf"] = "fmaf";
-    define_map["__builtin_fma"] = "fma";
+    // C99 <math.h> family, table-driven over roots x {"", "f", "l"}:
+    // libstdc++'s cmath inline wrappers call the __builtin_* forms (its
+    // include_next <math.h> supplies the real prototypes, so the aliased
+    // names type correctly). The previous ad-hoc singles grew one cmath
+    // branch at a time and missed the whole *l family the win64 staged
+    // 13.2.0 text calls ("__builtin_acosl undeclared" across every
+    // cmath consumer); the complete family closes the class. The *l
+    // RESOLUTION on win64 is the fork map's flavor-pin job
+    // (mir-mingw-stdio.h class 3): ucrtbase lacks most *l exports and
+    // mis-flavors the rest (MSVC 8-byte long double).
+    {
+	static const char *const c99_math_roots[] = {
+	    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
+	    "cbrt", "ceil", "copysign", "cos", "cosh", "erf", "erfc",
+	    "exp", "exp2", "expm1", "fabs", "fdim", "floor", "fma",
+	    "fmax", "fmin", "fmod", "frexp", "hypot", "ilogb", "ldexp",
+	    "lgamma", "llrint", "llround", "log", "log10", "log1p",
+	    "log2", "logb", "lrint", "lround", "modf", "nearbyint",
+	    "nextafter", "nexttoward", "pow", "remainder", "remquo",
+	    "rint", "round", "scalbln", "scalbn", "sin", "sinh", "sqrt",
+	    "tan", "tanh", "tgamma", "trunc", NULL };
+	for ( int i = 0; c99_math_roots[i]; ++i )
+	{
+	    std::string root = c99_math_roots[i];
+	    define_map["__builtin_" + root] = root;
+	    define_map["__builtin_" + root + "f"] = root + "f";
+	    define_map["__builtin_" + root + "l"] = root + "l";
+	}
+    }
     define_map["__builtin_conj"] = "conj";
     define_map["__builtin_conjf"] = "conjf";
     define_map["__builtin_conjl"] = "conjl";
@@ -1757,13 +2378,8 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_isinff"] = isinf;
 	macro_map["__builtin_isinfl"] = isinf;
     }
-    // __builtin_classify_type(x) → 0 (integer type, simplified)
-    {
-	MacroDef m;
-	m.params = {"__x"};
-	m.body = "0";
-	macro_map["__builtin_classify_type"] = m;
-    }
+    // __builtin_classify_type is a PARSER builtin (parser.cpp expression
+    // dispatch) — it must see the operand's type, which no macro can.
     // __builtin_alloca → alloca (line 930); compiler handles via stack bump pool.
     define_map["__builtin_ffs"] = "__madc_ffs";
     define_map["__builtin_ffsl"] = "__madc_ffsl";
@@ -1811,13 +2427,6 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_offsetof"] = m;
     }
 
-    // __builtin_classify_type(x) — return 0 (void type) as placeholder
-    {
-	MacroDef m;
-	m.params = {"__x"};
-	m.body = "0";
-	macro_map["__builtin_classify_type"] = m;
-    }
     {
 	MacroDef m;
 	m.body = "0";
@@ -1957,7 +2566,7 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 					 const char *arm, bool quiet_missing,
 					 bool &config_mismatch,
 					 double &map_secs, double &open_secs,
-					 bool require_config_match = true,
+					 Program::ForestConfigMatch config_match,
 					 bool header_only = false)
 {
     double _t0 = forest_stat_now();
@@ -1971,47 +2580,67 @@ static CirFrozenForest *forest_probe_arm(Program *prog, const char *path,
 	return NULL;
     }
     map_secs += forest_stat_now() - _t0;
-    CirFrozenForest *f = new CirFrozenForest();
-    double _t1 = forest_stat_now();
-    if ( !f->open_header(image, image_len, quiet_missing) )
+    size_t candidate_len = image_len;
+    for (;;)
     {
-	open_secs += forest_stat_now() - _t1;
-	delete f;
-	return NULL;
+	CirFrozenForest *f = new CirFrozenForest();
+	double _t1 = forest_stat_now();
+	if ( !f->open_header(image, candidate_len, quiet_missing) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    delete f;
+	    return NULL;
+	}
+	size_t previous_len = 0;
+	const bool have_previous = f->previous_image_len(previous_len);
+	const uint32_t producer_config = f->language_std();
+	const uint32_t consumer_config = madc_forest_config_word(prog);
+	bool matches = config_match == Program::forestMatchAny;
+	if ( config_match == Program::forestMatchExact )
+	    matches = producer_config == consumer_config
+		   && f->defines_hash() == madc_forest_defines_hash(prog);
+	else if ( config_match == Program::forestMatchStdlibFlavor )
+	    matches = (producer_config & CIR_FOREST_CONFIG_STDLIB_MASK)
+		   == (consumer_config & CIR_FOREST_CONFIG_STDLIB_MASK);
+
+	if ( !matches )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] producer config"
+		" mismatch — trying older profile" << std::endl);
+	    if ( config_match == Program::forestMatchExact )
+		config_mismatch = true;
+	    delete f;
+	}
+	else if ( header_only || f->complete_open(/*c2m=*/NULL) )
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
+		<< (header_only ? "directory only"
+				: std::to_string(f->unit_count()) + " units") << ")"
+		<< std::endl);
+	    return f;
+	}
+	else
+	{
+	    open_secs += forest_stat_now() - _t1;
+	    delete f;
+	}
+
+	if ( !have_previous )
+	    return NULL;
+	candidate_len = previous_len;
     }
-    if ( require_config_match
-      && ( f->language_std() != madc_forest_config_word(prog)
-	|| f->defines_hash() != madc_forest_defines_hash(prog) ) )
-    {
-	open_secs += forest_stat_now() - _t1;
-	DBG(std::cout << "forest-bind: [" << arm << "] producer config"
-	    " mismatch (std/defines) — skipped" << std::endl);
-	config_mismatch = true;
-	delete f;
-	return NULL;
-    }
-    if ( !header_only && !f->complete_open(/*c2m=*/NULL) )
-    {
-	open_secs += forest_stat_now() - _t1;
-	delete f;
-	return NULL;
-    }
-    open_secs += forest_stat_now() - _t1;
-    DBG(std::cout << "forest-bind: [" << arm << "] opened container ("
-	<< (header_only ? "directory only"
-			: std::to_string(f->unit_count()) + " units") << ")"
-	<< std::endl);
-    return f;
 }
 
 // The ordered carrier discovery chain (forest-carriers plan: one format, one
 // loader, N carriers). Returns the first arm that yields a usable container,
-// or NULL. TWO consumers walk it: the grove bind (require_config_match — a C
-// compile must not bind a C++-parsed corpus, the v27 contract) and the AOT
-// ledger (S5: madc's OWN runtime, target-specific but dialect-agnostic, so it
-// binds regardless of the producer's std/-D). Keeping ONE walker keeps the arm
-// ORDER — the thing carriers are actually about — in a single place.
-CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
+// or NULL. All three consumers walk it: the grove bind requires the exact
+// producer config; raw source requires the selected stdlib flavor but is
+// re-tokenized under the live std/-D policy; the AOT ledger is dialect-
+// agnostic. Each arm may carry a newest-first stack of profiles. Keeping ONE
+// walker keeps both arm order and within-arm profile order in one place.
+CirFrozenForest *Program::probe_forest_chain(ForestConfigMatch config_match,
 					     bool &cfg_mismatch,
 					     bool header_only)
 {
@@ -2021,7 +2650,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	return forest_probe_arm(this, forest_bind_path.c_str(),
 				"explicit", /*quiet_missing=*/false,
 				cfg_mismatch, _forest_map_seconds,
-				_forest_open_seconds, require_config_match,
+				_forest_open_seconds, config_match,
 				header_only);
 
     // Arm 1: self-image — the running binary's own carrier (ELF trailer /
@@ -2029,7 +2658,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
     CirFrozenForest *f = forest_probe_arm(this, NULL, "self-image",
 					  /*quiet_missing=*/true, cfg_mismatch,
 					  _forest_map_seconds, _forest_open_seconds,
-					  require_config_match,
+					  config_match,
 					  header_only);
     // Arm 2 (forest-carriers S4): library image — in the SHARED shape the
     // forest rides libmadc's own image, so ONE container serves the thin CLI
@@ -2046,7 +2675,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	f = forest_probe_arm(this, lib.c_str(), "library-image",
 			     /*quiet_missing=*/true, cfg_mismatch,
 			     _forest_map_seconds, _forest_open_seconds,
-			     require_config_match,
+			     config_match,
 			     header_only);
     if ( !f && registration_policy.enable_external_forest )
     {
@@ -2058,13 +2687,13 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, (exe + ".forest").c_str(),
 				 "sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
 	if ( !f && have_lib_image )
 	    f = forest_probe_arm(this, (lib + ".forest").c_str(),
 				 "lib-sidecar", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
 	// Arm 4: MADC_FOREST environment variable (a configured path; env
 	// outranks the madc.ini key per the config precedence rule
@@ -2074,7 +2703,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 	    f = forest_probe_arm(this, env, "MADC_FOREST",
 				 /*quiet_missing=*/false, cfg_mismatch,
 				 _forest_map_seconds, _forest_open_seconds,
-				 require_config_match,
+				 config_match,
 				 header_only);
 	// Arm 5 (forest-carriers S6): the madc.ini `forest =` key — the LAST
 	// arm, because a configured default must lose to everything more
@@ -2085,7 +2714,7 @@ CirFrozenForest *Program::probe_forest_chain(bool require_config_match,
 				 registration_policy.forest_config_path.c_str(),
 				 "madc.ini", /*quiet_missing=*/false,
 				 cfg_mismatch, _forest_map_seconds,
-				 _forest_open_seconds, require_config_match,
+				 _forest_open_seconds, config_match,
 				 header_only);
     }
     return f;
@@ -2114,7 +2743,7 @@ CirFrozenForest *Program::ensure_bind_forest()
     // loads, materialize, template payload) accumulate on the same clock.
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     bool cfg_mismatch = false;
-    bind_forest = probe_forest_chain(/*require_config_match=*/true, cfg_mismatch);
+    bind_forest = probe_forest_chain(forestMatchExact, cfg_mismatch);
     if ( bind_forest )
     {
 	bind_forest->_work_secs = &_forest_work_seconds;
@@ -2166,11 +2795,79 @@ CirFrozenForest *Program::ensure_ledger_forest()
     // is the whole requirement — binding the frozen string pool and arena is
     // grove work, and it needs live parse state this consumer may not have
     // (the .o link lane links precompiled objects: no lexer, no pool).
-    ledger_forest = probe_forest_chain(/*require_config_match=*/false,
+    ledger_forest = probe_forest_chain(forestMatchAny,
 				       cfg_mismatch, /*header_only=*/true);
     DBG(std::cout << "ledger: carrier "
 	<< (ledger_forest ? "opened" : "not found") << std::endl);
     return ledger_forest;
+}
+
+CirFrozenForest *Program::ensure_source_forest()
+{
+    if ( source_forest_tried )
+	return source_forest;
+    source_forest_tried = true;
+    if ( bind_forest )
+    {
+	source_forest = bind_forest;
+	return source_forest;
+    }
+
+    // Raw source ignores producer std/-D/posix config because these bytes are
+    // re-tokenized under THIS Program's live policy, but it must match the
+    // selected stdlib flavor: libc++ and libstdc++ own different header text.
+    // The same carrier walker remains the one owner of discovery/profile order.
+    bool cfg_mismatch = false;
+    source_forest = probe_forest_chain(forestMatchStdlibFlavor,
+				       cfg_mismatch, /*header_only=*/false);
+    if ( source_forest )
+    {
+	source_forest->_work_secs = &_forest_work_seconds;
+	source_forest->_work_depth = &_forest_work_depth;
+    }
+    return source_forest;
+}
+
+bool Program::forest_source_path(const std::string &candidate,
+				 bool allow_tail, std::string &resolved)
+{
+    CirFrozenForest *forest = ensure_source_forest();
+    if ( !forest )
+	return false;
+    int unit = forest->find_unit(candidate);
+    if ( unit < 0 && allow_tail )
+	unit = forest->find_unit_path_tail(candidate);
+    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
+	return false;
+    const char *name = forest->unit_name((uint32_t)unit);
+    if ( !name || !*name )
+	return false;
+    resolved = name;
+    return true;
+}
+
+bool Program::forest_source_text(const std::string &path, std::string &text)
+{
+    CirFrozenForest *forest = ensure_source_forest();
+    if ( !forest )
+	return false;
+    int unit = forest->find_unit(path);
+    if ( unit < 0 )
+	unit = forest->find_unit_path_tail(path);
+    if ( unit < 0 || !forest->unit_has_source((uint32_t)unit) )
+	return false;
+    std::map<uint32_t, std::string>::iterator cached =
+	forest_source_cache.find((uint32_t)unit);
+    if ( cached == forest_source_cache.end() )
+    {
+	std::string source_text;
+	if ( !forest->unit_source((uint32_t)unit, source_text) )
+	    return false;
+	cached = forest_source_cache.emplace((uint32_t)unit,
+					     std::move(source_text)).first;
+    }
+    text = cached->second;
+    return true;
 }
 
 // The discovery chain ended with no usable container: apply the failure
@@ -2277,7 +2974,9 @@ bool Program::need_protocol_macro_live()
 // the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
 // "stddef.h"), then the resolved filesystem path (real headers name their full
 // path) — the same resolution the live path would use, so a hit binds the exact
-// grove the pack froze.
+// grove the pack froze.  A compilerless consumer cannot stat() the producer's
+// paths, but it still carries their ordered search table: consult those exact
+// frozen provider names before falling back to an ambiguous path-tail match.
 int Program::forest_unit_for_include(const std::string &incfile)
 {
     CirFrozenForest *f = ensure_bind_forest();
@@ -2291,13 +2990,298 @@ int Program::forest_unit_for_include(const std::string &incfile)
 	u = f->find_unit(fp);
     if ( u >= 0 )
 	return u;
+    // Preserve the producer toolchain's include precedence even when none of
+    // its paths exists on the run-only machine.  include_next_search_list is
+    // the one builder for the ordered -I + selected-stdlib search list; its
+    // stored spellings are also the exact names used by filesystem-frozen
+    // units.  This matters when both a C++ wrapper and its C provider share a
+    // basename (libstdc++ <math.h> before mingw's native <math.h>).
+    std::vector<std::string> search;
+    include_next_search_list(search);
+    for ( size_t i = 0; i < search.size(); ++i )
+    {
+	std::string candidate = search[i];
+	if ( !candidate.empty() && candidate.back() != '/' )
+	    candidate += '/';
+	candidate += incfile;
+	u = f->find_unit(candidate);
+	if ( u >= 0 )
+	    return u;
+    }
     // Machine-portable arm: filesystem-frozen units carry the PRODUCER's
     // full header path, which this machine's resolver may not be able to
     // spell at all (the hosted darwin groves are frozen from the build
     // container's libc++ tree; run-only Macs have no headers to resolve
     // against). The include SPELLING matched against the unit name's tail
     // components is the identity that travels.
-    return f->find_unit_path_tail(incfile);
+    u = f->find_unit_path_tail(incfile);
+    // posix/<name> is an internal storage key, never an alternate tail match
+    // for an ordinary native header. Whole providers map to it explicitly at
+    // the include site after proving that the native provider is absent.
+    if ( u >= 0 )
+    {
+	const char *matched = f->unit_name((uint32_t)u);
+	if ( matched && is_posix_compat_header_name(matched)
+	  && !is_posix_compat_header_name(incfile) )
+	    u = -1;
+	else
+	    return u;
+    }
+    // A filesystem PCH freezes under its .madh provider identity, while the
+    // source include still names <header>. A headerless consumer cannot probe
+    // that file, so the portable tail mapping must try the PCH spelling too.
+    u = f->find_unit_path_tail(incfile + ".madh");
+    if ( u >= 0 )
+    {
+	const char *matched = f->unit_name((uint32_t)u);
+	if ( matched && is_posix_compat_header_name(matched) )
+	    return -1;
+    }
+    return u;
+}
+
+// v40 bind eligibility (task #57): every unit in the root's closure must
+// find its frozen EXTERNAL branch dependencies reproduced by the consumer's
+// live macro tables. A mismatch means the frozen unit's PP conditionals took
+// different arms than a live parse here would — binding it silently loses
+// (or gains) declarations: mingw stdlib.h defined errno before errno.h
+// parsed in the pack TU, so errno.h froze with its own errno define SKIPPED;
+// a consumer including <errno.h> alone must live-parse it instead. Units
+// already bound by an earlier include pass trivially — their state IS the
+// live state their own check ran against.
+// Does this unit's own frozen PP-event stream (re)define `nm`? The
+// include-once prune's test: an undefined-at-freeze dep that is defined HERE
+// and that the unit itself defines is the unit's own GUARD — the consumer
+// already holds this unit's content (an earlier declined root live-parsed
+// it), so the unit prunes as satisfied exactly like a live re-include.
+bool Program::forest_unit_defines_macro(uint32_t unit, const char *nm)
+{
+    std::vector<uint32_t> ev;
+    if ( !bind_forest->unit_pp_events(unit, ev) )
+	return false;
+    for ( size_t k = 0; k + 5 <= ev.size(); )
+    {
+	uint32_t name_id = ev[k], tag_flags = ev[k + 1], nparams = ev[k + 4];
+	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	const char *enm = bind_forest->pool_str(name_id);
+	if ( enm && tag != PackMacroEvent::peUndef && strcmp(enm, nm) == 0 )
+	    return true;
+	k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
+    }
+    return false;
+}
+
+// A unit-granular live include is safe only for a standalone HEADER husk, not
+// for a contextual fragment such as glibc bits/libc-header-start.h or
+// bits/mathcalls.h. The format already carries both facts needed to tell them
+// apart without names or thresholds: a husk has no frozen declaration surface,
+// and a standalone header consulted an undefined-at-entry macro that its own PP
+// stream defines (its include guard). Context-only fragments have no such guard;
+// non-husks have a non-empty declaration index and stay on the broad rollout
+// path even when one conditional branch was absent at freeze.
+bool Program::forest_unit_is_standalone_husk(
+	uint32_t unit, const std::vector<uint32_t> &deps)
+{
+    std::vector<cir_forest_decl_entry> decls;
+    if ( !bind_forest->unit_decl_index(unit, decls) || !decls.empty() )
+	return false;
+    for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+    {
+	if ( deps[k + 1] & 1u )
+	    continue;
+	const char *nm = bind_forest->pool_str(deps[k]);
+	if ( nm && forest_unit_defines_macro(unit, nm) )
+	    return true;
+    }
+    return false;
+}
+
+// Pass 1: collect the root's closure (units a bind would install — the
+// already-bound are excluded exactly as forest_bind_include excludes them).
+void Program::forest_env_collect(uint32_t unit, std::set<uint32_t> &closure)
+{
+    if ( forest_chain_set.count(unit) || forest_live_present.count(unit)
+      || forest_husk_live_pending.count(unit)
+      || !closure.insert(unit).second )
+	return;
+    std::vector<uint32_t> edges;
+    if ( bind_forest->unit_edges(unit, edges) )
+	for ( size_t i = 0; i < edges.size(); ++i )
+	    forest_env_collect(edges[i], closure);
+}
+
+bool Program::forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited)
+{
+    (void)visited;
+    return forest_bind_env_ok(unit);
+}
+
+bool Program::forest_bind_env_ok(uint32_t root)
+{
+    // v40 rollout knob (task #57): the mixed bind/live DECL frontier the
+    // decline path exposes is now absorbed (denotes_same_type tolerance +
+    // typedef/class live-wins), and the mismatch handling below is the
+    // three-way prune/inert-bind/decline redesign. The check still ships
+    // default-OFF until the knob-on packed-suite burndown reaches 0 and the
+    // #25 packed-lane latency check passes (declines add live parsing).
+    // MADC_FOREST_ENV_CHECK=1 turns the BROAD checks on, and the Linux
+    // forest_bind_gate runs its whole battery WITH them on, so the parked
+    // mechanism cannot rot. Missing-content units are different: a frozen
+    // want-defined/live-undefined branch cannot be supplied by any bind, so
+    // their exact-unit live recovery is always enabled.
+    static int enabled = -1;
+    if ( enabled < 0 )
+    {
+	const char *e = ::getenv("MADC_FOREST_ENV_CHECK");
+	enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    std::set<uint32_t> closure;
+    std::set<uint32_t> husk_live;
+    forest_env_collect(root, closure);
+    for ( std::set<uint32_t>::iterator ui = closure.begin();
+	  ui != closure.end(); ++ui )
+    {
+	uint32_t unit = *ui;
+	// Mask verdicts are rebuilt on every check of this unit — an earlier
+	// root's declined check may have recorded masks against live tables
+	// that its own live parse then changed.
+	forest_pp_install_mask.erase(unit);
+	std::vector<uint32_t> deps;
+	if ( !bind_forest->unit_branch_deps(unit, deps) )
+	    continue;
+	for ( size_t k = 0; k + 4 <= deps.size(); k += 4 )
+	{
+	    // A dep whose DEFINER is inside this closure is replay-internal:
+	    // the bind installs the definer's events too (sys/cdefs.h
+	    // consulting _FEATURES_H under a root that carries features.h).
+	    uint32_t definer = deps[k + 3];
+	    if ( definer != 0xffffffffu && closure.count(definer) )
+		continue;
+	    const char *nm = bind_forest->pool_str(deps[k]);
+	    if ( !nm )
+		continue;
+	    bool want_defined = (deps[k + 1] & 1u) != 0;
+	    bool have_defined = macro_name_defined(nm);
+	    if ( want_defined != have_defined )
+	    {
+		// Missing content is not a rollout choice. The producer saw an
+		// EXTERNAL definition and skipped this unit's conditional block;
+		// the consumer does not, so the frozen unit cannot supply what a
+		// live parse would expose. If the mismatch is below the root,
+		// schedule only that unit for the production include tokenizer and
+		// keep the root's other units bindable. If it IS the root, ordinary
+		// root fall-through already is the exact-unit live parse.
+		if ( want_defined && !have_defined
+		  && definer != 0xffffffffu
+		  && forest_unit_is_standalone_husk(unit, deps) )
+		{
+		    if ( unit == root )
+		    {
+			DBG(std::cout << "forest bind: DECLINE root "
+			    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			    << " — root is a missing-content husk (branch dep '"
+			    << nm << "' defined at freeze, undefined here); live-tokenizing root"
+			    << std::endl);
+			return false;
+		    }
+		    husk_live.insert(unit);
+		    DBG(std::cout << "forest bind: unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " is a missing-content husk (branch dep '" << nm
+			<< "' defined at freeze, undefined here); root "
+			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< " remains bindable" << std::endl);
+		    goto next_unit;	// every frozen dep of this live unit is moot
+		}
+		// Knob OFF preserves the shipping bind behavior for every broad
+		// mismatch. Only the missing-content case above bypasses it.
+		if ( !enabled )
+		    continue;
+		// A want-undefined dep the unit ITSELF defines is the unit's
+		// own GUARDED FALLBACK (task #57 prune redesign). Two
+		// dispositions, decline is not one of them:
+		// 1. PRUNE — only with honest include-once evidence: the
+		//    unit's FILE was live-tokenized here (an earlier
+		//    declined root live-parsed this header), so its whole
+		//    content is already present; skip it like a live
+		//    re-include. forest_live_present keeps
+		//    forest_bind_include from installing its PP events —
+		//    but stays OUT of forest_chain_set, whose membership
+		//    the decl-restore filter reads: restoring this unit's
+		//    decls BESIDE the live-parsed copy double-defines them
+		//    (struct _iobuf).
+		// 2. MASKED-BIND — no whole-file evidence: a shared
+		//    SUB-BLOCK guard (mingw stdio.h's _FILE_DEFINED live
+		//    from wchar.h's copy; stddef NULL; glibc wchar.h's
+		//    __attr_dealloc_fclose fallback). The dep record proves
+		//    a live-order parse of this unit would take the DEFINED
+		//    arm and skip the unit's own define, so the bind
+		//    installs everything EXCEPT this macro's define events
+		//    (forest_pp_install_mask) — live-true PP state, no
+		//    clobber of the live value. The unit's OTHER content —
+		//    which is NOT live — installs; decl twins at the shared
+		//    block are the mixed seam the typedef/class live-wins +
+		//    denotes_same_type tolerance absorb. Pruning here LOSES
+		//    that other content; declining cascades libc++ roots
+		//    into live parses (the statmem frontier — both were
+		//    tried, both broke it).
+		// The remaining broad mismatches DECLINE: non-self-defined
+		// external configuration consults whose state genuinely
+		// changed. Want-defined/have-undefined missing content was
+		// isolated to an exact live unit above; extra content binds and
+		// is arbitrated through the prune/masked-bind split here.
+		if ( !want_defined && have_defined
+		  && forest_unit_defines_macro(unit, nm) )
+		{
+		    if ( forest_unit_file_live_tokenized(unit) )
+		    {
+			DBG(std::cout << "forest bind: unit "
+			    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			    << " already present ('" << nm
+			    << "' guard live) — pruned" << std::endl);
+			forest_live_present.insert(unit);
+			goto next_unit;	// a pruned unit's other deps are moot
+		    }
+		    forest_pp_install_mask[unit].insert(nm);
+		    DBG(std::cout << "forest bind: unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " dep '" << nm
+			<< "' self-defined guard, live arm wins — binds with define masked"
+			<< std::endl);
+		    continue;	// this dep only; the unit's other deps still gate
+		}
+		DBG(std::cout << "forest bind: DECLINE root "
+		    << (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+		    << " — unit "
+		    << (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		    << " branch dep '" << nm << "' "
+		    << (want_defined ? "defined" : "undefined")
+		    << " at freeze, opposite here" << std::endl);
+		return false;
+	    }
+	    if ( enabled && want_defined && (deps[k + 1] & 2u) )
+	    {
+		const char *v = deps[k + 2] ? bind_forest->pool_str(deps[k + 2]) : NULL;
+		std::string have;
+		if ( std::string *dv = define_map.find(nm) )
+		    have = *dv;
+		else if ( MacroDef *mv = macro_map.find(nm) )
+		    have = mv->body;
+		if ( have != std::string(v ? v : "") )
+		{
+		    DBG(std::cout << "forest bind: DECLINE root "
+			<< (bind_forest->unit_name(root) ? bind_forest->unit_name(root) : "?")
+			<< " — unit "
+			<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+			<< " branch dep '" << nm << "' value differs" << std::endl);
+		    return false;
+		}
+	    }
+	}
+	next_unit:;
+    }
+    forest_husk_live_pending.insert(husk_live.begin(), husk_live.end());
+    return true;
 }
 
 // Bind a grove unit and its include closure: post-order DFS over the unit's
@@ -2309,8 +3293,58 @@ int Program::forest_unit_for_include(const std::string &incfile)
 // (symbol tables) restore ONCE per compile at the call site — never re-parse.
 void Program::forest_bind_include(uint32_t unit)
 {
-    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
+    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit)
+      || forest_live_present.count(unit) )
+    {
 	return;
+    }
+	const char *unit_name = bind_forest->unit_name(unit);
+	if ( unit_name && is_posix_compat_header_name(unit_name) )
+	{
+		const std::string base = std::string(unit_name).substr(
+			sizeof("posix/") - 1);
+		if ( !is_posix_compat_header_allowed(base) )
+			return;
+	}
+    // A missing-content child is the one unit a bind cannot reconstruct: its
+    // producer-side external macro hid declarations that are live here. Feed
+    // its portable header spelling through the ONE production include path;
+    // that path owns search order, disk/embedded selection, preprocessing,
+    // include guards, and token provenance. Keep it out of forest_chain_set so
+    // forest_restore_decls cannot restore the husk's incomplete frozen surface.
+    if ( forest_husk_live_pending.count(unit) )
+    {
+	if ( !unit_name || !*unit_name )
+	    Throw << "Frozen missing-content unit has no source identity" << flush;
+	std::string live_header(unit_name);
+	const std::string madh_suffix = ".madh";
+	if ( live_header.size() > madh_suffix.size()
+	  && live_header.compare(live_header.size() - madh_suffix.size(),
+				 madh_suffix.size(), madh_suffix) == 0 )
+	    live_header.erase(live_header.size() - madh_suffix.size());
+	size_t slash = live_header.find_last_of("/\\");
+	if ( slash != std::string::npos )
+	    live_header.erase(0, slash + 1);
+	if ( live_header.empty() )
+	    Throw << "Frozen missing-content unit has no live include spelling: "
+		  << unit_name << flush;
+	DBG(std::cout << "forest bind: missing-content husk " << unit_name
+	    << " — live-tokenizing <" << live_header << "> only" << std::endl);
+	forest_bind_walking.insert(unit);
+	try
+	{
+	    tokenize_synthetic_system_include(live_header, unit_name);
+	}
+	catch (...)
+	{
+	    forest_bind_walking.erase(unit);
+	    throw;
+	}
+	forest_bind_walking.erase(unit);
+	forest_husk_live_pending.erase(unit);
+	forest_live_present.insert(unit);
+	return;
+    }
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
     forest_bind_walking.insert(unit);
     // --show-stats (R0): per-unit SELF cost — edge decode + PP install,
@@ -2319,11 +3353,35 @@ void Program::forest_bind_include(uint32_t unit)
     std::vector<uint32_t> edges;
     bool have_edges = bind_forest->unit_edges(unit, edges);
     double _self = forest_stat_now() - _t0;
+    // Children before this unit's own PP delta is right while children are
+    // merely BOUND — a bind evaluates no #if, so install order cannot change
+    // what it sees. A missing-content husk child is different: it is LIVE-
+    // PARSED (see forest_husk_live_pending above), and a live parse DOES
+    // evaluate #if, against whatever the macro tables hold at that moment.
+    // With this unit's exports still uninstalled, an internal header gets
+    // parsed as if its public front had never run — glibc's bits/stat.h then
+    // hits its own `#if !defined _SYS_STAT_H && !defined _FCNTL_H` guard and
+    // #errors, because sys/stat.h had bound but not yet defined _SYS_STAT_H.
+    //
+    // So when any child is a pending husk, this unit's PP lands FIRST. That is
+    // an APPROXIMATION of live order, not a reproduction of it: the event
+    // stream carries no position for the child's include site, so the whole
+    // export set installs rather than the prefix that preceded the child. It
+    // is strictly closer to a live parse than installing nothing, and the
+    // headers this affects define their guard before including their internals
+    // — which is the whole reason the guard exists.
+    bool husk_child = false;
+    if ( have_edges )
+	for ( size_t i = 0; i < edges.size() && !husk_child; ++i )
+	    husk_child = forest_husk_live_pending.count(edges[i]) != 0;
+    if ( husk_child )
+	forest_install_pp(unit);
     if ( have_edges )
 	for ( size_t i = 0; i < edges.size(); ++i )
 	    forest_bind_include(edges[i]);
     double _t1 = forest_stat_now();
-    forest_install_pp(unit);
+    if ( !husk_child )
+	forest_install_pp(unit);
     forest_chain.push_back(unit);
     forest_chain_set.insert(unit);
     forest_bind_walking.erase(unit);
@@ -2345,12 +3403,29 @@ void Program::forest_install_pp(uint32_t unit)
     std::vector<uint32_t> ev;
     if ( !bind_forest->unit_pp_events(unit, ev) )
 	return;
+    // Masked-bind (task #57): a define event for a macro forest_bind_env_ok
+    // masked on this unit is the unit's own guarded fallback whose guard is
+    // live-defined — a live-order parse would skip it, so the install does
+    // too (the live value survives; undef events still apply).
+    std::map<uint32_t, std::set<std::string> >::const_iterator mask_it =
+	forest_pp_install_mask.find(unit);
+    const std::set<std::string> *mask =
+	mask_it == forest_pp_install_mask.end() ? NULL : &mask_it->second;
     for ( size_t k = 0; k + 5 <= ev.size(); )
     {
 	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
 	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
 	const char *nm = bind_forest->pool_str(name_id);
 	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	if ( nm && mask && tag != PackMacroEvent::peUndef && mask->count(nm) )
+	{
+	    DBG(std::cout << "forest bind: unit "
+		<< (bind_forest->unit_name(unit) ? bind_forest->unit_name(unit) : "?")
+		<< " define '" << nm << "' masked at install (live guard wins)"
+		<< std::endl);
+	    k += 5 + (tag == PackMacroEvent::peDefineFn ? nparams : 0);
+	    continue;
+	}
 	if ( nm )
 	{
 	    std::string name(nm);
@@ -2407,13 +3482,8 @@ void Program::forest_install_pp(uint32_t unit)
 // with their own call sites.
 static std::string canonical_path_for_compare(const std::string &path)
 {
-    if ( char *rp = realpath(path.c_str(), NULL) )
-    {
-	std::string out(rp);
-	free(rp);
-	return out;
-    }
-    return path;
+    std::string out = madc::detail::resolve_real_path(path.c_str());
+    return out.empty() ? path : out;
 }
 
 static const char *madc_fallback_include_paths[] = {
@@ -2430,6 +3500,123 @@ const char *const *Program::sys_include_paths() const
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
     return f->paths;
+}
+
+bool Program::posix_compat_enabled() const
+{
+	// The TARGET owns this, not the host (datadef.h: "never re-test _WIN32 at
+	// a consumer"). target_windows() is the third member of the target-property
+	// family beside target_llp64() / target_microsoft_bitfields(), so a future
+	// --target= knob reaches this predicate the same way it reaches the widths.
+	return target_windows() && registration_policy.enable_posix_compat;
+}
+
+bool Program::is_posix_compat_header_name(const std::string &name) const
+{
+	return name.compare(0, sizeof("posix/") - 1, "posix/") == 0;
+}
+
+bool Program::is_posix_compat_header_allowed(const std::string &name) const
+{
+	if ( !posix_compat_enabled() )
+		return false;
+	if ( !registration_policy.restrict_headers_to_allowlist
+	  && registration_policy.allowed_headers.empty() )
+		return true;
+	for ( size_t i = 0; i < registration_policy.allowed_headers.size(); ++i )
+		if ( registration_policy.allowed_headers[i] == name )
+			return true;
+	return false;
+}
+
+void Program::tokenize_posix_header_supplement(const std::string &incfile)
+{
+	if ( !is_posix_compat_header_allowed(incfile) )
+		return;
+	const std::string supplement = std::string("posix/") + incfile;
+	const std::string *embedded = find_embedded_header(supplement);
+	if ( !embedded )
+		return;
+	// A grove stores the real header and its supplement as ordered sibling
+	// edges. An explicit bind of the real header therefore still owes the
+	// supplement; bind that existing unit too so a later parent bind cannot
+	// restore the supplement's declarations a second time. Forests stamped
+	// before this policy bit are rejected by the config-word check.
+	if ( registration_policy.enable_forest_bind )
+	{
+		CirFrozenForest *forest = ensure_bind_forest();
+		int fu = forest ? forest->find_unit(supplement) : -1;
+		if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
+		{
+			forest_bind_include((uint32_t)fu);
+			mark_embedded_include_flag(supplement);
+			return;
+		}
+	}
+	// This is compiler-owned delta text, not another ordinary include lookup:
+	// no -I/PCH provider may outrank it. Serving from the restored includer
+	// records the real header and its supplement as ordered sibling edges.
+	tokenize_embedded_header_text(supplement, *embedded, false);
+}
+
+// "Does this path name a readable file" — one owner, defined further down with
+// the PCH candidate walk that is its other caller.
+bool madc_lexer_file_exists(const std::string &path);
+
+// <dlfcn.h> is the case the SUPPLEMENT model cannot serve: mingw-w64 ships no
+// such header at all, so there is no real provider to augment and nothing to
+// shadow. posix/<name> IS the provider. Gated on the walk's ACTUAL outcome —
+// the resolved path names no readable file — so §8's "serve only where the
+// native toolchain lacks it" is decided by evidence, not prediction. On a
+// POSIX host the native header always resolves, so this never fires there.
+// The DECISION above is a predicate of its own because TWO consumers need it:
+// the serve arm below acts on it, and __has_include answers with it. They sit
+// at the same position in the resolution order — after the filesystem walk —
+// so "can I include this?" and "will including it work?" cannot disagree. A
+// file-open probe alone cannot see a provider that is on no disk, and it
+// answered NO for <dlfcn.h> while the include below served it: the canonical
+// `#if __has_include(<dlfcn.h>)` idiom then took the no-dlfcn branch on a
+// target that has it. `text`, when given, receives the embedded provider so
+// the caller that serves does not repeat the lookup.
+bool Program::posix_whole_provider_serves(const std::string &incfile,
+					  const std::string &resolved,
+					  const std::string **text)
+{
+	if ( !is_posix_compat_header_allowed(incfile) )
+		return false;
+	if ( resolved_include_provider_exists(resolved) )
+		return false;
+	const std::string *embedded =
+		find_embedded_header(std::string("posix/") + incfile);
+	if ( !embedded )
+		return false;
+	if ( text )
+		*text = embedded;
+	return true;
+}
+
+// Serve it: the predicate decided, this acts. Prefer the frozen forest unit
+// when forest-bind is on, else tokenize the embedded text.
+bool Program::tokenize_posix_whole_provider(const std::string &incfile,
+					   const std::string &resolved)
+{
+	const std::string *embedded = NULL;
+	if ( !posix_whole_provider_serves(incfile, resolved, &embedded) )
+		return false;
+	const std::string provider = std::string("posix/") + incfile;
+	if ( registration_policy.enable_forest_bind )
+	{
+	    CirFrozenForest *forest = ensure_bind_forest();
+	    int fu = forest ? forest->find_unit(provider) : -1;
+	    if ( fu >= 0 && forest_bind_env_ok((uint32_t)fu) )
+	    {
+		forest_bind_include((uint32_t)fu);
+		mark_embedded_include_flag(provider);
+		return true;
+	    }
+	}
+	tokenize_embedded_header_text(provider, *embedded, false);
+	return true;
 }
 
 const char *Program::compiler_owned_include_dir() const
@@ -2568,6 +3755,9 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    std::ifstream probe(candidate.c_str());
 	    if ( probe.good() )
 		return candidate;
+	    std::string frozen_path;
+	    if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
+		return frozen_path;
 	}
 	// Fall back to current source directory — handles local header
 	// copies (e.g. libpq-fe.h sitting next to the .c that includes it)
@@ -2579,6 +3769,9 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    if ( probe.good() )
 		return local;
 	}
+	std::string frozen_path;
+	if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
+	    return frozen_path;
 	return incfile; // not found — will fail at open
     }
 
@@ -2699,7 +3892,13 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
 	std::ifstream probe(candidate.c_str());
 	if ( probe.good() )
 	    return candidate;
+	std::string frozen_path;
+	if ( forest_source_path(candidate, /*allow_tail=*/false, frozen_path) )
+	    return frozen_path;
     }
+	std::string frozen_path;
+	if ( forest_source_path(incfile, /*allow_tail=*/true, frozen_path) )
+	    return frozen_path;
     return incfile; // not found — will fail at open
 }
 
@@ -2747,11 +3946,17 @@ bool Program::embedded_wins_include_next(const std::string &incfile)
 // name, or "" when the file is NOT fully guard-wrapped (e.g. glibc's
 // bits/mathcalls.h, which is INTENTIONALLY included multiple times with a
 // different _Mdouble_ each pass).
-static std::string detect_include_guard(const std::string &file_path)
+// Reads through read_resolved_include(), NOT the filesystem: on a compiler-less
+// target the header exists only in the packed forest, and a detector that could
+// not see it reported "no guard" — indistinguishable from a genuinely
+// guard-less header, which inverts gcc's multiple-include optimization. See the
+// reader's comment for the failure this caused.
+std::string Program::detect_include_guard(const std::string &file_path)
 {
-    std::ifstream in(file_path.c_str());
-    if ( !in )
+    std::string file_text;
+    if ( !read_resolved_include(file_path, file_text) )
 	return std::string();
+    std::istringstream in(file_text);
     std::string guard;
     int depth = 0;
     bool seen_open = false;     // saw the opening #ifndef
@@ -2890,6 +4095,46 @@ void Program::pack_note_unit(const char *interned_file)
 	pack_unit_order.push_back(interned_file);
 }
 
+void Program::pack_record_source(const char *interned_file,
+				 const std::string &text)
+{
+    if ( !pack_recording || !interned_file )
+	return;
+    pack_note_unit(interned_file);
+    // A file can be reached repeatedly through its include guard. Its raw
+    // bytes are immutable during one freeze; first-wins keeps the original
+    // provider and avoids copying the same header on every visit.
+    pack_unit_sources.emplace(interned_file, text);
+}
+
+// A header reached again through its include guard is SKIPPED, and the skip
+// path records the edge — the reference — without ever reading the file. When
+// the very FIRST encounter is such a skip, that mints a unit with no content:
+// something the corpus points at but can never serve.
+//
+// It happens whenever madc predefines a guard so the header can be skipped
+// wholesale, which is exactly what it does for <stdc-predef.h> (gcc preincludes
+// that header; madc defines _STDC_PREDEF_H instead). A consumer whose --std=
+// differs from the producer's declines the grove, live-parses features.h from
+// the corpus, walks its unconditional `#include <stdc-predef.h>`, and finds a
+// husk. On a compiler-less target there is no disk to fall back to. That was 67
+// suite failures, and 46 of the Linux corpus's 241 units were such husks.
+//
+// So the reference and the content are recorded TOGETHER: an edge without bytes
+// is not a smaller corpus, it is a broken one. Freeze-time only (pack_recording
+// gates it) and at most one read per unit, so ordinary compiles pay nothing.
+void Program::pack_record_skipped_source(const std::string &path)
+{
+    if ( !pack_recording )
+	return;
+    const char *interned = intern_file(path);
+    if ( !interned || pack_unit_sources.count(interned) )
+	return;		// already captured by a real tokenization — first wins
+    std::string text;
+    if ( read_resolved_include(path, text) )
+	pack_record_source(interned, text);
+}
+
 void Program::pack_record_define(const std::string &name, const std::string &value)
 {
     if ( const char *unit = pack_current_unit() )
@@ -2900,6 +4145,7 @@ void Program::pack_record_define(const std::string &name, const std::string &val
 	ev.name = name;
 	ev.tag = PackMacroEvent::peDefine;
 	ev.value = value;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, true };
     }
 }
 
@@ -2913,6 +4159,7 @@ void Program::pack_record_define_fn(const std::string &name, const MacroDef &m)
 	ev.name = name;
 	ev.tag = PackMacroEvent::peDefineFn;
 	ev.macro = m;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, true };
     }
 }
 
@@ -2925,6 +4172,7 @@ void Program::pack_record_undef(const std::string &name)
 	PackMacroEvent &ev = pack_pp_exports[unit].back();
 	ev.name = name;
 	ev.tag = PackMacroEvent::peUndef;
+	pack_macro_origin[name] = PackMacroOrigin{ unit, false };
     }
 }
 
@@ -2937,10 +4185,70 @@ void Program::pack_record_edge(const std::string &includee)
     }
 }
 
-void Program::pack_record_branch_macro(const std::string &name)
+void Program::pack_record_branch_macro(const std::string &name,
+				       bool include_probe)
 {
-    if ( pack_recording && !name.empty() )
-	pack_branch_macros.insert(name);
+    if ( !pack_recording || name.empty() )
+	return;
+    pack_branch_macros.insert(name);
+    // An include-once GUARD PROBE (should_tokenize_include asking "is the
+    // includee's guard defined") is an EDGE decision — reproduced by the
+    // frozen edges + include-once semantics at bind, never a branch
+    // dependency of the includer's CONTENT. Recording it made every libc++
+    // header carry its includees' guards as deps and decline on re-binds.
+    if ( include_probe )
+	return;
+    // v40 (task #57): record the consult as an EXTERNAL branch dependency of
+    // the current unit when the macro's state was NOT established within the
+    // consulting unit's OWN subtree — consumers bind ANY unit directly, so a
+    // sibling under the same top-level include (mingw stdlib.h defining
+    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is just as
+    // external as an earlier root. Self/subtree definitions are reproduced by
+    // the unit's own bind replay; a defined macro with NO recorded origin is
+    // predefine/-D state, pinned by the v27 config word — neither is a
+    // dependency. The DEFINER travels with the dep: the bind walk skips any
+    // dep whose definer is inside the closure being bound (an ANCESTOR's
+    // guard — sys/cdefs.h consulting _FEATURES_H under features.h — is
+    // replay-internal there, and a real external elsewhere).
+    const char *unit = pack_current_unit();
+    if ( !unit )
+	return;
+    bool defined_now = macro_name_defined(name);
+    std::map<std::string, PackMacroOrigin>::iterator oi =
+	pack_macro_origin.find(name);
+    if ( defined_now && oi == pack_macro_origin.end() )
+	return;				// predefine / -D: config-word-pinned
+    if ( oi != pack_macro_origin.end() && oi->second.unit )
+    {
+	if ( oi->second.unit == unit )
+	    return;			// self: the unit's own replay decides
+	std::map<const char *, std::set<const char *> >::iterator sti =
+	    pack_unit_subtree.find(unit);
+	if ( sti != pack_unit_subtree.end()
+	  && sti->second.count(oi->second.unit) )
+	    return;			// subtree: edges install it before us
+    }
+    if ( !pack_unit_branch_dep_seen[unit].insert(name).second )
+	return;
+    PackBranchDep dep;
+    dep.name = name;
+    dep.defined = defined_now;
+    dep.has_value = false;
+    dep.definer = oi != pack_macro_origin.end() ? oi->second.unit : NULL;
+    if ( defined_now )
+    {
+	if ( std::string *dv = define_map.find(name) )
+	{
+	    dep.has_value = true;
+	    dep.value = *dv;
+	}
+	else if ( MacroDef *mv = macro_map.find(name) )
+	{
+	    dep.has_value = true;
+	    dep.value = mv->body;
+	}
+    }
+    pack_unit_branch_deps[unit].push_back(dep);
 }
 
 // -dM: dump the effective macro table (object-like + function-like) in
@@ -2991,7 +4299,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	if ( include_already_seen(canonical) )
 	    return false;
 	included_files[canonical] = true;
-	return true;
+	return live_tokenize_record(canonical, true);
     }
     // User ("...") includes keep madc's dialect require-once semantics
     // (pinned by tests/testincludeonce.mad). SYSTEM headers get gcc's
@@ -3002,7 +4310,7 @@ bool Program::should_tokenize_include(const std::string &path)
 	if ( include_already_seen(canonical) )
 	    return false;
 	included_files[canonical] = true;
-	return true;
+	return live_tokenize_record(canonical, true);
     }
     // System headers: gcc's multiple-include optimization. Skip a
     // repeat inclusion ONLY when the file is fully wrapped in an include
@@ -3012,21 +4320,110 @@ bool Program::should_tokenize_include(const std::string &path)
     auto gi = include_guard_by_file.find(canonical);
     if ( gi == include_guard_by_file.end() )
     {
-	include_guard_by_file[canonical] = detect_include_guard(canonical);
-	return true;
+	const std::string guard = detect_include_guard(canonical);
+	include_guard_by_file[canonical] = guard;
+	if ( guard.empty() )
+	    return live_tokenize_record(canonical, true);
+	// A FIRST live visit can still be a re-include: a forest bind may
+	// already have installed this header's guard (v40 mixed bind/live
+	// TUs — a bound <cstdio> then a declined <locale> live-parsing
+	// bits/types.h beside the restored decls). Same gcc rule as the
+	// repeat path below: guard defined = skip.
+	pack_record_branch_macro(guard, true /* include probe */);
+	return live_tokenize_record(canonical,
+	    define_map.find(guard) == define_map.end()
+	    && macro_map.find(guard) == macro_map.end());
     }
     const std::string &guard = gi->second;
     if ( guard.empty() )
-	return true;
-    pack_record_branch_macro(guard);	// B4a: guard definedness gates inclusion
-    return define_map.find(guard) == define_map.end()
-	&& macro_map.find(guard) == macro_map.end();
+	return live_tokenize_record(canonical, true);
+    pack_record_branch_macro(guard, true /* include probe */);	// B4a: guard definedness gates inclusion
+    return live_tokenize_record(canonical,
+	define_map.find(guard) == define_map.end()
+	&& macro_map.find(guard) == macro_map.end());
 }
 
-static bool file_exists(const std::string &path)
+// One recording owner: a TRUE verdict from should_tokenize_include means the
+// file's tokens enter THIS TU's live stream now. The v40 prune's honest
+// "already present" test (forest_unit_file_live_tokenized) reads the set —
+// a live guard macro alone is NOT sufficient evidence (a shared sub-block
+// guard or a bound sibling's replay also defines it: mingw stdio.h's
+// _FILE_DEFINED, the embedded stddef's NULL).
+bool Program::live_tokenize_record(const std::string &canonical, bool tok)
+{
+    if ( tok )
+	forest_live_tokenized.insert(canonical);
+    return tok;
+}
+
+// v40 prune evidence: was this frozen unit's FILE live-tokenized earlier in
+// this TU? Filesystem units freeze under their resolved (possibly ../-laden)
+// paths — compare canonically, the same owner the live record used. Embedded
+// units freeze under bare names ("stddef.h"); their live record is the
+// angle-bracket named key ("<stddef.h>").
+bool Program::forest_unit_file_live_tokenized(uint32_t unit)
+{
+    const char *uname = bind_forest->unit_name(unit);
+    if ( !uname || !*uname )
+	return false;
+    if ( *uname == '<' )
+	return forest_live_tokenized.count(uname) != 0;
+    if ( !strchr(uname, '/') )
+	return forest_live_tokenized.count("<" + std::string(uname) + ">") != 0
+	    || forest_live_tokenized.count(uname) != 0;
+    return forest_live_tokenized.count(canonical_path_for_compare(uname)) != 0;
+}
+
+// Defined here, used from tokenize_posix_whole_provider above too (declared
+// with it). "Does this path name a readable file" has ONE owner in this file.
+bool madc_lexer_file_exists(const std::string &path)
 {
     std::ifstream probe(path.c_str(), std::ios::binary);
     return probe.good();
+}
+
+// A resolved include can be readable from either ordinary storage or the raw
+// source slot in a packed forest.  This is the one existence predicate AFTER
+// resolution: consumers must not mistake a carrier-backed native header for a
+// missing provider and let a lower-priority compatibility header replace it.
+bool Program::resolved_include_provider_exists(const std::string &path)
+{
+    if ( path.empty() )
+	return false;
+    if ( madc_lexer_file_exists(path) )
+	return true;
+    std::string frozen_path;
+    return forest_source_path(path, /*allow_tail=*/false, frozen_path);
+}
+
+// The READING twin of resolved_include_provider_exists(): a resolved include's
+// BYTES come from ordinary storage or the packed forest's raw-source slot, in
+// that order. Both facts live here so no consumer can disagree with another
+// about whether a header is readable.
+//
+// That disagreement was a real defect, not a hypothetical. detect_include_guard()
+// read only from disk and returned "" when it could not open the file — and ""
+// is also how it spells "this header has no include guard" (glibc's
+// bits/mathcalls.h, deliberately multi-included). On a compiler-less target the
+// two became indistinguishable, so gcc's multiple-include optimization inverted:
+// every forest-served header looked guard-less, got re-tokenized instead of
+// skipped, and the re-tokenize then failed to open it. 67 suite tests died on
+// one header (<stdc-predef.h>, whose guard madc predefines exactly so it can be
+// skipped). Read failure and absent-guard are different answers; only a shared
+// reader keeps them apart.
+bool Program::read_resolved_include(const std::string &path, std::string &text)
+{
+    if ( path.empty() )
+	return false;
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if ( in )
+    {
+	std::ostringstream tmp;
+	tmp << in.rdbuf();
+	text = tmp.str();
+	return true;
+    }
+    return forest_source_text(path, text);
 }
 
 static void add_pch_candidate(std::vector<std::string> &candidates,
@@ -3062,7 +4459,7 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 
     for ( size_t i = 0; i < candidates.size(); ++i )
     {
-	if ( file_exists(candidates[i]) )
+	if ( madc_lexer_file_exists(candidates[i]) )
 	{
 	    outpath = candidates[i];
 	    return true;
@@ -3360,7 +4757,11 @@ void Program::add_datatypes()
 
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
-    static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    // wchar_t is target-shaped (int32 LP64 / uint16 LLP64). Function-static:
+    // binds the model at the FIRST Program's add_datatypes — fine while the
+    // model is fixed per process (hosted modes); a per-Program --target flip
+    // would need these statics revisited.
+    static TokenDataType tkWCHAR_T("wchar_t", *dd_platform_wchar());
     static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
@@ -3369,6 +4770,9 @@ void Program::add_datatypes()
     // _FloatN spellings use (MIR has no half-float): declarations parse;
     // half-precision ABI fidelity is a MIR floor gap (SIMD-class, Tier 3).
     static TokenDataType tkFLOAT16("_Float16", ddFLOAT);
+    // __bf16 (bfloat16 — gcc's avx512bf16 headers typedef vectors of it):
+    // the same nearest-supported approximation posture as _Float16.
+    static TokenDataType tkBF16("__bf16", ddFLOAT);
     static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
     static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
@@ -3427,6 +4831,7 @@ void Program::add_datatypes()
     }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
     datatype_map[tkFLOAT16.str] = &tkFLOAT16;
+    datatype_map[tkBF16.str] = &tkBF16;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
     datatype_map[tkFLOAT128.str] = &tkFLOAT128;
@@ -3759,6 +5164,11 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // posix/<name> is a compiler-internal storage namespace. A
+		    // user include must name the public native header; otherwise a
+		    // supplement could be served without its required real provider.
+		    if ( is_system && is_posix_compat_header_name(incfile) )
+			Throw << "Failed to open include file: " << incfile.c_str() << flush;
 		    // glibc's __need protocol: a request macro (__need_size_t,
 		    // __need_wchar_t, gcc's __need___va_list, ...) live at the
 		    // include marks a PROTOCOL VISIT — the header is DESIGNED
@@ -3814,6 +5224,17 @@ TokenBase *Program::_getToken()
 			  && !protocol_visit )
 			{
 			    int fu = forest_unit_for_include(incfile);
+			    // A parent bind selected this exact child for live
+			    // tokenization. Its recursive synthetic include must pass
+			    // through the normal provider path, never re-bind the husk.
+			    if ( fu >= 0
+			      && forest_husk_live_pending.count((uint32_t)fu) )
+				fu = -1;
+			    // v40 (task #57): a unit whose frozen branch
+			    // decisions assumed a different macro environment
+			    // declines here and live-parses below.
+			    if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+				fu = -1;
 			    if ( fu >= 0 )
 			    {
 				DBG(std::cout << "#include <" << incfile
@@ -3828,18 +5249,37 @@ TokenBase *Program::_getToken()
 				// freeze — re-run the one live side effect. A
 				// REAL-header unit (path name) never marks, exactly
 				// like the live filesystem branch.
-				{
-				    const char *un = bind_forest->unit_name(fu);
-				    if ( un && incfile == un
-				      && find_embedded_header(incfile) )
-					mark_embedded_include_flag(incfile);
-				}
+				const char *bound_unit_name = bind_forest->unit_name(fu);
+				const bool bound_embedded = bound_unit_name
+				    && find_embedded_header(bound_unit_name);
+				if ( bound_embedded )
+				    mark_embedded_include_flag(bound_unit_name);
 				// Item 5 (lazy defrost): the decl-record restore
 				// moved to flush_forest_pending_globals — the
 				// post-tokenize point where forest_chain_set is
 				// COMPLETE, so registration filters to the TU's
 				// actual bound-include closure (live parity: a
 				// header you never include declares nothing).
+				bool bound_real_provider = bound_unit_name
+				    && !bound_embedded
+				    && is_system_header_path(bound_unit_name);
+				if ( bound_unit_name && !bound_real_provider
+				  && !bound_embedded )
+				{
+				    const std::string bound_name(bound_unit_name);
+				    const std::string suffix = ".madh";
+				    if ( bound_name.size() > suffix.size()
+				      && bound_name.compare(bound_name.size() - suffix.size(),
+						    suffix.size(), suffix) == 0 )
+					bound_real_provider = is_system_header_path(
+					    bound_name.substr(0, bound_name.size()
+							      - suffix.size()).c_str());
+				    else if ( bound_name == incfile
+					   && find_precompiled_header(incfile) )
+					bound_real_provider = true;
+				}
+				if ( bound_real_provider )
+				    tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			}
@@ -3880,6 +5320,10 @@ TokenBase *Program::_getToken()
 			    if ( load_precompiled_header_file(pch_path, pch_tokens) )
 			    {
 				push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+				std::string pch_source_path = pch_path.substr(
+				    0, pch_path.size() - sizeof(".madh") + 1);
+				if ( is_system_header_path(pch_source_path.c_str()) )
+				    tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			    DBG(std::cout << "#include <" << incfile
@@ -3893,6 +5337,7 @@ TokenBase *Program::_getToken()
 			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
 			    {
 				push_precompiled_header_tokens(*this, incfile, pch_tokens);
+				tokenize_posix_header_supplement(incfile);
 				return getToken();
 			    }
 			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
@@ -3926,42 +5371,21 @@ TokenBase *Program::_getToken()
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
-			    // B4a: a protocol visit forms no unit and no edge —
-			    // the serving belongs to the includer's unit (owner
-			    // captured pre-swap, while the includer is current).
-			    const char *_proto_saved = NULL;
-			    if ( protocol_visit )
-				_proto_saved = pack_protocol_serving_begin();
-			    else
-				pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
-			    Source saved = std::move(source);
-			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-			    suppress_auto_include_scan = true;
-			    source = Source();
-			    source.fname(incfile.c_str());
-			    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
-			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
-			    TokenBase *itb;
-			    const char *_interned1 = intern_file(incfile);
-			    if ( !protocol_visit )
-				pack_note_unit(_interned1);
-			    while ( (itb = getRealToken()) )
-			    {
-				itb->file = _interned1;
-				push_token_with_literal_concat(itb);
-			    }
-			    source = std::move(saved);
-			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
-			    if ( protocol_visit )
-				pack_protocol_serving_end(_proto_saved);
-			    // flag headers for deferred registration during parse init
-			    mark_embedded_include_flag(incfile);
+			    tokenize_embedded_header_text(incfile, *embedded,
+							  protocol_visit);
 			    return getToken();
 			}
 		    }
 		    std::string full_path = is_include_next
 			? resolve_include_next_path(incfile)
 			: resolve_include_path(incfile, is_system);
+		    // A POSIX header the native toolchain does not ship AT ALL
+		    // has no real provider to augment, so the posix/ entry is
+		    // the provider itself. Decided here, after the walk, on its
+		    // actual outcome rather than a predicted one.
+		    if ( is_system && !is_include_next
+		      && tokenize_posix_whole_provider(incfile, full_path) )
+			return getToken();
 		    // Phase 6 (--forest-bind), v25: a grove-backed QUOTED /
 		    // filesystem include BINDS instead of tokenizing, exactly like
 		    // the angle branch above — the forest holds EVERY #include's
@@ -3972,14 +5396,24 @@ TokenBase *Program::_getToken()
 		    // the unit under). #include_next keeps its positional walk.
 		    if ( registration_policy.enable_forest_bind && !is_include_next
 		      && !full_path.empty() )
-		    {
+			{
 			int fu = forest_unit_for_include(full_path);
+			if ( fu >= 0
+			  && forest_husk_live_pending.count((uint32_t)fu) )
+			    fu = -1;
+			// v40 (task #57): environment mismatch declines to
+			// live parse.
+			if ( fu >= 0 && !forest_bind_env_ok((uint32_t)fu) )
+			    fu = -1;
 			if ( fu >= 0 )
 			{
 			    DBG(std::cout << "#include \"" << full_path
 				<< "\" bound to grove unit " << fu << " ("
 				<< bind_forest->unit_name(fu) << ")" << std::endl);
 			    forest_bind_include((uint32_t)fu);
+			    if ( is_system
+			      && is_system_header_path(full_path.c_str()) )
+				tokenize_posix_header_supplement(incfile);
 			    // Item 5: decl restore rides the post-tokenize
 			    // flush (see the system-include bind site).
 			    return getToken();
@@ -3988,7 +5422,10 @@ TokenBase *Program::_getToken()
 		    if ( !should_tokenize_include(full_path) )
 		    {
 			if ( !protocol_visit )	// a protocol visit records nothing
+			{
 			    pack_record_edge(full_path);	// B4a: edge survives the dedup skip
+			    pack_record_skipped_source(full_path);	// ...and so must its CONTENT
+			}
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -4013,8 +5450,13 @@ TokenBase *Program::_getToken()
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 		    suppress_auto_include_scan = true;
 		    source = Source();
-		    std::ifstream incf(full_path.c_str());
-		    if ( !incf )
+		    // ONE owner for "this resolved include's bytes" (disk,
+		    // then the forest's raw-source slot) — the same reader
+		    // detect_include_guard() uses, so the tokenizer and the
+		    // multiple-include optimization can never disagree about
+		    // which headers are readable.
+		    std::string include_text;
+		    if ( !read_resolved_include(full_path, include_text) )
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
@@ -4023,26 +5465,47 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
+		    const char *_interned2 = intern_file(full_path);
 		    {
 			ReadTimer _rt(_read_seconds);
-			incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
-			if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
-			incf.seekg(0);
-			source.copybuf(incf.rdbuf());
+			_input_bytes += include_text.size();	// --show-stats: header bytes
+			source.str(include_text);
 		    }
 		    TokenBase *itb;
-		    const char *_interned2 = intern_file(full_path);
 		    if ( !protocol_visit )
+		    {
 			pack_note_unit(_interned2);
+			pack_record_source(_interned2, source.text());
+		    }
+		    // v40 (task #57): unit-stack tracking — every unit entered
+		    // beneath a stack member joins that member's SUBTREE set,
+		    // the "reproduced by this unit's own bind replay" domain
+		    // the branch-dep recorder tests against. Protocol visits
+		    // form no unit and never touch the stack.
+		    if ( pack_recording && !protocol_visit )
+		    {
+			for ( size_t si = 0; si < pack_unit_stack.size(); ++si )
+			    pack_unit_subtree[pack_unit_stack[si]].insert(_interned2);
+			pack_unit_subtree[_interned2].insert(_interned2);
+			pack_unit_stack.push_back(_interned2);
+		    }
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
 			push_token_with_literal_concat(itb);
 		    }
+		    if ( pack_recording && !protocol_visit )
+			pack_unit_stack.pop_back();
 		    source = std::move(saved);
 		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    if ( protocol_visit )
 			pack_protocol_serving_end(_proto_saved);
+		    // A supplement augments the REAL system header after its tokens
+		    // and macros have been served. It is injected from the restored
+		    // includer so forest edges retain source order: real, then delta.
+		    if ( is_system && !protocol_visit
+		      && is_system_header_path(full_path.c_str()) )
+			tokenize_posix_header_supplement(incfile);
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )
@@ -4084,10 +5547,10 @@ TokenBase *Program::_getToken()
 		    void *handle;
 		    if ( is_auto_library_loading_enabled() )
 		    {
-			handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+			handle = madcdl_open_global(libname.c_str());
 			if ( !handle )
 			{
-			    std::string err = "Failed to load library: " + libname + ": " + dlerror();
+			    std::string err = "Failed to load library: " + libname + ": " + madcdl_error();
 			    Throw << err.c_str() << flush;
 			}
 			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
@@ -4095,7 +5558,7 @@ TokenBase *Program::_getToken()
 		    }
 		    else
 		    {
-			handle = dlopen(NULL, RTLD_LAZY | RTLD_GLOBAL);
+			handle = madcdl_open_self();
 			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
 				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
@@ -4610,13 +6073,43 @@ TokenBase *Program::_getToken()
 		    }
 		};
 		auto resolve_int_suffix_type = [&](int64_t val, bool is_hex_or_octal) -> DataDef * {
-		    if ( long_count >= 1 )
+		    if ( long_count >= 2 )
 			return has_u_suffix ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
+		    if ( long_count == 1 )
+		    {
+			// A single L means platform `long` — 8-byte on LP64
+			// (dd_platform_long() IS ddINT64 there, unchanged), 4-byte
+			// on LLP64, where C11 6.4.4.1 ladders a non-fitting value
+			// past it: decimal L -> long, long long; hex/octal L adds
+			// the unsigned rungs.
+			if ( !target_llp64() )
+			    return has_u_suffix ? (DataDef *)&ddUINT64
+					        : (DataDef *)&ddINT64;
+			uint64_t uval = (uint64_t)val;
+			if ( has_u_suffix )
+			    return uval <= 0xFFFFFFFFull ? dd_platform_ulong()
+							 : (DataDef *)&ddUINT64;
+			if ( uval <= 0x7FFFFFFFull )
+			    return dd_platform_long();
+			if ( is_hex_or_octal && uval <= 0xFFFFFFFFull )
+			    return dd_platform_ulong();
+			if ( (int64_t)uval >= 0 )
+			    return &ddINT64;
+			return is_hex_or_octal ? (DataDef *)&ddUINT64
+					       : (DataDef *)&ddINT64;
+		    }
+		    // Bare U ladders past unsigned int when the value doesn't
+		    // fit 32 bits (C11 6.4.4.1: unsigned int -> unsigned long
+		    // -> unsigned long long; both 64-bit rungs are ddUINT64).
+		    // gcc == clang == mingw-gcc: sizeof(4294967296U) is 8.
 		    if ( has_u_suffix )
-			return &ddUINT32;
+			return (uint64_t)val <= 0xFFFFFFFFull
+			     ? (DataDef *)&ddUINT32 : (DataDef *)&ddUINT64;
 		    // C integer literal type rules (no suffix):
 		    // Hex/octal: int → unsigned int → long → unsigned long
 		    // Decimal:   int → long → long long (never unsigned)
+		    // (the >32-bit rungs land on ddINT64/ddUINT64 either way —
+		    // on LLP64 the 4-byte long rung is just skipped, same as gcc)
 		    uint64_t uval = (uint64_t)val;
 		    if ( uval <= 0x7FFFFFFF )
 			return nullptr; // fits in int32 — use default
@@ -4744,6 +6237,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			tr->source_text = lit_text;
 			return tr;
 		    }
 		    }
@@ -4830,7 +6324,13 @@ TokenBase *Program::_getToken()
 			    tr->source_text = full;
 			    return tr;
 			}
-			return make_real(num);
+			TokenReal *tr = (TokenReal *)make_real(num);
+			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			    tr->setDataType(&ddFLOAT);
+			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
+			    tr->setDataType(&ddLDOUBLE);
+			tr->source_text = lit_text;
+			return tr;
 		    }
 		    if ( eat_imag_suffix() )
 		    {
@@ -4870,10 +6370,9 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && isdigit(source.peek()) )
 			lit_text += (char)source.get();
 		}
-		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
-		// real); madc doesn't currently distinguish float-vs-double
-		// literals at lex time (TokenReal is always double-precision),
-		// so we just consume the suffix char.
+		// C float literal suffixes (f/F, l/L). Preserve the spelling and stamp
+		// the TokenReal type below; macro prescan and later lowering both need
+		// the suffix to survive rather than silently widening it to double.
 		char real_type_suffix = 0;
 		if ( source.good() )
 		{
@@ -4915,6 +6414,7 @@ TokenBase *Program::_getToken()
 		    // value was parsed at full precision and then typed as a double.
 		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			tr->setDataType(&ddLDOUBLE);
+		    tr->source_text = lit_text;
 		    return tr;
 		}
 	    }
@@ -4944,8 +6444,8 @@ TokenBase *Program::_getToken()
 		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
 		// Prefixed literals ([lex.ccon]/[lex.string]): L / u / U / u8
-		// ahead of a quote — the same prefix set the preprocessor's
-		// is_prefixed_literal_token accepts (libc++ unicode.h:
+		// ahead of a quote — the same prefix set the replacement-list
+		// tokenizer accepts (libc++ unicode.h:
 		// `U'�'`). Gate the C++11/20 prefixes on the dialect so a
 		// C89 identifier `u` before a string stays two tokens.
 		if ( source.good()
@@ -4969,11 +6469,12 @@ TokenBase *Program::_getToken()
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
 		    std::string arg;
-		    int depth = 1;
+		    PpGroupScan group;
+		    group.step('(', source.good() ? source.peek() : '\0');
 		    bool at_line_start = false; // track whether next non-ws char is start of line
 		    int macro_ifdef_skip = 0; // >0 means we're skipping a false #ifdef/#else branch
 		    int macro_ifdef_depth = 0; // tracks #ifdef nesting inside macro args
-		    while ( source.good() && depth > 0 )
+		    while ( source.good() && !group.closed() )
 		    {
 			char mc = source.get();
 			// Handle #ifdef/#ifndef/#else/#endif inside macro args
@@ -5060,39 +6561,19 @@ TokenBase *Program::_getToken()
 			    // Still need to track nested #ifdef/#endif in skipped text
 			    continue;
 			}
-			if ( mc == '(' ) { ++depth; arg += mc; }
-			else if ( mc == ')' ) { --depth; if (depth > 0) arg += mc; }
-			else if ( mc == ',' && depth == 1 )
+			bool structural = group.step(
+			    mc, source.good() ? source.peek() : '\0');
+			if ( structural && group.closed() )
+			{
+			    // The invocation's closing parenthesis is not argument text.
+			}
+			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
 			    // trim whitespace from arg
 			    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
 			    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
 			    args.push_back(arg);
 			    arg.clear();
-			}
-			else if ( mc == '"' )
-			{
-			    arg += mc;
-			    while ( source.good() && source.peek() != '"' )
-			    {
-				if ( source.peek() == '\\' ) arg += source.get();
-				arg += source.get();
-			    }
-			    if ( source.peek() == '"' ) arg += source.get();
-			}
-			else if ( mc == '\'' )
-			{
-			    // Char literal — copy verbatim through the closing
-			    // `'` so any `(`, `)`, `,`, `"` inside the literal
-			    // (e.g. `')'`, `','`, `'"'`) doesn't disturb the
-			    // macro arg parser. Honour `\\` escapes.
-			    arg += mc;
-			    while ( source.good() && source.peek() != '\'' )
-			    {
-				if ( source.peek() == '\\' ) arg += source.get();
-				arg += source.get();
-			    }
-			    if ( source.peek() == '\'' ) arg += source.get();
 			}
 			else arg += mc;
 		    }
@@ -5190,34 +6671,46 @@ TokenBase *Program::_getToken()
 		    // named `type` (macro's first arg), substituting
 		    // `result→type` first and `type→T` next would rewrite
 		    // the user's variable and corrupt the expansion.
-		    // C standard: pre-expand macros in arguments before
-		    // substitution (except for # and ## operands, but we
-		    // expand uniformly for simplicity). This handles nested
-		    // macro calls like UMIN(x, UMIN(y, z)).
+		    // C standard: pre-expand an argument only where its parameter
+		    // has an ordinary use. # and ## consume the raw spelling; an
+		    // argument used only by those operators is never expanded.
+		    // Keep both forms because one parameter may have both kinds of
+		    // occurrence in the same body.
+		    std::vector<std::string> raw_args = args;
+		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
+		    size_t fixed_param_count = macro_fixed_param_count(macro);
 		    for ( size_t i = 0; i < args.size(); ++i )
 		    {
 			std::string &a = args[i];
+			std::string param;
+			if ( i < fixed_param_count )
+			    param = macro.params[i];
+			else if ( macro.variadic )
+			    param = has_named_varargs ? macro.variadic_param : "__VA_ARGS__";
+			if ( param.empty()
+			  || !macro_param_has_expanded_use(macro, param) )
+			    continue;
 			// Quick check: does the argument contain any known macro name?
 			// A naive alpha check triggers on hex literals (0x1F) and
 			// integer suffixes (LU/ULL), whose round-trip through the
 			// tokenizer loses the original representation.  Scan for
 			// actual identifier words and see if any match a define.
 			bool has_macro = false;
-			for ( size_t j = 0; j < a.size() && !has_macro; ++j )
-			{
-			    if ( !(isalpha((unsigned char)a[j]) || a[j] == '_') )
-				continue;
-			    std::string id;
-			    while ( j < a.size() && (isalnum((unsigned char)a[j]) || a[j] == '_') )
-				id += a[j++];
-			    if ( define_map.count(id) || macro_map.count(id) )
-				has_macro = true;
-			}
+			std::vector<MacroReplacementToken> arg_tokens =
+			    tokenize_macro_spelling(a);
+			for ( size_t j = 0; j < arg_tokens.size() && !has_macro; ++j )
+			    if ( arg_tokens[j].kind == MacroReplacementToken::rtIdentifier )
+			    {
+				std::string id = macro_token_text(a, arg_tokens[j]);
+				if ( define_map.count(id) || macro_map.count(id) )
+				    has_macro = true;
+			    }
 			if ( !has_macro ) continue;
 			// Push arg text through the tokenizer to expand macros
 			Source saved = std::move(source);
 			source = Source();
 			source.str(a);
+			source.inherit_macro_disables(saved, word);
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )
@@ -5227,194 +6720,16 @@ TokenBase *Program::_getToken()
 				case TokenType::ttSpace: expanded_arg += ' '; break;
 				case TokenType::ttTab:   expanded_arg += '\t'; break;
 				case TokenType::ttEOL:   expanded_arg += '\n'; break;
-				case TokenType::ttOperator:
-				case TokenType::ttSymbol:
-				    expanded_arg += (char)at->get(); break;
-				case TokenType::ttMultiOp:
-				    expanded_arg += ((TokenMultiOp *)at)->str; break;
-				case TokenType::ttString:
-				    expanded_arg += '"';
-				    expanded_arg += ((TokenIdent *)at)->spelling();
-				    expanded_arg += '"';
-				    break;
-				case TokenType::ttChar:
-				    expanded_arg += '\'';
-				    expanded_arg += (char)at->get();
-				    expanded_arg += '\'';
-				    break;
 				default:
-				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
-					expanded_arg += ti->spelling();
-				    else if ( at->type() == TokenType::ttInteger )
-				    {
-					TokenInt *tki = static_cast<TokenInt *>(at);
-					if ( !tki->source_text.empty() )
-					    expanded_arg += tki->source_text;
-					else
-					{
-					    char buf[32];
-					    snprintf(buf, sizeof(buf), "%ld", (long)at->get());
-					    expanded_arg += buf;
-					}
-				    }
-				    else
-					expanded_arg += (char)at->get();
+				    expanded_arg += token_spelling(at);
 				    break;
 			    }
 			}
 			source = std::move(saved);
 			a = expanded_arg;
 		    }
-		    std::map<std::string, const std::string *> param_map;
-		    std::string named_varargs;
-		    std::string empty_macro_arg;   // for params supplied no argument
-		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
-		    size_t fixed_param_count = macro.params.size();
-		    if ( has_named_varargs && fixed_param_count > 0 )
-			--fixed_param_count;
-		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
-		    {
-			if ( has_named_varargs && i == macro.params.size() - 1 )
-			{
-			    named_varargs = args[i];
-			    for ( size_t j = i + 1; j < args.size(); ++j )
-			    {
-				named_varargs += ", ";
-				named_varargs += args[j];
-			    }
-			    param_map[macro.params[i]] = &named_varargs;
-			}
-			else
-			    param_map[macro.params[i]] = &args[i];
-		    }
-		    // A macro called with fewer arguments than parameters binds the
-		    // missing params to EMPTY (C semantics) — e.g. `STR()` for
-		    // `#define STR(x) #x` binds x to "" so `#x` stringizes to "",
-		    // not a stray literal `#`. (glibc: __STRING(__USER_LABEL_PREFIX__)
-		    // with the prefix empty reaches the inner # with no argument.)
-		    for ( size_t i = args.size(); i < macro.params.size(); ++i )
-			param_map[macro.params[i]] = &empty_macro_arg;
-		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
-			std::string out("\"");
-			bool pending_space = false;
-			bool wrote = false;
-			for ( char c : raw )
-			{
-			    if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
-			    {
-				if ( wrote )
-				    pending_space = true;
-				continue;
-			    }
-			    if ( pending_space )
-			    {
-				out += ' ';
-				pending_space = false;
-			    }
-			    if ( c == '"' || c == '\\' )
-				out += '\\';
-			    out += c;
-			    wrote = true;
-			}
-			out += '"';
-			return out;
-		    };
-		    std::string expanded;
-		    expanded.reserve(macro.body.size());
-		    for ( size_t p = 0; p < macro.body.size(); )
-		    {
-			char bc = macro.body[p];
-			if ( bc == '#' && p + 1 < macro.body.size() && macro.body[p+1] == '#' )
-			{
-			    expanded += "##";
-			    p += 2;
-			}
-			else if ( bc == '#' )
-			{
-			    size_t q = p + 1;
-			    while ( q < macro.body.size()
-				 && (macro.body[q] == ' ' || macro.body[q] == '\t') )
-				++q;
-			    if ( q < macro.body.size()
-			      && (macro.body[q] == '_' || isalpha((unsigned char)macro.body[q])) )
-			    {
-				size_t start = q;
-				while ( q < macro.body.size()
-				     && (macro.body[q] == '_' || isalnum((unsigned char)macro.body[q])) )
-				    ++q;
-				std::string ident = macro.body.substr(start, q - start);
-				auto it = param_map.find(ident);
-				if ( it != param_map.end() )
-				{
-				    expanded += stringify_macro_arg(*it->second);
-				    p = q;
-				    continue;
-				}
-			    }
-			    expanded += bc;
-			    ++p;
-			}
-			else if ( bc == '_' || isalpha((unsigned char)bc) )
-			{
-			    size_t start = p;
-			    while ( p < macro.body.size()
-				 && (macro.body[p] == '_' || isalnum((unsigned char)macro.body[p])) )
-				++p;
-			    std::string ident = macro.body.substr(start, p - start);
-			    auto it = param_map.find(ident);
-			    if ( it != param_map.end()
-			      && !is_prefixed_literal_token(ident, macro.body, p) )
-				expanded += *it->second;
-			    else
-				expanded += ident;
-			}
-			else
-			{
-			    expanded += bc;
-			    ++p;
-			}
-		    }
-		    // C token-pasting: `A##B` after parameter substitution
-		    // fuses the two identifiers into one. Strip every `##`
-		    // (and optional whitespace around it) so the lexer sees
-		    // a single identifier when it re-tokenizes the
-		    // expansion. Required for IMC's COL(x) → C_##x pattern.
-		    {
-			std::string fused;
-			fused.reserve(expanded.size());
-			for ( size_t p = 0; p < expanded.size(); )
-			{
-			    if ( p + 1 < expanded.size() && expanded[p] == '#' && expanded[p+1] == '#' )
-			    {
-				// Drop trailing whitespace already in fused.
-				while ( !fused.empty() && (fused.back() == ' ' || fused.back() == '\t') )
-				    fused.pop_back();
-				p += 2;
-				// Drop leading whitespace after the ##.
-				while ( p < expanded.size() && (expanded[p] == ' ' || expanded[p] == '\t') )
-				    ++p;
-				continue;
-			    }
-			    fused += expanded[p++];
-			}
-			expanded.swap(fused);
-		    }
-		    if ( macro.variadic )
-		    {
-			std::string varargs;
-			for ( size_t i = fixed_param_count; i < args.size(); ++i )
-			{
-			    if ( !varargs.empty() )
-				varargs += ", ";
-			    varargs += args[i];
-			}
-			size_t pos = 0;
-			while ( (pos = expanded.find("__VA_ARGS__", pos)) != std::string::npos )
-			{
-			    expanded.replace(pos, strlen("__VA_ARGS__"), varargs);
-			    pos += varargs.size();
-			}
-		    }
+		    std::string expanded =
+			expand_function_macro_body(macro, raw_args, args);
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
 		    source.pushback_macro(expanded, word);
 		    return getToken();
@@ -5490,12 +6805,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == '(' )
 		    {
-			int depth = 0;
-			do {
-			    char c = source.get();
-			    if ( c == '(' ) ++depth;
-			    else if ( c == ')' ) --depth;
-			} while ( source.good() && depth > 0 );
+			consume_pp_group(source);
 			return getToken();
 		    }
 		    // An UNCONDITIONAL `noexcept` re-lexes as its token
@@ -5508,7 +6818,7 @@ TokenBase *Program::_getToken()
 		    return getToken();
 		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
-		// layout/type-shaping ones the parser understands and skip
+		// layout/type/lookup-shaping ones the parser understands and skip
 		// the rest.
 		if ( word == "__attribute__" || word == "__attribute" )
 		{
@@ -5516,23 +6826,8 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string attr_text;
 		    if ( source.peek() == '(' )
-		    {
-			int depth = 0;
-			do {
-			    char c = source.get();
-			    attr_text += c;
-			    if ( c == '(' ) ++depth;
-			    else if ( c == ')' ) --depth;
-			} while ( source.good() && depth > 0 );
-		    }
-		    if ( gnu_attribute_text_has_name(attr_text, "packed")
-		      || gnu_attribute_text_has_name(attr_text, "aligned")
-		      || gnu_attribute_text_has_name(attr_text, "mode")
-		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
-		      || gnu_attribute_text_has_name(attr_text, "vector_size")
-		      || gnu_attribute_text_has_name(attr_text, "alias")
-		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function")
-		      || gnu_attribute_text_has_name(attr_text, "optimize") )
+			consume_pp_group(source, &attr_text);
+		    if ( gnu_attribute_text_has_supported_name(attr_text) )
 		    {
 			source.pushback(attr_text);
 			return make_ident(word);
@@ -5567,7 +6862,10 @@ TokenBase *Program::_getToken()
 		  || word == "double"     || word == "float"
 		  || word == "__int128"
 		  || word == "_Complex"   || word == "__complex__"
-		  || word == "__complex" )
+		  || word == "__complex"
+		  || word == "_Float16"   || word == "_Float32"
+		  || word == "_Float64"   || word == "_Float128"
+		  || word == "_Float32x"  || word == "_Float64x" )
 		{
 		    enum {
 			TS_VOID     = 1 << 0,
@@ -5581,6 +6879,8 @@ TokenBase *Program::_getToken()
 			TS_UNSIGNED = 1 << 16,
 			TS_COMPLEX  = 1 << 18,
 			TS_INT128   = 1 << 20,
+			TS_FLOATN_F = 1 << 22,	// _Float16/_Float32 (~float)
+			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
 		    };
 		    int counter = compound_type_specifier_flag(word);
 		    // Accumulate subsequent type-specifier keywords
@@ -5670,12 +6970,14 @@ TokenBase *Program::_getToken()
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long", ddINT64);
+			    // Plain `long` is target-shaped (4-byte on LLP64) —
+			    // dd_platform_long(); the LONG+LONG rows below stay i64.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_long()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long", *dd_platform_long());
 			case TS_UNSIGNED + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("unsigned long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_ulong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long", *dd_platform_ulong());
 			case TS_LONG + TS_LONG:
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
@@ -5707,6 +7009,20 @@ TokenBase *Program::_getToken()
 			    // value passed as a double.
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddLDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
 			    return make_datatype("long double", ddLDOUBLE);
+			// C23 _FloatN + _Complex, either order (gcc's
+			// avx512fp16intrin.h: `_Float16 _Complex __A`). The complex
+			// carrier rides the same nearest-supported approximation the
+			// bare spellings use (add_datatypes: _Float16/_Float32 ~
+			// float, the rest ~ double; ABI fidelity = the Tier-3 half-
+			// float floor gap). BARE _FloatN breaks to the default's
+			// fall-through, where the datatype_map's own spelling-named
+			// token serves it exactly as before.
+			case TS_FLOATN_F:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return make_datatype(dd->name.c_str(), *dd); }
+			    break;
+			case TS_FLOATN_D:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    break;
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
@@ -5855,20 +7171,22 @@ std::string Program::expandIfMacros(const std::string &raw)
     {
 	std::string out;
 	bool changed = false;
-	size_t i = 0;
 	bool preserve_defined_operand = false;
-	while ( i < expr.size() )
+	std::vector<MacroReplacementToken> expression_tokens =
+	    tokenize_macro_spelling(expr);
+	for ( size_t ti = 0; ti < expression_tokens.size(); )
 	{
-	    // Copy non-identifier characters
-	    if ( !isalpha((unsigned char)expr[i]) && expr[i] != '_' )
+	    const MacroReplacementToken &token = expression_tokens[ti];
+	    if ( token.kind != MacroReplacementToken::rtIdentifier )
 	    {
-		out += expr[i++];
+		if ( token.kind == MacroReplacementToken::rtComment )
+		    out += ' ';
+		else
+		    out += macro_token_text(expr, token);
+		++ti;
 		continue;
 	    }
-	    // Extract identifier
-	    std::string word;
-	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
-		word += expr[i++];
+	    std::string word = macro_token_text(expr, token);
 	    // `defined` and the clang `__has_*` family are #if OPERATORS, not
 	    // macros, and their operands are NOT macro-expanded. That is not a
 	    // fine point for madc: it aliases 138 builtins in define_map
@@ -5886,6 +7204,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    {
 		out += word;
 		preserve_defined_operand = true;
+		++ti;
 		continue;
 	    }
 	    if ( is_has_op )
@@ -5894,32 +7213,33 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// Copy the whole parenthesized operand through verbatim — one
 		// group, so `<a/b.h>`, `"a.h"` and `clang::foo` all survive
 		// intact for the operator to interpret.
-		size_t j = i;
-		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
-		    ++j;
-		if ( j < expr.size() && expr[j] == '(' )
+		size_t group_token = ti + 1;
+		while ( group_token < expression_tokens.size()
+		     && macro_token_space(expression_tokens[group_token]) )
+		    ++group_token;
+		if ( group_token < expression_tokens.size()
+		  && expression_tokens[group_token].kind == MacroReplacementToken::rtPunct
+		  && macro_token_text(expr, expression_tokens[group_token]) == "(" )
 		{
-		    int pdepth = 0;
-		    while ( j < expr.size() )
+		    size_t end = pp_group_end(expr,
+			expression_tokens[group_token].begin);
+		    if ( end != std::string::npos )
 		    {
-			if ( expr[j] == '(' )
-			    ++pdepth;
-			else if ( expr[j] == ')' && --pdepth == 0 )
-			{
-			    ++j;
-			    break;
-			}
-			++j;
+			out += expr.substr(token.end, end - token.end);
+			while ( ti < expression_tokens.size()
+			     && expression_tokens[ti].begin < end )
+			    ++ti;
+			continue;
 		    }
-		    out += expr.substr(i, j - i);
-		    i = j;
 		}
+		++ti;
 		continue;
 	    }
 	    if ( preserve_defined_operand )
 	    {
 		out += word;
 		preserve_defined_operand = false;
+		++ti;
 		continue;
 	    }
 	    // Look up in define_map
@@ -5928,6 +7248,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    {
 		out += it->empty() ? "1" : *it;
 		changed = true;
+		++ti;
 	    }
 	    else if ( macro_map.count(word) > 0 )
 	    {
@@ -5940,26 +7261,33 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// derailing the evaluator so the defined-operator tail
 		// produced the wrong branch (glibc's floatn-common.h
 		// __HAVE_FLOATN_NOT_TYPEDEF condition).
-		size_t j = i;
-		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
-		    ++j;
-		if ( j < expr.size() && expr[j] == '(' )
+		size_t group_token = ti + 1;
+		while ( group_token < expression_tokens.size()
+		     && macro_token_space(expression_tokens[group_token]) )
+		    ++group_token;
+		if ( group_token < expression_tokens.size()
+		  && expression_tokens[group_token].kind == MacroReplacementToken::rtPunct
+		  && macro_token_text(expr, expression_tokens[group_token]) == "(" )
 		{
 		    const MacroDef &m = macro_map[word];
 		    std::vector<std::string> margs;
 		    std::string marg;
-		    int mdepth = 0;
+		    PpGroupScan mgroup;
+		    size_t j = expression_tokens[group_token].begin;
+		    mgroup.step('(', j + 1 < expr.size() ? expr[j + 1] : '\0');
 		    ++j; // consume '('
 		    for ( ; j < expr.size(); ++j )
 		    {
 			char mc = expr[j];
-			if ( mc == '(' ) { ++mdepth; marg += mc; }
-			else if ( mc == ')' )
+			char next = j + 1 < expr.size() ? expr[j + 1] : '\0';
+			bool structural = mgroup.step(mc, next);
+			if ( structural && mgroup.closed() )
 			{
-			    if ( mdepth == 0 ) { ++j; break; }
-			    --mdepth; marg += mc;
+			    ++j;
+			    break;
 			}
-			else if ( mc == ',' && mdepth == 0 )
+			else if ( structural && mc == ','
+			       && mgroup.at_argument_level() )
 			{ margs.push_back(marg); marg.clear(); }
 			else marg += mc;
 		    }
@@ -5970,77 +7298,40 @@ std::string Program::expandIfMacros(const std::string &raw)
 			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
 		    };
 		    for ( auto &a : margs ) trim(a);
-		    // Substitute params in a single pass over the body so an
-		    // argument matching a later parameter name isn't cascaded.
-		    const std::string &body = m.body;
-		    std::string expanded;
-		    size_t b = 0;
-		    while ( b < body.size() )
+		    std::vector<std::string> expanded_args = margs;
+		    size_t fixed = macro_fixed_param_count(m);
+		    for ( size_t ai = 0; ai < expanded_args.size(); ++ai )
 		    {
-			if ( !isalpha((unsigned char)body[b]) && body[b] != '_' )
-			{ expanded += body[b++]; continue; }
-			std::string bw;
-			while ( b < body.size()
-			     && (isalnum((unsigned char)body[b]) || body[b] == '_') )
-			    bw += body[b++];
-			bool subst = false;
-			for ( size_t pi2 = 0; pi2 < m.params.size(); ++pi2 )
-			    if ( bw == m.params[pi2] )
-			    {
-				expanded += pi2 < margs.size() ? margs[pi2] : "";
-				subst = true;
-				break;
-			    }
-			if ( !subst && m.variadic
-			  && (bw == "__VA_ARGS__"
-			      || (!m.variadic_param.empty() && bw == m.variadic_param)) )
-			{
-			    for ( size_t va = m.params.size(); va < margs.size(); ++va )
-			    {
-				if ( va > m.params.size() ) expanded += ", ";
-				expanded += margs[va];
-			    }
-			    subst = true;
-			}
-			if ( !subst )
-			    expanded += bw;
+			std::string param;
+			if ( ai < fixed )
+			    param = m.params[ai];
+			else if ( m.variadic )
+			    param = m.variadic_param.empty()
+				? "__VA_ARGS__" : m.variadic_param;
+			if ( !param.empty() && macro_param_has_expanded_use(m, param) )
+			    expanded_args[ai] = expandIfMacros(margs[ai]);
 		    }
-		    // Token pasting: `A ## B` joins into ONE token after
-		    // parameter substitution — glibc's #if-consulted macros
-		    // are built this way (`__GLIBC_USE(F)` -> `__GLIBC_USE_
-		    // ## F`); without the join the evaluator saw two
-		    // undefined halves (0) and glibc feature conditions
-		    // (__GLIBC_USE (DEPRECATED_GETS)) took the wrong branch.
-		    // The joined name resolves on the next expansion pass.
-		    size_t hh;
-		    while ( (hh = expanded.find("##")) != std::string::npos )
-		    {
-			size_t lend = hh;
-			while ( lend > 0 && (expanded[lend-1] == ' '
-					  || expanded[lend-1] == '\t') )
-			    --lend;
-			size_t rstart = hh + 2;
-			while ( rstart < expanded.size()
-			     && (expanded[rstart] == ' '
-			      || expanded[rstart] == '\t') )
-			    ++rstart;
-			expanded = expanded.substr(0, lend)
-				 + expanded.substr(rstart);
-		    }
+		    std::string expanded =
+			expand_function_macro_body(m, margs, expanded_args);
 		    out += "(" + expanded + ")";
-		    i = j;
+		    while ( ti < expression_tokens.size()
+			 && expression_tokens[ti].begin < j )
+			++ti;
 		    changed = true;
 		}
 		else
 		{
-		    // Function-like macro name with NO argument list: keep the
-		    // historical behavior (treated as 1 in #if context).
-		    out += "1";
-		    changed = true;
+		    // A function-like macro name without an invocation is not
+		    // expanded. It may become callable after parameter substitution.
+		    out += word;
+		    ++ti;
 		}
 	    }
 	    else
+	    {
 		out += word; // leave as-is (will become 0 in the evaluator)
+		++ti;
+	    }
 	}
 	expr = out;
 	if ( !changed ) break;
@@ -6102,12 +7393,13 @@ bool Program::has_builtin(const std::string &name)
 // libstdc++ wraps its whole _GLIBCXX_HAS_BUILTIN family in exactly that ifdef
 // (c++config.h:830), so every guard below it silently evaluated to 0 and the
 // default lane quietly lost LAUNDER / IS_SAME / HAS_UNIQ_OBJ_REP and their
-// siblings. The operators madc cannot back (__has_attribute, __has_feature,
-// …) stay OFF this list and thus invisible: claiming them would be the
-// unbacked yes this file refuses.
+// siblings. __has_attribute now answers from gnu_attribute_kind; operators
+// with no truthful registry (__has_feature, …) stay OFF this list and thus
+// invisible.
 bool Program::has_query_operator_implemented(const std::string &op)
 {
     return op == "__has_builtin"
+	|| op == "__has_attribute"
 	|| op == "__has_include"
 	|| op == "__has_include_next";
 }
@@ -6127,25 +7419,15 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	++pos;
     if ( pos >= expr.size() || expr[pos] != '(' )
 	return 0;	// bare identifier: no query to answer
-    ++pos;
     // Take the argument as raw text to the matching ')': the forms differ per
     // operator (`<a/b.h>`, `"a.h"`, `clang::foo`, a bare identifier), so the
     // shape belongs to the operator, not to this scanner.
-    std::string arg;
-    int depth = 1;
-    while ( pos < expr.size() )
-    {
-	char c = expr[pos];
-	if ( c == '(' )
-	    ++depth;
-	else if ( c == ')' && --depth == 0 )
-	{
-	    ++pos;
-	    break;
-	}
-	arg += c;
-	++pos;
-    }
+    size_t open = pos;
+    size_t end = pp_group_end(expr, open);
+    if ( end == std::string::npos )
+	return 0;
+    std::string arg = expr.substr(open + 1, end - open - 2);
+    pos = end;
     size_t b = arg.find_first_not_of(" \t");
     size_t e = arg.find_last_not_of(" \t");
     arg = (b == std::string::npos) ? std::string() : arg.substr(b, e - b + 1);
@@ -6154,6 +7436,14 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 
     if ( op == "__has_builtin" )
 	return has_builtin(arg) ? 1 : 0;
+
+    if ( op == "__has_attribute" )
+    {
+	// Preserving an attribute is not enough to advertise the complete
+	// compiler contract for it.  Grow this truth set only with an
+	// oracle-backed semantic gate; using_if_exists has both.
+	return madc_gnu_attribute_kind(arg) == GnuAttributeKind::UsingIfExists ? 1 : 0;
+    }
 
     if ( op == "__has_include" || op == "__has_include_next" )
     {
@@ -6170,6 +7460,8 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	    return 0;
 	std::string file = arg.substr(1, arg.size() - 2);
 	if ( file.empty() )
+	    return 0;
+	if ( is_system && is_posix_compat_header_name(file) )
 	    return 0;
 	if ( is_system )
 	{
@@ -6188,25 +7480,101 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
 	std::string path = op == "__has_include_next"
 			 ? resolve_include_next_path(file)
 			 : resolve_include_path(file, is_system);
-	std::ifstream probe(path.c_str());
-	return probe.good() ? 1 : 0;
+	if ( resolved_include_provider_exists(path) )
+	    return 1;
+	// LAST position in the executor's resolution order, mirrored here: a
+	// POSIX name the native toolchain ships no header for at all is served
+	// by the posix/ entry AFTER the walk fails. Same predicate, same
+	// position, so the answer matches what #include will do.
+	if ( is_system && op == "__has_include"
+	  && posix_whole_provider_serves(file, path) )
+	    return 1;
+	return 0;
     }
 
-    // __has_attribute / __has_cpp_attribute / __has_declspec_attribute /
-    // __has_feature / __has_extension / __has_keyword: madc supports a real
-    // subset of each (cleanup, vector_size, the C++11 keyword set the
-    // LanguageStd gate already knows), but there is no registry to ask yet, so
-    // claiming any of it would be exactly the unbacked yes this file refuses.
-    // 0 keeps every library on its portable path — the same answer they got
-    // before these operators existed, now given deliberately.
+    // __has_cpp_attribute / __has_declspec_attribute / __has_feature /
+    // __has_extension / __has_keyword: there is no truthful registry to ask
+    // yet.  0 keeps every library on its portable path.
     return 0;
 }
 
 bool Program::evaluateIfCondition()
 {
     std::string raw_expr;
-    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	raw_expr += source.get();
+    // Translation-phase-3 comment replacement ON the captured condition: each
+    // comment becomes one space BEFORE the string evaluator runs. A trailing
+    // `/* in libmingwex.a */` otherwise reaches the expression parser as
+    // division-and-garbage and the condition silently evaluates FALSE —
+    // mingw's wchar.h/stdlib.h guard their ISO-C-ext declarations (wcstold,
+    // strtold, llabs) with exactly that shape, and the dropped declarations
+    // surface as "not a declaration in '::'" a thousand lines later. It also
+    // keeps comment words out of pack_record_branch_macro (B4a). A block
+    // comment may span physical lines (the <stddef.h> #endif precedent —
+    // consume through `*/` wherever it closes); char/string literals shield
+    // both comment introducers.
+    bool in_str = false, in_chr = false;
+    while ( source.good() && !source.eof() )
+    {
+	int ch = source.peek();
+	if ( ch == '\n' || ch == '\r' )
+	    break;
+	if ( !in_str && !in_chr && ch == '/' )
+	{
+	    source.get();
+	    int nx = source.peek();
+	    if ( nx == '*' )
+	    {
+		source.get();
+		int prev = 0;
+		while ( source.good() && !source.eof() )
+		{
+		    int c2 = source.get();
+		    if ( prev == '*' && c2 == '/' )
+			break;
+		    prev = c2;
+		}
+		raw_expr += ' ';
+		continue;
+	    }
+	    if ( nx == '/' )
+	    {
+		while ( source.good() && !source.eof()
+		     && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		break;
+	    }
+	    raw_expr += '/';
+	    continue;
+	}
+	source.get();
+	if ( in_str )
+	{
+	    if ( ch == '\\' && source.good() && !source.eof()
+	      && source.peek() != '\n' && source.peek() != '\r' )
+	    {
+		raw_expr += (char)ch;
+		ch = source.get();
+	    }
+	    else if ( ch == '"' )
+		in_str = false;
+	}
+	else if ( in_chr )
+	{
+	    if ( ch == '\\' && source.good() && !source.eof()
+	      && source.peek() != '\n' && source.peek() != '\r' )
+	    {
+		raw_expr += (char)ch;
+		ch = source.get();
+	    }
+	    else if ( ch == '\'' )
+		in_chr = false;
+	}
+	else if ( ch == '"' )
+	    in_str = true;
+	else if ( ch == '\'' )
+	    in_chr = true;
+	raw_expr += (char)ch;
+    }
 
     // Expand macros before evaluation so expressions like
     // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
@@ -6974,8 +8342,18 @@ static std::string token_spelling(TokenBase *tb)
 	case TokenType::ttVariable:
 	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
 	    return std::string();
-	case TokenType::ttInteger: return std::to_string(tb->ival());
-	case TokenType::ttReal:    return std::to_string(tb->dval());
+	case TokenType::ttInteger:
+	{
+	    TokenInt *ti = static_cast<TokenInt *>(tb);
+	    return ti->source_text.empty() ? std::to_string(tb->ival())
+					   : ti->source_text;
+	}
+	case TokenType::ttReal:
+	{
+	    TokenReal *tr = static_cast<TokenReal *>(tb);
+	    return tr->source_text.empty() ? std::to_string(tb->dval())
+					   : tr->source_text;
+	}
 	case TokenType::ttChar:
 	{
 	    // Reconstruct a char literal that re-lexes to the same value.

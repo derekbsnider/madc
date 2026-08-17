@@ -1,12 +1,19 @@
-# AOT ledger sources (forest-carriers S5) — repo-root-relative paths, one per
-# line, canonical order. THE single owner of the list: src/Makefile compiles
-# these into libmadc (host build) and scripts/forest_pack.sh hands the same
-# paths to madc's --freeze-ledger= so they ride the forest container as MIR
-# ledger modules for -static-libmadc.
+# AOT ledger sources (forest-carriers S5) — one tagged, repo-root-relative
+# path per line, in canonical order. Format:
+#
+#   <target[,target...]> <src/rt/source.c>
+#
+# Targets are linux, darwin, and win64; use all for a source shared by every
+# target. This is THE single membership owner. Every consumer projects it
+# through scripts/select_ledger_sources.sh before compiling or freezing it.
 #
 # Membership rule: strict C11, no compiler builtins (madc compiles these
 # itself, so a `__builtin_x` here that madc lowers to `__madc_x` would call
 # straight back into this file), and no dependency on the C++ runtime. A
 # runtime piece that cannot meet that is Tier B and refuses loudly at emit.
-src/rt/rt_except.c
-src/rt/rt_vla.c
+all src/rt/rt_except.c
+all src/rt/rt_vla.c
+win64 src/rt/rt_posix_str.c
+win64 src/rt/rt_posix_time.c
+win64 src/rt/rt_posix_env.c
+win64 src/rt/rt_posix_dl.c

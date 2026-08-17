@@ -39,14 +39,26 @@ typedef __builtin_va_list __gnuc_va_list;
 
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
+// va_copy follows the target's va_list shape (Program::builtin_va_list_type):
+// SysV array-of-struct copies the one element; win64's scalar `char *`
+// (mingw/MSVC vadefs.h) is a plain assignment.
+#ifdef _WIN32
+#define va_copy(dest, src) ((dest) = (src))
+#else
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
+#endif
 
-// va_list is now the real ABI struct, so the v*printf family resolve to the
-// real libc functions (which take a va_list) — not the old __madc_* helpers
-// that unpacked a custom int64_t[] buffer.
-int vsprintf(char *, const char *, va_list);
-int vsnprintf(char *, unsigned long, const char *, va_list);
-int vfprintf(void *, const char *, va_list);
-int vprintf(const char *, va_list);
+// The v*printf family is NOT declared here. <stdarg.h> owns the va_* machinery
+// and nothing else — gcc's and clang's own stdarg.h declare zero stdio
+// functions, and <stdio.h> (glibc / the darwin prelude / UCRT) is the header
+// that owns those names. Declaring them here was a leftover from the embedded
+// <stdio.h> twin, which is gone.
+//
+// It was also actively WRONG on a libc that macro-izes them: darwin builds the
+// prelude with _FORTIFY_SOURCE=2, so `#define vsprintf(str,...)
+// __vsprintf_chk_func(str, 0, __VA_ARGS__)` is live once anything pulls the
+// stdio chain in. The declaration below then expanded mid-header into
+// `__builtin___vsprintf_chk (char *, 0, __darwin_obsz(...), ...)` and failed to
+// parse — reported, misleadingly, as an error at this line.
 
 #endif /* __need___va_list */

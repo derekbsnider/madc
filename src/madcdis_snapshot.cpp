@@ -310,6 +310,8 @@ bool snapshot_writer::append_file(const char *path) const
 
 bool snapshot_reader::open(const void *image, size_t image_len)
 {
+    _image = 0;
+    _image_size = 0;
     _blob = 0;
     _blob_size = 0;
     _dir.clear();
@@ -381,7 +383,31 @@ bool snapshot_reader::open(const void *image, size_t image_len)
 
     _blob = blob;
     _blob_size = (size_t)ftr.blob_size;
+    _image = bytes;
+    _image_size = image_len;
     return true;
+}
+
+bool snapshot_reader::previous_image_len(size_t &image_len) const
+{
+    if ( !_image || !_blob || _blob < _image
+      || (size_t)(_blob - _image) > _image_size )
+	return false;
+
+    const size_t blob_begin = (size_t)(_blob - _image);
+    for ( size_t pad = 0; pad < 16 && pad <= blob_begin; ++pad )
+    {
+	const size_t candidate_len = blob_begin - pad;
+	if ( candidate_len < sizeof(snapshot_header) + sizeof(snapshot_footer) )
+	    continue;
+	snapshot_reader candidate;
+	if ( candidate.open(_image, candidate_len) )
+	{
+	    image_len = candidate_len;
+	    return true;
+	}
+    }
+    return false;
 }
 
 const snapshot_segment *snapshot_reader::find(uint32_t seg_id) const

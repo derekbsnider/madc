@@ -1,0 +1,25 @@
+# forest_pack_guarded.txt — raw-source roots whose include edges are HIDDEN
+# from the default-standard Linux pack by __cplusplus guards.
+#
+# The Linux twin of scripts/forest_pack_guarded_windows.txt. A default-standard
+# preprocess cannot discover these edges: <iterator> reaches
+# bits/iterator_concepts.h only under `#if __cplusplus >= 202002L`, so freezing
+# <iterator> alone leaves a consumer compiling with --std=c++20 to walk off the
+# end of the corpus. That is exactly what scripts/headerless_suite.sh measured
+# (testifconstexpr, testinvocable: "Failed to open include file:
+# bits/iterator_concepts.h" from stl_iterator_base_types.h:71).
+#
+# These are included by ABSOLUTE PATH so their canonical sysroot names survive
+# while their guarded bodies stay semantically empty in this profile; the freeze
+# still records the exact raw text for live C++20 re-tokenization.
+#
+# Same membership as the win64 list — the guarded C++20 closure is a libstdc++
+# property, not a target property, so the two lists agree by construction. Keep
+# them in sync; a divergence means one platform learned something the other has
+# not.
+bits/ranges_cmp.h
+bits/iterator_concepts.h
+numbers
+bits/max_size_type.h
+bits/ranges_base.h
+bits/ranges_util.h

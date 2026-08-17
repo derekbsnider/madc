@@ -18,9 +18,9 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#include <glob.h>
 #include <regex>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include "madc_posix_io.h"	// glob_paths — the one pathname-expansion owner
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -93,14 +93,10 @@ void perl_glob(madc::value *arr, const char *pattern)
 	std::string p = perl_text_arg(pattern);
 	*arr = madc::value::make_array();
 
-	glob_t globbuf;
-	int ret = ::glob(p.c_str(), GLOB_NOSORT, NULL, &globbuf);
-	if ( ret == 0 )
-	{
-		for ( size_t i = 0; i < globbuf.gl_pathc; ++i )
-			arr->array().push_back(madc::value(std::string(globbuf.gl_pathv[i])));
-		globfree(&globbuf);
-	}
+	std::vector<std::string> matches;
+	madc::detail::glob_paths(p, matches);
+	for ( size_t i = 0; i < matches.size(); ++i )
+		arr->array().push_back(madc::value(matches[i]));
 }
 
 // perl::scalar — return count of elements in array (Perl's scalar @array)

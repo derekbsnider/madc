@@ -1,0 +1,16 @@
+#include <stdio.h>
+
+#if __has_include("pp_group)a.h")
+# define PP_GROUP_RESULT "present"
+#else
+# define PP_GROUP_RESULT "missing"
+#endif
+
+#define PP_GROUP_IGNORED(x) "comment-close"
+
+int main(void)
+{
+	puts(PP_GROUP_RESULT);
+	puts(PP_GROUP_IGNORED(/* comment *//));
+	return 0;
+}

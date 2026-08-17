@@ -70,7 +70,14 @@ enum
      * __builtin_va_list resolves in any process; the tag STRUCT itself
      * records as an ordinary aggregate. */
     MADC_TYPEID_BUILTIN_VA_LIST = 34,
-    MADC_TYPEID_PRIMITIVE_LAST = 34,
+    /* Platform `long` / `unsigned long` (task #46b, LLP64 target model):
+     * distinct 4-byte dds minted by dd_platform_long()/dd_platform_ulong().
+     * On LP64 the accessors return ddINT64/ddUINT64 (slots 10/15), so these
+     * slots resolve to NULL there — a frozen LLP64 forest thawed under LP64
+     * fails LOUDLY instead of silently re-widening every `long`. */
+    MADC_TYPEID_PLATFORM_LONG  = 35,
+    MADC_TYPEID_PLATFORM_ULONG = 36,
+    MADC_TYPEID_PRIMITIVE_LAST = 36,
 
     MADC_TYPEID_PRIMITIVE_END  = 0x100,
     MADC_TYPEID_SYSTEM_BASE    = 0x100

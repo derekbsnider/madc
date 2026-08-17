@@ -22,7 +22,6 @@
 #include <functional>
 #include <stdint.h>
 #include <setjmp.h>
-#include <dlfcn.h>
 #include <cstdlib>
 #include <typeinfo>
 #include <cxxabi.h>
@@ -44,6 +43,7 @@
 #include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
 #include "cir_builder.h"
 #include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
@@ -368,7 +368,7 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 // anchor (task #69).
 bool external_symbol_available(const std::string &sym)
 {
-	return !sym.empty() && dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+	return !sym.empty() && madcdl_sym_default(sym.c_str()) != NULL;
 }
 
 // task #69: a symbol qualifies for flavor marshalling ONLY when it is
@@ -381,14 +381,14 @@ bool external_symbol_available(const std::string &sym)
 // the .so build, so comparing module bases needs no path knowledge.
 static bool symbol_is_host_implemented(const std::string &sym)
 {
-	void *addr = sym.empty() ? NULL : dlsym(RTLD_DEFAULT, sym.c_str());
+	void *addr = sym.empty() ? NULL : madcdl_sym_default(sym.c_str());
 	if (!addr)
 		return false;
-	Dl_info di, anchor;
-	if (!dladdr(addr, &di)
-	    || !dladdr((void *)&external_symbol_available, &anchor))
+	MadcDlInfo di, anchor;
+	if (!madcdl_addr(addr, di)
+	    || !madcdl_addr((void *)&external_symbol_available, anchor))
 		return false;
-	return di.dli_fbase == anchor.dli_fbase;
+	return di.fbase == anchor.fbase;
 }
 
 // The mangled-direct link test, ONE owner for every bind site (std free fn,
@@ -408,14 +408,21 @@ bool CirBuilder::extern_symbol_can_link(const std::string &sym)
 	    || (m_prog && m_prog->deferred_lazy_bodies.count(sym));
 }
 
-node_t CirBuilder::integer(long val, TokenBase *origin)
+node_t CirBuilder::integer(int64_t val, TokenBase *origin)
 {
-	// c2m types N_I as `int` (32-bit) and N_L as `long` (64-bit). A value
-	// outside signed-32 range must be N_L, or c2m truncates+sign-extends it
-	// to int — e.g. __builtin_bswap64(0x0123456789abcdef) lost its high word.
-	bool fits_int = (val >= (long)INT32_MIN && val <= (long)INT32_MAX);
-	cir_node *cn = make(fits_int ? N_I : N_L, origin);
-	cn->base.u.l = val;
+	// c2m types N_I as `int` (32-bit). A value outside signed-32 range
+	// must be a 64-bit constant node or c2m truncates+sign-extends it to
+	// int — e.g. __builtin_bswap64(0x0123456789abcdef) lost its high word.
+	// That node is N_LL (`long long`, 64-bit on every target), NEVER N_L:
+	// c2m types N_L as platform `long`, which is 32-bit on win64 (LLP64),
+	// and its u.l storage narrows there too (c2mir_node.h mirrors
+	// cx86_64.h). The i64 spelling law — see append_i64.
+	bool fits_int = (val >= (int64_t)INT32_MIN && val <= (int64_t)INT32_MAX);
+	cir_node *cn = make(fits_int ? N_I : N_LL, origin);
+	if (fits_int)
+		cn->base.u.l = (c2mir_long)val;
+	else
+		cn->base.u.ll = val;
 	return cn->as_node();
 }
 
@@ -432,12 +439,14 @@ node_t CirBuilder::integer_typed(madc_wide_int val, DataDef *dd, TokenBase *orig
 		uint64_t hi64 = (uint64_t)((madc_wide_uint)val >> 64);
 		node_t u128_type = node2(N_TYPE, type_list(&ddUINT128),
 					 node2(N_DECL, ignore(), list()));
-		cir_node *hi_cn = make(N_UL, origin);
-		hi_cn->base.u.ul = (c2mir_ulong)hi64;
+		// N_ULL, never N_UL: platform `unsigned long` is 32-bit on
+		// win64, and these halves carry full 64-bit values.
+		cir_node *hi_cn = make(N_ULL, origin);
+		hi_cn->base.u.ull = (c2mir_ullong)hi64;
 		node_t hi_cast = node2(N_CAST, u128_type, hi_cn->as_node(), origin);
 		node_t shifted = node2(N_LSH, hi_cast, integer(64, origin), origin);
-		cir_node *lo_cn = make(N_UL, origin);
-		lo_cn->base.u.ul = (c2mir_ulong)lo64;
+		cir_node *lo_cn = make(N_ULL, origin);
+		lo_cn->base.u.ull = (c2mir_ullong)lo64;
 		node_t composed = node2(N_OR, shifted, lo_cn->as_node(), origin);
 		if (dd && dd->rawtype() == DataType::dtINT128) {
 			node_t i128_type = node2(N_TYPE, type_list(&ddINT128),
@@ -454,19 +463,22 @@ node_t CirBuilder::integer_typed(madc_wide_int val, DataDef *dd, TokenBase *orig
 	// code from is_unsigned()/size mirrors GCC's literal-typing: the
 	// operand self-determines its type, the operator/conversion follows.
 	if (!dd || !dd->is_integer())
-		return integer((long)val, origin);
+		return integer((int64_t)val, origin);
 	bool uns = dd->is_unsigned();
 	bool wide = (dd->size > 4);   // 8-byte long / long long
+	// Wide constants are N_LL/N_ULL, never N_L/N_UL: c2m types those as
+	// platform `long`, 32-bit on win64 (the i64 spelling law, append_i64).
 	c2mir_node_code_t code;
 	if (wide)
-		code = uns ? N_UL : N_L;
+		code = uns ? N_ULL : N_LL;
 	else
-		code = uns ? N_U  : N_I;
+		code = uns ? N_U   : N_I;
 	cir_node *cn = make(code, origin);
 	switch (code) {
-	case N_U:   cn->base.u.ul = (c2mir_ulong)(uint32_t)val; break;
-	case N_UL:  cn->base.u.ul = (c2mir_ulong)(uint64_t)val; break;
-	default:    cn->base.u.l  = (c2mir_long)val;            break;
+	case N_U:   cn->base.u.ul  = (c2mir_ulong)(uint32_t)val;  break;
+	case N_ULL: cn->base.u.ull = (c2mir_ullong)(uint64_t)val; break;
+	case N_LL:  cn->base.u.ll  = (c2mir_llong)val;            break;
+	default:    cn->base.u.l   = (c2mir_long)val;             break;
 	}
 	return cn->as_node();
 }
@@ -512,7 +524,7 @@ node_t CirBuilder::complex_literal(double val, DataDef *complex_dd, TokenBase *o
 		// expression; static initializers fold before reaching here).
 		if (!cdd->is_native())
 			return int_complex_compound(integer(0, origin),
-						    integer((long)val, origin),
+						    integer((int64_t)val, origin),
 						    cdd, origin);
 		elem = cdd->element_type;
 	}
@@ -573,6 +585,27 @@ node_t CirBuilder::simple(c2mir_node_code_t code, TokenBase *origin)
 node_t CirBuilder::append(node_t parent, node_t child)
 {
 	return c2mir_op_append(c2m, parent, child);
+}
+
+// ---- The i64 spelling law (LLP64) ----
+// madc's 64-bit int kinds (dtINT64/dtUINT64, size_t shapes, the value ABI's
+// integer payload, runtime-thunk integer slots) spell as `long long` — TWO
+// N_LONG specifier nodes — never a lone N_LONG: c2mir models platform
+// `long`, which is 32-bit on win64 (LLP64; third_party/mir/c2mir/x86_64/
+// cx86_64.h), so a single-N_LONG spec silently truncates every 64-bit value
+// there. LP64 targets type both spellings at 64 bits, so this is a no-op on
+// linux/darwin. The only legitimate lone N_LONG is the long double specifier
+// pair {N_LONG, N_DOUBLE} (marked ld-pair for the gate).
+node_t CirBuilder::append_i64(node_t spec_list, TokenBase *origin)
+{
+	append(spec_list, simple(N_LONG, origin));		// i64-owner
+	return append(spec_list, simple(N_LONG, origin));	// i64-owner
+}
+
+node_t CirBuilder::i64_list(TokenBase *origin)
+{
+	return node2(N_LIST, simple(N_LONG, origin),		// i64-owner
+		     simple(N_LONG, origin));			// i64-owner
 }
 
 node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
@@ -1766,11 +1799,15 @@ static size_t spec_decl_fixed_array_elems(node_t spec_decl)
 		node_t sz = c2mir_node_op(op, 2);        // N_ARR(static, quals, size)
 		if (!sz)
 			return 0;
-		if (sz->code == N_I || sz->code == N_L) {
+		if (sz->code == N_I || sz->code == N_L || sz->code == N_LL) {
 			cir_node *sn = CIR_NODE(sz);
-			if (sn->base.u.l <= 0)
+			// N_LL constants live in u.ll (u.l narrows to 32 bits
+			// on win64 — c2mir_node.h mirrors cx86_64.h).
+			int64_t sv = (sz->code == N_LL)
+				? (int64_t)sn->base.u.ll : (int64_t)sn->base.u.l;
+			if (sv <= 0)
 				return 0;
-			n *= (size_t)sn->base.u.l;
+			n *= (size_t)sv;
 			saw = true;
 		} else {
 			return 0;
@@ -4197,23 +4234,21 @@ cir_node *CirBuilder::tsubst_cir(cir_node *src,
 // Type builders
 // -----------------------------------------------------------------------
 
-// A class instance (`class Foo { ... };`, including header-defined std classes)
-// lowers to a plain C struct, matching the Cfront C++->C model. Returns the
-// class DataDef when `dd` denotes a non-pointer value class, else NULL.
+// NULL-tolerant wrappers over DataDef::unqualified() — the const-stripping rule
+// itself lives on the type (datadef.h) so the parser can ask it too.
 static DataDef *unqualified_type(DataDef *dd)
 {
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
-		return cd->base_type ? cd->base_type : dd;
-	return dd;
+	return dd ? dd->unqualified() : dd;
 }
 
 static const DataDef *unqualified_type(const DataDef *dd)
 {
-	if (const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(dd))
-		return cd->base_type ? cd->base_type : dd;
-	return dd;
+	return dd ? dd->unqualified() : dd;
 }
 
+// A class instance (`class Foo { ... };`, including header-defined std classes)
+// lowers to a plain C struct, matching the Cfront C++->C model. Returns the
+// class DataDef when `dd` denotes a non-pointer value class, else NULL.
 static DataDefCLASS *as_user_class(DataDef *dd)
 {
 	dd = unqualified_type(dd);
@@ -4357,7 +4392,7 @@ static const DataDefCLASS *class_pointer_pointee(const DataDef *dd)
 
 static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 {
-	if (!dd) return {N_LONG};
+	if (!dd) return {N_LONG, N_LONG};
 	switch (dd->rawtype()) {
 	case DataType::dtVOID:   return {};
 	case DataType::dtBOOL:   return {N_BOOL};
@@ -4365,19 +4400,20 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	case DataType::dtDOUBLE: return {N_DOUBLE};
 	// C spells long double as the SPECIFIER PAIR — c2mir has no N_LDOUBLE
 	// node because the language has no single token for it, the same way
-	// dtUINT64 below is {N_UNSIGNED, N_LONG}.
+	// dtUINT64 below is {N_UNSIGNED, N_LONG, N_LONG} (the i64 spelling law
+	// — see CirBuilder::append_i64).
 	case DataType::dtLDOUBLE: return {N_LONG, N_DOUBLE};
 	case DataType::dtUINT8:
 	case DataType::dtUINT16:
 	case DataType::dtUINT32: return {N_UNSIGNED, N_INT};
-	case DataType::dtUINT64: return {N_UNSIGNED, N_LONG};
+	case DataType::dtUINT64: return {N_UNSIGNED, N_LONG, N_LONG};
 	case DataType::dtINT8:
 	case DataType::dtINT16:
 	case DataType::dtINT32:  return {N_INT};
-	case DataType::dtINT64:  return {N_LONG};
+	case DataType::dtINT64:  return {N_LONG, N_LONG};
 	case DataType::dtINT128: return {N_INT128};
 	case DataType::dtUINT128: return {N_UNSIGNED, N_INT128};
-	default:                 return {N_LONG};
+	default:                 return {N_LONG, N_LONG};
 	}
 }
 
@@ -4393,7 +4429,7 @@ static CirBuilder::ExternParam native_param_shape(DataDef *dd, bool refp)
 	// A by-VALUE class/struct param (not a reference — that took the
 	// param_object_class void* branch above): declare it as the struct
 	// tag, by value. Without this the class fell through to
-	// native_scalar_specs -> {N_LONG}, so the extern proto declared an
+	// native_scalar_specs -> {N_LONG, N_LONG}, so the extern proto declared an
 	// ARITHMETIC param while the call passed the struct value
 	// (object_arg_value) -> c2mir "incompatible argument type for
 	// arithmetic type parameter" (real vector's _M_fill_insert taking a
@@ -4468,7 +4504,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
 		append_type_specs(lst, simd->element_type);
 		node_t attr_args = list();
-		append(attr_args, integer((long)simd->vector_bytes));
+		append(attr_args, integer((int64_t)simd->vector_bytes));
 		append(lst, node2(N_ATTR, id("vector_size"), attr_args));
 		return;
 	}
@@ -4497,7 +4533,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	case DataType::dtCHAR:   append(lst, simple(N_CHAR)); break;
 	case DataType::dtINT16:  append(lst, simple(N_SHORT)); break;
 	case DataType::dtINT32:  append(lst, simple(N_INT)); break;
-	case DataType::dtINT64:  append(lst, simple(N_LONG)); break;
+	case DataType::dtINT64:  append_i64(lst); break;
 	case DataType::dtUINT8:
 		append(lst, simple(N_UNSIGNED));
 		append(lst, simple(N_CHAR));
@@ -4512,7 +4548,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		break;
 	case DataType::dtUINT64:
 		append(lst, simple(N_UNSIGNED));
-		append(lst, simple(N_LONG));
+		append_i64(lst);
 		break;
 	case DataType::dtINT128: append(lst, simple(N_INT128)); break;
 	case DataType::dtUINT128:
@@ -4522,7 +4558,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
 	case DataType::dtLDOUBLE:		// the specifier PAIR, see above
-		append(lst, simple(N_LONG));
+		append(lst, simple(N_LONG));	// ld-pair
 		append(lst, simple(N_DOUBLE));
 		break;
 	default:
@@ -4537,7 +4573,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 node_t CirBuilder::simd_vector_attrs(size_t vector_bytes, TokenBase *origin)
 {
 	node_t attr_args = list();
-	append(attr_args, integer((long)vector_bytes, origin));
+	append(attr_args, integer((int64_t)vector_bytes, origin));
 	node_t attrs = list();
 	append(attrs, node2(N_ATTR, id("vector_size", origin), attr_args, origin));
 	return attrs;
@@ -4724,9 +4760,16 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
 			}
-			if (Variable *w = m_prog->find_namespace_function_overload(
+			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
-					at, &zeros, &tcf->explicit_template_args))
+					at, &zeros, &tcf->explicit_template_args);
+			if (::getenv("MADC_OVL_PROBE"))
+				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
+					fd->namespace_name.c_str(),
+					fd->function_display_name.c_str(), at.size(),
+					at.empty() || !at[0] ? "?" : at[0]->name.c_str(),
+					w ? w->name.c_str() : "(none)");
+			if (w)
 				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type)) {
 					if (fd_out)
 						*fd_out = wfd;
@@ -4814,7 +4857,7 @@ void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
 	static const char *probe = getenv("MADC_FLVMAR_PROBE");
 	if (!probe || sym.empty() || !flavor_marshal_candidate(fd))
 		return;
-	bool script_hit = dlsym(RTLD_DEFAULT, sym.c_str()) != NULL;
+	bool script_hit = madcdl_sym_default(sym.c_str()) != NULL;
 	std::string twin = m_prog
 		? (fd->method_display_name.empty()
 		   ? m_prog->host_flavor_fn_symbol(fd->namespace_name,
@@ -4822,7 +4865,7 @@ void CirBuilder::flavor_marshal_probe(const std::string &sym, FuncDef *fd)
 		   : m_prog->host_flavor_method_symbol(fd))
 		: std::string();
 	bool twin_hit = !twin.empty()
-		     && dlsym(RTLD_DEFAULT, twin.c_str()) != NULL;
+		     && madcdl_sym_default(twin.c_str()) != NULL;
 	fprintf(stderr,
 		"[flvmar] ns=%s fn=%s sym=%s hit=%d twin=%s twinhit=%d\n",
 		fd->namespace_name.c_str(), fd->function_display_name.c_str(),
@@ -4921,17 +4964,17 @@ bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
 		ctor_sym = itanium_mangle_ctor_sub(hs, cps);
 		dtor_sym = itanium_mangle_dtor_sub(hs, "D1");
 	}
-	if (!dlsym(RTLD_DEFAULT, ctor_sym.c_str())
-	    || !dlsym(RTLD_DEFAULT, dtor_sym.c_str()))
+	if (!madcdl_sym_default(ctor_sym.c_str())
+	    || !madcdl_sym_default(dtor_sym.c_str()))
 		return false;
 	referenced_funcs.insert(cstr_sym);
 	referenced_funcs.insert(size_sym);
 	need_output_extern(cstr_sym.c_str(), true, { { {N_VOID}, true } });
 	need_output_extern(size_sym.c_str(), false, { { {N_VOID}, true } },
-			   { N_LONG });
+			   { N_LONG, N_LONG });
 	need_output_extern(ctor_sym.c_str(), false,
 			   { { {N_VOID}, true }, { {N_CHAR}, true },
-			     { {N_LONG}, false }, { {N_VOID}, true } });
+			     { {N_LONG, N_LONG}, false }, { {N_VOID}, true } });
 	return true;
 }
 
@@ -5069,19 +5112,25 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	referenced_funcs.insert(assign_sym);
 	need_output_extern(assign_sym.c_str(), true,
 			   { { {N_VOID}, true }, { {N_CHAR}, true },
-			     { {N_LONG}, false } });
+			     { {N_LONG, N_LONG}, false } });
 	std::vector<ExternParam> sig_params;
 	for (size_t i = 0; i < kind.size(); ++i) {
 		if (kind[i] == 1)
-			sig_params.push_back({ {N_LONG}, false });
+			sig_params.push_back({ {N_LONG, N_LONG}, false });
 		else if (kind[i] == 2)
 			sig_params.push_back({ {N_DOUBLE}, false });
 		else
 			sig_params.push_back({ {N_VOID}, true });
 	}
 	std::vector<c2mir_node_code_t> sig_ret;
-	if (!ret_void && !ret_ptr)
-		sig_ret.push_back(ret_real ? N_DOUBLE : N_LONG);
+	if (!ret_void && !ret_ptr) {
+		if (ret_real) {
+			sig_ret.push_back(N_DOUBLE);
+		} else {
+			sig_ret.push_back(N_LONG);
+			sig_ret.push_back(N_LONG);
+		}
+	}
 	need_output_extern(host_sym.c_str(), ret_ptr, sig_params, sig_ret);
 	referenced_funcs.insert(host_sym);
 	// The thunk's own proto (call sites reference it before the late def).
@@ -5089,8 +5138,8 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 
 	// ---- the definition node ----
 	auto param_node = [&](const char *nm, int k) -> node_t {
-		node_t spec = node1(N_LIST,
-			simple(k == 1 ? N_LONG : k == 2 ? N_DOUBLE : N_VOID));
+		node_t spec = (k == 1) ? i64_list()
+			: node1(N_LIST, simple(k == 2 ? N_DOUBLE : N_VOID));
 		node_t dsuf = list();
 		if (k != 1 && k != 2)
 			append(dsuf, pointer());
@@ -5105,7 +5154,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	node_t param_list = list();
 	std::vector<std::string> anames;
 	for (size_t i = 0; i < kind.size(); ++i) {
-		char an[24];
+		char an[32];
 		snprintf(an, sizeof(an), "__fma%zu", i);
 		anames.push_back(an);
 		append(param_list, param_node(an, kind[i]));
@@ -5115,10 +5164,9 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	if (ret_ptr)
 		append(fdecl_suffix, pointer());
 	node_t decl = node2(N_DECL, id(thunk_sym), fdecl_suffix);
-	node_t ret_type = node1(N_LIST,
-		simple(ret_void ? N_VOID
-		       : ret_real ? N_DOUBLE
-		       : ret_ptr ? N_VOID : N_LONG));
+	node_t ret_type = (!ret_void && !ret_real && !ret_ptr)
+		? i64_list()
+		: node1(N_LIST, simple(ret_real ? N_DOUBLE : N_VOID));
 
 	std::vector<node_t> stmts;
 	auto member_call1 = [&](const std::string &msym, const char *obj) {
@@ -5135,11 +5183,11 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	for (size_t i = 0; i < kind.size(); ++i) {
 		if (kind[i] != 3)
 			continue;
-		char tnm[24];
+		char tnm[32];
 		snprintf(tnm, sizeof(tnm), "__fmt%zu", i);
 		tnames[i] = tnm;
 		stmts.push_back(obj_storage_decl(tnm, 4, dtor_sym.c_str(),
-						 NULL, alignof(long)));
+						 NULL, alignof(long long)));
 		node_t ca = list();
 		append(ca, temp_addr(tnm));
 		append(ca, member_call1(cstr_sym, anames[i].c_str()));
@@ -5156,8 +5204,9 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	node_t hcall = node2(N_CALL, id(host_sym.c_str()), ha);
 	// `<ret> __fmr = hostcall;` (skipped for void)
 	if (!ret_void) {
-		node_t spec = node1(N_SHARE, node1(N_LIST,
-			simple(ret_real ? N_DOUBLE : ret_ptr ? N_VOID : N_LONG)));
+		node_t spec = node1(N_SHARE, (!ret_real && !ret_ptr)
+			? i64_list()
+			: node1(N_LIST, simple(ret_real ? N_DOUBLE : N_VOID)));
 		node_t dsuf = list();
 		if (ret_ptr)
 			append(dsuf, pointer());
@@ -5235,7 +5284,7 @@ size_t CirBuilder::object_class_words(DataDefCLASS *cdd) const
 	if (cdd->size == 0) return 0;
 	if (cdd->is_complete && cdd->size == 1 && !cdd->has_vptr_slot)
 		return 0;
-	return (cdd->size + sizeof(long) - 1) / sizeof(long);
+	return (cdd->size + sizeof(long long) - 1) / sizeof(long long);
 }
 
 // N_TYPE node for a (void*) cast: TYPE(LIST(VOID), DECL(IGNORE, LIST(POINTER))).
@@ -5425,7 +5474,7 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
-		adj = node2(N_ADD, charp, integer((long)off), origin);
+		adj = node2(N_ADD, charp, integer((int64_t)off), origin);
 	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
@@ -5461,7 +5510,7 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			value, origin);
-		adj = node2(N_ADD, charp, integer((long)off), origin);
+		adj = node2(N_ADD, charp, integer((int64_t)off), origin);
 	}
 	}
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
@@ -5483,13 +5532,13 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 	// An object whose alignment exceeds the long[] buffer's natural 8
 	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
 	// _Alignas(align) long name[words].
-	if (align > alignof(long))
-		append(spec, node1(N_ALIGNAS, integer((long)align, origin)));
-	append(spec, simple(N_LONG, origin));
+	if (align > alignof(long long))
+		append(spec, node1(N_ALIGNAS, integer((int64_t)align, origin)));
+	append_i64(spec, origin);
 	node_t share = node1(N_SHARE, spec);
 	node_t decl_list = list();
 	append(decl_list, node3(N_ARR, ignore(), list(),
-				integer((long)words, origin)));
+				integer((int64_t)words, origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
 	need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
 	node_t attr_args = list();
@@ -5538,7 +5587,7 @@ bool CirBuilder::is_array_object(DataDef *dd)
 
 size_t CirBuilder::array_obj_words() const
 {
-	return (sizeof(madc::value) + sizeof(long) - 1) / sizeof(long);
+	return (sizeof(madc::value) + sizeof(long long) - 1) / sizeof(long long);
 }
 
 node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
@@ -5791,7 +5840,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 					addr, arg);
 				addr = node2(N_CAST, void_ptr_type(),
-					node2(N_ADD, charp, integer((long)off), arg), arg);
+					node2(N_ADD, charp, integer((int64_t)off), arg), arg);
 			}
 			return addr;
 		}
@@ -5843,7 +5892,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				addr, arg);
 			addr = node2(N_CAST, void_ptr_type(),
-				node2(N_ADD, charp, integer((long)off), arg), arg);
+				node2(N_ADD, charp, integer((int64_t)off), arg), arg);
 		}
 		return addr;
 	}
@@ -6635,8 +6684,8 @@ void CirBuilder::append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd
 				       DataDefSTRUCT *anon_sdd)
 {
 	if (anon_sdd) {
-		append(lst, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-				  ignore(), anon_members_list(anon_sdd)));
+		append(lst, aggregate_def_node(anon_sdd, ignore(),
+					       anon_members_list(anon_sdd)));
 		return;
 	}
 	// A typedef'd declaration keeps its alias spec (`static io *gp`) so the
@@ -7893,13 +7942,22 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 				    DataDefCLASS *ret_cls, DataDef *ret_dd)
 {
 	if (m_output_externs.count(symbol)) return;
+	// c2mir intrinsics (__builtin_va_*, alloca, the overflow set) are
+	// recognized BY NAME and lowered in-place; an extern prototype SHADOWS
+	// the intrinsic and turns every call into an undefined import at
+	// MIR-link. The per-caller referenced_funcs guards catch the live
+	// paths, but the packed win64 lane materialized mingw's inline printf
+	// body whose recorded callee protos reached this mint directly — so
+	// the rule is enforced HERE, at the one owner, where no caller can
+	// drift past it.
+	if (is_c2mir_builtin_call_name(symbol)) return;
 
 	node_t ext_list = list();
 	append(ext_list, simple(N_EXTERN));
 	// Return base type: a by-value class return is the class's struct/union tag
 	// (a trivially-copyable register return — _M_erase/_M_insert_rval yield
 	// __normal_iterator by value); otherwise N_VOID by default, or the
-	// caller-supplied specs (e.g. {N_LONG} for a long-returning runtime fn — a
+	// caller-supplied specs (e.g. {N_LONG, N_LONG} for an i64-returning runtime fn — a
 	// void base would silently truncate/misread a value used in arithmetic).
 	int ret_decl_stars = ret_ptr ? 1 : 0;
 	if (ret_cls) {
@@ -8027,7 +8085,7 @@ bool CirBuilder::ensure_runtime_extern_for(const std::string &sym)
 		return true;
 	}
 	if (sym == "__madc_throw_int") {
-		need_output_extern("__madc_throw_int", false, { { {N_LONG}, false } });
+		need_output_extern("__madc_throw_int", false, { { {N_LONG, N_LONG}, false } });
 		return true;
 	}
 	if (sym == "__madc_throw_double") {
@@ -8047,13 +8105,13 @@ bool CirBuilder::ensure_runtime_extern_for(const std::string &sym)
 		return true;
 	}
 	if (sym == "malloc") {
-		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG}, false } });
+		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		return true;
 	}
 	if (sym == "calloc") {
 		need_output_extern("calloc", true,
-			{ { {N_UNSIGNED, N_LONG}, false },
-			  { {N_UNSIGNED, N_LONG}, false } });
+			{ { {N_UNSIGNED, N_LONG, N_LONG}, false },
+			  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		return true;
 	}
 	if (sym == "free") {
@@ -8202,9 +8260,8 @@ void CirBuilder::append_lit_type_spec(node_t spec, DataDef *dd,
 		// member definition, matching var_decl's anon_sdd path.
 		node_t ml = list();
 		for (size_t i = 0; i < sdd->members.size(); i++)
-			append(ml, member_node(sdd->members[i], sdd));
-		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   ignore(), ml));
+			append(ml, member_node(sdd->members[i], sdd, i));
+		append(spec, aggregate_def_node(sdd, ignore(), ml));
 	} else {
 		// Scalar / builtin element type.
 		append_type_specs(spec, dd);
@@ -8369,9 +8426,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// `struct anonymous` reference is never defined. The pointer case
 	// (`struct { int i; } *sp;`) and the static/extern overrides below all
 	// route through anon_inline_spec(), so drop the old `!is_ptr` guard.
+	// dynamic_cast, not is_struct(): a nested-type/object-member/NSDMI
+	// feature promotes the aggregate to DataDefCLASS (btClass, where
+	// is_struct() is false), and a promoted ANONYMOUS aggregate still has
+	// no tag c2mir ever defines (gcc-torture 20000717-4: `struct {
+	// struct slot { ... } slot[4]; } s;` emitted `struct __anon_1 s`
+	// against no definition). member_node's anon path already casts.
 	DataDefSTRUCT *anon_sdd = NULL;
-	if (v->typedef_name.empty() && base_dd && base_dd->is_struct()
-	    && !base_dd->is_complex()) {
+	if (v->typedef_name.empty() && base_dd && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd && sdd->is_anonymous && !sdd->members.empty())
 			anon_sdd = sdd;
@@ -8553,7 +8615,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		referenced_funcs.insert("malloc");
 		// Declare `void *malloc(unsigned long)` — without a prototype c2mir
 		// assumes an `int` return and TRUNCATES the 64-bit pointer -> SIGSEGV.
-		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG}, false } });
+		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		node_t szof = node1(N_SIZEOF,
 				    node2(N_TYPE, type_list(base_dd),
 					  node2(N_DECL, ignore(), list())),
@@ -8861,16 +8923,69 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	return stars;
 }
 
-node_t CirBuilder::char_pad_member(int index, size_t bytes)
+node_t CirBuilder::aggregate_layout_contract(DataDefSTRUCT *owner)
+{
+	node_t contract = list();
+	append(contract, integer(1));
+	append(contract, integer((int64_t)(owner ? owner->size : 0)));
+	append(contract, integer((int64_t)(owner ? owner->alignment() : 1)));
+	append(contract, integer((int64_t)(owner ? owner->pack : 0)));
+	return contract;
+}
+
+node_t CirBuilder::member_layout_contract(size_t offset, int64_t bit_offset,
+					   int64_t bit_width)
+{
+	node_t contract = list();
+	append(contract, integer(1));
+	append(contract, integer((int64_t)offset));
+	append(contract, integer(bit_offset));
+	append(contract, integer(bit_width));
+	return contract;
+}
+
+node_t CirBuilder::finish_member_layout(node_t member, DataDefSTRUCT *owner,
+					 size_t member_index,
+					 size_t settled_offset)
+{
+	size_t offset = settled_offset;
+	int64_t bit_offset = -1;
+	int64_t bit_width = -1;
+	if (owner && member_index < owner->members.size()) {
+		if (offset == (size_t)-1 && member_index < owner->member_offsets.size())
+			offset = owner->member_offsets[member_index];
+		if (member_index < owner->member_bitfields.size()
+		    && owner->member_bitfields[member_index].is_bitfield) {
+			const DataDefSTRUCT::BitFieldInfo &bf =
+				owner->member_bitfields[member_index];
+			bit_offset = (int64_t)bf.bit_offset;
+			bit_width = (int64_t)bf.bit_width;
+		}
+	}
+	if (offset == (size_t)-1)
+		offset = 0;
+	append(member, member_layout_contract(offset, bit_offset, bit_width));
+	return member;
+}
+
+node_t CirBuilder::aggregate_def_node(DataDefSTRUCT *owner, node_t tag,
+					 node_t members)
+{
+	return node3(owner && owner->union_layout ? N_UNION : N_STRUCT,
+		     tag, members, aggregate_layout_contract(owner));
+}
+
+node_t CirBuilder::char_pad_member(int index, size_t bytes, size_t settled_offset)
 {
 	std::string pn = "__pad" + std::to_string(index);
 	node_t pspec = list(); append(pspec, simple(N_CHAR));
 	node_t pdl = list();
-	append(pdl, node3(N_ARR, ignore(), list(), integer((long)bytes)));
+	append(pdl, node3(N_ARR, ignore(), list(), integer((int64_t)bytes)));
 	node_t pm = simple(N_MEMBER);
 	append(pm, node1(N_SHARE, pspec));
 	append(pm, node2(N_DECL, id(pn.c_str()), pdl));
 	append(pm, ignore()); append(pm, ignore());
+	append(pm, member_layout_contract(settled_offset, -1, -1));
 	return pm;
 }
 
@@ -8892,15 +9007,22 @@ node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 	for (size_t i = 0; i < anon->members.size(); i++) {
 		auto gi = anon_group_starts.find(i);
 		if (gi != anon_group_starts.end()) {
+			size_t settled_offset = 0;
+			for (const DataDefSTRUCT::AnonymousAggregateInfo &ag
+			     : anon->anonymous_aggregates)
+				if (ag.first_member == i && ag.aggregate == gi->second) {
+					settled_offset = ag.offset;
+					break;
+				}
 			append(ml, anonymous_aggregate_member_node(
-				const_cast<DataDefSTRUCT *>(gi->second)));
+				const_cast<DataDefSTRUCT *>(gi->second), settled_offset));
 			size_t cnt = anon_group_counts[i];
 			if (cnt > 0) i += cnt - 1;
 			continue;
 		}
 		if (anon_grouped_members.count(i))
 			continue;
-		append(ml, member_node(anon->members[i], anon));
+		append(ml, member_node(anon->members[i], anon, i));
 	}
 	// An EMPTY aggregate whose parsed layout carries a nonzero size (the
 	// C++ sizeof-1 empty struct, datadef.h finalize()) must not emit a
@@ -8913,21 +9035,24 @@ node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
 
 node_t CirBuilder::anon_inline_spec(DataDefSTRUCT *anon)
 {
-	return node1(N_LIST, node2(anon->union_layout ? N_UNION : N_STRUCT,
-				   ignore(), anon_members_list(anon)));
+	return node1(N_LIST, aggregate_def_node(anon, ignore(),
+					       anon_members_list(anon)));
 }
 
-node_t CirBuilder::anonymous_aggregate_member_node(DataDefSTRUCT *anon)
+node_t CirBuilder::anonymous_aggregate_member_node(DataDefSTRUCT *anon,
+						     size_t settled_offset)
 {
 	node_t member = simple(N_MEMBER);
 	append(member, node1(N_SHARE, anon_inline_spec(anon)));
 	append(member, ignore());
 	append(member, ignore());
 	append(member, ignore());
+	append(member, member_layout_contract(settled_offset, -1, -1));
 	return member;
 }
 
-node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
+node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
+			       size_t member_index)
 {
 	DataDef *mtype = m.second;            // full member type, stars included
 	const std::string &mtypedef = m.typedef_name;
@@ -8988,7 +9113,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdl));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// A class object member embeds the lowered class struct directly. Its
@@ -9011,7 +9136,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// A madc `array` (madc::value) member: the member-field form of
@@ -9023,23 +9148,23 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// User dims (if any) stay outermost, as in the class-object arm above.
 	if (is_array_object(mtype)) {
 		node_t mspec = list();
-		if (alignof(madc::value) > alignof(long))
+		if (alignof(madc::value) > alignof(long long))
 			append(mspec, node1(N_ALIGNAS,
-				integer((long)alignof(madc::value), m.origin)));
-		append(mspec, simple(N_LONG, m.origin));
+				integer((int64_t)alignof(madc::value), m.origin)));
+		append_i64(mspec, m.origin);
 		node_t mdecl_list = list();
 		if (m_flexible)
 			append(mdecl_list, node3(N_ARR, ignore(), list(), ignore()));
 		for (size_t d = 0; d < mdims.size(); d++)
 			append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 		append(mdecl_list, node3(N_ARR, ignore(), list(),
-					 integer((long)array_obj_words(), m.origin)));
+					 integer((int64_t)array_obj_words(), m.origin)));
 		node_t mmember = simple(N_MEMBER, m.origin);
 		append(mmember, node1(N_SHARE, mspec));
 		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
 		append(mmember, ignore());
 		append(mmember, ignore());
-		return mmember;
+		return finish_member_layout(mmember, owner, member_index);
 	}
 
 	// Type specifier. A member declared via a typedef emits ID("alias")
@@ -9091,7 +9216,9 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// N_UNSIGNED themselves and are skipped.)
 	{
 		const DataDefSTRUCT::BitFieldInfo *bfsign =
-			owner ? owner->m_bitfield(m.first) : NULL;
+			owner && member_index < owner->member_bitfields.size()
+			&& owner->member_bitfields[member_index].is_bitfield
+			? &owner->member_bitfields[member_index] : NULL;
 		if (bfsign && bfsign->is_bitfield && bfsign->is_unsigned) {
 			bool has_sign_spec = false;
 			for (int i = 0; ; i++) {
@@ -9128,9 +9255,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// member here too (c2mir derives the aggregate's alignment from its
 	// strictest member): the tag attribute over-aligns the type without moving
 	// any member offset, matching GCC.
-	if (owner && !owner->members.empty() && &m >= &owner->members[0]
-	    && &m <= &owner->members[owner->members.size() - 1]) {
-		size_t midx = (size_t)(&m - &owner->members[0]);
+	if (owner && member_index < owner->members.size()) {
+		size_t midx = member_index;
 		size_t want_align = 0;
 		auto ai = owner->member_explicit_align.find(midx);
 		if (ai != owner->member_explicit_align.end())
@@ -9140,7 +9266,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		if (want_align > 1) {
 			node_t aligned_spec = list();
 			append(aligned_spec, node1(N_ALIGNAS,
-				integer((long)want_align, m.origin)));
+				integer((int64_t)want_align, m.origin)));
 			for (int i = 0; ; i++) {
 				node_t sp = c2mir_node_op(mspec, i);
 				if (!sp) break;
@@ -9151,7 +9277,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	}
 
 	node_t mshare = node1(N_SHARE, mspec);
-	node_t mid = id(m.first.c_str(), m.origin);
+	node_t mid = m.first.empty() ? ignore() : id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
 	// c2m declarator order: in `T *m[N]` the `[]` binds tighter than `*`
 	// (array of pointers), so the N_ARR dims must PRECEDE the pointer stars
@@ -9175,7 +9301,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		for (int s = 0; s < (depth > 0 ? depth : 1); s++)
 			append(mdecl_list, pointer());
 	}
-	node_t mdecl = node2(N_DECL, mid, mdecl_list);
+	node_t mdecl = m.first.empty() ? ignore() : node2(N_DECL, mid, mdecl_list);
 
 	node_t member = simple(N_MEMBER, m.origin);
 	append(member, mshare);
@@ -9188,12 +9314,14 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// sign-or-zero-extend-on-load itself (matching GCC). Without this, madc
 	// emitted a full-width member and bit-field values were wrong.
 	const DataDefSTRUCT::BitFieldInfo *bf =
-		owner ? owner->m_bitfield(m.first) : NULL;
+		owner && member_index < owner->member_bitfields.size()
+		&& owner->member_bitfields[member_index].is_bitfield
+		? &owner->member_bitfields[member_index] : NULL;
 	if (bf && bf->is_bitfield)
-		append(member, integer((long)bf->bit_width, m.origin));
+		append(member, integer((int64_t)bf->bit_width, m.origin));
 	else
 		append(member, ignore());
-	return member;
+	return finish_member_layout(member, owner, member_index);
 }
 
 node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
@@ -9206,8 +9334,7 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	// anonymous-inline paths already branch on union_layout — the DEFINITION
 	// emitter must too, else `union U {..}` is laid out as a struct (distinct
 	// offsets) and member aliasing silently breaks.
-	node_t struct_node = node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   struct_id, member_list);
+	node_t struct_node = aggregate_def_node(sdd, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -9297,7 +9424,11 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 			     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 	};
 	auto void_ptr_to = [&](node_t e) { return node2(N_CAST, vptr_t(), e); };
-	auto void_ptr_int = [&](long v) { return node2(N_CAST, vptr_t(), integer(v)); };
+	// long long, never long: HOST long is 32-bit on the win64 build, and
+	// the VMI word below packs base_count into bits 32+ — a `long`
+	// parameter truncates it AT THE CALL (the CirBuilder::integer(long)
+	// lesson from the LLP64 arc).
+	auto void_ptr_int = [&](long long v) { return node2(N_CAST, vptr_t(), integer(v)); };
 
 	node_t out = list();
 
@@ -9334,7 +9465,7 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 		node_t decl = node2(N_DECL, id(ts.c_str()), dl);
 		node_t bytes = list();
 		for (size_t i = 0; i < nm.size(); i++)
-			append(bytes, node2(N_INIT, list(), integer((long)(unsigned char)nm[i])));
+			append(bytes, node2(N_INIT, list(), integer((int64_t)(unsigned char)nm[i])));
 		append(bytes, node2(N_INIT, list(), integer(0))); // NUL terminator
 		node_t sd = simple(N_SPEC_DECL);
 		append(sd, node1(N_SHARE, spec));
@@ -9384,15 +9515,18 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 		append(inits, node2(N_INIT, list(), base_ti_ref(cdd->bases[0].base)));
 	} else if (cdd->typeinfo_flavor() == DataDefCLASS::TI_VMI) {
 		// [2] = (void*)( flags | (base_count << 32) )  (.long flags; .long count;)
-		unsigned long flags = 0;   // 0 is always runtime-safe
-		unsigned long count = cdd->bases.size();
+		// 64-bit types throughout: with 32-bit HOST long (win64 build)
+		// `count << 32` is shift-count-overflow UB (x86 shifts by 0),
+		// silently corrupting the __vmi_class_type_info word.
+		unsigned long long flags = 0;   // 0 is always runtime-safe
+		unsigned long long count = cdd->bases.size();
 		append(inits, node2(N_INIT, list(),
-			void_ptr_int((long)(flags | (count << 32)))));
+			void_ptr_int((long long)(flags | (count << 32)))));
 		for (const BaseSpec &bs : cdd->bases) {
 			append(inits, node2(N_INIT, list(), base_ti_ref(bs.base)));
-			long offflags = ((long)bs.offset << 8)
-				| (bs.access == 0 ? 0x2L : 0L)   // __public_mask
-				| (bs.is_virtual ? 0x1L : 0L);   // __virtual_mask
+			long long offflags = ((long long)bs.offset << 8)
+				| (bs.access == 0 ? 0x2LL : 0LL) // __public_mask
+				| (bs.is_virtual ? 0x1LL : 0LL); // __virtual_mask
 			append(inits, node2(N_INIT, list(), void_ptr_int(offflags)));
 		}
 	}
@@ -9504,7 +9638,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		node_t tdecl = node2(N_DECL, id(tname.c_str()),
 				     node1(N_LIST, node1(N_FUNC, plist)));
 		// (struct Cls *)(__self - off)
-		node_t adj = node2(N_SUB, id("__self"), integer((long)off));
+		node_t adj = node2(N_SUB, id("__self"), integer((int64_t)off));
 		node_t cls_spec = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(cdd)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
@@ -9720,15 +9854,16 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		// Opaque runtime-object class: `long _w[words];`
 		// filler, a complete type of the right size — size COMPUTED, never hard-coded.
 		node_t mspec = list();
-		append(mspec, simple(N_LONG));
+		append_i64(mspec);
 		node_t mdecl_list = list();
 		append(mdecl_list, node3(N_ARR, ignore(), list(),
-					 integer((long)objwords)));
+					 integer((int64_t)objwords)));
 		node_t member = simple(N_MEMBER);
 		append(member, node1(N_SHARE, mspec));
 		append(member, node2(N_DECL, id("_w"), mdecl_list));
 		append(member, ignore());
 		append(member, ignore());
+		append(member, member_layout_contract(0, -1, -1));
 		append(member_list, member);
 	} else {
 		struct Field {
@@ -9789,6 +9924,8 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::set<std::string> own_member_names;
 		for (size_t i = 0; i < cdd->members.size(); i++) {
 			const std::string &mn = cdd->members[i].first;
+			if (mn.empty())
+				continue; // unnamed bit-fields never participate in name hiding
 			member_name_counts[mn]++;
 			int origin = (i < cdd->member_origin.size()) ? cdd->member_origin[i] : -1;
 			if (origin < 0 && !cdd->member_vbase.count(i))
@@ -9797,14 +9934,17 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 		std::sort(fields.begin(), fields.end(),
 			  [](const Field &a, const Field &b){
 				  if (a.off != b.off) return a.off < b.off;
-				  return a.kind < b.kind;
+				  if (a.kind != b.kind) return a.kind < b.kind;
+				  // Equal-offset bit-fields must retain declaration order:
+				  // unnamed padding changes the following field's bit position.
+				  return a.kind == 1 && a.midx < b.midx;
 			  });
 		size_t cursor = 0; int synth = 0;
 		std::set<std::string> emitted_member_names;
 		for (const Field &f : fields) {
 			if (f.off > cursor) { // fill the gap with a char pad so the next field lands at f.off
 				append(member_list,
-				       char_pad_member(synth++, f.off - cursor));
+				       char_pad_member(synth++, f.off - cursor, cursor));
 				cursor = f.off;
 			}
 			if (f.kind == 0) { // vptr (primary keeps __vptr; secondaries __vptr_<offset>)
@@ -9815,13 +9955,15 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 				append(vm, node1(N_SHARE, vspec));
 				append(vm, node2(N_DECL, id(vn.c_str()), vdl));
 				append(vm, ignore()); append(vm, ignore());
+				append(vm, member_layout_contract(f.off, -1, -1));
 				append(member_list, vm);
 				cursor += 8;
 			} else {
 				if (f.kind == 2) {
 					append(member_list,
 					       anonymous_aggregate_member_node(
-						   const_cast<DataDefSTRUCT *>(f.anon)));
+						   const_cast<DataDefSTRUCT *>(f.anon),
+						   f.off));
 					cursor += f.sz;
 					continue;
 				}
@@ -9829,23 +9971,25 @@ node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 				int origin = (f.midx < cdd->member_origin.size())
 					? cdd->member_origin[f.midx] : -1;
 				bool inherited = origin >= 0 || cdd->member_vbase.count(f.midx);
-				bool duplicate = member_name_counts[out.first] > 1;
-				bool hidden_by_own = own_member_names.count(out.first) && inherited;
-				if ((duplicate && hidden_by_own)
-				    || emitted_member_names.count(out.first)) {
-					std::string base = out.first;
-					out.first += "__flat" + std::to_string(f.midx);
-					while (emitted_member_names.count(out.first))
-						out.first = base + "__flat" + std::to_string(++synth);
+				if (!out.first.empty()) {
+					bool duplicate = member_name_counts[out.first] > 1;
+					bool hidden_by_own = own_member_names.count(out.first) && inherited;
+					if ((duplicate && hidden_by_own)
+					    || emitted_member_names.count(out.first)) {
+						std::string base = out.first;
+						out.first += "__flat" + std::to_string(f.midx);
+						while (emitted_member_names.count(out.first))
+							out.first = base + "__flat" + std::to_string(++synth);
+					}
+					emitted_member_names.insert(out.first);
 				}
-				emitted_member_names.insert(out.first);
-				append(member_list, member_node(out, cdd));
+				append(member_list, member_node(out, cdd, f.midx));
 				cursor += f.sz;
 			}
 		}
 		if (cdd->size > cursor) // tail pad to the full computed size
 			append(member_list,
-			       char_pad_member(synth++, cdd->size - cursor));
+			       char_pad_member(synth++, cdd->size - cursor, cursor));
 	}
 
 	return member_list;
@@ -9907,8 +10051,7 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	// delegates to the class parser) must DEFINE as N_UNION — every
 	// reference site (class_tag_ref) already follows union_layout, and a
 	// struct-kind definition mismatches them all.
-	node_t struct_node = node2(cdd->union_layout ? N_UNION : N_STRUCT,
-				   struct_id, member_list);
+	node_t struct_node = aggregate_def_node(cdd, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -10303,13 +10446,13 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 		// declare real return types — never let the fallback turn it into void.)
 		switch (fd->return_value_type().rawtype()) {
 		case DataType::dtBOOL:   return { N_BOOL };
-		case DataType::dtUINT64: return { N_UNSIGNED, N_LONG };
+		case DataType::dtUINT64: return { N_UNSIGNED, N_LONG, N_LONG };
 		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
-		case DataType::dtINT64:  return { N_LONG };
+		case DataType::dtINT64:  return { N_LONG, N_LONG };
 		case DataType::dtINT32:  return { N_INT };
 		case DataType::dtINT128: return { N_INT128 };
 		case DataType::dtUINT128: return { N_UNSIGNED, N_INT128 };
-		default:                 return { N_LONG };
+		default:                 return { N_LONG, N_LONG };
 		}
 	}
 	return {};
@@ -10347,7 +10490,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			return NULL;
 		referenced_funcs.insert(size_sym);
 		need_output_extern(size_sym.c_str(), false,
-				   { { {N_VOID}, true } }, { N_UNSIGNED, N_LONG });
+				   { { {N_VOID}, true } }, { N_UNSIGNED, N_LONG, N_LONG });
 		node_t a = list();
 		append(a, node2(N_CAST, void_ptr_type(), this_arg, origin));
 		node_t call = node2(N_CALL, id(size_sym.c_str(), origin), a, origin);
@@ -10410,7 +10553,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			eparams.push_back(native_param_shape(pt, false));
 			append(args, translate_expr(arg));
 		} else {
-			eparams.push_back({ {N_LONG}, false });
+			eparams.push_back({ {N_LONG, N_LONG}, false });
 			append(args, translate_expr(arg));
 		}
 	}
@@ -10504,7 +10647,8 @@ static bool node_bottoms_at_this(node_t n)
 			break;
 		case N_ADD: {
 			node_t off = c2mir_node_op(n, 1);
-			if (!off || (off->code != N_I && off->code != N_L))
+			if (!off || (off->code != N_I && off->code != N_L
+				     && off->code != N_LL))
 				return false;
 			n = c2mir_node_op(n, 0);
 			break;
@@ -10569,7 +10713,7 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 					sum, origin);
 				sum = node2(N_ADD, charp,
-					    integer((long)pnv, origin), origin);
+					    integer((int64_t)pnv, origin), origin);
 			}
 			return node2(N_CAST, void_ptr_type(), sum, origin);
 		}
@@ -10596,7 +10740,7 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 	append(items, sd);
 	// ((long *)tmp->__vptr)[-(3 + slot)]
 	node_t vptr = node2(N_DEREF_FIELD, id(tmp, origin), id("__vptr", origin));
-	node_t lp_type = node2(N_TYPE, node1(N_LIST, simple(N_LONG)),
+	node_t lp_type = node2(N_TYPE, i64_list(),
 			       node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 	node_t vboff = node2(N_IND, node2(N_CAST, lp_type, vptr, origin),
 			     integer(-(long)(3 + slot), origin), origin);
@@ -10607,7 +10751,7 @@ node_t CirBuilder::vbase_dynamic_adjust(node_t this_arg, DataDefCLASS *view,
 		id(tmp, origin), origin);
 	node_t sum = node2(N_ADD, charp, vboff, origin);
 	if (nv_extra)
-		sum = node2(N_ADD, sum, integer((long)nv_extra, origin), origin);
+		sum = node2(N_ADD, sum, integer((int64_t)nv_extra, origin), origin);
 	append(items, node2(N_EXPR, list(),
 			    node2(N_CAST, void_ptr_type(), sum, origin), origin));
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
@@ -10705,7 +10849,7 @@ bool CirBuilder::append_ctor_vbase_forward_args(node_t args, DataDefCLASS *calle
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				sum, origin);
 			sum = node2(N_ADD, charp,
-				    integer((long)slots[i].second, origin), origin);
+				    integer((int64_t)slots[i].second, origin), origin);
 		}
 		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(vbs[i])),
 				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
@@ -10737,7 +10881,7 @@ void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee
 				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				adj, origin);
-			adj = node2(N_ADD, charp, integer((long)off, origin),
+			adj = node2(N_ADD, charp, integer((int64_t)off, origin),
 				    origin);
 		}
 		node_t vt = node2(N_TYPE, node1(N_LIST, class_tag_ref(V)),
@@ -10879,7 +11023,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				this_arg, origin);
 			this_arg = node2(N_ADD, charp,
-					 integer((long)VG.this_offset, origin), origin);
+					 integer((int64_t)VG.this_offset, origin), origin);
 		}
 		if (owner)
 			this_arg = node2(N_CAST,
@@ -10904,7 +11048,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
-				node2(N_ADD, charp, integer((long)boff), origin),
+				node2(N_ADD, charp, integer((int64_t)boff), origin),
 				origin);
 		}
 		}
@@ -11288,8 +11432,8 @@ node_t CirBuilder::madc_array_subscript_read(node_t container_void,
 {
 	if (!scls) {
 		need_output_extern("__php_array_get_int", false,
-				   { { {N_VOID}, true }, { {N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG});
+				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } },
+				   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
 		referenced_funcs.insert("__php_array_get_int");
 		node_t a = list();
 		append(a, container_void);
@@ -11308,7 +11452,7 @@ node_t CirBuilder::madc_array_subscript_read(node_t container_void,
 	node_t cc = class_ctor_call(tmp, scls, std::vector<TokenBase *>(), origin);
 	if (cc) m_pending_stmts.push_back(cc);
 	need_output_extern("__php_array_get_cstr", true,
-			   { { {N_VOID}, true }, { {N_LONG}, false } });
+			   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
 	node_t ga = list();
 	append(ga, container_void);
 	append(ga, index_node);
@@ -11914,7 +12058,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 				else if (cpt && cpt->is_pointer())
 					eparams.push_back({ {N_CHAR}, true });
 				else
-					eparams.push_back({ {N_LONG}, false });
+					eparams.push_back({ {N_LONG, N_LONG}, false });
 			}
 			if (copy_ctor->ctor_trailing_self)
 				eparams.push_back({ {N_VOID}, true });
@@ -12227,7 +12371,7 @@ void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
 				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				obj_addr, o);
-			adj = node2(N_ADD, charp, integer((long)off, o), o);
+			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
 		node_t vt = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(vb)),
@@ -12329,11 +12473,11 @@ node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 	// definition (task #50 KIND). Suppressed when a typed proto exists.
 	need_output_extern(dsym.c_str(), false, { { {}, true, cdd } });
 	node_t idecl = simple(N_SPEC_DECL);
-	append(idecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+	append(idecl, node1(N_SHARE, i64_list()));
 	append(idecl, node2(N_DECL, id("__ci"), list()));
 	append(idecl, ignore());
 	append(idecl, ignore());
-	append(idecl, integer((long)n - 1));
+	append(idecl, integer((int64_t)n - 1));
 	node_t cond = node2(N_GE, id("__ci"), integer(0));
 	node_t step = node2(N_SUB_ASSIGN, id("__ci"), integer(1));
 	node_t dargs = list();
@@ -12544,7 +12688,7 @@ void CirBuilder::append_base_default_constructs(node_t items,
 				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				self, origin);
-			adj = node2(N_ADD, charp, integer((long)off, origin), origin);
+			adj = node2(N_ADD, charp, integer((int64_t)off, origin), origin);
 		}
 		node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
 				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
@@ -12641,7 +12785,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				self);
-			adj = node2(N_ADD, charp, integer((long)off));
+			adj = node2(N_ADD, charp, integer((int64_t)off));
 		}
 		node_t bt = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(b)),
@@ -13047,7 +13191,27 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
 		size_t req = fd->required_param_count();
 		size_t req_user = req > 0 ? req - 1 : 0;   // exclude hidden __this
-		if (ctor_args.size() < req_user || ctor_args.size() > pn) continue;
+		if (ctor_args.size() < req_user || ctor_args.size() > pn) {
+			// The arity filter used to drop a candidate BEFORE the
+			// trace below, so a dump of "the candidates" silently
+			// omitted every ctor of the wrong arity — which is the
+			// set you are looking at when the question is "why did
+			// it not pick the initializer-list one".
+			static const char *csk =
+				::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			if (csk && *csk
+			    && cdd->name.find(csk) != std::string::npos)
+				fprintf(stderr, "[CTORSEL] cls=%s cand=%s "
+					"SKIP=arity nargs=%zu req=%zu pn=%zu "
+					"p1=%s\n",
+					cdd->name.c_str(), cv->name.c_str(),
+					ctor_args.size(), req_user, pn,
+					fd->parameters.size() > 1
+					    && fd->parameters[1]
+					    ? fd->parameters[1]->name.c_str()
+					    : "-");
+			continue;
+		}
 		int total = 0;
 		bool ok = true;
 		for (size_t i = 0; i < ctor_args.size(); i++) {
@@ -13064,6 +13228,12 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		}
 		{
 			static const char *csel = ::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			// Hoisted for typeid below: its operand on a POLYMORPHIC
+			// type IS evaluated, and vector operator[] is a call, so
+			// typeid(*ctor_args[0]) is an operand with side effects
+			// (-Wpotentially-evaluated-expression). Deref of a plain
+			// pointer has none.
+			TokenBase *a0 = ctor_args.empty() ? NULL : ctor_args[0];
 			if (csel && *csel
 			    && cdd->name.find(csel) != std::string::npos)
 				fprintf(stderr, "[CTORSEL] cls=%s cand=%s ok=%d "
@@ -13081,14 +13251,9 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					    ? "-"
 					    : ctor_arg_datadef(ctor_args[0])
 						      ->name.c_str(),
-					ctor_args.empty() || !ctor_args[0]
-					    ? "-"
-					    : typeid(*ctor_args[0]).name(),
-					!ctor_args.empty() && ctor_args[0]
-					    && ctor_args[0]->file
-					    ? ctor_args[0]->file : "?",
-					!ctor_args.empty() && ctor_args[0]
-					    ? ctor_args[0]->line : 0,
+					!a0 ? "-" : typeid(*a0).name(),
+					a0 && a0->file ? a0->file : "?",
+					a0 ? a0->line : 0,
 					m_cur_method
 					    ? m_cur_method->returns.name.c_str()
 					    : "?");
@@ -13150,12 +13315,215 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			}
 		}
 	}
-	if (best && best_var && best->local_emit_name.empty()) {
-		std::string default_sym = cdd->name + "__" + cdd->name;
-		if (best_var->name != default_sym)
-			best->local_emit_name = best_var->name;
-	}
+	note_ctor_emit_name(cdd, best, best_var);
 	return best;
+}
+
+// A selected NON-DEFAULT ctor overload is emitted under its own variable's
+// name, not the class default `C__C`. Extracted so every selector records it
+// identically — the initializer-list selector below is a second one, and a
+// selector that forgot this emitted a call to a symbol nothing defines.
+void CirBuilder::note_ctor_emit_name(DataDefCLASS *cdd, FuncDef *best,
+				     Variable *best_var)
+{
+	if (!cdd || !best || !best_var || !best->local_emit_name.empty())
+		return;
+	std::string default_sym = cdd->name + "__" + cdd->name;
+	if (best_var->name != default_sym)
+		best->local_emit_name = best_var->name;
+}
+
+bool CirBuilder::ctor_args_are_braced(TokenBase *origin)
+{
+	TokenDecl *td = dynamic_cast<TokenDecl *>(origin);
+	// Both spellings are list-initialization ([dcl.init.list]/1): the DIRECT
+	// form `T v{...}` arrives as braced ctor args, the COPY form
+	// `T v = {...}` as a brace init. Only the direct form kept a flag before,
+	// so the copy form silently took a different route.
+	return td && (td->ctor_args_braced || td->has_brace_init);
+}
+
+// The element type E of std::initializer_list<E>, read off the LAYOUT: the
+// first member is `const E *` in both stdlibs (libstdc++ `_M_array`, libc++
+// `__begin_`). Reading the layout rather than a member NAME is deliberate —
+// the two libraries spell the members differently and a name test would serve
+// one and silently mis-serve the other.
+static DataDef *initializer_list_element_type(DataDefCLASS *ilc)
+{
+	if (!ilc || ilc->members.size() != 2)
+		return NULL;
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(ilc->members[0].second);
+	return p ? p->base_type : NULL;
+}
+
+FuncDef *CirBuilder::find_initializer_list_ctor(DataDefCLASS *cdd,
+					   const std::vector<TokenBase *> &elems,
+					   DataDefCLASS **ilc_out,
+					   DataDef **elem_out, Variable **var_out)
+{
+	if (!cdd || elems.empty())
+		return NULL;
+	FuncDef *best = NULL;
+	Variable *best_var = NULL;
+	DataDefCLASS *best_il = NULL;
+	DataDef *best_elem = NULL;
+	int best_score = -1;
+	// WHICH ctors qualify is the class's own rule (DataDefCLASS::
+	// collect_initializer_list_ctors) — the parser reads the same list to
+	// decide not to deduce a member-template ctor from these tokens. Only
+	// the RANKING below belongs here.
+	std::vector<Variable *> il_ctors;
+	cdd->collect_initializer_list_ctors(il_ctors);
+	for (Variable *cv : il_ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd) continue;
+		bool refp = fd->is_ref_param(1);
+		DataDefCLASS *ilc = as_class_instance(fd->parameters[1]);
+		if (!ilc) ilc = param_object_class(fd->parameters[1], refp);
+		DataDef *elem = ilc ? initializer_list_element_type(ilc) : NULL;
+		// A CLASS element type needs its backing array CONSTRUCTED
+		// element by element (and destroyed at scope exit); an aggregate
+		// initializer of `std::string[2]` from two `const char *` is not
+		// that: the emitted code faulted inside
+		// basic_string::_M_construct for `vector<string> v{"a","b"}`.
+		// Declining here leaves such a list on the pre-existing path —
+		// a loud diagnostic, never a crash — until the constructed-array
+		// slice lands (recorded on task #56).
+		if (elem && as_class_instance(elem)) elem = NULL;
+		{
+			// Same env knob as the ctor-overload trace: when a braced
+			// list picks the wrong ctor the question is always "was
+			// there an initializer-list one, and why was it not it".
+			static const char *cil = ::getenv("MADC_XTEST_CTORSEL_DEBUG");
+			if (cil && *cil && cdd->name.find(cil) != std::string::npos)
+				fprintf(stderr, "[CTORIL] cls=%s cand=%s p1=%s"
+					" spell=%s il=%d elem=%s\n",
+					cdd->name.c_str(), cv->name.c_str(),
+					fd->parameters[1]
+					    ? fd->parameters[1]->name.c_str() : "-",
+					fd->parameters[1]
+					    ? fd->parameters[1]
+						->canonical_cpp_spelling().c_str()
+					    : "-",
+					ilc ? (int)ilc->is_std_initializer_list() : -1,
+					elem ? elem->name.c_str() : "-");
+		}
+		if (!elem) continue;
+		// Several initializer-list ctors can coexist
+		// (initializer_list<int> vs <double>): rank them on the ELEMENTS,
+		// the same generic scoring every other overload choice uses. A
+		// list none of them accepts declines the whole rule rather than
+		// forcing a bad conversion.
+		int total = 0;
+		bool ok = true;
+		for (TokenBase *e : elems) {
+			int s = score_arg_to_param(ctor_arg_datadef(e), elem,
+						   false, true,
+						   is_zero_integer_literal(e),
+						   false);
+			if (s < 0) { ok = false; break; }
+			total += s;
+		}
+		if (!ok || total <= best_score) continue;
+		best_score = total;
+		best = fd;
+		best_var = cv;
+		best_il = ilc;
+		best_elem = elem;
+	}
+	if (!best) return NULL;
+	if (ilc_out) *ilc_out = best_il;
+	if (elem_out) *elem_out = best_elem;
+	if (var_out) *var_out = best_var;
+	return best;
+}
+
+bool CirBuilder::takes_whole_braced_list(DataDefCLASS *cdd,
+					 const std::vector<TokenBase *> &elems)
+{
+	if (!cdd || elems.empty())
+		return false;
+	// Either the class consumes the list through an initializer-list ctor,
+	// or it IS std::initializer_list and is built from the list directly
+	// ([dcl.init.list]/5). Both mean the declaration lanes must thread the
+	// WHOLE list rather than its first element.
+	return cdd->is_std_initializer_list()
+	    || find_initializer_list_ctor(cdd, elems) != NULL;
+}
+
+FuncDef *CirBuilder::initializer_list_ctor(DataDefCLASS *cdd,
+					   const std::vector<TokenBase *> &elems,
+					   TokenBase *origin, node_t *arg_out)
+{
+	if (!arg_out) return NULL;
+	DataDefCLASS *ilc = NULL;
+	DataDef *elem = NULL;
+	Variable *ctor_var = NULL;
+	FuncDef *best = find_initializer_list_ctor(cdd, elems, &ilc, &elem,
+						   &ctor_var);
+	if (!best) return NULL;
+	node_t lit = initializer_list_literal(ilc, elem, elems, origin);
+	if (!lit) return NULL;
+	// A by-(const)ref initializer_list parameter takes the literal's ADDRESS
+	// — references lower to pointers here as everywhere else.
+	if (best->is_ref_param(1))
+		lit = node1(N_ADDR, lit, origin);
+	note_ctor_emit_name(cdd, best, ctor_var);
+	*arg_out = lit;
+	return best;
+}
+
+node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
+					    const std::vector<TokenBase *> &elems,
+					    TokenBase *origin)
+{
+	if (!ilc || !elem) return NULL;
+	// (E[]){e0, e1, ...} — an UNSIZED array declarator, so c2mir sizes it
+	// from the initializer count (the same shape translate_struct_lit emits
+	// for a C99 array compound literal).
+	node_t aspec = list();
+	append_lit_type_spec(aspec, elem, std::string());
+	node_t adecl = list();
+	append(adecl, node3(N_ARR, ignore(), list(), ignore()));
+	node_t atype = node2(N_TYPE, aspec, node2(N_DECL, ignore(), adecl));
+	node_t ainits = list();
+	for (size_t i = 0; i < elems.size(); i++)
+		append(ainits, node2(N_INIT, list(), init_value(elems[i])));
+	node_t arr = node2(N_COMPOUND_LITERAL, atype, ainits, origin);
+
+	// An array compound literal used as a VALUE decays to a pointer, and
+	// c2mir wants that decay spelled: initializing the `const E *` member
+	// from a bare array literal makes its checker read the literal's braces
+	// against the SCALAR member ("braces around scalar initializer" for one
+	// element, "excess elements in scalar initializer" for more). The parser
+	// wraps its own `(E[]){...}` in exactly this cast for the same reason
+	// (parser.cpp: `Array compound literals decay to pointer`) — this is the
+	// node-level twin of that rule, not a second rule.
+	// Searched: "ptr_type(" in cir_builder.h for an existing pointer-type
+	// node builder — void_ptr_type / char_ptr_type / class_ptr_type are all
+	// fixed-target, so the element-typed one is spelled here.
+	{
+		node_t pspec = list();
+		append_lit_type_spec(pspec, elem, std::string());
+		node_t pdecl = list();
+		append(pdecl, pointer());
+		arr = node2(N_CAST,
+			    node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)),
+			    arr, origin);
+	}
+
+	// (std::initializer_list<E>){ <the array>, N } — the two members in
+	// layout order, matching initializer_list_element_type's contract.
+	node_t ispec = list();
+	append_lit_type_spec(ispec, ilc, std::string());
+	node_t itype = node2(N_TYPE, ispec, node2(N_DECL, ignore(), list()));
+	node_t iinits = list();
+	append(iinits, node2(N_INIT, list(), arr));
+	append(iinits, node2(N_INIT, list(),
+			     integer((int64_t)elems.size(), origin)));
+	node_t lit = node2(N_COMPOUND_LITERAL, itype, iinits, origin);
+	CIR_NODE(lit)->set_datadef(ilc);
+	return lit;
 }
 
 FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
@@ -13555,7 +13923,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 				node_t tab = id(vname.c_str(), origin);
 				node_t ap = (G.addr_point == 0) ? tab
-					: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
+					: node2(N_ADD, tab, integer((int64_t)G.addr_point, origin), origin);
 				node_t vtab = node2(N_CAST, vptr_type, ap, origin);
 				append(blk, node2(N_EXPR, list(),
 					node2(N_ASSIGN, lhs, vtab, origin), origin));
@@ -13570,6 +13938,22 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
+	// LIST-initialization first ([dcl.init.list]/4): when the braces were
+	// written and the class has an initializer-list ctor, that ctor is the
+	// ONLY candidate and the whole list is its single argument. Falls
+	// through to ordinary overload scoring for every other class, so a
+	// braced list on a class without one still means "these arguments".
+	{
+		node_t il_arg = NULL;
+		if (ctor_args_are_braced(origin))
+			if (FuncDef *ilc = initializer_list_ctor(cdd, ctor_args,
+								 origin, &il_arg)) {
+				std::vector<node_t> one(1, il_arg);
+				return ctor_call_assemble(this_addr, cdd, ilc,
+							  one, origin,
+							  vbase_forward);
+			}
+	}
 	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		node_t dst = node1(N_DEREF,
@@ -13771,7 +14155,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 			else if (pt && pt->is_pointer())
 				eparams.push_back({ {N_CHAR}, true });
 			else
-				eparams.push_back({ {N_LONG}, false });
+				eparams.push_back({ {N_LONG, N_LONG}, false });
 		}
 		if (ctor->ctor_trailing_self)
 			eparams.push_back({ {N_VOID}, true });
@@ -13887,7 +14271,7 @@ node_t CirBuilder::class_array_construct_loop(
 
 	// long __ci = 0;
 	node_t ispec = list();
-	append(ispec, simple(N_LONG, origin));
+	append_i64(ispec, origin);
 	node_t init = simple(N_SPEC_DECL, origin);
 	append(init, node1(N_SHARE, ispec));
 	append(init, node2(N_DECL, id(ci, origin), list()));
@@ -13968,6 +14352,29 @@ node_t CirBuilder::class_aggregate_init(
 			if (!arg)
 				return decline();
 			if (DataDefCLASS *mc = as_class_instance(mt)) {
+				// A nested braced list (`.m = {a, b}`) aggregate-
+				// initializes an aggregate class member RECURSIVELY
+				// ([dcl.init.aggr]p12) — it is not a ctor argument
+				// (no ctor takes a brace list, so class_ctor_call_addr
+				// declined the whole walk: gcc-torture pr39339's
+				// `.defaults = {6, {...}}` where the nested-struct
+				// member promoted the chain to classes). Same walk,
+				// one FIELD deeper; any shape it can't serve still
+				// declines the whole list to the legacy lanes.
+				if (TokenStructLit *sub =
+					dynamic_cast<TokenStructLit *>(arg)) {
+					node_t nested = class_aggregate_init(
+						[&](const std::string &m2) -> node_t {
+							return node2(N_FIELD,
+								     member_lvalue(mn),
+								     id(m2.c_str(), origin));
+						}, mc, sub->inits, origin);
+					if (!nested)
+						return decline();
+					flush_pending_stmts(stmts);
+					stmts.push_back(nested);
+					continue;
+				}
 				std::vector<TokenBase *> one(1, arg);
 				node_t cc = class_ctor_call_addr(
 					node1(N_ADDR, member_lvalue(mn), origin),
@@ -13976,6 +14383,38 @@ node_t CirBuilder::class_aggregate_init(
 					return decline();
 				flush_pending_stmts(stmts);
 				stmts.push_back(cc);
+				continue;
+			}
+			// A nested braced list for a PLAIN struct member. The
+			// parser leaves an inner brace list UNTYPED — its type
+			// is contextual ([dcl.init.aggr]/C99 6.7.8): this
+			// member's. translate_expr would emit a void-typed
+			// compound literal ("compound literal of incomplete
+			// type"); spell the member's own type instead and let
+			// init_value carry the (possibly nested) values —
+			// `member = (struct D){...}`, the same machinery as
+			// translate_struct_lit. Array members decline (their
+			// braces are element lists, not a struct value).
+			if (TokenStructLit *sub =
+				dynamic_cast<TokenStructLit *>(arg)) {
+				const DataDefSTRUCT *ms = as_plain_struct(mt);
+				if (!ms || cdd->m_is_array_decl(mn))
+					return decline();
+				node_t spec = list();
+				append_lit_type_spec(spec, mt, sub->typedef_name);
+				node_t type_node = node2(N_TYPE, spec,
+					node2(N_DECL, ignore(), list()));
+				node_t linits = list();
+				for (size_t k = 0; k < sub->inits.size(); k++)
+					append(linits, node2(N_INIT, list(),
+						init_value(sub->inits[k])));
+				node_t cl = node2(N_COMPOUND_LITERAL, type_node,
+						  linits, sub);
+				node_t asgn = node2(N_ASSIGN, member_lvalue(mn),
+						    cl, origin);
+				flush_pending_stmts(stmts);
+				stmts.push_back(node2(N_EXPR, list(), asgn,
+						      origin));
 				continue;
 			}
 			node_t init = translate_expr(arg);
@@ -14096,6 +14535,43 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// a reference to a name nothing defines. Locals resolve to v->name.
 	const std::string vname = var_emit_name(*v);
 
+	// CONSTRUCTION FROM SELF is value-initialization, never a copy. `T x{}`
+	// is spelled internally as `x = x`: the parser's brace-init injection
+	// builds it (the `{` is not an expression, so the wrap arm pairs the
+	// variable with itself), and the v16 freeze both DETECTS and REBUILDS
+	// that shape as its CLASS_VALUE_INIT marker. For an empty trivially-
+	// copyable tag class (std::in_place_t) the self-copy emits nothing and
+	// the encoding is harmless; for anything with a real copy constructor it
+	// is fatal — `std::vector<int> e{};` emitted `vector__o5(&e, &e)`, so the
+	// copy ctor read its own uninitialized storage and called operator new on
+	// a garbage size (SIGSEGV, on every release to date). Value-initializing
+	// a class means its DEFAULT constructor ([dcl.init]/8), so drop the
+	// argument here — at the construction site both the live and the
+	// forest-restored lane pass through.
+	if (ctor_args.size() == 1)
+		if (TokenVar *selftv = dynamic_cast<TokenVar *>(ctor_args[0]))
+			if (&selftv->var == v)
+				return class_ctor_call(v, cdd,
+						       std::vector<TokenBase *>(),
+						       origin);
+
+	// The declared type IS std::initializer_list<E> ([dcl.init.list]/5):
+	// the object is initialized from the backing array DIRECTLY — there is
+	// no constructor call, and the one the library declares for this is
+	// private to the implementation precisely because only the compiler may
+	// use it. Assign the same literal every other list site builds.
+	if (cdd->is_std_initializer_list() && !ctor_args.empty()
+	    && ctor_args_are_braced(origin))
+		if (DataDef *elem = initializer_list_element_type(cdd))
+			if (node_t lit = initializer_list_literal(cdd, elem,
+								 ctor_args,
+								 origin))
+				return node2(N_EXPR, list(),
+					     node2(N_ASSIGN,
+						   id(vname.c_str(), origin),
+						   lit, origin),
+					     origin);
+
 	// ABSTRACT class: declaring a variable of a type with an unoverridden
 	// pure virtual is a compile error (matches g++'s "cannot declare
 	// variable ... to be of abstract type"). The array/heap/member sites
@@ -14162,10 +14638,17 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
-	// Resolve the ctor: prefer the overload matching the initializer (the
-	// general path; a user class has one ctor so this is a no-op). Fall back
-	// to the single ctor keyed under the class name.
-	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
+	// Resolve the ctor. LIST-initialization first ([dcl.init.list]/4): the
+	// braces were written and the class has an initializer-list ctor, so
+	// that ctor is the only candidate and the whole list is its single
+	// argument (`il_arg` then stands in for every element below). The twin
+	// decision in class_ctor_call_addr asks the same owner.
+	node_t il_arg = NULL;
+	FuncDef *ctor = NULL;
+	if (ctor_args_are_braced(origin))
+		ctor = initializer_list_ctor(cdd, ctor_args, origin, &il_arg);
+	if (!ctor)
+		ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching
 		// ctor (see try_implicit_copy_construct).
@@ -14194,6 +14677,13 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	append(args, external_ctor
 		     ? node2(N_CAST, void_ptr_type(), self_addr, origin)
 		     : self_addr); // &v
+	// A braced list served by an initializer-list ctor is ONE argument, so
+	// the per-element loop is skipped entirely and the default-argument
+	// filler below starts after that single parameter.
+	size_t user_arg_count = il_arg ? 1 : ctor_args.size();
+	if (il_arg)
+		append(args, il_arg);
+	else
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		TokenBase *arg = ctor_args[i];
 		size_t pi = i + 1;   // skip __this
@@ -14217,7 +14707,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// C++ default arguments: fill omitted trailing parameters from their default
 	// expressions (param_defaults is index-aligned with parameters). Same arg
 	// shaping as the user args above.
-	for (size_t pi = ctor_args.size() + 1;
+	for (size_t pi = user_arg_count + 1;
 	     ctor && pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
 	     && ctor->param_defaults[pi]; pi++) {
 		TokenBase *darg = ctor->param_defaults[pi];
@@ -14269,7 +14759,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 			else if (pt && pt->is_pointer())
 				eparams.push_back({ {N_CHAR}, true });
 			else
-				eparams.push_back({ {N_LONG}, false });
+				eparams.push_back({ {N_LONG, N_LONG}, false });
 		}
 		if (ctor->ctor_trailing_self)
 			eparams.push_back({ {N_VOID}, true });
@@ -14332,7 +14822,7 @@ void CirBuilder::vbase_ctor_stmts_addr(const std::function<node_t()> &mint_addr,
 				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				obj_addr, o);
-			adj = node2(N_ADD, charp, integer((long)off, o), o);
+			adj = node2(N_ADD, charp, integer((int64_t)off, o), o);
 		}
 		node_t vt = node2(N_TYPE,
 			node1(N_LIST, class_tag_ref(vb)),
@@ -15874,7 +16364,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 									    node1(N_LIST, pointer()))),
 								aarg, origin);
 							aarg = node2(N_ADD, charp,
-								integer((long)boff, origin),
+								integer((int64_t)boff, origin),
 								origin);
 						}
 					}
@@ -16397,7 +16887,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
-				node2(N_ADD, charp, integer((long)boff), origin),
+				node2(N_ADD, charp, integer((int64_t)boff), origin),
 				origin);
 		}
 		// Cast even at offset 0: the emitted body's prototype expects
@@ -17266,7 +17756,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 				this_arg, origin);
 			this_arg = node2(N_CAST, void_ptr_type(),
-				node2(N_ADD, charp, integer((long)boff), origin),
+				node2(N_ADD, charp, integer((int64_t)boff), origin),
 				origin);
 		}
 		}
@@ -17336,7 +17826,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 		CIR_NODE(this_arg)->synth_from_origin = true;
 		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
 		std::vector<ExternParam> eparams = { { {N_VOID}, true },
-						     { {N_LONG}, false } };
+						     { {N_LONG, N_LONG}, false } };
 		node_t args = list();
 		append(args, this_arg);
 		append(args, translate_expr(index));
@@ -17495,7 +17985,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// (c2mir.c) then rewrites the typedef's type into a real vector type, so every
 	// later use of NAME inherits it and c2mir handles vector literals / subscript /
 	// arithmetic natively. Tier-1 lowering: reuse c2mir's vector machinery rather
-	// than duplicating it. (Needs the fork's <=16B SIMD support, MIR_COMMIT 2ffebff+.)
+	// than duplicating it. (Needs MIR's <=16B SIMD support — in third_party/mir
+	// since fork-history commit 2ffebff.)
 	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
 		node_t sl = list();
 		append(sl, simple(N_TYPEDEF));
@@ -17558,7 +18049,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				node_t mbrs = (cdd_inline && cdd_inline->has_vptr_slot)
 					    ? class_member_list(cdd_inline)
 					    : anon_members_list(sdd);
-				append(tl, node2(agg, id(sdd->name.c_str()), mbrs));
+				append(tl, aggregate_def_node(sdd,
+					id(sdd->name.c_str()), mbrs));
 			}
 		}
 	} else {
@@ -17820,12 +18312,51 @@ static std::string overflow_helper_name(const std::string &generic,
 // Expression translation
 // -----------------------------------------------------------------------
 
+// Compile-time integer value for the constant-real operand fold below.
+// The expression parser deliberately retains operator trees, so `~0U` is a
+// TokenBnot rather than a TokenInt even though it is an integer constant
+// expression.  Keep this evaluator narrow and side-effect-free; unsupported
+// shapes fall back to ordinary c2mir lowering.
+static bool constant_integer_operand(TokenBase *t, madc_wide_int &out)
+{
+	if (!t)
+		return false;
+	if (t->type() == TokenType::ttInteger && t->is_constant()) {
+		out = t->wival();
+		return true;
+	}
+	if (TokenCast *c = dynamic_cast<TokenCast *>(t)) {
+		DataDef *ct = c->cast_type ? unqualified_type(c->cast_type) : NULL;
+		madc_wide_int v;
+		if (!ct || !ct->is_integer() || ct->is_pointer()
+		    || !constant_integer_operand(c->expr, v))
+			return false;
+		out = apply_integer_cast_value(ct, v);
+		return true;
+	}
+	TokenOperator *op = dynamic_cast<TokenOperator *>(t);
+	if (!op || op->argc() != 1 || !op->right
+	    || !constant_integer_operand(op->right, out))
+		return false;
+	switch (t->id()) {
+	case TokenID::tkNeg:  out = -out; break;
+	case TokenID::tkBnot: out = ~out; break;
+	case TokenID::tkLnot: out = !out; break;
+	default: return false;
+	}
+	DataDef *dt = t->datadef() ? unqualified_type(t->datadef()) : NULL;
+	if (!dt || !dt->is_integer())
+		return false;
+	out = apply_integer_cast_value(dt, out);
+	return true;
+}
+
 // Compile-time floating value of a cast operand, for the gcc-parity
 // float->int saturating fold in the TokenCast arm (task #65). Recurses
 // through nested REAL casts re-rounding at each precision — the rounding
 // is load-bearing: (float)2147483647 rounds UP to 2^31, and that rounded
 // value is what makes the outer int cast overflow — and admits integer
-// literals under a real cast. Returns false for any other operand shape.
+// constant expressions under a real cast. Returns false for any other shape.
 static bool constant_real_operand(TokenBase *t, long double &out)
 {
 	if (!t) return false;
@@ -17845,11 +18376,10 @@ static bool constant_real_operand(TokenBase *t, long double &out)
 			return false;
 		long double v;
 		if (!constant_real_operand(c->expr, v)) {
-			if (c->expr && c->expr->type() == TokenType::ttInteger
-			    && c->expr->is_constant())
-				v = (long double)c->expr->wival();
-			else
+			madc_wide_int iv;
+			if (!constant_integer_operand(c->expr, iv))
 				return false;
+			v = (long double)iv;
 		}
 		switch (ct->rawtype()) {
 		case DataType::dtFLOAT:  out = (long double)(float)v; break;
@@ -18113,7 +18643,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (dstC->is_unique_public_nonvirtual_base(srcC, &off)) hint = (long)off;
 		need_output_extern("__dynamic_cast", /*ret_ptr=*/true,
 			{ { {N_VOID}, true }, { {N_VOID}, true },
-			  { {N_VOID}, true }, { {N_LONG}, false } });
+			  { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
 		node_t args = list();
 		append(args, node2(N_CAST, void_ptr_type(), translate_expr(dc->operand), tb));
 		append(args, node2(N_CAST, void_ptr_type(), id(src_ti.c_str()), tb));
@@ -18306,8 +18836,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// new T[n] -> (T*)calloc((size_t)n, sizeof(T)). calloc value-
 				// zeroes — a safe superset of new[]'s default-init for scalars.
 				need_output_extern("calloc", true,
-					{ { {N_UNSIGNED, N_LONG}, false },
-					  { {N_UNSIGNED, N_LONG}, false } });
+					{ { {N_UNSIGNED, N_LONG, N_LONG}, false },
+					  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 				node_t cargs = list();
 				append(cargs, translate_expr(tn->array_size));
 				append(cargs, t_sizeof());
@@ -18317,7 +18847,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// new T / new T(v) -> ({ T *__newN = (T*)malloc(sizeof(T));
 			//                        [*__newN = v;] __newN; })
 			need_output_extern("malloc", true,
-				{ { {N_UNSIGNED, N_LONG}, false } });
+				{ { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 			char stmp[32];
 			snprintf(stmp, sizeof(stmp), "__new%d", m_strtmp_counter++);
 			node_t margs = list();
@@ -18359,8 +18889,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// c2mir does not default it to an implicit int return (which would
 		// truncate the 64-bit pointer to 32 bits and crash on deref).
 		need_output_extern("calloc", true,
-			{ { {N_UNSIGNED, N_LONG}, false },
-			  { {N_UNSIGNED, N_LONG}, false } });
+			{ { {N_UNSIGNED, N_LONG, N_LONG}, false },
+			  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 		// new C[n]: one zeroed block of `cookie + n*sizeof(struct C)`,
 		// the Itanium element-count cookie immediately before element 0
 		// (present iff the class has a non-trivial dtor — delete[] reads
@@ -18379,7 +18909,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t items = list();
 			// long __anN = (long)<count>;
 			node_t nspec = list();
-			append(nspec, simple(N_LONG, tb));
+			append_i64(nspec, tb);
 			node_t ndecl = simple(N_SPEC_DECL);
 			append(ndecl, node1(N_SHARE, nspec));
 			append(ndecl, node2(N_DECL, id(ntmp, tb), list()));
@@ -18390,7 +18920,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// char *__arN = (char *)calloc(1, CK + __anN * sizeof(struct C));
 			node_t nbytes = node2(N_MUL, id(ntmp, tb), node1(N_SIZEOF, struct_type(), tb), tb);
 			if (ck)
-				nbytes = node2(N_ADD, integer((long)ck, tb), nbytes, tb);
+				nbytes = node2(N_ADD, integer((int64_t)ck, tb), nbytes, tb);
 			node_t cargs = list();
 			append(cargs, integer(1, tb));
 			append(cargs, nbytes);
@@ -18408,7 +18938,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// struct C *__newN = (struct C *)(__arN + CK);
 			node_t elem0 = id(rtmp, tb);
 			if (ck)
-				elem0 = node2(N_ADD, elem0, integer((long)ck, tb), tb);
+				elem0 = node2(N_ADD, elem0, integer((int64_t)ck, tb), tb);
 			node_t edecl = simple(N_SPEC_DECL);
 			append(edecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
 			append(edecl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
@@ -18420,11 +18950,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// *(unsigned long *)(__arN + CK - 8) = __anN;
 				node_t ul_specs = list();
 				append(ul_specs, simple(N_UNSIGNED, tb));
-				append(ul_specs, simple(N_LONG, tb));
+				append_i64(ul_specs, tb);
 				node_t ul_ptr_type = node2(N_TYPE, ul_specs,
 					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 				node_t cookie_at = node2(N_ADD, id(rtmp, tb),
-					integer((long)(ck - sizeof(size_t)), tb), tb);
+					integer((int64_t)(ck - sizeof(size_t)), tb), tb);
 				node_t cookie = node1(N_DEREF,
 					node2(N_CAST, ul_ptr_type, cookie_at, tb), tb);
 				append(items, node2(N_EXPR, list(),
@@ -18526,13 +19056,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t then_items = list();
 			// long __dn = ((long *)__dp)[-1];
 			node_t l_ptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_LONG)),
+				i64_list(),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			node_t count_rd = node2(N_IND,
 				node2(N_CAST, l_ptr_type, id(dp, tb), tb),
 				integer(-1, tb), tb);
 			node_t ndecl = simple(N_SPEC_DECL);
-			append(ndecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+			append(ndecl, node1(N_SHARE, i64_list()));
 			append(ndecl, node2(N_DECL, id(dn, tb), list()));
 			append(ndecl, ignore());
 			append(ndecl, ignore());
@@ -18540,7 +19070,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			append(then_items, ndecl);
 			// for (long __ci = __dn - 1; __ci >= 0; __ci -= 1) dtor(__dp + __ci);
 			node_t idecl = simple(N_SPEC_DECL);
-			append(idecl, node1(N_SHARE, node1(N_LIST, simple(N_LONG))));
+			append(idecl, node1(N_SHARE, i64_list()));
 			append(idecl, node2(N_DECL, id(ci, tb), list()));
 			append(idecl, ignore());
 			append(idecl, ignore());
@@ -18559,7 +19089,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			node_t base = node2(N_SUB,
 				node2(N_CAST, c_ptr_type, id(dp, tb), tb),
-				integer((long)ack, tb), tb);
+				integer((int64_t)ack, tb), tb);
 			node_t fargs2 = list();
 			append(fargs2, base);
 			append(then_items, node2(N_EXPR, list(),
@@ -19248,7 +19778,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 								    node1(N_LIST, pointer()))),
 							addr, tb);
 						addr = node2(N_SUB, charp,
-							integer((long)off, tb), tb);
+							integer((int64_t)off, tb), tb);
 					}
 					return node1(N_DEREF,
 						node2(N_CAST, class_ptr_type(target),
@@ -19334,28 +19864,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				    && cv - cv == 0.0L) {   // finite only
 					bool uns = cast_dd->is_unsigned();
 					unsigned bits = (unsigned)cast_dd->size * 8;
-					long slo = 0, shi = 0;
-					unsigned long uhi = 0;
+					int64_t slo = 0, shi = 0;
+					uint64_t uhi = 0;
 					long double lo, hi;
 					if (uns) {
-						uhi = (bits == 64) ? ~0UL
-						      : ((1UL << bits) - 1);
+						uhi = (bits == 64) ? UINT64_MAX
+						      : ((UINT64_C(1) << bits) - 1);
 						lo = 0.0L;
 						hi = (long double)uhi;
 					} else {
-						shi = (bits == 64)
-						      ? (long)((~0UL) >> 1)
-						      : (long)((1L << (bits - 1)) - 1);
-						slo = (bits == 64)
-						      ? -(long)((~0UL) >> 1) - 1
-						      : -(long)(1L << (bits - 1));
+						shi = (bits == 64) ? INT64_MAX
+						      : (int64_t)((UINT64_C(1) << (bits - 1)) - 1);
+						slo = (bits == 64) ? INT64_MIN
+						      : -(int64_t)(UINT64_C(1) << (bits - 1));
 						lo = (long double)slo;
 						hi = (long double)shi;
 					}
 					if (cv < lo || cv > hi) {
-						long sat = (cv < lo)
-							   ? (uns ? 0L : slo)
-							   : (uns ? (long)uhi : shi);
+						int64_t sat = (cv < lo)
+							      ? (uns ? 0 : slo)
+							      : (uns ? -1 : shi);
 						node_t stl = type_list(cast_dd);
 						node_t stn = node2(N_TYPE, stl,
 							node2(N_DECL, ignore(), list()));
@@ -19918,10 +20446,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				bool wide = pointee && pointee->size == 8;
 				const char *sym = wide ? "__madc_atomic_fetch_add_l"
 						       : "__madc_atomic_fetch_add_i";
-				c2mir_node_code_t w = wide ? N_LONG : N_INT;
+				std::vector<c2mir_node_code_t> w = wide
+					? std::vector<c2mir_node_code_t>{N_LONG, N_LONG}
+					: std::vector<c2mir_node_code_t>{N_INT};
 				need_output_extern(sym, false,
-					{ { {w}, true }, { {w}, false }, { {N_INT}, false } },
-					{ w });
+					{ { w, true }, { w, false }, { {N_INT}, false } },
+					w);
 				node_t a = list();
 				for (size_t i = 0; i < 3; i++)
 					append(a, translate_expr(tcf->parameters[i]));
@@ -19941,8 +20471,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			const char *rt = builtin_output_runtime(tcf->var.name);
 			if (rt[0]) {
 				static const std::map<std::string, ExternParam> sigs = {
-					{"madc_puti",     {{N_LONG}, false}},
-					{"madc_putu",     {{N_UNSIGNED, N_LONG}, false}},
+					{"madc_puti",     {{N_LONG, N_LONG}, false}},
+					{"madc_putu",     {{N_UNSIGNED, N_LONG, N_LONG}, false}},
 					{"madc_putd",     {{N_DOUBLE}, false}},
 					{"madc_putf",     {{N_FLOAT}, false}},
 					{"madc_puts",     {{N_CHAR}, true}},
@@ -19976,7 +20506,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				append(fdecl, pointer());
 				append(fdecl, node1(N_FUNC, list()));
 				node_t fptr_t = node2(N_TYPE,
-					node1(N_LIST, simple(N_LONG, tb)),
+					i64_list(tb),
 					node2(N_DECL, ignore(), fdecl));
 				node_t callee = node2(N_CAST, fptr_t, fnexpr, tb);
 				node_t dargs = list();
@@ -20011,22 +20541,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// local_emit_name), not the source name.
 				FuncDef *cdf = NULL;
 				std::string callee_name = call_target_emit_name(tcf, &cdf);
-				Method *native_method = (Method *)tcf->var.data;
-				if (tcf->var.name == "system" && cdf
-				    && native_method && native_method->x86code && m_prog) {
-					auto sit = m_prog->external_symbol_map.find(
-						reinterpret_cast<uintptr_t>(native_method->x86code));
-					if (sit != m_prog->external_symbol_map.end()
-					    && !sit->second.empty()) {
-						callee_name = sit->second;
-						bool ret_ptr = false;
-						std::vector<c2mir_node_code_t> ret_specs;
-						std::vector<ExternParam> eparams;
-						native_func_shape(cdf, ret_ptr, ret_specs, eparams);
-						need_output_extern(callee_name.c_str(), ret_ptr,
-								   eparams, ret_specs);
-					}
-				}
+				// A builtin registered with a host thunk (system, the
+				// dlfcn family) carries the thunk's extern-C symbol in
+				// FuncDef::emit_symbol, so call_target_emit_name already
+				// produced the thunk name; the extern proto comes from
+				// the referenced_funcs pass like any other builtin's.
+				// (The old name-keyed "system" swap through
+				// external_symbol_map is subsumed.)
 				// c2mir intrinsics (e.g. __builtin_va_start) are
 				// recognized by name and lowered in-place; emitting an
 				// extern prototype for one shadows the intrinsic and
@@ -20168,7 +20689,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else if (raw == DataType::dtBOOL || sv->type->is_integer()) {
 				setter = "__madc_scope_set_int_runtime";
 				val = id(var_emit_name(*sv).c_str(), tb);
-				val_shape = { {N_LONG}, false };
+				val_shape = { {N_LONG, N_LONG}, false };
 			} else if (sv->type->is_real()) {
 				setter = "__madc_scope_set_real_runtime";
 				val = id(var_emit_name(*sv).c_str(), tb);
@@ -20199,7 +20720,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					m_pending_stmts.push_back(
 						obj_storage_decl(tnm, 4,
 							hdtor.c_str(), tb,
-							alignof(long)));
+							alignof(long long)));
 					auto taddr = [&]() {
 						return node1(N_ADDR,
 							node2(N_IND, id(tnm, tb),
@@ -21068,7 +21589,7 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 		ep = { {N_CHAR}, true };
 	} else {
 		sym = "__madc_throw_int";
-		ep = { {N_LONG}, false };
+		ep = { {N_LONG, N_LONG}, false };
 	}
 	need_output_extern(sym, false, { ep });
 	node_t args = list();
@@ -21157,13 +21678,13 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 
 	// Opaque, 8-aligned storage sized to MadcTryContext (jmp_buf + 2 ptrs). The
 	// builder is C++ so it knows the real ABI size; round up to a long[] count.
-	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long) - 1)
-			   / sizeof(long);
+	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long long) - 1)
+			   / sizeof(long long);
 	node_t ctx_spec = list();
-	append(ctx_spec, simple(N_LONG, tt));
+	append_i64(ctx_spec, tt);
 	node_t ctx_decl_list = list();
 	append(ctx_decl_list, node3(N_ARR, ignore(), list(),
-				    integer((long)ctx_words, tt)));
+				    integer((int64_t)ctx_words, tt)));
 	node_t ctx_sd = simple(N_SPEC_DECL, tt);
 	append(ctx_sd, node1(N_SHARE, ctx_spec));
 	append(ctx_sd, node2(N_DECL, id(ctxname, tt), ctx_decl_list));
@@ -21181,10 +21702,29 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	// setjmp(*(jmp_buf*)push_call) — declare setjmp returning int; the arg is the
 	// jbuf the runtime returned. c2mir takes the (void*) and treats it as the
 	// jmp_buf the libc setjmp expects (jmp_buf is an array -> a pointer in C).
+#ifdef _WIN32
+	// NON_SEH setjmp (W2.1): ucrtbase EXPORTS plain `setjmp`, and its x64
+	// flavor captures the SEH frame — the paired longjmp then RtlUnwindEx-
+	// walks JIT frames, the exact fault W2.1 gated. The safe contract is
+	// the two-arg _setjmp(jbuf, NULL): a NULL frame-ctx makes longjmp take
+	// the plain-restore path. `_setjmp` resolves to this binary's
+	// win_ucrt_compat thunk (tail-jmp to __intrinsic_setjmpex with the ctx
+	// register passed through), and MIR's returns-twice bookkeeping knows
+	// the name (SETJMP_NAME2). Host==target for the JIT; a future
+	// cross-windows mode moves this onto the target enum.
+	need_output_extern("_setjmp", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } },
+			   { N_INT });
+	node_t sj_args = list();
+	append(sj_args, push_call);
+	append(sj_args, node2(N_CAST, void_ptr_type(), integer(0, tt), tt));
+	node_t sj_call = node2(N_CALL, id("_setjmp", tt), sj_args, tt);
+#else
 	need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
 	node_t sj_args = list();
 	append(sj_args, push_call);
 	node_t sj_call = node2(N_CALL, id("setjmp", tt), sj_args, tt);
+#endif
 	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
 
 	// THEN arm: capture the cleanup-stack mark (== ctx->cleanup_mark, set by
@@ -21278,7 +21818,7 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 			const char *valsym; std::vector<c2mir_node_code_t> rs;
 			if (tag == 2) { valsym = "__madc_exception_double"; rs = { N_DOUBLE }; }
 			else if (tag == 3) { valsym = "__madc_exception_cstr"; rs = {}; }
-			else { valsym = "__madc_exception_int"; rs = { N_LONG }; }
+			else { valsym = "__madc_exception_int"; rs = { N_LONG, N_LONG }; }
 			bool ret_ptr = (tag == 3);
 			need_output_extern(valsym, ret_ptr, {}, rs);
 			node_t vcall = node2(N_CALL, id(valsym, tt), list(), tt);
@@ -21302,7 +21842,7 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 			node_t cv_spec = list();
 			if (tag == 2) append(cv_spec, simple(N_DOUBLE, tt));
 			else if (tag == 3) { append(cv_spec, simple(N_CHAR, tt)); }
-			else append(cv_spec, simple(N_LONG, tt));
+			else append_i64(cv_spec, tt);
 			node_t cv_decl_list = list();
 			if (tag == 3) append(cv_decl_list, pointer());   // const char*
 			node_t cv_sd = simple(N_SPEC_DECL, tt);
@@ -21448,7 +21988,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 
 	// long __fe_i = 0;
 	node_t ispec = list();
-	append(ispec, simple(N_LONG, fe));
+	append_i64(ispec, fe);
 	node_t init = simple(N_SPEC_DECL, fe);
 	append(init, node1(N_SHARE, ispec));
 	append(init, node2(N_DECL, id(idx, fe), list()));
@@ -21458,7 +21998,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 
 	// __fe_i < madarray_size((void*)container)
 	need_output_extern("madarray_size", false, { { {N_VOID}, true } },
-			   std::vector<c2mir_node_code_t>{N_LONG});
+			   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
 	node_t size_args = list();
 	append(size_args, container_addr());
 	node_t size_call = node2(N_CALL, id("madarray_size", fe), size_args, fe);
@@ -21475,7 +22015,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 			return error_node("range-for class elements over a madc array require "
 					  "operator=(char*) on the element type", fe);
 		need_output_extern("__php_array_get_cstr", true,
-				   { { {N_VOID}, true }, { {N_LONG}, false } });
+				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
 		node_t ga = list();
 		append(ga, container_addr());
 		append(ga, id(idx, fe));
@@ -21499,8 +22039,8 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	} else {
 		// x = (T)__php_array_get_int((void*)container, __fe_i)
 		need_output_extern("__php_array_get_int", false,
-				   { { {N_VOID}, true }, { {N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG});
+				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } },
+				   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
 		referenced_funcs.insert("__php_array_get_int");
 		node_t a = list();
 		append(a, container_addr());
@@ -21536,7 +22076,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 
 	// long __fe_i = 0;
 	node_t ispec = list();
-	append(ispec, simple(N_LONG, fe));
+	append_i64(ispec, fe);
 	node_t init = simple(N_SPEC_DECL, fe);
 	append(init, node1(N_SHARE, ispec));
 	append(init, node2(N_DECL, id(idx, fe), list()));
@@ -21636,7 +22176,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 
 	// long __fe_i = 0;
 	node_t ispec = list();
-	append(ispec, simple(N_LONG, fe));
+	append_i64(ispec, fe);
 	node_t init = simple(N_SPEC_DECL, fe);
 	append(init, node1(N_SHARE, ispec));
 	append(init, node2(N_DECL, id(idx, fe), list()));
@@ -21765,7 +22305,7 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 						     translate_expr(tc->range_high), tc));
 			} else {
 				for (int64_t v = (int64_t)lo; v <= (int64_t)hi; v++)
-					append(labels, node1(N_CASE, integer((long)v, tc), tc));
+					append(labels, node1(N_CASE, integer((int64_t)v, tc), tc));
 			}
 		} else {
 			append(labels, node1(N_CASE, translate_expr(tc->value), tc));
@@ -22086,6 +22626,16 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`
 	// already populated ctor_args.)
 	std::vector<TokenBase *> ctor_args = sdcl->ctor_args;
+	if (ctor_args.empty()) {
+		// COPY-list-initialization `T v = {a, b, c}` on a class with an
+		// initializer-list ctor is the WHOLE list ([dcl.init.list]/1 —
+		// the two spellings differ only in explicit-ctor viability, not
+		// in what the list means). Threading init_list[0] alone made
+		// `vector<int> v = {1,2,3}` select vector(size_type) with n=1 and
+		// DROP 2 and 3 — silently, with exit 0, down the emit-C lane.
+		if (takes_whole_braced_list(cdcl, sdcl->init_list))
+			ctor_args = sdcl->init_list;
+	}
 	if (ctor_args.empty()) {
 		TokenBase *initexpr = sdcl->initialize;
 		if (TokenAssign *as =
@@ -24245,7 +24795,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
 					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 					self, tf);
-				adj = node2(N_ADD, charp, integer((long)off), tf);
+				adj = node2(N_ADD, charp, integer((int64_t)off), tf);
 			}
 			node_t t = node2(N_TYPE,
 				node1(N_LIST, class_tag_ref(b)),
@@ -24371,7 +24921,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 				node_t tab = id(vname.c_str(), tf);
 				node_t ap = (G.addr_point == 0) ? tab
-					: node2(N_ADD, tab, integer((long)G.addr_point), tf);
+					: node2(N_ADD, tab, integer((int64_t)G.addr_point), tf);
 				node_t vtab = node2(N_CAST, vptr_type, ap, tf);
 				prologue.push_back(node2(N_EXPR, list(),
 					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
@@ -24513,7 +25063,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		node_t outer = list();
 		if (want_sys_init) {
 			need_output_extern("__madc_sys_init", false,
-					   { { {N_LONG}, false },
+					   { { {N_LONG, N_LONG}, false },
 					     { {N_VOID}, true } });
 			node_t sargs = list();
 			if (tf->method && tf->method->parameters.size() >= 2
@@ -24587,6 +25137,11 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 			if (agg)
 				return agg;
 		}
+		// Copy-list-initialization of a file-scope global — the same
+		// whole-list rule as the block-scope lane above.
+		if (ctor_args.empty()
+		    && takes_whole_braced_list(cdd, decl->init_list))
+			ctor_args = decl->init_list;
 		if (ctor_args.empty()) {
 			TokenBase *initexpr = decl->initialize;
 			if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))
@@ -24929,7 +25484,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	auto arg_slot = [&](size_t i) -> node_t {
 		if (i == 0) return id("__args");
 		return node2(N_ADD, id("__args"),
-			     integer((long)(i * sizeof(madc_value))));
+			     integer((int64_t)(i * sizeof(madc_value))));
 	};
 	auto helper_call = [&](const char *sym, std::initializer_list<node_t> args) {
 		node_t a = list();
@@ -24954,11 +25509,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		for (uint32_t t : ok_tids) {
 			node_t ne = node2(N_NE,
 					  helper_call("madc_value_get_type_id", {arg_slot(i)}),
-					  integer((long)t));
+					  integer((int64_t)t));
 			cond = cond ? node2(N_ANDAND, cond, ne) : ne;
 		}
 		stmts.push_back(node4(N_IF, list(), cond,
-				      node2(N_RETURN, list(), integer((long)i + 1)),
+				      node2(N_RETURN, list(), integer((int64_t)i + 1)),
 				      ignore()));
 	}
 
@@ -25010,7 +25565,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		referenced_funcs.insert(dtor_sym);
 		std::vector<ExternParam> mi_params{
 			{ {N_CHAR}, true }, { {N_UNSIGNED}, false },
-			{ {N_LONG}, false }, { {N_VOID}, true } };
+			{ {N_LONG, N_LONG}, false }, { {N_VOID}, true } };
 		need_output_extern("madc_value_make_instance", true, mi_params);
 		node_t cdecl = simple(N_SPEC_DECL);
 		append(cdecl, node1(N_SHARE, node1(N_LIST, simple(N_CHAR))));
@@ -25021,8 +25576,8 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		stmts.push_back(cdecl);
 		node_t mi = helper_call("madc_value_make_instance",
 					{id("__out"),
-					 integer((long)prog->type_id_for(ret_cdd)),
-					 integer((long)ret_cdd->size),
+					 integer((int64_t)prog->type_id_for(ret_cdd)),
+					 integer((int64_t)ret_cdd->size),
 					 id(dtor_sym.c_str())});
 		stmts.push_back(node2(N_EXPR, list(), node2(N_ASSIGN, id("__cell"), mi)));
 		stmts.push_back(node4(N_IF, list(),
@@ -25051,7 +25606,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			append(cargs, helper_call("madc_value_get_bool", {arg_slot(i)}));
 			break;
 		case ShimSlot::K_INT:
-			need_output_extern("madc_value_get_integer", false, p1, {N_LONG});
+			need_output_extern("madc_value_get_integer", false, p1, {N_LONG, N_LONG});
 			append(cargs, helper_call("madc_value_get_integer", {arg_slot(i)}));
 			break;
 		case ShimSlot::K_REAL:
@@ -25079,11 +25634,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	node_t call = node2(N_CALL, id(target_sym.c_str()), cargs);
 
 	// 5. Result conversion (set helpers; scalar calls nest in the setter).
-	std::vector<ExternParam> set_scalar{ { {N_CHAR}, true }, { {N_LONG}, false } };
+	std::vector<ExternParam> set_scalar{ { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } };
 	std::vector<ExternParam> set_real_p{ { {N_CHAR}, true }, { {N_DOUBLE}, false } };
 	std::vector<ExternParam> set_str{ { {N_CHAR}, true }, { {N_CHAR}, true } };
 	std::vector<ExternParam> set_str_n{ { {N_CHAR}, true }, { {N_CHAR}, true },
-					    { {N_LONG}, false } };
+					    { {N_LONG, N_LONG}, false } };
 	switch (rkind) {
 	case R_VOID:
 	case R_INST:
@@ -25097,7 +25652,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 				 : class_method_symbol(ret_cdd, "length");
 		std::vector<ExternParam> mp{ { {N_VOID}, true } };
 		need_output_extern(cs.c_str(), true, mp);
-		need_output_extern(ls.c_str(), false, mp, {N_LONG});
+		need_output_extern(ls.c_str(), false, mp, {N_LONG, N_LONG});
 		referenced_funcs.insert(cs);
 		referenced_funcs.insert(ls);
 		need_output_extern("madc_value_set_string_n", false, set_str_n, {N_INT});
@@ -25153,7 +25708,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	node_t body = node2(N_BLOCK, list(), items);
 	// linkonce [S4]: the shim is a deterministic synthesized adapter —
 	// every TU referencing the target emits an identical copy.
-	node_t shim_spec = node1(N_LIST, simple(N_LONG));
+	node_t shim_spec = i64_list();
 	append(shim_spec, node2(N_ATTR, id("linkonce"), list()));
 	node_t out = node4(N_FUNC_DEF, shim_spec, decl,
 			   list(), body);
@@ -25218,11 +25773,11 @@ node_t CirBuilder::synth_host_trampoline(Program *prog,
 	// Extern proto for the import the session binds to the host entry.
 	std::vector<ExternParam> eps;
 	if (reg.bound)
-		eps.push_back({ {N_LONG}, false });
+		eps.push_back({ {N_LONG, N_LONG}, false });
 	for (int k : reg.params) {
 		switch (k) {
 		case HCR::K_BOOL: eps.push_back({ {N_CHAR}, false });   break;
-		case HCR::K_INT:  eps.push_back({ {N_LONG}, false });   break;
+		case HCR::K_INT:  eps.push_back({ {N_LONG, N_LONG}, false });   break;
 		case HCR::K_REAL: eps.push_back({ {N_DOUBLE}, false }); break;
 		case HCR::K_CSTR: eps.push_back({ {N_CHAR}, true });    break;
 		default: return NULL;	// void parameter: not registrable
@@ -25233,7 +25788,7 @@ node_t CirBuilder::synth_host_trampoline(Program *prog,
 	switch (reg.returns) {
 	case HCR::K_VOID: case HCR::K_CSTR: break;
 	case HCR::K_BOOL: ret_specs = {N_CHAR};   break;
-	case HCR::K_INT:  ret_specs = {N_LONG};   break;
+	case HCR::K_INT:  ret_specs = {N_LONG, N_LONG};   break;
 	case HCR::K_REAL: ret_specs = {N_DOUBLE}; break;
 	default: return NULL;
 	}
@@ -25243,7 +25798,7 @@ node_t CirBuilder::synth_host_trampoline(Program *prog,
 	// Body: [return] __madc_host_cb_<k>([bound,] __p0..__pn);
 	node_t cargs = list();
 	if (reg.bound)
-		append(cargs, integer((long)reg.bound));
+		append(cargs, integer((int64_t)reg.bound));
 	char pn[16];
 	for (size_t i = 0; i < reg.params.size(); i++) {
 		snprintf(pn, sizeof(pn), "__p%u", (unsigned)i);
@@ -25789,14 +26344,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	node_t top_list = list();
 
 	// Wide string literals (parser addWideLiteral): synthetic file-scope
-	// int arrays whose Variable NAME embeds the raw UTF-32 payload
+	// arrays whose Variable NAME embeds the raw UTF-32 payload
 	// (binary-safe for parse-time dedup, not a valid C identifier). c2mir
 	// has no wide literals (no wchar_t — Tier 1 per lowering-vs-raising.md),
 	// so assign each a sanitized module symbol and define it up front:
 	//   static int __wlit_<hash>[] = { code points..., 0 };
-	// (wchar_t's underlying type is int on this target; the baked data
-	// already carries the NUL terminator.) Uses resolve through
-	// var_emit_name; the array decays to int* exactly like gcc's wchar_t[].
+	// The element follows the Variable's TARGET wchar_t shape
+	// (dd_platform_wchar via addWideLiteral): int/4-byte UTF-32 on LP64,
+	// unsigned short/2-byte UTF-16 on LLP64 — the baked data already
+	// carries the NUL terminator and any surrogate pairs. Uses resolve
+	// through var_emit_name; the array decays exactly like gcc's wchar_t[].
 	// The symbol derives from the CONTENT (FNV-1a 64), not creation order,
 	// and each decl is cond_mark_sym'd: the referenced-surface filter drops
 	// UNREFERENCED literals in both the live and bound lanes — creation-
@@ -25821,16 +26378,24 @@ node_t CirBuilder::translate_module(Program *prog)
 			snprintf(sym, sizeof(sym), "__wlit_%016llx",
 				 (unsigned long long)h);
 			m_wide_literal_syms[v] = sym;
+			bool w16 = v->type && v->type->size == 2;
 			node_t spec = list();
 			append(spec, simple(N_STATIC));
-			append(spec, simple(N_INT));
+			if (w16) {
+				append(spec, simple(N_UNSIGNED));
+				append(spec, simple(N_SHORT));
+			} else
+				append(spec, simple(N_INT));
 			node_t dl = list();
 			append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] sized by init
 			node_t decl = node2(N_DECL, id(sym), dl);
 			node_t inits = list();
 			const int32_t *cp = (const int32_t *)v->data;
+			const uint16_t *cp16 = (const uint16_t *)v->data;
 			for (uint32_t i = 0; i < v->count; i++)
-				append(inits, node2(N_INIT, list(), integer(cp[i])));
+				append(inits, node2(N_INIT, list(),
+						    integer(w16 ? (int64_t)cp16[i]
+								: (int64_t)cp[i])));
 			node_t sd = simple(N_SPEC_DECL);
 			append(sd, node1(N_SHARE, spec));
 			append(sd, decl);
@@ -26572,8 +27137,24 @@ node_t CirBuilder::translate_module(Program *prog)
 						if (m_output_externs.count(*ai))
 							continue;
 						uint32_t xu = 0, xi = 0;
-						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi))
+						if (!prog->bind_forest->extern_loc_for(*ai, xu, xi)) {
+							// Not an extern DECL in the producer: the
+							// argument may name a forest-BODIED sibling
+							// (mingw's static-inline strtof passed as
+							// __stoa's converter) — odr-use by address
+							// needs its DEFINITION, exactly as live's
+							// value-use lowering records it. Route it
+							// through referenced_funcs so this same
+							// fixpoint materializes the saved body /
+							// deferred derivation next round; a local or
+							// parameter name is inert there (no funcdef,
+							// no lazy body — nothing keys on it).
+							if (!referenced_funcs.count(*ai)) {
+								referenced_funcs.insert(*ai);
+								grew = true;
+							}
 							continue;
+						}
 						cir_node *xd = prog->bind_forest->node_for(xu, xi);
 						if (xd) {
 							m_output_externs[*ai] = xd->as_node();
@@ -26787,6 +27368,17 @@ node_t CirBuilder::translate_module(Program *prog)
 			}
 		}
 		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
+			continue;
+		// c2mir intrinsics (__builtin_va_*, alloca, the overflow set)
+		// are lowered BY NAME; an extern proto SHADOWS the intrinsic
+		// and turns every call into an undefined import at MIR-link.
+		// The live call arm guards its referenced_funcs insert, but
+		// the forest-bound lane re-feeds this set from frozen unit
+		// connectors (mingw's inline printf body carries a
+		// __builtin_va_start callee) — so the rule is enforced at
+		// this mint too, exactly like need_output_extern's guard.
+		if (is_c2mir_builtin_call_name(symbol)
+		    || is_c2mir_builtin_call_name(fname))
 			continue;
 
 		DataDef *ret_dd = &fd->return_value_type();
@@ -27436,7 +28028,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			// population, so N TU inits and dlopen'd modules
 			// never stomp a running script's sys.* mutations.
 			need_output_extern("__madc_sys_init_once", false,
-					   { { {N_LONG}, false },
+					   { { {N_LONG, N_LONG}, false },
 					     { {N_VOID}, true } });
 			node_t sargs = list();
 			append(sargs, id("argc"));

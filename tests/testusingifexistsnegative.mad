@@ -1,0 +1,10 @@
+// Negative control for testusingifexists: without the Clang attribute, a
+// missing using-declaration source must remain a hard parse error.
+namespace imported {
+using ::madc_missing_name;
+}
+
+int main()
+{
+	return 0;
+}

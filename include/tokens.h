@@ -336,12 +336,23 @@ public:
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const override { return 1; }
     // Propagate unsigned operand type so -1U is uint32, not ddINT;
-    // propagate a complex operand so -z stays complex (like the binary ops).
+    // propagate a complex operand so -z stays complex (like the binary ops);
+    // propagate a REAL operand (-2.5 is double, not ddINT) and an integer
+    // operand wider than int (-7L is long) — [expr.unary.op] with integer
+    // promotion. Overload ranking reads this parse-side VALUE view
+    // (operand_value_datadef); without the real arm, abs(-2.5) ranked as
+    // int and bound the int overload (silent truncation on the libc++
+    // global-abs family).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
 	if ( right && right->datadef() && right->datadef()->is_unsigned() )
 	    return right->datadef();
 	if ( right && right->datadef() && right->datadef()->is_complex() )
+	    return right->datadef();
+	if ( right && right->datadef() && right->datadef()->is_real() )
+	    return right->datadef();
+	if ( right && right->datadef() && right->datadef()->is_integer()
+	  && _datatype && right->datadef()->size > _datatype->size )
 	    return right->datadef();
 	return TokenOperator::datadef();
     }

@@ -19,7 +19,7 @@
 #   3b cout << "hi" as its OWN probe — the darwin sret arc's driving symptom;
 #      unmaskable by defects earlier in the chained groves probe
 #   4  the madc::value intrinsic, include-free
-#   5  exec:// channels end-to-end (spawn /usr/bin/sort, value carriers)
+#   5  exec:// channels end-to-end (spawn this madc, value carriers)
 #   6  AOT object round-trip (-c then run the .o through MIR's loader) —
 #      known-unsupported on darwin until the Mach-O object writer lands; the
 #      leg asserts a LOUD decline at whichever stage says no (today: the .o
@@ -157,24 +157,44 @@ printf 'answer=42\n' > val.expect
 check "value intrinsic (include-free)" val.expect "$MADC" val.mad
 
 # --- 5. exec:// channel ------------------------------------------------------
-cat > chan.mad <<'EOF'
-#include <ns_madc>
+cat > chan_child.mad <<'EOF'
 #include <stdio.h>
 int main() {
-    madc::channel sorter("exec://sort");
-    sorter.write("pear\n");
-    sorter.write("apple\n");
-    sorter.write("mango\n");
-    sorter.close_write();
-    value line;
-    // readline() strips the trailing newline (<ns_madc> contract).
-    while (sorter.readline(line))
-        printf("%s\n", line.c_str());
+    int ch;
+    int line_start = 1;
+    while ((ch = getchar()) != EOF) {
+        if (line_start) {
+            printf("child: ");
+            line_start = 0;
+        }
+        putchar(ch);
+        if (ch == '\n') line_start = 1;
+    }
     return 0;
 }
 EOF
-printf 'apple\nmango\npear\n' > chan.expect
-check "exec:// channel (sort round-trip)" chan.expect "$MADC" chan.mad
+cat > chan.mad <<'EOF'
+#include <ns_madc>
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+    const char *madc_bin = getenv("MADC_BIN");
+    char uri[1024];
+    snprintf(uri, sizeof(uri), "exec://%s --no-config %s", madc_bin, argv[1]);
+    madc::channel child(uri);
+    child.write("pear\n");
+    child.write("apple\n");
+    child.write("mango\n");
+    child.close_write();
+    value line;
+    // readline() strips the trailing newline (<ns_madc> contract).
+    while (child.readline(line))
+        printf("received: %s\n", line.c_str());
+    return 0;
+}
+EOF
+printf 'received: child: pear\nreceived: child: apple\nreceived: child: mango\n' > chan.expect
+check "exec:// channel (madc self-child round-trip)" chan.expect env MADC_BIN="$MADC" "$MADC" chan.mad chan_child.mad
 
 # --- 6. AOT object round-trip ------------------------------------------------
 cat > aot.mad <<'EOF'

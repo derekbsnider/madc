@@ -160,6 +160,8 @@ bool snapshot_append_blob(const char *path, const void *blob, size_t len);
 // of the image is never assumed for the metadata.
 class snapshot_reader
 {
+	const uint8_t *_image;	// whole mapped carrier passed to open()
+	size_t _image_size;
     const uint8_t *_blob;	// blob start within the image
     size_t _blob_size;
     snapshot_header _hdr;
@@ -173,12 +175,21 @@ class snapshot_reader
     // read_segment_into ride it.
     bool decode_payload(const snapshot_segment &seg, uint8_t *dst) const;
 public:
-    snapshot_reader() : _blob(0), _blob_size(0) { _hdr = snapshot_header(); }
+    snapshot_reader() : _image(0), _image_size(0), _blob(0), _blob_size(0)
+	{ _hdr = snapshot_header(); }
 
     // Validates footer magic/version/sizes, header, and every directory
     // record's payload bounds. False = not a container / corrupt -> caller
     // falls back; never throws, never reads out of bounds.
     bool open(const void *image, size_t image_len);
+
+    // Placement-2 profile stacks append more than one complete blob to the
+    // same carrier. After open(), return the image-prefix length whose EOF is
+    // the preceding valid blob's footer (skipping append_file's 0..15 bytes
+    // of alignment padding). False when this is the first/only blob. The
+    // caller opens that prefix with another snapshot_reader; content meaning
+    // and profile selection remain the consumer's concern.
+    bool previous_image_len(size_t &image_len) const;
 
     uint32_t segment_count() const { return (uint32_t)_dir.size(); }
     uint64_t context_hash()  const { return _hdr.context_hash; }

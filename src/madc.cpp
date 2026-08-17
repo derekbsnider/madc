@@ -4,12 +4,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/wait.h>
 #include <signal.h>
-#include <execinfo.h>
-#include <dlfcn.h>
 #include <unistd.h>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include <new>
 #include <iostream>
 #include <iomanip>
@@ -27,6 +26,10 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_dl.h"
+#include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
+#include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
+#include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
@@ -40,126 +43,6 @@ using namespace std;
 // faulting JIT RIP back to source. Library consumers should provide
 // their own crash/error plumbing instead of relying on process globals.
 static Program *g_active_program = NULL;
-
-// Resolve a JIT (MIR-generated) code address to "func+0xoff [JIT]".
-// Defined in madc_cir.cpp where the live MIR module is in scope. Returns 1
-// if the address falls inside a generated function's code range.
-extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n);
-
-static void crash_write(const char *data, size_t size)
-{
-    while ( size > 0 )
-    {
-	ssize_t written = write(STDERR_FILENO, data, size);
-	if ( written <= 0 )
-	    return;
-	data += written;
-	size -= (size_t)written;
-    }
-}
-
-static void crash_write_formatted(const char *data, int length, size_t capacity)
-{
-    if ( length <= 0 || capacity == 0 )
-	return;
-    size_t size = (size_t)length;
-    if ( size >= capacity )
-	size = capacity - 1;
-    crash_write(data, size);
-}
-
-// Async-signal-safe crash handler: writes signal name + backtrace to fd 2
-// (stderr) using only async-signal-safe libc calls. Re-raises the signal
-// with the default handler so core files still drop if enabled.
-static void crash_handler(int sig, siginfo_t *info, void *uctx)
-{
-    const char *name = "signal";
-    switch ( sig )
-    {
-	case SIGSEGV: name = "SIGSEGV (segmentation fault)";	break;
-	case SIGABRT: name = "SIGABRT (abort)";			break;
-	case SIGFPE:  name = "SIGFPE (arithmetic error)";	break;
-	case SIGBUS:  name = "SIGBUS (bus error)";		break;
-	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
-    }
-    const char *prefix = "\nmadc: caught ";
-    crash_write(prefix, strlen(prefix));
-    crash_write(name, strlen(name));
-    if ( info && (sig == SIGSEGV || sig == SIGBUS) )
-    {
-	char addrbuf[64];
-	int n = snprintf(addrbuf, sizeof(addrbuf), " at address %p", info->si_addr);
-	crash_write_formatted(addrbuf, n, sizeof(addrbuf));
-    }
-    crash_write("\n", 1);
-
-    const char *btheader = "Backtrace:\n";
-    crash_write(btheader, strlen(btheader));
-
-    void *frames[64];
-    int nf = backtrace(frames, 64);
-    // Symbolize each frame. JIT (MIR-generated) frames are invisible to
-    // backtrace_symbols/dladdr — resolve those against the live MIR module so
-    // a crash inside transpiled code reads as `func+0xoff [JIT]` instead of a
-    // bare address. Falls back to dladdr for native (libc/madc) frames.
-    for (int i = 0; i < nf; i++)
-    {
-	char line[320], sym[200];
-	if ( madc_jit_symbolize(frames[i], sym, sizeof(sym)) )
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] %s\n", frames[i], sym);
-	    crash_write_formatted(line, n, sizeof(line));
-	    continue;
-	}
-	Dl_info di;
-	if ( dladdr(frames[i], &di) && di.dli_sname )
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
-			     di.dli_sname,
-			     (unsigned long)((char *)frames[i] - (char *)di.dli_saddr));
-	    crash_write_formatted(line, n, sizeof(line));
-	}
-	else
-	{
-	    int n = snprintf(line, sizeof(line), "  [%p] ??\n", frames[i]);
-	    crash_write_formatted(line, n, sizeof(line));
-	}
-    }
-
-    // Restore default handler and re-raise so the shell sees the real exit
-    // status (and optionally produces a core dump).
-    struct sigaction dfl;
-    memset(&dfl, 0, sizeof(dfl));
-    dfl.sa_handler = SIG_DFL;
-    sigaction(sig, &dfl, NULL);
-    raise(sig);
-}
-
-static void install_crash_handler()
-{
-    // Run the handler on a dedicated alternate stack so a STACK OVERFLOW
-    // (e.g. runaway recursion in JIT'd code) is still catchable+symbolizable —
-    // without SA_ONSTACK the handler would re-fault on the exhausted stack and
-    // the kernel would kill us silently with no backtrace.
-    static char altstack[65536];	// fixed: SIGSTKSZ is non-constant on modern glibc
-    stack_t ss;
-    memset(&ss, 0, sizeof(ss));
-    ss.ss_sp = altstack;
-    ss.ss_size = sizeof(altstack);
-    ss.ss_flags = 0;
-    sigaltstack(&ss, NULL);
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
-    sigaction(SIGFPE,  &sa, NULL);
-    sigaction(SIGBUS,  &sa, NULL);
-    sigaction(SIGILL,  &sa, NULL);
-}
 
 double time_diff(struct timeval x , struct timeval y)
 {
@@ -190,6 +73,7 @@ double time_diff(struct timeval x , struct timeval y)
 // Soft = limit, hard = limit+slop so the process can't extend itself.
 // Every trip must name its knob (never-silent): SIGXCPU via
 // cpu_guard_handler, ENOMEM/bad_alloc via mem_guard_new_handler.
+#ifndef _WIN32
 static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 {
     if ( const char *env = getenv(env_name) ) {
@@ -205,6 +89,10 @@ static rlim_t env_rlim(const char *env_name, rlim_t fallback)
 // otherwise the failure surfaces as a bare std::bad_alloc with no
 // actionable cause. An OOM handler must not allocate, so the message goes
 // out via the crash handler's write(2) plumbing.
+// Guarded to match the ONE place it is armed (the !__APPLE__ RLIMIT_AS arm
+// below): darwin does not enforce RLIMIT_AS, so on Apple targets this handler
+// is never installed and a definition here is simply unused.
+#ifndef __APPLE__
 static rlim_t madc_mem_guard_mb = 0;
 
 static void mem_guard_new_handler(void)
@@ -216,9 +104,10 @@ static void mem_guard_new_handler(void)
                      " MB address-space guard active; raise it or set"
                      " MADC_MEM_LIMIT=0 to disable\n",
                      (unsigned long long)madc_mem_guard_mb);
-    crash_write_formatted(buf, n, sizeof(buf));
+    madc_crash_write_formatted(buf, n, sizeof(buf));
     throw std::bad_alloc();
 }
+#endif // !__APPLE__
 
 // Armed with the (opt-in) RLIMIT_CPU guard: the default SIGXCPU disposition
 // kills silently, which reads as a mystery death instead of the guard doing
@@ -232,17 +121,28 @@ static void cpu_guard_handler(int sig)
                      "madc: CPU time exceeded the MADC_CPU_LIMIT=%llu s guard;"
                      " raise it or unset it to disable\n",
                      (unsigned long long)madc_cpu_guard_secs);
-    crash_write_formatted(buf, n, sizeof(buf));
+    madc_crash_write_formatted(buf, n, sizeof(buf));
     struct sigaction dfl;
     memset(&dfl, 0, sizeof(dfl));
     dfl.sa_handler = SIG_DFL;
     sigaction(sig, &dfl, NULL);
     raise(sig);
 }
+#endif // !_WIN32
 
 static void install_resource_guards(size_t project_tus,
                                     const madc::config_settings &cfg)
 {
+#ifdef _WIN32
+    // Windows has no setrlimit. The JobObject equivalents
+    // (JOB_OBJECT_LIMIT_PROCESS_MEMORY, PerProcessUserTimeLimit) kill the
+    // process WITHOUT the nameable-knob message the POSIX guards guarantee,
+    // so the guards are documented no-ops here — the same posture as
+    // darwin's RLIMIT_AS below. A JobObject-based guard that still names
+    // its knob is a W-lane residual.
+    (void)project_tus;
+    (void)cfg;
+#else
     // Precedence for both guards: environment > madc.ini > baked default
     // (neither has a CLI flag, so the CLI layer of the rule is vacuous here).
     rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT",
@@ -292,7 +192,8 @@ static void install_resource_guards(size_t project_tus,
             std::set_new_handler(mem_guard_new_handler);
         }
     }
-#endif
+#endif // !__APPLE__
+#endif // !_WIN32
 }
 
 // Walk backwards from a line to include preceding comment block.
@@ -506,7 +407,7 @@ static void print_usage(const char *prog)
 "                          it is not the same as putting the library first with -I.\n"
 "  -D<name>[=value]        define a preprocessor macro\n"
 "  -I<dir>                 add an include search directory\n"
-"  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
+"  -l<name>                load lib<name>.so into the global scope so its symbols\n"
 "                          resolve at link time (e.g. -lcrypt). Works with or\n"
 "                          without --project.\n"
 "  --no-auto-load          do not act on #load directives (e.g. an embedded\n"
@@ -514,6 +415,7 @@ static void print_usage(const char *prog)
 "                          via -l instead. The namespace binds to global scope.\n"
 "  --no-includes           do not process #include directives\n"
 "  --no-embedded-headers   disable baked-in headers; use real system headers\n"
+"  --no-posix-compat       disable Win64's additive POSIX header supplements\n"
 "\n"
 "Codegen:\n"
 "  -O, -O0 .. -O3          JIT optimization level (bare -O = -O1)\n"
@@ -663,7 +565,7 @@ int main(int argc, char **argv)
     struct timeval _t_main;
     gettimeofday(&_t_main, NULL);
 
-    install_crash_handler();
+    madc_install_crash_handler();
 
     stringstream ss;
     MadcEngine engine;
@@ -801,6 +703,12 @@ int main(int argc, char **argv)
             // shim-retirement lever; it replaces the old disallow-everything gate,
             // which wrongly also dropped ns_php etc.
             prog->registration_policy.bypass_system_library_headers = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
+            // This policy rides the engine as well as the current Program so
+            // --project translation units inherit the same target surface.
+            engine.registration_policy.enable_posix_compat = false;
+            prog->registration_policy.enable_posix_compat = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-auto-load") == 0) {
             // Do not act on #load directives: the named library is not loaded
@@ -1218,10 +1126,10 @@ int main(int argc, char **argv)
     {
         if ( emit_native )
             break;
-        if ( !dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL) )
+        if ( !madcdl_open_global(lib.c_str(), /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
-                      << dlerror() << std::endl;
+                      << madcdl_error() << std::endl;
             return 1;
         }
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
@@ -1730,55 +1638,61 @@ int main(int argc, char **argv)
 	// no parser state, token arena, or live pool carries over).
 	if ( freeze_run )
 	{
-	    char tmpl[] = "/tmp/madc_frozen_XXXXXX";
-	    int tfd = mkstemp(tmpl);
+	    std::string snapshot_path;
+	    int tfd = madc::detail::make_temp_file("madc_frozen", snapshot_path);
 	    if ( tfd < 0 )
 	    {
-		perror("madc: --freeze-run: mkstemp");
+		perror("madc: --freeze-run: temporary file");
 		return 1;
 	    }
 	    close(tfd);
-	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false,
+	    if ( madc_cir_freeze(prog.get(), argv[filearg], snapshot_path.c_str(), false,
 				 freeze_mir_cache) != 0 )
 	    {
-		unlink(tmpl);
+		unlink(snapshot_path.c_str());
 		return 1;
 	    }
-	    std::string opt = std::string("--run-frozen=") + tmpl;
-	    std::string selfexe = madc_self_exe_path();   // resolved pre-fork
-	    std::vector<char *> cargv;
+	    std::string opt = std::string("--run-frozen=") + snapshot_path;
+	    std::string selfexe = madc_self_exe_path();   // resolved pre-spawn
+	    std::vector<std::string> cargv;
 	    cargv.push_back(argv[0]);
 	    // Verbosity crosses the re-exec: the thaw side's diagnostics
 	    // (trap-bind list, link trace) are DBG-gated in the CHILD.
 	    if ( madc_verbose )
-		cargv.push_back((char *)"-v");
-	    cargv.push_back((char *)opt.c_str());
+		cargv.push_back("-v");
+	    cargv.push_back(opt);
 	    for ( int i = filearg + 1; i < argc; ++i )   // program args after the source
 		cargv.push_back(argv[i]);
-	    cargv.push_back(NULL);
-	    pid_t pid = fork();
-	    if ( pid == 0 )
+	    madc::error rerr;
+	    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
+	    unlink(snapshot_path.c_str());
+	    if ( rc < 0 )
 	    {
-		execv(selfexe.c_str(), cargv.data());
-		perror("madc: --freeze-run: execv");
-		_exit(127);
-	    }
-	    int status = 0;
-	    if ( pid > 0 )
-		waitpid(pid, &status, 0);
-	    unlink(tmpl);
-	    if ( pid < 0 )
-	    {
-		perror("madc: --freeze-run: fork");
+		std::cerr << "madc: --freeze-run: " << rerr.message << std::endl;
 		return 1;
 	    }
-	    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+	    return rc;
 	}
 
 	// AOT: -c → .o, -shared → .so, -o → linked executable; do not run.
 	// (gcc CLI vocabulary; --emit-object/--emit-executable are aliases.)
 	if ( emit_native )
 	{
+	    // Positionals after the source are the SCRIPT's argv — but no script
+	    // runs on this lane, so they can only be misplaced flags (madc's
+	    // convention puts flags BEFORE the source, unlike gcc). Dropping
+	    // them silently turned `-c foo.c -o bar.o` into a derived-name .o
+	    // with exit 0 — a silent wrong answer. Refuse loudly instead.
+	    if ( filearg + 1 < argc )
+	    {
+		std::cerr << "madc: unconsumed arguments after '" << argv[filearg]
+			  << "' in AOT mode (flags go before the source"
+			     " file):";
+		for ( int i = filearg + 1; i < argc; i++ )
+		    std::cerr << " " << argv[i];
+		std::cerr << std::endl;
+		return 1;
+	    }
 	    MadcNativeKind kind;
 	    const char *explicit_out = NULL;
 	    const char *dflt_suffix = NULL;

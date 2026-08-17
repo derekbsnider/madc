@@ -1,25 +1,35 @@
 #include <string>
 #include <ns_madc>
 #include <stdio.h>
+#include <stdlib.h>
 
-int main()
+int main(int argc, char **argv)
 {
-    // exec://sort round-trip — ASCII input so no locale can reorder it.
-    madc::channel sorter("exec://sort");
-    if ( !sorter.ok() )
+    const char *madc_bin = getenv("MADC_BIN");
+    const char *child_source = argc > 1 ? argv[1] : "tests/testexecchild.mad";
+    if ( !madc_bin || !*madc_bin )
+        madc_bin = "bin/madc";
+    char child_uri[1024];
+    snprintf(child_uri, sizeof(child_uri), "exec://%s --no-config %s",
+             madc_bin, child_source);
+
+    // The lane's own madc is the child: always present, locale-free, and the
+    // same artifact in hosted, packed, JIT, EXE, and OBJ runs.
+    madc::channel child(child_uri);
+    if ( !child.ok() )
     {
-        printf("open failed: %s\n", sorter.last_error());
+        printf("open failed: %s\n", child.last_error());
         return 1;
     }
-    sorter.write("pear\n");
+    child.write("pear\n");
     string fruit = "apple\nmango\n";
-    sorter.write(fruit);
-    sorter.close_write();
+    child.write(fruit);
+    child.close_write();
 
     string line;
-    while ( sorter.readline(line) )
-        printf("sorted: %s\n", line.c_str());
-    sorter.close();
+    while ( child.readline(line) )
+        printf("received: %s\n", line.c_str());
+    child.close();
 
     // A spawn that cannot succeed fails loudly, not silently.
     madc::channel missing("exec:///nonexistent/no-such-tool");

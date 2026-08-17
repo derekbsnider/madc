@@ -53,6 +53,23 @@ class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 // parse-once tsubst use this owner so dependent and concrete queries agree.
 size_t query_datadef_measure(const DataDef *dd, bool want_alignof);
 
+// GNU attribute identity shared by lexer preservation, __has_attribute, and
+// declaration semantics.  External spellings may use either bare or
+// double-underscore names; callers compare the enum, never the spelling.
+enum class GnuAttributeKind : uint8_t {
+    Unsupported,
+    Packed,
+    Aligned,
+    Mode,
+    ScalarStorageOrder,
+    VectorSize,
+    Alias,
+    NoInstrumentFunction,
+    Optimize,
+    UsingIfExists
+};
+GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -679,6 +696,14 @@ public:
     // like FuncDef::param_default_tokens). The parsed ctor_args trees cannot
     // serialize; the flush re-runs the args-list parse over these tokens.
     std::vector<TokenBase *> ctor_arg_src;
+    // The ctor_args above came from a BRACED list (`T v{a, b}` / `T v = {a, b}`),
+    // not a paren list. [dcl.init.list]/3 makes the two differ for exactly one
+    // reason worth carrying this bit: a class with an initializer-list
+    // constructor takes the WHOLE braced list as one std::initializer_list<E>
+    // argument, and considers no other constructor. Dropping the braces at parse
+    // (which is what happened before) makes `vector<int> v{1,2,3}` indistinguishable
+    // from `vector<int> v(1,2,3)` — it selected vector(n, value, alloc).
+    bool ctor_args_braced = false;
     bool has_brace_init;               // true when `= { ... }` syntax was used
     bool is_const_decl;                // true when declared with `const` qualifier
     // True when this declaration carried a constant initializer that the parser
@@ -1557,6 +1582,7 @@ protected:
     size_t _gpos = 0;			// read cursor into _buf
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
+    std::set<std::string> _inherited_disabled_macros;
     int _lf, _cr, _column;
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
@@ -1577,6 +1603,7 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
     void str(const std::string &s) { _buf = s; _gpos = 0; }
+    const std::string &text() const { return _buf; }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
     // source characters were already counted on the first read, so re-reading
@@ -1590,10 +1617,21 @@ public:
     }
     bool macro_disabled(const std::string &name) const
     {
+	if ( _inherited_disabled_macros.count(name) )
+	    return true;
 	for ( const PushbackFrame &frame : _pushback_frames )
 	    if ( frame.disabled_macro == name )
 		return true;
 	return false;
+    }
+    void inherit_macro_disables(const Source &from, const std::string &current)
+    {
+	_inherited_disabled_macros = from._inherited_disabled_macros;
+	for ( const PushbackFrame &frame : from._pushback_frames )
+	    if ( !frame.disabled_macro.empty() )
+		_inherited_disabled_macros.insert(frame.disabled_macro);
+	if ( !current.empty() )
+	    _inherited_disabled_macros.insert(current);
     }
     // Active macro-expansion nesting depth (one frame per live expansion).
     // A runaway recursive macro grows this without bound; the lexer guards on
@@ -2041,6 +2079,12 @@ public:
 	datatype_vec_t params;
 	fVOIDFUNC extfunc;
 	bool is_method;
+	// Non-empty = the builtin is served by a HOST THUNK under this
+	// extern-C symbol (FuncDef::emit_symbol at mint). A builtin whose id
+	// collides with a real host-library name (dlopen, system) must emit
+	// the thunk's own symbol, or every lane binds the host function
+	// against the script signature instead of the registered thunk.
+	std::string emit_symbol;
     };
 
     struct BuiltinRegistry
@@ -2051,8 +2095,8 @@ public:
 	std::vector<FunctionRegistrationSpec> dlfcn_functions;
 
 	void add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
-	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
-	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
+	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false, const std::string &emit_symbol=std::string());
     };
 
     typedef void (*namespace_init_fn_t)(Program &);
@@ -2121,6 +2165,11 @@ public:
 	// This is the incremental shim-retirement lever — bypass system shims while
 	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
 	bool bypass_system_library_headers = false;
+	// Win64's native headers omit a narrow POSIX delta. When enabled, a real
+	// system header may be followed by the convention-keyed embedded supplement
+	// `posix/<name>`. POSIX hosts never activate the layer; the CLI opt-out is
+	// --no-posix-compat.
+	bool enable_posix_compat = true;
 	// Frozen-forest discovery + failure policy (forest-carriers S3).
 	// enable_external_forest gates the probe-chain arms that read frozen
 	// state from OUTSIDE the binary/library images (the <exe>.forest and
@@ -3678,10 +3727,25 @@ public:
 						// closure a frozen forest re-loads
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
+	struct ReplacementToken {
+	    enum Kind {
+		rtWhitespace, rtComment, rtIdentifier, rtPpNumber,
+		rtLiteral, rtHash, rtPaste, rtPunct
+	    };
+	    Kind kind;
+	    size_t begin;
+	    size_t end;
+	    ReplacementToken(Kind k, size_t b, size_t e)
+		: kind(k), begin(b), end(e) {}
+	};
 	std::vector<std::string> params;  // parameter names
 	bool variadic = false;           // trailing ... / __VA_ARGS__
 	std::string variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
+	// Lexer-private lazy cache. The spelling mirror makes direct body writes
+	// and forest thaw self-invalidating without widening the wire format.
+	mutable std::string replacement_tokens_for;
+	mutable std::vector<ReplacementToken> replacement_tokens;
     };
     madc::dis::intern_keyed_map<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
@@ -3746,6 +3810,39 @@ public:
     std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
     std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
     std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
+    // v40 (task #57): per-unit EXTERNAL branch dependencies — a PP-conditional
+    // consult whose macro state was established OUTSIDE the current top-level
+    // include's closure (an earlier sibling's #define, or undefined). Bind
+    // eligibility compares them to the consumer's live tables; mismatch
+    // declines the root bind to live parse. Same-root state is reproduced by
+    // the post-order replay and is deliberately NOT recorded; predefine/-D
+    // state (defined, no recorded origin root) is pinned by the v27 config
+    // word and skipped too.
+    struct PackBranchDep {
+	std::string name;
+	bool defined;			// state observed at the consult
+	bool has_value;			// object-like body captured below
+	std::string value;
+	const char *definer;		// unit that established the state (NULL = none)
+    };
+    struct PackMacroOrigin {
+	const char *unit;		// innermost unit whose parse defined it
+	bool defined;			// false after #undef
+    };
+    std::map<std::string, PackMacroOrigin> pack_macro_origin;
+    std::map<const char *, std::vector<PackBranchDep> > pack_unit_branch_deps;
+    std::map<const char *, std::set<std::string> > pack_unit_branch_dep_seen;
+    // v41: exact pre-preprocessor source text for every packed unit. A
+    // compiler-less target whose consumer config cannot bind the producer's
+    // semantic grove (another --std=, -D set, or POSIX posture) tokenizes this
+    // text under the CONSUMER config instead of chasing build-host paths.
+    std::map<const char *, std::string> pack_unit_sources;
+    // Consumers bind ANY unit directly, so "reproduced by the replay" means
+    // the definer sits in the CONSULTING unit's own edge subtree — a sibling
+    // under the same top-level include (mingw stdlib.h defining
+    // _CRT_ERRNO_DEFINED before errno.h parsed under <cstdlib>) is external.
+    std::vector<const char *> pack_unit_stack;	// include nesting, unit names
+    std::map<const char *, std::set<const char *> > pack_unit_subtree; // unit -> units entered beneath it (self included)
     std::vector<PackDeclEntry> pack_decls;	// parse-time top-level decl boundaries
     std::vector<PackDeclFrame> pack_decl_stack;	// open frames (namespace bodies nest)
     // A __need protocol serving (glibc's stddef/stdarg re-inclusion protocol,
@@ -3766,11 +3863,16 @@ public:
     // Recording hooks (PP side in lexer.cpp, decl side in parser.cpp; every
     // one gates on pack_recording so default builds pay one predicted branch).
     void pack_note_unit(const char *interned_file);
+    void pack_record_source(const char *interned_file, const std::string &text);
     void pack_record_define(const std::string &name, const std::string &value);
     void pack_record_define_fn(const std::string &name, const MacroDef &m);
     void pack_record_undef(const std::string &name);
     void pack_record_edge(const std::string &includee);	// includer = current source
-    void pack_record_branch_macro(const std::string &name);
+    // A dedup-SKIPPED include still needs its bytes in the corpus — see the
+    // definition. Freeze-time only, at most one read per unit.
+    void pack_record_skipped_source(const std::string &path);
+    void pack_record_branch_macro(const std::string &name,
+				  bool include_probe = false);
     const char *pack_current_unit();	// interned current source file (NULL off)
     void dump_macros(FILE *out);	// -dM: effective macro table, sorted
     void pack_open_toplevel_decl();	// loop-top: push a decl frame
@@ -4196,6 +4298,7 @@ public:
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
+    size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
     // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser
@@ -4391,7 +4494,6 @@ public:
     };
     std::map<uintptr_t, size_t> aot_layout_offsets;
     std::vector<AotDataRange> aot_layout_ranges;
-    std::map<uintptr_t, std::string> external_symbol_map;
     fVOIDFUNC root_fn;
 
     Program();
@@ -4481,6 +4583,14 @@ public:
     // dialect-agnostic, so a --std=c99 compile must still link it.
     CirFrozenForest *ledger_forest = NULL;
     bool ledger_forest_tried = false;	// one-shot open attempt (success or fail)
+    // Raw-source view of the same carrier. Unlike bind_forest, this ignores
+    // producer-config identity: the stored bytes are re-preprocessed under
+    // this Program's live config. It is consulted only after the ordinary
+    // filesystem search misses, so development hosts keep their normal path
+    // providers while compiler-less packaged targets remain multi-dialect.
+    CirFrozenForest *source_forest = NULL;
+    bool source_forest_tried = false;
+    std::map<uint32_t, std::string> forest_source_cache;
     // MIR module cache, rung 3 (JIT bind lane ONLY — the emit/dump lanes never
     // populate this, keeping their output byte-identical to live). Func names
     // exported by the container's MIR cache module: the m&l fixpoint emits a
@@ -4524,6 +4634,7 @@ public:
     // Namespace/struct/template maps stay eager — the lexer never reads them.
     std::vector<std::pair<std::string, TokenDataType *> > forest_pending_datatypes;
     std::set<std::string> forest_pending_datatype_names;	// staged-key guard
+    std::set<std::string> forest_restored_datatype_names;	// v40: aliases whose datatype_map entry came from a forest RESTORE — persists the whole TU (the typedef arm's live-wins provenance, task #57)
     // RC2: free-function declarations restored from a bound header. Same deferral
     // as the globals — the Variable lives in tkProgram scope, so registration
     // (funcdef_map + addVariable + Method, the parseFunction prototype shape)
@@ -4599,15 +4710,22 @@ public:
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
+    enum ForestConfigMatch {
+	forestMatchExact,
+	forestMatchStdlibFlavor,
+	forestMatchAny
+    };
     // The ordered carrier discovery chain (explicit → self-image → library
-    // image → sidecars → $MADC_FOREST). Walked by BOTH forest consumers;
-    // require_config_match applies the v27 producer-config gate (grove bind
-    // yes, AOT ledger no). Sets config_mismatch when an arm was rejected for
-    // that reason alone. header_only stops at the container directory —
+    // image → sidecars → $MADC_FOREST). Within each carrier, newest-to-
+    // oldest appended profiles are searched under `config_match`: exact for
+    // semantic grove bind, same stdlib flavor for live-tokenized source, any
+    // for the dialect-independent AOT ledger. Sets config_mismatch when an
+    // exact-match candidate was rejected for config alone. header_only stops
+    // at the container directory —
     // enough for the container-global segments (the AOT ledger), and it does
     // NOT need a live string pool, which a no-parse lane has no reason to own.
     // Implemented in lexer.cpp.
-    CirFrozenForest *probe_forest_chain(bool require_config_match,
+    CirFrozenForest *probe_forest_chain(ForestConfigMatch config_match,
 					bool &config_mismatch,
 					bool header_only = false);
     CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
@@ -4616,13 +4734,32 @@ public:
     // with the producer-config gate off and stopping at the directory (the
     // ledger is a container-global segment). NULL = no carrier at all.
     CirFrozenForest *ensure_ledger_forest();
+    CirFrozenForest *ensure_source_forest();
     void forest_missing_fallback(bool config_mismatch); // discovery exhausted: apply forest_missing_policy (mismatch = container seen, wrong std/-D)
     std::string forest_probed_arms() const;	// the arms probe_forest_chain walked, for the failure diagnostics (one owner)
     int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    bool forest_source_path(const std::string &candidate,
+			    bool allow_tail, std::string &resolved);
+    bool forest_source_text(const std::string &path, std::string &text);
     // A __need_* request macro is live: the next include is a protocol
     // visit (re-tokenize the protocol text; no once-only/PCH/forest).
     bool need_protocol_macro_live();
     void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
+    std::set<uint32_t> forest_live_present;	// v40: units ALREADY PRESENT via a live parse (guard prune) — bind skips them, the decl-restore filter must NOT see them
+    std::set<uint32_t> forest_husk_live_pending;	// task #57: missing-content closure units selected for exact live tokenization; never enter forest_chain_set
+    std::set<std::string> forest_live_tokenized;	// v40: canonical keys of files whose tokens ENTERED this TU's live stream (should_tokenize_include true-verdicts) — the prune's honest "already live" source
+    bool live_tokenize_record(const std::string &canonical, bool tok);	// one recording owner for the set above
+    bool forest_unit_file_live_tokenized(uint32_t unit);	// v40: was this unit's FILE live-tokenized here?
+    bool forest_bind_env_ok(uint32_t unit);	// v40: closure branch-dep env check (task #57)
+    bool forest_bind_env_ok(uint32_t unit, std::set<uint32_t> &visited);
+    void forest_env_collect(uint32_t unit, std::set<uint32_t> &closure);
+    bool forest_unit_defines_macro(uint32_t unit, const char *nm);	// v40: include-once prune helper
+    bool forest_unit_is_standalone_husk(uint32_t unit,
+					const std::vector<uint32_t> &deps);	// task #57: empty decl surface + own file guard, safe for exact live include
+    // task #57 masked-bind: unit -> its guarded-fallback macros whose guard is
+    // live-defined; forest_install_pp skips those define events (live-order
+    // parity — the live arm skipped them). Rebuilt per env check of the unit.
+    std::map<uint32_t, std::set<std::string> > forest_pp_install_mask;
     void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
@@ -4634,6 +4771,9 @@ public:
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
     bool is_embedded_header_allowed(const std::string &name) const;
+	bool posix_compat_enabled() const;
+	bool is_posix_compat_header_name(const std::string &name) const;
+	bool is_posix_compat_header_allowed(const std::string &name) const;
     // True iff a real system header named `name` exists in a glibc/libstdc++
     // include dir (i.e. NOT the compiler-owned freestanding dir, and not a
     // madc-own header with no real twin). Used to bypass embedded system-library
@@ -4705,6 +4845,23 @@ public:
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);
     void inject_pending_auto_includes();
+	void tokenize_synthetic_system_include(const std::string &header,
+					       const char *origin_name);
+	void tokenize_embedded_header_text(const std::string &name,
+					 const std::string &text,
+					 bool protocol_visit);
+	void tokenize_posix_header_supplement(const std::string &incfile);
+	bool posix_whole_provider_serves(const std::string &incfile,
+					 const std::string &resolved,
+					 const std::string **text = NULL);
+	bool tokenize_posix_whole_provider(const std::string &incfile,
+					   const std::string &resolved);
+	bool resolved_include_provider_exists(const std::string &path);
+	// The READING twin of the predicate above — same provider order, one
+	// owner. Every consumer that needs a resolved include's BYTES goes
+	// through it, so none can see a header the others cannot.
+	bool read_resolved_include(const std::string &path, std::string &text);
+	std::string detect_include_guard(const std::string &file_path);
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);
@@ -4722,7 +4879,7 @@ public:
 				 const std::string &display_name = "__madc_runtime_eval_expression",
 				 const madc::value *context = NULL);
 
-    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false);
+    Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false, bool builtin_registration=false, const std::string &emit_symbol=std::string());
 
     // manage compound nesting
     void pushCompound();
@@ -4936,6 +5093,10 @@ public:
     // a token-collecting caller can re-emit the full operator-function-id).
     void delimStepStream(TokenBase *t, DelimDepth &d,
 			 std::vector<TokenBase *> *extra = NULL);
+    // Block-scope hoist discriminator (task #57 / gcc parity): with the stream
+    // INSIDE a function declarator's parameter list, answers whether a BODY
+    // follows the declarator. Pure lookahead — every token is pushed back.
+    bool function_declarator_has_body();
     // Constant-expression evaluator (recursive descent over the token stream).
     // Each rung consumes from the stream via nextToken()/peekToken() and folds
     // an integer-constant-expression — used for array dimensions, bit-field
@@ -5246,6 +5407,9 @@ public:
     Variable *find_namespace_member_in_scope_chain(const std::string &ns_name,
 						   const std::string &member_name);
     std::string resolve_namespace_name_in_scope(const std::string &name);
+    // `<class-in-scope>::name` when that names a registered pseudo-namespace —
+    // how a CLASS-nested enum's relative `Tag::Value` spelling resolves.
+    std::string resolve_class_scoped_ns(const std::string &name);
     std::string active_cpp_lookup_namespace();
     // static_assert: parse the statement form (folds the constant condition,
     // throws with the message on failure), consume the deferred form inside an
@@ -5488,6 +5652,16 @@ public:
     TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
 						   TokenBase *owner_tb,
 						   bool committed_type_context = false);
+    // Fold a class-qualified NESTED-TYPE chain onto a type token that was just
+    // consumed, when `::` follows: `Outer::Inner`, `ios_base::Init`. Returns
+    // the nested type and consumes the chain, or NULL (consuming nothing) when
+    // the chain is not a nested type, so callers keep their existing paths and
+    // diagnostics. Every declaration position must agree on this — a struct
+    // MEMBER declared `Outer::flags m;` is the same construct as a local, and
+    // the member site not folding it is what stopped <iomanip> dead on
+    // `ios_base::fmtflags _M_mask;`.
+    DataDef *fold_class_qualified_nested_type(DataDef *base_type,
+					      TokenBase *type_tok);
     TokenDataType *resolve_member_chain_or_type(TokenDataType *type_tok,
 						TokenBase *tb,
 						bool consume_class_member_chain);

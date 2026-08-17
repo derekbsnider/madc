@@ -5,6 +5,7 @@
 #include "libmadc/value.h"
 
 #include <string>
+#include <stdint.h>
 
 namespace madc {
 
@@ -30,7 +31,7 @@ public:
 	bool ok() const;
 	const char *last_error() const;
 
-	long read(void *buffer, long capacity);
+	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);
 	// value-carrier twins (slice V1): the line/payload lands as a
@@ -38,7 +39,7 @@ public:
 	bool readline(value &out);
 	bool readall(value &out);
 	bool write(const char *text);
-	bool write(const char *buffer, long size);
+	bool write(const char *buffer, int64_t size);
 	bool write(std::string &text);
 	bool write(value &text);
 	bool close_write();

@@ -177,14 +177,20 @@ cat > "$D/cpp.mad" <<'EOF'
 int main() { std::string s = "hi"; std::cout << s << std::endl; return 0; }
 EOF
 
-LEDGER_ARGS=()
-while read -r src; do
-	LEDGER_ARGS+=("--freeze-ledger=$src")
-done < <(grep -vE '^[[:space:]]*(#|$)' "$LEDGER_LIST")
-if [ ${#LEDGER_ARGS[@]} -eq 0 ]; then
-	echo "forest_ledger_gate: $LEDGER_LIST lists no sources"
+if ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh linux "$LEDGER_LIST"); then
+	echo "forest_ledger_gate: could not select ledger sources" >&2
 	exit 1
 fi
+LEDGER_ARGS=()
+while IFS= read -r src; do
+	[ -n "$src" ] || continue
+	LEDGER_ARGS+=("--freeze-ledger=$src")
+done <<<"$LEDGER_SOURCES"
+if [ ${#LEDGER_ARGS[@]} -eq 0 ]; then
+	echo "forest_ledger_gate: $LEDGER_LIST selects no Linux sources"
+	exit 1
+fi
+LEDGER_MODULE_COUNT=${#LEDGER_ARGS[@]}
 
 # --- leg 1: freeze a container carrying the ledger ------------------------
 if run "$MADC" "${LEDGER_ARGS[@]}" --freeze-append="$D/madc.forest" "$D/tu.c" \
@@ -196,14 +202,16 @@ else
 	exit $rc
 fi
 dump=$(run "$MADC" --dump-forest="$D/madc.forest" 2>/dev/null | tr -d '\0')
-if grep -q '^ledger	modules=2	symbols=' <<<"$dump"; then
+LEDGER_SUMMARY_PREFIX=$'ledger\tmodules='"$LEDGER_MODULE_COUNT"$'\tsymbols='
+if grep -Fq "$LEDGER_SUMMARY_PREFIX" <<<"$dump"; then
 	pass "--dump-forest reports the ledger"
 else
 	fail "--dump-forest reports the ledger"
 	grep -a '^ledger' <<<"$dump" | head -3
 fi
 for src in "${LEDGER_ARGS[@]}"; do
-	if grep -q "^ledgermod	${src#--freeze-ledger=}	" <<<"$dump"; then
+	LEDGER_MODULE_PREFIX=$'ledgermod\t'"${src#--freeze-ledger=}"$'\t'
+	if grep -Fq "$LEDGER_MODULE_PREFIX" <<<"$dump"; then
 		pass "ledger carries ${src#--freeze-ledger=}"
 	else
 		fail "ledger carries ${src#--freeze-ledger=}"

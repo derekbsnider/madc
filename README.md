@@ -204,24 +204,46 @@ tokens. The same representation can execute in-process, render C11, and feed
 object or executable generation. There is no bytecode interpreter or parallel
 second compiler backend.
 
-See [docs/architecture.md](docs/architecture.md) and the pinned
-[madc MIR fork](https://github.com/derekbsnider/mir) for deeper implementation
-details.
+See [docs/architecture.md](docs/architecture.md) for deeper
+implementation details; the MIR/c2mir backend library is maintained
+in-tree at `third_party/mir`.
 
-## Project status
+## Current Release
 
-The current release is **v0.76.0** (2026-08-11) — madc's first public
-macOS release: provenance-clean arm64 + x86_64 tarballs that JIT and
-AOT-compile C and C++ on a header-less Mac, `libmadc_rt` for linking
-emitted C, and the AArch64 indirect-return ABI fix underneath it all.
-See the [changelog](CHANGELOG.md) for what each release added.
-Headline results:
+The current release is **v0.82.0** (2026-08-17) — the three-platform release:
+Linux, macOS and Windows ship together from one tree. The macOS regression that
+blocked it is fixed at its root. A class-nested enum tag was stamped a forest
+type-id but never given a record, so `std::ios_base`'s `event_callback *__fn_`
+could not be rebuilt when a forest was bound, and the fill silently dropped the
+whole class — eleven aggregates in all, because members flatten from bases.
+Without `ios_base` there was no vptr slot, so `__vptr` was never emitted and
+`operator<<` never resolved: a bound darwin `std::cout << "hi"` did not compile.
+Shipping with it: madc's embedded `<stdarg.h>` no longer declares the `v*printf`
+family (under darwin's `_FORTIFY_SOURCE=2` those declarations expanded into
+fortify builtins mid-header and killed every macOS forest pack), three
+previously-silent load-side losses are now measured, and every artifact lane
+builds the binary it validates.
 
-- **1019** integration tests passing, with 0 failures and 0 timeouts —
-  in the live JIT lane AND in the packed-release lane (the suite run
-  against the stripped, forest-packed `bin/madc-release`)
-- **1015/0** in the libc++ lane — the full suite passes under both stdlib
-  flavors (behavior parity, zero failing tests)
+Branch state: v0.82.0 is on `develop` and promoted to `master`, which carried
+v0.76.0 before it. Public binaries are published for all three platforms.
+
+Latest validated results:
+
+- Linux JIT: **1054 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE and OBJ lanes **1021/0**; packed suite **1054/0/0/9**
+- headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
+  Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
+  to serve a standard header from its own frozen corpus
+- macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
+  with v0.77.0; both arches packed at 835 units with the Mach-O release
+  verifier green
+- packed Win64 under persistent Wine green; on genuine Windows 11 all
+  seven battery legs pass, including compiling a C translation unit on a
+  host with no toolchain installed
+- **zero compiler warnings on every build lane**, enforced by `-Werror`
+  (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
+  macOS hosted/cross pairs), with the emitted-code warning ratchet at an
+  all-zero baseline
 - **1614/1685** GCC C torture tests passing, with no remaining standard-C
   failures; the remaining cases are classified GNU extensions
 - working native ELF output, Mach-O object output, multi-file linking, and a
@@ -234,18 +256,30 @@ See [test status](docs/test-status.md) and the
 [libc++ parity history](docs/parity/libcxx-failset.txt) for current results
 and known gaps.
 
+### Recent Releases
+
+- [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;
+  the macOS iostream regression is fixed where the type-id was stamped.
+- [v0.81.0](docs/release-notes/v0.81.0.md) — the Windows lane merges, the
+  headerless lanes land, and C++ list-initialization arrives.
+- [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
+  lands for Win64, and the build stops tolerating warnings.
+- [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
+  failures; exec fixtures, preprocessing, and aggregate layout converge.
+- [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
+  regression window closes and the 1614 baseline is restored.
+
 ## Building from source
 
-madc currently builds against its own pinned MIR fork. The exact compatible
-revision is recorded in [`MIR_COMMIT`](MIR_COMMIT) and [`MIR_VERSION`](MIR_VERSION).
+Everything madc needs from source lives in this repository — MIR (the
+JIT/codegen library, madc's maintained downstream of
+[vnmakarov/mir](https://github.com/vnmakarov/mir)) is included at
+`third_party/mir` and builds automatically. One clone is enough:
 
 ```bash
-# Build the pinned MIR fork.
-git clone -b develop https://github.com/derekbsnider/mir /workspace/mir
-git -C /workspace/mir checkout "$(cat MIR_COMMIT)"
-make -C /workspace/mir
+git clone https://github.com/derekbsnider/madc.git
+cd madc
 
-# Configure and build madc.
 autoreconf -fi
 ./configure
 make -C src

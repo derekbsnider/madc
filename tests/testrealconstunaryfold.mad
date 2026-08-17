@@ -1,0 +1,8 @@
+#include <stdint.h>
+#include <stdio.h>
+
+int main()
+{
+	printf("%u\n", (uint32_t)(float)~0U);
+	return 0;
+}

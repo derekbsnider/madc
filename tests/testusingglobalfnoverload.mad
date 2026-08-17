@@ -1,0 +1,31 @@
+// [namespace.udecl]: `using ::fn` adds the global function to the
+// destination namespace's overload set.  A template placeholder mirrored
+// into the inline namespace's parent must not keep winning qualified calls.
+//
+// Oracle: g++ and clang++ -O0 both print `pick=9` and call the unmangled
+// C-linkage symbol `madc_global_pick`.
+#include <stdio.h>
+
+extern "C" int madc_global_pick(int value)
+{
+	return value + 1;
+}
+
+namespace imported {
+inline namespace v1 {
+template <typename Iter, typename Value>
+Iter madc_global_pick(Iter first, Iter last, const Value &value);
+}
+}
+
+namespace imported {
+inline namespace v1 {
+using ::madc_global_pick;
+}
+}
+
+int main()
+{
+	printf("pick=%d\n", imported::madc_global_pick(8));
+	return 0;
+}

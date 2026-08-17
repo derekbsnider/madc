@@ -1,0 +1,41 @@
+// The <dlfcn.h> API contract, named so it is portable across all three
+// targets: no library filename appears anywhere (that is what makes
+// testdlopen/testdlcall structurally POSIX-only — they hardcode libc.so.6,
+// an ELF soname).
+//
+//   dlopen(NULL)                    -> a usable handle to the main program
+//   dlsym(RTLD_DEFAULT, "getenv")   -> non-NULL; getenv is in every process
+//                                      (libc on POSIX, ucrtbase.dll on win64)
+//   dlsym of a bogus name           -> NULL, and the failure is reportable
+//   dlerror()                       -> returns the error ONCE, then NULL
+//   dlclose(handle)                 -> 0
+//
+// On win64 this exercises include/madc/posix/dlfcn.h + src/rt/rt_posix_dl.c,
+// where mingw-w64 ships no dlfcn.h at all and posix/dlfcn.h is served as the
+// WHOLE provider rather than as a supplement.
+//
+// Oracle: gcc and clang on Linux (-ldl where the platform needs it) print the
+// same five lines.
+
+#include <dlfcn.h>
+#include <stdio.h>
+
+int main()
+{
+	void *self = dlopen(NULL, RTLD_LAZY);
+	printf("self %d\n", self != 0);
+
+	void *known = dlsym(RTLD_DEFAULT, "getenv");
+	printf("known %d\n", known != 0);
+
+	void *bogus = dlsym(RTLD_DEFAULT, "madc_no_such_symbol_exists");
+	printf("bogus %d\n", bogus == 0);
+
+	// The failed lookup must be reportable exactly once.
+	char *first = dlerror();
+	char *second = dlerror();
+	printf("err %d %d\n", first != 0, second == 0);
+
+	printf("close %d\n", dlclose(self) == 0);
+	return 0;
+}

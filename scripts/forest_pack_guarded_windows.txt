@@ -1,0 +1,9 @@
+# forest_pack_guarded_windows.txt — raw-source roots whose include edges are
+# hidden from the default-standard Windows pack by __cplusplus guards.
+# Paths are relative to the staged libstdc++ include root owned by src/Makefile.
+bits/ranges_cmp.h
+bits/iterator_concepts.h
+numbers
+bits/max_size_type.h
+bits/ranges_base.h
+bits/ranges_util.h

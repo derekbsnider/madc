@@ -1,0 +1,42 @@
+// #if/#elif condition capture must apply translation-phase-3 comment
+// replacement BEFORE the expression evaluates. A trailing comment reached
+// the string evaluator as `/ * garbage` and the condition silently read
+// FALSE, dropping the guarded declarations — mingw's wchar.h/stdlib.h
+// guard wcstold/strtold/llabs with exactly `#if !defined __NO_ISOCEXT
+// /* in libmingwex.a */` (win64 run-burndown defect #3's second root).
+// The `using ::name` probes fail the parse if a declaration was dropped.
+// Oracle: g++ and clang++ accept every shape here; expected output all-ok.
+#define FOO 1 /* define-body comment */
+#if !defined __NEVER_DEFINED_A /* paren-less defined, block comment */
+int pa(void);
+#endif
+#if !defined(__NEVER_DEFINED_B) /* parenthesized defined, block comment */
+int pb(void);
+#endif
+#if defined __NEVER_DEFINED_C /* comment on a false condition */
+#else
+int pc(void);
+#endif
+#ifdef __NEVER_DEFINED_D /* comment after #ifdef name */
+#else
+int pd(void);
+#endif
+#if FOO == 1 // line comment
+int pe(void);
+#endif
+#if !defined __NEVER_DEFINED_E /* block comment spanning
+   physical lines */ && !defined __NEVER_DEFINED_F
+int pf(void);
+#endif
+#if FOO == '/' /* slash inside a char literal is not a comment */
+#else
+int pg(void);
+#endif
+namespace q1 { using ::pa; }
+namespace q2 { using ::pb; }
+namespace q3 { using ::pc; }
+namespace q4 { using ::pd; }
+namespace q5 { using ::pe; }
+namespace q6 { using ::pf; }
+namespace q7 { using ::pg; }
+int main() { int z = FOO; puti(z); printstr("all-ok\n"); return 0; }

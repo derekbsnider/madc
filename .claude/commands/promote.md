@@ -40,14 +40,10 @@ Merges develop into master, tags the release, and pushes.
      `dist/` back, then
      `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm dist/SHA256SUMS`
 
-5. **Promote the MIR fork in lockstep** (`/workspace/mir` — branch
-   correspondence: the fork's `master` tracks madc's `master`):
-   - Verify the fork's `develop` is pushed and `MIR_COMMIT` points into it
-   - Switch the fork to `master`, merge `develop` (expected fast-forward;
-     if not, STOP and ask the user)
-   - Push the fork's master and tags
-   - Switch the fork back to `develop`
+   (MIR needs nothing separate: it lives in-tree at `third_party/mir`,
+   so the madc tag versions it — subtree migration 2026-08-11. The
+   macOS tarballs, when the release ships them, ride the same upload.)
 
-6. **Switch back to develop**
+5. **Switch back to develop**
 
-7. **Report**: Print confirmation with version number, tag, fork state, and GitHub URL
+6. **Report**: Print confirmation with version number, tag, and GitHub URL

@@ -7,7 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
-#include <dlfcn.h>
+#include "madc_dl.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -65,7 +65,7 @@ static void *const cir_runtime_anchor[] = {
 // madc_mir_backend.cpp. Needed once a translated program calls a runtime
 // symbol (e.g. the puti/printstr builtins -> madc_puti/madc_printstr).
 static void *cir_test_import_resolver(const char *name) {
-	return dlsym(RTLD_DEFAULT, name);
+	return madcdl_sym_default(name);
 }
 
 extern "C" bool cir_test_bool_true(void) {

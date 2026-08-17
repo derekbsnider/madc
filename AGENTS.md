@@ -159,21 +159,21 @@ working on storage/federation code or any shared surface that may affect it.
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 
-Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
-fork** (libmir + c2mir) at `/workspace/mir` —
-[github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
-**`develop`** (pinned at the commit in the repo-root `MIR_COMMIT` file — the
-single source of truth for the pin), **not** upstream
-MIR (it carries native C99 `_Complex`, `__attribute__((cleanup))`, the
-scope-depth auto-local layout fix, the struct/union statement-expression
-copy-out fix, ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support,
-and the SysV-varargs / `_Complex` / `_Alignas`
-ABI fixes the CIR backend depends on). The fork's `develop` tracks madc's
-`develop` and its `master` tracks madc's `master`. The fork is released as
-`<upstream-base>-madc.<madc-version>` (e.g. `1.0-madc.0.38.0`): the
-repo-root `MIR_VERSION` file declares the fork release madc depends on,
-and each madc release that ships fork changes cuts the matching annotated
-`v<MIR_VERSION>` tag on the fork (see `.claude/rules/build.md`).
+Build requires `clang++` (or `g++`) with C++11 support. **MIR (libmir +
+c2mir) lives IN this repository at `third_party/mir`** — a subtree import
+of the former fork, maintained as ordinary madc source (edit + commit it
+like any file; no pin, no lockstep, no separate release). It is NOT stock
+upstream MIR: it carries native C99 `_Complex`,
+`__attribute__((cleanup))`, the scope-depth auto-local layout fix, the
+struct/union statement-expression copy-out fix, ≤16-byte SIMD/vector
+(`vector_size`/`ext_vector_type`) support, the Mach-O executable writer,
+and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
+depends on. `make -C src` builds libmir + c2m itself, into
+`obj/mir/<variant>` (never inside the subtree). `vnmakarov/mir` is the
+true upstream; `github.com/derekbsnider/mir` is the historical former
+downstream and the transport for upstream PR branches only (see
+`.claude/rules/build.md` and
+`docs/plans/mir-into-madc-repo-2026-08-11.md`).
 
 ## Architecture
 
@@ -197,7 +197,8 @@ Execution flow: `madc.cpp` → lexer → parser → CIR builder (`cir_node`)
 ## Backend note
 
 asmjit (the original x86-64 JIT) was removed. CIR → c2mir → MIR is the
-sole backend; the MIR library (libmir + c2mir) lives at `/workspace/mir`.
+sole backend; the MIR library (libmir + c2mir) is in-tree at
+`third_party/mir`.
 
 ## Testing
 
@@ -327,7 +328,7 @@ that fails any of these is not merged.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, MIR fork pin discipline         |
+| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
 | [testing-fulltest.md](.claude/rules/testing-fulltest.md) |  5 | `make -C src fulltest` after every change      |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |

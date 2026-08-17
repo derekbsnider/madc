@@ -1,0 +1,1 @@
+DWARF-in-COFF/PE carriage not yet implemented — mir-pe refuses -g loudly on both the .o and image writers (the Mach-O writers' posture); the win64 -g JIT lane covers this test.

@@ -1610,7 +1610,9 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_BYTES == 32);
         CHECK(MADC_TYPEID_OBJECT == 33);
         CHECK(MADC_TYPEID_BUILTIN_VA_LIST == 34);
-        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 34);
+        CHECK(MADC_TYPEID_PLATFORM_LONG == 35);
+        CHECK(MADC_TYPEID_PLATFORM_ULONG == 36);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 36);
         CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
         CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
         CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
@@ -1651,6 +1653,45 @@ TEST_SUITE("type table (typeid) identity layer") {
             CHECK(va->type_id == MADC_TYPEID_BUILTIN_VA_LIST);
             CHECK(va->size == 24);
         }
+        // Platform long/ulong (task #46b): target-shaped accessors. On LP64
+        // they ARE ddINT64/ddUINT64 (slots 10/15) and the pinned slots 35/36
+        // resolve NULL — stamping them would steal the i64 slots. On LLP64
+        // they are the distinct 4-byte int-ranked dds named for the mangler.
+        {
+            struct ModelGuard {
+                TargetDataModel saved;
+                ModelGuard() : saved(madc_target_data_model) {}
+                ~ModelGuard() { madc_target_data_model = saved; }
+            } guard;
+            madc_target_data_model = TargetDataModel::LP64;
+            CHECK(dd_platform_long() == &ddINT64);
+            CHECK(dd_platform_ulong() == &ddUINT64);
+            CHECK(dd_platform_wchar() == &ddINT32);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == (DataDef *)NULL);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == (DataDef *)NULL);
+            madc_target_data_model = TargetDataModel::LLP64;
+            DataDef *pl = dd_platform_long();
+            DataDef *pu = dd_platform_ulong();
+            REQUIRE(pl != (DataDef *)NULL);
+            REQUIRE(pu != (DataDef *)NULL);
+            CHECK(pl != &ddINT64);
+            CHECK(pu != &ddUINT64);
+            CHECK(pl->size == 4);
+            CHECK(pu->size == 4);
+            CHECK(pl->name == "long");
+            CHECK(pu->name == "unsigned long");
+            CHECK(pl->is_integer());
+            CHECK(pu->is_integer());
+            CHECK(!pl->is_unsigned());
+            CHECK(pu->is_unsigned());
+            // subclass typeid exempts them from the scalar desugar — the
+            // NAME ("long" -> 'l') stays authoritative in mangled symbols
+            CHECK(pl->mangle_scalar_spelling() == "");
+            CHECK(pu->mangle_scalar_spelling() == "");
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == pl);
+            CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == pu);
+            CHECK(dd_platform_wchar() == &ddUINT16);
+        }
         // reserved-but-unbacked slots resolve NULL until their P0 slice lands
         CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
         // dynamic value kinds have no compiler DataDef
@@ -1659,6 +1700,118 @@ TEST_SUITE("type table (typeid) identity layer") {
         // out-of-segment queries resolve NULL
         CHECK(madc_primitive_for_slot(MADC_TYPEID_INVALID) == (DataDef *)NULL);
         CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);
+    }
+
+    TEST_CASE("target bit-field ABI selects SysV sharing or Microsoft allocation units") {
+        struct BitFieldABIGuard {
+            TargetBitFieldABI saved;
+            BitFieldABIGuard() : saved(madc_target_bitfield_abi) {}
+            ~BitFieldABIGuard() { madc_target_bitfield_abi = saved; }
+        } guard;
+
+        madc_target_bitfield_abi = TargetBitFieldABI::SystemV;
+        DataDefSTRUCT sysv("sysv_bits", 0);
+        sysv.addBitField("small", ddBOOL, 1);
+        sysv.addBitField("wide", ddUINT32, 5);
+        sysv.finalize();
+        REQUIRE(sysv.member_bitfields.size() == 2);
+        CHECK(sysv.member_access.size() == sysv.members.size());
+        CHECK(sysv.size == 4);
+        CHECK(sysv.member_bitfields[0].storage_offset == 0);
+        CHECK(sysv.member_bitfields[1].storage_offset == 0);
+        CHECK(sysv.member_bitfields[1].bit_offset == 1);
+
+        madc_target_bitfield_abi = TargetBitFieldABI::Microsoft;
+        DataDefSTRUCT ms("ms_bits", 0);
+        ms.addBitField("small", ddBOOL, 1);
+        ms.addBitField("wide", ddUINT32, 5);
+        ms.finalize();
+        REQUIRE(ms.member_bitfields.size() == 2);
+        CHECK(ms.member_access.size() == ms.members.size());
+        CHECK(ms.size == 8);
+        CHECK(ms.member_bitfields[0].storage_offset == 0);
+        CHECK(ms.member_bitfields[1].storage_offset == 4);
+        CHECK(ms.member_bitfields[1].bit_offset == 0);
+
+        DataDefSTRUCT same_size("ms_same_size", 0);
+        same_size.addBitField("u", ddUINT32, 1);
+        same_size.addBitField("s", ddINT32, 1);
+        same_size.finalize();
+        CHECK(same_size.size == 4);
+        CHECK(same_size.member_bitfields[1].storage_offset == 0);
+        CHECK(same_size.member_bitfields[1].bit_offset == 1);
+
+        DataDefSTRUCT packed("ms_packed", 0);
+        packed.pack = 1;
+        packed.addBitField("byte", ddUINT8, 1);
+        packed.addBitField("word", ddUINT32, 1);
+        packed.finalize();
+        CHECK(packed.size == 5);
+        CHECK(packed.alignment() == 1);
+        CHECK(packed.member_bitfields[1].storage_offset == 1);
+
+        DataDefSTRUCT ms_union("ms_union_bits", 0);
+        ms_union.union_layout = true;
+        ms_union.addBitField("a", ddUINT32, 3);
+        ms_union.addBitField("b", ddUINT32, 5);
+        ms_union.finalize();
+        REQUIRE(ms_union.member_bitfields.size() == 2);
+        CHECK(ms_union.size == 4);
+        CHECK(ms_union.member_bitfields[0].storage_offset == 0);
+        CHECK(ms_union.member_bitfields[0].bit_offset == 0);
+        CHECK(ms_union.member_bitfields[1].storage_offset == 0);
+        CHECK(ms_union.member_bitfields[1].bit_offset == 0);
+
+        DataDefSTRUCT ms_zero_union("ms_zero_union", 0);
+        ms_zero_union.union_layout = true;
+        ms_zero_union.addMember("c", ddUINT8, 1);
+        ms_zero_union.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_union.finalize();
+        REQUIRE(ms_zero_union.members.size() == 2);
+        CHECK(ms_zero_union.size == 1);
+        CHECK(ms_zero_union.alignment() == 1);
+
+        DataDefSTRUCT ms_zero_after_plain("ms_zero_after_plain", 0);
+        ms_zero_after_plain.addMember("c", ddUINT8, 1);
+        ms_zero_after_plain.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_after_plain.addUnnamedBitField(ddUINT16, 0);
+        ms_zero_after_plain.addMember("d", ddUINT8, 1);
+        ms_zero_after_plain.finalize();
+        REQUIRE(ms_zero_after_plain.members.size() == 4);
+        CHECK(ms_zero_after_plain.member_offsets[3] == 1);
+        CHECK(ms_zero_after_plain.size == 2);
+        CHECK(ms_zero_after_plain.alignment() == 1);
+
+        DataDefSTRUCT ms_zero_after_bits("ms_zero_after_bits", 0);
+        ms_zero_after_bits.addBitField("a", ddUINT8, 1);
+        ms_zero_after_bits.addUnnamedBitField(ddUINT32, 0);
+        ms_zero_after_bits.addBitField("b", ddUINT8, 1);
+        ms_zero_after_bits.finalize();
+        REQUIRE(ms_zero_after_bits.member_bitfields.size() == 3);
+        CHECK(ms_zero_after_bits.member_bitfields[2].storage_offset == 4);
+        CHECK(ms_zero_after_bits.size == 8);
+        CHECK(ms_zero_after_bits.alignment() == 4);
+
+        madc_target_bitfield_abi = TargetBitFieldABI::SystemV;
+        DataDefSTRUCT sysv_zero_after_plain("sysv_zero_after_plain", 0);
+        sysv_zero_after_plain.addMember("c", ddUINT8, 1);
+        sysv_zero_after_plain.addUnnamedBitField(ddUINT32, 0);
+        sysv_zero_after_plain.addMember("d", ddUINT8, 1);
+        sysv_zero_after_plain.finalize();
+        REQUIRE(sysv_zero_after_plain.members.size() == 3);
+        CHECK(sysv_zero_after_plain.member_offsets[2] == 4);
+        CHECK(sysv_zero_after_plain.size == 5);
+        CHECK(sysv_zero_after_plain.alignment() == 1);
+
+        DataDefSTRUCT sysv_union("sysv_union_bits", 0);
+        sysv_union.union_layout = true;
+        sysv_union.addBitField("a", ddUINT32, 3);
+        sysv_union.addBitField("b", ddUINT32, 5);
+        sysv_union.finalize();
+        REQUIRE(sysv_union.member_bitfields.size() == 2);
+        CHECK(sysv_union.member_bitfields[0].bit_offset == 0);
+        CHECK(sysv_union.member_bitfields[1].bit_offset == 0);
+        CHECK(sysv_union.size == 4);
     }
 
     TEST_CASE("project segment: lazy stamp, memoization, round trip") {

@@ -21,6 +21,20 @@ In the packed release binary, common system headers load from the
 frozen forest (pre-parsed state) instead of being re-parsed — same
 semantics, faster.
 
+## Win64 POSIX supplements
+
+The hosted Win64 compiler keeps MinGW's real system headers as the source of
+truth, then applies a small additive POSIX delta when that platform header
+omits a declaration or macro. For example, a delta for `<string.h>` lives at
+`include/madc/posix/string.h`; the real `<string.h>` is always served first.
+Supplements never redefine a platform type or replace a header MinGW ships.
+
+This layer is active only for Win64 and is enabled by default. Pass
+`--no-posix-compat` (or set `madc::compile_options::enable_posix_compat` to
+`false`) to suppress it. The setting is independent of
+`--no-embedded-headers`: that option can retire an embedded system-library
+shim, while a POSIX supplement augments a real header.
+
 ## The embedded set
 
 `include/madc/` bakes a small set of headers into the binary — no
@@ -34,8 +48,9 @@ external files needed at runtime:
   each self-contained (they include `<string>` themselves)
 
 A real header found earlier in the include search path outranks the
-embedded copy of the same name, and `--no-embedded-headers` disables the
-embedded set entirely.
+embedded copy of the same name. `--no-embedded-headers` bypasses embedded
+system-library shims while retaining madc-owned and freestanding compiler
+headers; Win64 POSIX supplements have the separate opt-out described above.
 
 ## Auto-include (madc dialect)
 

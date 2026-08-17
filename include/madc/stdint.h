@@ -16,25 +16,22 @@ typedef int16_t int_least16_t;  typedef uint16_t uint_least16_t;
 typedef int32_t int_least32_t;  typedef uint32_t uint_least32_t;
 typedef int64_t int_least64_t;  typedef uint64_t uint_least64_t;
 
-// Fast types: Darwin defines them as the exact-width types; the glibc model
-// widens 16/32 to the register word. Sizes must match the platform ABI the
-// program links against.
-#if defined(__APPLE__)
-typedef int8_t  int_fast8_t;    typedef uint8_t  uint_fast8_t;
-typedef int16_t int_fast16_t;   typedef uint16_t uint_fast16_t;
-typedef int32_t int_fast32_t;   typedef uint32_t uint_fast32_t;
-typedef int64_t int_fast64_t;   typedef uint64_t uint_fast64_t;
-#else
-typedef int8_t  int_fast8_t;    typedef uint8_t  uint_fast8_t;
-typedef long    int_fast16_t;   typedef unsigned long uint_fast16_t;
-typedef long    int_fast32_t;   typedef unsigned long uint_fast32_t;
-typedef long    int_fast64_t;   typedef unsigned long uint_fast64_t;
-#endif
+// Fast types, intmax, intptr: spelled through the toolchain-seeded
+// __*_TYPE__ macros, which carry each TARGET's model (Darwin's
+// exact-width fast types, glibc's register-word widening, win64's
+// short/int/long-long shapes) — the header's target-neutral-by-
+// construction rule, now for the platform-modeled aliases too. The
+// old hardcoded `long` rows minted 4-byte intmax_t/intptr_t on win64
+// and collided with the real header chain's typedefs.
+typedef __INT_FAST8_TYPE__  int_fast8_t;   typedef __UINT_FAST8_TYPE__  uint_fast8_t;
+typedef __INT_FAST16_TYPE__ int_fast16_t;  typedef __UINT_FAST16_TYPE__ uint_fast16_t;
+typedef __INT_FAST32_TYPE__ int_fast32_t;  typedef __UINT_FAST32_TYPE__ uint_fast32_t;
+typedef __INT_FAST64_TYPE__ int_fast64_t;  typedef __UINT_FAST64_TYPE__ uint_fast64_t;
 
-typedef long intmax_t;
-typedef unsigned long uintmax_t;
-typedef long int intptr_t;
-typedef unsigned long int uintptr_t;
+typedef __INTMAX_TYPE__ intmax_t;
+typedef __UINTMAX_TYPE__ uintmax_t;
+typedef __INTPTR_TYPE__ intptr_t;
+typedef __UINTPTR_TYPE__ uintptr_t;
 
 #define INT8_MIN    (-128)
 #define INT8_MAX    127

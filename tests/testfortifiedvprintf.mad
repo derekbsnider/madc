@@ -1,0 +1,38 @@
+// <stdarg.h> owns the va_* machinery and NOTHING else.
+//
+// Darwin builds its prelude with _FORTIFY_SOURCE=2, which makes the stdio
+// chain define function-like macros over the plain libc names:
+//     #define vsprintf(str,...) __vsprintf_chk_func (str, 0, __VA_ARGS__)
+// madc's embedded <stdarg.h> used to declare `int vsprintf(char *, const char
+// *, va_list);` itself. With that macro live, the declaration expanded
+// mid-header into __builtin___vsprintf_chk (char *, 0, __darwin_obsz(...), ...)
+// and failed to parse — which broke every arm64-macos build that reached the
+// libc++ <vector> chain, reported as an error inside stdarg.h.
+//
+// The header ordering below is darwin's: stdio first (so the macro is live),
+// stdarg second. gcc's and clang's own stdarg.h declare zero stdio functions,
+// so both oracles compile this unchanged.
+#include <stdio.h>
+
+#define vsprintf(str, ...) __madc_test_chk(str, 0, __VA_ARGS__)
+#define vsnprintf(str, len, ...) __madc_test_n_chk(str, len, 0, __VA_ARGS__)
+
+#include <stdarg.h>
+
+int sum_args(int count, ...)
+{
+	va_list ap;
+	va_start(ap, count);
+	int total = 0;
+	for ( int i = 0; i < count; ++i )
+		total += va_arg(ap, int);
+	va_end(ap);
+	return total;
+}
+
+int main()
+{
+	printf("fortified-header-ok\n");
+	printf("varargs %d\n", sum_args(3, 10, 20, 12));
+	return 0;
+}

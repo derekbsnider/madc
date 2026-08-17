@@ -118,7 +118,20 @@ enum : uint32_t
 	// modules, so a -static-libmadc emit merges the needed pieces into the
 	// produced image. OPTIONAL segment: absent = no ledger (the flag then
 	// refuses loudly). See cir_forest_ledger_header. ---
-	SNAP_KIND_CIR_LEDGER           = madc::dis::SNAP_KIND_CONSUMER + 22  // container-global: cir_forest_ledger_header + entries + payload
+	SNAP_KIND_CIR_LEDGER           = madc::dis::SNAP_KIND_CONSUMER + 22, // container-global: cir_forest_ledger_header + entries + payload
+	// --- v40: per-unit EXTERNAL branch dependencies (task #57) — the flat
+	// u32 stream is [name_id, flags, value_id, definer_unit]... with flags
+	// bit0 = defined-at-freeze, bit1 = value_id valid (object-like body),
+	// definer_unit = directory index of the unit that established the
+	// state (0xffffffff = none). Bind eligibility skips deps whose definer
+	// is inside the closure being bound (replay-internal) and compares the
+	// rest against the consumer's live macro tables; a mismatch declines
+	// the whole root bind to live parse (or prunes an already-live unit
+	// via its own guard). ---
+	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
+	// v41: exact source bytes before preprocessing. A config-mismatched
+	// consumer may re-tokenize these without binding producer semantic state.
+	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -533,7 +546,23 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // v6: complete type-table serialization (typeid->full DataDef, swizzle on
 // load) replaces the typeid->name closure + the decl_record/struct_member
 // parallel streams
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 39 };
+// v40: per-unit BRANCH DEPENDENCIES (slot +8; SEGS_PER_UNIT 8 -> 9): the
+// macros a unit's PP conditionals consulted whose state was established
+// OUTSIDE the unit's own top-level include closure at freeze (an earlier
+// sibling's #define — mingw stdlib.h defining errno before errno.h parsed —
+// or an undefined guard). Bind eligibility compares them against the
+// consumer's live macro tables and DECLINES to live parse on mismatch:
+// frozen unit state is order-conditional, and replaying it into a consumer
+// whose environment took the other branch silently loses declarations
+// (the win64 packed lane's errno/stod family, task #57).
+//
+// v41: per-unit RAW SOURCE (slot +9; SEGS_PER_UNIT 9 -> 10). The forest still
+// binds semantic state only on an exact v27 config match; a compiler-less
+// packaged target can instead tokenize the producer's exact header bytes
+// under another --std=/-D/POSIX config. This is source fallback, never a
+// relaxation of LOADED == parsed.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 41 };
+enum : uint32_t { CIR_FOREST_CONFIG_STDLIB_MASK = 0xfffe0000u };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -567,10 +596,10 @@ enum : uint32_t
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
-	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
+	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
-						// +6 pp exports, +7 edges (v2 slots may be
-						// zero-length: module-only freeze)
+						// +6 pp exports, +7 edges, +8 branch deps
+						// +9 raw source (v41; slots may be zero-length)
 };
 
 struct cir_forest_dir_header	// directory payload: header, then units, then lib name ids
@@ -908,6 +937,11 @@ struct cir_forest_unit
 	std::vector<cir_forest_decl_entry> decl_index;
 	std::vector<uint32_t>       pp_events;	// cir_forest_pp_event stream
 	std::vector<uint32_t>       edges;	// directory unit indices, include order
+	// v40: external branch dependencies — [name_id, flags, value_id,
+	// definer_unit] tuples (flags bit0 = defined at freeze, bit1 =
+	// value_id valid; definer_unit 0xffffffff = none).
+	std::vector<uint32_t>       branch_deps;
+	std::vector<uint8_t>        source_payload;	// v41: pre-PP source bytes
 };
 
 // A whole frozen forest in memory (the multi-unit sibling of cir_frozen_blob).
@@ -1411,6 +1445,8 @@ public:
 	bool open_header(const void *image, size_t len,
 			 bool quiet_missing = false);
 	bool complete_open(c2m_ctx_t c2m);
+	bool previous_image_len(size_t &len) const
+		{ return _reader.previous_image_len(len); }
 
 	// Rebind the c2m used to materialize nodes. The parse-time bind forest is
 	// opened with c2m=NULL (it restores only types/PP, never node segments), so
@@ -1476,6 +1512,9 @@ public:
 			     std::vector<cir_forest_decl_entry> &out);
 	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
+	bool unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out);	// v40
+	bool unit_has_source(uint32_t unit) const;	// v41 directory/segment probe
+	bool unit_source(uint32_t unit, std::string &out) const;	// v41 raw source fallback
 	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
 	// MIR module cache: the container's compiled-module blob (raw

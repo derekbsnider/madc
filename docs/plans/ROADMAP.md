@@ -1,5 +1,48 @@
 # madc Roadmap
 
+**✅ THREE-PLATFORM RELEASE (2026-08-17, v0.82.0):** Linux, macOS and
+Windows ship together from one tree, each validated on its own terms, and
+`master` moves off v0.76.0. The macOS regression that blocked it is fixed
+where the defect was, not where it showed: a CLASS-NESTED enum tag was
+STAMPED a forest type-id but never RECORDED — `[basic.scope.class]/1` makes
+such a tag a member, so `TokenENUM::parse` keeps it out of `datatype_map` on
+purpose, and the freeze's enum walk read exactly that map. `std::ios_base`
+carries `event_callback *__fn_`, whose signature takes `ios_base::event`, so
+at bind the fn-ptr could not be rebuilt, `__fn_` would not swizzle, and the
+aggregate fill dropped the whole class SILENTLY. Members flatten from bases,
+so one lost member killed ELEVEN aggregates (the entire iostream family over
+`char`/`wchar_t`/`int32_t`) — hence no vptr slot, no `__vptr`, unresolved
+`operator<<`, and a darwin `cout << "hi"` that would not compile. Shipping
+with it: the embedded `<stdarg.h>` no longer declares the `v*printf` family
+(darwin's `_FORTIFY_SOURCE=2` rewrote them mid-header and killed every macOS
+pack), three previously-silent load-side losses are now MEASURED
+(`materialize fill: DROPPED`, `materialize derived: UNRESOLVED`,
+`forest_restore_decls: SKIPPED`), and every artifact lane builds the binary
+it validates — `headerless-win` had been testing an eight-hour-old PE.
+Gate: `forest_bind_gate` `[nestedenumfn]`, negative-controlled, reproduces
+the darwin defect on Linux. Follow-ups: the pack's tolerated parse errors
+still exit 0 (#63), `madc` has no `--version` flag (#65), the macOS
+headerless cell (#60), and per-unit lazy decompression (#25).
+
+**✅ WINDOWS RELEASE LANE + HEADERLESS LANES + LIST-INIT LANDED
+(2026-08-16, v0.81.0):** the Windows W3–W5 lane merges (PE/COFF writers,
+packed hosted PE, adjacent runtime DLLs, the genuine-Windows battery over
+the WSL channel), the HEADERLESS lanes prove every artifact serves its own
+C++ AND C header surface with no headers on disk (private mount namespace +
+tmpfs over every discovered include root, three-legged negative control) and
+now run WITH the battery instead of by hand, and C++ list-initialization
+lands — madc had none, so `std::vector<int> v{1,2,3}` compiled as
+`v(1,2,3)` and `= {1,2,3}` silently produced a ONE-ELEMENT vector through
+`--emit=c11`. Three defects that shipped in v0.80.0 are fixed: that silent
+vector, a `std::vector<int> e{}` SIGSEGV (`T x{}` is spelled internally as
+`x = x`), and `<iomanip>` being unparseable on its first line of content.
+Task #58 closed IN VIVO on the owner's Windows box. Plans:
+`docs/plans/2026-08-12-windows-release-lane.md`. Follow-ups: class element
+types in a braced list (constructed backing array), braced lists as CALL
+arguments and range-for containers, pointer-to-member-function (the
+remaining half of #61), the macOS headerless cell, and per-unit lazy
+decompression (#25's `-> C-path scale` goal).
+
 **✅ VALUE INTRINSIC V1+V2 LANDED (2026-08-09, v0.75.0):** `madc::value`
 as a first-class script intrinsic — `value` / `var` / `madc::value`
 spellings of the ONE DataDef, `--std=madc`-gated, typedef-lane resolution
@@ -44,13 +87,14 @@ Open Track 5 follow-ups: optional madcdat service providers
 (libcurl-backed HTTP/REST etc.) and migrating suitable eager
 drivers/adapters to native cursors.
 
-Master plan linking all workstreams. Updated 2026-08-09 (v0.75.0 — the
-value intrinsic + value-first `<ns_madc>`; previous: v0.72.0 — the
-script-facing channel surface; v0.71.0 — FLR
-random access S1+S2; v0.70.0 — the
-data-channel core; v0.69.0 — the release-lane restoration +
-script-mode completion; v0.68.0 —
-the libc++ LANE-ZERO release, @429842b4 on feature/libcxx-parity7-claude):
+Master plan linking all workstreams. Updated 2026-08-16 (unreleased Windows
+W3–W5 implementation and full-suite validation complete; v0.80.0 — the POSIX
+target surface lands for Win64, the pre-merge dupaudit catches an
+`__has_include` vs `#include` divergence, a two-day cross-build break is fixed
+and gated, and zero warnings is enforced with `-Werror`; previous:
+v0.79.0 — the Win64 JIT milestone closes at 987/0/55; v0.78.0 — the
+torture window closes; v0.77.0 — MIR moves in-tree; v0.76.0 — the public
+macOS lane):
 🏁 **P2.7 IS COMPLETE.** The `-stdlib=libc++` flavored lane reached an
 EMPTY failing set — full behavior-parity with the default libstdc++
 flavor. At the release HEAD: fulltest **997/0/9skip**, lane
@@ -98,6 +142,104 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 high-level" — the answer is both.**
 
 ## Current State
+
+- **Unreleased Windows W3–W5 close (2026-08-16): implementation and every
+  release-lane gate are green on `feature/win3-pe-coff-codex`.** The stripped
+  MinGW+UCRT PE carries a dual-profile forest, exact target raw-source
+  fallbacks, a complete ledger, and adjacent runtime DLLs; task #57 closes via
+  unit-granular husk decline. The generic stage-once runner executes the full
+  eligible suite through the real Windows 11 PE loader, while the same packed
+  product runs under persistent Wine. Final gates: Linux fulltest
+  **1050/0/0TO/9skip**, warning census **1059/0 warnings**, libc++ JIT
+  **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**, packed Wine
+  **1008/0/0TO/51skip**, genuine Windows **1010/0/0TO/49skip**; PE verifier
+  green. The inherited `std::remove` libc++ regression was fixed generically
+  at `using ::fn` global lookup/overload registration. Remaining lane action:
+  owner decision to merge and ship the Windows artifact; tasks #55, #56, and
+  #58 remain non-blocking follow-ups.
+
+- **v0.80.0 (2026-08-14): the POSIX target surface lands for Win64, and
+  warnings stop being tolerated, at validated code head `63f008ad`.**
+  P1/P2 serve `setenv`/`unsetenv` (over the CRT's `_putenv_s`, not
+  `SetEnvironmentVariableA`), `strndup`, `timeradd`/`timersub`, a
+  lowercase `sleep`, and `<dlfcn.h>` as the first **whole provider** —
+  mingw ships no such header, so madc's `posix/` entry is the header
+  itself. `TargetOS` / `target_windows()` becomes the third
+  target-property owner beside `target_llp64()` and
+  `target_microsoft_bitfields()`. T6 (`dirent`) is deliberately deferred
+  to its own release: mingw ships `dirent.h` and its `readdir` fills
+  mingw's `struct dirent`, so serving `d_type` means owning the header
+  AND `opendir`/`readdir`/`closedir` over `FindFirstFileW`.
+  The pre-merge `/dupaudit` found `__has_include(<dlfcn.h>)` answering 0
+  on Win64 while the include served fine — a silent wrong answer in the
+  canonical portability idiom — now one predicate with two consumers.
+  Separately, `madc_cir.cpp`'s cross arm had been uncompilable since
+  2026-08-12, across a release, because no validation lane builds the
+  `cross-*` modes; that is the mode the macOS artifacts build through,
+  and it is now gated. Zero warnings holds on both surfaces: the
+  emitted-code ratchet is back to an all-zero baseline and `-Werror`
+  covers madc's own TUs. Lanes: fulltest **1040/0/0TO/9skip**, libc++ JIT
+  **1036/0/0TO/13skip**, EXE **1009/0**, OBJ **1009/0**, Wine
+  **998/0/0TO/51skip**, and six build lanes clean at zero warnings.
+  Next: T6 `dirent` as its own release, then Windows W3–W5.
+
+- **v0.79.0 (2026-08-14): Track 6.4's Win64 JIT milestone is closed at
+  validated code head `3d5bd90c`.** The MinGW+UCRT Wine domain moved
+  from **947/30/59skip** at handoff to **987/0/0TO/55skip**; the 55 are
+  25 libc++-flavor, 19 structural Win64/POSIX, 2 Wine-only, and 9 known
+  MIR exclusions. The branch closes review findings T1–T5: `exec://`
+  tests spawn the exact madc artifact instead of external `sort`; the
+  other Wine-only fixtures have real-Windows evidence; MSVC is limited
+  to non-ABI semantics; the remaining review surface is read; and the
+  layout/packing plus macro-expansion duplication audit leaves three
+  consolidated, negative-controlled gates. The deepest final fix makes
+  `DataDefSTRUCT` the one aggregate-layout owner and carries its answer
+  through versioned MC11 records to c2mir and emitted C. Final gates:
+  fulltest **1033/0/0TO/9skip**, libc++ JIT **1029/0/0TO/13skip**,
+  EXE **1004/0**, OBJ **1004/0**, persistent-Wine hosted Win64
+  **987/0/0TO/55skip**. Next, by owner sequence: POSIX target-surface P1
+  leaves + P2 `<dlfcn.h>` on a new branch; then resume Windows W3
+  PE/COFF, W4 groves, and W5 artifacts/battery.
+
+- **v0.78.0 (2026-08-12): the torture window closes (task #41).** The
+  5 standard-C class-(a) regressions from the 2026-07-23→08-11 window
+  are root-caused and fixed — long-double struct alignment 16
+  (`DataDefLDOUBLE::alignment()` override), `__builtin_classify_type`
+  as a real parser builtin (was a macro → 0), anonymous-aggregate
+  inline emission after nested-type class promotion, and nested-brace
+  aggregate recursion in designated inits — each with a
+  gcc+clang-oracled reducer in `tests/`. Torture restored to
+  **1614/1/9/0/61**, byte-identical to the 2026-07-23 baseline; the
+  failset is again exactly the 10 class-(b) items and the **promote
+  gate is met**. Validation: fulltest 1023/0, libcxxjit 1019/0,
+  EXE/OBJ green, release+packed green. The window's fails were
+  UNMASKED by its own correctness work (114b13a8 real long double,
+  6fec105d nested-type scope membership, 8f8f4009 loud aggregate-shape
+  gate) — the #74 unprototyped-call hypothesis was disproven. The
+  **Windows release lane plan** (Track 6.4) is drafted:
+  [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md)
+  (mingw-w64 + libstdc++ + UCRT, Win64 only, full-suite scope,
+  validated natively on the Windows 11 host carrying the build
+  container).
+
+- **v0.77.0 (2026-08-11): MIR lives in-tree — `third_party/mir` as a
+  full-history Git subtree (ADR 0002).** One clone builds everything:
+  `make -C src` builds libmir + c2m into `obj/mir/<variant>` (never
+  inside the subtree; `mirclean`); `MIR_COMMIT`/`MIR_VERSION` and the
+  fork-lockstep release ceremony are retired — the madc commit IS the
+  pin. Import tree-hash-identical to the final pin (fork
+  `v1.0-madc.0.76.0`, tagged `madc-pre-subtree-migration`).
+  `vnmakarov/mir` = upstream (deliberate subtree pulls);
+  `derekbsnider/mir` = frozen historical + upstream-PR transport.
+  Validation: fulltest 1019/0 TWICE (main tree + a mir-less fresh
+  clone), libcxxjit 1015/0, EXE/OBJ 990/0, release+packed green,
+  release-macos + Mach-O gates green, MIR suite 1145 tests green,
+  torture byte-identical to pre-migration, stale-checkout negative
+  control passed. The known-open rider (task #41: 5 torture fails from
+  the 2026-07-23→08-11 window) was RESOLVED in v0.78.0 — all class-(a),
+  all fixed. NEXT PLAN (owner): a **Windows release** (Track 6.4);
+  GitHub-Actions release automation follows once a Windows build works.
+  Plan/record: [mir-into-madc-repo-2026-08-11.md](mir-into-madc-repo-2026-08-11.md).
 
 - **v0.76.0 (2026-08-11): the macOS release lane — madc's first PUBLIC
   darwin release.** Tarballs `madc-0.76.0-macos-{arm64,x86_64}.tar.gz`:
@@ -1649,7 +1791,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port | TBD | Not started | — |
+| 6.4 | Windows port (a working Windows build + release artifacts; GitHub-Actions release automation follows it) | large | **Implementation complete; merge/release is an owner decision** (2026-08-16: verified packed PE, Wine 1008/0, genuine Windows 1010/0) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 

@@ -25,6 +25,12 @@ cd "$(dirname "$0")/.."
 ulimit -t 300 2>/dev/null
 
 BIN=bin/madc
+# v40 (task #57): this gate is the branch-dep environment check's keeper —
+# the redecl tolerance and the three-way prune/inert-bind/decline redesign
+# are in; the check ships default-OFF until the knob-on packed-suite
+# burndown reaches 0 and the #25 latency check passes. Running the whole
+# battery WITH it on keeps the parked mechanism from rotting.
+export MADC_FOREST_ENV_CHECK=1
 if [ ! -x "$BIN" ]; then
     echo "forest_bind_gate: missing $BIN"
     exit 1
@@ -392,6 +398,52 @@ int main()
 }
 EOF
 run_case ptr "v=10 dv=2.5 nv=20 px=3 sz=32"
+
+# --- case: nestedenumfn (task #64) — a CLASS-NESTED enum reached only through a
+#     member's type chain. [basic.scope.class]/1 makes the tag a MEMBER, so a
+#     live parse deliberately keeps it OUT of datatype_map and the namespace
+#     (TokenENUM::parse — it used to leak money_base::part to file scope). The
+#     freeze's enum walk read datatype_map, so a nested tag got NO DK_ENUM record
+#     while forest_serialize_type_id had already stamped it a project id: the
+#     fn-ptr signature's param then pointed at a DK_NONE slot, the fn-ptr never
+#     rebuilt, and pass 2 SILENTLY dropped the whole owning aggregate. That is
+#     std::ios_base's `event_callback *__fn_` — it took the entire iostream
+#     family with it, so a bound darwin (libc++) `cout << "hi"` died on
+#     `struct has no member __vptr`. Members flatten from bases, so one lost
+#     member kills every derived class too.
+#     The `int event` local is the other half of the gate: the tag must still
+#     NOT be visible at file scope after the restore.
+cat > tmp/fbgate_nestedenumfn.h <<'EOF'
+#ifndef FBGATE_NESTEDENUMFN_H
+#define FBGATE_NESTEDENUMFN_H
+class Callbacks {
+public:
+    enum event { erase_event, imbue_event, copyfmt_event };
+    typedef void (*event_callback)(event, Callbacks &, int);
+    int n;
+    event_callback *fn;
+};
+#endif
+EOF
+cat > tmp/fbgate_nestedenumfn_producer.cpp <<'EOF'
+#include <fbgate_nestedenumfn.h>
+int main() { Callbacks c; c.n = 0; c.fn = 0; return c.n; }
+EOF
+cat > tmp/fbgate_nestedenumfn_consumer.cpp <<'EOF'
+#include <fbgate_nestedenumfn.h>
+#include <cstdio>
+int main()
+{
+    int event = 7;			/* the nested tag must NOT leak here */
+    Callbacks c;
+    c.n = 1;
+    c.fn = 0;
+    Callbacks::event e = Callbacks::imbue_event;
+    printf("n=%d e=%d ev=%d sz=%zu\n", c.n, (int)e, event, sizeof(Callbacks));
+    return 0;
+}
+EOF
+run_case nestedenumfn "n=1 e=1 ev=7 sz=16"
 
 # --- case: ns (namespace-qualified type restoration) — a struct defined inside a
 #     user namespace. Before v10 the loaded type registered ONLY in the flat
@@ -1124,5 +1176,303 @@ fi
 rm -f "$sub_snap" "$sub_vlog"
 echo "forest_bind_gate: [subbind] OK — OWNER'S BAR: tests/testsubscript.mad freeze+bind == live == .expect (default arguments restored)"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind grove headers bound (no re-parse), output == live == g++"
+# --- case: redecl — the v40 mixed bind/live redeclaration seam (task #57) ----
+# The wchar.h/stdio.h FILE shape. A shared `#ifndef FBG_T_DEFINED` block lives
+# in BOTH a.h and b.h; c.h re-exports the typedef cstdio-style (`using ::fbgT`).
+# Corpus 1 (sub-block guard MASKED-BIND + tolerance): the freeze parses a.h's
+# copy first, so b.h's frozen unit records "FBG_T_DEFINED defined (definer
+# a.h)". The consumer includes b.h FIRST (dep live-undefined ⇒ root b.h
+# DECLINES and live-parses the block: live struct fbg_T + typedef fbgT), then
+# c.h: a.h's FBG_T_DEFINED mismatch is a guard a.h itself defines, but a.h's
+# file is NOT on the live-tokenized record ⇒ the redesign takes the
+# MASKED-BIND arm: a.h BINDS (never pruned — that would lose its non-shared
+# content; never declined — that cascades) with its own FBG_T_DEFINED define
+# masked at install (the live arm won), restoring struct fbg_T + typedef fbgT
+# twins beside the live copies. The main parse's live decls must TOLERATE the
+# twins (DataDef::denotes_same_type, C11 6.7p3), never throw.
+# Corpus 2 (real include-once guard, genuine live evidence): a.h consults
+# FBG_SPICE (defined at freeze by spice.h, absent live) so root a.h declines
+# and live-parses — its file IS on the live-tokenized record. c.h then binds
+# with a.h pruned on its REAL guard (the honest-evidence prune); same
+# tolerance tail. The pair pins the prune/inert-bind boundary.
+cat > tmp/fbgate_redecl_a.h <<'EOF'
+#ifndef FBG_REDECL_A_H
+#define FBG_REDECL_A_H
+#ifndef FBG_T_DEFINED
+#define FBG_T_DEFINED
+struct fbg_T { int x; int y; };
+typedef struct fbg_T fbgT;
+#endif
+#ifdef FBG_SPICE
+typedef int fbg_spice_seen;
+#endif
+#endif
+EOF
+cat > tmp/fbgate_redecl_b.h <<'EOF'
+#ifndef FBG_REDECL_B_H
+#define FBG_REDECL_B_H
+#ifndef FBG_T_DEFINED
+#define FBG_T_DEFINED
+struct fbg_T { int x; int y; };
+typedef struct fbg_T fbgT;
+#endif
+static int fbg_b_use(fbgT *p) { return p ? p->x : 0; }
+#endif
+EOF
+cat > tmp/fbgate_redecl_c.h <<'EOF'
+#ifndef FBG_REDECL_C_H
+#define FBG_REDECL_C_H
+#include <fbgate_redecl_a.h>
+namespace fbgns { using ::fbgT; }
+#endif
+EOF
+cat > tmp/fbgate_redecl_spice.h <<'EOF'
+#ifndef FBG_REDECL_SPICE_H
+#define FBG_REDECL_SPICE_H
+#define FBG_SPICE 1
+#endif
+EOF
+cat > tmp/fbgate_redecl_producer.cpp <<'EOF'
+#include <fbgate_redecl_c.h>
+#include <fbgate_redecl_b.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_redecl_consumer.cpp <<'EOF'
+#include <fbgate_redecl_b.h>
+#include <fbgate_redecl_c.h>
+#include <cstdio>
+int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", fbg_b_use(&t) + t.y); return 0; }
+EOF
+cat > tmp/fbgate_redecl2_producer.cpp <<'EOF'
+#include <fbgate_redecl_spice.h>
+#include <fbgate_redecl_c.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_redecl2_consumer.cpp <<'EOF'
+#include <fbgate_redecl_a.h>
+#include <fbgate_redecl_c.h>
+#include <cstdio>
+int main() { fbgT t; t.x = 5; t.y = 2; printf("v=%d\n", t.x + t.y); return 0; }
+EOF
+rd_snap="tmp/fbgate_redecl.msnap"
+rd_snap2="tmp/fbgate_redecl2.msnap"
+rd_vlog="tmp/fbgate_redecl_v.log"
+rd_vlog2="tmp/fbgate_redecl2_v.log"
+rd_gcc="tmp/fbgate_redecl_gcc"
+for c in tmp/fbgate_redecl_consumer.cpp tmp/fbgate_redecl2_consumer.cpp; do
+    rd_live=$(timeout 60 "$BIN" "$c" -I tmp 2>/dev/null)
+    [ "$rd_live" = "v=7" ] || fail "[redecl] live-parse of $c gave '$rd_live' != 'v=7'"
+    if command -v g++ >/dev/null 2>&1; then
+        if timeout 120 g++ -I tmp "$c" -o "$rd_gcc" >/dev/null 2>&1; then
+            rd_gcc_out=$("$rd_gcc" 2>/dev/null)
+            [ "$rd_gcc_out" = "v=7" ] || fail "[redecl] g++ output for $c '$rd_gcc_out' != 'v=7'"
+        else
+            fail "[redecl] g++ compile of $c FAILED"
+        fi
+    fi
+done
+timeout 120 "$BIN" --freeze="$rd_snap" tmp/fbgate_redecl_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[redecl] --freeze corpus 1 FAILED"
+timeout 120 "$BIN" --freeze="$rd_snap2" tmp/fbgate_redecl2_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[redecl] --freeze corpus 2 FAILED"
+# Corpus 1: b.h declines; a.h's sub-block-guard mismatch MASKED-BINDS (never
+# pruned, never declined; its own guard define masked); output still exact.
+rd_bind=$(timeout 60 "$BIN" --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp 2>/dev/null)
+[ "$rd_bind" = "v=7" ] || fail "[redecl] corpus-1 bind output '$rd_bind' != 'v=7'"
+timeout 60 "$BIN" -v --forest-bind="$rd_snap" tmp/fbgate_redecl_consumer.cpp -I tmp >"$rd_vlog" 2>&1
+grep -aq "DECLINE root tmp/fbgate_redecl_b.h" "$rd_vlog" \
+    || fail "[redecl] root b.h did NOT decline — the seam was never exercised"
+grep -aq "fbgate_redecl_a.h dep 'FBG_T_DEFINED' self-defined guard, live arm wins" "$rd_vlog" \
+    || fail "[redecl] corpus-1 a.h's sub-block guard did NOT take the masked-bind arm"
+grep -aq "fbgate_redecl_a.h define 'FBG_T_DEFINED' masked at install" "$rd_vlog" \
+    || fail "[redecl] corpus-1 a.h's guard define was NOT masked at install"
+grep -aq "fbgate_redecl_a.h already present" "$rd_vlog" \
+    && fail "[redecl] corpus-1 a.h was PRUNED without live-tokenize evidence (over-claim regressed)"
+grep -aq "DECLINE root tmp/fbgate_redecl_c.h" "$rd_vlog" \
+    && fail "[redecl] corpus-1 root c.h DECLINED — the masked-bind arm did not bind"
+grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog" \
+    || fail "[redecl] corpus-1 c.h did NOT bind"
+grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog" \
+    || fail "[redecl] corpus-1 restored fbgT twin never registered — the collision precondition is gone"
+grep -aq "Identifier already defined" "$rd_vlog" \
+    && fail "[redecl] corpus 1 hit the redeclaration throw (denotes_same_type tolerance regressed)"
+# Corpus 2: real-guard prune fires; the pruned unit's flat re-export suppresses.
+rd_bind2=$(timeout 60 "$BIN" --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp 2>/dev/null)
+[ "$rd_bind2" = "v=7" ] || fail "[redecl] corpus-2 bind output '$rd_bind2' != 'v=7'"
+timeout 60 "$BIN" -v --forest-bind="$rd_snap2" tmp/fbgate_redecl2_consumer.cpp -I tmp >"$rd_vlog2" 2>&1
+grep -aq "DECLINE root tmp/fbgate_redecl_a.h" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 root a.h did NOT decline (FBG_SPICE dep lost?)"
+grep -aq "fbgate_redecl_a.h already present ('FBG_REDECL_A_H' guard live)" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 a.h was NOT pruned on its REAL include-once guard"
+grep -aq "bound to grove unit.*fbgate_redecl_c.h" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 c.h did NOT bind"
+grep -aq "forest_restore_decls: typedef fbgT" "$rd_vlog2" \
+    || fail "[redecl] corpus-2 restored fbgT twin never registered — the collision precondition is gone"
+grep -aq "Identifier already defined" "$rd_vlog2" \
+    && fail "[redecl] corpus 2 hit the redeclaration throw"
+rm -f "$rd_snap" "$rd_snap2" "$rd_gcc" "$rd_vlog" "$rd_vlog2"
+echo "forest_bind_gate: [redecl] OK — masked-bind twin restored + tolerated (denotes_same_type); honest-evidence prune pinned; output == live == g++"
+
+# --- case: husk — unit-granular missing-content recovery (task #57) ----------
+# The mingw stdlib.h -> errno.h shape in miniature. pre.h defines the shared
+# sub-block guard BEFORE first including husk.h, so that frozen unit contains
+# only its file guard: its typedef/value block is absent. root.h later records
+# an edge to that already-included husk beside an independently bindable
+# sibling. On the consumer the shared guard is absent. Binding the frozen husk
+# would silently lose content; declining the WHOLE root throws away the sibling
+# and root too. The only faithful disposition is to bind the root + sibling and
+# live-tokenize just the husk. This recovery is correctness-critical and must
+# work with the broad MADC_FOREST_ENV_CHECK rollout knob both OFF and ON.
+cat > tmp/fbgate_husk_pre.h <<'EOF'
+#ifndef FBG_HUSK_PRE_H
+#define FBG_HUSK_PRE_H
+#define FBG_HUSK_SHARED_GUARD 1
+#include <fbgate_husk.h>
+#endif
+EOF
+cat > tmp/fbgate_husk.h <<'EOF'
+#ifndef FBG_HUSK_H
+#define FBG_HUSK_H
+#ifndef FBG_HUSK_SHARED_GUARD
+#define FBG_HUSK_SHARED_GUARD 1
+typedef int fbg_husk_t;
+#define FBG_HUSK_VALUE 7
+#endif
+#endif
+EOF
+cat > tmp/fbgate_husk_sibling.h <<'EOF'
+#ifndef FBG_HUSK_SIBLING_H
+#define FBG_HUSK_SIBLING_H
+typedef int fbg_husk_sibling_t;
+static int fbg_husk_sibling(void) { return 5; }
+#endif
+EOF
+cat > tmp/fbgate_husk_root.h <<'EOF'
+#ifndef FBG_HUSK_ROOT_H
+#define FBG_HUSK_ROOT_H
+#include <fbgate_husk_sibling.h>
+#include <fbgate_husk.h>
+typedef int fbg_husk_root_t;
+#endif
+EOF
+cat > tmp/fbgate_husk_producer.cpp <<'EOF'
+#include <fbgate_husk_pre.h>
+#include <fbgate_husk_root.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_husk_consumer.cpp <<'EOF'
+#include <fbgate_husk_root.h>
+#include <cstdio>
+int main()
+{
+    fbg_husk_t n = FBG_HUSK_VALUE;
+    fbg_husk_root_t r = 0;
+    fbg_husk_sibling_t s = fbg_husk_sibling();
+    printf("v=%d\n", n + r + s);
+    return 0;
+}
+EOF
+hs_snap="tmp/fbgate_husk.msnap"
+hs_gcc="tmp/fbgate_husk_gcc"
+hs_vlog_off="tmp/fbgate_husk_off_v.log"
+hs_vlog_on="tmp/fbgate_husk_on_v.log"
+hs_exp="v=12"
+hs_live=$(timeout 60 "$BIN" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
+[ "$hs_live" = "$hs_exp" ] || fail "[husk] live-parse output '$hs_live' != '$hs_exp'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ -I tmp tmp/fbgate_husk_consumer.cpp -o "$hs_gcc" >/dev/null 2>&1; then
+	hs_or=$("$hs_gcc" 2>/dev/null)
+	[ "$hs_or" = "$hs_exp" ] || fail "[husk] g++ output '$hs_or' != '$hs_exp'"
+    else
+	fail "[husk] g++ compile FAILED"
+    fi
+fi
+timeout 120 "$BIN" --freeze="$hs_snap" tmp/fbgate_husk_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[husk] --freeze FAILED"
+[ -f "$hs_snap" ] || fail "[husk] --freeze produced no container"
+for hs_knob in 0 1; do
+    if [ "$hs_knob" = 0 ]; then
+	hs_vlog="$hs_vlog_off"
+    else
+	hs_vlog="$hs_vlog_on"
+    fi
+    hs_bind=$(MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp 2>/dev/null)
+    [ "$hs_bind" = "$hs_exp" ] \
+	|| fail "[husk] knob-$hs_knob bind output '$hs_bind' != '$hs_exp'"
+    MADC_FOREST_ENV_CHECK="$hs_knob" timeout 60 "$BIN" -v --forest-bind="$hs_snap" tmp/fbgate_husk_consumer.cpp -I tmp >"$hs_vlog" 2>&1
+    grep -aq "missing-content husk.*fbgate_husk.h.*live-tokenizing" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob did NOT select unit-granular live tokenization"
+    grep -aq "DECLINE root.*fbgate_husk_root.h" "$hs_vlog" \
+	&& fail "[husk] knob-$hs_knob declined the whole root"
+    grep -aq "bound to grove unit.*fbgate_husk_root.h" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob root did NOT bind"
+    grep -aq "forest_restore_decls: typedef fbg_husk_sibling_t" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob sibling decl did NOT restore"
+    grep -aq "forest_restore_decls: typedef fbg_husk_root_t" "$hs_vlog" \
+	|| fail "[husk] knob-$hs_knob root decl did NOT restore"
+    grep -aq "forest_restore_decls: typedef fbg_husk_t" "$hs_vlog" \
+	&& fail "[husk] knob-$hs_knob restored the frozen husk decl instead of using live tokens"
+done
+rm -f "$hs_snap" "$hs_gcc" "$hs_vlog_off" "$hs_vlog_on"
+echo "forest_bind_gate: [husk] OK — only the missing-content unit live-tokenized; root + sibling bound with rollout knob OFF and ON; output == live == g++"
+
+# --- case: silbody — a static-inline header fn passed BY ADDRESS through a
+# bound template (task #57, the mingw strtof/__stoa shape). fbg_strtof is a
+# static __inline__ DEFINITION carrying a BLOCK-SCOPE prototype of its
+# delegate (mingw stdlib.h's exact layout); fbg_stof passes &fbg_strtof as a
+# template call argument. At bind, both ride forest bodies; the arg-ref
+# collector must route the address-referenced sibling through
+# referenced_funcs so its DEFINITION materializes (it is not an extern DECL,
+# so the extern-index lookup alone drops it: "undeclared identifier").
+cat > tmp/fbgate_silbody.h <<'EOF'
+#ifndef FBG_SILBODY_H
+#define FBG_SILBODY_H
+static __inline__ float fbgsb_conv(const char *s, char **e)
+{
+    float fbgsb_delegate(const char *, char **);
+    return fbgsb_delegate(s, e);
+}
+template <typename _TRet, typename _Ret = _TRet>
+_Ret fbgsb_stoa(_TRet (*conv)(const char *, char **), const char *s)
+{
+    char *e = 0;
+    return conv(s, &e);
+}
+inline float fbgsb_stof(const char *s)
+{
+    return fbgsb_stoa(&fbgsb_conv, s);
+}
+#endif
+EOF
+cat > tmp/fbgate_silbody_producer.cpp <<'EOF'
+#include <fbgate_silbody.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_silbody_consumer.cpp <<'EOF'
+#include <fbgate_silbody.h>
+#include <cstdio>
+float fbgsb_delegate(const char *s, char **e) { (void)s; (void)e; return 9.0f; }
+int main() { printf("t=%d\n", (int)fbgsb_stof("2.5")); return 0; }
+EOF
+sb_snap="tmp/fbgate_silbody.msnap"
+sb_gcc="tmp/fbgate_silbody_gcc"
+sb_live=$(timeout 60 "$BIN" tmp/fbgate_silbody_consumer.cpp -I tmp 2>/dev/null)
+[ "$sb_live" = "t=9" ] || fail "[silbody] live-parse output '$sb_live' != 't=9'"
+if command -v g++ >/dev/null 2>&1; then
+    if timeout 120 g++ -I tmp tmp/fbgate_silbody_consumer.cpp -o "$sb_gcc" >/dev/null 2>&1; then
+        sb_or=$("$sb_gcc" 2>/dev/null)
+        [ "$sb_or" = "t=9" ] || fail "[silbody] g++ output '$sb_or' != 't=9'"
+    else
+        fail "[silbody] g++ compile FAILED"
+    fi
+fi
+timeout 120 "$BIN" --freeze="$sb_snap" tmp/fbgate_silbody_producer.cpp -I tmp >/dev/null 2>&1 \
+    || fail "[silbody] --freeze FAILED"
+[ -f "$sb_snap" ] || fail "[silbody] --freeze produced no container"
+sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer.cpp -I tmp 2>/dev/null)
+[ "$sb_bind" = "t=9" ] || fail "[silbody] bind output '$sb_bind' != 't=9' (address-referenced static-inline sibling not materialized?)"
+rm -f "$sb_snap" "$sb_gcc"
+echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
+
+echo "forest_bind_gate: GREEN 25/25 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
 exit 0

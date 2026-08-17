@@ -1,0 +1,25 @@
+// Parenthesized FUNCTION-type typedef without a star — winnt.h:5870:
+//   typedef PVOID (ENCLAVE_TARGET_FUNCTION)(PVOID);
+// Identical to the plain Form-1 spelling `typedef RET NAME(params);`
+// modulo the parens; the Form-2 arm used to demand `*` and threw.
+#include <stdio.h>
+
+typedef int (PARENFN)(int);
+// And the pointer built FROM the function typedef with no parameter list
+// (winnt.h:5871: `typedef ENCLAVE_TARGET_FUNCTION (*PENCLAVE_TARGET_FUNCTION);`)
+// — the base carries the whole signature.
+typedef PARENFN (*PPARENFN);
+
+static int twice(int v)
+{
+    return v * 2;
+}
+
+int main()
+{
+    PARENFN *f = twice;
+    printf("%d\n", f(21));
+    PPARENFN g = twice;
+    printf("%d\n", g(4));
+    return 0;
+}

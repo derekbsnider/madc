@@ -9,8 +9,8 @@
 # Usage:
 #   scripts/remote_build.sh [stage ...]
 # Stages (default: sync build):
-#   sync      rsync madc + mir deltas to the container
-#   build     make MIR libmir.a + configure (once) + make -C src
+#   sync      rsync the madc tree to the container (third_party/mir rides along)
+#   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
 #   exe       bash scripts/run_tests.sh --exe
@@ -22,12 +22,33 @@
 #             per change); EXE/OBJ legs run at session end / pre-merge
 #   release   make -C src release
 #   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
+#   headerless-win  the win64 profile of the lane below (the shipped PE under
+#             wine with every include root masked, so Z: cannot stand in for
+#             the mingw headers). Run it with `wine`, as `headerless` runs
+#             with `packed`
+#   headerless the packed suite with NO headers on disk (private mount
+#             namespace, tmpfs over every system include root). The only lane
+#             that can SEE a forest decline — every other lane has the headers
+#             on disk (or, under wine, through Z:) so live parse silently
+#             rescues one and the run stays green. Carries its own two-sided
+#             negative control; refuses to run if the mask did not bite
+#   win       make -C src hosted-x86-64-windows (the MinGW+UCRT PE the wine
+#             lane tests; the mingw toolchain exists ONLY on the container)
+#   release-win  make -C src release-windows — the stripped, forest-packed PE
+#             that headerless-win runs and the Windows zip ships
+#   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
+#             parameter is load-bearing — see the stage body; without the
+#             persistent server a first run yields rotating phantom failures
+#   warnscan  scripts/warn_scan_lanes.sh — wipe each build mode's object tree
+#             and rebuild it, reporting warnings per lane. The zero-warnings
+#             law needs a CLEAN build per lane: an incremental one compiles
+#             only what it touches, so it reports a different subset each run
 #   release-macos  make -C src release-macos (both hosted darwin arches,
 #             stripped + forest-verified) + package_release_macos.sh
 #             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
-#   battery   fulltest + exe + obj + release + packed (the push gate)
+#   battery   fulltest + exe + obj + release + packed + headerless (the push gate)
 #   shell     print the ssh command and exit
 #
 # Every remote invocation is one ssh call running a generated script, so
@@ -37,7 +58,6 @@ REMOTE="dev@localhost"
 PORT=2299
 SSH="ssh -p $PORT $REMOTE"
 LOCAL_MADC=/workspace/madc
-LOCAL_MIR=/workspace/mir
 
 # ALWAYS keep a full transcript, whether or not the caller redirects.
 #
@@ -69,7 +89,14 @@ fi
 # battery expands IN PLACE (any position — other stages may surround it,
 # e.g. "sync battery libcxxjit"; the old whole-string match silently dropped
 # it to "unknown stage" and the run lost its fulltest leg, 2026-08-10).
-stages=${stages/battery/sync build fulltest exe obj release packed}
+# `headerless` is IN the battery, right after `packed` (it runs the packed
+# binary). It is the only lane that can observe the artifact failing to serve a
+# standard header from its own frozen corpus — every other lane has the headers
+# on disk, so a decline is silently rescued by live parse and the run stays
+# GREEN. Task #58 broke that promise on real Windows and unrelated work fixed it
+# days later, and NO lane noticed either event, because this one was
+# hand-invoked. A lane nobody runs is a lane that does not exist.
+stages=${stages/battery/sync build fulltest exe obj release packed headerless}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
@@ -131,9 +158,9 @@ for stage in $stages; do
 	case "$stage" in
 	sync)
 		echo "=== sync ==="
-		# bin/ obj/ lib/ tmp/ are excluded from the transfer, so the
+		# bin/ obj/ lib/ tmp/ dist/ are excluded from the transfer, so the
 		# directories themselves never arrive — make sure they exist.
-		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp"
+		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp /workspace/madc/dist"
 		# HOST-PROBED generated sources must NEVER cross the tunnel.
 		# They are written by probing the LOCAL compiler ($CXX -E -v for
 		# the include search list and stdlib flavor table, $CXX -dM -E
@@ -147,7 +174,7 @@ for stage in $stages; do
 		# fails to link madc_stdlib_flavors. rsync does not delete
 		# excluded files on the receiver, so the container keeps its own.
 		rsync -az --delete \
-			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ \
+			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
@@ -155,26 +182,14 @@ for stage in $stages; do
 		rc=$?
 		echo "sync madc rc=$rc"
 		note_stage "sync madc" "$rc"
-		# The container builds every MIR artifact; the NAS builds nothing
-		# (owner directive). So push SOURCE only — never build output.
-		# Objects/archives were already excluded; the linked drivers were
-		# not, and on 2026-08-10 an OLD c2m sitting in the NAS tree
-		# replaced the freshly built one and answered for a c2mir that
-		# was not under test (a gate failed against pre-fix behaviour and
-		# read as a real regression). build-*/ are the container's
-		# per-target cross trees, absent here — excluding them also ends
-		# the "cannot delete non-empty directory" spam --delete produced.
-		rsync -az --delete --exclude="*.o" --exclude="*.a" --exclude="*.d" \
-			--exclude="build-*/" \
-			--exclude=c2m --exclude=m2b --exclude=b2m --exclude=b2ctab \
-			--exclude=mir-bin-run --exclude=run-test \
-			-e "ssh -p $PORT" "$LOCAL_MIR/" "$REMOTE:/workspace/mir/"
-		rc=$?
-		echo "sync mir rc=$rc"
-		note_stage "sync mir" "$rc"
+		# MIR rides the madc sync: third_party/mir is ordinary madc source
+		# (subtree migration, docs/plans/mir-into-madc-repo-2026-08-11.md).
+		# The historical stale-c2m trap (2026-08-10: an OLD NAS-built c2m
+		# shadowed the container's and answered for a c2mir not under test)
+		# is closed by construction — every libmir/c2m build product lands
+		# in obj/mir/, and obj/ is excluded from the sync.
 		;;
 	build)
-		run_remote "build mir" "make -C /workspace/mir -j20 libmir.a"
 		run_remote "configure" "cd /workspace/madc; test -f src/config.mk || ./configure"
 		run_remote "build madc" "make -C /workspace/madc/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
@@ -251,7 +266,60 @@ for stage in $stages; do
 		note_stage "pull macos tarballs" "$rc"
 		;;
 	packed)
-		run_remote "packed" "cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		# Build what this lane VALIDATES. Every artifact lane below does
+		# the same: make is idempotent (a no-op when up to date), so the
+		# Makefile's dependencies decide freshness instead of the caller
+		# remembering to put `release` earlier in the stage list. Ordering
+		# is not a guarantee — `headerless-win` validated an EIGHT-HOUR-OLD
+		# madc-release-x86-64-windows.exe and reported 1010/1, a failure
+		# that belonged to a binary the fix under test was never built into.
+		run_remote "packed" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		;;
+	headerless)
+		run_remote "headerless" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; bash scripts/headerless_suite.sh"
+		;;
+	headerless-win)
+		# The win64 profile of the same lane: the shipped PE under wine
+		# with every include root masked, so `Z:` cannot stand in for the
+		# mingw headers the artifact is supposed to be serving itself.
+		# Paired with `wine` the way `headerless` is paired with `packed`.
+		# The profile is an ENV knob; a positional argument is a
+		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
+		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
+		run_remote "headerless-win" "make -C /workspace/madc/src -j20 release-windows; cd /workspace/madc; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		;;
+	release-win)
+		# The stripped, forest-packed PE the Windows zip ships — the
+		# artifact headerless-win and package_release_windows.sh both
+		# consume. It had no stage of its own, so the only way to refresh
+		# it was to remember the make target.
+		run_remote "release-win" "make -C /workspace/madc/src -j20 release-windows"
+		;;
+	win)
+		# The hosted MinGW+UCRT PE. Named for its make target so there is
+		# one spelling to remember, and it lives here because the mingw
+		# toolchain exists ONLY on the container — a toolchain query on the
+		# NAS answers "absent" for things that are installed.
+		run_remote "win build" "make -C /workspace/madc/src -j20 hosted-x86-64-windows"
+		;;
+	wine)
+		# The Win64 DOMAIN suite. Every argument here was re-derived from
+		# docs more than once before it lived in a script:
+		#   wineserver -p      PERSISTENT server. Without it the first run
+		#                      produces rotating phantom failures (a
+		#                      testderefpostincstore that passes on rerun).
+		#   MADC_BIN           the hosted PE, not bin/madc.
+		#   MADC_WRAPPER=wine  how the runner launches a non-native artifact.
+		#   MADC_SKIP_EXT      BOTH domains, so .win64_skip AND .wine64_skip
+		#                      fixtures apply (it is a whitespace-split LIST).
+		#   WINEDEBUG=-all     otherwise wine's chatter buries the summary.
+		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		;;
+	warnscan)
+		# Accepts lane labels: remote_build.sh 'warnscan host win64'
+		# is not expressible through the stage loop, so scan all lanes here
+		# and select with WARN_LANES=... when a subset is wanted.
+		run_remote "warnscan" "cd /workspace/madc; bash scripts/warn_scan_lanes.sh ${WARN_LANES:-}"
 		;;
 	pull)
 		# Bring the container-built binaries back to the NAS: the two

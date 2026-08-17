@@ -1,0 +1,47 @@
+#!/../bin/madc
+// A struct MEMBER whose type is a class-qualified nested type:
+// `Outer::flags m_flags;`. Every other declaration position already folded the
+// `::` chain — locals, globals, parameters, and C++ class bodies all worked —
+// but the data-only struct-body parser consumed the scope name and then met
+// `::` where it wanted the member NAME, rejecting the declaration.
+//
+// That is what stopped <iomanip> dead on its very first line of content,
+//   struct _Resetiosflags { ios_base::fmtflags _M_mask; };
+// which takes std::get_time / std::setw / std::setprecision with it.
+//
+// Oracle: g++ 13 and clang++, both -std=c++17 -> "7 4 1 2 5"
+#include <cstdio>
+
+struct Outer
+{
+	typedef int flags;
+	enum kind { A = 3, B = 4 };
+	struct pair { int a; int b; };
+};
+
+class Scoped
+{
+public:
+	typedef int width;
+};
+
+struct Holder
+{
+	Outer::flags m_flags;
+	Outer::kind  m_kind;
+	Outer::pair  m_pair;
+	Scoped::width m_width;
+};
+
+int main()
+{
+	Holder h;
+	h.m_flags = 7;
+	h.m_kind = Outer::B;
+	h.m_pair.a = 1;
+	h.m_pair.b = 2;
+	h.m_width = 5;
+	printf("%d %d %d %d %d\n", h.m_flags, (int)h.m_kind,
+	       h.m_pair.a, h.m_pair.b, h.m_width);
+	return 0;
+}

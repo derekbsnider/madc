@@ -1,0 +1,65 @@
+#!/../bin/madc
+// C++11 LIST-INITIALIZATION through std::initializer_list ([dcl.init.list]).
+//
+// madc had no notion of it: a braced list on a class type was lowered as a
+// parenthesised ctor-argument list, so `std::vector<int> v{1,2,3}` compiled as
+// `std::vector<int> v(1, 2, 3)` — arg 1 became the SIZE, arg 3 was handed to
+// allocator<int>'s (nonexistent) int ctor, and the program died on an undefined
+// MIR import. The copy form `= {1,2,3}` was worse: only init_list[0] was
+// threaded, selecting vector(size_type) with n == 1, which compiled CLEAN down
+// the --emit=c11 lane and silently produced a one-element vector.
+//
+// `std::vector<int> e{}` was a third defect in the same rule: the empty list
+// fell into the `=` expression path, which cannot parse `{`, and the
+// "wrap a non-assign initializer" arm then built `e = e` — the COPY ctor
+// reading its own uninitialized storage (SIGSEGV in operator new).
+//
+// Oracle (both canon compilers agree, g++ 13 and clang++, -std=c++17):
+//   3 1 2 3 / 2 4 5 / 2 1.5 2.5 / 4 / 3 36 / 0
+#include <initializer_list>
+#include <vector>
+#include <cstdio>
+
+// A user class with an initializer-list constructor: the whole braced list is
+// ONE argument, and the backing array outlives it ([dcl.init.list]/6).
+struct Sum
+{
+	int count;
+	int total;
+	Sum(std::initializer_list<int> l) : count((int)l.size()), total(0)
+	{
+		for (const int *p = l.begin(); p != l.end(); ++p)
+			total += *p;
+	}
+};
+
+int main()
+{
+	// direct-list-initialization
+	std::vector<int> a{1,2,3};
+	printf("%d %d %d %d\n", (int)a.size(), a[0], a[1], a[2]);
+
+	// copy-list-initialization — the WHOLE list, not its first element
+	std::vector<int> b = {4,5};
+	printf("%d %d %d\n", (int)b.size(), b[0], b[1]);
+
+	// a non-int element type: the initializer_list<E> instantiation and its
+	// backing array are both element-typed, never assumed int
+	std::vector<double> d{1.5, 2.5};
+	printf("%d %.1f %.1f\n", (int)d.size(), d[0], d[1]);
+
+	// the declared type IS std::initializer_list: built from the array
+	// directly, with no constructor call ([dcl.init.list]/5)
+	std::initializer_list<int> l = {7,8,9,10};
+	printf("%d\n", (int)l.size());
+
+	// a user initializer-list ctor, reading the list through begin()/end()
+	Sum s{11,12,13};
+	printf("%d %d\n", s.count, s.total);
+
+	// EMPTY braced list on a class with constructors: value-initialization,
+	// which for such a class is its default ctor — not a list, not a copy
+	std::vector<int> e{};
+	printf("%d\n", (int)e.size());
+	return 0;
+}

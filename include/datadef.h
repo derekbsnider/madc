@@ -36,6 +36,50 @@ extern thread_local bool madc_debug_info;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// The TARGET's 64-bit data model (task #46, owner decision 2026-08-13:
+// win64 = the PLATFORM model, LLP64). ONE owner for every "how wide is
+// long / which Itanium letter is size_t on this target" question — never
+// re-test _WIN32 at a consumer. Defaults to the host's model (hosted
+// modes compile for the host); cross-target machinery assigns it.
+// Defined in src/parser.cpp beside the dd globals.
+enum class TargetDataModel { LP64, LLP64 };
+extern TargetDataModel madc_target_data_model;
+inline bool target_llp64()
+{ return madc_target_data_model == TargetDataModel::LLP64; }
+
+// Aggregate bit-field allocation is a target ABI policy, independent of the
+// integer-width model above.  SysV may share storage across differently sized
+// declared types; the Microsoft ABI starts a new allocation unit when the
+// declared storage size changes.  Defined beside the data-model owner.
+enum class TargetBitFieldABI { SystemV, Microsoft };
+extern TargetBitFieldABI madc_target_bitfield_abi;
+inline bool target_microsoft_bitfields()
+{ return madc_target_bitfield_abi == TargetBitFieldABI::Microsoft; }
+
+// The TARGET's OS personality — the third target property, same shape and same
+// rule as the two above: ONE owner for every "is this target the non-POSIX
+// one" question, and never re-test _WIN32 at a consumer. This is what decides
+// whether the POSIX compatibility layer (docs/plans/2026-08-13-posix-target-
+// surface.md) is even eligible, so it must follow the target and not the host.
+// Defined beside the data-model owner.
+enum class TargetOS { Posix, Windows };
+extern TargetOS madc_target_os;
+inline bool target_windows()
+{ return madc_target_os == TargetOS::Windows; }
+
+// The TARGET-shaped C types whose width the data model decides (task #46b).
+// LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
+// shape — unchanged identities. LLP64: `long`/`unsigned long` are the
+// distinct 4-byte DataDefPlatformLONG/ULONG singletons (lazily minted —
+// typeid pins MADC_TYPEID_PLATFORM_LONG/ULONG) and wchar_t is the 2-byte
+// unsigned ddUINT16 shape. Every "how wide is long / wchar_t" site consults
+// these — never a _WIN32 test. Defined in src/parser.cpp beside the dd
+// globals.
+class DataDef;
+DataDef *dd_platform_long();
+DataDef *dd_platform_ulong();
+DataDef *dd_platform_wchar();
+
 // Resolved absolute path of the running executable, empty when unresolvable.
 // The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
 // _NSGetExecutablePath on macOS.
@@ -66,6 +110,14 @@ std::string madc_self_lib_path();
 #define MADC_TARGET_APPLE_P 1
 #else
 #define MADC_TARGET_APPLE_P 0
+#endif
+
+// The native-emit TARGET is Windows/PE (same shape as the Apple predicate:
+// an emit-only cross madc configured for win64, or a madc hosted there).
+#if defined(MADC_CROSS_WINDOWS) || defined(_WIN32)
+#define MADC_TARGET_WINDOWS_P 1
+#else
+#define MADC_TARGET_WINDOWS_P 0
 #endif
 
 class TokenBase;
@@ -187,6 +239,23 @@ public:
     // only write channel.
 private:
     std::string	 canonical_cpp_spelling_;
+    // The despaced, namespace-stripped rendering of the spelling above — the
+    // key StructRegistry's despaced index files this dd under. It is a PURE
+    // function of canonical_cpp_spelling_ (parser.cpp's strip_type_namespace
+    // and despace_spelling read nothing else), so it is derived ONCE and
+    // survives index rebuilds rather than being re-derived per entry on every
+    // rebuild.
+    //
+    // That re-derivation was the whole cost: invalidation is GLOBAL, so one
+    // dd's rewrite bumps canonical_spelling_gen and discards the entire index,
+    // and the resweep then rebuilds ~1,600 keys from scratch — three string
+    // temporaries apiece. tests/testsubscript.mad: 16 rebuilds, 22,649 sweeps,
+    // ~50M instructions in despace_spelling alone, re-deriving keys that had
+    // not changed. Caching here is orthogonal to WHEN the index rebuilds; it
+    // makes each rebuild cheap. parser.cpp owns the derivation (both helpers
+    // are static there); this is storage plus its invalidation.
+    std::string	 despaced_canonical_;
+    bool	 despaced_canonical_valid_;
 public:
     // Despaced-canonical index invalidation counter (defined in parser.cpp).
     static uint64_t canonical_spelling_gen;
@@ -195,11 +264,25 @@ public:
     // top-up sees it fresh).
     bool	 canonical_swept;
     const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    // Derived-key cache. Only StructRegistry's sweep fills it; every reader
+    // must treat !has_despaced_canonical() as "derive it yourself", never as
+    // "this dd has no key".
+    bool has_despaced_canonical() const { return despaced_canonical_valid_; }
+    const std::string &despaced_canonical() const { return despaced_canonical_; }
+    void set_despaced_canonical(const std::string &s)
+    {
+	despaced_canonical_ = s;
+	despaced_canonical_valid_ = true;
+    }
     void set_canonical_spelling(const std::string &s)
     {
-	if ( canonical_swept && canonical_cpp_spelling_ != s )
+	if ( canonical_cpp_spelling_ == s )
+	    return;			// not a rewrite: index and cache stand
+	if ( canonical_swept )
 	    ++canonical_spelling_gen;
 	canonical_cpp_spelling_ = s;
+	despaced_canonical_.clear();	// derived from the spelling that just died
+	despaced_canonical_valid_ = false;
     }
     // Marshalling-boundary predicate (libmadc value kinds): true when this
     // type is the class that carries madc::value's TEXT kind, i.e. a value
@@ -209,6 +292,26 @@ public:
     // knowledge (scripts/check-no-std-hardcoding.sh); callers ask the
     // marshalling question and never name the type.
     bool marshals_value_text() const;
+    // LANGUAGE predicate, not a library one: true when this type is an
+    // instantiation of std::initializer_list. [dcl.init.list]/5 gives a
+    // braced-init-list the type std::initializer_list<E> BY NAME and makes the
+    // program ill-formed when <initializer_list> was not included, so a
+    // conforming front end has to look this one type up by name — g++ does
+    // exactly this in cp/tree.cc (is_std_init_list). That is the ONLY reason a
+    // type-identity predicate is allowed here at all: the retire-std-hardcoding
+    // campaign forbids asking "is this type the standard string / stream /
+    // container", because production code can ask a generic question instead.
+    // There is no generic question that gives a braced list its type. It still
+    // lives in src/madc_mangle.cpp with the rest of the std:: symbol knowledge;
+    // scripts/check-no-std-hardcoding.sh gates any second copy.
+    bool is_std_initializer_list() const;
+    // This type with any top-level `const` peeled off (a DataDefCONST wrapper
+    // returns its base_type; everything else returns itself). Defined in
+    // parser.cpp — DataDefCONST is not complete at this point in the header.
+    // The CIR builder's unqualified_type() helpers delegate here, so the rule
+    // has one home.
+    DataDef *unqualified();
+    const DataDef *unqualified() const;
     // Itanium desugaring for a PLAIN SCALAR (a typedef alias dd like
     // std::streamoff, or a builtin scalar dd): the builtin C spelling for
     // its DataType ("long", "unsigned int", ...), or "" when this dd is not
@@ -240,15 +343,21 @@ public:
     bool	 speculative_class_capture;
     DataDef()
 	: _type(0), name(), size(0), canonical_cpp_spelling_(),
+	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
     DataDef(std::string n, size_t s, DataType d)
 	: _type((uint32_t)d), name(n), size(s), canonical_cpp_spelling_(),
+	  despaced_canonical_(), despaced_canonical_valid_(false),
 	  canonical_swept(false), type_id(0), scalar_alias_of(NULL),
 	  speculative_class_capture(madc_class_pattern_capture_active) {}
+    // The derived key travels WITH the spelling it was derived from: copying
+    // one without the other is what would make the cache lie.
     DataDef(const DataDef &other)
 	: _type(other._type), name(other.name), size(other.size),
 	  canonical_cpp_spelling_(other.canonical_cpp_spelling_),
+	  despaced_canonical_(other.despaced_canonical_),
+	  despaced_canonical_valid_(other.despaced_canonical_valid_),
 	  canonical_swept(other.canonical_swept), type_id(other.type_id),
 	  scalar_alias_of(other.scalar_alias_of),
 	  speculative_class_capture(other.speculative_class_capture
@@ -261,6 +370,8 @@ public:
 	    name = other.name;
 	    size = other.size;
 	    canonical_cpp_spelling_ = other.canonical_cpp_spelling_;
+	    despaced_canonical_ = other.despaced_canonical_;
+	    despaced_canonical_valid_ = other.despaced_canonical_valid_;
 	    canonical_swept = other.canonical_swept;
 	    type_id = other.type_id;
 	    scalar_alias_of = other.scalar_alias_of;
@@ -276,6 +387,14 @@ public:
 	    return true;
 
 	return false;
+    }
+    // C11 6.7p3 type identity across DataDef INSTANCES: true when this and
+    // d denote the same file-scope C type. Instance equality is the base
+    // answer; aggregates override — the forest-restore/live seam holds a
+    // restored twin and a live re-declaration of ONE tag as two objects.
+    virtual bool denotes_same_type(DataDef &d)
+    {
+	return &d == this;
     }
     virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
@@ -406,6 +525,35 @@ public:
     {
 	return rawtype() == DataType::dtARRAY && !is_pointer();
     }
+    // GCC's __builtin_classify_type typeclass for an EXPRESSION of this type,
+    // after the C default argument promotions the builtin applies (values from
+    // gcc typeclass.h): void=0, integer=1 (bool/char/short/enum promote to
+    // int), pointer=5 (array/function-designator decay happens at the call
+    // site), real=8 (float promotes to double), complex=9, record=12,
+    // union=13 (DataDefSTRUCT override), no_type_class=-1 for anything with
+    // no GCC class (SIMD vectors, template params). References classify as
+    // their referred type (DataDefREF override) — there are no expressions
+    // of reference type.
+    virtual int gcc_type_class() const
+    {
+	if ( is_simd() )
+	    return -1;
+	if ( is_pointer() )
+	    return 5;
+	if ( is_function() )
+	    return 5;	// a function designator decays to a function pointer
+	if ( is_complex() )
+	    return 9;
+	if ( is_real() )
+	    return 8;
+	if ( is_integer() )
+	    return 1;
+	if ( is_struct() || is_object() )
+	    return 12;
+	if ( rawtype() == DataType::dtVOID )
+	    return 0;
+	return -1;
+    }
     virtual bool has_ostream()
     {
 	return false;
@@ -439,6 +587,33 @@ public:
 	return RefType::rtValue;
     }
 };
+
+// Apply an integer cast to the parse/CIR constant-fold carrier.  This is the
+// one truncation owner for typed integer constants: the parser's constant
+// expression spine and CIR-only folds must agree on target width and
+// signedness (in particular when the host is LLP64).
+inline madc_wide_int apply_integer_cast_value(DataDef *cast_dd,
+					       madc_wide_int val,
+					       bool force_unsigned = false)
+{
+    if ( !cast_dd )
+	return val;
+    bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
+    int sz = cast_dd->size;
+    if ( sz == 1 )
+	return is_unsigned ? (madc_wide_int)(uint8_t)val : (madc_wide_int)(int8_t)val;
+    if ( sz == 2 )
+	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
+    if ( sz == 4 )
+	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
+    // 64-bit reads stay sign-carried in legacy folds, but an explicit
+    // unsigned cast zero-extends into the 128-bit carrier.
+    if ( sz == 8 )
+	return is_unsigned ? (madc_wide_int)(uint64_t)val
+			   : (madc_wide_int)(int64_t)val;
+    // A 16-byte cast is the identity on the 128-bit carrier.
+    return val;
+}
 
 // Member descriptor for struct/union/class layouts. Models a
 // std::pair<name, type> (the .first/.second names are kept for
@@ -533,6 +708,11 @@ public:
     // DataDefSTRUCT. The class head's `final` is consumed so the body parses;
     // this records it so __is_final can answer.
     bool struct_is_final = false;
+    // v40 (task #57): this instance was MATERIALIZED from a frozen forest
+    // arena, not live-parsed. The mixed bind/live seam reads it: a live
+    // re-definition of a restored complete class reuses this instance
+    // (skip-and-reuse) instead of throwing "already defined".
+    bool forest_restored = false;
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
@@ -542,6 +722,12 @@ public:
 				// being a real, emittable, referenceable C tag.
     bool reverse_scalar_storage;
     bool bitfield_active;
+    // The immediately preceding declaration was a NONZERO bit-field.  This is
+    // distinct from bitfield_active: a field that exactly fills its allocation
+    // unit ends the active run, but under the Microsoft ABI a following
+    // zero-width field still has the documented alignment effect.  A
+    // zero-width field itself must not arm a second zero-width field.
+    bool previous_was_nonzero_bitfield;
     AggregateDefinitionOrigin definition_origin;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
@@ -567,6 +753,22 @@ public:
 	return dd.size;
     }
 
+    // Same C TYPE across distinct instances (see DataDef::denotes_same_type):
+    // same aggregate kind, same non-synthetic tag, both complete, identical
+    // size and member count.
+    virtual bool denotes_same_type(DataDef &d)
+    {
+	if ( &d == this )
+	    return true;
+	DataDefSTRUCT *o = dynamic_cast<DataDefSTRUCT *>(&d);
+	return o && !is_anonymous && !o->is_anonymous
+	    && union_layout == o->union_layout
+	    && is_complete && o->is_complete
+	    && size == o->size
+	    && members.size() == o->members.size()
+	    && name == o->name;
+    }
+
     // The VIRTUAL base hosting the named member (member_vbase provenance), or
     // NULL for an own / non-virtual-base member.
     DataDefCLASS *member_vbase_host(const std::string &mname) const
@@ -582,13 +784,13 @@ public:
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false),
+	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
-	  reverse_scalar_storage(false), bitfield_active(false),
+	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
@@ -604,6 +806,8 @@ public:
     }
     virtual BaseType basetype() const { return BaseType::btStruct; }
     virtual size_t alignment() const { return max_align ? max_align : 1; }
+    // record_type_class vs union_type_class (classes inherit: a class is a record)
+    virtual int gcc_type_class() const { return union_layout ? 13 : 12; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void setReverseScalarStorage(bool reverse)
     {
@@ -640,6 +844,7 @@ public:
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
+	previous_was_nonzero_bitfield = false;
 	size_t fa = field_align(dd);
 	if ( union_layout )
 	{
@@ -690,31 +895,56 @@ public:
 	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
-	// SysV/gcc bitfield packing (task #76): a bitfield is placed at the
-	// next free BIT; the only constraint is that it must not cross a
-	// sizeof(T)-aligned window of its OWN declared type. Consecutive
-	// bitfields of DIFFERENT types share bytes when they fit —
-	// {_Bool b:1; unsigned x:5;} is ONE shared window (gcc/c2mir: 4
-	// bytes), not two allocation units (was 8). The recorded
-	// (storage_offset, storage_size, bit_offset) triple still names a
-	// naturally-aligned window of the declared type containing the
-	// field, so access consumers load/store exactly as before.
-	size_t next_bit = bitfield_active
-	    ? bitfield_unit_offset * 8 + bitfield_next_bit
-	    : size * 8;
-	if ( next_bit % storage_bits + width > storage_bits )
-	    next_bit = align_up(next_bit, storage_bits);
-	size_t window_offset = next_bit / storage_bits * storage_size;
-	size_t fa = field_align(dd);
-	if ( fa > max_align ) max_align = fa;
-	bitfield_active = true;
-	bitfield_unit_offset = window_offset;
-	bitfield_unit_size = storage_size;
-	bitfield_next_bit = next_bit - window_offset * 8;
+	// Every union member starts a fresh allocation run at byte/bit zero.
+	// Retaining the previous member's cursor makes semantic metadata disagree
+	// with both C compilers and c2mir even though c2mir's independent union
+	// reset can hide the error at runtime.
+	if ( union_layout )
+	    endBitFieldRun();
+	if ( target_microsoft_bitfields() )
+	{
+	    // Microsoft allocation units: adjacent fields share only while their
+	    // declared storage sizes agree and the next field still fits.  The
+	    // whole declared unit contributes to sizeof, with #pragma pack merely
+	    // capping its alignment (MinGW/MS ABI oracle).
+	    if ( !bitfield_active
+	      || bitfield_unit_size != storage_size
+	      || bitfield_next_bit + width > storage_bits )
+	    {
+		size_t fa = field_align(dd);
+		size_t start = union_layout ? 0 : align_up(size, fa);
+		if ( fa > max_align ) max_align = fa;
+		bitfield_active = true;
+		bitfield_unit_offset = start;
+		bitfield_unit_size = storage_size;
+		bitfield_next_bit = 0;
+		if ( size < start + storage_size )
+		    size = start + storage_size;
+	    }
+	}
+	else
+	{
+	    // SysV/gcc bitfield packing (task #76): a bitfield is placed at the
+	    // next free BIT; the only constraint is that it must not cross a
+	    // sizeof(T)-aligned window of its OWN declared type. Consecutive
+	    // bitfields of DIFFERENT types share bytes when they fit.
+	    size_t next_bit = union_layout ? 0 : bitfield_active
+		? bitfield_unit_offset * 8 + bitfield_next_bit
+		: size * 8;
+	    if ( next_bit % storage_bits + width > storage_bits )
+		next_bit = align_up(next_bit, storage_bits);
+	    size_t window_offset = next_bit / storage_bits * storage_size;
+	    size_t fa = field_align(dd);
+	    if ( fa > max_align ) max_align = fa;
+	    bitfield_active = true;
+	    bitfield_unit_offset = window_offset;
+	    bitfield_unit_size = storage_size;
+	    bitfield_next_bit = next_bit - window_offset * 8;
+	}
 
 	BitFieldInfo info;
 	info.is_bitfield = true;
-	info.storage_offset = window_offset;
+	info.storage_offset = bitfield_unit_offset;
 	info.storage_size = storage_size;
 	info.bit_offset = reverse_scalar_storage
 	    ? (storage_bits - bitfield_next_bit - width)
@@ -728,15 +958,25 @@ public:
 	    || alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
-	// Only the bytes the fields actually occupy count toward size —
-	// finalize() and the next plain member's align_up supply padding.
-	size_t end_byte = window_offset + (bitfield_next_bit + 7) / 8;
+	// SysV counts only bytes actually occupied; Microsoft already reserved
+	// the whole allocation unit above.  Taking the maximum serves both.
+	size_t end_byte = info.storage_offset + (bitfield_next_bit + 7) / 8;
 	if ( end_byte > size )
 	    size = end_byte;
+	if ( target_microsoft_bitfields() && bitfield_next_bit >= storage_bits )
+	    endBitFieldRun();
+	if ( union_layout )
+	    endBitFieldRun();
+	previous_was_nonzero_bitfield = true;
 	return info;
     }
     void addBitField(std::string n, DataDef &dd, size_t width)
     {
+	if ( n.empty() )
+	{
+	    addUnnamedBitField(dd, width);
+	    return;
+	}
 	BitFieldInfo info = allocateBitField(dd, width);
 	members.emplace_back(n, &dd);
 	member_counts.push_back(1);
@@ -745,23 +985,55 @@ public:
 	member_bitfields.push_back(info);
 	member_dims.push_back(std::vector<carray_dim_t>());
 	member_count_exprs.push_back(NULL);
+	member_access.push_back(0);
     }
     void addUnnamedBitField(DataDef &dd, size_t width)
     {
+	BitFieldInfo info;
 	if ( width == 0 )
 	{
 	    endBitFieldRun();
-	    size_t fa = field_align(dd);
-	    size = align_up(size, fa);
-	    if ( fa > max_align ) max_align = fa;
-	    return;
+	    info.is_bitfield = true;
+	    info.storage_size = bitfield_storage_size(dd);
+	    info.bit_width = 0;
+	    info.is_unsigned = dd.is_unsigned();
+	    info.reverse_storage = reverse_scalar_storage;
+	    if ( !union_layout )
+	    {
+		size_t fa = field_align(dd);
+		// SysV uses the zero-width field's declared type as a boundary for
+		// the NEXT member, but it does not raise the aggregate alignment.
+		// Microsoft applies the boundary/alignment only when the preceding
+		// declaration was itself a bit-field (MinGW/MS layout oracle).
+		if ( !target_microsoft_bitfields() || previous_was_nonzero_bitfield )
+		{
+		    size = align_up(size, fa);
+		    if ( target_microsoft_bitfields() && fa > max_align )
+			max_align = fa;
+		}
+		info.storage_offset = size;
+	    }
 	}
-	(void)allocateBitField(dd, width);
+	else
+	    info = allocateBitField(dd, width);
+	// Unnamed bit-fields are real ordered C members.  Keeping them in the
+	// member stream lets MC11-IR preserve `:N` and `:0` instead of relying on
+	// a later named field's already-folded offset to remember an absent node.
+	members.emplace_back(std::string(), &dd);
+	member_counts.push_back(1);
+	member_array_flags.push_back(false);
+	member_offsets.push_back(info.storage_offset);
+	member_bitfields.push_back(info);
+	member_dims.push_back(std::vector<carray_dim_t>());
+	member_count_exprs.push_back(NULL);
+	member_access.push_back(0);
+	previous_was_nonzero_bitfield = width != 0;
     }
     void addAnonymousAggregate(const DataDefSTRUCT &agg)
     {
 	has_anon_aggregate = true;
 	endBitFieldRun();
+	previous_was_nonzero_bitfield = false;
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);
 	size_t first_member = members.size();
@@ -1041,6 +1313,18 @@ public:
     // Purely data-driven (declaration_only/emit_symbol aggregation) — never a
     // namespace or class-name test. Defined in parser.cpp (needs FuncDef).
     bool is_externally_defined() const;
+    // The class's INITIALIZER-LIST constructors ([dcl.init.list]/4): those
+    // callable with exactly one user argument whose type is
+    // std::initializer_list<E> (by value or by reference). Existence and
+    // membership only — choosing among several by element type is overload
+    // resolution's job, in the CIR builder. Both phases read this one list:
+    // the parser must NOT deduce a member-template ctor from a braced list
+    // that will be consumed AS a list (`vector<double> d{1.5,2.5}` deduced
+    // the iterator-range ctor from two doubles), and the builder ranks the
+    // candidates. Defined in parser.cpp (needs FuncDef), like
+    // is_externally_defined() above.
+    void collect_initializer_list_ctors(std::vector<Variable *> &out) const;
+    bool has_initializer_list_ctor() const;
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
     // Subobject offset of `target` within this class (direct/transitive base), or
@@ -1192,8 +1476,22 @@ class DataDefUINT16:    public DataDef { public: DataDefUINT16():  DataDef("uint
 class DataDefUINT24:    public DataDef { public: DataDefUINT24():  DataDef("uint24_t", 3, DataType::dtUINT24) {} };
 class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint32_t", 4, DataType::dtUINT32) {} };
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
+// Platform `long` / `unsigned long` on the LLP64 target (task #46b, owner
+// decision 2026-08-13: win64 = the PLATFORM type model): 4-byte, int-ranked
+// (dtINT32/dtUINT32 — every width/codegen consumer treats them as 32-bit,
+// which IS the model), but a DISTINCT type identity whose NAME feeds the
+// Itanium mangler ('l'/'m' — the subclass typeid exempts them from the
+// mangle_scalar_spelling desugar exactly like the other builtin dds).
+// NEVER instantiate directly: dd_platform_long()/dd_platform_ulong()
+// (parser.cpp) are the one owner — on LP64 they return ddINT64/ddUINT64
+// (long IS int64 there) and these classes go uninstantiated.
+class DataDefPlatformLONG:  public DataDef { public:
+	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
+class DataDefPlatformULONG: public DataDef { public:
+	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
-// caps simple types at 8, which is correct for every other scalar).
+// caps simple types at 8, which is correct for every other scalar except
+// long double — see DataDefLDOUBLE below).
 class DataDefINT128:    public DataDef { public:
 	DataDefINT128():  DataDef("__int128", 16, DataType::dtINT128) {}
 	virtual size_t alignment() const { return 16; } };
@@ -1208,7 +1506,14 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
 // off the varargs stack and printed nan, and the mangler emitted Itanium `e`
 // for a value passed as a double.
-class DataDefLDOUBLE:   public DataDef { public: DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {} };
+class DataDefLDOUBLE:   public DataDef { public:
+	DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {}
+	// SysV x86-64 alignment IS 16 as the comment above has always said —
+	// but the base alignment() caps simple types at 8, so without this
+	// override struct layout placed long double members on 8-byte
+	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
+	// out as 32 — gcc/clang: 32).
+	virtual size_t alignment() const { return 16; } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1259,6 +1564,10 @@ public:
     // encodings" disagreement. This override makes the two agree. rawtype()
     // is inherited from DataDefPTR (base_type->rawtype()), unchanged.)
     virtual RefType reftype() const { return RefType::rtReference; }
+    // An expression never has reference type — it is an lvalue of the
+    // referred type, so classify as that (never DataDefPTR's pointer class).
+    virtual int gcc_type_class() const
+    { return base_type ? base_type->gcc_type_class() : -1; }
 };
 
 // `void&` — the reference-slot placeholder for MADC_TYPEID_VOID_REF. IS-A
@@ -1300,6 +1609,7 @@ public:
     virtual bool is_simd() const { return base_type->is_simd(); }
     virtual bool is_unsigned() const { return base_type->is_unsigned(); }
     virtual size_t alignment() const { return base_type->alignment(); }
+    virtual int gcc_type_class() const { return base_type->gcc_type_class(); }
 };
 
 // is_cstr() — declared in DataDef above; defined here where DataDefPTR /

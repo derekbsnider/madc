@@ -5,11 +5,18 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#ifdef _WIN32
+#include <winsock2.h>	// must precede any windows.h (winsock1 collision)
+#include <ws2tcpip.h>	// getaddrinfo/gai_strerror/socklen_t
+#include <afunix.h>	// AF_UNIX sockaddr_un (Windows 10 1803+)
+#include <limits.h>
+#else
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 
 namespace madc {
 namespace {
@@ -20,9 +27,82 @@ enum class SocketSemantics
 	datagram
 };
 
+// The socket stack: one process-wide WSAStartup on Windows (never a
+// WSACleanup — channels can outlive any scoped init; the OS reclaims at
+// exit), constant-true on POSIX so call sites stay platform-free.
+bool socket_stack_ready()
+{
+#ifdef _WIN32
+	static const bool ready = []() {
+		WSADATA data;
+		return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+	}();
+	return ready;
+#else
+	return true;
+#endif
+}
+
+// The per-call socket error code: winsock reports through
+// WSAGetLastError(), never errno.
+int socket_last_error()
+{
+#ifdef _WIN32
+	return WSAGetLastError();
+#else
+	return errno;
+#endif
+}
+
+// Compose a channel error from a harvested socket error code. WSA codes
+// are system error codes — FormatMessage (win_error_text) knows them.
+void set_socket_error_code(error *err, const std::string &operation,
+			   const std::string &what, int code)
+{
+#ifdef _WIN32
+	detail::set_channel_error(err, operation,
+				  what + ": " + detail::win_error_text(
+						(unsigned long)code));
+#else
+	errno = code;
+	detail::set_channel_errno(err, operation, what);
+#endif
+}
+
+void close_socket_fd(int &fd)
+{
+	if ( fd >= 0 )
+#ifdef _WIN32
+		::closesocket((SOCKET)fd);
+#else
+		::close(fd);
+#endif
+	fd = -1;
+}
+
+void socket_shutdown(int fd, bool read_side)
+{
+#ifdef _WIN32
+	::shutdown((SOCKET)fd, read_side ? SD_RECEIVE : SD_SEND);
+#else
+	::shutdown(fd, read_side ? SHUT_RD : SHUT_WR);
+#endif
+}
+
 int create_socket(int domain, int socket_type, int protocol)
 {
-#ifdef SOCK_CLOEXEC
+#ifdef _WIN32
+	// SOCKET is a kernel handle, and kernel handles are guaranteed to
+	// fit in 32 bits (the documented WOW64 interop rule), so the
+	// channel's int fd model holds — INVALID_SOCKET truncates to -1.
+	// Sockets are born inheritable: clear the flag (the SOCK_CLOEXEC
+	// analogue; sockets are not CRT fds, so the fd owner cannot).
+	SOCKET s = ::socket(domain, socket_type, protocol);
+	if ( s == INVALID_SOCKET )
+		return -1;
+	SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+	return (int)s;
+#elif defined(SOCK_CLOEXEC)
 	// Atomic close-on-exec at creation: no window for a concurrent
 	// fork+exec in a threaded embedding host to leak the fd.
 	return ::socket(domain, socket_type | SOCK_CLOEXEC, protocol);
@@ -124,6 +204,12 @@ int connect_network_socket(const DataSource &source, int socket_type,
 	std::string service;
 	if ( !split_network_endpoint(source, host, service, err) )
 		return -1;
+	if ( !socket_stack_ready() )
+	{
+		detail::set_channel_error(err, "socket channel open failed",
+					  "socket stack initialization failed");
+		return -1;
+	}
 
 	addrinfo hints;
 	std::memset(&hints, 0, sizeof(hints));
@@ -147,21 +233,19 @@ int connect_network_socket(const DataSource &source, int socket_type,
 				   address->ai_protocol);
 		if ( fd < 0 )
 		{
-			last_error = errno;
+			last_error = socket_last_error();
 			continue;
 		}
-		if ( ::connect(fd, address->ai_addr, address->ai_addrlen) == 0 )
+		if ( ::connect(fd, address->ai_addr,
+			       (socklen_t)address->ai_addrlen) == 0 )
 			break;
-		last_error = errno;
-		::close(fd);
-		fd = -1;
+		last_error = socket_last_error();
+		close_socket_fd(fd);
 	}
 	::freeaddrinfo(addresses);
 	if ( fd < 0 )
-	{
-		errno = last_error;
-		detail::set_channel_errno(err, "socket connect failed", source.authority());
-	}
+		set_socket_error_code(err, "socket connect failed",
+				      source.authority(), last_error);
 	return fd;
 }
 
@@ -172,6 +256,13 @@ int connect_unix_socket(const DataSource &source, error *err)
 	{
 		detail::set_channel_error(err, "unix socket connect failed",
 					  source.uri() + ": missing socket path");
+		return -1;
+	}
+
+	if ( !socket_stack_ready() )
+	{
+		detail::set_channel_error(err, "unix socket connect failed",
+					  "socket stack initialization failed");
 		return -1;
 	}
 
@@ -189,17 +280,17 @@ int connect_unix_socket(const DataSource &source, error *err)
 	int fd = create_socket(AF_UNIX, SOCK_STREAM, 0);
 	if ( fd < 0 )
 	{
-		detail::set_channel_errno(err, "unix socket creation failed", path);
+		set_socket_error_code(err, "unix socket creation failed", path,
+				      socket_last_error());
 		return -1;
 	}
 	socklen_t address_size = static_cast<socklen_t>(
 		offsetof(sockaddr_un, sun_path) + path.size() + 1);
 	if ( ::connect(fd, reinterpret_cast<sockaddr *>(&address), address_size) != 0 )
 	{
-		int number = errno;
-		::close(fd);
-		errno = number;
-		detail::set_channel_errno(err, "unix socket connect failed", path);
+		int number = socket_last_error();
+		close_socket_fd(fd);
+		set_socket_error_code(err, "unix socket connect failed", path, number);
 		return -1;
 	}
 	return fd;
@@ -245,13 +336,20 @@ public:
 						  "channel is not readable");
 			return false;
 		}
+#ifdef _WIN32
+		// winsock recv takes char* + int; no EINTR on Windows.
+		int chunk = capacity > (std::size_t)INT_MAX ? INT_MAX : (int)capacity;
+		ssize_t result = ::recv((SOCKET)fd_, (char *)buffer, chunk, 0);
+#else
 		ssize_t result;
 		do
 			result = ::recv(fd_, buffer, capacity, 0);
 		while ( result < 0 && errno == EINTR );
+#endif
 		if ( result < 0 )
 		{
-			detail::set_channel_errno(err, scheme_ + " read failed", endpoint_);
+			set_socket_error_code(err, scheme_ + " read failed",
+					      endpoint_, socket_last_error());
 			return false;
 		}
 		bytes_read = static_cast<std::size_t>(result);
@@ -271,10 +369,18 @@ public:
 						  "channel is not writable");
 			return false;
 		}
+#ifdef _WIN32
+		// A SOCKET is not a CRT fd — the stream write is ::send here
+		// (and Windows has no SIGPIPE to suppress).
+		int chunk = size > (std::size_t)INT_MAX ? INT_MAX : (int)size;
+		ssize_t result = ::send((SOCKET)fd_, (const char *)buffer, chunk, 0);
+#else
 		ssize_t result = detail::write_fd_without_sigpipe(fd_, buffer, size);
+#endif
 		if ( result < 0 )
 		{
-			detail::set_channel_errno(err, scheme_ + " write failed", endpoint_);
+			set_socket_error_code(err, scheme_ + " write failed",
+					      endpoint_, socket_last_error());
 			return false;
 		}
 		bytes_written = static_cast<std::size_t>(result);
@@ -286,7 +392,7 @@ public:
 		if ( fd_ < 0 || !capabilities_.read )
 			return;
 		if ( semantics_ == SocketSemantics::byte_stream )
-			::shutdown(fd_, SHUT_RD);
+			socket_shutdown(fd_, /*read_side=*/true);
 		capabilities_.read = false;
 		if ( !capabilities_.write )
 			close();
@@ -297,7 +403,7 @@ public:
 		if ( fd_ < 0 || !capabilities_.write )
 			return;
 		if ( semantics_ == SocketSemantics::byte_stream )
-			::shutdown(fd_, SHUT_WR);
+			socket_shutdown(fd_, /*read_side=*/false);
 		capabilities_.write = false;
 		if ( !capabilities_.read )
 			close();
@@ -305,9 +411,7 @@ public:
 
 	void close() override
 	{
-		if ( fd_ >= 0 )
-			::close(fd_);
-		fd_ = -1;
+		close_socket_fd(fd_);
 		capabilities_.read = false;
 		capabilities_.write = false;
 	}
@@ -330,6 +434,24 @@ protected:
 			return false;
 		}
 
+#ifdef _WIN32
+		// winsock has no recvmsg/MSG_TRUNC: a datagram larger than the
+		// buffer fails the recv with WSAEMSGSIZE — the same contract,
+		// reported through a different door.
+		int chunk = capacity > (std::size_t)INT_MAX ? INT_MAX : (int)capacity;
+		int result = ::recv((SOCKET)fd_, (char *)buffer, chunk, 0);
+		if ( result < 0 )
+		{
+			int code = socket_last_error();
+			if ( code == WSAEMSGSIZE )
+				detail::set_channel_error(err, scheme_ + " receive failed",
+							  endpoint_ + ": datagram exceeds receive buffer");
+			else
+				set_socket_error_code(err, scheme_ + " receive failed",
+						      endpoint_, code);
+			return false;
+		}
+#else
 		iovec vector;
 		vector.iov_base = buffer;
 		vector.iov_len = capacity;
@@ -343,7 +465,8 @@ protected:
 		while ( result < 0 && errno == EINTR );
 		if ( result < 0 )
 		{
-			detail::set_channel_errno(err, scheme_ + " receive failed", endpoint_);
+			set_socket_error_code(err, scheme_ + " receive failed",
+					      endpoint_, socket_last_error());
 			return false;
 		}
 		if ( (message.msg_flags & MSG_TRUNC) != 0 )
@@ -352,6 +475,7 @@ protected:
 						  endpoint_ + ": datagram exceeds receive buffer");
 			return false;
 		}
+#endif
 		bytes_read = static_cast<std::size_t>(result);
 		return true;
 	}
@@ -373,13 +497,21 @@ protected:
 			return false;
 		}
 
+#ifdef _WIN32
+		// A >INT_MAX "datagram" cannot exist on the wire; the capped
+		// send makes the existing partial-send check fail it loudly.
+		int chunk = size > (std::size_t)INT_MAX ? INT_MAX : (int)size;
+		ssize_t result = ::send((SOCKET)fd_, (const char *)buffer, chunk, 0);
+#else
 		ssize_t result;
 		do
 			result = ::send(fd_, buffer, size, 0);
 		while ( result < 0 && errno == EINTR );
+#endif
 		if ( result < 0 )
 		{
-			detail::set_channel_errno(err, scheme_ + " send failed", endpoint_);
+			set_socket_error_code(err, scheme_ + " send failed",
+					      endpoint_, socket_last_error());
 			return false;
 		}
 		if ( static_cast<std::size_t>(result) != size )

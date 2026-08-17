@@ -37,14 +37,23 @@
 # Every test now compiles warning-free on the flag-off (production) path. This
 # baseline file holds NO per-test entries, so ANY test that emits even one c2mir
 # compile warning fails `scripts/warn_census.sh --check` (and `make -C src
+# fulltest`). Keep it that way — fix the warning, never add an entry here.
 #
 # 2026-08-01 REGRESSION FROM ZERO, deliberate and tracked: testcoutstr_libcxx
-# (the 28-test-bucket gate, .flags-pinned to -stdlib=libc++) is the FIRST test
+# (the 28-test-bucket gate, .flags-pinned to -stdlib=libc++) was the FIRST test
 # to compile flavored libc++ header bodies under the ratchet's eye, and those
-# instantiated ctor bodies carry a pointer-fidelity warning triple (task #92:
+# instantiated ctor bodies carried a pointer-fidelity warning triple (task #92:
 # nullptr-as-integer family — unique_ptr.h:124 int-to-pointer assign, an
 # int-to-pointer argument, compressed_pair.h:44 return-expr). Baselined at 3 so
-# the gate itself can ship; LOWER this entry in the SAME commit that fixes each
-# class, per this file's contract. The rest of the suite stays at zero.
-# fulltest`). Keep it that way — fix the warning, never add an entry here.
-3 testcoutstr_libcxx.mad
+# the gate itself could ship.
+#
+# 2026-08-14 BACK TO ZERO: that triple is gone. testcoutstr_libcxx compiles
+# under -stdlib=libc++ with an EMPTY .warnings file, and NO .warnings file in
+# the whole census is non-empty. Entry removed; the all-zero end state holds
+# again for the entire suite.
+#
+# READ THIS BEFORE ADDING AN ENTRY: the ratchet only forbids INCREASES, so a
+# stale-high entry passes GREEN while hiding that its goal was already met.
+# `tests improved : 1` had been printing on every fulltest run since the class
+# was fixed, and nobody lowered the entry — the gate said GREEN the whole time.
+# When that line is non-zero, LOWER the entry. That is what this contract means.

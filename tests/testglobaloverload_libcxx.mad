@@ -1,0 +1,28 @@
+// Global-scope C++ overload family over an extern-C first declaration
+// (the system-header arm of Gap global_scope_plain_fn_overloading):
+// libc++'s <stdlib.h>/<math.h> declare global inline abs overloads AFTER
+// glibc's extern "C" int abs(int). The untracked FIRST declaration must
+// join the "::abs" overload set when tracking starts, or a call that
+// parse-binds the source name never re-ranks: abs(-2.5) bound int
+// abs(int) and truncated to 2 (silent wrong answer); a differing-arity
+// sibling hard-failed the arity check outright (mingw swprintf.inl's
+// 3-arg extern "C++" vswprintf beside the 4-arg ISO one — win64
+// run-burndown defect #3, "expected 4 got 3").
+// Oracle: clang++ -stdlib=libc++ prints 2 / 25 / 7 / 3. (g++/libstdc++
+// prints 20 on the double line for a real header-world reason — its
+// GLOBAL scope has no abs(double), only std::abs — so this test rides
+// the libc++ flavor, where the global family exists.)
+#include <cstdlib>
+#include <cmath>
+#include <cstdio>
+int main()
+{
+    printf("%d\n", abs(-2));
+    double d = abs(-2.5);
+    printf("%d\n", (int)(d * 10.0));
+    long l = abs(-7L);
+    printf("%ld\n", l);
+    float f = abs(-3.25f);
+    printf("%d\n", (int)f);
+    return 0;
+}

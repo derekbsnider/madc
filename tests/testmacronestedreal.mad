@@ -1,0 +1,25 @@
+// A function-like macro argument is macro-expanded before substitution. The
+// temporary token stream used for that expansion must round-trip a real
+// literal's spelling and suffix: 1.5f remains a float, never a NUL character
+// or an unsuffixed double. The self-named macro/template shape is the one
+// MinGW's <math.h> uses for __mingw_types_compatible_p.
+#include <stdio.h>
+
+template <typename A, typename B> struct madc_same_type {
+	static const bool result = false;
+};
+
+template <typename A> struct madc_same_type<A, A> {
+	static const bool result = true;
+};
+
+#define madc_same_type(A, B) madc_same_type<A, B>::result
+#define madc_choose(C, A, B) ((C) ? (A) : (B))
+#define madc_float_kind(X) madc_choose(madc_same_type(__typeof__(X), float), 1, 0)
+
+int main()
+{
+	printf("float=%d double=%d\n", madc_float_kind(1.5f),
+	       madc_float_kind(1.5));
+	return 0;
+}

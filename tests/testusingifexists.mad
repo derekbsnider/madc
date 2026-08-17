@@ -1,0 +1,29 @@
+// Clang's using_if_exists attribute makes a using-declaration conditional on
+// the source member existing.  libc++ uses this for C library declarations
+// whose availability varies by target.  MinGW GCC does not implement this
+// extension; Win64 Clang is the oracle for these libc++ declarations.
+#include <stdio.h>
+
+#if !__has_attribute(__using_if_exists__)
+#error MadC must advertise the using_if_exists semantics it implements
+#endif
+#if __has_attribute(__madc_no_such_attribute__)
+#error unknown attributes must not be advertised
+#endif
+#define MADC_USING_IF_EXISTS __attribute__((__using_if_exists__))
+
+int visible = 7;
+namespace source { int visible_ns = 11; }
+
+namespace imported {
+using ::visible __attribute__((using_if_exists));
+using ::madc_missing_name MADC_USING_IF_EXISTS;
+using source::visible_ns __attribute__((__using_if_exists__));
+using source::madc_missing_member MADC_USING_IF_EXISTS;
+}
+
+int main()
+{
+	printf("%d %d\n", imported::visible, imported::visible_ns);
+	return 0;
+}

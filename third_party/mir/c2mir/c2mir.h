@@ -1,0 +1,86 @@
+/* This file is a part of MIR project.
+   Copyright (C) 2020-2024 Vladimir Makarov <vmakarov.gcc@gmail.com>.
+*/
+
+#ifndef C2MIR_H
+
+#define C2MIR_H
+
+#include "mir.h"
+
+#define COMMAND_LINE_SOURCE_NAME "<command-line>"
+#define STDIN_SOURCE_NAME "<stdin>"
+
+struct c2mir_macro_command {
+  int def_p;              /* #define or #undef */
+  const char *name, *def; /* def is used only when def_p is true */
+};
+
+struct c2mir_options {
+  FILE *message_file;
+  int debug_p, verbose_p, ignore_warnings_p, no_prepro_p, prepro_only_p;
+  int syntax_only_p, pedantic_p, asm_p, object_p;
+  int debug_info_p;     /* stamp source locations for gdb debug info (see mir-debug.h) */
+  int native_object_p;  /* AOT: emit a native relocatable object (ELF .o) instead of
+                           executing -- distinct from object_p, which writes binary MIR
+                           (.bmir).  The driver compiles + loads + links with
+                           MIR_gen_set_object_mode and retrieves the object through
+                           c2mir_get_native_object (c2m flag: -fobject). */
+  size_t module_num;
+  FILE *prepro_output_file; /* non-null for prepro_only_p */
+  const char *output_file_name;
+  size_t macro_commands_num, include_dirs_num;
+  struct c2mir_macro_command *macro_commands;
+  const char **include_dirs;
+  int external_tree_p;  /* non-zero: caller owns AST nodes, c2mir won't free them */
+};
+
+void c2mir_init (MIR_context_t ctx);
+void c2mir_finish (MIR_context_t ctx);
+int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func) (void *),
+                   void *getc_data, const char *source_name, FILE *output_file);
+
+/* For a debug_info_p compile: the source files referenced by the stamped line
+   numbers, in file-id order (index i has file id i+1).  Returns the count and
+   sets *names to the (compiler-owned) array.  Valid until c2mir_finish.  Used
+   by the driver to build the DWARF file table.  Single-threaded compiles only. */
+size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names);
+
+/* For a debug_info_p compile, after MIR_link/gen: build the in-memory GDB-JIT
+   DWARF object (function symbols, .debug_line, and rich-typed variable DIEs for
+   the snapshotted locals/params) covering all generated functions.  On success
+   returns 0 and sets *buf (malloc'd; hand to MIR_debug_gdb_register, which takes
+   ownership) and *size; returns nonzero if there is nothing to emit or the host
+   is unsupported.  Single-threaded compiles only. */
+int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size);
+
+/* For a native_object_p compile, after MIR_load_module / MIR_link generated
+   every function under MIR_gen_set_object_mode: assemble the relocatable
+   native object (ELF .o, x86-64 first).  On success returns 0 and sets *buf
+   (malloc'd, caller-owned -- write it out and free it) and *size; returns
+   nonzero on failure or unsupported host.  This is the c2mir-API surface of
+   the MIR-gen object mode (see mir-gen.h); c2m's -fobject is a thin CLI over
+   it. */
+int c2mir_get_native_object (MIR_context_t ctx, void **buf, size_t *size);
+
+/* Same preconditions, but assemble a complete ET_EXEC dynamic executable (no
+   external toolchain): MIR synthesizes _start and the dynamic-linking
+   apparatus around the captured code.  params is a MIR_object_exec_params
+   (mir-debug.h): PT_INTERP path, DT_NEEDED sonames, and the entry symbol
+   __libc_start_main receives.  Write the buffer out 0755 and free it. */
+struct MIR_object_exec_params;
+int c2mir_get_native_executable (MIR_context_t ctx, const struct MIR_object_exec_params *params,
+                                 void **buf, size_t *size);
+
+/* R5, debug_info_p + native_object_p compiles: attach the source-level debug
+   info (the same builder the GDB-JIT path emits) to the object capture, so
+   the subsequent c2mir_get_native_object / c2mir_get_native_executable calls
+   carry .debug_line/.debug_info/.debug_frame -- section-offset relocated in
+   the .o, final link-time vaddrs in executables and shared objects.  Call
+   after every function is generated and before the native getter; the
+   attached state stays valid until c2mir_finish.  Returns 0 on success,
+   nonzero when there is nothing to attach (no -g, no functions) or the
+   capture is absent.  Single-threaded compiles only. */
+int c2mir_object_attach_debug (MIR_context_t ctx);
+
+#endif

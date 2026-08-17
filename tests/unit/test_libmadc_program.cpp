@@ -921,6 +921,16 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "use of undeclared identifier 'puti'");
     }
 
+    TEST_CASE("compile_options roundtrip the POSIX compatibility policy") {
+	madc::program pgm;
+	madc::compile_options options = pgm.get_compile_options();
+	CHECK(options.enable_posix_compat);
+	options.enable_posix_compat = false;
+	pgm.set_compile_options(options);
+
+	CHECK_FALSE(pgm.get_compile_options().enable_posix_compat);
+    }
+
     TEST_CASE("security_policy can disable namespace registration") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();

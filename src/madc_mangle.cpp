@@ -87,20 +87,25 @@ static std::string builtin_code(const std::string &t)
 	if (t == "wchar_t")             return "w";
 	if (t == "...")                 return "z";   // trailing ellipsis
 
-	// Fixed-width aliases (Linux x86-64 mappings)
+	// Fixed-width / width-carrying aliases. The 64-bit rows follow the
+	// target data model (datadef.h): LP64 spells them through `long`
+	// (l/m), LLP64 through `long long` (x/y) — x86_64-w64-mingw32-g++
+	// mangles f(size_t) as _Z1fy where Linux g++ says _Z1fm. The letter
+	// is the TYPE the typedef resolves to on the target, so it moves
+	// with the model; the plain long/long long rows above never do.
 	if (t == "int8_t")              return "a";
 	if (t == "uint8_t")             return "h";
 	if (t == "int16_t")             return "s";
 	if (t == "uint16_t")            return "t";
 	if (t == "int32_t")             return "i";
 	if (t == "uint32_t")            return "j";
-	if (t == "int64_t")             return "l";
-	if (t == "uint64_t")            return "m";
-	if (t == "size_t")              return "m";
-	if (t == "std::size_t")         return "m";
-	if (t == "ssize_t")             return "l";
-	if (t == "ptrdiff_t")           return "l";
-	if (t == "std::ptrdiff_t")      return "l";
+	if (t == "int64_t")             return target_llp64() ? "x" : "l";
+	if (t == "uint64_t")            return target_llp64() ? "y" : "m";
+	if (t == "size_t")              return target_llp64() ? "y" : "m";
+	if (t == "std::size_t")         return target_llp64() ? "y" : "m";
+	if (t == "ssize_t")             return target_llp64() ? "x" : "l";
+	if (t == "ptrdiff_t")           return target_llp64() ? "x" : "l";
+	if (t == "std::ptrdiff_t")      return target_llp64() ? "x" : "l";
 
 	return "";
 }
@@ -1211,8 +1216,15 @@ std::string DataDef::mangle_scalar_spelling() const
 	case DataType::dtUINT16:  return "unsigned short";
 	case DataType::dtINT32:   return "int";
 	case DataType::dtUINT32:  return "unsigned int";
-	case DataType::dtINT64:   return "long";
-	case DataType::dtUINT64:  return "unsigned long";
+	// The 64-bit dds spell through the target data model: the served
+	// headers themselves say `long` on LP64 and `long long` on LLP64
+	// (win64 size_t/int64_t/streamsize all resolve there), so template-
+	// argument identity, member-call mangling, and this desugar agree
+	// with the target's own libstdc++ exports (_Znwy, not _Znwm).
+	case DataType::dtINT64:   return target_llp64() ? "long long"
+							 : "long";
+	case DataType::dtUINT64:  return target_llp64() ? "unsigned long long"
+							 : "unsigned long";
 	case DataType::dtFLOAT:   return "float";
 	case DataType::dtDOUBLE:  return "double";
 	case DataType::dtLDOUBLE: return "long double";
@@ -1236,6 +1248,29 @@ bool DataDef::marshals_value_text() const
 		carrier_gen = g_std_abi_gen;
 	}
 	return itanium_encode_type_sub(spelling) == text_carrier;
+}
+
+// std::initializer_list<E> — see the contract on the declaration in datadef.h.
+// It is spelled with the UNTAGGED prefix under both stdlibs: libstdc++ declares
+// it directly in std, and libc++'s <initializer_list> opens a plain
+// `namespace std` too (not _LIBCPP_BEGIN_NAMESPACE_STD) precisely because the
+// compiler has to find this name. Matching on the OPEN TEMPLATE-ID prefix, not
+// a full encoded type, is deliberate: the question is "is this SOME
+// initializer_list", asked before the element type is known — that element type
+// is what the caller is trying to recover.
+bool DataDef::is_std_initializer_list() const
+{
+	const std::string &spelling =
+		canonical_cpp_spelling().empty() ? name : canonical_cpp_spelling();
+	if (spelling.empty())
+		return false;
+	const std::string bare = "std::initializer_list<";
+	if (spelling.compare(0, bare.size(), bare) == 0)
+		return true;
+	// LLVM spells everything through the ABI namespace when one is
+	// configured; ask the same owner every other spelling here asks.
+	const std::string tagged = std_prefix_tagged() + "initializer_list<";
+	return spelling.compare(0, tagged.size(), tagged) == 0;
 }
 
 std::string std_vector_type(const std::string &elem)

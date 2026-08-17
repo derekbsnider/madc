@@ -1,0 +1,1 @@
+wine-environment limit: wine's ucrtbase C99 complex entries are __wine_spec_unimplemented_stub; PASSES on real Windows (win_run.sh output marker reverified 2026-08-14)

@@ -2,6 +2,308 @@
 
 ## [Unreleased]
 
+## [v0.82.0] — 2026-08-17
+
+The three-platform release: Linux, macOS and Windows ship together from one
+tree, and the macOS regression that blocked it is fixed at its root.
+
+- **A class-nested enum tag was stamped a forest type-id but never recorded.**
+  `[basic.scope.class]/1` makes such a tag a member, so `TokenENUM::parse`
+  deliberately keeps it out of `datatype_map` and the namespace — registering it
+  only as its owner's class type-alias (the guard that stopped `money_base::part`
+  leaking `part` to file scope). The freeze's enum-recording walk read
+  `datatype_map`, so a nested tag never got a `DK_ENUM` record, while
+  `forest_serialize_type_id` had already stamped it a project id as a member,
+  param or function-pointer-signature cross-reference. A referenced id with no
+  record is `DK_NONE`. `std::ios_base` carries `event_callback *__fn_`, whose
+  signature takes `ios_base::event`, so at bind the function pointer could not be
+  rebuilt, `__fn_` would not swizzle, and the aggregate fill dropped the entire
+  class — silently, because `arena_chain_ok` admits a function-pointer chain
+  unconditionally and the fill's own bail had no diagnostic. Members flatten from
+  bases, so one lost member killed eleven aggregates: `ios_base` plus
+  `basic_ios`, `basic_istream`, `basic_ostream` and `basic_iostream` over `char`,
+  `wchar_t` and `int32_t`. With no `ios_base` there is no vptr slot, so no
+  `__vptr` was emitted and `operator<<` never resolved: a bound darwin
+  `std::cout << "hi"` failed with `shift operands should be of an integer type`
+  and six `struct has no member __vptr`. Darwin is the only libc++ forest, which
+  is why no other lane could see it — libstdc++ keeps its `event_callback` inside
+  the nested `_Callback_list`, so Linux and Windows never lost `ios_base` itself.
+  Enums reached through a class's `type_aliases` are now recorded through one
+  shared writer, carrying the owner's translation-unit-root fence and a
+  `DF_ENUM_CLASS_NESTED` flag so the restore re-attaches them as the owner's alias
+  only, never as a flat name.
+- **madc's embedded `<stdarg.h>` declared the `v*printf` family.** gcc's and
+  clang's own `stdarg.h` declare zero stdio functions; `<stdio.h>` owns those
+  names. It was also actively wrong against a libc that macro-ises them: darwin
+  builds its prelude at `_FORTIFY_SOURCE=2`, so `#define vsprintf(str,...)`
+  is live as soon as anything pulls the stdio chain in, and the declaration
+  expanded mid-header into `__builtin___vsprintf_chk (char *, 0,
+  __darwin_obsz(...), ...)`. That failed to parse and killed every
+  `hosted-*-macos` forest pack, reported misleadingly as an error inside
+  `stdarg.h`. Latent on Windows too, where mingw's `strsafe.h` poisons the same
+  names.
+- **Three silent load-side losses are now measured.** A bound forest reports
+  `materialize fill: DROPPED <aggregate> (member X | base Y)` — the fill-side
+  twin of the existing closure diagnostic — plus `materialize derived:
+  UNRESOLVED <kind> <name> (param #N tid=… kind=…)` for every derived type the
+  materialisation fixpoint could not build, and `forest_restore_decls: SKIPPED`
+  when a restored object is not the class it was recorded as. Each of the three
+  was a `continue` with no output; together they turned a week-long hunt into
+  minutes.
+- **Every artifact lane now builds the binary it validates.** `headerless-win`
+  consumed `bin/madc-release-x86-64-windows.exe` without building it and spent a
+  run validating an eight-hour-old PE — one compiled before the fix under test —
+  reporting a real failure against the wrong artifact. `packed` and `headerless`
+  had the same latent trap, fresh only because the battery happens to list
+  `release` earlier. Freshness is now the Makefile's dependencies rather than the
+  caller's memory, and `release-windows` gets a stage of its own.
+- **New gate.** `forest_bind_gate` case `[nestedenumfn]` is a synthetic reducer
+  of the same shape that reproduces on Linux, negative-controlled by reverting
+  `src/madc_cir.cpp`. Its `int event` local asserts the other half: a nested tag
+  must still not be visible at file scope after a restore.
+
+## [v0.81.0] — 2026-08-16
+
+The Windows release lane merges, the headerless lanes prove every artifact
+serves its own header surface with no headers on disk, and C++
+list-initialization lands — which madc did not have at all.
+
+- **`std::vector<int> v{1,2,3}` compiled as `std::vector<int> v(1,2,3)`.** madc had
+  no C++ list-initialization at all: a braced list on a class type was lowered
+  as a parenthesised constructor-argument list, so the first element became the
+  size and the third was handed to `allocator<int>`. The copy form
+  `= {1,2,3}` threaded only the first element, selecting `vector(size_type)`
+  with `n == 1` — which compiled clean through `--emit=c11` and silently
+  produced a one-element vector. Direct- and copy-list-initialization, non-`int`
+  element types, `std::initializer_list` as the declared type, and user
+  initializer-list constructors now all match g++ and clang++. Class element
+  types decline to the pre-existing path pending the constructed-backing-array
+  slice.
+- **Three defects that shipped in v0.80.0 are fixed.** `std::vector<int> e{}`
+  crashed: `T x{}` is spelled internally as `x = x`, so the copy constructor
+  read its own uninitialized storage and called `operator new` on a garbage
+  size — invisible for empty tag classes like `std::in_place_t`, fatal for
+  anything with a real copy constructor. Declarations before a switch's first
+  `case` label were rejected when they led with a qualifier or tag keyword
+  (`const char *cs;`). And a struct member declared with a class-qualified
+  nested type (`ios_base::fmtflags _M_mask;`) was rejected, which stopped
+  `<iomanip>` on its first line of content — every other declaration position
+  already folded that chain.
+- **The headerless lane runs with the battery, not by hand.** It is the only
+  lane that can observe an artifact failing to serve a standard header from its
+  own frozen corpus; every other lane has the headers on disk, or reaches them
+  through Wine's `Z:`. Task #58 broke that promise on real Windows and unrelated
+  work fixed it days later with neither event noticed. `#58` is now closed in
+  vivo — all seven `win_battery` legs green on the owner's Windows box,
+  including the `clane` leg that compiles a C translation unit on a
+  compiler-less host.
+- **Packed-lane startup is measured, not assumed — and binding beats parsing.**
+  On `#include <string>`, serving the frozen corpus costs 138ms against 196ms
+  for a live parse of the same headers by the same binary: the pack is ~30%
+  faster, which is what it is for. Carrying a bigger corpus is not free,
+  though. Against v0.80.0 the new artifact is +22ms bound, of which ~11ms is
+  simply the larger image (12.47 -> 14.66MB, measurable with forest binding
+  switched OFF) and ~11ms is the 98 extra units. Instruction count is +14%,
+  and both callgrind profiles have the same shape with every entry scaled
+  10-20% — no new hotspot, so the suspicion that a closure walk had reached the
+  default path untimed is refuted. Startup should be flat in pack size and is
+  instead mildly proportional to it: roughly a quarter of startup instructions
+  are decompression and unit segmentation for a program that includes only
+  `<string>`. Per-unit lazy decompression would make the pack's advantage grow
+  with the corpus instead of eroding.
+
+- **The Windows W3–W5 release lane is implementation-complete.** MadC now
+  builds and verifies a stripped MinGW+UCRT PE release, carries a
+  dual-standard-library packed forest with exact target raw-source fallbacks,
+  packages adjacent runtime DLLs and the emitted-code runtime, and runs the
+  complete eligible suite through both persistent Wine and the genuine
+  Windows 11 PE loader over the stage-once WSL channel. Task #57's errno
+  endgame uses unit-granular husk decline, so one missing-content unit can
+  live-parse without discarding the rest of its bound closure. Snapshot
+  discovery supports stacked profile containers, and the carrier selects raw
+  sources only from the matching standard-library flavor.
+- **Windows full-suite execution exposed and closed the remaining portable
+  language gaps.** GNU `using_if_exists`, linkage-block function bodies,
+  floating-literal suffixes through macro expansion, and one-shot CLI runtime
+  scope are covered by reducers. Native test cleanup uses relative paths and
+  C++ `std::remove`, without POSIX `rm` children.
+- **A libc++ regression from that cleanup is fixed at namespace lookup.** A
+  `using ::fn` declaration now performs strict global lookup and registers
+  both the existing destination declaration and the imported function in the
+  destination overload set. This matches GCC and Clang and prevents an older
+  inline-namespace template placeholder from winning over libc++'s imported
+  C function (`std::__1::remove`). `testusingglobalfnoverload` locks the
+  general rule.
+- **Final W5 validation:** Linux fulltest **1050/0/0TO/9skip**, warning
+  census **1059 compiles / 0 warnings**, libc++ JIT
+  **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**, packed Win64 under
+  persistent Wine **1008/0/0TO/51skip**, and the exact packed PE on genuine
+  Windows **1010/0/0TO/49skip**. `release-windows` and
+  `verify_pe_release.sh` are green. Merge and release remain an owner
+  decision.
+
+## [v0.80.0] — 2026-08-14
+
+The POSIX target surface lands for Win64, a pre-merge duplication audit
+catches a silent wrong answer before it ships, and the build stops
+tolerating warnings anywhere — on either surface, with a mechanism rather
+than a comment.
+
+- **POSIX target surface, P1 and P2.** `setenv`/`unsetenv` over the CRT's
+  `_putenv_s` (not `SetEnvironmentVariableA`, which updates the Win32 block
+  without the CRT's view), `strndup`, `timeradd`/`timersub`, a lowercase
+  `sleep`, and `<dlfcn.h>` as the first **whole provider** — mingw ships no
+  such header, so madc's `posix/` entry *is* the header rather than a
+  supplement to one. A new `TargetOS` / `target_windows()` joins
+  `target_llp64()` and `target_microsoft_bitfields()` as the third
+  target-property owner, so nothing re-tests `_WIN32` at a consumer.
+  `libmadc_rt` membership is now target-tagged, and
+  `win_posix_archive_gate.sh` proves the archive's POSIX symbols are
+  project-owned with no madc DLL import.
+- **`__has_include` and `#include` can no longer disagree.** The
+  whole-provider arm decided "no native provider ⇒ serve `posix/<name>`"
+  *after* the filesystem walk, at a position `__has_include` did not mirror
+  — so on Win64 `__has_include(<dlfcn.h>)` answered 0 while the include
+  served fine, and the canonical `#if __has_include(<dlfcn.h>)` idiom took
+  the no-dlfcn branch on a target that has dlfcn. The decision is now a
+  predicate with one owner and two consumers. Found by the `/dupaudit`
+  that `branching.md` requires before a feature branch merges.
+- **A two-day cross-build break, fixed and gated.** `madc_cir.cpp` used
+  `resolve_real_path` inside an `MADC_CROSS_TARGET` block without including
+  its declaring header. Host builds never compile that block, so every
+  validation lane stayed green while `make hosted-arm64-macos` failed —
+  and that is the mode the macOS release artifacts build through.
+  `check-cross-mode-compiles.sh` now compiles the cross arms from a
+  *derived* TU list, negative-controlled in both directions.
+- **Zero warnings, everywhere, enforced.** Both surfaces are clear and both
+  are held: the `warn_census` ratchet returns to an all-zero baseline (its
+  last entry was stale — a ratchet only forbids increases, so it had been
+  reporting GREEN over a goal already met), and `-Werror` now covers madc's
+  own translation units with a documented `WERROR=0` escape hatch. Cleared
+  along the way: undersized `%zu` identifier buffers, an unguarded
+  `NOMINMAX` redefinition, C++-only header flags riding the `-x c` runtime
+  compiles (where a C++ standard library's include dir on a C compile's
+  *system* path can shadow real C headers), 35 missing `override` markers,
+  side-effecting `typeid` operands, deprecated `sprintf`, and an
+  unused-on-Apple OOM handler.
+- **`ARFLAGS ?= rcs` never took effect.** `?=` silently no-ops on variables
+  make itself predefines, so every archive had been built `rv`. Fixed with
+  an `origin`-guarded assignment that still lets an explicit override win.
+  The same trap still hides `CC ?= clang` / `CXX ?= clang++`, which is why
+  the host builds with g++ and clang-only diagnostics never appear there.
+
+## [v0.79.0] — 2026-08-14
+
+The Win64 JIT milestone closes: the hosted MinGW+UCRT compiler runs its
+entire eligible suite without a failure, exec-channel tests are
+self-contained, and one settled aggregate layout now drives semantics,
+JIT execution, and emitted C.
+
+- **The Win64 JIT suite reaches zero failures.** The 46b LLP64
+  burndown fixes script/host namespace width agreement, unary integer
+  folding, Microsoft bit-field units, memory-shaped c2mir scalar
+  boundaries, C++ base tail-padding reuse, Win64 setjmp/longjmp stack
+  preservation in MIR, and conforming macro argument prescan/blue paint.
+  MinGW-oracled platform fixtures replace LP64/POSIX assumptions. The
+  final persistent-Wine result is **987 passed / 0 failed / 0 timed out /
+  55 skipped**, from **947/30/0/59** at handoff; the audited skips are 25
+  libc++-flavor, 19 structural Win64/POSIX, 2 Wine-only, and 9 known MIR
+  gaps.
+- **The `exec://` channel tests now spawn madc itself.** A deterministic
+  child script replaces the platform/locale-dependent external `sort`,
+  and the runner exports the exact artifact under test through
+  `MADC_BIN`. `testexecchannel`, `testvaluesort`, and
+  `testnsmadcautostring` therefore exercise the same child on Linux,
+  macOS, Wine, and native Windows; the latter again covers the channel's
+  `std::string` read/write overloads.
+- **Preprocessing has one balanced-group scanner and one replacement
+  expander.** Quote-aware preprocessing groups delegate to the shared
+  delimiter tracker, and macro replacement, prescan, blue-paint, token
+  paste, and variadic substitution flow through one owner. Both
+  consolidation gates are negative-controlled and part of `fulltest`.
+- **Aggregate layout is settled once and carried through MC11-IR.**
+  `DataDefSTRUCT` owns target-aware offsets, bit positions, size,
+  alignment, and pack; versioned aggregate/member records feed c2mir
+  verbatim and let emitted C recover `#pragma pack`. This fixes independent
+  union bit-fields, unnamed and zero-width bit-fields under SystemV and
+  Microsoft rules, forest round-trips, and class layout. The new contract
+  also exposed and fixed object-member struct promotion leaving class-only
+  base-layout metadata uninitialized.
+- **Windows oracle policy is platform-authentic.** MinGW GCC remains
+  the first Win64 oracle, with Clang as the required second opinion.
+  MSVC is evidence only for native Windows API/UCRT semantics where no
+  ABI question is involved; it never overrides MinGW for ABI, object
+  model, calling convention, layout, or mangling. Linux remains
+  GCC+libstdc++ first and macOS Clang+libc++ first. Matching neither GCC
+  nor Clang is unacceptable.
+- **Release gates at validated code head `3d5bd90c`:** Linux fulltest
+  **1033 passed / 0 failed / 0 timed out / 9 skipped**; libc++ JIT
+  **1029/0/0/13**; native EXE **1004/0**; OBJ **1004/0**; hosted Win64
+  under persistent Wine **987/0/0/55**. The rule-trailer audit covers
+  390 code commits with 0 missing trailers.
+
+## [v0.78.0] — 2026-08-12
+
+The torture window closes: the five standard-C regressions from the
+2026-07-23→08-11 window are root-caused and fixed (long-double
+alignment, a real `__builtin_classify_type`, anonymous-aggregate
+emission after class promotion, nested-brace aggregate recursion) —
+baseline 1614 restored, promote gate met again; the Windows release
+lane (Track 6.4) is planned.
+
+- **The 5-fail torture window is closed (task #41): four root defects
+  fixed, all standard-C class-(a).** The 2026-07-27 correctness work
+  ("long double is its own type again" @114b13a8; "a nested type is a
+  member of its enclosing scope" @6fec105d) had unmasked three latent
+  defects, and the 2026-08-06 loud-error gate (@8f8f4009) turned a
+  fourth from silent mis-init into a compile error:
+  - `long double` struct members now align 16 (SysV x86-64):
+    `DataDefLDOUBLE` carried the "16-byte aligned" comment but no
+    `alignment()` override, so the base cap of 8 applied — madc's
+    parse-time `sizeof` folded 24 for a struct c2mir laid out as 32
+    (gcc/clang: 32). `tests/testldblalign.mad`.
+  - `__builtin_classify_type` is a real parser builtin now, folding the
+    GCC typeclass constant from the unevaluated operand's type — it was
+    a lexer macro expanding to 0, so every classify-gated branch lied
+    (gcc-torture 20040709-1/2/3 aborted on NaN long doubles the class-8
+    branch never initialized). `tests/testclassifytype.mad`.
+  - An ANONYMOUS aggregate stays anonymous after nested-type class
+    promotion: the CIR var-decl lane's inline-body gate asked
+    `is_struct()` (false for the promoted class), emitting
+    `struct __anon_N` against a tag nothing defines (gcc-torture
+    20000717-4). `tests/testanonnested.mad`.
+  - A nested brace list in a designated initializer aggregate-
+    initializes a class-promoted member RECURSIVELY ([dcl.init.aggr]p12)
+    instead of posing as a ctor argument, and a plain-struct member's
+    inner braces get a compound literal typed from the MEMBER (the
+    parser leaves them contextually untyped) — gcc-torture pr39339's
+    "unsupported aggregate initializer shape". `tests/testnesteddesig.mad`.
+
+## [v0.77.0] — 2026-08-11
+
+One repository: MIR moves in-tree as a full-history Git subtree at
+`third_party/mir` — a single clone now builds everything, the pin and
+fork-lockstep release machinery are retired, and every build product
+stays out of the subtree.
+
+- **MIR moved into the repository: `third_party/mir` is a Git subtree**
+  (ADR 0002; plan `docs/plans/mir-into-madc-repo-2026-08-11.md`). One
+  clone builds everything — `make -C src` now builds libmir + c2m
+  itself, into `obj/mir/<variant>` (never inside the subtree; new
+  `mirclean` target removes them; `clean` leaves them). The import
+  preserved full MIR ancestry (no squash) at the exact commit
+  `MIR_COMMIT` pinned — proven by tree-hash equality — which is also
+  fork release `v1.0-madc.0.76.0` and the fork's
+  `madc-pre-subtree-migration` tag. `MIR_COMMIT`/`MIR_VERSION` and the
+  fork-lockstep branch/release ceremony are retired: the madc commit IS
+  the pin, the madc release IS the MIR release. `vnmakarov/mir` is the
+  true upstream (incoming changes = deliberate subtree pulls);
+  `derekbsnider/mir` is frozen as historical record + upstream-PR
+  transport (mir#461/#462/#463 ride there until resolved).
+  `remote_build.sh` drops its mir sync/build legs, and
+  `check-rule-trailers` skips imported third-party ancestry (madc
+  commits still checked — negative-controlled both ways).
+
 ## [v0.76.0] — 2026-08-11
 
 madc goes public on the Mac: provenance-clean macOS tarballs (arm64 +

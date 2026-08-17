@@ -45,6 +45,17 @@ public:
 	int exit_status() const;
 	void terminate();
 
+	// Spawn `executable` with the caller's full argv (argv[0] included)
+	// and ALL stdio inherited — no pipes, no channels — then wait.
+	// Returns the child's exit code, or -1 with err set when the spawn
+	// or wait fails or the child terminates abnormally. This is the
+	// run-and-wait arm of the ONE process-spawn owner (madc --freeze-run
+	// re-exec rides it); the Win32 backend replaces the platform
+	// primitives here and in start() together.
+	static int run_and_wait(const std::string &executable,
+				const std::vector<std::string> &argv,
+				error *err = nullptr);
+
 private:
 	Process(const Process &);
 	Process &operator=(const Process &);

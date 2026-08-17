@@ -1,0 +1,17 @@
+name: apple-aarch64-test
+
+on: [push, workflow_dispatch]
+
+jobs:
+  test:
+
+    strategy:
+      fail-fast: false
+    runs-on: macos-14
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: make test
+      run: |
+         uname -a
+         make test

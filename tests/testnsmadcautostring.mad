@@ -2,12 +2,24 @@
 // no explicit includes; the `string` and `madc` identifiers auto-include
 // <string> and <ns_madc>, and the canonical auto-include order puts
 // <string> FIRST, so <ns_madc>'s gated string overloads are present.
-madc::channel sorter("exec://sort");
-sorter.write("pear\n");
-string fruit = "apple\n";
-sorter.write(fruit);
-sorter.close_write();
-string line;
-while ( sorter.readline(line) )
-    printf("sorted: %s\n", line.c_str());
-printf("done\n");
+// The outer statement keeps argc/argv-dependent setup inside script mode's
+// synthesized main rather than turning it into a file-scope initializer.
+if ( argc > 0 )
+{
+    const char *madc_bin = getenv("MADC_BIN");
+    const char *child_source = argc > 1 ? argv[1] : "tests/testexecchild.mad";
+    if ( !madc_bin || !*madc_bin )
+        madc_bin = "bin/madc";
+    char child_uri[1024];
+    snprintf(child_uri, sizeof(child_uri), "exec://%s --no-config %s",
+             madc_bin, child_source);
+    madc::channel child(child_uri);
+    child.write("pear\n");
+    string fruit = "apple\n";
+    child.write(fruit);
+    child.close_write();
+    string line;
+    while ( child.readline(line) )
+        printf("received: %s\n", line.c_str());
+    printf("done\n");
+}

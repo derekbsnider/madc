@@ -71,6 +71,19 @@ const std::string *find_embedded_header(const std::string &name)
     auto it = embedded_headers.find(name);
     if ( it != embedded_headers.end() )
         return &it->second;
+    // <madc/X> is the explicit spelling of madc's compiler-owned include
+    // tree: keys here are relative to include/madc/, and the dual-build
+    // runtime sources (src/rt/rt_posix_*.c) include their own public
+    // headers as <madc/posix/X> so ONE spelling serves both compilers —
+    // mingw-g++ resolves it through -I../include, madc through this map.
+    // The bare internal keys (e.g. posix/X) stay non-includable: policy
+    // (is_embedded_header_allowed) never sees them spelled bare.
+    if ( name.compare(0, 5, "madc/") == 0 )
+    {
+        it = embedded_headers.find(name.substr(5));
+        if ( it != embedded_headers.end() )
+            return &it->second;
+    }
     return nullptr;
 }
 FOOTER

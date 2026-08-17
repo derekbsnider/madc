@@ -1,0 +1,38 @@
+// C typedef declarator lists — the mingw basetsd.h / winnt.h shape:
+//   typedef signed char INT8,*PINT8;
+//   typedef WCHAR *PWCHAR,*LPWCH,*PWCH;
+// Every tail declarator restarts from the UNDECORATED base type and takes
+// its own pointer/array shape. Before the fix the tail was silently
+// DROPPED (rc=0, aliases missing — the silent-wrong-answer class) and the
+// leftover comma spun the top-level parse loop forever on some inputs.
+#include <stdio.h>
+
+typedef signed char INT8, *PINT8;
+typedef int ARR[3], *PI, PLAIN;
+// The enum arm's list (winnt.h: `typedef enum {...} COMPARTMENT_ID,
+// *PCOMPARTMENT_ID;`) rides the same tail owner.
+typedef enum { CID_A = 4, CID_B } CID, *PCID;
+// The bodyless struct-tag arm (winnt.h: `typedef struct _X X, *PX;` for a
+// previously-defined tag) loops its own declarators in TokenSTRUCT::parse.
+struct _SL { int a; };
+typedef struct _SL SL, *PSL;
+
+int main()
+{
+    INT8 v = -5;
+    PINT8 p = &v;
+    ARR a = {1, 2, 3};
+    PLAIN x = 7;
+    PI q = &x;
+    printf("v=%d p=%d\n", (int)v, (int)*p);
+    printf("arr=%d last=%d\n", (int)sizeof(ARR), a[2]);
+    printf("x=%d q=%d\n", x, *q);
+    CID c = CID_B;
+    PCID pc = &c;
+    printf("cid=%d pcid=%d\n", (int)c, (int)*pc);
+    SL s;
+    s.a = 9;
+    PSL ps = &s;
+    printf("sl=%d\n", ps->a);
+    return 0;
+}

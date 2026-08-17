@@ -50,13 +50,14 @@ def main():
     if len(mf) > 600:
         stash("mir_fork_narrative", mf)
         status["mir_fork"] = (
-            "/workspace/mir pinned via repo-root MIR_COMMIT (currently the "
-            "develop branch of github.com/derekbsnider/mir). The fork carries "
-            "native _Complex, cleanup attribute, scope-depth layout fix, "
-            "<=16-byte SIMD (vector_size/ext_vector_type), and the SysV "
-            "varargs/_Alignas ABI fixes the CIR backend depends on. Pin "
-            "discipline: bump MIR_COMMIT in the SAME madc commit that starts "
-            "depending on new fork work. Full capability narrative: "
+            "MIR lives IN the repo at third_party/mir (subtree migration "
+            "2026-08-11; no pin, no fork lockstep — Git versions madc and "
+            "MIR together). It carries native _Complex, cleanup attribute, "
+            "scope-depth layout fix, <=16-byte SIMD "
+            "(vector_size/ext_vector_type), the SysV varargs/_Alignas ABI "
+            "fixes, and the Mach-O writer the CIR backend depends on. "
+            "github.com/derekbsnider/mir is historical + upstream-PR "
+            "transport only. Full capability narrative: "
             "docs/archived/claude_status_archive.json."
         )
 

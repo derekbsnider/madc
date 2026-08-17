@@ -1,5 +1,74 @@
 # Test Status
 
+> **Current (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
+> authoritative Linux fulltest **1050 passed / 0 failed / 0 timed out /
+> 9 skipped**; emitted-code warning census **1059 compiles / 0 warnings**;
+> libc++ JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.
+> The exact rebuilt packed Win64 release passed `verify_pe_release.sh`, the
+> persistent-Wine packed-product domain at **1008/0/0TO/51skip**, and the
+> genuine-Windows stage-once domain at **1010/0/0TO/49skip**. Fulltest's
+> post-suite forest bind gate is **24/24**, and every remaining structural,
+> carrier, ABI, and packaging gate returned success. Logs:
+> `tmp/logs/rb-20260816-005957.log` (fulltest) and
+> `tmp/logs/rb-20260816-011436.log` (full libc++ battery).
+>
+> **Previous (2026-08-14, validated code head `63f008ad` — v0.80.0 POSIX
+> target surface + the zero-warnings law):** authoritative Linux fulltest
+> **1040 passed / 0 failed / 0 timed out / 9 skipped**, libc++ JIT
+> **1036/0/0TO/13skip**, EXE **1009/0**, OBJ **1009/0**, and the
+> persistent-Wine hosted Win64 domain **998/0/0TO/51skip**.
+>
+> **Zero compiler warnings on every build lane, now enforced.** Clean
+> rebuilds of host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`,
+> `hosted-arm64-macos` and `hosted-x86-64-macos` each returned rc=0 with
+> **0 warnings**, including 39 unit-test binaries, with `-Werror` active
+> (escape hatch `WERROR=0`). The emitted-code ratchet
+> (`scripts/warn_census.sh`) is back to an **all-zero baseline** — its last
+> entry was stale, and because a ratchet only forbids increases it had been
+> reporting GREEN over a goal already met, printing `tests improved : 1`
+> every run.
+>
+> Two gates were added and negative-controlled in both directions:
+> `check-cross-mode-compiles.sh` (the `cross-*` modes were in NO validation
+> lane and had been uncompilable for two days across a release — the mode
+> the macOS artifacts build through), and `-Werror` itself, whose presence
+> on both the C++ and `rt/*.c` compile lines was verified with `make -Bn`
+> because a plain `make -n` prints nothing for an up-to-date target.
+>
+> **Previous (2026-08-14, validated code head `3d5bd90c` — v0.79.0
+> Win64 JIT milestone):** authoritative Linux fulltest **1033 passed /
+> 0 failed / 0 timed out / 9 skipped**, libc++ JIT
+> **1029/0/0TO/13skip**, EXE **1004/0**, and OBJ **1004/0**; every
+> `remote_build.sh` stage returned 0. Log:
+> `tmp/logs/rb-20260814-051011.log`. The hosted MinGW+UCRT executable
+> built successfully and the complete persistent-Wine domain passed
+> **987/0/0TO/55skip** (46 domain fixtures + 9 MIR fixtures), from the
+> 46b handoff's **947/30/0TO/59skip**. A first run without the documented
+> persistent wineserver produced one rotating
+> `testderefpostincstore` failure; that specimen immediately passed its
+> capped 1/1 rerun, and the full run with `wineserver -p` passed 987/0.
+> The three scoped duplication families are gated at zero divergent
+> implementations. The aggregate gate measures one definition owner / 7
+> references, one owner-to-contract edge, one aggregate and one member
+> contract builder, one c2mir aggregate and member consumer, and one
+> emit-C pack reader; its negative control is rejected. Focused units:
+> CIR freeze **36/36 cases, 761 assertions**; DataDef **85/85 cases, 555
+> assertions, 9 skipped**. Rule trailers: **390 code commits, 0 missing**.
+>
+> **Current (2026-08-13,
+> `feature/win64-46b-burndown-codex` @`0bc84193` — Win64 46b JIT
+> burndown close):** Wine domain suite **981/0/0TO/57skip**, down from
+> the handoff baseline **947/30/0TO/59skip**. The 57 audited skips are
+> 25 libc++-flavor tests outside the Win64 libstdc++ lane, 20
+> structural Win64/POSIX exclusions, 3 Wine-only environment
+> exclusions, and 9 known MIR gaps. Wine 9.0's rotating failures were
+> traced to `wine client error: recvmsg: Connection reset by peer`;
+> keeping one `wineserver -p` instance alive produced the zero-failure
+> full runs. Final-content deferred gates, each run once: Linux
+> fulltest **1029/0/0TO/9skip**, libc++ JIT
+> **1025/0/0TO/13skip**, both rc=0. Full log for those two gates:
+> `tmp/logs/rb-20260813-211415.log`.
+>
 > **Current (2026-08-07, `feature/data-channel-flow-codex` @cd1f19c6 -
 > session #70 close):** clean enabled remote fulltest
 > **999/0/0TO/9skip**, total rc=0; all warning, forest, rule-trailer,

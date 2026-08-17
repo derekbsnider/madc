@@ -14,20 +14,15 @@
 #include <utility>
 #include <vector>
 
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <sys/time.h>
-#include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
 #include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
 #endif
-// mir-code-alloc.h (reached via cir_node.h -> c2mir headers) redefines
-// MAP_FAILED to NULL for its own allocator; drop the glibc define so that
-// redefinition is fresh, and compare mmap() results against the real value
-// explicitly below.
-#undef MAP_FAILED
+#include "madc_posix_io.h"	// map_file_readonly — the one file-mapping owner
+				// (also why no <sys/mman.h> here: MIR's
+				// mir-code-alloc.h redefines MAP_FAILED, which
+				// used to force an #undef + (void *)-1 compare)
 
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -110,6 +105,7 @@ uint64_t madc_cir_context_hash()
 uint32_t madc_forest_config_word(const Program *prog)
 {
 	uint32_t word = (uint32_t)prog->language_std
+		      | ((uint32_t)(prog->posix_compat_enabled() ? 1 : 0) << 15)
 		      | ((uint32_t)(prog->gnu_dialect ? 1 : 0) << 16);
 	// The EFFECTIVE flavor name, not the CLI spelling: an explicit
 	// -stdlib=<build default> is the same config as no flag at all.
@@ -739,7 +735,13 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 				fu.pp_events.size() * sizeof(uint32_t), codec)
 		    || !add_seg(w, base + 7, SNAP_KIND_CIR_UNIT_EDGES,
 				fu.edges.data(),
-				fu.edges.size() * sizeof(uint32_t), codec))
+				fu.edges.size() * sizeof(uint32_t), codec)
+		    || !add_seg(w, base + 8, SNAP_KIND_CIR_BRANCH_DEPS,
+				fu.branch_deps.data(),
+				fu.branch_deps.size() * sizeof(uint32_t), codec)
+		    || !add_seg(w, base + 9, SNAP_KIND_CIR_UNIT_SOURCE,
+				fu.source_payload.data(),
+				fu.source_payload.size(), codec))
 			return false;
 	}
 	return true;
@@ -837,28 +839,19 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 			return false;
 		path = selfpath.c_str();
 	}
-	int fd = ::open(path, O_RDONLY);
-	if (fd < 0)
-		return false;
-	struct stat st;
-	if (fstat(fd, &st) != 0 || st.st_size <= 0) {
-		close(fd);
-		return false;
-	}
-	void *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	close(fd);
-	if (m == (void *)-1)	// the real MAP_FAILED (see #undef above)
+	size_t maplen = 0;
+	void *m = madc::detail::map_file_readonly(path, maplen);
+	if (!m)
 		return false;
 	// Deliberately never munmap'd: thawed segments read string bytes and
 	// pool blocks from the mapping for the process lifetime.
 	// Mach-O file: the container is the __MADC,__forest section slice
 	// (page-aligned in file, so 16-aligned payload offsets hold), not an
 	// EOF trailer. Anything else keeps the whole file (footer at EOF).
-	if (cir_macho_find_forest((const uint8_t *)m, (size_t)st.st_size,
-				  image, len))
+	if (cir_macho_find_forest((const uint8_t *)m, maplen, image, len))
 		return true;
 	image = m;
-	len = (size_t)st.st_size;
+	len = maplen;
 	return true;
 }
 
@@ -1613,6 +1606,21 @@ bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payl
 bool CirFrozenForest::unit_decl_index(uint32_t unit,
 				      std::vector<cir_forest_decl_entry> &out)
 {
+	out.clear();
+	if (unit >= _units.size())
+		return false;
+	uint32_t base = CIR_FOREST_SEG_UNIT_BASE
+		      + unit * CIR_FOREST_SEGS_PER_UNIT;
+	const madc::dis::snapshot_segment *s = _reader.find(base + 5);
+	if (!s || s->kind != SNAP_KIND_CIR_DECL_INDEX)
+		return false;
+	// An empty declaration surface is a valid grove unit (macro-only /
+	// edge-only headers and task #57's conditional husks). read_unit_seg
+	// deliberately treats zero raw bytes as "no payload" for its other
+	// callers; this API must distinguish that valid EMPTY index from a
+	// missing or wrong-kind segment so bind eligibility can classify it.
+	if (!s->raw_size)
+		return true;
 	madc::dis::decode_bytes raw;
 	if (!read_unit_seg(unit, 5, SNAP_KIND_CIR_DECL_INDEX, raw)
 	    || raw.size() % sizeof(cir_forest_decl_entry))
@@ -1645,6 +1653,39 @@ bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
 	if (!raw.empty())
 		memcpy(out.data(), raw.data(), raw.size());
 	return true;
+}
+
+// v40: [name_id, flags, value_id, definer_unit] tuples — see
+// SNAP_KIND_CIR_BRANCH_DEPS.
+bool CirFrozenForest::unit_branch_deps(uint32_t unit, std::vector<uint32_t> &out)
+{
+	madc::dis::decode_bytes raw;
+	if (!read_unit_seg(unit, 8, SNAP_KIND_CIR_BRANCH_DEPS, raw)
+	    || raw.size() % (4 * sizeof(uint32_t)))
+		return false;
+	out.resize(raw.size() / sizeof(uint32_t));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
+	return true;
+}
+
+bool CirFrozenForest::unit_source(uint32_t unit, std::string &out) const
+{
+	madc::dis::decode_bytes raw;
+	if (!read_unit_seg(unit, 9, SNAP_KIND_CIR_UNIT_SOURCE, raw))
+		return false;
+	out.assign((const char *)raw.data(), raw.size());
+	return true;
+}
+
+bool CirFrozenForest::unit_has_source(uint32_t unit) const
+{
+	if (unit >= _units.size())
+		return false;
+	uint32_t base = CIR_FOREST_SEG_UNIT_BASE
+		      + unit * CIR_FOREST_SEGS_PER_UNIT;
+	const madc::dis::snapshot_segment *s = _reader.find(base + 9);
+	return s && s->kind == SNAP_KIND_CIR_UNIT_SOURCE && s->raw_size != 0;
 }
 
 const char *CirFrozenForest::pool_cstr(uint32_t id, uint32_t &len) const
@@ -2263,6 +2304,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		sdd->definition_origin = (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 		? AggregateDefinitionOrigin::TranslationUnitRoot
 		: AggregateDefinitionOrigin::Included;
+		sdd->forest_restored = true;	// mixed bind/live seam provenance (task #57)
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
 	}
@@ -2393,6 +2435,69 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		}
 	}
 
+	// Permanent -v diagnostic: every DERIVED type the fixpoint above could
+	// NOT build. arena_chain_ok admits an fn-ptr chain unconditionally ("the
+	// target signature never gates member layout"), but this fixpoint can
+	// still fail to build one — and pass 2 then drops every aggregate with
+	// such a member. Without naming it here the loss surfaces only as a class
+	// that is simply absent, layers later (task #64: std::ios_base died on
+	// `event_callback *__fn_`, and took the whole iostream family with it).
+	DBG(for (uint32_t s = 0; s < nslots; ++s) {
+		uint32_t tid = madc::dis::arena_id_of(s);
+		if (by_id.count(tid))
+			continue;
+		madc::dis::defrec r;
+		if (!a.get_def_at(tid, r))
+			continue;
+		const char *dk = NULL;
+		if (r.kind == madc::dis::DK_PTR)		dk = "ptr";
+		else if (r.kind == madc::dis::DK_REF)		dk = "ref";
+		else if (r.kind == madc::dis::DK_CONST)		dk = "const";
+		else if (r.kind == madc::dis::DK_CARRAY)	dk = "carray";
+		else if (r.kind == madc::dis::DK_FPTR)		dk = "fptr";
+		if (!dk)
+			continue;
+		std::string why;
+		if (r.kind == madc::dis::DK_FPTR) {
+			madc::dis::defrec fr;
+			if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
+			    || !a.get_def_at(r.ref0, fr)
+			    || fr.kind != madc::dis::DK_FUNC)
+				why = "no signature record";
+			else if (!arena_swizzle(fr.ref0, by_id))
+				why = "return type";
+			else
+				for (uint32_t p = 0; p < fr.params_count; ++p) {
+					madc::dis::paramrec pr;
+					if (a.get_payload(fr.params_begin, p, pr)
+					    && arena_swizzle(pr.type_id, by_id))
+						continue;
+					why = "param #" + std::to_string(p)
+					    + " tid=" + std::to_string(pr.type_id);
+					madc::dis::defrec pd;
+					if (!a.get_def_at(pr.type_id, pd))
+						why += " (no record)";
+					else {
+						why += " kind=" + std::to_string((int)pd.kind);
+						if (pd.name_id && a.c_str(pd.name_id))
+							why += std::string(" ")
+							     + a.c_str(pd.name_id);
+					}
+					break;
+				}
+		} else {
+			madc::dis::defrec od;
+			why = "operand";
+			if (r.ref0 && a.get_def_at(r.ref0, od) && od.name_id
+			    && a.c_str(od.name_id))
+				why += std::string(" ") + a.c_str(od.name_id);
+		}
+		std::cout << "materialize derived: UNRESOLVED " << dk << " "
+			  << (r.name_id && a.c_str(r.name_id)
+			      ? a.c_str(r.name_id) : "?")
+			  << " (" << why << ")" << std::endl;
+	});
+
 	// Method-identity sharing (using-decl imports): a methodrec whose
 	// Variable name is NOT prefixed by its class's own name is a BASE
 	// method imported via a using-declaration (__gnu_cxx::__alloc_traits's
@@ -2442,12 +2547,28 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (!a.get_def_at(tid, r))
 			continue;
 		bool ok = true;
+		std::string fill_why;
 		for (uint32_t m = 0; m < r.members_count; ++m) {
 			madc::dis::memberrec mr;
-			if (!a.get_payload(r.members_begin, m, mr)) { ok = false; break; }
+			if (!a.get_payload(r.members_begin, m, mr)) {
+				ok = false;
+				fill_why = "member payload #" + std::to_string(m);
+				break;
+			}
 			DataDef *mdd = arena_swizzle(mr.type_id, by_id);
-			const char *mnm = mr.name_id ? a.c_str(mr.name_id) : NULL;
-			if (!mdd || !mnm) { ok = false; break; }
+			// String id zero is both the arena's empty-string sentinel and the
+			// correct C spelling of an unnamed bit-field.  Admit that exact
+			// structural case; a non-bit-field member still requires a name.
+			const char *mnm = mr.name_id ? a.c_str(mr.name_id)
+				: ((mr.bf_flags & 1u) ? "" : NULL);
+			if (!mdd || !mnm) {
+				ok = false;
+				fill_why = std::string("member ")
+					 + (mr.name_id && a.c_str(mr.name_id)
+					    ? a.c_str(mr.name_id) : "?")
+					 + (mdd ? " (no name)" : " (type chain)");
+				break;
+			}
 			sdd->members.push_back(memberpair_t(std::string(mnm), mdd));
 			sdd->member_offsets.push_back(mr.offset);
 			sdd->member_counts.push_back(mr.count ? mr.count : 1);
@@ -2472,12 +2593,27 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			if (mr.vbase_id) {
 				DataDefCLASS *vbc = dynamic_cast<DataDefCLASS *>(
 					arena_swizzle(mr.vbase_id, by_id));
-				if (!vbc) { ok = false; break; }
+				if (!vbc) {
+					ok = false;
+					fill_why = std::string("member ")
+						 + (mnm && *mnm ? mnm : "?") + " vbase";
+					break;
+				}
 				sdd->member_vbase[m] = vbc;
 			}
 		}
-		if (!ok)
+		if (!ok) {
+			// An ADMITTED record that cannot fill is an INVISIBLE loss: the
+			// consumer gets neither a definition nor a live rescue, so the
+			// class materializes as nothing at all (task #64 — std::ios_base
+			// vanished from a bound darwin forest exactly here, and the only
+			// symptom was `struct has no member __vptr` a whole layer later).
+			// Name it, the fill-side twin of the closure diagnostic above.
+			DBG(std::cout << "materialize fill: DROPPED "
+			    << (r.name_id && a.c_str(r.name_id) ? a.c_str(r.name_id) : "?")
+			    << " (" << fill_why << ")" << std::endl);
 			continue;		// defensive: the closure should have dropped it
+		}
 		sdd->size        = r.size;
 		sdd->max_align   = r.max_align ? r.max_align : 1;
 		// Verbatim: a restored empty recursion tail stays INCOMPLETE,
@@ -2568,10 +2704,22 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			bool bok = true;
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
 				madc::dis::baserec br;
-				if (!a.get_payload(r.bases_begin, b, br)) { bok = false; break; }
+				if (!a.get_payload(r.bases_begin, b, br)) {
+					bok = false;
+					fill_why = "base payload #" + std::to_string(b);
+					break;
+				}
 				DataDefCLASS *bc = dynamic_cast<DataDefCLASS *>(
 					arena_swizzle(br.base_id, by_id));
-				if (!bc) { bok = false; break; }
+				if (!bc) {
+					madc::dis::defrec bd;
+					fill_why = std::string("base ")
+						 + (a.get_def_at(br.base_id, bd) && bd.name_id
+						    && a.c_str(bd.name_id)
+						    ? a.c_str(bd.name_id) : "?");
+					bok = false;
+					break;
+				}
 				BaseSpec bs;
 				bs.base       = bc;
 				bs.offset     = br.offset;
@@ -2580,8 +2728,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				bs.access     = br.flags >> madc::dis::BSF_ACCESS_SHIFT;
 				cdd->bases.push_back(bs);
 			}
-			if (!bok)
+			if (!bok) {
+				DBG(std::cout << "materialize fill: DROPPED "
+				    << (r.name_id && a.c_str(r.name_id)
+					? a.c_str(r.name_id) : "?")
+				    << " (" << fill_why << ")" << std::endl);
 				continue;
+			}
 			cdd->base_class = cdd->bases.empty() ? NULL : cdd->bases[0].base;
 
 			// Methods: the arena run holds EVERY parsed method; apply the
@@ -3098,6 +3251,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			continue;
 		if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 			continue;	// v24: the program's own enum — fenced
+		if (r.flags & madc::dis::DF_ENUM_CLASS_NESTED)
+			continue;	// [basic.scope.class]/1: a class-nested tag is
+					// a MEMBER — live never publishes it flat or in
+					// the namespace, and neither may the restore. Its
+					// object is still built in pass 1a (so member /
+					// param / fn-ptr-signature ids swizzle) and the
+					// owner's type_aliases restore re-attaches it,
+					// which IS its whole live registration.
 		std::map<uint32_t, DataDef *>::iterator ei = by_id.find(tid);
 		if (ei == by_id.end())
 			continue;

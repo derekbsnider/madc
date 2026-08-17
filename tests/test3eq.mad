@@ -44,7 +44,7 @@ int main()
 
 	long lv = 7;
 	long long llv = 7;
-	printf("s_long=%d\n", lv === llv);	// 1: both 64-bit signed
+	printf("s_long=%d\n", lv === llv);	// LP64: 1; LLP64: 0 (32-bit long)
 
 	double d = 5;
 	float f = 5;

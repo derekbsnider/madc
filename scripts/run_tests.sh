@@ -19,6 +19,19 @@
 #                      must produce EMPTY stderr — locks diagnostic
 #                      hygiene (no leaked warnings/errors) for tests
 #                      that compile real system headers.
+#   tests/foo.<domain>_expect — replaces foo.expect when MADC_SKIP_EXT
+#                      includes <domain> (first listed domain wins): for
+#                      tests whose CORRECT output differs on the domain
+#                      (sizeof(long)-derived values on win64); content
+#                      comes from the domain's oracle compiler.
+#   tests/foo.<domain>_obj_skip — skip the OBJ pass only, only when
+#                      MADC_SKIP_EXT includes <domain>: for tests whose
+#                      .o lane is structurally out of that domain's scope
+#                      while the JIT (and other domains' .o lanes) still
+#                      cover them; content = one line saying why.
+#   tests/foo.<domain>_exe_skip — the domain twin of .exe_skip: skip BOTH
+#                      native-artifact passes (exe and obj), only when
+#                      MADC_SKIP_EXT includes <domain>.
 #
 # No test names are hard-coded here.
 #
@@ -42,6 +55,14 @@
 # MADC_BIN (env): the madc binary to test (default bin/madc). Generic
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
+#
+# MADC_WRAPPER (env): command prefix that runs the binary on its execution
+# domain — `wine` for the PE madc.exe on the build container. Word-split
+# deliberately (a wrapper may carry flags). Same generic-capability rule
+# as MADC_BIN: never a per-test hook. CRLF note: win64 stdout is CRLF in
+# text mode (gcc-parity-correct platform behavior); the .expect model is
+# per-line SUBSTRING match (grep -F), which tolerates the trailing \r —
+# fixtures stay LF, no normalization layer needed.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
@@ -59,6 +80,11 @@ HERMETIC_FLAGS="--no-config"
 STDLIB_NAME=""
 STDLIB_SKIP_EXT=""
 MADC="${MADC_BIN:-bin/madc}"
+# Export the resolved default too: exec-channel fixtures that spawn madc as
+# their child must exercise this lane's artifact, including the default lane
+# where the caller did not need to set MADC_BIN explicitly.
+export MADC_BIN="$MADC"
+MADC_WRAPPER="${MADC_WRAPPER:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
@@ -77,6 +103,19 @@ if [ -n "$STDLIB_NAME" ]; then
     # transform, not a per-flavor table — a third flavor needs no runner change.
     STDLIB_SKIP_EXT=$(printf '%s' "$STDLIB_NAME" | tr '+' 'x')
 fi
+
+# MADC_SKIP_EXT (env): the execution-DOMAIN twin of the stdlib skip lane —
+# tests/<base>.${ext}_skip marks a test structurally out of scope for the
+# domain the binary under test targets (win64 lanes run with
+# MADC_SKIP_EXT=win64; a fixture's one line says why, e.g. "POSIX sockets —
+# mingw-gcc rejects sys/socket.h too"). A whitespace-separated LIST layers
+# domains: a wine run of the win64 binary is two domains at once
+# (MADC_SKIP_EXT="win64 wine64" — wine64 fixtures mark wine-environment
+# limits like unimplemented ucrtbase stubs that PASS on real Windows).
+# Same convention rules as every fixture: never a per-test branch in the
+# runner, and the summary is labelled so a domain run can't be quoted as
+# the default-lane baseline.
+MADC_SKIP_EXT="${MADC_SKIP_EXT:-}"
 
 # Remaining positional arguments are basename GLOBS selecting a SUBSET of the
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
@@ -99,6 +138,7 @@ OBJ_PASS=0
 OBJ_FAIL=0
 SELECTED=0
 STDLIB_SKIPPED=0
+DOMAIN_SKIPPED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
     [ "$base" = "include_helper" ] && continue
@@ -135,6 +175,35 @@ for t in tests/*.mad; do
         continue
     fi
 
+    # Execution-domain lane (MADC_SKIP_EXT, e.g. win64, or a list like
+    # "win64 wine64"): same contract as the flavored skip; only consulted
+    # when the caller selected a domain, so every default-lane run is
+    # untouched.
+    domain_skip=0
+    for skip_ext in $MADC_SKIP_EXT; do
+        if [ -f "tests/$base.$skip_ext""_skip" ]; then
+            domain_skip=1
+            break
+        fi
+    done
+    if [ $domain_skip -eq 1 ]; then
+        SKIP=$((SKIP+1))
+        DOMAIN_SKIPPED=$((DOMAIN_SKIPPED+1))
+        continue
+    fi
+
+    # Execution-domain expect VARIANT: a test whose CORRECT output differs on
+    # the domain (e.g. sizeof(long)-derived values on win64, oracle =
+    # mingw-gcc) carries tests/<base>.<domain>_expect; the first domain in
+    # MADC_SKIP_EXT order wins. Only consulted on a domain run, so the
+    # default lane never sees it.
+    for skip_ext in $MADC_SKIP_EXT; do
+        if [ -f "tests/$base.$skip_ext""_expect" ]; then
+            expect_file="tests/$base.$skip_ext""_expect"
+            break
+        fi
+    done
+
     args=()
     flags=()
     [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
@@ -151,9 +220,9 @@ for t in tests/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -177,9 +246,9 @@ for t in tests/*.mad; do
         # assert it is empty; without the fixture it is simply discarded.
         errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
+            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -232,8 +301,22 @@ for t in tests/*.mad; do
     # dlopen happens before the .o dispatch); --project is compile-only
     # (the run executes the finished artifact) so it is dropped from the
     # replayed run flags.
+    # Domain twins of .obj_skip/.exe_skip: same pass coverage, scoped to a
+    # MADC_SKIP_EXT domain. <domain>_exe_skip covers BOTH native-artifact
+    # passes (the .exe_skip rule); <domain>_obj_skip the obj pass only.
+    domain_obj_skip=0
+    domain_exe_skip=0
+    for skip_ext in $MADC_SKIP_EXT; do
+        if [ -f "tests/$base.${skip_ext}_obj_skip" ]; then
+            domain_obj_skip=1
+        fi
+        if [ -f "tests/$base.${skip_ext}_exe_skip" ]; then
+            domain_exe_skip=1
+        fi
+    done
     if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ]; then
+       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ] \
+       && [ $domain_obj_skip -eq 0 ] && [ $domain_exe_skip -eq 0 ]; then
         obj_path="/tmp/madc_test_obj_${base}.o"
         run_flags=()
         skip_next=0
@@ -243,11 +326,11 @@ for t in tests/*.mad; do
             run_flags+=("$fl")
         done
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
-        if "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -279,16 +362,18 @@ for t in tests/*.mad; do
     # as structurally JIT-only (freeze re-exec machinery, in-process host
     # callbacks) — skipped here, not counted as an exe failure.
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ]; then
+       && [ ! -f "tests/$base.exe_skip" ] && [ $domain_exe_skip -eq 0 ]; then
         exe_path="/tmp/madc_test_exe_${base}"
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+            # The produced ARTIFACT runs under the same wrapper as the
+            # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
             fi
             exe_rc=$?
             exe_ok=1
@@ -326,6 +411,9 @@ if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes
     # measure different libraries and legitimately have different skip sets.
     echo "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
+fi
+if [ -n "$MADC_SKIP_EXT" ]; then
+    echo "DOMAIN RUN — $MADC_SKIP_EXT ($DOMAIN_SKIPPED test(s) carry a domain skip fixture); NOT the default-lane baseline"
 fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then

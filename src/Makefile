@@ -62,13 +62,42 @@ else ifeq ($(MODE),hosted-arm64-macos)
 BIN = ../bin/madc-hosted-arm64-macos
 else ifeq ($(MODE),hosted-x86-64-macos)
 BIN = ../bin/madc-hosted-x86-64-macos
+else ifeq ($(MODE),hosted-x86-64-windows)
+# madc-on-Windows (Track 6.4): full madc cross-built with mingw-w64 over
+# UCRT. Host == target (JIT + native AOT); Windows names executables .exe.
+BIN = ../bin/madc-hosted-x86-64-windows.exe
 else
 BIN = ../bin/madc
 endif
-CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
+# The zero-warnings law (owner directive 2026-08-14): a warning is a defect
+# report from a second compiler, so the build refuses one instead of printing
+# it. Every lane is at ZERO as of this commit — host -O0, release -O2,
+# hosted-x86-64-windows, both hosted/cross macOS pairs, and the unit-test
+# compiles — so holding the line costs nothing now; letting warnings
+# accumulate again is what costs.
+#
+# Scope is madc's OWN translation units. MIR builds through its own Makefile
+# with its own flags and is unaffected.
+#
+# Escape hatch for a surprise toolchain (a newer compiler inventing a warning
+# mid-release, say): `make WERROR=0`. Use it to get UNBLOCKED, then fix the
+# warning — the flag is never the fix, and it is not a way to land code that
+# warns. Note this rides CXXFLAGS, so an explicit `make CXXFLAGS=...` also
+# drops it; WERROR=0 is the supported spelling.
+WERROR ?= 1
+WERROR_FLAG = $(if $(filter 0,$(WERROR)),,-Werror)
+CXXFLAGS ?= -std=c++11 -Wall $(WERROR_FLAG) $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
-ARFLAGS ?= rcs
+# ARFLAGS needs `ifeq ($(origin ...),default)`, NOT `?=`. make DEFINES ARFLAGS
+# itself (built-in value `rv`), so its origin is `default` — never `undefined`
+# — and a `?=` here silently no-ops: every archive was built `rv`, which has
+# no `c` (so ar warns "creating <archive>" on a fresh tree) and has `v` (so it
+# narrates every member). This guard still lets an explicit command-line or
+# environment ARFLAGS win, which is what the `?=` was reaching for.
+ifeq ($(origin ARFLAGS),default)
+ARFLAGS = rcs
+endif
 INSTALL ?= install
 INSTALL_DATA ?= $(INSTALL) -m 644
 INSTALL_PROGRAM ?= $(INSTALL) -m 755
@@ -80,16 +109,29 @@ HFILES	= madc.h datadef.h tokens.h datatokens.h
 # (rule below, via $(CXX) -x c so every MODE's target/sysroot flags apply), and
 # madc compiles the SAME sources through c2mir at pack time into AOT ledger
 # modules, so -static-libmadc programs carry this machinery in their own image.
-# One list, both consumers: scripts/ledger_sources.txt is its single owner,
-# read here and by scripts/forest_pack.sh (repo-root-relative paths there).
-RT_LEDGER_SRCS = $(patsubst src/%,%,$(shell grep -vE '^[[:space:]]*(#|$$)' ../scripts/ledger_sources.txt))
-RT_OFILES = $(notdir $(RT_LEDGER_SRCS:.c=.o))
+# One tagged list, every consumer: scripts/ledger_sources.txt is its single
+# owner. The selector projects that list for the platform this C compiler is
+# actually targeting. Cross-madc modes stay Linux here because their C lane
+# is host-built; forest_pack_darwin.sh separately selects darwin sources for
+# the target MIR ledger it cross-freezes.
+RT_LEDGER_TARGET = linux
+ifneq ($(filter hosted-arm64-macos hosted-x86-64-macos,$(MODE)),)
+RT_LEDGER_TARGET = darwin
+endif
+ifeq ($(MODE),hosted-x86-64-windows)
+RT_LEDGER_TARGET = win64
+endif
+RT_LEDGER_MANIFEST = ../scripts/ledger_sources.txt
+RT_LEDGER_SELECTOR = ../scripts/select_ledger_sources.sh
+RT_LEDGER_INPUTS = $(RT_LEDGER_MANIFEST) $(RT_LEDGER_SELECTOR)
+RT_LEDGER_SRCS := $(patsubst src/%,%,$(shell bash $(RT_LEDGER_SELECTOR) $(RT_LEDGER_TARGET) $(RT_LEDGER_MANIFEST)))
+RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 # An empty list would link a madc whose try/catch and VLA runtime is simply
 # ABSENT — it builds and then dies at run time. Fail the build instead.
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -110,7 +152,14 @@ OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
-MIRDIR	= /workspace/mir
+# MIR lives IN this repository (subtree import of the former fork —
+# docs/plans/mir-into-madc-repo-2026-08-11.md); third_party/mir is ordinary
+# madc source. libmir build products land OUTSIDE the subtree, under
+# ../obj/mir/<variant>, so a build never dirties third_party/mir.
+# Deliberately outside `clean`'s scope (madc objects only) — `mirclean`
+# removes them.
+MIRDIR	= $(abspath ../third_party/mir)
+MIRBUILD = $(abspath ../obj/mir)
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
@@ -124,13 +173,13 @@ LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 # the sources so a new consumer joins automatically.
 VERSION_DEP_SRCS := $(shell grep -l 'MADC_VERSION_STR' *.cpp 2>/dev/null)
 $(VERSION_DEP_SRCS:%.cpp=$(OBJDIR)/%.o) $(VERSION_DEP_SRCS:%.cpp=$(PICOBJDIR)/%.o): ../VERSION
-MIRLIB	= $(MIRDIR)/libmir.a
+MIRLIB	= $(MIRBUILD)/host/libmir.a
 ifeq ($(MODE),cross-aarch64-linux)
 # One MIR variant lib per target (mir-target.h knobs; zero mir makefile
 # changes — the variant builds through the stock CPPFLAGS hook, rule below).
 # The same target define compiles madc's objects (per-mode obj tree), and
 # MADC_CROSS_TARGET names the target for the driver's emit-only guard.
-MIRLIB	= $(MIRDIR)/build-aarch64-linux/libmir.a
+MIRLIB	= $(MIRBUILD)/aarch64-linux/libmir.a
 DEFINES += -DMIR_TARGET_AARCH64_LINUX -DMADC_CROSS_TARGET='"aarch64-linux"'
 endif
 # Shared Apple-target facts (cross + hosted MODEs). DARWIN_PRELUDE_TARGET is
@@ -175,14 +224,14 @@ LLVM_LIBCXX_INC ?= /usr/lib/llvm-18/include/c++/v1
 ifeq ($(MODE),cross-x86-64-macos)
 # MADC_CROSS_APPLE: Mach-O link environment (implicit libSystem, no ELF
 # sonames/RUNPATH, runtime-free programs only — madc_cir.cpp).
-MIRLIB	= $(MIRDIR)/build-x86-64-macos/libmir.a
+MIRLIB	= $(MIRBUILD)/x86-64-macos/libmir.a
 DEFINES += -DMIR_TARGET_X86_64_MACOS -DMADC_CROSS_TARGET='"x86-64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = x86-64
 DARWIN_PRELUDE_TARGET = x86_64-apple-macos$(MACOS_MINOS)
 MADC_LINKLIBS_STANDIN = 1
 endif
 ifeq ($(MODE),cross-arm64-macos)
-MIRLIB	= $(MIRDIR)/build-arm64-macos/libmir.a
+MIRLIB	= $(MIRBUILD)/arm64-macos/libmir.a
 DEFINES += -DMIR_TARGET_ARM64_MACOS -DMADC_CROSS_TARGET='"arm64-macos"' -DMADC_CROSS_APPLE
 DARWIN_ARCH = arm64
 DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
@@ -204,11 +253,15 @@ DARWIN_ARCH = x86-64
 endif
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
-CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) -fuse-ld=lld
-CXX = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS) -fuse-ld=lld
+# -fuse-ld=lld is a LINK flag and rides $(LIBS) below, not the driver: on a
+# compile-only invocation clang warns "argument unused during compilation"
+# once per TU, which is every object in the mode.
+CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX_BASE = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX = $(CXX_BASE) $(DARWIN_CXX_ISYS)
 AR  = llvm-ar-18
 MODE_OPTFLAGS = -O2
-MIRLIB	= $(MIRDIR)/build-$(MODE)/libmir.a
+MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 # The configure-probed host packages (madcdat backends) do not exist in the
 # SDK: hosted modes build as if --enable-madcdat=no. zstd — the forest/pch
 # container codec the release pack ships — comes from a per-target static
@@ -224,9 +277,105 @@ MADC_STORAGE_DB_OFILES =
 # export their globals to dlsym without -rdynamic, and --whole-archive is
 # spelled -force_load <archive> (two ld64 args: the bare archive path that
 # follows WHOLE_ARCHIVE_BEGIN on the link line is its operand).
-LIBS = -lz -lm $(OPTIONAL_LIBS)
+LIBS = -fuse-ld=lld -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
+endif
+# --- hosted-on-Windows MODE (Track 6.4, docs/plans/2026-08-12-windows-release-lane.md).
+# The win64 toolchain: mingw-w64, -posix flavor (winpthreads), over UCRT.
+# The UCRT recipe (W0, scripts/win_ucrt_gate.sh is the reference): -D_UCRT
+# alone turns mingw's ANSI-stdio interposer OFF and %Lf on x87 80-bit long
+# double silently prints 0.00, so __USE_MINGW_ANSI_STDIO=1 always rides with
+# it; link-side the specs swap replaces gcc's hard-coded -lmsvcrt with -lucrt,
+# and win_ucrt_compat.S supplies the _setjmp/_setjmpex thunks that
+# msvcrt-compiled static libs (libstdc++, winpthreads) import.
+# __USE_MINGW_SETJMP_NON_SEH is mandatory lane-wide (W2.1): SEH-default
+# longjmp runs RtlUnwindEx frame-consistency unwinding, which faults crossing
+# a JIT frame with no RUNTIME_FUNCTION entry. All three defines live in
+# CC/CXX (not DEFINES) so the parse-time host-table capture (HOSTTAB_GEN)
+# sees the same posture the binary is built with.
+# The release pack also needs this root while the outer make has no hosted
+# MODE selected, so keep the stage owner outside the mode conditional.
+WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
+
+ifeq ($(MODE),hosted-x86-64-windows)
+WIN_MINGW = x86_64-w64-mingw32
+# _USE_MATH_DEFINES: mingw math.h hides M_PI (and friends) under
+# __STRICT_ANSI__, which the captured -std=c++17 posture defines. On
+# glibc targets g++ always predefines _GNU_SOURCE, so the Linux lane
+# effectively always has M_PI — this is mingw's own documented knob for
+# the same surface. Rides WIN_UCRT_FLAGS so the HOSTTAB capture seeds
+# it into every script TU (and the host build, harmlessly).
+WIN_UCRT_FLAGS = -D_UCRT -D__USE_MINGW_ANSI_STDIO=1 -D__USE_MINGW_SETJMP_NON_SEH -D_USE_MATH_DEFINES
+WIN_SPECS = $(abspath $(OBJDIR))/ucrt.specs
+# Parse-time generation (the EMBED_GEN/HOSTTAB precedent): the specs file
+# must exist before ANY compile in this make layer, including the recursive
+# MIR variant make, whose CC carries the -specs flag too.
+WIN_SPECS_GEN := $(shell mkdir -p $(abspath $(OBJDIR)); $(WIN_MINGW)-gcc-posix -dumpspecs | sed 's/-lmsvcrt/-lucrt/g' > $(WIN_SPECS); echo done)
+# UCRT-flavor libstdc++ (scripts/build_win_ucrt_libstdcxx.sh, staged per
+# container like the zstd builds): the C++ ABI leaks the CRT flavor via
+# std::mbstate_t (msvcrt: int; UCRT: _Mbstatet), so the distro's prebuilt
+# msvcrt-flavor libstdc++ cannot satisfy -D_UCRT objects (fpos<mbstate_t>
+# symbols — seekg/seekpos — mangle differently). Headers AND archive both
+# come from the stage: bits/c++config.h is build-generated, so mixing the
+# distro headers with the staged archive would be the same mismatch again.
+# The -isystem pair rides CXX (the DARWIN_CXX_ISYS pattern) so HOSTTAB_CXX
+# inherits it — madc serves user C++ the exact header text it was built
+# against.
+WIN_CXX_ISYS = -nostdinc++ -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0 -isystem $(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0/x86_64-w64-mingw32
+CC  = $(WIN_MINGW)-gcc-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
+CXX_BASE = $(WIN_MINGW)-g++-posix $(WIN_UCRT_FLAGS) -specs=$(WIN_SPECS)
+CXX = $(CXX_BASE) $(WIN_CXX_ISYS)
+AR  = $(WIN_MINGW)-ar
+MODE_OPTFLAGS = -O2
+MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
+# The configure-probed host packages do not exist for the cross target:
+# hosted modes build as if --enable-madcdat=no (the darwin posture). zstd
+# (the forest/pch container codec) comes from the per-target static stage
+# in the container, beside the darwin twins (W4.1; the release pack must
+# carry the zstd profile — the freeze path's zlib arm is a loud fallback).
+HAVE_MADCDAT = 0
+FEATURE_DEFINES =
+WIN_ZSTD_DIR ?= /workspace/zstd
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(WIN_ZSTD_DIR)/lib
+OPTIONAL_LIBS = $(WIN_ZSTD_DIR)/libzstd-x86-64-windows.a
+MADC_STORAGE_DB_OFILES =
+# win64 link facts: no ELF -rdynamic/-ldl (madcdl rides LoadLibrary out of
+# kernel32); -Wl,--export-all-symbols is the -rdynamic analogue — madcdl's
+# sym_default walk needs GetProcAddress(GetModuleHandle(NULL)) to see our
+# statics. libstdc++ links SHARED (the staged libstdc++-6.dll, copied
+# beside the exe by the rule below): PE ld auto-excludes runtime archives
+# from --export-all-symbols, so a -static-frozen libstdc++ exposes no _Z*
+# symbols and every script-side mangled-direct std:: import goes undefined
+# at MIR link. The DLL's export table is the resolution surface instead
+# (madcdl_sym_default walks the loaded module — the darwin flat-bind
+# analogue), and exe + scripts share ONE libstdc++ instance, the Linux
+# posture. winpthread is ALSO shared (the stage's UCRT-flavor
+# libwinpthread-1.dll): the shared libstdc++ imports it by name, and a
+# static-in-exe copy beside it would be a second winpthread instance —
+# pthread objects cross the exe<->DLL boundary (std::thread), and
+# winpthread handles are per-instance allocations. zlib stays frozen via
+# the -Bstatic window; -static-libgcc keeps the distro's msvcrt-flavor
+# libgcc DLL out of the process; the driver's trailing -lstdc++ resolves
+# in -Bdynamic mode, where ld prefers the stage's libstdc++.dll.a over
+# its .a. System DLLs stay imports either way (ws2_32/kernel32/ucrt are
+# import libs).
+LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
+# The compat thunks join every link via the object list (compile rule beside
+# the other per-mode rules below); riding CORE_OFILES also puts them in the
+# per-mode libmadc archives, where any downstream consumer link needs them.
+CORE_OFILES += win_ucrt_compat.o
+# Per-mode include-table source (the darwin precedent): the mingw header
+# world is captured from the cross compiler into the obj tree, never src/.
+SYS_INCLUDES_CPP = $(OBJDIR)/sys_include_paths.cpp
+export MADC_SYS_INCLUDES_OUT = $(SYS_INCLUDES_CPP)
+# A packed, compiler-less Windows install normally serves headers from its
+# forest. A deliberately live-tokenized conditional husk still needs the
+# exact target header text, though (task #57: standalone errno.h). Stage the
+# file from the SAME mingw-w64 header tree this mode compiles against and add
+# it only to this mode's embedded table; host/Linux tables stay untouched.
+WIN_MINGW_HEADERS ?= /usr/share/mingw-w64/include
+WIN_EMBED_FALLBACKS = 1
 endif
 # The compiler whose `#include <...>` world and predefined-macro environment
 # this madc presents to the code it COMPILES. Normally $(CXX) — the compiler
@@ -299,6 +448,10 @@ ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
 EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
+else ifdef WIN_EMBED_FALLBACKS
+WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_win_header_fallbacks.sh $(WIN_MINGW_HEADERS) $(WIN_EMBED_FALLBACK_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(WIN_EMBED_FALLBACK_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 endif
@@ -528,11 +681,23 @@ FORCE:
 cross-aarch64-linux:
 	$(MAKE) MODE=cross-aarch64-linux ../bin/madc-aarch64-linux
 
-# MIR variant lib for the cross target: the fork's stock makefile with the
-# target define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS
-# clobbers the fork makefile's default -I$$(SRC_DIR)).
-$(MIRDIR)/build-aarch64-linux/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' build-aarch64-linux/libmir.a
+# Host libmir + the c2m compiler the CIR-diff / ABI gates drive: built by
+# madc's own build, so a fresh clone needs no separate MIR step (migration
+# plan §11). FORCE delegates up-to-dateness to the MIR makefile's own
+# dependency tracking; a current build is a cheap no-op.
+$(MIRBUILD)/host/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/host
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/host $(MIRBUILD)/host/libmir.a $(MIRBUILD)/host/c2m
+
+mirclean:
+	rm -rf $(MIRBUILD)
+
+# MIR variant lib for the cross target: the MIR makefile with the target
+# define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS clobbers
+# the MIR makefile's default -I$$(SRC_DIR)).
+$(MIRBUILD)/aarch64-linux/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/aarch64-linux
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/aarch64-linux CPPFLAGS='-I. -DMIR_TARGET_AARCH64_LINUX' $(MIRBUILD)/aarch64-linux/libmir.a
 
 # Emit-only cross compilers for the Mach-O targets (axis B): the same MIR
 # variant-lib pattern; the writer signs ad-hoc, so the produced binaries
@@ -543,11 +708,13 @@ cross-x86-64-macos:
 cross-arm64-macos:
 	$(MAKE) MODE=cross-arm64-macos ../bin/madc-arm64-macos
 
-$(MIRDIR)/build-x86-64-macos/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' build-x86-64-macos/libmir.a
+$(MIRBUILD)/x86-64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/x86-64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/x86-64-macos CPPFLAGS='-I. -DMIR_TARGET_X86_64_MACOS' $(MIRBUILD)/x86-64-macos/libmir.a
 
-$(MIRDIR)/build-arm64-macos/libmir.a: FORCE
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' build-arm64-macos/libmir.a
+$(MIRBUILD)/arm64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/arm64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/arm64-macos CPPFLAGS='-I. -DMIR_TARGET_ARM64_MACOS' $(MIRBUILD)/arm64-macos/libmir.a
 
 # The MH_OBJECT `.o` gate (Mach-O axis B step 4): builds BOTH cross madcs
 # first, so the gate can never validate a stale binary, then runs the two
@@ -568,6 +735,11 @@ machogate: cross-arm64-macos cross-x86-64-macos
 # when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
 # side's job (W2, scripts/mac_battery.sh).
 release-macos:
+	# verify_macho_release.sh reads the packed forests back through the
+	# HOST bin/madc, whose freeze-context hash must match the tree that
+	# froze them (the version string rides the predefined-macro table) —
+	# so the dev binary is rebuilt first. No-op when already current.
+	$(MAKE)
 	$(MAKE) hosted-arm64-macos
 	$(MAKE) hosted-x86-64-macos
 	llvm-strip-18 -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
@@ -586,15 +758,44 @@ hosted-arm64-macos:
 	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
-# detection selects the Apple arms natively — no MIR_TARGET knobs. (The
-# fork makefile has no mkdir rule for new BUILD_DIRs — create it here.)
-$(MIRDIR)/build-hosted-arm64-macos/libmir.a: FORCE
-	mkdir -p $(MIRDIR)/build-hosted-arm64-macos
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-arm64-macos CC='$(CC)' AR='$(AR)' build-hosted-arm64-macos/libmir.a
+# detection selects the Apple arms natively — no MIR_TARGET knobs.
+$(MIRBUILD)/hosted-arm64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-arm64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-arm64-macos CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-arm64-macos/libmir.a
 
-$(MIRDIR)/build-hosted-x86-64-macos/libmir.a: FORCE
-	mkdir -p $(MIRDIR)/build-hosted-x86-64-macos
-	$(MAKE) -C $(MIRDIR) BUILD_DIR=build-hosted-x86-64-macos CC='$(CC)' AR='$(AR)' build-hosted-x86-64-macos/libmir.a
+$(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-x86-64-macos
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-macos CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-macos/libmir.a
+
+# madc hosted on Windows (Track 6.4): the win64 twin of the darwin hosted
+# targets. Same explicit-goal shape (binary + emitted-C runtime archive);
+# forest packing is the W4 workstream, so this mode builds the dev forest
+# shape (silent live parse). Run validation: wine + scripts/win_run.sh.
+hosted-x86-64-windows:
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc_rt.dll
+
+# win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
+# UCRT posture + specs swap), so host detection selects the _WIN32 arms
+# natively — no MIR_TARGET knobs, same model as the darwin-host variants.
+$(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
+	mkdir -p $(MIRBUILD)/hosted-x86-64-windows
+	$(MAKE) -C $(MIRDIR) BUILD_DIR=$(MIRBUILD)/hosted-x86-64-windows CC='$(CC)' AR='$(AR)' $(MIRBUILD)/hosted-x86-64-windows/libmir.a
+
+# Windows release artifact (windows lane W4): the win64 twin of `release`.
+# Same strip-before-pack law (strip rewrites the PE image and discards
+# appended bytes; PE export tables are sections and survive it). The
+# freezer is the exe ITSELF under wine — the Linux self-freeze model, not
+# the darwin cross-freezer (W4 execution decisions in the lane plan):
+# producer == consumer, so LOADED == parsed is exact by construction. The
+# pack script's verify legs (--dump-forest, --run-frozen, bind-cache
+# equivalence) run the EXACT shipped bytes under wine. The suite-facing
+# hosted exe stays live-parse; this is the packed product twin.
+release-windows:
+	$(MAKE) hosted-x86-64-windows
+	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
+	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
+	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
+	cd .. && bash scripts/verify_pe_release.sh bin/madc-release-x86-64-windows.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
@@ -662,7 +863,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ]; then ldconfig 2>/dev/null || true; fi
 
 clean:
-	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos ../obj/hosted-arm64-macos ../obj/hosted-x86-64-macos
+	rm -rf ../obj/develop ../obj/debug ../obj/release ../obj/cross-aarch64-linux ../obj/cross-x86-64-macos ../obj/cross-arm64-macos ../obj/hosted-arm64-macos ../obj/hosted-x86-64-macos ../obj/hosted-x86-64-windows
 	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
@@ -699,6 +900,15 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-one-macro-expander.sh
+	@cd .. && bash scripts/check-one-aggregate-layout.sh
+	@cd .. && bash scripts/check-one-dl-owner.sh
+	@cd .. && bash scripts/check-one-spawn-owner.sh
+	@cd .. && bash scripts/check-one-mmap-owner.sh
+	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
+	@cd .. && bash scripts/check-cross-mode-compiles.sh
+	@cd .. && bash scripts/check-i64-spec-spelling.sh
+	@cd .. && bash scripts/check-ns-header-widths.sh
 	@cd .. && bash scripts/check-template-thaw-choke.sh
 	@cd .. && bash scripts/check-ref-arg-lowering-owner.sh
 	@cd .. && bash scripts/check-fn-template-deduction-owner.sh
@@ -712,6 +922,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
 	@cd .. && bash scripts/class_pattern_equivalence.sh
+	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
 	@cd .. && bash scripts/forest_emitpack_gate.sh
@@ -727,6 +938,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
+	@cd .. && timeout 1500 bash scripts/win_posix_archive_gate.sh
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).
@@ -807,7 +1019,7 @@ $(LIBMODE_STAMP):
 	@rm -f $(LIBDIR)/.libmode-*
 	@touch $@
 
-$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
+$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(LIBMADC_STATIC_OBJS)
@@ -815,12 +1027,12 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP)
 # The emitted-C runtime subset (W3): the SAME ledger objects libmadc holds,
 # re-archived alone so `cc emitted.c -lmadc_rt` links without the full
 # runtime. No separate source list — membership is ledger_sources.txt's.
-$(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP)
+$(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
-$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP)
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(LIBDIR)
 	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 # A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
@@ -865,24 +1077,88 @@ $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 # `-x c` rather than a separate $(CC) so every MODE's target/sysroot flags
 # (the hosted-darwin CXX carries -target/--sysroot) apply unchanged; the
 # C++ standard flag from CXXFLAGS must NOT come along, hence its own flag set.
-RT_CFLAGS = -x c -std=c11 -Wall $(MODE_OPTFLAGS)
+RT_CFLAGS = -x c -std=c11 -Wall $(WERROR_FLAG) -ffunction-sections -fdata-sections $(MODE_OPTFLAGS)
+# ...but the C++-ONLY header flags in CXX (-nostdinc++ plus the C++ -isystem
+# pair) must not ride a `-x c` compile. gcc says so out loud ("valid for
+# C++/ObjC++ but not for C"), and the quiet half is worse: a C++ standard
+# library's include dir on a C compile's SYSTEM path lets its wrappers for C
+# header names shadow the real ones. CXX_BASE is the same driver carrying the
+# same target/sysroot flags WITHOUT that block — the two cross modes define it
+# beside their CXX; every other mode adds no C++-only flags, so it is just CXX.
+CXX_BASE ?= $(CXX)
+# -MMD cannot see command-line flag changes. Bump this version whenever
+# RT_CFLAGS or the PIC-only runtime flags change; both runtime object families
+# depend on the per-mode stamp so neither can silently retain the old flags.
+RT_FLAGS_VERSION = 2
+RT_FLAGS_STAMP = $(OBJDIR)/.rt-flags-v$(RT_FLAGS_VERSION)
+$(RT_FLAGS_STAMP):
+	@mkdir -p $(OBJDIR)
+	@rm -f $(OBJDIR)/.rt-flags-v*
+	@touch $@
+$(addprefix $(OBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
+$(addprefix $(PICOBJDIR)/,$(RT_OFILES)): $(RT_FLAGS_STAMP)
 $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
-	$(CXX) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
-# Apple-target modes compile the PER-MODE embedded_headers.cpp (generated at
-# parse time into the obj tree, EMBED_GEN above) — never src/embedded_headers.cpp,
-# which stays the committed include/madc/-only table for host builds.
-ifdef DARWIN_PRELUDE_TARGET
+# Target modes with an extra header root compile the PER-MODE
+# embedded_headers.cpp (generated at parse time into the obj tree, EMBED_GEN
+# above) — never src/embedded_headers.cpp, which stays the committed
+# include/madc/-only table for host builds.
+ifdef EMBEDDED_HEADERS_CPP
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
 
 # Per-mode include-table source (see SYS_INCLUDES_CPP above): same shape as
 # embedded_headers.o — the generated .cpp lives in the obj tree, never src/.
+# Guarded by the variable, not the mode family: every mode that captures a
+# foreign header world (darwin hosted+cross, windows hosted) sets it.
+ifdef SYS_INCLUDES_CPP
 $(OBJDIR)/sys_include_paths.o: $(SYS_INCLUDES_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
+
+# UCRT setjmp compat thunks (W0): plain cpp-driven assembly, no -MMD (the
+# one include is windows-lane-frozen); assembled by the mode's own CC so a
+# future arm64-windows twin reuses the rule unchanged.
+ifeq ($(MODE),hosted-x86-64-windows)
+$(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
+	@mkdir -p $(OBJDIR)
+	$(CC) -c -o $@ $<
+
+# Runtime DLLs staged beside the exe (the darwin dylib-beside-binary
+# analogue): the loader searches the exe's directory first, so wine, the
+# real-Windows runner, and the release zip all pick these UCRT-flavor
+# copies over anything else by name.
+../bin/libstdc++-6.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libstdc++-6.dll
+	cp -p $< $@
+
+../bin/libwinpthread-1.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libwinpthread-1.dll
+	cp -p $< $@
+
+# libmadc_rt.dll (W3.5): the win64 twin of libmadc.so — the runtime
+# provider AOT images (madc -o prog.exe) import madc_puts / the
+# madc_value_* bridge / the __madc_* helpers from, and the DLL half of
+# the external-link story (the import lib serves
+# `x86_64-w64-mingw32-gcc prog.o -lmadc_rt.dll`). Whole-archive: loaded
+# programs reference these symbols, the DLL itself does not, so plain
+# archive semantics would drop their objects. --export-all-symbols (in
+# LIBS) is the export surface — plain names, the darwin flat-bind
+# analogue. Staged in bin/ beside madc.exe: the PE loader's app-dir rule
+# serves madc.exe's own LoadLibrary probe, wine, win_run.sh's
+# adjacent-DLL shipping, and the release zip alike.
+# The .def rides the link: PE ld auto-excludes libmingwex/oldnames code
+# from --export-all-symbols, but AOT images import the mingw-stdio map's
+# surface (__mingw_printf family, *l math, dirent) from THIS DLL — the
+# .def re-adds exactly the map's names, generated from the one map owner
+# so the lists can never drift. --export-all-symbols stays on the line:
+# with a .def present ld would otherwise export ONLY the .def names.
+../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
+	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def $(MIRDIR)/mir-int128-helper.h
+	$(CXX) -shared -o $@ $(OBJDIR)/libmadc_rt.def -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
@@ -895,7 +1171,7 @@ ifdef HOSTED_DARWIN_TARGET
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
 
-$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt
+$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
 	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
@@ -905,7 +1181,7 @@ $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 
 $(PICOBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(PICOBJDIR)
-	$(CXX) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) -fPIC $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Auto-generated per-object header dependencies (from -MMD -MP above). A changed
 # .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.
