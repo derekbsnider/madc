@@ -2,9 +2,25 @@
 
 ## Status
 
-**DESIGNED, NOT STARTED.** Owner-approved in session #99: mechanism (approach
-A), return type (`madc::value`), PHP-fidelity rule, pointer recursion with loop
-detection, and the iteration-protocol prerequisite (Option 1). No code written.
+**IN PROGRESS — session #100 (2026-08-17), branch
+`feature/php-dump-intrinsics-claude`.** Owner-approved in session #99:
+mechanism (approach A), return type (`madc::value`), PHP-fidelity rule, pointer
+recursion with loop detection, and the iteration-protocol prerequisite
+(Option 1).
+
+Landed so far (each its own commit, each green in JIT + `--exe` + `--obj`):
+
+| slice | state |
+|---|---|
+| S0 — the range-for crash | **DONE.** Type-checked index protocol + one owner for the `operator[]` call. `tests/testforeachkeyed.mad`, `tests/testforeachrefindex.mad` |
+| S3a — `print_r` scalars | **DONE.** `tests/testphpprintr.mad`, PHP-oracled |
+| S3b — `print_r` aggregates | **DONE.** structs, classes, unions, anonymous unions, bit-fields, fixed arrays. `tests/testphpprintrstruct.mad`, PHP-oracled |
+| S4 — `var_dump` | **IN FLIGHT** (one walk, two renderers; real C type words) |
+| S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12 |
+| S5 — containers | NOT STARTED |
+| S6 — `madc::value` / `array` | NOT STARTED — see §12 for what it needs that the rest does not |
+
+§12 records what implementation TAUGHT us that the design could not know.
 
 This document is the implementation contract. A cold reader should need nothing
 else except the files it names.
@@ -418,3 +434,114 @@ dynamic value as PHP would render the value it holds.
 | iteration resolves by name | `src/cir_builder.cpp` ~21980, `findMethod("size")` / `findMethod("operator[]")` |
 | `DataDefSTRUCT` holds the layout facts | `include/datadef.h` ~644-700 |
 | `namespace php` block is declaration-only for the string family | `include/madc/ns_php:42` |
+
+## 12. Amendments from implementation (session #100)
+
+Everything here was learned by building it. Where it contradicts an earlier
+section, THIS section is current.
+
+### 12.1 The walk reads member ACCESSES, not offsets — a stronger law
+
+§5 said the dumper reads `DataDefSTRUCT` and never computes a layout fact. The
+implementation does better: it never READS an offset either. Members are emitted
+as `obj.member` access nodes (`N_FIELD` / `N_IND`), so c2mir resolves them
+against the struct `class_struct_members` emitted, and the dumper inherits — for
+free and unbreakably — the bit-field shift/mask rule, anonymous-aggregate
+transparency, and base flattening. Any future member-reading code here should
+follow the same rule: emit an access, do not address arithmetic.
+
+`member_offsets` is therefore NOT consulted at all. The parts of
+`DataDefSTRUCT` the walk does read: `members`, `member_counts`,
+`member_array_flags`, `member_access`, `member_origin`, `union_layout`.
+
+### 12.2 A shadowed inherited member is skipped (a named limit)
+
+`class_struct_members` renames a base member hidden by a same-named derived one
+to `<name>__flatN`, and that rule has **no reader** — `grep __flat` finds one
+site, the emitter. So `obj.<name>` cannot address the hidden member, and the
+walk skips it rather than print the wrong storage. Including it requires ONE
+owner for "the emitted field name of member i", shared by the emitter and any
+reader. That refactor is not part of this arc.
+
+### 12.3 The two-argument `print_r(v, true)` needs more than a declaration
+
+A bodyless namespace template registers ONE placeholder `Variable` per name
+(`register_skipped_namespace_template_function`), created with NO parameters,
+and its return type comes from the FIRST declaration. So a second declaration
+`value print_r(const T &, bool)` would NOT give the call a `value` type: the
+placeholder still returns `void`, and `value s = php::print_r(x, true);` would
+type-check against `void`. Arity dispatch at the intercept is easy (the argument
+count is right there); the RETURN TYPE is the blocker.
+
+Also unverified: whether a madc function can return a `value` (ddARRAY runtime
+object) BY VALUE at all. `<ns_madc>`'s whole API is `value &f(value &out, ...)`
+— the caller supplies the object. If by-value return is not supported, the PHP
+call shape `$s = print_r($x, true)` cannot be honoured as-is and the owner must
+choose between `php::print_r(out, x)` and waiting for by-value value returns.
+**Ask before implementing this form.**
+
+### 12.4 `var_dump`'s type word is the CANONICAL type, by construction
+
+There is no "source spelling of a type" owner in madc to reuse: `DataDef::name`
+for `int` is not reliably `"int"` (canonicalization maps the simple types by
+name, which is why `std::map<int,int>` mangles as `map_int32_t_int32_t_...`).
+So `dump_scalar_type_word` maps `DataType` -> spelling in ONE table. The
+consequence is honest and worth stating in the docs: var_dump reports the
+canonical type, not the typedef the source wrote (`size_t` shows as
+`unsigned long`) — exactly what `typeid` does in g++. `long` and `long long`
+share `dtINT64` in madc and therefore share the word `long`.
+
+An aggregate is spelled `struct X` / `union X`, never `class X`: madc PROMOTES a
+plain struct to `DataDefCLASS` when it earns class-hood, so "class" would be a
+claim about the source that the type graph cannot support.
+
+### 12.5 Resequencing: containers before the `begin()`/`end()` protocol
+
+The plan ordered S1 (the iteration protocol) second. Implementation shows the
+dumper does not need it for the container cases that matter most:
+`std::string`, `std::vector` and `std::array` are POSITIONAL sequences, and S0
+left behind exactly the type-checked predicate for them
+(`class_index_iteration_protocol`). Only ASSOCIATIVE containers (`map`, `set`,
+`unordered_*`) need `begin()`/`end()`.
+
+So the order is now: S4 (var_dump) -> S5a (positional containers, including
+`std::string` as a sequence of char) -> S3c (pointers) -> S1 (begin/end) -> S5b
+(associative) -> S6 (`madc::value`). S1 is still owed — `for (auto &kv : m)`
+does not work today and `for (int v : s)` over a `std::set` errors where g++
+runs — it is just no longer the gate for the dump feature.
+
+### 12.6 Pointers (S3c) need a real generated FUNCTION and a runtime stack
+
+The compile-time-expanded walk cannot follow a pointer: `struct Node { Node
+*next; }` recurses forever at expansion time. Following pointers therefore
+needs
+
+- a GENERATED dumper function per pointee type (so recursion is a runtime call),
+  which makes the column a RUNTIME parameter instead of a literal;
+- a runtime ancestor STACK, not a visited set: PHP prints the same array twice
+  when it appears twice, and says `*RECURSION*` only for a cycle — so the test
+  is "is this address currently being printed", push/pop around each aggregate.
+
+Both are new machinery. Nothing landed so far blocks them, and the primitives
+already take `col` as an ordinary `int` argument.
+
+### 12.7 `madc::value` (S6) is the ONE type that needs a runtime walker
+
+Every other type is walked at compile time because the compiler knows its
+shape. A `madc::value` carries its own runtime kind, so its walk must switch on
+that kind AT RUNTIME. That makes it the only case that wants a real runtime
+function rather than generated code — and it cannot live in `src/rt/rt_dump.c`,
+because the ledger's membership rule is strict C11 with no C++ dependency and
+the value API is C++. Two candidate shapes, to be decided when the slice starts:
+generated code driving the existing extern-C value API
+(`madarray_size` / `__php_array_get_*` plus a kind query) in a loop, or a Tier-B
+runtime function that a `-static-libmadc` Mach-O program cannot link. The first
+keeps the ledger promise; check whether a kind query is exported before choosing.
+
+### 12.8 Runtime home and the ledger
+
+The output primitives live in `src/rt/rt_dump.c`: strict C11, `printf`-based
+(NOT `std::cout` — a C++ dependency would disqualify it), registered in
+`scripts/ledger_sources.txt` as `all`. That one line is the whole build wiring:
+the Makefile derives `RT_OFILES` from the manifest. Verified on the
+`--emit=c11` -> `gcc -O0` lane as well as JIT / `--exe` / `--obj`.
