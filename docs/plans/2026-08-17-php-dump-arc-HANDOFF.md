@@ -1,4 +1,4 @@
-# HANDOFF — after v0.85.0 (php dump intrinsics), session #100, 2026-08-17
+# HANDOFF — the php dump intrinsics arc (INCOMPLETE), session #100, 2026-08-17
 
 **Read this fully before acting. Assume a cold start.** Run `bash scripts/resume.sh`
 first — it prints live git state and orphaned background jobs, which a compaction
@@ -12,13 +12,23 @@ from it; its §4 (the two macOS MIR-blob causes) is carried forward here as §4.
 
 ## 1. Where things stand
 
-**v0.85.0 is released on `develop`.** `master` still carries **v0.82.0**;
-v0.83.0, v0.84.0 and v0.85.0 are all unpromoted, deliberately (§5).
+**The dump arc is merged to `develop` and carries NO version bump.** VERSION
+stays **0.84.0**; the CHANGELOG entry sits under `[Unreleased]`.
+
+> **OWNER, 2026-08-17:** *"I don't mind the merge, I just don't want a version
+> bump until it's done."* So the merge is fine and the release is not. Do not cut
+> a version for this arc until §3's slices are actually finished — and note this
+> refines the standing release-cadence rule ("a feature merge to develop comes
+> WITH a release"): that applies to a COMPLETE feature. An incomplete arc merged
+> as a checkpoint stays unreleased.
+
+`master` still carries **v0.82.0**; v0.83.0 and v0.84.0 are released on
+`develop` and unpromoted, deliberately (§5).
 
 Working tree clean. Untracked `donut.c`, `test.mad`, `testsort.mad` are the
 owner's, **not ours to commit**.
 
-## 2. Validation of record (v0.85.0)
+## 2. Validation of record (the merged tree)
 
 | lane | result |
 |---|---|
@@ -71,17 +81,48 @@ In the order §12 recommends:
   `-static-libmadc` Mach-O program cannot link. Check whether a kind query is
   exported before choosing.
 
-**Two questions need the OWNER, not a decision from us:**
+**`print_r($x, true)` — the diagnosis below CORRECTS what this handoff said
+before. Read it and ignore any earlier "second overload" framing.**
 
-1. **`print_r($x, true)`'s return form.** PHP's call shape cannot be honoured
-   as-is: a bodyless namespace template registers ONE placeholder `Variable` with
-   NO parameters, and its return type comes from the FIRST declaration — so a
-   second declaration returning `value` would still type the call as `void`
-   (plan §12.3). It is also unverified whether a madc function can return a
-   `value` BY VALUE at all; `<ns_madc>`'s entire API is `value &f(value &out, …)`.
-   The alternatives are `php::print_r(out, x)` (the house idiom, not PHP's shape)
-   or waiting for by-value value returns.
-2. ~~`var_dump`'s container type word~~ — **DONE in v0.85.0.** The owner ruled the
+**OWNER, 2026-08-17:** *"php.net/print_r defines print_r as
+`function print_r(mixed $value, bool $return = false): string|true` … so it's
+not two functions, it's one function with a default value for the second
+parameter."* Correct, and it dissolves the blocker I had recorded (that a second
+declaration's return type would lose to the first's). There are no overloads
+here to collide. The faithful mapping is direct:
+
+| PHP | madc |
+|---|---|
+| `mixed $value` | `template<class T> … (const T &v` |
+| `bool $return = false` | `, bool ret = false)` |
+| `string\|true` | `value` — madc's mixed type holds either the string or `true` |
+
+`value` is not an awkward stand-in for the union return; a union-typed result is
+what `value` IS (v0.75.0, `project_value_intrinsic`).
+
+**The real blocker, verified in the code rather than reasoned about:**
+
+1. **The placeholder is minted with ZERO parameters, so there is nowhere for a
+   default argument to live.** `register_skipped_namespace_template_function`
+   (`src/parser.cpp:50433`) ends at
+   `pgm.addFunction(parse_id, datatype_vec_t{ret ? ret : &ddINT64}, NULL)` — and
+   `addFunction`'s second argument is the DATATYPE VECTOR
+   (`include/madc.h:4889`), here a single element holding only the return type.
+   No parameters ⇒ `FuncDef::param_defaults` (`include/madc.h:221`) is empty ⇒
+   the call-site default fill that already exists for free functions
+   (`src/parser.cpp:25199`) and methods (`:18063`) has nothing to fill from.
+   **The information is already available at that exact point:**
+   `capture_free_function_overload` runs a few lines earlier and captures every
+   declaration's signature so "the call site can select by arity". So the fix is
+   to carry the declared parameters and their defaults onto the placeholder — not
+   to invent new state, and not a new arity mechanism.
+2. **Still genuinely open: can a madc function return `value` BY VALUE?** Every
+   value-returning entry in `<ns_madc>` is `value &f(value &out, …)` —
+   out-parameter style throughout, which suggests the by-value path was never
+   needed and therefore never proven. Verify before designing on it. If it does
+   not work, that is a defect to fix at the ABI, not a reason to change PHP's
+   signature.
+2. ~~`var_dump`'s container type word~~ — **DONE.** The owner ruled the
    long canonical spelling unacceptable and it is fixed: `std::string(2) "hi"`,
    `std::vector<std::string>(2)`. The mechanism (inverting
    `Program::namespace_datatype_map` by type IDENTITY, plus a sequence's element
@@ -193,7 +234,7 @@ Each is a refusal with a reason, and each has a named enabler:
 - **Do not re-run suites on already-green content.** A source or freeze-FORMAT
   change invalidates prior greens; docs-only does not.
 
-## 9. Pre-merge `/dupaudit` (run at v0.85.0 merge time) — two families, neither divergent
+## 9. Pre-merge `/dupaudit` — two families, neither divergent
 
 Scope: the branch diff's code files — `src/cir_dump.cpp` (new), `src/cir_builder.cpp`
 class-call builders, `src/parser.cpp`'s classifier, `src/rt/rt_dump.c` (new).

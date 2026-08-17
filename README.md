@@ -210,7 +210,9 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.85.0** (2026-08-17) — `php::print_r` and
+The current release is **v0.84.0** — the forest pack's silent-degradation gate.
+
+**On `develop` and not yet released:** `php::print_r` and
 `php::var_dump` over **any** madc type. The compiler is their implementation:
 they are declared in `<ns_php>` with no definition anywhere, and the CIR builder
 generates a dumper for whatever type the argument has. A struct, a class with
@@ -229,8 +231,10 @@ than guessed at. A range-for crash fell out on the way in: `for (int v :
 std::map<int,int>)` used to SIGSEGV where g++ and clang reject the source, and
 the iteration protocol is type-checked now.
 
-Branch state: v0.85.0 is on `develop`; `master` carries v0.82.0, for which
-public binaries are published on all three platforms.
+Branch state: the dump arc is merged to `develop` with **no version bump** — it
+is incomplete, so it stays unreleased. `master` carries v0.82.0, for which
+public binaries are published on all three platforms; v0.83.0 and v0.84.0 are
+released on `develop` and unpromoted.
 
 Latest validated results:
 
@@ -253,8 +257,6 @@ Latest validated results:
 
 ### Recent Releases
 
-- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
-  over any madc type, PHP-oracled to the byte.
 - [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
   silently; the gate's first run found a lost `long double` member.
 - [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`

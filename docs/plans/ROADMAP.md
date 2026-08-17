@@ -1,6 +1,7 @@
 # madc Roadmap
 
-**✅ php::print_r / php::var_dump OVER ANY TYPE (2026-08-17, v0.85.0):** the two
+**🚧 php::print_r / php::var_dump OVER ANY TYPE (2026-08-17, on `develop`,
+UNRELEASED — the arc is incomplete and carries no version bump):** the two
 PHP dump functions render **any** madc value the way a PHP developer expects PHP
 to render it — not just `array` / `value`. A struct, a class with private and
 protected members, a base-flattened derived class, a union, an anonymous union, a

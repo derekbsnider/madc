@@ -2,10 +2,12 @@
 
 ## [Unreleased]
 
-## [v0.85.0] — 2026-08-17
-
 php::print_r and php::var_dump over ANY madc type — the compiler is their
-implementation, and PHP is the oracle to the byte.
+implementation, and PHP is the oracle to the byte. **Merged to `develop`,
+deliberately UNRELEASED:** the arc is incomplete (pointers, the `begin()`/`end()`
+protocol, associative containers, `madc::value`, and `print_r($x, true)` are all
+still refused by name), and the owner's call on 2026-08-17 was no version bump
+until it is done.
 
 - **`php::print_r(v)` and `php::var_dump(v, ...)` render any madc value the way a
   PHP developer expects PHP to render it.** Not just `array` / `value`: a

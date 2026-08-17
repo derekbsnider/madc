@@ -465,22 +465,46 @@ walk skips it rather than print the wrong storage. Including it requires ONE
 owner for "the emitted field name of member i", shared by the emitter and any
 reader. That refactor is not part of this arc.
 
-### 12.3 The two-argument `print_r(v, true)` needs more than a declaration
+### 12.3 `print_r($x, true)` — ONE function with a default argument
 
-A bodyless namespace template registers ONE placeholder `Variable` per name
-(`register_skipped_namespace_template_function`), created with NO parameters,
-and its return type comes from the FIRST declaration. So a second declaration
-`value print_r(const T &, bool)` would NOT give the call a `value` type: the
-placeholder still returns `void`, and `value s = php::print_r(x, true);` would
-type-check against `void`. Arity dispatch at the intercept is easy (the argument
-count is right there); the RETURN TYPE is the blocker.
+**CORRECTED 2026-08-17 by the owner.** This section previously argued that a
+second declaration `value print_r(const T &, bool)` would lose its return type to
+the first declaration's `void`. That framing was wrong on its own terms and, more
+importantly, solved a problem PHP does not have. PHP's signature is:
 
-Also unverified: whether a madc function can return a `value` (ddARRAY runtime
-object) BY VALUE at all. `<ns_madc>`'s whole API is `value &f(value &out, ...)`
-— the caller supplies the object. If by-value return is not supported, the PHP
-call shape `$s = print_r($x, true)` cannot be honoured as-is and the owner must
-choose between `php::print_r(out, x)` and waiting for by-value value returns.
-**Ask before implementing this form.**
+```php
+function print_r(mixed $value, bool $return = false): string|true
+```
+
+**One** function, a **default** second parameter, a **union** return. So:
+
+| PHP | madc |
+|---|---|
+| `mixed $value` | `template<class T> … (const T &v` |
+| `bool $return = false` | `, bool ret = false)` |
+| `string\|true` | `value` — madc's mixed type holds either the string or `true` |
+
+`value` is the natural home for `string|true`: a union-typed result is what
+`value` is (v0.75.0). No overload set, so nothing to collide.
+
+**The actual blocker, verified in the code:** the placeholder is minted with ZERO
+parameters, so a default argument has nowhere to live.
+`register_skipped_namespace_template_function` (`src/parser.cpp:50433`) ends at
+`pgm.addFunction(parse_id, datatype_vec_t{ret ? ret : &ddINT64}, NULL)`, and
+`addFunction`'s second argument is the DATATYPE VECTOR (`include/madc.h:4889`) —
+here one element, the return type alone. No parameters ⇒ `FuncDef::param_defaults`
+(`include/madc.h:221`) is empty ⇒ the call-site default fill that already works
+for free functions (`src/parser.cpp:25199`) and methods (`:18063`) has nothing to
+read. The signature is already captured next door by
+`capture_free_function_overload` so "the call site can select by arity", so the
+fix carries the declared parameters + defaults onto the placeholder. It does not
+need new state and it is not an arity mechanism.
+
+**Still open and worth verifying first:** whether a madc function can return a
+`value` BY VALUE. Every value-returning entry in `<ns_madc>` is
+`value &f(value &out, ...)`, so the by-value path looks unproven rather than
+known-good. If it turns out broken, that is an ABI defect to fix — not a reason
+to bend PHP's signature into `php::print_r(out, x)`.
 
 ### 12.4 `var_dump`'s type word is the CANONICAL type, by construction
 
@@ -548,7 +572,7 @@ The output primitives live in `src/rt/rt_dump.c`: strict C11, `printf`-based
 the Makefile derives `RT_OFILES` from the manifest. Verified on the
 `--emit=c11` -> `gcc -O0` lane as well as JIT / `--exe` / `--obj`.
 
-### 12.9 What S5a settled about the type word for a container (v0.85.0)
+### 12.9 What S5a settled about the type word for a container
 
 `var_dump` names a container by `DataDef::canonical_cpp_spelling()`, which is the
 only spelling available: the class `name` is a mangled tag
@@ -568,7 +592,7 @@ Two consequences, both accepted deliberately:
   fixtures asserting flavor-stable tails is SUPERSEDED: the fixture pins whole
   lines, because an alias is flavor-stable.
 
-### 12.10 Getting to `std::string` — invert the datatype map (DONE in v0.85.0)
+### 12.10 Getting to `std::string` — invert the datatype map (DONE on `develop`)
 
 **Correction to §12.9's first draft: a type -> alias map DOES exist.**
 `Program::namespace_datatype_map` is `namespace -> (name -> TokenDataType *)`, and

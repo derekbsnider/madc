@@ -1,4 +1,10 @@
-# Release v0.85.0 — 2026-08-17
+# UNRELEASED — php dump intrinsics (merged to `develop` 2026-08-17)
+
+**These are not release notes yet.** The arc is incomplete — pointers, the
+`begin()`/`end()` protocol, associative containers, `madc::value` and
+`print_r($x, true)` are all still refused by name — and the owner's call on
+2026-08-17 was no version bump until it is done. When it is, `/release` renames
+this file to the version it ships in and drops this banner.
 
 `php::print_r` and `php::var_dump` now work over **any** madc type, not just
 `array` / `value`. The compiler is their implementation: they are declared in
