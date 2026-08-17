@@ -86,4 +86,5 @@ namespace php {
     // script-facing namespace publics: there is nothing to bind to. A C++ host
     // that calls one gets an unresolved symbol, which is the intended contract.
     template<class T> void print_r(const T &v);
+    template<class... Ts> void var_dump(const Ts &...vs);
 }

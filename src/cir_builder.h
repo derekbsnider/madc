@@ -671,37 +671,51 @@ class CirBuilder {
 	// defined nowhere, so a call lowers to a dumper GENERATED for the
 	// argument's concrete type. lower_dump_call returns NULL when the callee
 	// is not a dump intrinsic, leaving the ordinary call path alone.
+// Which compiler-implemented dump a call is. ONE walk serves both; only the
+// framing differs, and every helper below selects on this. PUBLIC (the rest of
+// this region is private) so cir_dump.cpp's file-static framing helpers can name
+// it without becoming members.
+public:
+	enum DumpFlavor { dfNone, dfPrintR, dfVarDump };
+private:
 	node_t lower_dump_call(class TokenCallFunc *tcf, FuncDef *fd,
 			       TokenBase *origin);
-	node_t dump_print_r_value(TokenBase *arg, TokenBase *origin);
 	// An ACCESS FACTORY: builds a fresh access node for the same value each
 	// time it is called. A c2mir node is a tree node, so the same one cannot
 	// be handed to two parents — the walk rebuilds instead of sharing, the
 	// same discipline aggregate_member_init_stmts follows for `path`.
 	typedef std::function<node_t()> DumpAccess;
-	// print_r internals. Each returns false with `why` set when the type has
-	// no dumper yet — a refusal, never a guess. `depth` is a COMPILE-TIME
-	// nesting level: the walk is EXPANDED per level, so PHP's columns
-	// (8*depth, entries at +4) are literals and no runtime depth exists.
-	bool dump_pr_any(const DumpAccess &acc, DataDef *dd, size_t count,
-			 bool is_array, int depth, bool nested,
-			 std::vector<node_t> &out, TokenBase *origin,
+	// The walk. Each returns false with `why` set when the type has no dumper
+	// yet — a refusal, never a guess. `depth` is a COMPILE-TIME nesting level:
+	// the walk is EXPANDED per level, so every column is a literal and no
+	// runtime depth counter exists.
+	bool dump_argument(DumpFlavor fl, TokenBase *arg,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
+	bool dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+		      size_t count, bool is_array, int depth, bool nested,
+		      std::vector<node_t> &out, TokenBase *origin,
+		      std::string &why);
+	bool dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+			 int depth, std::vector<node_t> &out, TokenBase *origin,
 			 std::string &why);
-	bool dump_pr_scalar(const DumpAccess &acc, DataDef *dd,
-			    std::vector<node_t> &out, TokenBase *origin,
-			    std::string &why);
-	bool dump_pr_struct(const DumpAccess &acc, DataDefSTRUCT *sdd, int depth,
-			    bool nested, std::vector<node_t> &out,
-			    TokenBase *origin, std::string &why);
-	bool dump_pr_array(const DumpAccess &acc, DataDef *elem, size_t count,
-			   int depth, bool nested, std::vector<node_t> &out,
-			   TokenBase *origin, std::string &why);
+	bool dump_struct(DumpFlavor fl, const DumpAccess &acc, DataDefSTRUCT *sdd,
+			 int depth, bool nested, std::vector<node_t> &out,
+			 TokenBase *origin, std::string &why);
+	bool dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
+			size_t count, int depth, bool nested,
+			std::vector<node_t> &out, TokenBase *origin,
+			std::string &why);
 	// The output primitives, one builder each.
-	node_t dump_pr_head(int col, const std::string &word, TokenBase *origin);
-	node_t dump_pr_key(int col, const std::string &key, TokenBase *origin);
-	node_t dump_pr_key_idx(int col, node_t idx, TokenBase *origin);
+	node_t dump_call_stmt(const char *sym, node_t args, TokenBase *origin);
+	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
+			 size_t count, TokenBase *origin);
+	node_t dump_key(DumpFlavor fl, int depth, const std::string &key,
+			TokenBase *origin);
+	node_t dump_key_idx(DumpFlavor fl, int depth, node_t idx,
+			    TokenBase *origin);
+	node_t dump_tail(DumpFlavor fl, int depth, bool nested, TokenBase *origin);
 	node_t dump_pr_nl(TokenBase *origin);
-	node_t dump_pr_tail(int col, bool blank, TokenBase *origin);
 
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.

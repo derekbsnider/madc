@@ -1,0 +1,72 @@
+int(42)
+long(42)
+unsigned int(4000000000)
+double(3.5)
+float(1.5)
+bool(true)
+bool(false)
+char('A')
+char(10)
+char *(2) "hi"
+NULL
+=== two args
+char *(1) "x"
+=== struct
+struct Point(2) {
+  ["x"]=>
+  int(1)
+  ["y"]=>
+  int(2)
+}
+=== nested
+struct Outer(2) {
+  ["p"]=>
+  struct Point(2) {
+    ["x"]=>
+    int(7)
+    ["y"]=>
+    int(8)
+  }
+  ["n"]=>
+  int(5)
+}
+=== arrays
+struct Arr(2) {
+  ["v"]=>
+  int[3](3) {
+    [0]=>
+    int(10)
+    [1]=>
+    int(20)
+    [2]=>
+    int(30)
+  }
+  ["name"]=>
+  char[8](2) "hi"
+}
+int[3](3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(4)
+  [2]=>
+  int(9)
+}
+=== access
+struct Foo(4) {
+  ["pub"]=>
+  int(1)
+  ["s"]=>
+  int(2)
+  ["prot":protected]=>
+  int(3)
+  ["priv":"Foo":private]=>
+  int(4)
+}
+=== union
+union U(2) {
+  ["i"]=>
+  int(1094861636)
+  ["c"]=>
+  char[4](4) "DCBA"
+}

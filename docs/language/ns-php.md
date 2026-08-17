@@ -99,3 +99,104 @@ int main()
     return 0;
 }
 ```
+
+## Dump Functions — `print_r` and `var_dump` over ANY madc type
+
+`php::print_r(v)` and `php::var_dump(v...)` render **any** madc value the way a
+PHP developer expects PHP to render it: a struct prints like a PHP object, a
+fixed array like a PHP array, a `char *` or `char[]` like a string. They are not
+limited to `array` / `value` — the compiler generates the dumper for whatever
+type the argument has, so a `struct`, a `class` with private members, a `union`,
+a bit-field and a nested array all work.
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `print_r(v)` | PHP's `print_r` — the value, framed for humans | `php::print_r(pt)` |
+| `var_dump(v, ...)` | PHP's `var_dump`, variadic, with the REAL C/C++/madc type of each value | `php::var_dump(i, s)` |
+
+```c
+#include <ns_php>
+
+struct Point { int x; int y; };
+
+int main()
+{
+    Point pt;
+    pt.x = 1;
+    pt.y = 2;
+    php::print_r(pt);
+    php::var_dump(pt);
+    return 0;
+}
+```
+
+```
+Point Object
+(
+    [x] => 1
+    [y] => 2
+)
+struct Point(2) {
+  ["x"]=>
+  int(1)
+  ["y"]=>
+  int(2)
+}
+```
+
+`print_r` output is byte-identical to PHP's for every shape PHP can express —
+the 4-space entry indent, the 8-space step of a nested `(`, the blank line after
+a nested block, `[prot:protected]`, `[priv:Class:private]`, `1` for `true` and
+nothing at all for `false`. A double carries PHP's 14 significant digits,
+including PHP's `1.0E+25` mantissa where C's `%G` would print `1E+25`.
+
+`var_dump` keeps PHP's frame (2-space indent, the key line and value line
+separate, `}` with no trailing blank line) and makes exactly one deliberate
+change: it names the **real** type instead of simulating PHP's.
+
+| value | PHP | madc |
+|---|---|---|
+| `42` (`int`) | `int(42)` | `int(42)` |
+| `42L` | `int(42)` | `long(42)` |
+| `4000000000u` | `int(4000000000)` | `unsigned int(4000000000)` |
+| `3.5` | `float(3.5)` | `double(3.5)` |
+| `1.5f` | `float(1.5)` | `float(1.5)` |
+| `"hi"` | `string(2) "hi"` | `char *(2) "hi"` |
+| `char name[8]` = "hi" | — | `char[8](2) "hi"` |
+| a `Point` | `object(Point)#1 (2)` | `struct Point(2)` |
+| `int v[3]` | `array(3)` | `int[3](3)` |
+
+The type word is the CANONICAL type, not the typedef the source wrote — the same
+thing `typeid` reports in g++ — so a `size_t` shows as `unsigned long`. An
+aggregate is always spelled `struct X` (or `union X`): madc promotes a plain
+struct to a class internally when it earns class-hood, so `class` would be a
+claim about your source that the compiler cannot support.
+
+### What the dump shows for C shapes PHP does not have
+
+- **`union`** — every member's interpretation of the same storage, since C
+  offers no active-member truth. `u.i = 0x41424344` prints both
+  `[i] => 1094861636` and `[c] => DCBA` on a little-endian target.
+- **anonymous `struct` / `union` members** — named directly, as C names them.
+- **bit-fields** — their value. (The width belongs to the type word, not the
+  value.)
+- **`char` / `unsigned char`** — one character of text, matching
+  `cout << (char)65` and PHP's `chr(65)`.
+
+### Limits
+
+- These two are **compiler intrinsics**: they are declared in `<ns_php>` and
+  defined nowhere, so they cannot be called from a C or C++ host that merely
+  links `libmadc` — there is no symbol to call. That is by design.
+- An aggregate argument must be a variable or a member selection. A
+  struct-returning call would have to be re-evaluated once per field, so it is
+  refused out loud instead.
+- A member inherited from a base and **shadowed** by a same-named member in the
+  derived class is skipped: the emitted struct renames the hidden one and no
+  reader can address it.
+- Types still to come: pointers (followed, with PHP's `*RECURSION*` for a
+  cycle), `std::string` and the standard containers, enums (by enumerator name),
+  and `array` / `value` itself. Each is refused by name until then — never
+  guessed at.
+- `print_r($v, true)`'s return form is not implemented yet; `print_r` currently
+  always prints.

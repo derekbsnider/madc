@@ -175,3 +175,113 @@ void __madc_dump_pr_tail(int col, int blank)
     if (blank)
 	putchar('\n');
 }
+
+// ---------------------------------------------------------------------------
+// var_dump
+// ---------------------------------------------------------------------------
+// Same walk, different frame. PHP's var_dump indents 2 per level, puts the key
+// and the value on SEPARATE lines at the same column, terminates every value
+// line itself, and adds no blank line after a nested block:
+//
+//     array(2) {$
+//       [0]=>$
+//       int(1)$
+//       [1]=>$
+//       array(2) {$
+//         ["x"]=>$
+//         int(3)$
+//       }$
+//     }$
+//
+// madc's ONE deliberate divergence is the type word: the REAL C/C++/madc type,
+// not a simulated PHP one — `double` not `float`, `long` not `int`, `char *(2)`
+// not `string(2)`, `struct Point(2)` not `object(Point)#1 (2)`. PHP's object
+// handle (#1) is dropped: it identifies a PHP object instance and means nothing
+// here. Captured from php-cli 8.3.6 with cat -A (tmp/or_vd.php).
+
+void __madc_dump_vd_head(int col, const char *word, long long count)
+{
+    dump_indent(col);
+    printf("%s(%lld) {\n", word ? word : "", count);
+}
+
+void __madc_dump_vd_key(int col, const char *key)
+{
+    dump_indent(col);
+    printf("[%s]=>\n", key ? key : "");
+}
+
+void __madc_dump_vd_key_idx(int col, long long idx)
+{
+    dump_indent(col);
+    printf("[%lld]=>\n", idx);
+}
+
+void __madc_dump_vd_tail(int col)
+{
+    dump_indent(col);
+    printf("}\n");
+}
+
+void __madc_dump_vd_i64(int col, const char *ty, long long v, int is_unsigned)
+{
+    dump_indent(col);
+    if (is_unsigned)
+	printf("%s(%llu)\n", ty ? ty : "", (unsigned long long)v);
+    else
+	printf("%s(%lld)\n", ty ? ty : "", v);
+}
+
+void __madc_dump_vd_f64(int col, const char *ty, double v)
+{
+    dump_indent(col);
+    printf("%s(", ty ? ty : "");
+    __madc_dump_pr_f64(v);              /* one float format, both flavors */
+    printf(")\n");
+}
+
+void __madc_dump_vd_bool(int col, const char *ty, int v)
+{
+    dump_indent(col);
+    printf("%s(%s)\n", ty ? ty : "", v ? "true" : "false");
+}
+
+// A char's value line names the character when it is printable and the byte
+// otherwise: char('A') vs char(10). PHP has no char type, so C is the oracle
+// and a non-printable byte must not be written raw into the output.
+void __madc_dump_vd_char(int col, const char *ty, int c)
+{
+    unsigned char b = (unsigned char)c;
+    dump_indent(col);
+    if (b >= 0x20 && b < 0x7f)
+	printf("%s('%c')\n", ty ? ty : "", b);
+    else
+	printf("%s(%u)\n", ty ? ty : "", (unsigned)b);
+}
+
+// A NULL pointer is PHP's null, and PHP's var_dump prints NULL for it — the one
+// case where var_dump keeps PHP's word, because "no value" is not a C type.
+void __madc_dump_vd_cstr(int col, const char *ty, const char *s)
+{
+    dump_indent(col);
+    if (!s) {
+	printf("NULL\n");
+	return;
+    }
+    printf("%s(%llu) \"%s\"\n", ty ? ty : "", (unsigned long long)strlen(s), s);
+}
+
+void __madc_dump_vd_cstr_n(int col, const char *ty, const char *s, long long n)
+{
+    long long len = 0;
+    dump_indent(col);
+    if (!s) {
+	printf("NULL\n");
+	return;
+    }
+    while (len < n && s[len])
+	len++;
+    printf("%s(%lld) \"", ty ? ty : "", len);
+    fwrite(s, 1, (size_t)len, stdout);
+    printf("\"\n");
+}

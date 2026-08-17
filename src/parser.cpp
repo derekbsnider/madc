@@ -50422,8 +50422,11 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
 static const char *madc_namespace_template_builtin_kind(const std::string &ns,
 							const std::string &name)
 {
-    if ( ns == "php" && name == "print_r" )
-	return "php_print_r";
+    if ( ns == "php" )
+    {
+	if ( name == "print_r" )  return "php_print_r";
+	if ( name == "var_dump" ) return "php_var_dump";
+    }
     return NULL;
 }
 
