@@ -20397,6 +20397,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (inline_fd && inline_fd->inline_builtin_kind == "destroy"
 			    && tcf->parameters.size() == 1)
 				return lower_destroy_arg(tcf->parameters[0], true);
+			// php::print_r / php::var_dump: declared in <ns_php>,
+			// defined nowhere — the compiler generates the dumper for
+			// the argument's concrete type (src/cir_dump.cpp). NULL
+			// means "not a dump intrinsic"; the call path continues.
+			if (node_t dmp = lower_dump_call(tcf, inline_fd, tb))
+				return dmp;
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow

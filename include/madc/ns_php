@@ -77,4 +77,13 @@ namespace php {
     void array_slice(array &dest, array &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
     void array_merge(array &dest, array &src) { __php_array_merge(&dest, &src); }
     void array_column(array &dest, array &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
+
+    // print_r / var_dump over ANY madc type — the COMPILER is the
+    // implementation. Declared, never defined: "any type" has no signature a
+    // host could satisfy, and the dumper for a given T is generated at the call
+    // site from T's real structure (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+    // Deliberate exception to cpp-first-api.md's mangled-direct rule for
+    // script-facing namespace publics: there is nothing to bind to. A C++ host
+    // that calls one gets an unresolved symbol, which is the intended contract.
+    template<class T> void print_r(const T &v);
 }

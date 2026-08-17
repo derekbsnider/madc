@@ -17,4 +17,8 @@
 - Exception: compiler-machinery symbols emitted by the CIR builder
   (`__madc_scope_set_*`, `__madc_vla_free` category) stay extern-C — they are
   not user-resolved functions.
+- Exception: a COMPILER-IMPLEMENTED namespace public (`php::print_r`) is
+  declared in its script header as a function TEMPLATE with no definition
+  anywhere, tagged `FuncDef::inline_builtin_kind`, and lowered by the CIR
+  builder. It binds to nothing and exports to nothing — by design.
 - See `docs/rules/cpp-first-api.md` for the reasoning.

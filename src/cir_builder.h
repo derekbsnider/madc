@@ -662,6 +662,15 @@ class CirBuilder {
 	// The BARE operator[] call (no deref) — for a T&-returning operator[] this
 	// is the element ADDRESS (a T*). Used to take a string element's address.
 	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
+	// ---- php::print_r / php::var_dump (src/cir_dump.cpp) ----
+	// The compiler IS the implementation: these are declared in <ns_php> and
+	// defined nowhere, so a call lowers to a dumper GENERATED for the
+	// argument's concrete type. lower_dump_call returns NULL when the callee
+	// is not a dump intrinsic, leaving the ordinary call path alone.
+	node_t lower_dump_call(class TokenCallFunc *tcf, FuncDef *fd,
+			       TokenBase *origin);
+	node_t dump_print_r_value(TokenBase *arg, TokenBase *origin);
+
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	// `index_lvalue` is a SYNTHESIZED index (a range-for's loop counter) that

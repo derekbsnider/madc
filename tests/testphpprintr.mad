@@ -1,0 +1,67 @@
+#!/../bin/madc
+// php::print_r over madc SCALARS — the first slice of the dump intrinsics
+// (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+//
+// php::print_r is declared in <ns_php> and defined NOWHERE: the compiler
+// generates the dumper for the argument's concrete type. print_r prints the
+// value ALONE — no type word, no trailing newline — so each case here appends
+// its own "|" and newline, exactly as the PHP oracle does.
+//
+// ORACLE — php-cli 8.3.6 on tmp/or_pr.php, verbatim:
+//   42|  -7|  0|  3.5|  1|  -0.125|  0.33333333333333|  1.0E+25|
+//   1|   |    hi|  |   |   9223372036854775807|
+// (true -> "1"; false, "" and null -> the empty string; a double carries 14
+// significant digits, and an exponent form keeps a ".0" mantissa that C's %G
+// drops.)
+//
+// char and unsigned have no PHP counterpart; C++ is the oracle for those two
+// (std::cout << (char)'A' is "A", and an unsigned prints its magnitude).
+#include <iostream>
+#include <ns_php>
+using namespace std;
+
+int main()
+{
+	// Integers, including a literal argument (template deduction through
+	// the `const T &` parameter) and the 64-bit extreme.
+	php::print_r(42);           cout << "|" << endl;
+	int neg = -7;
+	php::print_r(neg);          cout << "|" << endl;
+	int zero = 0;
+	php::print_r(zero);         cout << "|" << endl;
+	long long big = 9223372036854775807LL;
+	php::print_r(big);          cout << "|" << endl;
+	unsigned int u = 4000000000u;
+	php::print_r(u);            cout << "|" << endl;
+
+	// Doubles: PHP's 14-significant-digit rendering, and its ".0" mantissa
+	// in the exponent form.
+	double half = 3.5;
+	php::print_r(half);         cout << "|" << endl;
+	double one = 1.0;
+	php::print_r(one);          cout << "|" << endl;
+	double eighth = -0.125;
+	php::print_r(eighth);       cout << "|" << endl;
+	double third = 1.0 / 3.0;
+	php::print_r(third);        cout << "|" << endl;
+	double huge = 1.0e25;
+	php::print_r(huge);         cout << "|" << endl;
+
+	// bool: PHP prints true as 1 and false as nothing at all.
+	bool t = true;
+	php::print_r(t);            cout << "|" << endl;
+	bool f = false;
+	php::print_r(f);            cout << "|" << endl;
+
+	// C strings are PHP strings. A NULL char* is PHP's null: empty.
+	php::print_r("hi");         cout << "|" << endl;
+	php::print_r("");           cout << "|" << endl;
+	const char *nul = NULL;
+	php::print_r(nul);          cout << "|" << endl;
+
+	// char: one character of text (C++ is the oracle).
+	char c = 'A';
+	php::print_r(c);            cout << "|" << endl;
+
+	return 0;
+}
