@@ -1,5 +1,25 @@
 # madc Roadmap
 
+**✅ UFCS (2026-08-17, v0.83.0):** uniform function call syntax for the madc
+dialect, in BOTH directions — `x.f(y)` prefers a member and falls back to
+`f(x, y)`; `f(x, y)` prefers a declared free function and falls back to
+`x.f(y)` ahead of the unresolved-symbol guesses. Two separate ordered
+fallbacks, never a merged overload set: Stroustrup's unified-call model, which
+C++ did not adopt. A fallback fires ONLY where the code was already a hard
+error, so nothing that compiled can change meaning, and every explicit
+`--std=` mode is byte-identical. The receiver is passed EXACTLY as written (no
+implicit `&`, no implicit `*`), which makes `.` and `->` the same operator in
+the fallback leg — `fp->fclose()` is `fclose(fp)`. All receiver kinds
+participate; calls chain (`n.twice().inc().twice()`) with no machinery added
+for it, because both fallbacks resolve into ordinary call nodes. Measuring
+before building narrowed the design twice: three of the four motivating calls
+(`size`/`begin`/`empty`) already worked via real `std::` free functions, so only
+member-only operations like `count(m, k)` needed the fallback; and the design's
+non-class hook count was wrong (four sites, not one — the missed one was
+`fp->fclose()`, since `FILE *` IS a struct). New gate `scripts/ufcs_gate.sh`
+sweeps the whole `--std=` matrix and asserts the entry condition has one owner.
+Docs: `docs/language/ufcs.md`. Also shipping: `madc --version` / `-V`.
+
 **✅ THREE-PLATFORM RELEASE (2026-08-17, v0.82.0):** Linux, macOS and
 Windows ship together from one tree, each validated on its own terms, and
 `master` moves off v0.76.0. The macOS regression that blocked it is fixed

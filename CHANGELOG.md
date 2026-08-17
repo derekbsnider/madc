@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [v0.83.0] — 2026-08-17
+
+UFCS: `x.f(y)` and `f(x, y)` become interchangeable spellings in the madc
+dialect, in both directions, with no auto-dereference and no merged overload set.
+
 - **UFCS — uniform function call syntax, in the madc dialect only.** `x.f(y)`
   and `f(x, y)` are now interchangeable spellings under `--std=madc`:
 

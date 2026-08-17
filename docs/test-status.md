@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
+> **Current (2026-08-17, v0.83.0 on `develop` — UFCS):** authoritative Linux
+> fulltest **1064 passed / 0 failed / 0 timed out / 9 skipped**; native
+> **EXE 1026/0** and **OBJ 1026/0**; zero warnings under `-Werror` on every
+> lane. `ufcs_gate` green inside fulltest (12 C + 9 C++ `--std=` modes x 3
+> probes, plus the one-owner check on the entry condition), and negative-
+> controlled against the shipped pre-UFCS `madc-release-v0.82.0` binary.
+> The ten new `tests/testufcs*.mad` reducers all carry g++ 13 and clang++ 18
+> oracles. Windows, macOS and the packed/headerless lanes were last measured at
+> v0.82.0 and are unchanged by UFCS, which is a front-end-only feature.
+> Log: `tmp/logs/rb-20260817-0*.log`.
+>
+> **Previous (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
 > authoritative Linux fulltest **1050 passed / 0 failed / 0 timed out /
 > 9 skipped**; emitted-code warning census **1059 compiles / 0 warnings**;
 > libc++ JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.

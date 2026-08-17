@@ -210,27 +210,29 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.82.0** (2026-08-17) — the three-platform release:
-Linux, macOS and Windows ship together from one tree. The macOS regression that
-blocked it is fixed at its root. A class-nested enum tag was stamped a forest
-type-id but never given a record, so `std::ios_base`'s `event_callback *__fn_`
-could not be rebuilt when a forest was bound, and the fill silently dropped the
-whole class — eleven aggregates in all, because members flatten from bases.
-Without `ios_base` there was no vptr slot, so `__vptr` was never emitted and
-`operator<<` never resolved: a bound darwin `std::cout << "hi"` did not compile.
-Shipping with it: madc's embedded `<stdarg.h>` no longer declares the `v*printf`
-family (under darwin's `_FORTIFY_SOURCE=2` those declarations expanded into
-fortify builtins mid-header and killed every macOS forest pack), three
-previously-silent load-side losses are now measured, and every artifact lane
-builds the binary it validates.
+The current release is **v0.83.0** (2026-08-17) — uniform function call syntax
+for the madc dialect. Under `--std=madc`, `x.f(y)` and `f(x, y)` are
+interchangeable spellings of the same call, in both directions: the dot form
+prefers a member and falls back to a free function, the call form prefers a
+declared free function and falls back to a member. Because a fallback only ever
+fires where the code was already a hard error, no program that compiled before
+can change meaning, and every explicit `--std=c*` / `--std=c++*` mode is
+byte-identical to v0.82.0. The receiver is passed exactly as written — no
+implicit `&`, no implicit `*` — which makes `.` and `->` the same operator in the
+fallback leg, so `fp->fclose()` reads as `fclose(fp)`. Every receiver kind
+participates (classes, structs, `int`, `char *`, arrays, operator results),
+calls chain (`n.twice().inc().twice()`), and member-only container operations
+gain the free spelling (`count(m, k)`). This is Stroustrup's unified-call model,
+which C++ itself did not adopt. Also shipping: `madc --version` / `-V`.
 
-Branch state: v0.82.0 is on `develop` and promoted to `master`, which carried
-v0.76.0 before it. Public binaries are published for all three platforms.
+Branch state: v0.83.0 is on `develop`; `master` carries v0.82.0, for which
+public binaries are published on all three platforms.
 
 Latest validated results:
 
-- Linux JIT: **1054 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE and OBJ lanes **1021/0**; packed suite **1054/0/0/9**
+- Linux JIT: **1064 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE and OBJ lanes **1026/0**; packed suite **1054/0/0/9** (last
+  measured at v0.82.0; UFCS is a front-end feature and did not touch that lane)
 - headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
@@ -258,6 +260,8 @@ and known gaps.
 
 ### Recent Releases
 
+- [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`
+  become interchangeable in the madc dialect, in both directions.
 - [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;
   the macOS iostream regression is fixed where the type-id was stamped.
 - [v0.81.0](docs/release-notes/v0.81.0.md) — the Windows lane merges, the
@@ -266,8 +270,6 @@ and known gaps.
   lands for Win64, and the build stops tolerating warnings.
 - [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
   failures; exec fixtures, preprocessing, and aggregate layout converge.
-- [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
-  regression window closes and the 1614 baseline is restored.
 
 ## Building from source
 
