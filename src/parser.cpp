@@ -55949,9 +55949,22 @@ static DataDef *skipped_template_function_return_type(
     // wrongly grab the LAST type INSIDE `<...>` (e.g. `bool`) as the return
     // type. Resolve the full return-type token range through the canonical
     // resolver instead (handles nested template-ids, `std::`, class typedefs).
-    if ( type_end > 0 && tokens[type_end - 1]
+    // A QUALIFIED return type (`madc::value &print_r(`) needs the same
+    // treatment and for the same reason: the backward scan below tries each
+    // token as a STANDALONE identifier against the FLAT datatype_map, so
+    // `madc` and `value` both miss and the whole declaration silently falls
+    // back to ddINT64 at the end of this function — a declared `madc::value &`
+    // return became `long`, and the call site then assigned an ADDRESS through
+    // the integer path (printing a decimal). Route it through the canonical
+    // resolver, which already owns qualified names.
+    bool qualified_return = false;
+    for ( size_t i = 0; i < type_end; ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkNS )
+	    { qualified_return = true; break; }
+    if ( qualified_return
+      || (type_end > 0 && tokens[type_end - 1]
       && (tokens[type_end - 1]->id() == TokenID::tkGT
-       || tokens[type_end - 1]->id() == TokenID::tkBSR) )
+       || tokens[type_end - 1]->id() == TokenID::tkBSR)) )
     {
 	size_t rs = 0;
 	while ( rs < type_end && tokens[rs]
