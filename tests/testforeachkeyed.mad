@@ -1,0 +1,30 @@
+#!/../bin/madc
+// Range-for over a KEY-subscripted container is a compile ERROR, not a crash.
+//
+// std::map has both size() and operator[], but `m[i]` is a keyed
+// lookup-that-inserts — never the i'th element. The real range protocol is
+// begin()/end(), and it yields std::pair<const K, V>, so BOTH canon compilers
+// reject this exact source:
+//   g++ 13.3   error: cannot convert 'std::pair<const int, int>' to 'int' in
+//              initialization
+//   clang 18   error: no viable conversion from 'std::pair<const int, int>' to
+//              'int'
+// madc used to trust the two METHOD NAMES, emit the index loop anyway, and hand
+// the loop counter to `map::operator[](const key_type &)` — which wants a
+// pointer. That SIGSEGV'd at (nil). The protocol match is type-checked now, and
+// a keyed container (one that names a key_type) has no index protocol at all.
+//
+// This expectation is PERMANENT: even once begin()/end() iteration lands, a map
+// element is a pair and cannot initialize an `int`, exactly as canon says.
+#include <map>
+#include <iostream>
+
+int main()
+{
+	std::map<int,int> m;
+	m[1] = 10;
+	m[2] = 20;
+	for (int v : m)
+		std::cout << v << std::endl;
+	return 0;
+}

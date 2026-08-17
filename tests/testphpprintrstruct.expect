@@ -1,0 +1,38 @@
+Point Object
+    [x] => 1
+    [y] => 2
+Outer Object
+    [p] => Point Object
+            [x] => 7
+            [y] => 8
+    [n] => 5
+Arr Object
+    [v] => Array
+            [0] => 10
+            [1] => 20
+            [2] => 30
+    [name] => hi
+Foo Object
+    [pub] => 1
+    [s] => 2
+    [prot:protected] => 3
+    [priv:Foo:private] => 4
+Derived Object
+    [bx] => 1
+    [bprot:protected] => 2
+    [dy] => 3
+Array
+    [0] => 1
+    [1] => 4
+    [2] => 9
+Bits Object
+    [a] => 5
+    [b] => 17
+    [c] => -3
+Anon Object
+    [tag] => 1
+    [i] => 42
+    [u] => 42
+U Object
+    [i] => 1094861636
+    [c] => DCBA

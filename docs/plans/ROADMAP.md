@@ -1,5 +1,47 @@
 # madc Roadmap
 
+**✅ php::print_r / php::var_dump OVER ANY TYPE (2026-08-17, v0.85.0):** the two
+PHP dump functions render **any** madc value the way a PHP developer expects PHP
+to render it — not just `array` / `value`. A struct, a class with private and
+protected members, a base-flattened derived class, a union, an anonymous union, a
+bit-field, a fixed array, a `char[]` and the POSITIONAL containers
+(`std::string`, `std::vector`, `std::array` — the owner's own two examples) all
+work today; pointers, enums, associative containers, multidimensional arrays and
+`value` itself each say "no dumper for type 'X' yet" until their slice lands,
+because a refusal is honest and a guess is not.
+Both are declared in `<ns_php>` as function TEMPLATES with no definition
+anywhere: "any type" has no signature a host could satisfy, so the CIR builder
+generates the dumper for whatever type the argument has (`src/cir_dump.cpp`) and
+the runtime carries only output primitives (`src/rt/rt_dump.c`, strict C11,
+ledger-registered so a `-static-libmadc` Mach-O program that dumps still links).
+That also makes the owner's "cannot be exported" constraint STRUCTURAL — a
+declared-but-undefined template is an unresolved symbol for any C++ host — and
+it is the first deliberate exception to `cpp-first-api.md`, documented there.
+Recognition is a TAG, not a name: the parser stamps
+`FuncDef::inline_builtin_kind` at declaration registration, the same carrier
+`std::addressof` / `std::forward` / `__destroy` use and one the forest already
+serializes, so a PACKED `<ns_php>` keeps it. PHP is the oracle to the byte
+(php-cli 8.3.6, captured with `cat -A`): the 4-space entry indent, the 8-space
+step of a nested `(`, the blank line after a nested block,
+`[priv:Foo:private]`, `1` for `true` and nothing at all for `false`, and PHP's
+14-significant-digit float including the `.0` mantissa PHP puts in an exponent
+form that C's `%G` drops. `var_dump` keeps PHP's frame and makes exactly ONE
+deliberate change, the one the owner asked for: it names the real C/C++/madc type
+(`double(3.5)`, `long(42)`, `char *(2) "hi"`, `struct Point(2)`) — and names it
+what the SOURCE calls it, `std::string(2) "hi"` and `std::vector<std::string>(2)`,
+by inverting madc's own type-name tables by type identity rather than matching
+`basic_string` as a string. The walk never
+computes — or even reads — a layout fact: members are emitted as `obj.member`
+ACCESS nodes, so bit-field shift/mask, anonymous-aggregate transparency and base
+flattening keep their single owner and the dumper cannot drift from them. A
+prerequisite crash fell out on the way in: `for (int v : std::map<int,int>)`
+SIGSEGV'd at (nil) where g++ and clang both REJECT the source, because the
+iteration protocol matched `size()`/`operator[]` by NAME and then fed a pointer
+parameter an integer; it is type-checked now, and the element accessor delegates
+to `class_subscript_addr_on`, the one `operator[]` call builder. Docs:
+`docs/language/ns-php.md`. Plan:
+[2026-08-17-php-print-r-var-dump-plan.md](2026-08-17-php-print-r-var-dump-plan.md).
+
 **✅ PACK DEGRADATION GATE (2026-08-17, v0.84.0, task #63):** the forest pack
 exits 0 while tolerating parse failures, and a bind can lose a whole aggregate
 without a word — task #64 was exactly that and it shipped.

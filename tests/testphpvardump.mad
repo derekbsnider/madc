@@ -1,0 +1,110 @@
+#!/../bin/madc
+// php::var_dump — the same walk as print_r, framed PHP's way but naming the REAL
+// C/C++/madc types (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+//
+// ORACLE — php-cli 8.3.6 (tmp/or_vd.php, captured with cat -A) fixes every
+// structural byte: 2-space indent per level, the key line and the value line on
+// SEPARATE lines at the same column, a head line of `<word>(<count>) {`, a tail
+// of `}` with NO blank line after it (unlike print_r), `[0]=>` for a position
+// and `["name"]=>` for a member, `["prot":protected]=>` and
+// `["priv":"Foo":private]=>` for access, and NULL for a null value.
+//
+// The type word is the ONE deliberate divergence, and it is the owner's own
+// rule ("var_dump() would show the C/C++/madc types, not simulate PHP types"):
+//   PHP           madc
+//   int(42)       int(42) / long(42) / unsigned int(42)  — the real width
+//   float(3.5)    double(3.5) / float(1.5)
+//   string(2)     char *(2) / char[8](2)
+//   object(P)#1   struct Point(2)   — PHP's object handle means nothing in C
+// A bool is bool(true)/bool(false) as in PHP; a char is char('A'), or char(10)
+// for a byte that must not be written raw into the output.
+#include <iostream>
+#include <ns_php>
+
+struct Point { int x; int y; };
+struct Outer { Point p; int n; };
+struct Arr   { int v[3]; char name[8]; };
+
+class Foo {
+public:
+	int pub;
+	int s;
+protected:
+	int prot;
+private:
+	int priv;
+public:
+	void fill() { pub = 1; s = 2; prot = 3; priv = 4; }
+};
+
+union U { int i; char c[4]; };
+
+int main()
+{
+	int i32 = 42;
+	php::var_dump(i32);
+	long lng = 42;
+	php::var_dump(lng);
+	unsigned int u = 4000000000u;
+	php::var_dump(u);
+	double d = 3.5;
+	php::var_dump(d);
+	float f = 1.5;
+	php::var_dump(f);
+	bool t = true;
+	php::var_dump(t);
+	bool fa = false;
+	php::var_dump(fa);
+	char c = 'A';
+	php::var_dump(c);
+	char nlc = '\n';
+	php::var_dump(nlc);
+	php::var_dump("hi");
+	const char *nul = NULL;
+	php::var_dump(nul);
+
+	// PHP's var_dump is variadic: every argument, in order.
+	std::cout << "=== two args" << std::endl;
+	php::var_dump(i32, "x");
+
+	std::cout << "=== struct" << std::endl;
+	Point pt;
+	pt.x = 1;
+	pt.y = 2;
+	php::var_dump(pt);
+
+	std::cout << "=== nested" << std::endl;
+	Outer o;
+	o.p.x = 7;
+	o.p.y = 8;
+	o.n = 5;
+	php::var_dump(o);
+
+	std::cout << "=== arrays" << std::endl;
+	Arr ar;
+	ar.v[0] = 10;
+	ar.v[1] = 20;
+	ar.v[2] = 30;
+	ar.name[0] = 'h';
+	ar.name[1] = 'i';
+	ar.name[2] = 0;
+	php::var_dump(ar);
+	int raw[3];
+	raw[0] = 1;
+	raw[1] = 4;
+	raw[2] = 9;
+	php::var_dump(raw);
+
+	std::cout << "=== access" << std::endl;
+	Foo fo;
+	fo.fill();
+	php::var_dump(fo);
+
+	// A union shows EVERY member's interpretation of the same storage: C
+	// offers no active-member truth (0x41424344 little-endian reads as "DCBA").
+	std::cout << "=== union" << std::endl;
+	U un;
+	un.i = 0x41424344;
+	php::var_dump(un);
+	return 0;
+}

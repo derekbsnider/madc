@@ -210,30 +210,34 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.84.0** (2026-08-17) — the forest pack stops
-degrading silently. A pack run exits 0 while tolerating parse failures, and a
-bind can lose an entire aggregate without a word; one gate now covers all three
-packs (Linux, Win64, macOS) with per-profile baselines, hard-zeroing the two
-losses that have no legitimate instance and ratcheting the rest. It refuses to
-render a verdict on a load probe that shows no materialization, because every
-diagnostic it reads is debug-gated and a run that bound nothing would otherwise
-score a clean sweep of zeros. On its first real run it found that **any struct
-with a `long double` member lost that member when bound from a container** —
-slot 18 of the type table was still marked reserved after real `long double`
-landed in v0.78.0, so the freeze minted an id no record walk writes. Fixing it
-also cleared every dropped record on the Linux and Win64 packs, so containers
-now carry strictly more than they did. Also surfaced and now tracked instead of
-silent: both macOS artifacts ship with no MIR module cache.
+The current release is **v0.85.0** (2026-08-17) — `php::print_r` and
+`php::var_dump` over **any** madc type. The compiler is their implementation:
+they are declared in `<ns_php>` with no definition anywhere, and the CIR builder
+generates a dumper for whatever type the argument has. A struct, a class with
+private and protected members, an inherited member, a union, an anonymous union,
+a bit-field, a fixed array, a `char[]`, a `std::string` and a `std::vector` all
+print the way a PHP developer expects PHP to print the corresponding value —
+byte-identical to php-cli 8.3.6 for every shape PHP can express, down to the
+8-space step of a nested `(`, the blank line after it, and PHP's `1.0E+25`
+mantissa where C's `%G` prints `1E+25`. `var_dump` keeps PHP's frame and makes
+exactly one deliberate change: it names the real C/C++/madc type
+(`double(3.5)`, `long(42)`, `char *(2) "hi"`, `struct Point(2)`). The walk never
+computes or even reads a layout fact — members are emitted as `obj.member`
+access nodes, so bit-fields, anonymous aggregates and base flattening keep their
+single owner — and every type without a dumper yet is refused BY NAME rather
+than guessed at. A range-for crash fell out on the way in: `for (int v :
+std::map<int,int>)` used to SIGSEGV where g++ and clang reject the source, and
+the iteration protocol is type-checked now.
 
-Branch state: v0.84.0 is on `develop`; `master` carries v0.82.0, for which
+Branch state: v0.85.0 is on `develop`; `master` carries v0.82.0, for which
 public binaries are published on all three platforms.
 
 Latest validated results:
 
-- Linux JIT: **1064 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE and OBJ lanes **1026/0**; packed suite **1054/0/0/9** (last
+- Linux JIT: **1070 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE and OBJ lanes **1031/0**; packed suite **1054/0/0/9** (last
   measured at v0.82.0)
-- all three pack lanes green under the new degradation gate: Linux and Win64 at
+- all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
 - headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
@@ -246,23 +250,11 @@ Latest validated results:
   seven battery legs pass, including compiling a C translation unit on a
   host with no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
-  (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
-  macOS hosted/cross pairs), with the emitted-code warning ratchet at an
-  all-zero baseline
-- **1614/1685** GCC C torture tests passing, with no remaining standard-C
-  failures; the remaining cases are classified GNU extensions
-- working native ELF output, Mach-O object output, multi-file linking, and a
-  statically packaged madc runtime option for emitted programs
-- public macOS binaries (arm64 + x86_64) with hosted JIT and native
-  Mach-O AOT `-o` for both C and C++ programs, self-signed at emit time
-- SMAUG 1.8 booting as a live, playable server in both JIT and native modes
-
-See [test status](docs/test-status.md) and the
-[libc++ parity history](docs/parity/libcxx-failset.txt) for current results
-and known gaps.
 
 ### Recent Releases
 
+- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
+  over any madc type, PHP-oracled to the byte.
 - [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
   silently; the gate's first run found a lost `long double` member.
 - [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`
@@ -273,8 +265,6 @@ and known gaps.
   headerless lanes land, and C++ list-initialization arrives.
 - [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
   lands for Win64, and the build stops tolerating warnings.
-- [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
-  failures; exec fixtures, preprocessing, and aggregate layout converge.
 
 ## Building from source
 

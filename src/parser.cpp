@@ -50410,6 +50410,26 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
     return declarator_exception_spec_at(pgm, tokens, i, NULL);
 }
 
+// The COMPILER-IMPLEMENTED namespace templates, keyed by (namespace, name) —
+// the one place those spellings are compared. A declaration-only template whose
+// implementation IS the compiler carries an inline_builtin_kind exactly like
+// std::addressof / std::forward / __destroy do, so the CIR builder dispatches on
+// the kind and never on a name; the kind rides the forest (cir_arena
+// builtin_kind_id), so a packed <ns_php> keeps it.
+//
+// Unlike its siblings this cannot be a BODY-SHAPE test: these declarations have
+// no body anywhere, which is the point (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+static const char *madc_namespace_template_builtin_kind(const std::string &ns,
+							const std::string &name)
+{
+    if ( ns == "php" )
+    {
+	if ( name == "print_r" )  return "php_print_r";
+	if ( name == "var_dump" ) return "php_var_dump";
+    }
+    return NULL;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -50515,6 +50535,9 @@ static void register_skipped_namespace_template_function(
 		fd->inline_builtin_kind = "destroy";
 	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
 		fd->inline_builtin_kind = "forward";
+	    else if ( const char *bk = madc_namespace_template_builtin_kind(
+					   pgm.current_namespace(), name) )
+		fd->inline_builtin_kind = bk;
 	}
 	ns[name] = var;
 	ns.erase(parse_id);

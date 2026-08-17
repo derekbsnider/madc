@@ -1,0 +1,43 @@
+Array
+(
+    [0] => 1
+    [1] => 4
+    [2] => 9
+)
+===
+std::vector<int>(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(4)
+  [2]=>
+  int(9)
+}
+===
+hi|
+std::string(2) "hi"
+===
+Person Object
+(
+    [name] => alice
+    [age] => 30
+)
+===
+struct Person(2) {
+  ["name"]=>
+  std::string(5) "alice"
+  ["age"]=>
+  int(30)
+}
+===
+Array
+(
+    [0] => bob
+    [1] => carol
+)
+===
+std::vector<std::string>(2) {
+  [0]=>
+  std::string(3) "bob"
+  [1]=>
+  std::string(5) "carol"
