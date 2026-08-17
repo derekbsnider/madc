@@ -48,6 +48,7 @@ and the streams are the real library objects.
 | Feature | Doc |
 |---------|-----|
 | `x := expr` — short variable declaration with type inference | (Go-style; see `tests/testcolon.mad`) |
+| UFCS — `x.f(y)` ≡ `f(x, y)`, either spelling | [ufcs.md](ufcs.md) |
 | `defer stmt;` — run at scope exit | [modern/defer.md](modern/defer.md) |
 | Multiple return values — `return a, b;` / `q, r := f();` | [multiple-returns.md](multiple-returns.md) |
 | `rust::match` expression | [rust-match.md](rust-match.md) |
