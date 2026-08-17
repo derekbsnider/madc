@@ -562,8 +562,42 @@ Two consequences, both accepted deliberately:
   var_dump value lines by their flavor-stable tail (`>(2) "hi"`) and pins the
   print_r blocks — the PHP-fidelity claim — in full. A test that spelled
   `__cxx11` would fail the libc++ lane, which runs the whole suite.
-- A shorter alias form (`std::string`, `std::vector<int>`) would need a
-  type -> alias reverse map that does not exist, or a name match on
-  `basic_string`, which is what this arc refuses to do anywhere. If it is wanted
-  later, the honest route is recording the SOURCE spelling on the declaration
-  (a variable's declared alias) — not pattern-matching the canonical form.
+- A shorter alias form is WANTED (owner, 2026-08-17: "I really don't think anyone
+  wants to see std::__cxx11::basic_string<...>"), and the mechanism exists.
+
+### 12.10 How to get to `std::string` — invert the datatype map (NOT a name match)
+
+**Correction to §12.9's first draft: a type -> alias map DOES exist.**
+`Program::namespace_datatype_map` is `namespace -> (name -> TokenDataType *)`, and
+`TokenDataType` is `{ std::string str; DataDef &definition; }` — the SPELLING the
+source used, bound to the DataDef it names (`include/datatokens.h:11`). `<string>`
+says `typedef basic_string<char> string;`, so `std["string"]->definition` IS the
+basic_string instantiation.
+
+So the type word for a class becomes: **search the datatype maps for an entry
+whose `definition` denotes THIS DataDef, and use the shortest qualified spelling
+found; fall back to `canonical_cpp_spelling()`, then `struct <name>`.** That is a
+type-IDENTITY inversion of the table the source's own `typedef` filled — the
+answer is "what did the source call this type", never a pattern match on
+`basic_string`. Deterministic tie-break: shortest name, then alphabetical.
+
+Notes for whoever implements it:
+
+- Do the lookup at COMPILE time, once per dumped type; cache per DataDef if the
+  scan shows up (the `std` map is a `std::map` enumerated by key).
+- `denotes_same_type` / pointer identity: compare through `unqualified()`, and be
+  careful that an alias may name a TYPEDEF of the class rather than the class.
+- A union must still keep its `union` keyword (§12.9) — the alias, if any, wins
+  for the NAME, not for dropping the kind.
+- `std::vector<int>` has NO alias, so it still prints
+  `std::vector<int32_t,std::allocator<int32_t>>`. Shortening THAT is a separate
+  question: it needs the instantiation's own argument list plus its template's
+  defaults, to drop trailing defaulted args (`std::allocator<int32_t>`) and to
+  render `int` rather than madc's canonicalized `int32_t`. No such record was
+  found on DataDefCLASS — `template_arg_names` lives on the namespace-overload
+  entry, not the class — so DO NOT assume it is available; measure first.
+- Changing the type word changes `tests/testphpseq.expect` (whose var_dump lines
+  are currently asserted by their flavor-stable tail precisely BECAUSE the
+  spelling was unstable). With `std::string` the fixture can pin the whole line,
+  which is strictly better — and flavor-stable, since the ALIAS is the same under
+  libstdc++ and libc++.

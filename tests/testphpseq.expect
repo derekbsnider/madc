@@ -5,7 +5,7 @@ Array
     [2] => 9
 )
 ===
->(3) {
+std::vector<int>(3) {
   [0]=>
   int(1)
   [1]=>
@@ -15,7 +15,7 @@ Array
 }
 ===
 hi|
->(2) "hi"
+std::string(2) "hi"
 ===
 Person Object
 (
@@ -25,7 +25,7 @@ Person Object
 ===
 struct Person(2) {
   ["name"]=>
->(5) "alice"
+  std::string(5) "alice"
   ["age"]=>
   int(30)
 }
@@ -36,8 +36,8 @@ Array
     [1] => carol
 )
 ===
->(2) {
+std::vector<std::string>(2) {
   [0]=>
->(3) "bob"
+  std::string(3) "bob"
   [1]=>
->(5) "carol"
+  std::string(5) "carol"

@@ -721,6 +721,13 @@ private:
 	node_t dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 			    TokenBase *origin);
 	node_t dump_tail(DumpFlavor fl, int depth, bool nested, TokenBase *origin);
+	// The source's own name for a type (the datatype maps inverted by type
+	// IDENTITY, never by pattern), and the type word var_dump prints.
+	std::string type_alias_spelling(DataDef *dd);
+	std::string dump_type_word(DataDef *dd);
+	std::string dump_class_type_word(class DataDefCLASS *cls);
+	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
+	std::string dump_array_type_word(DataDef *elem, size_t count);
 	node_t dump_vd_text_open(int depth, const std::string &word, node_t len,
 				 TokenBase *origin);
 	node_t dump_vd_text_close(TokenBase *origin);

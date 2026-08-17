@@ -134,25 +134,120 @@ static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd)
 	return kind + sdd->name;
 }
 
+// The type word for ANY type: a class goes through the class rule (alias, then
+// canonical spelling), everything else through the scalar table. One owner, so
+// a nested element word cannot disagree with a top-level one.
+std::string CirBuilder::dump_type_word(DataDef *dd)
+{
+	if (dd && !dd->is_pointer() && !dd->is_reference())
+		if (DataDefCLASS *c = is_class_object(dd)
+				    ? dynamic_cast<DataDefCLASS *>(dd->unqualified())
+				    : NULL)
+			return dump_class_type_word(c);
+	return dump_scalar_type_word(dd);
+}
+
+// A SEQUENCE's type word: the template's own name with its ELEMENT type, which
+// is the one argument a reader wants. The canonical spelling carries every
+// defaulted argument too —
+// std::vector<std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>,std::allocator<...same again...>>
+// — and the allocator and the char traits are implementation detail, not
+// information. The element type is not guessed: it is operator[]'s return type,
+// the same one the walk dumps. (A std::array's extent drops out of the spelling
+// and is printed as the COUNT instead.) A word with no '<' — a resolved alias
+// like std::string, or a plain class — is already what the source wrote.
+std::string CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem)
+{
+	std::string word = dump_class_type_word(cls);
+	size_t lt = word.find('<');
+	if (lt == std::string::npos || !elem)
+		return word;
+	return word.substr(0, lt) + "<" + dump_type_word(elem) + ">";
+}
+
 // An array's type word: the element's, with the extent.
-static std::string dump_array_type_word(DataDef *elem, size_t count)
+std::string CirBuilder::dump_array_type_word(DataDef *elem, size_t count)
 {
 	char n[32];
 	snprintf(n, sizeof(n), "[%llu]", (unsigned long long)count);
-	return dump_scalar_type_word(elem) + n;
+	return dump_type_word(elem) + n;
 }
 
-// A CONTAINER's type word for var_dump. A template instantiation's madc `name`
-// is a mangled tag no user wrote (vector_int32_t_std__allocator_int32_t_), so
-// prefer the type's own canonical C++ spelling when it has one. A union keeps
-// its keyword: with every member reading the same storage, "this is a union" is
-// the most important thing the line can say.
-static std::string dump_class_type_word(DataDefCLASS *cls)
+// The SOURCE's OWN NAME for this type, if anything names it. The datatype maps
+// bind the spelling a `typedef` / `using` introduced to the DataDef it names
+// (TokenDataType is { std::string str; DataDef &definition; }), so <string>'s
+// `typedef basic_string<char> string;` puts std["string"] -> the basic_string
+// instantiation. Inverting that table asks "what did the source call this type" —
+// it is a type-IDENTITY lookup, NOT a name match on `basic_string`, which is the
+// distinction this whole arc rests on.
+//
+// Shortest qualified spelling wins, then alphabetical, so the answer is
+// deterministic when several aliases name one type. Empty when none does.
+std::string CirBuilder::type_alias_spelling(DataDef *dd)
+{
+	if (!m_prog || !dd)
+		return std::string();
+	std::string best;
+	m_prog->namespace_datatype_map.for_each(
+		[&](const char *ns, datatype_map_t &m) -> bool {
+			for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
+				if (!it->second)
+					continue;
+				// Two keys are the type's OWN registration rather
+				// than a name the source gave it: the template-id
+				// spelling (holds '<') and the mangled tag madc
+				// registers the instantiation under, which IS the
+				// DataDef's own name. Without the second filter the
+				// "alias" found for std::vector<int> is
+				// std::vector_int32_t_std__allocator_int32_t_ —
+				// worse than the spelling it replaced.
+				if (it->first.find('<') != std::string::npos)
+					continue;
+				if (it->first == dd->name)
+					continue;
+				if (&it->second->definition != dd)
+					continue;
+				std::string cand = (ns && *ns)
+						 ? std::string(ns) + "::" + it->first
+						 : it->first;
+				if (best.empty() || cand.size() < best.size()
+				    || (cand.size() == best.size() && cand < best))
+					best = cand;
+			}
+			return false;
+		});
+	return best;
+}
+
+// A class's type word for var_dump.
+//
+// A union keeps its keyword: with every member reading the same storage, "this
+// is a union" is the most important thing the line can say, and an alias must
+// not hide it.
+//
+// A TEMPLATE INSTANTIATION is the case that needs help. Its madc `name` is a
+// mangled tag (vector_int32_t_std__allocator_int32_t_) and its canonical C++
+// spelling is complete but unreadable —
+// std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>> —
+// so when the source itself has a NAME for that type, use it: `std::string`.
+// Owner, 2026-08-17: "I really don't think anyone wants to see
+// std::__cxx11::basic_string<...>".
+//
+// A plain aggregate keeps `struct X`. It is already the source's own spelling,
+// and preferring an alias there would rename `struct Point` to whatever
+// `typedef struct Point Point_t;` happened to add.
+std::string CirBuilder::dump_class_type_word(DataDefCLASS *cls)
 {
 	if (cls->union_layout)
 		return "union " + cls->name;
-	if (!cls->canonical_cpp_spelling().empty())
-		return cls->canonical_cpp_spelling();
+	const std::string &canon = cls->canonical_cpp_spelling();
+	if (canon.find('<') != std::string::npos) {
+		std::string alias = type_alias_spelling(cls);
+		if (!alias.empty())
+			return alias;
+	}
+	if (!canon.empty())
+		return canon;
 	return "struct " + cls->name;
 }
 
@@ -359,7 +454,7 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		params.push_back({ {N_INT}, false });
 		params.push_back({ {N_CHAR}, true });
 		append(a, integer(dump_frame_col(fl, depth), origin));
-		std::string word = dump_scalar_type_word(dd);
+		std::string word = dump_type_word(dd);
 		append(a, str(word.c_str(), word.size() + 1, origin));
 	}
 	switch (kind) {
@@ -622,7 +717,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	bool is_text = elem->rawtype() == DataType::dtINT8
 		    || elem->rawtype() == DataType::dtUINT8;
 	std::string word = fl == dfVarDump
-			 ? dump_class_type_word(cls)
+			 ? dump_sequence_type_word(cls, elem)
 			 : (is_text ? std::string() : std::string("Array"));
 
 	std::vector<node_t> body;

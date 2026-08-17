@@ -17,15 +17,20 @@
 //   print_r(Person)         -> Person Object ( [name] => alice [age] => 30 )
 //   print_r(["bob","carol"])-> Array ( [0] => bob [1] => carol )
 // var_dump keeps PHP's frame — array(3) { [0]=> int(1) ... }, string(2) "hi" —
-// and names the real type instead: a container reports its CANONICAL C++
-// spelling (a template instantiation's internal tag is a mangled name no user
-// wrote), so std::string reads as
-// std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>
-// and std::vector<int> as std::vector<int32_t,std::allocator<int32_t>>. That
-// spelling is FLAVOR-DEPENDENT (libc++ says std::__1::basic_string<...>), which
-// is why the fixture asserts those value lines by their flavor-stable tail
-// (">(2) \"hi\"") and pins the print_r blocks — the PHP-fidelity claim — in
-// full.
+// and names the REAL type instead: std::string(2) "hi",
+// std::vector<int>(3) { ... }, std::vector<std::string>(2) { ... }.
+//
+// Both halves of those words are derived, not pattern-matched. "std::string" is
+// the SOURCE'S OWN NAME for the type, found by inverting the datatype maps by
+// type IDENTITY (<string>'s `typedef basic_string<char> string;` binds the
+// spelling to the very DataDef being dumped). The element in
+// "std::vector<std::string>" is operator[]'s return type — the same one the walk
+// dumps — and the defaulted allocator/traits arguments are dropped because they
+// are implementation detail, not information. Nothing here matches
+// `basic_string` or `vector` as a string, which is why the fixture can pin these
+// lines in full and stay stable across standard-library flavors: an ALIAS is the
+// same under libstdc++ and libc++, while the canonical spelling is not
+// (std::__cxx11:: vs std::__1::).
 #include <iostream>
 #include <string>
 #include <vector>
