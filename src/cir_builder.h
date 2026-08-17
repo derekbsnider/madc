@@ -664,8 +664,14 @@ class CirBuilder {
 	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.
+	// `index_lvalue` is a SYNTHESIZED index (a range-for's loop counter) that
+	// is already lowered and known to be an lvalue; pass it with index==NULL.
+	// It exists so the range-for path shares this ONE call builder — the index
+	// argument's shape (by value, by reference, class object) is decided here
+	// and nowhere else.
 	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
-				       TokenBase *index, TokenBase *origin);
+				       TokenBase *index, TokenBase *origin,
+				       node_t index_lvalue = NULL);
 	// Unwind a subscript token tree (TokenSubscript / TokenSubscriptExpr
 	// chain) to its named root variable + index list in the linearizer's
 	// order; false when tb is not a pure subscript tree over a named root.

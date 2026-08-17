@@ -1,0 +1,37 @@
+#!/../bin/madc
+// A POSITIONAL operator[] may take its index BY REFERENCE
+// (`int &operator[](const long &i)`), so a range-for over such a container must
+// pass the loop counter's ADDRESS. The range-for path used to build the
+// operator[] call by hand and pass the counter by VALUE, so the callee
+// dereferenced an integer: SIGSEGV at (nil). It delegates to the one operator[]
+// call owner (class_subscript_addr_on) now, which reads the parameter's shape.
+//
+// Bag also defines begin()/end(), so g++ and clang accept this exact source and
+// are a real oracle for it:
+//   g++ 13.3 / clang 18 -> 11 22 33 then 111 122 133
+#include <iostream>
+
+struct Bag {
+	int a[3];
+	int &operator[](const long &i) { return a[i]; }
+	long size() const { return 3; }
+	int *begin() { return a; }
+	int *end() { return a + 3; }
+};
+
+int main()
+{
+	Bag b;
+	b.a[0] = 11;
+	b.a[1] = 22;
+	b.a[2] = 33;
+	for (int x : b)
+		std::cout << x << std::endl;
+	// Reference loop var: writes go through operator[]'s T& result, so the
+	// container itself changes.
+	for (int &r : b)
+		r = r + 100;
+	for (int y : b)
+		std::cout << y << std::endl;
+	return 0;
+}

@@ -17807,13 +17807,42 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 // by the named-variable (TokenSubscript) and expression-receiver
 // (TokenSubscriptExpr) subscript paths.
 node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
-					   TokenBase *index, TokenBase *origin)
+					   TokenBase *index, TokenBase *origin,
+					   node_t index_lvalue)
 {
 	if (!cls || !recv_addr) return NULL;
 	std::string opname = "operator[]";
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return NULL;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+
+	// The INDEX argument (operator[] parameter 1; parameter 0 = __this) — one
+	// rule for both call shapes below, and for every caller. A SYNTHESIZED
+	// index (index == NULL, a range-for's loop counter) is integral and an
+	// lvalue by construction — class_index_iteration_protocol type-checks the
+	// parameter, and the counter is a real local — so a reference parameter
+	// takes its address directly, with no materialized temp.
+	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
+			? callee->parameters[1] : NULL;
+	bool refp = callee && callee->is_ref_param(1);
+	auto index_arg = [&]() -> node_t {
+		if (!index)
+			return refp ? node1(N_ADDR, index_lvalue, origin)
+				    : index_lvalue;
+		if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
+			return object_arg_addr(index, pc);
+		if (DataDefCLASS *vc = as_class_instance(idx_pt))
+			return object_arg_value(index, vc);
+		if (refp)
+			// A scalar reference parameter (`operator[](const key_type& k)`):
+			// an lvalue index folds to `&index`, but a prvalue index (a literal
+			// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
+			// ref_param_arg_addr materializes a temp for those, exactly as every
+			// other reference-argument site does, instead of taking `&<literal>`.
+			return ref_param_arg_addr(index, ref_param_referent(idx_pt),
+						  const_ref_param(callee, 1));
+		return translate_expr(index);
+	};
 
 	// A class-bound external operator[] names its real C++ symbol via
 	// emit_symbol and has no madc-emitted body. Emit that symbol and declare it
@@ -17824,12 +17853,17 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	if (callee && !callee->emit_symbol.empty()) {
 		node_t this_arg = node2(N_CAST, void_ptr_type(), recv_addr, origin);
 		CIR_NODE(this_arg)->synth_from_origin = true;
-		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
-		std::vector<ExternParam> eparams = { { {N_VOID}, true },
-						     { {N_LONG, N_LONG}, false } };
+		// Param 0 = this (void*); param 1 = the index — a 64-bit scalar,
+		// or a POINTER when operator[] takes its index by reference (read
+		// from the parameter, never assumed).
+		std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+		if (refp)
+			eparams.push_back({ {N_VOID}, true });
+		else
+			eparams.push_back({ {N_LONG, N_LONG}, false });
 		node_t args = list();
 		append(args, this_arg);
-		append(args, translate_expr(index));
+		append(args, index_arg());
 		// T& -> pointer return; class_subscript_call derefs it to the element
 		// lvalue so obj[i] reads and obj[i] = x writes.
 		need_output_extern(callee->emit_symbol.c_str(), true, eparams,
@@ -17843,24 +17877,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
 	node_t args = list();
 	append(args, recv_addr);
-	// Index argument (operator[] parameter 1; parameter 0 = __this).
-	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
-			? callee->parameters[1] : NULL;
-	bool refp = callee && callee->is_ref_param(1);
-	if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
-		append(args, object_arg_addr(index, pc));
-	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
-		append(args, object_arg_value(index, vc));
-	else if (refp)
-		// A scalar reference parameter (`operator[](const key_type& k)`):
-		// an lvalue index folds to `&index`, but a prvalue index (a literal
-		// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
-		// ref_param_arg_addr materializes a temp for those, exactly as every
-		// other reference-argument site does, instead of taking `&<literal>`.
-		append(args, ref_param_arg_addr(index, ref_param_referent(idx_pt),
-						const_ref_param(callee, 1)));
-	else
-		append(args, translate_expr(index));
+	append(args, index_arg());
 
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
@@ -21887,6 +21904,78 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	return node2(N_BLOCK, list(), items, tt);
 }
 
+// Is `name` visible as a class-scope type alias from `cls` (own aliases, then
+// bases, then enclosing scopes)? A thin name over class_alias_lookup_cir, the
+// file's one class-alias resolver, for callers that only need presence.
+static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
+{
+	std::set<DataDefCLASS *> seen;
+	return class_alias_lookup_cir(cls, name, seen) != NULL;
+}
+
+// Does `cls` support the POSITIONAL index-iteration protocol that
+// translate_foreach_class emits — `for (i = 0; i < c.size(); ++i) use(c[i])`?
+//
+// Naming `size` and `operator[]` is not the same as having that protocol.
+// std::map has both, yet `m[i]` is a KEYED lookup-that-inserts, never the i'th
+// element: g++ and clang reject `for (int v : m)` outright ("cannot convert
+// 'std::pair<const int, int>' to 'int'"), because the real range protocol is
+// begin()/end() and yields pairs. Trusting the two names emitted the index loop
+// anyway and handed the loop counter to `map::operator[](const key_type &)`,
+// which wants a pointer -> SIGSEGV at (nil). So the match is TYPE-CHECKED:
+//   - size() takes no user argument and returns an integral — it is the bound;
+//   - operator[] takes exactly one user argument that is integral, by value or
+//     through a reference (`operator[](const long &)` is a legal spelling of a
+//     positional subscript; lowering that argument is class_subscript_addr_on's
+//     job, not the caller's);
+//   - the class names no `key_type` — the standard library's own signal that its
+//     subscript is a KEY rather than a position, and the property generic C++
+//     keys on. A keyed container has no index protocol at all.
+// A class that fails this is not index-iterable, and translate_foreach_loop says
+// so out loud rather than falling through to the madc-array reader.
+static bool class_index_iteration_protocol(DataDefCLASS *cls, Variable *&szmv,
+					   Variable *&opmv)
+{
+	szmv = opmv = NULL;
+	if (!cls)
+		return false;
+	std::string szname = "size", opname = "operator[]";
+	Variable *sz = cls->findMethod(szname);
+	Variable *op = cls->findMethod(opname);
+	FuncDef *szfd = sz ? dynamic_cast<FuncDef *>(sz->type) : NULL;
+	FuncDef *opfd = op ? dynamic_cast<FuncDef *>(op->type) : NULL;
+	if (!szfd || !opfd)
+		return false;
+
+	// size(): no user argument, integral result (parameters may still carry
+	// the hidden __this slot — method_hidden_param_count owns that count).
+	size_t szhidden = method_hidden_param_count(sz, szfd, cls);
+	if (szfd->parameters.size() != szhidden
+	    || !szfd->return_value_type().is_integer())
+		return false;
+
+	// operator[]: exactly one user argument, integral. is_integer() is true
+	// for a POINTER (DataDefPTR) and for a pointer-to-data-member as well, so
+	// exclude both — neither is a position.
+	size_t ophidden = method_hidden_param_count(op, opfd, cls);
+	if (opfd->parameters.size() != ophidden + 1)
+		return false;
+	DataDef *ipt = opfd->parameters[ophidden];
+	if (DataDef *referent = ref_param_referent(ipt))
+		ipt = referent;
+	if (!ipt || !ipt->is_integer() || ipt->is_pointer()
+	    || ipt->is_member_pointer())
+		return false;
+
+	// A container that names a key_type subscripts by key, not by position.
+	if (class_has_type_alias(cls, "key_type"))
+		return false;
+
+	szmv = sz;
+	opmv = op;
+	return true;
+}
+
 // Range-based for over a madc array (madc::value): `for (T x : arr) body`.
 // The parser already declared `x` in the ENCLOSING scope (so translate_block
 // emits its storage + ctor once, and the cleanup attribute destructs it), so
@@ -21945,11 +22034,20 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	// std::vector<int> from the header template) iterates by index using
 	// its size() and operator[] methods.
 	if (DataDefCLASS *ccls = class_behind(cdd)) {
-		std::string szname = "size", opname = "operator[]";
-		Variable *szmv = ccls->findMethod(szname);
-		Variable *opmv = ccls->findMethod(opname);
-		if (szmv && opmv)
+		Variable *szmv = NULL, *opmv = NULL;
+		if (class_index_iteration_protocol(ccls, szmv, opmv))
 			return translate_foreach_class(fe, ccls, szmv, opmv);
+		// A class object with no index protocol must NOT fall through to
+		// the madc-array reader below: that reads the object's own bytes as
+		// a madc::value header (garbage length -> out-of-bounds element
+		// fetch), the same trap the raw-array arm above was added for.
+		if (!is_array_object(cdd))
+			return error_node((std::string("range-for over class '")
+					   + ccls->name + "' is not supported: it has no "
+					   "positional size()/operator[] index protocol "
+					   "(a key-subscripted container is iterated with "
+					   "begin()/end(), which madc does not implement "
+					   "yet)").c_str(), fe);
 	}
 
 	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
@@ -22069,7 +22167,6 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
 	};
 	std::string szsym = cls->name + "__size";
-	std::string opsym = cls->name + "__operator[]";
 
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
@@ -22094,14 +22191,16 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	// __fe_i += 1
 	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
 
-	// The element accessor `c[__fe_i]`. operator[] returns T& == a T*; the
-	// bare call is the element ADDRESS, the deref is the element lvalue.
-	referenced_funcs.insert(opsym);
+	// The element accessor `c[__fe_i]`, built by the ONE operator[] call owner
+	// (class_subscript_addr_on): it decides the index argument's shape FROM the
+	// parameter and knows about an externally-bound (emit_symbol) operator[].
+	// Hand-rolling the call here handed the loop counter BY VALUE to a
+	// `operator[](const long &)` — which wants a pointer — and SIGSEGV'd on a
+	// container g++ iterates fine. The bare call is the element ADDRESS for a
+	// T& return; the deref below turns it into the element lvalue.
 	auto op_addr = [&]() -> node_t {
-		node_t a = list();
-		append(a, recv_addr());
-		append(a, id(idx, fe));
-		return node2(N_CALL, id(opsym.c_str(), fe), a, fe);
+		return class_subscript_addr_on(cls, recv_addr(), NULL, fe,
+					       id(idx, fe));
 	};
 
 	node_t body_items = list();
