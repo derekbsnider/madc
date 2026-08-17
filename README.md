@@ -210,29 +210,32 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.83.0** (2026-08-17) — uniform function call syntax
-for the madc dialect. Under `--std=madc`, `x.f(y)` and `f(x, y)` are
-interchangeable spellings of the same call, in both directions: the dot form
-prefers a member and falls back to a free function, the call form prefers a
-declared free function and falls back to a member. Because a fallback only ever
-fires where the code was already a hard error, no program that compiled before
-can change meaning, and every explicit `--std=c*` / `--std=c++*` mode is
-byte-identical to v0.82.0. The receiver is passed exactly as written — no
-implicit `&`, no implicit `*` — which makes `.` and `->` the same operator in the
-fallback leg, so `fp->fclose()` reads as `fclose(fp)`. Every receiver kind
-participates (classes, structs, `int`, `char *`, arrays, operator results),
-calls chain (`n.twice().inc().twice()`), and member-only container operations
-gain the free spelling (`count(m, k)`). This is Stroustrup's unified-call model,
-which C++ itself did not adopt. Also shipping: `madc --version` / `-V`.
+The current release is **v0.84.0** (2026-08-17) — the forest pack stops
+degrading silently. A pack run exits 0 while tolerating parse failures, and a
+bind can lose an entire aggregate without a word; one gate now covers all three
+packs (Linux, Win64, macOS) with per-profile baselines, hard-zeroing the two
+losses that have no legitimate instance and ratcheting the rest. It refuses to
+render a verdict on a load probe that shows no materialization, because every
+diagnostic it reads is debug-gated and a run that bound nothing would otherwise
+score a clean sweep of zeros. On its first real run it found that **any struct
+with a `long double` member lost that member when bound from a container** —
+slot 18 of the type table was still marked reserved after real `long double`
+landed in v0.78.0, so the freeze minted an id no record walk writes. Fixing it
+also cleared every dropped record on the Linux and Win64 packs, so containers
+now carry strictly more than they did. Also surfaced and now tracked instead of
+silent: both macOS artifacts ship with no MIR module cache.
 
-Branch state: v0.83.0 is on `develop`; `master` carries v0.82.0, for which
+Branch state: v0.84.0 is on `develop`; `master` carries v0.82.0, for which
 public binaries are published on all three platforms.
 
 Latest validated results:
 
 - Linux JIT: **1064 passed / 0 failed / 0 timed out / 9 skipped**
 - native EXE and OBJ lanes **1026/0**; packed suite **1054/0/0/9** (last
-  measured at v0.82.0; UFCS is a front-end feature and did not touch that lane)
+  measured at v0.82.0)
+- all three pack lanes green under the new degradation gate: Linux and Win64 at
+  93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
+  arch, and every listed header verified present as a container unit
 - headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
@@ -260,6 +263,8 @@ and known gaps.
 
 ### Recent Releases
 
+- [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
+  silently; the gate's first run found a lost `long double` member.
 - [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`
   become interchangeable in the madc dialect, in both directions.
 - [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;

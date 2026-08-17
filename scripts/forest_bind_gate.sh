@@ -445,6 +445,40 @@ int main()
 EOF
 run_case nestedenumfn "n=1 e=1 ev=7 sz=16"
 
+# --- case: ldouble (task #63) — a struct with `long double` members. Slot 18
+#     (MADC_TYPEID_LONG_DOUBLE) was left "reserved" after real long double
+#     landed in 114b13a8, so ddLDOUBLE had no PINNED id and the freeze minted
+#     it a PROJECT id no record walk writes — a DK_NONE cross-reference. Both
+#     the scalar member and the pointer member then failed to swizzle at bind
+#     and were dropped, so a bound `s.lo` reported `Unidentified member 'lo'`
+#     while the identical live parse printed the g++/clang answer. The same
+#     loss family as nestedenumfn above, on a PRIMITIVE instead of an enum:
+#     found by scripts/forest_pack_gate.sh's first real run, which reported
+#     `ptr long double* (operand kind=0)` in the load probe.
+cat > tmp/fbgate_ldouble.h <<'EOF'
+#ifndef FBGATE_LDOUBLE_H
+#define FBGATE_LDOUBLE_H
+struct fbgate_ld { long double lo; long double *pp; int tag; };
+#endif
+EOF
+cat > tmp/fbgate_ldouble_producer.cpp <<'EOF'
+#include <fbgate_ldouble.h>
+int main() { struct fbgate_ld s; s.tag = 0; return s.tag; }
+EOF
+cat > tmp/fbgate_ldouble_consumer.cpp <<'EOF'
+#include <fbgate_ldouble.h>
+#include <cstdio>
+int main() {
+    long double x = 2.5L;
+    struct fbgate_ld s;
+    s.lo = 1.5L; s.pp = &x; s.tag = 7;
+    printf("ld=%.1f %.1f %d %d\n", (double)s.lo, (double)*s.pp, s.tag,
+           (int)sizeof(struct fbgate_ld));
+    return 0;
+}
+EOF
+run_case ldouble "ld=1.5 2.5 7 32"
+
 # --- case: ns (namespace-qualified type restoration) — a struct defined inside a
 #     user namespace. Before v10 the loaded type registered ONLY in the flat
 #     struct_map/datatype_map, so a bound `N::P` failed "Unknown namespace 'N'". v10
@@ -1474,5 +1508,10 @@ sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer
 rm -f "$sb_snap" "$sb_gcc"
 echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
 
-echo "forest_bind_gate: GREEN 25/25 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
+# NOTE: this tally is hand-maintained, and that bit me — the [ldouble] case ran
+# and passed while the summary still said 25/25, so the line UNDERSTATED
+# coverage. Worse in the other direction: deleting a case would leave this line
+# still claiming it runs. Deriving it from run_case would need the ~12 bespoke
+# cases below to register too; until then, update it when you add a case.
+echo "forest_bind_gate: GREEN 26/26 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
 exit 0

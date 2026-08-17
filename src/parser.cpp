@@ -16925,6 +16925,15 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_UINT64:	return &ddUINT64;
 		case MADC_TYPEID_FLOAT:		return &ddFLOAT;
 		case MADC_TYPEID_DOUBLE:	return &ddDOUBLE;
+		// Slot 18 was reserved "until its DataDef exists". It does: real
+		// long double landed in 114b13a8 (v0.78.0). Leaving the slot NULL
+		// left ddLDOUBLE with no PINNED id, so the freeze minted it a
+		// PROJECT id that no record walk writes — a DK_NONE cross-reference,
+		// task #64's exact shape: `ptr long double*` never materialized at
+		// bind (found by the task-#63 pack gate's first real run).
+		// 21/22 stay reserved on purpose: DataDefCOMPLEX is constructed per
+		// element type, so there is no global singleton to pin.
+		case MADC_TYPEID_LONG_DOUBLE:	return &ddLDOUBLE;
 		case MADC_TYPEID_INT128:	return &ddINT128;
 		case MADC_TYPEID_UINT128:	return &ddUINT128;
 		case MADC_TYPEID_MAX_ALIGN_T:	return &ddMAX_ALIGN_T;

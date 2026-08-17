@@ -1692,8 +1692,17 @@ TEST_SUITE("type table (typeid) identity layer") {
             CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == pu);
             CHECK(dd_platform_wchar() == &ddUINT16);
         }
-        // reserved-but-unbacked slots resolve NULL until their P0 slice lands
-        CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
+        // long double IS backed now (114b13a8), so its slot is pinned: an
+        // unpinned primitive mints a PROJECT id the record walk never writes,
+        // i.e. a DK_NONE cross-reference at bind (task #63 found `ptr long
+        // double*` failing to materialize exactly this way).
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == &ddLDOUBLE);
+        CHECK(ddLDOUBLE.type_id == MADC_TYPEID_LONG_DOUBLE);
+        // reserved-but-unbacked slots resolve NULL until their P0 slice lands:
+        // DataDefCOMPLEX is constructed per element type, so 21/22 have no
+        // global singleton to pin.
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_COMPLEX_FLOAT) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_COMPLEX_DOUBLE) == (DataDef *)NULL);
         // dynamic value kinds have no compiler DataDef
         CHECK(madc_primitive_for_slot(MADC_TYPEID_TEXT) == (DataDef *)NULL);
         CHECK(madc_primitive_for_slot(MADC_TYPEID_OBJECT) == (DataDef *)NULL);

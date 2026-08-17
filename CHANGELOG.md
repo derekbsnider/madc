@@ -2,6 +2,81 @@
 
 ## [Unreleased]
 
+## [v0.84.0] — 2026-08-17
+
+The forest pack stops degrading silently: one gate over all three packs, and the
+first defect it found was a `long double` member disappearing at bind.
+
+- **The forest pack's silent degradation is now gated (task #63).** A pack run
+  exits 0 while tolerating parse failures, and a bind can lose an entire
+  aggregate without a word — task #64 was exactly that, and it shipped.
+  `scripts/forest_pack_gate.sh` is the one owner, called by each pack script on
+  its own log: `forest_pack.sh` (linux), `forest_pack_windows.sh` (win64),
+  `forest_pack_darwin.sh` (darwin, once per arch). Baselines are **per profile**,
+  because the number recorded in the hand-off was the *darwin* one: the macOS log
+  splits at its two `forest_pack_darwin: OK` lines into 58 + 58, while linux and
+  win64 both read 93 over libstdc++ classes that share almost nothing with
+  libc++'s — one number for all three would have been 35 free slots. The count
+  anchors on `: error: ` over an ANSI-stripped stream; on one linux pack log
+  `grep -c error` says 339 (it matches `filesystem_error` in the deliberate
+  `pack drop:` lines), `grep -c 'error:'` says 102 (it matches
+  `system_error:616:6:` in a path), and the anchored pattern says 93. Three
+  strictnesses, each earned by a measurement: **hard zero** for
+  `materialize fill: DROPPED` and `forest_restore_decls: SKIPPED` — a record the
+  consumer admitted and then could not use, with no live parse to rescue it,
+  `fill: DROPPED` being the counter #64 would have tripped; **ratchet** for the
+  DK_NONE census, closure drops, and MIR-cache blob skips; and **uncounted** for
+  `UNRESOLVED` without `kind=0`, of which 139 are normal. Every load-side
+  diagnostic is `DBG`-gated, so the gate REQUIRES the `materialize filter:`
+  marker and refuses a verdict without it rather than scoring a clean sweep of
+  zeros on a run that bound nothing. `--selftest` is hermetic and wired into
+  `fulltest`: 17 legs, both directions of every boundary. Reasoning and every
+  number: [docs/plans/2026-08-17-pack-degradation-gate.md](docs/plans/2026-08-17-pack-degradation-gate.md).
+- **A `long double` member vanished when bound from a forest container.**
+  `madc_primitive_for_slot()` still returned NULL for slot 18, marked "reserved:
+  P0 wide-value work", even though `ddLDOUBLE` has existed since real long double
+  landed in v0.78.0. With no pinned id the freeze minted `long double` a *project*
+  id that no record walk writes, so at bind it was a DK_NONE cross-reference and
+  could not swizzle: `struct { long double lo; long double *pp; int tag; }`
+  live-parsed `ld=1.5 2.5 7 32` (== g++ 13 == clang++ 18) while the identical
+  source through `--freeze` + `--forest-bind` failed with
+  `Unidentified member 'lo'`. The same loss family as task #64, on a primitive
+  instead of an enum. Pinning the slot also cleared every
+  `materialize closure: DROPPED` on both the linux and win64 packs (1 → 0 and
+  3 → 0) — those dropped records were the long-double-bearing ones, so the
+  container now carries strictly more than it did. Found by the new gate's first
+  real run; gated by `tests/unit/test_datadef.cpp` and `forest_bind_gate`'s
+  `[ldouble]` case. Slots 21/22 stay reserved: `DataDefCOMPLEX` is constructed
+  per element type, so there is no global singleton to pin.
+- **`materialize derived: UNRESOLVED` now names the record kind in both arms.**
+  It spelled `kind=` only for fn-ptr params, so a DK_NONE reached as a
+  ptr/ref/const/carray operand printed a bare `operand` — indistinguishable from
+  the routine case of an operand outside the bound closure, and those chains are
+  the majority of derived ids. Task #64 happened to land in the arm that spelled
+  the kind. Widening it immediately named 57 previously-invisible DK_NONE
+  cross-references, 55 of them legitimate (a pointer to a template parameter has
+  no concrete record by construction) and 2 the `long double` defect above.
+- **Both macOS packs ship with no MIR cache blob** — newly *visible*, not newly
+  broken. Linux packs a 467 KB module blob and win64 a 497 KB one; both darwin
+  arches skip theirs, arm64 on `wrong result type in proto proto138` and x86-64
+  on `duration<double, nano>::operator%=` lowering `%` to an integer `umods`
+  with a floating operand. Correctness survives — which is why the pack exits
+  0 — but every consumer compile on macOS then pays full price. Pre-existing and
+  byte-identical before and after this release's code changes, so it is baselined
+  at `darwin mir-blob-skips 1` with both causes and reducer shapes recorded
+  rather than left silent.
+- **One owner for "every listed entry point must be a unit"** (pre-merge
+  `/dupaudit`). Pack verification is implemented three times, and this rule was
+  in two of them: `forest_pack_windows.sh` and `forest_pack_darwin.sh` each
+  carried their own `unit_present()` loop, both commenting on why it matters,
+  while `forest_pack.sh` — the linux lane every other lane is measured against —
+  had no such check, so a dropped unit there was invisible until the headerless
+  lane rescued it by the very live parse the check forbids. Consolidated into the
+  gate (`--dump` / `--units-from` / `--sources-from`), with literal matching
+  instead of an interpolated ERE, and two properties the inlined loops lacked: a
+  list that verifies NOTHING now fails, and an entry point is matched
+  exact-or-path-tail so `tor` no longer passes because `vector` is a unit.
+
 ## [v0.83.0] — 2026-08-17
 
 UFCS: `x.f(y)` and `f(x, y)` become interchangeable spellings in the madc

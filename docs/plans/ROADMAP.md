@@ -1,5 +1,32 @@
 # madc Roadmap
 
+**✅ PACK DEGRADATION GATE (2026-08-17, v0.84.0, task #63):** the forest pack
+exits 0 while tolerating parse failures, and a bind can lose a whole aggregate
+without a word — task #64 was exactly that and it shipped.
+`scripts/forest_pack_gate.sh` is the one owner, called by each pack script on its
+own log, with **per-profile** baselines: the number in the hand-off (58) was
+DARWIN's, and linux/win64 both read 93 over libstdc++ classes that share almost
+nothing with libc++'s, so one number would have been 35 free slots. Hard zero for
+the two losses with no legitimate instance (`materialize fill: DROPPED`,
+`forest_restore_decls: SKIPPED`); ratchet for the DK_NONE census, closure drops
+and MIR-blob skips; `UNRESOLVED` without `kind=0` uncounted, since 139 are
+normal. The gate REQUIRES the `materialize filter:` marker before rendering any
+verdict, because every load-side diagnostic is `DBG`-gated and a run that bound
+nothing would otherwise sweep clean. It paid for itself on its first real run by
+finding that **a `long double` member vanished at bind** — slot 18 was still
+"reserved" after real long double landed in v0.78.0, so the freeze minted it a
+project id no record walk writes; pinning it also cleared every closure drop on
+both packs (1→0, 3→0), so the container now carries strictly more. Two more finds
+came with it: `UNRESOLVED` only named the record kind for fn-ptr params (widened,
+which is what made the census measurable), and **both macOS packs ship with no
+MIR cache blob** while linux/win64 pack 467KB/497KB — pre-existing, now gated at
+`darwin mir-blob-skips 1` with both causes recorded instead of silent. The
+pre-merge `/dupaudit` consolidated "every listed entry point must be a unit",
+which win64 and darwin each implemented and the LINUX pack did not have at all.
+Follow-ups: the two MIR-blob causes, and task #60 (the macOS headerless cell) as
+darwin's consumer-side proof. Plan:
+[2026-08-17-pack-degradation-gate.md](2026-08-17-pack-degradation-gate.md).
+
 **✅ UFCS (2026-08-17, v0.83.0):** uniform function call syntax for the madc
 dialect, in BOTH directions — `x.f(y)` prefers a member and falls back to
 `f(x, y)`; `f(x, y)` prefers a declared free function and falls back to

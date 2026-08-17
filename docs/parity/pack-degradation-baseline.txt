@@ -1,0 +1,69 @@
+# Forest-pack degradation ratchet baseline (task #63).
+# Enforced by scripts/forest_pack_gate.sh, which each pack script calls on its
+# OWN run: scripts/forest_pack.sh (linux), forest_pack_windows.sh (win64),
+# forest_pack_darwin.sh (darwin, once per arch against the same key).
+#
+# Format: <count> <profile> <metric>
+#
+#   pack-errors    anchored madc diagnostics (': error: ' on the ANSI-stripped
+#                  stream) in ONE pack/freeze run. Every one is a header
+#                  construct madc could not parse; the gate prints the class
+#                  breakdown, which IS the burndown list.
+#   dk-none        'materialize derived: UNRESOLVED … kind=0' in that profile's
+#                  -v load probe: a project id whose record is DK_NONE, i.e.
+#                  stamped by the freeze and never written. A CENSUS, because
+#                  most instances are legitimate — a pointer to a template
+#                  parameter has no concrete record by construction, and the
+#                  consumer re-instantiates from the pattern. A CONCRETE type
+#                  here is task #64's shape and is a defect.
+#   mir-blob-skips 'blob skipped' in the pack log: the MIR module-cache blob
+#                  failed to compile and was dropped with "consumers fall
+#                  back". Correctness survives — which is why the pack exits 0 —
+#                  but every consumer compile then pays full price. linux and
+#                  win64 have no line here, so they are gated at ZERO (they
+#                  pack 467KB / 497KB blobs). darwin is at 1 per arch and both
+#                  causes are known; see the plan doc §8.
+#   closure-drops  'materialize closure: DROPPED' in the same probe — records
+#                  whose chain arena_chain_ok refuses to record. Designed
+#                  behaviour, so it ratchets; the container carrying LESS than
+#                  it did is the regression.
+#
+# A MISSING line means ZERO allowed, so a new profile or metric cannot appear
+# with room to spare. Counts may only go DOWN: lower them in the same commit
+# that fixes a class. The gate prints the exact new number when a run comes in
+# under baseline.
+#
+# NOT here, deliberately: 'materialize fill: DROPPED' and
+# 'forest_restore_decls: SKIPPED' are HARD ZERO with no baseline. Each is a
+# record the consumer ADMITTED and then could not use, a bound unit is reported
+# SERVED either way, and neither has a legitimate instance. `fill: DROPPED` is
+# the counter task #64 would have tripped.
+#
+# darwin has pack-errors only: a cross-freeze cannot run its own consumer, so
+# its load probe lives in scripts/mac_battery.sh leg 3c (hard-zero halves
+# gated, census reported) and its numbers are recorded in
+# docs/plans/2026-08-17-pack-degradation-gate.md.
+#
+# Measured 2026-08-17 (task #63, at v0.83.0 content + the gate):
+#   linux  93 pack-errors — 51 __cerb, 10 max_size, 12 _M_dispose, tail
+#   win64  93 pack-errors — same corpus (mingw ships libstdc++ 13.2)
+#   darwin 58 pack-errors — identical on arm64 and x86-64: 15 lambda parsing,
+#          10 facet member lookup, 4 static_cast tail (libc++, a different
+#          corpus from the two above — they share almost no classes, which is
+#          why one number for all three would have been 35 free slots)
+#   dk-none 55 on linux AND win64, all of them DEPENDENT operands (_Up/_Tp1/
+#          _Tp/_ValueT). It was 57 before this gate landed: the other 2 were
+#          `ptr long double*` and they were REAL — slot 18 stayed unpinned
+#          after real long double landed, so a struct with a `long double`
+#          member LOST that member at bind. Pinning it also cleared every
+#          closure drop (linux 1 -> 0, win64 3 -> 0): those dropped records
+#          were the long-double-bearing ones, so the container now carries
+#          MORE than it did. Gated by forest_bind_gate [ldouble].
+93 linux pack-errors
+55 linux dk-none
+0 linux closure-drops
+93 win64 pack-errors
+55 win64 dk-none
+0 win64 closure-drops
+58 darwin pack-errors
+1 darwin mir-blob-skips
