@@ -18,29 +18,162 @@
 // 8.3.6 verbatim). Where C truth and PHP presentation differ, print_r    //
 // follows PHP and var_dump follows C — that split is the whole design.   //
 //                                                                       //
+// EVERY primitive takes a leading `void *sink` (plan §13.4):             //
+//   sink == NULL -> write to stdout (PHP's print_r($x) / var_dump($x))   //
+//   sink != NULL -> append to an opaque growable buffer, which           //
+//                   print_r($x, true) returns as text.                  //
+// The sink is OPAQUE on purpose: generated code passes a `void *` and    //
+// never needs this struct's layout, so the two sides cannot disagree     //
+// about it. One writer (sink_write) owns the stdout-or-buffer decision,  //
+// so no primitive can route output differently from its siblings.        //
+//                                                                       //
 ///////////////////////////////////////////////////////////////////////////
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 // stdout, unbuffered-order-wise, is shared with the C++ iostreams the rest of
 // the runtime prints through (std::cout is sync_with_stdio by default), so a
 // script may interleave `cout <<` and php::print_r freely.
 
+// ---------------------------------------------------------------------------
+// The sink
+// ---------------------------------------------------------------------------
+// A capture buffer for print_r($x, true). Deliberately NOT open_memstream:
+// that is POSIX, and the win64 lane has no such function.
+
+struct madc_dump_sink {
+    char  *buf;
+    size_t len;
+    size_t cap;
+    int    oom;			/* a failed grow is remembered, never silent */
+};
+
+void *__madc_dump_sink_open(void)
+{
+    struct madc_dump_sink *s = (struct madc_dump_sink *)
+				  malloc(sizeof (struct madc_dump_sink));
+    if (!s)
+	return NULL;
+    s->buf = NULL;
+    s->len = 0;
+    s->cap = 0;
+    s->oom = 0;
+    return (void *)s;
+}
+
+// The captured text, always NUL-terminated and never NULL, so the caller needs
+// no branch. An empty capture reads as "".
+const char *__madc_dump_sink_text(void *sink)
+{
+    struct madc_dump_sink *s = (struct madc_dump_sink *)sink;
+    if (!s || !s->buf)
+	return "";
+    return s->buf;
+}
+
+// Nonzero when any append failed, so the caller can tell an empty dump from a
+// lost one rather than returning a plausible "".
+int __madc_dump_sink_failed(void *sink)
+{
+    struct madc_dump_sink *s = (struct madc_dump_sink *)sink;
+    return s ? s->oom : 0;
+}
+
+void __madc_dump_sink_close(void *sink)
+{
+    struct madc_dump_sink *s = (struct madc_dump_sink *)sink;
+    if (!s)
+	return;
+    free(s->buf);
+    free(s);
+}
+
+// THE writer. Every byte this file emits goes through here.
+static void sink_write(void *sink, const char *s, size_t n)
+{
+    struct madc_dump_sink *k = (struct madc_dump_sink *)sink;
+    size_t need;
+    char *nb;
+
+    if (!s || !n)
+	return;
+    if (!k) {
+	fwrite(s, 1, n, stdout);
+	return;
+    }
+    if (k->oom)
+	return;
+    need = k->len + n + 1;
+    if (need > k->cap) {
+	size_t cap = k->cap ? k->cap : 128;
+	while (cap < need)
+	    cap *= 2;
+	nb = (char *)realloc(k->buf, cap);
+	if (!nb) {
+	    k->oom = 1;
+	    return;
+	}
+	k->buf = nb;
+	k->cap = cap;
+    }
+    memcpy(k->buf + k->len, s, n);
+    k->len += n;
+    k->buf[k->len] = '\0';
+}
+
+static void sink_puts(void *sink, const char *s)
+{
+    if (s)
+	sink_write(sink, s, strlen(s));
+}
+
+static void sink_putc(void *sink, char c)
+{
+    sink_write(sink, &c, 1);
+}
+
+// Formatted write for the SHORT, bounded pieces only — numbers, punctuation and
+// compile-time type words. Arbitrary-length user text (a string's characters, a
+// type word of unknown length) is written with sink_puts instead, so nothing
+// here can truncate a value. 256 covers every format in this file: the longest
+// is a 64-bit decimal inside a few literal bytes.
+static void sink_printf(void *sink, const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+	return;
+    if ((size_t)n >= sizeof buf)
+	n = (int)(sizeof buf - 1);
+    sink_write(sink, buf, (size_t)n);
+}
+
+// ---------------------------------------------------------------------------
+// print_r scalars
+// ---------------------------------------------------------------------------
+
 // print_r of an integer: the decimal digits, NO newline and no type — PHP's
 // print_r(42) is exactly "42". Signedness comes from the compiler, which knows
 // the real type; the value rides as 64 bits either way.
-void __madc_dump_pr_i64(long long v, int is_unsigned)
+void __madc_dump_pr_i64(void *sink, long long v, int is_unsigned)
 {
     if (is_unsigned)
-	printf("%llu", (unsigned long long)v);
+	sink_printf(sink, "%llu", (unsigned long long)v);
     else
-	printf("%lld", v);
+	sink_printf(sink, "%lld", v);
 }
 
 // print_r of a floating value: PHP's own double->string, which is `%.14G`
 // (precision=14) PLUS a guaranteed decimal point in the mantissa of an
 // exponent form — PHP prints 1.0E+25 where C's %G prints 1E+25.
-void __madc_dump_pr_f64(double v)
+void __madc_dump_pr_f64(void *sink, double v)
 {
     char buf[64];
     char out[72];
@@ -56,7 +189,7 @@ void __madc_dump_pr_f64(double v)
 	    seen_exp = 1;
     }
     if (!seen_exp || seen_dot) {
-	printf("%s", buf);
+	sink_puts(sink, buf);
 	return;
     }
     for (i = 0, o = 0; i < n && o + 3 < sizeof(out); i++) {
@@ -67,41 +200,41 @@ void __madc_dump_pr_f64(double v)
 	out[o++] = buf[i];
     }
     out[o] = '\0';
-    printf("%s", out);
+    sink_puts(sink, out);
 }
 
 // print_r of a bool: PHP renders true as "1" and false as the EMPTY string.
-void __madc_dump_pr_bool(int v)
+void __madc_dump_pr_bool(void *sink, int v)
 {
     if (v)
-	printf("1");
+	sink_puts(sink, "1");
 }
 
 // print_r of a character: the byte itself, as a one-character string. PHP has
 // no char type; a PHP developer handed chr(65) sees "A".
-void __madc_dump_pr_char(int c)
+void __madc_dump_pr_char(void *sink, int c)
 {
-    printf("%c", (unsigned char)c);
+    sink_putc(sink, (char)(unsigned char)c);
 }
 
 // print_r of a C string: the text. A NULL pointer is PHP's null, which print_r
 // renders as the empty string.
-void __madc_dump_pr_cstr(const char *s)
+void __madc_dump_pr_cstr(void *sink, const char *s)
 {
     if (s)
-	printf("%s", s);
+	sink_puts(sink, s);
 }
 
 // print_r of a character ARRAY: text, bounded by the array's extent. A C array
 // need not be NUL-terminated, so %s could read past it; stop at the extent or
 // at the first NUL, whichever comes first.
-void __madc_dump_pr_cstr_n(const char *s, long long n)
+void __madc_dump_pr_cstr_n(void *sink, const char *s, long long n)
 {
     long long i;
     if (!s)
 	return;
     for (i = 0; i < n && s[i]; i++)
-	putchar(s[i]);
+	sink_putc(sink, s[i]);
 }
 
 // ---------------------------------------------------------------------------
@@ -128,52 +261,55 @@ void __madc_dump_pr_cstr_n(const char *s, long long n)
 // so no runtime depth counter exists. Captured from php-cli 8.3.6 with cat -A
 // (tmp/or_pr2.php) — do not "tidy" the blank line or the 8-space step.
 
-static void dump_indent(int col)
+static void dump_indent(void *sink, int col)
 {
     int i;
     for (i = 0; i < col; i++)
-	putchar(' ');
+	sink_putc(sink, ' ');
 }
 
 // The aggregate's opening: its type word ("Array", "Point Object"), then "(".
-void __madc_dump_pr_head(int col, const char *word)
+void __madc_dump_pr_head(void *sink, int col, const char *word)
 {
-    printf("%s\n", word ? word : "");
-    dump_indent(col);
-    printf("(\n");
+    sink_puts(sink, word ? word : "");
+    sink_putc(sink, '\n');
+    dump_indent(sink, col);
+    sink_puts(sink, "(\n");
 }
 
 // One entry's key: PHP spells a protected member "[name:protected]" and a
 // private one "[name:Class:private]". The whole key text is a compile-time
 // literal — the compiler knows the access and the declaring class.
-void __madc_dump_pr_key(int col, const char *key)
+void __madc_dump_pr_key(void *sink, int col, const char *key)
 {
-    dump_indent(col);
-    printf("[%s] => ", key ? key : "");
+    dump_indent(sink, col);
+    sink_putc(sink, '[');
+    sink_puts(sink, key ? key : "");
+    sink_puts(sink, "] => ");
 }
 
 // An array element's key: the position.
-void __madc_dump_pr_key_idx(int col, long long idx)
+void __madc_dump_pr_key_idx(void *sink, int col, long long idx)
 {
-    dump_indent(col);
-    printf("[%lld] => ", idx);
+    dump_indent(sink, col);
+    sink_printf(sink, "[%lld] => ", idx);
 }
 
 // End of a SCALAR entry. A nested aggregate ends itself (its ")" line plus the
 // blank line), so this must not be emitted for one.
-void __madc_dump_pr_nl(void)
+void __madc_dump_pr_nl(void *sink)
 {
-    putchar('\n');
+    sink_putc(sink, '\n');
 }
 
 // The aggregate's close. `blank` adds PHP's trailing empty line, which every
 // NESTED block gets and the outermost one does not.
-void __madc_dump_pr_tail(int col, int blank)
+void __madc_dump_pr_tail(void *sink, int col, int blank)
 {
-    dump_indent(col);
-    printf(")\n");
+    dump_indent(sink, col);
+    sink_puts(sink, ")\n");
     if (blank)
-	putchar('\n');
+	sink_putc(sink, '\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -199,104 +335,118 @@ void __madc_dump_pr_tail(int col, int blank)
 // handle (#1) is dropped: it identifies a PHP object instance and means nothing
 // here. Captured from php-cli 8.3.6 with cat -A (tmp/or_vd.php).
 
-void __madc_dump_vd_head(int col, const char *word, long long count)
+void __madc_dump_vd_head(void *sink, int col, const char *word, long long count)
 {
-    dump_indent(col);
-    printf("%s(%lld) {\n", word ? word : "", count);
+    dump_indent(sink, col);
+    sink_puts(sink, word ? word : "");
+    sink_printf(sink, "(%lld) {\n", count);
 }
 
-void __madc_dump_vd_key(int col, const char *key)
+void __madc_dump_vd_key(void *sink, int col, const char *key)
 {
-    dump_indent(col);
-    printf("[%s]=>\n", key ? key : "");
+    dump_indent(sink, col);
+    sink_putc(sink, '[');
+    sink_puts(sink, key ? key : "");
+    sink_puts(sink, "]=>\n");
 }
 
-void __madc_dump_vd_key_idx(int col, long long idx)
+void __madc_dump_vd_key_idx(void *sink, int col, long long idx)
 {
-    dump_indent(col);
-    printf("[%lld]=>\n", idx);
+    dump_indent(sink, col);
+    sink_printf(sink, "[%lld]=>\n", idx);
 }
 
-void __madc_dump_vd_tail(int col)
+void __madc_dump_vd_tail(void *sink, int col)
 {
-    dump_indent(col);
-    printf("}\n");
+    dump_indent(sink, col);
+    sink_puts(sink, "}\n");
 }
 
-void __madc_dump_vd_i64(int col, const char *ty, long long v, int is_unsigned)
+void __madc_dump_vd_i64(void *sink, int col, const char *ty, long long v,
+			int is_unsigned)
 {
-    dump_indent(col);
+    dump_indent(sink, col);
+    sink_puts(sink, ty ? ty : "");
     if (is_unsigned)
-	printf("%s(%llu)\n", ty ? ty : "", (unsigned long long)v);
+	sink_printf(sink, "(%llu)\n", (unsigned long long)v);
     else
-	printf("%s(%lld)\n", ty ? ty : "", v);
+	sink_printf(sink, "(%lld)\n", v);
 }
 
-void __madc_dump_vd_f64(int col, const char *ty, double v)
+void __madc_dump_vd_f64(void *sink, int col, const char *ty, double v)
 {
-    dump_indent(col);
-    printf("%s(", ty ? ty : "");
-    __madc_dump_pr_f64(v);              /* one float format, both flavors */
-    printf(")\n");
+    dump_indent(sink, col);
+    sink_puts(sink, ty ? ty : "");
+    sink_putc(sink, '(');
+    __madc_dump_pr_f64(sink, v);        /* one float format, both flavors */
+    sink_puts(sink, ")\n");
 }
 
-void __madc_dump_vd_bool(int col, const char *ty, int v)
+void __madc_dump_vd_bool(void *sink, int col, const char *ty, int v)
 {
-    dump_indent(col);
-    printf("%s(%s)\n", ty ? ty : "", v ? "true" : "false");
+    dump_indent(sink, col);
+    sink_puts(sink, ty ? ty : "");
+    sink_puts(sink, v ? "(true)\n" : "(false)\n");
 }
 
 // A char's value line names the character when it is printable and the byte
 // otherwise: char('A') vs char(10). PHP has no char type, so C is the oracle
 // and a non-printable byte must not be written raw into the output.
-void __madc_dump_vd_char(int col, const char *ty, int c)
+void __madc_dump_vd_char(void *sink, int col, const char *ty, int c)
 {
     unsigned char b = (unsigned char)c;
-    dump_indent(col);
+    dump_indent(sink, col);
+    sink_puts(sink, ty ? ty : "");
     if (b >= 0x20 && b < 0x7f)
-	printf("%s('%c')\n", ty ? ty : "", b);
+	sink_printf(sink, "('%c')\n", b);
     else
-	printf("%s(%u)\n", ty ? ty : "", (unsigned)b);
+	sink_printf(sink, "(%u)\n", (unsigned)b);
 }
 
 // A NULL pointer is PHP's null, and PHP's var_dump prints NULL for it — the one
 // case where var_dump keeps PHP's word, because "no value" is not a C type.
-void __madc_dump_vd_cstr(int col, const char *ty, const char *s)
+void __madc_dump_vd_cstr(void *sink, int col, const char *ty, const char *s)
 {
-    dump_indent(col);
+    dump_indent(sink, col);
     if (!s) {
-	printf("NULL\n");
+	sink_puts(sink, "NULL\n");
 	return;
     }
-    printf("%s(%llu) \"%s\"\n", ty ? ty : "", (unsigned long long)strlen(s), s);
+    sink_puts(sink, ty ? ty : "");
+    sink_printf(sink, "(%llu) \"", (unsigned long long)strlen(s));
+    sink_puts(sink, s);
+    sink_puts(sink, "\"\n");
 }
 
 // A CONTAINER rendered as text (std::string, vector<char>): the frame only —
 // the characters between the quotes are written one at a time by the generated
 // loop, through __madc_dump_pr_char. The length comes from the container's own
 // size(), so nothing here scans for a NUL.
-void __madc_dump_vd_text_open(int col, const char *ty, long long len)
+void __madc_dump_vd_text_open(void *sink, int col, const char *ty, long long len)
 {
-    dump_indent(col);
-    printf("%s(%lld) \"", ty ? ty : "", len);
+    dump_indent(sink, col);
+    sink_puts(sink, ty ? ty : "");
+    sink_printf(sink, "(%lld) \"", len);
 }
 
-void __madc_dump_vd_text_close(void)
+void __madc_dump_vd_text_close(void *sink)
 {
-    printf("\"\n");
+    sink_puts(sink, "\"\n");
 }
 
-void __madc_dump_vd_cstr_n(int col, const char *ty, const char *s, long long n)
+void __madc_dump_vd_cstr_n(void *sink, int col, const char *ty, const char *s,
+			   long long n)
 {
     long long len = 0;
-    dump_indent(col);
+    dump_indent(sink, col);
     if (!s) {
-	printf("NULL\n");
+	sink_puts(sink, "NULL\n");
 	return;
     }
     while (len < n && s[len])
 	len++;
-    printf("%s(%lld) \"", ty ? ty : "", len);
-    fwrite(s, 1, (size_t)len, stdout);
-    printf("\"\n");
+    sink_puts(sink, ty ? ty : "");
+    sink_printf(sink, "(%lld) \"", len);
+    sink_write(sink, s, (size_t)len);
+    sink_puts(sink, "\"\n");
 }

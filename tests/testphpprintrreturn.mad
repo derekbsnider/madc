@@ -1,0 +1,85 @@
+// php::print_r's PHP `$return` parameter (plan §13).
+//
+// PHP: function print_r(mixed $value, bool $return = false): string|true
+//   ONE function, a DEFAULT second parameter, and a union return — which is
+//   exactly what madc::value models: the TEXT when $return is true, boolean
+//   true when it is not.
+//
+// Oracle: php-cli 8.3.6, tmp/or_ret.php, captured with cat -A. PHP's captured
+// text is byte-identical to what print_r would have printed, including the
+// newline after the closing ')'.
+//
+// The work happens inside a function deliberately: a FILE-SCOPE declaration
+// with a dynamic initializer runs at main entry in madc (the g++
+// dynamic-initialization model — `int c = f();` at top level behaves the same
+// way), so a top-level `value s = php::print_r(p, true);` would capture before
+// the surrounding statements ran. That is the language's existing ordering rule
+// for every type, not something specific to print_r.
+
+struct Point { int x; int y; };
+
+void capture_form()
+{
+	Point p;
+	p.x = 3;
+	p.y = 4;
+
+	// $return = true: NOTHING is printed, the text comes back.
+	value s = php::print_r(p, true);
+	printf("[captured]\n");
+	printf("%s", s);
+	printf("[end]\n");
+}
+
+void print_form()
+{
+	Point p;
+	p.x = 3;
+	p.y = 4;
+
+	// $return = false, stated explicitly: PHP PRINTS and returns true.
+	value t = php::print_r(p, false);
+	printf("[t=%s]\n", t);
+}
+
+void default_form()
+{
+	Point p;
+	p.x = 7;
+	p.y = 8;
+
+	// No second argument at all — the default. Prints, and the result is
+	// unused, which is the shape that stays off the value/capture path
+	// entirely (no madc::value materialized, pure C11 runtime).
+	php::print_r(p);
+}
+
+void runtime_flag()
+{
+	Point p;
+	p.x = 1;
+	p.y = 2;
+
+	// The flag need not be a literal: one walk, sink chosen at runtime.
+	int want_text = 1;
+	value a = php::print_r(p, want_text);
+	printf("[flag1]\n");
+	printf("%s", a);
+
+	int want_print = 0;
+	value b = php::print_r(p, want_print);
+	printf("[flag0=%s]\n", b);
+}
+
+void scalar_capture()
+{
+	int n = 42;
+	value s = php::print_r(n, true);
+	printf("[n=%s]\n", s);
+}
+
+capture_form();
+print_form();
+default_form();
+runtime_flag();
+scalar_capture();

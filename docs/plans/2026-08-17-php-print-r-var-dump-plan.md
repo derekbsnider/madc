@@ -17,6 +17,7 @@ Landed so far (each its own commit, each green in JIT + `--exe` + `--obj`):
 | S3b — `print_r` aggregates | **DONE.** structs, classes, unions, anonymous unions, bit-fields, fixed arrays. `tests/testphpprintrstruct.mad`, PHP-oracled |
 | S4 — `var_dump` | **DONE.** One walk, two renderers; real C type words. `tests/testphpvardump.mad`, PHP-oracled |
 | S5a — positional containers | **DONE.** `std::string` as text, `std::vector` / `std::array` as arrays, via the shared type-checked protocol. `tests/testphpseq.mad`, PHP-oracled |
+| `print_r($x, true)` — PHP's `$return` | **DONE** (session #101). One function, default second parameter, `madc::value &` return holding the text or `true`. `tests/testphpprintrreturn.mad`, PHP-oracled. See §13. |
 | S3c — pointers + `*RECURSION*` | NOT STARTED — needs a generated function + a runtime ancestor stack, see §12.6 |
 | S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12.5 |
 | S5b — associative containers | NOT STARTED — gated on S1 |
@@ -172,8 +173,10 @@ holding ONE leading space before `*RECURSION*`.
 
 ```cpp
 namespace php {
-    template<class T> void print_r(const T &v);
-    template<class T> value print_r(const T &v, bool ret);   // ret==true -> the text
+    // ONE function, default second parameter — PHP's own signature. See §13;
+    // the two-overload spelling this block used to show was WRONG (owner,
+    // 2026-08-17) and is what sent §12.3's blocker analysis down a dead end.
+    template<class T> madc::value &print_r(const T &v, bool ret = false);
     template<class... Ts> void var_dump(const Ts &...vs);    // PHP's is variadic
 }
 ```
@@ -208,6 +211,11 @@ block at line 42), **declaration-only, no definition anywhere**.
   So `value` can never be the limiting factor. No `std::string`-returning twin:
   you cannot overload on return type, and `value.c_str()` already serves the
   C++-flavoured use. YAGNI.
+  **AMENDED §13.1:** the return is `madc::value &`, not `madc::value` by value —
+  a `value` has no C type to return (it lowers to an opaque `long long[6]` buffer
+  whose decay-to-pointer argument passing depends on), so by-value emits `int` and
+  silently returns nothing. The reference is madc's own value idiom and needs no
+  representation change. The DECISION (value, not std::string) is unchanged.
 - **Gating: none new.** `php::` already sits behind
   `registration_policy.enable_php_namespace` (`parser.cpp:23165`), so a host that
   disables the namespace loses these too, correctly and for free.
@@ -637,3 +645,177 @@ Notes for whoever implements it:
   spelling was unstable). With `std::string` the fixture can pin the whole line,
   which is strictly better — and flavor-stable, since the ALIAS is the same under
   libstdc++ and libc++.
+
+---
+
+## 13 `print_r($x, true)` — the design, after measuring (session #101)
+
+**Owner go-ahead:** *"alright, let's get print_r completed then."* PHP's signature
+is the contract (§12.3): ONE function, default second parameter, union return.
+
+### 13.1 What the probes established, before any design
+
+Four reducers against the live binary (`tmp/r1..r5`), because §12.3's blocker was
+recorded from reasoning and had already been wrong once:
+
+| probe | result |
+|---|---|
+| `value make() { … return v; }` | **compiles, runs, prints NOTHING, exit 0** — emits `int make()`. A SILENT WRONG ANSWER (defect D1 below). |
+| struct statement-expression copy-out in C | **works** (`1 4`) — the in-tree MIR fix is real, so a stmt-expr can yield an aggregate. |
+| `value &fill(value &out) { out = "filled"; … }` | **rejected** — "assignment of incompatible value" (defect D2 below). |
+| `madc::value &` / `*` in a non-madc namespace header | **already in use** (`ns_perl.h`, `ns_js.h`) — the qualified spelling resolves. |
+
+**Why `value` cannot be returned by value, and why that is NOT a missing arm.**
+`func_def`'s return-type chain ends at `type_list(ret_dd)` →
+`append_decl_type_specs` → `append_type_specs`, which has no `dtARRAY` case and
+falls through to `int` — the same fall-through the comment above
+`append_var_type_specs` already documents for two storage-class sites, and the
+same one that rendered a `DataDefFPTR` as a bare `long`. But adding an arm has
+nothing to render: **a `value` has no C type.** It lowers to opaque storage —
+`_Alignas(16) long long v[6] __attribute__((cleanup(madarray_destruct)))` plus an
+explicit `madarray_construct` — and `is_array_object`'s own comment says argument
+passing DEPENDS on that buffer decaying to a pointer. Giving `value` a real
+`struct` tag is therefore a representation arc (23 `is_array_object` sites plus
+every decay-dependent call), not a slice inside this one.
+
+### 13.2 The signature, and why it needs no representation change
+
+```cpp
+// include/madc/ns_php
+template<class T> madc::value &print_r(const T &v, bool ret = false);
+```
+
+`value` holds the captured text when `ret` is true and holds `true` when it is
+not — that IS PHP's `string|true`, with **no divergence**. The reference is
+madc's established value idiom (all of `<ns_madc>` is `value &f(value &out, …)`),
+and a reference return is a supported shape today; only D2's *assignment* is
+broken, which generated code does not use.
+
+`madc::value` is also the ONLY correct choice: `std::string` would make
+`php::print_r` depend on `<string>`, violating the owner law that madc's own
+surface carries no `#include` / PCH / forest dependency.
+
+Also settled: `var_dump` keeps `void`. PHP's var_dump returns void.
+
+### 13.3 Lowering
+
+`lower_dump_call` decides from two facts it already has — whether the call's
+result is USED, and what the second argument is:
+
+- **result discarded AND `ret` is a compile-time false** (every call the suite
+  makes today) → emit exactly the current code. Pure C11, printf path, no value
+  machinery linked. **This is the property worth protecting:** a program that
+  never captures still carries nothing.
+- **otherwise** → declare a value temp (`array_storage_decl` +
+  `array_ctor_call` own the storage, ctor and `cleanup` dtor — no new
+  machinery), then:
+  - `ret` constant true → walk into a sink, `madarray_assign_cstr(&tmp, buf)`
+  - `ret` constant false → walk to stdout, `madarray_assign_bool(&tmp, 1)`
+  - `ret` a RUNTIME bool → ONE walk with `sink = ret ? &s : NULL`, then a
+    conditional assign. The sink parameter makes this fall out; no duplicated walk.
+- the statement expression yields `&tmp`, i.e. the `value &`.
+
+### 13.4 The runtime sink (`src/rt/rt_dump.c`, still strict C11)
+
+Every primitive gains a leading `void *sink` and routes output through ONE
+internal writer: `sink == NULL` → stdout, else append to a `{char *buf; size_t
+len, cap;}` grown by realloc. One owner for the write, so no primitive can
+disagree about where output goes. `open_memstream` is deliberately NOT used — it
+is POSIX and the win64 lane has no such function.
+
+### 13.5 The parser change is NOT needed — and would be actively harmful
+
+§12.3 concluded the placeholder must carry its parameters and `param_defaults`.
+**Reading the registration through to the end refutes that**, and this is the
+third correction in this area, so it is recorded rather than summarised:
+
+> "the 0-param placeholder is **arity-filtered out of the ranking**" … "re-entering
+> parseFunction under the placeholder's id would **swallow their parameters** — the
+> single-id overload collapse"
+> — `register_skipped_namespace_template_function`, `src/parser.cpp`
+
+The zero-parameter placeholder is **load-bearing**. Giving it real parameters
+would enter every bodyless namespace template (`std::forward`, `std::addressof`,
+`std::declval`, …) into arity ranking it is currently and deliberately excluded
+from. That is a change to the whole template call path to serve one intrinsic —
+precisely the shape the design rules forbid.
+
+**It is also unnecessary.** Arity is not enforced against the placeholder — which
+is exactly why `print_r(x)` works TODAY against a zero-parameter placeholder — so
+`print_r(x, true)` parses on the same footing. And the default argument does not
+need parser support at all, because **the compiler IS the implementation**:
+`lower_dump_call` sees the actual argument list, so "no second argument means
+`false`" is the intrinsic's own lowering rule. The declaration's `= false` documents
+the contract for the reader; the intercept honours it.
+
+**The reference return needs nothing either.** `returns_reference()` renders a
+`T&` return as a pointer, and while `type_list(ddARRAY)` still mis-renders the
+POINTEE (D1's fall-through: `int *` rather than a value tag), the ADDRESS is
+correct and every value operation is a `void *`-based runtime call
+(`madarray_assign_cstr` and friends). That is how `<ns_madc>`'s
+`value &eval_unit(value &out, …)` already works. So D1 does not block this slice
+— it stays a real defect, just not this one's dependency.
+
+Net: no `src/parser.cpp` change in this slice.
+
+### 13.7 What the implementation changed about §13.3–13.6 (session #101, DONE)
+
+Landed and green: `tests/testphpprintrreturn.mad`, PHP-oracled against
+`tmp/or_ret.php`. Five forms — capture, explicit `false`, absent flag, runtime
+flag both ways, scalar capture. Corrections the work forced, each found by
+running rather than reasoning:
+
+- **The result must be an LVALUE, so the capturing form is HOISTED, not a
+  statement expression.** `({ …; &tmp; })` is not an lvalue, and a consumer of a
+  `value &` legitimately takes its address — `c = php::print_r(p, true);` failed
+  with *"lvalue required as unary & operand"*. The walk is a list of STATEMENTS,
+  so for the capturing form it goes to `m_pending_stmts` (the route every object
+  temp already takes) and the expression is just the temp's name. The
+  statement-expression shape is kept only for the non-capturing form, which needs
+  no lvalue.
+- **`value` had TWO silent defects in its own declaration path, both fixed here
+  because the natural spelling `value s = php::print_r(x, true);` needs them:**
+  - a BLOCK-scope `value v = <init>;` got storage + constructor and then
+    `continue`d past its initializer (`translate_block`'s statement loop);
+  - a FILE-scope one returned from `var_decl`'s array-object arm before the
+    dynamic-init queueing, so its initializer never reached
+    `__madc_global_init`.
+  Both dropped the initializer with no diagnostic: `value a = "hello";` printed
+  nothing. **The parser had already resolved the initializer into the registered
+  `operator=` call** — an early attempt to select the overload here instead
+  produced `madarray_assign_value(&v, *madarray_assign_cstr(&v, "x"))`, which MIR
+  rejected. The bug was never a missing selection; it was a dropped statement.
+- **A qualified return type on a bodyless namespace template silently became
+  `int64`.** `skipped_template_function_return_type`'s backward scan tried each
+  token as a standalone identifier against the FLAT `datatype_map`, so `madc` and
+  `value` both missed and it fell back to `ddINT64` — the declared
+  `madc::value &` return became `long`, and the call site then assigned an ADDRESS
+  through the integer path, printing a decimal. Qualified return types now route
+  through `resolve_type_token_range`, the canonical resolver the template-id
+  branch already used. The `MADC_RETPROBE=<substr>` env probe (already in the
+  code) is what localized this in one run.
+- **Ordering, worth knowing before filing a bug against it:** a FILE-SCOPE
+  declaration with a dynamic initializer runs at main entry, so a top-level
+  `value s = php::print_r(p, true);` captures before the surrounding statements
+  execute. That is madc's existing model for EVERY type — verified with
+  `int copy = seen();` at top level, which behaves identically — not something
+  specific to print_r. The test does its work inside functions for that reason.
+- **`madarray_assign_*` is never spelled in the new code.** Which runtime entry
+  serves which kind is owned by parser.cpp's registered `operator=` table, so the
+  dumper reads `FuncDef::emit_symbol` off the registration
+  (`class_assign_cstr_operator_def` / new `class_assign_scalar_operator_def`).
+  Naming the symbol at a second site is how the two drift.
+
+### 13.6 Two defects this slice UNCOVERED — each its own commit
+
+- **D1 — `value` returned by value silently returns nothing.** Layer chain:
+  `func_def` return-type arm → `type_list` → `append_decl_type_specs` →
+  `append_type_specs` (no `dtARRAY` case → `int`). The full fix is §13.1's
+  representation arc. The immediate fix is to make the fall-through **LOUD** —
+  an error naming the type — because exit 0 with empty output is the worst
+  outcome available, and refusing by name is this subsystem's established
+  discipline. Reducer: `tmp/r1.mad`.
+- **D2 — assigning to a `value &` is rejected** ("assignment of incompatible
+  value") while assigning to a plain `value` local works. Reducer: `tmp/r3.mad`.
+  Not on this slice's path (generated code calls the runtime setters directly),
+  but it is a live wrong-rejection of code the value-first API's own shape invites.

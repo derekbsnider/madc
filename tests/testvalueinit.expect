@@ -1,0 +1,8 @@
+a=block text
+b=42
+c=2.500000
+d=true
+e=block text
+same=1
+g_text=file-scope text
+g_int=7

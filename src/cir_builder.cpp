@@ -8382,10 +8382,23 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// model as runtime-object classes.
 	// madarray_construct is emitted as a separate statement by translate_block;
 	// the cleanup attribute on the storage handles scope-exit destruction.
-	if (is_array_object(v->type))
+	if (is_array_object(v->type)) {
+		// A FILE-SCOPE value with an initializer (`value g = "x";` at top
+		// level, which is where a script writes it) reaches this early return
+		// BEFORE the dynamic-init queueing below, so its initializer used to
+		// be dropped on the floor. Register it the same way a non-constant
+		// scalar global does: collect_global_ctors finds the TokenDecl in
+		// top_decls and queues the assignment into __madc_global_init, in
+		// declaration order. A value's storage is zero-initialized and the
+		// runtime treats zeroed storage as the empty value, so no file-scope
+		// constructor call is required — only the initializer was missing.
+		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
+		if (m_file_scope_decl && adecl && adecl->initialize)
+			m_dynamic_global_inits.insert(v);
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
 		return array_storage_decl(var_emit_name(*v).c_str(), origin);
+	}
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
@@ -11370,7 +11383,7 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
-static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
 	const std::string opname = "operator=";
@@ -11383,6 +11396,49 @@ static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 		    && fd->method_display_name != opname)
 			continue;
 		if (is_char_pointer(fd->parameters[1]))
+			return fd;
+	}
+	return NULL;
+}
+
+// The same lookup for the `operator=` overload taking a given SCALAR rawtype
+// (`madc::value`'s bool / int64 / double assign forms — parser.cpp's assign_ops
+// table registers them and OWNS which runtime entry each binds to). A caller
+// that needs "the runtime entry that assigns a bool to this class" asks here and
+// reads `emit_symbol`; spelling `madarray_assign_bool` at the call site instead
+// would put that binding in two places, free to drift.
+// The initializer a `value v = <init>;` declaration owes after its constructor.
+// Returns NULL for a bare `value v;`.
+//
+// The PARSER has already resolved the initializer into the registered
+// `operator=` call (`value v = "x"` arrives as the whole assignment, which
+// translates to `*madarray_assign_cstr(&v, "x")`), so there is nothing to select
+// here and nothing to rebuild — the initializer only needs to be EMITTED. An
+// earlier attempt selected the overload itself and produced
+// `madarray_assign_value(&v, *madarray_assign_cstr(&v, "x"))` — assigning the
+// value to itself through the wrong entry, which MIR rejected outright. The bug
+// was never a missing selection; it was a dropped statement.
+node_t CirBuilder::value_init_assign(TokenDecl *sdcl)
+{
+	if (!sdcl || !sdcl->initialize)
+		return NULL;
+	return node2(N_EXPR, list(), translate_expr(sdcl->initialize), sdcl);
+}
+
+FuncDef *class_assign_scalar_operator_def(DataDefCLASS *cdd, DataType want)
+{
+	if (!cdd) return NULL;
+	const std::string opname = "operator=";
+	const std::string mangled = cdd->name + "__" + opname;
+	for (Variable *mv : cdd->methods) {
+		if (!mv) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd || fd->parameters.size() < 2) continue;
+		if (mv->name != opname && mv->name != mangled
+		    && fd->method_display_name != opname)
+			continue;
+		DataDef *p = fd->parameters[1];
+		if (p && !p->is_pointer() && p->rawtype() == want)
 			return fd;
 	}
 	return NULL;
@@ -22705,8 +22761,17 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	if (tb->id() == TokenID::tkSemi)
 		return NULL;
 
-	// Expression statement
-	return node2(N_EXPR, list(), translate_expr(tb), tb);
+	// Expression statement. This is the ONE place an expression's result is
+	// discarded, so it is where m_discarded_stmt_expr is published: a lowering
+	// that can emit a cheaper form when nobody reads its result (php::print_r
+	// skipping a madc::value materialization) tests its own token against it.
+	// Saved/restored because a statement can be translated while another is in
+	// flight (a nested/hoisted function body).
+	TokenBase *saved_discarded = m_discarded_stmt_expr;
+	m_discarded_stmt_expr = tb;
+	node_t stmt_expr = translate_expr(tb);
+	m_discarded_stmt_expr = saved_discarded;
+	return node2(N_EXPR, list(), stmt_expr, tb);
 }
 
 // A loop/if body is a required statement operand: c2mir always has a node
@@ -23110,6 +23175,24 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
 				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));	// allowed-exception: guarded !file_global
+				// …and its INITIALIZER. Without this the `continue`
+				// below dropped it silently: `value v = "hello";`
+				// constructed an empty value and threw the text away,
+				// while the two-statement `value v; v = "hello";` worked.
+				//
+				// Built FIRST, because translating the initializer can
+				// materialize temporaries into m_pending_stmts (a
+				// php::print_r(x, true) initializer hoists its captured
+				// value there) — those declarations must be emitted
+				// before the assignment that reads them. This `continue`
+				// skips the loop's own flush below, so it happens here;
+				// without it the temp was used but never declared.
+				node_t vi = value_init_assign(sdcl);
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
+				if (vi)
+					append(items, vi);
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an

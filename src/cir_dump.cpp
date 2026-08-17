@@ -274,9 +274,31 @@ static std::string dump_member_key(CirBuilder::DumpFlavor fl,
 // apart. Every column and every key is a compile-time constant: the walk is
 // EXPANDED per nesting level, so the indentation needs no runtime state.
 
+// Declare a dump primitive. The leading `void *sink` is prepended HERE, once,
+// so it cannot drift from the argument dump_call_stmt prepends below.
+void CirBuilder::need_dump_extern(const char *sym,
+				  std::vector<ExternParam> params)
+{
+	params.insert(params.begin(), ExternParam{ { N_VOID }, true });
+	need_output_extern(sym, false, params);
+}
+
 node_t CirBuilder::dump_call_stmt(const char *sym, node_t args, TokenBase *origin)
 {
-	return node2(N_EXPR, list(), node2(N_CALL, id(sym, origin), args, origin),
+	// Every primitive's first argument is the sink: the generated `void *`
+	// local when this dump may capture, a null pointer when it prints. Built
+	// by prepending to the caller's list, so no primitive builder has to
+	// remember — the same reason need_dump_extern owns the matching shape.
+	node_t all = list();
+	node_t sink = m_dump_sink_var.empty()
+		      ? node2(N_CAST, void_ptr_type(), integer(0, origin), origin)
+		      : id(m_dump_sink_var.c_str(), origin);
+	append(all, sink);
+	// Move the caller's arguments in after the sink. c2mir op-lists are
+	// intrusive, so a node cannot sit in two lists — splice (which REMOVES as
+	// it goes) is the owner for this, not a copy loop.
+	c2mir_op_splice_after(c2m, all, sink, args);
+	return node2(N_EXPR, list(), node2(N_CALL, id(sym, origin), all, origin),
 		     origin);
 }
 
@@ -298,13 +320,13 @@ node_t CirBuilder::dump_head_node(DumpFlavor fl, int depth,
 	append(a, str(word.c_str(), word.size() + 1, origin));
 	if (fl == dfVarDump) {
 		// var_dump states the element/member COUNT in the head line.
-		need_output_extern("__madc_dump_vd_head", false,
+		need_dump_extern("__madc_dump_vd_head",
 				   { { {N_INT}, false }, { {N_CHAR}, true },
 				     { {N_LONG, N_LONG}, false } });
 		append(a, count);
 		return dump_call_stmt("__madc_dump_vd_head", a, origin);
 	}
-	need_output_extern("__madc_dump_pr_head", false,
+	need_dump_extern("__madc_dump_pr_head",
 			   { { {N_INT}, false }, { {N_CHAR}, true } });
 	return dump_call_stmt("__madc_dump_pr_head", a, origin);
 }
@@ -314,7 +336,7 @@ node_t CirBuilder::dump_key(DumpFlavor fl, int depth, const std::string &key,
 {
 	const char *sym = fl == dfVarDump ? "__madc_dump_vd_key"
 					  : "__madc_dump_pr_key";
-	need_output_extern(sym, false, { { {N_INT}, false }, { {N_CHAR}, true } });
+	need_dump_extern(sym, { { {N_INT}, false }, { {N_CHAR}, true } });
 	node_t a = list();
 	append(a, integer(dump_entry_col(fl, depth), origin));
 	append(a, str(key.c_str(), key.size() + 1, origin));
@@ -326,7 +348,7 @@ node_t CirBuilder::dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 {
 	const char *sym = fl == dfVarDump ? "__madc_dump_vd_key_idx"
 					  : "__madc_dump_pr_key_idx";
-	need_output_extern(sym, false, { { {N_INT}, false },
+	need_dump_extern(sym, { { {N_INT}, false },
 					 { {N_LONG, N_LONG}, false } });
 	node_t a = list();
 	append(a, integer(dump_entry_col(fl, depth), origin));
@@ -340,13 +362,13 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 	node_t a = list();
 	append(a, integer(dump_frame_col(fl, depth), origin));
 	if (fl == dfVarDump) {
-		need_output_extern("__madc_dump_vd_tail", false,
+		need_dump_extern("__madc_dump_vd_tail",
 				   { { {N_INT}, false } });
 		return dump_call_stmt("__madc_dump_vd_tail", a, origin);
 	}
 	// print_r follows a NESTED block's ")" with a blank line; the outermost
 	// one gets none.
-	need_output_extern("__madc_dump_pr_tail", false,
+	need_dump_extern("__madc_dump_pr_tail",
 			   { { {N_INT}, false }, { {N_INT}, false } });
 	append(a, integer(nested ? 1 : 0, origin));
 	return dump_call_stmt("__madc_dump_pr_tail", a, origin);
@@ -357,7 +379,7 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 node_t CirBuilder::dump_vd_text_open(int depth, const std::string &word,
 				     node_t len, TokenBase *origin)
 {
-	need_output_extern("__madc_dump_vd_text_open", false,
+	need_dump_extern("__madc_dump_vd_text_open",
 			   { { {N_INT}, false }, { {N_CHAR}, true },
 			     { {N_LONG, N_LONG}, false } });
 	node_t a = list();
@@ -369,13 +391,13 @@ node_t CirBuilder::dump_vd_text_open(int depth, const std::string &word,
 
 node_t CirBuilder::dump_vd_text_close(TokenBase *origin)
 {
-	need_output_extern("__madc_dump_vd_text_close", false, {});
+	need_dump_extern("__madc_dump_vd_text_close", {});
 	return dump_call_stmt("__madc_dump_vd_text_close", list(), origin);
 }
 
 node_t CirBuilder::dump_pr_nl(TokenBase *origin)
 {
-	need_output_extern("__madc_dump_pr_nl", false, {});
+	need_dump_extern("__madc_dump_pr_nl", {});
 	return dump_call_stmt("__madc_dump_pr_nl", list(), origin);
 }
 
@@ -469,7 +491,7 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		params.push_back({ {N_INT}, false });
 		append(a, integer(dd->is_unsigned() ? 1 : 0, origin));
 	}
-	need_output_extern(sym, false, params);
+	need_dump_extern(sym, params);
 	out.push_back(dump_call_stmt(sym, a, origin));
 	// print_r's newline ENDS AN ENTRY, so only a value inside a parent gets
 	// one: print_r(42) at top level is exactly "42". Every var_dump primitive
@@ -604,7 +626,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 		params.push_back({ {N_LONG, N_LONG}, false });
 		append(a, acc());
 		append(a, integer((int64_t)count, origin));
-		need_output_extern(sym, false, params);
+		need_dump_extern(sym, params);
 		out.push_back(dump_call_stmt(sym, a, origin));
 		if (fl == dfPrintR && depth > 0)
 			out.push_back(dump_pr_nl(origin));
@@ -728,7 +750,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 			out.push_back(dump_vd_text_open(depth, word,
 							id(nname.c_str(), origin),
 							origin));
-		need_output_extern("__madc_dump_pr_char", false,
+		need_dump_extern("__madc_dump_pr_char",
 				   { { {N_INT}, false } });
 		node_t ca = list();
 		append(ca, eacc());
@@ -896,6 +918,139 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 // ---------------------------------------------------------------------------
 // The call intercept
 // ---------------------------------------------------------------------------
+// print_r's $return flag: the capture sink and the returned madc::value
+// ---------------------------------------------------------------------------
+// Declare, as the first statements of the dump's block:
+//
+//     int   <ret>  = <the flag expression>;          // evaluated EXACTLY once
+//     void *<sink> = <ret> ? __madc_dump_sink_open() : (void *)0;
+//
+// The flag rides a temp because it is a user expression: `print_r(x, f())` must
+// call f() once, and both the sink decision and the result assignment below
+// need to test it. A NULL sink is what makes the walk print instead of capture,
+// so one variable expresses both PHP modes with no duplicated walk.
+void CirBuilder::dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
+				std::string &ret_var, std::string &sink_var,
+				TokenBase *origin)
+{
+	char rname[40], sname[40];
+	int n = m_strtmp_counter++;
+	snprintf(rname, sizeof rname, "__madc_dumpret_%d", n);
+	snprintf(sname, sizeof sname, "__madc_dumpsink_%d", n);
+	ret_var = rname;
+	sink_var = sname;
+
+	// int <ret> = <flag>;
+	node_t rspec = list();
+	append(rspec, simple(N_INT, origin));
+	node_t rdecl = simple(N_SPEC_DECL, origin);
+	append(rdecl, node1(N_SHARE, rspec));
+	append(rdecl, node2(N_DECL, id(rname, origin), list()));
+	append(rdecl, ignore());
+	append(rdecl, ignore());
+	append(rdecl, translate_expr(ret_arg));
+	stmts.push_back(rdecl);
+
+	// void *<sink> = <ret> ? __madc_dump_sink_open() : (void *)0;
+	need_output_extern("__madc_dump_sink_open", true, {});
+	node_t opened = node2(N_CALL, id("__madc_dump_sink_open", origin),
+			      list(), origin);
+	node_t init = node3(N_COND, id(rname, origin), opened,
+			    node2(N_CAST, void_ptr_type(), integer(0, origin),
+				  origin), origin);
+	node_t sspec = list();
+	append(sspec, simple(N_VOID, origin));
+	node_t sdeclr = list();
+	append(sdeclr, pointer());
+	node_t sdecl = simple(N_SPEC_DECL, origin);
+	append(sdecl, node1(N_SHARE, sspec));
+	append(sdecl, node2(N_DECL, id(sname, origin), sdeclr));
+	append(sdecl, ignore());
+	append(sdecl, ignore());
+	append(sdecl, init);
+	stmts.push_back(sdecl);
+}
+
+// The madc::value print_r returns. HOISTED to the enclosing statement through
+// m_pending_stmts — the same route every object temp takes (object_arg_addr's
+// __madc_objtmp) — because a value declared inside the statement expression
+// would be destroyed by its `cleanup` attribute at block exit, i.e. before the
+// caller copied from the reference we hand back. var_decl emits the storage and
+// its cleanup attribute; the constructor is a separate statement (translate_block
+// normally emits it, which does not run for a hoisted temp).
+std::string CirBuilder::dump_result_value_temp(TokenBase *origin)
+{
+	char name[40];
+	snprintf(name, sizeof name, "__madc_dumpval_%d", m_strtmp_counter++);
+	Variable *tmp = new Variable(name, ddARRAY, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, origin));
+	m_pending_stmts.push_back(array_ctor_call(name, origin));
+	return std::string(name);
+}
+
+// PHP returns the TEXT when $return is true and boolean TRUE when it is not,
+// and one madc::value carries either — so this is `string|true`, not an
+// approximation of it. With no sink there is no text to return, so the answer is
+// unconditionally true.
+node_t CirBuilder::dump_result_assign(const std::string &val_var,
+				      const std::string &sink_var,
+				      const std::string &ret_var,
+				      TokenBase *origin)
+{
+	// WHICH runtime entry assigns a bool / a C string to a madc::value is
+	// owned by parser.cpp's registered `operator=` overload set, so it is READ
+	// off the registration (emit_symbol) rather than spelled here. Spelling
+	// `madarray_assign_bool` at this site would be a second home for that
+	// binding — the divergence-by-duplication this codebase gates against.
+	FuncDef *bop = class_assign_scalar_operator_def(&ddARRAY, DataType::dtBOOL);
+	FuncDef *cop = class_assign_cstr_operator_def(&ddARRAY);
+	if (!bop || bop->emit_symbol.empty() || !cop || cop->emit_symbol.empty())
+		return error_node("madc::value is missing its registered "
+				  "operator= runtime binding", origin);
+
+	need_output_extern(bop->emit_symbol.c_str(), true,
+			   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
+	node_t ba = list();
+	append(ba, object_addr(val_var.c_str(), origin));
+	append(ba, integer(1, origin));
+	node_t as_true = node2(N_CALL, id(bop->emit_symbol.c_str(), origin), ba,
+			       origin);
+	if (sink_var.empty())
+		return node2(N_EXPR, list(), as_true, origin);
+
+	// <assign_cstr>(&val, __madc_dump_sink_text(sink))
+	need_output_extern(cop->emit_symbol.c_str(), true,
+			   { { {N_VOID}, true }, { {N_CHAR}, true } });
+	need_output_extern("__madc_dump_sink_text", true,
+			   { { {N_VOID}, true } }, { N_CHAR });
+	node_t ta = list();
+	append(ta, id(sink_var.c_str(), origin));
+	node_t text = node2(N_CALL, id("__madc_dump_sink_text", origin), ta,
+			    origin);
+	node_t ca = list();
+	append(ca, object_addr(val_var.c_str(), origin));
+	append(ca, text);
+	node_t as_text = node2(N_CALL, id(cop->emit_symbol.c_str(), origin), ca,
+			       origin);
+	return node2(N_EXPR, list(),
+		     node3(N_COND, id(ret_var.c_str(), origin), as_text,
+			   as_true, origin), origin);
+}
+
+node_t CirBuilder::dump_sink_close(const std::string &sink_var,
+				   TokenBase *origin)
+{
+	need_output_extern("__madc_dump_sink_close", false,
+			   { { {N_VOID}, true } });
+	node_t a = list();
+	append(a, id(sink_var.c_str(), origin));
+	return node2(N_EXPR, list(),
+		     node2(N_CALL, id("__madc_dump_sink_close", origin), a,
+			   origin), origin);
+}
+
+// ---------------------------------------------------------------------------
 // Returns NULL when the callee is not a dump intrinsic, so translate_expr's
 // ordinary call path continues untouched.
 node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
@@ -914,22 +1069,88 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 	if (fl == dfNone)
 		return NULL;
 
-	// print_r takes ONE value (PHP's second $return argument is a separate
-	// slice — it returns the text as a madc::value). var_dump is variadic and
-	// dumps each argument in order, exactly as PHP does.
-	if (fl == dfPrintR && tcf->parameters.size() != 1)
-		return error_node("php::print_r takes one argument", origin);
+	// PHP: print_r(mixed $value, bool $return = false): string|true — ONE
+	// function with a DEFAULT second parameter, so one or two arguments.
+	// var_dump is variadic and dumps each argument in order, as PHP does.
+	if (fl == dfPrintR && tcf->parameters.size() > 2)
+		return error_node("php::print_r takes one or two arguments "
+				  "(the value, and PHP's $return flag)", origin);
 	if (tcf->parameters.empty())
 		return error_node((std::string(dump_flavor_name(fl))
 				   + " needs at least one argument").c_str(),
 				  origin);
 
+	// The $return flag. ABSENT means false — the DEFAULT ARGUMENT is applied
+	// here rather than by the parser, because the compiler IS this function's
+	// implementation and the placeholder deliberately carries no parameters
+	// (its zero-arity is load-bearing for overload ranking; plan §13.5).
+	TokenBase *ret_arg = (fl == dfPrintR && tcf->parameters.size() == 2)
+			     ? tcf->parameters[1] : NULL;
+	// No literal folding here: an ABSENT flag is the only case worth a
+	// separate shape (it is every call the suite makes, and it must stay off
+	// the value/capture path). A PRESENT flag is always treated as a runtime
+	// value — `print_r(x, true)` then emits a test on a constant, which c2mir
+	// folds, and in exchange this handles a literal, a variable and an
+	// expression through one path instead of three.
+	bool may_capture = (ret_arg != NULL);
+	// The result is read unless this very call IS the discarded expression
+	// statement. When nobody reads it, no madc::value is materialized — which
+	// is what keeps a plain `php::print_r(x);` on the pure-C11 runtime path,
+	// with no value machinery linked (and so still ledger-clean for a
+	// -static-libmadc AOT image).
+	bool result_used = (fl == dfPrintR)
+			   && m_discarded_stmt_expr != (TokenBase *)tcf;
+
 	std::vector<node_t> stmts;
 	std::string why;
-	for (size_t i = 0; i < tcf->parameters.size(); i++)
+	std::string sink_var, ret_var, val_var;
+	if (may_capture)
+		dump_sink_open(stmts, ret_arg, ret_var, sink_var, origin);
+	if (result_used)
+		val_var = dump_result_value_temp(origin);
+
+	// Every primitive call inside the walk carries this sink (dump_call_stmt
+	// prepends it). Restored after, so a dump nested in another expression
+	// cannot inherit it.
+	std::string saved_sink = m_dump_sink_var;
+	m_dump_sink_var = sink_var;
+	bool walked = true;
+	// print_r dumps ONLY its first argument; the second is the flag.
+	size_t nvals = (fl == dfPrintR) ? 1 : tcf->parameters.size();
+	for (size_t i = 0; i < nvals && walked; i++)
 		if (!dump_argument(fl, tcf->parameters[i], stmts, origin, why))
-			return error_node((std::string(dump_flavor_name(fl))
-					   + ": " + why).c_str(), origin);
+			walked = false;
+	m_dump_sink_var = saved_sink;
+	if (!walked)
+		return error_node((std::string(dump_flavor_name(fl))
+				   + ": " + why).c_str(), origin);
+
+	// PHP's return value: the captured TEXT when $return is true, boolean
+	// true when it is not. One madc::value carries either — that IS PHP's
+	// `string|true`. Assign BEFORE closing the sink: the text points into the
+	// sink's own buffer.
+	if (result_used)
+		stmts.push_back(dump_result_assign(val_var, sink_var, ret_var,
+						   origin));
+	if (!sink_var.empty())
+		stmts.push_back(dump_sink_close(sink_var, origin));
+
+	// When the RESULT IS READ, the whole dump is HOISTED to the enclosing
+	// statement and the expression is just the value's name.
+	//
+	// It cannot be a statement expression: `({ ...; &tmp; })` is not an
+	// LVALUE, and a consumer of a `value &` return legitimately takes its
+	// address — `c = php::print_r(p, true);` failed with "lvalue required as
+	// unary & operand" precisely there. A plain identifier IS an lvalue, so
+	// every consumer (assignment, argument, initializer) sees the ordinary
+	// shape it already handles. The walk is a list of STATEMENTS anyway;
+	// m_pending_stmts is where statements produced while building an
+	// expression belong, and it is the same route every object temp takes.
+	if (result_used) {
+		for (size_t i = 0; i < stmts.size(); i++)
+			m_pending_stmts.push_back(stmts[i]);
+		return id(val_var.c_str(), origin);
+	}
 
 	// A statement expression keeps a call in expression position one node.
 	node_t items = list();
@@ -937,8 +1158,14 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 		append(items, stmts[i]);
 	// c2mir requires a statement expression's LAST statement to be an
 	// EXPRESSION, and a dump legitimately ends with a for-loop (print_r of a
-	// text container at top level emits only the character loop). Close with a
-	// discarded 0 so no shape has to remember.
+	// text container at top level emits only the character loop). Close with
+	// the RESULT when one is read, or a discarded 0 when none is, so no shape
+	// has to remember.
+	// The result is the value's ADDRESS: print_r is declared to return
+	// `madc::value &`, and madc renders a reference return as a pointer. The
+	// temp itself was hoisted to the enclosing statement (dump_result_value_temp
+	// -> m_pending_stmts), so it outlives this block — a value declared INSIDE
+	// would be destroyed by its cleanup attribute before the caller copied it.
 	append(items, node2(N_EXPR, list(), integer(0, origin), origin));
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
 }

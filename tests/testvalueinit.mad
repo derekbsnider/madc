@@ -1,0 +1,47 @@
+// A madc::value DECLARED WITH AN INITIALIZER must actually be initialized.
+//
+// Both scopes silently dropped the initializer before: a block-scope
+// `value v = "x";` got its storage and constructor and then `continue`d past
+// the initializer, and a file-scope one returned from var_decl's array-object
+// arm before the dynamic-init queueing. Either way the value came out EMPTY
+// with no diagnostic, while the two-statement `value v; v = "x";` worked — so
+// the bug was invisible to anyone who wrote it the second way.
+//
+// Oracle: the two spellings must agree. That is the whole test.
+
+value g_text = "file-scope text";
+value g_int = 7;
+
+void block_scope()
+{
+	value a = "block text";
+	value b = 42;
+	value c = 2.5;
+	value d = true;
+
+	printf("a=%s\n", a);
+	printf("b=%s\n", b);
+	printf("c=%s\n", c);
+	printf("d=%s\n", d);
+
+	// Copy-initialization from another value.
+	value e = a;
+	printf("e=%s\n", e);
+
+	// The two-statement form must still agree with the initializer form.
+	value f;
+	f = "block text";
+	printf("same=%d\n", strcmp(a.c_str(), f.c_str()) == 0);
+}
+
+void file_scope()
+{
+	// A file-scope dynamic initializer runs at main entry (madc's g++
+	// dynamic-initialization model, the same for every type), so these are
+	// read here rather than declared here.
+	printf("g_text=%s\n", g_text);
+	printf("g_int=%s\n", g_int);
+}
+
+block_scope();
+file_scope();

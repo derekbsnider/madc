@@ -91,6 +91,16 @@ public:
 	};
 };
 
+// WHICH runtime entry implements a class's `operator=` for a given argument
+// kind, read off the REGISTERED overload set (FuncDef::emit_symbol) rather than
+// spelled at the call site. madc::value's assign forms are registered by
+// parser.cpp's assign_ops table, which owns the binding; a second site naming
+// `madarray_assign_cstr` would be free to drift from it. Defined in
+// cir_builder.cpp, used from there and from cir_dump.cpp.
+class FuncDef *class_assign_cstr_operator_def(class DataDefCLASS *cdd);
+class FuncDef *class_assign_scalar_operator_def(class DataDefCLASS *cdd,
+						DataType want);
+
 class CirBuilder {
 	c2m_ctx_t c2m;
 	CirArena arena;
@@ -239,6 +249,15 @@ class CirBuilder {
 	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
+	// The token of the expression currently being translated as an EXPRESSION
+	// STATEMENT — i.e. the one expression in the program text whose result is
+	// thrown away. A lowering that can produce a cheaper form when nobody reads
+	// its result compares ITS OWN token against this (php::print_r skips
+	// materializing a madc::value for `print_r(x);`).
+	// It holds the TOKEN, not a bool, deliberately: a bool set across the whole
+	// subtree would also claim the inner call in `f(php::print_r(x, true))`,
+	// whose result IS read. Identity is exact; a flag is not.
+	TokenBase *m_discarded_stmt_expr = NULL;
 	// Splice m_pending_stmts into `out` (preserving order) and clear it.
 	// For statement-list builders that run OUTSIDE translate_block's
 	// statement loop (ctor/dtor prologue + epilogue synthesis): a temp
@@ -708,6 +727,34 @@ private:
 			std::string &why);
 	// The output primitives, one builder each.
 	node_t dump_call_stmt(const char *sym, node_t args, TokenBase *origin);
+	// ONE owner for declaring a dump primitive's extern: every one of them
+	// takes a leading `void *sink` (rt_dump.c), so the shape is prepended
+	// here instead of at each declaration site — a site that spelled its own
+	// parameter list would be free to disagree with dump_call_stmt's argument
+	// list, and the resulting mismatch is exactly the class of bug the
+	// one-owner rule exists to prevent.
+	// (need_dump_extern is declared beside need_output_extern below, where
+	// ExternParam is in scope.)
+	// print_r's PHP `$return` flag (plan §13.3): the capture sink, the
+	// madc::value the call returns, and the two statements that finish it.
+	void dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
+			    std::string &ret_var, std::string &sink_var,
+			    TokenBase *origin);
+	// The assignment a `value v = <init>;` declaration owes after its
+	// constructor (NULL for a bare `value v;`). One home, so the
+	// declaration form cannot drift from the expression lane.
+	node_t value_init_assign(class TokenDecl *sdcl);
+	std::string dump_result_value_temp(TokenBase *origin);
+	node_t dump_result_assign(const std::string &val_var,
+				  const std::string &sink_var,
+				  const std::string &ret_var,
+				  TokenBase *origin);
+	node_t dump_sink_close(const std::string &sink_var, TokenBase *origin);
+	// The sink expression every primitive call carries: the name of the
+	// generated `void *` local when a dump may CAPTURE its output, empty when
+	// it goes straight to stdout (then a null pointer is passed). Set by
+	// lower_dump_call for the duration of one dump's walk.
+	std::string m_dump_sink_var;
 	bool dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 			   DataDefCLASS *cls, int depth, bool nested,
 			   std::vector<node_t> &out, TokenBase *origin,
@@ -1177,6 +1224,13 @@ public:
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
+	// ONE owner for declaring a php::print_r / php::var_dump output
+	// primitive: every one takes a leading `void *sink` (src/rt/rt_dump.c),
+	// so the shape is prepended here rather than at each declaration site. A
+	// site that spelled its own parameter list would be free to disagree with
+	// the argument list dump_call_stmt prepends, and that mismatch is the
+	// class of bug the one-owner rule exists to prevent.
+	void need_dump_extern(const char *sym, std::vector<ExternParam> params);
 	// v20 (forest bind): declare the extern for a COMPILER-RUNTIME symbol a
 	// LOADED forest body references (__madc_* exception/cleanup runtime,
 	// setjmp, malloc/calloc/free, __madc_vla_free) with the SAME signature

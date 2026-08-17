@@ -85,6 +85,14 @@ namespace php {
     // Deliberate exception to cpp-first-api.md's mangled-direct rule for
     // script-facing namespace publics: there is nothing to bind to. A C++ host
     // that calls one gets an unresolved symbol, which is the intended contract.
-    template<class T> void print_r(const T &v);
+    // PHP's own signature: ONE function, a DEFAULT second parameter, and a
+    // `string|true` return — which is what madc::value models (the text when
+    // `ret` is true, boolean true when it is not). Returned BY REFERENCE, to a
+    // temporary the compiler declares at the call site: a `value` has no C type
+    // to return by value (it lowers to an opaque buffer whose argument passing
+    // depends on decaying to a pointer), and `value &` is madc's own value idiom
+    // — `<ns_madc>`'s eval API returns exactly this shape. Plan §13.
+    template<class T> madc::value &print_r(const T &v, bool ret = false);
+    // PHP's var_dump returns void and is variadic.
     template<class... Ts> void var_dump(const Ts &...vs);
 }
