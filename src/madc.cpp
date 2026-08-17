@@ -37,6 +37,13 @@
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 
+// Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION (the
+// version-consuming objects depend on that file — src/Makefile). The fallback
+// matches lexer.cpp's and cir_freeze.cpp's so an ad-hoc compile still builds.
+#ifndef MADC_VERSION_STR
+#define MADC_VERSION_STR "0.0.0"
+#endif
+
 using namespace std;
 
 // CLI-only active program pointer used by the crash handler to map a
@@ -480,6 +487,8 @@ static void print_usage(const char *prog)
 "                          program (forces -O0, no inlining, spill-all)\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
+"  -V, --version           print the madc version (and the cross target, if\n"
+"                          this artifact has one) and exit\n"
 "\n"
 "Configuration file (optional; CLI > environment > madc.ini > defaults):\n"
 "  --config=<file>         read this madc.ini instead of searching; a file\n"
@@ -605,6 +614,7 @@ int main(int argc, char **argv)
     bool no_pie = false;                  // -no-pie: fixed-base ET_EXEC (default = PIE, gcc parity)
     bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
+    bool show_version = false;            // --version / -V
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
@@ -850,6 +860,10 @@ int main(int argc, char **argv)
                 || strcmp(argv[i], "-?") == 0) {
             show_help = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--version") == 0
+                || strcmp(argv[i], "-V") == 0) {
+            show_version = true;
+            filearg = i + 1;
         } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
             // -l<name>: dlopen a shared library so its symbols are resolvable by
             // the import resolver at link time (e.g. -lcrypt). Like a linker's
@@ -908,6 +922,22 @@ int main(int argc, char **argv)
 	const char *live_capture = getenv("MADC_CLASS_PATTERN_LIVE");
 	if ( live_capture && *live_capture && strcmp(live_capture, "0") != 0 )
 	    prog->class_pattern_live_capture = true;
+    }
+
+    if ( show_version )
+    {
+        // Same string the built-in MADC_VERSION macro and madc::sys.version
+        // carry: the build threads ../VERSION in as -DMADC_VERSION_STR, and
+        // the version-consuming objects depend on that file, so all three
+        // spellings move together on a release bump.
+        std::cout << "madc " << MADC_VERSION_STR << std::endl;
+#ifdef MADC_CROSS_TARGET
+        // A cross artifact is a DIFFERENT compiler from the native one of the
+        // same version; say so, because the version alone cannot tell them
+        // apart and the macOS/Windows tarballs ship exactly that.
+        std::cout << "Target: " << MADC_CROSS_TARGET << std::endl;
+#endif
+        return 0;
     }
 
     if ( show_help )
