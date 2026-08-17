@@ -12182,7 +12182,7 @@ void CirBuilder::class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 }
 
 // A `struct Cls *<nm> = <init>;` pointer-binding decl (synthetic).
-node_t CirBuilder::class_ptr_bind(DataDefCLASS *cdd, const char *nm,
+node_t CirBuilder::class_ptr_bind(DataDef *cdd, const char *nm,
 				  node_t init, TokenBase *origin)
 {
 	node_t sd = simple(N_SPEC_DECL, origin);

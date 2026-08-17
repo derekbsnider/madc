@@ -559,7 +559,11 @@ class CirBuilder {
 	void class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 				       const char *rname, std::vector<node_t> &out,
 				       TokenBase *origin);
-	node_t class_ptr_bind(DataDefCLASS *cdd, const char *nm, node_t init,
+	// A `struct Tag *<nm> = <init>;` pointer-binding decl. Takes DataDef, not
+	// DataDefCLASS: a POD `struct Point` is only PROMOTED to DataDefCLASS when
+	// it earns class-hood, and class_tag_ref (the only thing this passes it to)
+	// has always taken the base type.
+	node_t class_ptr_bind(DataDef *cdd, const char *nm, node_t init,
 			      TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
@@ -670,6 +674,34 @@ class CirBuilder {
 	node_t lower_dump_call(class TokenCallFunc *tcf, FuncDef *fd,
 			       TokenBase *origin);
 	node_t dump_print_r_value(TokenBase *arg, TokenBase *origin);
+	// An ACCESS FACTORY: builds a fresh access node for the same value each
+	// time it is called. A c2mir node is a tree node, so the same one cannot
+	// be handed to two parents — the walk rebuilds instead of sharing, the
+	// same discipline aggregate_member_init_stmts follows for `path`.
+	typedef std::function<node_t()> DumpAccess;
+	// print_r internals. Each returns false with `why` set when the type has
+	// no dumper yet — a refusal, never a guess. `depth` is a COMPILE-TIME
+	// nesting level: the walk is EXPANDED per level, so PHP's columns
+	// (8*depth, entries at +4) are literals and no runtime depth exists.
+	bool dump_pr_any(const DumpAccess &acc, DataDef *dd, size_t count,
+			 bool is_array, int depth, bool nested,
+			 std::vector<node_t> &out, TokenBase *origin,
+			 std::string &why);
+	bool dump_pr_scalar(const DumpAccess &acc, DataDef *dd,
+			    std::vector<node_t> &out, TokenBase *origin,
+			    std::string &why);
+	bool dump_pr_struct(const DumpAccess &acc, DataDefSTRUCT *sdd, int depth,
+			    bool nested, std::vector<node_t> &out,
+			    TokenBase *origin, std::string &why);
+	bool dump_pr_array(const DumpAccess &acc, DataDef *elem, size_t count,
+			   int depth, bool nested, std::vector<node_t> &out,
+			   TokenBase *origin, std::string &why);
+	// The output primitives, one builder each.
+	node_t dump_pr_head(int col, const std::string &word, TokenBase *origin);
+	node_t dump_pr_key(int col, const std::string &key, TokenBase *origin);
+	node_t dump_pr_key_idx(int col, node_t idx, TokenBase *origin);
+	node_t dump_pr_nl(TokenBase *origin);
+	node_t dump_pr_tail(int col, bool blank, TokenBase *origin);
 
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.

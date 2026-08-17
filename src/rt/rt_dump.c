@@ -91,3 +91,87 @@ void __madc_dump_pr_cstr(const char *s)
     if (s)
 	printf("%s", s);
 }
+
+// print_r of a character ARRAY: text, bounded by the array's extent. A C array
+// need not be NUL-terminated, so %s could read past it; stop at the extent or
+// at the first NUL, whichever comes first.
+void __madc_dump_pr_cstr_n(const char *s, long long n)
+{
+    long long i;
+    if (!s)
+	return;
+    for (i = 0; i < n && s[i]; i++)
+	putchar(s[i]);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregates
+// ---------------------------------------------------------------------------
+// PHP's print_r frames an array or object as
+//
+//     Array$                     <- the type word, then a newline
+//     ($                         <- at column `col`
+//         [0] => 1$              <- entries at col + 4
+//     )$                         <- back at col
+//
+// and a NESTED one puts its type word on the "=> " line, indents its "(" a
+// further 8, and follows its ")" with a BLANK line:
+//
+//         [1] => Array$
+//             ($
+//                 [0] => 2$
+//             )$
+//     $
+//
+// So col is 8*depth and entries sit at 8*depth+4. Every column here arrives as
+// a compile-time constant: the generated dumper is expanded per nesting level,
+// so no runtime depth counter exists. Captured from php-cli 8.3.6 with cat -A
+// (tmp/or_pr2.php) — do not "tidy" the blank line or the 8-space step.
+
+static void dump_indent(int col)
+{
+    int i;
+    for (i = 0; i < col; i++)
+	putchar(' ');
+}
+
+// The aggregate's opening: its type word ("Array", "Point Object"), then "(".
+void __madc_dump_pr_head(int col, const char *word)
+{
+    printf("%s\n", word ? word : "");
+    dump_indent(col);
+    printf("(\n");
+}
+
+// One entry's key: PHP spells a protected member "[name:protected]" and a
+// private one "[name:Class:private]". The whole key text is a compile-time
+// literal — the compiler knows the access and the declaring class.
+void __madc_dump_pr_key(int col, const char *key)
+{
+    dump_indent(col);
+    printf("[%s] => ", key ? key : "");
+}
+
+// An array element's key: the position.
+void __madc_dump_pr_key_idx(int col, long long idx)
+{
+    dump_indent(col);
+    printf("[%lld] => ", idx);
+}
+
+// End of a SCALAR entry. A nested aggregate ends itself (its ")" line plus the
+// blank line), so this must not be emitted for one.
+void __madc_dump_pr_nl(void)
+{
+    putchar('\n');
+}
+
+// The aggregate's close. `blank` adds PHP's trailing empty line, which every
+// NESTED block gets and the outermost one does not.
+void __madc_dump_pr_tail(int col, int blank)
+{
+    dump_indent(col);
+    printf(")\n");
+    if (blank)
+	putchar('\n');
+}
