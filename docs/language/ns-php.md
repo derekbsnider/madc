@@ -165,6 +165,8 @@ change: it names the **real** type instead of simulating PHP's.
 | `char name[8]` = "hi" | — | `char[8](2) "hi"` |
 | a `Point` | `object(Point)#1 (2)` | `struct Point(2)` |
 | `int v[3]` | `array(3)` | `int[3](3)` |
+| a `std::vector<int>` | `array(3)` | `std::vector<int32_t,std::allocator<int32_t>>(3)` |
+| a `std::string` | `string(2) "hi"` | `std::__cxx11::basic_string<char,...>(2) "hi"` |
 
 The type word is the CANONICAL type, not the typedef the source wrote — the same
 thing `typeid` reports in g++ — so a `size_t` shows as `unsigned long`. An
@@ -183,6 +185,32 @@ claim about your source that the compiler cannot support.
 - **`char` / `unsigned char`** — one character of text, matching
   `cout << (char)65` and PHP's `chr(65)`.
 
+### Containers
+
+A class that offers `size()` and `operator[](integral)` — `std::vector`,
+`std::array`, `std::string`, and any user class shaped the same way — is a
+POSITIONAL SEQUENCE, and prints as one. That is a structural test, not a list of
+blessed container names: nothing here matches `c_str`, `length` or `vector` by
+name.
+
+- **A sequence whose element is a character type is TEXT**, which is how
+  `std::string` prints as its contents rather than as an array of small integers
+  — and why `std::vector<char>` does the same.
+- **Any other sequence is a PHP array**, keyed `[0..size()-1]`.
+- The count is read from `size()` ONCE, so the printed count and the elements
+  always agree.
+- An ASSOCIATIVE container (`std::map`, `std::set`) is not a positional
+  sequence — its `operator[]` takes a key, not a position — so it falls back to
+  showing its members. Rendering `[key] => value` needs the `begin()`/`end()`
+  protocol, which madc does not implement yet.
+- A class that looks positional but whose element type has no dumper yet (a
+  `Matrix::operator[]` returning a row pointer) also falls back to its members:
+  the sequence rendering is an enhancement and never removes information.
+
+`var_dump` names a container by its canonical C++ spelling, which for a template
+instantiation is long (`std::vector<int32_t,std::allocator<int32_t>>`) and
+depends on the standard-library flavor. `print_r` is the readable form.
+
 ### Limits
 
 - These two are **compiler intrinsics**: they are declared in `<ns_php>` and
@@ -195,8 +223,8 @@ claim about your source that the compiler cannot support.
   derived class is skipped: the emitted struct renames the hidden one and no
   reader can address it.
 - Types still to come: pointers (followed, with PHP's `*RECURSION*` for a
-  cycle), `std::string` and the standard containers, enums (by enumerator name),
-  and `array` / `value` itself. Each is refused by name until then — never
-  guessed at.
+  cycle), enums (by enumerator name), associative containers, multidimensional
+  arrays, and `array` / `value` itself. Each is refused by name until then —
+  never guessed at.
 - `print_r($v, true)`'s return form is not implemented yet; `print_r` currently
   always prints.

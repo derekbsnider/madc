@@ -15,9 +15,11 @@ Landed so far (each its own commit, each green in JIT + `--exe` + `--obj`):
 | S0 — the range-for crash | **DONE.** Type-checked index protocol + one owner for the `operator[]` call. `tests/testforeachkeyed.mad`, `tests/testforeachrefindex.mad` |
 | S3a — `print_r` scalars | **DONE.** `tests/testphpprintr.mad`, PHP-oracled |
 | S3b — `print_r` aggregates | **DONE.** structs, classes, unions, anonymous unions, bit-fields, fixed arrays. `tests/testphpprintrstruct.mad`, PHP-oracled |
-| S4 — `var_dump` | **IN FLIGHT** (one walk, two renderers; real C type words) |
-| S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12 |
-| S5 — containers | NOT STARTED |
+| S4 — `var_dump` | **DONE.** One walk, two renderers; real C type words. `tests/testphpvardump.mad`, PHP-oracled |
+| S5a — positional containers | **DONE.** `std::string` as text, `std::vector` / `std::array` as arrays, via the shared type-checked protocol. `tests/testphpseq.mad`, PHP-oracled |
+| S3c — pointers + `*RECURSION*` | NOT STARTED — needs a generated function + a runtime ancestor stack, see §12.6 |
+| S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12.5 |
+| S5b — associative containers | NOT STARTED — gated on S1 |
 | S6 — `madc::value` / `array` | NOT STARTED — see §12 for what it needs that the rest does not |
 
 §12 records what implementation TAUGHT us that the design could not know.
@@ -495,7 +497,7 @@ An aggregate is spelled `struct X` / `union X`, never `class X`: madc PROMOTES a
 plain struct to `DataDefCLASS` when it earns class-hood, so "class" would be a
 claim about the source that the type graph cannot support.
 
-### 12.5 Resequencing: containers before the `begin()`/`end()` protocol
+### 12.5 Resequencing: containers before the `begin()`/`end()` protocol (DONE)
 
 The plan ordered S1 (the iteration protocol) second. Implementation shows the
 dumper does not need it for the container cases that matter most:
@@ -504,9 +506,9 @@ left behind exactly the type-checked predicate for them
 (`class_index_iteration_protocol`). Only ASSOCIATIVE containers (`map`, `set`,
 `unordered_*`) need `begin()`/`end()`.
 
-So the order is now: S4 (var_dump) -> S5a (positional containers, including
-`std::string` as a sequence of char) -> S3c (pointers) -> S1 (begin/end) -> S5b
-(associative) -> S6 (`madc::value`). S1 is still owed — `for (auto &kv : m)`
+So the order is now: S4 (var_dump, DONE) -> S5a (positional containers,
+including `std::string` as a sequence of char, DONE) -> S3c (pointers) -> S1
+(begin/end) -> S5b (associative) -> S6 (`madc::value`). S1 is still owed — `for (auto &kv : m)`
 does not work today and `for (int v : s)` over a `std::set` errors where g++
 runs — it is just no longer the gate for the dump feature.
 
@@ -545,3 +547,23 @@ The output primitives live in `src/rt/rt_dump.c`: strict C11, `printf`-based
 `scripts/ledger_sources.txt` as `all`. That one line is the whole build wiring:
 the Makefile derives `RT_OFILES` from the manifest. Verified on the
 `--emit=c11` -> `gcc -O0` lane as well as JIT / `--exe` / `--obj`.
+
+### 12.9 What S5a settled about the type word for a container (v0.85.0)
+
+`var_dump` names a container by `DataDef::canonical_cpp_spelling()`, which is the
+only spelling available: the class `name` is a mangled tag
+(`vector_int32_t_std__allocator_int32_t_`) no user wrote. It is long and it
+carries madc's canonicalization (`int32_t`, not `int`) and the standard library's
+ABI namespace (`std::__cxx11::basic_string<...>`, and `std::__1::` under libc++).
+
+Two consequences, both accepted deliberately:
+
+- The FIXTURE cannot pin those lines: `tests/testphpseq.expect` asserts the
+  var_dump value lines by their flavor-stable tail (`>(2) "hi"`) and pins the
+  print_r blocks — the PHP-fidelity claim — in full. A test that spelled
+  `__cxx11` would fail the libc++ lane, which runs the whole suite.
+- A shorter alias form (`std::string`, `std::vector<int>`) would need a
+  type -> alias reverse map that does not exist, or a name match on
+  `basic_string`, which is what this arc refuses to do anywhere. If it is wanted
+  later, the honest route is recording the SOURCE spelling on the declaration
+  (a variable's declared alias) — not pattern-matching the canonical form.

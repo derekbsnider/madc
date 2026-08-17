@@ -313,7 +313,7 @@ no matter how small.
 |--------------------------------------------------|------:|------------------------------------------------|
 | [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
-| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
+| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  24 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct, with two named exceptions (CIR-emitted machinery, compiler-implemented publics like `php::print_r`) |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [fix-what-you-find.md](.claude/rules/fix-what-you-find.md) |   21 | A defect you DISCOVER is yours to fix — "pre-existing" is not a disposition; silent wrong answers jump the queue; the fix ships a reducer |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
@@ -354,10 +354,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **31 rules, 854 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **31 rules, 863 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1268 lines.**
+- **Grand total loaded by Claude Code per turn: ~1279 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
