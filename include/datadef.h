@@ -1791,6 +1791,22 @@ public:
     DataDefARRAY(): DDClass("array", sizeof(madc::value), DataType::dtARRAY)
     {
 	set_canonical_spelling("madc::value");
+	// The carrier's ALIGNMENT, stated because nothing else can derive it.
+	// This is a DDClass with NO members, so compute_layout never runs on it
+	// and max_align stays at its ctor default of 1 — which made
+	// alignment() report 1 for a 48-byte, 16-aligned object. Every consumer
+	// that asks the TYPE got that 1: DataDefSTRUCT::field_align placed a
+	// `value` member at the next byte (offset 4 after an `int`), so a struct
+	// holding one was misaligned, and madc's SETTLED layout is what c2mir
+	// consumes verbatim — so the `_Alignas(16)` the member emitter writes
+	// could not correct it. It surfaced only in the -O2 lane, where
+	// madc::value's own operator= uses an aligned SSE move and faults
+	// (SIGSEGV with si_addr 0); at -O0 the unaligned copy quietly worked.
+	// Both fields, together: cir_freeze restores them as a pair, and
+	// finalize() rounds the struct SIZE by max_align while alignment()
+	// reads class_align.
+	class_align = alignof(madc::value);
+	max_align   = alignof(madc::value);
     }
 };
 
