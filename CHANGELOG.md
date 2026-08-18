@@ -38,6 +38,15 @@ names itself.
   under both flavors and var_dump's quotes decided from the key's TYPE at compile
   time. All TEN print_r blocks php-cli 8.3.6 produces for this data are reproduced
   byte for byte. `tests/testphpdumpiter.mad`, `tests/testforeachiter.mad`.
+- **Fixed, before it shipped: that guard then refused a struct dumped BY VALUE
+  holding a pointer to itself.** The set bounds an EXPANSION and a generated dumper
+  function's body is not one — the recursion there is a CALL, already bounded by the
+  memo — so `dump_pointer_fn` starts a new path, beside the four context names it
+  already swaps for the same reason. **A 1084/0 fulltest did not catch it:** every
+  pointer test dumps a POINTER at top level (`print_r(&a)`), so the by-value shape
+  had no coverage in 1084 tests. Re-measuring the probe set found it, which is the
+  argument for measuring coverage rather than trusting a slice.
+  `tests/testphpdumpselfref.mad` now carries the three by-value shapes.
 - **Fixed: a type that contains ITSELF expanded forever.**
   `struct Node { long size(); Node &operator[](long); };` is legal C++ — a
   JSON-tree shape — and the dump walk is expanded per nesting level, so nothing

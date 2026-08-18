@@ -66,14 +66,15 @@ because libstdc++ declares the iterator's `operator!=` as a friend FREE function
 on that case and its `.expect_err` pins the message, which names the container by
 its own name AND says which piece is missing.
 
-## 3. WHAT LANDED IN #104 — four commits
+## 3. WHAT LANDED IN #104 — five code commits
 
 | commit | what |
 |---|---|
 | `3c0de0da` | **a pointer comparison against a base subobject owes the base adjustment** — `B2 *p2 = &d; p2 == &d` answered 0 where gcc and clang answer 1. Found because libstdc++'s `_List_base::_M_clear` does exactly that and every std::list program printed a c2mir warning |
 | `f68c4690` | **the dumper renders iterator containers** — the shared `class_iterator_iteration_protocol`, the counted loop, the inline-key primitive pair, plus two word defects (`std::__cxx11::list`, and a container word from the canonical spelling) |
 | `582d9eed` | **the range-for is the recognizer's SECOND consumer** — `for (std::pair<const int,int> &kv : m)` over a std::map |
-| (this session's fourth) | **a type that contains ITSELF must not expand forever** — a self-referential container consumed 4 GB and died in `std::bad_alloc`; the guard is an ancestor set in the TYPE domain, two sets (walk and word), and the POINTER path is exempt because its memo already bounds it |
+| `d237d83b` | **a type that contains ITSELF must not expand forever** — a self-referential container consumed 4 GB and died in `std::bad_alloc`; the guard is an ancestor set in the TYPE domain, two sets (walk and word) |
+| `54da4e38` | **and a generated dumper function starts a NEW expansion path** — the guard above then refused a struct dumped BY VALUE holding a pointer to itself. ⚠️ **A 1084/0 fulltest did not catch it**; re-measuring the probe set did. See §3.2 |
 
 Plan §19 is the AS-BUILT record: §19.2 the recognizer, §19.3 why the loop is
 counted, §19.4 the key, §19.5 the two word defects, §19.7 what is still not
@@ -92,6 +93,26 @@ covered.
 3. **A discarded reference result must NOT be dereferenced.** `++it;` emitted as
    `*f(&it);` is a dereference with no effect — a warning, and warnings are
    defects here. `class_nullary_call`'s `discard_value` flag exists for it.
+
+### 3.2 ⚠️ THE LESSON THAT COST THE MOST: a green suite is a slice
+
+`d237d83b`'s type-path guard refused `php::print_r(k)` on
+`struct Link { int v; Link *next; }` — a struct dumped **by value** holding a
+pointer to itself. **fulltest was 1084 / 0 with that bug in.** Every pointer test
+dumps a POINTER at top level (`php::print_r(&a)`), so the type was never on the
+expansion path when its generated dumper was built: the by-value shape had no
+coverage anywhere in 1084 tests.
+
+It was found by **re-measuring the probe set AFTER the release commit was already
+made**. `tests/testphpdumpselfref.mad` now carries the three by-value shapes, so
+the hole is a gate rather than a note.
+
+⚠️ **And the measurement was blind twice before it was right.**
+`tmp/patch/coverage.sh` runs `./bin/madc`, which on the NAS is whatever was last
+PULLED — it printed `REFUSED` for a shape that had just been fixed, and earlier for
+all 21 shapes at once. It now prints a provenance banner (binary, mtime,
+`--version`, hostname, HEAD) and says to RUN IT ON THE CONTAINER. An evidence run
+that cannot say what it tested is not evidence.
 
 ## 4. OPEN DEFECTS — every one has a reducer
 

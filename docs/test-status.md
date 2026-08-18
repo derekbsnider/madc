@@ -31,7 +31,19 @@
 >
 > `--emit=c11` parity spot-checked for the new walk: the generated C compiles
 > under `gcc -std=c11` and its output is byte-identical to the JIT's
-> (`tmp/probe/emitc_iter.mad`).
+> (`tmp/probe/emitc_iter.mad`). Native lanes: **EXE 1044/0**, **OBJ 1044/0**,
+> packed **1084/0/0/9**, headerless **1058/0/35skip**, release rc=0 — the whole
+> battery re-run over the five code commits.
+>
+> ⚠️ **A 1084/0 run is a SLICE, and this session proved it.** `d237d83b`'s
+> type-path guard refused `php::print_r(k)` on
+> `struct Link { int v; Link *next; }` — a struct dumped BY VALUE holding a pointer
+> to itself — and fulltest was **1084 / 0 with that bug in**, because every pointer
+> test dumps a POINTER at top level (`php::print_r(&a)`) so the by-value shape had
+> no coverage in 1084 tests. It was found by re-measuring the probe set AFTER the
+> release commit (`54da4e38` is the fix). `tests/testphpdumpselfref.mad` now carries
+> the three by-value shapes. Coverage on the container's v0.85.0 binary: **21 OK,
+> 0 not-OK**.
 >
 > **Previous (2026-08-17, the dump arc merged to `develop` and still
 > UNRELEASED at that point):** authoritative Linux fulltest **1071 passed / 0 failed / 0
