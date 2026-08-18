@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.85.0] — 2026-08-18
+
+php::print_r and php::var_dump over ANY madc type — the arc complete, all 20
+probe shapes rendering, and every silent wrong answer it uncovered in the
+compiler fixed with its own reducer and gate.
+
 php::print_r and php::var_dump over ANY madc type — the compiler is their
 implementation, and PHP is the oracle to the byte. **The arc is complete: all 20
 probe shapes render**, and the one remaining refusal is a principled limit that

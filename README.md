@@ -210,41 +210,55 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.84.0** — the forest pack's silent-degradation gate.
+The current release is **v0.85.0** — `php::print_r` and `php::var_dump` over
+**any** madc type.
 
-**On `develop` and not yet released:** `php::print_r` and
-`php::var_dump` over **any** madc type. The compiler is their implementation:
-they are declared in `<ns_php>` with no definition anywhere, and the CIR builder
-generates a dumper for whatever type the argument has. A struct, a class with
-private and protected members, an inherited member, a union, an anonymous union,
-a bit-field, a fixed array, a `char[]`, a `std::string` and a `std::vector` all
-print the way a PHP developer expects PHP to print the corresponding value —
-byte-identical to php-cli 8.3.6 for every shape PHP can express, down to the
+The compiler is their implementation: they are declared in `<ns_php>` with no
+definition anywhere, and the CIR builder generates a dumper for whatever type the
+argument has, so a program that never dumps carries nothing. php-cli 8.3.6 is the
+oracle, and every shape PHP can express is byte-identical to it — down to the
 8-space step of a nested `(`, the blank line after it, and PHP's `1.0E+25`
-mantissa where C's `%G` prints `1E+25`. `var_dump` keeps PHP's frame and makes
-exactly one deliberate change: it names the real C/C++/madc type
-(`double(3.5)`, `long(42)`, `char *(2) "hi"`, `struct Point(2)`). The walk never
-computes or even reads a layout fact — members are emitted as `obj.member`
-access nodes, so bit-fields, anonymous aggregates and base flattening keep their
-single owner — and every type without a dumper yet is refused BY NAME rather
-than guessed at. A range-for crash fell out on the way in: `for (int v :
-std::map<int,int>)` used to SIGSEGV where g++ and clang reject the source, and
-the iteration protocol is type-checked now.
+mantissa where C's `%G` prints `1E+25`.
 
-Branch state: the dump arc is merged to `develop` with **no version bump** — it
-is incomplete, so it stays unreleased. `master` carries v0.82.0, for which
-public binaries are published on all three platforms; v0.83.0 and v0.84.0 are
-released on `develop` and unpromoted.
+**All 20 probe shapes render.** Structs and classes with private, protected and
+inherited members; unions, anonymous unions and bit-fields; fixed and
+multidimensional arrays; `char[]` as text; `std::string`, `std::vector` and
+`std::array`; **pointers**, followed at the same depth with PHP's `*RECURSION*`
+for a real cycle (an ancestor stack, so a value reachable twice acyclically
+prints in full both times); **enums**, by enumerator name with the real backing
+type; **`std::map`, `std::set` and `std::list`**, through C++'s own iterator
+protocol, with a keyed container printing `[key] => value` and never the
+`std::pair` its elements are; the whole `array` / `value` nine-kind gamut; and
+`print_r($v, true)` capture with a runtime flag. `var_dump` makes exactly one
+deliberate change: it names the real C/C++/madc type (`double(3.5)`, `long(42)`,
+`struct Point(2)`, `std::map<std::string,int>(2)`), spelled the way the SOURCE
+spells it. The one remaining refusal names itself — a container with
+`begin()`/`end()` and no `size()`, because the generated loop must be counted
+off `size()` when the iterator's `operator!=` is a friend free function.
+
+The iteration recognizer is SHARED, and that is the point: its iterator twin gave
+the range-based `for` the containers it never had, so
+`for (std::pair<const int,int> &kv : m)` works now too. Five silent wrong answers
+in the compiler fell out on the way and each ships a reducer: a pointer
+COMPARISON against a base subobject omitted the base adjustment
+(`B2 *p2 = &d; p2 == &d` answered 0 where g++ and clang++ answer 1), a
+`madc::value` member was misaligned so the packed -O2 lane crashed on it, a
+`madc::value`'s base type fell through to `int`, a nullary method call could
+select the wrong overload, and a type that contains ITSELF expanded until the
+4 GB memory guard killed it.
+
+Branch state: v0.85.0 is released on `develop`. `master` carries v0.82.0, for
+which public binaries are published on all three platforms; v0.83.0, v0.84.0 and
+v0.85.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1070 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE and OBJ lanes **1031/0**; packed suite **1054/0/0/9** (last
-  measured at v0.82.0)
+- Linux JIT: **1084 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1044/0**, OBJ lane **1044/0**; packed suite **1084/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
+- headerless (no headers on disk anywhere): Linux **1058/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -257,6 +271,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
+  over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
 - [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
   silently; the gate's first run found a lost `long double` member.
 - [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`

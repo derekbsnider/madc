@@ -50,12 +50,13 @@ used to SIGSEGV at (nil) where g++ and clang both REJECT the source (the protoco
 matched `size()`/`operator[]` by NAME and fed a pointer parameter an integer), it
 is type-checked now, and its ITERATOR twin gave the range-based `for` the
 containers it never had — `for (std::pair<const int,int> &kv : m)` works.
-Four silent wrong answers in the compiler fell out on the way and each ships its
+Five silent wrong answers in the compiler fell out on the way and each ships its
 own reducer and gate: a pointer COMPARISON against a base subobject omitted the
 base adjustment (`B2 *p2 = &d; p2 == &d` answered 0 where both compilers answer
 1 — libstdc++'s own `_List_base::_M_clear` is that shape), a `madc::value` member
 was misaligned so the packed -O2 lane crashed on it, a `madc::value`'s base type
-fell through to `int`, and `class_nullary_call` could select the wrong overload.
+fell through to `int`, `class_nullary_call` could select the wrong overload, and a
+type that contains ITSELF expanded until the 4 GB memory guard killed it.
 Docs: `docs/language/ns-php.md`. Plan and as-built record:
 [2026-08-17-php-print-r-var-dump-plan.md](2026-08-17-php-print-r-var-dump-plan.md).
 

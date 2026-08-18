@@ -10,11 +10,30 @@ Supersedes the session-#103 revision.
 
 ## 1. STATE
 
-- Branch `develop`. **VERSION = 0.84.0.** `master` = v0.82.0.
+- Branch `develop`. **VERSION = 0.85.0, RELEASED on develop.** `master` = v0.82.0; v0.83.0, v0.84.0 and v0.85.0 are all unpromoted.
+- ⚠️ **NOT PUSHED.** develop is 40+ commits ahead of `origin/develop`. Verify the remote is `derekbsnider/madc` before any push (`git remote -v` — origin is NOT first).
 - Working tree clean except the owner's untracked `donut.c`, `test.mad`,
   `testsort.mad` — **never commit them**.
 - ⚠️ `git stash@{0}` still holds the SUPERSEDED compile-time pointer expansion
   from #102. It is dead: plan §17 is what shipped. **Drop it.**
+
+### 1.1 Validation of record — v0.85.0
+
+| lane | result |
+|---|---|
+| fulltest | **1084 / 0 fail / 0 timeout / 9 skip** |
+| `--exe` | **1044 / 0** |
+| `--obj` | **1044 / 0** |
+| release | rc=0 |
+| packed (`madc-release`) | **1084 / 0 / 0 TO / 9 skip** |
+| headerless | **1058 / 0 / 35 skip** |
+| c2mir warning ratchet | **1092 tests compiled, 0 warnings**, all-zero baseline |
+| trailer gate | 457 code commits, 0 missing |
+
+`--emit=c11` parity spot-checked for the new walk: the generated C compiles under
+`gcc -std=c11` and its output is byte-identical to the JIT's
+(`tmp/probe/emitc_iter.mad`). MIR c-tests stand from #102 (`third_party/mir`
+untouched). wine / macOS batteries unchanged since v0.82.0 and NOT re-run.
 
 ### 2. THE ARC IS COMPLETE — 20 of 20 probe shapes render
 
