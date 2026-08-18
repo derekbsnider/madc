@@ -807,6 +807,36 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	return true;
 }
 
+// Is this class a CONTAINER whose elements this walk cannot reach yet?
+//
+// It advertises C++'s own ITERATION protocol (begin()/end()) but is not
+// positionally indexable, so dump_sequence declined it: std::map, std::set,
+// std::list. Descending into its members instead is what produced
+//
+//   php::print_r: member '_M_t': member '_M_impl': member '_M_header':
+//   member '_M_color': no dumper for type '_Rb_tree_color' yet
+//
+// — four levels into libstdc++'s red-black tree, naming a type the user never
+// wrote and never once mentioning std::map. A container this walk cannot render
+// must be refused by ITS OWN name, BEFORE the descent. (My earlier claim that
+// "every uncovered type is refused by name, so nothing lies" was true of the
+// scalar arm and false of exactly this one.)
+//
+// begin()/end() and nothing else: a plain aggregate that happens to expose a
+// size() is not a container and must still be member-walked, so the test is the
+// iteration concept itself. When slice S1 lands the type-checked iterator
+// protocol, this predicate's BODY becomes that test and this call site starts
+// dumping where it now refuses.
+static bool container_needs_iterator_walk(DataDefCLASS *cls)
+{
+	if (!cls)
+		return false;
+	Variable *b = cls->findMethod(std::string("begin"));
+	Variable *e = cls->findMethod(std::string("end"));
+	return b && e && dynamic_cast<FuncDef *>(b->type) != NULL
+	    && dynamic_cast<FuncDef *>(e->type) != NULL;
+}
+
 // ---------------------------------------------------------------------------
 // A madc::value — the one type the compiler CANNOT expand
 // ---------------------------------------------------------------------------
@@ -893,6 +923,17 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			// falls back to the member walk below rather than failing
 			// the call: those members are real, and an enhancement must
 			// not turn a working dump into an error.
+			//
+			// A CONTAINER's members are not real in that sense — they
+			// are the library's own internals — so one is refused by
+			// its own name here rather than walked.
+			if (container_needs_iterator_walk(ccls)) {
+				why = std::string("no dumper for container '")
+				    + dump_class_type_word(ccls)
+				    + "' yet: its elements need the begin()/end()"
+				      " protocol";
+				return false;
+			}
 		}
 		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd))
 			return dump_struct(fl, acc, sdd, depth, nested, out,

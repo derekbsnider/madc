@@ -1,0 +1,20 @@
+// A container php::print_r cannot render yet must be refused BY ITS OWN NAME.
+//
+// This used to descend four levels into libstdc++'s red-black tree and refuse
+// there:
+//
+//   php::print_r: member '_M_t': member '_M_impl': member '_M_header':
+//   member '_M_color': no dumper for type '_Rb_tree_color' yet
+//
+// — naming a type the user never wrote and never once saying std::map. A
+// std::map is not a positional sequence (its operator[] takes a KEY), so
+// dump_sequence declines it and the member walk took over. The member walk is
+// right for an ordinary aggregate and wrong for a container: those members are
+// the library's internals, not the user's data.
+//
+// The gate is the MESSAGE. Removing the by-name refusal makes the diagnostic
+// mention _Rb_tree_color again, which this fixture no longer matches.
+#include <map>
+
+std::map<int,int> m;
+php::print_r(m);
