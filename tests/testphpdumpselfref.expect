@@ -30,3 +30,41 @@ struct Box_int32_t(1) {
   ["v"]=>
   int(7)
 }
+--- self-pointer, dumped BY VALUE (null)
+Link Object
+(
+    [v] => 1
+    [next] => 
+)
+struct Link(2) {
+  ["v"]=>
+  int(1)
+  ["next"]=>
+  NULL
+}
+--- self-pointer, dumped BY VALUE (points at itself)
+Link Object
+(
+    [v] => 2
+    [next] => Link Object
+        (
+            [v] => 2
+            [next] => Link Object
+ *RECURSION*
+        )
+)
+--- a two-node ring, dumped BY VALUE
+Ring Object
+(
+    [id] => 10
+    [peer] => Ring Object
+        (
+            [id] => 20
+            [peer] => Ring Object
+                (
+                    [id] => 10
+                    [peer] => Ring Object
+ *RECURSION*
+                )
+        )
+)

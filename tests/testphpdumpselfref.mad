@@ -25,9 +25,24 @@
 // `Box<int>` covers the WORD path specifically: a self-referential TEMPLATE
 // container's word contains its own word. A non-template one exits early because
 // dump_template_word needs a '<', so only a template can reach that recursion.
+// ⚠️ AND THE OTHER HALF, which a green suite did NOT catch: a struct dumped BY
+// VALUE that contains a POINTER to its own type. The type-path set is for
+// bounding an EXPANSION, and a generated dumper function's body is not one — the
+// recursion there is a CALL, bounded by the memo. Carrying the caller's path into
+// that body refused the canonical case, `php::print_r(n)` on
+// `struct Link { int v; Link *next; }`: the top-level expansion of Node is still
+// on the path when member `next` generates Link's dumper and its body expands Link
+// again. Every OTHER pointer test dumps a POINTER at top level
+// (`php::print_r(&a)`), so Link was never on the path when the function was built,
+// and the hole survived a 1084/0 run. It was found by re-measuring the probe set,
+// which is the whole argument for measuring coverage instead of trusting a slice.
 #include <stdio.h>
 
 struct Pt { int x; int y; };
+
+struct Link { int v; struct Link *next; };
+
+struct Ring { int id; struct Ring *peer; };
 
 struct Twice { Pt a; Pt b; };
 
@@ -62,5 +77,25 @@ int main()
 	b.v = 7;
 	php::print_r(b);
 	php::var_dump(b);
+
+	printf("--- self-pointer, dumped BY VALUE (null)\n");
+	Link k;
+	k.v = 1;
+	k.next = 0;
+	php::print_r(k);
+	php::var_dump(k);
+
+	printf("--- self-pointer, dumped BY VALUE (points at itself)\n");
+	Link loop;
+	loop.v = 2;
+	loop.next = &loop;
+	php::print_r(loop);
+
+	printf("--- a two-node ring, dumped BY VALUE\n");
+	Ring a, c;
+	a.id = 10; c.id = 20;
+	a.peer = &c;
+	c.peer = &a;
+	php::print_r(a);
 	return 0;
 }

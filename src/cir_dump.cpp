@@ -1783,6 +1783,17 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 	std::string saved_nest = m_dump_fn_nested;
 	std::vector<node_t> saved_pending;
 	saved_pending.swap(m_pending_stmts);
+	// A GENERATED FUNCTION STARTS A NEW EXPANSION PATH. The type-path set exists
+	// to bound an EXPANSION, and this body is not one: the recursion here is a
+	// CALL, bounded by the memo registered just above. Carrying the caller's path
+	// in refused the canonical case — `php::print_r(n)` on
+	// `struct Node { int v; Node *next; }`, where the top-level expansion of Node
+	// is still on the path when member `next` generates Node's dumper and its body
+	// expands Node again. A green suite did NOT catch that: every pointer test
+	// dumps a POINTER at top level (`print_r(&a)`), so Node was never on the path
+	// when the function was built. tmp/probe/p15_selfref.mad did.
+	std::set<DataDef *> saved_expanding;
+	saved_expanding.swap(m_dump_expanding);
 	m_dump_sink_var = DUMPFN_SINK;
 	m_dump_col_base = DUMPFN_COL;
 	m_dump_fn_depth = DUMPFN_DEPTH;
@@ -1799,6 +1810,7 @@ std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 	std::vector<node_t> hoisted;
 	hoisted.swap(m_pending_stmts);
 	m_pending_stmts.swap(saved_pending);
+	m_dump_expanding.swap(saved_expanding);
 	// The three context names stay SET until every arm below is built. The
 	// null, cycle and out-of-memory arms are part of this function's body too,
 	// so they need its column base and its `nested` parameter exactly as the

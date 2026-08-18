@@ -1594,3 +1594,38 @@ The outcome is not a refusal: the container arm declines and `dump_any`'s existi
 fallback prints the type's real MEMBERS — the same rule that keeps a positional
 container whose element has no dumper working. Gate:
 `tests/testphpdumpselfref.mad`, whose `Twice` case is the negative control.
+
+### 19.9 ⚠️ The guard's own regression, and what it says about the suite
+
+§19.8's type-path set bounded an EXPANSION and carried into a place that is not
+one. A generated dumper function's body IS a `dump_any(pointee)` call, but the
+recursion THERE is a CALL, already bounded by the memo registered before the body
+is built. Carrying the caller's path in refused the canonical case:
+
+```c
+struct Link { int v; struct Link *next; };
+Link k; php::print_r(k);
+// -> php::print_r: member 'next': no dumper for 'Link' yet: it contains ITSELF
+```
+
+The top-level expansion of `Link` is still on the path when member `next`
+generates `Link`'s dumper and its body expands `Link` again. `dump_pointer_fn`
+now swaps the set out for the duration of the body — beside the four context
+names (`m_dump_sink_var`, `m_dump_col_base`, `m_dump_fn_depth`,
+`m_dump_fn_nested`) it already swaps there for exactly the same reason. The set is
+the fifth member of that group; relaxing the guard in `dump_any` instead would
+have been the shim, because `dump_any` cannot tell which caller it has.
+
+⚠️ **fulltest was 1084 / 0 with the bug in.** Every pointer test dumps a POINTER
+at top level (`php::print_r(&a)`), so the type was never on the path when its
+function was built: the BY-VALUE shape had no coverage anywhere in 1084 tests. It
+was found by re-measuring the probe set AFTER the release commit was made.
+`tests/testphpdumpselfref.mad` now carries the three by-value shapes — a null
+self-pointer, a self-pointer at itself, and a two-node ring — so the hole is
+closed with a gate.
+
+⚠️ **And the measurement was blind twice before it was right.**
+`tmp/patch/coverage.sh` runs `./bin/madc`, which on the NAS is whatever was last
+pulled: it printed REFUSED for a shape that had just been fixed, and earlier for
+all 21 shapes at once. It now prints a provenance banner — binary, mtime,
+`--version`, hostname, HEAD — and says to run on the container.
