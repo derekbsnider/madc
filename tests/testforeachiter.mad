@@ -1,0 +1,68 @@
+// Range-based for over a container with NO POSITION — std::map, std::set,
+// std::list.
+//
+// This is the SECOND consumer of class_iterator_iteration_protocol, the shared
+// structural recognizer the dumper (tests/testphpdumpiter.mad) keys on. One
+// predicate, two consumers: that is why it lives in cir_builder.cpp beside its
+// positional twin (class_index_iteration_protocol, the size()+operator[] shape
+// translate_foreach_class emits) rather than inside the dumper.
+//
+// Before it, `for (... : m)` over a std::map failed with "range-for over class
+// 'map' is not supported: it has no positional size()/operator[] index protocol"
+// — because the ONE recognizer madc had knew only that shape.
+//
+// THE LOOP IS COUNTED off size(). libstdc++ declares the iterator's operator!=
+// as a friend FREE function (stl_tree.h 320, stl_list.h 324), so findMethod
+// cannot see it and `it != m.end()` has no member to dispatch.
+//
+// `continue` is the load-bearing case: the advance sits in the for-header's
+// INCREMENT slot, not at the tail of the body, so a `continue` still advances.
+// A body-tail increment loops forever on the first skipped element.
+//
+// Oracle: tmp/or/feiter.cpp under `g++ -O0` and `clang++ -O0` — both print the
+// .expect below, line for line. A std::map and std::set are key-ORDERED, so
+// 3,1,2 goes in and 1,2,3 comes out; a std::list keeps insertion order.
+#include <map>
+#include <set>
+#include <list>
+#include <string>
+#include <stdio.h>
+
+int main()
+{
+	std::map<int,int> m;
+	m[3] = 30; m[1] = 10; m[2] = 20;
+	for (std::pair<const int,int> &kv : m)
+		printf("map %d=%d\n", kv.first, kv.second);
+
+	std::set<int> s;
+	s.insert(7); s.insert(4);
+	for (int v : s)
+		printf("set %d\n", v);
+
+	std::list<int> l;
+	l.push_back(9); l.push_back(8);
+	for (int v : l)
+		printf("list %d\n", v);
+
+	std::list<std::string> ls;
+	ls.push_back("aa"); ls.push_back("bb");
+	for (std::string x : ls)
+		printf("lstr %s\n", x.c_str());
+
+	// A reference loop variable MUTATES the container element: it binds to the
+	// address operator* yields, so there is nothing to copy back.
+	for (int &v : l)
+		v = v + 1;
+	for (int v : l)
+		printf("plus1 %d\n", v);
+
+	int n = 0;
+	for (int v : s) {
+		if (v == 4)
+			continue;
+		n = n + v;
+	}
+	printf("skipped %d\n", n);
+	return 0;
+}

@@ -919,6 +919,13 @@ private:
 	bool class_iterator_iteration_protocol(DataDefCLASS *cls,
 					       IterProtocol &ip,
 					       std::string *why = NULL);
+	// Range-for over an ITERATOR container — the recognizer's SECOND consumer,
+	// so `for (auto_or_T x : m)` over a std::map / set / list works from the
+	// same predicate the dumper uses. Returns a BLOCK (the count and the
+	// iterator precede the loop).
+	node_t translate_foreach_iterator(class TokenFOREACH *fe,
+					  DataDefCLASS *cls,
+					  const IterProtocol &ip);
 	// Call a NULLARY class method (`obj.size()`) and yield its value.
 	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
 	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),

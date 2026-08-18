@@ -22353,17 +22353,25 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 		Variable *szmv = NULL, *opmv = NULL;
 		if (class_index_iteration_protocol(ccls, szmv, opmv))
 			return translate_foreach_class(fe, ccls, opmv);
+		// No position, but C++'s own ITERATOR protocol: std::map, std::set,
+		// std::list, and any container shaped like them. THE SAME shared
+		// recognizer the dumper keys on — one predicate, two consumers, which
+		// is the whole reason it lives here beside its positional twin rather
+		// than in cir_dump.cpp.
+		IterProtocol ip;
+		std::string ip_why;
+		if (class_iterator_iteration_protocol(ccls, ip, &ip_why))
+			return translate_foreach_iterator(fe, ccls, ip);
 		// A class object with no index protocol must NOT fall through to
 		// the madc-array reader below: that reads the object's own bytes as
 		// a madc::value header (garbage length -> out-of-bounds element
 		// fetch), the same trap the raw-array arm above was added for.
 		if (!is_array_object(cdd))
 			return error_node((std::string("range-for over class '")
-					   + ccls->name + "' is not supported: it has no "
-					   "positional size()/operator[] index protocol "
-					   "(a key-subscripted container is iterated with "
-					   "begin()/end(), which madc does not implement "
-					   "yet)").c_str(), fe);
+					   + ccls->name + "' is not supported: it has "
+					   "neither the positional size()/operator[] "
+					   "index protocol nor a usable iterator "
+					   "protocol — " + ip_why).c_str(), fe);
 	}
 
 	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
@@ -22568,6 +22576,194 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
 	return node5(N_FOR, list(), init, cond, incr, body, fe);
+}
+
+// Range-for over an ITERATOR container: `for (T x : m)` / `for (T &x : m)` ->
+//
+//   { long n = c.size(); It it = c.begin();
+//     for (long k = 0; k < n; k += 1) { <fill x from *it>; <body>; ++it; } }
+//
+// The element FILL cases are translate_foreach_class's, unchanged in meaning —
+// reference loop variable, class element through its operator=, scalar element —
+// with the element reached through the iterator instead of through operator[].
+//
+// COUNTED off size() for the reason class_iterator_iteration_protocol owns:
+// libstdc++ declares the iterator's operator!= as a friend FREE function, so
+// `it != c.end()` has no member to dispatch and cannot be generated.
+//
+// Returns a BLOCK, not the bare N_FOR the other two arms return: the count and
+// the iterator are two statements that must precede the loop. translate_foreach
+// wraps whatever comes back in the element variable's own block, so a block here
+// nests correctly.
+node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cls,
+					      const IterProtocol &ip)
+{
+	bool recv_is_ptr = fe->container->datadef()
+			   && fe->container->datadef()->is_pointer();
+	auto recv_addr = [&]() -> node_t {
+		node_t c = translate_expr(fe->container);
+		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
+	};
+	char nm[32], kx[32], itn[32];
+	snprintf(nm, sizeof(nm), "__fe_n_%d", m_strtmp_counter++);
+	snprintf(kx, sizeof(kx), "__fe_k_%d", m_strtmp_counter++);
+	snprintf(itn, sizeof(itn), "__fe_it_%d", m_strtmp_counter++);
+
+	// long n = c.size();
+	node_t szcall = class_nullary_call(cls, "size", recv_addr(), fe);
+	if (!szcall)
+		return error_node("range-for: container has no callable size()", fe);
+	node_t nspec = list();
+	append_i64(nspec, fe);
+	node_t ndecl = simple(N_SPEC_DECL, fe);
+	append(ndecl, node1(N_SHARE, nspec));
+	append(ndecl, node2(N_DECL, id(nm, fe), list()));
+	append(ndecl, ignore());
+	append(ndecl, ignore());
+	append(ndecl, szcall);
+
+	// It it = c.begin();  — a class iterator by its struct tag, a pointer one
+	// by its pointee spec plus stars.
+	node_t bcall = class_nullary_call(cls, "begin", recv_addr(), fe);
+	if (!bcall)
+		return error_node("range-for: container has no callable begin()", fe);
+	node_t ispecs = list();
+	node_t istars = list();
+	if (ip.itcls) {
+		append(ispecs, class_tag_ref(ip.itcls));
+	} else {
+		DataDef *ibase = ip.itptr ? ip.itptr->unqualified() : NULL;
+		int stars = ibase ? 1 + dd_peel_pointers(ibase) : 0;
+		if (!ibase || !dump_pointee_specs(ibase, ispecs))
+			return error_node("range-for: iterator pointee has no "
+					  "renderable declaration", fe);
+		for (int i = 0; i < stars; i++)
+			append(istars, pointer());
+	}
+	node_t idecl = simple(N_SPEC_DECL, fe);
+	append(idecl, node1(N_SHARE, ispecs));
+	append(idecl, node2(N_DECL, id(itn, fe), istars));
+	append(idecl, ignore());
+	append(idecl, ignore());
+	append(idecl, bcall);
+
+	// The element's ADDRESS and its LVALUE, rebuilt per use. A pointer iterator
+	// IS the address. A class iterator's operator* returns a reference, which is
+	// a pointer at this level — class_nullary_call hands back that pointer when
+	// asked for it, and the dereferenced lvalue otherwise, so neither shape is
+	// spelled twice.
+	bool star_is_ref = true;
+	if (ip.itcls) {
+		FuncDef *stfd = NULL;
+		if (Variable *stv = ip.itcls->findMethod(std::string("operator*")))
+			stfd = dynamic_cast<FuncDef *>(stv->type);
+		star_is_ref = stfd && stfd->returns_reference();
+	}
+	auto elem_addr = [&]() -> node_t {
+		if (!ip.itcls)
+			return id(itn, fe);
+		return class_nullary_call(ip.itcls, "operator*",
+					  node1(N_ADDR, id(itn, fe), fe), fe, true);
+	};
+	auto elem_value = [&]() -> node_t {
+		if (!ip.itcls)
+			return node1(N_DEREF, id(itn, fe), fe);
+		return class_nullary_call(ip.itcls, "operator*",
+					  node1(N_ADDR, id(itn, fe), fe), fe);
+	};
+
+	node_t body_items = list();
+	if (fe->elem_is_ref) {
+		// `for (T &x : c)`: x is a vfREFERENCE pointer bound to the element's
+		// address, so writes through it mutate the container element. An
+		// operator* that returns BY VALUE has no element to bind to —
+		// [dcl.init.ref] rejects that in C++ too, so say so.
+		if (!star_is_ref)
+			return error_node("range-for by reference (T&) is not "
+					  "supported over this container: its "
+					  "operator* returns by value, so its "
+					  "elements have no address to bind", fe);
+		append(body_items, node2(N_EXPR, list(),
+					 node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					       elem_addr(), fe), fe));
+	} else if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
+		// A class element copies through its registered operator=, exactly as
+		// the positional arm does — a bit-copy would alias the source's owned
+		// members.
+		FuncDef *op = class_assign_operator_def(ec);
+		if (op && star_is_ref) {
+			std::string sym = class_method_call_symbol(ec, op, "operator=");
+			bool external = !op->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), true,
+						   { { {N_VOID}, true },
+						     { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			node_t dst = node1(N_ADDR, id(fe->elemname.c_str(), fe), fe);
+			node_t src = elem_addr();
+			if (external) {
+				dst = node2(N_CAST, void_ptr_type(), dst, fe);
+				src = node2(N_CAST, void_ptr_type(), src, fe);
+			}
+			node_t a = list();
+			append(a, dst);
+			append(a, src);
+			append(body_items,
+			       node2(N_EXPR, list(),
+				     node2(N_CALL, id(sym.c_str(), fe), a, fe), fe));
+		} else {
+			append(body_items,
+			       node2(N_EXPR, list(),
+				     node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					   elem_value(), fe), fe));
+		}
+	} else {
+		append(body_items,
+		       node2(N_EXPR, list(),
+			     node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+				   elem_value(), fe), fe));
+	}
+
+	node_t user_body = translate_loop_body(fe->statement);
+	if (user_body)
+		append(body_items, user_body);
+
+	// ++it LAST, so a `continue` in the user body still advances: the increment
+	// belongs in the for-header's own slot, not at the end of the body.
+	// (A body-tail increment is what a `continue` would skip.)
+	node_t advance;
+	if (!ip.itcls)
+		advance = node2(N_ADD_ASSIGN, id(itn, fe), integer(1, fe), fe);
+	else
+		advance = class_nullary_call(ip.itcls, "operator++",
+					     node1(N_ADDR, id(itn, fe), fe), fe,
+					     true);
+	if (!advance)
+		return error_node("range-for: iterator has no callable prefix "
+				  "operator++", fe);
+
+	// for (long k = 0; k < n; (k += 1, ++it))
+	node_t kspec = list();
+	append_i64(kspec, fe);
+	node_t init = simple(N_SPEC_DECL, fe);
+	append(init, node1(N_SHARE, kspec));
+	append(init, node2(N_DECL, id(kx, fe), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, fe));
+	node_t cond = node2(N_LT, id(kx, fe), id(nm, fe), fe);
+	node_t incr = node2(N_COMMA,
+			    node2(N_ADD_ASSIGN, id(kx, fe), integer(1, fe), fe),
+			    advance, fe);
+	node_t loop = node5(N_FOR, list(), init, cond, incr,
+			    node2(N_BLOCK, list(), body_items, fe), fe);
+
+	node_t items = list();
+	append(items, ndecl);
+	append(items, idecl);
+	append(items, loop);
+	return node2(N_BLOCK, list(), items, fe);
 }
 
 // Range-for over a raw fixed-size C array: `for (T x : a)` ->

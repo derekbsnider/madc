@@ -14,8 +14,22 @@
 // pointer. That SIGSEGV'd at (nil). The protocol match is type-checked now, and
 // a keyed container (one that names a key_type) has no index protocol at all.
 //
-// This expectation is PERMANENT: even once begin()/end() iteration lands, a map
-// element is a pair and cannot initialize an `int`, exactly as canon says.
+// This expectation is PERMANENT: begin()/end() iteration HAS landed now
+// (tests/testforeachiter.mad), and a map element is still a pair that cannot
+// initialize an `int`, exactly as canon says.
+//
+// WHAT CHANGED WITH THE ITERATOR PROTOCOL: madc no longer refuses the CONTAINER
+// — it iterates it — so the rejection has moved to the element ASSIGNMENT, where
+// c2mir reports it. The `.expect_err` fixture tracks that.
+//
+// It is deliberately c2mir's diagnostic and not a front-end one. A front-end
+// message naming both types the way g++ does would need a real convertibility
+// predicate, and madc has none: the direction is NOT simply "an aggregate cannot
+// initialize a scalar", because a class with `operator int()` legitimately can,
+// and a `const char *` element legitimately initializes a `std::string` loop
+// variable. Guessing at that lattice to improve one message would reject working
+// code. The rejection itself is correct, loud, and exits nonzero, which is what
+// this test gates.
 #include <map>
 #include <iostream>
 

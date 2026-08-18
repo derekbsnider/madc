@@ -1,0 +1,4 @@
+Presence enables the check: the JIT run must produce EMPTY stderr. A generated
+iterator loop that mis-declares its iterator local, selects the POSTFIX
+operator++, or dereferences a discarded reference result warns here rather than
+failing the output comparison.
