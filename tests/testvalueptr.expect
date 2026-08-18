@@ -1,0 +1,9 @@
+integer(42)
+string(4) "text"
+struct Holder(2) {
+  ["tag"]=>
+  int(7)
+  ["v"]=>
+  string(4) "text"
+}
+real(1.5)

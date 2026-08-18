@@ -4550,6 +4550,20 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		append(lst, simple(N_UNSIGNED));
 		append_i64(lst);
 		break;
+	// The intrinsic value carrier (madc::value). Its STORAGE is an opaque
+	// `_Alignas(alignof(madc::value)) long long name[array_obj_words()]`
+	// (array_storage_decl / the class-member arm), so its type SPECIFIER is
+	// `long long` and the shape — `[6]` for an object, a star for a pointer to
+	// one — belongs to the declarator, which is C's own model.
+	//
+	// Without this case a value fell to the `default: int` below, so every site
+	// that spells a value's base type through a DECLARATOR rather than through
+	// the storage emitter got `int`: `value *p` emitted `int *p` (c2mir:
+	// "incompatible types in assignment to a pointer") and a value-returning
+	// function emitted `int f()`. Those were SILENT except for the warning —
+	// the pointer value itself was right, so the dump printed correctly while
+	// the declared type was a 4-byte lie about a 48-byte object.
+	case DataType::dtARRAY:  append_i64(lst); break;
 	case DataType::dtINT128: append(lst, simple(N_INT128)); break;
 	case DataType::dtUINT128:
 		append(lst, simple(N_UNSIGNED));
@@ -19464,6 +19478,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			note_global_reference(ta->var);
 			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);
+			// `&valueobj` for the intrinsic value carrier: its storage is an
+			// opaque `long long name[array_obj_words()]` (array_storage_decl),
+			// so the NAME already decays to a pointer to it. N_ADDR over an
+			// array yields `long long (*)[N]` — the same VALUE but a different
+			// TYPE, which c2mir reported as "incompatible types in assignment
+			// to a pointer" as soon as `value *` had a real type to disagree
+			// with. Same shape as the reference arm above: the thing already IS
+			// the address.
+			if (is_array_object(ta->var.type))
+				return id(var_emit_name(ta->var).c_str(), tb);
 			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
 		}
 	}
@@ -19484,6 +19508,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (node_t flat = vla_flat_subscript(vroot, vidxs, tb))
 					return CIR_NODE(flat)->base.code == N_IND
 					       ? node1(N_ADDR, flat, tb) : flat;
+			// `&s.valuemember` — same decay as `&valueobj`; see the
+			// address-of-variable arm above for why N_ADDR is the wrong type.
+			if (tae->expr && is_array_object(tae->expr->datadef()))
+				return translate_expr(tae->expr);
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
 		}
 	}
