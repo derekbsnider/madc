@@ -26591,6 +26591,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// functions emitted into this module. Carrying a memo across modules would
 	// hand the next one a call to a name it never defines.
 	m_dump_fn_syms.clear();
+	m_dump_enum_fn_syms.clear();
 	m_dump_fn_counter = 0;
 	m_pending_top_protos.clear();
 	m_pending_top_defs.clear();

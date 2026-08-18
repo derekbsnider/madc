@@ -474,6 +474,31 @@ void __madc_dump_vd_recursion(void *sink, int col)
     sink_puts(sink, "*RECURSION*\n");
 }
 
+// An enum. PHP 8.1 renders one as enum(Tag::CASE) — which already names the real
+// type and the real enumerator, so var_dump has nothing to diverge from here for
+// once. Captured from php-cli 8.3.6 (tmp/or/enum.php, cat -A).
+//
+// A C enum value need NOT name an enumerator: `(Color)3` is legal C and PHP has
+// no way to express it. That case reports the type and the value —
+// `enum Color(3)` — the same <type>(<n>) shape every other var_dump line uses,
+// rather than inventing an enumerator name for a value that has none.
+void __madc_dump_vd_enum(void *sink, int col, const char *tag,
+			 const char *name, long long v)
+{
+    dump_indent(sink, col);
+    if (name && *name) {
+	sink_puts(sink, "enum(");
+	sink_puts(sink, tag ? tag : "?");
+	sink_puts(sink, "::");
+	sink_puts(sink, name);
+	sink_puts(sink, ")\n");
+	return;
+    }
+    sink_puts(sink, "enum ");
+    sink_puts(sink, tag ? tag : "?");
+    sink_printf(sink, "(%lld)\n", v);
+}
+
 // An opaque typed instance: its payload SIZE in bytes, then its type id. The
 // count in parentheses is bytes here, where PHP's string(2) counts characters
 // and array(5) counts elements — an opaque payload has neither. See

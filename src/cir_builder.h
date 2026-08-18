@@ -793,6 +793,16 @@ private:
 	node_t dump_int_local(const char *name, node_t init, TokenBase *origin);
 	// print_r's word for the frame the *RECURSION* marker replaces.
 	std::string dump_pr_recursion_word(DataDef *dd);
+	// An ENUM renders as its enumerator NAME plus its backing value — PHP
+	// 8.1's own enum shape, and exactly what a C enum has.
+	bool dump_enum(DumpFlavor fl, const DumpAccess &acc,
+		       class DataDefENUM *edd, int depth, bool nested,
+		       std::vector<node_t> &out, TokenBase *origin,
+		       std::string &why);
+	// The memoized value -> enumerator-name lookup generated per TAG. Flavor
+	// independent: both renderings ask the same question.
+	std::string dump_enum_name_fn(class DataDefENUM *edd, TokenBase *origin);
+	std::map<DataDef *, std::string> m_dump_enum_fn_syms;
 	std::map<std::pair<DataDef *, int>, std::string> m_dump_fn_syms;
 	// Generated dumper prototypes and definitions awaiting the module's
 	// top_list. TWO lists, because mutual recursion (`struct A { B *b; };

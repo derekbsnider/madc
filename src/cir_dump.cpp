@@ -545,16 +545,15 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// is_integer() is true for a pointer (DataDefPTR), for a pointer-to-data-
 	// member and for a function pointer, and a SIMD vector's follows its
 	// element: any of those reaching the integer arm would print an address or
-	// a lane as a decimal. An enum must show its ENUMERATOR name, so it waits
-	// for the slice that has the enumerator table rather than shipping as a
-	// bare number a later slice would then change.
+	// a lane as a decimal.
 	//
 	// A pointer reaching HERE is one dump_any declined to follow — a function
 	// pointer, a pointer-to-member, a `void *`. A followable one never arrives:
-	// dump_any routes it to dump_pointer first.
+	// dump_any routes it to dump_pointer first, and an ENUM to dump_enum, so
+	// neither needs an arm here.
 	else if (dd->is_pointer() || dd->is_reference() || dd->is_member_pointer()
 		 || dd->is_object() || dd->is_function() || dd->is_simd()
-		 || dd->is_complex() || dynamic_cast<DataDefENUM *>(dd) != NULL) {
+		 || dd->is_complex()) {
 		why = std::string("no dumper for type '") + dd->name + "' yet";
 		return false;
 	}
@@ -971,6 +970,195 @@ static bool container_needs_iterator_walk(DataDefCLASS *cls)
 	Variable *e = cls->findMethod(std::string("end"));
 	return b && e && dynamic_cast<FuncDef *>(b->type) != NULL
 	    && dynamic_cast<FuncDef *>(e->type) != NULL;
+}
+
+// ---------------------------------------------------------------------------
+// An enum
+// ---------------------------------------------------------------------------
+// PHP 8.1 renders an enum as its own small frame — the case NAME and, for a
+// BACKED enum, the backing value:
+//
+//     Suit Enum:string          enum(Suit::Hearts)          <- var_dump
+//     (
+//         [name] => Hearts
+//         [value] => H
+//     )
+//
+// A C enum is exactly a backed enum: a name and an integer. So print_r keeps
+// PHP's shape verbatim and var_dump keeps PHP's one-liner, with the REAL backing
+// type in the head word (`Color Enum:int`, `Color Enum:unsigned int`) rather
+// than a simulated one. Oracle: tmp/or/enum.php, php-cli 8.3.6, cat -A.
+//
+// The value -> name resolution is a RUNTIME question (the value is a variable),
+// so it becomes a generated lookup function per tag, memoized — the same
+// machinery the pointer walk uses for its own per-type functions.
+
+// static char *__madc_enumname_N(long long v)
+// {
+//         if (v == 0) return "RED";
+//         if (v == 1) return "GREEN";
+//         return "";
+// }
+//
+// A flat if-chain, NOT a switch: duplicate values are legal C
+// (`enum { A = 1, B = 1 }`) and would be duplicate switch labels, which c2mir
+// rejects. The FIRST name wins — the source's own order, and what a debugger
+// shows. `char *` and not `const char *` because a C string literal IS `char[]`,
+// so this needs no const plumbing to be warning-free C.
+std::string CirBuilder::dump_enum_name_fn(DataDefENUM *edd, TokenBase *origin)
+{
+	std::map<DataDef *, std::string>::iterator it
+		= m_dump_enum_fn_syms.find(edd);
+	if (it != m_dump_enum_fn_syms.end())
+		return it->second;
+
+	char nm[48];
+	snprintf(nm, sizeof nm, "__madc_enumname_%d", m_dump_fn_counter++);
+	std::string fname = nm;
+	m_dump_enum_fn_syms[edd] = fname;
+
+	static const char *P_V = "__dv";
+	std::vector<node_t> stmts;
+	std::set<int64_t> seen;
+	for (size_t e = 0; e < edd->enumerators.size(); e++) {
+		if (!seen.insert(edd->enumerators[e].second).second)
+			continue;
+		const std::string &en = edd->enumerators[e].first;
+		node_t ritems = list();
+		append(ritems, node2(N_RETURN, list(),
+				     str(en.c_str(), en.size() + 1, origin),
+				     origin));
+		stmts.push_back(node4(N_IF, list(),
+				      node2(N_EQ, id(P_V, origin),
+					    integer(edd->enumerators[e].second,
+						    origin),
+					    origin),
+				      node2(N_BLOCK, list(), ritems, origin),
+				      ignore(), origin));
+	}
+	// A value naming NO enumerator is legal C. The EMPTY string is the honest
+	// answer to "which enumerator is this", and it is also exactly what print_r
+	// renders for a null — so no call site needs a branch, and var_dump's
+	// primitive reads it as "report the type and the number instead".
+	stmts.push_back(node2(N_RETURN, list(), str("", 1, origin), origin));
+
+	node_t items = list();
+	for (size_t i = 0; i < stmts.size(); i++)
+		append(items, stmts[i]);
+
+	node_t vspec = list();
+	append(vspec, simple(N_LONG, origin));
+	append(vspec, simple(N_LONG, origin));
+	node_t params = list();
+	append(params, dump_fn_param(vspec, 0, P_V, origin));
+
+	node_t pspecs = list();
+	append(pspecs, simple(N_STATIC, origin));
+	append(pspecs, simple(N_CHAR, origin));
+	node_t pdecl_list = list();
+	append(pdecl_list, node1(N_FUNC, params));
+	append(pdecl_list, pointer());
+	node_t proto = simple(N_SPEC_DECL, origin);
+	append(proto, node1(N_SHARE, pspecs));
+	append(proto, node2(N_DECL, id(fname.c_str(), origin), pdecl_list));
+	append(proto, ignore());
+	append(proto, ignore());
+	append(proto, ignore());
+
+	node_t dparams = list();
+	node_t dvspec = list();
+	append(dvspec, simple(N_LONG, origin));
+	append(dvspec, simple(N_LONG, origin));
+	append(dparams, dump_fn_param(dvspec, 0, P_V, origin));
+	node_t dspecs = list();
+	append(dspecs, simple(N_STATIC, origin));
+	append(dspecs, simple(N_CHAR, origin));
+	node_t ddecl_list = list();
+	append(ddecl_list, node1(N_FUNC, dparams));
+	append(ddecl_list, pointer());
+	node_t def = node4(N_FUNC_DEF, dspecs,
+			   node2(N_DECL, id(fname.c_str(), origin), ddecl_list),
+			   list(),
+			   node2(N_BLOCK, list(), items, origin), origin);
+
+	m_pending_top_protos.push_back(proto);
+	m_pending_top_defs.push_back(def);
+	return fname;
+}
+
+bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
+			   DataDefENUM *edd, int depth, bool nested,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why)
+{
+	// An OPAQUE declaration (`enum E;`) has no enumerator table here, so no
+	// name can be shown. Refused BY ITS OWN NAME rather than shipping a bare
+	// number that would read as an int — the same rule every other uncovered
+	// type in this file follows.
+	if (edd->enumerators.empty()) {
+		why = std::string("no dumper for enum '") + edd->name
+		    + "' yet: no enumerators are visible here, so the value"
+		      " cannot be named";
+		return false;
+	}
+	std::string fn = dump_enum_name_fn(edd, origin);
+	if (fn.empty()) {
+		why = std::string("no dumper for enum '") + edd->name + "' yet";
+		return false;
+	}
+	// The backing type: the declared fixed base, else the one computed from the
+	// enumerator range at the definition's close. NULL only for an opaque
+	// declaration, which was refused above; int is the documented fallback.
+	DataDef *under = edd->underlying ? edd->underlying : &ddINT32;
+	// The tag's own spelling. The CANONICAL one when there is one, so a
+	// class-nested or namespaced tag reads as `Deck::Kind` /
+	// `std::ios_base::event` rather than the bare `Kind` — the same spelling
+	// (and the same owner) the forest keys its enumerator run on.
+	const std::string &canon = edd->canonical_cpp_spelling();
+	std::string tag = canon.empty() ? edd->name : canon;
+
+	if (fl == dfVarDump) {
+		need_dump_extern("__madc_dump_vd_enum",
+				 { { {N_INT}, false }, { {N_CHAR}, true },
+				   { {N_CHAR}, true },
+				   { {N_LONG, N_LONG}, false } });
+		node_t nargs = list();
+		append(nargs, acc());
+		node_t a = list();
+		append(a, dump_col(fl, depth, false, origin));
+		append(a, str(tag.c_str(), tag.size() + 1, origin));
+		append(a, node2(N_CALL, id(fn.c_str(), origin), nargs, origin));
+		append(a, acc());
+		out.push_back(dump_call_stmt("__madc_dump_vd_enum", a, origin));
+		return true;
+	}
+
+	// print_r: PHP's frame, with the real backing type after the colon.
+	std::string word = tag + " Enum:" + dump_type_word(under);
+	out.push_back(dump_head(fl, depth, word, 2, origin));
+
+	out.push_back(dump_key(fl, depth, "name", origin));
+	need_dump_extern("__madc_dump_pr_cstr", { { {N_CHAR}, true } });
+	node_t nargs = list();
+	append(nargs, acc());
+	node_t na = list();
+	append(na, node2(N_CALL, id(fn.c_str(), origin), nargs, origin));
+	out.push_back(dump_call_stmt("__madc_dump_pr_cstr", na, origin));
+	if (node_t nl = dump_pr_end_entry(fl, depth + 1, origin))
+		out.push_back(nl);
+
+	out.push_back(dump_key(fl, depth, "value", origin));
+	need_dump_extern("__madc_dump_pr_i64",
+			 { { {N_LONG, N_LONG}, false }, { {N_INT}, false } });
+	node_t va = list();
+	append(va, acc());
+	append(va, integer(under->is_unsigned() ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_pr_i64", va, origin));
+	if (node_t nl = dump_pr_end_entry(fl, depth + 1, origin))
+		out.push_back(nl);
+
+	out.push_back(dump_tail(fl, depth, nested, origin));
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,6 +1691,15 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd))
 			return dump_struct(fl, acc, sdd, depth, nested, out,
 					   origin, why);
+		// An enum is a NAME with a backing value, which is a frame under
+		// print_r and one line under var_dump — not a scalar, so it is
+		// dispatched here rather than in dump_scalar. Tried after the
+		// aggregate arms and before the scalar tail: a DataDefENUM's rawtype
+		// is dtINT, so the integer arm would otherwise print the number.
+		if (DataDefENUM *edd
+			    = dynamic_cast<DataDefENUM *>(dd->unqualified()))
+			return dump_enum(fl, acc, edd, depth, nested, out,
+					 origin, why);
 	}
 	// A pointer that is not TEXT is FOLLOWED, at this same depth. is_cstr() is
 	// a char pointer — PHP's string — and belongs to the scalar arm. A REFERENCE

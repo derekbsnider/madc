@@ -1701,6 +1701,22 @@ public:
     // enums are int-sized).
     DataDef *underlying = NULL;
 
+    // The tag's OWN enumerators, in DECLARATION order — the one live owner of
+    // "which enumerators belong to this enum, and what are their values".
+    //
+    // The three live registrations (TokenENUM::parse) each index a constant by
+    // NAME in a different store: a scoped enum's pseudo-namespace, a
+    // class-nested enum's static-member maps, a plain enum's global constants.
+    // None of them can be asked the REVERSE question, and none of them can be
+    // asked it from the TYPE — which is what rendering an enum-typed value
+    // needs (php::var_dump must name the enumerator, not ship a bare number).
+    //
+    // Declaration order, and DUPLICATE VALUES ARE KEPT: `enum { A = 1, B = 1 }`
+    // is legal C, both names are real, and dropping one here would make this
+    // list disagree with the source. Consumers that must pick ONE name for a
+    // value take the first (see CirBuilder::dump_enum_name_fn).
+    std::vector<std::pair<std::string, int64_t> > enumerators;
+
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
 

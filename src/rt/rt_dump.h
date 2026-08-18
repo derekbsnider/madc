@@ -143,6 +143,12 @@ void __madc_dump_vd_cstr_n(void *sink, int col, const char *ty, const char *s,
 			   long long n);
 void __madc_dump_vd_text_open(void *sink, int col, const char *ty,
 			      long long len);
+/* An enum. `name` is the enumerator the value names, or empty when it names
+ * none — which is legal C and has no PHP equivalent, so the two shapes differ.
+ * The generated walk resolves the name (a memoized per-tag lookup function);
+ * this owns only the two spellings. */
+void __madc_dump_vd_enum(void *sink, int col, const char *tag,
+			 const char *name, long long v);
 void __madc_dump_vd_text_close(void *sink);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */

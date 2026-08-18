@@ -21720,6 +21720,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		register_in_namespace(rt.ns, name, rt.dd, tdt);
 	    if ( !rt.enumerators.empty() )
 	    {
+		// The tag's own list first: a RESTORED enum must answer
+		// "what are your enumerators" exactly as a live-parsed one
+		// does, or a bound compile would refuse a dump the live
+		// compile renders. DataDefENUM::enumerators is the owner;
+		// the pseudo-namespace constants below are the name-lookup
+		// surface, rebuilt from the same pairs.
+		if ( DataDefENUM *redd = dynamic_cast<DataDefENUM *>(rt.dd) )
+		    if ( redd->enumerators.empty() )
+			for ( size_t e = 0; e < rt.enumerators.size(); ++e )
+			    redd->enumerators.push_back(
+				std::make_pair(std::string(rt.enumerators[e].first),
+					       rt.enumerators[e].second));
 		std::string pk = (rt.ns && *rt.ns && ns_ok)
 			       ? std::string(rt.ns) + "::" + name : name;
 		variable_map_t &scope_ns = namespace_variables_for_write(pk);
@@ -46657,6 +46669,12 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
+	// The TAG's own record of this enumerator. Placed here, after all three
+	// registration branches, because this is the single point where the name
+	// and the value are both known whichever branch ran — so the type's list
+	// cannot fall out of step with the constants that were registered.
+	if ( DataDefENUM *tag_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+	    tag_edd->enumerators.push_back(std::make_pair(name, val));
 	if ( val < enum_min_val )
 	    enum_min_val = val;
 	if ( val > enum_max_val )

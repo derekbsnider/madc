@@ -1,0 +1,89 @@
+// php::print_r / php::var_dump over an ENUM.
+//
+// PHP 8.1 renders an enum as its own small frame — the case NAME and, for a
+// BACKED enum, the backing value — and var_dump as the one-liner
+// enum(Tag::CASE). A C enum IS a backed enum: a name and an integer. So print_r
+// keeps PHP's shape verbatim and var_dump keeps PHP's line, with the REAL
+// backing type in the head word rather than a simulated one. Oracle:
+// tmp/or/enum.php, php-cli 8.3.6, cat -A:
+//
+//     Suit Enum:string          enum(Suit::Hearts)
+//     (
+//         [name] => Hearts
+//         [value] => H
+//     )
+//
+// The unscoped all-non-negative enums below have `unsigned int` as their
+// computed underlying type — the g++/clang canon rule ([dcl.enum], already
+// gated in TokenENUM::parse), not a madc invention.
+//
+// A C enum value need NOT name an enumerator: `(Color)7` is legal. That case
+// cannot be given a name, so print_r shows an EMPTY [name] (which is exactly how
+// it renders a null) and var_dump reports the type and the number instead —
+// `enum Color(7)`. Neither invents an enumerator that does not exist.
+#include <ns_php>
+
+enum Color { RED, GREEN, BLUE };
+enum Flags : unsigned int { F_A = 1, F_B = 2, F_C = 4 };
+enum class Suit { Hearts, Spades };
+// Duplicate VALUES are legal C and both names are real; the lookup keeps the
+// FIRST, which is the source's own order and what a debugger shows.
+enum Dup { D_FIRST = 5, D_ALIAS = 5 };
+// A negative enumerator makes the computed underlying type signed `int`.
+enum Signed { S_NEG = -1, S_POS = 1 };
+
+struct Card { Color c; int n; };
+
+class Deck {
+public:
+	enum Kind { Poker, Tarot };
+	Kind k;
+	int size;
+};
+
+int main()
+{
+	Color c = GREEN;
+	printf("--- plain pr\n");
+	php::print_r(c);
+	printf("--- plain vd\n");
+	php::var_dump(c);
+
+	printf("--- fixed base vd\n");
+	Flags f = F_C;
+	php::var_dump(f);
+
+	printf("--- scoped vd\n");
+	Suit s = Suit::Spades;
+	php::var_dump(s);
+
+	printf("--- duplicate value vd\n");
+	Dup d = D_ALIAS;
+	php::var_dump(d);
+
+	printf("--- signed pr\n");
+	Signed g = S_NEG;
+	php::print_r(g);
+	printf("--- signed vd\n");
+	php::var_dump(g);
+
+	printf("--- in struct pr\n");
+	Card k;
+	k.c = BLUE; k.n = 3;
+	php::print_r(&k);
+	printf("--- in struct vd\n");
+	php::var_dump(&k);
+
+	printf("--- class nested vd\n");
+	Deck dk;
+	dk.k = Deck::Tarot; dk.size = 78;
+	php::var_dump(dk);
+
+	printf("--- unnamed value vd\n");
+	Color bogus = (Color)7;
+	php::var_dump(bogus);
+	printf("--- unnamed value pr\n");
+	php::print_r(bogus);
+	printf("--- end\n");
+	return 0;
+}
