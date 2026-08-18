@@ -69,6 +69,45 @@ void        __madc_dump_sink_close(void *sink);
 /* --- flavor-neutral ----------------------------------------------------- */
 void __madc_dump_raw(void *sink, const char *p, long long n);
 
+/* --- the ancestor stack: PHP's *RECURSION* marker ----------------------- */
+/* "Is this object already on the path I am currently printing." An ANCESTOR
+ * STACK, not a visited set: PHP prints an object that merely APPEARS twice in
+ * full BOTH times and marks only a genuine cycle (oracle: tmp/or/share.php vs
+ * tmp/or/ptr.php, php-cli 8.3.6). Push on descend, pop on return.
+ *
+ * ONE stack for both walks. The generated pointer walk (src/cir_dump.cpp) and
+ * the madc::value walk (src/rt_dump_value.cpp) can be NESTED inside each other
+ * — a value sits in a struct a pointer reached — so two private stacks would
+ * each see half the path and miss a cycle that crosses between them.
+ *
+ * `tag` identifies the pointee TYPE, so a cycle is (same address AND same
+ * type). Without it, `struct T { int v; int *p; }` with `p = &t.v` reports a
+ * false cycle: &t and &t.v are the SAME address. A whole walk is generated in
+ * ONE translation unit, so a TU-local tag is exact.
+ *
+ * Returns 1 pushed, 0 already on the path (a cycle), -1 could not grow. Three
+ * ways so an allocation failure is never reported as a false *RECURSION*.
+ * It GROWS without limit: a 10,000-node list is legitimate and PHP prints all
+ * of it. The membership scan is linear in the CURRENT DEPTH, so a dump that is
+ * n deep costs O(n^2) compares — the depth is bounded by the C stack the
+ * recursive walk itself needs long before that matters. */
+int  __madc_dump_anc_push(const void *p, unsigned tag);
+void __madc_dump_anc_pop(void);
+
+/* The tag namespace has ONE owner: this line. The madc::value walk is a single
+ * walk over a single type, so it takes tag 0; the generated pointer walk
+ * numbers its pointee types from 1 (src/cir_dump.cpp). */
+#define MADC_DUMP_TAG_VALUE 0u
+#define MADC_DUMP_TAG_FIRST 1u
+
+/* A dump that CANNOT continue says so, in the output, where the value would
+ * have been. THE owner of that spelling: the generated walk (an ancestor stack
+ * that would not grow) and the madc::value walk (a kind/backing mismatch, which
+ * as_array() throws on) both report through here, so a reader sees one form.
+ * Printing a plausible empty aggregate instead is the silent wrong answer this
+ * arc refuses. */
+void __madc_dump_fail(void *sink, const char *what);
+
 /* --- print_r ----------------------------------------------------------- */
 void __madc_dump_pr_i64(void *sink, long long v, int is_unsigned);
 void __madc_dump_pr_f64(void *sink, double v);

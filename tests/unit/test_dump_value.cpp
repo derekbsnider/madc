@@ -391,12 +391,54 @@ TEST_SUITE("value dump: the sink itself") {
 
     // A dump of a broken value must SAY so rather than print a plausible empty
     // aggregate. A null pointer is the reachable-from-C form of that.
+    //
+    // The wording is "madc dump", not "madc::value dump": the GENERATED pointer
+    // walk reports its own failures (an ancestor stack that would not grow)
+    // through the same primitive, __madc_dump_fail, so the spelling has one
+    // owner in rt_dump.c instead of one per walk.
     TEST_CASE("a null value pointer reports itself") {
 	void *sink = __madc_dump_sink_open();
 	REQUIRE(sink != NULL);
 	__madc_dump_value(sink, NULL, MADC_DUMP_PRINT_R, 0, 0);
 	CHECK(std::string(__madc_dump_sink_text(sink))
-	      == "[madc::value dump failed: null value pointer]\n");
+	      == "[madc dump failed: null value pointer]\n");
 	__madc_dump_sink_close(sink);
+    }
+
+    // The ancestor stack is SHARED with the generated pointer walk, so a value
+    // walk must leave it exactly as it found it. A leak here would make the rest
+    // of an enclosing struct dump report a false *RECURSION*.
+    TEST_CASE("the shared ancestor stack is balanced across a value walk") {
+	madc::value v = nested_mix();
+	void *sink = __madc_dump_sink_open();
+	REQUIRE(sink != NULL);
+	// Occupy one slot, dump, and confirm the SAME address is still reported
+	// as on-path afterwards (1 = pushed would mean the walk had popped it).
+	int outer = 7;
+	CHECK(__madc_dump_anc_push(&outer, 999u) == 1);
+	__madc_dump_value(sink, &v, MADC_DUMP_PRINT_R, 0, 0);
+	CHECK(__madc_dump_anc_push(&outer, 999u) == 0);
+	__madc_dump_anc_pop();
+	__madc_dump_anc_pop();
+	// ...and with the stack now empty it is pushable again.
+	CHECK(__madc_dump_anc_push(&outer, 999u) == 1);
+	__madc_dump_anc_pop();
+	__madc_dump_sink_close(sink);
+    }
+
+    // The TAG is what keeps `struct T { int v; int *p; }` with `p = &t.v` from
+    // reporting a false cycle: &t and &t.v are the SAME address, and only the
+    // pointee type tells them apart.
+    TEST_CASE("the same address under two tags is not a cycle") {
+	int x = 0;
+	CHECK(__madc_dump_anc_push(&x, 1u) == 1);
+	CHECK(__madc_dump_anc_push(&x, 2u) == 1);	// different type: not a cycle
+	CHECK(__madc_dump_anc_push(&x, 1u) == 0);	// same type: a cycle
+	__madc_dump_anc_pop();
+	__madc_dump_anc_pop();
+	// Popped off the path, the address is reachable again — a STACK, not a
+	// visited set. This is the property PHP's own output demands.
+	CHECK(__madc_dump_anc_push(&x, 1u) == 1);
+	__madc_dump_anc_pop();
     }
 }

@@ -770,6 +770,53 @@ private:
 	bool dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
 			bool nested, std::vector<node_t> &out,
 			TokenBase *origin);
+	// A POINTER is FOLLOWED: PHP has no pointers, so the pointee is what a PHP
+	// developer expects, at the SAME depth (an indirection is not a nesting
+	// level). Emits a CALL to a generated dumper FUNCTION, never an inline
+	// expansion — that is what makes a cycle, a long list and a fan-out graph
+	// all terminate. See the definition for the whole argument.
+	bool dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+			  int depth, bool nested, std::vector<node_t> &out,
+			  TokenBase *origin, std::string &why);
+	// The generated dumper for (pointee, flavor), minted on first use and
+	// MEMOIZED — so the recursive case finds a call to make instead of a
+	// second expansion. Empty string on failure, with `why` set.
+	std::string dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
+				    TokenBase *origin, std::string &why);
+	// The pointee's declared spec list. ONE owner, because the generated
+	// function's PARAMETER type and the cast at its call site must be the same
+	// type. False for a pointee with no renderable spec (void).
+	bool dump_pointee_specs(DataDef *base, node_t specs);
+	node_t dump_fn_param(node_t specs, int stars, const char *name,
+			     TokenBase *origin);
+	node_t dump_fn_param_list(DataDef *base, int stars, TokenBase *origin);
+	node_t dump_int_local(const char *name, node_t init, TokenBase *origin);
+	// print_r's word for the frame the *RECURSION* marker replaces.
+	std::string dump_pr_recursion_word(DataDef *dd);
+	std::map<std::pair<DataDef *, int>, std::string> m_dump_fn_syms;
+	// Generated dumper prototypes and definitions awaiting the module's
+	// top_list. TWO lists, because mutual recursion (`struct A { B *b; };
+	// struct B { A *a; };`) needs every prototype ahead of every definition.
+	// There is no existing mid-body top-level queue: the lambda / nested-fn
+	// hoist happens in the PARSER, as real FuncDefs.
+	std::vector<node_t> m_pending_top_protos;
+	std::vector<node_t> m_pending_top_defs;
+	int m_dump_fn_counter = 0;
+	// While a generated dumper's BODY is being built: the names of its column
+	// base local, its depth parameter and its nested parameter. All empty in
+	// the ordinary in-line walk, which is what keeps every column there a
+	// compile-time constant.
+	std::string m_dump_col_base;
+	std::string m_dump_fn_depth;
+	std::string m_dump_fn_nested;
+	// ONE owner each for the three things that stop being compile-time
+	// constants inside a generated dumper: a column, the absolute depth, and
+	// whether this value is an ENTRY of an enclosing aggregate.
+	node_t dump_col(DumpFlavor fl, int depth, bool entry, TokenBase *origin);
+	node_t dump_depth_arg(int depth, TokenBase *origin);
+	node_t dump_nested_arg(int depth, bool nested, TokenBase *origin);
+	node_t dump_pr_end_entry(DumpFlavor fl, int depth, TokenBase *origin);
+	node_t dump_vd_null(int depth, TokenBase *origin);
 	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
 			 size_t count, TokenBase *origin);
 	node_t dump_head_node(DumpFlavor fl, int depth, const std::string &word,
@@ -2009,6 +2056,12 @@ public:
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);
 };
+
+// Peel ALL pointer levels off `dd` to its base type, returning the star count.
+// The one owner: the function-return emitters and the generated pointer dumper
+// (cir_dump.cpp) both need a multi-star type's real base, and a peel-one-level
+// copy in either place emits the wrong number of stars.
+int dd_peel_pointers(DataDef *&dd);
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
 // literal payloads, and the +madc fields (source position, typedef

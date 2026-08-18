@@ -102,6 +102,82 @@ static int dump_entry_col(CirBuilder::DumpFlavor fl, int depth)
 	return madc_dump_entry_col(dump_wire_flavor(fl), depth);
 }
 
+// The column STEP per nesting level — the linearity the generated dumper rests
+// on. frame_col(d) == step * d, so frame_col(a + b) == frame_col(a) +
+// frame_col(b): a function that knows only its BASE column can still emit every
+// column inside itself as base + a compile-time constant.
+static int dump_col_step(CirBuilder::DumpFlavor fl)
+{
+	return madc_dump_frame_col(dump_wire_flavor(fl), 1);
+}
+
+// ---------------------------------------------------------------------------
+// What is NOT a compile-time constant inside a generated dumper
+// ---------------------------------------------------------------------------
+// The in-line walk is EXPANDED per nesting level, so it knows its absolute
+// depth and every column is a literal. A generated dumper FUNCTION is shared by
+// call sites at DIFFERENT depths (the same `Node *` is dumped at top level and
+// three levels into a struct), so three things become runtime values there: the
+// column, the absolute depth, and whether this value is an ENTRY of an
+// enclosing aggregate. Each gets ONE owner below, so no builder has to know
+// which context it is in — they all just ask.
+
+// A column: `depth` is RELATIVE to the enclosing generated dumper, absolute
+// outside one.
+node_t CirBuilder::dump_col(DumpFlavor fl, int depth, bool entry,
+			    TokenBase *origin)
+{
+	int k = entry ? dump_entry_col(fl, depth) : dump_frame_col(fl, depth);
+	if (m_dump_col_base.empty())
+		return integer(k, origin);
+	if (!k)
+		return id(m_dump_col_base.c_str(), origin);
+	return node2(N_ADD, id(m_dump_col_base.c_str(), origin),
+		     integer(k, origin), origin);
+}
+
+// The ABSOLUTE depth, for the one primitive that needs a depth rather than a
+// column: the runtime madc::value walk, which computes its own descent.
+node_t CirBuilder::dump_depth_arg(int depth, TokenBase *origin)
+{
+	if (m_dump_fn_depth.empty())
+		return integer(depth, origin);
+	if (!depth)
+		return id(m_dump_fn_depth.c_str(), origin);
+	return node2(N_ADD, id(m_dump_fn_depth.c_str(), origin),
+		     integer(depth, origin), origin);
+}
+
+// Is this value an ENTRY of an enclosing aggregate? print_r follows a nested
+// block's ")" with a blank line and ends a scalar entry with a newline, and both
+// ask this. At relative depth 0 inside a generated dumper the answer belongs to
+// the CALLER, so it is that function's own parameter; anywhere deeper it is
+// unconditionally true.
+node_t CirBuilder::dump_nested_arg(int depth, bool nested, TokenBase *origin)
+{
+	if (!depth && !m_dump_fn_nested.empty())
+		return id(m_dump_fn_nested.c_str(), origin);
+	return integer(nested ? 1 : 0, origin);
+}
+
+// print_r's end of a SCALAR entry. NULL when nothing is owed — print_r(42) at
+// top level is exactly "42". Inside a generated dumper at relative depth 0 the
+// answer is only known at run time, so it becomes a test on `nested`.
+node_t CirBuilder::dump_pr_end_entry(DumpFlavor fl, int depth,
+				     TokenBase *origin)
+{
+	if (fl != dfPrintR)
+		return NULL;		// every var_dump primitive ends its own line
+	if (depth > 0)
+		return dump_pr_nl(origin);
+	if (m_dump_fn_nested.empty())
+		return NULL;		// genuinely the top level
+	node_t items = list();
+	append(items, dump_pr_nl(origin));
+	return node4(N_IF, list(), id(m_dump_fn_nested.c_str(), origin),
+		     node2(N_BLOCK, list(), items, origin), ignore(), origin);
+}
+
 // ---------------------------------------------------------------------------
 // Type words (var_dump only)
 // ---------------------------------------------------------------------------
@@ -134,6 +210,15 @@ static std::string dump_scalar_type_word(DataDef *dd)
 	case DataType::dtLDOUBLE:  return "long double";
 	default:                   return dd->name;
 	}
+}
+
+// print_r's word for an aggregate's opening line. PHP's own spelling, kept
+// because a struct IS what a PHP developer reads as an object. ONE owner: the
+// *RECURSION* marker prints the word of the frame it REPLACES, and a second
+// " Object" spelling there would be free to drift from this one.
+static std::string dump_pr_object_word(DataDefSTRUCT *sdd)
+{
+	return sdd->name + " Object";
 }
 
 // An aggregate's type word. `struct` for every non-union aggregate, `union` for
@@ -336,7 +421,7 @@ node_t CirBuilder::dump_head_node(DumpFlavor fl, int depth,
 				  TokenBase *origin)
 {
 	node_t a = list();
-	append(a, integer(dump_frame_col(fl, depth), origin));
+	append(a, dump_col(fl, depth, false, origin));
 	append(a, str(word.c_str(), word.size() + 1, origin));
 	if (fl == dfVarDump) {
 		// var_dump states the element/member COUNT in the head line.
@@ -358,7 +443,7 @@ node_t CirBuilder::dump_key(DumpFlavor fl, int depth, const std::string &key,
 					  : "__madc_dump_pr_key";
 	need_dump_extern(sym, { { {N_INT}, false }, { {N_CHAR}, true } });
 	node_t a = list();
-	append(a, integer(dump_entry_col(fl, depth), origin));
+	append(a, dump_col(fl, depth, true, origin));
 	append(a, str(key.c_str(), key.size() + 1, origin));
 	return dump_call_stmt(sym, a, origin);
 }
@@ -371,7 +456,7 @@ node_t CirBuilder::dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 	need_dump_extern(sym, { { {N_INT}, false },
 					 { {N_LONG, N_LONG}, false } });
 	node_t a = list();
-	append(a, integer(dump_entry_col(fl, depth), origin));
+	append(a, dump_col(fl, depth, true, origin));
 	append(a, idx);
 	return dump_call_stmt(sym, a, origin);
 }
@@ -380,7 +465,7 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 			     TokenBase *origin)
 {
 	node_t a = list();
-	append(a, integer(dump_frame_col(fl, depth), origin));
+	append(a, dump_col(fl, depth, false, origin));
 	if (fl == dfVarDump) {
 		need_dump_extern("__madc_dump_vd_tail",
 				   { { {N_INT}, false } });
@@ -390,7 +475,7 @@ node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
 	// one gets none.
 	need_dump_extern("__madc_dump_pr_tail",
 			   { { {N_INT}, false }, { {N_INT}, false } });
-	append(a, integer(nested ? 1 : 0, origin));
+	append(a, dump_nested_arg(depth, nested, origin));
 	return dump_call_stmt("__madc_dump_pr_tail", a, origin);
 }
 
@@ -403,7 +488,7 @@ node_t CirBuilder::dump_vd_text_open(int depth, const std::string &word,
 			   { { {N_INT}, false }, { {N_CHAR}, true },
 			     { {N_LONG, N_LONG}, false } });
 	node_t a = list();
-	append(a, integer(dump_frame_col(dfVarDump, depth), origin));
+	append(a, dump_col(dfVarDump, depth, false, origin));
 	append(a, str(word.c_str(), word.size() + 1, origin));
 	append(a, len);
 	return dump_call_stmt("__madc_dump_vd_text_open", a, origin);
@@ -419,6 +504,18 @@ node_t CirBuilder::dump_pr_nl(TokenBase *origin)
 {
 	need_dump_extern("__madc_dump_pr_nl", {});
 	return dump_call_stmt("__madc_dump_pr_nl", list(), origin);
+}
+
+// var_dump's NULL line. A null pointer is PHP's null, and NULL is the one PHP
+// word var_dump keeps ("no value" is not a C type). rt_dump.c owns the spelling,
+// and a null `char *` already routes to the same primitive — so the two can
+// never disagree.
+node_t CirBuilder::dump_vd_null(int depth, TokenBase *origin)
+{
+	need_dump_extern("__madc_dump_vd_null", { { {N_INT}, false } });
+	node_t a = list();
+	append(a, dump_col(dfVarDump, depth, false, origin));
+	return dump_call_stmt("__madc_dump_vd_null", a, origin);
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +548,10 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// a lane as a decimal. An enum must show its ENUMERATOR name, so it waits
 	// for the slice that has the enumerator table rather than shipping as a
 	// bare number a later slice would then change.
+	//
+	// A pointer reaching HERE is one dump_any declined to follow — a function
+	// pointer, a pointer-to-member, a `void *`. A followable one never arrives:
+	// dump_any routes it to dump_pointer first.
 	else if (dd->is_pointer() || dd->is_reference() || dd->is_member_pointer()
 		 || dd->is_object() || dd->is_function() || dd->is_simd()
 		 || dd->is_complex() || dynamic_cast<DataDefENUM *>(dd) != NULL) {
@@ -495,7 +596,7 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		// (col, type-word, value[, is_unsigned])
 		params.push_back({ {N_INT}, false });
 		params.push_back({ {N_CHAR}, true });
-		append(a, integer(dump_frame_col(fl, depth), origin));
+		append(a, dump_col(fl, depth, false, origin));
 		std::string word = dump_type_word(dd);
 		append(a, str(word.c_str(), word.size() + 1, origin));
 	}
@@ -516,8 +617,8 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// print_r's newline ENDS AN ENTRY, so only a value inside a parent gets
 	// one: print_r(42) at top level is exactly "42". Every var_dump primitive
 	// terminates its own line.
-	if (fl == dfPrintR && depth > 0)
-		out.push_back(dump_pr_nl(origin));
+	if (node_t nl = dump_pr_end_entry(fl, depth, origin))
+		out.push_back(nl);
 	return true;
 }
 
@@ -556,7 +657,7 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 	out.push_back(dump_head(fl, depth,
 				fl == dfVarDump
 				  ? dump_aggregate_type_word(sdd)
-				  : sdd->name + " Object",
+				  : dump_pr_object_word(sdd),
 				shown.size(), origin));
 
 	for (size_t si = 0; si < shown.size(); si++) {
@@ -658,7 +759,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 		if (fl == dfVarDump) {
 			params.push_back({ {N_INT}, false });
 			params.push_back({ {N_CHAR}, true });
-			append(a, integer(dump_frame_col(fl, depth), origin));
+			append(a, dump_col(fl, depth, false, origin));
 			std::string word = dump_array_type_word(elem, dims,
 							       dim_ix);
 			append(a, str(word.c_str(), word.size() + 1, origin));
@@ -669,8 +770,8 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 		append(a, integer((int64_t)count, origin));
 		need_dump_extern(sym, params);
 		out.push_back(dump_call_stmt(sym, a, origin));
-		if (fl == dfPrintR && depth > 0)
-			out.push_back(dump_pr_nl(origin));
+		if (node_t nl = dump_pr_end_entry(fl, depth, origin))
+			out.push_back(nl);
 		return true;
 	}
 
@@ -834,8 +935,8 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	if (is_text) {
 		if (fl == dfVarDump)
 			out.push_back(dump_vd_text_close(origin));
-		else if (depth > 0)
-			out.push_back(dump_pr_nl(origin));
+		else if (node_t nl = dump_pr_end_entry(fl, depth, origin))
+			out.push_back(nl);
 	} else {
 		out.push_back(dump_tail(fl, depth, nested, origin));
 	}
@@ -873,6 +974,430 @@ static bool container_needs_iterator_walk(DataDefCLASS *cls)
 }
 
 // ---------------------------------------------------------------------------
+// A pointer
+// ---------------------------------------------------------------------------
+// PHP has no pointers, so what a PHP developer expects to see is the POINTEE:
+// `Node *n` renders exactly as `*n` would, at the SAME depth — a pointer is an
+// indirection, not a nesting level. A null pointer is PHP's null (nothing for
+// print_r, NULL for var_dump), and the dereference is guarded so a null member
+// cannot fault the dump.
+//
+// THE RECURSION IS A RUNTIME QUESTION, AND THAT DECIDES THE WHOLE SHAPE. Every
+// other type in this file is EXPANDED in line, which works because the type
+// bounds the walk. A pointer graph does not: `struct N { N *next; }` is a
+// linked list, and how long it is — and whether it loops — is a property of the
+// DATA. An earlier attempt expanded the pointee in line and guarded with a stack
+// of pointee TYPES on the current path. It terminated, but only by REFUSING
+// `struct N { N *next; }` — a linked list, the canonical thing anyone wants to
+// print_r. That is loop AVOIDANCE BY REFUSAL, not loop detection, and the
+// feature was absent behind a check that looked like one. (It also blew up on an
+// ACYCLIC fan-out graph: the type stack is a PATH — it must be, see below — so a
+// shared subtree re-expanded once per path, and a 14-level fan-out-2 chain took
+// 57 seconds before dying.)
+//
+// So the pointee walk becomes a FUNCTION and the recursion becomes a CALL. That
+// one move fixes the cycle, the long list and the fan-out together: a shared
+// pointee is one call per site instead of one expansion, and the depth of the
+// walk is the depth of the DATA, decided at run time by an ancestor stack.
+//
+// It must be an ANCESTOR STACK and not a visited set. Oracle, php-cli 8.3.6:
+// an object reachable TWICE acyclically prints IN FULL BOTH TIMES with no marker
+// (tmp/or/share.php), and only a genuine ring gets ` *RECURSION*`
+// (tmp/or/ptr.php). A `set<void *> visited` would stamp the marker on the second
+// sighting of a merely shared node — a wrong answer that looks like a feature.
+// The owner's other standard method, a "visited" flag ON each element, is not
+// available: these are the user's own structs (a SMAUG CHAR_DATA), there is
+// nowhere to put a flag, and a dump must never write to the data it reads.
+
+// The pointee's declared spec list. ONE owner, because the generated function's
+// PARAMETER type and the cast at its call site have to be the SAME type — and a
+// silent mismatch there is an ABI bug, not a diagnostic.
+bool CirBuilder::dump_pointee_specs(DataDef *base, node_t specs)
+{
+	if (!base || base->rawtype() == DataType::dtVOID)
+		return false;
+	// A struct / class pointee is its TAG reference (`struct Node *`), which is
+	// also what keeps an incomplete-at-this-point type legal in a prototype.
+	// is_class_object IS the shared class predicate (the same one dump_any keys
+	// on). The intrinsic value carrier is deliberately NOT here: it has no
+	// struct tag in the emitted C — its storage is an opaque long long[] — so it
+	// takes the ordinary spec path below, which append_type_specs owns.
+	if ((base->is_struct() || is_class_object(base)) && !base->is_complex()) {
+		append(specs, class_tag_ref(base));
+		return true;
+	}
+	append_type_specs(specs, base);
+	return true;
+}
+
+// One parameter of a generated dumper. The spec list is consumed (c2mir op-lists
+// are intrusive: a node lives in exactly one list), so the caller builds a fresh
+// one per use — which is why the prototype and the definition each build their
+// own parameter list from scratch.
+node_t CirBuilder::dump_fn_param(node_t specs, int stars, const char *name,
+				 TokenBase *origin)
+{
+	node_t dl = list();
+	for (int i = 0; i < stars; i++)
+		append(dl, pointer());
+	node_t pd = simple(N_SPEC_DECL, origin);
+	append(pd, node1(N_SHARE, specs));
+	append(pd, node2(N_DECL, id(name, origin), dl));
+	append(pd, ignore());
+	append(pd, ignore());
+	append(pd, ignore());
+	return pd;
+}
+
+// print_r's word for the frame the *RECURSION* marker replaces. The ARM ORDER
+// mirrors dump_any's, and every spelling comes from that arm's own owner
+// (dump_pr_object_word, and the literal "Array" both array arms use) — so this
+// cannot say "Node Object" where the walk would have said "Array".
+std::string CirBuilder::dump_pr_recursion_word(DataDef *dd)
+{
+	DataDef *u = dd ? dd->unqualified() : NULL;
+	if (!u)
+		return "Array";
+	DataDefCLASS *cls = is_class_object(u)
+			  ? dynamic_cast<DataDefCLASS *>(u) : NULL;
+	Variable *szmv = NULL, *opmv = NULL;
+	if (cls && class_index_iteration_protocol(cls, szmv, opmv))
+		return "Array";
+	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u))
+		return dump_pr_object_word(sdd);
+	return "Array";
+}
+
+// The generated dumper's parameter names. Fixed, because the body refers to them
+// by name; `__d`-prefixed so they cannot collide with the walk's own temporaries
+// (__dmp_i_N / __dmp_n_N) or with anything a user wrote.
+#define DUMPFN_SINK  "__dsink"
+#define DUMPFN_PTR   "__dptr"
+#define DUMPFN_DEPTH "__ddepth"
+#define DUMPFN_NEST  "__dnest"
+#define DUMPFN_COL   "__dcol"
+#define DUMPFN_R     "__dr"
+
+// (void *sink, T *p, int depth, int nested) — built fresh per use.
+node_t CirBuilder::dump_fn_param_list(DataDef *base, int stars,
+				      TokenBase *origin)
+{
+	node_t pspec = list();
+	if (!dump_pointee_specs(base, pspec))
+		return NULL;
+	node_t params = list();
+	node_t vspec = list();
+	append(vspec, simple(N_VOID, origin));
+	append(params, dump_fn_param(vspec, 1, DUMPFN_SINK, origin));
+	append(params, dump_fn_param(pspec, stars, DUMPFN_PTR, origin));
+	node_t dspec = list();
+	append(dspec, simple(N_INT, origin));
+	append(params, dump_fn_param(dspec, 0, DUMPFN_DEPTH, origin));
+	node_t nspec = list();
+	append(nspec, simple(N_INT, origin));
+	append(params, dump_fn_param(nspec, 0, DUMPFN_NEST, origin));
+	return params;
+}
+
+// `int <name> = <init>;`
+node_t CirBuilder::dump_int_local(const char *name, node_t init,
+				  TokenBase *origin)
+{
+	node_t spec = list();
+	append(spec, simple(N_INT, origin));
+	node_t decl = simple(N_SPEC_DECL, origin);
+	append(decl, node1(N_SHARE, spec));
+	append(decl, node2(N_DECL, id(name, origin), list()));
+	append(decl, ignore());
+	append(decl, ignore());
+	append(decl, init);
+	return decl;
+}
+
+// The name of the generated dumper for (pointee, flavor), minted on first use.
+// Empty on failure, with `why` set.
+std::string CirBuilder::dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
+					TokenBase *origin, std::string &why)
+{
+	DataDef *key = pointee ? pointee->unqualified() : NULL;
+	if (!key) {
+		why = "unresolved pointee type";
+		return std::string();
+	}
+	std::pair<DataDef *, int> mk(key, (int)fl);
+	std::map<std::pair<DataDef *, int>, std::string>::iterator it
+		= m_dump_fn_syms.find(mk);
+	if (it != m_dump_fn_syms.end())
+		return it->second;
+
+	// The parameter's type: the pointee's base plus one star for THIS pointer
+	// and one for every level the pointee itself carries, so `int **` yields a
+	// `int **` parameter and its body dumps an `int *` through a second dumper.
+	DataDef *base = key;
+	int stars = 1 + dd_peel_pointers(base);
+
+	int n = m_dump_fn_counter++;
+	char nm[48];
+	snprintf(nm, sizeof nm, "__madc_dumpfn_%d", n);
+	std::string fname = nm;
+	// The TYPE tag for the ancestor stack. Derived from the function index, so
+	// it is a bijection with (pointee, flavor) inside this TU — and a whole walk
+	// is generated in ONE TU with ONE flavor, which makes it a bijection with
+	// the pointee TYPE for every path that can actually be walked.
+	unsigned tag = MADC_DUMP_TAG_FIRST + (unsigned)n;
+
+	// Registered BEFORE the body is built. The body may reach this same
+	// (pointee, flavor) again — that IS the cyclic case — and it must find a
+	// CALL to make rather than start a second expansion that never ends.
+	m_dump_fn_syms[mk] = fname;
+	size_t proto_mark = m_pending_top_protos.size();
+	size_t def_mark = m_pending_top_defs.size();
+
+	// The walk runs against the function's OWN sink, column base, depth and
+	// nested flag, at RELATIVE depth 0 — which is what makes the pointee render
+	// at the same depth as the pointer.
+	std::string saved_sink = m_dump_sink_var;
+	std::string saved_base = m_dump_col_base;
+	std::string saved_depth = m_dump_fn_depth;
+	std::string saved_nest = m_dump_fn_nested;
+	std::vector<node_t> saved_pending;
+	saved_pending.swap(m_pending_stmts);
+	m_dump_sink_var = DUMPFN_SINK;
+	m_dump_col_base = DUMPFN_COL;
+	m_dump_fn_depth = DUMPFN_DEPTH;
+	m_dump_fn_nested = DUMPFN_NEST;
+
+	std::vector<node_t> walk;
+	DumpAccess pacc = [this, origin]() -> node_t {
+		return node1(N_DEREF, id(DUMPFN_PTR, origin), origin);
+	};
+	bool ok = dump_any(fl, pacc, key, NULL, 0, true, walk, origin, why);
+	// Anything the walk HOISTED belongs inside this function: it references
+	// these parameters, so leaving it on the caller's list would emit it in a
+	// scope where those names do not exist.
+	std::vector<node_t> hoisted;
+	hoisted.swap(m_pending_stmts);
+	m_pending_stmts.swap(saved_pending);
+	// The three context names stay SET until every arm below is built. The
+	// null, cycle and out-of-memory arms are part of this function's body too,
+	// so they need its column base and its `nested` parameter exactly as the
+	// walk did — restoring here instead emitted the var_dump NULL at column 0
+	// and dropped print_r's end-of-entry newline entirely.
+
+	if (!ok) {
+		m_dump_sink_var = saved_sink;
+		m_dump_col_base = saved_base;
+		m_dump_fn_depth = saved_depth;
+		m_dump_fn_nested = saved_nest;
+		// Rolled back completely: the memo entry, and any dumper minted
+		// for a NESTED pointee while this body was being built. A half
+		// generated function left behind would be emitted as dead code in
+		// a TU whose dump has already been refused.
+		m_dump_fn_syms.erase(mk);
+		m_pending_top_protos.resize(proto_mark);
+		m_pending_top_defs.resize(def_mark);
+		return std::string();
+	}
+
+	// int __dcol = <step> * __ddepth;   — the base column, computed ONCE.
+	// The geometry is linear in depth, so every column inside the body is this
+	// plus a compile-time constant (dump_col owns that).
+	std::vector<node_t> body;
+	body.insert(body.end(), hoisted.begin(), hoisted.end());
+	body.push_back(dump_int_local(DUMPFN_COL,
+				      node2(N_MUL,
+					    integer(dump_col_step(fl), origin),
+					    id(DUMPFN_DEPTH, origin), origin),
+				      origin));
+
+	// int __dr = __madc_dump_anc_push(__dptr, <tag>);
+	need_output_extern("__madc_dump_anc_push", false,
+			   { { {N_VOID}, true },
+			     { {N_UNSIGNED, N_INT}, false } }, { N_INT });
+	need_output_extern("__madc_dump_anc_pop", false, {});
+	node_t pargs = list();
+	append(pargs, id(DUMPFN_PTR, origin));
+	append(pargs, integer((int64_t)tag, origin));
+	std::vector<node_t> pushed;
+	pushed.push_back(dump_int_local(DUMPFN_R,
+					node2(N_CALL,
+					      id("__madc_dump_anc_push", origin),
+					      pargs, origin),
+					origin));
+
+	// if (__dr > 0) { <walk>; pop(); } else if (__dr == 0) { <cycle> }
+	//                                    else { <could not grow> }
+	node_t witems = list();
+	for (size_t i = 0; i < walk.size(); i++)
+		append(witems, walk[i]);
+	append(witems, node2(N_EXPR, list(),
+			     node2(N_CALL, id("__madc_dump_anc_pop", origin),
+				   list(), origin), origin));
+
+	node_t citems = list();
+	if (fl == dfVarDump) {
+		need_dump_extern("__madc_dump_vd_recursion",
+				 { { {N_INT}, false } });
+		node_t ca = list();
+		append(ca, dump_col(fl, 0, false, origin));
+		append(citems, dump_call_stmt("__madc_dump_vd_recursion", ca,
+					      origin));
+	} else {
+		// print_r puts the word of the frame it is NOT going to open on
+		// the entry line, then ` *RECURSION*`. rt_dump.c owns that shape.
+		need_dump_extern("__madc_dump_pr_recursion",
+				 { { {N_CHAR}, true } });
+		std::string word = dump_pr_recursion_word(key);
+		node_t ca = list();
+		append(ca, str(word.c_str(), word.size() + 1, origin));
+		append(citems, dump_call_stmt("__madc_dump_pr_recursion", ca,
+					      origin));
+	}
+
+	// The stack could not GROW. Reported as itself and never as a cycle: a
+	// plausible *RECURSION* where the truth is "out of memory" is the silent
+	// wrong answer this arc refuses.
+	need_dump_extern("__madc_dump_fail", { { {N_CHAR}, true } });
+	static const char kOom[] = "dump too deep (ancestor stack exhausted)";
+	node_t oa = list();
+	append(oa, str(kOom, sizeof kOom, origin));
+	node_t oitems = list();
+	append(oitems, dump_call_stmt("__madc_dump_fail", oa, origin));
+
+	node_t inner = node4(N_IF, list(),
+			     node2(N_EQ, id(DUMPFN_R, origin),
+				   integer(0, origin), origin),
+			     node2(N_BLOCK, list(), citems, origin),
+			     node2(N_BLOCK, list(), oitems, origin), origin);
+	node_t iitems = list();
+	append(iitems, inner);
+	pushed.push_back(node4(N_IF, list(),
+			       node2(N_GT, id(DUMPFN_R, origin),
+				     integer(0, origin), origin),
+			       node2(N_BLOCK, list(), witems, origin),
+			       node2(N_BLOCK, list(), iitems, origin), origin));
+
+	// The null arm. print_r renders null as the EMPTY string, so all it owes is
+	// the end-of-entry newline a scalar entry would have emitted — and whether
+	// it owes even that is the caller's question, which is why dump_pr_end_entry
+	// turns it into a test on `nested` here. var_dump prints NULL.
+	node_t nitems = list();
+	if (fl == dfVarDump)
+		append(nitems, dump_vd_null(0, origin));
+	else if (node_t nl = dump_pr_end_entry(fl, 0, origin))
+		append(nitems, nl);
+
+	node_t pitems = list();
+	for (size_t i = 0; i < pushed.size(); i++)
+		append(pitems, pushed[i]);
+	body.push_back(node4(N_IF, list(), id(DUMPFN_PTR, origin),
+			     node2(N_BLOCK, list(), pitems, origin),
+			     node2(N_BLOCK, list(), nitems, origin), origin));
+
+	// The body is complete; the enclosing context resumes here.
+	m_dump_sink_var = saved_sink;
+	m_dump_col_base = saved_base;
+	m_dump_fn_depth = saved_depth;
+	m_dump_fn_nested = saved_nest;
+
+	node_t bitems = list();
+	for (size_t i = 0; i < body.size(); i++)
+		append(bitems, body[i]);
+
+	// static void <fname>(void *sink, T *p, int depth, int nested)
+	//
+	// STATIC, and therefore NOT declared through need_output_extern: an extern
+	// prototype ahead of a static definition is a storage-class conflict. Static
+	// is also what makes the per-TU name safe — two TUs that both dump a `Node *`
+	// each get their own copy, and neither is a duplicate symbol at link.
+	node_t proto_params = dump_fn_param_list(base, stars, origin);
+	node_t def_params = dump_fn_param_list(base, stars, origin);
+	if (!proto_params || !def_params) {
+		why = std::string("no dumper for a pointer to '")
+		    + (key->name.empty() ? std::string("?") : key->name)
+		    + "' yet";
+		m_dump_fn_syms.erase(mk);
+		m_pending_top_protos.resize(proto_mark);
+		m_pending_top_defs.resize(def_mark);
+		return std::string();
+	}
+
+	node_t pspecs = list();
+	append(pspecs, simple(N_STATIC, origin));
+	append(pspecs, simple(N_VOID, origin));
+	node_t proto = simple(N_SPEC_DECL, origin);
+	append(proto, node1(N_SHARE, pspecs));
+	append(proto, node2(N_DECL, id(fname.c_str(), origin),
+			    node1(N_LIST, node1(N_FUNC, proto_params))));
+	append(proto, ignore());
+	append(proto, ignore());
+	append(proto, ignore());
+
+	node_t dspecs = list();
+	append(dspecs, simple(N_STATIC, origin));
+	append(dspecs, simple(N_VOID, origin));
+	node_t def = node4(N_FUNC_DEF, dspecs,
+			   node2(N_DECL, id(fname.c_str(), origin),
+				 node1(N_LIST, node1(N_FUNC, def_params))),
+			   list(),
+			   node2(N_BLOCK, list(), bitems, origin), origin);
+
+	m_pending_top_protos.push_back(proto);
+	m_pending_top_defs.push_back(def);
+	return fname;
+}
+
+// The call site: one call, and the pointee is rendered at THIS depth.
+bool CirBuilder::dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+			      int depth, bool nested, std::vector<node_t> &out,
+			      TokenBase *origin, std::string &why)
+{
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd->unqualified());
+	DataDef *pointee = pdd ? pdd->base_type : NULL;
+	// Refused by name, never guessed at. A void pointer has no pointee to
+	// render; a function pointer and a pointer-to-member are addresses rather
+	// than handles on a value.
+	if (!pointee || pointee->rawtype() == DataType::dtVOID
+	    || pointee->is_function() || dd->is_member_pointer()) {
+		why = std::string("no dumper for type '") + dd->name + "' yet";
+		return false;
+	}
+	std::string fn = dump_pointer_fn(fl, pointee, origin, why);
+	if (fn.empty()) {
+		if (why.empty())
+			why = std::string("no dumper for type '") + dd->name
+			    + "' yet";
+		return false;
+	}
+
+	// The pointer is CAST to the parameter's exact type. The pointee's own
+	// qualifiers were peeled to name the type once (dump_pointee_specs), so a
+	// `const Node *` argument reaches a `struct Node *` parameter — the cast
+	// says so rather than leaving c2mir to accept a mismatch quietly.
+	DataDef *base = pointee->unqualified();
+	int stars = 1 + dd_peel_pointers(base);
+	node_t cspecs = list();
+	if (!dump_pointee_specs(base, cspecs)) {
+		why = std::string("no dumper for type '") + dd->name + "' yet";
+		return false;
+	}
+	node_t cdecl = list();
+	for (int i = 0; i < stars; i++)
+		append(cdecl, pointer());
+	node_t ctype = node2(N_TYPE, cspecs, node2(N_DECL, ignore(), cdecl));
+
+	node_t a = list();
+	append(a, node2(N_CAST, ctype, acc(), origin));
+	append(a, dump_depth_arg(depth, origin));
+	append(a, dump_nested_arg(depth, nested, origin));
+	// dump_call_stmt prepends the sink, exactly as it does for a primitive —
+	// so the SAME generated function serves a printing dump and a capturing
+	// one, and the memo does not have to be keyed on the sink.
+	out.push_back(dump_call_stmt(fn.c_str(), a, origin));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // A madc::value — the one type the compiler CANNOT expand
 // ---------------------------------------------------------------------------
 // Every other shape in this file is walked at compile time because the call site
@@ -899,8 +1424,8 @@ bool CirBuilder::dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
 	node_t a = list();
 	append(a, node1(N_ADDR, acc(), origin));
 	append(a, integer(dump_wire_flavor(fl), origin));
-	append(a, integer(depth, origin));
-	append(a, integer(nested ? 1 : 0, origin));
+	append(a, dump_depth_arg(depth, origin));
+	append(a, dump_nested_arg(depth, nested, origin));
 	out.push_back(dump_call_stmt("__madc_dump_value", a, origin));
 	return true;
 }
@@ -979,6 +1504,13 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			return dump_struct(fl, acc, sdd, depth, nested, out,
 					   origin, why);
 	}
+	// A pointer that is not TEXT is FOLLOWED, at this same depth. is_cstr() is
+	// a char pointer — PHP's string — and belongs to the scalar arm. A REFERENCE
+	// stays there too: madc renders one as a pointer, but it cannot be null, it
+	// is not an indirection the source wrote, and the walk already reaches
+	// through it wherever it dumps one.
+	if (dd->is_pointer() && !dd->is_cstr() && !dd->is_reference())
+		return dump_pointer(fl, acc, dd, depth, nested, out, origin, why);
 	return dump_scalar(fl, acc, dd, depth, out, origin, why);
 }
 
@@ -1023,6 +1555,10 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 	// also derives from TokenVar, so a dynamic_cast alone would admit one.
 	bool simple_lvalue = arg->type() == TokenType::ttVariable
 			  || arg->type() == TokenType::ttMember;
+	// A POINTER argument does NOT need this: it is passed to the generated
+	// dumper ONCE, by value, and every rebuild of the access happens inside that
+	// function against its own parameter. `php::print_r(list_head())` is
+	// therefore fine where `php::print_r(make_point())` is not.
 	if ((is_arr || dynamic_cast<DataDefSTRUCT *>(dd) != NULL) && !simple_lvalue) {
 		why = "an aggregate argument must be a variable or member (a"
 		      " temporary has no address to walk, and would be"

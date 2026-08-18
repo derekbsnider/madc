@@ -35,8 +35,6 @@
  * rt_dump.c ("no value" is not a C type).
  */
 
-#include <algorithm>
-#include <cstring>
 #include <exception>
 #include <map>
 #include <string>
@@ -47,15 +45,29 @@
 
 namespace {
 
-// The ancestor chain, by identity, for PHP's *RECURSION* marker. An ANCESTOR
-// stack and not a visited set: PHP prints a value that merely APPEARS twice in
-// full, both times, and marks only a genuine CYCLE. Verified against the oracle
-// — tmp/or_value.php's `$twice` prints its inner array twice with no marker,
-// while `$cyc` marks it.
-typedef std::vector<const void *> AncestorStack;
+// The ancestor chain, by identity, for PHP's *RECURSION* marker — the SHARED
+// runtime stack in src/rt/rt_dump.c, which owns why it is a stack and not a
+// visited set. It is shared rather than private to this file because the two
+// walks NEST: a value can sit inside a struct the generated pointer walk is
+// printing, and a pointer inside a value's instance kind reaches back the other
+// way, so a private stack here would see only half of one path.
+//
+// RAII because it must pop on EVERY exit path. as_array() throws on a
+// kind/backing mismatch, and a leaked entry would make the REST of the
+// enclosing dump report a false cycle — the stack outlives this call.
+struct AncestorFrame {
+	int r;
+	explicit AncestorFrame(const void *p)
+		: r(__madc_dump_anc_push(p, MADC_DUMP_TAG_VALUE)) {}
+	~AncestorFrame() { if (r > 0) __madc_dump_anc_pop(); }
+private:
+	AncestorFrame(const AncestorFrame &);
+	AncestorFrame &operator=(const AncestorFrame &);
+};
 
 void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
-		   bool nested, AncestorStack &anc);
+		   bool nested);
+void dump_failure(void *sink, const char *what);
 
 // print_r ends a SCALAR entry with a newline; a nested aggregate ends itself
 // (its ")" line plus a blank line). At top level there is no entry to end:
@@ -89,7 +101,7 @@ void dump_payload(void *sink, const madc::value &v, int flavor, int depth,
 // spells an array index and a string key the same way ([0] => / [name] => );
 // var_dump quotes a string key ("name") and not an index, exactly as PHP does.
 void dump_entry(void *sink, const madc::value &child, const std::string *key,
-		long long idx, int flavor, int depth, AncestorStack &anc)
+		long long idx, int flavor, int depth)
 {
 	int kcol = madc_dump_entry_col(flavor, depth);
 	if (!key) {
@@ -103,7 +115,7 @@ void dump_entry(void *sink, const madc::value &child, const std::string *key,
 	} else {
 		__madc_dump_pr_key(sink, kcol, key->c_str());
 	}
-	dump_value_at(sink, child, flavor, depth + 1, true, anc);
+	dump_value_at(sink, child, flavor, depth + 1, true);
 }
 
 // An array or an object: the same frame, differing only in the keys. print_r
@@ -111,19 +123,25 @@ void dump_entry(void *sink, const madc::value &child, const std::string *key,
 // and PHP frames one exactly like a list. var_dump names the kind, so the two
 // stay distinguishable there.
 void dump_aggregate(void *sink, const madc::value &v, int flavor, int depth,
-		    bool nested, AncestorStack &anc)
+		    bool nested)
 {
 	int col = madc_dump_frame_col(flavor, depth);
 	const void *self = (const void *)&v;
 
-	if (std::find(anc.begin(), anc.end(), self) != anc.end()) {
+	AncestorFrame frame(self);
+	if (frame.r == 0) {
 		if (flavor == MADC_DUMP_VAR_DUMP)
 			__madc_dump_vd_recursion(sink, col);
 		else
 			__madc_dump_pr_recursion(sink, "Array");
 		return;
 	}
-	anc.push_back(self);
+	if (frame.r < 0) {
+		// A failed GROW, never rendered as a cycle: that would be a
+		// plausible wrong answer where the truth is "out of memory".
+		dump_failure(sink, "ancestor stack exhausted");
+		return;
+	}
 
 	bool is_obj = v.type() == madc::value::kind::object;
 	const std::vector<madc::value> *arr = NULL;
@@ -146,23 +164,21 @@ void dump_aggregate(void *sink, const madc::value &v, int flavor, int depth,
 		std::map<std::string, madc::value>::const_iterator it;
 		for (it = obj->begin(); it != obj->end(); ++it)
 			dump_entry(sink, it->second, &it->first, 0, flavor,
-				   depth, anc);
+				   depth);
 	} else {
 		for (size_t i = 0; i < arr->size(); i++)
 			dump_entry(sink, (*arr)[i], NULL, (long long)i, flavor,
-				   depth, anc);
+				   depth);
 	}
 
 	if (flavor == MADC_DUMP_VAR_DUMP)
 		__madc_dump_vd_tail(sink, col);
 	else
 		__madc_dump_pr_tail(sink, col, nested ? 1 : 0);
-
-	anc.pop_back();
 }
 
 void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
-		   bool nested, AncestorStack &anc)
+		   bool nested)
 {
 	int col = madc_dump_frame_col(flavor, depth);
 	const char *word = madc::value::kind_name(v.type());
@@ -216,7 +232,7 @@ void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
 
 	case madc::value::kind::array:
 	case madc::value::kind::object:
-		dump_aggregate(sink, v, flavor, depth, nested, anc);
+		dump_aggregate(sink, v, flavor, depth, nested);
 		return;
 
 	case madc::value::kind::instance:
@@ -235,14 +251,11 @@ void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
 // (type_id says `array` with no vector behind it, which as_array() throws on) —
 // no script can build one, but a host handing in a hand-assembled madc_value
 // could. Printing a plausible empty aggregate instead would be exactly the
-// silent wrong answer this arc refuses.
+// silent wrong answer this arc refuses. The SPELLING belongs to rt_dump.c, which
+// the generated walk reports its own failures through.
 void dump_failure(void *sink, const char *what)
 {
-	static const char pre[] = "[madc::value dump failed: ";
-	__madc_dump_raw(sink, pre, (long long)(sizeof pre - 1));
-	if (what)
-		__madc_dump_raw(sink, what, (long long)strlen(what));
-	__madc_dump_raw(sink, "]\n", 2);
+	__madc_dump_fail(sink, what);
 }
 
 } // namespace
@@ -258,9 +271,8 @@ extern "C" void __madc_dump_value(void *sink, const void *vp, int flavor,
 		return;
 	}
 	const madc::value *v = static_cast<const madc::value *>(vp);
-	AncestorStack anc;
 	try {
-		dump_value_at(sink, *v, flavor, depth, nested != 0, anc);
+		dump_value_at(sink, *v, flavor, depth, nested != 0);
 	} catch (const std::exception &e) {
 		dump_failure(sink, e.what());
 	} catch (...) {

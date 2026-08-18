@@ -180,6 +180,74 @@ void __madc_dump_raw(void *sink, const char *p, long long n)
 }
 
 // ---------------------------------------------------------------------------
+// The ancestor stack
+// ---------------------------------------------------------------------------
+// The path currently being printed, by (address, type). See rt_dump.h for why
+// it is a stack and not a visited set, why the tag is needed, and what the
+// return values mean.
+
+// Storage class of the per-thread path. Real TLS in the host build; the ledger
+// build defines it EMPTY (-DMADC_RT_TLS=, madc_cir_ledger_compile) because MIR
+// has no thread-local storage, so a `-static-libmadc` image carries a
+// PROCESS-GLOBAL path. Single-threaded programs are unaffected; the honest fix
+// is TLS in MIR (a Tier-3 floor gap, .claude/rules/lowering-vs-raising.md).
+// Same pattern, same reason, as src/rt/rt_except.c.
+#ifndef MADC_RT_TLS
+#define MADC_RT_TLS _Thread_local
+#endif
+
+struct madc_dump_anc {
+    const void *p;
+    unsigned    tag;
+};
+
+static MADC_RT_TLS struct madc_dump_anc *madc_anc_buf = NULL;
+static MADC_RT_TLS size_t madc_anc_len = 0;
+static MADC_RT_TLS size_t madc_anc_cap = 0;
+
+int __madc_dump_anc_push(const void *p, unsigned tag)
+{
+    size_t i;
+    struct madc_dump_anc *nb;
+    size_t cap;
+
+    for (i = 0; i < madc_anc_len; i++)
+	if (madc_anc_buf[i].p == p && madc_anc_buf[i].tag == tag)
+	    return 0;			/* a cycle */
+    if (madc_anc_len == madc_anc_cap) {
+	cap = madc_anc_cap ? madc_anc_cap * 2 : 32;
+	nb = (struct madc_dump_anc *)
+		 realloc(madc_anc_buf, cap * sizeof *nb);
+	if (!nb)
+	    return -1;			/* never reported as a cycle */
+	madc_anc_buf = nb;
+	madc_anc_cap = cap;
+    }
+    madc_anc_buf[madc_anc_len].p = p;
+    madc_anc_buf[madc_anc_len].tag = tag;
+    madc_anc_len++;
+    return 1;
+}
+
+// Popped only by a caller whose push RETURNED 1 — the capacity is deliberately
+// kept for the next dump, so a program that dumps in a loop allocates once.
+void __madc_dump_anc_pop(void)
+{
+    if (madc_anc_len)
+	madc_anc_len--;
+}
+
+// The dump could not continue. Flavor-neutral: a failure is not a value, so it
+// has no type word and no framing, and it is deliberately visible rather than
+// silent.
+void __madc_dump_fail(void *sink, const char *what)
+{
+    sink_puts(sink, "[madc dump failed: ");
+    sink_puts(sink, what ? what : "unknown error");
+    sink_puts(sink, "]\n");
+}
+
+// ---------------------------------------------------------------------------
 // print_r scalars
 // ---------------------------------------------------------------------------
 

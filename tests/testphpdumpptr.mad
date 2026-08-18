@@ -1,0 +1,83 @@
+// php::print_r / php::var_dump over POINTERS.
+//
+// PHP has no pointers, so the pointee is what a PHP developer expects, at the
+// SAME depth — an indirection is not a nesting level. print_r's output below is
+// byte-for-byte php-cli 8.3.6 on the equivalent object graph (tmp/or/ptr.php,
+// tmp/or/share.php, captured with cat -A). var_dump keeps madc's one documented
+// divergence: the REAL C type word (`struct Node(2)`) where PHP prints
+// `object(Node)#1 (2)`, whose instance handle means nothing here.
+//
+// The two shapes that decide the DESIGN:
+//   - a RING is marked *RECURSION* (so the walk terminates on real data), and
+//   - an object merely reachable TWICE acyclically is printed IN FULL BOTH
+//     TIMES, with no marker.
+// That second one is why the guard is an ANCESTOR STACK and not a visited set:
+// a `set<void *> visited` would stamp the marker on the second sighting of a
+// shared node, which PHP does not do.
+#include <ns_php>
+
+struct Node { int val; Node *next; };
+struct Leaf { int v; };
+struct Pair { Leaf *a; Leaf *b; };
+struct Bwd;
+struct Fwd { int fv; Bwd *b; };
+struct Bwd { int bv; Fwd *f; };
+
+int main()
+{
+	Node a, b, c;
+	a.val = 1; b.val = 2; c.val = 3;
+	a.next = &b; b.next = &c; c.next = NULL;
+
+	printf("--- list pr\n");
+	php::print_r(&a);
+	printf("--- list vd\n");
+	php::var_dump(&a);
+
+	c.next = &a;			// close the ring
+	printf("--- ring pr\n");
+	php::print_r(&a);
+	printf("--- ring vd\n");
+	php::var_dump(&a);
+
+	Node s;
+	s.val = 9; s.next = &s;		// a self-pointer
+	printf("--- self pr\n");
+	php::print_r(&s);
+	printf("--- self vd\n");
+	php::var_dump(&s);
+
+	Leaf leaf; leaf.v = 7;
+	Pair p; p.a = &leaf; p.b = &leaf;	// SHARED, acyclic
+	printf("--- shared pr\n");
+	php::print_r(&p);
+
+	// A ring through TWO types, which a self-reference test would miss.
+	Fwd f; Bwd w;
+	f.fv = 1; w.bv = 2; f.b = &w; w.f = &f;
+	printf("--- mutual pr\n");
+	php::print_r(&f);
+
+	// A null pointer is PHP's null: nothing for print_r, NULL for var_dump.
+	Leaf *nul = NULL;
+	printf("--- null vd\n");
+	php::var_dump(nul);
+
+	// A pointer to a SCALAR, and one more indirection out.
+	int n = 42; int *ip = &n; int **ipp = &ip;
+	printf("--- scalar\n");
+	php::var_dump(ip);
+	php::var_dump(ipp);
+
+	// A char pointer stays TEXT — it must NOT be followed as an indirection.
+	struct Mixed { const char *name; int *count; };
+	Mixed m; m.name = "abc"; m.count = &n;
+	printf("--- mixed vd\n");
+	php::var_dump(&m);
+
+	// The capture form works through a generated dumper unchanged: the sink is
+	// a PARAMETER, so one function serves a printing dump and a capturing one.
+	value txt = php::print_r(&leaf, true);
+	printf("--- captured %d\n", (int)(strlen(txt.c_str()) > 0));
+	return 0;
+}

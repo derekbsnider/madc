@@ -6892,7 +6892,7 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 // -----------------------------------------------------------------------
 
 static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
-static int dd_peel_pointers(DataDef *&dd); // defined below; peels to pointee
+// dd_peel_pointers is declared in cir_builder.h (cir_dump.cpp needs it too).
 
 // Peel DataDefCArray layers off a type, collecting fixed-array dimensions
 // outermost-first. `typedef unsigned long T[2]` -> elem=unsigned long,
@@ -8895,7 +8895,7 @@ static int dd_ptr_depth(DataDef *dd)
 // (`const unsigned short **__ctype_b_loc(void)`) keeps every level — the
 // old peel-one-level pattern emitted `unsigned short *`, and the ctype
 // macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
-static int dd_peel_pointers(DataDef *&dd)
+int dd_peel_pointers(DataDef *&dd)
 {
 	int depth = 0;
 	while (dd && dd->is_pointer()) {
@@ -26587,6 +26587,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_emit_sets_seen_classes.clear();
 	m_emit_sets_struct_count = 0;
 	m_emit_sets_funcdefs_done = false;
+	// Generated dump-helper state: per-module, because the helpers are STATIC
+	// functions emitted into this module. Carrying a memo across modules would
+	// hand the next one a call to a name it never defines.
+	m_dump_fn_syms.clear();
+	m_dump_fn_counter = 0;
+	m_pending_top_protos.clear();
+	m_pending_top_defs.clear();
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
@@ -28459,6 +28466,19 @@ node_t CirBuilder::translate_module(Program *prog)
 		func_def_nodes.insert(func_def_nodes.begin(),
 				      forest_bodies.begin(), forest_bodies.end());
 	}
+
+	// Generated pointer dumpers (cir_dump.cpp), minted while the function
+	// BODIES above were translated. Every PROTOTYPE ahead of every DEFINITION:
+	// mutual recursion through two struct types (`struct A { B *b; }` /
+	// `struct B { A *a; }`) needs both declared before either is defined. The
+	// whole group precedes the user's own bodies, which are its only callers.
+	for (size_t i = 0; i < m_pending_top_protos.size(); i++)
+		append(top_list, m_pending_top_protos[i]);
+	func_def_nodes.insert(func_def_nodes.begin(),
+			      m_pending_top_defs.begin(),
+			      m_pending_top_defs.end());
+	m_pending_top_protos.clear();
+	m_pending_top_defs.clear();
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)
