@@ -1,0 +1,56 @@
+// A STRING initializing an array sub-object consumes it WHOLE.
+//
+// `struct S { char n[2][8]; }; S s = { { "ada", "bob" } };` silently lost every
+// row after the first: "bob" was written over the MIDDLE of row 0 (offset 4
+// instead of 8) and row 1 stayed empty. Exit 0, no diagnostic, wrong data —
+// gcc and clang both print [ada][bob].
+//
+// The bug was in c2mir, not in madc: update_init_object_path descended INTO the
+// row a string had just consumed, so the next initializer advanced to row0[1]
+// rather than to row 1. madc's parse-time byte-list expansion hid it for a BARE
+// `char n[2][8] = {...}` — that path keys on the declared variable's dims — and
+// a struct MEMBER falls through that guard, which is how it surfaced.
+//
+// Oracle: gcc -O0 and clang -O0 (tmp/r_init2.c); the c2mir-level regression test
+// is third_party/mir/c-tests/new/nested-string-array-init.c.
+
+struct S
+{
+	int  tag;
+	char n[2][8];
+};
+
+struct T
+{
+	char n[2][8];
+	int  tag;
+};
+
+int main()
+{
+	// The bare form, which madc's own expansion covers.
+	char a[2][8] = { "ada", "bob" };
+	printf("bare: [%s][%s]\n", a[0], a[1]);
+
+	// Three dimensions.
+	char b[2][2][4] = { { "ab", "cd" }, { "ef", "gh" } };
+	printf("deep: [%s][%s][%s][%s]\n", b[0][0], b[0][1], b[1][0], b[1][1]);
+
+	// The struct-member forms, which reach c2mir unexpanded — the shapes that
+	// were wrong. Both member positions, because the defect was an offset
+	// mis-advance and not a first/last-member effect.
+	S s = { 7, { "ada", "bob" } };
+	printf("after:  %d [%s][%s]\n", s.tag, s.n[0], s.n[1]);
+
+	T t = { { "ada", "bob" }, 9 };
+	printf("before: [%s][%s] %d\n", t.n[0], t.n[1], t.tag);
+
+	// A row initialized by a SHORTER string has its tail zero-filled, and the
+	// next row must not have been written into it.
+	printf("tails: %d %d %d\n", s.n[0][4], s.n[0][7], s.n[1][4]);
+
+	// The one-dimensional case always worked; keep it covered.
+	char one[8] = "abc";
+	printf("one: [%s] %d\n", one, one[7]);
+	return 0;
+}

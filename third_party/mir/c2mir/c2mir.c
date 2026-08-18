@@ -8814,8 +8814,10 @@ static mir_llong get_indexed_initializer_type_size (c2m_ctx_t c2m_ctx, struct ty
             : -1);
 }
 
-static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type *value_type,
-                                    int list_p) {
+static int init_compatible_string_p (node_t n, struct type *el_type);
+
+static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, node_t value,
+                                    struct type *value_type, int list_p) {
   init_object_t init_object;
   struct type *el_type;
   mir_llong size_val;
@@ -8865,6 +8867,18 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
     if ((el_type->mode == TM_STRUCT || el_type->mode == TM_UNION) && value_type != NULL
         && el_type->u.tag_type == value_type->u.tag_type)
       return TRUE;
+    /* A STRING initializing this array sub-object consumes it WHOLE, exactly as
+       the brace list and the whole-struct value above do, so the path must not
+       descend into it.  Without this, `char n[2][8] = {"ada", "bob"}` left the
+       path pointing INSIDE row 0, and the next initializer advanced to
+       row0[1] -- offset 1 instead of 8.  So "bob" was memcpy'd over the middle
+       of row 0 and row 1 stayed empty, silently, with no diagnostic:
+       gcc and clang both print [ada][bob], c2m printed [ada][].  The same
+       one-off hit every deeper nesting (`char[2][2][4]` gave [ab][][ef][]) and
+       every char-array member of a struct.  */
+    if (el_type->mode == TM_ARR && value != NULL
+        && init_compatible_string_p (value, el_type->u.arr_type->el_type))
+      return TRUE;
     init_object.container_type = el_type;
     init_object.field_designator_p = FALSE;
     if (indexed_initializer_type_p (el_type)) {
@@ -8903,7 +8917,8 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
   struct type *el_type;
   struct expr *value_expr = value->attr;
 
-  if (!update_init_object_path (c2m_ctx, mark, value_expr == NULL ? NULL : value_expr->type,
+  if (!update_init_object_path (c2m_ctx, mark, value,
+                                value_expr == NULL ? NULL : value_expr->type,
                                 !go_inside_p || value->code == N_LIST
                                   || value->code == N_COMPOUND_LITERAL)) {
     error (c2m_ctx, pos, "excess elements in %s initializer", detail);

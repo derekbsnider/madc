@@ -1,0 +1,6 @@
+bare: [ada][bob]
+deep: [ab][cd][ef][gh]
+after:  7 [ada][bob]
+before: [ada][bob] 9
+tails: 0 0 0
+one: [abc] 0
