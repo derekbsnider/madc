@@ -20400,6 +20400,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (code == N_ASSIGN)
 				right = upcast_class_ptr(right, top->left->datadef(),
 							 top->right, tb);
+			// Derived->base pointer COMPARISON. [expr.eq]/[expr.rel]
+			// convert BOTH operands to their composite pointer type, so
+			// the adjustment can be owed on either side — and it is not
+			// merely cosmetic: a SECONDARY base subobject sits at a
+			// nonzero offset, so `B2 *p = &d; p == &d` answered 0 where
+			// gcc and clang both answer 1 (tmp/or/ptrcmp.cpp). The shape
+			// that exposed it is libstdc++'s own: _List_base::_M_clear
+			// compares a `_List_node_base *` cursor against
+			// `&_M_impl._M_node`, whose static type is the DERIVED
+			// _List_node_header. upcast_class_ptr returns its operand
+			// unchanged when no conversion applies, so at most one of the
+			// two below fires.
+			if (code == N_EQ || code == N_NE || code == N_LT
+			    || code == N_LE || code == N_GT || code == N_GE) {
+				DataDef *cldd = top->left  ? top->left->datadef()  : NULL;
+				DataDef *crdd = top->right ? top->right->datadef() : NULL;
+				left  = upcast_class_ptr(left,  crdd, top->left,  tb, cldd);
+				right = upcast_class_ptr(right, cldd, top->right, tb, crdd);
+			}
 			// GNU void*/func-ptr/incomplete-ptr arithmetic (element size 1).
 			// c2mir rejects it, so cast the size-1 pointer operand(s) to
 			// `char *` — the exact size-1 semantics GCC uses — before the op.
