@@ -759,6 +759,11 @@ private:
 			   DataDefCLASS *cls, int depth, bool nested,
 			   std::vector<node_t> &out, TokenBase *origin,
 			   std::string &why);
+	// A madc::value: ONE call to the runtime walk, because its kind is only
+	// known then. No `why` — there is no per-type expansion that can fail.
+	bool dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
+			bool nested, std::vector<node_t> &out,
+			TokenBase *origin);
 	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
 			 size_t count, TokenBase *origin);
 	node_t dump_head_node(DumpFlavor fl, int depth, const std::string &word,

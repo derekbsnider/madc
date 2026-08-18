@@ -561,6 +561,11 @@ already take `col` as an ordinary `int` argument.
 
 ### 12.7 `madc::value` (S6) is the ONE type that needs a runtime walker
 
+> ⚠️ **SUPERSEDED by §14.** The first sentence and the runtime-walker conclusion
+> hold. The two candidate shapes below, and the instruction to check for an
+> exported kind query, were both shaped by a backwards premise — see §14.1.
+> Nothing was added to the public C API.
+
 Every other type is walked at compile time because the compiler knows its
 shape. A `madc::value` carries its own runtime kind, so its walk must switch on
 that kind AT RUNTIME. That makes it the only case that wants a real runtime
@@ -834,3 +839,154 @@ running rather than reasoning:
   value") while assigning to a plain `value` local works. Reducer: `tmp/r3.mad`.
   Not on this slice's path (generated code calls the runtime setters directly),
   but it is a live wrong-rejection of code the value-first API's own shape invites.
+
+## 14 S6 — the `madc::value` kind gamut (session #102, DONE)
+
+> **OWNER, 2026-08-17:** *"the most critical thing for print_r and var_dump to
+> support is the full gamut of the madc::value / madc::array values"* … *"and
+> those are **easiest** since they are runtime determinable"*
+
+Right on both counts, and the resequencing is the reason: this was scheduled
+LAST (behind `begin()`/`end()` and pointers) and is the smallest of the three,
+because a value carries its own kind tag. There is no per-type expansion — one
+recursive function, the depth as a parameter.
+
+### 14.1 The runtime home — §12.7's open question, answered differently
+
+§12.7 offered two candidates: generated code driving the extern-C value API in a
+loop, or "a Tier-B runtime function that a `-static-libmadc` Mach-O program
+cannot link", and told the next session to check whether a kind query is
+exported before choosing. Both candidates were shaped by a premise that turned
+out to be backwards.
+
+**The measured facts.** `include/libmadc/value.h`: the `array` and `object` kinds
+are backed by `unique_ptr<vector<value>>` and `unique_ptr<map<string,value>>` —
+C++ containers, NOT the 32-byte struct. So a value walk needs the C++ script
+runtime no matter where it lives. And `scripts/forest_ledger_gate.sh` **leg 6
+already asserts** that a program holding a `madc::value` refuses the ledger path
+with a Tier-B message, naming `madarray_construct` / `__php_array_*` as the
+reason.
+
+So the C++-ness is not a cost this slice pays — it is a property the value type
+already had, gated. The decision follows:
+
+- The walk is **`src/rt_dump_value.cpp`**, ordinary C++, in `src/` and NOT in
+  `src/rt/`. `src/rt/` is the ledger lane and the Makefile derives `RT_OFILES`
+  from `scripts/ledger_sources.txt`, so a `.cpp` there is not even built.
+- Putting it in `rt_dump.c` (what the earlier handoff instructed) would have made
+  that strict-C11 file depend on C++, breaking dumping of **ordinary C types** in
+  the very lane the membership rule exists to protect. The instruction was wrong
+  and the rule is what caught it.
+- **No new C accessors were needed.** The earlier plan's step 1 — add count /
+  element-at / key-at to `include/madc_api.h` — existed only to let a C11 walker
+  reach the containers. A C++ walker uses `as_array()` / `as_object()` directly.
+  Nothing was added to the public C API.
+
+### 14.2 One geometry owner — `src/rt/rt_dump.h`
+
+The walk now happens in two places (generated, compile-time columns; runtime,
+computed columns), so `8 * depth` needed an owner. `src/rt/rt_dump.h` is it: the
+flavor discriminator (`madc_dump_flavor`), `madc_dump_frame_col` /
+`madc_dump_entry_col`, and **every primitive's prototype**. `rt_dump.c` includes
+it, so the extern-"C" prototypes are compiler-CHECKED against their definitions
+— previously an argument-list mismatch between the emitter's `need_dump_extern`
+shape and the definition would have linked silently. Same-directory quoted
+include, which is the shape the pack-time ledger compile already resolves.
+
+`cir_dump.cpp` converts `CirBuilder::DumpFlavor` to the wire discriminator at
+one boundary (`dump_wire_flavor`) and its two column helpers delegate.
+
+### 14.3 var_dump's type word for a value: the KIND
+
+`var_dump` names the real type. For a dynamically typed slot the real type IS the
+kind, so it uses `madc::value::kind_name` — the existing single owner of those
+spellings — and PHP's `int`/`float`/`bool` read as `integer`/`real`/`boolean`.
+Three reasons, in order of weight:
+
+1. No storage word distinguishes `string` from `bytes`, or `array` from
+   `object`. `long(42)` would be true of the payload and silent about the slot.
+2. It reuses an existing spelling table instead of inventing one.
+3. It is honest about dynamism: the reader sees a kind a later assignment can
+   change.
+
+`null` keeps PHP's `NULL` — the exception already documented in `rt_dump.c`
+("no value" is not a C type). `print_r` diverges from PHP nowhere.
+
+### 14.4 What is NOT byte-identical to PHP, deliberately
+
+- **Object-kind key ORDER.** The backing is a `std::map`, so keys print in KEY
+  order; PHP preserves INSERTION order. The oracle file writes its keys in key
+  order so the difference stays visible rather than being hidden by a
+  reordering.
+- **`instance` kind prints a NUMBER, not a type name.** There is no
+  type-id → name registry at run time (the segmented typeid table,
+  `docs/plans/2026-06-12-type-table-value-abi-design.md` §3). `instance#4242` /
+  `instance(24) #4242` reports the identity it HAS; printing `Object` would be
+  the quiet guess this arc refuses. When the table lands, the name belongs there.
+- **A CAPTURED `bytes` value truncates at an embedded NUL.** The direct-print
+  path is binary-exact (`__madc_dump_raw` writes by count), but
+  `print_r($x, true)` returns through `madarray_assign_cstr`, which is
+  NUL-terminated. Unreachable today — no script constructs a `bytes` value — and
+  the fix is a length-carrying assignment, i.e. the value-ABI work.
+
+### 14.5 `*RECURSION*` — implemented, and UNREACHABLE today
+
+PHP marks a CYCLE and only a cycle: a value appearing twice prints twice in full
+(oracle `tmp/or_value.php`, `$twice` vs `$cyc`). So the guard is an ANCESTOR
+stack, never a visited set.
+
+**A cycle cannot be constructed today.** `madc::value` owns its children through
+`unique_ptr` with value semantics, so pushing a value into its own array
+deep-COPIES it — the graph is a tree by construction. The guard is therefore
+shipped for the refcounted-cell backing on the roadmap (value.h: "their cell
+representation arrives with the madcdis pool work"), which is when aliasing can
+exist. A recursive printer with no cycle guard is a latent hang in the worst
+possible place, so it ships now; it is 12 lines.
+
+**What IS gated** is the FORMAT, which is the part that can silently drift:
+`print_r` puts the type word on the entry line and `*RECURSION*` on its own line
+indented by exactly **ONE space at every depth** (verified at depths 1 and 2),
+with no `(` block and no trailing blank line; `var_dump` puts the bare marker at
+the value column. Both primitives are unit-tested against those bytes. The
+DETECTION is not gated and cannot be — stated here rather than left implied.
+
+### 14.6 The container refusal was a BUG, and is fixed with the same commit family
+
+`php::print_r(std::map<int,int>)` used to descend four levels into libstdc++'s
+red-black tree and refuse at `_Rb_tree_color` — naming a type the user never
+wrote and never once saying `std::map`. A map is not a positional sequence (its
+`operator[]` takes a KEY, which `class_index_iteration_protocol` already tests
+via `key_type`), so `dump_sequence` declined and the member walk took over.
+
+The member walk is right for an ordinary aggregate and wrong for a container:
+those members are the library's internals. `container_needs_iterator_walk` in
+`cir_dump.cpp` now refuses by the container's own name, using C++'s own
+iteration concept — the class advertises `begin()` and `end()` — and nothing
+else, so a plain aggregate that happens to expose `size()` is still member-walked.
+No begin/end predicate existed (`git grep iteration_protocol|has_begin_end`
+found only `class_index_iteration_protocol`). When S1 lands the type-checked
+iterator protocol, this predicate's BODY becomes that test and the call site
+starts dumping where it now refuses.
+
+Before: `member '_M_t': member '_M_impl': member '_M_header': member '_M_color':
+no dumper for type '_Rb_tree_color' yet`.
+After: `no dumper for container 'std::map<int32_t,int32_t,...>' yet: its elements
+need the begin()/end() protocol`.
+
+Gated by `tests/testphpdumprefuse.expect_err`, which no longer matches if the
+diagnostic reverts to naming an internal.
+
+### 14.7 Gates
+
+- `tests/unit/test_dump_value.cpp` — **19 cases / 126 assertions**, BYTE-exact
+  against `tmp/or_value2.php`. This is the real gate: a `.expect` fixture asserts
+  only that each non-empty line APPEARS, so it cannot see a missing blank line, a
+  wrong order, or the trailing space on a null element's `[4] => ` line, and
+  print_r's format is made of exactly those. It also reaches the `object`,
+  `bytes` and `instance` kinds, which no script can construct.
+- `tests/testphpdumpvalue.mad` — end to end through the compiler for the
+  script-reachable kinds, including a `value` as a struct MEMBER, where the
+  generated walk frames the struct and hands the runtime walk the depth: the
+  output has `int(9)` for the C int beside `array(1)` for the value, each walk
+  naming what it actually has.
+- `tests/testphpdumprefuse.expect_err` — the container refusal, by name.

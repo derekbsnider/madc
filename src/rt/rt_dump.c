@@ -33,6 +33,10 @@
 #include <string.h>
 #include <stdarg.h>
 
+// Every prototype below is CHECKED against its definition here. The header is
+// the one dump contract, shared with the generated walk and the C++ value walk.
+#include "rt_dump.h"
+
 // stdout, unbuffered-order-wise, is shared with the C++ iostreams the rest of
 // the runtime prints through (std::cout is sync_with_stdio by default), so a
 // script may interleave `cout <<` and php::print_r freely.
@@ -71,6 +75,15 @@ const char *__madc_dump_sink_text(void *sink)
     if (!s || !s->buf)
 	return "";
     return s->buf;
+}
+
+// The captured LENGTH. The buffer is binary-safe — a value of kind `bytes` may
+// contain a NUL and __madc_dump_raw writes it — so a caller that must not stop
+// at the first NUL reads the length rather than calling strlen on the text.
+size_t __madc_dump_sink_length(void *sink)
+{
+    struct madc_dump_sink *s = (struct madc_dump_sink *)sink;
+    return s ? s->len : 0;
 }
 
 // Nonzero when any append failed, so the caller can tell an empty dump from a
@@ -153,6 +166,17 @@ static void sink_printf(void *sink, const char *fmt, ...)
     if ((size_t)n >= sizeof buf)
 	n = (int)(sizeof buf - 1);
     sink_write(sink, buf, (size_t)n);
+}
+
+// EXACTLY n bytes, NUL included. The public face of sink_write, for a payload
+// whose length is known and which may contain a NUL: a madc::value's `string`
+// and `bytes` kinds both carry an explicit byte count, so neither may be
+// written with a NUL-terminated primitive. Flavor-neutral — the framing around
+// it differs, the bytes do not.
+void __madc_dump_raw(void *sink, const char *p, long long n)
+{
+    if (p && n > 0)
+	sink_write(sink, p, (size_t)n);
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +336,35 @@ void __madc_dump_pr_tail(void *sink, int col, int blank)
 	sink_putc(sink, '\n');
 }
 
+// A CYCLE. PHP prints the type word on the entry line, then `*RECURSION*` on
+// its own line indented by exactly ONE space — at every depth, not stepped with
+// the frame. Verified at depth 1 and depth 2 (tmp/or_value.php, cat -A):
+//
+//         [self] => Array$
+//  *RECURSION*$
+//
+// That one space is PHP's, not a typo, and there is NO "(" block and no
+// trailing blank line: the marker replaces the whole nested frame. Reached only
+// by the RUNTIME value walk — a cycle needs aliasing, which a compile-time type
+// walk cannot express.
+void __madc_dump_pr_recursion(void *sink, const char *word)
+{
+    sink_puts(sink, word ? word : "");
+    sink_puts(sink, "\n *RECURSION*\n");
+}
+
+// An opaque typed instance under print_r. PHP has no equivalent — there are no
+// readable properties to list — so this reports the identity it does have. The
+// type_id is printed as a NUMBER because no type-id -> name registry exists at
+// run time yet (the segmented typeid table,
+// docs/plans/2026-06-12-type-table-value-abi-design.md §3); when one lands, the
+// type's name belongs here. Saying "Object" and stopping would be the quiet
+// guess this arc refuses to make.
+void __madc_dump_pr_instance(void *sink, unsigned type_id)
+{
+    sink_printf(sink, "instance#%u", type_id);
+}
+
 // ---------------------------------------------------------------------------
 // var_dump
 // ---------------------------------------------------------------------------
@@ -334,6 +387,35 @@ void __madc_dump_pr_tail(void *sink, int col, int blank)
 // not `string(2)`, `struct Point(2)` not `object(Point)#1 (2)`. PHP's object
 // handle (#1) is dropped: it identifies a PHP object instance and means nothing
 // here. Captured from php-cli 8.3.6 with cat -A (tmp/or_vd.php).
+
+// PHP's NULL line — var_dump's one retained PHP word, because "no value" is not
+// a C type. THE owner of that spelling: a null `char *` and a value of kind null
+// both route here, so the two can never disagree.
+void __madc_dump_vd_null(void *sink, int col)
+{
+    dump_indent(sink, col);
+    sink_puts(sink, "NULL\n");
+}
+
+// A cycle: the marker alone, at the value line's own column (which is where the
+// key line above it also sits). Captured from php-cli 8.3.6 — see
+// __madc_dump_pr_recursion for print_r's stranger shape.
+void __madc_dump_vd_recursion(void *sink, int col)
+{
+    dump_indent(sink, col);
+    sink_puts(sink, "*RECURSION*\n");
+}
+
+// An opaque typed instance: its payload SIZE in bytes, then its type id. The
+// count in parentheses is bytes here, where PHP's string(2) counts characters
+// and array(5) counts elements — an opaque payload has neither. See
+// __madc_dump_pr_instance for why the id is a number and not a name.
+void __madc_dump_vd_instance(void *sink, int col, long long size,
+			     unsigned type_id)
+{
+    dump_indent(sink, col);
+    sink_printf(sink, "instance(%lld) #%u\n", size, type_id);
+}
 
 void __madc_dump_vd_head(void *sink, int col, const char *word, long long count)
 {
@@ -403,15 +485,14 @@ void __madc_dump_vd_char(void *sink, int col, const char *ty, int c)
 	sink_printf(sink, "(%u)\n", (unsigned)b);
 }
 
-// A NULL pointer is PHP's null, and PHP's var_dump prints NULL for it — the one
-// case where var_dump keeps PHP's word, because "no value" is not a C type.
+// A NULL pointer is PHP's null; __madc_dump_vd_null owns that line.
 void __madc_dump_vd_cstr(void *sink, int col, const char *ty, const char *s)
 {
-    dump_indent(sink, col);
     if (!s) {
-	sink_puts(sink, "NULL\n");
+	__madc_dump_vd_null(sink, col);
 	return;
     }
+    dump_indent(sink, col);
     sink_puts(sink, ty ? ty : "");
     sink_printf(sink, "(%llu) \"", (unsigned long long)strlen(s));
     sink_puts(sink, s);
@@ -438,11 +519,11 @@ void __madc_dump_vd_cstr_n(void *sink, int col, const char *ty, const char *s,
 			   long long n)
 {
     long long len = 0;
-    dump_indent(sink, col);
     if (!s) {
-	sink_puts(sink, "NULL\n");
+	__madc_dump_vd_null(sink, col);
 	return;
     }
+    dump_indent(sink, col);
     while (len < n && s[len])
 	len++;
     sink_puts(sink, ty ? ty : "");

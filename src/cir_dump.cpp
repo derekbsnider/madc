@@ -46,6 +46,11 @@ extern "C" {
 #include "c2mir/c2mir_api.h"
 }
 
+// The dump output contract: the flavor discriminator, the column geometry and
+// every primitive's prototype. Shared with src/rt/rt_dump.c (which emits the
+// bytes) and src/rt_dump_value.cpp (which walks a madc::value at run time).
+#include "rt/rt_dump.h"
+
 extern thread_local bool madc_verbose;
 
 // ---------------------------------------------------------------------------
@@ -76,18 +81,25 @@ static const char *dump_flavor_name(CirBuilder::DumpFlavor fl)
 // ---------------------------------------------------------------------------
 // Columns
 // ---------------------------------------------------------------------------
-// print_r frames an aggregate with its "(" 8 per level and entries 4 further
-// in; var_dump indents 2 per level, and an entry's key line and value line sit
-// at the SAME column. Both captured with cat -A from php-cli 8.3.6
-// (tmp/or_pr2.php, tmp/or_vd.php) — do not "tidy" either step.
+// The geometry itself lives in src/rt/rt_dump.h, because the RUNTIME value walk
+// computes the same columns as it descends and two copies of `8 * depth` would
+// be free to diverge. These convert the compiler-side flavor enum to the shared
+// wire discriminator and delegate — enum-over-strings: one conversion, at the
+// edge.
+static int dump_wire_flavor(CirBuilder::DumpFlavor fl)
+{
+	return fl == CirBuilder::dfVarDump ? MADC_DUMP_VAR_DUMP
+					   : MADC_DUMP_PRINT_R;
+}
+
 static int dump_frame_col(CirBuilder::DumpFlavor fl, int depth)
 {
-	return fl == CirBuilder::dfVarDump ? 2 * depth : 8 * depth;
+	return madc_dump_frame_col(dump_wire_flavor(fl), depth);
 }
 
 static int dump_entry_col(CirBuilder::DumpFlavor fl, int depth)
 {
-	return dump_frame_col(fl, depth) + (fl == CirBuilder::dfVarDump ? 2 : 4);
+	return madc_dump_entry_col(dump_wire_flavor(fl), depth);
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +807,39 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// A madc::value — the one type the compiler CANNOT expand
+// ---------------------------------------------------------------------------
+// Every other shape in this file is walked at compile time because the call site
+// knows T. A value's KIND is a property of the VALUE, not of the type: the same
+// `value v` holds an integer here and an array of maps there, so there is
+// nothing to expand and no member census to take. One call to the runtime walk
+// (src/rt_dump_value.cpp) covers all nine kinds, arbitrary nesting and PHP's
+// *RECURSION* marker — which is why the owner is right that this is the EASIEST
+// of the remaining shapes and not the hardest.
+//
+// The sink rides in front as it does for every primitive (dump_call_stmt
+// prepends it), so print_r($v, true) captures a value dump with no extra work.
+// `depth` and `nested` are compile-time here and become runtime parameters
+// there: the value may sit inside a struct that the generated walk framed.
+bool CirBuilder::dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
+			    bool nested, std::vector<node_t> &out,
+			    TokenBase *origin)
+{
+	need_dump_extern("__madc_dump_value",
+			 { { {N_VOID}, true },  // const madc::value *
+			   { {N_INT}, false },  // flavor
+			   { {N_INT}, false },  // depth
+			   { {N_INT}, false } });  // nested
+	node_t a = list();
+	append(a, node1(N_ADDR, acc(), origin));
+	append(a, integer(dump_wire_flavor(fl), origin));
+	append(a, integer(depth, origin));
+	append(a, integer(nested ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_value", a, origin));
+	return true;
+}
+
 // The one dispatch: array framing, then aggregate framing, then scalar.
 bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			  size_t count, bool is_array, int depth, bool nested,
@@ -814,19 +859,23 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	// whose pointee is a struct is NOT this case: following it is the pointer
 	// slice, and dump_scalar refuses it by name until then.
 	if (!dd->is_pointer() && !dd->is_reference()) {
+		// The intrinsic value carrier (madc::value == ddARRAY) goes to the
+		// RUNTIME walk, and must be taken before either branch below: it is
+		// a class WITH registered methods (its c_str is madarray_cstr), so a
+		// structural sequence test would pass and then call through the
+		// wrong runtime, and it is a DataDefSTRUCT with no madc members, so
+		// the member walk would print an empty aggregate.
+		if (is_array_object(dd))
+			return dump_value(fl, acc, depth, nested, out, origin);
 		// A class that is a POSITIONAL SEQUENCE renders as one (an array,
 		// or text when its element is a character) rather than as its
 		// members: a std::vector<int>'s private pointers are not what a PHP
 		// developer asked to see. Tried BEFORE the member walk, and only a
 		// structural test decides it.
-		// The intrinsic value carrier (madc::value == ddARRAY) is a class
-		// WITH registered methods (its c_str is madarray_cstr), so it would
-		// pass a structural sequence test and then be called through the
-		// wrong runtime. Its rendering is its own slice; exclude it here.
 		// is_class_object IS the shared predicate (as_class_instance behind
 		// it, which already excludes ddARRAY by rawtype); the cast only
 		// recovers the pointer it validated, so no condition is duplicated.
-		DataDefCLASS *ccls = is_class_object(dd) && !is_array_object(dd)
+		DataDefCLASS *ccls = is_class_object(dd)
 				   ? dynamic_cast<DataDefCLASS *>(dd->unqualified())
 				   : NULL;
 		if (ccls) {
@@ -845,17 +894,9 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			// the call: those members are real, and an enhancement must
 			// not turn a working dump into an error.
 		}
-		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
-			// The intrinsic value carrier (madc::value) is a DDClass
-			// with no madc members: its rendering is its own slice.
-			if (dd->rawtype() == DataType::dtARRAY) {
-				why = std::string("no dumper for type '")
-				    + dd->name + "' yet";
-				return false;
-			}
+		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd))
 			return dump_struct(fl, acc, sdd, depth, nested, out,
 					   origin, why);
-		}
 	}
 	return dump_scalar(fl, acc, dd, depth, out, origin, why);
 }
@@ -907,7 +948,8 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 			  || arg->type() == TokenType::ttMember;
 	if ((is_arr || dynamic_cast<DataDefSTRUCT *>(dd) != NULL) && !simple_lvalue) {
 		why = "an aggregate argument must be a variable or member (a"
-		      " temporary would be re-evaluated once per field)";
+		      " temporary has no address to walk, and would be"
+		      " re-evaluated once per field)";
 		return false;
 	}
 

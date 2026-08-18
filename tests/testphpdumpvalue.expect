@@ -1,0 +1,56 @@
+[pr-null]|
+[pr-bool]1|
+[pr-int]42|
+[pr-real]2.5|
+[pr-str]hi|
+NULL
+boolean(true)
+integer(42)
+real(2.5)
+string(2) "hi"
+Array
+(
+    [0] => alpha
+    [1] => 7
+    [2] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+)
+array(3) {
+  [0]=>
+  string(5) "alpha"
+  [1]=>
+  integer(7)
+  [2]=>
+  array(2) {
+    [0]=>
+    integer(1)
+    [1]=>
+    integer(2)
+  }
+}
+Holder Object
+(
+    [tag] => 9
+    [items] => Array
+        (
+            [0] => x
+        )
+)
+struct Holder(2) {
+  ["tag"]=>
+  int(9)
+  ["items"]=>
+  array(1) {
+    [0]=>
+    string(1) "x"
+  }
+}
+[cap]
+Array
+(
+    [0] => alpha
+)
+[end]
