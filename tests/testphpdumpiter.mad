@@ -1,0 +1,171 @@
+// php::print_r / php::var_dump over a container with NO POSITION — std::map,
+// std::set, std::list. These are reached through C++'s own ITERATOR protocol,
+// which is what class_iterator_iteration_protocol recognizes and what
+// dump_iterator generates a loop for.
+//
+// THE LOOP IS COUNTED, off size(), and not `it != c.end()`. libstdc++ declares
+// operator== / operator!= on every one of these iterators as FRIEND FREE
+// functions (stl_tree.h 315/320 and 396/401, stl_list.h 318/324 and 408/414),
+// so there is no member to dispatch and a generated comparison is not available.
+// var_dump's head line states the count anyway, so size() was already required.
+//
+// PHP is the oracle for the FRAMING (tmp/or/map.php, php-cli 8.3.6, cat -A):
+// print_r writes `    [k] => v`, var_dump writes `  [3]=>` for an integral key
+// and `  ["b"]=>` for a string one — quoted only when the key is text, which the
+// compiler knows from the key's TYPE. A nested block gets print_r's trailing
+// blank line and var_dump none. An empty container is `Array\n(\n)` / `(0) {\n}`.
+//
+// The one deliberate divergence is the one this arc already had: var_dump names
+// the REAL C++ type. It is the SOURCE's spelling, not the canonical one —
+// std::list, never std::__cxx11::list, and std::map<std::string,std::vector<int>>,
+// never <...,std::allocator<...>> four arguments deep.
+//
+// ORDER: a std::map and a std::set are SORTED by key; a PHP array preserves
+// insertion order. So the entries below come out in key order, which is the
+// container's semantics and not a formatting choice — the keys are chosen so the
+// difference is visible (3,1,2 inserted; 1,2,3 printed).
+//
+// A KEYED container renders `[key] => value` and never the std::pair its
+// value_type actually is; a set and a list have no key, so the POSITION is the
+// key, exactly as a vector's is. PHP has no set, and a list of values is a list.
+#include <map>
+#include <set>
+#include <list>
+#include <vector>
+#include <string>
+#include <stdio.h>
+
+struct Pt { int x; int y; };
+
+// The protocol is STRUCTURAL, not a std:: allowance. Two hand-rolled containers
+// prove it, one per iterator SHAPE: a raw-pointer iterator (dereference and
+// += 1) and a class iterator (member operator* and prefix operator++).
+struct RawIter {
+	int d[3];
+	int *begin() { return d; }
+	int *end() { return d + 3; }
+	long size() { return 3; }
+};
+
+struct MyIt {
+	int *p;
+	int &operator*() { return *p; }
+	MyIt &operator++() { p = p + 1; return *this; }
+};
+
+struct MyBag {
+	int d[2];
+	MyIt begin() { MyIt i; i.p = d; return i; }
+	MyIt end() { MyIt i; i.p = d + 2; return i; }
+	long size() { return 2; }
+};
+
+struct Holder {
+	int tag;
+	std::map<std::string,int> m;
+};
+
+int main()
+{
+	printf("--- empty\n");
+	std::map<int,int> e;
+	php::print_r(e);
+	php::var_dump(e);
+
+	printf("--- map int-keyed\n");
+	std::map<int,int> m;
+	m[3] = 30; m[1] = 10; m[2] = 20;
+	php::print_r(m);
+	php::var_dump(m);
+
+	printf("--- map string-keyed\n");
+	std::map<std::string,int> sm;
+	sm["b"] = 2; sm["a"] = 1;
+	php::print_r(sm);
+	php::var_dump(sm);
+
+	printf("--- set\n");
+	std::set<int> s;
+	s.insert(7); s.insert(4);
+	php::print_r(s);
+	php::var_dump(s);
+
+	printf("--- list\n");
+	std::list<int> l;
+	l.push_back(9); l.push_back(8);
+	php::print_r(l);
+	php::var_dump(l);
+
+	printf("--- list of string\n");
+	std::list<std::string> ls;
+	ls.push_back("aa");
+	ls.push_back("bb");
+	php::print_r(ls);
+	php::var_dump(ls);
+
+	printf("--- set of string\n");
+	std::set<std::string> ss;
+	ss.insert("z");
+	ss.insert("y");
+	php::print_r(ss);
+
+	printf("--- nested sequence value\n");
+	std::map<std::string, std::vector<int> > mv;
+	mv["a"].push_back(1);
+	mv["a"].push_back(2);
+	mv["b"].push_back(3);
+	php::print_r(mv);
+	php::var_dump(mv);
+
+	printf("--- map of map\n");
+	std::map<int, std::map<int,int> > mm;
+	mm[1][7] = 70;
+	mm[2][8] = 80;
+	php::print_r(mm);
+
+	printf("--- struct value\n");
+	std::map<int,Pt> mp;
+	Pt p; p.x = 4; p.y = 5;
+	mp[9] = p;
+	php::print_r(mp);
+	php::var_dump(mp);
+
+	printf("--- string value\n");
+	std::map<int, std::string> ms;
+	ms[1] = "hi";
+	php::print_r(ms);
+	php::var_dump(ms);
+
+	printf("--- map inside a struct\n");
+	Holder h;
+	h.tag = 3;
+	h.m["k"] = 11;
+	php::print_r(h);
+	php::var_dump(h);
+
+	// A pointer to a container goes through the generated dumper function, so
+	// the iterator walk composes with the pointer slice unchanged.
+	printf("--- pointer to a map\n");
+	std::map<int,int> *pm = &mm[1];
+	php::print_r(pm);
+
+	// The capture form needs nothing new: the sink is the first argument of
+	// every primitive, so one expansion serves a printing dump and a
+	// capturing one.
+	printf("--- captured\n");
+	value cap = php::print_r(ms, true);
+	printf("%s", cap.c_str());
+
+	printf("--- raw pointer iterator\n");
+	RawIter ri;
+	ri.d[0] = 11; ri.d[1] = 22; ri.d[2] = 33;
+	php::print_r(ri);
+	php::var_dump(ri);
+
+	printf("--- user class iterator\n");
+	MyBag bag;
+	bag.d[0] = 5; bag.d[1] = 6;
+	php::print_r(bag);
+	php::var_dump(bag);
+	return 0;
+}

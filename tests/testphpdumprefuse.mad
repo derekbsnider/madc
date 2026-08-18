@@ -1,4 +1,5 @@
-// A container php::print_r cannot render yet must be refused BY ITS OWN NAME.
+// A container php::print_r cannot render must be refused BY ITS OWN NAME, and
+// must say WHICH piece is missing.
 //
 // This used to descend four levels into libstdc++'s red-black tree and refuse
 // there:
@@ -7,22 +8,40 @@
 //   member '_M_color': no dumper for type '_Rb_tree_color' yet
 //
 // — naming a type the user never wrote and never once saying std::map. A
-// std::map is not a positional sequence (its operator[] takes a KEY), so
-// dump_sequence declines it and the member walk took over. The member walk is
-// right for an ordinary aggregate and wrong for a container: those members are
-// the library's internals, not the user's data.
+// container's members are the library's internals, not the user's data, so a
+// container is refused (or walked) AT ITSELF, before any descent.
 //
-// The gate is the MESSAGE. Removing the by-name refusal makes the diagnostic
-// mention _Rb_tree_color again, which this fixture no longer matches.
+// std::map, std::set and std::list are no longer the subject: they RENDER now,
+// through the generated iterator loop (tests/testphpdumpiter.mad). What remains
+// refused is a genuine and PERMANENT limit rather than an arbitrary one, and the
+// message states it:
 //
-// The message must also not overstate the gap. It used to end "its elements need
-// the begin()/end() protocol", which reads as though madc cannot call begin() or
-// end() — it can: a hand-written `for (std::map<int,int>::iterator it =
-// m.begin(); it != m.end(); ++it)` compiles and runs. What is missing is a
-// GENERATED loop, because madc's one shared "is this iterable" recognizer
-// (class_index_iteration_protocol) only knows the positional size() +
-// operator[] shape. The fixture pins that wording too.
-#include <map>
+// the generated loop is COUNTED off size(), because libstdc++ declares
+// operator== / operator!= on every standard iterator as FRIEND FREE functions
+// (stl_tree.h 315/320, stl_list.h 318/324) — findMethod cannot see a free
+// function, so `it != c.end()` cannot be generated at all. A container with
+// begin()/end() and NO size() therefore has no bound, and saying so is the only
+// honest answer. It costs nothing for the containers that DO render: var_dump's
+// head line states the count anyway.
+//
+// The gate is the MESSAGE. A refusal that goes back to naming _Rb_tree_color, or
+// that stops naming the missing piece, no longer matches this fixture.
+struct It {
+	int *p;
+	int &operator*() { return *p; }
+	It &operator++() { p = p + 1; return *this; }
+};
 
-std::map<int,int> m;
-php::print_r(m);
+struct NoSize {
+	int d[3];
+	It begin() { It i; i.p = d; return i; }
+	It end() { It i; i.p = d + 3; return i; }
+};
+
+int main()
+{
+	NoSize n;
+	n.d[0] = 1;
+	php::print_r(n);
+	return 0;
+}

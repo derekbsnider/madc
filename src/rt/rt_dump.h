@@ -118,6 +118,15 @@ void __madc_dump_pr_cstr_n(void *sink, const char *s, long long n);
 void __madc_dump_pr_head(void *sink, int col, const char *word);
 void __madc_dump_pr_key(void *sink, int col, const char *key);
 void __madc_dump_pr_key_idx(void *sink, int col, long long idx);
+/* One entry's key rendered INLINE — the key's own value goes BETWEEN the two.
+ * A struct member's key is a compile-time literal (pr_key above), but a
+ * CONTAINER's key is a real value of a real type (a std::map's key_type), so the
+ * walk renders it with the same primitives it renders any other value with.
+ * pr_key IS open + the text + close, and is implemented that way, so the bracket
+ * spelling has exactly one owner and the literal and rendered forms cannot
+ * drift. */
+void __madc_dump_pr_key_open(void *sink, int col);
+void __madc_dump_pr_key_close(void *sink);
 void __madc_dump_pr_nl(void *sink);
 void __madc_dump_pr_tail(void *sink, int col, int blank);
 void __madc_dump_pr_recursion(void *sink, const char *word);
@@ -132,6 +141,12 @@ void __madc_dump_vd_head(void *sink, int col, const char *word,
 			 long long count);
 void __madc_dump_vd_key(void *sink, int col, const char *key);
 void __madc_dump_vd_key_idx(void *sink, int col, long long idx);
+/* The var_dump twins. It QUOTES a string key (["name"]=>) and leaves an
+ * integral one bare ([1]=>) — php-cli 8.3.6, tmp/or/map.php. Which one applies
+ * is a COMPILE-TIME property of the key's type, so it arrives as a flag rather
+ * than being sniffed from the bytes. */
+void __madc_dump_vd_key_open(void *sink, int col, int quote);
+void __madc_dump_vd_key_close(void *sink, int quote);
 void __madc_dump_vd_tail(void *sink, int col);
 void __madc_dump_vd_i64(void *sink, int col, const char *ty, long long v,
 			int is_unsigned);

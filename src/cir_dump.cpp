@@ -231,17 +231,61 @@ static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd)
 	return kind + sdd->name;
 }
 
-// The type word for ANY type: a class goes through the class rule (alias, then
-// canonical spelling), everything else through the scalar table. One owner, so
-// a nested element word cannot disagree with a top-level one.
+// The type word for ANY type: a CONTAINER goes through the container rule, any
+// other class through the class rule (alias, then canonical spelling), and
+// everything else through the scalar table. One owner, so a nested element word
+// cannot disagree with a top-level one — which it did: a std::map's VALUE word
+// came straight from the canonical spelling and said
+// std::vector<int32_t,std::allocator<int32_t>> on the head line while the very
+// next line, rendered by the sequence walk, said std::vector<int>. The
+// container arms feed their element types back through here, so the recursion
+// terminates on the element nesting.
 std::string CirBuilder::dump_type_word(DataDef *dd)
 {
 	if (dd && !dd->is_pointer() && !dd->is_reference())
 		if (DataDefCLASS *c = is_class_object(dd)
 				    ? dynamic_cast<DataDefCLASS *>(dd->unqualified())
 				    : NULL)
-			return dump_class_type_word(c);
+			return dump_container_type_word(c);
 	return dump_scalar_type_word(dd);
+}
+
+// A class's word, container-aware. The two container recognizers decide it, the
+// same ones the two container WALKS use — so the word on an entry's head line
+// and the word the walk below it prints are answers to one question.
+std::string CirBuilder::dump_container_type_word(DataDefCLASS *cls)
+{
+	Variable *szmv = NULL, *opmv = NULL;
+	if (class_index_iteration_protocol(cls, szmv, opmv)) {
+		FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL;
+		if (opfd)
+			return dump_sequence_type_word(cls,
+						       &opfd->return_value_type());
+	}
+	IterProtocol ip;
+	if (class_iterator_iteration_protocol(cls, ip)) {
+		DataDef *elem = ip.elem;
+		std::vector<DataDef *> wargs;
+		DataDef *kdd = NULL, *vdd = NULL;
+		if (ip.keyed) {
+			DataDefSTRUCT *pair = dynamic_cast<DataDefSTRUCT *>(
+						elem ? elem->unqualified() : NULL);
+			for (size_t i = 0; pair && i < pair->members.size(); i++) {
+				if (pair->members[i].first == "first")
+					kdd = pair->members[i].second;
+				else if (pair->members[i].first == "second")
+					vdd = pair->members[i].second;
+			}
+		}
+		if (kdd && vdd) {
+			wargs.push_back(kdd);
+			wargs.push_back(vdd);
+		} else {
+			wargs.push_back(elem);
+		}
+		return dump_template_word(cls, wargs);
+	}
+	return dump_class_type_word(cls);
 }
 
 // A SEQUENCE's type word: the template's own name with its ELEMENT type, which
@@ -255,11 +299,33 @@ std::string CirBuilder::dump_type_word(DataDef *dd)
 // like std::string, or a plain class — is already what the source wrote.
 std::string CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem)
 {
+	std::vector<DataDef *> args;
+	args.push_back(elem);
+	return dump_template_word(cls, args);
+}
+
+// The general form, and the ONE owner of the defaulted-argument strip: a KEYED
+// container carries TWO informative arguments (std::map<int,int>) where a
+// sequence carries one, and the canonical spelling carries four
+// (std::map<int,int,std::less<int>,std::allocator<std::pair<const int,int>>>).
+// Both container walks render their word through here, so a map's word cannot
+// use a different rule from a vector's.
+std::string CirBuilder::dump_template_word(DataDefCLASS *cls,
+					   const std::vector<DataDef *> &args)
+{
 	std::string word = dump_class_type_word(cls);
 	size_t lt = word.find('<');
-	if (lt == std::string::npos || !elem)
+	if (lt == std::string::npos || args.empty())
 		return word;
-	return word.substr(0, lt) + "<" + dump_type_word(elem) + ">";
+	std::string out = word.substr(0, lt) + "<";
+	for (size_t i = 0; i < args.size(); i++) {
+		if (!args[i])
+			return word;   // an unresolved argument: keep the canonical
+		if (i)
+			out += ",";
+		out += dump_type_word(args[i]);
+	}
+	return out + ">";
 }
 
 // An array's type word: the element's, with every extent from THIS dimension
@@ -349,11 +415,55 @@ std::string CirBuilder::dump_class_type_word(DataDefCLASS *cls)
 	if (canon.find('<') != std::string::npos) {
 		std::string alias = type_alias_spelling(cls);
 		if (!alias.empty())
-			return alias;
+			return strip_inline_namespaces(alias);
 	}
 	if (!canon.empty())
-		return canon;
+		return strip_inline_namespaces(canon);
 	return "struct " + cls->name;
+}
+
+// An INLINE namespace is transparent to qualified lookup, so it is not part of
+// the name anybody WRITES. std::list<int> is canonically
+// std::__cxx11::list<int,std::allocator<int>> — the libstdc++ ABI inline
+// namespace — and printing that is exactly the show-the-canonical-name-instead-
+// of-the-source's mistake the alias lookup above exists to avoid for
+// std::string. std::map has no such component and std::list does, so without
+// this one var_dump line says std::map<int,int> and the next says
+// std::__cxx11::list<int>.
+//
+// Driven by Program::inline_namespace_children — the parser's OWN record of
+// which namespaces are inline, kept for [namespace.qual] lookup — so no
+// spelling is hardcoded here and libc++'s __1 is handled by the same code.
+// Each replacement strictly shortens the string (a child's qualified name
+// contains its parent's as a prefix), so the outer pass terminates.
+std::string CirBuilder::strip_inline_namespaces(const std::string &spelling)
+{
+	if (!m_prog)
+		return spelling;
+	std::string out = spelling;
+	bool again = true;
+	while (again) {
+		again = false;
+		std::map<std::string, std::vector<std::string> >::const_iterator it;
+		for (it = m_prog->inline_namespace_children.begin();
+		     it != m_prog->inline_namespace_children.end(); ++it) {
+			for (size_t i = 0; i < it->second.size(); i++) {
+				const std::string &child = it->second[i];
+				if (child.empty() || child == it->first)
+					continue;
+				std::string from = child + "::";
+				std::string to = it->first.empty()
+					       ? std::string()
+					       : it->first + "::";
+				size_t at;
+				while ((at = out.find(from)) != std::string::npos) {
+					out.replace(at, from.size(), to);
+					again = true;
+				}
+			}
+		}
+	}
+	return out;
 }
 
 // PHP's key spelling for a member, per flavor. print_r writes
@@ -459,6 +569,63 @@ node_t CirBuilder::dump_key_idx(DumpFlavor fl, int depth, node_t idx,
 	append(a, dump_col(fl, depth, true, origin));
 	append(a, idx);
 	return dump_call_stmt(sym, a, origin);
+}
+
+// The two halves of an INLINE key. A struct member's key is a compile-time
+// literal (dump_key above); a CONTAINER's key is a runtime value of a real type,
+// so the walk renders it BETWEEN these. rt_dump.c writes the literal form in
+// terms of the same pair, so the bracket spelling has one owner.
+node_t CirBuilder::dump_key_open(DumpFlavor fl, int depth, bool quote,
+				 TokenBase *origin)
+{
+	node_t a = list();
+	append(a, dump_col(fl, depth, true, origin));
+	if (fl == dfVarDump) {
+		need_dump_extern("__madc_dump_vd_key_open",
+				 { { {N_INT}, false }, { {N_INT}, false } });
+		append(a, integer(quote ? 1 : 0, origin));
+		return dump_call_stmt("__madc_dump_vd_key_open", a, origin);
+	}
+	need_dump_extern("__madc_dump_pr_key_open", { { {N_INT}, false } });
+	return dump_call_stmt("__madc_dump_pr_key_open", a, origin);
+}
+
+node_t CirBuilder::dump_key_close(DumpFlavor fl, bool quote, TokenBase *origin)
+{
+	node_t a = list();
+	if (fl == dfVarDump) {
+		need_dump_extern("__madc_dump_vd_key_close",
+				 { { {N_INT}, false } });
+		append(a, integer(quote ? 1 : 0, origin));
+		return dump_call_stmt("__madc_dump_vd_key_close", a, origin);
+	}
+	need_dump_extern("__madc_dump_pr_key_close", {});
+	return dump_call_stmt("__madc_dump_pr_key_close", a, origin);
+}
+
+// A container ENTRY's key, rendered inline between those two.
+//
+// The key goes through the SAME walk as any other value — with the PRINT_R
+// flavor regardless of `fl`, because print_r's scalar form IS the bare value
+// with no type word and no newline, which is exactly what PHP puts inside the
+// brackets under BOTH flavors: `[3] => 30`, `[3]=>`, `["b"]=>`. Depth 0 is what
+// suppresses print_r's end-of-entry newline (dump_pr_end_entry decides that from
+// the depth), so the key stays on its own line. Oracle: tmp/or/map.php,
+// php-cli 8.3.6, cat -A.
+//
+// var_dump's one addition is the QUOTES around a text key, and whether the key
+// is text is a compile-time property of its type.
+bool CirBuilder::dump_key_value(DumpFlavor fl, const DumpAccess &kacc,
+				DataDef *kdd, int depth,
+				std::vector<node_t> &out, TokenBase *origin,
+				std::string &why)
+{
+	bool quote = fl == dfVarDump && dump_type_is_text(kdd);
+	out.push_back(dump_key_open(fl, depth, quote, origin));
+	if (!dump_any(dfPrintR, kacc, kdd, NULL, 0, false, out, origin, why))
+		return false;
+	out.push_back(dump_key_close(fl, quote, origin));
+	return true;
 }
 
 node_t CirBuilder::dump_tail(DumpFlavor fl, int depth, bool nested,
@@ -822,6 +989,36 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	return true;
 }
 
+// Is this a CHARACTER type — the element that makes a positional sequence TEXT
+// rather than an array of numbers? ONE owner: dump_sequence keys its own framing
+// on it, and dump_type_is_text asks it about a container's element one level up.
+static bool dump_elem_is_char(DataDef *elem)
+{
+	return elem && (elem->rawtype() == DataType::dtINT8
+		     || elem->rawtype() == DataType::dtUINT8);
+}
+
+// Does this type RENDER as PHP's string? var_dump quotes a STRING key and leaves
+// every other key bare, and the compiler decides which — so this is the same
+// question the walk's own text arms already answer, asked one level up: a char
+// pointer (dump_scalar's is_cstr arm) or a positional sequence of characters
+// (dump_sequence's is_text arm, which is what std::string is).
+bool CirBuilder::dump_type_is_text(DataDef *dd)
+{
+	DataDef *u = dd ? dd->unqualified() : NULL;
+	if (!u)
+		return false;
+	if (u->is_cstr())
+		return true;
+	DataDefCLASS *cls = is_class_object(u)
+			  ? dynamic_cast<DataDefCLASS *>(u) : NULL;
+	Variable *szmv = NULL, *opmv = NULL;
+	if (!cls || !class_index_iteration_protocol(cls, szmv, opmv))
+		return false;
+	FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL;
+	return opfd && dump_elem_is_char(&opfd->return_value_type());
+}
+
 // ---------------------------------------------------------------------------
 // A POSITIONAL container (std::string, std::vector, std::array, ...)
 // ---------------------------------------------------------------------------
@@ -883,8 +1080,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 		return call;
 	};
 
-	bool is_text = elem->rawtype() == DataType::dtINT8
-		    || elem->rawtype() == DataType::dtUINT8;
+	bool is_text = dump_elem_is_char(elem);
 	std::string word = fl == dfVarDump
 			 ? dump_sequence_type_word(cls, elem)
 			 : (is_text ? std::string() : std::string("Array"));
@@ -942,40 +1138,244 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	return true;
 }
 
-// Is this class a CONTAINER whose elements this walk cannot reach yet?
+// ---------------------------------------------------------------------------
+// An ITERATOR container (std::map, std::set, std::list)
+// ---------------------------------------------------------------------------
+// A container with no POSITION: its elements are reached through C++'s own
+// iterator protocol. The structural test is
+// class_iterator_iteration_protocol — the SHARED type-checked predicate, the
+// twin of the positional one dump_sequence uses, and the same one the range-for
+// keys on. No method is matched by name here for the same reason it is not
+// there: a by-name match is what made `for (int v : map)` SIGSEGV.
 //
-// It advertises C++'s own ITERATION protocol (begin()/end()) but is not
-// positionally indexable, so dump_sequence declined it: std::map, std::set,
-// std::list.
+// The emitted shape is:
 //
-// ⚠️ TO BE CLEAR ABOUT WHAT IS MISSING: madc can iterate these containers
-// perfectly well in HAND-WRITTEN code — `for (std::map<int,int>::iterator it =
-// m.begin(); it != m.end(); ++it)` compiles and runs (tmp/probe/mapiter_a.mad).
-// What does not exist is a GENERATED iterator loop, and the reason is that madc
-// has exactly ONE shared structural recognizer for "this class is iterable" —
-// class_index_iteration_protocol — and it recognizes only the POSITIONAL shape
-// (size() + integral operator[]). Both consumers of that recognizer, the
-// range-for lowering (translate_foreach_class, which is built entirely on
-// size() + operator[]) and this dumper, therefore stop here. The gap is a
-// recognizer plus a generated loop for SYNTHESIZED code, not a missing language
-// capability.
+//     long n = c.size();
+//     struct It it = c.begin();
+//     <head n>
+//     for (long k = 0; k < n; k += 1) { <key>; <value>; ++it; }
+//     <tail>
 //
-// Descending into its members instead is what produced
+// WHY COUNTED AND NOT `it != c.end()`: libstdc++ declares operator== and
+// operator!= on every one of these iterators as FRIEND FREE functions, not
+// members, so there is no member to dispatch and a generated comparison is not
+// available at all. size() is the bound instead — which costs nothing, because
+// var_dump's head line states the count anyway. The recognizer owns that
+// requirement, which is why size() is part of the PREDICATE and not of this
+// function.
+//
+// A KEYED container renders `[key] => value`; a set and a list render
+// positionally, exactly like a vector. That is not a naming decision: PHP has no
+// set, a list of values IS a list, and only a map has a key to print.
+bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
+			       DataDefCLASS *cls, int depth, bool nested,
+			       std::vector<node_t> &out, TokenBase *origin,
+			       std::string &why)
+{
+	IterProtocol ip;
+	if (!class_iterator_iteration_protocol(cls, ip, &why))
+		return false;
+	DataDefCLASS *itcls = ip.itcls;
+	DataDef *elem = ip.elem;
+	bool keyed = ip.keyed;
+
+	// A KEYED container's element is a std::pair<const K, V>, and PHP renders
+	// a map as `[key] => value`, never as a pair. The two halves come from the
+	// ELEMENT type's own members — which is what `value_type` is — rather than
+	// from the container, so nothing here knows the word "pair". If either is
+	// missing the element renders positionally: honest, rather than wrong.
+	DataDef *kdd = NULL, *vdd = NULL;
+	std::string kname, vname;
+	if (keyed) {
+		DataDefSTRUCT *pair = dynamic_cast<DataDefSTRUCT *>(
+					elem ? elem->unqualified() : NULL);
+		for (size_t i = 0; pair && i < pair->members.size(); i++) {
+			if (pair->members[i].first == "first") {
+				kdd = pair->members[i].second;
+				kname = "first";
+			} else if (pair->members[i].first == "second") {
+				vdd = pair->members[i].second;
+				vname = "second";
+			}
+		}
+		if (!kdd || !vdd)
+			keyed = false;
+	}
+
+	char nm[40], kx[40], itn[40];
+	snprintf(nm, sizeof(nm), "__dmp_n_%d", m_strtmp_counter++);
+	snprintf(kx, sizeof(kx), "__dmp_k_%d", m_strtmp_counter++);
+	snprintf(itn, sizeof(itn), "__dmp_it_%d", m_strtmp_counter++);
+	std::string nname = nm, idxname = kx, itname = itn;
+
+	// long n = c.size();  — the count ONCE, into a local: the head line and
+	// the loop bound must agree, and size() is a real call.
+	node_t szcall = class_nullary_call(cls, "size",
+					   node1(N_ADDR, acc(), origin), origin);
+	if (!szcall) {
+		why = std::string("its size() is not callable");
+		return false;
+	}
+	node_t nspec = list();
+	append_i64(nspec, origin);
+	node_t ndecl = simple(N_SPEC_DECL, origin);
+	append(ndecl, node1(N_SHARE, nspec));
+	append(ndecl, node2(N_DECL, id(nname.c_str(), origin), list()));
+	append(ndecl, ignore());
+	append(ndecl, ignore());
+	append(ndecl, szcall);
+	out.push_back(ndecl);
+
+	// struct It it = c.begin();  — an ordinary local, copy-initialized from
+	// begin()'s native struct return (the recognizer rejected the __retbuf
+	// shape, so this assignment is the whole of the copy).
+	node_t bcall = class_nullary_call(cls, "begin",
+					  node1(N_ADDR, acc(), origin), origin);
+	if (!bcall) {
+		why = std::string("its begin() is not callable");
+		return false;
+	}
+	node_t ispecs = list();
+	node_t istars = list();
+	if (itcls) {
+		append(ispecs, class_tag_ref(itcls));
+	} else {
+		// A raw-pointer iterator: the pointee's spec plus one star per
+		// level, named ONCE by the same owner the pointer walk uses.
+		DataDef *ibase = ip.itptr->unqualified();
+		int stars = 1 + dd_peel_pointers(ibase);
+		if (!dump_pointee_specs(ibase, ispecs)) {
+			why = std::string("its iterator's pointee has no "
+					  "renderable declaration");
+			return false;
+		}
+		for (int i = 0; i < stars; i++)
+			append(istars, pointer());
+	}
+	node_t idecl = simple(N_SPEC_DECL, origin);
+	append(idecl, node1(N_SHARE, ispecs));
+	append(idecl, node2(N_DECL, id(itname.c_str(), origin), istars));
+	append(idecl, ignore());
+	append(idecl, ignore());
+	append(idecl, bcall);
+	out.push_back(idecl);
+
+	// The element LVALUE, rebuilt per use (a c2mir node has one parent): a
+	// class iterator's `operator*` — class_nullary_call already dereferences a
+	// reference return, so this IS the element and not its address — or a plain
+	// dereference of a pointer iterator.
+	DumpAccess eacc = [this, itname, itcls, origin]() -> node_t {
+		if (!itcls)
+			return node1(N_DEREF, id(itname.c_str(), origin), origin);
+		return class_nullary_call(itcls, "operator*",
+					  node1(N_ADDR,
+						id(itname.c_str(), origin),
+						origin),
+					  origin);
+	};
+
+	std::vector<DataDef *> wargs;
+	if (keyed) {
+		wargs.push_back(kdd);
+		wargs.push_back(vdd);
+	} else {
+		wargs.push_back(elem);
+	}
+	std::string word = fl == dfVarDump ? dump_template_word(cls, wargs)
+					   : std::string("Array");
+	out.push_back(dump_head_node(fl, depth, word, id(nname.c_str(), origin),
+				     origin));
+
+	std::vector<node_t> body;
+	if (keyed) {
+		DumpAccess kacc = [this, eacc, kname, origin]() -> node_t {
+			return node2(N_FIELD, eacc(), id(kname.c_str(), origin),
+				     origin);
+		};
+		DumpAccess vacc = [this, eacc, vname, origin]() -> node_t {
+			return node2(N_FIELD, eacc(), id(vname.c_str(), origin),
+				     origin);
+		};
+		if (!dump_key_value(fl, kacc, kdd, depth, body, origin, why))
+			return false;
+		if (!dump_any(fl, vacc, vdd, NULL, depth + 1, true, body, origin,
+			      why))
+			return false;
+	} else {
+		// No key to print, so the POSITION is the key — the same rendering
+		// a vector gets, and the k the loop already counts.
+		body.push_back(dump_key_idx(fl, depth,
+					    id(idxname.c_str(), origin), origin));
+		if (!dump_any(fl, eacc, elem, NULL, depth + 1, true, body, origin,
+			      why))
+			return false;
+	}
+
+	// The advance. For a class iterator, `++it` — the PREFIX operator++,
+	// selected by ARITY (the postfix one is the same spelling with a dummy
+	// int); class_nullary_call owns that selection, and discards the reference
+	// result rather than dereferencing it. For a pointer iterator, `it += 1`,
+	// which c2mir scales by the pointee exactly as C does.
+	if (!itcls) {
+		body.push_back(node2(N_EXPR, list(),
+				     node2(N_ADD_ASSIGN,
+					   id(itname.c_str(), origin),
+					   integer(1, origin), origin),
+				     origin));
+	} else {
+		node_t inc = class_nullary_call(itcls, "operator++",
+						node1(N_ADDR,
+						      id(itname.c_str(), origin),
+						      origin),
+						origin, true);
+		if (!inc) {
+			why = std::string("its iterator's operator++ is not "
+					  "callable");
+			return false;
+		}
+		body.push_back(node2(N_EXPR, list(), inc, origin));
+	}
+
+	// for (long k = 0; k < n; k += 1) { ... }
+	node_t kspec = list();
+	append_i64(kspec, origin);
+	node_t init = simple(N_SPEC_DECL, origin);
+	append(init, node1(N_SHARE, kspec));
+	append(init, node2(N_DECL, id(idxname.c_str(), origin), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, origin));
+	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
+			    id(nname.c_str(), origin), origin);
+	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
+			    integer(1, origin), origin);
+	node_t items = list();
+	for (size_t i = 0; i < body.size(); i++)
+		append(items, body[i]);
+	out.push_back(node5(N_FOR, list(), init, cond, incr,
+			    node2(N_BLOCK, list(), items, origin), origin));
+	out.push_back(dump_tail(fl, depth, nested, origin));
+	return true;
+}
+
+// Is this class a CONTAINER — something whose elements, not whose members, are
+// its content?
+//
+// Asked only AFTER both container walks have declined, and it decides one thing:
+// whether the decline is REFUSED BY NAME or falls through to the member walk. A
+// plain aggregate that happens to expose a size() is not a container and must
+// still be member-walked; a container's members are the library's internals, so
+// walking them produced
 //
 //   php::print_r: member '_M_t': member '_M_impl': member '_M_header':
 //   member '_M_color': no dumper for type '_Rb_tree_color' yet
 //
 // — four levels into libstdc++'s red-black tree, naming a type the user never
-// wrote and never once mentioning std::map. A container this walk cannot render
-// must be refused by ITS OWN name, BEFORE the descent. (My earlier claim that
-// "every uncovered type is refused by name, so nothing lies" was true of the
-// scalar arm and false of exactly this one.)
-//
-// begin()/end() and nothing else: a plain aggregate that happens to expose a
-// size() is not a container and must still be member-walked, so the test is the
-// iteration concept itself. When slice S1 lands the type-checked iterator
-// protocol, this predicate's BODY becomes that test and this call site starts
-// dumping where it now refuses.
+// wrote and never once mentioning std::map. So the test is the ITERATION concept
+// itself: begin()/end() and nothing else. Whether the elements can actually be
+// REACHED is class_iterator_iteration_protocol's question, and its `why` is what
+// the refusal quotes — so a container this walk cannot render is refused by its
+// own name AND says which piece is missing.
 static bool container_needs_iterator_walk(DataDefCLASS *cls)
 {
 	if (!cls)
@@ -1264,6 +1664,9 @@ std::string CirBuilder::dump_pr_recursion_word(DataDef *dd)
 			  ? dynamic_cast<DataDefCLASS *>(u) : NULL;
 	Variable *szmv = NULL, *opmv = NULL;
 	if (cls && class_index_iteration_protocol(cls, szmv, opmv))
+		return "Array";
+	IterProtocol ip;
+	if (cls && class_iterator_iteration_protocol(cls, ip))
 		return "Array";
 	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u))
 		return dump_pr_object_word(sdd);
@@ -1694,14 +2097,27 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			// A CONTAINER's members are not real in that sense — they
 			// are the library's own internals — so one is refused by
 			// its own name here rather than walked.
+			// A container with no POSITION but with C++'s ITERATOR
+			// protocol (std::map, std::set, std::list): a generated
+			// counted begin()/operator++ loop. Same local-first
+			// discipline as the sequence arm — a partial expansion
+			// must not reach `out`.
+			std::vector<node_t> itr;
+			std::string itr_why;
+			if (dump_iterator(fl, acc, ccls, depth, nested, itr,
+					  origin, itr_why)) {
+				out.insert(out.end(), itr.begin(), itr.end());
+				return true;
+			}
 			if (container_needs_iterator_walk(ccls)) {
 				why = std::string("no dumper for container '")
-				    + dump_class_type_word(ccls)
-				    + "' yet: the walk knows only the POSITIONAL"
-				      " protocol (size() + operator[]), which this"
-				      " container does not have; reaching its"
-				      " elements needs a GENERATED begin()/end()"
-				      " loop (a hand-written one already works)";
+				    + dump_class_type_word(ccls) + "' yet: "
+				    + (itr_why.empty()
+					 ? std::string("it has neither the "
+						"positional size()/operator[] "
+						"protocol nor a reachable "
+						"iterator protocol")
+					 : itr_why);
 				return false;
 			}
 		}

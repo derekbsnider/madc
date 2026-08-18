@@ -1,0 +1,196 @@
+--- empty
+Array
+(
+)
+std::map<int,int>(0) {
+}
+--- map int-keyed
+Array
+(
+    [1] => 10
+    [2] => 20
+    [3] => 30
+)
+std::map<int,int>(3) {
+  [1]=>
+  int(10)
+  [2]=>
+  int(20)
+  [3]=>
+  int(30)
+}
+--- map string-keyed
+Array
+(
+    [a] => 1
+    [b] => 2
+)
+std::map<std::string,int>(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+}
+--- set
+Array
+(
+    [0] => 4
+    [1] => 7
+)
+std::set<int>(2) {
+  [0]=>
+  int(4)
+  [1]=>
+  int(7)
+}
+--- list
+Array
+(
+    [0] => 9
+    [1] => 8
+)
+std::list<int>(2) {
+  [0]=>
+  int(9)
+  [1]=>
+  int(8)
+}
+--- list of string
+Array
+(
+    [0] => aa
+    [1] => bb
+)
+std::list<std::string>(2) {
+  [0]=>
+  std::string(2) "aa"
+  [1]=>
+  std::string(2) "bb"
+}
+--- set of string
+Array
+(
+    [0] => y
+    [1] => z
+)
+--- nested sequence value
+Array
+(
+    [a] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+    [b] => Array
+        (
+            [0] => 3
+        )
+)
+std::map<std::string,std::vector<int>>(2) {
+  ["a"]=>
+  std::vector<int>(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["b"]=>
+  std::vector<int>(1) {
+    [0]=>
+    int(3)
+  }
+}
+--- map of map
+Array
+(
+    [1] => Array
+        (
+            [7] => 70
+        )
+    [2] => Array
+        (
+            [8] => 80
+        )
+)
+--- struct value
+Array
+(
+    [9] => Pt Object
+        (
+            [x] => 4
+            [y] => 5
+        )
+)
+std::map<int,Pt>(1) {
+  [9]=>
+  struct Pt(2) {
+    ["x"]=>
+    int(4)
+    ["y"]=>
+    int(5)
+  }
+}
+--- string value
+Array
+(
+    [1] => hi
+)
+std::map<int,std::string>(1) {
+  [1]=>
+  std::string(2) "hi"
+}
+--- map inside a struct
+Holder Object
+(
+    [tag] => 3
+    [m] => Array
+        (
+            [k] => 11
+        )
+)
+struct Holder(2) {
+  ["tag"]=>
+  int(3)
+  ["m"]=>
+  std::map<std::string,int>(1) {
+    ["k"]=>
+    int(11)
+  }
+}
+--- pointer to a map
+Array
+(
+    [7] => 70
+)
+--- captured
+Array
+(
+    [1] => hi
+)
+--- raw pointer iterator
+Array
+(
+    [0] => 11
+    [1] => 22
+    [2] => 33
+)
+struct RawIter(3) {
+  [0]=>
+  int(11)
+  [1]=>
+  int(22)
+  [2]=>
+  int(33)
+}
+--- user class iterator
+Array
+(
+    [0] => 5
+    [1] => 6
+)
+struct MyBag(2) {
+  [0]=>
+  int(5)
+  [1]=>
+  int(6)
+}

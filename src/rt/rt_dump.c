@@ -374,9 +374,24 @@ void __madc_dump_pr_head(void *sink, int col, const char *word)
 // literal — the compiler knows the access and the declaring class.
 void __madc_dump_pr_key(void *sink, int col, const char *key)
 {
+    __madc_dump_pr_key_open(sink, col);
+    sink_puts(sink, key ? key : "");
+    __madc_dump_pr_key_close(sink);
+}
+
+// A key whose TEXT is a RUNTIME value — a container's key_type. The walk renders
+// the key itself between these two, with the same primitives every other value
+// goes through. The bracket spelling lives here once, which is why the literal
+// form above is written in terms of it: two copies of "] => " would be free to
+// drift, and a map's key line would then not match a member's.
+void __madc_dump_pr_key_open(void *sink, int col)
+{
     dump_indent(sink, col);
     sink_putc(sink, '[');
-    sink_puts(sink, key ? key : "");
+}
+
+void __madc_dump_pr_key_close(void *sink)
+{
     sink_puts(sink, "] => ");
 }
 
@@ -519,9 +534,29 @@ void __madc_dump_vd_head(void *sink, int col, const char *word, long long count)
 
 void __madc_dump_vd_key(void *sink, int col, const char *key)
 {
+    // The caller supplies the quotes for this form: a member key is a literal
+    // that already carries them, along with the access suffix that goes INSIDE
+    // the brackets (["priv":"Foo":private]).
+    __madc_dump_vd_key_open(sink, col, 0);
+    sink_puts(sink, key ? key : "");
+    __madc_dump_vd_key_close(sink, 0);
+}
+
+// A container key, rendered between the two. var_dump quotes a STRING key and
+// not an integral one (php-cli 8.3.6: ["b"]=> vs [3]=>), and the compiler knows
+// which from the key's type — so `quote` is a compile-time flag.
+void __madc_dump_vd_key_open(void *sink, int col, int quote)
+{
     dump_indent(sink, col);
     sink_putc(sink, '[');
-    sink_puts(sink, key ? key : "");
+    if (quote)
+	sink_putc(sink, '"');
+}
+
+void __madc_dump_vd_key_close(void *sink, int quote)
+{
+    if (quote)
+	sink_putc(sink, '"');
     sink_puts(sink, "]=>\n");
 }
 

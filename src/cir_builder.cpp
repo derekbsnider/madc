@@ -5629,6 +5629,38 @@ static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
 }
 
+// The NULLARY overload of `name` on `cdd` — the one an `obj.name()` call picks.
+//
+// findMethod alone returns the FIRST by-name match, which for an ARITY-overloaded
+// name is a coin flip. Prefix `operator++()` and postfix `operator++(int)` are
+// both spelled "operator++" and differ only in the postfix dummy parameter, so a
+// by-name pick can hand back the postfix one and the emitted call then passes no
+// argument for its `int`. findMethodOverload with NO argument types is the
+// existing owner of that selection — the parse-time unary-operator lowering
+// (Program::nullary_operator_call) makes exactly this call — and its cv tiebreak
+// also prefers the non-const `begin()` over `begin() const`.
+//
+// The by-name pick stays as the FALLBACK, deliberately: findMethodOverload
+// returns NULL when every same-name candidate is rejected, and a method reached
+// through a lookup path the overload walk cannot see (alias webs,
+// using-declarations) must still resolve. So this NARROWS the choice; it never
+// loses one.
+static Variable *class_nullary_method_var(DataDefCLASS *cdd, const char *name)
+{
+	if (!cdd || !name)
+		return NULL;
+	std::vector<const DataDef *> no_args;
+	if (Variable *mv = cdd->findMethodOverload(std::string(name), no_args, 0))
+		return mv;
+	return cdd->findMethod(std::string(name));
+}
+
+static FuncDef *class_nullary_method(DataDefCLASS *cdd, const char *name)
+{
+	Variable *mv = class_nullary_method_var(cdd, name);
+	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+}
+
 static std::string class_method_symbol(DataDefCLASS *cdd, const char *name)
 {
 	FuncDef *fd = class_method_def(cdd, name);
@@ -17883,12 +17915,16 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 // from the method's own return type (ret_dd), so a size_t return does not
 // collapse to void*.
 node_t CirBuilder::class_nullary_call(DataDefCLASS *cls, const char *name,
-				      node_t recv_addr, TokenBase *origin)
+				      node_t recv_addr, TokenBase *origin,
+				      bool discard_value)
 {
-	FuncDef *fd = class_method_def(cls, name);
+	// The NULLARY overload, and the symbol of THAT overload: resolving the
+	// method by name and the symbol by name again could pick two different
+	// functions for one call.
+	FuncDef *fd = class_nullary_method(cls, name);
 	if (!cls || !fd || !recv_addr)
 		return NULL;
-	std::string sym = class_method_symbol(cls, name);
+	std::string sym = class_method_call_symbol(cls, fd, std::string(name));
 	if (sym.empty())
 		return NULL;
 	node_t a = list();
@@ -17904,7 +17940,10 @@ node_t CirBuilder::class_nullary_call(DataDefCLASS *cls, const char *name,
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	// A reference-returning nullary yields the address; deref to the value.
-	if (fd->returns_reference())
+	// NOT when the value is DISCARDED (`++it;` as a statement): `*f(&it);` is a
+	// dereference with no effect, which is a warning in every compiler that
+	// looks — and the zero-warnings law makes that a defect, not a style note.
+	if (fd->returns_reference() && !discard_value)
 		return node1(N_DEREF, call, origin);
 	return call;
 }
@@ -22116,6 +22155,140 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 
 	szmv = sz;
 	opmv = op;
+	return true;
+}
+
+// Does `cls` support C++'s own ITERATOR iteration protocol — `begin()`/`end()`
+// yielding an object with `operator*` and prefix `operator++`? The TWIN of
+// class_index_iteration_protocol above, for the containers that have no
+// position at all: std::map, std::set, std::list.
+//
+// TYPE-CHECKED for exactly the reason the positional one is. Naming `begin`
+// proves nothing, so: begin() and end() must be NULLARY and must return the SAME
+// class, and that class must itself declare a nullary `operator*` (the element)
+// and a nullary `operator++` (the advance). A by-name match here would generate a
+// loop over whatever `begin` happened to mean.
+//
+// WHY size() IS PART OF THIS PREDICATE — i.e. why the caller's loop is COUNTED
+// and not `while (it != end())`: libstdc++ declares operator== and operator!= on
+// EVERY one of these iterators as FRIEND FREE functions, not members
+// (stl_tree.h 315/320 and 396/401, stl_list.h 318/324 and 408/414). findMethod
+// cannot see a free function, so a member-dispatch comparison cannot be
+// generated at all. size() is the bound instead, and it costs nothing: var_dump
+// states the element count in its head line anyway, so the count is already
+// required. A container with begin()/end() and NO size() is therefore genuinely
+// out of reach, and this predicate says so rather than emitting an unbounded
+// loop.
+//
+// `keyed` reports the ASSOCIATIVE shape STRUCTURALLY — the container names a
+// `mapped_type`, the standard library's own signal, and the property generic C++
+// keys on. True for std::map, false for std::set / std::list, which therefore
+// render positionally exactly like a vector: PHP has no set, and a list of
+// values is the honest form.
+//
+// A MEMBER, not static like its twin: it consults class_return_via_retbuf, the
+// signature-ABI owner, to reject an iterator whose by-value return would not be
+// C's native struct return.
+bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
+						   IterProtocol &ip,
+						   std::string *why)
+{
+	ip = IterProtocol();
+	if (!cls)
+		return false;
+	// One spelling per decline, so the refusal the dumper prints names the
+	// piece that is actually missing instead of a generic "not supported".
+	struct Decline {
+		std::string *w;
+		bool operator()(const char *m) const
+		{
+			if (w) *w = m;
+			return false;
+		}
+	} decline = { why };
+
+	// size() — the loop bound. Same nullary-integral test the positional
+	// protocol applies to it (method_hidden_param_count owns the __this slot).
+	Variable *sz = cls->findMethod(std::string("size"));
+	FuncDef *szfd = sz ? dynamic_cast<FuncDef *>(sz->type) : NULL;
+	if (!szfd)
+		return decline("it declares no size(), and the generated loop is "
+			       "COUNTED because an iterator comparison is a free "
+			       "function this walk cannot dispatch");
+	if (szfd->parameters.size() != method_hidden_param_count(sz, szfd, cls)
+	    || !szfd->return_value_type().is_integer())
+		return decline("its size() is not a nullary integral method");
+
+	Variable *bv = class_nullary_method_var(cls, "begin");
+	Variable *ev = class_nullary_method_var(cls, "end");
+	FuncDef *bfd = bv ? dynamic_cast<FuncDef *>(bv->type) : NULL;
+	FuncDef *efd = ev ? dynamic_cast<FuncDef *>(ev->type) : NULL;
+	if (!bfd || !efd)
+		return decline("it declares no begin()/end() pair");
+	if (bfd->parameters.size() != method_hidden_param_count(bv, bfd, cls)
+	    || efd->parameters.size() != method_hidden_param_count(ev, efd, cls))
+		return decline("its begin()/end() are not nullary");
+	if (bfd->returns_reference() || efd->returns_reference())
+		return decline("its begin()/end() return a reference rather than "
+			       "an iterator");
+	DataDef *brdd = &bfd->return_value_type();
+	DataDef *erdd = &efd->return_value_type();
+
+	// SHAPE 1 — a RAW POINTER iterator (`int *begin()`), which a hand-rolled
+	// container over a plain array is written with. The loop dereferences it
+	// and advances by 1; there is no operator to find, so the element type IS
+	// the pointee. void / function / member pointers are excluded for the same
+	// reason the pointer walk excludes them: they are addresses, not handles on
+	// a value.
+	if (brdd && brdd->is_pointer() && !brdd->is_reference()) {
+		DataDefPTR *bp = dynamic_cast<DataDefPTR *>(brdd->unqualified());
+		DataDef *pointee = bp ? bp->base_type : NULL;
+		if (!pointee || pointee->rawtype() == DataType::dtVOID
+		    || pointee->is_function() || brdd->is_member_pointer())
+			return decline("its begin() returns a pointer with no "
+				       "renderable pointee");
+		if (!erdd || !erdd->is_pointer())
+			return decline("its begin() and end() do not return the "
+				       "same iterator type");
+		ip.itptr = pointee;
+		ip.elem = pointee;
+		ip.keyed = class_has_type_alias(cls, "mapped_type");
+		return true;
+	}
+
+	// SHAPE 2 — a CLASS iterator, which is what every standard container has.
+	DataDefCLASS *bc = as_class_instance(brdd);
+	DataDefCLASS *ec = as_class_instance(erdd);
+	if (!bc)
+		return decline("its begin() returns neither an iterator class nor "
+			       "a pointer");
+	if (bc != ec)
+		return decline("its begin() and end() do not return the same "
+			       "iterator class");
+	// The generated loop declares the iterator as an ordinary local and copies
+	// begin()'s result into it, so the iterator must use C's native struct
+	// return. A class needing a destructor returns through the __retbuf ABI,
+	// which is a different call shape entirely.
+	if (class_return_via_retbuf(&bfd->return_value_type()))
+		return decline("its iterator needs a destructor, so begin() "
+			       "returns through the __retbuf ABI rather than as a "
+			       "native struct");
+
+	Variable *stv = class_nullary_method_var(bc, "operator*");
+	Variable *incv = class_nullary_method_var(bc, "operator++");
+	FuncDef *stfd = stv ? dynamic_cast<FuncDef *>(stv->type) : NULL;
+	FuncDef *incfd = incv ? dynamic_cast<FuncDef *>(incv->type) : NULL;
+	if (!stfd
+	    || stfd->parameters.size() != method_hidden_param_count(stv, stfd, bc))
+		return decline("its iterator has no nullary operator*");
+	if (!incfd
+	    || incfd->parameters.size() != method_hidden_param_count(incv, incfd, bc))
+		return decline("its iterator has no PREFIX operator++ (the "
+			       "postfix one is the same spelling with a dummy int)");
+
+	ip.itcls = bc;
+	ip.elem = &stfd->return_value_type();
+	ip.keyed = class_has_type_alias(cls, "mapped_type");
 	return true;
 }
 

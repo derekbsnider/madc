@@ -765,6 +765,27 @@ private:
 			   DataDefCLASS *cls, int depth, bool nested,
 			   std::vector<node_t> &out, TokenBase *origin,
 			   std::string &why);
+	// A container with C++'s ITERATOR protocol and no position (std::map,
+	// std::set, std::list): a generated COUNTED loop over begin() +
+	// operator++. Keyed containers render `[key] => value`, the rest
+	// positionally. See the definition for why the loop is counted.
+	bool dump_iterator(DumpFlavor fl, const DumpAccess &acc,
+			   DataDefCLASS *cls, int depth, bool nested,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
+	// A container ENTRY's key, rendered INLINE between the bracket
+	// primitives by the ordinary walk — because a container's key is a real
+	// value of a real type, not the compile-time literal a struct member's
+	// key is.
+	bool dump_key_value(DumpFlavor fl, const DumpAccess &kacc, DataDef *kdd,
+			    int depth, std::vector<node_t> &out,
+			    TokenBase *origin, std::string &why);
+	node_t dump_key_open(DumpFlavor fl, int depth, bool quote,
+			     TokenBase *origin);
+	node_t dump_key_close(DumpFlavor fl, bool quote, TokenBase *origin);
+	// Does this type render as PHP's STRING? var_dump quotes a string key and
+	// leaves every other key bare, and the compiler decides which.
+	bool dump_type_is_text(DataDef *dd);
 	// A madc::value: ONE call to the runtime walk, because its kind is only
 	// known then. No `why` — there is no per-type expansion that can fail.
 	bool dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
@@ -839,9 +860,23 @@ private:
 	// The source's own name for a type (the datatype maps inverted by type
 	// IDENTITY, never by pattern), and the type word var_dump prints.
 	std::string type_alias_spelling(DataDef *dd);
+	// Drop every INLINE-namespace component from a qualified spelling: they
+	// are transparent to qualified lookup, so nobody writes them
+	// (std::__cxx11::list -> std::list). Driven by the parser's own
+	// inline_namespace_children record, never by a hardcoded name.
+	std::string strip_inline_namespaces(const std::string &spelling);
 	std::string dump_type_word(DataDef *dd);
 	std::string dump_class_type_word(class DataDefCLASS *cls);
+	// A class's word, CONTAINER-aware: the two container recognizers decide
+	// it, so an entry's head-line word and the word the walk below it prints
+	// answer one question. dump_type_word routes every class through here.
+	std::string dump_container_type_word(class DataDefCLASS *cls);
 	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
+	// A template container's word with only the type arguments that carry
+	// information — the canonical spelling drags in every defaulted
+	// comparator and allocator. ONE owner for both container walks.
+	std::string dump_template_word(class DataDefCLASS *cls,
+				       const std::vector<DataDef *> &args);
 	std::string dump_array_type_word(DataDef *elem,
 					 const std::vector<carray_dim_t> &dims,
 					 size_t dim_ix);
@@ -858,13 +893,43 @@ private:
 	static bool class_index_iteration_protocol(DataDefCLASS *cls,
 						   class Variable *&szmv,
 						   class Variable *&opmv);
+	// Everything a generated iteration loop needs, filled by the recognizer
+	// below. One struct rather than five out-parameters, because the two
+	// iterator SHAPES are alternatives: `itcls` names a class iterator (member
+	// operator* / operator++) and `itptr` a raw-pointer one (deref / += 1),
+	// and exactly one of the two is set.
+	struct IterProtocol {
+		DataDefCLASS *itcls;   // the iterator CLASS, or NULL
+		DataDef      *itptr;   // the POINTEE when the iterator is a pointer
+		DataDef      *elem;    // the element type, either shape
+		bool          keyed;   // the container names a `mapped_type`
+		IterProtocol()
+			: itcls(NULL), itptr(NULL), elem(NULL), keyed(false) {}
+	};
+	// The ITERATOR iteration protocol — `begin()`/`end()` returning one
+	// iterator (a class with a nullary `operator*` and a PREFIX `operator++`,
+	// or a raw pointer), plus the `size()` the generated loop counts off (an
+	// iterator comparison is a friend FREE function in libstdc++, so it
+	// cannot be dispatched; see the definition). The twin of the positional
+	// predicate above, and shared the same way — the range-for and the dumper
+	// both key on THIS one, never on a private copy. `keyed` reports the
+	// associative shape structurally (the container names a `mapped_type`).
+	// `why` receives the reason for a decline, so a refusal can name the
+	// piece that is missing.
+	bool class_iterator_iteration_protocol(DataDefCLASS *cls,
+					       IterProtocol &ip,
+					       std::string *why = NULL);
 	// Call a NULLARY class method (`obj.size()`) and yield its value.
 	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
 	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),
 	// the extern declaration and the reference-return deref. NULL when the
 	// class has no such method.
+	// `discard_value`: the result is thrown away (`++it;` as a statement), so
+	// a reference return is NOT dereferenced — `*f(&it);` is a dereference
+	// with no effect and every compiler that looks warns about it.
 	node_t class_nullary_call(DataDefCLASS *cls, const char *name,
-				  node_t recv_addr, TokenBase *origin);
+				  node_t recv_addr, TokenBase *origin,
+				  bool discard_value = false);
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.
 	// `index_lvalue` is a SYNTHESIZED index (a range-for's loop counter) that
