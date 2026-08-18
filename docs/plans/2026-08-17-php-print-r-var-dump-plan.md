@@ -1420,3 +1420,177 @@ call site needs a branch; var_dump reads it as "report the type and the number"
 and prints `enum Color(7)`. Neither invents a case that does not exist. An
 OPAQUE declaration (`enum E;`) has no table at all and is refused BY ITS OWN
 NAME, like every other uncovered type in this file.
+
+---
+
+## 19. Iterator containers — std::map / std::set / std::list (session #104, AS BUILT)
+
+The last uncovered shape. Delivered in commit `f68c4690` (the dumper) and the
+range-for's second consumer in the commit after it.
+
+### 19.1 What was actually missing — a RECOGNIZER, not a capability
+
+madc could always iterate these containers in HAND-WRITTEN code:
+
+```c
+for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it)
+        printf("%d=%d\n", it->first, it->second);
+```
+
+What did not exist was a GENERATED loop, and the reason was single: madc had
+exactly ONE structural recognizer for "is this class iterable" —
+`class_index_iteration_protocol` — and it knew only the POSITIONAL shape
+(`size()` + integral `operator[]`). Both of its consumers stopped at a
+`std::map`: `translate_foreach_class` (built entirely on `size()`+`operator[]`)
+and the dumper. So the work was **its twin, plus a loop, plus wiring both
+consumers** — never new language support.
+
+### 19.2 `class_iterator_iteration_protocol` — the shared twin
+
+Lives in `src/cir_builder.cpp` beside the positional one, NOT in
+`src/cir_dump.cpp`. It is a property of a CLASS and is owed to the range-for as
+much as to the dumper; a dumper-private copy is the duplication this repo gates
+against. TYPE-CHECKED for the same reason its twin is — naming `begin` proves
+nothing, exactly as naming `size` and `operator[]` did not (a by-name match is
+what made `for (int v : map)` SIGSEGV):
+
+- `size()` nullary, integral — the loop BOUND (see §19.3);
+- `begin()` and `end()` nullary, returning the SAME iterator;
+- and then one of two SHAPES:
+  - a **class iterator** with a nullary `operator*` and a **prefix**
+    `operator++`, whose by-value return is C's native struct return (a
+    `__retbuf` iterator is a different call shape and is refused);
+  - a **raw pointer iterator** (`int *begin()`), dereferenced and advanced by
+    `+= 1` — what a hand-rolled container over a plain array is written with.
+
+It reports its DECLINE reason through `why`, so the refusal quotes the missing
+piece instead of describing the walk.
+
+`keyed` is decided STRUCTURALLY: the container names a `mapped_type`. True for
+`std::map`, false for `std::set` / `std::list`. Never by class name.
+
+### 19.3 ⚠️ THE LOOP IS COUNTED OFF size() — this is not a shortcut
+
+libstdc++ declares `operator==` and `operator!=` on EVERY one of these iterators
+as **friend FREE functions**, not members — `stl_tree.h` 315/320 and 396/401,
+`stl_list.h` 318/324 and 408/414. `findMethod` cannot see a free function, so a
+member-dispatch `it != c.end()` **cannot be generated at all**. madc does have
+free-operator machinery (`Program::free_operator_overloads`,
+`CirBuilder::std_free_operator_instantiation`) but every entry point is
+TOKEN-driven, and synthesized code has no token.
+
+So:
+
+```c
+long n = c.size();  It it = c.begin();
+for (long k = 0; k < n; k += 1) { <use *it>; ++it; }
+```
+
+It costs nothing: var_dump's head line states the count anyway, so `size()` was
+already required. And it is why `size()` belongs to the PREDICATE — a container
+with `begin()`/`end()` and no `size()` has no bound, is refused, and the message
+says exactly that. That is the ONE remaining refusal, and it is principled:
+`tests/testphpdumprefuse.mad` is now built on it.
+
+⚠️ `operator++` needs ARITY selection. Prefix and postfix are both spelled
+`operator++` and differ only in the postfix dummy `int`, so `findMethod` picks
+either. `class_nullary_call` now selects the nullary overload through
+`findMethodOverload(name, {})` — the existing owner of that choice, which
+`Program::nullary_operator_call` already used — and takes the symbol of THAT
+overload rather than resolving the name a second time. The by-name pick stays as
+the fallback, so nothing reachable only through an alias web is lost.
+
+⚠️ In the ADVANCE the reference result is **discarded**, so it must NOT be
+dereferenced: `*f(&it);` is a dereference with no effect and every compiler that
+looks warns. `class_nullary_call` takes a `discard_value` flag for it.
+
+### 19.4 The KEY — one primitive pair, and the ordinary walk between them
+
+A `std::map`'s element is `std::pair<const K, V>`, and PHP renders a map as
+`[key] => value`, never as a pair. So the two halves come from the ELEMENT type's
+own `first` / `second` members — which is what `value_type` IS — and nothing in
+the walk knows the word "pair".
+
+The key is rendered by the SAME `dump_any` walk as any other value, between two
+new primitives (`__madc_dump_pr_key_open` / `_close` and the var_dump twins),
+**with the print_r flavor regardless of the caller's**: print_r's scalar form IS
+the bare value with no type word and no newline, which is exactly what PHP puts
+inside the brackets under BOTH flavors. Depth 0 is what suppresses print_r's
+end-of-entry newline. So there is no integral-vs-string key branch at all.
+
+var_dump's one addition is the QUOTES around a text key (`["b"]=>` vs `[3]=>`),
+and whether the key is text is a compile-time property of its TYPE —
+`dump_type_is_text`, which asks the walk's own text arms (a char pointer, or a
+positional sequence of characters).
+
+`rt_dump.c`'s literal key form (`__madc_dump_pr_key`) is rewritten in terms of
+the same open/close pair, so the bracket spelling has exactly one owner and a
+map's key line cannot drift from a struct member's.
+
+### 19.5 Two word defects this commit fixed, because it would have introduced them
+
+- **`std::__cxx11::list<int>`.** An inline namespace is transparent to qualified
+  lookup, so nobody writes it. `strip_inline_namespaces` is driven by
+  `Program::inline_namespace_children`, the parser's own record kept for
+  [namespace.qual] lookup — so libc++'s `__1` is handled by the same code and no
+  spelling is hardcoded. Without it one var_dump line said `std::map<int,int>`
+  and the next said `std::__cxx11::list<int>`.
+- **A container's word reached through `dump_type_word`** came straight from the
+  canonical spelling, so a nested value's head line said
+  `std::vector<int32_t,std::allocator<int32_t>>` while the very next line, from
+  the sequence walk, said `std::vector<int>`. `dump_type_word` now routes every
+  class through `dump_container_type_word`, which asks the two container
+  recognizers — the same ones the two WALKS use — so the word and the walk answer
+  one question. `dump_template_word` is the one owner of the defaulted-argument
+  strip (one informative argument for a sequence, two for a keyed container).
+
+### 19.6 Oracle
+
+php-cli 8.3.6, `tmp/or/map.php` and `tmp/or/iter_pr.php`, captured with `cat -A`.
+**All TEN print_r blocks PHP produces for this data are reproduced byte for
+byte** — including a nested block's trailing blank line and the empty
+container's `Array\n(\n)`. var_dump's key geometry matches too, with this arc's
+one documented divergence (the real C++ type in the head word).
+
+Range-for oracle: `tmp/or/feiter.cpp` under `g++ -O0` and `clang++ -O0`, both
+agreeing line for line with `tests/testforeachiter.expect`.
+
+### 19.7 Still not covered — say it plainly
+
+- **`for (auto &kv : m)`** — the range-for's element type is never deduced from
+  `auto`. A parser deduction gap, independent of the iteration protocol, and it
+  fails loudly. `for (std::pair<const int,int> &kv : m)` works.
+- **`std::unordered_map`** — does not PARSE yet, for an unrelated reason:
+  `hashtable_policy.h:613` uses `__int_traits`, which madc reports as an
+  undeclared identifier. Nothing to do with the dump arc.
+- **A container with `begin()`/`end()` and no `size()`** — refused, permanently
+  and on purpose (§19.3).
+
+### 19.8 A type that contains ITSELF (the fourth #104 commit)
+
+`struct Node { long size(); Node &operator[](long); };` is legal C++ — a
+JSON-tree shape — and the walk is EXPANDED per nesting level, so nothing bounded
+it: 4 GB, then `tree build failed (std::bad_alloc)`. Pre-existing in
+`dump_sequence`; §19.5's `dump_container_type_word` is a SECOND site with the
+same shape.
+
+The guard is an ancestor set in the TYPE domain — the compile-time analogue of
+§17.2's runtime ancestor stack, and a PATH set for the same reason that one is a
+stack: `struct Twice { Pt a; Pt b; }` reaches `Pt` twice without a cycle and must
+print it both times.
+
+⚠️ **TWO sets, and they must not be shared.** `dump_any` pushes the type BEFORE
+the head-line word is built, so one set would make every container's word fall
+back to the canonical spelling. `m_dump_expanding` is the walk's;
+`m_dump_word_expanding` is the word's. The word guard is reachable only for a
+self-referential TEMPLATE container, because `dump_template_word` needs a `<`.
+
+⚠️ **The POINTER path is exempt and must stay exempt.** `dump_pointer_fn` is
+memoized, so a cycle through a pointer emits a CALL and never re-enters
+`dump_any` for the same type. Guarding it would refuse the rings §17 exists to
+render.
+
+The outcome is not a refusal: the container arm declines and `dump_any`'s existing
+fallback prints the type's real MEMBERS — the same rule that keeps a positional
+container whose element has no dumper working. Gate:
+`tests/testphpdumpselfref.mad`, whose `Twice` case is the negative control.

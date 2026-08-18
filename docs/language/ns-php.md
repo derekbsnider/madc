@@ -206,17 +206,95 @@ name.
 - **Any other sequence is a PHP array**, keyed `[0..size()-1]`.
 - The count is read from `size()` ONCE, so the printed count and the elements
   always agree.
-- An ASSOCIATIVE container (`std::map`, `std::set`) is not a positional
-  sequence — its `operator[]` takes a key, not a position — so it falls back to
-  showing its members. Rendering `[key] => value` needs the `begin()`/`end()`
-  protocol, which madc does not implement yet.
 - A class that looks positional but whose element type has no dumper yet (a
-  `Matrix::operator[]` returning a row pointer) also falls back to its members:
-  the sequence rendering is an enhancement and never removes information.
+  `Matrix::operator[]` returning a row pointer) falls back to its members: the
+  sequence rendering is an enhancement and never removes information.
+
+A container with **no position** — `std::map`, `std::set`, `std::list` — prints
+too, through C++'s own iterator protocol: `begin()` / `end()` yielding an iterator
+with `operator*` and prefix `operator++` (a class iterator or a raw pointer one),
+plus `size()`. That is the same structural test the range-based `for` uses, so
+whatever prints here also iterates there.
+
+- **A KEYED container prints `[key] => value`**, never the `std::pair` its
+  elements actually are. Keyed means the container names a `mapped_type` — the
+  standard library's own signal — so a `std::map` is keyed and a `std::set` and a
+  `std::list` are not.
+- **A set and a list print POSITIONALLY**, keyed `[0..size()-1]`, exactly like a
+  vector. PHP has no set, and a list of values is a list.
+- **The key is rendered by the same walk as any other value**, so an integral key
+  prints as a number and a `std::string` key as its text. `var_dump` quotes a
+  string key (`["b"]=>`) and leaves an integral one bare (`[3]=>`), which is what
+  PHP does.
+- **A `std::map` and a `std::set` are key-ORDERED**, so entries appear in key
+  order rather than insertion order. That is the container's semantics, not a
+  rendering choice.
+- The loop is **counted off `size()`**. A container with `begin()`/`end()` and no
+  `size()` has no bound this walk can use and is refused by name, saying so.
 
 `var_dump` names a container the way you would write it: `std::vector<int>`,
-`std::vector<std::string>`, `std::string`. A `std::array`'s extent is not in the
-word — it is the count in parentheses.
+`std::map<std::string,int>`, `std::list<int>`, `std::string`. A `std::array`'s
+extent is not in the word — it is the count in parentheses.
+
+### Pointers
+
+PHP has no pointers, so a pointer is **followed**: the pointee is printed, at the
+SAME depth, because an indirection is not a nesting level. A null pointer prints
+as PHP's null — nothing at all under `print_r`, `NULL` under `var_dump`. A `char *`
+is PHP's string and stays text.
+
+- **A cycle is marked, not chased.** A ring, a self-pointer and a mutual ring each
+  end in PHP's `*RECURSION*`, carrying the word of the frame it replaces.
+- **A value reachable TWICE without a cycle prints IN FULL both times**, which is
+  what PHP does. The test is "is this already on the path I am printing", not
+  "have I ever seen it".
+- A long list prints in full — thousands of nodes — because the pointee walk is a
+  generated function and the recursion is a real call.
+
+### Enums
+
+An enum prints as **its enumerator's name plus its value**, which is PHP 8.1's own
+enum shape:
+
+```
+Color Enum:unsigned int          # print_r
+(
+    [name] => GREEN
+    [value] => 1
+)
+
+enum(Color::GREEN)               # var_dump
+```
+
+The head word carries the REAL backing type. A value naming no enumerator —
+`(Color)7`, legal C with no PHP form — shows an empty `[name]`, and `var_dump`
+prints `enum Color(7)` rather than inventing a case. Scoped, class-nested and
+fixed-base enums all work; duplicate enumerator values resolve to the first name,
+which is what a debugger shows.
+
+### `array` and `value`
+
+madc's own dynamic carrier prints across all nine of its kinds, with the nesting
+and the `*RECURSION*` marker PHP gives an array of arrays. `var_dump` names the
+KIND rather than a storage type — `integer(42)`, `real(3.5)`, `object(3) {` —
+because a dynamically typed slot's real type IS its kind: `long(42)` would be true
+of the payload and silent about the slot, and no C word distinguishes `string` from
+`bytes` or `array` from `object`. `null` keeps PHP's `NULL`.
+
+### Capturing the output
+
+`print_r($v, true)` returns the text instead of printing it, exactly as PHP's
+second parameter does:
+
+```c
+value s = php::print_r(v, true);
+printf("%s", s.c_str());
+```
+
+The return is `string|true` in PHP and a `value` here: the text when the flag is
+set, boolean `true` when it is not. The flag may be a runtime expression — one
+walk serves both, because the output sink is a parameter rather than a compile-time
+choice.
 
 ### Limits
 
@@ -229,9 +307,11 @@ word — it is the count in parentheses.
 - A member inherited from a base and **shadowed** by a same-named member in the
   derived class is skipped: the emitted struct renames the hidden one and no
   reader can address it.
-- Types still to come: pointers (followed, with PHP's `*RECURSION*` for a
-  cycle), enums (by enumerator name), associative containers, multidimensional
-  arrays, and `array` / `value` itself. Each is refused by name until then —
-  never guessed at.
-- `print_r($v, true)`'s return form is not implemented yet; `print_r` currently
-  always prints.
+- A type with no dumper is **refused by name** — `no dumper for type 'X' yet`, or
+  for a container `no dumper for container 'X' yet: <which piece is missing>` —
+  and never guessed at. A `void *`, a function pointer and a pointer-to-member are
+  addresses rather than handles on a value, so they are refused; so is a container
+  with `begin()`/`end()` and no `size()`.
+- **`for (auto &x : m)`** over one of these containers does not work yet: the
+  range-for's element type is not deduced from `auto`. Name the type —
+  `for (std::pair<const int,int> &kv : m)` — and it does.

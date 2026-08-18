@@ -3,7 +3,70 @@
 ## [Unreleased]
 
 php::print_r and php::var_dump over ANY madc type — the compiler is their
-implementation, and PHP is the oracle to the byte.
+implementation, and PHP is the oracle to the byte. **The arc is complete: all 20
+probe shapes render**, and the one remaining refusal is a principled limit that
+names itself.
+
+- **`php::print_r` / `php::var_dump` render `std::map`, `std::set` and
+  `std::list`** — the last uncovered shape. What was missing was never language
+  support (a hand-written `for (std::map<int,int>::iterator it = m.begin(); it !=
+  m.end(); ++it)` always compiled): madc had exactly ONE structural recognizer for
+  "is this class iterable" and it knew only the POSITIONAL `size()`+`operator[]`
+  shape, so both of its consumers stopped at a map. The twin,
+  `class_iterator_iteration_protocol`, lives beside it and is shared the same way
+  — **the range-for is its second consumer, so `for (std::pair<const int,int> &kv
+  : m)` works now too.** Both iterator SHAPES are covered: a class iterator
+  (member `operator*` / prefix `operator++`) and a raw pointer one (dereference /
+  `+= 1`), so a hand-rolled container over a plain array renders as well.
+  ⚠️ The generated loop is **COUNTED off `size()`**, not `it != c.end()`:
+  libstdc++ declares `operator==`/`operator!=` on every one of these iterators as
+  friend FREE functions, so there is no member to dispatch and a comparison cannot
+  be generated at all. It costs nothing — var_dump's head line states the count
+  anyway — and it is why a container with `begin()`/`end()` and no `size()` is
+  refused, by its own name, saying exactly which piece is missing.
+  A KEYED container renders `[key] => value` and never the `std::pair` its
+  `value_type` is; keyed is decided STRUCTURALLY (the container names a
+  `mapped_type`), so a set and a list render positionally like a vector — PHP has
+  no set, and a list of values is a list. The key goes through the SAME walk as
+  any other value, between one new primitive pair, with print_r's bare-value form
+  under both flavors and var_dump's quotes decided from the key's TYPE at compile
+  time. All TEN print_r blocks php-cli 8.3.6 produces for this data are reproduced
+  byte for byte. `tests/testphpdumpiter.mad`, `tests/testforeachiter.mad`.
+- **Fixed: a type that contains ITSELF expanded forever.**
+  `struct Node { long size(); Node &operator[](long); };` is legal C++ — a
+  JSON-tree shape — and the dump walk is expanded per nesting level, so nothing
+  bounded it: 4 GB, then `tree build failed (std::bad_alloc)`. The guard is an
+  ancestor set in the TYPE domain, the compile-time analogue of the runtime
+  ancestor stack the pointer walk uses, and a PATH set for the same reason that
+  one is a stack — a struct with two members of one type must still print both.
+  The pointer path stays exempt because its memo already bounds it. The outcome
+  is not a refusal: the container arm declines and the existing member-walk
+  fallback prints the type's real members. `tests/testphpdumpselfref.mad`.
+- **Fixed: a pointer comparison against a base subobject omitted the base
+  adjustment.** `B2 *p2 = &d; p2 == &d` answered **0** where g++ and clang++ both
+  answer 1. [expr.eq]/[expr.rel] convert both operands to their composite pointer
+  type and madc applied that conversion on assignment only; for a PRIMARY base the
+  addresses coincide so it looked like nothing worse than a c2mir "incompatible
+  pointer types in comparison" warning, but a SECONDARY base sits at a nonzero
+  offset and the answer was silently wrong. libstdc++'s own `_List_base::_M_clear`
+  is that shape — it walks a `_List_node_base *` cursor against
+  `&_M_impl._M_node`, whose static type is the derived `_List_node_header` — so
+  every program that used a `std::list` printed the warning.
+  `tests/testptrcmpupcast.mad`, oracled against both compilers.
+- **Fixed: `var_dump` printed `std::__cxx11::list<int>`.** An inline namespace is
+  transparent to qualified lookup, so nobody writes it; the strip reads
+  `Program::inline_namespace_children`, the parser's own record, so libc++'s `__1`
+  is handled by the same code. And a container's word reached through
+  `dump_type_word` came straight from the canonical spelling, so one head line
+  said `std::vector<int32_t,std::allocator<int32_t>>` while the next said
+  `std::vector<int>` — every class now routes through the two container
+  recognizers, so the word and the walk answer one question.
+- **Fixed: `class_nullary_call` could call the wrong overload.** It resolved the
+  method by name and the SYMBOL by name again, taking the first by-name match —
+  for an arity-overloaded name a coin flip, and prefix/postfix `operator++` are
+  the same spelling. It now selects the nullary overload through
+  `findMethodOverload` and takes that overload's symbol, keeping the by-name pick
+  as the fallback.
 
 - **`php::print_r` / `php::var_dump` FOLLOW a pointer, cycles and all.** PHP has
   no pointers, so the pointee is what a PHP developer expects, at the SAME depth:

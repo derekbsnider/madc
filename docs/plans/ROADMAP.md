@@ -1,15 +1,21 @@
 # madc Roadmap
 
-**🚧 php::print_r / php::var_dump OVER ANY TYPE (2026-08-17, on `develop`,
-UNRELEASED — the arc is incomplete and carries no version bump):** the two
+**✅ php::print_r / php::var_dump OVER ANY TYPE (2026-08-18, v0.85.0):** the two
 PHP dump functions render **any** madc value the way a PHP developer expects PHP
-to render it — not just `array` / `value`. A struct, a class with private and
-protected members, a base-flattened derived class, a union, an anonymous union, a
-bit-field, a fixed array, a `char[]` and the POSITIONAL containers
-(`std::string`, `std::vector`, `std::array` — the owner's own two examples) all
-work today; pointers, enums, associative containers, multidimensional arrays and
-`value` itself each say "no dumper for type 'X' yet" until their slice lands,
-because a refusal is honest and a guess is not.
+to render it — not just `array` / `value`. **All 20 probe shapes render:** a
+struct, a class with private and protected members, a base-flattened derived
+class, a union, an anonymous union, a bit-field, fixed and multidimensional
+arrays, a `char[]` as text, the positional containers (`std::string`,
+`std::vector`, `std::array`), POINTERS (followed at the same depth, with PHP's
+`*RECURSION*` for a real cycle), ENUMS (enumerator name plus the real backing
+type, PHP 8.1's shape), the ITERATOR containers (`std::map`, `std::set`,
+`std::list`, and any hand-rolled container with the same shape), the full
+`array` / `value` nine-kind gamut through one runtime walk, and
+`print_r($v, true)` capture with a runtime flag. The ONE remaining refusal is a
+principled limit that names itself: a container with `begin()`/`end()` and no
+`size()` — the generated loop must be COUNTED, because libstdc++ declares every
+one of these iterators' `operator!=` as a friend FREE function that `findMethod`
+cannot see, so `it != c.end()` cannot be generated at all.
 Both are declared in `<ns_php>` as function TEMPLATES with no definition
 anywhere: "any type" has no signature a host could satisfy, so the CIR builder
 generates the dumper for whatever type the argument has (`src/cir_dump.cpp`) and
@@ -24,23 +30,33 @@ Recognition is a TAG, not a name: the parser stamps
 serializes, so a PACKED `<ns_php>` keeps it. PHP is the oracle to the byte
 (php-cli 8.3.6, captured with `cat -A`): the 4-space entry indent, the 8-space
 step of a nested `(`, the blank line after a nested block,
-`[priv:Foo:private]`, `1` for `true` and nothing at all for `false`, and PHP's
+`[priv:Foo:private]`, `1` for `true` and nothing at all for `false`, PHP's
 14-significant-digit float including the `.0` mantissa PHP puts in an exponent
-form that C's `%G` drops. `var_dump` keeps PHP's frame and makes exactly ONE
-deliberate change, the one the owner asked for: it names the real C/C++/madc type
-(`double(3.5)`, `long(42)`, `char *(2) "hi"`, `struct Point(2)`) — and names it
-what the SOURCE calls it, `std::string(2) "hi"` and `std::vector<std::string>(2)`,
-by inverting madc's own type-name tables by type identity rather than matching
-`basic_string` as a string. The walk never
-computes — or even reads — a layout fact: members are emitted as `obj.member`
-ACCESS nodes, so bit-field shift/mask, anonymous-aggregate transparency and base
-flattening keep their single owner and the dumper cannot drift from them. A
-prerequisite crash fell out on the way in: `for (int v : std::map<int,int>)`
-SIGSEGV'd at (nil) where g++ and clang both REJECT the source, because the
-iteration protocol matched `size()`/`operator[]` by NAME and then fed a pointer
-parameter an integer; it is type-checked now, and the element accessor delegates
-to `class_subscript_addr_on`, the one `operator[]` call builder. Docs:
-`docs/language/ns-php.md`. Plan:
+form that C's `%G` drops, and — for a keyed container — `[3] => 30` under
+`print_r` with `[3]=>` bare and `["b"]=>` quoted under `var_dump`, the quote
+decided from the key's TYPE at compile time. `var_dump` keeps PHP's frame and
+makes exactly ONE deliberate change, the one the owner asked for: it names the
+real C/C++/madc type (`double(3.5)`, `long(42)`, `char *(2) "hi"`,
+`struct Point(2)`, `std::map<std::string,int>(2)`) — and names it what the SOURCE
+calls it, `std::string` never `std::__cxx11::basic_string<char,…>` and
+`std::list` never `std::__cxx11::list`, by inverting madc's own type-name tables
+by type identity and dropping inline-namespace components rather than matching
+`basic_string` as a string. The walk never computes — or even reads — a layout
+fact: members are emitted as `obj.member` ACCESS nodes, so bit-field shift/mask,
+anonymous-aggregate transparency and base flattening keep their single owner and
+the dumper cannot drift from them.
+The iteration recognizer is SHARED, and that is the point: `for (int v : map)`
+used to SIGSEGV at (nil) where g++ and clang both REJECT the source (the protocol
+matched `size()`/`operator[]` by NAME and fed a pointer parameter an integer), it
+is type-checked now, and its ITERATOR twin gave the range-based `for` the
+containers it never had — `for (std::pair<const int,int> &kv : m)` works.
+Four silent wrong answers in the compiler fell out on the way and each ships its
+own reducer and gate: a pointer COMPARISON against a base subobject omitted the
+base adjustment (`B2 *p2 = &d; p2 == &d` answered 0 where both compilers answer
+1 — libstdc++'s own `_List_base::_M_clear` is that shape), a `madc::value` member
+was misaligned so the packed -O2 lane crashed on it, a `madc::value`'s base type
+fell through to `int`, and `class_nullary_call` could select the wrong overload.
+Docs: `docs/language/ns-php.md`. Plan and as-built record:
 [2026-08-17-php-print-r-var-dump-plan.md](2026-08-17-php-print-r-var-dump-plan.md).
 
 **✅ PACK DEGRADATION GATE (2026-08-17, v0.84.0, task #63):** the forest pack

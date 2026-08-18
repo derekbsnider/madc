@@ -1,8 +1,40 @@
 # Test Status
 
-> **Current (2026-08-17, php::print_r / php::var_dump over ANY madc type —
-> merged to `develop`, UNRELEASED; VERSION stays 0.84.0 until the arc is
-> complete):** authoritative Linux fulltest **1071 passed / 0 failed / 0
+> **Current (2026-08-18, v0.85.0 — php::print_r / php::var_dump over ANY madc
+> type, THE ARC COMPLETE):** authoritative Linux fulltest **1083 passed / 0
+> failed / 0 timed out / 9 skipped**; **1092 tests compiled with ZERO warnings**
+> under the c2mir ratchet (baseline 0, and it is a full all-zero baseline);
+> trailer gate 456 code commits / 0 missing. The dump tests are oracled against
+> **php-cli 8.3.6** — every `print_r` block is byte-identical to PHP's for the
+> corresponding PHP value, captured with `cat -A`; for the iterator containers all
+> TEN blocks PHP produces for that data match byte for byte
+> (`tmp/or/map.php`, `tmp/or/iter_pr.php`). `php-cli` is in
+> `scripts/provision_container.sh`: it is an oracle like g++ and clang++, and its
+> absence would have read as green.
+>
+> New in session #104: `testphpdumpiter` (std::map / set / list — int and string
+> keys, nested sequence and map values, struct and string values, empty, inside a
+> struct, through a pointer, captured, plus a hand-rolled container for EACH
+> iterator shape: a class iterator and a raw-pointer one — 196 expect lines),
+> `testforeachiter` (the range-based `for` over the same containers, oracled
+> against `g++ -O0` and `clang++ -O0`, including a `T&` loop variable mutating an
+> element and a `continue` that must still advance), and `testptrcmpupcast` (a
+> derived->base pointer COMPARISON owes the base adjustment — `B2 *p2 = &d;
+> p2 == &d` answered 0 where both compilers answer 1). `testforeachkeyed` was
+> retargeted: madc no longer refuses the container, so the rejection moved to the
+> element assignment where c2mir reports it, and `testphpdumprefuse` was rebuilt
+> on the one PERMANENT refusal (a container with begin()/end() and no size()).
+> `testphpdumpselfref` gates the type-path guard — a container whose element type
+> is the container used to consume 4 GB and die in `std::bad_alloc`, and its
+> `Twice` case is the negative control that a visited set (rather than a PATH set)
+> would fail.
+>
+> `--emit=c11` parity spot-checked for the new walk: the generated C compiles
+> under `gcc -std=c11` and its output is byte-identical to the JIT's
+> (`tmp/probe/emitc_iter.mad`).
+>
+> **Previous (2026-08-17, the dump arc merged to `develop` and still
+> UNRELEASED at that point):** authoritative Linux fulltest **1071 passed / 0 failed / 0
 > timed out / 9 skipped** (eight new tests: four for the dump intrinsics, two for
 > the range-for protocol fix, one for print_r's $return, one for madc::value
 > initializers); zero warnings under `-Werror`. The dump tests are

@@ -1,301 +1,177 @@
-# HANDOFF — php dump intrinsics arc, sessions #100–#103, 2026-08-18
+# HANDOFF — php dump intrinsics arc, sessions #100–#104, 2026-08-18
 
 **Read this fully. Assume a cold start.** Run `bash scripts/resume.sh` first (live
 git state + orphaned jobs), then `claude_status.json`, then this file, then
-`docs/plans/2026-08-17-php-print-r-var-dump-plan.md` §14–§18.
+`docs/plans/2026-08-17-php-print-r-var-dump-plan.md` §14–§19.
 
-Supersedes the session-#102 revision.
+Supersedes the session-#103 revision.
 
 ---
 
 ## 1. STATE
 
 - Branch `develop`. **VERSION = 0.84.0.** `master` = v0.82.0.
-- **No release cut yet.** The owner's standing ruling from #101 — *"I don't want a
-  version bump until it's done"* — still applies, and §2 shows ONE shape still
-  uncovered (`std::map` / `set` / `list`). Read §3 before deciding.
 - Working tree clean except the owner's untracked `donut.c`, `test.mad`,
   `testsort.mad` — **never commit them**.
-- ⚠️ `git stash@{0}` still holds the SUPERSEDED compile-time pointer expansion.
-  It is now dead: plan §17 is what shipped. **Drop it** rather than read it,
-  except for the record in §16.1.
+- ⚠️ `git stash@{0}` still holds the SUPERSEDED compile-time pointer expansion
+  from #102. It is dead: plan §17 is what shipped. **Drop it.**
 
-### Landed in session #103 (four commits, all green together)
+### 2. THE ARC IS COMPLETE — 20 of 20 probe shapes render
 
-| commit | what |
-|---|---|
-| `eaac1416` | a `madc::value`'s base type is `long long`, not the `int` it fell through to — `append_type_specs` had no `dtARRAY` arm, so `value *p` emitted `int *p`; plus the `&v` decay that then became necessary |
-| `0785bb84` | **`print_r`/`var_dump` FOLLOW a pointer** — a generated dumper FUNCTION per (pointee, flavor) + a shared runtime ancestor stack. Rings, self-pointers, mutual rings, shared-acyclic, null, `T**`, pointer members |
-| `647ff2dd` | **a `madc::value` is 16-ALIGNED** — `DataDefARRAY` reported alignment 1, so a `value` member landed at offset 4 where gcc/clang put it at 16. Silent at -O0; SIGSEGV in the packed -O2 lane |
-| `07a9b79c` | **an enum knows its own enumerators** — `DataDefENUM::enumerators` is the one owner; PHP 8.1's enum shape with the real backing type |
+**`php::print_r` / `php::var_dump` now render every shape the probe set covers.**
+The last gap (`std::map` / `std::set` / `std::list`) closed in session #104.
 
-### Validation of record — the exact content those four commits ship
-
-| lane | result |
-|---|---|
-| fulltest | **1080 / 0 fail / 0 timeout / 9 skip** |
-| `--exe` | **1040 / 0** |
-| `--obj` | **1040 / 0** |
-| release | rc=0 |
-| packed (`madc-release`) | **1080 / 0** |
-| headerless | **1054 / 0 / 35 skip** |
-
-Zero warnings under `-Werror`; trailer gate 451/0. Logs `tmp/logs/rb-20260818-*.log`.
-`third_party/mir` was NOT touched this session, so the MIR c-tests (1143 tests /
-2286 successes / 0 failures) stand from #102. wine / macOS batteries unchanged
-since v0.82.0 and NOT re-run.
-
-⚠️ **A note on the history:** `647ff2dd` was committed once with the hunk spliced
-into `DataDefSIMD` by a `git apply --unidiff-zero` split, then reset and redone
-from the file. If you are auditing, the current commit is correct and the working
-tree was proven byte-identical to the validated content afterwards. **Do not
-split a diff with `--unidiff-zero`** — zero context cannot verify placement.
-
-## 2. MEASURED COVERAGE — re-run, never summarise
-
-`bash tmp/patch/coverage.sh` on the container re-measures `tmp/probe/p*.mad` and
-prints OK / REFUSED / WARNED per shape. The session-#101 release was cut on a
-one-slice "done" and had to be reverted; the standing directive is **report
-coverage, not slices**.
+Re-measure, never summarise: `bash tmp/patch/coverage.sh` on the container.
+(The session-#101 release was cut on a one-slice "done" and had to be reverted;
+the standing directive is **report coverage, not slices**.)
 
 | shape | result |
 |---|---|
-| scalar, `const char *` | **OK** |
-| struct / class (access, inheritance, unions, anon unions, bit-fields) | **OK** |
-| fixed array, `char[]` as text | **OK** |
-| multidimensional array (2-D, 3-D) | **OK** |
-| `std::vector`, nested vector, `std::string` | **OK** |
-| `print_r($x, true)` (capture, runtime flag, scalar capture) | **OK** |
-| `madc::value` / `array` — all nine kinds | **OK** |
-| **pointer, pointer member, `T**`, null, ring, self-ref, mutual ring, shared-acyclic** | **OK** (#103) |
-| **enum** — plain, fixed base, scoped, class-nested, duplicate value, unnamed value | **OK** (#103) |
-| **`std::map` / `set` / `list`** | **REFUSED, and the error names the CONTAINER** — the ONE remaining shape. See §3. |
+| scalar, `const char *` | OK |
+| struct / class (access, inheritance, unions, anon unions, bit-fields) | OK |
+| fixed array, `char[]` as text | OK |
+| multidimensional array (2-D, 3-D) | OK |
+| `std::vector`, nested vector, `std::string` | OK |
+| `print_r($x, true)` (capture, runtime flag, scalar capture) | OK |
+| `madc::value` / `array` — all nine kinds | OK |
+| pointer, pointer member, `T**`, null, ring, self-ref, mutual ring, shared-acyclic | OK (#103) |
+| enum — plain, fixed base, scoped, class-nested, duplicate value, unnamed value | OK (#103) |
+| **`std::map` / `std::set` / `std::list`** — int + string keys, nested, struct/string values, empty, in a struct, through a pointer, captured | **OK (#104)** |
+| **hand-rolled container** — class iterator AND raw-pointer iterator | **OK (#104)** |
 
-17 of 20 probes OK; the 3 refusals are all the associative/list containers.
+The ONE remaining refusal is principled and permanent: **a container with
+`begin()`/`end()` and no `size()`.** The generated loop is COUNTED off `size()`
+because libstdc++ declares the iterator's `operator!=` as a friend FREE function
+(`stl_tree.h` 320, `stl_list.h` 324) — `findMethod` cannot see a free function, so
+`it != c.end()` has no member to dispatch. `tests/testphpdumprefuse.mad` is built
+on that case and its `.expect_err` pins the message, which names the container by
+its own name AND says which piece is missing.
 
-**"The error names the container" means exactly this and nothing more.** Before
-commit `69b910ec` (session #102) the dumper DESCENDED into a map's members and
-failed deep inside libstdc++:
+## 3. WHAT LANDED IN #104 — four commits
 
-```
-php::print_r: member '_M_t': member '_M_impl': member '_M_header':
-member '_M_color': no dumper for type '_Rb_tree_color' yet
-```
+| commit | what |
+|---|---|
+| `3c0de0da` | **a pointer comparison against a base subobject owes the base adjustment** — `B2 *p2 = &d; p2 == &d` answered 0 where gcc and clang answer 1. Found because libstdc++'s `_List_base::_M_clear` does exactly that and every std::list program printed a c2mir warning |
+| `f68c4690` | **the dumper renders iterator containers** — the shared `class_iterator_iteration_protocol`, the counted loop, the inline-key primitive pair, plus two word defects (`std::__cxx11::list`, and a container word from the canonical spelling) |
+| `582d9eed` | **the range-for is the recognizer's SECOND consumer** — `for (std::pair<const int,int> &kv : m)` over a std::map |
+| (this session's fourth) | **a type that contains ITSELF must not expand forever** — a self-referential container consumed 4 GB and died in `std::bad_alloc`; the guard is an ancestor set in the TYPE domain, two sets (walk and word), and the POINTER path is exempt because its memo already bounds it |
 
-— four levels into the red-black tree, blaming a type the user never wrote and
-never once saying `std::map`. The refusal now happens AT the container, before
-the descent, so the diagnostic names the type the user actually wrote. It is a
-statement about the MESSAGE, not about the mechanism.
-`tests/testphpdumprefuse.expect_err` is the gate on that message.
+Plan §19 is the AS-BUILT record: §19.2 the recognizer, §19.3 why the loop is
+counted, §19.4 the key, §19.5 the two word defects, §19.7 what is still not
+covered.
 
-## 3. NEXT — S1. Read §3.0 FIRST: "missing the begin()/end() protocol" is WRONG.
+### 3.1 The three things that are easy to get wrong here
 
-### 3.0 ⚠️ What is actually missing (an earlier version of this file overstated it)
+1. **The recognizer lives in `src/cir_builder.cpp`, beside its positional twin** —
+   not in `src/cir_dump.cpp`. It is a property of a CLASS and both the range-for
+   and the dumper key on it. A dumper-private copy is the duplication this repo
+   gates against.
+2. **`class_nullary_call` selects the NULLARY overload** (via
+   `findMethodOverload(name, {})`) and takes the symbol of THAT overload. Prefix
+   and postfix `operator++` are the same spelling; a by-name pick is a coin flip.
+   The by-name pick remains the fallback so alias-web lookups still resolve.
+3. **A discarded reference result must NOT be dereferenced.** `++it;` emitted as
+   `*f(&it);` is a dereference with no effect — a warning, and warnings are
+   defects here. `class_nullary_call`'s `discard_value` flag exists for it.
 
-**madc is NOT missing `begin()`/`end()`.** This compiles and runs today
-(`tmp/probe/mapiter_a.mad`):
+## 4. OPEN DEFECTS — every one has a reducer
 
-```c
-for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it)
-        printf("%d=%d\n", it->first, it->second);
-```
-
-What is missing is narrower, and it is ONE thing with two consequences: madc has
-exactly **one** shared structural recognizer for "is this class iterable" —
-`CirBuilder::class_index_iteration_protocol` — and it recognizes only the
-POSITIONAL shape (`size()` + integral `operator[]`). There is no iterator-shaped
-recognizer, and therefore no generated iterator loop. Both consumers of that one
-recognizer stop at a `std::map`:
-
-- **the range-for lowering** — `translate_foreach_class` is built entirely on
-  `size()` + `operator[]` (verified: it emits `for (__fe_i = 0; __fe_i < c.size();
-  ++__fe_i)` and subscripts). That is why `for (auto &kv : m)` fails.
-- **the dumper** — it SYNTHESIZES code, so it cannot use the token-driven paths
-  that make the hand-written loop above work.
-
-So S1 is **a recognizer plus a generated loop for synthesized code**, not a
-missing language capability. Say it that way; the old phrasing sent a reader
-looking for absent `begin()`/`end()` support that is present and working.
-
-The compiler's own diagnostic said the wrong thing too and was reworded to match
-(`no dumper for container '…' yet: the walk knows only the POSITIONAL protocol
-(size() + operator[]), which this container does not have; reaching its elements
-needs a GENERATED begin()/end() loop (a hand-written one already works)`), with
-`tests/testphpdumprefuse.expect_err` pinning it.
-
-### 3.1 The shape to build
-
-The iterator twin of `class_index_iteration_protocol`, plus the loop that uses
-it. It is **owed regardless of the dumper** — `for (auto &kv : m)` is a
-user-facing gap — so build the recognizer as the SHARED one, exactly as the
-positional pair is shared today, and let the range-for and the dumper both key on
-it. One recognizer, two consumers; never a dumper-private copy.
-
-Do NOT reach into `_Rb_tree` instead. That is exactly what commit `69b910ec`
-(session #102) was written to stop; the by-name refusal is the correct behaviour
-until the protocol exists.
-
-### 3.2 MEASURED in #103 — three findings that CHANGE the design
-
-Run these before designing anything; they are cheap and they redirect the work.
-
-1. **The explicit-iterator loop ALREADY WORKS on a `std::map`.** `tmp/probe/mapiter_a.mad`:
-   `for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it)` with
-   `it->first` / `it->second` runs and prints correctly. So begin/end/compare/
-   increment/arrow on a real libstdc++ tree iterator are NOT the gap.
-2. **What IS missing is `auto` deduction, in two places.**
-   `for (auto &kv : m)` fails with *"member reference type 'auto' is not a
-   structure or union"* (the range-for's element type is never deduced), and
-   `auto it = m.begin(); ++it;` fails to PARSE — *"Expecting ';' after for
-   condition"* on the `++it`. `tmp/probe/mapiter_c.mad`, `tmp/probe/mapiter.mad`.
-   Those two are the language half of S1 and are independent of the dumper,
-   which knows the iterator type and needs no `auto`.
-3. ⚠️ **libstdc++ declares `operator==` / `operator!=` on EVERY one of these
-   iterators as FRIEND FREE functions, not members** — `stl_tree.h` lines
-   315/320 and 396/401, `stl_list.h` 318/324 and 408/414. `findMethod` will not
-   find them, so **a member-dispatch `it != end()` cannot be generated at all.**
-   madc does have free-operator machinery (`Program::free_operator_overloads`,
-   `instantiate_free_operator_template`, `CirBuilder::std_free_operator_instantiation`)
-   but every entry point is TOKEN-driven, and the dumper has no token.
-
-**So the generated loop should be COUNTED, not comparison-based:**
-
-```
-long n = c.size();  It it = c.begin();
-for (long k = 0; k < n; ++k) { <use *it>; ++it; }
-```
-
-`operator*` and prefix `operator++` ARE members (verified at the same lines), so
-this is entirely member dispatch. It is not a shortcut: var_dump's head line
-states the count anyway, so `size()` is already required, and the loop shape is
-the one `dump_sequence` emits today. ⚠️ `operator++` needs ARITY selection —
-prefix and postfix are both spelled `operator++` and differ only in the postfix
-dummy `int`, so `findMethod` alone picks either.
-
-### 3.3 The remaining design question — capture the oracle FIRST
-
-A `std::map`'s element is `std::pair<const K, V>` and PHP renders a map as
-`[key] => value`, NOT as a pair. So the keyed containers need the key rendered
-BETWEEN `[` and `] => `:
-
-- An INTEGRAL key already works with no new primitive: `dump_key_idx` takes a
-  runtime `long long` (`__madc_dump_pr_key_idx`).
-- A STRING key does not. It needs an inline-key primitive PAIR
-  (`pr_key_open` / `pr_key_close` plus the var_dump twins) so the key's own walk
-  can render between them — and then the "does a key owe print_r's end-of-entry
-  newline" rule has to be answered NO for a key, which `dump_pr_end_entry`
-  currently decides from depth alone.
-- var_dump QUOTES a string key (`["name"]=>`) and not an integral one (`[1]=>`),
-  and the compiler knows which — so the quote is a compile-time flag, not a
-  runtime test.
-
-Distinguish keyed from positional STRUCTURALLY, never by name:
-`class_has_type_alias(cls, "mapped_type")` is true for `std::map` and false for
-`std::set` / `std::list` (both of which therefore render POSITIONALLY, exactly
-like a vector — PHP has no set, and a list of values is the honest form).
-
-**The layer chain:**
-
-- `CirBuilder::class_index_iteration_protocol` (`src/cir_builder.cpp` ~22059) is
-  the model to copy: a TYPE-CHECKED structural predicate, no method matched by
-  name-only, shared by the range-for and the dumper.
-- S1 adds its twin: `begin()`/`end()` nullary, returning the SAME class type,
-  which itself has `operator!=`, `operator++` and `operator*`. Type-checked, for
-  the same reason the index one is — a by-name match is what made
-  `for (int v : map)` SIGSEGV in the first place.
-- `container_needs_iterator_walk` (`src/cir_dump.cpp`) is the refusal site. Its
-  BODY becomes that predicate and the call site starts dumping.
-- Generating the loop needs an iterator OBJECT local plus operator calls on it.
-  `class_nullary_call` already owns the nullary-method call; the object-temp
-  machinery is `object_arg_addr`'s `__madc_objtmp`.
-- Then **S5b**: a map's `*i` is a `std::pair<const K, V>`, and PHP renders a map
-  as `[key] => value`, not as a pair — so the dumper must use the pair's `first`
-  as the PHP KEY. Capture the oracle from php-cli 8.3.6 before writing it.
-
-**This was NOT attempted in #103** — it is a language feature with its own tests
-across every lane, not a dumper slice, and starting it would have put four
-validated commits at risk. It is the next thing.
-
-## 4. THEN — in this order
-
-- The two macOS MIR-blob causes (§6).
-- Then #60 / #61 / #25 / #56 / #55 / #49.
+- **`size()` / `count()` on a NON-ARRAY-kind script `value` returns 0.**
+  `add_array_methods` binds both to `madarray_size`, which is the RANGE-FOR length
+  helper and deliberately reads 0 for a non-array kind ("Intentionally NOT
+  ns_common::value_count", its own comment). So `value s = "hello"; s.size()` is 0
+  while the payload has five bytes, and `php::print_r(x, true)` produces a value
+  whose `size()` is 0 — which is why every existing capture test measures
+  `strlen(v.c_str())` instead. `ns_common::value_count` is the owner
+  `madarray_size`'s comment names. Reducer `tmp/probe/valuecount.mad`.
+  ⚠️ NOT taken in #104 on purpose: what `size()` should mean across the nine kinds
+  is a decision about the `value` INTRINSIC's user-visible surface, not a dump
+  bug, and the owner has been shaping that surface.
+- **`for (auto &kv : m)`** — the range-for's element type is never deduced from
+  `auto`; the explicit-type form works. A parser deduction gap, independent of the
+  iteration protocol. Reducer `tmp/probe/feauto.mad`.
+- **`std::unordered_map` does not PARSE** — `hashtable_policy.h:613` uses
+  `__int_traits`, reported as an undeclared identifier. Unrelated to the dump arc.
+  Reducer `tmp/probe/refuse2.mad`.
+- **`for (int v : plain_struct)`** over a struct with NO protocol reports c2mir's
+  "conversion of non-scalar value requested" twice instead of a madc diagnostic:
+  `class_behind` returns NULL for a struct that never earned class-hood, so the
+  class arm (with its good message) is never reached. A loud compile error either
+  way — a diagnostic-quality defect, not a wrong answer. Reducer
+  `tmp/probe/feplain.mad`.
+- **`--emit=c11` declares libc functions with the dlsym FALLBACK signature.** Any
+  program that reaches `memcpy` / `strlen` through libstdc++ internals emits
+  `extern long long memcpy();`, and `gcc -std=c11` warns
+  `conflicting types for built-in function`. A plain `std::string` program is
+  enough: reducer `tmp/probe/tinystr.mad` (2 warnings). The JIT is unaffected and
+  the OUTPUT is byte-identical, so it is a warning-not-wrong-answer — but the
+  zero-warnings law covers every lane, and this one is not in the c2mir ratchet
+  because the ratchet measures the JIT path. `.claude/rules/embedded-headers.md`
+  already states the rule this violates ("declare real return types — never rely
+  on the fallback for signed int"); these two just have no declaration on the
+  path libstdc++ takes. Pre-existing, independent of the dump arc.
+- **D1** — `value f()` by value emits `int f()`, runs, prints nothing, exits 0.
+  `eaac1416` fixed the SPECIFIER half (`append_type_specs` has a `dtARRAY` arm);
+  the return DECLARATOR half is untouched. Reducer `tmp/r1.mad`.
+- **D2** — assigning to a `value &` PARAMETER is wrongly rejected. Reducer
+  `tmp/r3.mad`. (Also hit head-on writing #104's probes: `madc::value &cap =
+  php::print_r(x, true)` fails where `value cap = ...` works.)
+- **c2m cannot PARSE `_Alignas` on a struct member** — gcc and clang accept it and
+  C23 puts it there. A Tier-2 raise; the JIT is unaffected because madc's settled
+  layout is what c2mir consumes.
+- The `tests/testphpdumpptr.mad` fan-out SIGSEGV is unreachable now but was never
+  root-caused.
+- Object-key ORDER in a captured value dump.
+- Two macOS MIR-blob causes.
+- README says 1031 EXE/OBJ; measured 1040+.
 
 ## 5. SETTLED — do not re-litigate
 
-- **`php::print_r` returns `madc::value &`**, not by value. Signature
+- **`php::print_r` returns `madc::value &`**, signature
   `template<class T> madc::value &print_r(const T &v, bool ret = false)`.
-- **The bodyless placeholder's ZERO arity is load-bearing** (it is arity-filtered
-  out of overload ranking). The default argument is applied by `lower_dump_call`,
-  because the compiler IS the implementation.
+- **The bodyless placeholder's ZERO arity is load-bearing** (arity-filtered out of
+  overload ranking); the default argument is applied by `lower_dump_call`.
 - **The capturing form is HOISTED to `m_pending_stmts`** — `({…; &tmp;})` is not
   an lvalue.
-- **The sink is an explicit first parameter** on every primitive, and on every
+- **The sink is an explicit first parameter** on every primitive and every
   generated dumper — which is why ONE generated function serves a printing dump
   and a capturing one, and the memo needs no sink in its key.
 - **`src/rt/rt_dump.h` is the ONE dump contract** — flavor, column geometry, the
   ancestor stack, the tag namespace, every prototype.
-- **The `madc::value` walk is C++ in `src/rt_dump_value.cpp`, NOT `src/rt/`.**
-  Plan §14.1 has the whole argument (the ledger lane).
-- **The ancestor stack is a STACK, not a visited set, and is keyed on
-  (address, TYPE).** Both halves are load-bearing and both have oracles: PHP
-  prints a twice-reachable object in full both times, and without the type
-  `struct T { int v; int *p; }` with `p = &t.v` reports a false cycle. Plan §17.2.
+- **The `madc::value` walk is C++ in `src/rt_dump_value.cpp`, NOT `src/rt/`** (the
+  strict-C11 ledger lane). Plan §14.1 has the argument.
+- **The ancestor stack is a STACK, not a visited set, keyed on (address, TYPE).**
+  Both halves oracle-backed. Plan §17.2.
 - **A pointer renders the pointee at the SAME depth** — an indirection is not a
   nesting level.
-- **`var_dump` names the REAL C type**; `print_r` diverges from PHP nowhere.
+- **`var_dump` names the REAL C type; `print_r` diverges from PHP nowhere.**
 - **An enum's enumerators belong to `DataDefENUM`**, and `forest_record_enum`
-  READS that owner. Do not reintroduce the `namespace_map` reverse lookup.
+  READS that owner.
+- **`keyed` is decided by `mapped_type`**, structurally, never by class name.
+  A `std::set` / `std::list` renders POSITIONALLY: PHP has no set, and a list of
+  values is a list.
+- **The container loop is COUNTED off `size()`** — see §2. Not a shortcut.
 - **Making the script `value` BE the 32-byte `madc_value`: RECORDED, NOT
   SCHEDULED** (owner: *"I don't believe it's necessary to take on now"*).
 
-## 6. OPEN DEFECTS
+## 6. NEXT
 
-- **D1** — `value f()` by value emits `int f()`, runs, prints nothing, exits 0.
-  `eaac1416` fixed the SPECIFIER half of its root (`append_type_specs` now has a
-  `dtARRAY` arm); the return DECLARATOR half is untouched. Reducer `tmp/r1.mad`.
-- **D2** — assigning to a `value &` PARAMETER is wrongly rejected. Reducer
-  `tmp/r3.mad`.
-- **c2m cannot PARSE `_Alignas` on a struct member** — "syntax error on struct
-  (expected '<declarator>')" — while gcc and clang both accept it and C23 puts
-  alignment-specifier in specifier-qualifier-list. It does NOT affect the JIT
-  (which builds `node_t` directly, where N_ALIGNAS on an N_MEMBER is handled and
-  now correct), but it means `--emit=c11` output containing a value member cannot
-  be recompiled by `c2m` itself. Reducer `tmp/or/align.c`. Tier 2 (raise c2mir).
-- **The §16.1 fan14 SIGSEGV is not root-caused, only unreachable.** Plan §17.4.
-- **A CAPTURED `bytes` value truncates at an embedded NUL** — unreachable today;
-  the fix is the value-ABI work. Plan §14.4.
-- **Object-kind key ORDER** is key order where PHP preserves insertion order —
-  deliberate, documented, oracle written in key order.
-- macOS: both darwin arches ship NO MIR module cache; `darwin mir-blob-skips 1`.
-  arm64 `wrong result type in proto proto138`; x86-64
-  `duration<double,nano>::operator%=` lowers `%` to integer `umods` on a floating
-  operand — fix the LOWERING.
-- README's EXE/OBJ counts say 1031; **measured 1040**. Correct with the next
-  release.
+- The two macOS MIR-blob causes.
+- Then #60 / #61 / #25 / #56 / #55 / #49.
+- The `value.size()` decision in §4, when the owner wants the intrinsic surface
+  touched.
 
-## 7. STANDING CONSTRAINTS
+## 7. TRAPS BANKED FROM THIS ARC
 
-- **The QNAP NAS never builds or tests.** Everything via
-  `scripts/remote_build.sh` (container, `ssh -p 2299 dev@localhost`). One heavy
-  job at a time. `php` 8.3.6 is on the container — it is the dump oracle; capture
-  with `cat -A` and never retype from memory. Oracles live in `tmp/or/`.
-- **A WARNING IS ALWAYS YOURS TO FIX** (owner, this session). There is no
-  "pre-existing" disposition for one. Both new dump tests carry `.expect_quiet`,
-  so stderr must be EMPTY — that is the gate that keeps it true.
-- MIR c-tests after any `third_party/mir` change:
-  `sh c-tests/runtests.sh c-tests/use-c2m-gen /workspace/madc/obj/mir/host/c2m`.
-- ⚠️ **`grep -r` here is a ugrep shim with `--ignore-files`** — use **`git grep`**
-  for any coverage sweep.
-- ⚠️ **Never edit sources while a container suite runs** — the sync delivers an
-  older preserved mtime and make skips it. `touch` edited sources, or wait.
-- ⚠️ **Never split a diff with `git apply --unidiff-zero`.** Zero context cannot
-  verify placement; it silently spliced a hunk into the wrong class this session.
-  Split by rebuilding the file instead.
-- Push only to `derekbsnider/*`; `origin` is not first in `git remote -v`.
-- No `&&` chains; no backticks in a `-m` message; never `git add -A`.
-- Scratch and reducers in `tmp/` (gitignored).
-- Every `src/`/`include/` commit carries `Hypothesis:`/`Layer:`/`Searched:`/
-  `Oracle:` — `scripts/check-rule-trailers.sh` gates it.
-- **Do not re-run suites on already-green content.** Source changes invalidate a
-  green; docs-only changes do not.
+- ⚠️ **Never split a diff with `git apply --unidiff-zero`.** In #103 it spliced a
+  hunk into `DataDefSIMD` instead of `DataDefARRAY` and produced an unbuildable
+  commit. Zero context cannot verify placement. Rebuild the file instead.
+- ⚠️ **The refusal message is a gate, so it must not overstate the gap.** #103's
+  message said madc needed "a GENERATED begin()/end() loop" in a way that read as
+  "madc cannot call begin()" — it always could. The owner caught it. Say what is
+  missing, not what the walk does.
+- ⚠️ **`tmp/` is NOT rsynced to the container.** `scripts/remote_build.sh sync`
+  skips it, so a probe written locally must be `scp`'d (port 2299) before
+  `bin/madc` on the container can see it. `tests/` IS synced.
+- ⚠️ **The container refuses a second concurrent suite** and says so. Wait for the
+  first; do not pass `MADC_ALLOW_CONCURRENT=1` to get moving.
