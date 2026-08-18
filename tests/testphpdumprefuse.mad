@@ -14,6 +14,14 @@
 //
 // The gate is the MESSAGE. Removing the by-name refusal makes the diagnostic
 // mention _Rb_tree_color again, which this fixture no longer matches.
+//
+// The message must also not overstate the gap. It used to end "its elements need
+// the begin()/end() protocol", which reads as though madc cannot call begin() or
+// end() — it can: a hand-written `for (std::map<int,int>::iterator it =
+// m.begin(); it != m.end(); ++it)` compiles and runs. What is missing is a
+// GENERATED loop, because madc's one shared "is this iterable" recognizer
+// (class_index_iteration_protocol) only knows the positional size() +
+// operator[] shape. The fixture pins that wording too.
 #include <map>
 
 std::map<int,int> m;

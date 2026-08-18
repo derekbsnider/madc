@@ -946,7 +946,21 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 //
 // It advertises C++'s own ITERATION protocol (begin()/end()) but is not
 // positionally indexable, so dump_sequence declined it: std::map, std::set,
-// std::list. Descending into its members instead is what produced
+// std::list.
+//
+// ⚠️ TO BE CLEAR ABOUT WHAT IS MISSING: madc can iterate these containers
+// perfectly well in HAND-WRITTEN code — `for (std::map<int,int>::iterator it =
+// m.begin(); it != m.end(); ++it)` compiles and runs (tmp/probe/mapiter_a.mad).
+// What does not exist is a GENERATED iterator loop, and the reason is that madc
+// has exactly ONE shared structural recognizer for "this class is iterable" —
+// class_index_iteration_protocol — and it recognizes only the POSITIONAL shape
+// (size() + integral operator[]). Both consumers of that recognizer, the
+// range-for lowering (translate_foreach_class, which is built entirely on
+// size() + operator[]) and this dumper, therefore stop here. The gap is a
+// recognizer plus a generated loop for SYNTHESIZED code, not a missing language
+// capability.
+//
+// Descending into its members instead is what produced
 //
 //   php::print_r: member '_M_t': member '_M_impl': member '_M_header':
 //   member '_M_color': no dumper for type '_Rb_tree_color' yet
@@ -1683,8 +1697,11 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			if (container_needs_iterator_walk(ccls)) {
 				why = std::string("no dumper for container '")
 				    + dump_class_type_word(ccls)
-				    + "' yet: its elements need the begin()/end()"
-				      " protocol";
+				    + "' yet: the walk knows only the POSITIONAL"
+				      " protocol (size() + operator[]), which this"
+				      " container does not have; reaching its"
+				      " elements needs a GENERATED begin()/end()"
+				      " loop (a hand-written one already works)";
 				return false;
 			}
 		}

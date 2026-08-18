@@ -69,23 +69,73 @@ coverage, not slices**.
 | `madc::value` / `array` — all nine kinds | **OK** |
 | **pointer, pointer member, `T**`, null, ring, self-ref, mutual ring, shared-acyclic** | **OK** (#103) |
 | **enum** — plain, fixed base, scoped, class-nested, duplicate value, unnamed value | **OK** (#103) |
-| **`std::map` / `set` / `list`** | **REFUSED by container name** — the ONE remaining shape. See §3. |
+| **`std::map` / `set` / `list`** | **REFUSED, and the error names the CONTAINER** — the ONE remaining shape. See §3. |
 
-17 of 20 probes OK; the 3 refusals are all the associative/list containers, and
-each names ITSELF rather than a libstdc++ internal.
+17 of 20 probes OK; the 3 refusals are all the associative/list containers.
 
-## 3. NEXT — S1, the iterator protocol. It is the last shape AND a language gap.
+**"The error names the container" means exactly this and nothing more.** Before
+commit `69b910ec` (session #102) the dumper DESCENDED into a map's members and
+failed deep inside libstdc++:
 
-`std::map` / `set` / `list` are refused because `dump_sequence` needs a POSITIONAL
-`size()` + `operator[]`, which they do not have. The honest path is the iterator
-twin of the existing predicate — and **it is owed regardless of the dumper:**
-`for (auto &kv : m)` does not work today either.
+```
+php::print_r: member '_M_t': member '_M_impl': member '_M_header':
+member '_M_color': no dumper for type '_Rb_tree_color' yet
+```
+
+— four levels into the red-black tree, blaming a type the user never wrote and
+never once saying `std::map`. The refusal now happens AT the container, before
+the descent, so the diagnostic names the type the user actually wrote. It is a
+statement about the MESSAGE, not about the mechanism.
+`tests/testphpdumprefuse.expect_err` is the gate on that message.
+
+## 3. NEXT — S1. Read §3.0 FIRST: "missing the begin()/end() protocol" is WRONG.
+
+### 3.0 ⚠️ What is actually missing (an earlier version of this file overstated it)
+
+**madc is NOT missing `begin()`/`end()`.** This compiles and runs today
+(`tmp/probe/mapiter_a.mad`):
+
+```c
+for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it)
+        printf("%d=%d\n", it->first, it->second);
+```
+
+What is missing is narrower, and it is ONE thing with two consequences: madc has
+exactly **one** shared structural recognizer for "is this class iterable" —
+`CirBuilder::class_index_iteration_protocol` — and it recognizes only the
+POSITIONAL shape (`size()` + integral `operator[]`). There is no iterator-shaped
+recognizer, and therefore no generated iterator loop. Both consumers of that one
+recognizer stop at a `std::map`:
+
+- **the range-for lowering** — `translate_foreach_class` is built entirely on
+  `size()` + `operator[]` (verified: it emits `for (__fe_i = 0; __fe_i < c.size();
+  ++__fe_i)` and subscripts). That is why `for (auto &kv : m)` fails.
+- **the dumper** — it SYNTHESIZES code, so it cannot use the token-driven paths
+  that make the hand-written loop above work.
+
+So S1 is **a recognizer plus a generated loop for synthesized code**, not a
+missing language capability. Say it that way; the old phrasing sent a reader
+looking for absent `begin()`/`end()` support that is present and working.
+
+The compiler's own diagnostic said the wrong thing too and was reworded to match
+(`no dumper for container '…' yet: the walk knows only the POSITIONAL protocol
+(size() + operator[]), which this container does not have; reaching its elements
+needs a GENERATED begin()/end() loop (a hand-written one already works)`), with
+`tests/testphpdumprefuse.expect_err` pinning it.
+
+### 3.1 The shape to build
+
+The iterator twin of `class_index_iteration_protocol`, plus the loop that uses
+it. It is **owed regardless of the dumper** — `for (auto &kv : m)` is a
+user-facing gap — so build the recognizer as the SHARED one, exactly as the
+positional pair is shared today, and let the range-for and the dumper both key on
+it. One recognizer, two consumers; never a dumper-private copy.
 
 Do NOT reach into `_Rb_tree` instead. That is exactly what commit `69b910ec`
 (session #102) was written to stop; the by-name refusal is the correct behaviour
 until the protocol exists.
 
-### 3.1 MEASURED in #103 — three findings that CHANGE the design
+### 3.2 MEASURED in #103 — three findings that CHANGE the design
 
 Run these before designing anything; they are cheap and they redirect the work.
 
@@ -122,7 +172,7 @@ the one `dump_sequence` emits today. ⚠️ `operator++` needs ARITY selection �
 prefix and postfix are both spelled `operator++` and differ only in the postfix
 dummy `int`, so `findMethod` alone picks either.
 
-### 3.2 The remaining design question — capture the oracle FIRST
+### 3.3 The remaining design question — capture the oracle FIRST
 
 A `std::map`'s element is `std::pair<const K, V>` and PHP renders a map as
 `[key] => value`, NOT as a pair. So the keyed containers need the key rendered

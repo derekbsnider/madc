@@ -1,2 +1,3 @@
 php::print_r: no dumper for container 'std::map<
-' yet: its elements need the begin()/end() protocol
+' yet: the walk knows only the POSITIONAL protocol (size() + operator[])
+a GENERATED begin()/end() loop (a hand-written one already works)
