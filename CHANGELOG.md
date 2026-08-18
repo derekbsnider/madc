@@ -5,6 +5,50 @@
 php::print_r and php::var_dump over ANY madc type — the compiler is their
 implementation, and PHP is the oracle to the byte.
 
+- **`php::print_r` / `php::var_dump` FOLLOW a pointer, cycles and all.** PHP has
+  no pointers, so the pointee is what a PHP developer expects, at the SAME depth:
+  an indirection is not a nesting level. The pointee walk is a GENERATED FUNCTION
+  and the recursion is a CALL, guarded by a shared thread-local ancestor stack —
+  which fixes three shapes at once: a ring terminates with PHP's `*RECURSION*`
+  marker, a 5000-node list prints in full, and a 14-level fan-out-2 graph
+  compiles in 0.5s where an earlier inline expansion took 57s and then crashed.
+  It is an ANCESTOR STACK and not a visited set because PHP prints an object
+  reachable twice acyclically IN FULL BOTH TIMES and marks only a real cycle; it
+  is keyed on (address, pointee TYPE) because without the type
+  `struct T { int v; int *p; }` with `p = &t.v` reports a false cycle — `&t` and
+  `&t.v` are the same address. `tests/testphpdumpptr.mad`, PHP-oracled
+  byte-for-byte.
+- **An enum names its enumerator.** `DataDefENUM` now owns its enumerators —
+  they lived in three stores (a scoped enum's pseudo-namespace, a class-nested
+  enum's static members, a plain enum's global constants), none of which could be
+  asked the question from the TYPE. `forest_record_enum` reads that owner instead
+  of a name-keyed reverse lookup into `namespace_map`. Rendering follows PHP 8.1,
+  which has real enums: `Color Enum:unsigned int` with `[name]`/`[value]` for
+  `print_r`, `enum(Color::GREEN)` for `var_dump`, with the REAL backing type
+  (which g++ and clang++ both confirm). A value naming no enumerator — `(Color)7`,
+  legal C with no PHP form — shows an empty `[name]` and `enum Color(7)` rather
+  than inventing a case. `tests/testphpdumpenum.mad`, PHP-oracled.
+- **Fixed: a `madc::value` MEMBER was misaligned, and the -O2 lane crashed on
+  it.** `DataDefARRAY` reported alignment **1** for a 48-byte 16-aligned object
+  (a member-less `DDClass`, so `compute_layout` never ran and `max_align` stayed
+  at its default), so a `value` member landed at offset 4 where gcc and clang
+  both place it at 16. madc's settled layout is what c2mir consumes verbatim, so
+  the `_Alignas(16)` in the emitted declaration could not correct it — and
+  `--emit=c11` compiled by gcc disagreed with madc's own JIT about where the
+  member lives. Invisible at -O0; in the packed -O2 lane `madc::value::operator=`
+  uses an aligned SSE move and faults. `h.v = "x"` was enough to trigger it.
+  `tests/testvaluealign.mad` asserts the offsets directly, so it fails in every
+  lane rather than only the optimized one.
+- **Fixed: a `madc::value`'s base type fell through to `int`.**
+  `append_type_specs` had no `dtARRAY` arm, so every site spelling a value's base
+  type through a DECLARATOR got the `default: int` — `value *p` emitted `int *p`,
+  a four-byte declaration of a forty-eight-byte object, silent apart from one
+  c2mir warning because the pointer VALUE was still right. Fixing the specifier
+  then required `&v` to stop being `N_ADDR` of the storage array (that yields
+  `long long (*)[6]`); the array NAME already decays correctly.
+  `tests/testvalueptr.mad`, with `.expect_quiet` so the warning cannot return
+  unnoticed.
+
 - **`php::print_r($x, true)` — PHP's `$return` parameter.** PHP's own signature:
   ONE function, a default second parameter, and a `string|true` return, which is
   what `madc::value` models — the captured text when `$return` is true, boolean

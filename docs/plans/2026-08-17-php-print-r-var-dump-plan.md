@@ -21,10 +21,10 @@ Landed so far (each its own commit, each green in JIT + `--exe` + `--obj`):
 | S6 — `madc::value` / `array` | **DONE** (session #102). All nine kinds, arbitrary nesting, both flavors, via ONE runtime walk. `tests/unit/test_dump_value.cpp` (byte-exact) + `tests/testphpdumpvalue.mad`. See §14 — it corrects §12.7. |
 | container refusal by name | **DONE** (session #102). `std::map` said `_Rb_tree_color`; it names the container now. `tests/testphpdumprefuse.expect_err`. See §14.6. |
 | multidimensional arrays | **DONE** (session #102). The walk carries the dim chain and recurses per dimension. `tests/testphpdumpmultidim.mad`. See §15 — and the c2mir silent-wrong-answer it uncovered. |
-| S3c — pointers + `*RECURSION*` | NOT STARTED — needs a generated function + a runtime ancestor stack, see §12.6 |
-| enums | NOT STARTED — refused by name. Needs the enumerator table: `DataDefENUM` carries `enum_name` and `underlying` but NOT its enumerators (a scoped enum's live in a `variable_map_t` pseudo-namespace), so showing the NAME rather than a bare number needs the type graph to hold them |
-| S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12.5 |
-| S5b — associative containers | NOT STARTED — gated on S1 |
+| S3c — pointers + `*RECURSION*` | **DONE** (session #103). A generated dumper FUNCTION per (pointee, flavor) + the shared runtime ancestor stack. Rings, self-pointers, mutual rings, shared-acyclic, null, pointer-to-pointer, pointer members. `tests/testphpdumpptr.mad` (+ `.expect_quiet`), PHP-oracled byte-for-byte. See §17 — it supersedes §16.1's rejected attempt. |
+| enums | **DONE** (session #103). `DataDefENUM::enumerators` is the one owner; PHP 8.1's enum shape with the REAL backing type. `tests/testphpdumpenum.mad` (+ `.expect_quiet`), PHP-oracled. See §18. |
+| S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12.5. Owed regardless of the dumper: `for (auto &kv : m)` does not work today. |
+| S5b — associative containers | NOT STARTED — gated on S1. `std::map` / `set` / `list` are still refused BY NAME; this is the last uncovered shape. |
 
 **COVERAGE, not slices** (the standing directive after session #101 released on a
 one-slice "done"): a measured shape table for what works and what is refused
@@ -1213,3 +1213,210 @@ enumerators back out of `prog->namespace_map` keyed by the canonical spelling �
 NAME-keyed reverse lookup.** Making the type the owner means switching that read
 too (otherwise there are two answers to one question), which touches the pack
 path — so it needs the release / packed / headerless lanes, not just fulltest.
+
+## 17 Pointers (S3c) — BUILT (session #103). Supersedes §16.1's attempt.
+
+§16.3's design landed essentially as written. What follows is what it actually
+took, and the two places the design was silent.
+
+### 17.1 The shape that shipped
+
+```c
+static void __madc_dumpfn_N(void *sink, T *p, int depth, int nested)
+{
+        int __dcol = <step> * depth;            /* the base column, ONCE */
+        if (p) {
+                int r = __madc_dump_anc_push(p, <tag>);
+                if (r > 0)       { <walk *p at RELATIVE depth 0>; anc_pop(); }
+                else if (r == 0) { <*RECURSION*> }
+                else             { <__madc_dump_fail: could not grow> }
+        } else { <null render> }
+}
+```
+
+- **One function per (pointee type, flavor), memoized**, registered in the memo
+  BEFORE its body is built — so a body that reaches the same pointee finds a
+  CALL to make instead of starting a second expansion that never ends. That is
+  the whole cycle fix. On failure the memo entry AND any nested dumper minted
+  while building it are rolled back, so a refused dump leaves no dead static
+  function behind.
+- **`static`, therefore NOT declared through `need_output_extern`** — an extern
+  prototype ahead of a static definition is a storage-class conflict. Static is
+  also what makes the per-TU name safe: two TUs that each dump a `Node *` get
+  their own copy and neither is a duplicate symbol at link.
+- **Two pending lists**, `m_pending_top_protos` and `m_pending_top_defs`,
+  drained in `translate_module` just before Pass 2. Every prototype ahead of
+  every definition, because a mutual `struct A { B *b; } / struct B { A *a; }`
+  needs both declared before either is defined.
+- The sink is a PARAMETER, so ONE generated function serves a printing dump and
+  a capturing `print_r($x, true)` — the memo needs no sink in its key.
+
+### 17.2 The ancestor stack: keyed on (address, TYPE)
+
+`__madc_dump_anc_push(const void *p, unsigned tag)` returns **1** pushed / **0**
+already-on-path / **-1** could-not-grow. Three ways, so an allocation failure is
+never rendered as a `*RECURSION*` that is not there.
+
+The design did not have the **tag**. It is required:
+
+```c
+struct T { int v; int *p; };   T t; t.p = &t.v;
+```
+
+`&t` and `&t.v` are the SAME address. Without a type discriminator the walk
+pushes `&t` for the `T *` and then sees `&t.v` as already-on-path — a **false
+cycle**, i.e. a silent wrong answer, on ordinary C. The tag is the generated
+function's own index, which is a bijection with (pointee, flavor) inside the TU;
+a whole walk is generated in ONE TU with ONE flavor, so within any path that can
+actually be walked it is a bijection with the pointee TYPE.
+
+It GROWS without limit (a 10,000-node list is legitimate and PHP prints all of
+it) and it is `MADC_RT_TLS` thread-local, exactly as `rt_except.c` does, with
+the ledger build defining that empty.
+
+**`src/rt_dump_value.cpp` moved onto the same stack**, via an RAII frame so an
+exception thrown by `as_array()` cannot leak an entry. One owner, not two — and
+necessary rather than tidy: the two walks NEST (a value sits in a struct a
+pointer reached), so two private stacks would each see half of one path.
+
+### 17.3 Columns: `base + constant`, and the two other runtime facts
+
+The in-line walk is expanded per level, so it knows its absolute depth and every
+column is a literal. A generated function is shared by call sites at DIFFERENT
+depths, so three things stop being compile-time constants inside it. Each got
+ONE owner rather than a parameter threaded through ~20 builders:
+
+| owner | what it decides |
+|---|---|
+| `dump_col(fl, depth, entry)` | `integer(k)` outside a dumper, `base + k` inside |
+| `dump_depth_arg(depth)` | the ABSOLUTE depth, for `__madc_dump_value` (the one primitive that takes a depth, because the runtime value walk computes its own descent) |
+| `dump_nested_arg(depth, nested)` | a literal, or the function's `nested` PARAMETER at relative depth 0 |
+| `dump_pr_end_entry(fl, depth)` | print_r's end-of-entry newline: nothing, `pr_nl`, or `if (nested) pr_nl` |
+
+This works because the geometry is LINEAR in depth —
+`frame_col(a+b) == frame_col(a) + frame_col(b)` — which `rt_dump.h`'s
+`madc_dump_frame_col` owns and `dump_col_step` reads.
+
+⚠️ **The bug this shape invites, which bit once:** the context names must stay
+SET until every arm is built. Restoring them right after the walk emitted the
+var_dump `NULL` at column 0 and dropped print_r's end-of-entry newline entirely,
+because the null and cycle arms are part of the same function body and were
+being built as if they were top-level.
+
+### 17.4 §16.1's SIGSEGV: no longer reachable through this path
+
+The rejected inline expansion took **57s and then SIGSEGV** on `tmp/probe/fan14.mad`
+(an ACYCLIC 14-level fan-out-2 graph). The generated-function design compiles the
+same file in **534ms** with correct output, because a shared pointee is one CALL
+per site instead of one expansion per path: 15 functions, not 2^14 inline copies.
+
+The crash itself was **never root-caused**, and this does not root-cause it — it
+removes the only construct known to reach it (the knob that drove the expansion
+past its budget existed only in the stash). A flat hand-written 32,000-statement
+function still compiles in 3.3s, so it was never a per-function size limit. If a
+future change can produce a similar shape by other means, this is the trail.
+
+### 17.5 Measured, against php-cli 8.3.6
+
+print_r is BYTE-IDENTICAL on every shape (oracles `tmp/or/ptr.php`,
+`tmp/or/share.php`, captured with `cat -A`); var_dump matches except madc's
+documented real-C-type word.
+
+| shape | result |
+|---|---|
+| 3-node list, acyclic | **byte-identical**, including the empty `[next] => ` and its newline |
+| ring `1 -> 2 -> 3 -> 1` | **byte-identical**, one-space ` *RECURSION*`, no trailing blank |
+| self-pointer | **byte-identical** |
+| shared leaf, acyclic | **printed twice IN FULL, no marker** — the discriminator that rules out a visited set |
+| mutual `A -> B -> A` | `*RECURSION*` with A's own word |
+| null pointer | print_r empty, var_dump `NULL` |
+| pointer member in a struct | correct at depth |
+| `int *`, `int **` | followed through both levels |
+| `const char *` member | still TEXT — NOT followed |
+| pointer to `std::vector` / `std::string` / `madc::value` | rendered as the pointee |
+| 5000-node list, then the same list RINGED | both terminate; the ring differs by exactly the marker |
+| `tmp/probe/fan14.mad` | 534ms, correct (was 57s + SIGSEGV) |
+
+### 17.6 The defect the slice uncovered — fixed in its own commit
+
+A `value *` had no real type: `append_type_specs` had no `dtARRAY` arm, so a
+value's base type took the `default: int` at every site that spells it through a
+DECLARATOR rather than through the storage emitter. `value *p` emitted `int *p` —
+a four-byte declaration of a forty-eight-byte object, silent apart from one
+c2mir warning because the pointer VALUE was still right.
+
+Fixing the specifier then required `&v` to stop being `N_ADDR` of the storage
+array: that yields `long long (*)[6]`, the same address with a different type.
+The array NAME already decays correctly, the same way a `T &` parameter's stored
+value already IS the address; `&s.v` on a value MEMBER needed the same arm.
+
+This is also the root of **D1** (`value f()` emitting `int f()` and silently
+returning nothing). The return path needs declarator work of its own, so D1
+stays open. `tests/testvalueptr.mad` carries a `.expect_quiet` fixture, so the
+warning cannot return unnoticed.
+
+## 18 Enums — BUILT (session #103). Supersedes §16.4's cost estimate.
+
+### 18.1 The owner
+
+`DataDefENUM::enumerators` — `vector<pair<string,int64_t>>`, DECLARATION order,
+duplicates KEPT. Stamped at the ONE point in `TokenENUM::parse` where the name
+and the value are both known whichever of the three registration branches ran.
+
+§16.4 was right that no existing structure could answer the question. The three
+live stores — a scoped enum's pseudo-namespace, a class-nested enum's
+`static_member_*` maps, a plain C enum's global constants — each answer "what is
+`Color::GREEN`". None answers "what are `Color`'s enumerators", and the plain-C
+registration has no edge back to the tag at all.
+
+`forest_record_enum` now READS the owner instead of re-deriving the run with a
+NAME-keyed reverse lookup into `prog->namespace_map`. That also fixes the ORDER
+(the map was alphabetical; the tag is in declaration order). The restore
+populates the owner, so a bound compile renders what a live one does.
+
+### 18.2 Rendering — PHP 8.1 has real enums, so there is an oracle
+
+Captured from php-cli 8.3.6 (`tmp/or/enum.php`, `cat -A`):
+
+```
+Suit Enum:string                 enum(Suit::Hearts)        <- var_dump
+(
+    [name] => Hearts
+    [value] => H
+)
+```
+
+A C enum IS a backed enum — a name and an integer — so print_r keeps PHP's frame
+verbatim and var_dump keeps PHP's one-liner. madc's one divergence is the same
+one as everywhere else: the REAL backing type after the colon
+(`Color Enum:unsigned int`), which **g++ and clang++ both confirm** is what
+`std::underlying_type<Color>::type` is for an all-non-negative unscoped enum
+(`int` once an enumerator is negative). The tag uses its CANONICAL spelling, so a
+class-nested one reads `enum(Deck::Kind::Tarot)`.
+
+### 18.3 The value -> name lookup
+
+A runtime question, so it is a memoized generated function per TAG — the
+machinery §17 just added, reused:
+
+```c
+static char *__madc_enumname_N(long long v)
+{
+        if (v == 0) return "RED";
+        if (v == 1) return "GREEN";
+        return "";
+}
+```
+
+A flat if-chain and NOT a switch: duplicate values are legal C
+(`enum { A = 1, B = 1 }`) and would be duplicate labels, which c2mir rejects.
+The FIRST name wins — the source's order, and what a debugger shows. `char *`
+rather than `const char *` because a C string literal IS `char[]`, so this needs
+no const plumbing to be warning-free.
+
+**A value naming NO enumerator** is legal C and has no PHP form. The lookup
+returns the EMPTY string, which is exactly what print_r renders for a null, so no
+call site needs a branch; var_dump reads it as "report the type and the number"
+and prints `enum Color(7)`. Neither invents a case that does not exist. An
+OPAQUE declaration (`enum E;`) has no table at all and is refused BY ITS OWN
+NAME, like every other uncovered type in this file.
