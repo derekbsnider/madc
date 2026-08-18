@@ -85,6 +85,65 @@ Do NOT reach into `_Rb_tree` instead. That is exactly what commit `69b910ec`
 (session #102) was written to stop; the by-name refusal is the correct behaviour
 until the protocol exists.
 
+### 3.1 MEASURED in #103 — three findings that CHANGE the design
+
+Run these before designing anything; they are cheap and they redirect the work.
+
+1. **The explicit-iterator loop ALREADY WORKS on a `std::map`.** `tmp/probe/mapiter_a.mad`:
+   `for (std::map<int,int>::iterator it = m.begin(); it != m.end(); ++it)` with
+   `it->first` / `it->second` runs and prints correctly. So begin/end/compare/
+   increment/arrow on a real libstdc++ tree iterator are NOT the gap.
+2. **What IS missing is `auto` deduction, in two places.**
+   `for (auto &kv : m)` fails with *"member reference type 'auto' is not a
+   structure or union"* (the range-for's element type is never deduced), and
+   `auto it = m.begin(); ++it;` fails to PARSE — *"Expecting ';' after for
+   condition"* on the `++it`. `tmp/probe/mapiter_c.mad`, `tmp/probe/mapiter.mad`.
+   Those two are the language half of S1 and are independent of the dumper,
+   which knows the iterator type and needs no `auto`.
+3. ⚠️ **libstdc++ declares `operator==` / `operator!=` on EVERY one of these
+   iterators as FRIEND FREE functions, not members** — `stl_tree.h` lines
+   315/320 and 396/401, `stl_list.h` 318/324 and 408/414. `findMethod` will not
+   find them, so **a member-dispatch `it != end()` cannot be generated at all.**
+   madc does have free-operator machinery (`Program::free_operator_overloads`,
+   `instantiate_free_operator_template`, `CirBuilder::std_free_operator_instantiation`)
+   but every entry point is TOKEN-driven, and the dumper has no token.
+
+**So the generated loop should be COUNTED, not comparison-based:**
+
+```
+long n = c.size();  It it = c.begin();
+for (long k = 0; k < n; ++k) { <use *it>; ++it; }
+```
+
+`operator*` and prefix `operator++` ARE members (verified at the same lines), so
+this is entirely member dispatch. It is not a shortcut: var_dump's head line
+states the count anyway, so `size()` is already required, and the loop shape is
+the one `dump_sequence` emits today. ⚠️ `operator++` needs ARITY selection —
+prefix and postfix are both spelled `operator++` and differ only in the postfix
+dummy `int`, so `findMethod` alone picks either.
+
+### 3.2 The remaining design question — capture the oracle FIRST
+
+A `std::map`'s element is `std::pair<const K, V>` and PHP renders a map as
+`[key] => value`, NOT as a pair. So the keyed containers need the key rendered
+BETWEEN `[` and `] => `:
+
+- An INTEGRAL key already works with no new primitive: `dump_key_idx` takes a
+  runtime `long long` (`__madc_dump_pr_key_idx`).
+- A STRING key does not. It needs an inline-key primitive PAIR
+  (`pr_key_open` / `pr_key_close` plus the var_dump twins) so the key's own walk
+  can render between them — and then the "does a key owe print_r's end-of-entry
+  newline" rule has to be answered NO for a key, which `dump_pr_end_entry`
+  currently decides from depth alone.
+- var_dump QUOTES a string key (`["name"]=>`) and not an integral one (`[1]=>`),
+  and the compiler knows which — so the quote is a compile-time flag, not a
+  runtime test.
+
+Distinguish keyed from positional STRUCTURALLY, never by name:
+`class_has_type_alias(cls, "mapped_type")` is true for `std::map` and false for
+`std::set` / `std::list` (both of which therefore render POSITIONALLY, exactly
+like a vector — PHP has no set, and a list of values is the honest form).
+
 **The layer chain:**
 
 - `CirBuilder::class_index_iteration_protocol` (`src/cir_builder.cpp` ~22059) is
