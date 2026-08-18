@@ -1,0 +1,66 @@
+// A type that contains ITSELF must not expand forever.
+//
+// `struct Node { long size(); Node &operator[](long); };` is legal C++ — a
+// JSON-tree shape — and the dump walk is EXPANDED per nesting level, so nothing
+// bounded it: this consumed 4 GB and died in the MADC_MEM_LIMIT guard with
+// `tree build failed (std::bad_alloc)`, which says nothing about what happened.
+//
+// The fix is an ancestor set in the TYPE domain — the compile-time analogue of
+// the runtime ancestor stack the pointer walk uses. TWO sets, because the WORD
+// walks the type graph independently of the WALK (a container's word contains its
+// element's), and dump_any pushes the type before the head-line word is built, so
+// one shared set would make every container's word degrade.
+//
+// The outcome is not a refusal: the container arm declines, and dump_any's
+// existing fallback prints the type's real MEMBERS instead. That rule predates
+// this — "a class that IS positional but whose element has no dumper yet falls
+// back to the member walk; an enhancement must not turn a working dump into an
+// error" — and it is the right answer here too, because the members are real.
+//
+// THE NEGATIVE CONTROL IS THE POINT: `Twice` reaches `Pt` twice WITHOUT a cycle
+// and must print it BOTH times. A visited set would stamp the second one; this is
+// a PATH set, so it does not. Same distinction as the runtime ancestor stack, in
+// the type domain.
+//
+// `Box<int>` covers the WORD path specifically: a self-referential TEMPLATE
+// container's word contains its own word. A non-template one exits early because
+// dump_template_word needs a '<', so only a template can reach that recursion.
+#include <stdio.h>
+
+struct Pt { int x; int y; };
+
+struct Twice { Pt a; Pt b; };
+
+struct Node {
+	int v;
+	long size() { return 1; }
+	Node &operator[](long i) { return *this; }
+};
+
+template<class T>
+struct Box {
+	T v;
+	long size() { return 1; }
+	Box<T> &operator[](long i) { return *this; }
+};
+
+int main()
+{
+	printf("--- the same type twice, no cycle: both must print\n");
+	Twice t;
+	t.a.x = 1; t.a.y = 2; t.b.x = 3; t.b.y = 4;
+	php::print_r(t);
+
+	printf("--- self-referential container: members, not 4 GB\n");
+	Node n;
+	n.v = 1;
+	php::print_r(n);
+	php::var_dump(n);
+
+	printf("--- self-referential TEMPLATE container: the word path\n");
+	Box<int> b;
+	b.v = 7;
+	php::print_r(b);
+	php::var_dump(b);
+	return 0;
+}

@@ -255,6 +255,22 @@ std::string CirBuilder::dump_type_word(DataDef *dd)
 // and the word the walk below it prints are answers to one question.
 std::string CirBuilder::dump_container_type_word(DataDefCLASS *cls)
 {
+	// A SELF-REFERENTIAL container's word contains itself. Fall back to the
+	// canonical spelling rather than recursing: a `Box<int>` whose operator[]
+	// returns `Box<int>&` would otherwise build its own name forever (a
+	// non-template one exits below anyway, because dump_template_word needs a
+	// '<'). m_dump_word_expanding is its own set — see the header for why it
+	// cannot share the walk's.
+	if (!cls || m_dump_word_expanding.count(cls))
+		return cls ? dump_class_type_word(cls) : std::string("?");
+	m_dump_word_expanding.insert(cls);
+	std::string word = dump_container_type_word_inner(cls);
+	m_dump_word_expanding.erase(cls);
+	return word;
+}
+
+std::string CirBuilder::dump_container_type_word_inner(DataDefCLASS *cls)
+{
 	Variable *szmv = NULL, *opmv = NULL;
 	if (class_index_iteration_protocol(cls, szmv, opmv)) {
 		FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL;
@@ -2053,6 +2069,36 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	if (dims && !dims->empty())
 		return dump_array(fl, acc, dd, *dims, 0, depth, nested, out,
 				  origin, why);
+	// An AGGREGATE already on the expansion path is refused by name. The walk is
+	// EXPANDED per nesting level, so a type that contains itself — legally, via a
+	// container whose element type is the container (`Node &operator[](long)`) —
+	// has no bound: it consumed 4 GB and died in MADC_MEM_LIMIT with
+	// `std::bad_alloc`, which says nothing about what happened. See
+	// m_dump_expanding in the header for why the pointer path is exempt.
+	DataDef *path_key = dd->unqualified();
+	bool guarded = path_key && !dd->is_pointer() && !dd->is_reference()
+		    && dynamic_cast<DataDefSTRUCT *>(path_key) != NULL;
+	if (guarded && m_dump_expanding.count(path_key)) {
+		why = std::string("no dumper for '") + dump_type_word(dd)
+		    + "' yet: it contains ITSELF (a container whose element type is"
+		      " the container), so expanding it has no bound. A"
+		      " self-referential structure reached through a POINTER is"
+		      " followed, with a runtime cycle check";
+		return false;
+	}
+	// RAII, because every arm below has its own `return`.
+	struct PathFrame {
+		std::set<DataDef *> *set;
+		DataDef *key;
+		PathFrame(std::set<DataDef *> *s, DataDef *k) : set(s), key(k)
+		{
+			if (set) set->insert(key);
+		}
+		~PathFrame() { if (set) set->erase(key); }
+	private:
+		PathFrame(const PathFrame &);
+		PathFrame &operator=(const PathFrame &);
+	} frame(guarded ? &m_dump_expanding : NULL, path_key);
 	// A DataDefSTRUCT is the ONE aggregate-layout owner, and a POD struct is
 	// only PROMOTED to DataDefCLASS when it earns class-hood — so the walk
 	// keys on DataDefSTRUCT, never on DataDefCLASS. A pointer or reference

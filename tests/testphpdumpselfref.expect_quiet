@@ -1,0 +1,4 @@
+Presence enables the check: the JIT run must produce EMPTY stderr. Without the
+type-path guard this test does not warn — it allocates 4 GB and dies — so the
+real gate is that it completes at all; this fixture keeps it honest about
+diagnostics on top.

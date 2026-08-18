@@ -761,6 +761,24 @@ private:
 	// it goes straight to stdout (then a null pointer is passed). Set by
 	// lower_dump_call for the duration of one dump's walk.
 	std::string m_dump_sink_var;
+	// The dump walk's ancestor set in the TYPE domain — the compile-time
+	// analogue of the runtime ancestor stack in src/rt/rt_dump.c, and it exists
+	// for the same reason: `struct Node { long size(); Node &operator[](long); };`
+	// is legal C++ (a JSON-tree shape) and makes the sequence walk recurse on its
+	// own element type with nothing bounding it. A type on the CURRENT path is
+	// refused by name; one merely reached twice (`struct P { Pt a; Pt b; }`)
+	// is not, which is why it is a path set and not a visited set.
+	//
+	// The POINTER path deliberately has no entry here and must not get one:
+	// dump_pointer_fn is MEMOIZED, so a cycle through a pointer emits a CALL and
+	// never re-enters dump_any for the same type.
+	std::set<DataDef *> m_dump_expanding;
+	// The same question for the WORD, which walks the type graph independently
+	// (a container's word contains its element's). SEPARATE from the set above
+	// on purpose: dump_any pushes the type BEFORE the head-line word is built, so
+	// one shared set would make every container's word fall back to the canonical
+	// spelling.
+	std::set<DataDef *> m_dump_word_expanding;
 	bool dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 			   DataDefCLASS *cls, int depth, bool nested,
 			   std::vector<node_t> &out, TokenBase *origin,
@@ -871,6 +889,7 @@ private:
 	// it, so an entry's head-line word and the word the walk below it prints
 	// answer one question. dump_type_word routes every class through here.
 	std::string dump_container_type_word(class DataDefCLASS *cls);
+	std::string dump_container_type_word_inner(class DataDefCLASS *cls);
 	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
 	// A template container's word with only the type arguments that carry
 	// information — the canonical spelling drags in every defaulted
