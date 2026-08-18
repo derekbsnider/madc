@@ -177,12 +177,20 @@ std::string CirBuilder::dump_sequence_type_word(DataDefCLASS *cls, DataDef *elem
 	return word.substr(0, lt) + "<" + dump_type_word(elem) + ">";
 }
 
-// An array's type word: the element's, with the extent.
-std::string CirBuilder::dump_array_type_word(DataDef *elem, size_t count)
+// An array's type word: the element's, with every extent from THIS dimension
+// outward — `int[2][3]` at the outer level of an `int m[2][3]` and `int[3]` one
+// level in, which is the shape C declares and the nesting PHP renders.
+std::string CirBuilder::dump_array_type_word(DataDef *elem,
+					     const std::vector<carray_dim_t> &dims,
+					     size_t dim_ix)
 {
-	char n[32];
-	snprintf(n, sizeof(n), "[%llu]", (unsigned long long)count);
-	return dump_type_word(elem) + n;
+	std::string word = dump_type_word(elem);
+	for (size_t d = dim_ix; d < dims.size(); d++) {
+		char n[32];
+		snprintf(n, sizeof(n), "[%llu]", (unsigned long long)dims[d]);
+		word += n;
+	}
+	return word;
 }
 
 // The SOURCE's OWN NAME for this type, if anything names it. The datatype maps
@@ -560,16 +568,19 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 		bool is_arr = count > 1
 			   || (i < sdd->member_array_flags.size()
 			       && sdd->member_array_flags[i]);
-		// member_counts holds the TOTAL element count, so a multi-dim
-		// member would be walked as one flat run and `m[i]` would index
-		// past a ROW: for `int m[2][3]`, m[4] is out of bounds. PHP shows
-		// a nested array here; both need the dim chain, so refuse until
-		// the walk carries it.
-		if (is_arr && i < sdd->member_dims.size()
-		    && sdd->member_dims[i].size() > 1) {
-			why = std::string("member '") + mn + "': no dumper for a"
-			      " multidimensional array yet";
-			return false;
+		// The DIM CHAIN, not the flattened count. member_counts holds
+		// the TOTAL element count (6 for `int m[2][3]`), and `m[i]`
+		// yields a ROW rather than an element, so a flat walk would read
+		// past the first row. member_dims carries the real shape; a
+		// 1-dimensional member whose dims were not recorded falls back to
+		// the count, which for one dimension IS the extent.
+		std::vector<carray_dim_t> mdims;
+		if (is_arr) {
+			if (i < sdd->member_dims.size()
+			    && !sdd->member_dims[i].empty())
+				mdims = sdd->member_dims[i];
+			else
+				mdims.push_back((carray_dim_t)(count ? count : 1));
 		}
 
 		// The key carries the ACCESS, and a private member also names its
@@ -593,8 +604,8 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 			return node2(N_FIELD, acc(), id(mname.c_str(), origin),
 				     origin);
 		};
-		if (!dump_any(fl, macc, mt, count, is_arr, depth + 1, true, out,
-			      origin, why)) {
+		if (!dump_any(fl, macc, mt, is_arr ? &mdims : NULL, depth + 1,
+			      true, out, origin, why)) {
 			why = std::string("member '") + mn + "': " + why;
 			return false;
 		}
@@ -608,21 +619,38 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 // ---------------------------------------------------------------------------
 // Elements are walked by a REAL loop (one expansion of the element dumper),
 // never unrolled — `char buf[4096]` must not emit 4096 copies.
+//
+// MULTIPLE DIMENSIONS are ordinary recursion over the dim chain, one level per
+// dimension — which is exactly how PHP renders one: nested arrays. `dim_ix` is
+// the dimension this call frames, so `int m[2][3]` frames 2 rows here and each
+// row re-enters at dim_ix 1 to frame its 3 elements. The access composes the
+// same way: each level's `eacc` wraps the level above it, so the leaf emits
+// `m[i][j]` and no level has to know how deep it is.
 bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
-			    size_t count, int depth, bool nested,
-			    std::vector<node_t> &out, TokenBase *origin,
-			    std::string &why)
+			    const std::vector<carray_dim_t> &dims, size_t dim_ix,
+			    int depth, bool nested, std::vector<node_t> &out,
+			    TokenBase *origin, std::string &why)
 {
 	if (!elem) {
 		why = "array of unresolved element type";
 		return false;
 	}
+	if (dim_ix >= dims.size()) {
+		why = "array with no recorded extent";
+		return false;
+	}
+	size_t count = (size_t)dims[dim_ix];
+	if (!count)
+		count = 1;
+	bool last = dim_ix + 1 == dims.size();
+
 	// A char array IS text to a PHP developer, not an array of small ints —
-	// the same rule that will make std::string print as its contents. Bounded
-	// by the extent: a C array need not be NUL-terminated, and %s would read
-	// past it.
-	if (elem->rawtype() == DataType::dtINT8
-	    || elem->rawtype() == DataType::dtUINT8) {
+	// the same rule that makes std::string print as its contents. Bounded by
+	// the extent: a C array need not be NUL-terminated, and %s would read
+	// past it. The rule applies at the LAST dimension only: a row of
+	// `char n[2][8]` is a string, and the level above it is an array of them.
+	if (last && (elem->rawtype() == DataType::dtINT8
+		     || elem->rawtype() == DataType::dtUINT8)) {
 		const char *sym = fl == dfVarDump ? "__madc_dump_vd_cstr_n"
 						  : "__madc_dump_pr_cstr_n";
 		std::vector<ExternParam> params;
@@ -631,7 +659,8 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 			params.push_back({ {N_INT}, false });
 			params.push_back({ {N_CHAR}, true });
 			append(a, integer(dump_frame_col(fl, depth), origin));
-			std::string word = dump_array_type_word(elem, count);
+			std::string word = dump_array_type_word(elem, dims,
+							       dim_ix);
 			append(a, str(word.c_str(), word.size() + 1, origin));
 		}
 		params.push_back({ {N_CHAR}, true });
@@ -647,7 +676,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 
 	out.push_back(dump_head(fl, depth,
 				fl == dfVarDump
-				  ? dump_array_type_word(elem, count)
+				  ? dump_array_type_word(elem, dims, dim_ix)
 				  : std::string("Array"),
 				count, origin));
 
@@ -661,7 +690,13 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	DumpAccess eacc = [this, acc, idxname, origin]() -> node_t {
 		return node2(N_IND, acc(), id(idxname.c_str(), origin), origin);
 	};
-	if (!dump_any(fl, eacc, elem, 1, false, depth + 1, true, body, origin, why))
+	// The innermost dimension holds ELEMENTS; every outer one holds arrays.
+	bool inner_ok = last
+		      ? dump_any(fl, eacc, elem, NULL, depth + 1, true, body,
+				 origin, why)
+		      : dump_array(fl, eacc, elem, dims, dim_ix + 1, depth + 1,
+				   true, body, origin, why);
+	if (!inner_ok)
 		return false;
 
 	// for (long i = 0; i < count; i += 1) { ... }
@@ -772,7 +807,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 					     id(nname.c_str(), origin), origin));
 		body.push_back(dump_key_idx(fl, depth,
 					    id(idxname.c_str(), origin), origin));
-		if (!dump_any(fl, eacc, elem, 1, false, depth + 1, true, body,
+		if (!dump_any(fl, eacc, elem, NULL, depth + 1, true, body,
 			      origin, why))
 			return false;
 	}
@@ -871,18 +906,23 @@ bool CirBuilder::dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
 }
 
 // The one dispatch: array framing, then aggregate framing, then scalar.
+//
+// `dims` IS the array-ness: NULL (or empty) means this is not a fixed-extent
+// array, and otherwise it is the whole dim chain. One parameter rather than the
+// old count+flag pair, because the two could disagree — and did, for a
+// multidimensional member, where the count was the FLATTENED total.
 bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
-			  size_t count, bool is_array, int depth, bool nested,
-			  std::vector<node_t> &out, TokenBase *origin,
-			  std::string &why)
+			  const std::vector<carray_dim_t> *dims, int depth,
+			  bool nested, std::vector<node_t> &out,
+			  TokenBase *origin, std::string &why)
 {
 	if (!dd) {
 		why = "unresolved type";
 		return false;
 	}
-	if (is_array)
-		return dump_array(fl, acc, dd, count ? count : 1, depth, nested,
-				  out, origin, why);
+	if (dims && !dims->empty())
+		return dump_array(fl, acc, dd, *dims, 0, depth, nested, out,
+				  origin, why);
 	// A DataDefSTRUCT is the ONE aggregate-layout owner, and a POD struct is
 	// only PROMOTED to DataDefCLASS when it earns class-hood — so the walk
 	// keys on DataDefSTRUCT, never on DataDefCLASS. A pointer or reference
@@ -959,26 +999,22 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 		return false;
 	}
 
-	// A fixed-extent array VARIABLE carries its extent on the Variable, not in
-	// its DataDef (a struct MEMBER carries it in member_counts instead) — the
-	// same place translate_foreach_carray reads it.
-	size_t count = 1;
-	bool is_arr = false;
+	// A fixed-extent array VARIABLE carries its shape on the Variable, not in
+	// its DataDef (a struct MEMBER carries it in member_dims instead) — the
+	// same place translate_foreach_carray reads it. The DIM CHAIN, never
+	// total_elements(): that flattens every dimension, and `a[i]` on a
+	// multi-dim array yields a ROW, so a flat walk would read past the first
+	// row.
+	std::vector<carray_dim_t> adims;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
 		if (tv->var.is_fixed_array() && !tv->var.is_vla()
 		    && tv->var.total_elements() > 0) {
-			// total_elements() flattens every dimension, and `a[i]` on
-			// a multi-dim array yields a ROW, not an element — walking
-			// it flat would index past the first row. PHP renders a
-			// nested array; both want the dim chain, so refuse until
-			// the walk carries it.
-			if (tv->var.dims.size() > 1) {
-				why = "no dumper for a multidimensional array yet";
-				return false;
-			}
-			count = tv->var.total_elements();
-			is_arr = true;
+			adims = tv->var.dims;
+			if (adims.empty())
+				adims.push_back((carray_dim_t)
+						tv->var.total_elements());
 		}
+	bool is_arr = !adims.empty();
 
 	// The walk rebuilds the access once PER MEMBER, so an aggregate argument
 	// must be re-evaluable without side effects. A named variable or a member
@@ -995,7 +1031,8 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 	}
 
 	DumpAccess acc = [this, arg]() -> node_t { return translate_expr(arg); };
-	return dump_any(fl, acc, dd, count, is_arr, 0, false, out, origin, why);
+	return dump_any(fl, acc, dd, is_arr ? &adims : NULL, 0, false, out,
+			origin, why);
 }
 
 // ---------------------------------------------------------------------------

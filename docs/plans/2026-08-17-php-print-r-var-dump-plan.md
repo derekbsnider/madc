@@ -18,10 +18,18 @@ Landed so far (each its own commit, each green in JIT + `--exe` + `--obj`):
 | S4 — `var_dump` | **DONE.** One walk, two renderers; real C type words. `tests/testphpvardump.mad`, PHP-oracled |
 | S5a — positional containers | **DONE.** `std::string` as text, `std::vector` / `std::array` as arrays, via the shared type-checked protocol. `tests/testphpseq.mad`, PHP-oracled |
 | `print_r($x, true)` — PHP's `$return` | **DONE** (session #101). One function, default second parameter, `madc::value &` return holding the text or `true`. `tests/testphpprintrreturn.mad`, PHP-oracled. See §13. |
+| S6 — `madc::value` / `array` | **DONE** (session #102). All nine kinds, arbitrary nesting, both flavors, via ONE runtime walk. `tests/unit/test_dump_value.cpp` (byte-exact) + `tests/testphpdumpvalue.mad`. See §14 — it corrects §12.7. |
+| container refusal by name | **DONE** (session #102). `std::map` said `_Rb_tree_color`; it names the container now. `tests/testphpdumprefuse.expect_err`. See §14.6. |
+| multidimensional arrays | **DONE** (session #102). The walk carries the dim chain and recurses per dimension. `tests/testphpdumpmultidim.mad`. See §15 — and the c2mir silent-wrong-answer it uncovered. |
 | S3c — pointers + `*RECURSION*` | NOT STARTED — needs a generated function + a runtime ancestor stack, see §12.6 |
+| enums | NOT STARTED — refused by name. Needs the enumerator table: `DataDefENUM` carries `enum_name` and `underlying` but NOT its enumerators (a scoped enum's live in a `variable_map_t` pseudo-namespace), so showing the NAME rather than a bare number needs the type graph to hold them |
 | S1 — `begin()`/`end()` protocol | NOT STARTED — **resequenced**, see §12.5 |
 | S5b — associative containers | NOT STARTED — gated on S1 |
-| S6 — `madc::value` / `array` | NOT STARTED — see §12 for what it needs that the rest does not |
+
+**COVERAGE, not slices** (the standing directive after session #101 released on a
+one-slice "done"): a measured shape table for what works and what is refused
+lives in the live handoff, and is re-measured — never summarised — before any
+release claim.
 
 §12 records what implementation TAUGHT us that the design could not know.
 
@@ -990,3 +998,85 @@ diagnostic reverts to naming an internal.
   output has `int(9)` for the C int beside `array(1)` for the value, each walk
   naming what it actually has.
 - `tests/testphpdumprefuse.expect_err` — the container refusal, by name.
+
+## 15 Multidimensional arrays (session #102, DONE) — and the c2mir bug they found
+
+### 15.1 The walk carries the dim chain
+
+`int m[2][3]` was refused, and the refusal poisoned the whole dump: one such
+member and the entire struct became a compile error. The stated reason was real
+— `member_counts` holds the FLATTENED total (6, not 2) and `m[i]` yields a ROW,
+so a flat walk reads past the first row — but the dim chain was already recorded
+in `member_dims` (struct members) and `Variable::dims` (variables). Nothing was
+missing; it was simply not being read.
+
+`dump_any` now takes `const std::vector<carray_dim_t> *dims` in place of the old
+`size_t count, bool is_array` pair. **`dims` IS the array-ness**: NULL or empty
+means not an array. One parameter instead of two that could disagree — and they
+did, which was the bug. `dump_array` gained a `dim_ix` and recurses one level per
+dimension, which is exactly how PHP renders one (nested arrays). The access
+composes naturally: each level's `eacc` wraps the level above, so the leaf emits
+`m[i][j]` and no level knows how deep it is.
+
+The char-array-is-text rule now applies at the LAST dimension only: a row of
+`char n[2][8]` is a string, and the level above it is an array of strings —
+which is what PHP shows. `var_dump`'s word carries the extents from this
+dimension out: `int[2][3]` at the outer level, `int[3]` one level in.
+
+print_r output is byte-identical to php-cli 8.3.6 for both the 2-D and 3-D cases
+(diffed programmatically against `tmp/or_multidim.out`, not eyeballed).
+
+### 15.2 The test found a SILENT WRONG ANSWER in c2mir
+
+Writing the struct-member case exposed a defect that had nothing to do with
+dumping:
+
+```c
+struct S { char n[2][8]; };
+struct S s = { { "ada", "bob" } };     /* gcc & clang: [ada][bob] */
+```
+
+madc printed `[ada][]`. Exit 0, no diagnostic, wrong data.
+
+**It was c2mir, not madc**, and the bare array was wrong too — `c2m` alone gave
+`bare: [ada][]` and `char[2][2][4]` gave `[ab][][ef][]`. madc's parse-time
+byte-list expansion (the `c11-transpiler.md` workaround) HID it for a bare
+`char n[2][8] = {...}`, because that expansion keys on the DECLARED VARIABLE's
+`arr_dims`; a struct member has none, falls through the guard, and reached the
+real bug.
+
+Root cause, read off the emitted MIR rather than guessed:
+
+```
+	call	memcpy, I_0, fp,      "ada\000", 4
+	add	I_2, fp, 4                        <-- must be fp, 8
+	call	memcpy, I_1, I_2,     "bob\000", 4
+```
+
+`update_init_object_path` descends into an aggregate element until it reaches a
+scalar. When a STRING initializes an array sub-object it consumes that
+sub-object WHOLE, so the path must not descend into it — the same rule the
+function already had for a brace list and for a whole-struct value. Without it
+the path was left inside row 0, so the next initializer advanced to `row0[1]`:
+offset 1 instead of 8. `rel_offset` then never triggered the gap fill, and "bob"
+landed over the middle of row 0.
+
+The fix is the missing third arm beside those two, using c2mir's own
+`init_compatible_string_p`. Fixed in `third_party/mir/c2mir/c2mir.c` — in-tree
+madc source, maintained like any file (`.claude/rules/build.md`) — and it is an
+upstream-worthy bugfix authored here.
+
+Gates: `third_party/mir/c-tests/new/nested-string-array-init.c` (c2mir's own
+suite, self-checking, verified against gcc AND clang) and
+`tests/teststrarrayinit.mad`. Negative control: the pre-fix `c2m` binary printed
+`[ada][]` and `[ab][][ef][]` for those exact shapes.
+
+MIR c-tests after the fix: **1143 tests, 2286 successes, 0 failures.**
+
+### 15.3 Follow-up NOT taken: retiring madc's byte-list expansion
+
+With c2mir correct, madc's parse-time string→byte-list expansion for nested char
+array initializers is redundant for the shapes it covers. It is NOT removed
+here: it is not a defect, removing it needs its own verification pass over every
+shape it serves (including `--emit=c11`), and this commit is a bug fix. Recorded
+so it is not rediscovered as a mystery.

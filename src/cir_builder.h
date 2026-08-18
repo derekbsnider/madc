@@ -711,9 +711,13 @@ private:
 	bool dump_argument(DumpFlavor fl, TokenBase *arg,
 			   std::vector<node_t> &out, TokenBase *origin,
 			   std::string &why);
+	// `dims` IS the array-ness: NULL or empty means not a fixed-extent
+	// array, otherwise it is the whole dim chain. One parameter, not a
+	// count+flag pair the two of which could disagree — and did, for a
+	// multidimensional member whose count was the FLATTENED total.
 	bool dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
-		      size_t count, bool is_array, int depth, bool nested,
-		      std::vector<node_t> &out, TokenBase *origin,
+		      const std::vector<carray_dim_t> *dims, int depth,
+		      bool nested, std::vector<node_t> &out, TokenBase *origin,
 		      std::string &why);
 	bool dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			 int depth, std::vector<node_t> &out, TokenBase *origin,
@@ -721,10 +725,12 @@ private:
 	bool dump_struct(DumpFlavor fl, const DumpAccess &acc, DataDefSTRUCT *sdd,
 			 int depth, bool nested, std::vector<node_t> &out,
 			 TokenBase *origin, std::string &why);
+	// `dim_ix` is the dimension THIS call frames; it recurses one level per
+	// dimension, which is how PHP renders a multidimensional array.
 	bool dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
-			size_t count, int depth, bool nested,
-			std::vector<node_t> &out, TokenBase *origin,
-			std::string &why);
+			const std::vector<carray_dim_t> &dims, size_t dim_ix,
+			int depth, bool nested, std::vector<node_t> &out,
+			TokenBase *origin, std::string &why);
 	// The output primitives, one builder each.
 	node_t dump_call_stmt(const char *sym, node_t args, TokenBase *origin);
 	// ONE owner for declaring a dump primitive's extern: every one of them
@@ -779,7 +785,9 @@ private:
 	std::string dump_type_word(DataDef *dd);
 	std::string dump_class_type_word(class DataDefCLASS *cls);
 	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
-	std::string dump_array_type_word(DataDef *elem, size_t count);
+	std::string dump_array_type_word(DataDef *elem,
+					 const std::vector<carray_dim_t> &dims,
+					 size_t dim_ix);
 	node_t dump_vd_text_open(int depth, const std::string &word, node_t len,
 				 TokenBase *origin);
 	node_t dump_vd_text_close(TokenBase *origin);
