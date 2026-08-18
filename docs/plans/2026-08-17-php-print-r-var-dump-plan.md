@@ -1080,3 +1080,136 @@ array initializers is redundant for the shapes it covers. It is NOT removed
 here: it is not a defect, removing it needs its own verification pass over every
 shape it serves (including `--emit=c11`), and this commit is a bug fix. Recorded
 so it is not rediscovered as a mystery.
+
+## 16 Pointers (S3c) — the design, after a WRONG first attempt (session #102)
+
+### 16.1 What was tried and REJECTED — read this before re-attempting
+
+A compile-time pointer expansion was built, made green for acyclic graphs, and
+then **set aside in `git stash@{0}`, not committed.** It followed a pointer by
+expanding the pointee inline, guarded by a stack of pointee types on the current
+expansion path plus a fan-out budget.
+
+It terminated, and the reasoning was even sound as far as it went: a struct
+cannot contain itself BY VALUE (C forbids it), so every unbounded path must
+traverse a pointer; the type-path stack refuses a repeat, so depth is bounded by
+the number of distinct pointee types. Mutual `A -> B -> A` and longer rings were
+caught, not just literal self-reference.
+
+**It is still the wrong design, for the reason the owner gave:**
+
+> *"if you have a linked list of structures with pointers and a loop exists where
+> one structure points back to an earlier one in the series, print_r or var_dump
+> would loop endlessly without loop detection"*
+
+That is **loop avoidance by refusal, not loop detection.** It terminates only
+because it REFUSES `struct Node { Node *next; }` — a linked list, which is the
+canonical thing anyone wants to `print_r`. The feature was absent and the check
+was hiding that.
+
+Two measured problems on top of the conceptual one:
+
+- **An acyclic DAG bounds the depth but NOT the size.** The stack is a path (it
+  must be — see §16.2), so a shared subtree re-expands once per path. A 14-level
+  fan-out-2 chain with no cycle at all took **57s and then SIGSEGV**; the 12-level
+  one took 6.3s. A budget was added to refuse loudly instead of crashing, which
+  is a patch on a design that should not exist.
+- ⚠️ **THAT SIGSEGV IS NOT ROOT-CAUSED and is a recorded open defect.** A flat
+  hand-written 32,000-statement function compiles fine in 3.3s, so it is NOT a
+  per-function size limit — it is specific to the shape the expansion produced.
+  Reducer: `tmp/probe/fan14.mad` with `MADC_DUMP_EXPAND_LIMIT` raised (the knob
+  exists only in the stash). Whoever lands §16.3 should confirm the generated-
+  function design cannot reach it, and if madc/c2mir/MIR can still be crashed
+  that way by other means, fix it there.
+
+What CARRIES OVER from the stash: the null rendering (print_r renders a null
+pointer as the empty string, keeping only the entry's newline; var_dump prints
+NULL at the value column), the `dump_vd_null` builder, `__madc_dump_vd_null` in
+rt_dump.c, and `tests/testphpdumpptr.mad` — whose expected output is IDENTICAL
+under either design, so it is a real gate on the new one.
+
+### 16.2 The oracle: an ANCESTOR STACK, never a visited set
+
+Captured from php-cli 8.3.6 (`tmp/or_cyc.php`, `cat -A`) because the owner named
+`set<void *> visited` as one of the two standard methods and PHP does not behave
+that way:
+
+| shape | PHP |
+|---|---|
+| leaf reachable TWICE, acyclic | printed **twice, in full** — no marker |
+| ring `1 -> 2 -> 1` | `N Object` then ` *RECURSION*` |
+| self `s -> s` | `N Object` then ` *RECURSION*` |
+
+So a `set<void *>` is WRONG: it would stamp `*RECURSION*` on the second sighting
+of a shared node. The structure is a **stack** — push on descend, pop on return —
+i.e. "is this address on the path I am currently printing", which is the visited
+set narrowed to the current path.
+
+Note also that print_r's marker line is preceded by the OBJECT's own type word
+(`N Object`), not `Array`. `__madc_dump_pr_recursion(sink, word)` already takes
+the word as a parameter for exactly this.
+
+The owner's second method — a "visited" flag ON each element — is **not available
+here**: there is nowhere to put it (these are the user's own structs, e.g. a
+SMAUG `CHAR_DATA`), and a dump must not write to the data it reads (const
+objects, read-only pages, shared or concurrent access). PHP can do it because it
+owns its zvals; madc does not own the pointee.
+
+### 16.3 The design to BUILD
+
+1. **The ancestor stack becomes a shared RUNTIME facility in `src/rt/rt_dump.c`**
+   — strict C11, thread-local via the `MADC_RT_TLS` pattern `rt_except.c`
+   already uses (the ledger build defines it empty). It must GROW rather than
+   cap: a 10,000-node list is legitimate and PHP prints all of it.
+   `__madc_dump_anc_push(const void *p)` returns 1 pushed / 0 already-on-path
+   (cycle) / -1 could-not-grow, so the generated code branches three ways and an
+   allocation failure is never reported as a false `*RECURSION*`.
+   **`src/rt_dump_value.cpp` must then USE it** instead of its own local
+   `AncestorStack` — one owner for "am I already printing this", not two.
+2. **One generated function per (pointee type, flavor)**, memoized:
+   `static void __madc_dumpfn_N(void *sink, T *p, int depth, int nested)`.
+   Recursion becomes a CALL, which fixes cycles, long lists AND the fan-out
+   blowup in one move — a shared pointee is one call per site instead of one
+   expansion. Body:
+   `if (!p) <null render> else { r = anc_push(p); if (r>0) { <walk *p>; anc_pop(); } else if (r==0) <recursion marker> else <oom marker> }`
+3. **Columns stay compile-time constants inside the body.** The geometry is
+   LINEAR in depth — `frame_col(d+r) == frame_col(d) + frame_col(r)`, and
+   `entry_col(d+r) == frame_col(d) + entry_col(r)` — so the function computes its
+   base column ONCE at run time and every column inside is
+   `base + <constant>`. This is what avoids threading a runtime column through
+   all ~20 builders. Carry the base as a `CirBuilder` member holding the local's
+   name, exactly as `m_dump_sink_var` already does, and give the addition ONE
+   owner (a `col_expr(fl, depth, entry, origin)` helper that emits either
+   `integer(k)` or `N_ADD(base, integer(k))`).
+4. **Where the definition goes:** `top_list` in the module assembly
+   (`src/cir_builder.cpp` ~26564). Emit the PROTOTYPE at the call site through
+   the existing `need_output_extern` so the call is declared before use, queue
+   the `N_FUNC_DEF` on a new `m_pending_top_defs`, and drain it into `top_list`
+   after bodies translate. There is no existing mid-body top-level queue — the
+   lambda/nested-fn hoist happens in the PARSER (real FuncDefs with
+   `local_emit_name`), so this queue is new.
+5. Inside the body, set `m_dump_sink_var` to the function's `sink` PARAMETER and
+   the column base to its base local, then call `dump_any` on the pointee at
+   RELATIVE depth 0. `nested` is the parameter, used by the outermost tail and by
+   print_r's "a scalar entry owes a newline only inside an aggregate" rule (which
+   needs absolute-depth>0, and `nested` is exactly that).
+6. Deletes on landing: the type-graph stack, the fan-out budget, and the
+   `MADC_DUMP_EXPAND_LIMIT` knob (all stash-only).
+
+### 16.4 Enums — the other outstanding shape, and its one real cost
+
+`DataDefENUM` carries `enum_name` and `underlying` but NOT its enumerators, so
+the dumper cannot show a NAME and refuses rather than ship a bare number a later
+slice would change. The enumerators exist in three live registrations
+(`TokenENUM::parse`: scoped pseudo-namespace / class static members / global
+constants) and the forest ALREADY serializes them as a `constvalrec` run on the
+`DK_ENUM` record.
+
+The clean shape is `DataDefENUM::enumerators` as the one live owner, populated at
+the single point in `TokenENUM::parse` where name and value are both known, and
+at the forest restore (which already builds `rt.enumerators`). ⚠️ **The cost is
+that `forest_record_enum` (`src/madc_cir.cpp` ~4795) currently reads the
+enumerators back out of `prog->namespace_map` keyed by the canonical spelling — a
+NAME-keyed reverse lookup.** Making the type the owner means switching that read
+too (otherwise there are two answers to one question), which touches the pack
+path — so it needs the release / packed / headerless lanes, not just fulltest.
