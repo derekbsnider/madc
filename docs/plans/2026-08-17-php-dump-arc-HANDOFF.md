@@ -99,6 +99,14 @@ covered.
   class arm (with its good message) is never reached. A loud compile error either
   way — a diagnostic-quality defect, not a wrong answer. Reducer
   `tmp/probe/feplain.mad`.
+- **Cosmetic, but it should be tightened:** in the RAW-POINTER arm of
+  `class_iterator_iteration_protocol`, `end()` is only checked for
+  `is_pointer()`, while its decline message says "do not return the same iterator
+  type". Compare the POINTEE DataDefs instead. There is no wrong answer behind it
+  — the counted loop never calls `end()`, which is required purely as the
+  structural signal that this is the iteration protocol — so it was left for the
+  next commit that earns a battery rather than re-running one for a check with no
+  behavioural effect. The CLASS arm already compares properly (`bc != ec`).
 - **`--emit=c11` declares libc functions with the dlsym FALLBACK signature.** Any
   program that reaches `memcpy` / `strlen` through libstdc++ internals emits
   `extern long long memcpy();`, and `gcc -std=c11` warns
