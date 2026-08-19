@@ -54041,7 +54041,12 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	return true;	// unresolvable -> cannot disprove; stay permissive
     DataDef *pdd = &tdt->definition;
     DataDefCLASS *pcls = dynamic_cast<DataDefCLASS *>(pdd);
-    if ( !pcls && !dynamic_cast<DataDefENUM *>(pdd) )
+    // A PLAIN-STRUCT param (never promoted to class-hood — <iomanip>'s
+    // _Setprecision/_Setw) is a named type like a class: it takes the
+    // identity lane below, never the arithmetic arm. DataDefCLASS IS-A
+    // DataDefSTRUCT, so this covers both.
+    DataDefSTRUCT *pstr = dynamic_cast<DataDefSTRUCT *>(pdd);
+    if ( !pstr && !dynamic_cast<DataDefENUM *>(pdd) )
     {
 	// Arithmetic concrete param: a POINTER argument has no standard
 	// conversion to it ([conv] — pointer->bool notwithstanding: this
@@ -54060,10 +54065,14 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	// std::string and the whole basic_string struct was passed BY VALUE
 	// as the `char`, which c2mir reported a phase later as "incompatible
 	// argument type for arithmetic type parameter" — naming no operator.
-	// ENUM arguments stay permissive: integral promotion IS a standard
-	// conversion.
+	// A PLAIN-STRUCT argument is the same rule again (no standard
+	// conversion exists, [conv]) and was missed the same way: the char
+	// inserter claimed `cout << setprecision(3)` because _Setprecision
+	// never earns class-hood — same c2mir report, one phase later.
+	// DataDefSTRUCT covers class + plain struct + union. ENUM arguments
+	// stay permissive: integral promotion IS a standard conversion.
 	if ( arg_core && (arg_core->is_pointer()
-			  || dynamic_cast<DataDefCLASS *>(arg_core)) )
+			  || dynamic_cast<DataDefSTRUCT *>(arg_core)) )
 	    return false;
 	return true;	// scalar / builtin param: permissive
     }
@@ -54133,7 +54142,7 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
     TokenBase *operands[2] = { lhs, rhs };
     std::map<std::string, DataDef *> binding;
     std::map<std::string, std::string> text_binding;
-    DataDefCLASS *param_cls[2] = { NULL, NULL };
+    DataDefSTRUCT *param_cls[2] = { NULL, NULL };
     for ( size_t i = 0; i < 2; ++i )
     {
 	const std::string &sp = ov.param_spellings[i];
@@ -54160,7 +54169,12 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 		    names_tp = true;
 	if ( sp.find('<') != std::string::npos && names_tp )
 	{
-	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
+	    // A PLAIN-STRUCT argument deduces here too: <iomanip>'s
+	    // _Setfill<_CharT> is a template-id param whose argument
+	    // (_Setfill<char>) never earns class-hood. Everything this lane
+	    // needs — canonical spelling, template-head split — lives on the
+	    // base DataDef; only the derived-to-base walk is class-only.
+	    DataDefSTRUCT *cls = dynamic_cast<DataDefSTRUCT *>(arg_core);
 	    if ( !cls )
 		return NULL;
 	    // Derived-to-base ref binding for deduction: an ofstream argument
@@ -54168,9 +54182,11 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	    // the walk this candidate was refused and try_free_operator_call
 	    // fell SILENTLY back to the member operator<<(const void*) —
 	    // `outf << "hello"` wrote the pointer VALUE into the file.
-	    if ( DataDefCLASS *bc = class_or_base_with_template_head(
-			cls, template_head_component(sp)) )
-		cls = bc;
+	    // (A plain struct has no bases; the walk applies to classes.)
+	    if ( DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(cls) )
+		if ( DataDefCLASS *bc = class_or_base_with_template_head(
+			    acls, template_head_component(sp)) )
+		    cls = bc;
 	    const std::string canon = cls->canonical_cpp_spelling().empty()
 				    ? cls->name : cls->canonical_cpp_spelling();
 	    if ( template_head_component(sp) != template_head_component(canon) )
