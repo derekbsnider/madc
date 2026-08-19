@@ -1,0 +1,9 @@
+string  count=5 size=5
+null    count=0 size=0
+array   count=3 size=3
+object  count=2 size=2
+integer count -> caught: count(): integer value is not countable
+real    count -> caught: count(): real value is not countable
+boolean count -> caught: count(): boolean value is not countable
+object  foreach visited=0 (count=2)
+array   foreach visited=3 (count=3)

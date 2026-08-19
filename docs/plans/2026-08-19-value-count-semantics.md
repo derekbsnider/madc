@@ -8,17 +8,24 @@ non-string, non-container it should be an ERROR.
 
 ## What is wrong today, measured
 
-`tmp/probe/valuecount2.mad` on the v0.85.0 JIT:
+`tmp/count/c3.mad`, re-measured at live HEAD (both `.count()` and `.size()` give
+the same answer, because both bind to the same entry):
 
-| carrier holds        | `.size()` / `.count()` | should be |
+| carrier holds        | `.count()` / `.size()` | should be |
 |----------------------|------------------------|-----------|
 | string `"hello"`     | **0**                  | 5         |
-| integer              | **0**                  | error     |
-| real                 | **0**                  | error     |
-| boolean              | **0**                  | error     |
+| integer `42`         | **0**                  | error     |
+| real `3.5`           | **0**                  | error     |
+| boolean `true`       | **0**                  | error     |
+| null (`value n;`)    | 0 ✓                    | 0         |
 | array of 2           | 2 ✓                    | 2         |
 
 Every wrong answer is a silent `0` — the shape this codebase refuses.
+
+Build the array with `php::array_push`, not `a[0] = 1`: subscript WRITES on a madc
+array are not implemented (tests/testarraysubscript.mad's own header scopes task
+#91 R0 to subscript *reads*), so a probe that assigns through a subscript leaves
+the carrier at kind `null` and measures nothing. That is not a defect found here.
 
 ## Root cause
 
@@ -40,6 +47,8 @@ the loop's answer wins.
 
 **Two questions, two functions.** `madarray_size` keeps its name, its behaviour
 and its comment as the foreach bound. `count`/`size` bind to a NEW entry.
+
+All three pieces below are as built.
 
 1. `ns_common::value_length(const madc::value &, bool *ok)` — the semantic owner
    of the ruling, beside the existing `value_count` (which stays as it is: it is
@@ -79,9 +88,21 @@ array kinds: one answers "how many elements", the other "how many bytes of
 payload". Documented here because the two names are the same and the divergence
 is now intentional rather than accidental.
 
+## rt_except.h — created here
+
+`__madc_throw_cstr` had no header: its only caller was generated code, whose
+externs the CIR builder emits. `madarray_count` is the first HOST caller, and a
+local `extern` at the call site is the silent-mismatch trap rt_dump.h documents
+— so `src/rt/rt_except.h` now carries the throw-family prototypes, included by
+`rt_except.c` (definitions checked) and the backend. Deliberately only the
+throw family: the try/cleanup-stack primitives are generated code's own
+machinery, and the only correct host interaction is to RAISE.
+
 ## Gate
 
-`tests/testvaluecount.mad` — every reachable kind through both `.count()` and
-`.size()`, plus the error case inside a `try`/`catch` so the throw is asserted
-rather than merely assumed, plus a `for (... : a)` loop over an object-kind
-carrier proving the foreach bound still reads 0.
+`tests/testvaluecount.mad` — string/null/array/object through both `.count()`
+and `.size()` (object kind is script-reachable via `madc::context_set_int`),
+the three error kinds each asserted INSIDE a `try`/`catch (const char *)` so
+the throw is measured rather than assumed, and range-fors over BOTH an
+object-kind carrier (visited=0 while count=2 — the bound and the method answer
+different questions) and the array (visited == count).

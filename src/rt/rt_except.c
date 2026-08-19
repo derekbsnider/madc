@@ -17,6 +17,8 @@
 #include <setjmp.h>
 #include <string.h>
 
+#include "rt_except.h"	/* host-callable throw prototypes, CHECKED here */
+
 // Storage class of the per-thread exception state. Real TLS in the host
 // build; the ledger build defines it EMPTY (-DMADC_RT_TLS=) because MIR has
 // no thread-local storage, so a `-static-libmadc` image carries PROCESS-GLOBAL

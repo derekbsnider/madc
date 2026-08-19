@@ -1,0 +1,68 @@
+// The script .count()/.size() semantics on the madc value carrier — the owner
+// ruling (2026-08-18): containers (array AND object kind) count ELEMENTS, the
+// text kinds (string/bytes) count LENGTH, null is an EMPTY container (0), and
+// any other kind is an ERROR — a real madc exception, catchable as
+// `catch (const char *)`, never a silent 0. string "hello" .count() was 0 for
+// a whole release because count/size were bound to the range-for BOUND
+// (madarray_size), which answers a different question.
+//
+// The last block proves the two questions stayed SEPARATE: a range-for over an
+// object-kind carrier still iterates ZERO times (the bound reads 0 there —
+// foreach walks indexed elements only), while .count() on the same carrier
+// answers 2.
+#include <cstdio>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	value s = "hello";
+	printf("string  count=%lld size=%lld\n", s.count(), s.size());
+
+	value n;
+	printf("null    count=%lld size=%lld\n", n.count(), n.size());
+
+	array a;
+	php::array_push(a, "one");
+	php::array_push(a, "two");
+	php::array_push(a, "three");
+	printf("array   count=%lld size=%lld\n", a.count(), a.size());
+
+	value ctx;
+	madc::context_set_int(ctx, "x", 1);
+	madc::context_set_int(ctx, "y", 2);
+	printf("object  count=%lld size=%lld\n", ctx.count(), ctx.size());
+
+	value i = 42;
+	try {
+		printf("unreached %lld\n", i.count());
+	} catch (const char *m) {
+		printf("integer count -> caught: %s\n", m);
+	}
+
+	value r = 3.5;
+	try {
+		printf("unreached %lld\n", r.count());
+	} catch (const char *m) {
+		printf("real    count -> caught: %s\n", m);
+	}
+
+	value b = true;
+	try {
+		printf("unreached %lld\n", b.count());
+	} catch (const char *m) {
+		printf("boolean count -> caught: %s\n", m);
+	}
+
+	// The foreach bound is NOT .count(): object kind iterates zero times.
+	long visited = 0;
+	for ( string e : ctx )
+		visited = visited + 1;
+	printf("object  foreach visited=%ld (count=%lld)\n", visited, ctx.count());
+
+	// And over the real array both agree.
+	for ( string e : a )
+		visited = visited + 1;
+	printf("array   foreach visited=%ld (count=%lld)\n", visited, a.count());
+	return 0;
+}

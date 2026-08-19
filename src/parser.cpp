@@ -22942,8 +22942,13 @@ void Program::add_madc_namespace()
 
 // Native methods on the builtin madc `array` (the generic polyglot value
 // object — the php::/perl::/… namespace functions are skins over it):
-// count()/size() bind to the madarray_size runtime entry via emit_symbol,
-// the same external-binding path string's length()/size() ride. ddARRAY is
+// count()/size() bind to the madarray_count runtime entry via emit_symbol,
+// the same external-binding path string's length()/size() ride. NOT
+// madarray_size — that is the range-for BOUND, where an object-kind carrier
+// must read 0; .count() answers the OWNER semantics (elements for
+// containers, length for text kinds, a script exception otherwise), and one
+// function answering both questions is how string.count() was a silent 0
+// for a whole release. ddARRAY is
 // a process-global singleton, so registration is once-guarded and every
 // allocation is process-lifetime (addFunction isMethod=true touches no
 // Program-owned map — nothing dangles across Programs).
@@ -22961,7 +22966,7 @@ void Program::add_array_methods()
 	if ( fd )
 	{
 	    fd->declaration_only = true;
-	    fd->emit_symbol = "madarray_size";
+	    fd->emit_symbol = "madarray_count";
 	    fd->method_display_name = name;
 	}
 	Method *md = static_cast<Method *>(var->data);

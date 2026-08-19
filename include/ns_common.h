@@ -75,7 +75,18 @@ std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 
 // Element count of a madc::value: array size, object size, or 0 for any
 // other kind (a never-touched script array is kind::null == empty).
+// This is the PHP semantics php::count / perl::scalar keep; the script
+// .count()/.size() methods use value_length below instead.
 size_t value_count(const madc::value &v);
+
+// The script-facing .count()/.size() semantics (owner ruling 2026-08-18):
+// containers count ELEMENTS, string kinds count LENGTH, anything else is an
+// error. Sets *ok false (and returns 0) for a kind with no answer — the
+// caller decides how to report it, because "an error" means a script
+// exception in the runtime thunk and could mean a diagnostic elsewhere.
+// null is 0 with ok TRUE: `array a;` is kind null until a mutator vivifies
+// it, so an unfilled carrier is an EMPTY container, not a non-container.
+size_t value_length(const madc::value &v, bool *ok);
 
 // Split `s` by literal `delim` and store the pieces as strings in `out`.
 // `out` is reset to an empty kind::array first. An empty delim pushes the
