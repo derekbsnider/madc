@@ -40,10 +40,13 @@ element can be deduced before the container parses; everything can be after.
    - madc `array` (ddARRAY) → **`string`** — DECIDED DEFAULT: the element model
      follows task #91 R0's subscript ruling (string-first, the Python/PHP
      element model behind `sys.argv[i]`), so `auto` answers what `a[i]` answers.
-     NOT `value`: `for (value v : a)` does not compile today (measured,
-     tmp/auto/fv.mad — three c2mir check errors; a LOUD feature gap, recorded
-     here as adjacent work, not chased in this arc), and a deduction that
-     produces a broken loop would be worse than none;
+     NOT `value` — `auto` follows the subscript's answer. (`for (value v : a)`
+     itself was a separate gap, CLOSED in the follow-up commit: the fv.mad
+     probe had stacked TWO defects — the element fill, fixed via
+     `__php_array_get_value`, and `cout << value`, which is still open and is
+     a streaming/operator question, not a loop one. `for (value v : a)` is now
+     the explicit opt-in for the raw carrier, copy semantics, `value &v` still
+     refused by name.)
    - class container → `class_index_iteration_protocol` (element =
      `operator[]`'s return) else `class_iterator_iteration_protocol`
      (element = `ip.elem`);

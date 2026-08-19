@@ -50951,10 +50951,10 @@ DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *wher
 
     // The madc array/value carrier answers STRING-FIRST — task #91 R0's
     // subscript ruling (the Python/PHP element model behind sys.argv[i]), so
-    // `auto` answers exactly what `a[i]` answers. NOT `value`: a value
-    // element does not compile as a loop variable today (a loud gap, recorded
-    // in docs/plans/2026-08-19-range-for-auto-deduction.md), and a deduction
-    // that produces a broken loop would be worse than none.
+    // `auto` answers exactly what `a[i]` answers. NOT `value`, even though a
+    // value loop element compiles (`for (value v : a)` — the explicit opt-in
+    // for the raw carrier, filled through __php_array_get_value): `auto`
+    // follows the subscript's answer, and a[i] is string-first.
     if ( uq && uq->rawtype() == DataType::dtARRAY )
     {
 	if ( DataDef *sdd = resolve_named_datadef(std::string("string")) )

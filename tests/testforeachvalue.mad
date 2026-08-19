@@ -1,0 +1,47 @@
+// Range-for with a `value` LOOP ELEMENT — the element is the carrier itself,
+// copied whole through __php_array_get_value (value::operator= is the one
+// retag/freeze owner), so the element keeps its KIND: an integer element
+// counts as an error, a string element counts its length. The int/cstr
+// fetchers can't do this — the int fetch loses the kind, and its assignment
+// into the 32-byte value buffer was ill-typed C that c2mir refused
+// ("assignment of incompatible value").
+//
+// A COPY by design: elements have no stable address, the same fact that
+// refuses `value &v`. The mutation block proves the copy: writing the loop
+// element must not change the source array.
+#include <cstdio>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	array a;
+	php::array_push(a, "one");
+	php::array_push(a, "three");
+	php::array_push_int(a, 7);
+
+	// The element keeps its kind: string kinds have a countable length,
+	// the integer kind throws — through the SAME loop variable.
+	for ( value v : a )
+	{
+		try {
+			printf("len=%lld str=%s\n", v.count(), v);
+		} catch (const char *m) {
+			printf("caught: %s\n", m);
+		}
+	}
+
+	// The element is a COPY: mutating it must not touch the source.
+	for ( value v : a )
+		v = "clobbered";
+	for ( value v : a )
+		printf("intact=%s\n", v);
+
+	// An empty array iterates zero times; a value element still compiles.
+	array e;
+	long visited = 0;
+	for ( value v : e )
+		visited = visited + 1;
+	printf("empty visited=%ld\n", visited);
+	return 0;
+}

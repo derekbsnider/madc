@@ -316,6 +316,29 @@ int64_t php_array_get_int(madc::value *arr, int64_t index)
 	return 0;
 }
 
+// Copy element `index` into `dst` — the range-for fill for a `value` LOOP
+// ELEMENT (`for (value v : a)`), where the int/cstr fetchers above lose the
+// element's kind. A COPY by design: elements have no stable address (the same
+// model that refuses `value &v`), and value::operator= is the one owner of
+// retagging + freeze rejection. Out of range / non-array resets dst to null —
+// the generated loop is bounded by madarray_size so it cannot reach this, but
+// a host calling directly must not read the previous iteration's value.
+void php_array_get_value(madc::value *arr, int64_t index, madc::value *dst)
+{
+	if ( !dst )
+		return;
+	if ( arr && arr->is_array() )
+	{
+		const std::vector<madc::value> &data = arr->as_array();
+		if ( index >= 0 && (size_t)index < data.size() )
+		{
+			*dst = data[(size_t)index];
+			return;
+		}
+	}
+	*dst = madc::value();
+}
+
 const char *php_array_get_cstr(madc::value *arr, int64_t index)
 {
 	thread_local std::string res;
@@ -524,6 +547,7 @@ std::string *__php_array_pop(std::string *a, madc::value *b) { return php_array_
 std::string *__php_array_get(std::string *a, madc::value *b, int64_t c) { return php_array_get(a, b, c); }
 int64_t __php_array_get_int(madc::value *a, int64_t b) { return php_array_get_int(a, b); }
 const char *__php_array_get_cstr(madc::value *a, int64_t b) { return php_array_get_cstr(a, b); }
+void __php_array_get_value(madc::value *a, int64_t b, madc::value *c) { php_array_get_value(a, b, c); }
 void __php_array_reverse(madc::value *a) { php_array_reverse(a); }
 int64_t __php_in_array(const char *a, madc::value *b) { return php_in_array(a, b); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }

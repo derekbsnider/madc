@@ -22467,6 +22467,27 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 		append(a, getcall);
 		node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
 		append(body_items, node2(N_EXPR, list(), fill, fe));
+	} else if (is_array_object(fe->elemtype)) {
+		// A `value` LOOP ELEMENT (`for (value v : a)`): the element is the
+		// carrier itself, so neither fetch above fits — the int fetch loses
+		// the kind and its assignment into the 32-byte value buffer is
+		// ill-typed C (c2mir rejected it: "assignment of incompatible
+		// value"). Copy the element whole:
+		//   __php_array_get_value((void*)container, __fe_i, (void*)&v);
+		// value::operator= inside it is the one retag/freeze owner, and a
+		// COPY is the model — elements have no stable address, which is
+		// the same fact that refuses `value &v` above.
+		need_output_extern("__php_array_get_value", false,
+				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false },
+				     { {N_VOID}, true } });
+		node_t a = list();
+		append(a, container_addr());
+		append(a, id(idx, fe));
+		append(a, node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, id(fe->elemname.c_str(), fe), fe),
+				fe));
+		node_t fill = node2(N_CALL, id("__php_array_get_value", fe), a, fe);
+		append(body_items, node2(N_EXPR, list(), fill, fe));
 	} else {
 		// x = (T)__php_array_get_int((void*)container, __fe_i)
 		need_output_extern("__php_array_get_int", false,
