@@ -31,9 +31,7 @@ Arrays use the `array` data type, which stores mixed-type elements (MadValue).
 | `explode(arr, delim, str)` | Split string into array | `php::explode(a, ",", csv)` |
 | `implode(result, glue, arr)` | Join array into string | `php::implode(s, ",", a)` |
 | `count(arr)` | Number of elements | `n = php::count(a)` |
-| `array_push(arr, str)` | Append string | `php::array_push(a, "val")` |
-| `array_push_int(arr, int)` | Append integer | `php::array_push_int(a, 42)` |
-| `array_push_array(arr, nested)` | Append an array as a nested row | `php::array_push_array(rows, row)` |
+| `array_push(arr, v)` | Append any value (overloads: string, int, real, bool, `value`/nested array, `std::string`); returns the new count | `n = php::array_push(a, 42)` |
 | `array_pop(result, arr)` | Remove + return last element | `php::array_pop(s, a)` |
 | `array_get(result, arr, index)` | Get element as string | `php::array_get(s, a, 0)` |
 | `array_get_int(arr, index)` | Get element as int | `n = php::array_get_int(a, 0)` |
@@ -73,8 +71,8 @@ int main()
 
 ## Nested Rows Example
 
-`array` elements can themselves be arrays — `array_push_array` builds a
-table of rows, and `array_column` pulls one column back out:
+`array` elements can themselves be arrays — pushing an array nests it as a
+row, and `array_column` pulls one column back out:
 
 ```c
 int main()
@@ -83,11 +81,11 @@ int main()
     array alice;
     array bob;
     php::array_push(alice, "alice");
-    php::array_push_int(alice, 30);
+    php::array_push(alice, 30);
     php::array_push(bob, "bob");
-    php::array_push_int(bob, 25);
-    php::array_push_array(rows, alice);
-    php::array_push_array(rows, bob);
+    php::array_push(bob, 25);
+    php::array_push(rows, alice);
+    php::array_push(rows, bob);
 
     array names;
     php::array_column(names, rows, 0);   // element 0 of every row

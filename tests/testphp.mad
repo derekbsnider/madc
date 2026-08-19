@@ -102,8 +102,8 @@ int main()
     php::array_push(row1, "admin");
     php::array_push(row2, "bob");
     php::array_push(row2, "user");
-    php::array_push_array(rows, row1);
-    php::array_push_array(rows, row2);
+    php::array_push(rows, row1);
+    php::array_push(rows, row2);
     php::array_column(col, rows, 1);
     php::implode(joined, delim, col);
     cout << "column: " << joined << endl;

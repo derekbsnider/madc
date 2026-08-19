@@ -26,9 +26,12 @@ std::string *__php_wordwrap(std::string *, int64_t, std::string *);
 void __php_explode(madc::value *, const char *, const char *);
 std::string *__php_implode(std::string *, const char *, madc::value *);
 int64_t __php_count(madc::value *);
-void __php_array_push(madc::value *, const char *);
-void __php_array_push_int(madc::value *, int64_t);
-void __php_array_push_array(madc::value *, madc::value *);
+int64_t __php_array_push(madc::value *, const char *);
+int64_t __php_array_push_int(madc::value *, int64_t);
+int64_t __php_array_push_real(madc::value *, double);
+int64_t __php_array_push_bool(madc::value *, bool);
+int64_t __php_array_push_array(madc::value *, madc::value *);
+int64_t __php_array_push_value(madc::value *, madc::value *);
 std::string *__php_array_pop(std::string *, madc::value *);
 std::string *__php_array_get(std::string *, madc::value *, int64_t);
 int64_t __php_array_get_int(madc::value *, int64_t);
@@ -65,9 +68,18 @@ inline std::string &wordwrap(std::string &s, int64_t width, std::string &separat
 inline void explode(madc::value &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
 inline std::string &implode(std::string &result, const char *glue, madc::value &values) { return *__php_implode(&result, glue, &values); }
 inline int64_t count(madc::value &values) { return __php_count(&values); }
-inline void array_push(madc::value &values, const char *text) { __php_array_push(&values, text); }
-inline void array_push_int(madc::value &values, int64_t value) { __php_array_push_int(&values, value); }
-inline void array_push_array(madc::value &values, madc::value &nested) { __php_array_push_array(&values, &nested); }
+// array_push is ONE overloaded name, PHP parity: it accepts any value type
+// and RETURNS the array's new element count. The madc::value& overload is a
+// kind-preserving deep copy (an array-kind carrier nests). The plain-int
+// overload exists to keep `array_push(a, 7)` unambiguous under ISO C++
+// (int->int64_t, int->double and int->bool are all "conversion" rank).
+inline int64_t array_push(madc::value &values, const char *text) { return __php_array_push(&values, text); }
+inline int64_t array_push(madc::value &values, int64_t v) { return __php_array_push_int(&values, v); }
+inline int64_t array_push(madc::value &values, int v) { return __php_array_push_int(&values, v); }
+inline int64_t array_push(madc::value &values, double v) { return __php_array_push_real(&values, v); }
+inline int64_t array_push(madc::value &values, bool v) { return __php_array_push_bool(&values, v); }
+inline int64_t array_push(madc::value &values, madc::value &v) { return __php_array_push_value(&values, &v); }
+inline int64_t array_push(madc::value &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
 inline std::string &array_pop(std::string &result, madc::value &values) { return *__php_array_pop(&result, &values); }
 inline std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *__php_array_get(&result, &values, index); }
 inline int64_t array_get_int(madc::value &values, int64_t index) { return __php_array_get_int(&values, index); }

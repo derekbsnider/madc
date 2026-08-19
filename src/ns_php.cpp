@@ -252,26 +252,55 @@ int64_t php_count(madc::value *arr)
 	return (int64_t)ns_common::value_count(*arr);
 }
 
-// php::array_push — append value (string) to array
-void php_array_push_str(madc::value *arr, const char *str)
+// php::array_push — ONE overloaded name (PHP parity: no array_push_int
+// madc-ism). Every entry returns the array's NEW element count, like PHP's
+// array_push(). The count is read back through value_count — the one owner
+// of element counting — so the degrade paths stay honest: a frozen carrier
+// reports its unchanged count, a non-array carrier reports 0 (both after
+// value_array_for_write's stderr notice).
+
+// string-kind push
+int64_t php_array_push_str(madc::value *arr, const char *str)
 {
 	const char *s = (const char *)str;
 	ns_common::value_array_for_write(*arr, "php::array_push")
 		.push_back(madc::value(std::string(s ? s : "")));
+	return (int64_t)ns_common::value_count(*arr);
 }
 
-// php::array_push_int — append integer to array
-void php_array_push_int(madc::value *arr, int64_t val)
+// integer-kind push
+int64_t php_array_push_int(madc::value *arr, int64_t val)
 {
-	ns_common::value_array_for_write(*arr, "php::array_push_int")
+	ns_common::value_array_for_write(*arr, "php::array_push")
 		.push_back(madc::value(val));
+	return (int64_t)ns_common::value_count(*arr);
 }
 
-// php::array_push_array — append nested array by deep copy
-void php_array_push_array(madc::value *arr, madc::value *value)
+// real-kind push
+int64_t php_array_push_real(madc::value *arr, double val)
 {
-	ns_common::value_array_for_write(*arr, "php::array_push_array")
+	ns_common::value_array_for_write(*arr, "php::array_push")
+		.push_back(madc::value(val));
+	return (int64_t)ns_common::value_count(*arr);
+}
+
+// boolean-kind push
+int64_t php_array_push_bool(madc::value *arr, bool val)
+{
+	ns_common::value_array_for_write(*arr, "php::array_push")
+		.push_back(madc::value(val));
+	return (int64_t)ns_common::value_count(*arr);
+}
+
+// carrier push — a value of ANY kind, kind-preserving deep copy (the value
+// copy ctor); pushing an array-kind carrier nests it. Serves both the
+// script's (array&, value&) overload and the legacy __php_array_push_array
+// plumbing symbol.
+int64_t php_array_push_value(madc::value *arr, madc::value *value)
+{
+	ns_common::value_array_for_write(*arr, "php::array_push")
 		.push_back(*value);
+	return (int64_t)ns_common::value_count(*arr);
 }
 
 // php::array_pop — remove and return last element as string
@@ -540,9 +569,12 @@ std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return 
 void __php_explode(madc::value *a, const char *b, const char *c) { php_explode(a, b, c); }
 std::string *__php_implode(std::string *a, const char *b, madc::value *c) { return php_implode(a, b, c); }
 int64_t __php_count(madc::value *a) { return php_count(a); }
-void __php_array_push(madc::value *a, const char *b) { php_array_push_str(a, b); }
-void __php_array_push_int(madc::value *a, int64_t b) { php_array_push_int(a, b); }
-void __php_array_push_array(madc::value *a, madc::value *b) { php_array_push_array(a, b); }
+int64_t __php_array_push(madc::value *a, const char *b) { return php_array_push_str(a, b); }
+int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_int(a, b); }
+int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }
+int64_t __php_array_push_bool(madc::value *a, bool b) { return php_array_push_bool(a, b); }
+int64_t __php_array_push_array(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
+int64_t __php_array_push_value(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
 std::string *__php_array_pop(std::string *a, madc::value *b) { return php_array_pop(a, b); }
 std::string *__php_array_get(std::string *a, madc::value *b, int64_t c) { return php_array_get(a, b, c); }
 int64_t __php_array_get_int(madc::value *a, int64_t b) { return php_array_get_int(a, b); }

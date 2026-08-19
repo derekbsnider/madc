@@ -22,8 +22,8 @@ int main()
 
 	// bare array still works (backward compat)
 	array nums;
-	php::array_push_int(nums, 10);
-	php::array_push_int(nums, 20);
+	php::array_push(nums, 10);
+	php::array_push(nums, 20);
 	n = php::count(nums);
 	cout << n << endl;
 

@@ -23,8 +23,8 @@ for (string name : names)
 	cout << name << endl;
 
 array nums;
-php::array_push_int(nums, 10);
-php::array_push_int(nums, 20);
+php::array_push(nums, 10);
+php::array_push(nums, 20);
 int sum = 0;
 for (int n : nums)
 	sum = sum + n;

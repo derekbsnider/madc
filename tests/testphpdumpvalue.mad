@@ -57,12 +57,12 @@ void array_kind()
 {
 	array a;
 	php::array_push(a, "alpha");
-	php::array_push_int(a, 7);
+	php::array_push(a, 7);
 
 	array inner;
-	php::array_push_int(inner, 1);
-	php::array_push_int(inner, 2);
-	php::array_push_array(a, inner);
+	php::array_push(inner, 1);
+	php::array_push(inner, 2);
+	php::array_push(a, inner);
 
 	// Nesting is ordinary recursion here, not a per-level expansion: the
 	// runtime walk carries the depth.

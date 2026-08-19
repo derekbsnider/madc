@@ -18,7 +18,7 @@ int main()
 	array a;
 	php::array_push(a, "one");
 	php::array_push(a, "three");
-	php::array_push_int(a, 7);
+	php::array_push(a, 7);
 
 	// The element keeps its kind: string kinds have a countable length,
 	// the integer kind throws — through the SAME loop variable.

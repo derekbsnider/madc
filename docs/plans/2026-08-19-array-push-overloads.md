@@ -84,3 +84,42 @@ Landed BEFORE this (same session, 2026-08-19): `for (value v : a)` (commit
 lower_free_operator_to_call + <ns_madc> gated declaration + host
 madc::operator<<). Release cadence: this change ships WITH a release when it
 lands.
+
+## Executed (2026-08-19, session #106)
+
+**Landed as designed, with two findings the probes forced:**
+
+- **`value` ≡ `array`** — the two spellings are the SAME DataDef (ddARRAY,
+  one tagged carrier; parser.cpp `add_madc_namespace`). So `(array&, array&)`
+  and `(array&, value&)` are the same signature and the set carries ONE
+  carrier overload, spelled `value &v`. An `array` argument nests through it
+  (kind-preserving deep copy via the value copy ctor). The probe that proved
+  it: both spellings declared together always resolved to the
+  first-registered one.
+- **Ranking defect found and fixed one layer down** (fix-what-you-find, own
+  commit): `score_arg_to_param`'s numeric lane scored EVERY mismatched
+  numeric pair a flat 4, so float→double (a PROMOTION, [conv.fpprom]) tied
+  float→int64 and registration order picked the TRUNCATING overload. Fixed
+  by grading: same-domain (int→int, fp→fp) = 4, cross-domain or landing on
+  bool = 3. Oracle: g++ AND clang++ agree (flt=2 dbl=2 bool=3 long=1,
+  unambiguous). Gate: `tests/testoverloadnumrank.mad`. The int-literal pick
+  (`f(7)` → int64) is a documented madc-dialect liberality — ISO C++ calls
+  it ambiguous; madc grades same-domain above cross-domain so the obvious
+  overload wins deterministically.
+- Measured before designing: `<ns_php>` is already madc-mode-only (strict
+  C++ fails at `array` in its extern block), so spelling `value` in the
+  header adds no new mode constraint. No `_GLIBCXX_STRING`-style gate needed
+  (`<ns_php>` opens with `#include <string>`).
+- Host header `ns_php.h` gained the same set PLUS a plain-`int` overload —
+  under ISO C++ `array_push(v, 7)` is otherwise ambiguous (int→int64_t /
+  int→double / int→bool are all "conversion" rank). Script side does not
+  need it: the graded ranker resolves int32 args to the int64 overload.
+- `array_push_int` / `array_push_array` retired from BOTH headers; the
+  extern-C `__php_array_push_int` / `_array` symbols stay as plumbing
+  (`_array` now delegates to `php_array_push_value` — one implementation).
+  Tests and docs/language pages migrated to the one name.
+- Gate: `tests/testarraypush.mad` — 9 pushes through ONE name, PHP-parity
+  count returns asserted (n1..n9), `count=9`, `var_dump` kind words for
+  every element (float arg → `real(2.5)`, literal 0 → `integer(0)`).
+- Still follow-on (unchanged): PHP's VARIADIC multi-value form
+  `array_push($arr, $v1, $v2, ...)`.
