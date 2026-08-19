@@ -34,6 +34,7 @@
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
 #include "spelling_delim.h"
+#include "libc_signatures.h"	// THE C99 math root list (shared with the parser)
 
 // Out-of-line anchor for intern_keyed_map's env-gated write trap
 // (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
@@ -2078,17 +2079,13 @@ void Program::_tokenizer_init()
     // RESOLUTION on win64 is the fork map's flavor-pin job
     // (mir-mingw-stdio.h class 3): ucrtbase lacks most *l exports and
     // mis-flavors the rest (MSVC 8-byte long double).
+    // The root list itself lives in include/libc_signatures.h's owner, because
+    // the parser expands the SAME list into return types for an undeclared call
+    // (madc_libc_return_class). A second copy here is how five of these ended up
+    // registered by hand, one bug report at a time, while fifty-one silently read
+    // xmm0 out of rax.
     {
-	static const char *const c99_math_roots[] = {
-	    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
-	    "cbrt", "ceil", "copysign", "cos", "cosh", "erf", "erfc",
-	    "exp", "exp2", "expm1", "fabs", "fdim", "floor", "fma",
-	    "fmax", "fmin", "fmod", "frexp", "hypot", "ilogb", "ldexp",
-	    "lgamma", "llrint", "llround", "log", "log10", "log1p",
-	    "log2", "logb", "lrint", "lround", "modf", "nearbyint",
-	    "nextafter", "nexttoward", "pow", "remainder", "remquo",
-	    "rint", "round", "scalbln", "scalbn", "sin", "sinh", "sqrt",
-	    "tan", "tanh", "tgamma", "trunc", NULL };
+	const char *const *c99_math_roots = madc_libc_math_roots();
 	for ( int i = 0; c99_math_roots[i]; ++i )
 	{
 	    std::string root = c99_math_roots[i];

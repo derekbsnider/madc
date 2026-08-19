@@ -50,6 +50,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "spelling_delim.h"
+#include "libc_signatures.h"	// what an UNDECLARED libc symbol returns
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
@@ -23329,40 +23330,56 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
     return false;
 }
 
-// Some libc symbols resolved via dlsym fallback return a pointer, not an
-// int. Declaring them as dtINT64 leaves CIR emitting `long f()` and then
-// assigning the result to a pointer (a spurious int-to-pointer warning,
-// and a real truncation risk on any 32-bit-int return path). Map the
-// known string-returning ones to dtCHARptr so the prototype is accurate.
+// The return type of an UNDECLARED symbol that dlsym resolved.
 //
-// Likewise, the void / noreturn libc functions (abort, exit, free, ...)
-// genuinely return `void`. Declaring them as dtINT64 makes the dlsym
-// prototype `long f()`, so a comma-expression / ternary branch ending in
-// such a call is typed `long` rather than `void` — e.g. the assert idiom
-// `(e) ? (void)0 : (printf(...), abort())` then trips c2mir's
-// "incompatible types in true and false parts of cond-expression". Map the
-// known void-returning ones to dtVOID so the prototype matches GCC/libc.
-// Returns a typespec_t (DataDef*+RefType or a bare DataType) so the char*
-// case names the pointer STRUCTURALLY via ptr_of(ddCHAR) — resolved through
-// getPointerType to the same ddCHARptr the dtCHARptr tag produced — rather than
-// the +10000 tag (tag-arithmetic retirement). The 5 call sites wrap the result
-// in datatype_vec_t{...}, whose element type is typespec_t, so they are
-// unaffected.
+// The default is `int` — what C says an implicit declaration returns, and what
+// the sibling C89 implicit path ten lines down the same fallback chain already
+// builds (FuncDef(ddINT32)). The two guesses used to contradict each other, with
+// this one winning whenever libc exported the name (i.e. always, for a libc
+// name), and `long long` is wrong for most of the C library:
+//
+//   strcmp("abc","abd") < 0   evaluated FALSE — an int -1 read out of all of rax
+//   floor(2.7)                returned 1.0    — a double read out of rax, not xmm0
+//
+// Both are legal C89 with no header in scope, both exited 0 with the wrong
+// answer, and 1084 green tests never saw either: every test that calls these
+// includes the header, and libstdc++ funnels its own __builtin_memcmp through an
+// int, which preserves the sign.
+//
+// Everything that does NOT return `int` comes from one table keyed by name
+// (include/libc_signatures.h) — gcc's builtins.def model. This function owns
+// only the mapping from that table's CLASS onto madc's types, because only here
+// is it known that ddCHAR exists and that the target's `long` may be 4 bytes.
+//
+// Returns a typespec_t (DataDef*+RefType or a bare DataType) so the pointer
+// cases name the pointee STRUCTURALLY via ptr_of(), resolved through
+// getPointerType (tag-arithmetic retirement). The 5 call sites wrap the result
+// in datatype_vec_t{...}, whose element type is typespec_t.
 static typespec_t dynamic_symbol_fallback_return_type(const std::string &name)
 {
-    static const std::set<std::string> cstr_returners = {
-	"asctime", "ctime"
-    };
-    static const std::set<std::string> void_returners = {
-	"abort", "exit", "_exit", "_Exit", "quick_exit",
-	"free", "perror", "srand", "srandom",
-	"__assert_fail", "__assert", "__assert_perror_fail"
-    };
-    if ( cstr_returners.count(name) )
-	return ptr_of(ddCHAR);
-    if ( void_returners.count(name) )
-	return DataType::dtVOID;
-    return DataType::dtINT64;
+    switch ( madc_libc_return_class(name) )
+    {
+    case LibcRet::Void:		return DataType::dtVOID;
+    case LibcRet::CharPtr:	return ptr_of(ddCHAR);
+    case LibcRet::VoidPtr:	return ptr_of(ddVOID);
+    case LibcRet::Double:	return DataType::dtDOUBLE;
+    case LibcRet::Float:	return DataType::dtFLOAT;
+    case LibcRet::LDouble:	return DataType::dtLDOUBLE;
+    case LibcRet::Int64:	return DataType::dtINT64;
+    case LibcRet::UInt64:	return DataType::dtUINT64;
+    case LibcRet::UInt32:	return DataType::dtUINT32;
+    case LibcRet::UInt16:	return DataType::dtUINT16;
+    // Platform long: 4 bytes on LLP64. The one width owner is
+    // madc_target_data_model (datadef.h) — same branch labs' registration takes.
+    case LibcRet::Long:
+	return target_llp64() ? DataType::dtINT32 : DataType::dtINT64;
+    case LibcRet::ULong:
+	return target_llp64() ? DataType::dtUINT32 : DataType::dtUINT64;
+    case LibcRet::Int:
+    case LibcRet::Unknown:
+	break;
+    }
+    return DataType::dtINT32;
 }
 
 Variable *Program::runtime_eval_scope_target(Variable *var) const
