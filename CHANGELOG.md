@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [v0.87.0] — 2026-08-19
+
+The range-for loop element can be the value carrier itself.
+
+- **`for (value v : a)` compiles and runs** — the madc-array loop's element-fill
+  dispatch gains a third arm: an `is_array_object` element is copied WHOLE
+  through the new `__php_array_get_value` fetcher (beside its int/cstr
+  siblings; `value::operator=` inside it is the one retag/freeze owner), so the
+  element KEEPS ITS KIND — through one loop variable, a string element counts
+  its length and an integer element throws from `count()` and is caught inside
+  the loop body. Copy semantics by design (elements have no stable address —
+  the same fact that keeps `value &v` refused by name, pinned by test). Before,
+  the element fell into the scalar arm and c2mir refused the ill-typed
+  emission; the probe that recorded the gap had stacked TWO defects, and the
+  other — `cout << value`, which fails identically with no loop anywhere — is a
+  separate streaming/operator gap, still open and recorded. `auto` over a madc
+  array still deduces `string` (the subscript's answer); `for (value v : a)` is
+  the explicit opt-in for the raw carrier. Gate: `tests/testforeachvalue.mad`.
+
 ## [v0.86.0] — 2026-08-19
 
 The compiler knows the C library's signatures: undeclared libc calls stop

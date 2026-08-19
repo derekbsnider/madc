@@ -210,47 +210,39 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.86.0** — the compiler knows the C library's
-signatures.
+The current release is **v0.87.0** — the range-for loop element can be the
+value carrier itself.
 
-An UNDECLARED libc call now gets its real signature instead of a `long long`
-guess: `strcmp("abc","abd") < 0` used to evaluate FALSE (an `int` −1 read out of
-all of rax) and `floor(2.7)` returned 1.0 (a double read out of rax, not xmm0) —
-legal C89, exit 0, wrong answers, invisible to 1084 green tests because every
-test that calls these includes the header. The fallback default is now C's own
-`int`, every non-int return comes from one table (`include/libc_signatures.h`,
-gcc's builtins.def model), and the C99 math families also carry their real
-ARGUMENT shapes — `floorf(3.9f)` was 2.000 through float promotion; all nine
-shapes × three suffixes are now byte-identical to gcc, headerless. A totality
-gate (`check-libc-alias-signatures.sh`) requires a signature for every
-`__builtin_` alias target, negative-controlled.
+`for (value v : a)` compiles and runs: the madc-array loop's element-fill
+dispatch gains a third arm that copies the element WHOLE through the new
+`__php_array_get_value` fetcher, so the element keeps its kind — through one
+loop variable, a string element counts its length and an integer element throws
+from `count()` and is caught inside the loop body. Copy semantics by design
+(elements have no stable address — `value &v` stays refused by name, pinned);
+`auto` over a madc array still deduces `string`, the subscript's answer, so
+`for (value v : a)` is the explicit opt-in for the raw carrier.
 
-`.count()`/`.size()` on the madc value carrier answer the owner semantics:
-containers count elements, text kinds count length, null is an empty container,
-and a non-countable kind raises a real, catchable madc exception — never the
-silent 0 it returned before (`value s = "hello"; s.count()` was 0). The
-range-for bound is a different question and a different function, pinned
-unchanged by test.
+v0.86.0 (same day) made the compiler know the C library's signatures: an
+UNDECLARED libc call gets its real return AND argument types from one table
+(`include/libc_signatures.h`, gcc's builtins.def model) instead of a `long
+long` guess — before, `strcmp(a,b) < 0` evaluated FALSE and `floorf(3.9f)`
+returned 2.000 on legal C89 with exit 0. `.count()`/`.size()` on the value
+carrier answer the owner semantics (elements / length / a catchable error,
+never a silent 0), and range-for takes an `auto` element deduced through the
+shared iteration recognizers, with two [stmt.ranged] shadowing fixes.
 
-And range-for takes an `auto` element: `for (auto &kv : m)` over `std::map`,
-`for (auto x : v)` over `std::vector`, raw arrays, and the madc array (deduces
-`string`, the subscript ruling) — deduced at parse time through the same shared
-iteration recognizers the loop lowering and the dumper key on. Two shadowing
-divergences from g++ fell out of [stmt.ranged] and are fixed: the range of
-`for (auto x : x)` binds to the OUTER array, in the parser and in the emitted C.
-
-Branch state: v0.86.0 is released on `develop`. `master` carries v0.82.0, for
+Branch state: v0.87.0 is released on `develop`. `master` carries v0.82.0, for
 which public binaries are published on all three platforms; v0.83.0 through
-v0.86.0 are released on `develop` and unpromoted.
+v0.87.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1089 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1049/0**, OBJ lane **1049/0**; packed suite **1089/0/0/9**
+- Linux JIT: **1090 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1050/0**, OBJ lane **1050/0**; packed suite **1090/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1063/0/0/35**,
+- headerless (no headers on disk anywhere): Linux **1064/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -263,6 +255,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
+  element can be the carrier itself, kind-preserving, copy semantics.
 - [v0.86.0](docs/release-notes/v0.86.0.md) — undeclared libc calls get real
   signatures; .count()/.size() owner semantics; range-for `auto` elements.
 - [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
@@ -271,8 +265,6 @@ Latest validated results:
   silently; the gate's first run found a lost `long double` member.
 - [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`
   become interchangeable in the madc dialect, in both directions.
-- [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;
-  the macOS iostream regression is fixed where the type-id was stamped.
 
 ## Building from source
 

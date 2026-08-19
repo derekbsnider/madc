@@ -1,5 +1,13 @@
 # madc Roadmap
 
+**✅ `for (value v : a)` (2026-08-19, v0.87.0):** the madc-array loop's
+element-fill dispatch gains its third arm — an `is_array_object` element copies
+WHOLE through `__php_array_get_value`, kind-preserving, copy semantics
+(`value &v` stays refused; `auto` still deduces `string` per the subscript
+ruling). Residual recorded: `cout << value` is a separate streaming/operator
+gap (host impl + gated `<ns_madc>` declaration are trivial; the unknown is
+free-operator resolution over the intrinsic type).
+
 **✅ LIBC FALLBACK SIGNATURES + COUNT SEMANTICS + RANGE-FOR AUTO (2026-08-19,
 v0.86.0):** three arcs, each a measured silent wrong answer. An UNDECLARED libc
 call gets its real signature — return AND arguments — from one table

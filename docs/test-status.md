@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-08-19, v0.86.0 — the compiler knows the C library's
+> **Current (2026-08-19, v0.87.0 — `for (value v : a)`):** authoritative Linux
+> fulltest **1090 passed / 0 failed / 0 timed out / 9 skipped**; **1099 tests
+> compiled with ZERO warnings**; EXE **1050/0**, OBJ **1050/0**, packed
+> **1090/0/0/9**, headerless **1064/0/35skip**, release rc=0 — full battery.
+> New: `testforeachvalue` (the loop element is the carrier itself: kind
+> preserved through the copy — string lengths + the caught integer throw in one
+> loop; mutation leaves the source intact; empty array = zero iterations;
+> `value &v` refusal pinned). The other half of the original probe —
+> `cout << value` — fails identically with NO loop (a streaming/operator gap,
+> recorded in docs/plans/2026-08-19-range-for-auto-deduction.md).
+>
+> **Previous (2026-08-19, v0.86.0 — the compiler knows the C library's
 > signatures):** authoritative Linux fulltest **1089 passed / 0 failed / 0 timed
 > out / 9 skipped**; **1098 tests compiled with ZERO warnings** (full all-zero
 > baseline); EXE **1049/0**, OBJ **1049/0**, packed **1089/0/0/9**, headerless
