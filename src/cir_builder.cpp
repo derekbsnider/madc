@@ -13157,8 +13157,24 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return 3;
 		return -1;
 	}
-	if (p_num && a_num)
-		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+	if (p_num && a_num) {
+		if (adc->rawtype() == pdc->rawtype())
+			return 5;
+		// Grade within the numeric domain instead of a flat 4: staying
+		// in one domain (integer->integer, floating->floating) ranks
+		// above crossing it or landing on bool. [conv.fpprom]: a
+		// float argument reaching a double parameter is a PROMOTION —
+		// the flat 4 tied it with float->int64 and registration order
+		// picked the TRUNCATING overload (testoverloadnumrank; both
+		// g++ and clang++ select the double overload unambiguously).
+		// Landing ON bool is a boolean conversion, graded below
+		// same-domain so an integer argument never falls onto a bool
+		// overload by tie-order.
+		if (adc->is_real() == pdc->is_real()
+		    && pdc->rawtype() != DataType::dtBOOL)
+			return 4;
+		return 3;
+	}
 	return 0;            // unrecognized pairing: neutral
 }
 
