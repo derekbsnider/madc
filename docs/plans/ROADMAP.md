@@ -1,5 +1,24 @@
 # madc Roadmap
 
+**✅ LIBC FALLBACK SIGNATURES + COUNT SEMANTICS + RANGE-FOR AUTO (2026-08-19,
+v0.86.0):** three arcs, each a measured silent wrong answer. An UNDECLARED libc
+call gets its real signature — return AND arguments — from one table
+(`include/libc_signatures.h`, gcc's builtins.def model) shared by the lexer's
+`__builtin_` alias map and the parser's dlsym fallback; before, `strcmp(a,b) < 0`
+was FALSE and `floorf(3.9f)` was 2.000 on legal C89 with exit 0. The value
+carrier's `.count()`/`.size()` answer the owner ruling (elements / length /
+catchable error, never a silent 0) through `madarray_count` +
+`ns_common::value_length`, with the range-for bound untouched and pinned. And
+range-for takes an `auto` element, deduced at parse time through the shared
+iteration recognizers — their third consumer — including two [stmt.ranged]
+shadowing fixes (`for (auto x : x)` now binds the range to the OUTER array, in
+the parser and in the emitted C). Gates: `check-libc-alias-signatures.sh`
+(negative-controlled) + five new tests. Full battery per arc; final state
+1089/0/0TO/9skip, EXE/OBJ 1049/0, headerless 1063/0, census 0 warnings. Plans:
+[2026-08-19-libc-fallback-signatures.md](2026-08-19-libc-fallback-signatures.md),
+[2026-08-19-value-count-semantics.md](2026-08-19-value-count-semantics.md),
+[2026-08-19-range-for-auto-deduction.md](2026-08-19-range-for-auto-deduction.md).
+
 **✅ php::print_r / php::var_dump OVER ANY TYPE (2026-08-18, v0.85.0):** the two
 PHP dump functions render **any** madc value the way a PHP developer expects PHP
 to render it — not just `array` / `value`. **All 20 probe shapes render:** a

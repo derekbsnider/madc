@@ -1,6 +1,29 @@
 # Test Status
 
-> **Current (2026-08-18, v0.85.0 — php::print_r / php::var_dump over ANY madc
+> **Current (2026-08-19, v0.86.0 — the compiler knows the C library's
+> signatures):** authoritative Linux fulltest **1089 passed / 0 failed / 0 timed
+> out / 9 skipped**; **1098 tests compiled with ZERO warnings** (full all-zero
+> baseline); EXE **1049/0**, OBJ **1049/0**, packed **1089/0/0/9**, headerless
+> **1063/0/35skip**, release rc=0 — the full battery run per code commit (three
+> times: once per arc).
+>
+> Five new tests, and what each is the gate for:
+> `testlibcnoheader` (an UNDECLARED libc call's RETURN type, headerless, gcc -O0
+> oracle — before the fix `strcmp(a,b) < 0` was FALSE and `floor(2.7)` was 1.0;
+> two deliberate, documented divergences where gcc's own output is UB garbage:
+> madc's atof/atoll answers are the correct ones), `testlibcnoheaderargs` (the
+> ARGUMENT convention — all nine C99-math argument shapes × three suffixes,
+> byte-identical to gcc; `floorf(3.9f)` was 2.000 through float promotion),
+> `testvaluecount` (the owner .count()/.size() semantics: elements / length /
+> catchable error — `value s = "hello"; s.count()` was a silent 0; the range-for
+> bound pinned unchanged by the visited=0/count=2 line), `testforeachauto` (the
+> `auto` range-for element, g++ AND clang++ -O0 oracle, including the
+> [stmt.ranged] shadowing case `for (auto x : x)`), `testforeachautoarray` (the
+> madc array deduces `string`, the #91 subscript ruling). New fulltest gate:
+> `scripts/check-libc-alias-signatures.sh` — every `__builtin_` alias target
+> must carry a signature entry, with a negative control that must fail.
+>
+> **Previous (2026-08-18, v0.85.0 — php::print_r / php::var_dump over ANY madc
 > type, THE ARC COMPLETE):** authoritative Linux fulltest **1083 passed / 0
 > failed / 0 timed out / 9 skipped**; **1092 tests compiled with ZERO warnings**
 > under the c2mir ratchet (baseline 0, and it is a full all-zero baseline);

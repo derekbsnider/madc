@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+## [v0.86.0] — 2026-08-19
+
+The compiler knows the C library's signatures: undeclared libc calls stop
+returning garbage, the value carrier's .count()/.size() answer the owner
+semantics with a catchable error for the rest, and range-for takes an `auto`
+element deduced through the shared recognizers.
+
+- **An UNDECLARED C library call gets its real signature** — two silent wrong
+  answers fixed, both legal C89, both exit 0. (1) RETURN: the dlsym fallback
+  declared every undeclared symbol `long long`, so `strcmp("abc","abd") < 0`
+  evaluated FALSE (an int -1 read out of all of rax) and `floor(2.7)` returned
+  1.0 (a double read out of rax, not xmm0). The default is now C's own `int`,
+  and every non-int return comes from ONE table (`include/libc_signatures.h` —
+  gcc's builtins.def model). The 56 C99 math roots moved into that table so the
+  lexer's `__builtin_` alias map and the parser's signatures expand the SAME
+  list — six roots had been registered by hand, one bug report each, while
+  fifty read the wrong register. (2) ARGUMENTS: a zero-parameter fallback
+  declaration is the variadic convention, so float promotion made
+  `floorf(3.9f)` return 2.000 and `fmodf(7,4)` return -nan; the table now
+  carries the nine argument shapes the math families take, resolved by one
+  suffix-rule owner so return and arguments cannot disagree about a family.
+  Measured headerless against gcc -O0: `tests/testlibcnoheader.mad` (every line
+  but two DOCUMENTED divergences where gcc itself emits UB garbage — madc's
+  atof/atoll answers are the correct ones) and `tests/testlibcnoheaderargs.mad`
+  (all nine shapes x three suffixes, byte-identical). Gate:
+  `scripts/check-libc-alias-signatures.sh` (fulltest) — every alias target must
+  have an entry, negative-controlled.
+
+- **`.count()`/`.size()` on the value carrier answer the OWNER semantics** —
+  containers (array AND object kind) count elements, the text kinds count
+  length, null is an empty container, and a non-countable kind is a REAL madc
+  exception (`catch (const char *)`), never a silent 0. Before: `value s =
+  "hello"; s.count()` was 0, and so was every scalar kind — count/size were
+  bound to `madarray_size`, the range-for BOUND, which answers a different
+  question (object kind must read 0 there; range-fors are pinned unchanged by
+  the test). Two questions, two functions now: the bound keeps its name and its
+  behaviour; the methods bind to `madarray_count` over
+  `ns_common::value_length`. New `src/rt/rt_except.h` carries the throw-family
+  prototypes so the first HOST caller of the exception runtime is
+  compiler-checked. Gate: `tests/testvaluecount.mad`.
+
+- **Range-for takes an `auto` element** — `for (auto &kv : m)` over a std::map,
+  `for (auto x : v)` over a std::vector, raw arrays, and the madc array (which
+  deduces `string`, the #91 subscript ruling). The element type is deduced at
+  parse time from the container through the SAME shared recognizers the loop
+  lowering and the dumper key on (positional: `operator[]`'s return; iterator:
+  `operator*`'s — their third consumer, so deduction cannot disagree with what
+  the loop iterates). The parser now parses the container BEFORE declaring the
+  element ([stmt.ranged]), and the raw-array lowering captures the range into a
+  unique temp first — so `for (auto x : x)` binds the range to the OUTER array
+  (the previous order was a silent shadowing divergence from g++, and a
+  pointer-element shadow COMPILED and read garbage). Oracled against g++ AND
+  clang++ -O0: `tests/testforeachauto.mad`, `tests/testforeachautoarray.mad`.
+
 ## [v0.85.0] — 2026-08-18
 
 php::print_r and php::var_dump over ANY madc type — the arc complete, all 20
