@@ -22189,9 +22189,10 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 // A MEMBER, not static like its twin: it consults class_return_via_retbuf, the
 // signature-ABI owner, to reject an iterator whose by-value return would not be
 // C's native struct return.
-bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
-						   IterProtocol &ip,
-						   std::string *why)
+/*static*/ bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
+							      IterProtocol &ip,
+							      std::string *why,
+							      CirBuilder *abi)
 {
 	ip = IterProtocol();
 	if (!cls)
@@ -22268,8 +22269,9 @@ bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
 	// The generated loop declares the iterator as an ordinary local and copies
 	// begin()'s result into it, so the iterator must use C's native struct
 	// return. A class needing a destructor returns through the __retbuf ABI,
-	// which is a different call shape entirely.
-	if (class_return_via_retbuf(&bfd->return_value_type()))
+	// which is a different call shape entirely. A builder-state check (the
+	// memo), so only ABI callers make it — see the declaration.
+	if (abi && abi->class_return_via_retbuf(&bfd->return_value_type()))
 		return decline("its iterator needs a destructor, so begin() "
 			       "returns through the __retbuf ABI rather than as a "
 			       "native struct");
@@ -22309,11 +22311,17 @@ bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
 // decl shapes as translate_block's hoisted-variable walk.
 node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 {
-	node_t loop = translate_foreach_loop(fe);
+	std::vector<node_t> prelude;
+	node_t loop = translate_foreach_loop(fe, &prelude);
 	Variable *ev = fe->elemvar;
 	if (!loop || !ev)
 		return loop;
 	node_t items = list();
+	// Range capture FIRST ([stmt.ranged]: the range binds before the loop
+	// variable exists), then the element — so an element sharing the
+	// container's name cannot capture the loop's own container references.
+	for (node_t pn : prelude)
+		append(items, pn);
 	append(items, var_decl(ev, fe));
 	if (is_array_object(ev->type)) {
 		append(items, array_ctor_call(ev->name.c_str(), fe));
@@ -22339,7 +22347,8 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	return node2(N_BLOCK, list(), items, fe);
 }
 
-node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
+node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
+					  std::vector<node_t> *prelude)
 {
 	if (!fe->container || !fe->elemtype)
 		return error_node("range-for missing container or element type", fe);
@@ -22360,7 +22369,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 		// than in cir_dump.cpp.
 		IterProtocol ip;
 		std::string ip_why;
-		if (class_iterator_iteration_protocol(ccls, ip, &ip_why))
+		if (class_iterator_iteration_protocol(ccls, ip, &ip_why, this))
 			return translate_foreach_iterator(fe, ccls, ip);
 		// A class object with no index protocol must NOT fall through to
 		// the madc-array reader below: that reads the object's own bytes as
@@ -22384,7 +22393,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
 		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
 		    && ctv->var.total_elements() > 0)
-			return translate_foreach_carray(fe, ctv);
+			return translate_foreach_carray(fe, ctv, prelude);
 	}
 
 	// Reference loop var over a madc array (php/perl dynamic array) is not
@@ -22771,17 +22780,52 @@ node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cl
 // N is the array's compile-time element count; `a[i]` is a direct subscript
 // (N_IND), element stride sizeof(T) — c2mir handles it natively, exactly like
 // g++'s array range-for lowering. No madc-array runtime helper.
-node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
+node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
+					    std::vector<node_t> *prelude)
 {
 	// var_emit_name: the container can be a file-scope global (a class-static
 	// fixed array carries storage_alias_name) — the subscripts below must
 	// name the emitted storage, not the raw source name.
 	const std::string arrname_s = var_emit_name(ctv->var);
-	const char *arrname = arrname_s.c_str();
 	long count = (long)ctv->var.total_elements();
 
-	char idx[32];
+	char idx[32], an[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
+	snprintf(an, sizeof(an), "__fe_a_%d", m_strtmp_counter++);
+
+	// T *__fe_a_N = <array>;  — the range captured ONCE, by a unique name,
+	// emitted (via `prelude`) BEFORE the element declaration in the wrap
+	// block. [stmt.ranged]: `for (auto x : x)` subscripts the OUTER array;
+	// subscripting `arrname` from inside the wrap would resolve to the
+	// just-declared ELEMENT when the two share a name — an int element made
+	// that loud (subscripted value is neither array nor pointer), but a
+	// POINTER element compiled and read garbage, the silent shape.
+	{
+		// Typed by the ARRAY's element (ctv->var.type), never the declared
+		// loop element: `for (long e : int_arr)` converts per element — a
+		// long* over an int array would stride 8 over 4-byte slots.
+		DataDef *abase = ctv->var.type ? ctv->var.type->unqualified() : NULL;
+		int astars_n = abase ? 1 + dd_peel_pointers(abase) : 0;
+		node_t aspecs = list();
+		node_t astars = list();
+		if (!abase || !dump_pointee_specs(abase, aspecs))
+			return error_node("range-for: array element type has no "
+					  "renderable declaration", fe);
+		for (int i = 0; i < astars_n; i++)
+			append(astars, pointer());
+		node_t adecl = simple(N_SPEC_DECL, fe);
+		append(adecl, node1(N_SHARE, aspecs));
+		append(adecl, node2(N_DECL, id(an, fe), astars));
+		append(adecl, ignore());
+		append(adecl, ignore());
+		append(adecl, id(arrname_s.c_str(), fe));
+		if (prelude)
+			prelude->push_back(adecl);
+		else
+			return error_node("range-for: raw-array capture needs the "
+					  "wrap prelude", fe);
+	}
+	const char *arrname = an;
 
 	// long __fe_i = 0;
 	node_t ispec = list();

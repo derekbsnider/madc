@@ -4394,6 +4394,11 @@ public:
     // language_std; this flag only controls strictness presentation.
     bool gnu_dialect;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
+    // `auto x = expr` deduction is C++11+ and C23+; in C89..C17 `auto` is a
+    // storage-class specifier, not a deduced type (I4). ONE owner of that
+    // gate — the declaration-`auto` path and the range-for element deduction
+    // both key on it.
+    bool auto_deduction_allowed() const { return !is_c_mode() || language_std == STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
     // (gcc's default dialect) does not — real glibc headers branch on it
@@ -5222,6 +5227,12 @@ public:
     // A CALL operand types by its RESOLVED callee's return — see
     // resolved_call_funcdef.
     DataDef *operand_value_datadef(TokenBase *operand);
+    // The element type of `for (auto x : container)`, deduced from the
+    // container expression — the shared iteration recognizers answer it
+    // (positional: operator[]'s return; iterator: operator*'s return), the
+    // raw-array and madc-array cases directly. Throws, naming the container,
+    // when no protocol answers. Gated on auto_deduction_allowed().
+    DataDef *range_for_deduce_element(TokenBase *container, TokenBase *where);
     // The RESOLVED callee of a call token whose parse-bound Variable may be an
     // arbitrary member of a late-bound namespace overload set (overloads /
     // fn-template instantiations register after the call site parses). Re-ranks

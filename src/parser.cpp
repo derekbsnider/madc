@@ -54,6 +54,7 @@
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
+#include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
 #include "madc_pch.h"	// v20: restored template token runs deserialize from the .madh record form
 
 using namespace std;
@@ -45225,6 +45226,29 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname
 		    << (range_elem_ref ? " (reference)" : "") << endl);
 
+		// Parse the container expression FIRST, in the ENCLOSING scope —
+		// [stmt.ranged] evaluates the range outside the loop-variable's
+		// scope, so `for (auto x : x)` binds the range `x` to the OUTER
+		// variable (declaring the element first made the container's
+		// name resolve to the element, a shadowing divergence from g++).
+		// Parsing it first is also what makes `auto` deducible below:
+		// the element's type is a fact about the container.
+		TokenBase *tn4 = pgm.nextToken();
+		fe->container = pgm.parseExpression(tn4, true);
+		if ( !fe->container )
+		    pgm.Throw(tn4) << "Failed to parse container expression in range-for" << flush;
+
+		tn4 = pgm.nextToken();
+		if ( tn4->id() != TokenID::tkClBrk )
+		    pgm.Throw(tn4) << "Expecting ) after range-for container" << flush;
+
+		// `for (auto x : c)` — deduce the element type from the
+		// container, so the BODY parses with the element's real class
+		// (`kv.first` must resolve members at parse time) and the CIR
+		// receives a real type (I2), never the ddAUTO placeholder.
+		if ( fe->elemtype == &ddAUTO )
+		    fe->elemtype = pgm.range_for_deduce_element(fe->container, tn4);
+
 		// The element variable has LOOP scope (C++ [stmt.ranged], the
 		// same model as the typed for-init below): declare it in a
 		// parse-time compound of its own, so sibling range-fors reusing
@@ -45240,21 +45264,11 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 		if ( range_elem_ref )
 		{
-		    DataDef *ref_ptr = pgm.getReferenceType(&dt->definition);
+		    DataDef *ref_ptr = pgm.getReferenceType(fe->elemtype);
 		    fe->elemvar = pgm.addVariable(code, *ref_ptr, fe->elemname, 1, NULL, false);
 		}
 		else
-		    fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
-
-		// parse the container expression
-		TokenBase *tn4 = pgm.nextToken();
-		fe->container = pgm.parseExpression(tn4, true);
-		if ( !fe->container )
-		    pgm.Throw(tn4) << "Failed to parse container expression in range-for" << flush;
-
-		tn4 = pgm.nextToken();
-		if ( tn4->id() != TokenID::tkClBrk )
-		    pgm.Throw(tn4) << "Expecting ) after range-for container" << flush;
+		    fe->elemvar = pgm.addVariable(code, *fe->elemtype, fe->elemname, 1, NULL, false);
 
 		tn4 = pgm.nextToken();
 		fe->statement = pgm.parseStatement(tn4);
@@ -50904,6 +50918,75 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
     if ( no_winner )
 	*no_winner = true;
     return fd;
+}
+
+// The element type of `for (auto x : c)` — a fact about the CONTAINER, so it
+// is answered by the same shared recognizers the range-for lowering and the
+// dumper already key on (one predicate per protocol, three consumers now), and
+// deduction cannot disagree with what the loop will actually iterate. Called
+// from TokenFOR::parse AFTER the container expression parses and BEFORE the
+// body does, because `kv.first` in the body must resolve members at parse time.
+//
+// The recognizers are queried WITHOUT the __retbuf ABI check (NULL abi): the
+// element TYPE is a fact about the class, while retbuf viability is a fact
+// about the builder's lowering — and a deduction the lowering later declines
+// still gets codegen's named refusal, never a silent path.
+DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *where)
+{
+    // Same standard gate as declaration `auto` (C++11+/C23+); in C89..C17
+    // `auto` is a storage-class specifier and cannot head a range-for anyway.
+    if ( !auto_deduction_allowed() )
+	Throw(where) << "range-for 'auto' element deduction requires C++ or C23"
+		     << flush;
+
+    // A raw fixed-size C array: the dims carry the array-ness, so the
+    // element IS the variable's type (the CIR's translate_foreach_carray arm
+    // reads the same shape).
+    if ( TokenVar *ctv = dynamic_cast<TokenVar *>(container) )
+	if ( ctv->var.is_fixed_array() )
+	    return ctv->var.type;
+
+    DataDef *cdd = operand_value_datadef(container);
+    DataDef *uq = cdd ? cdd->unqualified() : NULL;
+
+    // The madc array/value carrier answers STRING-FIRST — task #91 R0's
+    // subscript ruling (the Python/PHP element model behind sys.argv[i]), so
+    // `auto` answers exactly what `a[i]` answers. NOT `value`: a value
+    // element does not compile as a loop variable today (a loud gap, recorded
+    // in docs/plans/2026-08-19-range-for-auto-deduction.md), and a deduction
+    // that produces a broken loop would be worse than none.
+    if ( uq && uq->rawtype() == DataType::dtARRAY )
+    {
+	if ( DataDef *sdd = resolve_named_datadef(std::string("string")) )
+	    return sdd;
+	Throw(where) << "range-for 'auto' over a madc array deduces 'string', "
+		     << "but no string type is in scope" << flush;
+    }
+
+    if ( DataDefCLASS *ccls = dynamic_cast<DataDefCLASS *>(uq) )
+    {
+	Variable *szmv = NULL, *opmv = NULL;
+	if ( CirBuilder::class_index_iteration_protocol(ccls, szmv, opmv) )
+	    if ( FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL )
+		return &opfd->return_value_type();	// the referent of a T& return
+	CirBuilder::IterProtocol ip;
+	std::string why;
+	if ( CirBuilder::class_iterator_iteration_protocol(ccls, ip, &why)
+	  && ip.elem )
+	    return ip.elem;
+	Throw(where) << "cannot deduce the range-for 'auto' element from '"
+		     << ccls->name << "': "
+		     << (why.empty()
+			 ? "it has neither the positional size()/operator[] "
+			   "protocol nor a usable iterator protocol"
+			 : why.c_str())
+		     << flush;
+    }
+
+    Throw(where) << "cannot deduce the range-for 'auto' element: the container "
+		 << "is not an array, a madc array, or a recognized container"
+		 << flush;
+    return NULL;	// Throw does not return; keeps the compiler satisfied
 }
 
 DataDef *Program::operand_value_datadef(TokenBase *operand)
@@ -62026,7 +62109,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// allow deduction in C++/madc always, and in C only at C23. The fn-name /
 	// lambda fn-ptr forms below are unaffected (they are the original behaviour
 	// and remain available wherever this block runs).
-	bool auto_deduction_allowed = !is_c_mode() || language_std == STD_C23;
+	bool auto_deduction_allowed = this->auto_deduction_allowed();
 
 	// Decide whether the initializer is a function name or lambda (the original
 	// fn-ptr path) or a general expression (P2.3 deduction). A bare function

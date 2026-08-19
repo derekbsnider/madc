@@ -909,6 +909,12 @@ private:
 	// the two members is not enough). The range-for and the dumper share this
 	// ONE predicate; a by-name version of it in either place is the bug it was
 	// written to fix. Static: it asks only about the class.
+	//
+	// PUBLIC (with its iterator twin below): the parser's range-for `auto`
+	// deduction is the recognizers' third consumer — the element type is a
+	// fact about the container's class, answered once, here, so deduction
+	// cannot disagree with what the loop will iterate.
+public:
 	static bool class_index_iteration_protocol(DataDefCLASS *cls,
 						   class Variable *&szmv,
 						   class Variable *&opmv);
@@ -935,9 +941,21 @@ private:
 	// associative shape structurally (the container names a `mapped_type`).
 	// `why` receives the reason for a decline, so a refusal can name the
 	// piece that is missing.
-	bool class_iterator_iteration_protocol(DataDefCLASS *cls,
-					       IterProtocol &ip,
-					       std::string *why = NULL);
+	//
+	// Static, with the ONE builder-state dependency — the __retbuf ABI
+	// viability of the iterator's return (class_return_via_retbuf memoizes on
+	// the builder) — carried by `abi`: every CODEGEN caller passes its
+	// builder and gets today's exact check and decline; the PARSER's
+	// range-for `auto` deduction passes NULL and takes the STRUCTURAL answer
+	// only, because the element TYPE is a fact about the class while retbuf
+	// viability is a fact about this builder's lowering. A NULL-abi accept
+	// that codegen later declines still prints codegen's named refusal — no
+	// silent path.
+	static bool class_iterator_iteration_protocol(DataDefCLASS *cls,
+						      IterProtocol &ip,
+						      std::string *why = NULL,
+						      CirBuilder *abi = NULL);
+private:
 	// Range-for over an ITERATOR container — the recognizer's SECOND consumer,
 	// so `for (auto_or_T x : m)` over a std::map / set / list works from the
 	// same predicate the dumper uses. Returns a BLOCK (the count and the
@@ -1996,7 +2014,13 @@ public:
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
-	node_t translate_foreach_loop(class TokenFOREACH *fe);
+	// `prelude` (when non-NULL) receives declarations that must precede the
+	// ELEMENT declaration in the wrap block — [stmt.ranged] binds the range
+	// BEFORE the loop variable exists, so a range capture emitted here is
+	// what keeps `for (auto x : x)` subscripting the OUTER array instead of
+	// the just-declared element.
+	node_t translate_foreach_loop(class TokenFOREACH *fe,
+				      std::vector<node_t> *prelude = NULL);
 	// Range-for over a user-defined class / template-instantiated container:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the
@@ -2009,7 +2033,8 @@ public:
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
 	// subscript `a[__i]`. (No madc-array runtime helper.)
-	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv);
+	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv,
+					std::vector<node_t> *prelude);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 	// rust::match over integer patterns -> a switch: each arm's pattern(s)

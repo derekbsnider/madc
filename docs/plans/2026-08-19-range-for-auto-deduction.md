@@ -1,6 +1,6 @@
 # `for (auto &kv : m)` — deduce the range-for element type at parse time
 
-**Status:** planned, not started (this session's task #3; #2 and #1 landed first)
+**Status:** IMPLEMENTED (this session; see the commit carrying this doc)
 
 ## Measured at live HEAD (v0.85.0 + the libc-fallback commits)
 
@@ -80,6 +80,22 @@ static). The split that keeps one owner:
 `tmp/auto/fa.cpp` — g++ and clang++ -O0 agree byte-for-byte (vector by value,
 vector mutated through `auto &`, map `.first`/`.second` through `auto &` and
 `const auto &`, raw array, and the shadowing case `for (auto x : x)` summing 6).
+
+## What implementation added beyond this plan
+
+- The reorder exposed a SECOND shadowing defect one layer down: the raw-array
+  LOWERING referenced the container by emitted name inside the wrap block that
+  declares the element, so `for (auto x : x)` subscripted the just-declared
+  element (loud for an int element; a POINTER element compiled and read
+  garbage — the silent shape). Fixed where the names are emitted:
+  `translate_foreach_loop` gained a `prelude` channel and the carray arm
+  captures the range into a unique `T *__fe_a_N` BEFORE the element
+  declaration, typed by the ARRAY's element (never the declared loop element —
+  `for (long e : int_arr)` must not stride 8 over 4-byte slots).
+- The recognizers moved into a PUBLIC window of CirBuilder — the parser is
+  their third consumer, and that is the whole point of having shared ones.
+- The gate predicate became `Program::auto_deduction_allowed()`, replacing the
+  inline expression at the declaration-`auto` site (one owner).
 
 ## Tests
 

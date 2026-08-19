@@ -279,7 +279,7 @@ std::string CirBuilder::dump_container_type_word_inner(DataDefCLASS *cls)
 						       &opfd->return_value_type());
 	}
 	IterProtocol ip;
-	if (class_iterator_iteration_protocol(cls, ip)) {
+	if (class_iterator_iteration_protocol(cls, ip, NULL, this)) {
 		DataDef *elem = ip.elem;
 		std::vector<DataDef *> wargs;
 		DataDef *kdd = NULL, *vdd = NULL;
@@ -1189,7 +1189,7 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 			       std::string &why)
 {
 	IterProtocol ip;
-	if (!class_iterator_iteration_protocol(cls, ip, &why))
+	if (!class_iterator_iteration_protocol(cls, ip, &why, this))
 		return false;
 	DataDefCLASS *itcls = ip.itcls;
 	DataDef *elem = ip.elem;
@@ -1682,7 +1682,7 @@ std::string CirBuilder::dump_pr_recursion_word(DataDef *dd)
 	if (cls && class_index_iteration_protocol(cls, szmv, opmv))
 		return "Array";
 	IterProtocol ip;
-	if (cls && class_iterator_iteration_protocol(cls, ip))
+	if (cls && class_iterator_iteration_protocol(cls, ip, NULL, this))
 		return "Array";
 	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u))
 		return dump_pr_object_word(sdd);

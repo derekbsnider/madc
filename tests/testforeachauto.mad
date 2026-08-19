@@ -1,0 +1,43 @@
+// Range-for with an `auto` ELEMENT — the element type is deduced from the
+// container at parse time (the container is the only place it exists), through
+// the SAME shared recognizers the loop lowering and the dumper key on:
+// positional containers answer with operator[]'s return, iterator containers
+// with operator*'s. Before this, `auto` reached the body as the ddAUTO
+// placeholder: kv.first had no class to resolve against (map) and the CIR got
+// a size-0 element (vector).
+//
+// The shadowing case at the end pins [stmt.ranged] scope: the range is
+// evaluated OUTSIDE the loop-variable's scope, so `for (auto x : x)` binds the
+// range `x` to the OUTER array. The parser used to declare the element before
+// parsing the container, which would have bound the container to the element.
+//
+// Oracle: g++ -O0 and clang++ -O0 agree byte-for-byte (tmp/auto/fa.cpp).
+#include <map>
+#include <vector>
+#include <string>
+#include <iostream>
+
+int main()
+{
+	std::vector<int> v;
+	v.push_back(3);
+	v.push_back(4);
+	for (auto x : v) std::cout << "v:" << x << std::endl;
+	for (auto &x : v) x = x * 10;
+	for (auto x : v) std::cout << "vx10:" << x << std::endl;
+
+	std::map<std::string,int> m;
+	m["a"] = 1;
+	m["b"] = 2;
+	for (auto &kv : m) std::cout << kv.first << "=" << kv.second << std::endl;
+	for (const auto &kv : m) std::cout << "c:" << kv.first << "=" << kv.second << std::endl;
+
+	int arr[3] = { 7, 8, 9 };
+	for (auto e : arr) std::cout << "a:" << e << std::endl;
+
+	int x[3] = { 1, 2, 3 };
+	long sum = 0;
+	for (auto x : x) sum += x;
+	std::cout << "shadow:" << sum << std::endl;
+	return 0;
+}
