@@ -5615,6 +5615,14 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
+node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
+{
+	if (sdcl && !sdcl->ctor_args.empty())
+		return class_ctor_call(&sdcl->var, &ddARRAY, sdcl->ctor_args,
+				       sdcl);
+	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
+}
+
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
 {
 	if (!cdd || !name) return NULL;
@@ -14869,16 +14877,16 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	if (external_ctor) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // this
-		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-			DataDef *pt = ctor->parameters[pi];
-			bool refp = ctor->is_ref_param(pi);
-			if (param_object_class(pt, refp) || refp)
-				eparams.push_back({ {N_VOID}, true });
-			else if (pt && pt->is_pointer())
-				eparams.push_back({ {N_CHAR}, true });
-			else
-				eparams.push_back({ {N_LONG, N_LONG}, false });
-		}
+		// native_param_shape is the ONE param-shape owner (objects/refs
+		// -> void*, pointers -> void*/char*, scalars via
+		// native_scalar_specs). The hand-rolled copy this replaces
+		// flat-typed every scalar {N_LONG, N_LONG}, so an external
+		// ctor's DOUBLE parameter was declared long long and c2mir
+		// truncated the argument into a GPR while the callee read
+		// xmm0 (value(3.5) constructed real(0)).
+		for (size_t pi = 1; pi < ctor->parameters.size(); pi++)
+			eparams.push_back(native_param_shape(
+				ctor->parameters[pi], ctor->is_ref_param(pi)));
 		if (ctor->ctor_trailing_self)
 			eparams.push_back({ {N_VOID}, true });
 		need_output_extern(sym.c_str(), false, eparams);
@@ -21692,7 +21700,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 				if (is_array_object(ctd->var.type)) {
 					append(class_init_items, var_decl(&ctd->var, ctd));
 					append(class_init_items,
-					       array_ctor_call(ctd->var.name.c_str(), ctd));	// allowed-exception: for-init scope local
+					       array_decl_ctor_call(ctd));	// allowed-exception: for-init scope local
 					return;
 				}
 				// Scalar declarator: var_decl folds ctd->initialize
@@ -21722,7 +21730,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			} else {
 				append(class_init_items, var_decl(&td->var, td));
 				append(class_init_items,
-				       array_ctor_call(td->var.name.c_str(), td));	// allowed-exception: for-init scope local
+				       array_decl_ctor_call(td));	// allowed-exception: for-init scope local
 			}
 			init = ignore();
 		} else {
@@ -23671,7 +23679,20 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
-				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));	// allowed-exception: guarded !file_global
+				{
+					// Parens direct-init (`value v(7);`): the
+					// selected madarray_construct_* entry's
+					// ARGUMENTS may materialize temporaries into
+					// m_pending_stmts — their declarations must
+					// precede the construction that reads them
+					// (the same ordering the `vi` flush below
+					// keeps for `=` initializers).
+					node_t cc = array_decl_ctor_call(sdcl);
+					for (node_t p : m_pending_stmts)
+						append(items, p);
+					m_pending_stmts.clear();
+					if (cc) append(items, cc);
+				}
 				// …and its INITIALIZER. Without this the `continue`
 				// below dropped it silently: `value v = "hello";`
 				// constructed an empty value and threw the text away,

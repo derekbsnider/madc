@@ -1,0 +1,18 @@
+-7
+3.5
+null::
+7
+hi
+2.5
+1
+e::
+hi
+42
+array(2) {
+  [0]=>
+  real(3.5)
+  [1]=>
+  string(4) "text"
+}
+real(2.5)
+boolean(true)

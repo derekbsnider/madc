@@ -66,6 +66,21 @@ void *madarray_construct(void *ptr)
     { return new(ptr) madc::value; }
 void madarray_destruct(void *ptr)
     { ((madc::value *)ptr)->~value(); }
+// Value-carrying placement construction into the same buffer — the ctor
+// family add_array_methods registers on ddARRAY (`value(-7)` temporaries,
+// `value v(7);` direct-init). Placement-new like madarray_construct: the
+// storage is RAW here, so the assign family (whose operator= reads the OLD
+// kind to release the previous payload) must not run. Returns the receiver.
+void *madarray_construct_cstr(void *ptr, const char *s)
+    { return new(ptr) madc::value(s ? s : ""); }
+void *madarray_construct_int(void *ptr, int64_t i)
+    { return new(ptr) madc::value(i); }
+void *madarray_construct_real(void *ptr, double d)
+    { return new(ptr) madc::value(d); }
+void *madarray_construct_bool(void *ptr, int64_t b)
+    { return new(ptr) madc::value(b != 0); }
+void *madarray_construct_value(void *ptr, void *src)
+    { return new(ptr) madc::value(*(const madc::value *)src); }
 // Range-for length over a script array. Intentionally NOT
 // ns_common::value_count: foreach iterates indexed elements only, so an
 // object-kind ctx must read as length 0 here.

@@ -23050,6 +23050,54 @@ void Program::add_array_methods()
 	ddARRAY.method_map["operator="] = var;
     }
 
+    // Placement-construction surface: `value(-7)` temporaries and
+    // `value v(7);` direct-init. REAL ctor overloads on ddARRAY —
+    // select_ctor_overload ranks cdd->ctors generically, and class_ctor_call's
+    // external-ctor arm (emit_symbol) declares and calls the runtime entry —
+    // binding the madarray_construct_* family (placement-new into RAW
+    // storage; the assign family reads the OLD kind to release the previous
+    // payload, so it must never run on an unconstructed buffer). Without
+    // these the ObjTemp arm found no ctor, emitted NOTHING, and the temp's
+    // kind byte was stack garbage (near-silent: an "instance" notice, then
+    // SIGSEGV walking a garbage payload). has_user_ctor routes construction
+    // to the resolve arm instead of the implicit-default arm that drops
+    // arguments.
+    ddARRAY.has_user_ctor = true;
+    struct ArrayCtorOp { typespec_t param; const char *sym; };
+    const ArrayCtorOp ctor_ops[] = {
+	// dtVOID + null dd = "no parameter": the default ctor's sentinel row.
+	{ DataType::dtVOID,       "madarray_construct"       },
+	{ ptr_of(ddCHAR),         "madarray_construct_cstr"  },
+	{ DataType::dtINT64,      "madarray_construct_int"   },
+	{ DataType::dtDOUBLE,     "madarray_construct_real"  },
+	{ DataType::dtBOOL,       "madarray_construct_bool"  },
+	{ typespec_t(array_ref),  "madarray_construct_value" },
+    };
+    for ( const ArrayCtorOp &op : ctor_ops )
+    {
+	datatype_vec_t sig{typespec_t(array_ref), ptr_of(ddARRAY)};
+	if ( op.param.dd || op.param.dt != DataType::dtVOID )
+	    sig.push_back(op.param);
+	Variable *var = addFunction("array", sig, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = op.sym;
+	    fd->method_display_name = "array";
+	    // The copy ctor binds any value lvalue AND conversion
+	    // temporaries: const array& (C++ idiom), like the copy-assign.
+	    if ( op.param.dd == array_ref )
+		fd->const_params = { false, false, true };
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.ctors.push_back(var);
+    }
+
     // Text view (slice V1): c_str() bound to madarray_cstr gives the value
     // carrier the same const char* coercion surface a madc string has —
     // object_cstr_arg discovers it generically, which is what lowers a value

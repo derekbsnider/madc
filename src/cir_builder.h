@@ -677,6 +677,13 @@ class CirBuilder {
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
+	// The construction statement for a DECLARED value/array local — the one
+	// owner of the parens-vs-bare decision: `value v(7);` (TokenDecl::
+	// ctor_args) selects from the registered madarray_construct_* ctor set
+	// via class_ctor_call (the entries placement-construct into the raw
+	// storage, so the default construct must NOT also run); the bare form
+	// default-constructs (madarray_construct).
+	node_t array_decl_ctor_call(TokenDecl *sdcl);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
