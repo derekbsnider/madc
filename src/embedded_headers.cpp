@@ -3,6 +3,28 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"bits/value_stream", R"EMBED(// bits/value_stream — the always-available half of the madc value
+// stream inserter. madc::value is an INHERENT madc-mode type (owner
+// law 2026-08-19: it requires no #include), so streaming one must not
+// depend on <ns_madc> or on include order. The declaration still
+// cannot precede std::ostream's, so the lexer injects this fragment
+// ONCE, at the completion of whichever include first defines the
+// ostream guard (_GLIBCXX_OSTREAM / _LIBCPP_OSTREAM — <iostream>,
+// <fstream>, <sstream>, or the bare-cout auto-include), madc dialect
+// only. Strict C/C++ modes never see it; <ns_madc>'s guarded twin is
+// their opt-in, and redeclaration beside it is safe (the overload
+// registry dedups same-spelling redeclarations).
+//
+// Stream a value EXACTLY as the contained type would stream (owner
+// ruling 2026-08-19): each kind forwards to the real inserter, so
+// std::hex / setprecision / boolalpha apply the way they do to a plain
+// int / double / bool; null streams nothing; array/object/instance are
+// not streamable (a stderr notice, nothing written). Resolves
+// mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+namespace madc {
+    std::ostream &operator<<(std::ostream &os, const value &v);
+}
+)EMBED"},
     {"float.h", R"EMBED(// madc embedded float.h — floating-point characteristics for host x86-64
 
 #ifndef __MADC_FLOAT_H
@@ -213,6 +235,19 @@ namespace madc {
     void context_set_array(value &ctx, std::string &key, value &v);
 #endif
 
+#if defined(_GLIBCXX_OSTREAM) || defined(_LIBCPP_OSTREAM)
+    // Stream a value EXACTLY as the contained type would stream (owner
+    // ruling 2026-08-19): each kind forwards to the real inserter, so
+    // std::hex / setprecision / boolalpha apply the way they do to a plain
+    // int / double / bool; null streams nothing; array/object/instance are
+    // not streamable (a stderr notice, nothing written — C++ gives
+    // std::vector no operator<< either, and the kind is only known at run
+    // time). Present only when <ostream>/<iostream> precedes this header,
+    // the same guard model as the std::string conveniences above. Resolves
+    // mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+    std::ostream &operator<<(std::ostream &os, const value &v);
+#endif
+
     // The system object (Python `sys` convention — include this header
     // like Python's `import sys`). sys.argv / sys.path are mutable madc
     // arrays (argv[0] = script path; path mutations steer FUTURE
@@ -400,9 +435,11 @@ extern "C" {
     void __php_explode(array *, const char *, const char *);
     std::string *__php_implode(std::string *, const char *, array *);
     int64_t __php_count(array *);
-    void __php_array_push(array *, const char *);
-    void __php_array_push_int(array *, int64_t);
-    void __php_array_push_array(array *, array *);
+    int64_t __php_array_push(array *, const char *);
+    int64_t __php_array_push_int(array *, int64_t);
+    int64_t __php_array_push_real(array *, double);
+    int64_t __php_array_push_bool(array *, bool);
+    int64_t __php_array_push_value(array *, value *);
     std::string *__php_array_pop(std::string *, array *);
     std::string *__php_array_get(std::string *, array *, int64_t);
     int64_t __php_array_get_int(array *, int64_t);
@@ -440,9 +477,18 @@ namespace php {
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
     std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
     int64_t count(array &values) { return __php_count(&values); }
-    void array_push(array &values, const char *text) { __php_array_push(&values, text); }
-    void array_push_int(array &values, int64_t value) { __php_array_push_int(&values, value); }
-    void array_push_array(array &values, array &nested) { __php_array_push_array(&values, &nested); }
+    // array_push is ONE overloaded name, PHP parity: it accepts any value
+    // type and RETURNS the array's new element count. ONE carrier overload
+    // serves both `value` and `array` arguments — the two spellings are the
+    // SAME DataDef (ddARRAY, one tagged carrier), so a second (array&)
+    // overload would be the same signature. The carrier push is a
+    // kind-preserving deep copy: pushing an array-kind carrier nests it.
+    int64_t array_push(array &values, const char *text) { return __php_array_push(&values, text); }
+    int64_t array_push(array &values, int64_t v) { return __php_array_push_int(&values, v); }
+    int64_t array_push(array &values, double v) { return __php_array_push_real(&values, v); }
+    int64_t array_push(array &values, bool v) { return __php_array_push_bool(&values, v); }
+    int64_t array_push(array &values, value &v) { return __php_array_push_value(&values, &v); }
+    int64_t array_push(array &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
     std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
     std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
     int64_t array_get_int(array &values, int64_t index) { return __php_array_get_int(&values, index); }
@@ -458,6 +504,24 @@ namespace php {
     void array_slice(array &dest, array &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
     void array_merge(array &dest, array &src) { __php_array_merge(&dest, &src); }
     void array_column(array &dest, array &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
+
+    // print_r / var_dump over ANY madc type — the COMPILER is the
+    // implementation. Declared, never defined: "any type" has no signature a
+    // host could satisfy, and the dumper for a given T is generated at the call
+    // site from T's real structure (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+    // Deliberate exception to cpp-first-api.md's mangled-direct rule for
+    // script-facing namespace publics: there is nothing to bind to. A C++ host
+    // that calls one gets an unresolved symbol, which is the intended contract.
+    // PHP's own signature: ONE function, a DEFAULT second parameter, and a
+    // `string|true` return — which is what madc::value models (the text when
+    // `ret` is true, boolean true when it is not). Returned BY REFERENCE, to a
+    // temporary the compiler declares at the call site: a `value` has no C type
+    // to return by value (it lowers to an opaque buffer whose argument passing
+    // depends on decaying to a pointer), and `value &` is madc's own value idiom
+    // — `<ns_madc>`'s eval API returns exactly this shape. Plan §13.
+    template<class T> madc::value &print_r(const T &v, bool ret = false);
+    // PHP's var_dump returns void and is variadic.
+    template<class... Ts> void var_dump(const Ts &...vs);
 }
 )EMBED"},
     {"ns_php.h", R"EMBED(#ifndef MADC_NS_PHP_H
@@ -488,9 +552,12 @@ std::string *__php_wordwrap(std::string *, int64_t, std::string *);
 void __php_explode(madc::value *, const char *, const char *);
 std::string *__php_implode(std::string *, const char *, madc::value *);
 int64_t __php_count(madc::value *);
-void __php_array_push(madc::value *, const char *);
-void __php_array_push_int(madc::value *, int64_t);
-void __php_array_push_array(madc::value *, madc::value *);
+int64_t __php_array_push(madc::value *, const char *);
+int64_t __php_array_push_int(madc::value *, int64_t);
+int64_t __php_array_push_real(madc::value *, double);
+int64_t __php_array_push_bool(madc::value *, bool);
+int64_t __php_array_push_array(madc::value *, madc::value *);
+int64_t __php_array_push_value(madc::value *, madc::value *);
 std::string *__php_array_pop(std::string *, madc::value *);
 std::string *__php_array_get(std::string *, madc::value *, int64_t);
 int64_t __php_array_get_int(madc::value *, int64_t);
@@ -527,9 +594,18 @@ inline std::string &wordwrap(std::string &s, int64_t width, std::string &separat
 inline void explode(madc::value &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
 inline std::string &implode(std::string &result, const char *glue, madc::value &values) { return *__php_implode(&result, glue, &values); }
 inline int64_t count(madc::value &values) { return __php_count(&values); }
-inline void array_push(madc::value &values, const char *text) { __php_array_push(&values, text); }
-inline void array_push_int(madc::value &values, int64_t value) { __php_array_push_int(&values, value); }
-inline void array_push_array(madc::value &values, madc::value &nested) { __php_array_push_array(&values, &nested); }
+// array_push is ONE overloaded name, PHP parity: it accepts any value type
+// and RETURNS the array's new element count. The madc::value& overload is a
+// kind-preserving deep copy (an array-kind carrier nests). The plain-int
+// overload exists to keep `array_push(a, 7)` unambiguous under ISO C++
+// (int->int64_t, int->double and int->bool are all "conversion" rank).
+inline int64_t array_push(madc::value &values, const char *text) { return __php_array_push(&values, text); }
+inline int64_t array_push(madc::value &values, int64_t v) { return __php_array_push_int(&values, v); }
+inline int64_t array_push(madc::value &values, int v) { return __php_array_push_int(&values, v); }
+inline int64_t array_push(madc::value &values, double v) { return __php_array_push_real(&values, v); }
+inline int64_t array_push(madc::value &values, bool v) { return __php_array_push_bool(&values, v); }
+inline int64_t array_push(madc::value &values, madc::value &v) { return __php_array_push_value(&values, &v); }
+inline int64_t array_push(madc::value &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
 inline std::string &array_pop(std::string &result, madc::value &values) { return *__php_array_pop(&result, &values); }
 inline std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *__php_array_get(&result, &values, index); }
 inline int64_t array_get_int(madc::value &values, int64_t index) { return __php_array_get_int(&values, index); }
@@ -1003,13 +1079,18 @@ typedef __builtin_va_list __gnuc_va_list;
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
 #endif
 
-// va_list is now the real ABI struct, so the v*printf family resolve to the
-// real libc functions (which take a va_list) — not the old __madc_* helpers
-// that unpacked a custom int64_t[] buffer.
-int vsprintf(char *, const char *, va_list);
-int vsnprintf(char *, unsigned long, const char *, va_list);
-int vfprintf(void *, const char *, va_list);
-int vprintf(const char *, va_list);
+// The v*printf family is NOT declared here. <stdarg.h> owns the va_* machinery
+// and nothing else — gcc's and clang's own stdarg.h declare zero stdio
+// functions, and <stdio.h> (glibc / the darwin prelude / UCRT) is the header
+// that owns those names. Declaring them here was a leftover from the embedded
+// <stdio.h> twin, which is gone.
+//
+// It was also actively WRONG on a libc that macro-izes them: darwin builds the
+// prelude with _FORTIFY_SOURCE=2, so `#define vsprintf(str,...)
+// __vsprintf_chk_func(str, 0, __VA_ARGS__)` is live once anything pulls the
+// stdio chain in. The declaration below then expanded mid-header into
+// `__builtin___vsprintf_chk (char *, 0, __darwin_obsz(...), ...)` and failed to
+// parse — reported, misleadingly, as an error at this line.
 
 #endif /* __need___va_list */
 )EMBED"},
@@ -1054,9 +1135,21 @@ typedef __WCHAR_TYPE__ wchar_t;
 #undef __need_wchar_t
 #endif
 #ifdef __need_NULL
-#ifndef NULL
+// gcc's stddef.h spells this `#undef NULL` + an UNCONDITIONAL `#define`, with
+// the comment "in case <stdio.h> has defined it" — a __need_NULL request must
+// PRODUCE NULL, not merely leave it produced. An `#ifndef NULL` guard here
+// diverges from that oracle and makes the definition conditional on whatever
+// ran earlier in the translation unit.
+//
+// That divergence is invisible live and fatal frozen. The pack's canonical
+// order puts <cstddef> first, so by the time glibc's <stdlib.h> issued its
+// __need_NULL request the guard was already false: the freeze recorded
+// stdlib.h's `define __need_NULL` and `undef __need_NULL` and NO `define NULL`,
+// leaving a unit that cannot define NULL when bound on its own. A TU reaching
+// stddef.h ONLY through the __need protocol then got no NULL at all
+// (tests/smaug_requests_mud.mah, on the headerless lane).
+#undef NULL
 #define NULL ((void *)0)
-#endif
 #undef __need_NULL
 #endif
 #ifdef __need_wint_t

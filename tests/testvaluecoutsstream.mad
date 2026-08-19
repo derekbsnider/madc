@@ -1,0 +1,14 @@
+// The bits/value_stream injection is keyed on the ostream GUARD macro,
+// not on a header name: <sstream> (which includes <ostream>) is enough
+// to arm it, and the inserter resolves for an ostringstream through the
+// ordinary derived-to-base walk. cout itself arrives via auto-include.
+#include <sstream>
+
+int main()
+{
+	std::ostringstream os;
+	value v = 3.5;
+	os << v;
+	cout << os.str() << endl;
+	return 0;
+}

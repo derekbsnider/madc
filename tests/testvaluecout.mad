@@ -1,0 +1,7 @@
+// The owner's exact reducer (2026-08-19): madc::value is an INHERENT
+// madc-mode type — streaming one to cout requires NO includes. Bare
+// `cout` arrives via the auto-include prelude; the value inserter
+// declaration arrives via the lexer's bits/value_stream injection at
+// that include's completion (keyed on the ostream guard macro).
+var test = "hello";
+cout << test << endl;

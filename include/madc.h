@@ -4250,6 +4250,7 @@ public:
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
     bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
+    bool _value_stream_operator_injected; // bits/value_stream fragment served (one-shot; see maybe_inject_value_stream_operator)
     // Intern file paths so TokenBase::file pointers stay stable for
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the
@@ -4887,6 +4888,12 @@ public:
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);
     void mark_embedded_include_flag(const std::string &incfile);
+    // Every include-serving arm's completion return (lexer.cpp): fires the
+    // include-completion side effects, then continues the outer scan.
+    TokenBase *include_completed_token();
+    // One-shot: serve bits/value_stream once the ostream guard is defined
+    // (madc dialect only) — madc::value's inserter is always-included surface.
+    void maybe_inject_value_stream_operator();
     void push_runtime_scope();
     void pop_runtime_scope();
     static Program *active_runtime_program();
