@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [v0.89.0] — 2026-08-19
+
+`php::array_push` is ONE overloaded name that returns the new count (PHP parity).
+
+- **`php::array_push` overload set** (owner ruling + parity law: php::
+  functions mirror the real PHP functions; `array_push_int` /
+  `array_push_array` were invented madc-isms and are RETIRED): one name,
+  overloads for `const char*`, `int64_t`, `double`, `bool`, `value&`,
+  `std::string&` — every overload returning `int64_t` = the array's new
+  element count, like PHP's `array_push()`. ONE carrier overload serves
+  `value` AND `array` arguments (the two spellings are the SAME DataDef —
+  ddARRAY, one tagged carrier), kind-preserving deep copy: pushing an
+  array-kind carrier nests it. The motivating defect — `php::array_push(a, 7)`
+  went through the only (char*) overload and SIGSEGV'd at address 7 — is now
+  the int-overload line by construction. New runtime plumbing:
+  `__php_array_push_real` / `_bool` / `_value`; `_int` / `_array` stay as
+  plumbing (`_array` delegates to the one carrier implementation). Host
+  header `ns_php.h` carries the same set plus a plain-`int` overload (ISO
+  C++ would otherwise find `array_push(v, 7)` ambiguous). PHP's variadic
+  multi-value form stays a recorded parity follow-on. Gate:
+  `tests/testarraypush.mad`.
+- **Numeric overload grading fixed** (found by this arc's ranking probe;
+  own commit): `score_arg_to_param`'s numeric lane scored every mismatched
+  numeric pair a flat 4, so a `float` argument picked the TRUNCATING int64
+  overload by registration order. Now graded — same numeric domain
+  (int→int, fp→fp) above crossing domains or landing on bool — matching
+  what g++ AND clang++ do unambiguously (float→double is a promotion,
+  [conv.fpprom]). The int-literal pick (`f(7)` → int64 where ISO C++ calls
+  it ambiguous) is a documented madc-dialect liberality: the obvious
+  overload wins deterministically. Gate: `tests/testoverloadnumrank.mad`.
+
 ## [v0.88.0] — 2026-08-19
 
 `cout << value` streams exactly as the contained type would.

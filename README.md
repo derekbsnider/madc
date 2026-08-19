@@ -210,32 +210,34 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.88.0** — `cout << value` streams exactly as the
-contained type would.
+The current release is **v0.89.0** — `php::array_push` is ONE overloaded name
+that returns the new element count (PHP parity).
 
-One `madc::operator<<(std::ostream&, const value&)` dispatches per kind at run
-time, each kind forwarding to the REAL ostream inserter — so `std::hex` and
-`boolalpha` apply to a value the way they do to a plain `long long` or `bool`,
-measured byte-identical to the plain-type twin program under g++ AND clang++.
-null streams nothing; the container kinds follow C++'s own convention
-(std::vector has no `operator<<`): a stderr notice, nothing streamed, the
-stream survives. Same-day siblings: v0.87.0 made `for (value v : a)` iterate
-with the element keeping its kind, and v0.86.0 gave undeclared libc calls
-their real signatures, the value carrier's `.count()`/`.size()` the owner
-semantics, and range-for an `auto` element.
+Overloads for `const char*`, `int64_t`, `double`, `bool`, `value&` and
+`std::string&`, every one returning the array's new count like PHP's
+`array_push()`; the invented `array_push_int` / `array_push_array` madc-isms
+are retired. One carrier overload serves `value` and `array` arguments (the
+two spellings are the same tagged carrier), kind-preserving — pushing an
+array nests it. The arc's ranking probe also found and fixed a numeric
+overload-grading defect: a `float` argument used to select a TRUNCATING
+int64 overload by registration order; it now selects double, matching g++
+and clang++. Same-day siblings: v0.88.0 made `cout << value` stream exactly
+as the contained type would, v0.87.0 made `for (value v : a)` iterate with
+the element keeping its kind, and v0.86.0 gave undeclared libc calls their
+real signatures.
 
-Branch state: v0.88.0 is released on `develop`. `master` carries v0.82.0, for
+Branch state: v0.89.0 is released on `develop`. `master` carries v0.82.0, for
 which public binaries are published on all three platforms; v0.83.0 through
-v0.88.0 are released on `develop` and unpromoted.
+v0.89.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1091 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1051/0**, OBJ lane **1051/0**; packed suite **1091/0/0/9**
+- Linux JIT: **1093 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1053/0**, OBJ lane **1053/0**; packed suite **1093/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1065/0/0/35**,
+- headerless (no headers on disk anywhere): Linux **1067/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -248,6 +250,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.89.0](docs/release-notes/v0.89.0.md) — `php::array_push` as one
+  overloaded name returning the new count; numeric overload grading fixed.
 - [v0.88.0](docs/release-notes/v0.88.0.md) — `cout << value` streams exactly
   as the contained type would; two pre-existing gaps found and recorded.
 - [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop

@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-08-19, v0.88.0 — `cout << value`):** authoritative Linux
+> **Current (2026-08-19, v0.89.0 — `php::array_push` overload set):**
+> authoritative Linux fulltest **1093 passed / 0 failed / 0 timed out /
+> 9 skipped**; **1102 tests compiled with ZERO warnings**; EXE **1053/0**,
+> OBJ **1053/0**, packed **1093/0/0/9**, headerless **1067/0/35skip**,
+> release rc=0 — full battery. New: `testarraypush` (one overloaded name,
+> PHP-parity count returns, every kind's var_dump word — float arg lands on
+> the double overload, literal 0 stays an integer push) and
+> `testoverloadnumrank` (numeric overload GRADING: float selects double —
+> promotion — never the truncating int64 by registration order; g++ and
+> clang++ oracle both agree, unambiguous). Retired spellings
+> `array_push_int` / `array_push_array` migrated across 7 tests + 4 docs
+> pages.
+>
+> **Previous (2026-08-19, v0.88.0 — `cout << value`):** authoritative Linux
 > fulltest **1091 passed / 0 failed / 0 timed out / 9 skipped**; **1100 tests
 > compiled with ZERO warnings**; EXE **1051/0**, OBJ **1051/0**, packed
 > **1091/0/0/9**, headerless **1065/0/35skip**, release rc=0 — full battery.

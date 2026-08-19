@@ -1,5 +1,14 @@
 # madc Roadmap
 
+**✅ `php::array_push` overload set (2026-08-19, v0.89.0):** ONE overloaded
+name per the owner's parity law (php:: mirrors real PHP; `array_push_int` /
+`array_push_array` madc-isms retired), returning the new element count like
+PHP. One carrier overload — `value` ≡ `array` (same DataDef). Found + fixed
+one layer down: `score_arg_to_param`'s flat-4 numeric tie let a float
+argument pick the truncating int64 overload by registration order; now
+graded (promotion above cross-domain), g++/clang++ oracle. Follow-on
+recorded: PHP's variadic multi-value form.
+
 **✅ `cout << value` (2026-08-19, v0.88.0):** streams exactly as the contained
 type would — per-kind forwarding to the real inserters (hex/boolalpha apply),
 null empty, container kinds = stderr notice per C++'s own no-operator<<
