@@ -203,8 +203,13 @@ not compile. Changing a registered builtin's return type has its own blast
 radius (every `puts(...)`-as-a-statement call site), so it is recorded here
 rather than folded in.
 
-Pointer-returning POSIX names not in the first table pass — the `locale_t`
-family (`newlocale`, `duplocale`, `uselocale`) is the known example — are the
-class the design expects c2mir's "using integer without cast for pointer type
-parameter" to surface. They land with Part 2 so Part 1 ships on exactly the
-content its battery ran.
+The `locale_t` family (`newlocale`, `duplocale`, `uselocale`, and their
+glibc `__`-twins) is in the table as of Part 2, but that did NOT silence the
+pre-existing `c++locale.h` pack-drain line "using integer without cast for
+pointer type parameter" (12 occurrences before and after — measured, not
+assumed). That warning is about the ARGUMENT: `__convert_from_v` passes a
+`__c_locale` (typedef `__locale_t`, a pointer) that is typed as an integer, so
+the root is typedef resolution for `extern "C" __typeof(uselocale) __uselocale;`
+(madc has no `typeof`), not the fallback signature. Separate defect, separate
+layer; the table entries stay because they are true and cover the direct-call
+case.

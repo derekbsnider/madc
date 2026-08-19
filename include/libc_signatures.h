@@ -60,6 +60,34 @@ enum class LibcRet : uint8_t {
 	VoidPtr		/* void *, FILE *, DIR *, struct tm *, a function pointer */
 };
 
+/* The ARGUMENT shape of a <math.h> family member. A return class alone is not
+ * enough for these: the fallback declares ZERO parameters — the variadic
+ * convention — so C's default argument promotion turns a `float` into a `double`
+ * and the real `floorf` reads a float out of half of it. floorf(3.9f) was 2.000
+ * and fmodf(7,4) was -nan. `sqrtf` is the tell: it works only because it is one
+ * of the six roots that were registered by hand, WITH a declared float parameter.
+ *
+ * `T` is the family's own real type — `double` for the bare root, `float` for the
+ * `f` suffix, `long double` for `l` — the same suffix rule the return class uses,
+ * so the two cannot disagree about a family.
+ *
+ * MATH ONLY, deliberately. The variadic convention is harmless for the rest of
+ * the C library: pointers and integers pass unchanged, `char` promotes to `int`
+ * which is what every <ctype.h> function takes anyway. `float` promotion is the
+ * one default promotion that changes the callee's view of the bits. */
+enum class LibcArgs : uint8_t {
+	None,		/* not a shape this table knows -> variadic convention */
+	T,		/* (T)             — the 1-argument majority */
+	T_T,		/* (T,T)           — atan2 pow fmod hypot ... */
+	T_T_T,		/* (T,T,T)         — fma */
+	T_Int,		/* (T,int)         — ldexp scalbn */
+	T_Long,		/* (T,long)        — scalbln */
+	T_Tptr,		/* (T,T*)          — modf */
+	T_Intptr,	/* (T,int*)        — frexp */
+	T_T_Intptr,	/* (T,T,int*)      — remquo */
+	T_LDouble	/* (T,long double) — nexttoward */
+};
+
 /* The class for one libc name, or LibcRet::Unknown when this table does not
  * know it. Handles the <math.h> families by suffix, so `log10f` and `log10l`
  * resolve without 171 explicit entries. */
@@ -70,5 +98,11 @@ LibcRet madc_libc_return_class(const std::string &name);
  * it into return classes. Two expansions of one list cannot disagree about
  * which names exist. */
 const char *const *madc_libc_math_roots(void);
+
+/* `name`'s argument shape when it is a <math.h> family member, else
+ * LibcArgs::None. `family` (when non-NULL) receives the T of the shape as
+ * LibcRet::Double / Float / LDouble — chosen by the SUFFIX, independent of the
+ * return class, because `lroundf` takes a float and returns a long. */
+LibcArgs madc_libc_arg_shape(const std::string &name, LibcRet *family);
 
 #endif /* __LIBC_SIGNATURES_H */

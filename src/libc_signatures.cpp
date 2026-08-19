@@ -53,6 +53,31 @@ const Entry math_integer_roots[] = {
 	{ NULL, LibcRet::Unknown }
 };
 
+/* The argument shapes. A root not listed here takes shape (T) — the
+ * 1-argument majority. `nexttoward`'s second parameter is `long double` at every
+ * suffix (C99: `float nexttowardf(float, long double)`), which is why it is its
+ * own shape rather than T_T. */
+struct ShapeEntry {
+	const char *root;
+	LibcArgs args;
+};
+
+const ShapeEntry math_shapes[] = {
+	{ "atan2", LibcArgs::T_T },	{ "copysign", LibcArgs::T_T },
+	{ "fdim", LibcArgs::T_T },	{ "fmax", LibcArgs::T_T },
+	{ "fmin", LibcArgs::T_T },	{ "fmod", LibcArgs::T_T },
+	{ "hypot", LibcArgs::T_T },	{ "nextafter", LibcArgs::T_T },
+	{ "pow", LibcArgs::T_T },	{ "remainder", LibcArgs::T_T },
+	{ "fma", LibcArgs::T_T_T },
+	{ "ldexp", LibcArgs::T_Int },	{ "scalbn", LibcArgs::T_Int },
+	{ "scalbln", LibcArgs::T_Long },
+	{ "modf", LibcArgs::T_Tptr },
+	{ "frexp", LibcArgs::T_Intptr },
+	{ "remquo", LibcArgs::T_T_Intptr },
+	{ "nexttoward", LibcArgs::T_LDouble },
+	{ NULL, LibcArgs::None }
+};
+
 const Entry signatures[] = {
 	/* --- void ------------------------------------------------------- */
 	/* A `long` prototype here types the assert idiom's ternary branch
@@ -153,6 +178,17 @@ const Entry signatures[] = {
 	{ "gethostbyname", LibcRet::VoidPtr },
 	{ "gethostbyaddr", LibcRet::VoidPtr },
 	{ "pthread_getspecific", LibcRet::VoidPtr },
+	/* locale_t IS a pointer. libstdc++'s bits/c++locale.h declares
+	 * `extern "C" __typeof(uselocale) __uselocale;` — a typeof declaration
+	 * madc cannot resolve (C11 has no typeof), so the call reaches this
+	 * fallback, and an integer passed to __uselocale's own pointer parameter
+	 * is c2mir's "using integer without cast for pointer type parameter".
+	 * That warning is how a missed pointer-returner announces itself. */
+	{ "newlocale", LibcRet::VoidPtr }, { "__newlocale", LibcRet::VoidPtr },
+	{ "duplocale", LibcRet::VoidPtr }, { "__duplocale", LibcRet::VoidPtr },
+	{ "uselocale", LibcRet::VoidPtr }, { "__uselocale", LibcRet::VoidPtr },
+	{ "freelocale", LibcRet::Void }, { "__freelocale", LibcRet::Void },
+	{ "nl_langinfo_l", LibcRet::CharPtr },
 
 	/* --- size_t and the always-64 unsigned returns ------------------ */
 	{ "strlen", LibcRet::UInt64 }, { "strnlen", LibcRet::UInt64 },
@@ -212,6 +248,17 @@ const Entry signatures[] = {
 	{ "difftime", LibcRet::Double },
 	{ "drand48", LibcRet::Double }, { "erand48", LibcRet::Double },
 	{ "strtof", LibcRet::Float }, { "strtold", LibcRet::LDouble },
+	/* The locale-explicit conversion family, both spellings — libstdc++
+	 * calls the __-prefixed ones directly. */
+	{ "strtod_l", LibcRet::Double }, { "__strtod_l", LibcRet::Double },
+	{ "strtof_l", LibcRet::Float }, { "__strtof_l", LibcRet::Float },
+	{ "strtold_l", LibcRet::LDouble }, { "__strtold_l", LibcRet::LDouble },
+	{ "strtol_l", LibcRet::Long }, { "__strtol_l", LibcRet::Long },
+	{ "strtoul_l", LibcRet::ULong }, { "__strtoul_l", LibcRet::ULong },
+	{ "strtoll_l", LibcRet::Int64 }, { "__strtoll_l", LibcRet::Int64 },
+	{ "strtoull_l", LibcRet::UInt64 }, { "__strtoull_l", LibcRet::UInt64 },
+	{ "strxfrm_l", LibcRet::UInt64 }, { "__strxfrm_l", LibcRet::UInt64 },
+	{ "strftime_l", LibcRet::UInt64 },
 
 	/* --- explicitly int -------------------------------------------- */
 	/* Same class as the default, listed anyway: every one of these is an
@@ -318,44 +365,59 @@ const table_t &table(void)
 	return m;
 }
 
-/* `name` as a member of a <math.h> family, or Unknown. The suffix picks the
- * width for the real families and picks NOTHING for the five integer roots —
- * `lroundf` returns `long`, and reading it as a float is the same class of bug
- * this whole file exists to close. */
-LibcRet math_class_of(const std::string &name)
+/* Resolve `name` as a member of a <math.h> family: the ROOT it belongs to and
+ * the real type its suffix names. ONE owner of the suffix rule, because both the
+ * return class and the argument shape have to agree about which family a name is
+ * in — `lroundf` takes a float and returns a long, and a second copy of this
+ * resolution is how the two would come to disagree.
+ *
+ * The name is tried AS a root first: `modf` and `erf` end in 'f' and are roots
+ * themselves. */
+bool math_family_of(const std::string &name, std::string *root_out,
+		    LibcRet *family_out)
 {
 	if ( name.empty() )
-		return LibcRet::Unknown;
+		return false;
+
+	for ( int i = 0; math_roots[i]; ++i )
+	{
+		if ( name != math_roots[i] )
+			continue;
+		if ( root_out )   *root_out = name;
+		if ( family_out ) *family_out = LibcRet::Double;
+		return true;
+	}
 
 	char suffix = name[name.size() - 1];
-	std::string root = name;
-	bool has_suffix = (suffix == 'f' || suffix == 'l') && name.size() > 1;
-	if ( has_suffix )
-		root = name.substr(0, name.size() - 1);
-
-	for ( int pass = 0; pass < 2; ++pass )
+	if ( suffix != 'f' && suffix != 'l' )
+		return false;
+	std::string root = name.substr(0, name.size() - 1);
+	for ( int i = 0; math_roots[i]; ++i )
 	{
-		/* Pass 0 tries the name AS a root (`modf`, `erf` end in 'f' and
-		 * are roots themselves); pass 1 strips the suffix. */
-		const std::string &cand = pass == 0 ? name : root;
-		if ( pass == 1 && !has_suffix )
-			break;
-
-		bool found = false;
-		for ( int i = 0; math_roots[i] && !found; ++i )
-			found = cand == math_roots[i];
-		if ( !found )
+		if ( root != math_roots[i] )
 			continue;
-
-		for ( int i = 0; math_integer_roots[i].name; ++i )
-			if ( cand == math_integer_roots[i].name )
-				return math_integer_roots[i].ret;
-
-		if ( pass == 0 )
-			return LibcRet::Double;
-		return suffix == 'f' ? LibcRet::Float : LibcRet::LDouble;
+		if ( root_out )   *root_out = root;
+		if ( family_out )
+			*family_out = suffix == 'f' ? LibcRet::Float
+						    : LibcRet::LDouble;
+		return true;
 	}
-	return LibcRet::Unknown;
+	return false;
+}
+
+/* The return class of a family member. The suffix picks the width for the real
+ * families and picks NOTHING for the five integer roots — `lroundf` returns
+ * `long`, and reading it as a float is the same class of bug this file closes. */
+LibcRet math_class_of(const std::string &name)
+{
+	std::string root;
+	LibcRet family = LibcRet::Unknown;
+	if ( !math_family_of(name, &root, &family) )
+		return LibcRet::Unknown;
+	for ( int i = 0; math_integer_roots[i].name; ++i )
+		if ( root == math_integer_roots[i].name )
+			return math_integer_roots[i].ret;
+	return family;
 }
 
 } // namespace
@@ -372,4 +434,18 @@ LibcRet madc_libc_return_class(const std::string &name)
 const char *const *madc_libc_math_roots(void)
 {
 	return math_roots;
+}
+
+LibcArgs madc_libc_arg_shape(const std::string &name, LibcRet *family)
+{
+	std::string root;
+	LibcRet fam = LibcRet::Unknown;
+	if ( !math_family_of(name, &root, &fam) )
+		return LibcArgs::None;
+	if ( family )
+		*family = fam;
+	for ( int i = 0; math_shapes[i].root; ++i )
+		if ( root == math_shapes[i].root )
+			return math_shapes[i].args;
+	return LibcArgs::T;
 }

@@ -23382,6 +23382,59 @@ static typespec_t dynamic_symbol_fallback_return_type(const std::string &name)
     return DataType::dtINT32;
 }
 
+// The FULL declaration for an undeclared dlsym-resolved symbol: the return type
+// above, plus real parameters for the <math.h> families.
+//
+// Zero declared parameters means the variadic convention, and C's default
+// argument promotion then turns a `float` into a `double` — so the real
+// `floorf`, which takes a float, read one out of half of a double and
+// floorf(3.9f) was 2.000 while fmodf(7,4) was -nan. `sqrtf` was right only
+// because it is one of the six roots registered by hand, WITH a declared float
+// parameter; declaring the parameters is the whole of what those registrations
+// were doing.
+//
+// Math only. For the rest of the C library the variadic convention is harmless:
+// pointers and integers pass unchanged and `char` promotes to `int`, which is
+// what every <ctype.h> function takes anyway. `float` promotion is the one
+// default promotion that changes the callee's view of the bits.
+static datatype_vec_t dynamic_symbol_fallback_signature(const std::string &name)
+{
+    typespec_t ret = dynamic_symbol_fallback_return_type(name);
+
+    LibcRet family = LibcRet::Unknown;
+    LibcArgs shape = madc_libc_arg_shape(name, &family);
+    if ( shape == LibcArgs::None )
+	return datatype_vec_t{ret};
+
+    // T — the family's own real type, chosen by the SUFFIX. Both the tag (for a
+    // by-value parameter) and the DataDef (for modf's T*) name the same type.
+    DataType tdt = DataType::dtDOUBLE;
+    DataDef *tdd = &ddDOUBLE;
+    if ( family == LibcRet::Float )
+	{ tdt = DataType::dtFLOAT;   tdd = &ddFLOAT; }
+    else if ( family == LibcRet::LDouble )
+	{ tdt = DataType::dtLDOUBLE; tdd = &ddLDOUBLE; }
+
+    switch ( shape )
+    {
+    case LibcArgs::T:		return datatype_vec_t{ret, tdt};
+    case LibcArgs::T_T:		return datatype_vec_t{ret, tdt, tdt};
+    case LibcArgs::T_T_T:	return datatype_vec_t{ret, tdt, tdt, tdt};
+    case LibcArgs::T_Int:	return datatype_vec_t{ret, tdt, DataType::dtINT32};
+    case LibcArgs::T_Long:
+	return datatype_vec_t{ret, tdt,
+	    target_llp64() ? DataType::dtINT32 : DataType::dtINT64};
+    case LibcArgs::T_Tptr:	return datatype_vec_t{ret, tdt, ptr_of(*tdd)};
+    case LibcArgs::T_Intptr:	return datatype_vec_t{ret, tdt, ptr_of(ddINT32)};
+    case LibcArgs::T_T_Intptr:
+	return datatype_vec_t{ret, tdt, tdt, ptr_of(ddINT32)};
+    case LibcArgs::T_LDouble:
+	return datatype_vec_t{ret, tdt, DataType::dtLDOUBLE};
+    case LibcArgs::None:	break;
+    }
+    return datatype_vec_t{ret};
+}
+
 Variable *Program::runtime_eval_scope_target(Variable *var) const
 {
     if ( !var )
@@ -26646,7 +26699,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	void *sym = madcdl_sym_default(aname.c_str());
 	if ( sym )
 	    avar = addFunction(aname,
-		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
+		dynamic_symbol_fallback_signature(aname),
 		(fVOIDFUNC)sym);
     }
     if ( !avar )
@@ -32183,7 +32236,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 		void *sym = madcdl_sym_default(dyn_name.c_str());
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
-			datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
+			dynamic_symbol_fallback_signature(dyn_name),
 			(fVOIDFUNC)sym);
 	    }
 	}
@@ -34385,7 +34438,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( sym )
 			{
 			    var = addFunction(fname,
-				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
+				dynamic_symbol_fallback_signature(fname),
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
@@ -34403,7 +34456,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( tsym )
 			    {
 				var = addFunction(fname,
-				    datatype_vec_t{dynamic_symbol_fallback_return_type(twin)},
+				    dynamic_symbol_fallback_signature(twin),
 				    (fVOIDFUNC)tsym);
 				if ( var )
 				    if ( FuncDef *bfd = dynamic_cast<FuncDef *>(var->type) )
@@ -37228,7 +37281,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    void *sym = madcdl_sym_default(gname.c_str());
 			    if ( sym )
 				var = addFunction(gname,
-				    datatype_vec_t{dynamic_symbol_fallback_return_type(gname)},
+				    dynamic_symbol_fallback_signature(gname),
 				    (fVOIDFUNC)sym);
 			}
 			if ( !var )
