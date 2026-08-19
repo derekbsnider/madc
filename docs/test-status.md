@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-19, v0.89.0 — `php::array_push` overload set):**
+> **Current (2026-08-19, v0.90.0 — `value(N)` constructs):** authoritative
+> Linux fulltest **1095 passed / 0 failed / 0 timed out / 9 skipped**;
+> **1104 tests compiled with ZERO warnings**; EXE **1055/0**, OBJ
+> **1055/0**, packed **1095/0/0/9**, headerless **1069/0/35skip**, release
+> rc=0, MIR c-tests **1143/2286/0** (exact baseline) — full battery. New:
+> `testvaluector` (ctor overloads on the carrier: temporaries, direct-init,
+> carrier copy, temps as call args with kind AND payload preserved) and
+> `testforinitctor` (for-init parens direct-init + per-iteration while-header
+> temporary; g++ AND clang++ oracle, byte-identical). Recorded with
+> reducers: madc's front end ignores user __attribute__((cleanup)) on
+> locals; declaration-flow ';' conventions remain asymmetric.
+>
+> **Previous (2026-08-19, v0.89.0 — `php::array_push` overload set):**
 > authoritative Linux fulltest **1093 passed / 0 failed / 0 timed out /
 > 9 skipped**; **1102 tests compiled with ZERO warnings**; EXE **1053/0**,
 > OBJ **1053/0**, packed **1093/0/0/9**, headerless **1067/0/35skip**,

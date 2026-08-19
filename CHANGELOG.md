@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [v0.90.0] — 2026-08-19
+
+`value(N)` constructs — temporaries, direct-init declarations, loop headers.
+
+- **`value(-7)` / `value v(7);` construct correctly** — ddARRAY (the
+  value/array carrier) had NO registered constructors, so a functional-cast
+  temporary emitted NOTHING for construction (kind byte = stack garbage; an
+  "instance" notice then SIGSEGV — near-silent) and the parens declaration
+  did not even parse. Real ctor overloads now registered
+  (default/cstr/int64/double/bool/carrier-copy), bound to new
+  `madarray_construct_*` placement-new runtime entries, mirroring the
+  `madarray_assign_*` operator= family; declaration lanes route parens
+  direct-init through one owner. Found one layer down: external-ctor extern
+  prototypes flat-typed every scalar param `long long`, so `value(3.5)`
+  marshalled 3.5 through a GPR the callee never read and constructed
+  `real(0)` — the shapes now come from `native_param_shape`. Gate:
+  `tests/testvaluector.mad`.
+- **Loop-header temporaries are per-iteration** — a for increment's
+  `s = s + "x"` or a while condition's `(t + "!").size()` used to flush its
+  temp ONCE into the enclosing block (stale value every iteration; for a
+  class-shape for-init, emitted before the loop variable existed). Loop
+  headers now wrap materialized temps in a statement expression
+  (`loop_header_expr_scope`) — constructed and destroyed every evaluation,
+  in the loop's own scope. Gate: `tests/testforinitctor.mad` (g++ AND
+  clang++ oracle).
+- **c2mir: a statement expression's value is its last statement AS
+  WRITTEN** — the check/gen arms read the block's tail after the scope's
+  `__attribute__((cleanup))` calls were appended, typing the whole
+  expression as the (void) cleanup call and overwriting its value op.
+  Generic fork fix (upstream-worthy); MIR c-tests 1143/2286/0 — exact
+  baseline. c2m's own C parser now compiles a cleanup-carrying stmt-expr
+  while-condition byte-identical to gcc.
+- **`for (string s("ab"); ...)` parses** — the declaration ctor-call arm
+  consumed the init's trailing `;` that the for parse tail still needs;
+  a `parsing_for_init` context channel (the `parsing_const_decl` precedent)
+  scopes the fix to the one broken caller.
+- **Recorded** (reducers in the plan doc): madc's front end silently
+  ignores user `__attribute__((cleanup(fn)))` on locals (c2m's own parser
+  and gcc both run it); the declaration flows' `;` conventions remain
+  asymmetric — unification is a follow-up.
+
 ## [v0.89.0] — 2026-08-19
 
 `php::array_push` is ONE overloaded name that returns the new count (PHP parity).

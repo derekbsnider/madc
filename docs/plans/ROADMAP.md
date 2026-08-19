@@ -1,5 +1,14 @@
 # madc Roadmap
 
+**✅ `value(N)` construction (2026-08-19, v0.90.0):** the carrier has real
+ctors (placement-construct entries mirroring the assign family); external-
+ctor extern prototypes adopt native_param_shape (double no longer truncates
+through a GPR); loop-header temporaries per-iteration via stmt-expr scoping;
+c2mir stmt-expr value read pre-cleanup-append (fork fix, upstream-worthy,
+MIR c-tests exact baseline); for-init parens direct-init parses
+(parsing_for_init channel). Residues recorded: front-end user cleanup attr
+on locals ignored; ';' convention asymmetry.
+
 **✅ `php::array_push` overload set (2026-08-19, v0.89.0):** ONE overloaded
 name per the owner's parity law (php:: mirrors real PHP; `array_push_int` /
 `array_push_array` madc-isms retired), returning the new element count like
