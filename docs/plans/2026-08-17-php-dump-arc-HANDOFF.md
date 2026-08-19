@@ -171,17 +171,51 @@ that cannot say what it tested is not evidence.
   structural signal that this is the iteration protocol — so it was left for the
   next commit that earns a battery rather than re-running one for a check with no
   behavioural effect. The CLASS arm already compares properly (`bc != ec`).
-- **`--emit=c11` declares libc functions with the dlsym FALLBACK signature.** Any
-  program that reaches `memcpy` / `strlen` through libstdc++ internals emits
-  `extern long long memcpy();`, and `gcc -std=c11` warns
-  `conflicting types for built-in function`. A plain `std::string` program is
-  enough: reducer `tmp/probe/tinystr.mad` (2 warnings). The JIT is unaffected and
-  the OUTPUT is byte-identical, so it is a warning-not-wrong-answer — but the
-  zero-warnings law covers every lane, and this one is not in the c2mir ratchet
-  because the ratchet measures the JIT path. `.claude/rules/embedded-headers.md`
-  already states the rule this violates ("declare real return types — never rely
-  on the fallback for signed int"); these two just have no declaration on the
-  path libstdc++ takes. Pre-existing, independent of the dump arc.
+- 🔴 **THE FALLBACK SIGNATURE IS A LIVE SILENT WRONG ANSWER, not a warning.**
+  I had this filed as an `--emit=c11` cosmetic issue. It is not. MEASURED on the
+  v0.85.0 JIT:
+
+  ```c
+  int printf(const char *, ...);
+  int main(){ printf("%d\n", strcmp("abc","abd") < 0 ? 1 : 0); }   /* no <string.h> */
+  ```
+  madc prints **0**; gcc prints **1**. The branch is simply not taken. Same for
+  `__builtin_strcmp` directly, and `long long l = __builtin_strcmp("abc","abd")`
+  gives **4294967295** where gcc gives **-1**.
+
+  **ROOT CAUSE, exactly:** `src/lexer.cpp` rewrites **68** `__builtin_X` spellings
+  to the bare libc name via `define_map` (`define_map["__builtin_strcmp"] =
+  "strcmp"`, line ~2024 for memcpy and the surrounding block). The builtin registry
+  in `src/parser.cpp` ~20346 registers the REAL signatures — but under the
+  `__builtin_X` name, which the lexer guarantees the parser can never see. So the
+  registration is dead code for every one of the 68, the bare name has no
+  declaration unless a header supplied one, and the implicit/dlsym fallback gives
+  `long long f()`. A 32-bit negative return then reads as a huge positive in any
+  64-bit consumer.
+  `add_core_function("memcpy"|"strlen"|"strcmp"|…)` — bare — is registered NOWHERE.
+
+  **What is and is not affected (measured, do not re-derive):**
+  - bare `strcmp` with no `<string.h>`: **WRONG** — and that is legal C89, in a
+    project whose north star is compiling a C89 codebase.
+  - `#include <string.h>` then `strcmp`: **correct** — the embedded header declares
+    the comparison family as `int`, which is what `embedded-headers.md` already
+    demands. So the header route is protected; the UNDECLARED route is not.
+  - `std::string` `<` / `==` / `.compare()`: **correct**. libstdc++ funnels
+    `__builtin_memcmp` through an `int` (`char_traits::compare` returns `int`), and
+    the truncation preserves the sign. That masking is why a green suite never saw
+    this.
+
+  **THE PRECEDENTED FIX** — and the repo has already done it once for this exact
+  class. `docs/parity/warning-baseline.txt`'s own history records
+  "`__madc_builtin_frame_address` registered with its real void* return cleared
+  testbuiltinframeaddress (13 -> 12)": i.e. register the real signature under the
+  name the lexer rewrites **TO**. Do that for the rewrite table, driven FROM the
+  table so the two cannot drift again (a data-driven pass over the same
+  `define_map` entries, not 68 hand-written registrations). The comparison family
+  (`strcmp`, `strncmp`, `memcmp`, `strcasecmp`, `strncasecmp`) is the dangerous
+  subset and must be `int`.
+  **A gate is mandatory:** a test that calls the comparison family with NO header
+  in scope and asserts the sign, so the registration cannot silently rot back.
 - **D1** — `value f()` by value emits `int f()`, runs, prints nothing, exits 0.
   `eaac1416` fixed the SPECIFIER half (`append_type_specs` has a `dtARRAY` arm);
   the return DECLARATOR half is untouched. Reducer `tmp/r1.mad`.
