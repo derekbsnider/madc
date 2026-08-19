@@ -45378,7 +45378,9 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	// name scope only: CIR never sees it (the for lowering declares the
 	// variable itself — init-slot var_decl or the synthetic block wrap).
 	pgm.pushCompound();
+	pgm.parsing_for_init = true;
 	initialize = pgm.parseDeclaration(dt);
+	pgm.parsing_for_init = false;
 	typed_for_init = true;
     }
     else
@@ -62517,7 +62519,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // there ([dcl.init.list]/4 makes it the ONLY candidate).
 	    if ( !(td->ctor_args_braced && ddc->has_initializer_list_ctor()) )
 		instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    // STATEMENT contexts keep consuming the trailing ';' here
+	    // (long-standing behavior, unmeasured reliance surface); a
+	    // FOR-INIT declaration must leave it — TokenFOR::parse's tail
+	    // still needs to see the init terminator (parsing_for_init, the
+	    // parsing_const_decl-style context channel).
+	    if ( !parsing_for_init
+	      && peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
 	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )
 	    {

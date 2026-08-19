@@ -1,0 +1,31 @@
+// Loop-header expressions with class machinery — two defects, one layer
+// chain, oracled by g++ AND clang++ -O0 on the identical twin (ab/abx/abb):
+//
+// 1. A parens direct-init declarator in a for-init (`for (string s("ab");`)
+//    is a DECLARATION whose trailing ';' belongs to the STATEMENT layer.
+//    parseDeclaration's class ctor-call arm used to consume the ';' itself —
+//    the only declaration flow that did — so TokenFOR::parse's init tail
+//    threw "Expecting ';' after for init" at the CONDITION token, for every
+//    class type.
+// 2. A loop-header expression that materializes a temporary (the for
+//    increment's `s + "x"`, the while condition's `t + "!"`) must construct
+//    it EVERY iteration inside the loop's own scope. The temp's decl+init
+//    used to flush ONCE into the enclosing block — evaluated once (the while
+//    would spin forever on the stale value; the suite timeout would catch a
+//    regression) and, for a class-shape for-init, emitted BEFORE the loop
+//    variable it reads existed ("undeclared identifier s"). Lowered now as a
+//    statement-expression per header (loop_header_expr_scope).
+#include <cstdio>
+#include <iostream>
+#include <string>
+
+int main()
+{
+	for ( std::string s("ab"); s.size() < 4; s = s + "x" )
+		std::cout << s << std::endl;
+	std::string t("a");
+	while ( (t + "!").size() < 4 )
+		t = t + "b";
+	std::cout << t << std::endl;
+	return 0;
+}

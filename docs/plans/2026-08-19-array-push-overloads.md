@@ -123,3 +123,18 @@ lands.
   every element (float arg → `real(2.5)`, literal 0 → `integer(0)`).
 - Still follow-on (unchanged): PHP's VARIADIC multi-value form
   `array_push($arr, $v1, $v2, ...)`.
+
+## Residue arc executed next (same day, session #106): value(N) construction
+
+Traced and fixed as five layered commits (value ctors; extern scalar shapes;
+c2mir stmt-expr value-vs-cleanup; loop-header temp scoping; declaration ';'
+convention). Gates: tests/testvaluector.mad, tests/testforinitctor.mad.
+
+**Gap found and RECORDED (not fixed here): madc's front end silently ignores
+user `__attribute__((cleanup(fn)))` on local declarations.** Reducer: a
+cleanup-attributed local in a plain block through bin/madc never calls fn
+(gcc/clang run it at scope exit; c2m's own C parser also runs it — verified
+after the stmt-expr fix). Layer: madc parser attribute handling on local
+decls → CIR cleanup channel (obj_storage_decl's cleanup attr is driven by
+class dtors only). Class-b GNU extension (clang supports it ⇒ in scope);
+follow-on work item.
