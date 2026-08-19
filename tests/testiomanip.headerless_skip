@@ -1,0 +1,1 @@
+<iomanip> is a documented pack-corpus blocker (scripts/forest_pack_headers.txt v3: live-parse defect "Expecting member name in class definition") — the pack cannot serve it yet, and this lane has no disk headers to rescue from; the default/EXE/OBJ/packed lanes cover the test. Remove this skip when iomanip joins the pack list.

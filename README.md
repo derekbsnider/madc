@@ -210,10 +210,16 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.90.0** — `value(N)` constructs: temporaries,
-direct-init declarations, and loop headers.
+The current release is **v0.91.0** — `<iomanip>` manipulator objects work:
+`setprecision`, `setw`, `setfill`.
 
-The value/array carrier now has real registered constructors, so
+Parametrized manipulators are plain structs consumed by free `operator<<`
+templates, and both free-operator template lanes assumed class-hood — the
+char inserter claimed `cout << setprecision(3)` and `_Setfill<char>` was
+refused outright; struct arguments now resolve like class arguments, oracled
+byte-identical against g++ and clang++, including manipulators applying to a
+streamed `value`. Same-day siblings — v0.90.0: the value/array carrier has
+real registered constructors, so
 `value(-7)` temporaries and `value v(7);` declarations construct instead of
 leaving a garbage-kind buffer (previously a near-silent SIGSEGV). The layer
 chain under it was fixed the whole way down: external-ctor extern
@@ -222,22 +228,21 @@ through a GPR), loop-header temporaries are built per-iteration in their
 own statement-expression scope, c2mir reads a statement expression's value
 from its last statement AS WRITTEN (not the appended cleanup call —
 generic fork fix, MIR c-tests at exact baseline), and
-`for (string s("ab"); ...)` parses. Same-day siblings: v0.89.0 made
-`php::array_push` one overloaded name returning the new count, and v0.88.0
-made `cout << value` stream exactly as the contained type would.
+`for (string s("ab"); ...)` parses; v0.89.0 made `php::array_push` one
+overloaded name returning the new count.
 
-Branch state: v0.90.0 is released on `develop`. `master` carries v0.82.0, for
+Branch state: v0.91.0 is released on `develop`. `master` carries v0.82.0, for
 which public binaries are published on all three platforms; v0.83.0 through
-v0.90.0 are released on `develop` and unpromoted.
+v0.91.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1095 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1055/0**, OBJ lane **1055/0**; packed suite **1095/0/0/9**
+- Linux JIT: **1096 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1056/0**, OBJ lane **1056/0**; packed suite **1096/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1069/0/0/35**,
+- headerless (no headers on disk anywhere): Linux **1069/0/0/36**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -250,6 +255,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
+  setprecision/setw/setfill; plain structs in free-operator resolution.
 - [v0.90.0](docs/release-notes/v0.90.0.md) — `value(N)` constructs:
   temporaries, direct-init, loop headers; c2mir stmt-expr value fix.
 - [v0.89.0](docs/release-notes/v0.89.0.md) — `php::array_push` as one

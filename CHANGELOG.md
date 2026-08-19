@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [v0.91.0] — 2026-08-19
+
+Manipulator objects work: `setprecision`, `setw`, `setfill`.
+
+- **`<iomanip>` parametrized manipulators stream correctly** — they return
+  PLAIN STRUCTS (`_Setprecision`/`_Setw`/`_Setfill<_CharT>`) consumed by
+  free `operator<<` templates, and both free-operator template lanes
+  assumed class-hood, which those structs never earn: the char inserter
+  template CLAIMED `cout << setprecision(3)` (the whole struct passed by
+  value as the char — "incompatible argument type for arithmetic type
+  parameter", naming no operator), and the template-id deduction lane
+  refused `_Setfill<char>` outright. Struct arguments now reject arithmetic
+  params like class arguments do ([conv]: no standard conversion exists);
+  plain-struct params take the named-type identity lane; the template-id
+  lane accepts DataDefSTRUCT (its needs all live on the base DataDef).
+  Gate: `tests/testiomanip.mad` — g++ AND clang++ oracle, byte-identical,
+  including the value-carrier cross-shape (a manipulator applies to a
+  streamed `value` exactly as to the contained type — the v0.88.0
+  contract). This closes the second recorded priority residue from
+  v0.88.0; both are now done (`value(N)` construction shipped in v0.90.0).
+
 ## [v0.90.0] — 2026-08-19
 
 `value(N)` constructs — temporaries, direct-init declarations, loop headers.

@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-19, v0.90.0 — `value(N)` constructs):** authoritative
+> **Current (2026-08-19, v0.91.0 — `<iomanip>` manipulator objects):**
+> authoritative Linux fulltest **1096 passed / 0 failed / 0 timed out /
+> 9 skipped**; **1105 tests compiled with ZERO warnings**; EXE **1056/0**,
+> OBJ **1056/0**, packed **1096/0/0/9**, headerless **1069/0/36skip**
+> (testiomanip carries a headerless_skip — <iomanip> is a documented
+> pack-corpus blocker, forest_pack_headers.txt v3), release rc=0 — full
+> battery. New: `testiomanip`
+> (setprecision/setw/setfill/fixed, g++ AND clang++ oracle byte-identical,
+> plus a manipulator applying to a streamed `value`). Both v0.88.0 priority
+> residues are now closed (value(N) construction in v0.90.0, manipulator
+> objects here).
+>
+> **Previous (2026-08-19, v0.90.0 — `value(N)` constructs):** authoritative
 > Linux fulltest **1095 passed / 0 failed / 0 timed out / 9 skipped**;
 > **1104 tests compiled with ZERO warnings**; EXE **1055/0**, OBJ
 > **1055/0**, packed **1095/0/0/9**, headerless **1069/0/35skip**, release

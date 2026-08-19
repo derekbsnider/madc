@@ -1,5 +1,11 @@
 # madc Roadmap
 
+**✅ `<iomanip>` manipulator objects (2026-08-19, v0.91.0):** plain structs
+in free-operator resolution — struct args reject arithmetic params like
+class args; plain-struct params take the identity lane; the template-id
+deduction lane accepts DataDefSTRUCT (_Setfill<char>). Both v0.88.0
+priority residues closed.
+
 **✅ `value(N)` construction (2026-08-19, v0.90.0):** the carrier has real
 ctors (placement-construct entries mirroring the assign family); external-
 ctor extern prototypes adopt native_param_shape (double no longer truncates
