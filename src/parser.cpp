@@ -17356,6 +17356,33 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
     }
     if ( lc && lc->binary_operator_return_type(opname) )
     {
+	// The madc array/value CARRIER as the rhs (`cout << v`): a DECLARED
+	// concrete free operator is the ONLY lane that can ever serve it — the
+	// member set takes scalars/pointers, and the W2 mangled-direct lane
+	// spelling-matches std's TEMPLATE captures, which no intrinsic type
+	// matches. Try the concrete registered set (madc::operator<< from
+	// <ns_madc>, resolved mangled-direct like any namespace public); no
+	// winner falls through to today's behaviour unchanged. Type-predicate
+	// gated (is_madc_array), never name-keyed; user-class rhs operands do
+	// not enter — their arbitration below is untouched.
+	if ( to->right->datadef() && to->right->datadef()->is_madc_array() )
+	{
+	    std::vector<const DataDef *> at;
+	    at.push_back(free_operator_arg_datadef(to->left));
+	    at.push_back(free_operator_arg_datadef(to->right));
+	    std::vector<bool> zl(2, false);
+	    if ( Variable *win = find_free_operator_function(opname, at, &zl) )
+	    {
+		TokenCallFunc *tc = new TokenCallFunc(*win);
+		tc->file = to->file;
+		tc->line = to->line;
+		tc->column = to->column;
+		tc->parameters.push_back(to->left);
+		tc->parameters.push_back(to->right);
+		return tc;
+	    }
+	    return NULL;	// no declared operator for the carrier — member path
+	}
 	// A named member operator normally owns the expression. The ONE exception:
 	// the rhs is a class object but every same-name binary member takes a
 	// non-class (arithmetic/pointer) parameter — the iterator signature
@@ -50955,7 +50982,7 @@ DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *wher
     // value loop element compiles (`for (value v : a)` — the explicit opt-in
     // for the raw carrier, filled through __php_array_get_value): `auto`
     // follows the subscript's answer, and a[i] is string-first.
-    if ( uq && uq->rawtype() == DataType::dtARRAY )
+    if ( uq && uq->is_madc_array() )
     {
 	if ( DataDef *sdd = resolve_named_datadef(std::string("string")) )
 	    return sdd;

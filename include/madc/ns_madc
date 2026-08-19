@@ -88,6 +88,19 @@ namespace madc {
     void context_set_array(value &ctx, std::string &key, value &v);
 #endif
 
+#if defined(_GLIBCXX_OSTREAM) || defined(_LIBCPP_OSTREAM)
+    // Stream a value EXACTLY as the contained type would stream (owner
+    // ruling 2026-08-19): each kind forwards to the real inserter, so
+    // std::hex / setprecision / boolalpha apply the way they do to a plain
+    // int / double / bool; null streams nothing; array/object/instance are
+    // not streamable (a stderr notice, nothing written — C++ gives
+    // std::vector no operator<< either, and the kind is only known at run
+    // time). Present only when <ostream>/<iostream> precedes this header,
+    // the same guard model as the std::string conveniences above. Resolves
+    // mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+    std::ostream &operator<<(std::ostream &os, const value &v);
+#endif
+
     // The system object (Python `sys` convention — include this header
     // like Python's `import sys`). sys.argv / sys.path are mutable madc
     // arrays (argv[0] = script path; path mutations steer FUTURE

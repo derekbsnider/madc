@@ -1,0 +1,55 @@
+// `cout << value` streams EXACTLY as the contained type would stream (owner
+// ruling 2026-08-19): each kind forwards to the REAL ostream inserter — so
+// std::hex, setprecision and boolalpha apply the way they do to a plain
+// long long / double / bool, measured against the plain-type twin program
+// (tmp/auto/vs.cpp, g++ -O0 and clang++ -O0 byte-identical). NOT the text
+// renderer: value_to_string prints "4.000000" where `cout << 4.0` prints "4".
+//
+// Resolution: madc::operator<<(ostream&, const value&) is declared in
+// <ns_madc> (gated on the ostream include guard) and resolves mangled-direct
+// to the host implementation — a CONCRETE free operator, reached through the
+// carrier arm in lower_free_operator_to_call: no member of ostream can take
+// the carrier, and the W2 template lane spelling-matches std shapes only.
+//
+// null streams NOTHING (PHP's echo null). The container kinds follow C++'s
+// own convention (std::vector has no operator<<): a stderr notice, nothing
+// written to stdout — .expect only checks stdout, and the ok: lines around
+// the array line prove the stream survives.
+// NAMED values only: the functional-cast temporary form `value(255)` is a
+// SEPARATE, pre-existing construction gap (it builds a garbage-kind temp —
+// recorded in docs/plans/2026-08-19-range-for-auto-deduction.md), not a
+// streaming shape, so this test does not stand on it.
+#include <iostream>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	value s = "hello";
+	value i = 42;
+	value neg = -7;
+	value r = 2.5;
+	value quarter = 0.25;
+	value b = true;
+	value h = 255;
+	value n;
+	std::cout << "s:" << s << std::endl;
+	std::cout << "i:" << i << " neg:" << neg << std::endl;
+	std::cout << "r:" << r << " quarter:" << quarter << std::endl;
+	std::cout << "b:" << b << " alpha:" << std::boolalpha << b
+		  << std::noboolalpha << std::endl;
+	std::cout << "hex:" << std::hex << h << std::dec << std::endl;
+	// std::setprecision is NOT here: inserting the parametrized manipulator
+	// OBJECT (_Setprecision) fails with plain doubles too — a pre-existing
+	// gap unrelated to value (t3.mad reducer in the plan doc). std::hex and
+	// boolalpha above are the function-manipulator form, which works.
+	std::cout << "chain:" << i << "," << r << "," << s << std::endl;
+	std::cout << "null:[" << n << "]" << std::endl;
+
+	array a;
+	php::array_push(a, "x");
+	std::cout << "ok-before" << std::endl;
+	std::cout << a << std::endl;
+	std::cout << "ok-after" << std::endl;
+	return 0;
+}

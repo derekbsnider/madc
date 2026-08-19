@@ -109,3 +109,55 @@ vector mutated through `auto &`, map `.first`/`.second` through `auto &` and
 case `int x[3]; for (auto x : x)`. The failing shapes above become the expect
 lines; `tests/testforeachiter.mad` (explicit types) stays as the
 no-regression control.
+
+
+---
+
+## Follow-up (same day): `cout << value` — CLOSED, and two gaps found doing it
+
+**The streaming half is implemented** (owner ruling: stream EXACTLY as the
+contained type would):
+
+- `madc::operator<<(std::ostream &, const value &)` — declared in
+  `include/libmadc/value.h`, implemented in `src/madc_value.cpp`. Each kind
+  forwards to the REAL inserter, so `std::hex` / `boolalpha` apply as they do
+  to a plain `long long` / `bool`; null streams nothing; string/bytes write
+  the payload byte count exactly. The container kinds take the ns_common
+  report convention (stderr notice, nothing streamed) because this ONE symbol
+  is also the script binding and no C++ exception may cross into JIT frames
+  (the report_frozen doctrine, src/ns_common.cpp).
+- `<ns_madc>` declares it gated on `_GLIBCXX_OSTREAM || _LIBCPP_OSTREAM` —
+  the same guard model as its `_GLIBCXX_STRING` conveniences.
+- **The resolution unknown, answered:** the W2 mangled-direct lane captures
+  TEMPLATE operators only (17 std::operator<< captures, zero non-template),
+  and `lower_free_operator_to_call`'s member-owns-it arm required a USER-CLASS
+  rhs to divert — the carrier (`ddARRAY`, which IS a DataDefCLASS named
+  "array"; only the `rawtype != dtRESERVED` filter excludes it from
+  operand_object_class) fell through to shift typing. The fix is a carrier arm
+  in that dispatch: rhs `is_madc_array()` → try the CONCRETE registered set
+  (`find_free_operator_function`, which the <ns_madc> declaration reaches via
+  `namespace_fn_overload_sets["madc::operator<<"]`) — the only lane that can
+  ever serve an intrinsic rhs, since W2 spelling-matches std template shapes.
+  Type-predicate gated; user-class rhs arbitration untouched.
+- Gate: `tests/testvaluestream.mad` — byte-identical to the plain-type twin
+  (tmp/auto/vs.cpp, g++ AND clang++ -O0 agree) on every shared line, chaining,
+  `std::hex`, `boolalpha`, null-empty, the array stderr notice with the stream
+  surviving. The emitted C11 carries `_ZN4madclsERSoRKNS_5valueE`.
+
+**Two pre-existing gaps found while testing (reducers inline, tmp/ is
+untracked):**
+
+1. **`value(N)` functional-cast temporaries build a garbage-kind temp.**
+   `std::cout << "neg:" << value(-7) << std::endl;` compiles, the temp's kind
+   reads as `instance` (garbage bytes), the operator prints its not-streamable
+   notice, then SIGSEGV. In other positions the same form emits c2mir-refused
+   code instead. The named form `value neg = -7;` is fine. This is the value
+   CONSTRUCTION surface (expression-position functional cast), not streaming —
+   and the garbage kind makes it near-silent, so it is the highest-priority
+   residue here.
+2. **Parametrized manipulator OBJECTS do not compile, with or without value.**
+   `std::cout << std::setprecision(3) << 3.14159` — plain double, no value
+   anywhere — fails with "incompatible argument type for arithmetic type
+   parameter". `std::hex` / `boolalpha` (function manipulators) work; the
+   `_Setprecision`/`_Setw` object inserters (free std template operator<<
+   shapes) do not bind. Reducer: tmp/auto/t3.mad.
