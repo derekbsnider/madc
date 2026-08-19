@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-08-19, v0.87.0 — `for (value v : a)`):** authoritative Linux
+> **Current (2026-08-19, v0.88.0 — `cout << value`):** authoritative Linux
+> fulltest **1091 passed / 0 failed / 0 timed out / 9 skipped**; **1100 tests
+> compiled with ZERO warnings**; EXE **1051/0**, OBJ **1051/0**, packed
+> **1091/0/0/9**, headerless **1065/0/35skip**, release rc=0 — full battery.
+> New: `testvaluestream` (each kind streams via the REAL inserter — hex,
+> boolalpha, chaining — byte-identical to the plain-type twin program, which
+> g++ and clang++ agree on; null empty; the array line = stderr notice +
+> nothing streamed + the stream survives). Found and recorded with reducers:
+> `value(N)` functional-cast temporaries build a garbage-kind temp;
+> `std::setprecision` (manipulator OBJECTS) fails with plain doubles too.
+>
+> **Previous (2026-08-19, v0.87.0 — `for (value v : a)`):** authoritative Linux
 > fulltest **1090 passed / 0 failed / 0 timed out / 9 skipped**; **1099 tests
 > compiled with ZERO warnings**; EXE **1050/0**, OBJ **1050/0**, packed
 > **1090/0/0/9**, headerless **1064/0/35skip**, release rc=0 — full battery.

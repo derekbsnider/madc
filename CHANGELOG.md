@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [v0.88.0] — 2026-08-19
+
+`cout << value` streams exactly as the contained type would.
+
+- **`cout << value` works** — one `madc::operator<<(std::ostream&, const
+  value&)` dispatching per kind at run time, each kind forwarding to the REAL
+  ostream inserter so `std::hex` / `boolalpha` apply the way they do to a
+  plain `long long` / `bool` (NOT the text renderer, which prints "4.000000"
+  where `cout << 4.0` prints "4"). Byte-identical to the plain-type twin
+  program under g++ AND clang++ -O0 on every shared line, chaining included.
+  null streams nothing; the container kinds follow C++'s own convention
+  (std::vector has no `operator<<`): a stderr notice, nothing streamed, the
+  stream survives — no C++ exception may cross into JIT frames, so the one
+  symbol serves hosts and scripts alike. Declared for scripts in `<ns_madc>`
+  gated on the ostream include guard; resolution reaches it through a new
+  type-predicate-gated carrier arm in `lower_free_operator_to_call` (the W2
+  mangled-direct lane captures TEMPLATE operators only — measured — and the
+  member arm required a user-class rhs, so `cout << v` used to fall through
+  to integer-shift typing). Gate: `tests/testvaluestream.mad`.
+- **Two pre-existing gaps found and recorded** (reducers in
+  `docs/plans/2026-08-19-range-for-auto-deduction.md`): `value(N)`
+  functional-cast temporaries build a garbage-kind temp (near-silent —
+  priority residue), and parametrized manipulator objects
+  (`std::setprecision`) fail to compile even with plain doubles.
+- **Owner law recorded** (`docs/plans/2026-08-19-array-push-overloads.md`):
+  php:: functions mirror the ORIGINAL PHP functions — invented madc-isms
+  (`array_push_int`) are drift requiring operator approval. The
+  `php::array_push` overload set (with PHP's count return, aliases retired)
+  is the next session's settled plan.
+
 ## [v0.87.0] — 2026-08-19
 
 The range-for loop element can be the value carrier itself.

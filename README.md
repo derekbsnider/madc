@@ -210,39 +210,32 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.87.0** — the range-for loop element can be the
-value carrier itself.
+The current release is **v0.88.0** — `cout << value` streams exactly as the
+contained type would.
 
-`for (value v : a)` compiles and runs: the madc-array loop's element-fill
-dispatch gains a third arm that copies the element WHOLE through the new
-`__php_array_get_value` fetcher, so the element keeps its kind — through one
-loop variable, a string element counts its length and an integer element throws
-from `count()` and is caught inside the loop body. Copy semantics by design
-(elements have no stable address — `value &v` stays refused by name, pinned);
-`auto` over a madc array still deduces `string`, the subscript's answer, so
-`for (value v : a)` is the explicit opt-in for the raw carrier.
+One `madc::operator<<(std::ostream&, const value&)` dispatches per kind at run
+time, each kind forwarding to the REAL ostream inserter — so `std::hex` and
+`boolalpha` apply to a value the way they do to a plain `long long` or `bool`,
+measured byte-identical to the plain-type twin program under g++ AND clang++.
+null streams nothing; the container kinds follow C++'s own convention
+(std::vector has no `operator<<`): a stderr notice, nothing streamed, the
+stream survives. Same-day siblings: v0.87.0 made `for (value v : a)` iterate
+with the element keeping its kind, and v0.86.0 gave undeclared libc calls
+their real signatures, the value carrier's `.count()`/`.size()` the owner
+semantics, and range-for an `auto` element.
 
-v0.86.0 (same day) made the compiler know the C library's signatures: an
-UNDECLARED libc call gets its real return AND argument types from one table
-(`include/libc_signatures.h`, gcc's builtins.def model) instead of a `long
-long` guess — before, `strcmp(a,b) < 0` evaluated FALSE and `floorf(3.9f)`
-returned 2.000 on legal C89 with exit 0. `.count()`/`.size()` on the value
-carrier answer the owner semantics (elements / length / a catchable error,
-never a silent 0), and range-for takes an `auto` element deduced through the
-shared iteration recognizers, with two [stmt.ranged] shadowing fixes.
-
-Branch state: v0.87.0 is released on `develop`. `master` carries v0.82.0, for
+Branch state: v0.88.0 is released on `develop`. `master` carries v0.82.0, for
 which public binaries are published on all three platforms; v0.83.0 through
-v0.87.0 are released on `develop` and unpromoted.
+v0.88.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1090 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1050/0**, OBJ lane **1050/0**; packed suite **1090/0/0/9**
+- Linux JIT: **1091 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1051/0**, OBJ lane **1051/0**; packed suite **1091/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1064/0/0/35**,
+- headerless (no headers on disk anywhere): Linux **1065/0/0/35**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -255,6 +248,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.88.0](docs/release-notes/v0.88.0.md) — `cout << value` streams exactly
+  as the contained type would; two pre-existing gaps found and recorded.
 - [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
   element can be the carrier itself, kind-preserving, copy semantics.
 - [v0.86.0](docs/release-notes/v0.86.0.md) — undeclared libc calls get real
@@ -263,8 +258,6 @@ Latest validated results:
   over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
 - [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
   silently; the gate's first run found a lost `long double` member.
-- [v0.83.0](docs/release-notes/v0.83.0.md) — UFCS: `x.f(y)` and `f(x, y)`
-  become interchangeable in the madc dialect, in both directions.
 
 ## Building from source
 

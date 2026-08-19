@@ -1,5 +1,15 @@
 # madc Roadmap
 
+**✅ `cout << value` (2026-08-19, v0.88.0):** streams exactly as the contained
+type would — per-kind forwarding to the real inserters (hex/boolalpha apply),
+null empty, container kinds = stderr notice per C++'s own no-operator<<
+convention. Resolution via a type-predicate carrier arm in
+`lower_free_operator_to_call` (W2 captures template operators only — measured).
+NEXT (settled plan, owner parity law): the `php::array_push` overload set —
+[2026-08-19-array-push-overloads.md](2026-08-19-array-push-overloads.md).
+Priority residues: `value(N)` functional-cast temporaries (garbage-kind temp),
+`std::setprecision` manipulator objects.
+
 **✅ `for (value v : a)` (2026-08-19, v0.87.0):** the madc-array loop's
 element-fill dispatch gains its third arm — an `is_array_object` element copies
 WHOLE through `__php_array_get_value`, kind-preserving, copy semantics
