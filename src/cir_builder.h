@@ -258,6 +258,17 @@ class CirBuilder {
 	// subtree would also claim the inner call in `f(php::print_r(x, true))`,
 	// whose result IS read. Identity is exact; a flag is not.
 	TokenBase *m_discarded_stmt_expr = NULL;
+	// Wrap a loop-HEADER expression (while/do/for condition, for increment)
+	// whose translation materialized temporaries (m_pending_stmts entries at
+	// index >= mark) into a statement-expression carrying those
+	// declarations: the temp is then constructed — and its cleanup runs —
+	// on EVERY iteration, inside the loop's own scope. Without this the
+	// temp's decl+init flushed ONCE into the enclosing block: evaluated
+	// once (stale value each iteration) and, for a class-shape for-init,
+	// BEFORE the loop variable it reads existed ("undeclared identifier").
+	// An IF condition keeps translate_if's flush-before semantics — a
+	// selection evaluates once; a loop header, every iteration.
+	node_t loop_header_expr_scope(node_t expr, size_t mark, TokenBase *o);
 	// Splice m_pending_stmts into `out` (preserving order) and clear it.
 	// For statement-list builders that run OUTSIDE translate_block's
 	// statement loop (ctor/dtor prologue + epilogue synthesis): a temp

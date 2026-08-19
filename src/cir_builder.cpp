@@ -21656,11 +21656,26 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 	return node2(N_BLOCK, list(), items, ti);
 }
 
+node_t CirBuilder::loop_header_expr_scope(node_t expr, size_t mark,
+					  TokenBase *o)
+{
+	if (m_pending_stmts.size() <= mark)
+		return expr;
+	node_t items = list();
+	for (size_t i = mark; i < m_pending_stmts.size(); i++)
+		append(items, m_pending_stmts[i]);
+	m_pending_stmts.resize(mark);
+	append(items, node2(N_EXPR, list(), expr, o));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, o), o);
+}
+
 node_t CirBuilder::translate_while(TokenBase *tw)
 {
 	TokenWHILE *w = dynamic_cast<TokenWHILE *>(tw);
 	if (!w) return ignore();
-	node_t cond = translate_cond(w->condition);
+	size_t mark = m_pending_stmts.size();
+	node_t cond = loop_header_expr_scope(translate_cond(w->condition),
+					     mark, tw);
 	return node3(N_WHILE, list(), cond,
 		     translate_loop_body(w->statement), tw);
 }
@@ -21745,13 +21760,17 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	} else {
 		init = ignore();
 	}
+	size_t hdr_mark = m_pending_stmts.size();
 	node_t cond = tf->condition ? translate_cond(tf->condition) : ignore();
+	cond = loop_header_expr_scope(cond, hdr_mark, tf);
+	hdr_mark = m_pending_stmts.size();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
 	// Comma-separated increment clauses (`for (...; ...; i++, j--)`): fold the
 	// extras into the increment via N_COMMA so each runs every iteration.
 	if (tf->increment)
 		for (TokenBase *ex : tf->incr_extras)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
+	incr = loop_header_expr_scope(incr, hdr_mark, tf);
 	node_t body = translate_loop_body(tf->statement);
 	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);
 	// Class-shape for-init: the decl + construction statements precede the
@@ -22943,7 +22962,10 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 
 node_t CirBuilder::translate_do(TokenDO *td)
 {
-	return node3(N_DO, list(), translate_cond(td->condition),
+	size_t mark = m_pending_stmts.size();
+	node_t cond = loop_header_expr_scope(translate_cond(td->condition),
+					     mark, td);
+	return node3(N_DO, list(), cond,
 		     translate_loop_body(td->statement), td);
 }
 
