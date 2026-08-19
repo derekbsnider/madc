@@ -116,17 +116,41 @@ that cannot say what it tested is not evidence.
 
 ## 4. OPEN DEFECTS — every one has a reducer
 
-- **`size()` / `count()` on a NON-ARRAY-kind script `value` returns 0.**
-  `add_array_methods` binds both to `madarray_size`, which is the RANGE-FOR length
-  helper and deliberately reads 0 for a non-array kind ("Intentionally NOT
-  ns_common::value_count", its own comment). So `value s = "hello"; s.size()` is 0
-  while the payload has five bytes, and `php::print_r(x, true)` produces a value
-  whose `size()` is 0 — which is why every existing capture test measures
-  `strlen(v.c_str())` instead. `ns_common::value_count` is the owner
-  `madarray_size`'s comment names. Reducer `tmp/probe/valuecount.mad`.
-  ⚠️ NOT taken in #104 on purpose: what `size()` should mean across the nine kinds
-  is a decision about the `value` INTRINSIC's user-visible surface, not a dump
-  bug, and the owner has been shaping that surface.
+- **`size()` / `count()` on a script `value` returns 0 for EVERY kind except
+  `array`.** MEASURED (`tmp/probe/valuecount2.mad`, v0.85.0 binary):
+
+  | kind | `size()` | truth |
+  |---|---|---|
+  | `string` "hello" | **0** | 5 bytes (`strlen(c_str())`) |
+  | `integer` 42 | **0** | — |
+  | `real` 3.5 | **0** | — |
+  | `boolean` true | **0** | — |
+  | `array` (2 elems) | 2 | 2 ✓ |
+
+  `Program::add_array_methods` (`src/parser.cpp` ~22948) registers BOTH `count`
+  and `size` on `ddARRAY` with `emit_symbol = "madarray_size"`, and
+  `madarray_size` (`src/madc_mir_backend.cpp:73`) is
+  `v->is_array() ? v->as_array().size() : 0` — the RANGE-FOR bound, whose own
+  comment says "Intentionally NOT ns_common::value_count: foreach iterates indexed
+  elements only, so an object-kind ctx must read as length 0 here." So one function
+  answers two different questions, and the user-facing one gets the foreach answer.
+  Meanwhile the C++ `madc::value::size()` (`src/madc_value.cpp:569`) returns
+  `_v.size`, the payload BYTE COUNT — so the C++ API and the script surface
+  disagree under one name.
+  Visible consequence: `php::print_r(x, true)` yields a `string`-kind value whose
+  `size()` is 0, which is why every capture test measures
+  `strlen(v.c_str())` instead.
+  ⚠️ **Correcting an earlier claim of mine:** I wrote that `count()` on an
+  OBJECT-kind value reports 0 where PHP's `count()` reports the entry count. That
+  case is NOT reachable — `tests/testphpdumpvalue.mad` records that no script can
+  construct the object, bytes or instance kinds yet, so it can only arrive from a
+  host-supplied value.
+  ⚠️ Note that `count()` returning 0 for a SCALAR is not obviously wrong — PHP 8
+  raises a TypeError for `count(42)`. It is `size()` on a `string` kind that is a
+  plainly wrong number. Deciding what each name means across the nine kinds is a
+  choice about the `value` intrinsic's user-visible surface, which is why #104 did
+  not take it. `ns_common::value_count` is the owner `madarray_size`'s own comment
+  names.
 - **`for (auto &kv : m)`** — the range-for's element type is never deduced from
   `auto`; the explicit-type form works. A parser deduction gap, independent of the
   iteration protocol. Reducer `tmp/probe/feauto.mad`.
