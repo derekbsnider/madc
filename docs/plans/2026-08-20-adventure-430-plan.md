@@ -1,5 +1,65 @@
 # Colossal Cave Adventure (430-point) in madc — implementation plan
 
+**HANDOFF (2026-08-20, pre-compaction; session #109). READ THIS BLOCK
+FULLY, then the SETTLED section, before any work.**
+
+Where things stand — all pushed on
+`feature/track7-hub-projections-claude` @75205e50, working tree clean,
+VERSION 0.94.0 (⚠️ NO release until the boundary below; merge timing =
+open owner call):
+
+- **A0 plan approved** (this doc). **A1 Wave-L LANDED @163f6908**:
+  `bag["k"]` + `bag.k` keyed slots (madarray_key_slot; Perl-model
+  vivification — access creates, php::array_key_exists never does),
+  `value&` param mutation, object-kind range-for (values, key order),
+  php::array_key_exists (one overloaded script name; `_int` only on the
+  extern-C shim, the array_push pattern). Contracts pinned in
+  tests/testvaluekeys.mad; 147/147 blast-radius subset green.
+  **L3 (value BY-VALUE returns) is NOT done** — its recon is in the A1
+  STATUS block below (one admission point, but the carrier needs a
+  C-VISIBLE slot type; decide with both the script lane and the future
+  mangled-direct `madc::value ui::get()` lane in view). Until L3, ui::
+  uses `value &out` params (the <ns_madc> convention).
+- **A2 LANDED @a1d36959**: .world props carry full value trees as
+  single-line JSON (json.hpp bridge in world_text.h detail::); fixed a
+  real pre-existing round-trip hole (ambiguous strings now JSON-quote).
+  Unit battery extended (test_world_text 7 cases / 111 assertions).
+- **A4 LANDED @8b8cc392**: examples/adventure/ = vendored
+  data/adventure.yaml (BSD-2 + COPYING) + tools/advent_yaml_to_world.py
+  (shape-checked 185/70/623/76/58/10; run with python3 on the
+  CONTAINER) + adventure.world CHECKED IN (1717 lines). Verified:
+  ui::world_open + ui::world_save re-emits it BYTE-IDENTICALLY.
+- **A3 LANDED @917fd1f2**: ui::get/name_of/contents (reads, never
+  vivify) + ui::set (one overloaded name) / ui::move routed through
+  mutation_context (G4 gate holds). tests/testuibags.mad walks the real
+  dungeon from script (travel-rule bags iterate via range-for +
+  keyed reads — the game loop's core access pattern, proven).
+- **NEXT = A5, the game skeleton**: examples/adventure/advent.mad (+
+  module .inc files): loop → vocab → intent → travel interpreter →
+  describe/listobjects view → LCG (A=1093 C=221587 M=1048576) + `seed`
+  verb → parity harness. The BYTE-LEVEL I/O discipline and the
+  LISTING-ORDER LAW are banked in the A5/A6 slice notes below — follow
+  them, they are measured facts, not guesses. First converter addendum:
+  the per-object `seq` prop (listing order). Validation staging: get
+  the opening sequence + overworld walk byte-identical against
+  transcript fragments, then grow toward whole logs.
+- Working facts: reference clones live at /workspace/open-adventure
+  (data + tests/*.log/.chk oracle + the C source), /workspace/advent.cpp,
+  /workspace/advent.py. Probes live in tmp/advprobes/ (run_probes.sh;
+  probe_ui_bags.mad shows the E2 patterns). Build/test ONLY via
+  scripts/remote_build.sh (sync build / unittest; probes travel by scp
+  — tmp/ and tests/ additions are NOT rsynced back; adventure.world was
+  generated on the container and pulled back by scp). Targeted tests
+  per slice; fulltest ONCE at the merge wave. Commits touching src/ or
+  include/ carry the four rule trailers; commit messages with backticks
+  go via `git commit -F <file>`.
+- Deferred residues (recorded, not blocking): L3; numeric extraction
+  from a keyed read (`long n = bag["k"]` undefined — use var/php::
+  converters); `cout << bag["k"]` streaming admission unverified
+  (printf coercion IS covered); integer-subscript value elements keep
+  string-first typing (use range-for for value elements); the missing
+  %s-vs-string format warning (pre-arc residue).
+
 **Status: APPROVED DESIGN (owner, 2026-08-20 session #109) — this doc is
 the execution plan.** Track 7 Phase 2: the real game on the Phase-1 hub.
 Branch: `feature/track7-hub-projections-claude` (continues; Phase 1 is
