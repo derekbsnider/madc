@@ -34,8 +34,18 @@ stand and what the owner ruled:
   everything on develop (v0.93.0 + v0.94.0 + the Track 7 feature) into
   a MASTER PROMOTION — three-platform gated per promote.md step 5.
 - **NEXT (owner-directed): the real game.** `examples/adventure/` will
-  implement the ORIGINAL Colossal Cave Adventure ("adventure" was the
-  original binary name) on madc::ui + madc::dis. References the owner
+  implement Colossal Cave Adventure on madc::ui + madc::dis —
+  specifically **the "450 point, Adventure 2.5" version, i.e. what
+  Open Adventure IS** (owner 2026-08-20: it is "clean and portable";
+  verify the exact point total during recon). The C++ and Python ports
+  are mined for DATA-STRUCTURE design — OOP/modern shapes that suit how
+  madc works and its madc::value carrier. ⚠️ OWNER STYLE DIRECTIVE for
+  the example code: use **`var`** variables wherever strict typing is
+  not needed (the value carrier's dynamic spelling — the example
+  showcases it). **The owner wants a proper BRAINSTORMING session for
+  the Adventure implementation as the NEXT session's opening act** —
+  design before code: format extensions, data structures, slice cuts,
+  parity staging. References the owner
   named: https://gitlab.com/esr/open-adventure/ (C, canonical
   Crowther/Woods 350-point, BSD-2 — license-compatible, data source of
   truth via its adventure.yaml + regression transcripts as the oracle),
