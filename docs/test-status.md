@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-08-20, v0.92.1 — the v0.92 binary-shipping patch):**
+> **Current (2026-08-20, v0.93.0 — the MIR convert false-dependency
+> fix):** authoritative Linux fulltest **1104 passed / 0 failed / 0
+> timed out / 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test
+> **1143/2286/0 (exact baseline)** — the merge-wave battery for the
+> one-commit fork change (`mir-gen-x86_64.c` pattern table: `pxor`
+> dep-break on scalar SSE converts). Perf evidence: donut.c 300 frames
+> 1.374s → **0.493s** (gcc -O0 0.514s), outputs md5-identical;
+> sin-only/sweep microbenchmarks unregressed. No fixture changes.
+>
+> **Previous (2026-08-20, v0.92.1 — the v0.92 binary-shipping patch):**
 > authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
 > 9 skipped**; EXE **1063/0**, OBJ **1063/0**, release rc=0 — one
 > merge-wave battery at the fixed content. Windows: wine packed suite

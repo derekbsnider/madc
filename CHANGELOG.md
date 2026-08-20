@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [v0.93.0] — 2026-08-20
+
+Floating-point codegen at gcc speed: the MIR false-dependency fix.
+
+- **Call-heavy FP code runs 2.8× faster — donut.c now BEATS gcc -O0**
+  (300 frames: 1.374s → 0.493s; gcc -O0 0.514s; outputs byte-identical).
+  MIR's x86-64 generator emitted the merging scalar SSE converts
+  (`cvtsi2ss`/`cvtsi2sd`/`cvtss2sd`/`cvtsd2ss`) bare, so every convert
+  falsely depended on the destination register's previous writer — in
+  sin/cos-heavy loops that is the previous libm call's return chain,
+  serializing calls the out-of-order core could overlap (~76 vs ~24
+  cycles/call, at IDENTICAL dynamic instruction counts — invisible to
+  callgrind, misattributed to libm by samplers). The fix is the
+  dependency-breaking idiom gcc and clang emit: `pxor dst,dst` before
+  the convert (`third_party/mir/mir-gen-x86_64.c` pattern table); the
+  tied dst==src forms keep the bare encoding (real dependency there).
+  The defect is pure upstream MIR code, unchanged since 2019 — queued
+  as an upstream PR candidate (owner review gates submission).
+  Diagnosis chain (equal-Ir wall gap → state/args bit-identical →
+  rdtsc shim → construct bisection → one-pxor A/B proof) recorded in
+  the session memory; pure-arithmetic madc code was already at ~0.92×
+  gcc -O0 — the false dep was what broke the "80% of gcc" claim.
+
+Validation: MIR c2mir-gen-test 1143/2286/0 (exact baseline), fulltest
+1104/0/0/9, EXE 1063/0, donut/l1c/sinbench/sweepbench outputs
+md5-identical with no regression on the already-fast cases.
+
 ## [v0.92.1] — 2026-08-20
 
 The v0.92 line's binary-shipping patch: two win64 regressions caught by the

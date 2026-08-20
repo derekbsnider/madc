@@ -210,26 +210,22 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.92.1** — the v0.92 line's binary-shipping
-patch, promoted to `master` with packages on all three platforms.
+The current release is **v0.93.0** — floating-point codegen at gcc
+speed: a six-year-old upstream MIR defect (false dependencies on the
+scalar SSE converts) fixed in the in-tree fork, making call-heavy FP
+code ~2.8× faster — donut.c now beats gcc -O0 (0.493s vs 0.514s per 300
+frames, byte-identical output). Diagnosed from identical instruction
+counts down to a one-`pxor` A/B proof; queued for upstreaming.
 
-The v0.92 line makes the C++23 formatting surface simply part of madc:
-`std::println("x={} y={:.3f}", x, y)` works in a bare script with zero
-header parse, literal format strings are validated at compile time, and
-the strict-C11 engine underneath is pinned byte-for-byte to real
-libstdc++ `std::format` by 1430 generated oracle rows. `cout << value`
-needs no includes either — the inserter declaration is injected at the
-completion of whichever include first defines the ostream guard. The
-v0.92.1 patch carries the two win64 fixes the new three-platform
-promotion gate caught before any binary shipped: the headerless
-existence probe could not see the four float-math names ucrtbase hides
-(`fabsf`/`frexpf`/`hypotf`/`ldexpf`, now pinned as the complete audited
-set), and `var_dump` of a `long` printed the LLP64 rank's `int(42)`
-instead of the source name's `long(42)`.
+The prior v0.92 line made the C++23 formatting surface simply part of
+madc — `std::println("x={} y={:.3f}", x, y)` in a bare script with zero
+header parse, compile-time-validated format strings, and an engine
+pinned byte-for-byte to real libstdc++ by 1430 generated oracle rows —
+plus `cout << value` with no includes.
 
-Branch state: v0.92.1 is promoted — `develop` and `master` both carry it,
-with public binaries published for Linux (deb/rpm), Windows x86-64, and
-macOS (Apple Silicon + Intel).
+Branch state: v0.93.0 is released on `develop`. `master` carries the
+promoted v0.92.1, with public binaries published for Linux (deb/rpm),
+Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results:
 
@@ -255,6 +251,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.93.0](docs/release-notes/v0.93.0.md) — FP codegen at gcc speed: the
+  upstream MIR convert false-dependency fixed; donut.c beats gcc -O0.
 - [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:
   two win64 fixes from the new three-platform promotion gate; six assets.
 - [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
@@ -271,8 +269,6 @@ Latest validated results:
   element can be the carrier itself, kind-preserving, copy semantics.
 - [v0.86.0](docs/release-notes/v0.86.0.md) — undeclared libc calls get real
   signatures; .count()/.size() owner semantics; range-for `auto` elements.
-- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
-  over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
 
 ## Building from source
 
