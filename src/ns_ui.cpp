@@ -182,6 +182,15 @@ int64_t entity_by_name(int64_t w, const char *name)
     return (int64_t)s->w.find(name);
 }
 
+int64_t create(int64_t w, const char *name)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !name || !*name )
+	return 0;
+    madc::hub::mutation_context mc(s->w);
+    return (int64_t)mc.create(name);
+}
+
 int64_t location(int64_t w, int64_t entity)
 {
     ui_session *s = ui_get(w);

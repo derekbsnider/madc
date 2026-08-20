@@ -57,6 +57,17 @@ int main()
 	ui::move(w, lamp, start);
 	printf("lamp-at-start=%d\n", (int)(ui::location(w, lamp) == start));
 
+	// Runtime entity creation (the game's player/world-state seam):
+	// created, findable, bag-writable, placeable.
+	long player = ui::create(w, "player");
+	ui::set(w, player, "deaths", (long)0);
+	ui::move(w, player, start);
+	var d;
+	ui::get(d, w, player, "deaths");
+	printf("player=%d deaths=%s at-start=%d\n",
+	       (int)(ui::entity_by_name(w, "player") == player), d,
+	       (int)(ui::location(w, player) == start));
+
 	ui::world_close(w);
 	return 0;
 }

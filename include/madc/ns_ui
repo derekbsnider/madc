@@ -26,6 +26,12 @@ namespace ui {
     // Entity lookup by canonical name (0 = absent).
     int64_t entity_by_name(int64_t w, const char *name);
 
+    // Create a new entity with the given canonical name (routes through
+    // the hub's mutation context). Returns its id (0 on a bad handle or
+    // empty name). Runtime entities (actors, singletons) ride the same
+    // save as the authored world.
+    int64_t create(int64_t w, const char *name);
+
     // Where an entity is (its containment target; 0 = nowhere). The
     // driver's room-change detection for auto-look.
     int64_t location(int64_t w, int64_t entity);

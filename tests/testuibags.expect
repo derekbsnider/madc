@@ -11,3 +11,4 @@ held=4
 - FOOD
 - BOTTLE
 lamp-at-start=1
+player=1 deaths=0 at-start=1
