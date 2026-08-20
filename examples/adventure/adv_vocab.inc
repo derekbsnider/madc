@@ -147,10 +147,13 @@ void shift_words()
 
 void clear_command()
 {
+	OLDOBJ = CMD["obj"];
 	CMD["raw0"] = "";
 	CMD["raw1"] = "";
 	CMD["type0"] = T_NONE;
 	CMD["type1"] = T_NONE;
 	CMD["id0"] = "";
 	CMD["id1"] = "";
+	CMD["verb"] = "";
+	CMD["obj"] = "";
 }

@@ -1,0 +1,31 @@
+no
+seed 43
+e
+get lamp
+get keys
+take food
+eat food
+get bottle
+drink
+drink
+inventory
+w
+s
+s
+s
+unlock grate
+open grate
+d
+w
+on lamp
+w
+get cage
+xyzzy
+off lamp
+drop cage
+drop keys
+inventory
+take keys
+xyzzy
+e
+back

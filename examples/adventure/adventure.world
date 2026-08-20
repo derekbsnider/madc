@@ -987,12 +987,14 @@
 %entity KEYS
   descriptions = ["There are some keys on the ground here."]
   inventory = Set of keys
+  place = LOC_BUILDING
   seq = 64
   words = ["keys","key"]
 %entity LAMP
   changes = ["Your lamp is now off.","Your lamp is now on."]
   descriptions = ["There is a shiny brass lamp nearby.","There is a lamp shining nearby."]
   inventory = Brass lantern
+  place = LOC_BUILDING
   seq = 63
   states = ["LAMP_DARK","LAMP_BRIGHT"]
   words = ["lamp","lante"]
@@ -1002,6 +1004,7 @@
   fixed_at = LOC_BELOWGRATE
   immovable = true
   inventory = *grate
+  place = LOC_GRATE
   seq = 22
   seq_fixed = 21
   states = ["GRATE_CLOSED","GRATE_OPEN"]
@@ -1009,11 +1012,13 @@
 %entity CAGE
   descriptions = ["There is a small wicker cage discarded nearby."]
   inventory = Wicker cage
+  place = LOC_COBBLE
   seq = 62
   words = ["cage"]
 %entity ROD
   descriptions = ["A three foot black rod with a rusty star on an end lies nearby."]
   inventory = Black rod
+  place = LOC_DEBRIS
   seq = 61
   words = ["rod"]
 %entity ROD2
@@ -1025,6 +1030,7 @@
   fixed_at = LOC_MISTHALL
   immovable = true
   inventory = *steps
+  place = LOC_PITTOP
   seq = 20
   seq_fixed = 19
   states = ["STEPS_DOWN","STEPS_UP"]
@@ -1032,6 +1038,7 @@
 %entity BIRD
   descriptions = ["A cheerful little bird is sitting here singing.","There is a little bird in the cage.","A cheerful little bird is sitting here singing."]
   inventory = Little bird in cage
+  place = LOC_BIRDCHAMBER
   seq = 60
   sounds = ["The bird's singing is quite melodious.","The bird does not seem inclined to sing while in the cage.","It almost seems as though the bird is trying to tell you something.","To your surprise, you can understand the bird's chirping; it is\nsinging about the joys of its forest home.","The bird does not seem inclined to sing while in the cage.","The bird is singing to you in gratitude for your having returned it to\nits home.  In return, it informs you of a magic word which it thinks\nyou may find useful somewhere near the Hall of Mists.  The magic word\nchanges frequently, but for now the bird believes it is \"%s\".  You\nthank the bird for this information, and it flies off into the forest."]
   states = ["BIRD_UNCAGED","BIRD_CAGED","BIRD_FOREST_UNCAGED"]
@@ -1041,18 +1048,21 @@
   descriptions = ["The way north is barred by a massive, rusty, iron door.","The way north leads through a massive, rusty, iron door."]
   immovable = true
   inventory = *rusty door
+  place = LOC_IMMENSE
   seq = 59
   states = ["DOOR_RUSTED","DOOR_UNRUSTED"]
   words = ["door"]
 %entity PILLOW
   descriptions = ["A small velvet pillow lies on the floor."]
   inventory = Velvet pillow
+  place = LOC_SOFTROOM
   seq = 58
   words = ["pillo","velve"]
 %entity SNAKE
   descriptions = ["A huge green fierce snake bars the way!",""]
   immovable = true
   inventory = *snake
+  place = LOC_KINGHALL
   seq = 57
   sounds = ["The snake is hissing venomously.",""]
   states = ["SNAKE_BLOCKS","SNAKE_CHASED"]
@@ -1063,6 +1073,7 @@
   fixed_at = LOC_WESTBANK
   immovable = true
   inventory = *fissure
+  place = LOC_EASTBANK
   seq = 18
   seq_fixed = 17
   states = ["UNBRIDGED","BRIDGED"]
@@ -1071,12 +1082,14 @@
   descriptions = ["A massive stone tablet embedded in the wall reads:\n\"Congratulations on bringing light into the dark-room!\""]
   immovable = true
   inventory = *stone tablet
+  place = LOC_DARKROOM
   seq = 56
   texts = ["\"Congratulations on bringing light into the dark-room!\""]
   words = ["table"]
 %entity CLAM
   descriptions = ["There is an enormous clam here with its shell tightly closed."]
   inventory = Giant clam  >GRUNT!<
+  place = LOC_SHELLROOM
   seq = 55
   sounds = ["The clam is as tight-mouthed as a, er, clam."]
   words = ["clam"]
@@ -1088,6 +1101,7 @@
 %entity MAGAZINE
   descriptions = ["There are a few recent issues of \"Spelunker Today\" magazine here."]
   inventory = "\"Spelunker Today\""
+  place = LOC_ANTEROOM
   seq = 54
   texts = ["I'm afraid the magazine is written in dwarvish.  But penciled on one\ncover you see, \"Please leave the magazines at the construction site.\""]
   words = ["magaz","issue","spelu","\"spel"]
@@ -1099,12 +1113,14 @@
 %entity FOOD
   descriptions = ["There is food here."]
   inventory = Tasty food
+  place = LOC_BUILDING
   seq = 53
   words = ["food","ratio"]
 %entity BOTTLE
   changes = ["Your bottle is now full of water.","The bottle of water is now empty.","Your bottle is now full of oil."]
   descriptions = ["There is a bottle of water here.","There is an empty bottle here.","There is a bottle of oil here."]
   inventory = Small bottle
+  place = LOC_BUILDING
   seq = 52
   states = ["WATER_BOTTLE","EMPTY_BOTTLE","OIL_BOTTLE"]
   words = ["bottl","jar"]
@@ -1119,6 +1135,7 @@
   descriptions = ["",""]
   immovable = true
   inventory = *mirror
+  place = LOC_MIRRORCANYON
   seq = 51
   states = ["MIRROR_UNBROKEN","MIRROR_BROKEN"]
   words = ["mirro"]
@@ -1127,6 +1144,7 @@
   descriptions = ["There is a tiny little plant in the pit, murmuring \"water, water, ...\"","There is a 12-foot-tall beanstalk stretching up out of the pit,\nbellowing \"WATER!! WATER!!\"","There is a gigantic beanstalk stretching all the way up to the hole."]
   immovable = true
   inventory = *plant
+  place = LOC_WESTPIT
   seq = 50
   sounds = ["The plant continues to ask plaintively for water.","The plant continues to demand water.","The plant now maintains a contented silence."]
   states = ["PLANT_THIRSTY","PLANT_BELLOWING","PLANT_GROWN"]
@@ -1136,6 +1154,7 @@
   fixed_at = LOC_EASTEND
   immovable = true
   inventory = *phony plant
+  place = LOC_WESTEND
   seq = 16
   seq_fixed = 15
   words = ["plant"]
@@ -1143,6 +1162,7 @@
   descriptions = [""]
   immovable = true
   inventory = *stalactite
+  place = LOC_TOPSTALACTITE
   seq = 49
   words = ["stala"]
 %entity OBJ_27
@@ -1150,6 +1170,7 @@
   fixed_at = LOC_WINDOW2
   immovable = true
   inventory = *shadowy figure and/or window
+  place = LOC_WINDOW1
   seq = 14
   seq_fixed = 13
   words = ["shado","figur","windo"]
@@ -1162,6 +1183,7 @@
 %entity OBJ_29
   immovable = true
   inventory = *cave drawings
+  place = LOC_ORIENTAL
   seq = 48
   words = ["drawi"]
 %entity OBJ_30
@@ -1174,6 +1196,7 @@
   fixed_at = LOC_SECRET6
   immovable = true
   inventory = *dragon
+  place = LOC_SECRET4
   seq = 12
   seq_fixed = 11
   sounds = ["The dragon's ominous hissing does not bode well for you.","The dragon is, not surprisingly, silent.","The dragon is, not surprisingly, silent."]
@@ -1185,6 +1208,7 @@
   fixed_at = LOC_NECHASM
   immovable = true
   inventory = *chasm
+  place = LOC_SWCHASM
   seq = 10
   seq_fixed = 9
   states = ["TROLL_BRIDGE","BRIDGE_WRECKED"]
@@ -1195,6 +1219,7 @@
   fixed_at = LOC_NECHASM
   immovable = true
   inventory = *troll
+  place = LOC_SWCHASM
   seq = 8
   seq_fixed = 7
   sounds = ["The troll sounds quite adamant in his demand for a treasure.","The troll sounds quite adamant in his demand for a treasure.",""]
@@ -1212,6 +1237,7 @@
   changes = ["","The bear eagerly wolfs down your food, after which he seems to calm\ndown considerably and even becomes rather friendly.","",""]
   descriptions = ["There is a ferocious cave bear eyeing you from the far end of the room!","There is a gentle cave bear sitting placidly in one corner.","There is a contented-looking bear wandering about nearby.",""]
   immovable = true
+  place = LOC_BARRENROOM
   seq = 47
   states = ["UNTAMED_BEAR","SITTING_BEAR","CONTENTED_BEAR","BEAR_DEAD"]
   words = ["bear"]
@@ -1224,6 +1250,7 @@
 %entity VOLCANO
   immovable = true
   inventory = *volcano and/or geyser
+  place = LOC_BREATHTAKING
   seq = 46
   words = ["volca","geyse"]
 %entity VEND
@@ -1231,6 +1258,7 @@
   descriptions = ["There is a massive and somewhat battered vending machine here.  The\ninstructions on it read: \"Drop coins here to receive fresh batteries.\"","There is a massive vending machine here, swung back to reveal a\nsouthward passage."]
   immovable = true
   inventory = *vending machine
+  place = LOC_DEADEND13
   seq = 45
   states = ["VEND_BLOCKS","VEND_UNBLOCKS"]
   texts = ["\"Drop coins here to receive fresh batteries.\"","\"Drop coins here to receive fresh batteries.\""]
@@ -1243,12 +1271,14 @@
 %entity OBJ_40
   immovable = true
   inventory = *carpet and/or moss and/or curtains
+  place = LOC_SOFTROOM
   seq = 44
   words = ["carpe","moss"]
 %entity OGRE
   descriptions = ["A formidable ogre bars the northern exit."]
   immovable = true
   inventory = *ogre
+  place = LOC_LARGE
   seq = 43
   sounds = ["The ogre is apparently the strong, silent type."]
   words = ["ogre"]
@@ -1257,6 +1287,7 @@
   descriptions = ["A small urn is embedded in the rock.","A small urn full of oil is embedded in the rock.","A small oil flame extrudes from an urn embedded in the rock."]
   immovable = true
   inventory = *urn
+  place = LOC_CLIFF
   seq = 42
   states = ["URN_EMPTY","URN_DARK","URN_LIT"]
   words = ["urn"]
@@ -1277,6 +1308,7 @@
   fixed_at = LOC_RESNORTH
   immovable = true
   inventory = *reservoir
+  place = LOC_RESERVOIR
   seq = 4
   seq_fixed = 3
   states = ["WATERS_UNPARTED","WATERS_PARTED"]
@@ -1284,12 +1316,14 @@
 %entity RABBITFOOT
   descriptions = ["Your keen eye spots a severed leporine appendage lying on the ground."]
   inventory = Leporine appendage
+  place = LOC_FOREST22
   seq = 41
   words = ["appen","lepor"]
 %entity OBJ_47
   descriptions = [""]
   immovable = true
   inventory = *mud
+  place = LOC_DEBRIS
   seq = 40
   texts = ["\"MAGIC WORD XYZZY\""]
   words = ["mud"]
@@ -1297,6 +1331,7 @@
   descriptions = [""]
   immovable = true
   inventory = *note
+  place = LOC_NUGGET
   seq = 39
   texts = ["\"You won't get it up the steps\""]
   words = ["note"]
@@ -1304,6 +1339,7 @@
   descriptions = ["",""]
   immovable = true
   inventory = *sign
+  place = LOC_ANTEROOM
   seq = 38
   states = ["INGAME_SIGN","ENDGAME_SIGN"]
   texts = ["Cave under construction beyond this point.\n           Proceed at own risk.\n       [Witt Construction Company]","\"Treasure Vault.  Keys in main office.\""]
@@ -1311,30 +1347,35 @@
 %entity NUGGET
   descriptions = ["There is a large sparkling nugget of gold here!"]
   inventory = Large gold nugget
+  place = LOC_NUGGET
   seq = 37
   treasure = true
   words = ["gold","nugge"]
 %entity OBJ_51
   descriptions = ["There are diamonds here!"]
   inventory = Several diamonds
+  place = LOC_WESTBANK
   seq = 36
   treasure = true
   words = ["diamo"]
 %entity OBJ_52
   descriptions = ["There are bars of silver here!"]
   inventory = Bars of silver
+  place = LOC_FLOORHOLE
   seq = 35
   treasure = true
   words = ["silve","bars"]
 %entity OBJ_53
   descriptions = ["There is precious jewelry here!"]
   inventory = Precious jewelry
+  place = LOC_SOUTHSIDE
   seq = 34
   treasure = true
   words = ["jewel"]
 %entity COINS
   descriptions = ["There are many coins here!"]
   inventory = Rare coins
+  place = LOC_WESTSIDE
   seq = 33
   treasure = true
   words = ["coins"]
@@ -1346,6 +1387,7 @@
 %entity EGGS
   descriptions = ["There is a large nest here, full of golden eggs!","The nest of golden eggs has vanished!","Done!"]
   inventory = Golden eggs
+  place = LOC_GIANTROOM
   seq = 32
   states = ["EGGS_HERE","EGGS_VANISHED","EGGS_DONE"]
   treasure = true
@@ -1353,6 +1395,7 @@
 %entity TRIDENT
   descriptions = ["There is a jewel-encrusted trident here!"]
   inventory = Jeweled trident
+  place = LOC_WATERFALL
   seq = 31
   treasure = true
   words = ["tride"]
@@ -1360,6 +1403,7 @@
   changes = ["The vase is now resting, delicately, on a velvet pillow.","The ming vase drops with a delicate crash.","You have taken the vase and hurled it delicately to the ground."]
   descriptions = ["There is a delicate, precious, ming vase here!","The floor is littered with worthless shards of pottery.","The floor is littered with worthless shards of pottery."]
   inventory = Ming vase
+  place = LOC_ORIENTAL
   seq = 30
   states = ["VASE_WHOLE","VASE_DROPPED","VASE_BROKEN"]
   treasure = true
@@ -1367,12 +1411,14 @@
 %entity EMERALD
   descriptions = ["There is an emerald here the size of a plover's egg!","There is an emerald resting in a small cavity in the rock!"]
   inventory = Egg-sized emerald
+  place = LOC_PLOVER
   seq = 29
   treasure = true
   words = ["emera"]
 %entity PYRAMID
   descriptions = ["There is a platinum pyramid here, 8 inches on a side!"]
   inventory = Platinum pyramid
+  place = LOC_DARKROOM
   seq = 28
   treasure = true
   words = ["plati","pyram"]
@@ -1386,6 +1432,7 @@
   fixed_at = LOC_SECRET6
   immovable = true
   inventory = Persian rug
+  place = LOC_SECRET4
   seq = 2
   seq_fixed = 1
   states = ["RUG_FLOOR","RUG_DRAGON","RUG_HOVER"]
@@ -1394,6 +1441,7 @@
 %entity OBJ_63
   descriptions = ["There are rare spices here!"]
   inventory = Rare spices
+  place = LOC_BOULDERS2
   seq = 27
   treasure = true
   words = ["spice"]
@@ -1401,6 +1449,7 @@
   descriptions = ["There is a golden chain lying in a heap on the floor!","The bear is locked to the wall with a golden chain!","There is a golden chain locked to the wall!"]
   immovable = true
   inventory = Golden chain
+  place = LOC_BARRENROOM
   seq = 26
   states = ["CHAIN_HEAP","CHAINING_BEAR","CHAIN_FIXED"]
   treasure = true
@@ -1408,6 +1457,7 @@
 %entity RUBY
   descriptions = ["There is an enormous ruby here!","There is a ruby resting in a small cavity in the rock!"]
   inventory = Giant ruby
+  place = LOC_STOREROOM
   seq = 25
   treasure = true
   words = ["ruby"]
@@ -1425,12 +1475,14 @@
 %entity SAPPH
   descriptions = ["A brilliant blue star sapphire is here!","There is a star sapphire resting in a small cavity in the rock!"]
   inventory = Star sapphire
+  place = LOC_LEDGE
   seq = 24
   treasure = true
   words = ["sapph"]
 %entity OBJ_69
   descriptions = ["There is a richly-carved ebony statuette here!"]
   inventory = Ebony statuette
+  place = LOC_REACHDEAD
   seq = 23
   treasure = true
   words = ["ebony","statu"]
@@ -1727,6 +1779,7 @@
   dwarflocs = ["LOC_KINGHALL","LOC_WESTBANK","LOC_Y2","LOC_ALIKE3","LOC_COMPLEX","LOC_MAZEEND12"]
   noaction = ["THANKYOU","INVALIDMAGIC","HELP","NO","TREE","DIG","LOST","MIST","FBOMB","STOP","INFO","SWIM","WIZARD","YES","NEWS","ACT_VERSION"]
   obituaries = [{"query":"Oh dear, you seem to have gotten yourself killed.  I might be able to\nhelp you out, but I've never really done this before.  Do you want me\nto try to reincarnate you?","yes_response":"All right.  But don't blame me if something goes wr......\n                    --- POOF!! ---\nYou are engulfed in a cloud of orange smoke.  Coughing and gasping,\nyou emerge from the smoke and find...."},{"query":"You clumsy oaf, you've done it again!  I don't know how long I can\nkeep this up.  Do you want me to try reincarnating you again?","yes_response":"Okay, now where did I put my orange smoke?....  >POOF!<\nEverything disappears in a dense cloud of orange smoke."},{"query":"Now you've really done it!  I'm out of orange smoke!  You don't expect\nme to do a decent reincarnation without any orange smoke, do you?","yes_response":"Okay, if you're so smart, do it yourself!  I'm leaving!"}]
+  objects = ["KEYS","LAMP","GRATE","CAGE","ROD","ROD2","STEPS","BIRD","DOOR","PILLOW","SNAKE","FISSURE","OBJ_13","CLAM","OYSTER","MAGAZINE","DWARF","KNIFE","FOOD","BOTTLE","WATER","OIL","MIRROR","PLANT","PLANT2","OBJ_26","OBJ_27","AXE","OBJ_29","OBJ_30","DRAGON","CHASM","TROLL","TROLL2","BEAR","MESSAG","VOLCANO","VEND","BATTERY","OBJ_40","OGRE","URN","CAVITY","BLOOD","RESER","RABBITFOOT","OBJ_47","OBJ_48","SIGN","NUGGET","OBJ_51","OBJ_52","OBJ_53","COINS","CHEST","EGGS","TRIDENT","VASE","EMERALD","PYRAMID","PEARL","RUG","OBJ_63","CHAIN","RUBY","JADE","AMBER","SAPPH","OBJ_69"]
   seq_next = 65
   turn_thresholds = [{"message":"Tsk!  A wizard wouldn't have to take 350 turns.  This is going to cost\nyou a couple of points.","point_loss":2,"threshold":350},{"message":"500 turns?  That's another few points you've lost.","point_loss":3,"threshold":500},{"message":"Are you still at it?  Five points off for exceeding 1000 turns!","point_loss":5,"threshold":1000},{"message":"Good grief, don't you *EVER* give up?  Do you realize you've spent\nover 2500 turns at this?  That's another ten points off, a total of\ntwenty points lost for taking so long.","point_loss":10,"threshold":2500}]
 %link KEYS in LOC_BUILDING

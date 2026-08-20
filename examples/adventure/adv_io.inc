@@ -81,6 +81,17 @@ void speak_msg(value &text)
 	speak_rendered(r);
 }
 
+// vspeak with blank=false — inventory listings print consecutively.
+void speak_msg_noblank(value &text)
+{
+	var r;
+	var none = "";
+	render_msg(r, text, 0, none);
+	if ( r.length() == 0 )
+		return;
+	std::print("{}\n", r);
+}
+
 void speak_msg_d(value &text, long d)
 {
 	var r;

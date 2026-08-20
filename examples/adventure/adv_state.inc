@@ -25,6 +25,7 @@ var FIXEDAT;			// locname -> { seqkey: objname } fixed sides
 var ENT;			// entity-id memo: name -> id
 var OBJ_NAMES;			// object names in objnum order
 var CMD;			// the current command bag
+var OLDOBJ;			// previous command's object (clear_command)
 
 // Listing-order key: zero-padded (999999999 - seq), so ascending map
 // key order IS descending placement order (the atloc-prepend law).
@@ -161,6 +162,93 @@ void move_object(long o, long dest)
 	ui::move(W, o, dest);
 	ui::set(W, o, "seq", SEQ_NEXT);
 	SEQ_NEXT = SEQ_NEXT + 1;
+}
+
+// Carry/drop with the holding-count law (the reference's carry/drop:
+// the bird is weightless so cage+bird counting stays right).
+void carry_object(long o, const char *name)
+{
+	if ( toting(o) )
+		return;
+	var nm = name;
+	if ( nm != "BIRD" )
+		HOLDING = HOLDING + 1;
+	move_object(o, PLAYER);
+}
+
+void drop_object(long o, const char *name, long dest)
+{
+	var nm = name;
+	if ( toting(o) && nm != "BIRD" )
+		HOLDING = HOLDING - 1;
+	move_object(o, dest);
+}
+
+void destroy_object(long o, const char *name)
+{
+	drop_object(o, name, 0);
+}
+
+// Is the object fixed in place? A runtime `fixed` bag prop (0 = freed,
+// nonzero = fixed) overrides the static shape (immovable one-placed or
+// two-placed).
+bool obj_is_fixed(long o)
+{
+	var f;
+	ui::get(f, W, o, "fixed");
+	if ( !f.is_null() )
+		return f.as_integer() != 0;
+	if ( bag_flag(o, "immovable") )
+		return true;
+	var fx;
+	ui::get(fx, W, o, "fixed_at");
+	return !fx.is_null();
+}
+
+void obj_set_fixed(long o, long fixedness)
+{
+	ui::set(W, o, "fixed", fixedness);
+}
+
+// The STATIC original placement (converter `place` prop; 0 = nowhere).
+long static_place(long o)
+{
+	var p;
+	ui::get(p, W, o, "place");
+	if ( p.is_null() )
+		return 0;
+	return E(p.c_str());
+}
+
+// The liquid in the bottle: "WATER", "OIL", or "" — by bottle state.
+void liquid_in_bottle(value &out)
+{
+	out = "";
+	long b = E("BOTTLE");
+	long st = obj_state(b);
+	if ( st == state_index_c(b, "WATER_BOTTLE") )
+		out = "WATER";
+	else if ( st == state_index_c(b, "OIL_BOTTLE") )
+		out = "OIL";
+}
+
+// First dwarf at a location (0 = none / dwarves not active; the pirate
+// never counts). Dead-dwarf bookkeeping lands with A7.
+long atdwrf(long l)
+{
+	if ( DFLAG < 2 )
+		return 0;
+	long di = 1;
+	while ( di <= 5 )
+	{
+		var dn = "dwarf";
+		dn += to_string(di).c_str();
+		long dw = E(dn.c_str());
+		if ( ui::location(W, dw) == l )
+			return di;
+		di = di + 1;
+	}
+	return 0;
 }
 
 bool is_dark()

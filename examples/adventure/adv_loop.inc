@@ -215,9 +215,13 @@ long word_loop()
 		}
 		long part = P_UNKNOWN;
 		if ( t0 == T_OBJECT )
+		{
 			part = P_UNKNOWN;
+			CMD["obj"] = CMD["id0"];
+		}
 		else if ( t0 == T_ACTION )
 		{
+			CMD["verb"] = CMD["id0"];
 			if ( t1 == T_NUMERIC )
 				part = P_TRANSITIVE;
 			else
@@ -248,6 +252,7 @@ long word_loop()
 		{
 			var cap = php::ucfirst(raw0);
 			sspeak_s("DO_WHAT", cap);
+			CMD["obj"] = "";
 			return 2;
 		}
 		if ( g == G_CHECKHINT )

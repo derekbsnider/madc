@@ -259,6 +259,12 @@ def convert(doc):
                 props["fixed_at"] = locs[1]
         elif isinstance(locs, str):
             place = locs
+        if place and place != "LOC_NOWHERE":
+            # The STATIC original placement (the reference's objects[].plac)
+            # — several verb rules compare against it after the object has
+            # moved (vase vs the pillow's plac, chain lock site, troll
+            # restore). The %link below is the MUTABLE containment.
+            props["place"] = place
         out.entity(name, props)
         if place and place != "LOC_NOWHERE":
             out.link(name, "in", place)
@@ -327,6 +333,10 @@ def convert(doc):
                        for o in doc["obituaries"]],
         "dwarflocs": doc["dwarflocs"],
         "noaction": noaction,
+        # Object names in objnum order (index 0 = NO_OBJECT excluded):
+        # the game's iteration order for inventory, init bookkeeping,
+        # and scoring.
+        "objects": [key_name(n) for n, _ in objects[1:]],
         "seq_next": seq_next})
 
     return out, counts
