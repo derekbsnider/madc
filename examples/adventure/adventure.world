@@ -1,0 +1,1717 @@
+%world 1
+%entity LOC_NOWHERE
+  maptag = Nowhere
+  travel = []
+%entity LOC_START
+  conditions = {"ABOVE":true,"FLUID":true,"LIT":true}
+  long = "You are standing at the end of a road before a small brick building.\nAround you is a forest.  A small stream flows out of the building and\ndown a gully."
+  short = You're in front of building.
+  sound = STREAM_GURGLES
+  travel = [{"action":["goto","LOC_HILL"],"cond":null,"verbs":["ROAD","WEST","UPWAR"]},{"action":["goto","LOC_BUILDING"],"cond":null,"verbs":["ENTER","BUILD","INWAR","EAST"]},{"action":["goto","LOC_VALLEY"],"cond":null,"verbs":["DOWNS","GULLY","STREA","SOUTH","DOWN"]},{"action":["goto","LOC_FOREST1"],"cond":null,"verbs":["FORES","NORTH"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["DEPRE"]}]
+%entity LOC_HILL
+  conditions = {"ABOVE":true,"LIT":true}
+  long = "You have walked up a hill, still in the forest.  The road slopes back\ndown the other side of the hill.  There is a building in the distance."
+  short = You're at hill in road.
+  travel = [{"action":["goto","LOC_START"],"cond":null,"verbs":["BUILD","EAST"]},{"action":["goto","LOC_ROADEND"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST20"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST13"],"cond":null,"verbs":["SOUTH","FORES"]},{"action":["speak","WHICH_WAY"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_BUILDING
+  conditions = {"ABOVE":true,"FLUID":true,"LIT":true}
+  long = You are inside a building, a well house for a large spring.
+  short = You're inside building.
+  sound = STREAM_GURGLES
+  travel = [{"action":["goto","LOC_START"],"cond":null,"verbs":["OUT","OUTDO","WEST"]},{"action":["goto","LOC_FOOF1"],"cond":null,"verbs":["XYZZY"]},{"action":["goto","LOC_FOOF3"],"cond":null,"verbs":["PLUGH"]},{"action":["goto","LOC_SEWER"],"cond":null,"verbs":["DOWNS","STREA"]}]
+%entity LOC_VALLEY
+  conditions = {"ABOVE":true,"FLUID":true,"LIT":true}
+  long = "You are in a valley in the forest beside a stream tumbling along a\nrocky bed."
+  short = You're in valley.
+  sound = STREAM_GURGLES
+  travel = [{"action":["goto","LOC_START"],"cond":null,"verbs":["UPSTR","BUILD","NORTH"]},{"action":["goto","LOC_FOREST6"],"cond":null,"verbs":["EAST","FORES"]},{"action":["goto","LOC_FOREST12"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_SLIT"],"cond":null,"verbs":["DOWNS","SOUTH","DOWN"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["DEPRE"]},{"action":["speak","UPSTREAM_DOWNSTREAM"],"cond":null,"verbs":["STREA"]}]
+%entity LOC_ROADEND
+  conditions = {"ABOVE":true,"LIT":true}
+  long = The road, which approaches from the east, ends here amid the trees.
+  short = You're at end of road.
+  travel = [{"action":["goto","LOC_HILL"],"cond":null,"verbs":["ROAD","EAST","UPWAR"]},{"action":["goto","LOC_START"],"cond":null,"verbs":["BUILD"]},{"action":["goto","LOC_FOREST14"],"cond":null,"verbs":["SOUTH","FORES"]},{"action":["goto","LOC_FOREST15"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST21"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_CLIFF
+  conditions = {"ABOVE":true,"LIT":true,"NOBACK":true}
+  hints = ["CLIFF"]
+  long = "The forest thins out here to reveal a steep cliff.  There is no way\ndown, but a small ledge can be seen to the west across the chasm."
+  short = You're at cliff.
+  travel = [{"action":["goto","LOC_FOREST17"],"cond":null,"verbs":["SOUTH","FORES"]},{"action":["goto","LOC_FOREST19"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_NOMAKE"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_SLIT
+  conditions = {"ABOVE":true,"FLUID":true,"LIT":true}
+  long = "At your feet all the water of the stream splashes into a 2-inch slit\nin the rock.  Downstream the streambed is bare rock."
+  short = You're at slit in streambed.
+  sound = STREAM_GURGLES
+  travel = [{"action":["goto","LOC_START"],"cond":null,"verbs":["BUILD"]},{"action":["goto","LOC_VALLEY"],"cond":null,"verbs":["UPSTR","NORTH"]},{"action":["goto","LOC_FOREST6"],"cond":null,"verbs":["EAST","FORES"]},{"action":["goto","LOC_FOREST10"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["DOWNS","BED","SOUTH","DEPRE"]},{"action":["speak","DONT_FIT"],"cond":null,"verbs":["SLIT","STREA","DOWN","INWAR","ENTER"]}]
+%entity LOC_GRATE
+  conditions = {"ABOVE":true,"LIT":true}
+  hints = ["CAVE","JADE"]
+  long = "You are in a 20-foot depression floored with bare dirt.  Set into the\ndirt is a strong steel grate mounted in concrete.  A dry streambed\nleads into the depression."
+  short = You're outside grate.
+  travel = [{"action":["goto","LOC_FOREST7"],"cond":null,"verbs":["EAST","FORES"]},{"action":["goto","LOC_FOREST10"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_FOREST9"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_START"],"cond":null,"verbs":["BUILD"]},{"action":["goto","LOC_SLIT"],"cond":null,"verbs":["UPSTR","GULLY","NORTH"]},{"action":["goto","LOC_BELOWGRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["ENTER","INWAR","DOWN"]},{"action":["speak","GRATE_NOWAY"],"cond":null,"verbs":["ENTER"]}]
+%entity LOC_BELOWGRATE
+  conditions = {"LIT":true}
+  long = "You are in a small chamber beneath a 3x3 steel grate to the surface.\nA low crawl over cobbles leads inward to the west."
+  short = You're below the grate.
+  travel = [{"action":["goto","LOC_GRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["OUT","UPWAR"]},{"action":["speak","GRATE_NOWAY"],"cond":null,"verbs":["OUT"]},{"action":["goto","LOC_COBBLE"],"cond":null,"verbs":["CRAWL","COBBL","INWAR","WEST"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["PIT"]},{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":["DEBRI"]}]
+%entity LOC_COBBLE
+  conditions = {"LIT":true}
+  long = "You are crawling over cobbles in a low passage.  There is a dim light\nat the east end of the passage."
+  short = You're in cobble crawl.
+  travel = [{"action":["goto","LOC_BELOWGRATE"],"cond":null,"verbs":["OUT","SURFA","EAST"]},{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":["INWAR","DARK","WEST","DEBRI"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["PIT"]}]
+%entity LOC_DEBRIS
+  long = "You are in a debris room filled with stuff washed in from the surface.\nA low wide passage with cobbles becomes plugged with mud and debris\nhere, but an awkward canyon leads upward and west.  In the mud someone\nhas scrawled, \"MAGIC WORD XYZZY\"."
+  short = You're in debris room.
+  travel = [{"action":["goto","LOC_GRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["DEPRE"]},{"action":["goto","LOC_BELOWGRATE"],"cond":null,"verbs":["ENTRA"]},{"action":["goto","LOC_COBBLE"],"cond":null,"verbs":["CRAWL","COBBL","PASSA","LOW","EAST"]},{"action":["goto","LOC_AWKWARD"],"cond":null,"verbs":["CANYO","INWAR","UPWAR","WEST"]},{"action":["goto","LOC_FOOF2"],"cond":null,"verbs":["XYZZY"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["PIT"]}]
+%entity LOC_AWKWARD
+  long = You are in an awkward sloping east/west canyon.
+  maptag = Awkward canyon.
+  travel = [{"action":["goto","LOC_GRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["DEPRE"]},{"action":["goto","LOC_BELOWGRATE"],"cond":null,"verbs":["ENTRA"]},{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":["DOWN","EAST","DEBRI"]},{"action":["goto","LOC_BIRDCHAMBER"],"cond":null,"verbs":["INWAR","UPWAR","WEST"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["PIT"]}]
+%entity LOC_BIRDCHAMBER
+  hints = ["BIRD"]
+  long = "You are in a splendid chamber thirty feet high.  The walls are frozen\nrivers of orange stone.  An awkward canyon and a good passage exit\nfrom east and west sides of the chamber."
+  short = You're in bird chamber.
+  travel = [{"action":["goto","LOC_GRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["DEPRE"]},{"action":["goto","LOC_BELOWGRATE"],"cond":null,"verbs":["ENTRA"]},{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":["DEBRI"]},{"action":["goto","LOC_AWKWARD"],"cond":null,"verbs":["CANYO","EAST"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["PASSA","PIT","WEST"]}]
+%entity LOC_PITTOP
+  long = "At your feet is a small pit breathing traces of white mist.  An east\npassage ends here except for a small crack leading on."
+  short = You're at top of small pit.
+  travel = [{"action":["goto","LOC_GRATE"],"cond":["not","GRATE","GRATE_CLOSED"],"verbs":["DEPRE"]},{"action":["goto","LOC_BELOWGRATE"],"cond":null,"verbs":["ENTRA"]},{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":["DEBRI"]},{"action":["goto","LOC_BIRDCHAMBER"],"cond":null,"verbs":["PASSA","EAST"]},{"action":["goto","LOC_NECKBROKE"],"cond":["carry","NUGGET"],"verbs":["DOWN","PIT","STEPS"]},{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_CRACK"],"cond":null,"verbs":["CRACK","WEST"]}]
+%entity LOC_MISTHALL
+  conditions = {"DEEP":true}
+  hints = ["JADE"]
+  long = "You are at one end of a vast hall stretching forward out of sight to\nthe west.  There are openings to either side.  Nearby, a wide stone\nstaircase leads downward.  The hall is filled with wisps of white mist\nswaying to and fro almost as if alive.  A cold wind blows up the\nstaircase.  There is a passage at the top of a dome behind you."
+  short = You're in Hall of Mists.
+  sound = WIND_WHISTLES
+  travel = [{"action":["goto","LOC_NUGGET"],"cond":null,"verbs":["LEFT","SOUTH"]},{"action":["goto","LOC_EASTBANK"],"cond":null,"verbs":["FORWA","HALL","WEST"]},{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":["STAIR","DOWN","NORTH"]},{"action":["goto","LOC_DOME"],"cond":["carry","NUGGET"],"verbs":["UPWAR","PIT","STEPS","DOME","PASSA","EAST"]},{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_JUMBLE"],"cond":null,"verbs":["Y2"]}]
+%entity LOC_CRACK
+  conditions = {"DEEP":true}
+  long = "The crack is far too small for you to follow.  At its widest it is\nbarely wide enough to admit your foot."
+  travel = [{"action":["goto","LOC_PITTOP"],"cond":null,"verbs":[]}]
+%entity LOC_EASTBANK
+  conditions = {"DEEP":true}
+  long = "You are on the east bank of a fissure slicing clear across the hall.\nThe mist is quite thick here, and the fissure is too wide to jump."
+  short = You're on east bank of fissure.
+  travel = [{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":["HALL","EAST"]},{"action":["speak","CROSS_BRIDGE"],"cond":["not","FISSURE","UNBRIDGED"],"verbs":["JUMP"]},{"action":["goto","LOC_NOMAKE"],"cond":["not","FISSURE","BRIDGED"],"verbs":["FORWA"]},{"action":["speak","NO_CROSS"],"cond":["not","FISSURE","BRIDGED"],"verbs":["OVER","ACROS","WEST","CROSS"]},{"action":["goto","LOC_WESTBANK"],"cond":null,"verbs":["OVER"]}]
+%entity LOC_NUGGET
+  conditions = {"DEEP":true}
+  long = "This is a low room with a crude note on the wall.  The note says,\n\"You won't get it up the steps\"."
+  short = You're in nugget-of-gold room.
+  travel = [{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":["HALL","OUT","NORTH"]}]
+%entity LOC_KINGHALL
+  conditions = {"DEEP":true}
+  hints = ["SNAKE"]
+  long = "You are in the Hall of the Mountain King, with passages off in all\ndirections."
+  short = You're in Hall of Mt King.
+  travel = [{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":["STAIR","UPWAR","EAST"]},{"action":["goto","LOC_FLOORHOLE"],"cond":["not","SNAKE","SNAKE_BLOCKS"],"verbs":["NORTH","RIGHT"]},{"action":["goto","LOC_SOUTHSIDE"],"cond":["not","SNAKE","SNAKE_BLOCKS"],"verbs":["SOUTH","LEFT"]},{"action":["goto","LOC_WESTSIDE"],"cond":["not","SNAKE","SNAKE_BLOCKS"],"verbs":["WEST","FORWA"]},{"action":["goto","LOC_SNAKEBLOCK"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_SECRET3"],"cond":["pct",35],"verbs":["SW"]},{"action":["goto","LOC_SNAKEBLOCK"],"cond":["with","SNAKE"],"verbs":["SW"]},{"action":["goto","LOC_SECRET3"],"cond":null,"verbs":["SECRE"]}]
+%entity LOC_NECKBROKE
+  conditions = {"DEEP":true}
+  long = You are at the bottom of the pit with a broken neck.
+  maptag = Pit bottom
+  travel = [{"action":["goto","LOC_NOWHERE"],"cond":null,"verbs":[]}]
+%entity LOC_NOMAKE
+  conditions = {"DEEP":true}
+  long = You didn't make it.
+  travel = [{"action":["goto","LOC_NOWHERE"],"cond":null,"verbs":[]}]
+%entity LOC_DOME
+  conditions = {"DEEP":true}
+  long = The dome is unclimbable.
+  travel = [{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":[]}]
+%entity LOC_WESTEND
+  conditions = {"DEEP":true}
+  long = "You are at the west end of the Twopit Room.  There is a large hole in\nthe wall above the pit at this end of the room."
+  short = You're at west end of Twopit Room.
+  travel = [{"action":["goto","LOC_EASTEND"],"cond":null,"verbs":["EAST","ACROS"]},{"action":["goto","LOC_SLAB"],"cond":null,"verbs":["WEST","SLAB"]},{"action":["goto","LOC_WESTPIT"],"cond":null,"verbs":["DOWN","PIT"]},{"action":["speak","TOO_FAR"],"cond":null,"verbs":["HOLE"]}]
+%entity LOC_EASTPIT
+  conditions = {"DEEP":true,"FLUID":true,"OILY":true}
+  long = "You are at the bottom of the eastern pit in the Twopit Room.  There is\na small pool of oil in one corner of the pit."
+  short = You're in east pit.
+  travel = [{"action":["goto","LOC_EASTEND"],"cond":null,"verbs":["UPWAR","OUT"]}]
+%entity LOC_WESTPIT
+  conditions = {"DEEP":true}
+  long = "You are at the bottom of the western pit in the Twopit Room.  There is\na large hole in the wall about 25 feet above you."
+  short = You're in west pit.
+  travel = [{"action":["goto","LOC_WESTEND"],"cond":null,"verbs":["UPWAR","OUT"]},{"action":["goto","LOC_BUILDING1"],"cond":["not","PLANT","PLANT_GROWN"],"verbs":["CLIMB"]},{"action":["goto","LOC_CLIMBSTALK"],"cond":null,"verbs":["CLIMB"]}]
+%entity LOC_CLIMBSTALK
+  conditions = {"DEEP":true}
+  long = You clamber up the plant and scurry through the hole at the top.
+  travel = [{"action":["goto","LOC_NARROW"],"cond":null,"verbs":[]}]
+%entity LOC_WESTBANK
+  conditions = {"DEEP":true}
+  long = You are on the west side of the fissure in the Hall of Mists.
+  short = You're on west bank of fissure.
+  travel = [{"action":["speak","CROSS_BRIDGE"],"cond":["not","FISSURE","UNBRIDGED"],"verbs":["JUMP"]},{"action":["goto","LOC_NOMAKE"],"cond":["not","FISSURE","BRIDGED"],"verbs":["FORWA"]},{"action":["speak","NO_CROSS"],"cond":["not","FISSURE","BRIDGED"],"verbs":["OVER","ACROS","EAST","CROSS"]},{"action":["goto","LOC_EASTBANK"],"cond":null,"verbs":["OVER"]},{"action":["goto","LOC_PARALLEL1"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_MISTWEST"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_FLOORHOLE
+  conditions = {"DEEP":true}
+  long = "You are in a low n/s passage at a hole in the floor.  The hole goes\ndown to an e/w passage."
+  maptag = Floor hole.
+  short = You're in n/s passage above e/w passage.
+  travel = [{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":["HALL","OUT","SOUTH"]},{"action":["goto","LOC_Y2"],"cond":null,"verbs":["NORTH","Y2"]},{"action":["goto","LOC_BROKEN"],"cond":null,"verbs":["DOWN","HOLE"]}]
+%entity LOC_SOUTHSIDE
+  conditions = {"DEEP":true}
+  long = You are in the south side chamber.
+  travel = [{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":["HALL","OUT","NORTH"]}]
+%entity LOC_WESTSIDE
+  conditions = {"DEEP":true}
+  long = "You are in the west side chamber of the Hall of the Mountain King.\nA passage continues west and up here."
+  short = You're in the west side chamber.
+  travel = [{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":["HALL","OUT","EAST"]},{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["WEST","UPWAR"]}]
+%entity LOC_BUILDING1
+  conditions = {"DEEP":true}
+  long = 
+  maptag = Middle of plant.
+  travel = [{"action":["goto","LOC_NOCLIMB"],"cond":["not","PLANT","PLANT_BELLOWING"],"verbs":[]},{"action":["goto","LOC_PLANTTOP"],"cond":null,"verbs":[]}]
+%entity LOC_SNAKEBLOCK
+  conditions = {"DEEP":true}
+  long = You can't get by the snake.
+  travel = [{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":[]}]
+%entity LOC_Y2
+  conditions = {"DEEP":true}
+  long = "You are in a large room, with a passage to the south, a passage to the\nwest, and a wall of broken rock to the east.  There is a large \"Y2\" on\na rock in the room's center."
+  maptag = Y2.
+  short = You're at "Y2".
+  travel = [{"action":["goto","LOC_FOOF4"],"cond":null,"verbs":["PLUGH"]},{"action":["goto","LOC_FLOORHOLE"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_JUMBLE"],"cond":null,"verbs":["EAST","WALL","BROKE"]},{"action":["goto","LOC_WINDOW1"],"cond":null,"verbs":["WEST"]},{"action":["special",2],"cond":["carry","EMERALD"],"verbs":["PLOVE"]},{"action":["goto","LOC_FOOF5"],"cond":null,"verbs":["PLOVE"]}]
+%entity LOC_JUMBLE
+  conditions = {"DEEP":true}
+  long = You are in a jumble of rock, with cracks everywhere.
+  maptag = Rock jumble
+  travel = [{"action":["goto","LOC_Y2"],"cond":null,"verbs":["DOWN","Y2"]},{"action":["goto","LOC_MISTHALL"],"cond":null,"verbs":["UPWAR"]}]
+%entity LOC_WINDOW1
+  conditions = {"DEEP":true}
+  long = "You're at a low window overlooking a huge pit, which extends up out of\nsight.  A floor is indistinctly visible over 50 feet below.  Traces of\nwhite mist cover the floor of the pit, becoming thicker to the right.\nMarks in the dust around the window would seem to indicate that\nsomeone has been here recently.  Directly across the pit from you and\n25 feet away there is a similar window looking into a lighted room.  A\nshadowy figure can be seen there peering back at you."
+  short = You're at window on pit.
+  travel = [{"action":["goto","LOC_Y2"],"cond":null,"verbs":["EAST","Y2"]},{"action":["goto","LOC_NECKBROKE"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_BROKEN
+  conditions = {"DEEP":true}
+  long = "You are in a dirty broken passage.  To the east is a crawl.  To the\nwest is a large passage.  Above you is a hole to another passage."
+  short = You're in dirty passage.
+  travel = [{"action":["goto","LOC_SMALLPITBRINK"],"cond":null,"verbs":["EAST","CRAWL"]},{"action":["goto","LOC_FLOORHOLE"],"cond":null,"verbs":["UPWAR","HOLE"]},{"action":["goto","LOC_DUSTY"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["BEDQU"]}]
+%entity LOC_SMALLPITBRINK
+  conditions = {"DEEP":true}
+  long = "You are on the brink of a small clean climbable pit.  A crawl leads\nwest."
+  short = You're at brink of small pit.
+  travel = [{"action":["goto","LOC_BROKEN"],"cond":null,"verbs":["WEST","CRAWL"]},{"action":["goto","LOC_SMALLPIT"],"cond":null,"verbs":["DOWN","PIT","CLIMB"]}]
+%entity LOC_SMALLPIT
+  conditions = {"DEEP":true,"FLUID":true}
+  long = "You are in the bottom of a small pit with a little stream, which\nenters and exits through tiny slits."
+  maptag = Small pit bottom
+  short = You're at bottom of pit with stream.
+  sound = STREAM_GURGLES
+  travel = [{"action":["goto","LOC_SMALLPITBRINK"],"cond":null,"verbs":["CLIMB","UPWAR","OUT"]},{"action":["speak","DONT_FIT"],"cond":null,"verbs":["SLIT","STREA","DOWN","UPSTR","DOWNS","ENTER","INWAR"]}]
+%entity LOC_DUSTY
+  conditions = {"DEEP":true}
+  long = "You are in a large room full of dusty rocks.  There is a big hole in\nthe floor.  There are cracks everywhere, and a passage leading east."
+  short = You're in dusty rock room.
+  travel = [{"action":["goto","LOC_BROKEN"],"cond":null,"verbs":["EAST","PASSA"]},{"action":["goto","LOC_COMPLEX"],"cond":null,"verbs":["DOWN","HOLE","FLOOR"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["BEDQU"]}]
+%entity LOC_PARALLEL1
+  conditions = {"DEEP":true}
+  long = "You have crawled through a very low wide passage parallel to and north\nof the Hall of Mists."
+  travel = [{"action":["goto","LOC_MISTWEST"],"cond":null,"verbs":[]}]
+%entity LOC_MISTWEST
+  conditions = {"DEEP":true}
+  long = "You are at the west end of the Hall of Mists.  A low wide crawl\ncontinues west and another goes north.  To the south is a little\npassage 6 feet off the floor."
+  short = You're at west end of Hall of Mists.
+  travel = [{"action":["goto","LOC_ALIKE1"],"cond":null,"verbs":["SOUTH","UPWAR","PASSA","CLIMB"]},{"action":["goto","LOC_WESTBANK"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_PARALLEL2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_LONGEAST"],"cond":null,"verbs":["WEST","CRAWL"]}]
+%entity LOC_ALIKE1
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_MISTWEST"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_ALIKE1"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ALIKE2"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE11"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_ALIKE2
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE1"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE3"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_ALIKE3
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE2"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_MAZEEND3"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_ALIKE6"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_MAZEEND9"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_ALIKE4
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE1"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_MAZEEND1"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_MAZEEND2"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE14"],"cond":null,"verbs":["UPWAR","DOWN"]}]
+%entity LOC_MAZEEND1
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["WEST","OUT"]}]
+%entity LOC_MAZEEND2
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["EAST","OUT"]}]
+%entity LOC_MAZEEND3
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE3"],"cond":null,"verbs":["UPWAR","OUT"]}]
+%entity LOC_ALIKE5
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE6"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ALIKE7"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_ALIKE6
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE3"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ALIKE5"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE7"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_ALIKE7
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE5"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE6"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ALIKE9"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_ALIKE8
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE6"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE7"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE9"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_ALIKE10"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_MAZEEND11"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_ALIKE9
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE7"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_MAZEEND4"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_MAZEEND4
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE9"],"cond":null,"verbs":["WEST","OUT"]}]
+%entity LOC_ALIKE10
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE10"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_MAZEEND5"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_PITBRINK"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_MAZEEND5
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE10"],"cond":null,"verbs":["UPWAR","OUT"]}]
+%entity LOC_PITBRINK
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  long = "You are on the brink of a thirty foot pit with a massive orange column\ndown one wall.  You could climb down here but you could not get back\nup.  The maze continues at this level."
+  short = You're at brink of pit.
+  travel = [{"action":["goto","LOC_BIRDCHAMBER"],"cond":null,"verbs":["DOWN","CLIMB"]},{"action":["goto","LOC_ALIKE10"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_MAZEEND6"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE12"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ALIKE13"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_MAZEEND6
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_PITBRINK"],"cond":null,"verbs":["EAST","OUT"]}]
+%entity LOC_PARALLEL2
+  conditions = {"DEEP":true}
+  long = "You have crawled through a very low wide passage parallel to and north\nof the Hall of Mists."
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_WESTBANK"],"cond":null,"verbs":[]}]
+%entity LOC_LONGEAST
+  conditions = {"DEEP":true}
+  long = "You are at the east end of a very long hall apparently without side\nchambers.  To the east a low wide crawl slants up.  To the north a\nround two foot hole slants down."
+  maptag = Maze all alike.
+  short = You're at east end of long hall.
+  travel = [{"action":["goto","LOC_MISTWEST"],"cond":null,"verbs":["EAST","UPWAR","CRAWL"]},{"action":["goto","LOC_LONGWEST"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["NORTH","DOWN","HOLE"]}]
+%entity LOC_LONGWEST
+  conditions = {"DEEP":true}
+  long = "You are at the west end of a very long featureless hall.  The hall\njoins up with a narrow north/south passage."
+  maptag = Maze all alike.
+  short = You're at west end of long hall.
+  travel = [{"action":["goto","LOC_LONGEAST"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT1"],"cond":["nodwarves"],"verbs":["SOUTH"]}]
+%entity LOC_CROSSOVER
+  conditions = {"DEEP":true}
+  long = You are at a crossover of a high n/s passage and a low e/w one.
+  maptag = Passage crossover.
+  travel = [{"action":["goto","LOC_LONGEAST"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DEADEND7"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_WESTSIDE"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_LONGWEST"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_DEADEND7
+  conditions = {"DEEP":true}
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["SOUTH","OUT"]}]
+%entity LOC_COMPLEX
+  conditions = {"DEEP":true}
+  hints = ["JADE"]
+  long = "You are at a complex junction.  A low hands and knees passage from the\nnorth joins a higher crawl from the east to make a walking passage\ngoing west.  There is also a large room above.  The air is damp here."
+  short = You're at complex junction.
+  sound = WIND_WHISTLES
+  travel = [{"action":["goto","LOC_DUSTY"],"cond":null,"verbs":["UPWAR","CLIMB","ROOM"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["WEST","BEDQU"]},{"action":["goto","LOC_SHELLROOM"],"cond":null,"verbs":["NORTH","SHELL"]},{"action":["goto","LOC_ANTEROOM"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_BEDQUILT
+  conditions = {"DEEP":true}
+  long = "You are in Bedquilt, a long east/west passage with holes everywhere.\nTo explore at random select north, south, up, or down."
+  short = You're in Bedquilt.
+  travel = [{"action":["goto","LOC_COMPLEX"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_SWISSCHEESE"],"cond":null,"verbs":["WEST"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",65],"verbs":["SOUTH"]},{"action":["goto","LOC_SLAB"],"cond":null,"verbs":["SLAB"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",60],"verbs":["UPWAR"]},{"action":["goto","LOC_SECRET2"],"cond":["pct",70],"verbs":["UPWAR"]},{"action":["goto","LOC_DUSTY"],"cond":null,"verbs":["UPWAR"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",50],"verbs":["NORTH"]},{"action":["goto","LOC_LOWROOM"],"cond":["pct",75],"verbs":["NORTH"]},{"action":["goto","LOC_THREEJUNCTION"],"cond":null,"verbs":["NORTH"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",65],"verbs":["DOWN"]},{"action":["goto","LOC_ANTEROOM"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_SWISSCHEESE
+  conditions = {"DEEP":true}
+  long = "You are in a room whose walls resemble Swiss cheese.  Obvious passages\ngo west, east, ne, and nw.  Part of the room is occupied by a large\nbedrock block."
+  short = You're in Swiss Cheese Room.
+  travel = [{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_EASTEND"],"cond":null,"verbs":["WEST"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",80],"verbs":["SOUTH"]},{"action":["goto","LOC_TALL"],"cond":null,"verbs":["CANYO"]},{"action":["goto","LOC_SOFTROOM"],"cond":null,"verbs":["EAST"]},{"action":["speak","FUTILE_CRAWL"],"cond":["pct",50],"verbs":["NW"]},{"action":["goto","LOC_ORIENTAL"],"cond":null,"verbs":["ORIEN"]}]
+%entity LOC_EASTEND
+  conditions = {"DEEP":true}
+  long = "You are at the east end of the Twopit Room.  The floor here is\nlittered with thin rock slabs, which make it easy to descend the pits.\nThere is a path here bypassing the pits to connect passages from east\nand west.  There are holes all over, but the only big one is on the\nwall directly over the west pit where you can't get to it."
+  short = You're at east end of Twopit Room.
+  travel = [{"action":["goto","LOC_SWISSCHEESE"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_WESTEND"],"cond":null,"verbs":["WEST","ACROS"]},{"action":["goto","LOC_EASTPIT"],"cond":null,"verbs":["DOWN","PIT"]}]
+%entity LOC_SLAB
+  conditions = {"DEEP":true}
+  long = "You are in a large low circular chamber whose floor is an immense slab\nfallen from the ceiling (Slab Room).  East and west there once were\nlarge passages, but they are now filled with boulders.  Low small\npassages go north and south, and the south one quickly bends west\naround the boulders."
+  short = You're in Slab Room.
+  travel = [{"action":["goto","LOC_WESTEND"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_SECRET1"],"cond":null,"verbs":["UPWAR","CLIMB"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_SECRET1
+  conditions = {"DEEP":true}
+  long = You are in a secret n/s canyon above a large room.
+  travel = [{"action":["goto","LOC_SLAB"],"cond":null,"verbs":["DOWN","SLAB"]},{"action":["goto","LOC_SECRET5"],"cond":["not","DRAGON","DRAGON_BARS"],"verbs":["SOUTH"]},{"action":["goto","LOC_SECRET4"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_MIRRORCANYON"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_RESERVOIR"],"cond":null,"verbs":["RESER"]}]
+%entity LOC_SECRET2
+  conditions = {"DEEP":true}
+  long = You are in a secret n/s canyon above a sizable passage.
+  maptag = Secret canyon
+  travel = [{"action":["goto","LOC_THREEJUNCTION"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["DOWN","PASSA"]},{"action":["goto","LOC_TOPSTALACTITE"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_THREEJUNCTION
+  conditions = {"DEEP":true}
+  long = "You are in a secret canyon at a junction of three canyons, bearing\nnorth, south, and se.  The north one is as tall as the other two\ncombined."
+  maptag = Secret canyon junction
+  short = You're at junction of three secret canyons.
+  travel = [{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_SECRET2"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_WINDOW2"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_LOWROOM
+  conditions = {"DEEP":true}
+  long = You are in a large low room.  Crawls lead north, se, and sw.
+  short = You're in large low room.
+  travel = [{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["BEDQU"]},{"action":["goto","LOC_WINDING"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DEADCRAWL"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ORIENTAL"],"cond":null,"verbs":["SE","ORIEN"]}]
+%entity LOC_DEADCRAWL
+  conditions = {"DEEP":true}
+  long = Dead end crawl.
+  travel = [{"action":["goto","LOC_LOWROOM"],"cond":null,"verbs":["SOUTH","CRAWL","OUT"]}]
+%entity LOC_SECRET3
+  conditions = {"DEEP":true}
+  long = "You are in a secret canyon which here runs e/w.  It crosses over a\nvery tight canyon 15 feet below.  If you go down you may not be able\nto get back up."
+  maptag = Secret e/w canyon
+  short = You're in secret e/w canyon above tight canyon.
+  travel = [{"action":["goto","LOC_KINGHALL"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_SECRET5"],"cond":["not","DRAGON","DRAGON_BARS"],"verbs":["WEST"]},{"action":["goto","LOC_SECRET6"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_WIDEPLACE"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_WIDEPLACE
+  conditions = {"DEEP":true}
+  long = You are at a wide place in a very tight n/s canyon.
+  maptag = Wide place
+  travel = [{"action":["goto","LOC_TIGHTPLACE"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_TALL"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_TIGHTPLACE
+  conditions = {"DEEP":true}
+  long = The canyon here becomes too tight to go further south.
+  maptag = Tight canyon
+  travel = [{"action":["goto","LOC_WIDEPLACE"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_TALL
+  conditions = {"DEEP":true}
+  long = "You are in a tall e/w canyon.  A low tight crawl goes 3 feet north and\nseems to open up."
+  maptag = Tall canyon
+  travel = [{"action":["goto","LOC_WIDEPLACE"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_BOULDERS1"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_SWISSCHEESE"],"cond":null,"verbs":["NORTH","CRAWL"]}]
+%entity LOC_BOULDERS1
+  conditions = {"DEEP":true}
+  long = The canyon runs into a mass of boulders -- dead end.
+  maptag = Boulders
+  travel = [{"action":["goto","LOC_TALL"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_SEWER
+  conditions = {"DEEP":true}
+  long = "The stream flows out through a pair of 1 foot diameter sewer pipes.\nIt would be advisable to use the exit."
+  travel = [{"action":["goto","LOC_BUILDING"],"cond":null,"verbs":[]}]
+%entity LOC_ALIKE11
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE1"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ALIKE11"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ALIKE11"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_MAZEEND8"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_MAZEEND8
+  conditions = {"ALLALIKE":true,"DEEP":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE11"],"cond":null,"verbs":["WEST","OUT"]}]
+%entity LOC_MAZEEND9
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE3"],"cond":null,"verbs":["SOUTH","OUT"]}]
+%entity LOC_ALIKE12
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_PITBRINK"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_ALIKE13"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_MAZEEND10"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_ALIKE13
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_PITBRINK"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ALIKE12"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_MAZEEND12"],"cond":null,"verbs":["NW"]}]
+%entity LOC_MAZEEND10
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE12"],"cond":null,"verbs":["EAST","OUT"]}]
+%entity LOC_MAZEEND11
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOARRR":true}
+  hints = ["MAZE"]
+  long = Dead end
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE8"],"cond":null,"verbs":["UPWAR","OUT"]}]
+%entity LOC_ALIKE14
+  conditions = {"ALLALIKE":true,"DEEP":true,"NOBACK":true}
+  hints = ["MAZE"]
+  long = You are in a maze of twisty little passages, all alike.
+  maptag = Maze all alike.
+  travel = [{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["UPWAR","DOWN"]}]
+%entity LOC_NARROW
+  conditions = {"DEEP":true}
+  long = "You are in a long, narrow corridor stretching out of sight to the\nwest.  At the eastern end is a hole through which you can see a\nprofusion of leaves."
+  short = You're in narrow corridor.
+  travel = [{"action":["goto","LOC_WESTPIT"],"cond":null,"verbs":["DOWN","CLIMB","EAST"]},{"action":["goto","LOC_NECKBROKE"],"cond":null,"verbs":["JUMP"]},{"action":["goto","LOC_GIANTROOM"],"cond":null,"verbs":["WEST","GIANT"]}]
+%entity LOC_NOCLIMB
+  conditions = {"DEEP":true}
+  long = There is nothing here to climb.  Use "up" or "out" to leave the pit.
+  travel = [{"action":["goto","LOC_WESTPIT"],"cond":null,"verbs":[]}]
+%entity LOC_PLANTTOP
+  conditions = {"DEEP":true}
+  long = You have climbed up the plant and out of the pit.
+  travel = [{"action":["goto","LOC_WESTEND"],"cond":null,"verbs":[]}]
+%entity LOC_INCLINE
+  conditions = {"DEEP":true}
+  long = "You are at the top of a steep incline above a large room.  You could\nclimb down here, but you would not be able to climb up.  There is a\npassage leading back to the north."
+  short = You're at steep incline above large room.
+  travel = [{"action":["goto","LOC_WATERFALL"],"cond":null,"verbs":["NORTH","CAVER","PASSA"]},{"action":["goto","LOC_LOWROOM"],"cond":null,"verbs":["DOWN","CLIMB"]}]
+%entity LOC_GIANTROOM
+  conditions = {"DEEP":true}
+  long = "You are in the Giant Room.  The ceiling here is too high up for your\nlamp to show it.  Cavernous passages lead east, north, and south.  On\nthe west wall is scrawled the inscription, \"FEE FIE FOE FOO\" [sic]."
+  short = You're in Giant Room.
+  travel = [{"action":["goto","LOC_NARROW"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_CAVEIN"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_IMMENSE"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_CAVEIN
+  conditions = {"DEEP":true}
+  long = The passage here is blocked by a recent cave-in.
+  maptag = Cave-in blockage
+  travel = [{"action":["goto","LOC_GIANTROOM"],"cond":null,"verbs":["SOUTH","GIANT","OUT"]}]
+%entity LOC_IMMENSE
+  conditions = {"DEEP":true}
+  long = You are at one end of an immense north/south passage.
+  maptag = Immense passage end.
+  sound = WIND_WHISTLES
+  travel = [{"action":["goto","LOC_GIANTROOM"],"cond":null,"verbs":["SOUTH","GIANT","PASSA"]},{"action":["goto","LOC_WATERFALL"],"cond":["not","DOOR","DOOR_RUSTED"],"verbs":["NORTH","ENTER","CAVER"]},{"action":["speak","RUSTY_DOOR"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_WATERFALL
+  conditions = {"DEEP":true,"FLUID":true}
+  long = "You are in a magnificent cavern with a rushing stream, which cascades\nover a sparkling waterfall into a roaring whirlpool which disappears\nthrough a hole in the floor.  Passages exit to the south and west."
+  short = You're in cavern with waterfall.
+  sound = STREAM_SPLASHES
+  travel = [{"action":["goto","LOC_IMMENSE"],"cond":null,"verbs":["SOUTH","OUT"]},{"action":["goto","LOC_GIANTROOM"],"cond":null,"verbs":["GIANT"]},{"action":["goto","LOC_INCLINE"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_SOFTROOM
+  conditions = {"DEEP":true}
+  long = "You are in the Soft Room.  The walls are covered with heavy curtains,\nthe floor with a thick pile carpet.  Moss covers the ceiling."
+  short = You're in Soft Room.
+  travel = [{"action":["goto","LOC_SWISSCHEESE"],"cond":null,"verbs":["WEST","OUT"]}]
+%entity LOC_ORIENTAL
+  conditions = {"DEEP":true}
+  long = "This is the Oriental Room.  Ancient oriental cave drawings cover the\nwalls.  A gently sloping passage leads upward to the north, another\npassage leads se, and a hands and knees crawl leads west."
+  short = You're in Oriental Room.
+  travel = [{"action":["goto","LOC_SWISSCHEESE"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_LOWROOM"],"cond":null,"verbs":["WEST","CRAWL"]},{"action":["goto","LOC_MISTY"],"cond":null,"verbs":["UPWAR","NORTH","CAVER"]}]
+%entity LOC_MISTY
+  conditions = {"DEEP":true}
+  long = "You are following a wide path around the outer edge of a large cavern.\nFar below, through a heavy white mist, strange splashing noises can be\nheard.  The mist rises up through a fissure in the ceiling.  The path\nexits to the south and west."
+  short = You're in misty cavern.
+  sound = NO_MEANING
+  travel = [{"action":["goto","LOC_ORIENTAL"],"cond":null,"verbs":["SOUTH","ORIEN"]},{"action":["goto","LOC_ALCOVE"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_ALCOVE
+  conditions = {"DEEP":true}
+  hints = ["DARK"]
+  long = "You are in an alcove.  A small nw path seems to widen after a short\ndistance.  An extremely tight tunnel leads east.  It looks like a very\ntight squeeze.  An eerie light can be seen at the other end."
+  short = You're in alcove.
+  travel = [{"action":["goto","LOC_MISTY"],"cond":null,"verbs":["NW","CAVER"]},{"action":["special",1],"cond":null,"verbs":["EAST","PASSA"]},{"action":["goto","LOC_PLOVER"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_PLOVER
+  conditions = {"DEEP":true,"LIT":true}
+  hints = ["DARK"]
+  long = "You're in a small chamber lit by an eerie green light.  An extremely\nnarrow tunnel exits to the west.  A dark corridor leads ne."
+  short = You're in Plover Room.
+  travel = [{"action":["special",1],"cond":null,"verbs":["WEST","PASSA","OUT"]},{"action":["goto","LOC_ALCOVE"],"cond":null,"verbs":["WEST"]},{"action":["special",2],"cond":["carry","EMERALD"],"verbs":["PLOVE"]},{"action":["goto","LOC_FOOF6"],"cond":null,"verbs":["PLOVE"]},{"action":["goto","LOC_DARKROOM"],"cond":null,"verbs":["NE","DARK"]}]
+%entity LOC_DARKROOM
+  conditions = {"DEEP":true}
+  hints = ["DARK"]
+  long = You're in the dark-room.  A corridor leading south is the only exit.
+  short = You're in dark-room.
+  travel = [{"action":["goto","LOC_PLOVER"],"cond":null,"verbs":["SOUTH","PLOVE","OUT"]}]
+%entity LOC_ARCHED
+  conditions = {"DEEP":true}
+  long = "You are in an arched hall.  A coral passage once continued up and east\nfrom here, but is now blocked by debris.  The air smells of sea water."
+  short = You're in arched hall.
+  travel = [{"action":["goto","LOC_SHELLROOM"],"cond":null,"verbs":["DOWN","SHELL","OUT"]}]
+%entity LOC_SHELLROOM
+  conditions = {"DEEP":true}
+  long = "You're in a large room carved out of sedimentary rock.  The floor and\nwalls are littered with bits of shells embedded in the stone.  A\nshallow passage proceeds downward, and a somewhat steeper one leads\nup.  A low hands and knees passage enters from the south."
+  short = You're in Shell Room.
+  travel = [{"action":["goto","LOC_ARCHED"],"cond":null,"verbs":["UPWAR","HALL"]},{"action":["goto","LOC_SLOPING1"],"cond":null,"verbs":["DOWN"]},{"action":["speak","CLAM_BLOCKER"],"cond":["carry","CLAM"],"verbs":["SOUTH"]},{"action":["speak","OYSTER_BLOCKER"],"cond":["carry","OYSTER"],"verbs":["SOUTH"]},{"action":["goto","LOC_COMPLEX"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_SLOPING1
+  conditions = {"DEEP":true}
+  long = You are in a long sloping corridor with ragged sharp walls.
+  maptag = Sloping corridor
+  travel = [{"action":["goto","LOC_SHELLROOM"],"cond":null,"verbs":["UPWAR","SHELL"]},{"action":["goto","LOC_CULDESAC"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_CULDESAC
+  conditions = {"DEEP":true}
+  long = You are in a cul-de-sac about eight feet across.
+  maptag = Cul-de-sac.
+  travel = [{"action":["goto","LOC_SLOPING1"],"cond":null,"verbs":["UPWAR","OUT"]},{"action":["goto","LOC_SHELLROOM"],"cond":null,"verbs":["SHELL"]}]
+%entity LOC_ANTEROOM
+  conditions = {"DEEP":true}
+  long = "You are in an anteroom leading to a large passage to the east.  Small\npassages go west and up.  The remnants of recent digging are evident.\nA sign in midair here says \"Cave under construction beyond this point.\nProceed at own risk.  [Witt Construction Company]\""
+  short = You're in anteroom.
+  travel = [{"action":["goto","LOC_COMPLEX"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_BEDQUILT"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_WITTSEND"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_DIFFERENT1
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of twisty little passages, all different.
+  maptag = Maze all different
+  travel = [{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_LONGWEST"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_WITTSEND
+  conditions = {"DEEP":true,"NOBACK":true}
+  hints = ["WITT"]
+  long = You are at Witt's End.  Passages lead off in *ALL* directions.
+  short = You're at Witt's End.
+  travel = [{"action":["speak","FUTILE_CRAWL"],"cond":["pct",95],"verbs":["EAST","NORTH","SOUTH","NE","SE","SW","NW","UPWAR","DOWN"]},{"action":["goto","LOC_ANTEROOM"],"cond":null,"verbs":["EAST"]},{"action":["speak","WAY_BLOCKED"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_MIRRORCANYON
+  conditions = {"DEEP":true}
+  hints = ["JADE"]
+  long = "You are in a north/south canyon about 25 feet across.  The floor is\ncovered by white mist seeping in from the north.  The walls extend\nupward for well over 100 feet.  Suspended from some unseen point far\nabove you, an enormous two-sided mirror is hanging parallel to and\nmidway between the canyon walls.  (The mirror is obviously provided\nfor the use of the dwarves who, as you know, are extremely vain.)  A\nsmall window can be seen in either wall, some fifty feet up."
+  short = You're in Mirror Canyon.
+  sound = WIND_WHISTLES
+  travel = [{"action":["goto","LOC_SECRET1"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_RESERVOIR"],"cond":null,"verbs":["NORTH","RESER"]}]
+%entity LOC_WINDOW2
+  conditions = {"DEEP":true}
+  long = "You're at a low window overlooking a huge pit, which extends up out of\nsight.  A floor is indistinctly visible over 50 feet below.  Traces of\nwhite mist cover the floor of the pit, becoming thicker to the left.\nMarks in the dust around the window would seem to indicate that\nsomeone has been here recently.  Directly across the pit from you and\n25 feet away there is a similar window looking into a lighted room.  A\nshadowy figure can be seen there peering back at you."
+  short = You're at window on pit.
+  travel = [{"action":["goto","LOC_THREEJUNCTION"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_NECKBROKE"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_TOPSTALACTITE
+  conditions = {"ALLALIKE":true,"DEEP":true}
+  long = "A large stalactite extends from the roof and almost reaches the floor\nbelow.  You could climb down it, and jump from it to the floor, but\nhaving done so you would be unable to reach it to climb back up."
+  short = You're at top of stalactite.
+  travel = [{"action":["goto","LOC_SECRET2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_ALIKE6"],"cond":["pct",40],"verbs":["DOWN","JUMP","CLIMB"]},{"action":["goto","LOC_ALIKE9"],"cond":["pct",50],"verbs":["DOWN"]},{"action":["goto","LOC_ALIKE4"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_DIFFERENT2
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a little maze of twisting passages, all different.
+  maptag = Maze all different
+  travel = [{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DEADEND13"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_RESERVOIR
+  conditions = {"DEEP":true,"FLUID":true}
+  long = "You are at the edge of a large underground reservoir.  An opaque cloud\nof white mist fills the room and rises rapidly upward.  The lake is\nfed by a stream, which tumbles out of a hole in the wall about 10 feet\noverhead and splashes noisily into the water somewhere within the\nmist.  There is a passage going back toward the south."
+  short = You're at reservoir.
+  sound = STREAM_SPLASHES
+  travel = [{"action":["goto","LOC_MIRRORCANYON"],"cond":null,"verbs":["SOUTH","OUT"]},{"action":["speak","BAD_DIRECTION"],"cond":["not","RESER","WATERS_PARTED"],"verbs":["NORTH","ACROS","CROSS"]},{"action":["goto","LOC_RESBOTTOM"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_MAZEEND12
+  conditions = {"ALLALIKE":true,"DEEP":true}
+  long = Dead end
+  travel = [{"action":["goto","LOC_ALIKE13"],"cond":null,"verbs":["SE"]}]
+%entity LOC_NE
+  conditions = {"DEEP":true,"LIT":true}
+  long = "You are at the northeast end of an immense room, even larger than the\nGiant Room.  It appears to be a repository for the \"Adventure\"\nprogram.  Massive torches far overhead bathe the room with smoky\nyellow light.  Scattered about you can be seen a pile of bottles (all\nof them empty), a nursery of young beanstalks murmuring quietly, a bed\nof oysters, a bundle of black rods with rusty stars on their ends, and\na collection of brass lanterns.  Off to one side a great many dwarves\nare sleeping on the floor, snoring loudly.  A notice nearby reads: \"Do\nnot disturb the dwarves!\"  An immense mirror is hanging against one\nwall, and stretches to the other end of the room, where various other\nsundry objects can be glimpsed dimly in the distance."
+  maptag = Repository ne end
+  short = You're at ne end.
+  sound = MURMURING_SNORING
+  travel = [{"action":["goto","LOC_SW"],"cond":null,"verbs":["SW"]}]
+%entity LOC_SW
+  conditions = {"DEEP":true,"LIT":true}
+  long = "You are at the southwest end of the repository.  To one side is a pit\nfull of fierce green snakes.  On the other side is a row of small\nwicker cages, each of which contains a little sulking bird.  In one\ncorner is a bundle of black rods with rusty marks on their ends.  A\nlarge number of velvet pillows are scattered about on the floor.  A\nvast mirror stretches off to the northeast.  At your feet is a large\nsteel grate, next to which is a sign that reads, \"Treasure Vault.\nKeys in main office.\""
+  maptag = Repository sw end
+  short = You're at sw end.
+  sound = SNAKES_HISSING
+  travel = [{"action":["goto","LOC_NE"],"cond":null,"verbs":["NE"]},{"action":["speak","GRATE_NOWAY"],"cond":null,"verbs":["DOWN"]}]
+%entity LOC_SWCHASM
+  conditions = {"DEEP":true}
+  long = "You are on one side of a large, deep chasm.  A heavy white mist rising\nup from below obscures all view of the far side.  A sw path leads away\nfrom the chasm into a winding corridor."
+  short = You're on sw side of chasm.
+  travel = [{"action":["goto","LOC_WINDING"],"cond":null,"verbs":["SW"]},{"action":["speak","TROLL_BLOCKS"],"cond":["with","TROLL"],"verbs":["OVER","ACROS","CROSS","NE"]},{"action":["speak","BRIDGE_GONE"],"cond":["not","CHASM","TROLL_BRIDGE"],"verbs":["OVER"]},{"action":["special",3],"cond":null,"verbs":["OVER"]},{"action":["goto","LOC_NOMAKE"],"cond":["not","CHASM","TROLL_BRIDGE"],"verbs":["JUMP"]},{"action":["speak","CROSS_BRIDGE"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_WINDING
+  conditions = {"DEEP":true}
+  long = "You are in a long winding corridor sloping out of sight in both\ndirections."
+  short = You're in sloping corridor.
+  travel = [{"action":["goto","LOC_LOWROOM"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_SWCHASM"],"cond":null,"verbs":["UPWAR"]}]
+%entity LOC_SECRET4
+  conditions = {"DEEP":true}
+  long = You are in a secret canyon which exits to the north and east.
+  maptag = Secret canyon
+  travel = [{"action":["goto","LOC_SECRET1"],"cond":null,"verbs":["NORTH","OUT"]},{"action":["speak","NASTY_DRAGON"],"cond":null,"verbs":["EAST","FORWA"]}]
+%entity LOC_SECRET5
+  conditions = {"DEEP":true}
+  long = You are in a secret canyon which exits to the north and east.
+  maptag = Secret canyon
+  travel = [{"action":["goto","LOC_SECRET1"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_SECRET3"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_SECRET6
+  conditions = {"DEEP":true}
+  long = You are in a secret canyon which exits to the north and east.
+  maptag = Secret canyon
+  travel = [{"action":["goto","LOC_SECRET3"],"cond":null,"verbs":["EAST","OUT"]},{"action":["speak","NASTY_DRAGON"],"cond":null,"verbs":["NORTH","FORWA"]}]
+%entity LOC_NECHASM
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You are on the far side of the chasm.  A ne path leads away from the\nchasm on this side."
+  short = You're on ne side of chasm.
+  travel = [{"action":["goto","LOC_CORRIDOR"],"cond":null,"verbs":["NE"]},{"action":["speak","TROLL_BLOCKS"],"cond":["with","TROLL"],"verbs":["OVER","ACROS","CROSS","SW"]},{"action":["special",3],"cond":null,"verbs":["OVER"]},{"action":["speak","CROSS_BRIDGE"],"cond":null,"verbs":["JUMP"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["FORK"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]},{"action":["goto","LOC_BARRENFRONT"],"cond":null,"verbs":["BARRE"]}]
+%entity LOC_CORRIDOR
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You're in a long east/west corridor.  A faint rumbling noise can be\nheard in the distance."
+  maptag = e/w canyon
+  short = You're in corridor.
+  sound = DULL_RUMBLING
+  travel = [{"action":["goto","LOC_NECHASM"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["EAST","FORK"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]},{"action":["goto","LOC_BARRENFRONT"],"cond":null,"verbs":["BARRE"]}]
+%entity LOC_FORK
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "The path forks here.  The left fork leads northeast.  A dull rumbling\nseems to get louder in that direction.  The right fork leads southeast\ndown a gentle slope.  The main corridor enters from the west."
+  short = You're at fork in path.
+  sound = DULL_RUMBLING
+  travel = [{"action":["goto","LOC_CORRIDOR"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_WARMWALLS"],"cond":null,"verbs":["NE","LEFT"]},{"action":["goto","LOC_LIMESTONE"],"cond":null,"verbs":["SE","RIGHT","DOWN"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]},{"action":["goto","LOC_BARRENFRONT"],"cond":null,"verbs":["BARRE"]}]
+%entity LOC_WARMWALLS
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "The walls are quite warm here.  From the north can be heard a steady\nroar, so loud that the entire cave seems to be trembling.  Another\npassage leads south, and a low crawl goes east."
+  maptag = Warm junction
+  short = You're at junction with warm walls.
+  sound = LOUD_ROAR
+  travel = [{"action":["goto","LOC_FORK"],"cond":null,"verbs":["SOUTH","FORK"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["NORTH","VIEW"]},{"action":["goto","LOC_BOULDERS2"],"cond":null,"verbs":["EAST","CRAWL"]}]
+%entity LOC_BREATHTAKING
+  conditions = {"DEEP":true,"LIT":true,"NOARRR":true}
+  hints = ["JADE"]
+  long = "You are on the edge of a breath-taking view.  Far below you is an\nactive volcano, from which great gouts of molten lava come surging\nout, cascading back down into the depths.  The glowing rock fills the\nfarthest reaches of the cavern with a blood-red glare, giving every-\nthing an eerie, macabre appearance.  The air is filled with flickering\nsparks of ash and a heavy smell of brimstone.  The walls are hot to\nthe touch, and the thundering of the volcano drowns out all other\nsounds.  Embedded in the jagged roof far overhead are myriad twisted\nformations composed of pure white alabaster, which scatter the murky\nlight into sinister apparitions upon the walls.  To one side is a deep\ngorge, filled with a bizarre chaos of tortured rock which seems to\nhave been crafted by the devil himself.  An immense river of fire\ncrashes out from the depths of the volcano, burns its way through the\ngorge, and plummets into a bottomless pit far off to your left.  To\nthe right, an immense geyser of blistering steam erupts continuously\nfrom a barren island in the center of a sulfurous lake, which bubbles\nominously.  The far right wall is aflame with an incandescence of its\nown, which lends an additional infernal splendor to the already\nhellish scene.  A dark, foreboding passage exits to the south."
+  loud = true
+  short = You're at breath-taking view.
+  sound = TOTAL_ROAR
+  travel = [{"action":["goto","LOC_WARMWALLS"],"cond":null,"verbs":["SOUTH","PASSA","OUT"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["FORK"]},{"action":["speak","RIDICULOUS_ATTEMPT"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_GRUESOME"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_BOULDERS2
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You are in a small chamber filled with large boulders.  The walls are\nvery warm, causing the air in the room to be almost stifling from the\nheat.  The only exit is a crawl heading west, through which is coming\na low rumbling."
+  short = You're in Chamber of Boulders.
+  sound = DULL_RUMBLING
+  travel = [{"action":["goto","LOC_WARMWALLS"],"cond":null,"verbs":["WEST","OUT","CRAWL"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["FORK"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]}]
+%entity LOC_LIMESTONE
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You are walking along a gently sloping north/south passage lined with\noddly shaped limestone formations."
+  short = You're in limestone passage.
+  travel = [{"action":["goto","LOC_FORK"],"cond":null,"verbs":["NORTH","UPWAR","FORK"]},{"action":["goto","LOC_BARRENFRONT"],"cond":null,"verbs":["SOUTH","DOWN","BARRE"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]}]
+%entity LOC_BARRENFRONT
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You are standing at the entrance to a large, barren room.  A notice\nabove the entrance reads:  \"Caution!  Bear in room!\""
+  short = You're in front of Barren Room.
+  travel = [{"action":["goto","LOC_LIMESTONE"],"cond":null,"verbs":["WEST","UPWAR"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["FORK"]},{"action":["goto","LOC_BARRENROOM"],"cond":null,"verbs":["EAST","INWAR","BARRE","ENTER"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]}]
+%entity LOC_BARRENROOM
+  conditions = {"DEEP":true,"NOARRR":true}
+  long = "You are inside a barren room.  The center of the room is completely\nempty except for some dust.  Marks in the dust lead away toward the\nfar end of the room.  The only exit is the way you came in."
+  short = You're in Barren Room.
+  travel = [{"action":["goto","LOC_BARRENFRONT"],"cond":null,"verbs":["WEST","OUT"]},{"action":["goto","LOC_FORK"],"cond":null,"verbs":["FORK"]},{"action":["goto","LOC_BREATHTAKING"],"cond":null,"verbs":["VIEW"]}]
+%entity LOC_DIFFERENT3
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of twisting little passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["EAST"]}]
+%entity LOC_DIFFERENT4
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a little maze of twisty passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["SE"]}]
+%entity LOC_DIFFERENT5
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a twisting maze of little passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_DIFFERENT6
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a twisting little maze of passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["SW"]}]
+%entity LOC_DIFFERENT7
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a twisty little maze of passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["UPWAR"]}]
+%entity LOC_DIFFERENT8
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a twisty maze of little passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_DIFFERENT9
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a little twisty maze of passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["WEST"]}]
+%entity LOC_DIFFERENT10
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of little twisting passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["NE"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT11"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["NW"]}]
+%entity LOC_DIFFERENT11
+  conditions = {"ALLDIFFERENT":true,"DEEP":true,"NOBACK":true}
+  long = You are in a maze of little twisty passages, all different.
+  maptag = Maze all different.
+  travel = [{"action":["goto","LOC_DIFFERENT1"],"cond":null,"verbs":["SW"]},{"action":["goto","LOC_DIFFERENT3"],"cond":null,"verbs":["NW"]},{"action":["goto","LOC_DIFFERENT4"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_DIFFERENT5"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_DIFFERENT6"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT7"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_DIFFERENT8"],"cond":null,"verbs":["SE"]},{"action":["goto","LOC_DIFFERENT9"],"cond":null,"verbs":["UPWAR"]},{"action":["goto","LOC_DIFFERENT10"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["NE"]}]
+%entity LOC_DEADEND13
+  conditions = {"ALLDIFFERENT":true,"DEEP":true}
+  long = Dead end
+  travel = [{"action":["goto","LOC_DIFFERENT2"],"cond":null,"verbs":["NORTH","OUT"]},{"action":["goto","LOC_ROUGHHEWN"],"cond":["not","VEND","VEND_BLOCKS"],"verbs":["SOUTH"]},{"action":["goto","LOC_BADDIRECTION"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_ROUGHHEWN
+  conditions = {"DEEP":true}
+  long = You are in a long, rough-hewn, north/south corridor.
+  maptag = Rough-hewn corridor
+  travel = [{"action":["goto","LOC_DEADEND13"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_LARGE"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_BADDIRECTION
+  conditions = {"DEEP":true}
+  long = There is no way to go that direction.
+  travel = [{"action":["goto","LOC_DEADEND13"],"cond":null,"verbs":[]}]
+%entity LOC_LARGE
+  conditions = {"DEEP":true}
+  hints = ["OGRE"]
+  long = You are in a large chamber with passages to the west and north.
+  maptag = Large chamber.
+  travel = [{"action":["goto","LOC_ROUGHHEWN"],"cond":null,"verbs":["WEST"]},{"action":["speak","OGRE_SNARL"],"cond":["with","OGRE"],"verbs":["NORTH"]},{"action":["goto","LOC_STOREROOM"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_STOREROOM
+  conditions = {"DEEP":true}
+  long = You are in the ogre's storeroom.  The only exit is to the south.
+  maptag = Ogre's storeroom.
+  travel = [{"action":["goto","LOC_LARGE"],"cond":null,"verbs":["SOUTH","OUT"]}]
+%entity LOC_FOREST1
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_START"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST13"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST3"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST2
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST1"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST19"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST3"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST18"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST3
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST4"],"cond":null,"verbs":["EAST","WEST"]},{"action":["goto","LOC_FOREST2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST1"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST4
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST3"],"cond":null,"verbs":["EAST","NORTH"]},{"action":["goto","LOC_FOREST5"],"cond":null,"verbs":["WEST","SOUTH"]}]
+%entity LOC_FOREST5
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST4"],"cond":null,"verbs":["EAST","NORTH"]},{"action":["goto","LOC_FOREST7"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST6"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST6
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST5"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST7"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_VALLEY"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_SLIT"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST7
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST5"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST6"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST8"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST8
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST9"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST11"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST22"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST7"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST9
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST11"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST8"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST10"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST10
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_SLIT"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST11"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST9"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_GRATE"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST11
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST10"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST8"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST22"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST9"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST12
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST13"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST14"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST22"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_VALLEY"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST13
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST1"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST12"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST20"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_HILL"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST14
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_ROADEND"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST16"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST15"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST12"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST15
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST16"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST22"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_ROADEND"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST14"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST16
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST17"],"cond":null,"verbs":["EAST","NORTH"]},{"action":["goto","LOC_FOREST14"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST15"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST17
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST18"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST16"],"cond":null,"verbs":["WEST","SOUTH"]},{"action":["goto","LOC_CLIFF"],"cond":null,"verbs":["NORTH"]}]
+%entity LOC_FOREST18
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST19"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST17"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST2"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST21"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST19
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST2"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST18"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_CLIFF"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST20"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST20
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_HILL"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST21"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST19"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST13"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST21
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST20"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_ROADEND"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST18"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST21"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_FOREST22
+  conditions = {"FOREST":true,"LIT":true,"NOBACK":true}
+  hints = ["WOODS"]
+  long = You are wandering aimlessly through the forest.
+  maptag = Forest.
+  travel = [{"action":["goto","LOC_FOREST8"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_FOREST11"],"cond":null,"verbs":["WEST"]},{"action":["goto","LOC_FOREST15"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_FOREST12"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_LEDGE
+  conditions = {"ABOVE":true,"LIT":true}
+  long = "You are on a small ledge on one face of a sheer cliff.  There are no\npaths away from the ledge.  Across the chasm is a small clearing\nsurrounded by forest."
+  short = You're on ledge.
+  travel = [{"action":["goto","LOC_NOMAKE"],"cond":null,"verbs":["JUMP"]}]
+%entity LOC_RESBOTTOM
+  conditions = {"DEEP":true,"FLUID":true}
+  long = "You are walking across the bottom of the reservoir.  Walls of water\nrear up on either side.  The roar of the water cascading past is\nnearly deafening, and the mist is so thick you can barely see."
+  loud = true
+  short = You're at bottom of reservoir.
+  sound = TOTAL_ROAR
+  travel = [{"action":["goto","LOC_RESNORTH"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_RESERVOIR"],"cond":null,"verbs":["SOUTH"]}]
+%entity LOC_RESNORTH
+  conditions = {"DEEP":true,"FLUID":true}
+  long = "You are at the northern edge of the reservoir.  A northwest passage\nleads sharply up from here."
+  short = You're north of reservoir.
+  sound = WATERS_CRASHING
+  travel = [{"action":["speak","BAD_DIRECTION"],"cond":["not","RESER","WATERS_PARTED"],"verbs":["SOUTH","ACROS","CROSS"]},{"action":["goto","LOC_RESBOTTOM"],"cond":null,"verbs":["SOUTH"]},{"action":["goto","LOC_TREACHEROUS"],"cond":null,"verbs":["NW","UPWAR","OUT"]}]
+%entity LOC_TREACHEROUS
+  conditions = {"DEEP":true}
+  long = You are scrambling along a treacherously steep, rocky passage.
+  maptag = Rocky passage.
+  travel = [{"action":["goto","LOC_STEEP"],"cond":null,"verbs":["UPWAR","NW"]},{"action":["goto","LOC_RESNORTH"],"cond":null,"verbs":["DOWN","SE"]}]
+%entity LOC_STEEP
+  conditions = {"DEEP":true}
+  long = You are on a very steep incline, which widens at it goes upward.
+  maptag = Steep incline
+  travel = [{"action":["goto","LOC_TREACHEROUS"],"cond":null,"verbs":["DOWN","SE"]},{"action":["goto","LOC_CLIFFBASE"],"cond":null,"verbs":["UPWAR","NW"]}]
+%entity LOC_CLIFFBASE
+  conditions = {"DEEP":true}
+  long = "You are at the base of a nearly vertical cliff.  There are some\nslim footholds which would enable you to climb up, but it looks\nextremely dangerous.  Here at the base of the cliff lie the remains\nof several earlier adventurers who apparently failed to make it."
+  short = You're at base of cliff.
+  travel = [{"action":["goto","LOC_STEEP"],"cond":null,"verbs":["DOWN","SE"]},{"action":["goto","LOC_CLIFFACE"],"cond":null,"verbs":["UPWAR","CLIMB"]}]
+%entity LOC_CLIFFACE
+  conditions = {"DEEP":true}
+  long = You are climbing along a nearly vertical cliff.
+  maptag = Vertical cliff.
+  travel = [{"action":["goto","LOC_CLIFFBASE"],"cond":null,"verbs":["DOWN"]},{"action":["goto","LOC_CLIFFTOP"],"cond":["carry","RABBITFOOT"],"verbs":["UPWAR"]},{"action":["goto","LOC_FOOTSLIP"],"cond":null,"verbs":["UPWAR"]}]
+%entity LOC_FOOTSLIP
+  conditions = {"DEEP":true}
+  long = "Just as you reach the top, your foot slips on a loose rock and you\ntumble several hundred feet to join the other unlucky adventurers."
+  travel = [{"action":["goto","LOC_NOWHERE"],"cond":null,"verbs":[]}]
+%entity LOC_CLIFFTOP
+  conditions = {"DEEP":true}
+  long = "Just as you reach the top, your foot slips on a loose rock and you\nmake one last desperate grab.  Your luck holds, as does your grip.\nWith an enormous heave, you lift yourself to the ledge above."
+  travel = [{"action":["goto","LOC_CLIFFLEDGE"],"cond":null,"verbs":[]}]
+%entity LOC_CLIFFLEDGE
+  conditions = {"DEEP":true}
+  long = "You are on a small ledge at the top of a nearly vertical cliff.\nThere is a low crawl leading off to the northeast."
+  maptag = Clifftop
+  short = You're at top of cliff.
+  travel = [{"action":["goto","LOC_CLIFFACE"],"cond":null,"verbs":["CLIMB","DOWN"]},{"action":["goto","LOC_REACHDEAD"],"cond":null,"verbs":["NE","CRAWL"]}]
+%entity LOC_REACHDEAD
+  conditions = {"DEEP":true}
+  long = You have reached a dead end.
+  maptag = Dead end.
+  travel = [{"action":["goto","LOC_CLIFFLEDGE"],"cond":null,"verbs":["SW","OUT","CRAWL"]}]
+%entity LOC_GRUESOME
+  conditions = {"DEEP":true}
+  long = There is now one more gruesome aspect to the spectacular vista.
+  travel = [{"action":["goto","LOC_NOWHERE"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF1
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_DEBRIS"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF2
+  conditions = {"ABOVE":true}
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_BUILDING"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF3
+  conditions = {"DEEP":true}
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_Y2"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF4
+  conditions = {"ABOVE":true}
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_BUILDING"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF5
+  conditions = {"DEEP":true}
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_PLOVER"],"cond":null,"verbs":[]}]
+%entity LOC_FOOF6
+  conditions = {"DEEP":true}
+  long = >>Foof!<<
+  travel = [{"action":["goto","LOC_Y2"],"cond":null,"verbs":[]}]
+%entity NO_OBJECT
+%entity KEYS
+  descriptions = ["There are some keys on the ground here."]
+  inventory = Set of keys
+  words = ["keys","key"]
+%entity LAMP
+  changes = ["Your lamp is now off.","Your lamp is now on."]
+  descriptions = ["There is a shiny brass lamp nearby.","There is a lamp shining nearby."]
+  inventory = Brass lantern
+  states = ["LAMP_DARK","LAMP_BRIGHT"]
+  words = ["lamp","lante"]
+%entity GRATE
+  changes = ["The grate is now locked.","The grate is now unlocked."]
+  descriptions = ["The grate is locked.","The grate is open."]
+  fixed_at = LOC_BELOWGRATE
+  immovable = true
+  inventory = *grate
+  states = ["GRATE_CLOSED","GRATE_OPEN"]
+  words = ["grate"]
+%entity CAGE
+  descriptions = ["There is a small wicker cage discarded nearby."]
+  inventory = Wicker cage
+  words = ["cage"]
+%entity ROD
+  descriptions = ["A three foot black rod with a rusty star on an end lies nearby."]
+  inventory = Black rod
+  words = ["rod"]
+%entity ROD2
+  descriptions = ["A three foot black rod with a rusty mark on an end lies nearby."]
+  inventory = Black rod
+  words = ["rod"]
+%entity STEPS
+  descriptions = ["Rough stone steps lead down the pit.","Rough stone steps lead up the dome."]
+  fixed_at = LOC_MISTHALL
+  immovable = true
+  inventory = *steps
+  states = ["STEPS_DOWN","STEPS_UP"]
+  words = ["steps"]
+%entity BIRD
+  descriptions = ["A cheerful little bird is sitting here singing.","There is a little bird in the cage.","A cheerful little bird is sitting here singing."]
+  inventory = Little bird in cage
+  sounds = ["The bird's singing is quite melodious.","The bird does not seem inclined to sing while in the cage.","It almost seems as though the bird is trying to tell you something.","To your surprise, you can understand the bird's chirping; it is\nsinging about the joys of its forest home.","The bird does not seem inclined to sing while in the cage.","The bird is singing to you in gratitude for your having returned it to\nits home.  In return, it informs you of a magic word which it thinks\nyou may find useful somewhere near the Hall of Mists.  The magic word\nchanges frequently, but for now the bird believes it is \"%s\".  You\nthank the bird for this information, and it flies off into the forest."]
+  states = ["BIRD_UNCAGED","BIRD_CAGED","BIRD_FOREST_UNCAGED"]
+  words = ["bird"]
+%entity DOOR
+  changes = ["The hinges are quite thoroughly rusted now and won't budge.","The oil has freed up the hinges so that the door will now move,\nalthough it requires some effort."]
+  descriptions = ["The way north is barred by a massive, rusty, iron door.","The way north leads through a massive, rusty, iron door."]
+  immovable = true
+  inventory = *rusty door
+  states = ["DOOR_RUSTED","DOOR_UNRUSTED"]
+  words = ["door"]
+%entity PILLOW
+  descriptions = ["A small velvet pillow lies on the floor."]
+  inventory = Velvet pillow
+  words = ["pillo","velve"]
+%entity SNAKE
+  descriptions = ["A huge green fierce snake bars the way!",""]
+  immovable = true
+  inventory = *snake
+  sounds = ["The snake is hissing venomously.",""]
+  states = ["SNAKE_BLOCKS","SNAKE_CHASED"]
+  words = ["snake"]
+%entity FISSURE
+  changes = ["The crystal bridge has vanished!","A crystal bridge now spans the fissure."]
+  descriptions = ["","A crystal bridge spans the fissure."]
+  fixed_at = LOC_WESTBANK
+  immovable = true
+  inventory = *fissure
+  states = ["UNBRIDGED","BRIDGED"]
+  words = ["fissu"]
+%entity OBJ_13
+  descriptions = ["A massive stone tablet embedded in the wall reads:\n\"Congratulations on bringing light into the dark-room!\""]
+  immovable = true
+  inventory = *stone tablet
+  texts = ["\"Congratulations on bringing light into the dark-room!\""]
+  words = ["table"]
+%entity CLAM
+  descriptions = ["There is an enormous clam here with its shell tightly closed."]
+  inventory = Giant clam  >GRUNT!<
+  sounds = ["The clam is as tight-mouthed as a, er, clam."]
+  words = ["clam"]
+%entity OYSTER
+  descriptions = ["There is an enormous oyster here with its shell tightly closed.","Interesting.  There seems to be something written on the underside of\nthe oyster."]
+  inventory = Giant oyster  >GROAN!<
+  sounds = ["Even though it's an oyster, the critter's as tight-mouthed as a clam.","It says the same thing it did before.  Hm, maybe it's a pun?"]
+  words = ["oyste"]
+%entity MAGAZINE
+  descriptions = ["There are a few recent issues of \"Spelunker Today\" magazine here."]
+  inventory = "\"Spelunker Today\""
+  texts = ["I'm afraid the magazine is written in dwarvish.  But penciled on one\ncover you see, \"Please leave the magazines at the construction site.\""]
+  words = ["magaz","issue","spelu","\"spel"]
+%entity DWARF
+  immovable = true
+  words = ["dwarf","dwarv"]
+%entity KNIFE
+  words = ["knife","knive"]
+%entity FOOD
+  descriptions = ["There is food here."]
+  inventory = Tasty food
+  words = ["food","ratio"]
+%entity BOTTLE
+  changes = ["Your bottle is now full of water.","The bottle of water is now empty.","Your bottle is now full of oil."]
+  descriptions = ["There is a bottle of water here.","There is an empty bottle here.","There is a bottle of oil here."]
+  inventory = Small bottle
+  states = ["WATER_BOTTLE","EMPTY_BOTTLE","OIL_BOTTLE"]
+  words = ["bottl","jar"]
+%entity WATER
+  inventory = Water in the bottle
+  words = ["water","h2o"]
+%entity OIL
+  inventory = Oil in the bottle
+  words = ["oil"]
+%entity MIRROR
+  changes = ["","You strike the mirror a resounding blow, whereupon it shatters into a\nmyriad tiny fragments."]
+  descriptions = ["",""]
+  immovable = true
+  inventory = *mirror
+  states = ["MIRROR_UNBROKEN","MIRROR_BROKEN"]
+  words = ["mirro"]
+%entity PLANT
+  changes = ["You've over-watered the plant!  It's shriveling up!  And now . . .","The plant spurts into furious growth for a few seconds.","The plant grows explosively, almost filling the bottom of the pit."]
+  descriptions = ["There is a tiny little plant in the pit, murmuring \"water, water, ...\"","There is a 12-foot-tall beanstalk stretching up out of the pit,\nbellowing \"WATER!! WATER!!\"","There is a gigantic beanstalk stretching all the way up to the hole."]
+  immovable = true
+  inventory = *plant
+  sounds = ["The plant continues to ask plaintively for water.","The plant continues to demand water.","The plant now maintains a contented silence."]
+  states = ["PLANT_THIRSTY","PLANT_BELLOWING","PLANT_GROWN"]
+  words = ["plant","beans"]
+%entity PLANT2
+  descriptions = ["","The top of a 12-foot-tall beanstalk is poking out of the west pit.","There is a huge beanstalk growing out of the west pit up to the hole."]
+  fixed_at = LOC_EASTEND
+  immovable = true
+  inventory = *phony plant
+  words = ["plant"]
+%entity OBJ_26
+  descriptions = [""]
+  immovable = true
+  inventory = *stalactite
+  words = ["stala"]
+%entity OBJ_27
+  descriptions = ["The shadowy figure seems to be trying to attract your attention."]
+  fixed_at = LOC_WINDOW2
+  immovable = true
+  inventory = *shadowy figure and/or window
+  words = ["shado","figur","windo"]
+%entity AXE
+  changes = ["","The axe misses and lands near the bear where you can't get at it."]
+  descriptions = ["There is a little axe here.","There is a little axe lying beside the bear."]
+  inventory = Dwarf's axe
+  states = ["AXE_HERE","AXE_LOST"]
+  words = ["axe"]
+%entity OBJ_29
+  immovable = true
+  inventory = *cave drawings
+  words = ["drawi"]
+%entity OBJ_30
+  immovable = true
+  inventory = *pirate/genie
+  words = ["pirat","genie","djinn"]
+%entity DRAGON
+  changes = ["","Congratulations!  You have just vanquished a dragon with your bare\nhands!  (Unbelievable, isn't it?)","Your head buzzes strangely for a moment."]
+  descriptions = ["A huge green fierce dragon bars the way!","The blood-specked body of a huge green dead dragon lies to one side.","The body of a huge green dead dragon is lying off to one side."]
+  fixed_at = LOC_SECRET6
+  immovable = true
+  inventory = *dragon
+  sounds = ["The dragon's ominous hissing does not bode well for you.","The dragon is, not surprisingly, silent.","The dragon is, not surprisingly, silent."]
+  states = ["DRAGON_BARS","DRAGON_DEAD","DRAGON_BLOODLESS"]
+  words = ["drago"]
+%entity CHASM
+  changes = ["","Just as you reach the other side, the bridge buckles beneath the\nweight of the bear, which was still following you around.  You\nscrabble desperately for support, but as the bridge collapses you\nstumble back and fall into the chasm."]
+  descriptions = ["A rickety wooden bridge extends across the chasm, vanishing into the\nmist.  A notice posted on the bridge reads, \"Stop! Pay troll!\"","The wreckage of a bridge (and a dead bear) can be seen at the bottom\nof the chasm."]
+  fixed_at = LOC_NECHASM
+  immovable = true
+  inventory = *chasm
+  states = ["TROLL_BRIDGE","BRIDGE_WRECKED"]
+  words = ["chasm"]
+%entity TROLL
+  changes = ["","","The bear lumbers toward the troll, who lets out a startled shriek and\nscurries away.  The bear soon gives up the pursuit and wanders back."]
+  descriptions = ["A burly troll stands by the bridge and insists you throw him a\ntreasure before you may cross.","The troll steps out from beneath the bridge and blocks your way.",""]
+  fixed_at = LOC_NECHASM
+  immovable = true
+  inventory = *troll
+  sounds = ["The troll sounds quite adamant in his demand for a treasure.","The troll sounds quite adamant in his demand for a treasure.",""]
+  states = ["TROLL_UNPAID","TROLL_PAIDONCE","TROLL_GONE"]
+  words = ["troll"]
+%entity TROLL2
+  descriptions = ["The troll is nowhere to be seen."]
+  fixed_at = LOC_NOWHERE
+  immovable = true
+  inventory = *phony troll
+  words = ["troll"]
+%entity BEAR
+  changes = ["","The bear eagerly wolfs down your food, after which he seems to calm\ndown considerably and even becomes rather friendly.","",""]
+  descriptions = ["There is a ferocious cave bear eyeing you from the far end of the room!","There is a gentle cave bear sitting placidly in one corner.","There is a contented-looking bear wandering about nearby.",""]
+  immovable = true
+  states = ["UNTAMED_BEAR","SITTING_BEAR","CONTENTED_BEAR","BEAR_DEAD"]
+  words = ["bear"]
+%entity MESSAG
+  descriptions = ["There is a message scrawled in the dust in a flowery script, reading:\n\"This is not the maze where the pirate leaves his treasure chest.\""]
+  immovable = true
+  inventory = *message in second maze
+  texts = ["\"This is not the maze where the pirate leaves his treasure chest.\""]
+  words = ["messa"]
+%entity VOLCANO
+  immovable = true
+  inventory = *volcano and/or geyser
+  words = ["volca","geyse"]
+%entity VEND
+  changes = ["The vending machine swings back to block the passage.","As you strike the vending machine, it pivots backward along with a\nsection of wall, revealing a dark passage leading south."]
+  descriptions = ["There is a massive and somewhat battered vending machine here.  The\ninstructions on it read: \"Drop coins here to receive fresh batteries.\"","There is a massive vending machine here, swung back to reveal a\nsouthward passage."]
+  immovable = true
+  inventory = *vending machine
+  states = ["VEND_BLOCKS","VEND_UNBLOCKS"]
+  texts = ["\"Drop coins here to receive fresh batteries.\"","\"Drop coins here to receive fresh batteries.\""]
+  words = ["machi","vendi"]
+%entity BATTERY
+  descriptions = ["There are fresh batteries here.","Some worn-out batteries have been discarded nearby."]
+  inventory = Batteries
+  states = ["FRESH_BATTERIES","DEAD_BATTERIES"]
+  words = ["batte"]
+%entity OBJ_40
+  immovable = true
+  inventory = *carpet and/or moss and/or curtains
+  words = ["carpe","moss"]
+%entity OGRE
+  descriptions = ["A formidable ogre bars the northern exit."]
+  immovable = true
+  inventory = *ogre
+  sounds = ["The ogre is apparently the strong, silent type."]
+  words = ["ogre"]
+%entity URN
+  changes = ["The urn is empty and will not light.","The urn is now dark.","The urn is now lit."]
+  descriptions = ["A small urn is embedded in the rock.","A small urn full of oil is embedded in the rock.","A small oil flame extrudes from an urn embedded in the rock."]
+  immovable = true
+  inventory = *urn
+  states = ["URN_EMPTY","URN_DARK","URN_LIT"]
+  words = ["urn"]
+%entity CAVITY
+  descriptions = ["","There is a small urn-shaped cavity in the rock."]
+  immovable = true
+  inventory = *cavity
+  states = ["CAVITY_FULL","CAVITY_EMPTY"]
+  words = ["cavit"]
+%entity BLOOD
+  descriptions = [""]
+  immovable = true
+  inventory = *blood
+  words = ["blood"]
+%entity RESER
+  changes = ["The waters crash together again.","The waters have parted to form a narrow path across the reservoir."]
+  descriptions = ["","The waters have parted to form a narrow path across the reservoir."]
+  fixed_at = LOC_RESNORTH
+  immovable = true
+  inventory = *reservoir
+  states = ["WATERS_UNPARTED","WATERS_PARTED"]
+  words = ["reser"]
+%entity RABBITFOOT
+  descriptions = ["Your keen eye spots a severed leporine appendage lying on the ground."]
+  inventory = Leporine appendage
+  words = ["appen","lepor"]
+%entity OBJ_47
+  descriptions = [""]
+  immovable = true
+  inventory = *mud
+  texts = ["\"MAGIC WORD XYZZY\""]
+  words = ["mud"]
+%entity OBJ_48
+  descriptions = [""]
+  immovable = true
+  inventory = *note
+  texts = ["\"You won't get it up the steps\""]
+  words = ["note"]
+%entity SIGN
+  descriptions = ["",""]
+  immovable = true
+  inventory = *sign
+  states = ["INGAME_SIGN","ENDGAME_SIGN"]
+  texts = ["Cave under construction beyond this point.\n           Proceed at own risk.\n       [Witt Construction Company]","\"Treasure Vault.  Keys in main office.\""]
+  words = ["sign"]
+%entity NUGGET
+  descriptions = ["There is a large sparkling nugget of gold here!"]
+  inventory = Large gold nugget
+  treasure = true
+  words = ["gold","nugge"]
+%entity OBJ_51
+  descriptions = ["There are diamonds here!"]
+  inventory = Several diamonds
+  treasure = true
+  words = ["diamo"]
+%entity OBJ_52
+  descriptions = ["There are bars of silver here!"]
+  inventory = Bars of silver
+  treasure = true
+  words = ["silve","bars"]
+%entity OBJ_53
+  descriptions = ["There is precious jewelry here!"]
+  inventory = Precious jewelry
+  treasure = true
+  words = ["jewel"]
+%entity COINS
+  descriptions = ["There are many coins here!"]
+  inventory = Rare coins
+  treasure = true
+  words = ["coins"]
+%entity CHEST
+  descriptions = ["The pirate's treasure chest is here!"]
+  inventory = Treasure chest
+  treasure = true
+  words = ["chest","box","treas"]
+%entity EGGS
+  descriptions = ["There is a large nest here, full of golden eggs!","The nest of golden eggs has vanished!","Done!"]
+  inventory = Golden eggs
+  states = ["EGGS_HERE","EGGS_VANISHED","EGGS_DONE"]
+  treasure = true
+  words = ["eggs","egg","nest"]
+%entity TRIDENT
+  descriptions = ["There is a jewel-encrusted trident here!"]
+  inventory = Jeweled trident
+  treasure = true
+  words = ["tride"]
+%entity VASE
+  changes = ["The vase is now resting, delicately, on a velvet pillow.","The ming vase drops with a delicate crash.","You have taken the vase and hurled it delicately to the ground."]
+  descriptions = ["There is a delicate, precious, ming vase here!","The floor is littered with worthless shards of pottery.","The floor is littered with worthless shards of pottery."]
+  inventory = Ming vase
+  states = ["VASE_WHOLE","VASE_DROPPED","VASE_BROKEN"]
+  treasure = true
+  words = ["vase","ming","shard","potte"]
+%entity EMERALD
+  descriptions = ["There is an emerald here the size of a plover's egg!","There is an emerald resting in a small cavity in the rock!"]
+  inventory = Egg-sized emerald
+  treasure = true
+  words = ["emera"]
+%entity PYRAMID
+  descriptions = ["There is a platinum pyramid here, 8 inches on a side!"]
+  inventory = Platinum pyramid
+  treasure = true
+  words = ["plati","pyram"]
+%entity PEARL
+  descriptions = ["Off to one side lies a glistening pearl!"]
+  inventory = Glistening pearl
+  treasure = true
+  words = ["pearl"]
+%entity RUG
+  descriptions = ["There is a Persian rug spread out on the floor!","The dragon is sprawled out on a Persian rug!!","There is a Persian rug here, hovering in mid-air!"]
+  fixed_at = LOC_SECRET6
+  immovable = true
+  inventory = Persian rug
+  states = ["RUG_FLOOR","RUG_DRAGON","RUG_HOVER"]
+  treasure = true
+  words = ["rug","persi"]
+%entity OBJ_63
+  descriptions = ["There are rare spices here!"]
+  inventory = Rare spices
+  treasure = true
+  words = ["spice"]
+%entity CHAIN
+  descriptions = ["There is a golden chain lying in a heap on the floor!","The bear is locked to the wall with a golden chain!","There is a golden chain locked to the wall!"]
+  immovable = true
+  inventory = Golden chain
+  states = ["CHAIN_HEAP","CHAINING_BEAR","CHAIN_FIXED"]
+  treasure = true
+  words = ["chain"]
+%entity RUBY
+  descriptions = ["There is an enormous ruby here!","There is a ruby resting in a small cavity in the rock!"]
+  inventory = Giant ruby
+  treasure = true
+  words = ["ruby"]
+%entity JADE
+  descriptions = ["A precious jade necklace has been dropped here!"]
+  inventory = Jade necklace
+  treasure = true
+  words = ["jade","neckl"]
+%entity AMBER
+  descriptions = ["There is a rare amber gemstone here!","There is an amber gemstone resting in a small cavity in the rock!"]
+  inventory = Amber gemstone
+  states = ["AMBER_IN_URN","AMBER_IN_ROCK"]
+  treasure = true
+  words = ["amber","gemst"]
+%entity SAPPH
+  descriptions = ["A brilliant blue star sapphire is here!","There is a star sapphire resting in a small cavity in the rock!"]
+  inventory = Star sapphire
+  treasure = true
+  words = ["sapph"]
+%entity OBJ_69
+  descriptions = ["There is a richly-carved ebony statuette here!"]
+  inventory = Ebony statuette
+  treasure = true
+  words = ["ebony","statu"]
+%entity adv-vocabulary
+  actions = {"?":["HELP"],"abra":["INVALIDMAGIC"],"abrac":["INVALIDMAGIC"],"attac":["ATTACK"],"blast":["BLAST"],"blowu":["BLAST"],"break":["BREAK"],"brief":["BRIEF"],"calm":["TAME"],"captu":["CARRY"],"carry":["CARRY"],"catch":["CARRY"],"chant":["SAY"],"close":["LOCK"],"conti":["GO"],"deton":["BLAST"],"devou":["EAT"],"dig":["DIG"],"disca":["DROP"],"distu":["WAKE"],"drink":["DRINK"],"drop":["DROP"],"dump":["DROP"],"eat":["EAT"],"excav":["DIG"],"explo":["GO"],"extin":["EXTINGUISH"],"fee":["FEE"],"feed":["FEED"],"fie":["FIE"],"fight":["ATTACK"],"fill":["FILL"],"find":["FIND"],"fly":["FLY"],"foe":["FOE"],"follo":["GO"],"foo":["FOO"],"free":["DROP"],"fuck":["FBOMB"],"fum":["FUM"],"g":["CARRY"],"get":["CARRY"],"go":["GO"],"help":["HELP"],"hit":["ATTACK"],"hocus":["INVALIDMAGIC"],"i":["INVENTORY"],"ignit":["BLAST"],"info":["INFO"],"infor":["INFO"],"inven":["INVENTORY"],"keep":["CARRY"],"kill":["ATTACK"],"light":["LIGHT"],"liste":["LISTEN"],"lock":["LOCK"],"lost":["LOST"],"mist":["MIST"],"mumbl":["SAY"],"news":["NEWS"],"no":["NO"],"nothi":["NOTHING"],"off":["EXTINGUISH"],"on":["LIGHT"],"open":["UNLOCK"],"opens":["INVALIDMAGIC"],"pause":["SAVE"],"perus":["READ"],"placa":["TAME"],"pocus":["INVALIDMAGIC"],"pour":["POUR"],"proce":["GO"],"quit":["QUIT"],"read":["READ"],"relea":["DROP"],"resta":["RESUME"],"resum":["RESUME"],"rub":["RUB"],"run":["GO"],"save":["SAVE"],"say":["SAY"],"score":["SCORE"],"seed":["SEED"],"sesam":["INVALIDMAGIC"],"shake":["WAVE"],"shatt":["BREAK"],"shaza":["INVALIDMAGIC"],"sing":["SAY"],"slay":["ATTACK"],"smash":["BREAK"],"snarf":["CARRY"],"steal":["CARRY"],"stop":["STOP"],"strik":["ATTACK"],"suspe":["SAVE"],"swim":["SWIM"],"swing":["WAVE"],"take":["CARRY"],"tame":["TAME"],"thank":["THANKYOU"],"throw":["THROW"],"toss":["THROW"],"tote":["CARRY"],"trave":["GO"],"tree":["TREE"],"trees":["TREE"],"turn":["GO"],"unloc":["UNLOCK"],"utter":["SAY"],"versi":["ACT_VERSION"],"wake":["WAKE"],"walk":["GO"],"waste":["WASTE"],"wave":["WAVE"],"where":["FIND"],"wizar":["WIZARD"],"yes":["YES"],"z":["NOTHING"],"z'zzz":["PART"]}
+  motions = {"above":["UP"],"acros":["MOT_42"],"ascen":["UP"],"awkwa":["MOT_26"],"back":["BACK"],"barre":["MOT_40"],"bed":["MOT_16"],"bedqu":["BEDQUILT"],"broke":["MOT_54"],"build":["MOT_12"],"canyo":["MOT_25"],"cave":["CAVE"],"caver":["CAVERN"],"climb":["MOT_56"],"cobbl":["MOT_18"],"conti":["FORWARD"],"crack":["MOT_33"],"crawl":["CRAWL"],"cross":["CROSS"],"d":["DOWN"],"dark":["MOT_22"],"debri":["MOT_51"],"depre":["DEPRESSION"],"desce":["DOWN"],"descr":["LOOK"],"dome":["MOT_35"],"down":["DOWN"],"downs":["MOT_5"],"downw":["DOWN"],"e":["EAST"],"east":["EAST"],"enter":["ENTER"],"entra":["ENTRANCE"],"exami":["LOOK"],"exit":["OUTSIDE"],"floor":["MOT_58"],"fores":["MOT_6"],"fork":["MOT_15"],"forwa":["FORWARD"],"giant":["MOT_27"],"gully":["MOT_13"],"hall":["MOT_38"],"hill":["MOT_2"],"hole":["MOT_52"],"house":["MOT_12"],"in":["INSIDE"],"insid":["INSIDE"],"inwar":["INSIDE"],"jump":["MOT_39"],"l":["LOOK"],"leave":["OUTSIDE"],"left":["LEFT"],"look":["LOOK"],"low":["MOT_24"],"main":["OFFICE"],"n":["NORTH"],"ne":["NE"],"north":["NORTH"],"nowhe":["NUL"],"null":["NUL"],"nw":["NW"],"offic":["OFFICE"],"onwar":["FORWARD"],"orien":["ORIENTAL"],"out":["OUTSIDE"],"outdo":["MOT_32"],"outsi":["OUTSIDE"],"over":["MOT_41"],"passa":["MOT_23"],"pit":["MOT_31"],"plove":["PLOVER"],"plugh":["PLUGH"],"reser":["RESERVOIR"],"retre":["BACK"],"retur":["BACK"],"right":["RIGHT"],"road":["MOT_2"],"room":["MOT_59"],"s":["SOUTH"],"se":["SE"],"secre":["MOT_66"],"shell":["SHELLROOM"],"slab":["MOT_61"],"slabr":["MOT_61"],"slit":["MOT_60"],"south":["SOUTH"],"stair":["MOT_10"],"steps":["MOT_34"],"strea":["STREAM"],"surfa":["MOT_20"],"sw":["SW"],"touch":["LOOK"],"tunne":["MOT_23"],"u":["UP"],"up":["UP"],"upstr":["MOT_4"],"upwar":["UP"],"valle":["MOT_9"],"view":["MOT_28"],"w":["WEST"],"wall":["MOT_53"],"west":["WEST"],"x":["LOOK"],"xyzzy":["XYZZY"],"y2":["MOT_55"]}
+  objwords = {"\"spel":["MAGAZINE"],"amber":["AMBER"],"appen":["RABBITFOOT"],"axe":["AXE"],"bars":["OBJ_52"],"batte":["BATTERY"],"beans":["PLANT"],"bear":["BEAR"],"bird":["BIRD"],"blood":["BLOOD"],"bottl":["BOTTLE"],"box":["CHEST"],"cage":["CAGE"],"carpe":["OBJ_40"],"cavit":["CAVITY"],"chain":["CHAIN"],"chasm":["CHASM"],"chest":["CHEST"],"clam":["CLAM"],"coins":["COINS"],"diamo":["OBJ_51"],"djinn":["OBJ_30"],"door":["DOOR"],"drago":["DRAGON"],"drawi":["OBJ_29"],"dwarf":["DWARF"],"dwarv":["DWARF"],"ebony":["OBJ_69"],"egg":["EGGS"],"eggs":["EGGS"],"emera":["EMERALD"],"figur":["OBJ_27"],"fissu":["FISSURE"],"food":["FOOD"],"gemst":["AMBER"],"genie":["OBJ_30"],"geyse":["VOLCANO"],"gold":["NUGGET"],"grate":["GRATE"],"h2o":["WATER"],"issue":["MAGAZINE"],"jade":["JADE"],"jar":["BOTTLE"],"jewel":["OBJ_53"],"key":["KEYS"],"keys":["KEYS"],"knife":["KNIFE"],"knive":["KNIFE"],"lamp":["LAMP"],"lante":["LAMP"],"lepor":["RABBITFOOT"],"machi":["VEND"],"magaz":["MAGAZINE"],"messa":["MESSAG"],"ming":["VASE"],"mirro":["MIRROR"],"moss":["OBJ_40"],"mud":["OBJ_47"],"neckl":["JADE"],"nest":["EGGS"],"note":["OBJ_48"],"nugge":["NUGGET"],"ogre":["OGRE"],"oil":["OIL"],"oyste":["OYSTER"],"pearl":["PEARL"],"persi":["RUG"],"pillo":["PILLOW"],"pirat":["OBJ_30"],"plant":["PLANT","PLANT2"],"plati":["PYRAMID"],"potte":["VASE"],"pyram":["PYRAMID"],"ratio":["FOOD"],"reser":["RESER"],"rod":["ROD","ROD2"],"ruby":["RUBY"],"rug":["RUG"],"sapph":["SAPPH"],"shado":["OBJ_27"],"shard":["VASE"],"sign":["SIGN"],"silve":["OBJ_52"],"snake":["SNAKE"],"spelu":["MAGAZINE"],"spice":["OBJ_63"],"stala":["OBJ_26"],"statu":["OBJ_69"],"steps":["STEPS"],"table":["OBJ_13"],"treas":["CHEST"],"tride":["TRIDENT"],"troll":["TROLL","TROLL2"],"urn":["URN"],"vase":["VASE"],"velve":["PILLOW"],"vendi":["VEND"],"volca":["VOLCANO"],"water":["WATER"],"windo":["OBJ_27"]}
+%entity adv-action-defaults
+  ACT_NULL = null
+  ACT_UNKNOWN = Huh?
+  ACT_VERSION = "There is a puff of orange smoke; within it, fiery runes spell out:\n\nOpen Adventure %V - http://www.catb.org/esr/open-adventure/"
+  ATTACK = Don't be ridiculous!
+  BLAST = Blasting requires dynamite.
+  BREAK = It is beyond your power to do that.
+  BRIEF = On what?
+  CARRY = You are already carrying it!
+  DIG = "Digging without a shovel is quite impractical.  Even with a shovel\nprogress is unlikely."
+  DRINK = "You have taken a drink from the stream.  The water tastes strongly of\nminerals, but is not unpleasant.  It is extremely cold."
+  DROP = You aren't carrying it!
+  EAT = Don't be ridiculous!
+  EXTINGUISH = I'm afraid I don't understand.
+  FBOMB = Watch it!
+  FEE = I don't know how.
+  FEED = There is nothing here to eat.
+  FIE = I don't know how.
+  FILL = You can't fill that.
+  FIND = "I can only tell you what you see as you move about and manipulate\nthings.  I cannot tell you where remote things are."
+  FLY = I'm game.  Would you care to explain how?
+  FOE = I don't know how.
+  FOO = I don't know how.
+  FUM = I don't know how.
+  GO = Where?
+  HELP = "I know of places, actions, and things.  Most of my vocabulary\ndescribes places and is used to move you there.  To move, try words\nlike forest, building, downstream, enter, east, west, north, south,\nup, or down.  I know about a few special objects, like a black rod\nhidden in the cave.  These objects can be manipulated using some of\nthe action words that I know.  Usually you will need to give both the\nobject and action words (in either order), but sometimes I can infer\nthe object from the verb alone.  Some objects also imply verbs; in\nparticular, \"inventory\" implies \"take inventory\", which causes me to\ngive you a list of what you're carrying.  Some objects have unexpected\neffects; the effects are not always desirable!  Usually people having\ntrouble moving just need to try a few more words.  Usually people\ntrying unsuccessfully to manipulate an object are attempting something\nbeyond their (or my!) capabilities and should try a completely\ndifferent tack.  One point often confusing to beginners is that, when\nthere are several ways to go in a certain direction (e.g., if there\nare several holes in a wall), choosing that direction in effect\nchooses one of the ways at random; often, though, by specifying the\nplace you want to reach you can guarantee choosing the right path.\nAlso, to speed the game you can sometimes move long distances with a\nsingle word.  For example, \"building\" usually gets you to the building\nfrom anywhere above ground except when lost in the forest.  Also, note\nthat cave passages and forest paths turn a lot, so leaving one place\nheading north doesn't guarantee entering the next from the south.\nHowever (another important point), except when you've used a \"long\ndistance\" word such as \"building\", there is always a way to go back\nwhere you just came from unless I warn you to the contrary, even\nthough the direction that takes you back might not be the reverse of\nwhat got you here.  Good luck, and have fun!"
+  INFO = "For a summary of the most recent changes to the game, say \"news\".\nIf you want to end your adventure early, say \"quit\".  To suspend your\nadventure such that you can continue later, say \"suspend\" (or \"pause\"\nor \"save\").  To see how well you're doing, say \"score\".  To get full\ncredit for a treasure, you must have left it safely in the building,\nthough you get partial credit just for locating it.  You lose points\nfor getting killed, or for quitting, though the former costs you more.\nThere are also points based on how much (if any) of the cave you've\nmanaged to explore; in particular, there is a large bonus just for\ngetting in (to distinguish the beginners from the rest of the pack),\nand there are other ways to determine whether you've been through some\nof the more harrowing sections.  If you think you've found all the\ntreasures, just keep exploring for a while.  If nothing interesting\nhappens, you haven't found them all yet.  If something interesting\n*DOES* happen (incidentally, there *ARE* ways to hasten things along),\nit means you're getting a bonus and have an opportunity to garner many\nmore points in the Master's section.  I may occasionally offer hints\nif you seem to be having trouble.  If I do, I'll warn you in advance\nhow much it will affect your score to accept the hints.  Finally, to\nsave time, you may specify \"brief\", which tells me never to repeat the\nfull description of a place unless you explicitly ask me to."
+  INVALIDMAGIC = Good try, but that is an old worn-out magic word.
+  INVENTORY = "I can only tell you what you see as you move about and manipulate\nthings.  I cannot tell you where remote things are."
+  LIGHT = I'm afraid I don't understand.
+  LISTEN = I'm afraid I don't understand.
+  LOCK = I don't know how to lock or unlock such a thing.
+  LOST = I'm as confused as you are.
+  MIST = "Mist is a white vapor, usually water, seen from time to time in\ncaverns.  It can be found anywhere but is frequently a sign of a deep\npit leading down to water."
+  NEWS = "Open Adventure is an author-approved open-source release of\nVersion 2.5 with, as yet, no gameplay changes.\nVersion 2.5 was essentially the same as Version II; the cave and the\nhazards therein are unchanged, and top score is still 430 points.\nThere are a few more hints, especially for some of the more obscure\npuzzles.  There are a few minor bugfixes and cosmetic changes.  You\ncan now save a game and resume it at once (formerly you had to wait a\nwhile first), but it now costs you a few points each time you save the\ngame.  Saved games are now stored in much smaller files than before."
+  NO = OK
+  NOTHING = null
+  PART = Nothing happens.
+  POUR = You aren't carrying it!
+  QUIT = Huh?
+  READ = I'm afraid I don't understand.
+  RESUME = Huh?
+  RUB = "Rubbing the electric lamp is not particularly rewarding.  Anyway,\nnothing exciting happens."
+  SAVE = Huh?
+  SAY = null
+  SCORE = Huh?
+  SEED = Seed set to %d
+  STOP = I don't know the word "stop".  Use "quit" if you want to give up.
+  SWIM = I don't know how.
+  TAME = I'm game.  Would you care to explain how?
+  THANKYOU = You're quite welcome.
+  THROW = You aren't carrying it!
+  TREE = "The trees of the forest are large hardwood oak and maple, with an\noccasional grove of pine or spruce.  There is quite a bit of under-\ngrowth, largely birch and ash saplings plus nondescript bushes of\nvarious sorts.  This time of year visibility is quite restricted by\nall the leaves, but travel is quite easy if you detour around the\nspruce and berry bushes."
+  UNLOCK = I don't know how to lock or unlock such a thing.
+  WAKE = Don't be ridiculous!
+  WASTE = Game limit is now %d
+  WAVE = Nothing happens.
+  WIZARD = Wizards are not to be disturbed by such as you.
+  YES = Guess again.
+%entity adv-messages
+  ALL_SILENT = All is silent.
+  ALREADY_CARRYING = You are already carrying it!
+  ALREADY_DEAD = For crying out loud, the poor thing is already dead!
+  ALREADY_LOCKED = It was already locked.
+  ALREADY_UNLOCKED = It was already unlocked.
+  AM_GAME = I'm game.  Would you care to explain how?
+  ARENT_CARRYING = You aren't carrying it!
+  BAD_DIRECTION = There is no way to go that direction.
+  BAD_SAVE = Oops, that does not look like a valid save file.
+  BARE_HANDS_QUERY = With what?  Your bare hands?
+  BEAR_BLOCKS = "There is no way to get past the bear to unlock the chain, which is\nprobably just as well."
+  BEAR_CHAINED = The bear is still chained to the wall.
+  BEAR_CONFUSED = The bear is confused; he only wants to be your friend.
+  BEAR_HANDS = With what?  Your bare hands?  Against *HIS* bear hands??
+  BEYOND_POWER = It is beyond your power to do that.
+  BIRD_ATTACKS = "The little bird attacks the green snake, and in an astounding flurry\ndrives the snake away."
+  BIRD_BURNT = "The little bird attacks the green dragon, and in an astounding flurry\ngets burnt to a cinder.  The ashes blow away."
+  BIRD_CRAP = "The bird eyes you suspiciously and flutters away.  A moment later you\nfeel something wet land on your head, but upon looking up you can see\nno sign of the culprit."
+  BIRD_DEAD = The little bird is now dead.  Its body disappears.
+  BIRD_DEVOURED = The snake has now devoured your bird.
+  BIRD_EVADES = "The bird seemed unafraid at first, but as you approach it becomes\ndisturbed and you cannot catch it."
+  BIRD_PINING = "It's not hungry (it's merely pinin' for the fjords).  Besides, you\nhave no bird seed."
+  BOTTLE_FULL = Your bottle is already full.
+  BRIDGE_GONE = There is no longer any way across the chasm.
+  BRIEF_CONFIRM = "Okay, from now on I'll only describe a place in full the first time\nyou come to it.  To get the full description, say \"look\"."
+  CAGE_FLY = The bird flies agitatedly about the cage.
+  CANNOT_CARRY = You can catch the bird, but you cannot carry it.
+  CANNOT_UNLOCK = You can't unlock the keys.
+  CANT_APPLY = I don't know how to apply that word here.
+  CANT_POUR = You can't pour that.
+  CARRY_LIMIT = You can't carry anything more.  You'll have to drop something first.
+  CAVE_CLOSED = "The sepulchral voice intones, \"The cave is now closed.\"  As the echoes\nfade, there is a blinding flash of light (and a small puff of orange\nsmoke). . . .    As your eyes refocus, you look around and find..."
+  CAVE_CLOSING = "A sepulchral voice reverberating through the cave, says, \"Cave closing\nsoon.  All adventurers exit immediately through main office.\""
+  CAVE_NEARBY = "Somewhere nearby is Colossal Cave, where others have found fortunes in\ntreasure and gold, though it is rumored that some who enter are never\nseen again.  Magic is said to work in the cave.  I will be your eyes\nand hands.  Direct me with commands of 1 or 2 words.  I should warn\nyou that I look at only the first five letters of each word, so you'll\nhave to enter \"northeast\" as \"ne\" to distinguish it from \"north\".\nYou can type \"help\" for some general hints.  For information on how\nto end your adventure, scoring, etc., type \"info\".\n\t\t\t      - - -\nThis program was originally developed by Willie Crowther.  Most of the\nfeatures of the current program were added by Don Woods."
+  CHAIN_LOCKED = The chain is now locked.
+  CHAIN_UNLOCKED = The chain is now unlocked.
+  CLAM_BLOCKER = You can't fit this five-foot clam through that little passage!
+  CLAM_OPENER = You don't have anything strong enough to open the clam.
+  CLUE_QUERY = "Hmmm, this looks like a clue, which means it'll cost you 10 points to\nread it.  Should I go ahead and read it anyway?"
+  CROSS_BRIDGE = I respectfully suggest you go across the bridge instead of jumping.
+  DEATH_CLOSING = "It looks as though you're dead.  Well, seeing as how it's so close to\nclosing time anyway, I think we'll just call it a day."
+  DEEP_ROOTS = The plant has exceptionally deep roots and cannot be pulled free.
+  DEFEAT_MESSAGE = "There is a loud explosion, and a twenty-foot hole appears in the far\nwall, burying the snakes in the rubble.  A river of molten lava pours\nin through the hole, destroying everything in its path, including you!"
+  DONT_FIT = You don't fit through a two-inch slit!
+  DONT_KNOW = Sorry, I don't know the word "%s".
+  DONT_UNDERSTAND = I'm afraid I don't understand.
+  DOUGHNUT_HOLES = I suppose you collect doughnut holes, too?
+  DO_WHAT = %s what?
+  DRAGON_SCALES = The axe bounces harmlessly off the dragon's thick scales.
+  DROP_CLAM = I advise you to put down the clam before opening it.  >STRAIN!<
+  DROP_OYSTER = I advise you to put down the oyster before opening it.  >WRENCH!<
+  DULL_RUMBLING = The air is filled with a dull rumbling sound.
+  DWARF_BLOCK = A little dwarf with a big knife blocks your way.
+  DWARF_DODGES = You attack a little dwarf, but he dodges out of the way.
+  DWARF_PACK = There are %d threatening little dwarves in the room with you.
+  DWARF_RAN = "A little dwarf just walked around a corner, saw you, threw a little\naxe at you which missed, cursed, and ran away."
+  DWARF_SINGLE = There is a threatening little dwarf in the room with you!
+  DWARF_SMOKE = "You killed a little dwarf.  The body vanishes in a cloud of greasy\nblack smoke."
+  DWARVES_AWAKEN = "The resulting ruckus has awakened the dwarves.  There are now several\nthreatening little dwarves in the room with you!  Most of them throw\nknives at you!  All of them get you!"
+  EXIT_CLOSED = "A mysterious recorded voice groans into life and announces:\n   \"This exit is closed.  Please leave via main office.\""
+  FEET_WET = Your feet are now wet.
+  FEW_DROPS = There are only a few drops--not enough to carry.
+  FILL_INVALID = There is nothing here with which to fill it.
+  FLAP_ARMS = Though you flap your arms furiously, it is to no avail.
+  FOLLOW_STREAM = "I don't know where the cave is, but hereabouts no stream can run on\nthe surface for long.  I would try the stream."
+  FOREST_QUERY = null
+  FORGOT_PATH = Sorry, but I no longer seem to remember how it was you got here.
+  FREE_FLY = The bird flies about agitatedly for a moment.
+  FULL_URN = The urn is already full of oil.
+  FUTILE_CRAWL = "You have crawled around in some little holes and wound up back in the\nmain passage."
+  GARNERED_POINTS = You have garnered %d out of a possible %d points, using %d turn%S.
+  GEM_FITS = The gem fits easily into the cavity.
+  GETS_YOU = It gets you!
+  GET_BATTERIES = Your lamp is getting dim.  You'd best go back for those batteries.
+  GO_UNNEEDED = "You don't have to say \"go\" every time; just specify a direction or, if\nit's nearby, name the place to which you wish to move."
+  GRATE_NOWAY = You can't go through a locked steel grate!
+  GROUND_WET = Your bottle is empty and the ground is wet.
+  HAND_PASSTHROUGH = Your hand passes through it as though it weren't there.
+  HINT_COST = I am prepared to give you a hint, but it will cost you %d point%S.
+  HUH_MAN = Huh?
+  KILLED_DWARF = You killed a little dwarf.
+  KNIFE_THROWN = One sharp nasty knife is thrown at you!
+  KNIVES_VANISH = The dwarves' knives vanish as they strike the walls of the cave.
+  LAMP_DIM = "Your lamp is getting dim.  You'd best start wrapping this up, unless\nyou can find some fresh batteries.  I seem to recall there's a vending\nmachine in the maze.  Bring some coins with you."
+  LAMP_OUT = Your lamp has run out of power.
+  LOST_APPETITE = I think I just lost my appetite.
+  LOUD_ROAR = The roar is quite loud here.
+  MISSES_YOU = It misses!
+  MISSING_BATTERIES = "Your lamp is getting dim, and you're out of spare batteries.  You'd\nbest start wrapping this up."
+  MULTIPLE_HITS = %d of them get you!
+  MURMURING_SNORING = "You can hear the murmuring of the beanstalks and the snoring of the\ndwarves."
+  MUST_DROP = "Something you're carrying won't fit through the tunnel with you.\nYou'd best take inventory and drop something."
+  NASTY_DRAGON = The dragon looks rather nasty.  You'd best not try to get by.
+  NEARBY = "I can only tell you what you see as you move about and manipulate\nthings.  I cannot tell you where remote things are."
+  NECKLACE_FLY = "The bird flies about agitatedly for a moment, then disappears through\nthe crack.  It reappears shortly, carrying in its beak a jade\nnecklace, which it drops at your feet."
+  NEEDED_NEARBY = I daresay whatever you want is around here somewhere.
+  NEED_DETAIL = I need more detailed instructions to do that.
+  NEXT_HIGHER = To achieve the next higher rating, you need %d more point%S.
+  NONE_HIT = None of them hits you!
+  NOTHING_EDIBLE = There's nothing here it wants to eat (except perhaps you).
+  NOTHING_HAPPENS = Nothing happens.
+  NOTHING_LOCKED = There is nothing here with a lock!
+  NOT_BRIGHT = (Uh, y'know, that wasn't very bright.)
+  NOT_CONNECTED = You can't get there from here.
+  NOT_KNOWHOW = I don't know how.
+  NOT_LOCKABLE = I don't know how to lock or unlock such a thing.
+  NOW_HOLDING = You are currently holding the following:
+  NO_CARRY = You're not carrying anything.
+  NO_CONTAINER = You have nothing in which to carry it.
+  NO_CROSS = There is no way across the fissure.
+  NO_HIGHER = "To achieve the next higher rating would be a neat trick!\nCongratulations!!"
+  NO_INOUT_HERE = "I don't know in from out here.  Use compass points or name something\nin the general direction you want to go."
+  NO_KEYS = You have no keys!
+  NO_LIQUID = There is nothing here with which to fill the bottle.
+  NO_LOCK = It has no lock.
+  NO_LOCKSITE = There is nothing here to which the chain can be locked.
+  NO_MEANING = You are unable to make anything of the splashing noise.
+  NO_MESSAGE = null
+  NO_MORE_DETAIL = "Sorry, but I am not allowed to give more detail.  I will repeat the\nlong description of your location."
+  NO_SEE = I see no %s here.
+  NO_TARGET = There is nothing here to attack.
+  NUMERIC_REQUIRED = This command requires a numeric argument.
+  OFF_SCALE = You just went off my scale!!
+  OGRE_DODGE = "The ogre, who despite his bulk is quite agile, easily dodges your\nattack.  He seems almost amused by your puny effort."
+  OGRE_FULL = The ogre doesn't appear to be hungry.
+  OGRE_PANIC1 = "The ogre, distracted by your rush, is struck by the knife.  With a\nblood-curdling yell he turns and bounds after the dwarves, who flee\nin panic.  You are left alone in the room."
+  OGRE_PANIC2 = "The ogre, distracted by your rush, is struck by the knife.  With a\nblood-curdling yell he turns and bounds after the dwarf, who flees\nin panic.  You are left alone in the room."
+  OGRE_SNARL = The ogre snarls and shoves you back.
+  OIL_URN = Your bottle is now empty and the urn is full of oil.
+  OKEY_DOKEY = Okay, "%s".
+  OK_MAN = OK
+  ONE_HIT = One of them gets you!
+  OYSTER_BLOCKER = You can't fit this five-foot oyster through that little passage!
+  OYSTER_OPENER = You don't have anything strong enough to open the oyster.
+  OYSTER_OPENS = "The oyster creaks open, revealing nothing but oyster inside.  It\npromptly snaps shut again."
+  PEARL_FALLS = "A glistening pearl falls out of the clam and rolls away.  Goodness,\nthis must really be an oyster.  (I never was very good at identifying\nbivalves.)  Whatever it is, it has now snapped shut again."
+  PECULIAR_NOTHING = Peculiar.  Nothing unexpected happens.
+  PIRATE_POUNCES = "Out from the shadows behind you pounces a bearded pirate!  \"Har, har,\"\nhe chortles, \"I'll just take all this booty and hide it away with me\nchest deep in the maze!\"  He snatches your treasure and vanishes into\nthe gloom."
+  PIRATE_RUSTLES = There are faint rustling noises from the darkness behind you.
+  PIRATE_SPOTTED = "There are faint rustling noises from the darkness behind you.  As you\nturn toward them, the beam of your lamp falls across a bearded pirate.\nHe is carrying a large chest.  \"Shiver me timbers!\" he cries, \"I've\nbeen spotted!  I'd best hie meself off to the maze to hide me chest!\"\nWith that, he vanishes into the gloom."
+  PITCH_DARK = It is now pitch dark.  If you proceed you will likely fall into a pit.
+  PIT_FALL = You fell into a pit and broke every bone in your body!
+  PLEASE_ANSWER = Please answer the question.
+  PROD_DWARF = "You prod the nearest dwarf, who wakes up grumpily, takes one look at\nyou, curses, and grabs for his axe."
+  REALLY_MAD = You fool, dwarves eat only coal!  Now you've made him *REALLY* mad!!
+  REALLY_QUIT = Do you really want to quit now?
+  REMOVE_MESSAGE = "You sift your fingers through the dust, but succeed only in\nobliterating the cryptic message."
+  REPLACE_BATTERIES = "Your lamp is getting dim.  I'm taking the liberty of replacing the\nbatteries."
+  REQUIRES_DYNAMITE = Blasting requires dynamite.
+  RESUME_ABANDON = To resume an earlier Adventure, you must abandon the current one.
+  RESUME_HELP = To resume your Adventure, start a new game and then say "RESUME".
+  RIDICULOUS_ATTEMPT = Don't be ridiculous!
+  ROCKY_TROLL = "Trolls are close relatives with the rocks and have skin as tough as\nthat of a rhinoceros.  The troll fends off your blows effortlessly."
+  RUG_GOES = "You board the Persian rug, which promptly whisks you across the chasm.\nYou have time for a fleeting glimpse of a two thousand foot drop to a\nmighty river; then you find yourself on the other side."
+  RUG_HOVERS = The rug hovers stubbornly where it is.
+  RUG_NOTHING1 = The rug does not appear inclined to cooperate.
+  RUG_NOTHING2 = "If you mean to use the Persian rug, it does not appear inclined to\ncooperate."
+  RUG_RETURNS = The rug ferries you back across the chasm.
+  RUG_RISES = The Persian rug stiffens and rises a foot or so off the ground.
+  RUG_SETTLES = The Persian rug settles gently to the ground.
+  RUG_WIGGLES = "The Persian rug draped over your shoulder seems to wriggle for a\nmoment, but then subsides."
+  RUSTY_DOOR = The door is extremely rusty and refuses to open.
+  SAVERESUME_DISABLED = Save and resume are disabled.
+  SAVE_TAMPERING = "A dark fog creeps in to surround you.  From somewhere in the fog you\nhear a stern voice.  \"This Adventure has been tampered with!  You have\nbeen dabbling in magic, knowing not the havoc you might cause thereby.\nLeave at once, before you do irrevocable harm!\"  The fog thickens,\nuntil at last you can see nothing at all.  Your vision then clears,\nand you find yourself back in The Real World."
+  SAYS_PLUGH = A hollow voice says "PLUGH".
+  SHAKING_LEAVES = The plant indignantly shakes the oil off its leaves and asks, "Water?"
+  SHATTER_VASE = The sudden change in temperature has delicately shattered the vase.
+  SHELL_IMPERVIOUS = The shell is very strong and is impervious to attack.
+  SNAKES_HISSING = A loud hissing emanates from the snake pit.
+  SNAKE_WARNING = Attacking the snake both doesn't work and is very dangerous.
+  SPLATTER_MESSAGE = "There is a loud explosion, and you are suddenly splashed across the\nwalls of the room."
+  START_OVER = What's the matter, can't you read?  Now you'd best start over.
+  STILL_LOCKED = The chain is still locked.
+  STREAM_GURGLES = The stream is gurgling placidly.
+  STREAM_SPLASHES = The stream splashes loudly into the pool.
+  SUSPEND_WARNING = "I can suspend your Adventure for you so that you can resume later, but\nit will cost you 5 points."
+  TAME_BEAR = You are being followed by a very large, tame bear.
+  THANKS_DELICIOUS = Thank you, it was delicious!
+  THIS_ACCEPTABLE = Is this acceptable?
+  THROWN_KNIVES = %d of them throw knives at you!
+  TOOK_LONG = It's a pity you took so long about it.
+  TOO_FAR = It is too far up for you to reach.
+  TOTAL_ROAR = The roaring is so loud that it drowns out all other sound.
+  TOTAL_SCORE = You scored %d out of a possible %d, using %d turn%S.
+  TROLL_BLOCKS = The troll refuses to let you cross.
+  TROLL_RETURNS = "The troll deftly catches the axe, examines it carefully, and tosses it\nback, declaring, \"Good workmanship, but it's not valuable enough.\""
+  TROLL_SATISFIED = The troll catches your treasure and scurries away out of sight.
+  TROLL_VICES = Gluttony is not one of the troll's vices.  Avarice, however, is.
+  TWIST_TURN = "Sorry, but the path twisted and turned so much that I can't figure\nout which way to go to get back."
+  TWO_WORDS = Please stick to 1- and 2-word commands.
+  UNHAPPY_BIRD = Oh, leave the poor unhappy bird alone.
+  UNSURE_FACING = I am unsure how you are facing.  Use compass points or nearby objects.
+  UPSTREAM_DOWNSTREAM = Upstream or downstream?
+  URN_GENIES = "As you rub the urn, there is a flash of light and a genie appears.\nHis aspect is stern as he advises: \"One who wouldst traffic in\nprecious stones must first learn to recognize the signals thereof.\"\nHe wrests the urn from the stone, leaving a small cavity.  Turning to\nface you again, he fixes you with a steely eye and intones: \"Caution!\"\nGenie and urn vanish in a cloud of amber smoke.  The smoke condenses\nto form a rare amber gemstone, resting in the cavity in the rock."
+  URN_NOBUDGE = The urn is far too firmly embedded for your puny strength to budge it.
+  URN_NOPOUR = There's no way to get the oil out of the urn.
+  VERSION_SKEW = "I'm sorry, but that Adventure was begun using Version %d.%d of the\nsave file format, and this program uses Version %d.%d.  You must find an instance\nusing that other version in order to resume that Adventure."
+  VICTORY_MESSAGE = "There is a loud explosion, and a twenty-foot hole appears in the far\nwall, burying the dwarves in the rubble.  You march through the hole\nand find yourself in the main office, where a cheering band of\nfriendly elves carry the conquering adventurer off into the sunset."
+  WANT_HINT = Do you want the hint?
+  WATERS_CRASHING = The waters are crashing loudly against the shore.
+  WATER_URN = "You empty the bottle into the urn, which promptly ejects the water\nwith uncanny accuracy, squirting you directly between the eyes."
+  WAYOUT_CLUE = "It says, \"There is a way out of this place.  Do you need any more\ninformation to escape?  Sorry, but this initial hint is all you get.\""
+  WAY_BLOCKED = "You have crawled around in some little holes and found your way\nblocked by a recent cave-in.  You are now back in the main passage."
+  WELCOME_YOU = Welcome to Adventure!!  Would you like instructions?
+  WELL_POINTLESS = Well, that was remarkably pointless!
+  WHAT_DO = What do you want to do with the %s?
+  WHERE_QUERY = Where?
+  WHICH_WAY = Which way?
+  WIND_WHISTLES = The wind whistles coldly past your ears.
+  WITHOUT_SUSPENDS = Now let's see you do it without suspending in mid-Adventure.
+  W_IS_WEST = If you prefer, simply type w rather than west.
+  YOU_HAVEIT = I believe what you want is right here with you.
+  YOU_JOKING = You can't be serious!
+%entity adv-hints
+  BIRD = {"hint":"Something about you seems to be frightening the bird.  Perhaps you\nmight figure out what it is.","number":2,"penalty":2,"question":"Are you trying to catch the bird?","turns":5}
+  CAVE = {"hint":"The grate is very solid and has a hardened steel lock.  You cannot\nenter without a key, and there are no keys nearby.  I would recommend\nlooking elsewhere for the keys.","number":1,"penalty":2,"question":"Are you trying to get into the cave?","turns":4}
+  CLIFF = {"hint":"This section is quite advanced.  Find the cave first.\n","number":7,"penalty":2,"question":"Are you wondering what to do here?","turns":8}
+  DARK = {"hint":"There is a way to explore that region without having to worry about\nfalling into a pit.  None of the objects available is immediately\nuseful in discovering the secret.","number":5,"penalty":5,"question":"Are you trying to explore beyond the plover room?","turns":25}
+  JADE = {"hint":"Once you've found all the other treasures, it is no longer possible to\nlocate the one you're now missing.","number":10,"penalty":4,"question":"You're missing only one other treasure.  Do you need help finding it?","turns":1}
+  MAZE = {"hint":"You can make the passages look less alike by dropping things.","number":4,"penalty":4,"question":"Do you need help getting out of the maze?","turns":75}
+  OGRE = {"hint":"There is nothing the presence of which will prevent you from defeating\nhim; thus it can't hurt to fetch everything you possibly can.","number":9,"penalty":4,"question":"Do you need help dealing with the ogre?","turns":10}
+  SNAKE = {"hint":"You can't kill the snake, or drive it away, or avoid it, or anything\nlike that.  There is a way to get by, but you don't have the necessary\nresources right now.","number":3,"penalty":2,"question":"Are you trying to somehow deal with the snake?","turns":8}
+  WITT = {"hint":"Don't go west.\n","number":6,"penalty":3,"question":"Do you need help getting out of here?","turns":20}
+  WOODS = {"hint":"Go east ten times.  If that doesn't get you out, then go south, then\nwest twice, then south.","number":8,"penalty":2,"question":"Would you like to be shown out of the forest?","turns":25}
+%entity adv-tables
+  classes = [{"message":null,"threshold":0},{"message":"You are obviously a rank amateur.  Better luck next time.","threshold":45},{"message":"Your score qualifies you as a novice class adventurer.","threshold":120},{"message":"You have achieved the rating: \"Experienced Adventurer\".","threshold":170},{"message":"You may now consider yourself a \"Seasoned Adventurer\".","threshold":250},{"message":"You have reached \"Junior Master\" status.","threshold":320},{"message":"Your score puts you in Master Adventurer Class C.","threshold":375},{"message":"Your score puts you in Master Adventurer Class B.","threshold":410},{"message":"Your score puts you in Master Adventurer Class A.","threshold":426},{"message":"All of Adventuredom gives tribute to you, Adventurer Grandmaster!","threshold":429},{"message":"Adventuredom stands in awe -- you have now joined the ranks of the\n       W O R L D   C H A M P I O N   A D V E N T U R E R S !\nIt may interest you to know that the Dungeon-Master himself has, to\nmy knowledge, never achieved this threshold in fewer than 330 turns.","threshold":9999}]
+  dwarflocs = ["LOC_KINGHALL","LOC_WESTBANK","LOC_Y2","LOC_ALIKE3","LOC_COMPLEX","LOC_MAZEEND12"]
+  obituaries = [{"query":"Oh dear, you seem to have gotten yourself killed.  I might be able to\nhelp you out, but I've never really done this before.  Do you want me\nto try to reincarnate you?","yes_response":"All right.  But don't blame me if something goes wr......\n                    --- POOF!! ---\nYou are engulfed in a cloud of orange smoke.  Coughing and gasping,\nyou emerge from the smoke and find...."},{"query":"You clumsy oaf, you've done it again!  I don't know how long I can\nkeep this up.  Do you want me to try reincarnating you again?","yes_response":"Okay, now where did I put my orange smoke?....  >POOF!<\nEverything disappears in a dense cloud of orange smoke."},{"query":"Now you've really done it!  I'm out of orange smoke!  You don't expect\nme to do a decent reincarnation without any orange smoke, do you?","yes_response":"Okay, if you're so smart, do it yourself!  I'm leaving!"}]
+  turn_thresholds = [{"message":"Tsk!  A wizard wouldn't have to take 350 turns.  This is going to cost\nyou a couple of points.","point_loss":2,"threshold":350},{"message":"500 turns?  That's another few points you've lost.","point_loss":3,"threshold":500},{"message":"Are you still at it?  Five points off for exceeding 1000 turns!","point_loss":5,"threshold":1000},{"message":"Good grief, don't you *EVER* give up?  Do you realize you've spent\nover 2500 turns at this?  That's another ten points off, a total of\ntwenty points lost for taking so long.","point_loss":10,"threshold":2500}]
+%link KEYS in LOC_BUILDING
+%link LAMP in LOC_BUILDING
+%link GRATE in LOC_GRATE
+%link CAGE in LOC_COBBLE
+%link ROD in LOC_DEBRIS
+%link STEPS in LOC_PITTOP
+%link BIRD in LOC_BIRDCHAMBER
+%link DOOR in LOC_IMMENSE
+%link PILLOW in LOC_SOFTROOM
+%link SNAKE in LOC_KINGHALL
+%link FISSURE in LOC_EASTBANK
+%link OBJ_13 in LOC_DARKROOM
+%link CLAM in LOC_SHELLROOM
+%link MAGAZINE in LOC_ANTEROOM
+%link FOOD in LOC_BUILDING
+%link BOTTLE in LOC_BUILDING
+%link MIRROR in LOC_MIRRORCANYON
+%link PLANT in LOC_WESTPIT
+%link PLANT2 in LOC_WESTEND
+%link OBJ_26 in LOC_TOPSTALACTITE
+%link OBJ_27 in LOC_WINDOW1
+%link OBJ_29 in LOC_ORIENTAL
+%link DRAGON in LOC_SECRET4
+%link CHASM in LOC_SWCHASM
+%link TROLL in LOC_SWCHASM
+%link BEAR in LOC_BARRENROOM
+%link VOLCANO in LOC_BREATHTAKING
+%link VEND in LOC_DEADEND13
+%link OBJ_40 in LOC_SOFTROOM
+%link OGRE in LOC_LARGE
+%link URN in LOC_CLIFF
+%link RESER in LOC_RESERVOIR
+%link RABBITFOOT in LOC_FOREST22
+%link OBJ_47 in LOC_DEBRIS
+%link OBJ_48 in LOC_NUGGET
+%link SIGN in LOC_ANTEROOM
+%link NUGGET in LOC_NUGGET
+%link OBJ_51 in LOC_WESTBANK
+%link OBJ_52 in LOC_FLOORHOLE
+%link OBJ_53 in LOC_SOUTHSIDE
+%link COINS in LOC_WESTSIDE
+%link EGGS in LOC_GIANTROOM
+%link TRIDENT in LOC_WATERFALL
+%link VASE in LOC_ORIENTAL
+%link EMERALD in LOC_PLOVER
+%link PYRAMID in LOC_DARKROOM
+%link RUG in LOC_SECRET4
+%link OBJ_63 in LOC_BOULDERS2
+%link CHAIN in LOC_BARRENROOM
+%link RUBY in LOC_STOREROOM
+%link SAPPH in LOC_LEDGE
+%link OBJ_69 in LOC_REACHDEAD
