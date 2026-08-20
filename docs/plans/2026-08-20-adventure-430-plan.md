@@ -153,6 +153,19 @@ Probe matrix first (S0 discipline: measure before designing; probes in
 `tmp/`, run on the container). Each confirmed gap = its own commit with
 trailers + reducer + test. Candidate list, ordered by need:
 
+**A1 STATUS: L1+L2+L4+L5+L6 LANDED @163f6908** (probe matrix green,
+tests/testvaluekeys.mad pins the contracts, 147/147 blast-radius subset
+green; testvaluecount's iterate-zero pin superseded by L5 — the
+count-vs-bound lesson now pins on the string kind). **L3 (value
+by-value returns) remains** — the retbuf path is user-class-gated
+(class_return_via_retbuf / function_retbuf_class); the carrier needs
+admission plus signature-emission and return-lowering audits (sret
+shape; madarray_construct_value is the copy-in). Deferred residues
+recorded: numeric extraction from a keyed read (`long n = bag["k"]`)
+is not a defined coercion — spell php:: converters/var destinations;
+`cout << bag["k"]` streaming admission unverified (printf coercion IS
+covered).
+
 **A1 PROBE RESULTS (2026-08-20, container, tmp/advprobes/, L0 control
 green):** ALL SIX CONFIRMED. L1 member access = PARSER error
 ("Unidentified member 'name' in 'array'" — `.name` resolves against the
