@@ -2447,6 +2447,42 @@ DataDef *Program::madc_array_element_type()
     return &ddINT64;
 }
 
+// Is this subscript INDEX a string KEY (`bag["k"]`, `bag[word]`) — the
+// carrier's object-kind keyed access — rather than an element index?
+// Char pointers (string literals included) and c_str()-bearing class
+// instances (std::string) are keys; every other index stays the element
+// path. The carrier itself is deliberately NOT a key type: `a[v]` with a
+// var index must stay an element read (spell `a[v.c_str()]` to key).
+bool Program::madc_array_key_index(TokenBase *idx)
+{
+    DataDef *dd = idx ? idx->datadef() : NULL;
+    if ( !dd )
+	return false;
+    if ( dd->is_pointer() )
+    {
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	return p && p->base_type
+	    && p->base_type->rawtype() == DataType::dtCHAR;
+    }
+    if ( dd->is_madc_array() )
+	return false;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    std::string cstr_name = "c_str";
+    return cls && cls->findMethod(cstr_name) != NULL;
+}
+
+// The type a madc array subscript produces, INDEX-AWARE: a string key
+// yields the carrier itself (`bag["k"]` is a value lvalue — the keyed
+// slot madarray_key_slot returns), any other index keeps the string-first
+// element model above. The token's ddARRAY typing IS the keyed marker the
+// CIR builder reads — element reads are never typed ddARRAY, so no flag
+// travels beside the type.
+DataDef *Program::madc_array_subscript_type(TokenBase *idx)
+{
+    return madc_array_key_index(idx) ? (DataDef *)&ddARRAY
+				     : madc_array_element_type();
+}
+
 // The ONE builtin-spelling -> canonical-DataDef table. Every C/C++ source
 // spelling of a builtin scalar resolves to the SAME canonical object the
 // lexer's type-specifier path emits (`int` -> ddINT32), so identity-sensitive
@@ -26188,9 +26224,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
 	    }
 	    else if ( !handled_fixed_array && base_type && base_type->is_madc_array() )
-		// madc array member chain (`s.a[0]`): element read,
-		// string-first typing (madc_array_element_type).
-		elem_type = madc_array_element_type();
+		// madc array member chain (`s.a[0]`, `s.bag["k"]`): index-aware —
+		// string keys type as the carrier (the keyed slot), element reads
+		// keep string-first typing (madc_array_subscript_type).
+		elem_type = madc_array_subscript_type(idx_expr);
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
@@ -33603,6 +33640,41 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 		    {
+			// The intrinsic carrier (`var o; o.name`): a dot member
+			// over the object kind is SUGAR for the keyed subscript
+			// `o["name"]` — rewrite to the same token shape
+			// (parser-typed ddARRAY) so ONE lowering owns keyed
+			// access (madarray_key_slot). Only the non-call form:
+			// real carrier methods resolved above, and a call form
+			// (`o.f(...)`) belongs to the UFCS fallback below,
+			// never to a bag slot.
+			if ( struct_type == &ddARRAY
+			  && (!peekToken() || peekToken()->id() != TokenID::tkOpBrk) )
+			{
+			    TokenStr *key = new TokenStr(id);
+			    key->file = tb->file;
+			    key->line = tb->line;
+			    key->column = tb->column;
+			    TokenBase *keyed;
+			    TokenVar *rtv = ( lhs_dot->type() == TokenType::ttVariable )
+				? dynamic_cast<TokenVar *>(lhs_dot) : NULL;
+			    if ( rtv )
+			    {
+				TokenSubscript *tsn = new TokenSubscript(rtv->var, key);
+				tsn->setDataType(&ddARRAY);
+				keyed = tsn;
+			    }
+			    else
+				keyed = new TokenSubscriptExpr(lhs_dot, key, &ddARRAY);
+			    keyed->file = tb->file;
+			    keyed->line = tb->line;
+			    keyed->column = tb->column;
+			    exStack.pop();	// the receiver
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+				opStack.pop();
+			    exStack.push(keyed);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			// [expr.ref]p4: `obj.member` naming a STATIC data member /
 			// in-class constant (possibly inherited) designates the
 			// static member; the object expression is discarded. This
@@ -35151,10 +35223,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
-			// madc array element read: string-first typing (the
-			// Python/PHP element model — see madc_array_element_type).
-			if ( tv->var.type && tv->var.type->is_madc_array() )
-			    tsn->setDataType(madc_array_element_type());
+			// madc array subscript, index-aware: a string KEY types
+			// as the carrier (the keyed slot); an element read keeps
+			// string-first typing (the Python/PHP element model —
+			// see madc_array_subscript_type). A `value &` receiver
+			// (reference parameter) denotes its referent carrier.
+			DataDef *sub_recv = tv->var.type;
+			if ( DataDef *ref = referent_if_reference(sub_recv) )
+			    sub_recv = ref;
+			if ( sub_recv && sub_recv->is_madc_array() )
+			    tsn->setDataType(madc_array_subscript_type(idx));
 			exStack.push(tsn);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
@@ -35243,10 +35321,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// SIMD vector subscript: v[i] yields the lane element type.
 			if ( elem_type && elem_type->is_simd() )
 			    elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
-			// madc array member (`s.a[0]`, `sys.argv[1]`): element
-			// read, string-first typing (madc_array_element_type).
+			// madc array member/chain (`s.a[0]`, `bag["k"]["j"]`):
+			// index-aware — a string KEY types as the carrier (the
+			// keyed slot), an element read keeps string-first typing
+			// (madc_array_subscript_type).
 			if ( elem_type && elem_type->is_madc_array() )
-			    elem_type = madc_array_element_type();
+			    elem_type = madc_array_subscript_type(idx);
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and

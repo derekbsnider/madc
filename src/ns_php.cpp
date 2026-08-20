@@ -20,6 +20,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
+#include <iterator>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
@@ -316,6 +317,34 @@ std::string *php_array_pop(std::string *result, madc::value *arr)
 	return result;
 }
 
+// The ONE nth-element resolver behind the range-for fetchers: array kind
+// answers its vector, the OBJECT kind answers the nth VALUE in key order
+// (std::map iteration order — deterministic; the keyed-access wave's L5
+// contract, docs/plans/2026-08-20-adventure-430-plan.md). NULL when out of
+// range or a non-container kind. Key access rides the keyed subscript /
+// php::array_key_exists, never an index.
+static const madc::value *php_container_nth(const madc::value *arr,
+					    int64_t index)
+{
+	if ( !arr || index < 0 )
+		return NULL;
+	if ( arr->is_array() )
+	{
+		const std::vector<madc::value> &data = arr->as_array();
+		return (size_t)index < data.size() ? &data[(size_t)index] : NULL;
+	}
+	if ( arr->is_object() )
+	{
+		const std::map<std::string, madc::value> &m = arr->as_object();
+		if ( (size_t)index >= m.size() )
+			return NULL;
+		std::map<std::string, madc::value>::const_iterator it = m.begin();
+		std::advance(it, (size_t)index);
+		return &it->second;
+	}
+	return NULL;
+}
+
 // php::array_get — get element at integer index as string
 std::string *php_array_get(std::string *result, madc::value *arr, int64_t index)
 {
@@ -330,15 +359,14 @@ std::string *php_array_get(std::string *result, madc::value *arr, int64_t index)
 	return result;
 }
 
-// php::array_get_int — get element at integer index as int
+// php::array_get_int — get element at integer index as int (array kind and,
+// per the L5 contract, the object kind's nth value in key order).
 int64_t php_array_get_int(madc::value *arr, int64_t index)
 {
-	if ( !arr->is_array() )
+	const madc::value *vp = php_container_nth(arr, index);
+	if ( !vp )
 		return 0;
-	const std::vector<madc::value> &data = arr->as_array();
-	if ( index < 0 || (size_t)index >= data.size() )
-		return 0;
-	const madc::value &v = data[(size_t)index];
+	const madc::value &v = *vp;
 	if ( v.is_integer() ) return v.as_integer();
 	if ( v.is_real() ) return (int64_t)v.as_real();
 	if ( v.is_string() ) { try { return std::stoll(v.as_string()); } catch(...) { return 0; } }
@@ -349,35 +377,26 @@ int64_t php_array_get_int(madc::value *arr, int64_t index)
 // ELEMENT (`for (value v : a)`), where the int/cstr fetchers above lose the
 // element's kind. A COPY by design: elements have no stable address (the same
 // model that refuses `value &v`), and value::operator= is the one owner of
-// retagging + freeze rejection. Out of range / non-array resets dst to null —
-// the generated loop is bounded by madarray_size so it cannot reach this, but
-// a host calling directly must not read the previous iteration's value.
+// retagging + freeze rejection. Out of range / non-container resets dst to
+// null — the generated loop is bounded by madarray_size so it cannot reach
+// this, but a host calling directly must not read the previous iteration's
+// value.
 void php_array_get_value(madc::value *arr, int64_t index, madc::value *dst)
 {
 	if ( !dst )
 		return;
-	if ( arr && arr->is_array() )
-	{
-		const std::vector<madc::value> &data = arr->as_array();
-		if ( index >= 0 && (size_t)index < data.size() )
-		{
-			*dst = data[(size_t)index];
-			return;
-		}
-	}
-	*dst = madc::value();
+	if ( const madc::value *v = php_container_nth(arr, index) )
+		*dst = *v;
+	else
+		*dst = madc::value();
 }
 
 const char *php_array_get_cstr(madc::value *arr, int64_t index)
 {
 	thread_local std::string res;
 	res.clear();
-	if ( arr->is_array() )
-	{
-		const std::vector<madc::value> &data = arr->as_array();
-		if ( index >= 0 && (size_t)index < data.size() )
-			ns_common::value_to_string(data[(size_t)index], res);
-	}
+	if ( const madc::value *v = php_container_nth(arr, index) )
+		ns_common::value_to_string(*v, res);
 	return res.c_str();
 }
 
@@ -398,6 +417,32 @@ int64_t php_in_array(const char *needle, madc::value *arr)
 	for ( auto &v : arr->as_array() )
 		if ( v.is_string() && v.as_string() == n )
 			return 1;
+	return 0;
+}
+
+// php::array_key_exists — PHP parity (key first): does the key exist in the
+// container? Object kind answers the map (string key, or the int key's
+// decimal spelling — PHP coerces int keys); array kind answers the index
+// range for an int key. Never vivifies — this is THE non-mutating
+// existence question beside the vivifying keyed subscript
+// (madarray_key_slot).
+int64_t php_array_key_exists(const char *key, madc::value *arr)
+{
+	if ( !arr || !key )
+		return 0;
+	if ( arr->is_object() )
+		return arr->as_object().count(key) ? 1 : 0;
+	return 0;
+}
+
+int64_t php_array_key_exists_int(int64_t key, madc::value *arr)
+{
+	if ( !arr )
+		return 0;
+	if ( arr->is_array() )
+		return (key >= 0 && (size_t)key < arr->as_array().size()) ? 1 : 0;
+	if ( arr->is_object() )
+		return arr->as_object().count(std::to_string(key)) ? 1 : 0;
 	return 0;
 }
 
@@ -582,6 +627,8 @@ const char *__php_array_get_cstr(madc::value *a, int64_t b) { return php_array_g
 void __php_array_get_value(madc::value *a, int64_t b, madc::value *c) { php_array_get_value(a, b, c); }
 void __php_array_reverse(madc::value *a) { php_array_reverse(a); }
 int64_t __php_in_array(const char *a, madc::value *b) { return php_in_array(a, b); }
+int64_t __php_array_key_exists(const char *a, madc::value *b) { return php_array_key_exists(a, b); }
+int64_t __php_array_key_exists_int(int64_t a, madc::value *b) { return php_array_key_exists_int(a, b); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }
 void __php_array_unique(madc::value *a) { php_array_unique(a); }
 std::string *__php_array_shift(std::string *a, madc::value *b) { return php_array_shift(a, b); }

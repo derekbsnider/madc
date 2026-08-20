@@ -4606,6 +4606,12 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 {
 	if (class_subscript_is_object(arg) || class_array_subscript_is_object(arg))
 		return true;
+	// A KEYED carrier subscript (`bag["k"]`, `bag.k`) is a value lvalue —
+	// admit it so the coercion/addressing arms fire (object_cstr_arg in
+	// char*/varargs positions); the raw pass handed printf the slot's
+	// payload words (SIGSEGV in _IO_printf).
+	if (is_carrier_keyed_subscript(arg))
+		return true;
 	// type() discriminators gate the downcasts: TokenCallMethod derives
 	// from TokenMember which derives from TokenCallFunc which derives from
 	// TokenVar — an ungated downcast would classify a method CALL (an
@@ -5816,6 +5822,28 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
 	if (!target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	// A KEYED carrier subscript (`bag["k"]`, `bag.k` over the carrier): its
+	// translation is N_DEREF(madarray_key_slot(...)) — a value lvalue whose
+	// address is the slot call itself (&* folds). Bind it directly so
+	// receivers and operator= writes hit the LIVE map slot; the
+	// materializing tail below would copy into a temp and silently drop
+	// every write.
+	if (target == &ddARRAY && is_carrier_keyed_subscript(arg))
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
+
+	// A REFERENCE-to-carrier variable (`value &v` parameter: `v = 5`, or
+	// v passed on as a value argument): the reference is pointer-stored —
+	// its object address is the stored pointer (object_var_addr's rule),
+	// never a materialized copy (which would silently drop writes).
+	if (target == &ddARRAY && arg
+	    && arg->type() == TokenType::ttVariable
+	    && arg->datadef() && arg->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(arg->datadef())) == &ddARRAY)
+		if (TokenVar *rtv = dynamic_cast<TokenVar *>(arg))
+			return node2(N_CAST, void_ptr_type(),
+				     object_var_addr(rtv->var, arg), arg);
 
 	// An AGGREGATE REFERENCE MEMBER (`_Alloc& __alloc_`, stored as a pointer
 	// slot) denotes its referent ([expr.ref]): the member's stored VALUE
@@ -11600,6 +11628,62 @@ node_t CirBuilder::madc_array_subscript_read(node_t container_void,
 	return id(name, origin);
 }
 
+// Is this token a KEYED carrier subscript (`bag["k"]`, `bag[word]`)? The
+// parser's typing IS the marker: madc_array_subscript_type types a keyed
+// subscript as ddARRAY itself, and element reads are never typed ddARRAY —
+// so the test is the token shape plus its recorded type, re-deriving
+// nothing. Covers both the named-variable (TokenSubscript) and
+// expression-base (TokenSubscriptExpr) shapes.
+bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
+{
+	if (!tb || tb->type() != TokenType::ttSubscript)
+		return false;
+	if (unqualified_type(tb->datadef()) != &ddARRAY)
+		return false;
+	// A `value &` receiver (reference parameter) denotes its referent
+	// carrier — unwrap the reference representation before the test.
+	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb)) {
+		DataDef *rt = tsub->object.type;
+		if (rt && rt->is_reference())
+			rt = ref_param_referent(rt);
+		return is_array_object(rt);
+	}
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb)) {
+		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
+		if (bt && bt->is_reference())
+			bt = ref_param_referent(bt);
+		return is_array_object(bt);
+	}
+	return false;
+}
+
+// The keyed-slot call for a carrier subscript: madarray_key_slot(recv, key)
+// — the runtime returns the (vivified) map entry's address, so the call IS
+// the slot lvalue's address; N_DEREF of it is the value lvalue the
+// expression lanes return (&* folds back to the call at every consumer
+// that addresses it). recv_void: (void*)-cast node addressing the carrier.
+// The key argument: a char pointer passes through; a c_str()-bearing class
+// (std::string) coerces through object_cstr_arg — the one existing
+// class-to-cstr owner.
+node_t CirBuilder::carrier_key_slot_call(node_t recv_void, TokenBase *key,
+					 TokenBase *origin)
+{
+	need_output_extern("madarray_key_slot", true,
+			   { { {N_VOID}, true }, { {N_CHAR}, true } },
+			   { N_CHAR });
+	node_t karg;
+	if (is_char_pointer(key ? key->datadef() : NULL))
+		karg = translate_expr(key);
+	else
+		karg = object_cstr_arg(key);
+	node_t a = list();
+	append(a, recv_void);
+	append(a, karg);
+	node_t call = node2(N_CALL, id("madarray_key_slot", origin), a, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
 // A member flattened in from a BASE subobject (member_origin >= 0) belongs to
 // that base's lifetime whenever the base's own constructor ran. Constructing it
 // again here re-runs a constructor on an already-constructed object, and when
@@ -16945,6 +17029,20 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		|| top->left->type() == TokenType::ttMember)
 	    && unqualified_type(top->left->datadef()) == &ddARRAY)
 		lcls = &ddARRAY;
+	// A `value &` variable lvalue (`void f(value &v) { v = 5; }`): the
+	// reference denotes a carrier lvalue — same admission; the receiver
+	// address is the stored pointer (object_arg_addr's reference arm).
+	if (!lcls && top->left
+	    && top->left->type() == TokenType::ttVariable
+	    && top->left->datadef() && top->left->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(top->left->datadef())) == &ddARRAY)
+		lcls = &ddARRAY;
+	// A KEYED carrier subscript lvalue (`bag["k"] = x`, `bag.k = x`): the
+	// map slot is a value lvalue — admit ddARRAY so the registered
+	// operator= family (madarray_assign_*) resolves; the receiver address
+	// is the slot call itself (object_arg_addr's keyed arm).
+	if (!lcls && is_carrier_keyed_subscript(top->left))
+		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
@@ -19669,6 +19767,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
+			// KEYED carrier access (`bag["k"]` — parser-typed ddARRAY;
+			// `value &` receivers included, whose stored pointer IS
+			// the carrier's address): the value lvalue over the
+			// vivified map slot. Checked before the plain-carrier
+			// gate below, which sees only the unwrapped object type.
+			if (is_carrier_keyed_subscript(tsub))
+				return node1(N_DEREF, carrier_key_slot_call(
+					node2(N_CAST, void_ptr_type(), base, tb),
+					tsub->index, tb), tb);
 			// madc array element read (`arr[i]`): route through the
 			// runtime getters — a raw N_IND would index the value
 			// object's long[] buffer words.
@@ -19721,12 +19828,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// getters — a raw N_IND would index the value object's
 			// long[] buffer words.
 			if (tse->base_expr && tse->base_expr->datadef()
-			    && is_array_object(tse->base_expr->datadef()))
+			    && is_array_object(tse->base_expr->datadef())) {
+				// KEYED access on an expression base (`s.bag["k"]`,
+				// a `bag["a"]["b"]` chain): the base's own
+				// translation is a value lvalue (a buffer field, or
+				// the previous link's N_DEREF(slot)); its address is
+				// the receiver — &* folds chains back to slot calls.
+				if (is_carrier_keyed_subscript(tse))
+					return node1(N_DEREF, carrier_key_slot_call(
+						node2(N_CAST, void_ptr_type(),
+						      node1(N_ADDR,
+							    translate_expr(tse->base_expr),
+							    tb), tb),
+						tse->index, tb), tb);
 				return madc_array_subscript_read(
 					node2(N_CAST, void_ptr_type(),
 					      translate_expr(tse->base_expr), tb),
 					translate_expr(tse->index),
 					as_class_instance(tse->datadef()), tb);
+			}
 			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested

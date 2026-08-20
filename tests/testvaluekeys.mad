@@ -1,0 +1,109 @@
+// Keyed access on the value carrier — the object kind's script surface
+// (Wave L of the Adventure feeder plan, docs/plans/2026-08-20-adventure-430-plan.md).
+//
+// - bag["key"] is a value LVALUE over the vivified map slot
+//   (madarray_key_slot): writes retag the slot through the registered
+//   operator= family, reads coerce like any value expression.
+// - bag.key is SUGAR for bag["key"] (the parser rewrites carrier dot
+//   members to the same keyed-subscript shape).
+// - Access VIVIFIES (Perl model): touching a missing key creates it as
+//   null. The non-mutating existence question is php::array_key_exists
+//   (PHP parity: key first). This test PINS that contract.
+// - Keyed access on a scalar-kind carrier is a real script error,
+//   catchable as `catch (const char *)` — never a silent retag.
+// - Range-for over an object bag visits the VALUES in key order
+//   (std::map order — deterministic).
+#include <cstdio>
+#include <string>
+#include <ns_php>
+#include <ns_madc>
+
+void fill(value &bag)
+{
+	// L4: a value& parameter is a live carrier lvalue — keyed writes
+	// and a whole-carrier retag both hit the caller's object.
+	bag["fuel"] = 6;
+	bag["lit"] = false;
+}
+
+int main()
+{
+	// Literal keys, one write per scalar kind, subscript reads.
+	var o;
+	o["name"] = "lamp";
+	o["fuel"] = 6;
+	o["lit"] = true;
+	o["weight"] = 2.5;
+	printf("name=%s fuel=%s lit=%s weight=%s\n",
+	       o["name"], o["fuel"], o["lit"], o["weight"]);
+	printf("count=%lld\n", o.count());
+
+	// Dot-member sugar: same bag, both spellings, both directions.
+	o.owner = "hero";
+	printf("owner=%s via-sub=%s\n", o.owner, o["owner"]);
+	o["state"] = "bright";
+	printf("state-via-dot=%s\n", o.state);
+
+	// Runtime keys: a std::string key coerces through c_str.
+	std::string k = "fuel";
+	printf("runtime-key=%s\n", o[k]);
+
+	// Nested chains vivify level by level (dot and subscript mix).
+	var w;
+	w["lamp"]["fuel"] = 9;
+	w.cave.dark = true;
+	printf("nested=%s dark=%s\n", w["lamp"]["fuel"], w.cave.dark);
+
+	// Carrier copy is a DEEP copy: mutating the copy leaves the source.
+	var c = o;
+	c["name"] = "clone";
+	printf("src=%s copy=%s\n", o["name"], c["name"]);
+
+	// value-to-value keyed assignment copies the whole tagged payload.
+	var v2;
+	v2["taken"] = o["name"];
+	printf("taken=%s\n", v2["taken"]);
+
+	// Existence is php::array_key_exists — and ACCESS vivifies (pinned).
+	printf("has-fuel=%d has-ghost=%d\n",
+	       (int)php::array_key_exists("fuel", o),
+	       (int)php::array_key_exists("ghost", o));
+	printf("touch=%s\n", o["ghost"]);
+	printf("ghost-after-touch=%d\n", (int)php::array_key_exists("ghost", o));
+
+	// Object bags iterate their VALUES in key order.
+	var it;
+	it["a"] = 1;
+	it["b"] = "two";
+	it["c"] = true;
+	long n = 0;
+	for ( value e : it )
+		n = n + 1;
+	printf("visited=%ld\n", n);
+
+	// array_key_exists on the array kind: index-range answer.
+	array arr;
+	php::array_push(arr, "zero");
+	printf("arr0=%d arr9=%d\n",
+	       (int)php::array_key_exists(0, arr),
+	       (int)php::array_key_exists(9, arr));
+
+	// A value& parameter mutates the caller's bag (L4).
+	var lamp;
+	fill(lamp);
+	printf("fill-fuel=%s fill-lit=%s\n", lamp["fuel"], lamp["lit"]);
+
+	// Keyed access on a scalar kind is a catchable script error.
+	var s;
+	s = 42;
+	try {
+		s["k"] = 1;
+		printf("no-throw\n");
+	} catch (const char *m) {
+		printf("caught: %s\n", m);
+	}
+
+	// The dump intrinsics walk a script-built bag.
+	php::print_r(o);
+	return 0;
+}

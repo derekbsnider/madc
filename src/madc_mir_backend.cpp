@@ -81,15 +81,22 @@ void *madarray_construct_bool(void *ptr, int64_t b)
     { return new(ptr) madc::value(b != 0); }
 void *madarray_construct_value(void *ptr, void *src)
     { return new(ptr) madc::value(*(const madc::value *)src); }
-// Range-for length over a script array. Intentionally NOT
-// ns_common::value_count: foreach iterates indexed elements only, so an
-// object-kind ctx must read as length 0 here.
+// Range-for length over a script array OR object bag. Arrays count their
+// elements; the object kind counts its map entries (`for (value v : bag)`
+// visits the VALUES in key order — php_array_get_value's object arm is the
+// matching fill). Scalars still read 0. Intentionally NOT
+// ns_common::value_count (that answers .count() with text-length semantics
+// and a script exception for uncountable kinds).
 // int64_t, never `long`: the CIR declares these thunk slots as long long
 // (the i64 spelling law), and host `long` is 32-bit on win64 (LLP64).
 int64_t madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;
-	return v->is_array() ? (int64_t)v->as_array().size() : 0;
+	if ( v->is_array() )
+	    return (int64_t)v->as_array().size();
+	if ( v->is_object() )
+	    return (int64_t)v->as_object().size();
+	return 0;
     }
 
 // The script .count()/.size() methods (add_array_methods binds both here).
@@ -138,6 +145,30 @@ void *madarray_assign_bool(void *ptr, int64_t b)
     { *(madc::value *)ptr = madc::value(b != 0); return ptr; }
 void *madarray_assign_value(void *ptr, void *src)
     { *(madc::value *)ptr = *(const madc::value *)src; return ptr; }
+
+// String-keyed SLOT on the object kind — the lvalue behind `bag["key"]`
+// (and the parser's `bag.key` member spelling over the carrier). Vivifies
+// a null carrier to an empty object, then returns the address of the
+// (default-constructed-if-missing) map entry — Perl-model autovivification:
+// ACCESS creates the slot, reads included; the non-mutating existence
+// question is php::array_key_exists, never this. std::map nodes are
+// stable, so the returned slot stays valid for the entry's lifetime.
+// A scalar already in the carrier is a real script error (replacing it
+// with an object would eat data — retag the carrier first), and freeze()
+// rejection rides madc::value::object() (the one owner); both surface as
+// catchable script errors, never a C++ throw across the MIR boundary.
+void *madarray_key_slot(void *ptr, const char *key)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_null() && !v->is_object() )
+	    __madc_throw_cstr("[\"key\"]: value of this kind has no keyed members");
+	try {
+	    return &v->object()[key ? key : ""];
+	} catch ( const std::exception & ) {
+	    __madc_throw_cstr("[\"key\"]: value is frozen");
+	}
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
 
 // Text view of a value for C varargs (printf "%s") — the coercion the CIR
 // builder applies to a value argument in a variadic call. String kind

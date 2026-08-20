@@ -5743,6 +5743,11 @@ public:
     // Element type for madc `array` subscript READS (string-first — the
     // Python/PHP element model; long fallback when no string class is known).
     DataDef *madc_array_element_type();
+    // Keyed-subscript classification for the carrier: string-typed index =
+    // object-kind KEY access; the subscript then types as ddARRAY (the
+    // keyed marker the CIR builder reads). See parser.cpp for the rules.
+    static bool madc_array_key_index(TokenBase *idx);
+    DataDef *madc_array_subscript_type(TokenBase *idx);
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in

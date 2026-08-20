@@ -30,6 +30,8 @@ extern "C" {
     const char *__php_array_get_cstr(array *, int64_t);
     void __php_array_reverse(array *);
     int64_t __php_in_array(const char *, array *);
+    int64_t __php_array_key_exists(const char *, value *);
+    int64_t __php_array_key_exists_int(int64_t, value *);
     int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
     std::string *__php_array_shift(std::string *, array *);
@@ -79,6 +81,14 @@ namespace php {
     const char *array_get_cstr(array &values, int64_t index) { return __php_array_get_cstr(&values, index); }
     void array_reverse(array &values) { __php_array_reverse(&values); }
     int64_t in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    // PHP parity (key FIRST): does the key exist in the container? The
+    // object kind answers its map; an int key answers the array kind's
+    // index range (and the int key's decimal spelling on an object bag).
+    // Never vivifies — the existence question beside the vivifying keyed
+    // subscript bag["k"].
+    bool array_key_exists(const char *key, value &values) { return __php_array_key_exists(key, &values) != 0; }
+    bool array_key_exists(std::string &key, value &values) { return __php_array_key_exists(key.c_str(), &values) != 0; }
+    bool array_key_exists(int64_t key, value &values) { return __php_array_key_exists_int(key, &values) != 0; }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
     std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }

@@ -6,10 +6,12 @@
 // a whole release because count/size were bound to the range-for BOUND
 // (madarray_size), which answers a different question.
 //
-// The last block proves the two questions stayed SEPARATE: a range-for over an
-// object-kind carrier still iterates ZERO times (the bound reads 0 there —
-// foreach walks indexed elements only), while .count() on the same carrier
-// answers 2.
+// The last block proves the two questions stayed SEPARATE: a range-for over a
+// STRING-kind carrier iterates ZERO times (the bound reads 0 — foreach walks
+// container elements only, never text), while .count() on the same carrier
+// answers its length. Object bags DO iterate (their values, in key order) —
+// the keyed-access wave's contract (docs/plans/2026-08-20-adventure-430-plan.md,
+// Wave L5), which superseded the original iterate-zero pin here.
 #include <cstdio>
 #include <ns_php>
 #include <ns_madc>
@@ -54,13 +56,21 @@ int main()
 		printf("boolean count -> caught: %s\n", m);
 	}
 
-	// The foreach bound is NOT .count(): object kind iterates zero times.
+	// The foreach bound is NOT .count(): a TEXT kind iterates zero times
+	// while its count() is the length.
 	long visited = 0;
+	for ( string e : s )
+		visited = visited + 1;
+	printf("string  foreach visited=%ld (count=%lld)\n", visited, s.count());
+
+	// Object bags iterate their VALUES in key order (Wave L5).
+	visited = 0;
 	for ( string e : ctx )
 		visited = visited + 1;
 	printf("object  foreach visited=%ld (count=%lld)\n", visited, ctx.count());
 
 	// And over the real array both agree.
+	visited = 0;
 	for ( string e : a )
 		visited = visited + 1;
 	printf("array   foreach visited=%ld (count=%lld)\n", visited, a.count());

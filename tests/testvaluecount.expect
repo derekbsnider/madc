@@ -5,5 +5,6 @@ object  count=2 size=2
 integer count -> caught: count(): integer value is not countable
 real    count -> caught: count(): real value is not countable
 boolean count -> caught: count(): boolean value is not countable
-object  foreach visited=0 (count=2)
+string  foreach visited=0 (count=5)
+object  foreach visited=2 (count=2)
 array   foreach visited=3 (count=3)
