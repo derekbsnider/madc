@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-08-19, v0.91.0 — `<iomanip>` manipulator objects):**
+> **Current (2026-08-20, v0.92.0 — bare `cout << value` + std::format/
+> print/println intrinsics):** authoritative Linux fulltest **1104 passed /
+> 0 failed / 0 timed out / 9 skipped**; **1113 tests compiled with ZERO
+> warnings**; EXE **1063/0**, OBJ **1063/0**, packed **1104/0/0/9**,
+> headerless **1077/0/36skip**, release rc=0 — one merge-wave battery.
+> New: `testvaluecout`/`testvaluecoutorder`/`testvaluecoutsstream` (the
+> value inserter as always-included surface, guard-keyed injection),
+> `teststdprint`/`teststdformat`/`teststdprintvalue`/`teststdformaterr`
+> (the formatting intrinsics; plus `test_rt_format`, 4334 unit assertions
+> against 1430 generated libstdc++ oracle rows), `testcastsizeof` (cast of
+> paren-less sizeof — front-end fix found by the AOT ledger parse of the
+> new engine).
+>
+> **Previous (2026-08-19, v0.91.0 — `<iomanip>` manipulator objects):**
 > authoritative Linux fulltest **1096 passed / 0 failed / 0 timed out /
 > 9 skipped**; **1105 tests compiled with ZERO warnings**; EXE **1056/0**,
 > OBJ **1056/0**, packed **1096/0/0/9**, headerless **1069/0/36skip**

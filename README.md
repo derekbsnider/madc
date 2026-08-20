@@ -210,39 +210,38 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.91.0** — `<iomanip>` manipulator objects work:
-`setprecision`, `setw`, `setfill`.
+The current release is **v0.92.0** — bare `cout << value` with zero
+includes, and `std::format` / `std::print` / `std::println` as
+always-included madc intrinsics.
 
-Parametrized manipulators are plain structs consumed by free `operator<<`
-templates, and both free-operator template lanes assumed class-hood — the
-char inserter claimed `cout << setprecision(3)` and `_Setfill<char>` was
-refused outright; struct arguments now resolve like class arguments, oracled
-byte-identical against g++ and clang++, including manipulators applying to a
-streamed `value`. Same-day siblings — v0.90.0: the value/array carrier has
-real registered constructors, so
-`value(-7)` temporaries and `value v(7);` declarations construct instead of
-leaving a garbage-kind buffer (previously a near-silent SIGSEGV). The layer
-chain under it was fixed the whole way down: external-ctor extern
-prototypes type their scalars correctly (a double no longer truncates
-through a GPR), loop-header temporaries are built per-iteration in their
-own statement-expression scope, c2mir reads a statement expression's value
-from its last statement AS WRITTEN (not the appended cleanup call —
-generic fork fix, MIR c-tests at exact baseline), and
-`for (string s("ab"); ...)` parses; v0.89.0 made `php::array_push` one
-overloaded name returning the new count.
+`madc::value` is an inherent madc-mode type, so streaming one to cout no
+longer depends on any `#include` or include order — its inserter
+declaration is injected by the lexer at the completion of whichever
+include first defines the ostream guard. And the C++23 formatting surface
+is simply part of madc: `std::println("x={} y={:.3f}", x, y)` works in a
+bare script with zero header parse. The compiler validates literal format
+strings at compile time (the C++23 contract, no consteval machinery) and
+lowers each field to a strict-C11 engine pinned byte-for-byte to real
+libstdc++ `std::format` by 1430 generated oracle rows — shortest
+round-trip float defaults, bit-exact hex floats, the works. `std::format`
+returns a real `std::string`; `value`/`var` arguments format as their
+contained kind. The arc also flushed out and fixed a front-end defect
+(`(long long)sizeof chunk` — a cast of a paren-less sizeof) and recorded
+one libstdc++ 13 defect with evidence (`{:#.0f}` of DBL_MAX corrupts its
+buffer).
 
-Branch state: v0.91.0 is released on `develop`. `master` carries v0.82.0, for
+Branch state: v0.92.0 is released on `develop`. `master` carries v0.82.0, for
 which public binaries are published on all three platforms; v0.83.0 through
-v0.91.0 are released on `develop` and unpromoted.
+v0.92.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1096 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1056/0**, OBJ lane **1056/0**; packed suite **1096/0/0/9**
+- Linux JIT: **1104 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1063/0**, OBJ lane **1063/0**; packed suite **1104/0/0/9**
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1069/0/0/36**,
+- headerless (no headers on disk anywhere): Linux **1077/0/0/36**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -255,6 +254,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
+  includes) + std::format/print/println as always-included intrinsics.
 - [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
   setprecision/setw/setfill; plain structs in free-operator resolution.
 - [v0.90.0](docs/release-notes/v0.90.0.md) — `value(N)` constructs:

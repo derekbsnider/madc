@@ -1,5 +1,47 @@
 # std::print / std::println / std::format as madc intrinsics
 
+**Status:** SLICES 1+2 EXECUTED 2026-08-20 (engine @ `rt_format:` commit,
+intrinsics + lowering @ the slice-2 commit; ships in v0.92.0). Phase 2
+(vformat/runtime strings) and the residues below remain open.
+
+## Executed notes (what the plan didn't know)
+
+- The format string reaches the lowering as the `__literal__<text>`
+  const char* Variable (addLiteral), not a TokenStr — the bytes are the
+  name suffix, a convention three other builder sites already read.
+- The by-value std::string return walks the call into class-return
+  ELISION lanes that emit the callee symbol directly, bypassing the
+  translate_expr intercept: `object_call_temp_addr` (operand shapes)
+  now delegates to lower_format_call; the decl-init same-class elision
+  declines intrinsics. Any future intrinsic returning a class BY VALUE
+  must audit `git grep call_target_emit_name` the same way.
+- Oracle findings: expected strings can embed NUL ("{:5c}" of 0 — the
+  fixture rows carry explicit lengths); libstdc++ 13's "{:#.0f}" of
+  DBL_MAX returns a corrupt buffer (byte 0 NUL, digits shifted;
+  tmp/fmt/maxf.cpp) — cell excluded with evidence, engine keeps printf's
+  correct output. Candidate upstream GCC report.
+- 'c' presentation accepts exactly char's SIGNED range (-42 → byte
+  \326, 255 throws); precision-less 'a'/'A' must be built bit-exactly
+  from the double (printf %a prints denormals un-normalized).
+- libstdc++ 13 treats char strings as BYTE strings (width counts bytes,
+  precision truncates mid-UTF-8 — the 3-byte € probe) — pinned as-is.
+
+## Residues (open, named)
+
+1. **`var s = std::format(...)` errors loudly** — madc::value has no
+   std::string ctor/assign ingestion overload (madarray_construct_* has
+   cstr/int/real/bool/value only). Follow-up: add the std::string lane.
+2. **Phase 2**: std::vformat / runtime format strings (the engine
+   already runs the same grammar at runtime by construction).
+3. Width/precision from arguments (`{:{}}`) — refused with a named
+   message; cheap once wanted.
+4. `#include <format>` / `<print>` SPELLINGS in madc mode (embedded
+   provider stubs) — deferred; the bare identifiers are the surface.
+5. `std::println()` zero-arg (bare newline) — the declaration requires
+   a format string; add the overload if wanted.
+6. No locale `L`, chrono/ranges formatting, wide output, or user
+   `formatter<T>` — refused by name (parity: mostly ill-formed anyway).
+
 **Status:** PLANNED (owner approved 2026-08-19: "yes, let's do it").
 **Owner constraint (verbatim intent):** these are "just part of madc without
 being slowed down by having madc parsing all kinds of expensive c++ headers" —

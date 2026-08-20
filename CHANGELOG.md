@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+## [v0.92.0] — 2026-08-20
+
+Bare `cout << value` with ZERO includes, and `std::format` / `std::print` /
+`std::println` as always-included madc intrinsics.
+
+- **`cout << value` needs no includes** (owner law: `madc::value` is an
+  inherent madc-mode type). The v0.88.0 stream operator was declared only
+  in `<ns_madc>` behind the ostream include guard, so the bare script
+  `var test = "hello"; cout << test << endl;` failed ("shift operands
+  should be of an integer type") and `<ns_madc>` before `<iostream>`
+  compiled the declaration out. The declaration is now a compiler-owned
+  fragment (`include/madc/bits/value_stream`) the lexer injects ONCE at
+  the completion of whichever include first defines the ostream guard —
+  keyed on the GUARD macro, not a header name, so `<fstream>`/`<sstream>`
+  arm it too, top-level completions only, madc dialect only. Gates:
+  `testvaluecout` (the reducer verbatim), `testvaluecoutorder`,
+  `testvaluecoutsstream`.
+- **`std::format` / `std::print` / `std::println` are part of madc** —
+  zero includes, zero header parse: `std::println("x={} y={:.3f}", x, y)`
+  just works in a bare script. Declaration-only variadic templates in
+  `<bits/std_format>` (auto-included on the bare identifiers), lowered by
+  the compiler (`src/cir_format.cpp`): the LITERAL format string is
+  parsed and validated at COMPILE time by the same strict-C11 engine the
+  runtime uses (`src/rt/rt_format.c`, in the AOT ledger), so bad
+  presentation types, bad indexes and malformed strings are compile
+  errors — the C++23 contract with no consteval machinery. The engine is
+  pinned byte-for-byte to libstdc++ std::format by 1430 generated oracle
+  rows (g++ 13.3 `-std=c++23`; `scripts/gen_format_oracle.cpp`):
+  shortest-round-trip float defaults with fixed winning length ties,
+  bit-exact hex floats (denormals normalized), byte-string width/
+  precision, sign-then-prefix negative hex. `std::format` returns a real
+  `std::string` through every consumption shape (decl-init, `cout <<`
+  operand, statement); a `value`/`var` argument formats as its contained
+  kind (the `cout << value` contract). Gates: `test_rt_format` (4334
+  assertions), `teststdprint`, `teststdformat`, `teststdprintvalue`,
+  `teststdformaterr`. Boundaries recorded in
+  `docs/plans/2026-08-19-std-print-format-intrinsics.md` (vformat/runtime
+  strings = phase 2; `var s = std::format(...)` needs the value
+  std::string-ingestion follow-up; no L/chrono/ranges/wide/formatter<T>).
+- **Front end: a cast binds a paren-less sizeof/alignof operand** —
+  `(long long)sizeof chunk` resolved `sizeof` as a variable ("undeclared
+  identifier"), found when the AOT ledger parsed the new engine source.
+  Both operand forms now route through the one sizeof owner. Gate:
+  `testcastsizeof` (gcc/clang oracle).
+- Process: `fulltest` gates the MERGE WAVE, not every change (rules
+  rewrite, owner directive); releases batch features — this one carries
+  the whole wave. One oracle-side libstdc++ 13 defect recorded and
+  excluded with evidence (`{:#.0f}` of DBL_MAX returns a corrupt buffer).
+
+Validation (one merge-wave battery): fulltest 1104/0 (0 timeouts, 9
+skips), census 1113 tests / zero warnings, EXE 1063/0, OBJ 1063/0,
+packed 1104/0/0/9, headerless 1077/0/36skip, release rc=0.
+
 ## [v0.91.0] — 2026-08-19
 
 Manipulator objects work: `setprecision`, `setw`, `setfill`.
