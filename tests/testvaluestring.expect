@@ -9,5 +9,8 @@ valeq=yes
 valne=yes
 vivify=grown
 empty=true nullempty=true fullempty=false
+at=yes
+ref=Northeast sub=North
+es=1
 caught: substr(): position out of range
 caught: +=: value of this kind cannot append text

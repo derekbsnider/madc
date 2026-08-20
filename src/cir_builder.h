@@ -685,6 +685,9 @@ class CirBuilder {
 	// always passed by pointer and the long[] buffer name decays to that pointer
 	// at the call site.
 	static bool is_array_object(DataDef *dd);    // dtARRAY value type, not a pointer
+	// The carrier class behind a receiver type: the carrier itself OR a
+	// reference to it (a `value &` parameter) — NULL otherwise.
+	static DataDefCLASS *carrier_behind(DataDef *dd);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);

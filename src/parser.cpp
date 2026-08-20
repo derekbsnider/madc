@@ -23082,6 +23082,10 @@ void Program::add_array_methods()
 	{ "substr", ptr_of(ddCHAR),    "madarray_substr", 2 },
 	{ "length", DataType::dtINT64, "madarray_count",  0 },
 	{ "empty",  DataType::dtBOOL,  "madarray_empty",  0 },
+	// at(pos): the BYTE at pos as an int (string kind; range-checked,
+	// catchable) — std::string::at's role for scanners, sized for the
+	// carrier (no char& into the cell).
+	{ "at",     DataType::dtINT64, "madarray_at",     1 },
     };
     for ( const ArrayStrMethod &sm : str_methods )
     {

@@ -302,6 +302,16 @@ const char *madarray_substr(void *ptr, int64_t pos, int64_t len)
 	return slot.c_str();
     }
 
+int64_t madarray_at(void *ptr, int64_t pos)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!v->is_string())
+	    __madc_throw_cstr("at(): value kind is not string");
+	if (pos < 0 || (size_t)pos >= v->size())
+	    __madc_throw_cstr("at(): position out of range");
+	return (int64_t)(unsigned char)((const char *)v->data())[pos];
+    }
+
 int64_t madarray_empty(void *ptr)
     {
 	const madc::value *v = (const madc::value *)ptr;

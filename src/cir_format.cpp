@@ -128,6 +128,19 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	}
 	DataDef *u = dd->unqualified();
 
+	// A value& parameter (a reference over the carrier) IS the carrier
+	// for formatting purposes — unwrap it here; the fkValue lowering's
+	// object_arg_addr already reads a reference variable's stored
+	// pointer. Without this the reference fell into the pointer arm
+	// ("no formatter for pointer type 'array*'").
+	if ( u->is_reference() )
+	{
+		DataDefPTR *rp = dynamic_cast<DataDefPTR *>(u);
+		DataDef *base = rp ? rp->base_type : NULL;
+		if ( base && base->unqualified()->is_madc_array() )
+			u = base->unqualified();
+	}
+
 	// The spec's SHAPE — parsed by the one engine parser, so the message a
 	// user sees at compile time names the same rule the runtime enforces.
 	madc_fmt_spec sp;

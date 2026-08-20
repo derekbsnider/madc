@@ -10392,6 +10392,24 @@ static bool var_is_pointer_stored(const Variable &v)
 	return false;
 }
 
+// The carrier class behind a receiver type: the madc array/value itself
+// OR a reference to it (a `value &` parameter's declared type) — the
+// method registry and receiver conventions are the carrier's either way
+// (object_var_addr reads a reference variable's stored pointer).
+// ddARRAY IS-A DataDefCLASS but is deliberately not a user class, so
+// class_behind rejects it and callers land here.
+DataDefCLASS *CirBuilder::carrier_behind(DataDef *dd)
+{
+	if (!dd)
+		return NULL;
+	DataDef *u = dd->unqualified();
+	if (DataDef *r = ref_param_referent(u))
+		u = r->unqualified();
+	if (u && is_array_object(u))
+		return dynamic_cast<DataDefCLASS *>(unqualified_type(u));
+	return NULL;
+}
+
 // The raw object address of a NAMED variable (NOT cast to void*): the pointer
 // itself when pointer-stored, else `&name`. The single source of truth for
 // object-instance addressing; object_var_void_addr wraps this in a void* cast.
@@ -10437,9 +10455,8 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// of decaying. Re-wrap with & (c2mir folds &* back to the slot
 		// call) — the same receiver convention object_arg_addr's keyed
 		// arm uses.
-		if (!recv_class && is_array_object(recv_type)) {
-			recv_class = dynamic_cast<DataDefCLASS *>(
-				unqualified_type(recv_type));
+		if (!recv_class) {
+			recv_class = carrier_behind(recv_type);
 			if (recv_class) {
 				node_t rn = translate_expr(tm->parent_expr);
 				if (is_carrier_keyed_subscript(tm->parent_expr))
@@ -10528,12 +10545,12 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	recv_node = id(var_emit_name(tm->object).c_str(), origin);
 	from_var = true;
 	recv_class = class_behind(recv_type);
-	// madc-array receiver as a named variable (`a.count()`): same deliberate
-	// as_user_class exclusion; object_var_addr below addresses the value
-	// buffer (capture-safe, and &buffer == the decayed buffer address).
-	if (!recv_class && is_array_object(recv_type))
-		recv_class = dynamic_cast<DataDefCLASS *>(
-			unqualified_type(recv_type));
+	// madc-array receiver as a named variable (`a.count()`) or a value&
+	// parameter (`text.at(i)`): same deliberate as_user_class exclusion;
+	// object_var_addr below addresses the value buffer or reads the
+	// reference's stored pointer (capture-safe either way).
+	if (!recv_class)
+		recv_class = carrier_behind(recv_type);
 	if (!recv_class) return NULL;
 	// A NAMED object variable uses the unified addressing rule (a by-value /
 	// by-ref `string` param is stored AS the object address, so its `this` is
