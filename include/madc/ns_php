@@ -32,6 +32,14 @@ extern "C" {
     int64_t __php_in_array(const char *, array *);
     int64_t __php_array_key_exists(const char *, value *);
     int64_t __php_array_key_exists_int(int64_t, value *);
+    const char *__php_strtolower(value *);
+    const char *__php_strtolower_cstr(const char *);
+    const char *__php_strtoupper(value *);
+    const char *__php_strtoupper_cstr(const char *);
+    const char *__php_ucfirst_value(value *);
+    const char *__php_ucfirst_cstr2(const char *);
+    int64_t __php_ctype_digit(value *);
+    int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
     std::string *__php_array_shift(std::string *, array *);
@@ -89,6 +97,18 @@ namespace php {
     bool array_key_exists(const char *key, value &values) { return __php_array_key_exists(key, &values) != 0; }
     bool array_key_exists(std::string &key, value &values) { return __php_array_key_exists(key.c_str(), &values) != 0; }
     bool array_key_exists(int64_t key, value &values) { return __php_array_key_exists_int(key, &values) != 0; }
+    // PHP-parity case transforms: byte-wise ASCII (PHP 8 semantics,
+    // locale-independent). Ring-lifetime returns (the c_str contract):
+    // pass onward or capture into a var/value immediately.
+    const char *strtolower(value &s) { return __php_strtolower(&s); }
+    const char *strtolower(const char *s) { return __php_strtolower_cstr(s); }
+    const char *strtoupper(value &s) { return __php_strtoupper(&s); }
+    const char *strtoupper(const char *s) { return __php_strtoupper_cstr(s); }
+    const char *ucfirst(value &s) { return __php_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __php_ucfirst_cstr2(s); }
+    // PHP parity: true iff non-empty and every byte is 0-9.
+    bool ctype_digit(value &s) { return __php_ctype_digit(&s) != 0; }
+    bool ctype_digit(const char *s) { return __php_ctype_digit_cstr(s) != 0; }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
     std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }

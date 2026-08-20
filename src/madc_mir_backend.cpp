@@ -213,17 +213,105 @@ const char *madarray_cstr(void *ptr)
 	const madc::value *v = (const madc::value *)ptr;
 	if (v->is_string())
 	    return (const char *)v->data();
-	thread_local std::string ring[8];
-	thread_local unsigned ring_i = 0;
-	std::string &slot = ring[ring_i++ & 7u];
+	std::string &slot = ns_common::ring_slot();
 	if (v->is_null())
-	    slot = "";
+	    slot.clear();
 	else if (v->is_boolean())
 	    slot = v->as_boolean() ? "true" : "false";
 	else if (!ns_common::value_to_string(*v, slot))
 	    slot = std::string("[") + madc::value::kind_name(v->type())
 		 + ":" + std::to_string((long long)v->size()) + "]";
 	return slot.c_str();
+    }
+
+// ---- string surface (value-first.md): a string-kind value is usable
+// like a std::string. Equality is a QUESTION — a kind mismatch answers
+// false, never a throw. Mutation (+=) and extraction (substr) keep the
+// strict-kind contract with catchable script errors. substr returns
+// ring-lifetime text (the c_str contract) until value-by-value returns
+// (L3) land.
+int64_t madarray_eq_cstr(void *ptr, const char *s)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!s || !v->is_string())
+	    return 0;
+	size_t len = v->size();
+	return strlen(s) == len
+	    && memcmp((const char *)v->data(), s, len) == 0;
+    }
+int64_t madarray_ne_cstr(void *ptr, const char *s)
+    { return !madarray_eq_cstr(ptr, s); }
+int64_t madarray_eq_value(void *ptr, void *other)
+    { return *(const madc::value *)ptr == *(const madc::value *)other; }
+int64_t madarray_ne_value(void *ptr, void *other)
+    { return !(*(const madc::value *)ptr == *(const madc::value *)other); }
+
+// Append text onto a string-kind (or null — vivifies to string) value.
+// One exact-reserved temp + one copy into the cell (NUL-transparent via
+// the std::string ctor → madc_value_set_string_n; no strlen). The
+// rebuilt payload rides madc::value's own assignment, so freeze
+// rejection stays with the one owner. A true in-place cell append is a
+// future carrier primitive if appends ever get hot.
+static void madarray_append_text(madc::value *v, const char *s, size_t n)
+    {
+	if (!v->is_null() && !v->is_string())
+	    __madc_throw_cstr("+=: value of this kind cannot append text");
+	size_t old = v->is_string() ? v->size() : 0;
+	if (n == 0 && old > 0)
+	    return;
+	std::string t;
+	t.reserve(old + n);
+	if (old)
+	    t.append((const char *)v->data(), old);
+	t.append(s, n);
+	try {
+	    *v = madc::value(t);
+	} catch (const std::exception &) {
+	    __madc_throw_cstr("+=: value is frozen");
+	}
+    }
+void *madarray_append_cstr(void *ptr, const char *s)
+    {
+	madarray_append_text((madc::value *)ptr, s ? s : "",
+			     s ? strlen(s) : 0);
+	return ptr;
+    }
+void *madarray_append_value(void *ptr, void *other)
+    {
+	const madc::value *o = (const madc::value *)other;
+	if (!o->is_string())
+	    __madc_throw_cstr("+=: appended value is not string kind");
+	madarray_append_text((madc::value *)ptr, (const char *)o->data(),
+			     o->size());
+	return ptr;
+    }
+
+const char *madarray_substr(void *ptr, int64_t pos, int64_t len)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!v->is_string())
+	    __madc_throw_cstr("substr(): value kind is not string");
+	size_t sz = v->size();
+	if (pos < 0 || (size_t)pos > sz)
+	    __madc_throw_cstr("substr(): position out of range");
+	size_t n = sz - (size_t)pos;
+	if (len >= 0 && (size_t)len < n)
+	    n = (size_t)len;
+	std::string &slot = ns_common::ring_slot();
+	slot.assign((const char *)v->data() + (size_t)pos, n);
+	return slot.c_str();
+    }
+
+int64_t madarray_empty(void *ptr)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (v->is_null())
+	    return 1;
+	bool ok = true;
+	size_t n = ns_common::value_length(*v, &ok);
+	if (!ok)
+	    __madc_throw_cstr("empty(): value of this kind is not countable");
+	return n == 0;
     }
 
 // madc::sys population (task #91) — injected by the CIR builder in TUs

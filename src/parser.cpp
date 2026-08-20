@@ -23072,6 +23072,39 @@ void Program::add_array_methods()
 	ddARRAY.method_map[ac.name] = var;
     }
 
+    // String surface (value-first.md): a string-kind value is usable like
+    // a std::string. substr returns ring-lifetime text (the c_str
+    // contract, L3 caveat); length aliases count (owner semantics);
+    // empty answers null/text/containers and errors on scalars.
+    struct ArrayStrMethod { const char *name; typespec_t ret;
+			    const char *sym; int extra_ints; };
+    const ArrayStrMethod str_methods[] = {
+	{ "substr", ptr_of(ddCHAR),    "madarray_substr", 2 },
+	{ "length", DataType::dtINT64, "madarray_count",  0 },
+	{ "empty",  DataType::dtBOOL,  "madarray_empty",  0 },
+    };
+    for ( const ArrayStrMethod &sm : str_methods )
+    {
+	datatype_vec_t sig{sm.ret, ptr_of(ddARRAY)};
+	for ( int i = 0; i < sm.extra_ints; ++i )
+	    sig.push_back(DataType::dtINT64);
+	Variable *var = addFunction(sm.name, sig, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = sm.sym;
+	    fd->method_display_name = sm.name;
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[sm.name] = var;
+    }
+
     // Scalar (re)assignment surface (slice V1): native operator= overloads
     // binding to the madarray_assign_* runtime entries (madc_mir_backend.cpp).
     // One registration per scalar kind + the value copy-assign; expression
@@ -23116,6 +23149,50 @@ void Program::add_array_methods()
 	    md->owner_class = &ddARRAY;
 	ddARRAY.methods.push_back(var);
 	ddARRAY.method_map["operator="] = var;
+    }
+
+    // Comparison + append operators (value-first.md string surface).
+    // Equality is a QUESTION: the runtime answers false on a kind
+    // mismatch, never a throw — and registering these retires the silent
+    // pointer-compare that `v == "text"` used to lower to. operator+=
+    // returns the receiver (the operator= reference lowering); the value
+    // variants bind const array& like the copy-assign.
+    struct ArrayBinOp { const char *name; typespec_t ret; typespec_t param;
+			const char *sym; };
+    const ArrayBinOp bin_ops[] = {
+	{ "operator==", DataType::dtBOOL,     ptr_of(ddCHAR),
+	  "madarray_eq_cstr" },
+	{ "operator==", DataType::dtBOOL,     typespec_t(array_ref),
+	  "madarray_eq_value" },
+	{ "operator!=", DataType::dtBOOL,     ptr_of(ddCHAR),
+	  "madarray_ne_cstr" },
+	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
+	  "madarray_ne_value" },
+	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
+	  "madarray_append_cstr" },
+	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
+	  "madarray_append_value" },
+    };
+    for ( const ArrayBinOp &op : bin_ops )
+    {
+	Variable *var = addFunction(op.name,
+	    datatype_vec_t{op.ret, ptr_of(ddARRAY), op.param}, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = op.sym;
+	    fd->method_display_name = op.name;
+	    if ( op.param.dd == array_ref )
+		fd->const_params = { false, false, true };
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[op.name] = var;
     }
 
     // Placement-construction surface: `value(-7)` temporaries and

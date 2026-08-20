@@ -1,0 +1,65 @@
+// The carrier's string surface (value-first.md): a string-kind value is
+// usable like a std::string — ==/!= against literals and values, +=
+// append, substr, length/empty. Equality is a QUESTION (kind mismatch
+// answers false, never a throw); mutation/extraction keep the
+// strict-kind contract as catchable script errors. substr returns
+// ring-lifetime text (the c_str contract) until L3 lands.
+#include <ns_madc>
+
+int main()
+{
+	var s = "Northeast";
+	std::println("len={} count={}", s.length(), s.count());
+
+	if ( s == "Northeast" )
+		std::println("eq=yes");
+	if ( s != "Southwest" )
+		std::println("ne=yes");
+	// kind mismatch answers false, never a throw
+	var n = 42;
+	if ( n == "42" )
+		std::println("inteq=BAD");
+	else
+		std::println("inteq=no");
+
+	var cut = s.substr(0, 5);
+	std::println("cut={}", cut);
+	if ( cut == "North" )
+		std::println("cuteq=yes");
+
+	var u = "north";
+	u += "east";
+	u += s.substr(5, 4);
+	std::println("concat={}", u);
+
+	var t = s;
+	if ( t == s )
+		std::println("valeq=yes");
+	if ( u != s )
+		std::println("valne=yes");
+
+	// += vivifies a null carrier to string
+	var z;
+	z += "grown";
+	std::println("vivify={}", z);
+
+	var e = "";
+	var nul;
+	std::println("empty={} nullempty={} fullempty={}",
+		     e.empty(), nul.empty(), s.empty());
+
+	// strict-kind and range errors stay catchable
+	try {
+		var bad = s.substr(20, 1);
+		std::println("no-throw {}", bad);
+	} catch (const char *m) {
+		std::println("caught: {}", m);
+	}
+	try {
+		n += "text";
+		std::println("no-throw-append");
+	} catch (const char *m) {
+		std::println("caught: {}", m);
+	}
+	return 0;
+}

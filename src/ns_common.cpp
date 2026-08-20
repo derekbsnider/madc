@@ -273,4 +273,18 @@ void join_with_sep(std::string &out, const madc::value &arr,
 	}
 }
 
+std::string &ring_slot()
+{
+	thread_local std::string ring[8];
+	thread_local unsigned ring_i = 0;
+	return ring[ring_i++ & 7u];
+}
+
+const char *ring_text(std::string s)
+{
+	std::string &slot = ring_slot();
+	slot = std::move(s);
+	return slot.c_str();
+}
+
 }  // namespace ns_common

@@ -10602,7 +10602,14 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// empty() -> (size() == 0). The real size() member returns a clean size_t;
 	// the bool-returning empty() returns a 1-byte value (garbage upper bits as
 	// a 64-bit int). Same observable result, robust read. (g++ canon.)
-	if (method == "empty") {
+	// The madc carrier (ddARRAY) is exempt: its empty() binds our own
+	// madarray_empty runtime entry (per-kind semantics, clean return) —
+	// and class_behind rejects ddARRAY, so the rewrite's size() lookup
+	// would bail to the field-emission fallback and mis-lower the call.
+	bool carrier_recv = is_array_object(tm->parent_expr
+					    ? tm->parent_expr->datadef()
+					    : tm->object.type);
+	if (method == "empty" && !carrier_recv) {
 		DataDefCLASS *owner = (!callee->parameters.empty())
 				    ? class_behind(callee->parameters[0]) : NULL;
 		std::string size_sym = class_method_symbol(owner, "size");

@@ -94,6 +94,20 @@ size_t value_length(const madc::value &v, bool *ok);
 void split_by_delim(madc::value &out, const std::string &s,
 		    const std::string &delim);
 
+// ---- Transient text returns ------------------------------------------
+
+// The ONE thread-local text ring behind every ring-lifetime const char*
+// return (the c_str() contract: valid to pass onward or copy immediately;
+// a pointer stays valid until its slot recycles — 8 slots, the inet_ntoa
+// model). Runtime entries and php:: functions returning transient text
+// use this; never a private static buffer.
+// ring_slot() lends the next slot DIRECTLY — assign/build into it and
+// return its c_str(); slot capacity persists across uses, so steady-state
+// callers allocate nothing. ring_text() is the move-in convenience for a
+// string you already built.
+std::string &ring_slot();
+const char *ring_text(std::string s);
+
 // Join `arr`'s string-coercible elements with `sep` into `out`. `out`
 // is cleared first. A non-array `arr` (null included) joins as empty.
 // Elements that are not string/integer/real are skipped silently

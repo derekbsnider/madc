@@ -1,0 +1,7 @@
+low=mixed-42 case!
+up=MIXED-42 CASE!
+lowlit=abc-def
+uplit=ABC-DEF
+uc=West uclit=East
+dig=true mix=false neg=false emp=false int=false
+diglit=true mixlit=false

@@ -446,6 +446,101 @@ int64_t php_array_key_exists_int(int64_t key, madc::value *arr)
 	return 0;
 }
 
+// php::strtolower / php::strtoupper — PHP parity: byte-wise ASCII case
+// transforms (locale-independent, PHP 8 semantics). Scalar kinds coerce
+// to their text (PHP's coercive typing); containers have no PHP-legal
+// text and answer "". Ring-lifetime returns (the c_str contract,
+// value-first.md): the transform builds IN the lent ring slot — one
+// bounded pass, zero temporary allocations at steady state.
+
+// Fill the lent slot with the value's PHP text view (no temp string).
+static std::string &php_text_slot(const madc::value *v)
+{
+	std::string &slot = ns_common::ring_slot();
+	if ( !v || v->is_null() )
+		slot.clear();
+	else if ( v->is_string() )
+		slot.assign((const char *)v->data(), v->size());
+	else if ( !ns_common::value_to_string(*v, slot) )
+		slot.clear();
+	return slot;
+}
+
+static void php_ascii_case_inplace(std::string &s, bool up)
+{
+	for ( size_t i = 0; i < s.size(); ++i )
+	{
+		char c = s[i];
+		if ( up && c >= 'a' && c <= 'z' )
+			s[i] = (char)(c - 32);
+		else if ( !up && c >= 'A' && c <= 'Z' )
+			s[i] = (char)(c + 32);
+	}
+}
+
+static const char *php_case_cstr(const char *s, bool up)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	php_ascii_case_inplace(slot, up);
+	return slot.c_str();
+}
+static const char *php_case_value(const madc::value *v, bool up)
+{
+	std::string &slot = php_text_slot(v);
+	php_ascii_case_inplace(slot, up);
+	return slot.c_str();
+}
+const char *php_strtolower(const char *s)
+	{ return php_case_cstr(s, false); }
+const char *php_strtolower_value(const madc::value *v)
+	{ return php_case_value(v, false); }
+const char *php_strtoupper(const char *s)
+	{ return php_case_cstr(s, true); }
+const char *php_strtoupper_value(const madc::value *v)
+	{ return php_case_value(v, true); }
+
+// php::ucfirst — first byte uppercased if ASCII a-z (PHP semantics).
+const char *php_ucfirst_cstr(const char *s)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	if ( !slot.empty() && slot[0] >= 'a' && slot[0] <= 'z' )
+		slot[0] = (char)(slot[0] - 32);
+	return slot.c_str();
+}
+const char *php_ucfirst_value(const madc::value *v)
+{
+	std::string &slot = php_text_slot(v);
+	if ( !slot.empty() && slot[0] >= 'a' && slot[0] <= 'z' )
+		slot[0] = (char)(slot[0] - 32);
+	return slot.c_str();
+}
+
+// php::ctype_digit — PHP parity: true iff the text is non-empty and
+// every byte is 0-9. A non-string value answers false (PHP 8 dropped
+// the legacy int-argument mode). Reads the payload directly — no copy.
+int64_t php_ctype_digit(const char *s)
+{
+	if ( !s || !*s )
+		return 0;
+	for ( ; *s; ++s )
+		if ( *s < '0' || *s > '9' )
+			return 0;
+	return 1;
+}
+int64_t php_ctype_digit_value(const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	const char *p = (const char *)v->data();
+	size_t n = v->size();
+	for ( size_t i = 0; i < n; ++i )
+		if ( p[i] < '0' || p[i] > '9' )
+			return 0;
+	return 1;
+}
+
 // php::array_search — find index of value in array, returns -1 if not found
 int64_t php_array_search(const char *needle, madc::value *arr)
 {
@@ -629,6 +724,14 @@ void __php_array_reverse(madc::value *a) { php_array_reverse(a); }
 int64_t __php_in_array(const char *a, madc::value *b) { return php_in_array(a, b); }
 int64_t __php_array_key_exists(const char *a, madc::value *b) { return php_array_key_exists(a, b); }
 int64_t __php_array_key_exists_int(int64_t a, madc::value *b) { return php_array_key_exists_int(a, b); }
+const char *__php_strtolower(madc::value *a) { return php_strtolower_value(a); }
+const char *__php_strtolower_cstr(const char *a) { return php_strtolower(a); }
+const char *__php_strtoupper(madc::value *a) { return php_strtoupper_value(a); }
+const char *__php_strtoupper_cstr(const char *a) { return php_strtoupper(a); }
+const char *__php_ucfirst_value(madc::value *a) { return php_ucfirst_value(a); }
+const char *__php_ucfirst_cstr2(const char *a) { return php_ucfirst_cstr(a); }
+int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
+int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }
 void __php_array_unique(madc::value *a) { php_array_unique(a); }
 std::string *__php_array_shift(std::string *a, madc::value *b) { return php_array_shift(a, b); }
