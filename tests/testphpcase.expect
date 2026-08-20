@@ -5,3 +5,4 @@ uplit=ABC-DEF
 uc=West uclit=East
 dig=true mix=false neg=false emp=false int=false
 diglit=true mixlit=false
+iv=1318612053 pfx=12 lit=42 neg=-17 real=3 int=42

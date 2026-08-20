@@ -541,6 +541,30 @@ int64_t php_ctype_digit_value(const madc::value *v)
 	return 1;
 }
 
+// php::intval — PHP parity (base 10): leading whitespace, optional sign,
+// then the longest digit prefix converts ("12abc" -> 12, "abc" -> 0).
+// Integer kind passes through; real truncates toward zero; bool 1/0;
+// containers 0 (PHP's array-to-int is 0/1 by emptiness — the 1 case is
+// deliberately NOT mirrored: a container is not a number here).
+int64_t php_intval_cstr(const char *s)
+{
+	return s ? (int64_t)strtoll(s, NULL, 10) : 0;
+}
+int64_t php_intval_value(const madc::value *v)
+{
+	if ( !v )
+		return 0;
+	if ( v->is_integer() )
+		return v->as_integer();
+	if ( v->is_boolean() )
+		return v->as_boolean() ? 1 : 0;
+	if ( v->is_real() )
+		return (int64_t)v->as_real();
+	if ( v->is_string() )
+		return php_intval_cstr((const char *)v->data());
+	return 0;
+}
+
 // php::array_search — find index of value in array, returns -1 if not found
 int64_t php_array_search(const char *needle, madc::value *arr)
 {
@@ -732,6 +756,8 @@ const char *__php_ucfirst_value(madc::value *a) { return php_ucfirst_value(a); }
 const char *__php_ucfirst_cstr2(const char *a) { return php_ucfirst_cstr(a); }
 int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
+int64_t __php_intval(madc::value *a) { return php_intval_value(a); }
+int64_t __php_intval_cstr(const char *a) { return php_intval_cstr(a); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }
 void __php_array_unique(madc::value *a) { php_array_unique(a); }
 std::string *__php_array_shift(std::string *a, madc::value *b) { return php_array_shift(a, b); }

@@ -19,12 +19,20 @@ int main()
 	var mix = "12a45";
 	var neg = "-1234";
 	var emp = "";
-	var intval = 42;
+	var iv42 = 42;
 	std::println("dig={} mix={} neg={} emp={} int={}",
 		     php::ctype_digit(num), php::ctype_digit(mix),
 		     php::ctype_digit(neg), php::ctype_digit(emp),
-		     php::ctype_digit(intval));
+		     php::ctype_digit(iv42));
 	std::println("diglit={} mixlit={}",
 		     php::ctype_digit("007"), php::ctype_digit("x7"));
+
+	var seedy = "1318612053";
+	var pfx = "12abc";
+	var realy = 3.9;
+	std::println("iv={} pfx={} lit={} neg={} real={} int={}",
+		     php::intval(seedy), php::intval(pfx),
+		     php::intval("0042"), php::intval("-17zz"),
+		     php::intval(realy), php::intval(iv42));
 	return 0;
 }

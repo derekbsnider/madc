@@ -40,6 +40,8 @@ extern "C" {
     const char *__php_ucfirst_cstr2(const char *);
     int64_t __php_ctype_digit(value *);
     int64_t __php_ctype_digit_cstr(const char *);
+    int64_t __php_intval(value *);
+    int64_t __php_intval_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
     std::string *__php_array_shift(std::string *, array *);
@@ -109,6 +111,10 @@ namespace php {
     // PHP parity: true iff non-empty and every byte is 0-9.
     bool ctype_digit(value &s) { return __php_ctype_digit(&s) != 0; }
     bool ctype_digit(const char *s) { return __php_ctype_digit_cstr(s) != 0; }
+    // PHP parity (base 10): longest digit prefix converts; int passes
+    // through, real truncates, bool 1/0, containers 0.
+    int64_t intval(value &v) { return __php_intval(&v); }
+    int64_t intval(const char *s) { return __php_intval_cstr(s); }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
     std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
