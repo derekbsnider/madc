@@ -197,6 +197,16 @@ static const struct {
   {"sinhl", (void *) sinhl},           {"sqrtl", (void *) sqrtl},
   {"tanl", (void *) tanl},             {"tanhl", (void *) tanhl},
   {"tgammal", (void *) tgammal},       {"truncl", (void *) truncl},
+  /* 3 (cont.): the FLOAT math names ucrtbase does not export.  The
+     complete C99 <math.h> float-suffix surface was audited against the
+     real export list (__imp_ stubs in the mingw import lib, cross-checked
+     with GetProcAddress under wine): exactly these four are hidden --
+     ucrt serves them as header inlines / the _hypotf oldname, so
+     mingw-gcc statically binds libmingwex's.  Closed as the complete
+     hidden set, same closure rule as the long-double family above (the
+     unsuffixed surface is fully exported; nothing else to pin). */
+  {"fabsf", (void *) fabsf},           {"frexpf", (void *) frexpf},
+  {"hypotf", (void *) hypotf},         {"ldexpf", (void *) ldexpf},
   /* 3 (cont.): ucrt "oldnames" aliases.  ucrtbase exports only the
      underscore spellings (_strdup, _wcsdup); the plain POSIX names exist
      purely as import-library aliases resolved at LINK time, so no module

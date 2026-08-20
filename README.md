@@ -210,29 +210,26 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.92.0** — bare `cout << value` with zero
-includes, and `std::format` / `std::print` / `std::println` as
-always-included madc intrinsics.
+The current release is **v0.92.1** — the v0.92 line's binary-shipping
+patch, promoted to `master` with packages on all three platforms.
 
-`madc::value` is an inherent madc-mode type, so streaming one to cout no
-longer depends on any `#include` or include order — its inserter
-declaration is injected by the lexer at the completion of whichever
-include first defines the ostream guard. And the C++23 formatting surface
-is simply part of madc: `std::println("x={} y={:.3f}", x, y)` works in a
-bare script with zero header parse. The compiler validates literal format
-strings at compile time (the C++23 contract, no consteval machinery) and
-lowers each field to a strict-C11 engine pinned byte-for-byte to real
-libstdc++ `std::format` by 1430 generated oracle rows — shortest
-round-trip float defaults, bit-exact hex floats, the works. `std::format`
-returns a real `std::string`; `value`/`var` arguments format as their
-contained kind. The arc also flushed out and fixed a front-end defect
-(`(long long)sizeof chunk` — a cast of a paren-less sizeof) and recorded
-one libstdc++ 13 defect with evidence (`{:#.0f}` of DBL_MAX corrupts its
-buffer).
+The v0.92 line makes the C++23 formatting surface simply part of madc:
+`std::println("x={} y={:.3f}", x, y)` works in a bare script with zero
+header parse, literal format strings are validated at compile time, and
+the strict-C11 engine underneath is pinned byte-for-byte to real
+libstdc++ `std::format` by 1430 generated oracle rows. `cout << value`
+needs no includes either — the inserter declaration is injected at the
+completion of whichever include first defines the ostream guard. The
+v0.92.1 patch carries the two win64 fixes the new three-platform
+promotion gate caught before any binary shipped: the headerless
+existence probe could not see the four float-math names ucrtbase hides
+(`fabsf`/`frexpf`/`hypotf`/`ldexpf`, now pinned as the complete audited
+set), and `var_dump` of a `long` printed the LLP64 rank's `int(42)`
+instead of the source name's `long(42)`.
 
-Branch state: v0.92.0 is released on `develop`. `master` carries v0.82.0, for
-which public binaries are published on all three platforms; v0.83.0 through
-v0.92.0 are released on `develop` and unpromoted.
+Branch state: v0.92.1 is promoted — `develop` and `master` both carry it,
+with public binaries published for Linux (deb/rpm), Windows x86-64, and
+macOS (Apple Silicon + Intel).
 
 Latest validated results:
 
@@ -244,16 +241,22 @@ Latest validated results:
 - headerless (no headers on disk anywhere): Linux **1077/0/0/36**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
-- macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
-  with v0.77.0; both arches packed at 835 units with the Mach-O release
+- macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
+  leg-for-leg parity with the shipped v0.82.0 binary (re-run as a negative
+  control on the same host); the three are standing known-opens (groves
+  `os.str()` husk, the value intrinsic, the exec:// channel), not
+  regressions; both arches packed at 835 units with the Mach-O release
   verifier green
-- packed Win64 under persistent Wine green; on genuine Windows 11 all
+- packed Win64 under persistent Wine **1061/0/0/52** (the v0.92.1 gate
+  run — both v0.92.0-era regressions fixed); on genuine Windows 11 all
   seven battery legs pass, including compiling a C translation unit on a
   host with no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:
+  two win64 fixes from the new three-platform promotion gate; six assets.
 - [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
   includes) + std::format/print/println as always-included intrinsics.
 - [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
@@ -270,8 +273,6 @@ Latest validated results:
   signatures; .count()/.size() owner semantics; range-for `auto` elements.
 - [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
   over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
-- [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
-  silently; the gate's first run found a lost `long double` member.
 
 ## Building from source
 
