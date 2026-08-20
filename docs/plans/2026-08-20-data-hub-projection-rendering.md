@@ -340,6 +340,15 @@ hatch. Phase 1 ships code-defined projections only, internally shaped as
 query + mapping so the stored-view descriptor later serializes the query
 half verbatim and names the mapping half.
 
+**Renderer dependency model (owner, 2026-08-20).** The level-0 text
+renderer is INTERNAL to madc the way madc::dis is — dependency-free,
+always present. External UI rendering libraries (curses, Skia, GUI
+toolkits, engines — levels 1+) interface the way madc::dat handles
+external dependencies: optional providers behind the core seams, and
+perhaps literally connected through madc::dat. The dis/dat split is the
+rendering split too: core renders text with nothing; everything that
+links an external library is a dat-side provider.
+
 **Prose (ratified with an owner refinement).** Prose is content: the
 projection library owns all composition; the level-0 renderer only
 typesets (headings, lists, wrap). The description pipeline spans three

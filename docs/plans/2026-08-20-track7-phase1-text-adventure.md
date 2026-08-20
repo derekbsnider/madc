@@ -12,6 +12,44 @@ inventory-derived brass key, data refusal prose, leveled verbs; G4 one
 write path, planted-violation control. Remaining: the merge wave
 (fulltest + EXE lane once, scoped /dupaudit, merge WITH a release).**
 
+**HANDOFF (2026-08-20, pre-compaction; session #108).** Where things
+stand and what the owner ruled:
+
+- All slices S0–S5 are green and COMMITTED on
+  `feature/track7-hub-projections-claude` (pushed through @5d95a30a).
+  The merge-wave battery passed on the container: fulltest rc=0 (all
+  gates incl. the two new pilot gates + rule trailers), integration
+  1106/0/0TO/9skip (+2 pilot tests), EXE 1065/0, release+packed
+  1106/0/0/9.
+- ⚠️ **OWNER LAW (second repeat): NO RELEASE — releases mark COMPLETE
+  features, never slices.** The v0.95.0 ceremony drafts in tmp/ are
+  DEAD; VERSION stays 0.94.0. Merge-to-develop timing is an OPEN OWNER
+  CALL (they historically don't mind checkpoint merges; ask or await).
+- **NEXT (owner-directed): the real game.** `examples/adventure/` will
+  implement the ORIGINAL Colossal Cave Adventure ("adventure" was the
+  original binary name) on madc::ui + madc::dis. References the owner
+  named: https://gitlab.com/esr/open-adventure/ (C, canonical
+  Crowther/Woods 350-point, BSD-2 — license-compatible, data source of
+  truth via its adventure.yaml + regression transcripts as the oracle),
+  https://github.com/anthay/advent.cpp (C++ single-file),
+  https://udel.edu/~mm/hp/adventure/advent.py (Python) — madc sits in
+  the space between the three; mine all three for ideas.
+- **OWNER ARCHITECTURE RULING**: level-0 text rendering is INTERNAL
+  (dis-like, dependency-free); external UI rendering libraries are
+  dat-side providers (perhaps literally through madc::dat) — recorded
+  in the design doc's Decided section.
+- Engine gaps Colossal Cave will force (the brainstorm, to be planned
+  next session): conditional/probabilistic travel (link-attached
+  conditions — the brass-door pattern generalized onto links),
+  vocabulary-as-data (synonyms, magic words, %vocab section),
+  per-state object prose, autonomous NPC behavior on tick (dwarves,
+  pirate — compiled catalog now, script verbs post-eval/exec), canned
+  message tables, scoring/death/reincarnation, the lamp battery
+  (already built in miniature). Data path: convert adventure.yaml →
+  .world offline (checked-in output + converter tool); transcript
+  parity against open-adventure's walkthrough logs is the "serious
+  job" gate.
+
 Status: implementation plan, 2026-08-20, executing the APPROVED design
 [2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md).
 Work happens on `feature/track7-hub-projections-claude` off `develop`;
