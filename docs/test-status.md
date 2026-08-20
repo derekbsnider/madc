@@ -7,9 +7,15 @@
 > **1061 passed / 0 failed / 52 skipped** (both v0.92.0-era regressions
 > fixed: `testlibcnoheaderargs` — the four float-math names ucrtbase
 > hides are pinned; `testphpvardump` — the LLP64 platform `long` words
-> as its source name). macOS: both arches cross-built and
-> verify_macho_release green. First three-platform asset set since
-> v0.82.0 (deb/rpm, windows zip, two macOS tarballs, SHA256SUMS).
+> as its source name). macOS: both arches cross-built,
+> verify_macho_release green, and the hardware battery on the arm64
+> tarball is **8 passed / 3 failed — exact leg-for-leg parity with the
+> shipped v0.82.0 binary** (re-run on the same host as a negative
+> control): the three fails are the standing known-opens (groves
+> `os.str()` husk, value intrinsic — now a loud compile error where
+> v0.82.0 SIGSEGV'd — and the exec:// channel), so zero darwin
+> regressions. First three-platform asset set since v0.82.0 (deb/rpm,
+> windows zip, two macOS tarballs, SHA256SUMS).
 >
 > **Previous (2026-08-20, v0.92.0 — bare `cout << value` + std::format/
 > print/println intrinsics):** authoritative Linux fulltest **1104 passed /

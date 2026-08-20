@@ -241,10 +241,14 @@ Latest validated results:
 - headerless (no headers on disk anywhere): Linux **1077/0/0/36**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
-- macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
-  with v0.77.0; both arches packed at 835 units with the Mach-O release
+- macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
+  leg-for-leg parity with the shipped v0.82.0 binary (re-run as a negative
+  control on the same host); the three are standing known-opens (groves
+  `os.str()` husk, the value intrinsic, the exec:// channel), not
+  regressions; both arches packed at 835 units with the Mach-O release
   verifier green
-- packed Win64 under persistent Wine green; on genuine Windows 11 all
+- packed Win64 under persistent Wine **1061/0/0/52** (the v0.92.1 gate
+  run — both v0.92.0-era regressions fixed); on genuine Windows 11 all
   seven battery legs pass, including compiling a C translation unit on a
   host with no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
