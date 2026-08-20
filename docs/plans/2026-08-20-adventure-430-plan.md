@@ -157,10 +157,25 @@ trailers + reducer + test. Candidate list, ordered by need:
 tests/testvaluekeys.mad pins the contracts, 147/147 blast-radius subset
 green; testvaluecount's iterate-zero pin superseded by L5 — the
 count-vs-bound lesson now pins on the string kind). **L3 (value
-by-value returns) remains** — the retbuf path is user-class-gated
-(class_return_via_retbuf / function_retbuf_class); the carrier needs
-admission plus signature-emission and return-lowering audits (sret
-shape; madarray_construct_value is the copy-in). Deferred residues
+by-value returns) remains** — recon complete (2026-08-20): ONE decision
+point (class_return_via_retbuf, user-class-gated; every consumer
+funnels through function_retbuf_class), but the carrier lacks a
+C-VISIBLE POINTEE TYPE for the slot: values lower to aligned long[]
+buffers with NO emitted struct tag, while retbuf_param/class_ptr_type/
+ExternParam all render `struct <tag> *`. Design options: (a) synthesize
+a one-time `struct __madc_value { _Alignas(16) long long w[4]; }`
+definition + a carrier arm in append_decl_type_specs (uniform: all
+lanes + arm64 sret ABI classification get the right size — preferred);
+(b) void*-shaped retbuf special-cases per call lane (x86-64-honest for
+script-emitted callees only). Copy-in = madarray_construct_value
+(registered external ctor — class_ctor_call's emit_symbol arm); slot
+temps already declare via the array model with cleanup; locals
+auto-destruct via the cleanup attribute. NOTE the external lane is L3's
+OTHER half: a mangled-direct host `madc::value ui::get(...)` needs the
+same admission and then rides the existing external-sret machinery
+(the std::string return path) — decide (a)/(b) with BOTH lanes in
+view. E2's ui:: API shape depends on this; if L3 slips past A3, design
+E2 with `value &out` and add the by-value overloads when L3 lands. Deferred residues
 recorded: numeric extraction from a keyed read (`long n = bag["k"]`)
 is not a defined coercion — spell php:: converters/var destinations;
 `cout << bag["k"]` streaming admission unverified (printf coercion IS
