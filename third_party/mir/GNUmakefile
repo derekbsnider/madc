@@ -393,6 +393,10 @@ scan-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/scan-test.c
 aarch64-mem-disp-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/aarch64-mem-disp.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/aarch64-mem-disp-test $(LDLIBS) && $(BUILD_DIR)/aarch64-mem-disp-test$(EXE)
 
+# ssa_combine loop-header-PHI fold regression (issue #467).
+ssa-combine-loop-phi-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/ssa-combine-loop-phi.c
+	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/ssa-combine-loop-phi-test $(LDLIBS) && $(BUILD_DIR)/ssa-combine-loop-phi-test$(EXE)
+
 io-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/io.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/io-test $(LDLIBS) && $(BUILD_DIR)/io-test$(EXE)
 
