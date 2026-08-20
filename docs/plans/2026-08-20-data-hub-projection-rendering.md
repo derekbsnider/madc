@@ -176,7 +176,8 @@ change that violates one of these locks somebody's future out.
    identity. Round-trip is the acid test of the hub claim.
 5. **Projection is the security boundary.** (MUD visibility; shop
    customer/admin.) Project THEN transmit; filtering is never a renderer
-   courtesy. Access lives at the projection stage.
+   courtesy. Access lives at the projection stage. (Access model — keys +
+   levels over credentials — decided at owner review; see Decided.)
 6. **Access filters, wants select, needs veto.** Three user axes, never
    conflated: access → which data/verbs exist in the projection; wants →
    which variant/level; needs → constraints the renderer MUST honor.
@@ -300,15 +301,54 @@ collaborative text.
 - rendering-abstraction.md gains a pointer to this doc; its levels/
   negotiation/WCAG sections stay authoritative.
 
-## Open questions (for the owner, not blockers for Phase 1)
+## Decided (owner review, 2026-08-20)
 
-- Verb conflict/permission model: are verb permissions per-role flags on the
-  verb entity, or a relation between role and verb? (Phase 1 can ship with
-  flags; the relation shape is more graph-native.)
-- The projection definition language: how much of a stored view is
-  declarative data vs. attached madc code? (Phase 1: code-defined
-  projections only; the stored-view surface designs against real usage.)
-- Where the NL description composer lives: a level-0 renderer concern or a
-  projection-library concern? (Lean: projection library — the prose IS the
-  semantic tree's level-0 content, and other renderers may want the same
-  sentences as tooltips.)
+**The access model (owner-specified).** Access to ANYTHING — verbs,
+entities, components, fields, projections — is a **condition** evaluated
+against the accessor's **credentials**. Two primitive condition kinds,
+explicitly not mutually exclusive and combinable:
+
+- **Keys** — binary possession of a named capability: you have the key or
+  you do not. Textual at the surface; interned to ids, with a principal's
+  key set held as a bitvector for O(1) checks (enum-over-strings honored).
+  Keys **layer**: a key can provide other keys — a master key for a
+  domain — via a key→key implication relation whose transitive closure is
+  folded into the bitvector when credentials are built, so checks stay
+  flat.
+- **Levels** — numeric, **per domain**: condition = holder's level in that
+  domain >= the required level.
+
+A role is not a third concept — a role IS a key. And credentials can
+derive from the data itself: holding the brass-key ENTITY (an inventory
+relation) confers the brass-key CAPABILITY — so one machinery guards a
+door in the game world and a schema edit in the admin tool. Key
+assignments, level assignments, and key implications are relations in the
+hub: projectable and auditable (the permissions screen is just a
+projection; demand 3). Phase 1 requirement form: a set of required keys +
+an optional (domain, min-level) pair per protected thing;
+boolean-combined requirement expressions arrive later, as data.
+
+**Stored views (ratified as drafted).** Declarative core = the Track 5
+logical query IR + a presentation mapping (fields → roles/labels/actions/
+editability); everything else is an escape hatch to **code as a
+first-class named entity referenced by identity — never an anonymous blob
+embedded inline in another entity's data**. Whether a code entity's source
+lives in the hub (moddable, mudprog-style) or in compiled host code is a
+per-application deployment choice (demand 2 intact); defining or editing
+code entities is itself key-gated, so the access model secures the escape
+hatch. Phase 1 ships code-defined projections only, internally shaped as
+query + mapping so the stored-view descriptor later serializes the query
+half verbatim and names the mapping half.
+
+**Prose (ratified with an owner refinement).** Prose is content: the
+projection library owns all composition; the level-0 renderer only
+typesets (headings, lists, wrap). The description pipeline spans three
+sources behind ONE seam, chosen per entity/projection: (a) hand-authored
+prose — a fact in its own right, and unique rooms may share whole
+descriptions; (b) template composition (the Phase 1 kit: enumeration,
+pluralization, articles — the MUD string heritage; templates are data, so
+translation stays possible); (c) true NLG — **the ultimate goal, owner-
+stated, explicitly post-Phase-1**. The rule that keeps NLG unlocked:
+composed prose is derived and the facts it came from stay authoritative —
+never bake prose in a way that discards its facts; authored prose
+coexists as a fact of its own.
