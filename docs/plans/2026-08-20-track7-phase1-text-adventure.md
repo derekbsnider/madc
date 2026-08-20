@@ -25,6 +25,14 @@ stand and what the owner ruled:
   features, never slices.** The v0.95.0 ceremony drafts in tmp/ are
   DEAD; VERSION stays 0.94.0. Merge-to-develop timing is an OPEN OWNER
   CALL (they historically don't mind checkpoint merges; ask or await).
+- ⚠️ **THE RELEASE BOUNDARY, owner-defined 2026-08-20:** "the new
+  release is allowed when Colossal Cave Adventure is tested to be fully
+  playable ... and then we will also have a master promotion."
+  Operational reading: fully playable = the full 350-point walkthrough
+  plays through our engine, gated by transcript parity against
+  open-adventure's regression logs. That release then batches
+  everything on develop (v0.93.0 + v0.94.0 + the Track 7 feature) into
+  a MASTER PROMOTION — three-platform gated per promote.md step 5.
 - **NEXT (owner-directed): the real game.** `examples/adventure/` will
   implement the ORIGINAL Colossal Cave Adventure ("adventure" was the
   original binary name) on madc::ui + madc::dis. References the owner
