@@ -256,6 +256,7 @@ def convert(doc):
             vocab_m.setdefault(w, []).append(name)
     vocab_a = {}
     defaults = {}
+    noaction = []
     for name, a in actions:
         name = key_name(name)
         a = a or {}
@@ -265,6 +266,8 @@ def convert(doc):
         if msg == "NO_MESSAGE":
             msg = None
         defaults[name] = clean_text(msg) if msg is not None else None
+        if a.get("noaction"):
+            noaction.append(name)
     out.entity("adv-vocabulary", {"motions": vocab_m, "actions": vocab_a,
                                   "objwords": objwords})
     out.entity("adv-action-defaults", defaults)
@@ -304,6 +307,7 @@ def convert(doc):
                         "yes_response": clean_text(o["yes_response"])}
                        for o in doc["obituaries"]],
         "dwarflocs": doc["dwarflocs"],
+        "noaction": noaction,
         "seq_next": seq_next})
 
     return out, counts
