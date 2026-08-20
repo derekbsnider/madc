@@ -34,15 +34,33 @@ open owner call):
   mutation_context (G4 gate holds). tests/testuibags.mad walks the real
   dungeon from script (travel-rule bags iterate via range-for +
   keyed reads — the game loop's core access pattern, proven).
-- **NEXT = A5, the game skeleton**: examples/adventure/advent.mad (+
-  module .inc files): loop → vocab → intent → travel interpreter →
-  describe/listobjects view → LCG (A=1093 C=221587 M=1048576) + `seed`
-  verb → parity harness. The BYTE-LEVEL I/O discipline and the
-  LISTING-ORDER LAW are banked in the A5/A6 slice notes below — follow
-  them, they are measured facts, not guesses. First converter addendum:
-  the per-object `seq` prop (listing order). Validation staging: get
-  the opening sequence + overworld walk byte-identical against
-  transcript fragments, then grow toward whole logs.
+- **A5 LANDED (2026-08-20, session #110)** — the game runs and is
+  BYTE-PARITY GATED. examples/adventure/advent.mad + adv_{state,rng,io,
+  vocab,describe,travel,actions,loop}.inc, value-first. Gate G-A
+  (fragment stage) = scripts/adventure_parity.sh in fulltest, negative-
+  controlled: `opening` (win430.chk's first 579 bytes: welcome/seed/
+  east/listings/>>Foof!<</dark Y2) + `overworld` (30-command sweep vs
+  the reference binary: motions, BACK both branches, LOOK/CAVE, misses,
+  DONT_KNOW/TWO_WORDS, enter-stream, GO-shift, pct forest wandering =
+  RNG parity). Converter addenda landed: per-object seq/seq_fixed +
+  seq_next (listing-order law), noaction list, travel verbs RESOLVED to
+  motion names (⚠️ the YAML rule verbs are WORDS; two id spaces only
+  coincided on compass names — the win was invisible until 'building'
+  failed). Feeders landed en route: carrier string surface
+  (==/!=/+=/substr/length/empty/at + as_integer/as_boolean/as_real/
+  is_null; value-first.md RULE minted by owner directive),
+  php::strtolower/strtoupper/ucfirst/ctype_digit/intval, ui::create,
+  cstr catch-var typing, keyed-subscript method receivers, value&
+  unwraps (method receivers + format args). A7/A8/A9 walls are LOUD
+  exits (dwarfmove dflag>=1, special travel, croak) — never silent
+  wrong output. Reference oracle binary builds on the CONTAINER at
+  /workspace/madc/tmp/open-adventure (libedit-dev installed; rebuild
+  with `make advent` after container rebuilds).
+- **NEXT = A6, verb systems wave 1**: take/drop/open/lock/on/off/
+  inventory/drink/eat + the object-word analysis (the reference's
+  action() front half: HERE checks, liquids, GO_UNKNOWN paths) — then
+  extend the fragment corpus with verb-using walks (keys/lamp/grate =
+  the cave entry sequence) and start whole shallow logs.
 - Working facts: reference clones live at /workspace/open-adventure
   (data + tests/*.log/.chk oracle + the C source), /workspace/advent.cpp,
   /workspace/advent.py. Probes live in tmp/advprobes/ (run_probes.sh;
@@ -53,12 +71,19 @@ open owner call):
   per slice; fulltest ONCE at the merge wave. Commits touching src/ or
   include/ carry the four rule trailers; commit messages with backticks
   go via `git commit -F <file>`.
-- Deferred residues (recorded, not blocking): L3; numeric extraction
-  from a keyed read (`long n = bag["k"]` undefined — use var/php::
-  converters); `cout << bag["k"]` streaming admission unverified
-  (printf coercion IS covered); integer-subscript value elements keep
+- Deferred residues (recorded, not blocking): L3; implicit numeric
+  coercion from a keyed read stays undefined BY DESIGN (`long n =
+  bag["k"].as_integer()` / php::intval are the defined routes);
+  `cout << bag["k"]` streaming admission unverified (printf/println
+  coercion IS covered); integer-subscript value elements keep
   string-first typing (use range-for for value elements); the missing
-  %s-vs-string format warning (pre-arc residue).
+  %s-vs-string format warning (pre-arc residue); the std::print
+  auto-include scan does not fire for identifiers inside user #include
+  modules (suppress_auto_include_scan conflates "system header serving"
+  with "any include in flight" — advent.mad carries the explicit
+  <bits/std_format> include); the streaming format lowering emits
+  literal segments BEFORE evaluating args (a side-effecting format arg
+  interleaves; std::format evaluates args first).
 
 **Status: APPROVED DESIGN (owner, 2026-08-20 session #109) — this doc is
 the execution plan.** Track 7 Phase 2: the real game on the Phase-1 hub.
