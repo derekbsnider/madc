@@ -8127,7 +8127,13 @@ struct rewrite_data {
    base/index reuse); the per-insn op_nums[] must hold them all or it overflows
    (gen_assert is compiled out in release).  Was 2.
    ADOPTED-FROM: github.com/theMackabu/mir @ dbfc84fe0
-   ("backport community fixes for codegen correctness"). */
+   ("backport community fixes for codegen correctness").
+   No fixed table size is provably enough: this path is reached for MIR_USE
+   too, whose operand count is unbounded, so the loop below also checks the
+   bound at RUN time and declines (undoing its rewrites) when the table is
+   full -- the same decline it already takes when target_insn_ok_p rejects.
+   ADOPTED-FROM: upstream PR #468 (wshlavacek) -- the bug behind upstream
+   issue #410; found via `o[0] = t * t` after a call (stack-canary abort). */
 #define MAX_INSN_RELOAD_MEM_OPS 4
 static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR_reg_t loc,
                                 MIR_reg_t base_reg) {
@@ -8142,8 +8148,11 @@ static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR
   int n = 0, op_nums[MAX_INSN_RELOAD_MEM_OPS];
   for (int i = nop; i < (int) insn->nops; i++)
     if (insn->ops[i].mode == MIR_OP_VAR && insn->ops[i].u.var == reg) {
+      if (n >= MAX_INSN_RELOAD_MEM_OPS) { /* cannot record the undo -- give up */
+        for (int j = 0; j < n; j++) insn->ops[op_nums[j]] = saved_op;
+        return FALSE;
+      }
       insn->ops[i] = mem_op;
-      gen_assert (n < MAX_INSN_RELOAD_MEM_OPS);
       op_nums[n++] = i;
     }
   if (target_insn_ok_p (gen_ctx, insn)) return TRUE;
