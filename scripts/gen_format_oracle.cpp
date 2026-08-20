@@ -17,6 +17,13 @@
 // The .inc is CHECKED IN: the oracle outputs are the contract, regenerated
 // only when the matrix grows (or the oracle compiler majorly changes — a
 // diff at regeneration is a finding, not noise).
+//
+// ⚠️ Regeneration happens on the CONTAINER (it has the g++-13 <format>
+// oracle) but the SOURCE OF TRUTH is the repo tree: scp the fresh .inc
+// back to the local tree IMMEDIATELY — the next rsync sync overwrites the
+// container copy with whatever the local tree holds, and a stale local v
+// silently reverts the fixture (2026-08-20: 1428 unit assertions failed
+// exactly this way — rows without the expect_n field read length 0).
 
 #include <format>
 #include <cstdio>
