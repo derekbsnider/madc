@@ -78,6 +78,39 @@ Known opens that may bite: `value f()` by-value return lowers to `int f()`
 NEEDS becomes its own feeder-fix commit (fix-what-you-find) or a recorded
 workaround here — never a silent detour.
 
+**RESULTS (2026-08-20, container, 11 probes; tmp/track7probes/):**
+
+Works — the pilot relies on these: scalar retag + printf coercion;
+object-kind bags via `madc::context_set_*` with eval-path readback
+including nested dotted paths (`lamp.fuel`); `.count()`; `php::print_r`
+over nested bags; deep-copy isolation on carrier assignment; value egress
+(`.c_str()` → std::string, `cout << value`); array kind push/subscript/
+range-for (subscript yields `string` per the ruling — spell reads
+`a[i].c_str()` / `string s = a[i]` / `cout << a[i]`).
+
+Loud compile errors, confirmed, workarounds recorded — NO pilot blockers,
+no feeder fixes required for Phase 1:
+- `value f()` by-value return: compile error at HEAD (better than the
+  banked "silent empty" symptom — it got LOUD somewhere in the
+  v0.86–v0.94 arcs). Workaround: `value &` out-params.
+- retagging a `value &` PARAMETER (`v = 5`): compile error (the documented
+  sibling defect). Workaround: mutate via `context_set_*`.
+- `value = std::string` ingestion: compile error (documented residue).
+  Workaround: `.c_str()`.
+- string-keyed subscript on the carrier (`bag["k"]`): unsupported, loud.
+  Workaround: `context_set_*` + eval readback. (Ergonomic follow-up
+  candidate AFTER the pilot: carrier subscript as sugar over the same
+  entries — would retire the clunkiest spelling in the driver.)
+
+Diagnostic-parity note (recorded, not pilot-blocking, matches canon
+behavior but misses canon's warning): `printf("%s", a[0])` with the
+string-typed subscript result prints garbage with NO -Wformat-style
+warning, where g++/clang both warn on std::string-to-%s. Candidate small
+diagnostics fix, own commit, own reducer — queued behind the pilot.
+
+Also noted: the container dev `bin/madc` predates the v0.94.0 VERSION bump
+(wave-validated code, stale label) — S1 starts with a sync + rebuild.
+
 ### S1 — Entity/component core + credentials (C++, madcdis; ~2-3 days)
 
 - Entity handles over `id_table`; component attach/detach as record-family
