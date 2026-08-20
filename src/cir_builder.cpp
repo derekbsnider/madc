@@ -10429,12 +10429,23 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// `madc::sys.argv.count()`): ddARRAY IS-A DataDefCLASS but is
 		// deliberately not a user class (as_user_class rejects dtARRAY).
 		// The translated array lvalue decays to the value-buffer address —
-		// the same receiver convention as the subscript path.
+		// the same receiver convention as the subscript path. A KEYED
+		// carrier subscript receiver (`bag["k"].as_integer()`) is the one
+		// shape that must NOT ride the decay: it translates to the slot's
+		// value LVALUE (N_DEREF of the madarray_key_slot call), which as
+		// an argument LOADS the slot's first byte (the kind byte) instead
+		// of decaying. Re-wrap with & (c2mir folds &* back to the slot
+		// call) — the same receiver convention object_arg_addr's keyed
+		// arm uses.
 		if (!recv_class && is_array_object(recv_type)) {
 			recv_class = dynamic_cast<DataDefCLASS *>(
 				unqualified_type(recv_type));
-			if (recv_class)
-				return translate_expr(tm->parent_expr);
+			if (recv_class) {
+				node_t rn = translate_expr(tm->parent_expr);
+				if (is_carrier_keyed_subscript(tm->parent_expr))
+					return node1(N_ADDR, rn, origin);
+				return rn;
+			}
 		}
 		if (!recv_class) return NULL;
 		// A by-value object-returning CALL receiver (`*begin()` — begin()
