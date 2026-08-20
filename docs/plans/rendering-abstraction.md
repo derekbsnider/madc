@@ -3,6 +3,16 @@
 Revised 2026-05-24 after extensive research into 60 years of UI/UX history
 and modern framework analysis.
 
+> **2026-08-20:** Track 7 was revisited and merged with the data-substrate
+> crossover into the APPROVED design
+> [2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md).
+> This doc remains the reference for the capability levels, the three-way
+> negotiation, the WCAG mapping, and the UI-history lessons. Superseded by
+> that design: render blocks as the primary authoring surface (Phase 1 is
+> library-surface only), per-BINARY capability resolution (now
+> per-connection), and hard C types in the semantic IR (now value-first:
+> content = `madc::value`, classification = registry-interned ids).
+
 ## Vision
 
 A single semantic rendering abstraction that adapts to ANY display target —

@@ -250,6 +250,7 @@ raw channels, processes, and standard dependency-free drivers belong here.*
 | 5A.13 | Lazy Cursor/Sink/Flow + ABI-compatible streaming extensions | — | **DONE** @cd1f19c6 | [2026-08-07-data-channel-streaming-process-flow-plan.md](2026-08-07-data-channel-streaming-process-flow-plan.md) |
 | 5A.14 | Raw channels + format bridge + explicit Process (`memory/file/FIFO/TCP/UDP/UDS/exec`) | — | **DONE** @cd1f19c6 | [2026-08-07-data-channel-streaming-process-flow-plan.md](2026-08-07-data-channel-streaming-process-flow-plan.md) |
 | 5A.15 | Standard dependency-free record drivers (DSV/FLR/VLR); DSV native streaming | — | **DONE** @079ca8c3/@533947e1 | [madcdat-plan.md](madcdat-plan.md) |
+| 5A.16 | Schema observation & hardening (dynamic → observed → locked; deopt-style guards; logical sibling of 5A.7's physical encodings) | 3-4 wk | Planned (design approved 2026-08-20) | [2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md) |
 
 ### Track 5B: madcdat — External Storage Drivers (`libmadcdat`)
 
@@ -319,24 +320,33 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 
 ---
 
-## Track 7: Rendering Abstraction (`ui::`)
+## Track 7: Data Projection & Rendering (`ui::` + the data hub)
 
-*Universal semantic rendering: teletype to Unreal Engine. WCAG by design.
-Hardware × user preference × accessibility three-way negotiation.
-JIT-time capability resolution for zero runtime overhead.*
+*One substrate for the whole lifetime of data; every UI is a projection of
+it. Semantic rendering from teletype to Unreal. WCAG by design. Access ×
+wants × needs × capability negotiation; per-connection JIT specialization.
+Design **APPROVED 2026-08-20**:
+[2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md)
+— 15 demands, keys+levels access model, value-first semantic IR, the two
+pilots. [rendering-abstraction.md](rendering-abstraction.md) stays the
+reference for levels/negotiation/WCAG detail.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 7.1 | Semantic IR + Level 0 (text stream) | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.2 | Level 1 — curses/terminal backend | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.3 | Reactivity + compiler-tracked state deps | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.1 | Hub projections + value-typed semantic IR + Level 0 (text) + access model (keys/levels) + verb registry | 3-5 wk | **Planned — NEXT UP**; gate = the text-adventure pilot | [phase 1](2026-08-20-track7-phase1-text-adventure.md) |
+| 7.2 | Level 1 — curses/terminal backend (pulls 8.1's piece table forward as a component type) | 3-4 wk | Planned; gate = madcide first light | [design](2026-08-20-data-hub-projection-rendering.md) |
+| 7.3 | Reactivity — compiler-tracked deps + per-connection projection instances + semantic-diff wire | 2-3 wk | Planned | [design](2026-08-20-data-hub-projection-rendering.md) |
 | 7.4 | Level 2 — 2D graphics (Skia/Cairo) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.5 | Level 3 — Web backend (WebSocket + thin JS) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.5 | Level 3 — Web backend (semantic diffs over WebSocket + thin JS) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 | 7.6 | Level 3 — Native GUI (SDL2/GTK) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 | 7.7 | Level 4 — GPU/3D (WebGPU/Metal) | Future | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 
-**Dependencies:** 2.1 (constructors) for widget lifecycle. 7.1-7.2 can
-start after 1.2 (cleanup) makes the parser ready for `render` blocks.
+**Dependencies:** Track 5's shipped substrate (entities/relations/adapters)
+— met. Feeders flagged, not absorbed: the value ABI arc (atomic cell
+refcounts per demand 15), `value` std::string ingestion, eval/exec for
+script-attached verbs (post-Phase-1). Phase 1 is **library-surface only** —
+no new parser syntax; `render { }` blocks are a later ergonomic layer
+(cpp-first-api).
 
 ---
 
@@ -346,7 +356,7 @@ start after 1.2 (cleanup) makes the parser ready for `render` blocks.
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Future | [madc-ide.md](madc-ide.md) |
+| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Planned — pulled forward with 7.2 as a hub component type (madcide = 7.2's gate) | [madc-ide.md](madc-ide.md) |
 | 8.2 | libmadcedit curses rendering | 2-3 wk | Blocked on 7.2 | [madc-ide.md](madc-ide.md) |
 | 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Future | [madc-ide.md](madc-ide.md) |
 | 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Blocked on 8.2 | [madc-ide.md](madc-ide.md) |
@@ -415,15 +425,16 @@ run in parallel.
      ├── ★ PARITY-TO-MASTER GATE MET (2026-08-12); promotions resumed
      └── Remaining: class-(b) GNU extensions; eval/exec + REPL on MIR
 
- ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
- ║   └── render { } blocks, UINode, text output
- ║       Can start in parallel with Track 1.3
+ ║── Track 7.1  Hub projections + Level 0                [3-5 wk]
+ ║   └── pilot: the text adventure (design APPROVED 2026-08-20;
+ ║       library surface only — no new parser syntax)
 
 12.  Track 1.4  Code cleanup Phase B                    [3 wk]
      └── Parser dereference & subscript unification
          Unblocks: PCH transition, parser resilience
 
  ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
+ ║   └── pilot: madcide (pulls 8.1's piece table forward)
 
 13.  Track 8.1  libmadcedit core                         [3-4 wk]
      ├── Piece table, cursor, undo/redo, CUA keybindings
@@ -481,9 +492,9 @@ run in parallel.
 **Where things actually stand (2026-08-20):** the promote gate is MET, the
 three platform lanes all ship, and the data-substrate core (5A.13-15, 5C.0)
 is live. The open fronts are the Standing opens in Current State, Track 1.6
-(the SIMD floor), Track 5's remaining substrate phases (5A.3-5A.12, 5B, 5C),
-Track 7 (rendering abstraction — due a fresh recon/design pass; the original
-concept doc predates the data-substrate work it overlaps), and Track 2.10/2.11
+(the SIMD floor), Track 5's remaining substrate phases (5A.3-5A.12, 5A.16,
+5B, 5C), Track 7 (data projection & rendering — design APPROVED 2026-08-20;
+**Phase 1, the text-adventure pilot, is next up**), and Track 2.10/2.11
 (mangled-name unification, self-hosting).
 
 ## The SMAUG Goal
@@ -521,7 +532,9 @@ SMAUG target terminal, web, and GUI from the same game code.
 | macOS/ARM64 Port | [macos-arm64-port.md](macos-arm64-port.md) |
 | Pre-Compiled Headers | [precompiled-headers.md](precompiled-headers.md) |
 | Perry/Rust Integration | [perry-rust-integration.md](perry-rust-integration.md) |
-| Rendering Abstraction | [rendering-abstraction.md](rendering-abstraction.md) |
+| **Data Hub & Projection–Rendering (Track 7, APPROVED 2026-08-20)** | [2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md) |
+| Track 7 Phase 1 — the Text-Adventure Pilot | [2026-08-20-track7-phase1-text-adventure.md](2026-08-20-track7-phase1-text-adventure.md) |
+| Rendering Abstraction (levels/negotiation/WCAG reference) | [rendering-abstraction.md](rendering-abstraction.md) |
 | madc IDE & Editor | [madc-ide.md](madc-ide.md) |
 | Multi-Syntax Support | [multi-syntax.md](multi-syntax.md) |
 | Typed-Register IR (archived — asmjit-era) | [archived/typed-register-ir.md](archived/typed-register-ir.md) |

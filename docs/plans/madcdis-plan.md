@@ -7,6 +7,17 @@ and streaming framework that ships as part of core `libmadc`. It
 supersedes earlier framings in which the entire data subsystem was
 optional or limited to typed in-memory storage.
 
+> **UPDATE 2026-08-20** — The Track 7 revisit
+> (`2026-08-20-data-hub-projection-rendering.md`, APPROVED) adopts an
+> **entity/component reading of this substrate**: an entity is an `id_table`
+> identity, a component is a record-family membership, and a classic record
+> is the degenerate one-component case; archetype-style packing is the
+> physical shape of hardened compositions. It also adds a planned phase:
+> **5A.16 schema observation & hardening** (dynamic → observed → locked with
+> deopt-style guards) — the logical sibling of 5A.7's physical encodings.
+> Nothing existing changes; the reading tells new consumers (projections,
+> verbs, credentials) which structures own what.
+
 > **UPDATE 2026-08-07** - The streaming/process-flow milestone is complete.
 > `madcdis` now owns the optional cursor extensions, typed sources/sinks/flows,
 > raw channels, process endpoints, and standard dependency-free transports and
