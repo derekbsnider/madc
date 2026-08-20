@@ -191,6 +191,15 @@ static std::string dump_scalar_type_word(DataDef *dd)
 		return "?";
 	if (dd->is_cstr())
 		return "char *";
+	// The LLP64 platform `long` / `unsigned long` are DISTINCT 4-byte
+	// singleton TYPES (task #46b) whose identity survives to here, and
+	// their word is their own source name — `long l = 42` dumps long(42)
+	// on every target, never the rank's "int". LP64 never instantiates
+	// these classes, so this cannot rewrite an LP64 word.
+	DataDef *u = dd->unqualified();
+	if (dynamic_cast<DataDefPlatformLONG *>(u)
+	    || dynamic_cast<DataDefPlatformULONG *>(u))
+		return u->name;
 	switch (dd->rawtype()) {
 	case DataType::dtBOOL:     return "bool";
 	case DataType::dtINT8:     return "char";
