@@ -153,6 +153,23 @@ Probe matrix first (S0 discipline: measure before designing; probes in
 `tmp/`, run on the container). Each confirmed gap = its own commit with
 trailers + reducer + test. Candidate list, ordered by need:
 
+**A1 PROBE RESULTS (2026-08-20, container, tmp/advprobes/, L0 control
+green):** ALL SIX CONFIRMED. L1 member access = PARSER error
+("Unidentified member 'name' in 'array'" — `.name` resolves against the
+carrier class's method registry, no object-kind lowering). L2 subscript
+= CIR lowering feeds the string key to the INTEGER-index getter
+("using pointer without cast for integer type parameter") and the
+result is not an lvalue — needs kind-dispatched get + a write-through
+form. L3a script `var f()` return = the banked lowers-to-int defect
+("returning pointer without cast for integer result"); C++ analogue is
+class-by-value return (gcc: hidden sret pointer; in-tree precedent:
+`__retbuf`). L3b CONTRAST CONTROL PASSES (php::print_r capture) — the
+gap is script-defined/mangled-direct returns only. L4 `value&` param
+assignment does not route through the retag/assign runtime family
+("assignment of incompatible value" at the callee). L5 blocked by L2,
+retest after. L6 `php::array_key_exists` not in ns_php (php-parity law:
+mirror PHP exactly — key first, `bool` return).
+
 - L1 object-kind MEMBER ACCESS in script: `o.name` read/write on a
   value whose kind is object/null (write vivifies). Dotted chains.
 - L2 string-keyed SUBSCRIPT: `o["k"]` with RUNTIME keys (vocab and
