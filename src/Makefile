@@ -969,6 +969,11 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 
 $(BINDIR)/test_process: $(PROCESS_FIXTURE)
 
+# test_rt_format bakes the oracle fixture in via #include — without this
+# prerequisite a regenerated .inc leaves a STALE test binary asserting the
+# old rows (the 2026-08-20 battery ran 1428 phantom failures that way).
+$(BINDIR)/test_rt_format: $(TESTDIR)/rt_format_oracle.inc
+
 $(PROCESS_FIXTURE): ../tests/helpers/process_fixture.cpp
 	mkdir -p $(BINDIR)
 	$(CXX) -o $@ $(CXXFLAGS) $<
