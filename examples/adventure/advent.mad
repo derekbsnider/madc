@@ -1,0 +1,59 @@
+#!/usr/bin/env madc
+// Colossal Cave Adventure — the 430-point Adventure 2.5, in madc.
+//
+// Data + observable behavior come from open-adventure (BSD-2, Will
+// Crowther & Don Woods 1977-1995, revived by Eric S. Raymond 2017);
+// the dungeon rides examples/adventure/adventure.world through the
+// madc data hub (ui::). The implementation is madc's own: data-
+// oriented ECS over the hub, systems + a transcript view, MUD-shaped
+// seams (the player is an actor entity, never a singleton).
+// Plan: docs/plans/2026-08-20-adventure-430-plan.md.
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
+#include <fstream>
+#include <string>
+// Explicit: the std::print/println auto-include scan does not fire for
+// identifiers inside user #include modules (lexer residue — noted in
+// the plan doc), so the main file includes the intrinsics header.
+#include <bits/std_format>
+#include <ns_ui>
+#include <ns_php>
+#include <ns_madc>
+using namespace std;
+
+#include "adv_state.inc"
+#include "adv_rng.inc"
+#include "adv_io.inc"
+#include "adv_vocab.inc"
+#include "adv_describe.inc"
+#include "adv_travel.inc"
+#include "adv_actions.inc"
+#include "adv_loop.inc"
+
+int main()
+{
+	if ( !world_boot() )
+	{
+		fprintf(stderr, "advent: cannot open adventure.world\n");
+		return 1;
+	}
+	init_game();
+	// Deterministic default; transcripts re-seed with `seed N`.
+	rng_seed(0);
+	if ( ask_yes_no("WELCOME_YOU", "CAVE_NEARBY", "NO_MESSAGE") )
+	{
+		NOVICE = true;
+		LIMIT = 1000;
+	}
+	for (;;)
+	{
+		if ( !do_move_step() )
+			continue;
+		if ( !do_command_once() )
+			break;
+	}
+	// EOF: the reference scores and exits (slice A9); the skeleton
+	// ends quietly so fragment diffs stop at the tail.
+	return 0;
+}

@@ -1,0 +1,104 @@
+// ---- the describe/listobjects view (the transcript's room text) --------
+
+// Speak the kk'th state description of an object (the reference's
+// pspeak look mode): a null or missing entry prints nothing.
+void pspeak_look(long o, long kk)
+{
+	if ( kk < 0 )
+		return;
+	var ds;
+	ui::get(ds, W, o, "descriptions");
+	if ( ds.is_null() )
+		return;
+	long i = 0;
+	for ( value d : ds )
+	{
+		if ( i == kk )
+		{
+			if ( !d.is_null() && d.length() > 0 )
+				speak_msg(d);
+			return;
+		}
+		i = i + 1;
+	}
+}
+
+// STEPS describe by which side the player stands on (the reference's
+// fixed-side check).
+long steps_state(long o)
+{
+	var fx;
+	ui::get(fx, W, o, "fixed_at");
+	if ( !fx.is_null() && E(fx.c_str()) == LOC )
+		return state_index_c(o, "STEPS_UP");
+	return state_index_c(o, "STEPS_DOWN");
+}
+
+void describe_location()
+{
+	long ab = bag_int(LOC, "abbrev", 0);
+	var m;
+	ui::get(m, W, LOC, "short");
+	if ( ab % ABBNUM == 0 || m.is_null() )
+		ui::get(m, W, LOC, "long");
+	if ( !forced_loc(LOC) && is_dark() )
+		msg_of(m, "PITCH_DARK");
+	if ( toting(E("BEAR")) )
+		rspeak("TAME_BEAR");
+	speak_msg(m);
+	if ( LOC == E("LOC_Y2") && pct(25) && !CLOSNG )
+		rspeak("SAYS_PLUGH");
+}
+
+void listobjects()
+{
+	if ( is_dark() )
+		return;
+	ui::set(W, LOC, "abbrev", bag_int(LOC, "abbrev", 0) + 1);
+	// LISTING-ORDER LAW: the reference's atloc lists PREPEND on drop —
+	// list by placement stamp DESCENDING. Zero-padded (999999999-seq)
+	// keys make the object bag iterate in exactly that order, and the
+	// location's fixed-side entries (converter seq_fixed) merge in.
+	var nm_loc;
+	ui::name_of(nm_loc, W, LOC);
+	var byseq;
+	if ( php::array_key_exists(nm_loc.c_str(), FIXEDAT) )
+		byseq = FIXEDAT[nm_loc.c_str()];
+	var held;
+	ui::contents(held, W, LOC);
+	for ( value h : held )
+	{
+		long o = E(h.c_str());
+		var sq;
+		ui::get(sq, W, o, "seq");
+		if ( sq.is_null() )
+			continue;	// actors and singletons are not listed
+		string key = pad_seq_key(sq.as_integer());
+		byseq[key.c_str()] = h.c_str();
+	}
+	for ( value onm : byseq )
+	{
+		long o = E(onm.c_str());
+		if ( onm == "STEPS" && toting(E("NUGGET")) )
+			continue;
+		if ( !obj_found(o) )
+		{
+			if ( CLOSED )
+				continue;
+			ui::set(W, o, "found", true);
+			// Treasure first-sight specials (the reference's
+			// prop hacks: full score needs prop 0 later).
+			if ( onm == "RUG" )
+				obj_set_state(o, state_index_c(o, "RUG_DRAGON"));
+			if ( onm == "CHAIN" )
+				obj_set_state(o, state_index_c(o, "CHAINING_BEAR"));
+			if ( onm == "EGGS" )
+				SEENBIGWORDS = true;
+			TALLY = TALLY - 1;
+		}
+		long kk = obj_state(o);
+		if ( onm == "STEPS" )
+			kk = steps_state(o);
+		pspeak_look(o, kk);
+	}
+}
