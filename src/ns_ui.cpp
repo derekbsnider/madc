@@ -81,17 +81,6 @@ ui_session *ui_get(int64_t handle)
     return s[(size_t)handle - 1];
 }
 
-bool ui_read_file(const char *path, std::string &out)
-{
-    std::ifstream in(path);
-    if ( !in )
-	return false;
-    std::ostringstream buf;
-    buf << in.rdbuf();
-    out = buf.str();
-    return true;
-}
-
 // Per-use actor credentials: session grants + carried grants + closure.
 credentials ui_creds(ui_session *s, entity_id actor)
 {
@@ -117,7 +106,7 @@ int64_t world_open(const char *path)
 	return 0;
     }
     std::string text;
-    if ( !ui_read_file(path, text) )
+    if ( !madc::hub::read_file_text(path, text) )
     {
 	fprintf(stderr, "ui::world_open: cannot read `%s`\n", path);
 	return 0;
@@ -148,15 +137,8 @@ int64_t world_open(const char *path)
     for ( size_t i = 0; i < doc.requires_.size(); ++i )
     {
 	const world_doc::verb_decl &d = doc.requires_[i];
-	requirement req;
-	for ( size_t k = 0; k < d.keys.size(); ++k )
-	    req.keys.push_back(s->w.intern(d.keys[k]));
-	if ( !d.domain.empty() )
-	{
-	    req.level_domain = s->w.intern(d.domain);
-	    req.min_level = (int32_t)d.min_level;
-	}
-	s->gates[d.name] = std::make_pair(req, d.refusal);
+	s->gates[d.name] = std::make_pair(
+	    madc::hub::requirement_from_decl(d, s->w), d.refusal);
     }
     s->verb_decls = doc.verbs;
     s->require_decls = doc.requires_;

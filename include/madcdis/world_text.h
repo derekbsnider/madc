@@ -119,6 +119,11 @@ inline madc::value wt_value(const std::string &text)
     return madc::value(text);
 }
 
+// NOT prose::text_of. This is the SERIALIZATION twin of wt_value — its
+// output must round-trip through wt_value unchanged (the format's law).
+// prose::text_of is display coercion (%g reals, empty null) and may
+// drift from this freely; consolidating the two would break one law or
+// the other.
 inline std::string wt_value_text(const madc::value &v)
 {
     if ( v.is_boolean() )
@@ -169,6 +174,38 @@ inline bool wt_parse_verb(const std::string &rest, world_doc::verb_decl &out,
 }
 
 } // namespace detail
+
+// Slurp a file into a string; false on any failure. THE one owner of
+// whole-file reads in the hub subsystem (the lexer and program loaders
+// own SOURCE ingestion with their richer error paths — different
+// concern, different owner).
+inline bool read_file_text(const std::string &path, std::string &out)
+{
+    std::ifstream in(path.c_str());
+    if ( !in )
+	return false;
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    out = buf.str();
+    return true;
+}
+
+// Bind one %verb / %require declaration's condition to hub types: intern
+// the keys and the level domain. THE one owner of decl -> requirement
+// (the verb catalog and the session gate table both consume it).
+inline requirement requirement_from_decl(const world_doc::verb_decl &d,
+					 const world &w)
+{
+    requirement req;
+    for ( size_t i = 0; i < d.keys.size(); ++i )
+	req.keys.push_back(w.intern(d.keys[i]));
+    if ( !d.domain.empty() )
+    {
+	req.level_domain = w.intern(d.domain);
+	req.min_level = (int32_t)d.min_level;
+    }
+    return req;
+}
 
 // Parse the document text. False = loud error naming the 1-based line.
 inline bool world_doc_parse(const std::string &text, world_doc &out,
@@ -412,16 +449,6 @@ inline world_doc world_doc_extract(const world &w)
 // the source. Accepts file-like sources (plain path or file://).
 class world_text_adapter : public SourceAdapter
 {
-    static bool read_file(const std::string &path, std::string &out)
-    {
-	std::ifstream in(path.c_str());
-	if ( !in )
-	    return false;
-	std::ostringstream buf;
-	buf << in.rdbuf();
-	out = buf.str();
-	return true;
-    }
     static std::string source_path(const DataSource &source)
     {
 	return source.path().empty() ? source.location() : source.path();
@@ -446,7 +473,7 @@ public:
 		 error *err = (error *)0) const
     {
 	std::string text;
-	if ( !read_file(source_path(source), text) )
+	if ( !read_file_text(source_path(source), text) )
 	{
 	    if ( err )
 		*err = error(error::severity::error, error::phase::runtime,

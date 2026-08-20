@@ -392,15 +392,8 @@ inline bool register_catalog(verb_table &t, world &w,
 	err = "no compiled handler named `" + decl.name + "`";
 	return false;
     }
-    requirement req;
-    for ( size_t i = 0; i < decl.keys.size(); ++i )
-	req.keys.push_back(w.intern(decl.keys[i]));
-    if ( !decl.domain.empty() )
-    {
-	req.level_domain = w.intern(decl.domain);
-	req.min_level = (int32_t)decl.min_level;
-    }
-    t.register_verb(w.intern(decl.name), req, decl.refusal, fn);
+    t.register_verb(w.intern(decl.name), requirement_from_decl(decl, w),
+		    decl.refusal, fn);
     return true;
 }
 
