@@ -39,6 +39,7 @@ hits=$( { grep -rnE 'rtPtr\(|rtRef\(|rtDePtr\(|rtDeRef\(' src/ include/ \
         | grep -vE '^include/doctest\.h:' \
         | grep -vE '^include/json\.hpp:' \
         | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|/\*)' \
         | sort -u )
 n=$( printf '%s' "$hits" | grep -c . )
 
@@ -57,6 +58,7 @@ chits=$( { grep -rnE 'dt[A-Za-z0-9]+(ptr|ref)\b' src/ include/ ;
         | grep -vE '^include/doctest\.h:' \
         | grep -vE '^include/json\.hpp:' \
         | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|/\*)' \
         | grep -vE 'rawtype' \
         | sort -u )
 cn=$( printf '%s' "$chits" | grep -c . )
