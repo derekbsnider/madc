@@ -179,6 +179,35 @@ def convert(doc):
     # ---- objects ---------------------------------------------------------
     objects = doc["objects"]
     counts["objects"] = len(objects)
+
+    # LISTING-ORDER LAW (plan, A5/A6): the reference's atloc lists PREPEND
+    # on drop, and initialise() drops two-placed objects first (objnum
+    # DESCENDING; fixed side before primary side each), then plain-placed
+    # objects (objnum DESCENDING; fixd <= 0, so immovable one-placed
+    # objects ride this loop). Replay that exact order into per-object
+    # seq / seq_fixed props; the game lists location contents by seq
+    # DESCENDING and stamps every later drop from a world counter seeded
+    # with seq_next. YAML list position IS the objnum (index 0 = NO_OBJECT).
+    seq_of = {}
+    seq_fixed_of = {}
+    seq = 0
+    numbered = [(i, key_name(n), o or {}) for i, (n, o) in enumerate(objects)]
+    for i, name, obj in reversed(numbered):
+        locs = obj.get("locations")
+        if i >= 1 and isinstance(locs, list) and len(locs) > 1:
+            seq += 1
+            seq_fixed_of[name] = seq
+            seq += 1
+            seq_of[name] = seq
+    for i, name, obj in reversed(numbered):
+        locs = obj.get("locations")
+        place = locs[0] if isinstance(locs, list) else locs
+        if (i >= 1 and name not in seq_of
+                and place and place != "LOC_NOWHERE"):
+            seq += 1
+            seq_of[name] = seq
+    seq_next = seq + 1
+
     objwords = {}
     for name, obj in objects:
         name = key_name(name)
@@ -199,6 +228,10 @@ def convert(doc):
             props["immovable"] = True
         if obj.get("treasure"):
             props["treasure"] = True
+        if name in seq_of:
+            props["seq"] = seq_of[name]
+        if name in seq_fixed_of:
+            props["seq_fixed"] = seq_fixed_of[name]
         locs = obj.get("locations")
         place = None
         if isinstance(locs, list):
@@ -270,7 +303,8 @@ def convert(doc):
         "obituaries": [{"query": clean_text(o["query"]),
                         "yes_response": clean_text(o["yes_response"])}
                        for o in doc["obituaries"]],
-        "dwarflocs": doc["dwarflocs"]})
+        "dwarflocs": doc["dwarflocs"],
+        "seq_next": seq_next})
 
     return out, counts
 
