@@ -33,25 +33,18 @@ stand and what the owner ruled:
   open-adventure's regression logs. That release then batches
   everything on develop (v0.93.0 + v0.94.0 + the Track 7 feature) into
   a MASTER PROMOTION — three-platform gated per promote.md step 5.
-- **NEXT (owner-directed): the real game.** `examples/adventure/` will
-  implement Colossal Cave Adventure on madc::ui + madc::dis —
-  specifically **the "450 point, Adventure 2.5" version, i.e. what
-  Open Adventure IS** (owner 2026-08-20: it is "clean and portable";
-  verify the exact point total during recon). The C++ and Python ports
-  are mined for DATA-STRUCTURE design — OOP/modern shapes that suit how
-  madc works and its madc::value carrier. ⚠️ OWNER STYLE DIRECTIVE for
-  the example code: use **`var`** variables wherever strict typing is
-  not needed (the value carrier's dynamic spelling — the example
-  showcases it). **The owner wants a proper BRAINSTORMING session for
-  the Adventure implementation as the NEXT session's opening act** —
-  design before code: format extensions, data structures, slice cuts,
-  parity staging. References the owner
-  named: https://gitlab.com/esr/open-adventure/ (C, canonical
-  Crowther/Woods 350-point, BSD-2 — license-compatible, data source of
-  truth via its adventure.yaml + regression transcripts as the oracle),
-  https://github.com/anthay/advent.cpp (C++ single-file),
-  https://udel.edu/~mm/hp/adventure/advent.py (Python) — madc sits in
-  the space between the three; mine all three for ideas.
+- **NEXT (owner-directed): the real game — BRAINSTORM DONE, PLAN
+  APPROVED (session #109).** See
+  [2026-08-20-adventure-430-plan.md](2026-08-20-adventure-430-plan.md)
+  — the execution plan for Colossal Cave Adventure at
+  `examples/adventure/`. Key rulings recorded there: target is
+  Adventure 2.5 = the **430-point** version (pinned from source; "450"
+  was a misremember), references are references only, architecture is
+  modern data-oriented ECS + systems + events + views, MUD-shaped
+  (actor-parameterized, Diku act()-as-data event scopes, command path
+  vs world pulse, sessions bind actors), `var`-first style, oracle =
+  open-adventure's ~92 in-scope .log/.chk transcripts with win430 as
+  the release-boundary gate.
 - **OWNER ARCHITECTURE RULING**: level-0 text rendering is INTERNAL
   (dis-like, dependency-free); external UI rendering libraries are
   dat-side providers (perhaps literally through madc::dat) — recorded
