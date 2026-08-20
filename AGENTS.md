@@ -322,6 +322,7 @@ no matter how small.
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
+| [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -356,10 +357,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **31 rules, 867 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **32 rules, 889 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1285 lines.**
+- **Grand total loaded by Claude Code per turn: ~1307 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

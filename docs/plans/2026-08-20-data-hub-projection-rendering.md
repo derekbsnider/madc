@@ -292,6 +292,11 @@ collaborative text.
 - **Dependencies flagged, not absorbed**: eval/exec (verbs-as-scripts),
   value ABI arc (value-first IR; atomic cell refcounts per demand 15),
   `value` std::string ingestion.
+- **Standing law codified** (owner, 2026-08-20): every madc language
+  addition states and honors a thread-safety contract —
+  `.claude/rules/thread-safety.md` (bare rule) +
+  `docs/rules/thread-safety.md` (reasoning, pre-law audit debt, TSan-lane
+  gate plan). Effective immediately, independent of this doc's approval.
 - rendering-abstraction.md gains a pointer to this doc; its levels/
   negotiation/WCAG sections stay authoritative.
 
