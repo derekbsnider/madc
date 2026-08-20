@@ -1,0 +1,13 @@
+// std::print / std::println as always-included madc intrinsics: ZERO
+// includes — the bare identifiers auto-include <bits/std_format>, the
+// compiler validates the literal format strings and lowers each field
+// to the rt_format engine (oracle: libstdc++ std::format, pinned in
+// tests/unit/rt_format_oracle.inc).
+std::println("hello {}!", "world");
+std::print("a={} b={:08.3f} c={:>6}|\n", 42, 3.14159, "ok");
+std::println("{2}-{1}-{0}", "c", "b", "a");
+std::println("{{literal}} {:+d} {:#x} {:x}", 7, 255, -42);
+double d = 0.1;
+bool t = false;
+char c = 'Z';
+std::println("d={} t={} c={} chex={:#x}", d, t, c, c);

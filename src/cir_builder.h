@@ -922,6 +922,40 @@ private:
 	node_t dump_vd_text_close(TokenBase *origin);
 	node_t dump_pr_nl(TokenBase *origin);
 
+	// ---- std::format / std::print / std::println (src/cir_format.cpp) ----
+	// The C++23 formatting surface as compiler-implemented intrinsics
+	// (declared in <bits/std_format>, defined nowhere): the LITERAL format
+	// string is parsed and validated at COMPILE time by the same C engine
+	// the runtime uses (src/rt/rt_format.c — one grammar owner), so an
+	// invalid format string is a compile error exactly as C++23 requires,
+	// and each replacement field lowers to a typed primitive call.
+	// lower_format_call returns NULL when the callee is not a format
+	// intrinsic, leaving the ordinary call path alone.
+public:
+	enum FormatFlavor { ffNone, ffFormat, ffPrint, ffPrintln };
+private:
+	node_t lower_format_call(class TokenCallFunc *tcf, FuncDef *fd,
+				 TokenBase *origin);
+	// Is this call a format intrinsic? The by-value std::string return
+	// otherwise walks std::format into the class-return ELISION lanes
+	// (object_call_temp_addr, the decl-init same-class arm), which emit
+	// the placeholder symbol directly — those lanes ask first and route
+	// through lower_format_call instead.
+	bool format_intrinsic_call(class TokenCallFunc *tcf);
+	// One replacement field: classify the argument's concrete type,
+	// validate the spec's presentation against it (false + `why` = the
+	// compile-time diagnostic), and emit the typed primitive call.
+	bool format_field_stmt(TokenBase *arg, const std::string &spec,
+			       const std::string &sink_var,
+			       std::vector<node_t> &out, TokenBase *origin,
+			       std::string &why);
+	// A literal run between fields (and println's trailing newline).
+	node_t format_text_stmt(const std::string &bytes,
+				const std::string &sink_var, TokenBase *origin);
+	// The sink argument every primitive leads with: the capture sink local
+	// (std::format) or a null pointer meaning stdout (print/println).
+	node_t format_sink_arg(const std::string &sink_var, TokenBase *origin);
+
 	// The POSITIONAL index-iteration protocol — `size()` plus
 	// `operator[](integral)`, TYPE-CHECKED (see the definition for why naming
 	// the two members is not enough). The range-for and the dumper share this

@@ -677,6 +677,13 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"map", "map"},
 	{"set", "set"},
 
+	// std::format / std::print / std::println — compiler-implemented
+	// intrinsics; the fragment declares them (madc dialect only, like
+	// every entry here — auto_includes_enabled gates the scan).
+	{"format", "bits/std_format"},
+	{"print", "bits/std_format"},
+	{"println", "bits/std_format"},
+
 	{"php", "ns_php"},
 	{"perl", "ns_perl"},
 	{"python", "ns_python"},

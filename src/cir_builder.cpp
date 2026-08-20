@@ -6582,6 +6582,20 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		}
 	}
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
+	// A format intrinsic (std::format) has no callee to emit — the
+	// compiler is its implementation. Delegate BEFORE minting the temp
+	// (lower_format_call hoists its own constructed std::string local)
+	// and take that lvalue's address, the class_method_call pattern above.
+	if (tcf && format_intrinsic_call(tcf)) {
+		node_t lv = lower_format_call(tcf, call_target_funcdef(tcf),
+					      origin);
+		if (lv) {
+			node_t addr = node2(N_CAST, void_ptr_type(),
+					    node1(N_ADDR, lv, origin), origin);
+			CIR_NODE(addr)->synth_from_origin = true;
+			return addr;
+		}
+	}
 	char name[40];
 	object_temp_decl(cdd, name, sizeof(name), origin);
 
@@ -20602,6 +20616,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// means "not a dump intrinsic"; the call path continues.
 			if (node_t dmp = lower_dump_call(tcf, inline_fd, tb))
 				return dmp;
+			// std::format / std::print / std::println: declared in
+			// <bits/std_format>, defined nowhere — the compiler
+			// validates the literal format string and lowers each
+			// field to the rt_format engine (src/cir_format.cpp).
+			if (node_t fmc = lower_format_call(tcf, inline_fd, tb))
+				return fmc;
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow
@@ -23418,7 +23438,13 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	}
 	if (ctor_args.size() == 1
 	    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
-	    && object_returning_call_class(ctor_args[0]) == cdcl) {
+	    && object_returning_call_class(ctor_args[0]) == cdcl
+	    // A format intrinsic has no symbol to elide into the declared
+	    // object — fall to the generic path, whose operand translation
+	    // routes through lower_format_call (copy-construct from the
+	    // hoisted result temp).
+	    && !format_intrinsic_call(
+			dynamic_cast<TokenCallFunc *>(ctor_args[0]))) {
 		TokenCallFunc *itcf =
 			dynamic_cast<TokenCallFunc *>(ctor_args[0]);
 		FuncDef *ifd = NULL;

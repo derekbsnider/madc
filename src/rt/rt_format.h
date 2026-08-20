@@ -103,6 +103,26 @@ void __madc_fmt_bool(void *sink, const char *spec, long long spec_n, int v);
 void __madc_fmt_ptr(void *sink, const char *spec, long long spec_n,
 		    const void *p);
 
+/* --- the C++ half (src/rt_format_value.cpp) ------------------------------ */
+/* NOT part of the strict-C11 ledger lane, same split as rt_dump.h's
+ * __madc_dump_value: these touch std::string / madc::value, so a program
+ * using them already needs the C++ script runtime. Declared here so the one
+ * format contract stays in one place. */
+
+/* A std::string argument: formats its bytes through __madc_fmt_str_n.
+ * `sp` is a `const std::string *`, opaque to C. */
+void __madc_fmt_stdstring(void *sink, const char *spec, long long spec_n,
+			  const void *sp);
+/* A madc::value argument: the one runtime-dispatched case — a value's kind
+ * is a property of the VALUE. Scalar kinds route to the primitives above;
+ * container kinds get the loud marker (parity: C++ gives std::vector no
+ * formatter either). `vp` is a `const madc::value *`. */
+void __madc_fmt_value(void *sink, const char *spec, long long spec_n,
+		      const void *vp);
+/* std::format's result hand-off: assign the sink's captured bytes into the
+ * caller's std::string (`strp`) and CLOSE the sink. */
+void __madc_fmt_take(void *strp, void *sink);
+
 #ifdef __cplusplus
 }
 #endif

@@ -50604,12 +50604,24 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
 // Unlike its siblings this cannot be a BODY-SHAPE test: these declarations have
 // no body anywhere, which is the point (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
 static const char *madc_namespace_template_builtin_kind(const std::string &ns,
-							const std::string &name)
+							const std::string &name,
+							const char *decl_file)
 {
     if ( ns == "php" )
     {
 	if ( name == "print_r" )  return "php_print_r";
 	if ( name == "var_dump" ) return "php_var_dump";
+    }
+    // The std:: intrinsics are additionally PROVENANCE-gated: only the
+    // compiler-owned fragment's declarations are compiler-implemented. A
+    // real libstdc++ <format> parsed some day must keep its own std::format
+    // untouched — the name alone cannot be the key there.
+    if ( ns == "std" && decl_file
+      && strcmp(decl_file, "bits/std_format") == 0 )
+    {
+	if ( name == "format" )   return "std_format";
+	if ( name == "print" )    return "std_print";
+	if ( name == "println" )  return "std_println";
     }
     return NULL;
 }
@@ -50720,7 +50732,9 @@ static void register_skipped_namespace_template_function(
 	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
 		fd->inline_builtin_kind = "forward";
 	    else if ( const char *bk = madc_namespace_template_builtin_kind(
-					   pgm.current_namespace(), name) )
+					   pgm.current_namespace(), name,
+					   tokens.empty() ? NULL
+							  : tokens[0]->file) )
 		fd->inline_builtin_kind = bk;
 	}
 	ns[name] = var;
