@@ -1,0 +1,68 @@
+// UFCS, the call-syntax direction — madc dialect only (--std=madc).
+//
+//	f(x, y)  ->  viable declared free f?  use it
+//		 ->  otherwise                x.f(y)
+//		 ->  otherwise                existing unresolved-symbol behavior
+//
+// This is the direction the unified-call proposal is actually about: "Note
+// begin(c) and c.begin() for range-for loops and in general code. Why do
+// we/someone have to write both?" (Stroustrup, 2016).
+//
+// Negative control: tests/testufcscallstrict.mad — the same shape must FAIL
+// under --std=c++17. Ordering control: tests/testufcsorder.mad.
+#include <map>
+#include <string.h>
+#include <stdio.h>
+
+class Bag
+{
+public:
+	int n;
+	int tally() { return this.n * 3; }
+	int scaleby(int k) { return this.n * k; }
+};
+
+// A DECLARED free function must beat a member of the same name.
+class Twine
+{
+public:
+	int n;
+	int declared() { return 2; }		// must never be selected
+};
+
+int declared(Twine &t)
+{
+	return 111;
+}
+
+int main()
+{
+	// A user class: no free tally/scaleby exists, so both re-form as members.
+	Bag b;
+	b.n = 5;
+	printf("tally=%d\n", tally(b));			// -> b.tally()
+	printf("scaleby=%d\n", scaleby(b, 4));		// -> b.scaleby(4)
+
+	// The motivating case. <map> declares no free `count`, so count(m, k)
+	// re-forms as m.count(k). `size(m)` needs no help — libstdc++ really
+	// does declare std::size, which is the duplication the proposal is
+	// complaining about; it must keep resolving to the free function.
+	std::map<int,int> m;
+	m[3] = 9;
+	m[5] = 25;
+	printf("count3=%d\n", (int)count(m, 3));	// -> m.count(3)
+	printf("count4=%d\n", (int)count(m, 4));	// -> m.count(4)
+	printf("msize=%d\n", (int)size(m));		// std::size, unchanged
+
+	// Free-beats-member: `declared` is a real declaration, so it wins.
+	Twine t;
+	t.n = 0;
+	printf("free-beats-member=%d\n", declared(t));
+
+	// Ordinary C is untouched: a char* receiver is not a class, so the
+	// fallback never engages and strlen stays strlen.
+	const char *s = "hello";
+	printf("cstr=%d\n", (int)strlen(s));
+
+	return 0;
+}

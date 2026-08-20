@@ -1,0 +1,4 @@
+php::print_r: no dumper for container 'struct NoSize' yet
+it declares no size()
+the generated loop is COUNTED
+an iterator comparison is a free function this walk cannot dispatch

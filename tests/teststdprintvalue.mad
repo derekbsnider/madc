@@ -1,0 +1,11 @@
+// A madc value/var argument: the ONE runtime-dispatched case — the
+// contained kind formats exactly as the contained type would (the
+// cout << value contract), null formats as nothing, and the spec
+// passes through to the kind's own presentation.
+var v = 3.5;
+var s = "vs";
+var n;
+var b = true;
+std::println("v={} s={} n=[{}] b={}", v, s, n, b);
+var i = 255;
+std::println("ihex={:#x} ipad={:>5}", i, i);

@@ -1,0 +1,7 @@
+len=3 str=one
+len=5 str=three
+caught: count(): integer value is not countable
+intact=one
+intact=three
+intact=7
+empty visited=0

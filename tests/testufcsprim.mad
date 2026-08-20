@@ -1,0 +1,71 @@
+// UFCS on NON-CLASS receivers — madc dialect only (--std=madc).
+//
+// This is where the dialect earns the feature: `n.twice()`, `s.shout()`,
+// `buf.sum2()` are all hard errors today ("member reference is not a structure
+// or union"), so nothing that compiles can change meaning.
+//
+// The receiver is argument 0 EXACTLY as written: no implicit `&`, no implicit
+// `*`, types unchanged (owner rule, 2026-08-17). That makes `.` and `->` the
+// same operator in the fallback leg — `ip->sum2()` is `sum2(ip)`, NOT
+// `sum2(*ip)`. The C++ identity `p->f()` == `(*p).f()` still holds for the
+// member leg, which runs first.
+//
+// The four rejection sites this exercises, all in src/parser.cpp:
+//   dot, non-class receiver type        -> n.twice(), s.shout(), a.sum2()
+//   dot, operator-result rvalue         -> (n + 1).twice()
+//   arrow, non-struct pointee           -> ip->sum2()
+//   arrow, pointee has no such member   -> np->nodeval()
+//
+// Negative control: tests/testufcsprimstrict.mad (same shape, --std=c++17).
+#include <stdio.h>
+
+int twice(int n)
+{
+	return n * 2;
+}
+
+int shout(const char *s)
+{
+	return (int)s[0];
+}
+
+int sum2(int *p)
+{
+	return p[0] + p[1];
+}
+
+struct Node
+{
+	int v;
+};
+
+int nodeval(struct Node *n)
+{
+	return n->v * 10;
+}
+
+int main()
+{
+	int n = 21;
+	printf("int=%d\n", n.twice());			// -> twice(n)
+
+	const char *s = "Zed";
+	printf("cstr=%d\n", s.shout());			// -> shout(s)
+
+	int a[2];
+	a[0] = 3;
+	a[1] = 4;
+	printf("arr=%d\n", a.sum2());			// -> sum2(a)
+
+	int *ip = a;
+	printf("ptr-arrow=%d\n", ip->sum2());		// -> sum2(ip), NOT sum2(*ip)
+
+	struct Node nd;
+	nd.v = 7;
+	struct Node *np = &nd;
+	printf("struct-arrow=%d\n", np->nodeval());	// -> nodeval(np)
+
+	printf("rvalue=%d\n", (n + 1).twice());		// -> twice(n + 1)
+
+	return 0;
+}

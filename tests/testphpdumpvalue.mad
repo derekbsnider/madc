@@ -1,0 +1,99 @@
+// php::print_r / php::var_dump over a madc::value — the kinds a SCRIPT can
+// build, end to end through the compiler.
+//
+// A value is the one type the compiler cannot expand: its kind belongs to the
+// VALUE, not to the type, so the CIR builder emits ONE call to the runtime walk
+// (src/rt_dump_value.cpp) and that walk decides everything at run time. This
+// test is the end-to-end half; tests/unit/test_dump_value.cpp is the byte-exact
+// half and also covers the object, bytes and instance kinds, which no script can
+// construct yet.
+//
+// Oracle: php-cli 8.3.6, tmp/or_value3.php, captured with cat -A. var_dump keeps
+// madc's one documented divergence — it names the value's KIND with madc's own
+// spelling, so PHP's int/float/bool read as integer/real/boolean. `tag` below is
+// a real C `int`, so it keeps the C word: the two walks meet in one output and
+// each names what it actually has.
+
+struct Holder
+{
+	int   tag;
+	array items;
+};
+
+void scalar_kinds()
+{
+	value vnull;			// default-constructed: kind null
+	value vbool = true;
+	value vint = 42;
+	value vreal = 2.5;
+	value vstr = "hi";
+
+	// print_r of a scalar is the value ALONE — no type, no newline. The
+	// markers make the empty renderings (null, false) visible.
+	printf("[pr-null]");
+	php::print_r(vnull);
+	printf("|\n");
+	printf("[pr-bool]");
+	php::print_r(vbool);
+	printf("|\n");
+	printf("[pr-int]");
+	php::print_r(vint);
+	printf("|\n");
+	printf("[pr-real]");
+	php::print_r(vreal);
+	printf("|\n");
+	printf("[pr-str]");
+	php::print_r(vstr);
+	printf("|\n");
+
+	php::var_dump(vnull);
+	php::var_dump(vbool);
+	php::var_dump(vint);
+	php::var_dump(vreal);
+	php::var_dump(vstr);
+}
+
+void array_kind()
+{
+	array a;
+	php::array_push(a, "alpha");
+	php::array_push(a, 7);
+
+	array inner;
+	php::array_push(inner, 1);
+	php::array_push(inner, 2);
+	php::array_push(a, inner);
+
+	// Nesting is ordinary recursion here, not a per-level expansion: the
+	// runtime walk carries the depth.
+	php::print_r(a);
+	php::var_dump(a);
+}
+
+void value_as_member()
+{
+	// The GENERATED walk frames the struct and hands the runtime walk the
+	// depth it framed; the runtime walk continues the columns from there.
+	Holder h;
+	h.tag = 9;
+	php::array_push(h.items, "x");
+	php::print_r(h);
+	php::var_dump(h);
+}
+
+void captured()
+{
+	// print_r($x, true) works on the value path for free: the sink is the
+	// first argument of every primitive, including the runtime walk's.
+	array a;
+	php::array_push(a, "alpha");
+	value s = php::print_r(a, true);
+	printf("[cap]\n");
+	printf("%s", s);
+	printf("[end]\n");
+}
+
+scalar_kinds();
+array_kind();
+value_as_member();
+captured();

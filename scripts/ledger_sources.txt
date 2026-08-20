@@ -13,6 +13,8 @@
 # runtime piece that cannot meet that is Tier B and refuses loudly at emit.
 all src/rt/rt_except.c
 all src/rt/rt_vla.c
+all src/rt/rt_dump.c
+all src/rt/rt_format.c
 win64 src/rt/rt_posix_str.c
 win64 src/rt/rt_posix_time.c
 win64 src/rt/rt_posix_env.c

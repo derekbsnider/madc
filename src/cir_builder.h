@@ -91,6 +91,16 @@ public:
 	};
 };
 
+// WHICH runtime entry implements a class's `operator=` for a given argument
+// kind, read off the REGISTERED overload set (FuncDef::emit_symbol) rather than
+// spelled at the call site. madc::value's assign forms are registered by
+// parser.cpp's assign_ops table, which owns the binding; a second site naming
+// `madarray_assign_cstr` would be free to drift from it. Defined in
+// cir_builder.cpp, used from there and from cir_dump.cpp.
+class FuncDef *class_assign_cstr_operator_def(class DataDefCLASS *cdd);
+class FuncDef *class_assign_scalar_operator_def(class DataDefCLASS *cdd,
+						DataType want);
+
 class CirBuilder {
 	c2m_ctx_t c2m;
 	CirArena arena;
@@ -239,6 +249,26 @@ class CirBuilder {
 	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
+	// The token of the expression currently being translated as an EXPRESSION
+	// STATEMENT — i.e. the one expression in the program text whose result is
+	// thrown away. A lowering that can produce a cheaper form when nobody reads
+	// its result compares ITS OWN token against this (php::print_r skips
+	// materializing a madc::value for `print_r(x);`).
+	// It holds the TOKEN, not a bool, deliberately: a bool set across the whole
+	// subtree would also claim the inner call in `f(php::print_r(x, true))`,
+	// whose result IS read. Identity is exact; a flag is not.
+	TokenBase *m_discarded_stmt_expr = NULL;
+	// Wrap a loop-HEADER expression (while/do/for condition, for increment)
+	// whose translation materialized temporaries (m_pending_stmts entries at
+	// index >= mark) into a statement-expression carrying those
+	// declarations: the temp is then constructed — and its cleanup runs —
+	// on EVERY iteration, inside the loop's own scope. Without this the
+	// temp's decl+init flushed ONCE into the enclosing block: evaluated
+	// once (stale value each iteration) and, for a class-shape for-init,
+	// BEFORE the loop variable it reads existed ("undeclared identifier").
+	// An IF condition keeps translate_if's flush-before semantics — a
+	// selection evaluates once; a loop header, every iteration.
+	node_t loop_header_expr_scope(node_t expr, size_t mark, TokenBase *o);
 	// Splice m_pending_stmts into `out` (preserving order) and clear it.
 	// For statement-list builders that run OUTSIDE translate_block's
 	// statement loop (ctor/dtor prologue + epilogue synthesis): a temp
@@ -559,7 +589,11 @@ class CirBuilder {
 	void class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 				       const char *rname, std::vector<node_t> &out,
 				       TokenBase *origin);
-	node_t class_ptr_bind(DataDefCLASS *cdd, const char *nm, node_t init,
+	// A `struct Tag *<nm> = <init>;` pointer-binding decl. Takes DataDef, not
+	// DataDefCLASS: a POD `struct Point` is only PROMOTED to DataDefCLASS when
+	// it earns class-hood, and class_tag_ref (the only thing this passes it to)
+	// has always taken the base type.
+	node_t class_ptr_bind(DataDef *cdd, const char *nm, node_t init,
 			      TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
@@ -654,6 +688,13 @@ class CirBuilder {
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
+	// The construction statement for a DECLARED value/array local — the one
+	// owner of the parens-vs-bare decision: `value v(7);` (TokenDecl::
+	// ctor_args) selects from the registered madarray_construct_* ctor set
+	// via class_ctor_call (the entries placement-construct into the raw
+	// storage, so the default construct must NOT also run); the bare form
+	// default-constructs (madarray_construct).
+	node_t array_decl_ctor_call(TokenDecl *sdcl);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
@@ -662,10 +703,339 @@ class CirBuilder {
 	// The BARE operator[] call (no deref) — for a T&-returning operator[] this
 	// is the element ADDRESS (a T*). Used to take a string element's address.
 	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
+	// ---- php::print_r / php::var_dump (src/cir_dump.cpp) ----
+	// The compiler IS the implementation: these are declared in <ns_php> and
+	// defined nowhere, so a call lowers to a dumper GENERATED for the
+	// argument's concrete type. lower_dump_call returns NULL when the callee
+	// is not a dump intrinsic, leaving the ordinary call path alone.
+// Which compiler-implemented dump a call is. ONE walk serves both; only the
+// framing differs, and every helper below selects on this. PUBLIC (the rest of
+// this region is private) so cir_dump.cpp's file-static framing helpers can name
+// it without becoming members.
+public:
+	enum DumpFlavor { dfNone, dfPrintR, dfVarDump };
+private:
+	node_t lower_dump_call(class TokenCallFunc *tcf, FuncDef *fd,
+			       TokenBase *origin);
+	// An ACCESS FACTORY: builds a fresh access node for the same value each
+	// time it is called. A c2mir node is a tree node, so the same one cannot
+	// be handed to two parents — the walk rebuilds instead of sharing, the
+	// same discipline aggregate_member_init_stmts follows for `path`.
+	typedef std::function<node_t()> DumpAccess;
+	// The walk. Each returns false with `why` set when the type has no dumper
+	// yet — a refusal, never a guess. `depth` is a COMPILE-TIME nesting level:
+	// the walk is EXPANDED per level, so every column is a literal and no
+	// runtime depth counter exists.
+	bool dump_argument(DumpFlavor fl, TokenBase *arg,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
+	// `dims` IS the array-ness: NULL or empty means not a fixed-extent
+	// array, otherwise it is the whole dim chain. One parameter, not a
+	// count+flag pair the two of which could disagree — and did, for a
+	// multidimensional member whose count was the FLATTENED total.
+	bool dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+		      const std::vector<carray_dim_t> *dims, int depth,
+		      bool nested, std::vector<node_t> &out, TokenBase *origin,
+		      std::string &why);
+	bool dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+			 int depth, std::vector<node_t> &out, TokenBase *origin,
+			 std::string &why);
+	bool dump_struct(DumpFlavor fl, const DumpAccess &acc, DataDefSTRUCT *sdd,
+			 int depth, bool nested, std::vector<node_t> &out,
+			 TokenBase *origin, std::string &why);
+	// `dim_ix` is the dimension THIS call frames; it recurses one level per
+	// dimension, which is how PHP renders a multidimensional array.
+	bool dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
+			const std::vector<carray_dim_t> &dims, size_t dim_ix,
+			int depth, bool nested, std::vector<node_t> &out,
+			TokenBase *origin, std::string &why);
+	// The output primitives, one builder each.
+	node_t dump_call_stmt(const char *sym, node_t args, TokenBase *origin);
+	// ONE owner for declaring a dump primitive's extern: every one of them
+	// takes a leading `void *sink` (rt_dump.c), so the shape is prepended
+	// here instead of at each declaration site — a site that spelled its own
+	// parameter list would be free to disagree with dump_call_stmt's argument
+	// list, and the resulting mismatch is exactly the class of bug the
+	// one-owner rule exists to prevent.
+	// (need_dump_extern is declared beside need_output_extern below, where
+	// ExternParam is in scope.)
+	// print_r's PHP `$return` flag (plan §13.3): the capture sink, the
+	// madc::value the call returns, and the two statements that finish it.
+	void dump_sink_open(std::vector<node_t> &stmts, TokenBase *ret_arg,
+			    std::string &ret_var, std::string &sink_var,
+			    TokenBase *origin);
+	// The assignment a `value v = <init>;` declaration owes after its
+	// constructor (NULL for a bare `value v;`). One home, so the
+	// declaration form cannot drift from the expression lane.
+	node_t value_init_assign(class TokenDecl *sdcl);
+	std::string dump_result_value_temp(TokenBase *origin);
+	node_t dump_result_assign(const std::string &val_var,
+				  const std::string &sink_var,
+				  const std::string &ret_var,
+				  TokenBase *origin);
+	node_t dump_sink_close(const std::string &sink_var, TokenBase *origin);
+	// The sink expression every primitive call carries: the name of the
+	// generated `void *` local when a dump may CAPTURE its output, empty when
+	// it goes straight to stdout (then a null pointer is passed). Set by
+	// lower_dump_call for the duration of one dump's walk.
+	std::string m_dump_sink_var;
+	// The dump walk's ancestor set in the TYPE domain — the compile-time
+	// analogue of the runtime ancestor stack in src/rt/rt_dump.c, and it exists
+	// for the same reason: `struct Node { long size(); Node &operator[](long); };`
+	// is legal C++ (a JSON-tree shape) and makes the sequence walk recurse on its
+	// own element type with nothing bounding it. A type on the CURRENT path is
+	// refused by name; one merely reached twice (`struct P { Pt a; Pt b; }`)
+	// is not, which is why it is a path set and not a visited set.
+	//
+	// The POINTER path deliberately has no entry here and must not get one:
+	// dump_pointer_fn is MEMOIZED, so a cycle through a pointer emits a CALL and
+	// never re-enters dump_any for the same type.
+	std::set<DataDef *> m_dump_expanding;
+	// The same question for the WORD, which walks the type graph independently
+	// (a container's word contains its element's). SEPARATE from the set above
+	// on purpose: dump_any pushes the type BEFORE the head-line word is built, so
+	// one shared set would make every container's word fall back to the canonical
+	// spelling.
+	std::set<DataDef *> m_dump_word_expanding;
+	bool dump_sequence(DumpFlavor fl, const DumpAccess &acc,
+			   DataDefCLASS *cls, int depth, bool nested,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
+	// A container with C++'s ITERATOR protocol and no position (std::map,
+	// std::set, std::list): a generated COUNTED loop over begin() +
+	// operator++. Keyed containers render `[key] => value`, the rest
+	// positionally. See the definition for why the loop is counted.
+	bool dump_iterator(DumpFlavor fl, const DumpAccess &acc,
+			   DataDefCLASS *cls, int depth, bool nested,
+			   std::vector<node_t> &out, TokenBase *origin,
+			   std::string &why);
+	// A container ENTRY's key, rendered INLINE between the bracket
+	// primitives by the ordinary walk — because a container's key is a real
+	// value of a real type, not the compile-time literal a struct member's
+	// key is.
+	bool dump_key_value(DumpFlavor fl, const DumpAccess &kacc, DataDef *kdd,
+			    int depth, std::vector<node_t> &out,
+			    TokenBase *origin, std::string &why);
+	node_t dump_key_open(DumpFlavor fl, int depth, bool quote,
+			     TokenBase *origin);
+	node_t dump_key_close(DumpFlavor fl, bool quote, TokenBase *origin);
+	// Does this type render as PHP's STRING? var_dump quotes a string key and
+	// leaves every other key bare, and the compiler decides which.
+	bool dump_type_is_text(DataDef *dd);
+	// A madc::value: ONE call to the runtime walk, because its kind is only
+	// known then. No `why` — there is no per-type expansion that can fail.
+	bool dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
+			bool nested, std::vector<node_t> &out,
+			TokenBase *origin);
+	// A POINTER is FOLLOWED: PHP has no pointers, so the pointee is what a PHP
+	// developer expects, at the SAME depth (an indirection is not a nesting
+	// level). Emits a CALL to a generated dumper FUNCTION, never an inline
+	// expansion — that is what makes a cycle, a long list and a fan-out graph
+	// all terminate. See the definition for the whole argument.
+	bool dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
+			  int depth, bool nested, std::vector<node_t> &out,
+			  TokenBase *origin, std::string &why);
+	// The generated dumper for (pointee, flavor), minted on first use and
+	// MEMOIZED — so the recursive case finds a call to make instead of a
+	// second expansion. Empty string on failure, with `why` set.
+	std::string dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
+				    TokenBase *origin, std::string &why);
+	// The pointee's declared spec list. ONE owner, because the generated
+	// function's PARAMETER type and the cast at its call site must be the same
+	// type. False for a pointee with no renderable spec (void).
+	bool dump_pointee_specs(DataDef *base, node_t specs);
+	node_t dump_fn_param(node_t specs, int stars, const char *name,
+			     TokenBase *origin);
+	node_t dump_fn_param_list(DataDef *base, int stars, TokenBase *origin);
+	node_t dump_int_local(const char *name, node_t init, TokenBase *origin);
+	// print_r's word for the frame the *RECURSION* marker replaces.
+	std::string dump_pr_recursion_word(DataDef *dd);
+	// An ENUM renders as its enumerator NAME plus its backing value — PHP
+	// 8.1's own enum shape, and exactly what a C enum has.
+	bool dump_enum(DumpFlavor fl, const DumpAccess &acc,
+		       class DataDefENUM *edd, int depth, bool nested,
+		       std::vector<node_t> &out, TokenBase *origin,
+		       std::string &why);
+	// The memoized value -> enumerator-name lookup generated per TAG. Flavor
+	// independent: both renderings ask the same question.
+	std::string dump_enum_name_fn(class DataDefENUM *edd, TokenBase *origin);
+	std::map<DataDef *, std::string> m_dump_enum_fn_syms;
+	std::map<std::pair<DataDef *, int>, std::string> m_dump_fn_syms;
+	// Generated dumper prototypes and definitions awaiting the module's
+	// top_list. TWO lists, because mutual recursion (`struct A { B *b; };
+	// struct B { A *a; };`) needs every prototype ahead of every definition.
+	// There is no existing mid-body top-level queue: the lambda / nested-fn
+	// hoist happens in the PARSER, as real FuncDefs.
+	std::vector<node_t> m_pending_top_protos;
+	std::vector<node_t> m_pending_top_defs;
+	int m_dump_fn_counter = 0;
+	// While a generated dumper's BODY is being built: the names of its column
+	// base local, its depth parameter and its nested parameter. All empty in
+	// the ordinary in-line walk, which is what keeps every column there a
+	// compile-time constant.
+	std::string m_dump_col_base;
+	std::string m_dump_fn_depth;
+	std::string m_dump_fn_nested;
+	// ONE owner each for the three things that stop being compile-time
+	// constants inside a generated dumper: a column, the absolute depth, and
+	// whether this value is an ENTRY of an enclosing aggregate.
+	node_t dump_col(DumpFlavor fl, int depth, bool entry, TokenBase *origin);
+	node_t dump_depth_arg(int depth, TokenBase *origin);
+	node_t dump_nested_arg(int depth, bool nested, TokenBase *origin);
+	node_t dump_pr_end_entry(DumpFlavor fl, int depth, TokenBase *origin);
+	node_t dump_vd_null(int depth, TokenBase *origin);
+	node_t dump_head(DumpFlavor fl, int depth, const std::string &word,
+			 size_t count, TokenBase *origin);
+	node_t dump_head_node(DumpFlavor fl, int depth, const std::string &word,
+			      node_t count, TokenBase *origin);
+	node_t dump_key(DumpFlavor fl, int depth, const std::string &key,
+			TokenBase *origin);
+	node_t dump_key_idx(DumpFlavor fl, int depth, node_t idx,
+			    TokenBase *origin);
+	node_t dump_tail(DumpFlavor fl, int depth, bool nested, TokenBase *origin);
+	// The source's own name for a type (the datatype maps inverted by type
+	// IDENTITY, never by pattern), and the type word var_dump prints.
+	std::string type_alias_spelling(DataDef *dd);
+	// Drop every INLINE-namespace component from a qualified spelling: they
+	// are transparent to qualified lookup, so nobody writes them
+	// (std::__cxx11::list -> std::list). Driven by the parser's own
+	// inline_namespace_children record, never by a hardcoded name.
+	std::string strip_inline_namespaces(const std::string &spelling);
+	std::string dump_type_word(DataDef *dd);
+	std::string dump_class_type_word(class DataDefCLASS *cls);
+	// A class's word, CONTAINER-aware: the two container recognizers decide
+	// it, so an entry's head-line word and the word the walk below it prints
+	// answer one question. dump_type_word routes every class through here.
+	std::string dump_container_type_word(class DataDefCLASS *cls);
+	std::string dump_container_type_word_inner(class DataDefCLASS *cls);
+	std::string dump_sequence_type_word(class DataDefCLASS *cls, DataDef *elem);
+	// A template container's word with only the type arguments that carry
+	// information — the canonical spelling drags in every defaulted
+	// comparator and allocator. ONE owner for both container walks.
+	std::string dump_template_word(class DataDefCLASS *cls,
+				       const std::vector<DataDef *> &args);
+	std::string dump_array_type_word(DataDef *elem,
+					 const std::vector<carray_dim_t> &dims,
+					 size_t dim_ix);
+	node_t dump_vd_text_open(int depth, const std::string &word, node_t len,
+				 TokenBase *origin);
+	node_t dump_vd_text_close(TokenBase *origin);
+	node_t dump_pr_nl(TokenBase *origin);
+
+	// ---- std::format / std::print / std::println (src/cir_format.cpp) ----
+	// The C++23 formatting surface as compiler-implemented intrinsics
+	// (declared in <bits/std_format>, defined nowhere): the LITERAL format
+	// string is parsed and validated at COMPILE time by the same C engine
+	// the runtime uses (src/rt/rt_format.c — one grammar owner), so an
+	// invalid format string is a compile error exactly as C++23 requires,
+	// and each replacement field lowers to a typed primitive call.
+	// lower_format_call returns NULL when the callee is not a format
+	// intrinsic, leaving the ordinary call path alone.
+public:
+	enum FormatFlavor { ffNone, ffFormat, ffPrint, ffPrintln };
+private:
+	node_t lower_format_call(class TokenCallFunc *tcf, FuncDef *fd,
+				 TokenBase *origin);
+	// Is this call a format intrinsic? The by-value std::string return
+	// otherwise walks std::format into the class-return ELISION lanes
+	// (object_call_temp_addr, the decl-init same-class arm), which emit
+	// the placeholder symbol directly — those lanes ask first and route
+	// through lower_format_call instead.
+	bool format_intrinsic_call(class TokenCallFunc *tcf);
+	// One replacement field: classify the argument's concrete type,
+	// validate the spec's presentation against it (false + `why` = the
+	// compile-time diagnostic), and emit the typed primitive call.
+	bool format_field_stmt(TokenBase *arg, const std::string &spec,
+			       const std::string &sink_var,
+			       std::vector<node_t> &out, TokenBase *origin,
+			       std::string &why);
+	// A literal run between fields (and println's trailing newline).
+	node_t format_text_stmt(const std::string &bytes,
+				const std::string &sink_var, TokenBase *origin);
+	// The sink argument every primitive leads with: the capture sink local
+	// (std::format) or a null pointer meaning stdout (print/println).
+	node_t format_sink_arg(const std::string &sink_var, TokenBase *origin);
+
+	// The POSITIONAL index-iteration protocol — `size()` plus
+	// `operator[](integral)`, TYPE-CHECKED (see the definition for why naming
+	// the two members is not enough). The range-for and the dumper share this
+	// ONE predicate; a by-name version of it in either place is the bug it was
+	// written to fix. Static: it asks only about the class.
+	//
+	// PUBLIC (with its iterator twin below): the parser's range-for `auto`
+	// deduction is the recognizers' third consumer — the element type is a
+	// fact about the container's class, answered once, here, so deduction
+	// cannot disagree with what the loop will iterate.
+public:
+	static bool class_index_iteration_protocol(DataDefCLASS *cls,
+						   class Variable *&szmv,
+						   class Variable *&opmv);
+	// Everything a generated iteration loop needs, filled by the recognizer
+	// below. One struct rather than five out-parameters, because the two
+	// iterator SHAPES are alternatives: `itcls` names a class iterator (member
+	// operator* / operator++) and `itptr` a raw-pointer one (deref / += 1),
+	// and exactly one of the two is set.
+	struct IterProtocol {
+		DataDefCLASS *itcls;   // the iterator CLASS, or NULL
+		DataDef      *itptr;   // the POINTEE when the iterator is a pointer
+		DataDef      *elem;    // the element type, either shape
+		bool          keyed;   // the container names a `mapped_type`
+		IterProtocol()
+			: itcls(NULL), itptr(NULL), elem(NULL), keyed(false) {}
+	};
+	// The ITERATOR iteration protocol — `begin()`/`end()` returning one
+	// iterator (a class with a nullary `operator*` and a PREFIX `operator++`,
+	// or a raw pointer), plus the `size()` the generated loop counts off (an
+	// iterator comparison is a friend FREE function in libstdc++, so it
+	// cannot be dispatched; see the definition). The twin of the positional
+	// predicate above, and shared the same way — the range-for and the dumper
+	// both key on THIS one, never on a private copy. `keyed` reports the
+	// associative shape structurally (the container names a `mapped_type`).
+	// `why` receives the reason for a decline, so a refusal can name the
+	// piece that is missing.
+	//
+	// Static, with the ONE builder-state dependency — the __retbuf ABI
+	// viability of the iterator's return (class_return_via_retbuf memoizes on
+	// the builder) — carried by `abi`: every CODEGEN caller passes its
+	// builder and gets today's exact check and decline; the PARSER's
+	// range-for `auto` deduction passes NULL and takes the STRUCTURAL answer
+	// only, because the element TYPE is a fact about the class while retbuf
+	// viability is a fact about this builder's lowering. A NULL-abi accept
+	// that codegen later declines still prints codegen's named refusal — no
+	// silent path.
+	static bool class_iterator_iteration_protocol(DataDefCLASS *cls,
+						      IterProtocol &ip,
+						      std::string *why = NULL,
+						      CirBuilder *abi = NULL);
+private:
+	// Range-for over an ITERATOR container — the recognizer's SECOND consumer,
+	// so `for (auto_or_T x : m)` over a std::map / set / list works from the
+	// same predicate the dumper uses. Returns a BLOCK (the count and the
+	// iterator precede the loop).
+	node_t translate_foreach_iterator(class TokenFOREACH *fe,
+					  DataDefCLASS *cls,
+					  const IterProtocol &ip);
+	// Call a NULLARY class method (`obj.size()`) and yield its value.
+	// `recv_addr` is the receiver's address. ONE owner for the symbol choice
+	// (emit_symbol-aware, unlike the hand-rolled `Class__size` it replaced),
+	// the extern declaration and the reference-return deref. NULL when the
+	// class has no such method.
+	// `discard_value`: the result is thrown away (`++it;` as a statement), so
+	// a reference return is NOT dereferenced — `*f(&it);` is a dereference
+	// with no effect and every compiler that looks warns about it.
+	node_t class_nullary_call(DataDefCLASS *cls, const char *name,
+				  node_t recv_addr, TokenBase *origin,
+				  bool discard_value = false);
 	// Receiver-generic operator[] dispatch core shared by the named-variable
 	// and expression-receiver subscript paths; recv_addr = receiver address.
+	// `index_lvalue` is a SYNTHESIZED index (a range-for's loop counter) that
+	// is already lowered and known to be an lvalue; pass it with index==NULL.
+	// It exists so the range-for path shares this ONE call builder — the index
+	// argument's shape (by value, by reference, class object) is decided here
+	// and nowhere else.
 	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
-				       TokenBase *index, TokenBase *origin);
+				       TokenBase *index, TokenBase *origin,
+				       node_t index_lvalue = NULL);
 	// Unwind a subscript token tree (TokenSubscript / TokenSubscriptExpr
 	// chain) to its named root variable + index list in the linearizer's
 	// order; false when tb is not a pure subscript tree over a named root.
@@ -1085,6 +1455,13 @@ public:
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
+	// ONE owner for declaring a php::print_r / php::var_dump output
+	// primitive: every one takes a leading `void *sink` (src/rt/rt_dump.c),
+	// so the shape is prepended here rather than at each declaration site. A
+	// site that spelled its own parameter list would be free to disagree with
+	// the argument list dump_call_stmt prepends, and that mismatch is the
+	// class of bug the one-owner rule exists to prevent.
+	void need_dump_extern(const char *sym, std::vector<ExternParam> params);
 	// v20 (forest bind): declare the extern for a COMPILER-RUNTIME symbol a
 	// LOADED forest body references (__madc_* exception/cleanup runtime,
 	// setjmp, malloc/calloc/free, __madc_vla_free) with the SAME signature
@@ -1689,18 +2066,27 @@ public:
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
-	node_t translate_foreach_loop(class TokenFOREACH *fe);
+	// `prelude` (when non-NULL) receives declarations that must precede the
+	// ELEMENT declaration in the wrap block — [stmt.ranged] binds the range
+	// BEFORE the loop variable exists, so a range capture emitted here is
+	// what keeps `for (auto x : x)` subscripting the OUTER array instead of
+	// the just-declared element.
+	node_t translate_foreach_loop(class TokenFOREACH *fe,
+				      std::vector<node_t> *prelude = NULL);
 	// Range-for over a user-defined class / template-instantiated container:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the
 	// enclosing scope by the parser.
+	// `opmv` is the validated operator[]; the size() call goes through
+	// class_nullary_call, so no size Variable is threaded here.
 	node_t translate_foreach_class(class TokenFOREACH *fe,
 				       class DataDefCLASS *cls,
-				       class Variable *szmv, class Variable *opmv);
+				       class Variable *opmv);
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
 	// subscript `a[__i]`. (No madc-array runtime helper.)
-	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv);
+	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv,
+					std::vector<node_t> *prelude);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 	// rust::match over integer patterns -> a switch: each arm's pattern(s)
@@ -1848,6 +2234,12 @@ public:
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);
 };
+
+// Peel ALL pointer levels off `dd` to its base type, returning the star count.
+// The one owner: the function-return emitters and the generated pointer dumper
+// (cir_dump.cpp) both need a multi-star type's real base, and a peel-one-level
+// copy in either place emits the wrong number of stars.
+int dd_peel_pointers(DataDef *&dd);
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
 // literal payloads, and the +madc fields (source position, typedef

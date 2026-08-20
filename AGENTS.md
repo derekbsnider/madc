@@ -109,9 +109,11 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    code, namespace files implement their own namespace. A fix that
    touches the wrong layer is a future bug. (`design-principles.md`)
 
-6. **`make -C src fulltest` after every change.** A change is not done
-   until the full test suite is green. No JIT-green-EXE-broken, no
-   EXE-green-JIT-broken. (`testing-fulltest.md`)
+6. **Targeted tests per change; `make -C src fulltest` per MERGE WAVE.**
+   Incremental commits run the new/affected tests; the full battery runs
+   ONCE at the release/merge gate (or for genuinely suite-wide blast
+   radius). Never re-run suites on already-green content. No
+   JIT-green-EXE-broken, no EXE-green-JIT-broken. (`testing-fulltest.md`)
 
 7. **No hard-coding specifics into general machinery.** Test runner:
    no per-test case branches. Parser: no string comparisons against
@@ -313,7 +315,7 @@ no matter how small.
 |--------------------------------------------------|------:|------------------------------------------------|
 | [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
-| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
+| [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  24 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct, with two named exceptions (CIR-emitted machinery, compiler-implemented publics like `php::print_r`) |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [fix-what-you-find.md](.claude/rules/fix-what-you-find.md) |   21 | A defect you DISCOVER is yours to fix — "pre-existing" is not a disposition; silent wrong answers jump the queue; the fix ships a reducer |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
@@ -329,7 +331,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) |  5 | `make -C src fulltest` after every change      |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 11 | Targeted tests per change; `make -C src fulltest` once per merge wave |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -354,10 +356,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **31 rules, 854 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **31 rules, 867 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1268 lines.**
+- **Grand total loaded by Claude Code per turn: ~1285 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
@@ -398,8 +400,8 @@ sibling `docs/rules/` reasoning file. Refresh these counts by running
 - Commit early. Never run `git checkout` on files with uncommitted
   work — use feature guards (`#ifdef FEATURE_NAME`) or `git stash`.
 - Read the related rule(s) before editing compiler internals.
-- Run `make -C src fulltest` after each change; a green test run is
-  part of "done."
+- Run the targeted tests per change and `make -C src fulltest` once per
+  merge wave; a green merge-wave battery is part of "done."
 
 ## Help / feedback
 

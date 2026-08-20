@@ -1,0 +1,4 @@
+// Compile-time format-string checking — the C++23 contract, achieved
+// because the compiler IS the implementation: a bad presentation type
+// for the argument's type is a compile error, never a runtime surprise.
+std::println("x={:q}", 5);

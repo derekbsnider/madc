@@ -1,0 +1,9 @@
+// std::format returns a real std::string, through every consumption
+// shape the class-return lanes own: declaration-init (the elision lane
+// falls back to the generic path for an intrinsic), expression operand
+// of cout <<, and a plain statement value.
+std::string t = std::format("n={:#06X}", 255);
+cout << t << endl;
+cout << std::format("inline {}", 99) << endl;
+std::string u = std::format("{}|{:>8}|{:.2f}", 1, "hi", 2.5);
+cout << u << endl;

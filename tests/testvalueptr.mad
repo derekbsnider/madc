@@ -1,0 +1,41 @@
+// A POINTER TO madc::value must have a real type.
+//
+// A value's storage is an opaque `_Alignas(16) long long v[6]` blob
+// (CirBuilder::array_storage_decl), and until this was fixed nothing told
+// append_type_specs so: dtARRAY fell through to its `default: int`, so a
+// `value *` declarator emitted `int *` — a 4-byte lie about a 48-byte object.
+// It was SILENT apart from a c2mir warning, because the pointer VALUE was still
+// right, so every read through it happened to work.
+//
+// `&v` then had to stop being N_ADDR of the array: that yields
+// `long long (*)[6]`, a different type from `long long *`, which is what the
+// warning actually reported once `value *` had a real type to disagree with.
+// The array NAME already decays to the right pointer, exactly as a `T &`
+// parameter's stored value already IS the address.
+//
+// The .expect_quiet fixture is the real gate here: this test passes only with
+// EMPTY stderr, so the warning cannot come back unnoticed.
+#include <ns_php>
+
+struct Holder { int tag; value v; };
+
+int main()
+{
+	value a = 42;
+	value *pa = &a;
+	php::var_dump(pa);
+
+	Holder h;
+	h.tag = 7;
+	h.v = "text";
+	value *pm = &h.v;
+	php::var_dump(pm);
+	php::var_dump(&h);
+
+	// Reassignment through the pointer variable: the declared type has to be
+	// usable, not merely present.
+	value b = 1.5;
+	pa = &b;
+	php::var_dump(pa);
+	return 0;
+}

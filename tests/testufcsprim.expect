@@ -1,0 +1,6 @@
+int=42
+cstr=90
+arr=7
+ptr-arrow=7
+struct-arrow=70
+rvalue=44

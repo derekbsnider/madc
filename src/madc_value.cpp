@@ -719,4 +719,35 @@ const char *value::kind_name(kind k)
     return "null";
 }
 
+// See the declaration in include/libmadc/value.h for the contract: each kind
+// forwards to the REAL inserter so stream state applies; the container kinds
+// take the ns_common report convention (stderr + nothing streamed) because
+// this symbol is also the script binding and a C++ throw must not cross into
+// JIT frames.
+std::ostream &operator<<(std::ostream &os, const value &v)
+{
+    switch ( v.type() )
+    {
+    case value::kind::null:
+	return os;
+    case value::kind::boolean:
+	return os << v.as_boolean();
+    case value::kind::integer:
+	return os << v.as_integer();
+    case value::kind::real:
+	return os << v.as_real();
+    case value::kind::string:
+    case value::kind::bytes:
+	return os.write((const char *)v.data(),
+			(std::streamsize)v.size());
+    case value::kind::array:
+    case value::kind::object:
+    case value::kind::instance:
+	break;
+    }
+    std::cerr << "operator<<: value is " << value::kind_name(v.type())
+	      << ", not streamable — nothing written" << std::endl;
+    return os;
+}
+
 } // namespace madc

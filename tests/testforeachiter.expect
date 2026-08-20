@@ -1,0 +1,12 @@
+map 1=10
+map 2=20
+map 3=30
+set 4
+set 7
+list 9
+list 8
+lstr aa
+lstr bb
+plus1 10
+plus1 9
+skipped 7

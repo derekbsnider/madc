@@ -1,0 +1,120 @@
+--- list pr
+Node Object
+(
+    [val] => 1
+    [next] => Node Object
+        (
+            [val] => 2
+            [next] => Node Object
+                (
+                    [val] => 3
+                    [next] => 
+                )
+
+        )
+
+)
+--- list vd
+struct Node(2) {
+  ["val"]=>
+  int(1)
+  ["next"]=>
+  struct Node(2) {
+    ["val"]=>
+    int(2)
+    ["next"]=>
+    struct Node(2) {
+      ["val"]=>
+      int(3)
+      ["next"]=>
+      NULL
+    }
+  }
+}
+--- ring pr
+Node Object
+(
+    [val] => 1
+    [next] => Node Object
+        (
+            [val] => 2
+            [next] => Node Object
+                (
+                    [val] => 3
+                    [next] => Node Object
+ *RECURSION*
+                )
+
+        )
+
+)
+--- ring vd
+struct Node(2) {
+  ["val"]=>
+  int(1)
+  ["next"]=>
+  struct Node(2) {
+    ["val"]=>
+    int(2)
+    ["next"]=>
+    struct Node(2) {
+      ["val"]=>
+      int(3)
+      ["next"]=>
+      *RECURSION*
+    }
+  }
+}
+--- self pr
+Node Object
+(
+    [val] => 9
+    [next] => Node Object
+ *RECURSION*
+)
+--- self vd
+struct Node(2) {
+  ["val"]=>
+  int(9)
+  ["next"]=>
+  *RECURSION*
+}
+--- shared pr
+Pair Object
+(
+    [a] => Leaf Object
+        (
+            [v] => 7
+        )
+
+    [b] => Leaf Object
+        (
+            [v] => 7
+        )
+
+)
+--- mutual pr
+Fwd Object
+(
+    [fv] => 1
+    [b] => Bwd Object
+        (
+            [bv] => 2
+            [f] => Fwd Object
+ *RECURSION*
+        )
+
+)
+--- null vd
+NULL
+--- scalar
+int(42)
+int(42)
+--- mixed vd
+struct Mixed(2) {
+  ["name"]=>
+  char *(3) "abc"
+  ["count"]=>
+  int(42)
+}
+--- captured 1

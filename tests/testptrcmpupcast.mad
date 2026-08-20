@@ -1,0 +1,48 @@
+// A derived->base pointer COMPARISON owes the base-subobject adjustment.
+//
+// [expr.eq]/[expr.rel] convert both operands to their composite pointer type,
+// so the adjustment can be owed on either side. madc applied it on assignment
+// (`B *b = &d`) and not on comparison, which was not merely noisy: a SECONDARY
+// base sits at a nonzero offset, so `B2 *p2 = &d; p2 == &d` answered 0 where
+// gcc and clang both answer 1 — a silent wrong answer, exit 0.
+//
+// Oracle: tmp/or/ptrcmp.cpp under `g++ -O0` and `clang++ -O0`; both print the
+// .expect below byte for byte.
+//
+// The std::list tail is the shape that exposed it in real code: libstdc++'s
+// _List_base::_M_clear compares a `_List_node_base *` cursor against
+// `&_M_impl._M_node`, whose static type is the DERIVED _List_node_header. The
+// .expect_quiet fixture is the gate — every one of these comparisons used to
+// print "incompatible pointer types in comparison" to stderr.
+#include <stdio.h>
+#include <list>
+
+struct B1 { int a; };
+struct B2 { int b; };
+struct D : B1, B2 { int c; };
+
+int main()
+{
+	D d;
+	d.a = 1; d.b = 2; d.c = 3;
+	B1 *p1 = &d;
+	B2 *p2 = &d;
+
+	// Primary base: the base subobject shares the derived address.
+	printf("p1==&d %d\n", p1 == &d);
+	printf("&d==p1 %d\n", &d == p1);
+	printf("p1!=&d %d\n", p1 != &d);
+
+	// Secondary base: nonzero offset — this is the wrong-answer case.
+	printf("p2==&d %d\n", p2 == &d);
+	printf("&d==p2 %d\n", &d == p2);
+	printf("p2!=&d %d\n", p2 != &d);
+	printf("p2<=&d %d\n", p2 <= &d);
+	printf("p2>=&d %d\n", p2 >= &d);
+
+	std::list<int> l;
+	l.push_back(7);
+	l.push_back(8);
+	printf("list %d %d\n", (int)l.size(), l.front());
+	return 0;
+}

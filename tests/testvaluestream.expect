@@ -1,0 +1,10 @@
+s:hello
+i:42 neg:-7
+r:2.5 quarter:0.25
+b:1 alpha:true
+hex:ff
+chain:42,2.5,hello
+null:[]
+ok-before
+
+ok-after

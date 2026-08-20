@@ -210,28 +210,38 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.82.0** (2026-08-17) — the three-platform release:
-Linux, macOS and Windows ship together from one tree. The macOS regression that
-blocked it is fixed at its root. A class-nested enum tag was stamped a forest
-type-id but never given a record, so `std::ios_base`'s `event_callback *__fn_`
-could not be rebuilt when a forest was bound, and the fill silently dropped the
-whole class — eleven aggregates in all, because members flatten from bases.
-Without `ios_base` there was no vptr slot, so `__vptr` was never emitted and
-`operator<<` never resolved: a bound darwin `std::cout << "hi"` did not compile.
-Shipping with it: madc's embedded `<stdarg.h>` no longer declares the `v*printf`
-family (under darwin's `_FORTIFY_SOURCE=2` those declarations expanded into
-fortify builtins mid-header and killed every macOS forest pack), three
-previously-silent load-side losses are now measured, and every artifact lane
-builds the binary it validates.
+The current release is **v0.92.0** — bare `cout << value` with zero
+includes, and `std::format` / `std::print` / `std::println` as
+always-included madc intrinsics.
 
-Branch state: v0.82.0 is on `develop` and promoted to `master`, which carried
-v0.76.0 before it. Public binaries are published for all three platforms.
+`madc::value` is an inherent madc-mode type, so streaming one to cout no
+longer depends on any `#include` or include order — its inserter
+declaration is injected by the lexer at the completion of whichever
+include first defines the ostream guard. And the C++23 formatting surface
+is simply part of madc: `std::println("x={} y={:.3f}", x, y)` works in a
+bare script with zero header parse. The compiler validates literal format
+strings at compile time (the C++23 contract, no consteval machinery) and
+lowers each field to a strict-C11 engine pinned byte-for-byte to real
+libstdc++ `std::format` by 1430 generated oracle rows — shortest
+round-trip float defaults, bit-exact hex floats, the works. `std::format`
+returns a real `std::string`; `value`/`var` arguments format as their
+contained kind. The arc also flushed out and fixed a front-end defect
+(`(long long)sizeof chunk` — a cast of a paren-less sizeof) and recorded
+one libstdc++ 13 defect with evidence (`{:#.0f}` of DBL_MAX corrupts its
+buffer).
+
+Branch state: v0.92.0 is released on `develop`. `master` carries v0.82.0, for
+which public binaries are published on all three platforms; v0.83.0 through
+v0.92.0 are released on `develop` and unpromoted.
 
 Latest validated results:
 
-- Linux JIT: **1054 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE and OBJ lanes **1021/0**; packed suite **1054/0/0/9**
-- headerless (no headers on disk anywhere): Linux **1028/0/0/35**,
+- Linux JIT: **1104 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1063/0**, OBJ lane **1063/0**; packed suite **1104/0/0/9**
+- all three pack lanes green under the degradation gate: Linux and Win64 at
+  93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
+  arch, and every listed header verified present as a container unit
+- headerless (no headers on disk anywhere): Linux **1077/0/0/36**,
   Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
   to serve a standard header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **7 passed / 3 failed**, exact parity
@@ -241,33 +251,27 @@ Latest validated results:
   seven battery legs pass, including compiling a C translation unit on a
   host with no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
-  (host `-O0`, release `-O2`, debug, `hosted-x86-64-windows`, and both
-  macOS hosted/cross pairs), with the emitted-code warning ratchet at an
-  all-zero baseline
-- **1614/1685** GCC C torture tests passing, with no remaining standard-C
-  failures; the remaining cases are classified GNU extensions
-- working native ELF output, Mach-O object output, multi-file linking, and a
-  statically packaged madc runtime option for emitted programs
-- public macOS binaries (arm64 + x86_64) with hosted JIT and native
-  Mach-O AOT `-o` for both C and C++ programs, self-signed at emit time
-- SMAUG 1.8 booting as a live, playable server in both JIT and native modes
-
-See [test status](docs/test-status.md) and the
-[libc++ parity history](docs/parity/libcxx-failset.txt) for current results
-and known gaps.
 
 ### Recent Releases
 
-- [v0.82.0](docs/release-notes/v0.82.0.md) — the three-platform release;
-  the macOS iostream regression is fixed where the type-id was stamped.
-- [v0.81.0](docs/release-notes/v0.81.0.md) — the Windows lane merges, the
-  headerless lanes land, and C++ list-initialization arrives.
-- [v0.80.0](docs/release-notes/v0.80.0.md) — the POSIX target surface
-  lands for Win64, and the build stops tolerating warnings.
-- [v0.79.0](docs/release-notes/v0.79.0.md) — Win64 JIT reaches zero
-  failures; exec fixtures, preprocessing, and aggregate layout converge.
-- [v0.78.0](docs/release-notes/v0.78.0.md) — the standard-C torture
-  regression window closes and the 1614 baseline is restored.
+- [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
+  includes) + std::format/print/println as always-included intrinsics.
+- [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
+  setprecision/setw/setfill; plain structs in free-operator resolution.
+- [v0.90.0](docs/release-notes/v0.90.0.md) — `value(N)` constructs:
+  temporaries, direct-init, loop headers; c2mir stmt-expr value fix.
+- [v0.89.0](docs/release-notes/v0.89.0.md) — `php::array_push` as one
+  overloaded name returning the new count; numeric overload grading fixed.
+- [v0.88.0](docs/release-notes/v0.88.0.md) — `cout << value` streams exactly
+  as the contained type would; two pre-existing gaps found and recorded.
+- [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
+  element can be the carrier itself, kind-preserving, copy semantics.
+- [v0.86.0](docs/release-notes/v0.86.0.md) — undeclared libc calls get real
+  signatures; .count()/.size() owner semantics; range-for `auto` elements.
+- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
+  over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
+- [v0.84.0](docs/release-notes/v0.84.0.md) — the forest pack stops degrading
+  silently; the gate's first run found a lost `long double` member.
 
 ## Building from source
 

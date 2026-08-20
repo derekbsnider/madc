@@ -1,0 +1,17 @@
+// Include-ORDER independence for the value stream inserter: <ns_madc>
+// parsed BEFORE any ostream header compiles its guarded operator<<
+// twin out (the guard macro is still undefined), so the operator must
+// arrive from the lexer's bits/value_stream injection at <iostream>'s
+// completion instead. The reverse order (iostream first, ns_madc's
+// twin redeclaring after the injection) is testvaluestream.mad.
+#include <ns_madc>
+#include <iostream>
+
+int main()
+{
+	madc::value v = 42;
+	std::cout << v << std::endl;
+	value s = "order-ok";
+	std::cout << s << std::endl;
+	return 0;
+}

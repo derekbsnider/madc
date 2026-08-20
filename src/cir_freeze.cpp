@@ -2486,11 +2486,26 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 					break;
 				}
 		} else {
+			// Spell the operand's record kind, exactly like the fn-ptr
+			// param arm above. An id whose record is DK_NONE (kind=0)
+			// is task #64's fingerprint — stamped by
+			// forest_serialize_type_id as a cross-reference, never
+			// written by any record walk — and `kind=0` is the token
+			// the pack degradation gate hard-zeroes. Naming it only in
+			// the param arm left ptr/ref/const/carray chains, the
+			// MAJORITY of derived ids, unable to say the same thing:
+			// a DK_NONE operand printed as a bare "operand", which
+			// reads like the routine outside-the-closure case.
 			madc::dis::defrec od;
 			why = "operand";
-			if (r.ref0 && a.get_def_at(r.ref0, od) && od.name_id
-			    && a.c_str(od.name_id))
-				why += std::string(" ") + a.c_str(od.name_id);
+			if (!r.ref0 || !a.get_def_at(r.ref0, od))
+				why += " (no record)";
+			else {
+				why += " kind=" + std::to_string((int)od.kind);
+				if (od.name_id && a.c_str(od.name_id))
+					why += std::string(" ")
+					     + a.c_str(od.name_id);
+			}
 		}
 		std::cout << "materialize derived: UNRESOLVED " << dk << " "
 			  << (r.name_id && a.c_str(r.name_id)

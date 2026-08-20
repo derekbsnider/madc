@@ -50,9 +50,11 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "spelling_delim.h"
+#include "libc_signatures.h"	// what an UNDECLARED libc symbol returns
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
+#include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
 #include "madc_pch.h"	// v20: restored template token runs deserialize from the .madh record form
 
 using namespace std;
@@ -16925,6 +16927,15 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_UINT64:	return &ddUINT64;
 		case MADC_TYPEID_FLOAT:		return &ddFLOAT;
 		case MADC_TYPEID_DOUBLE:	return &ddDOUBLE;
+		// Slot 18 was reserved "until its DataDef exists". It does: real
+		// long double landed in 114b13a8 (v0.78.0). Leaving the slot NULL
+		// left ddLDOUBLE with no PINNED id, so the freeze minted it a
+		// PROJECT id that no record walk writes — a DK_NONE cross-reference,
+		// task #64's exact shape: `ptr long double*` never materialized at
+		// bind (found by the task-#63 pack gate's first real run).
+		// 21/22 stay reserved on purpose: DataDefCOMPLEX is constructed per
+		// element type, so there is no global singleton to pin.
+		case MADC_TYPEID_LONG_DOUBLE:	return &ddLDOUBLE;
 		case MADC_TYPEID_INT128:	return &ddINT128;
 		case MADC_TYPEID_UINT128:	return &ddUINT128;
 		case MADC_TYPEID_MAX_ALIGN_T:	return &ddMAX_ALIGN_T;
@@ -17345,6 +17356,33 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
     }
     if ( lc && lc->binary_operator_return_type(opname) )
     {
+	// The madc array/value CARRIER as the rhs (`cout << v`): a DECLARED
+	// concrete free operator is the ONLY lane that can ever serve it — the
+	// member set takes scalars/pointers, and the W2 mangled-direct lane
+	// spelling-matches std's TEMPLATE captures, which no intrinsic type
+	// matches. Try the concrete registered set (madc::operator<< from
+	// <ns_madc>, resolved mangled-direct like any namespace public); no
+	// winner falls through to today's behaviour unchanged. Type-predicate
+	// gated (is_madc_array), never name-keyed; user-class rhs operands do
+	// not enter — their arbitration below is untouched.
+	if ( to->right->datadef() && to->right->datadef()->is_madc_array() )
+	{
+	    std::vector<const DataDef *> at;
+	    at.push_back(free_operator_arg_datadef(to->left));
+	    at.push_back(free_operator_arg_datadef(to->right));
+	    std::vector<bool> zl(2, false);
+	    if ( Variable *win = find_free_operator_function(opname, at, &zl) )
+	    {
+		TokenCallFunc *tc = new TokenCallFunc(*win);
+		tc->file = to->file;
+		tc->line = to->line;
+		tc->column = to->column;
+		tc->parameters.push_back(to->left);
+		tc->parameters.push_back(to->right);
+		return tc;
+	    }
+	    return NULL;	// no declared operator for the carrier — member path
+	}
 	// A named member operator normally owns the expression. The ONE exception:
 	// the rhs is a class object but every same-name binary member takes a
 	// non-class (arithmetic/pointer) parameter — the iterator signature
@@ -21711,6 +21749,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		register_in_namespace(rt.ns, name, rt.dd, tdt);
 	    if ( !rt.enumerators.empty() )
 	    {
+		// The tag's own list first: a RESTORED enum must answer
+		// "what are your enumerators" exactly as a live-parsed one
+		// does, or a bound compile would refuse a dump the live
+		// compile renders. DataDefENUM::enumerators is the owner;
+		// the pseudo-namespace constants below are the name-lookup
+		// surface, rebuilt from the same pairs.
+		if ( DataDefENUM *redd = dynamic_cast<DataDefENUM *>(rt.dd) )
+		    if ( redd->enumerators.empty() )
+			for ( size_t e = 0; e < rt.enumerators.size(); ++e )
+			    redd->enumerators.push_back(
+				std::make_pair(std::string(rt.enumerators[e].first),
+					       rt.enumerators[e].second));
 		std::string pk = (rt.ns && *rt.ns && ns_ok)
 			       ? std::string(rt.ns) + "::" + name : name;
 		variable_map_t &scope_ns = namespace_variables_for_write(pk);
@@ -22920,8 +22970,13 @@ void Program::add_madc_namespace()
 
 // Native methods on the builtin madc `array` (the generic polyglot value
 // object — the php::/perl::/… namespace functions are skins over it):
-// count()/size() bind to the madarray_size runtime entry via emit_symbol,
-// the same external-binding path string's length()/size() ride. ddARRAY is
+// count()/size() bind to the madarray_count runtime entry via emit_symbol,
+// the same external-binding path string's length()/size() ride. NOT
+// madarray_size — that is the range-for BOUND, where an object-kind carrier
+// must read 0; .count() answers the OWNER semantics (elements for
+// containers, length for text kinds, a script exception otherwise), and one
+// function answering both questions is how string.count() was a silent 0
+// for a whole release. ddARRAY is
 // a process-global singleton, so registration is once-guarded and every
 // allocation is process-lifetime (addFunction isMethod=true touches no
 // Program-owned map — nothing dangles across Programs).
@@ -22939,7 +22994,7 @@ void Program::add_array_methods()
 	if ( fd )
 	{
 	    fd->declaration_only = true;
-	    fd->emit_symbol = "madarray_size";
+	    fd->emit_symbol = "madarray_count";
 	    fd->method_display_name = name;
 	}
 	Method *md = static_cast<Method *>(var->data);
@@ -22993,6 +23048,54 @@ void Program::add_array_methods()
 	    md->owner_class = &ddARRAY;
 	ddARRAY.methods.push_back(var);
 	ddARRAY.method_map["operator="] = var;
+    }
+
+    // Placement-construction surface: `value(-7)` temporaries and
+    // `value v(7);` direct-init. REAL ctor overloads on ddARRAY —
+    // select_ctor_overload ranks cdd->ctors generically, and class_ctor_call's
+    // external-ctor arm (emit_symbol) declares and calls the runtime entry —
+    // binding the madarray_construct_* family (placement-new into RAW
+    // storage; the assign family reads the OLD kind to release the previous
+    // payload, so it must never run on an unconstructed buffer). Without
+    // these the ObjTemp arm found no ctor, emitted NOTHING, and the temp's
+    // kind byte was stack garbage (near-silent: an "instance" notice, then
+    // SIGSEGV walking a garbage payload). has_user_ctor routes construction
+    // to the resolve arm instead of the implicit-default arm that drops
+    // arguments.
+    ddARRAY.has_user_ctor = true;
+    struct ArrayCtorOp { typespec_t param; const char *sym; };
+    const ArrayCtorOp ctor_ops[] = {
+	// dtVOID + null dd = "no parameter": the default ctor's sentinel row.
+	{ DataType::dtVOID,       "madarray_construct"       },
+	{ ptr_of(ddCHAR),         "madarray_construct_cstr"  },
+	{ DataType::dtINT64,      "madarray_construct_int"   },
+	{ DataType::dtDOUBLE,     "madarray_construct_real"  },
+	{ DataType::dtBOOL,       "madarray_construct_bool"  },
+	{ typespec_t(array_ref),  "madarray_construct_value" },
+    };
+    for ( const ArrayCtorOp &op : ctor_ops )
+    {
+	datatype_vec_t sig{typespec_t(array_ref), ptr_of(ddARRAY)};
+	if ( op.param.dd || op.param.dt != DataType::dtVOID )
+	    sig.push_back(op.param);
+	Variable *var = addFunction("array", sig, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = op.sym;
+	    fd->method_display_name = "array";
+	    // The copy ctor binds any value lvalue AND conversion
+	    // temporaries: const array& (C++ idiom), like the copy-assign.
+	    if ( op.param.dd == array_ref )
+		fd->const_params = { false, false, true };
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.ctors.push_back(var);
     }
 
     // Text view (slice V1): c_str() bound to madarray_cstr gives the value
@@ -23308,40 +23411,109 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
     return false;
 }
 
-// Some libc symbols resolved via dlsym fallback return a pointer, not an
-// int. Declaring them as dtINT64 leaves CIR emitting `long f()` and then
-// assigning the result to a pointer (a spurious int-to-pointer warning,
-// and a real truncation risk on any 32-bit-int return path). Map the
-// known string-returning ones to dtCHARptr so the prototype is accurate.
+// The return type of an UNDECLARED symbol that dlsym resolved.
 //
-// Likewise, the void / noreturn libc functions (abort, exit, free, ...)
-// genuinely return `void`. Declaring them as dtINT64 makes the dlsym
-// prototype `long f()`, so a comma-expression / ternary branch ending in
-// such a call is typed `long` rather than `void` — e.g. the assert idiom
-// `(e) ? (void)0 : (printf(...), abort())` then trips c2mir's
-// "incompatible types in true and false parts of cond-expression". Map the
-// known void-returning ones to dtVOID so the prototype matches GCC/libc.
-// Returns a typespec_t (DataDef*+RefType or a bare DataType) so the char*
-// case names the pointer STRUCTURALLY via ptr_of(ddCHAR) — resolved through
-// getPointerType to the same ddCHARptr the dtCHARptr tag produced — rather than
-// the +10000 tag (tag-arithmetic retirement). The 5 call sites wrap the result
-// in datatype_vec_t{...}, whose element type is typespec_t, so they are
-// unaffected.
+// The default is `int` — what C says an implicit declaration returns, and what
+// the sibling C89 implicit path ten lines down the same fallback chain already
+// builds (FuncDef(ddINT32)). The two guesses used to contradict each other, with
+// this one winning whenever libc exported the name (i.e. always, for a libc
+// name), and `long long` is wrong for most of the C library:
+//
+//   strcmp("abc","abd") < 0   evaluated FALSE — an int -1 read out of all of rax
+//   floor(2.7)                returned 1.0    — a double read out of rax, not xmm0
+//
+// Both are legal C89 with no header in scope, both exited 0 with the wrong
+// answer, and 1084 green tests never saw either: every test that calls these
+// includes the header, and libstdc++ funnels its own __builtin_memcmp through an
+// int, which preserves the sign.
+//
+// Everything that does NOT return `int` comes from one table keyed by name
+// (include/libc_signatures.h) — gcc's builtins.def model. This function owns
+// only the mapping from that table's CLASS onto madc's types, because only here
+// is it known that ddCHAR exists and that the target's `long` may be 4 bytes.
+//
+// Returns a typespec_t (DataDef*+RefType or a bare DataType) so the pointer
+// cases name the pointee STRUCTURALLY via ptr_of(), resolved through
+// getPointerType (tag-arithmetic retirement). The 5 call sites wrap the result
+// in datatype_vec_t{...}, whose element type is typespec_t.
 static typespec_t dynamic_symbol_fallback_return_type(const std::string &name)
 {
-    static const std::set<std::string> cstr_returners = {
-	"asctime", "ctime"
-    };
-    static const std::set<std::string> void_returners = {
-	"abort", "exit", "_exit", "_Exit", "quick_exit",
-	"free", "perror", "srand", "srandom",
-	"__assert_fail", "__assert", "__assert_perror_fail"
-    };
-    if ( cstr_returners.count(name) )
-	return ptr_of(ddCHAR);
-    if ( void_returners.count(name) )
-	return DataType::dtVOID;
-    return DataType::dtINT64;
+    switch ( madc_libc_return_class(name) )
+    {
+    case LibcRet::Void:		return DataType::dtVOID;
+    case LibcRet::CharPtr:	return ptr_of(ddCHAR);
+    case LibcRet::VoidPtr:	return ptr_of(ddVOID);
+    case LibcRet::Double:	return DataType::dtDOUBLE;
+    case LibcRet::Float:	return DataType::dtFLOAT;
+    case LibcRet::LDouble:	return DataType::dtLDOUBLE;
+    case LibcRet::Int64:	return DataType::dtINT64;
+    case LibcRet::UInt64:	return DataType::dtUINT64;
+    case LibcRet::UInt32:	return DataType::dtUINT32;
+    case LibcRet::UInt16:	return DataType::dtUINT16;
+    // Platform long: 4 bytes on LLP64. The one width owner is
+    // madc_target_data_model (datadef.h) — same branch labs' registration takes.
+    case LibcRet::Long:
+	return target_llp64() ? DataType::dtINT32 : DataType::dtINT64;
+    case LibcRet::ULong:
+	return target_llp64() ? DataType::dtUINT32 : DataType::dtUINT64;
+    case LibcRet::Int:
+    case LibcRet::Unknown:
+	break;
+    }
+    return DataType::dtINT32;
+}
+
+// The FULL declaration for an undeclared dlsym-resolved symbol: the return type
+// above, plus real parameters for the <math.h> families.
+//
+// Zero declared parameters means the variadic convention, and C's default
+// argument promotion then turns a `float` into a `double` — so the real
+// `floorf`, which takes a float, read one out of half of a double and
+// floorf(3.9f) was 2.000 while fmodf(7,4) was -nan. `sqrtf` was right only
+// because it is one of the six roots registered by hand, WITH a declared float
+// parameter; declaring the parameters is the whole of what those registrations
+// were doing.
+//
+// Math only. For the rest of the C library the variadic convention is harmless:
+// pointers and integers pass unchanged and `char` promotes to `int`, which is
+// what every <ctype.h> function takes anyway. `float` promotion is the one
+// default promotion that changes the callee's view of the bits.
+static datatype_vec_t dynamic_symbol_fallback_signature(const std::string &name)
+{
+    typespec_t ret = dynamic_symbol_fallback_return_type(name);
+
+    LibcRet family = LibcRet::Unknown;
+    LibcArgs shape = madc_libc_arg_shape(name, &family);
+    if ( shape == LibcArgs::None )
+	return datatype_vec_t{ret};
+
+    // T — the family's own real type, chosen by the SUFFIX. Both the tag (for a
+    // by-value parameter) and the DataDef (for modf's T*) name the same type.
+    DataType tdt = DataType::dtDOUBLE;
+    DataDef *tdd = &ddDOUBLE;
+    if ( family == LibcRet::Float )
+	{ tdt = DataType::dtFLOAT;   tdd = &ddFLOAT; }
+    else if ( family == LibcRet::LDouble )
+	{ tdt = DataType::dtLDOUBLE; tdd = &ddLDOUBLE; }
+
+    switch ( shape )
+    {
+    case LibcArgs::T:		return datatype_vec_t{ret, tdt};
+    case LibcArgs::T_T:		return datatype_vec_t{ret, tdt, tdt};
+    case LibcArgs::T_T_T:	return datatype_vec_t{ret, tdt, tdt, tdt};
+    case LibcArgs::T_Int:	return datatype_vec_t{ret, tdt, DataType::dtINT32};
+    case LibcArgs::T_Long:
+	return datatype_vec_t{ret, tdt,
+	    target_llp64() ? DataType::dtINT32 : DataType::dtINT64};
+    case LibcArgs::T_Tptr:	return datatype_vec_t{ret, tdt, ptr_of(*tdd)};
+    case LibcArgs::T_Intptr:	return datatype_vec_t{ret, tdt, ptr_of(ddINT32)};
+    case LibcArgs::T_T_Intptr:
+	return datatype_vec_t{ret, tdt, tdt, ptr_of(ddINT32)};
+    case LibcArgs::T_LDouble:
+	return datatype_vec_t{ret, tdt, DataType::dtLDOUBLE};
+    case LibcArgs::None:	break;
+    }
+    return datatype_vec_t{ret};
 }
 
 Variable *Program::runtime_eval_scope_target(Variable *var) const
@@ -26608,7 +26780,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	void *sym = madcdl_sym_default(aname.c_str());
 	if ( sym )
 	    avar = addFunction(aname,
-		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
+		dynamic_symbol_fallback_signature(aname),
 		(fVOIDFUNC)sym);
     }
     if ( !avar )
@@ -32145,7 +32317,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 		void *sym = madcdl_sym_default(dyn_name.c_str());
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
-			datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
+			dynamic_symbol_fallback_signature(dyn_name),
 			(fVOIDFUNC)sym);
 	    }
 	}
@@ -32365,6 +32537,181 @@ static bool template_id_is_type_expression_context(Program &pgm)
 // casts, new/sizeof-family, etc. `tb` advances through the stream; arm-level
 // breaks map to Break, `done = true` paths to Done. ttKeyword falls through
 // into the dispatch for keyword tokens that are contextual identifiers.
+// ---- UFCS (madc dialect): the member-access fallback ----------------------
+// `x.f(args)` / `p->f(args)` on a receiver with NO member `f` re-forms as the
+// ordinary call `f(x, args)` / `f(p, args)`. Member lookup runs FIRST and wins
+// outright, so the only programs this can affect are ones the parser was about
+// to reject — that is the safety property the slice's negative control pins.
+//
+// `.` and `->` are the SAME operator here, because the rule is "the receiver is
+// argument 0, EXACTLY as written": no implicit `&`, no implicit `*`, types
+// unchanged. So `fp->fclose()` is `fclose(fp)` and `s->strlen()` is
+// `strlen(s)` — the C spelling, which is the point. The C++ identity
+// `p->f()` == `(*p).f()` still holds for the MEMBER leg, which runs first; it
+// simply does not extend to a fallback leg that is a hard error in C++ at all.
+//
+// One fallback, one direction, no merged overload set and no cross-kind
+// ranking (the D/Nim rule, deliberately not C++ N4165). That is why this needs
+// no overload-resolution surgery: what it produces is an ORDINARY
+// TokenCallFunc, and every later stage — arity check, overload pick, CIR,
+// --emit=c11 — sees a call with nothing special about it. By emission time no
+// trace of the syntax survives (Tier 1, lowering-vs-raising.md).
+// The ONE owner of "would UFCS be attempted at this point?" — the dialect gate,
+// the operator-function-id exclusion, and "a call actually follows".
+//
+// It is shared deliberately. Both fallbacks need it, and so does the combined
+// diagnostic: if the diagnostic asked the question separately, the two could
+// drift and it would claim a UFCS form was tried when it never was (or stay
+// silent when it was). An operator-function-id is a NAME, never a candidate;
+// and `x.f` with no argument list has no ordinary-call form to fall back TO,
+// so it must keep its original error.
+bool Program::ufcs_attempts_here(bool operator_id)
+{
+    return ufcs_enabled()
+	&& !operator_id
+	&& peekToken()
+	&& peekToken()->id() == TokenID::tkOpBrk;
+}
+
+bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+				bool operator_id,
+				std::stack<TokenBase *> &exStack,
+				std::stack<TokenBase *> &opStack,
+				TokenBase *&tb, bool &done)
+{
+    if ( !receiver || !ident_tb || !ufcs_attempts_here(operator_id) )
+	return false;
+    // Ordinary unqualified lookup — the SAME resolver a hand-written `f(x, y)`
+    // gets from this position (the receiver already occupies the expression
+    // head, so expression_head is false exactly as it would be there). No new
+    // lookup rule: a php:: / perl:: helper becomes an extension method when,
+    // and only when, it is already visible.
+    Variable *fvar = resolve_preferred_identifier(ident_tb, false);
+    if ( !fvar || !dynamic_cast<FuncDef *>(fvar->type) )
+	return false;
+
+    TokenCallFunc *tc = new TokenCallFunc(*fvar);
+    // The receiver is argument 0, passed EXACTLY as written — no implicit `&`,
+    // no implicit `*`. Existing overload resolution and reference binding
+    // decide everything else; UFCS contributes syntax, not conversions.
+    exStack.pop();		// receiver moves into the argument list
+    tc->parameters.push_back(receiver);
+    if ( !opStack.empty()
+      && (opStack.top()->id() == TokenID::tkDot
+       || opStack.top()->id() == TokenID::tkDeRef) )
+	opStack.pop();		// `.` or `->` — same operator in this leg
+    tb = nextToken();		// the '('
+    tc->line = tb->line;
+    tc->column = tb->column;
+    tb = parseCallFunc(tc);
+    DBG(cout << "UFCS: member access '" << ident_tb->spelling()
+	     << "(...)' re-formed as '" << fvar->name << "(receiver, ...)'" << endl);
+    opStack.push(tc);
+    if ( tb->id() == TokenID::tkSemi )
+	done = true;
+    return true;
+}
+
+// ---- UFCS (madc dialect): the call-syntax fallback ------------------------
+// `f(x, args)` with NO declared free `f` visible re-forms as `x.f(args)`. This
+// is the direction Stroustrup's unified-call note is actually about — "Note
+// begin(c) and c.begin() ... Why do we/someone have to write both?" — and the
+// one the committee did not object to.
+//
+// It fires BEFORE the unresolved-symbol guesses (dlsym, the C89 implicit `int`
+// declaration): a member of the argument's own type beats a blind guess at a
+// libc symbol of the same name. That ordering is the one behaviour this slice
+// changes, and tests/testufcscall.mad pins it.
+//
+// TRIGGER: no declared free `f` at all. NOT "declared but not arity-viable" —
+// measured, that stronger trigger is not needed. Of the four motivating calls,
+// `size(v)`, `begin(v)` and `empty(v)` ALREADY work today (libstdc++ really
+// does declare std::size/std::begin/std::empty, which is the very duplication
+// the proposal complains about), and only `count(m, k)` fails — with "use of
+// undeclared identifier", i.e. no declaration at all. Widening the trigger to
+// arity would mean judging a whole namespace overload set, which risks stealing
+// a call that resolves today; there is no evidence it buys anything.
+//
+// The receiver is read by LOOKAHEAD, not by parsing: the first argument must be
+// a single identifier naming a class-typed variable. tokens[0] is the `(` (the
+// indexing count_queued_call_arguments already uses). That covers the
+// motivating shapes; a call whose first argument is a compound expression keeps
+// its old behaviour rather than guessing.
+bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
+				 std::stack<TokenBase *> &opStack,
+				 TokenBase *&tb, bool &done, TokenCpnd *code)
+{
+    if ( !ident_tb || !ufcs_attempts_here(operator_id) )
+	return false;
+    // `(` ident `,`   or   `(` ident `)`
+    if ( tokens.size() < 3 || !tokens[1] || !tokens[2] )
+	return false;
+    if ( tokens[1]->type() != TokenType::ttIdentifier )
+	return false;
+    if ( tokens[2]->id() != TokenID::tkComma
+      && tokens[2]->id() != TokenID::tkClBrk )
+	return false;
+
+    TokenIdent *recv_ident = static_cast<TokenIdent *>(tokens[1]);
+    // Resolved exactly as the first argument would be if parsed: a nested
+    // parseExpression starts with empty stacks, so expression_head is true.
+    Variable *recv = resolve_preferred_identifier(recv_ident, true);
+    if ( !recv )
+	return false;
+    DataDefCLASS *cls =
+	dynamic_cast<DataDefCLASS *>(referent_if_reference(recv->type));
+    if ( !cls )
+	return false;
+
+    size_t argc = count_queued_call_arguments();
+    if ( argc == 0 )
+	return false;			// `f()` has no receiver to move
+    const std::string &id = ident_tb->spelling();
+    // Arity viability through the ONE owner (defaults- and varargs-aware);
+    // argc counts the receiver, the member call does not.
+    Variable *mvar = find_method_by_callable_arity(cls, id, argc - 1, false);
+    if ( !mvar )
+	return false;
+    // A STATIC member has no `this` slot, so a TokenCallMethod built around it
+    // passes the receiver as a REAL argument. Measured with the guard removed,
+    // `reading(g)` on a static then dies at the downstream arity check with
+    // "Incorrect number of parameters for 'Gauge__reading': expected 0 got 1"
+    // — an error either way, so this is NOT a silent-wrong-answer guard, it is
+    // a diagnostic one: it keeps a mangled internal name out of a message about
+    // source that never mentioned it, and declines to build a node whose shape
+    // is already known to be wrong. The dot arm splits statics off into a
+    // TokenCallFunc for the same reason; rather than duplicate that split for a
+    // form whose whole point is passing the receiver, UFCS declines.
+    if ( mvar->flags & vfSTATIC )
+	return false;
+
+    TokenCallMethod *tc = new TokenCallMethod(*recv, *mvar);
+    tb = nextToken();			// the '('
+    tc->line = tb->line;
+    tc->column = tb->column;
+    nextToken();			// the receiver identifier
+    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	nextToken();			// the comma that followed it
+    tb = parseCallMethod(tc);
+    tc = reselect_method_overload(tc, *recv, cls, id);
+    // Access control on the SELECTED overload ([class.access]). UFCS must
+    // never become a way to reach a private member from outside the class.
+    {
+	DataDefCLASS *cur_class =
+	    (code && code->method) ? code->method->owner_class : NULL;
+	std::string av = method_access_violation(cls, &tc->var, id, cur_class,
+						 current_function_friend_name(code));
+	if ( !av.empty() )
+	    Throw(tc) << av << flush;
+    }
+    DBG(cout << "UFCS: '" << id << "(" << recv->name << ", ...)' re-formed as '"
+	     << recv->name << '.' << id << "(...)'" << endl);
+    opStack.push(tc);
+    if ( tb->id() == TokenID::tkSemi )
+	done = true;
+    return true;
+}
+
 Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				 std::stack<TokenBase *> &exStack,
 				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
@@ -33042,6 +33389,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
 				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
 				    << std::endl);
+				// UFCS (--std=madc): an operator-result rvalue that is not a class.
+				// Try the ordinary free call `f(receiver, args)` before
+				// rejecting. The receiver is passed EXACTLY as written —
+				// no implicit & and no implicit * (owner rule, 2026-08-17).
+				if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+							 exStack, opStack, tb, done) )
+				    return done ? ExprStep::Done : ExprStep::Break;
 				Throw(tb) << "member reference is not a structure or union" << flush;
 			    }
 			    struct_type = op_type;
@@ -33070,7 +33424,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return ExprStep::Break;
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
+		    {
+			// UFCS (--std=madc): a non-class receiver (int, char *, array).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference is not a structure or union" << flush;
+		    }
 		    var = NULL;
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`__p.operator->()`) was
@@ -33262,6 +33625,22 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    done = true;
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
+			// UFCS (--std=madc): the receiver type has no member `id`
+			// of ANY kind — neither a method (the lookup above) nor a
+			// data member (the offset lookup here). Try the ordinary
+			// free call `id(receiver, args)` before giving up. An
+			// operator-function-id is a NAME, never a candidate.
+			if ( ufcs_access_fallback(lhs_dot, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
+			// ONE error naming BOTH attempts — a UFCS miss must never
+			// read like a plain typo.
+			if ( ufcs_attempts_here(parsed_operator_name) )
+			    Throw(tb) << "Unidentified member '" << id << "' in '"
+				      << struct_type->name << "', and no function '"
+				      << id << "' in scope for the UFCS form '"
+				      << id << '(' << struct_type->name << ", ...)'"
+				      << flush;
 			Throw(tb) << "Unidentified member '" << id << "' in '"
 				  << struct_type->name << '\'' << flush;
 		    }
@@ -33444,9 +33823,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			base = ptr_type->base_type;
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
+		    {
+			// UFCS (--std=madc): `->` on a non-struct pointee (char *, int *).
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "member reference type '" << base->name
 			    << "' is not a structure or union (member '"
 			    << ident_tb->spelling() << "')" << flush;
+		    }
 
 		    // member_lookup_name, not the raw spelling: an
 		    // operator-function-id member (`p->operator*()`) was
@@ -33605,7 +33993,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 		    }
 		    if ( ofs == -1 )
+		    {
+			// UFCS (--std=madc): the pointee has no member `id` of any kind.
+			// Try the ordinary free call `f(receiver, args)` before
+			// rejecting. The receiver is passed EXACTLY as written —
+			// no implicit & and no implicit * (owner rule, 2026-08-17).
+			if ( ufcs_access_fallback(lhs, ident_tb, parsed_operator_name,
+						 exStack, opStack, tb, done) )
+			    return done ? ExprStep::Done : ExprStep::Break;
 			Throw(tb) << "no member named '" << id << "'" << flush;
+		    }
 		    // Access control (P2.5): reject private/protected member access
 		    // via `->` from outside the (derived) class.
 		    {
@@ -34085,6 +34482,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		}
+		// UFCS (--std=madc): no declared free `f` is visible. Try the
+		// member form `arg0.f(rest)` BEFORE the unresolved-symbol
+		// guesses below (dlsym, C89 implicit int) — the owner's order is
+		// declared free -> member -> existing unresolved-symbol
+		// behaviour, and tests/testufcscall.mad pins it.
+		if ( !var
+		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
+					opStack, tb, done, code) )
+		    return done ? ExprStep::Done : ExprStep::Break;
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    std::string fname = ident_tb->spelling();
@@ -34113,7 +34519,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( sym )
 			{
 			    var = addFunction(fname,
-				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
+				dynamic_symbol_fallback_signature(fname),
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
@@ -34131,7 +34537,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( tsym )
 			    {
 				var = addFunction(fname,
-				    datatype_vec_t{dynamic_symbol_fallback_return_type(twin)},
+				    dynamic_symbol_fallback_signature(twin),
 				    (fVOIDFUNC)tsym);
 				if ( var )
 				    if ( FuncDef *bfd = dynamic_cast<FuncDef *>(var->type) )
@@ -35461,6 +35867,35 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			cast_expr = parse_complex_component_operand(
 			    is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling()),
 			    cast_expr_tb);
+		    }
+		    else if ( cast_expr_tb
+		      && cast_expr_tb->type() == TokenType::ttIdentifier
+		      && (((TokenIdent *)cast_expr_tb)->spelling_is("sizeof")
+		       || is_alignof_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
+		    {
+			// (long long)sizeof chunk — sizeof/alignof as the cast
+			// operand, BOTH forms ([expr.sizeof] allows a paren-less
+			// unary-expression operand). The plain identifier arms
+			// below would resolve `sizeof` as a variable ("undeclared
+			// identifier 'sizeof'" — the rt_format.c ledger parse),
+			// the same trap as the __real__/__imag__ arm above. One
+			// owner: the same resolver trio the main expression arm
+			// uses (dynamic type query, VLA sizeof, constant fold).
+			const char *qname = ((TokenIdent *)cast_expr_tb)->spelling();
+			if ( TokenBase *query_tb = try_parse_dynamic_type_query(cast_expr_tb, qname) )
+			    cast_expr = query_tb;
+			else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(cast_expr_tb, qname) )
+			    cast_expr = vla_tb;
+			else
+			{
+			    size_t query_value = evaluate_type_query(cast_expr_tb, qname);
+			    TokenInt *ti = new TokenInt((int64_t)query_value);
+			    ti->setDataType(&ddUINT64);
+			    ti->file = cast_expr_tb->file;
+			    ti->line = cast_expr_tb->line;
+			    ti->column = cast_expr_tb->column;
+			    cast_expr = ti;
+			}
 		    }
 		    else if ( cast_expr_tb
 		      && cast_expr_tb->type() == TokenType::ttIdentifier
@@ -36956,7 +37391,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    void *sym = madcdl_sym_default(gname.c_str());
 			    if ( sym )
 				var = addFunction(gname,
-				    datatype_vec_t{dynamic_symbol_fallback_return_type(gname)},
+				    dynamic_symbol_fallback_signature(gname),
 				    (fVOIDFUNC)sym);
 			}
 			if ( !var )
@@ -44895,6 +45330,29 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname
 		    << (range_elem_ref ? " (reference)" : "") << endl);
 
+		// Parse the container expression FIRST, in the ENCLOSING scope —
+		// [stmt.ranged] evaluates the range outside the loop-variable's
+		// scope, so `for (auto x : x)` binds the range `x` to the OUTER
+		// variable (declaring the element first made the container's
+		// name resolve to the element, a shadowing divergence from g++).
+		// Parsing it first is also what makes `auto` deducible below:
+		// the element's type is a fact about the container.
+		TokenBase *tn4 = pgm.nextToken();
+		fe->container = pgm.parseExpression(tn4, true);
+		if ( !fe->container )
+		    pgm.Throw(tn4) << "Failed to parse container expression in range-for" << flush;
+
+		tn4 = pgm.nextToken();
+		if ( tn4->id() != TokenID::tkClBrk )
+		    pgm.Throw(tn4) << "Expecting ) after range-for container" << flush;
+
+		// `for (auto x : c)` — deduce the element type from the
+		// container, so the BODY parses with the element's real class
+		// (`kv.first` must resolve members at parse time) and the CIR
+		// receives a real type (I2), never the ddAUTO placeholder.
+		if ( fe->elemtype == &ddAUTO )
+		    fe->elemtype = pgm.range_for_deduce_element(fe->container, tn4);
+
 		// The element variable has LOOP scope (C++ [stmt.ranged], the
 		// same model as the typed for-init below): declare it in a
 		// parse-time compound of its own, so sibling range-fors reusing
@@ -44910,21 +45368,11 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 		if ( range_elem_ref )
 		{
-		    DataDef *ref_ptr = pgm.getReferenceType(&dt->definition);
+		    DataDef *ref_ptr = pgm.getReferenceType(fe->elemtype);
 		    fe->elemvar = pgm.addVariable(code, *ref_ptr, fe->elemname, 1, NULL, false);
 		}
 		else
-		    fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
-
-		// parse the container expression
-		TokenBase *tn4 = pgm.nextToken();
-		fe->container = pgm.parseExpression(tn4, true);
-		if ( !fe->container )
-		    pgm.Throw(tn4) << "Failed to parse container expression in range-for" << flush;
-
-		tn4 = pgm.nextToken();
-		if ( tn4->id() != TokenID::tkClBrk )
-		    pgm.Throw(tn4) << "Expecting ) after range-for container" << flush;
+		    fe->elemvar = pgm.addVariable(code, *fe->elemtype, fe->elemname, 1, NULL, false);
 
 		tn4 = pgm.nextToken();
 		fe->statement = pgm.parseStatement(tn4);
@@ -44959,7 +45407,9 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	// name scope only: CIR never sees it (the for lowering declares the
 	// variable itself — init-slot var_decl or the synthetic block wrap).
 	pgm.pushCompound();
+	pgm.parsing_for_init = true;
 	initialize = pgm.parseDeclaration(dt);
+	pgm.parsing_for_init = false;
 	typed_for_init = true;
     }
     else
@@ -46414,6 +46864,12 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    }
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
+	// The TAG's own record of this enumerator. Placed here, after all three
+	// registration branches, because this is the single point where the name
+	// and the value are both known whichever branch ran — so the type's list
+	// cannot fall out of step with the constants that were registered.
+	if ( DataDefENUM *tag_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+	    tag_edd->enumerators.push_back(std::make_pair(name, val));
 	if ( val < enum_min_val )
 	    enum_min_val = val;
 	if ( val > enum_max_val )
@@ -50167,6 +50623,38 @@ static uint8_t skipped_template_function_noexcept_spec(Program &pgm,
     return declarator_exception_spec_at(pgm, tokens, i, NULL);
 }
 
+// The COMPILER-IMPLEMENTED namespace templates, keyed by (namespace, name) —
+// the one place those spellings are compared. A declaration-only template whose
+// implementation IS the compiler carries an inline_builtin_kind exactly like
+// std::addressof / std::forward / __destroy do, so the CIR builder dispatches on
+// the kind and never on a name; the kind rides the forest (cir_arena
+// builtin_kind_id), so a packed <ns_php> keeps it.
+//
+// Unlike its siblings this cannot be a BODY-SHAPE test: these declarations have
+// no body anywhere, which is the point (docs/plans/2026-08-17-php-print-r-var-dump-plan.md).
+static const char *madc_namespace_template_builtin_kind(const std::string &ns,
+							const std::string &name,
+							const char *decl_file)
+{
+    if ( ns == "php" )
+    {
+	if ( name == "print_r" )  return "php_print_r";
+	if ( name == "var_dump" ) return "php_var_dump";
+    }
+    // The std:: intrinsics are additionally PROVENANCE-gated: only the
+    // compiler-owned fragment's declarations are compiler-implemented. A
+    // real libstdc++ <format> parsed some day must keep its own std::format
+    // untouched — the name alone cannot be the key there.
+    if ( ns == "std" && decl_file
+      && strcmp(decl_file, "bits/std_format") == 0 )
+    {
+	if ( name == "format" )   return "std_format";
+	if ( name == "print" )    return "std_print";
+	if ( name == "println" )  return "std_println";
+    }
+    return NULL;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -50272,6 +50760,11 @@ static void register_skipped_namespace_template_function(
 		fd->inline_builtin_kind = "destroy";
 	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
 		fd->inline_builtin_kind = "forward";
+	    else if ( const char *bk = madc_namespace_template_builtin_kind(
+					   pgm.current_namespace(), name,
+					   tokens.empty() ? NULL
+							  : tokens[0]->file) )
+		fd->inline_builtin_kind = bk;
 	}
 	ns[name] = var;
 	ns.erase(parse_id);
@@ -50545,6 +51038,75 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
     if ( no_winner )
 	*no_winner = true;
     return fd;
+}
+
+// The element type of `for (auto x : c)` — a fact about the CONTAINER, so it
+// is answered by the same shared recognizers the range-for lowering and the
+// dumper already key on (one predicate per protocol, three consumers now), and
+// deduction cannot disagree with what the loop will actually iterate. Called
+// from TokenFOR::parse AFTER the container expression parses and BEFORE the
+// body does, because `kv.first` in the body must resolve members at parse time.
+//
+// The recognizers are queried WITHOUT the __retbuf ABI check (NULL abi): the
+// element TYPE is a fact about the class, while retbuf viability is a fact
+// about the builder's lowering — and a deduction the lowering later declines
+// still gets codegen's named refusal, never a silent path.
+DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *where)
+{
+    // Same standard gate as declaration `auto` (C++11+/C23+); in C89..C17
+    // `auto` is a storage-class specifier and cannot head a range-for anyway.
+    if ( !auto_deduction_allowed() )
+	Throw(where) << "range-for 'auto' element deduction requires C++ or C23"
+		     << flush;
+
+    // A raw fixed-size C array: the dims carry the array-ness, so the
+    // element IS the variable's type (the CIR's translate_foreach_carray arm
+    // reads the same shape).
+    if ( TokenVar *ctv = dynamic_cast<TokenVar *>(container) )
+	if ( ctv->var.is_fixed_array() )
+	    return ctv->var.type;
+
+    DataDef *cdd = operand_value_datadef(container);
+    DataDef *uq = cdd ? cdd->unqualified() : NULL;
+
+    // The madc array/value carrier answers STRING-FIRST — task #91 R0's
+    // subscript ruling (the Python/PHP element model behind sys.argv[i]), so
+    // `auto` answers exactly what `a[i]` answers. NOT `value`, even though a
+    // value loop element compiles (`for (value v : a)` — the explicit opt-in
+    // for the raw carrier, filled through __php_array_get_value): `auto`
+    // follows the subscript's answer, and a[i] is string-first.
+    if ( uq && uq->is_madc_array() )
+    {
+	if ( DataDef *sdd = resolve_named_datadef(std::string("string")) )
+	    return sdd;
+	Throw(where) << "range-for 'auto' over a madc array deduces 'string', "
+		     << "but no string type is in scope" << flush;
+    }
+
+    if ( DataDefCLASS *ccls = dynamic_cast<DataDefCLASS *>(uq) )
+    {
+	Variable *szmv = NULL, *opmv = NULL;
+	if ( CirBuilder::class_index_iteration_protocol(ccls, szmv, opmv) )
+	    if ( FuncDef *opfd = opmv ? dynamic_cast<FuncDef *>(opmv->type) : NULL )
+		return &opfd->return_value_type();	// the referent of a T& return
+	CirBuilder::IterProtocol ip;
+	std::string why;
+	if ( CirBuilder::class_iterator_iteration_protocol(ccls, ip, &why)
+	  && ip.elem )
+	    return ip.elem;
+	Throw(where) << "cannot deduce the range-for 'auto' element from '"
+		     << ccls->name << "': "
+		     << (why.empty()
+			 ? "it has neither the positional size()/operator[] "
+			   "protocol nor a usable iterator protocol"
+			 : why.c_str())
+		     << flush;
+    }
+
+    Throw(where) << "cannot deduce the range-for 'auto' element: the container "
+		 << "is not an array, a madc array, or a recognized container"
+		 << flush;
+    return NULL;	// Throw does not return; keeps the compiler satisfied
 }
 
 DataDef *Program::operand_value_datadef(TokenBase *operand)
@@ -53522,7 +54084,12 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	return true;	// unresolvable -> cannot disprove; stay permissive
     DataDef *pdd = &tdt->definition;
     DataDefCLASS *pcls = dynamic_cast<DataDefCLASS *>(pdd);
-    if ( !pcls && !dynamic_cast<DataDefENUM *>(pdd) )
+    // A PLAIN-STRUCT param (never promoted to class-hood — <iomanip>'s
+    // _Setprecision/_Setw) is a named type like a class: it takes the
+    // identity lane below, never the arithmetic arm. DataDefCLASS IS-A
+    // DataDefSTRUCT, so this covers both.
+    DataDefSTRUCT *pstr = dynamic_cast<DataDefSTRUCT *>(pdd);
+    if ( !pstr && !dynamic_cast<DataDefENUM *>(pdd) )
     {
 	// Arithmetic concrete param: a POINTER argument has no standard
 	// conversion to it ([conv] — pointer->bool notwithstanding: this
@@ -53541,10 +54108,14 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	// std::string and the whole basic_string struct was passed BY VALUE
 	// as the `char`, which c2mir reported a phase later as "incompatible
 	// argument type for arithmetic type parameter" — naming no operator.
-	// ENUM arguments stay permissive: integral promotion IS a standard
-	// conversion.
+	// A PLAIN-STRUCT argument is the same rule again (no standard
+	// conversion exists, [conv]) and was missed the same way: the char
+	// inserter claimed `cout << setprecision(3)` because _Setprecision
+	// never earns class-hood — same c2mir report, one phase later.
+	// DataDefSTRUCT covers class + plain struct + union. ENUM arguments
+	// stay permissive: integral promotion IS a standard conversion.
 	if ( arg_core && (arg_core->is_pointer()
-			  || dynamic_cast<DataDefCLASS *>(arg_core)) )
+			  || dynamic_cast<DataDefSTRUCT *>(arg_core)) )
 	    return false;
 	return true;	// scalar / builtin param: permissive
     }
@@ -53614,7 +54185,7 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
     TokenBase *operands[2] = { lhs, rhs };
     std::map<std::string, DataDef *> binding;
     std::map<std::string, std::string> text_binding;
-    DataDefCLASS *param_cls[2] = { NULL, NULL };
+    DataDefSTRUCT *param_cls[2] = { NULL, NULL };
     for ( size_t i = 0; i < 2; ++i )
     {
 	const std::string &sp = ov.param_spellings[i];
@@ -53641,7 +54212,12 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 		    names_tp = true;
 	if ( sp.find('<') != std::string::npos && names_tp )
 	{
-	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
+	    // A PLAIN-STRUCT argument deduces here too: <iomanip>'s
+	    // _Setfill<_CharT> is a template-id param whose argument
+	    // (_Setfill<char>) never earns class-hood. Everything this lane
+	    // needs — canonical spelling, template-head split — lives on the
+	    // base DataDef; only the derived-to-base walk is class-only.
+	    DataDefSTRUCT *cls = dynamic_cast<DataDefSTRUCT *>(arg_core);
 	    if ( !cls )
 		return NULL;
 	    // Derived-to-base ref binding for deduction: an ofstream argument
@@ -53649,9 +54225,11 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	    // the walk this candidate was refused and try_free_operator_call
 	    // fell SILENTLY back to the member operator<<(const void*) —
 	    // `outf << "hello"` wrote the pointer VALUE into the file.
-	    if ( DataDefCLASS *bc = class_or_base_with_template_head(
-			cls, template_head_component(sp)) )
-		cls = bc;
+	    // (A plain struct has no bases; the walk applies to classes.)
+	    if ( DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(cls) )
+		if ( DataDefCLASS *bc = class_or_base_with_template_head(
+			    acls, template_head_component(sp)) )
+		    cls = bc;
 	    const std::string canon = cls->canonical_cpp_spelling().empty()
 				    ? cls->name : cls->canonical_cpp_spelling();
 	    if ( template_head_component(sp) != template_head_component(canon) )
@@ -55683,9 +56261,22 @@ static DataDef *skipped_template_function_return_type(
     // wrongly grab the LAST type INSIDE `<...>` (e.g. `bool`) as the return
     // type. Resolve the full return-type token range through the canonical
     // resolver instead (handles nested template-ids, `std::`, class typedefs).
-    if ( type_end > 0 && tokens[type_end - 1]
+    // A QUALIFIED return type (`madc::value &print_r(`) needs the same
+    // treatment and for the same reason: the backward scan below tries each
+    // token as a STANDALONE identifier against the FLAT datatype_map, so
+    // `madc` and `value` both miss and the whole declaration silently falls
+    // back to ddINT64 at the end of this function — a declared `madc::value &`
+    // return became `long`, and the call site then assigned an ADDRESS through
+    // the integer path (printing a decimal). Route it through the canonical
+    // resolver, which already owns qualified names.
+    bool qualified_return = false;
+    for ( size_t i = 0; i < type_end; ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkNS )
+	    { qualified_return = true; break; }
+    if ( qualified_return
+      || (type_end > 0 && tokens[type_end - 1]
       && (tokens[type_end - 1]->id() == TokenID::tkGT
-       || tokens[type_end - 1]->id() == TokenID::tkBSR) )
+       || tokens[type_end - 1]->id() == TokenID::tkBSR)) )
     {
 	size_t rs = 0;
 	while ( rs < type_end && tokens[rs]
@@ -61654,7 +62245,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// allow deduction in C++/madc always, and in C only at C23. The fn-name /
 	// lambda fn-ptr forms below are unaffected (they are the original behaviour
 	// and remain available wherever this block runs).
-	bool auto_deduction_allowed = !is_c_mode() || language_std == STD_C23;
+	bool auto_deduction_allowed = this->auto_deduction_allowed();
 
 	// Decide whether the initializer is a function name or lambda (the original
 	// fn-ptr path) or a general expression (P2.3 deduction). A bare function
@@ -61987,7 +62578,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // there ([dcl.init.list]/4 makes it the ONLY candidate).
 	    if ( !(td->ctor_args_braced && ddc->has_initializer_list_ctor()) )
 		instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    // STATEMENT contexts keep consuming the trailing ';' here
+	    // (long-standing behavior, unmeasured reliance surface); a
+	    // FOR-INIT declaration must leave it — TokenFOR::parse's tail
+	    // still needs to see the init terminator (parsing_for_init, the
+	    // parsing_const_decl-style context channel).
+	    if ( !parsing_for_init
+	      && peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
 	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )
 	    {

@@ -52,7 +52,7 @@ The `format` function takes a format string with `{}` placeholders and a MadArra
 ```c
 array args;
 php::array_push(args, "World");
-php::array_push_int(args, 42);
+php::array_push(args, 42);
 string fmt = "Hello {}, the answer is {}";
 string result;
 python::format(result, fmt, args);

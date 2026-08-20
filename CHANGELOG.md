@@ -2,6 +2,607 @@
 
 ## [Unreleased]
 
+## [v0.92.0] — 2026-08-20
+
+Bare `cout << value` with ZERO includes, and `std::format` / `std::print` /
+`std::println` as always-included madc intrinsics.
+
+- **`cout << value` needs no includes** (owner law: `madc::value` is an
+  inherent madc-mode type). The v0.88.0 stream operator was declared only
+  in `<ns_madc>` behind the ostream include guard, so the bare script
+  `var test = "hello"; cout << test << endl;` failed ("shift operands
+  should be of an integer type") and `<ns_madc>` before `<iostream>`
+  compiled the declaration out. The declaration is now a compiler-owned
+  fragment (`include/madc/bits/value_stream`) the lexer injects ONCE at
+  the completion of whichever include first defines the ostream guard —
+  keyed on the GUARD macro, not a header name, so `<fstream>`/`<sstream>`
+  arm it too, top-level completions only, madc dialect only. Gates:
+  `testvaluecout` (the reducer verbatim), `testvaluecoutorder`,
+  `testvaluecoutsstream`.
+- **`std::format` / `std::print` / `std::println` are part of madc** —
+  zero includes, zero header parse: `std::println("x={} y={:.3f}", x, y)`
+  just works in a bare script. Declaration-only variadic templates in
+  `<bits/std_format>` (auto-included on the bare identifiers), lowered by
+  the compiler (`src/cir_format.cpp`): the LITERAL format string is
+  parsed and validated at COMPILE time by the same strict-C11 engine the
+  runtime uses (`src/rt/rt_format.c`, in the AOT ledger), so bad
+  presentation types, bad indexes and malformed strings are compile
+  errors — the C++23 contract with no consteval machinery. The engine is
+  pinned byte-for-byte to libstdc++ std::format by 1430 generated oracle
+  rows (g++ 13.3 `-std=c++23`; `scripts/gen_format_oracle.cpp`):
+  shortest-round-trip float defaults with fixed winning length ties,
+  bit-exact hex floats (denormals normalized), byte-string width/
+  precision, sign-then-prefix negative hex. `std::format` returns a real
+  `std::string` through every consumption shape (decl-init, `cout <<`
+  operand, statement); a `value`/`var` argument formats as its contained
+  kind (the `cout << value` contract). Gates: `test_rt_format` (4334
+  assertions), `teststdprint`, `teststdformat`, `teststdprintvalue`,
+  `teststdformaterr`. Boundaries recorded in
+  `docs/plans/2026-08-19-std-print-format-intrinsics.md` (vformat/runtime
+  strings = phase 2; `var s = std::format(...)` needs the value
+  std::string-ingestion follow-up; no L/chrono/ranges/wide/formatter<T>).
+- **Front end: a cast binds a paren-less sizeof/alignof operand** —
+  `(long long)sizeof chunk` resolved `sizeof` as a variable ("undeclared
+  identifier"), found when the AOT ledger parsed the new engine source.
+  Both operand forms now route through the one sizeof owner. Gate:
+  `testcastsizeof` (gcc/clang oracle).
+- Process: `fulltest` gates the MERGE WAVE, not every change (rules
+  rewrite, owner directive); releases batch features — this one carries
+  the whole wave. One oracle-side libstdc++ 13 defect recorded and
+  excluded with evidence (`{:#.0f}` of DBL_MAX returns a corrupt buffer).
+
+Validation (one merge-wave battery): fulltest 1104/0 (0 timeouts, 9
+skips), census 1113 tests / zero warnings, EXE 1063/0, OBJ 1063/0,
+packed 1104/0/0/9, headerless 1077/0/36skip, release rc=0.
+
+## [v0.91.0] — 2026-08-19
+
+Manipulator objects work: `setprecision`, `setw`, `setfill`.
+
+- **`<iomanip>` parametrized manipulators stream correctly** — they return
+  PLAIN STRUCTS (`_Setprecision`/`_Setw`/`_Setfill<_CharT>`) consumed by
+  free `operator<<` templates, and both free-operator template lanes
+  assumed class-hood, which those structs never earn: the char inserter
+  template CLAIMED `cout << setprecision(3)` (the whole struct passed by
+  value as the char — "incompatible argument type for arithmetic type
+  parameter", naming no operator), and the template-id deduction lane
+  refused `_Setfill<char>` outright. Struct arguments now reject arithmetic
+  params like class arguments do ([conv]: no standard conversion exists);
+  plain-struct params take the named-type identity lane; the template-id
+  lane accepts DataDefSTRUCT (its needs all live on the base DataDef).
+  Gate: `tests/testiomanip.mad` — g++ AND clang++ oracle, byte-identical,
+  including the value-carrier cross-shape (a manipulator applies to a
+  streamed `value` exactly as to the contained type — the v0.88.0
+  contract). This closes the second recorded priority residue from
+  v0.88.0; both are now done (`value(N)` construction shipped in v0.90.0).
+
+## [v0.90.0] — 2026-08-19
+
+`value(N)` constructs — temporaries, direct-init declarations, loop headers.
+
+- **`value(-7)` / `value v(7);` construct correctly** — ddARRAY (the
+  value/array carrier) had NO registered constructors, so a functional-cast
+  temporary emitted NOTHING for construction (kind byte = stack garbage; an
+  "instance" notice then SIGSEGV — near-silent) and the parens declaration
+  did not even parse. Real ctor overloads now registered
+  (default/cstr/int64/double/bool/carrier-copy), bound to new
+  `madarray_construct_*` placement-new runtime entries, mirroring the
+  `madarray_assign_*` operator= family; declaration lanes route parens
+  direct-init through one owner. Found one layer down: external-ctor extern
+  prototypes flat-typed every scalar param `long long`, so `value(3.5)`
+  marshalled 3.5 through a GPR the callee never read and constructed
+  `real(0)` — the shapes now come from `native_param_shape`. Gate:
+  `tests/testvaluector.mad`.
+- **Loop-header temporaries are per-iteration** — a for increment's
+  `s = s + "x"` or a while condition's `(t + "!").size()` used to flush its
+  temp ONCE into the enclosing block (stale value every iteration; for a
+  class-shape for-init, emitted before the loop variable existed). Loop
+  headers now wrap materialized temps in a statement expression
+  (`loop_header_expr_scope`) — constructed and destroyed every evaluation,
+  in the loop's own scope. Gate: `tests/testforinitctor.mad` (g++ AND
+  clang++ oracle).
+- **c2mir: a statement expression's value is its last statement AS
+  WRITTEN** — the check/gen arms read the block's tail after the scope's
+  `__attribute__((cleanup))` calls were appended, typing the whole
+  expression as the (void) cleanup call and overwriting its value op.
+  Generic fork fix (upstream-worthy); MIR c-tests 1143/2286/0 — exact
+  baseline. c2m's own C parser now compiles a cleanup-carrying stmt-expr
+  while-condition byte-identical to gcc.
+- **`for (string s("ab"); ...)` parses** — the declaration ctor-call arm
+  consumed the init's trailing `;` that the for parse tail still needs;
+  a `parsing_for_init` context channel (the `parsing_const_decl` precedent)
+  scopes the fix to the one broken caller.
+- **Recorded** (reducers in the plan doc): madc's front end silently
+  ignores user `__attribute__((cleanup(fn)))` on locals (c2m's own parser
+  and gcc both run it); the declaration flows' `;` conventions remain
+  asymmetric — unification is a follow-up.
+
+## [v0.89.0] — 2026-08-19
+
+`php::array_push` is ONE overloaded name that returns the new count (PHP parity).
+
+- **`php::array_push` overload set** (owner ruling + parity law: php::
+  functions mirror the real PHP functions; `array_push_int` /
+  `array_push_array` were invented madc-isms and are RETIRED): one name,
+  overloads for `const char*`, `int64_t`, `double`, `bool`, `value&`,
+  `std::string&` — every overload returning `int64_t` = the array's new
+  element count, like PHP's `array_push()`. ONE carrier overload serves
+  `value` AND `array` arguments (the two spellings are the SAME DataDef —
+  ddARRAY, one tagged carrier), kind-preserving deep copy: pushing an
+  array-kind carrier nests it. The motivating defect — `php::array_push(a, 7)`
+  went through the only (char*) overload and SIGSEGV'd at address 7 — is now
+  the int-overload line by construction. New runtime plumbing:
+  `__php_array_push_real` / `_bool` / `_value`; `_int` / `_array` stay as
+  plumbing (`_array` delegates to the one carrier implementation). Host
+  header `ns_php.h` carries the same set plus a plain-`int` overload (ISO
+  C++ would otherwise find `array_push(v, 7)` ambiguous). PHP's variadic
+  multi-value form stays a recorded parity follow-on. Gate:
+  `tests/testarraypush.mad`.
+- **Numeric overload grading fixed** (found by this arc's ranking probe;
+  own commit): `score_arg_to_param`'s numeric lane scored every mismatched
+  numeric pair a flat 4, so a `float` argument picked the TRUNCATING int64
+  overload by registration order. Now graded — same numeric domain
+  (int→int, fp→fp) above crossing domains or landing on bool — matching
+  what g++ AND clang++ do unambiguously (float→double is a promotion,
+  [conv.fpprom]). The int-literal pick (`f(7)` → int64 where ISO C++ calls
+  it ambiguous) is a documented madc-dialect liberality: the obvious
+  overload wins deterministically. Gate: `tests/testoverloadnumrank.mad`.
+
+## [v0.88.0] — 2026-08-19
+
+`cout << value` streams exactly as the contained type would.
+
+- **`cout << value` works** — one `madc::operator<<(std::ostream&, const
+  value&)` dispatching per kind at run time, each kind forwarding to the REAL
+  ostream inserter so `std::hex` / `boolalpha` apply the way they do to a
+  plain `long long` / `bool` (NOT the text renderer, which prints "4.000000"
+  where `cout << 4.0` prints "4"). Byte-identical to the plain-type twin
+  program under g++ AND clang++ -O0 on every shared line, chaining included.
+  null streams nothing; the container kinds follow C++'s own convention
+  (std::vector has no `operator<<`): a stderr notice, nothing streamed, the
+  stream survives — no C++ exception may cross into JIT frames, so the one
+  symbol serves hosts and scripts alike. Declared for scripts in `<ns_madc>`
+  gated on the ostream include guard; resolution reaches it through a new
+  type-predicate-gated carrier arm in `lower_free_operator_to_call` (the W2
+  mangled-direct lane captures TEMPLATE operators only — measured — and the
+  member arm required a user-class rhs, so `cout << v` used to fall through
+  to integer-shift typing). Gate: `tests/testvaluestream.mad`.
+- **Two pre-existing gaps found and recorded** (reducers in
+  `docs/plans/2026-08-19-range-for-auto-deduction.md`): `value(N)`
+  functional-cast temporaries build a garbage-kind temp (near-silent —
+  priority residue), and parametrized manipulator objects
+  (`std::setprecision`) fail to compile even with plain doubles.
+- **Owner law recorded** (`docs/plans/2026-08-19-array-push-overloads.md`):
+  php:: functions mirror the ORIGINAL PHP functions — invented madc-isms
+  (`array_push_int`) are drift requiring operator approval. The
+  `php::array_push` overload set (with PHP's count return, aliases retired)
+  is the next session's settled plan.
+
+## [v0.87.0] — 2026-08-19
+
+The range-for loop element can be the value carrier itself.
+
+- **`for (value v : a)` compiles and runs** — the madc-array loop's element-fill
+  dispatch gains a third arm: an `is_array_object` element is copied WHOLE
+  through the new `__php_array_get_value` fetcher (beside its int/cstr
+  siblings; `value::operator=` inside it is the one retag/freeze owner), so the
+  element KEEPS ITS KIND — through one loop variable, a string element counts
+  its length and an integer element throws from `count()` and is caught inside
+  the loop body. Copy semantics by design (elements have no stable address —
+  the same fact that keeps `value &v` refused by name, pinned by test). Before,
+  the element fell into the scalar arm and c2mir refused the ill-typed
+  emission; the probe that recorded the gap had stacked TWO defects, and the
+  other — `cout << value`, which fails identically with no loop anywhere — is a
+  separate streaming/operator gap, still open and recorded. `auto` over a madc
+  array still deduces `string` (the subscript's answer); `for (value v : a)` is
+  the explicit opt-in for the raw carrier. Gate: `tests/testforeachvalue.mad`.
+
+## [v0.86.0] — 2026-08-19
+
+The compiler knows the C library's signatures: undeclared libc calls stop
+returning garbage, the value carrier's .count()/.size() answer the owner
+semantics with a catchable error for the rest, and range-for takes an `auto`
+element deduced through the shared recognizers.
+
+- **An UNDECLARED C library call gets its real signature** — two silent wrong
+  answers fixed, both legal C89, both exit 0. (1) RETURN: the dlsym fallback
+  declared every undeclared symbol `long long`, so `strcmp("abc","abd") < 0`
+  evaluated FALSE (an int -1 read out of all of rax) and `floor(2.7)` returned
+  1.0 (a double read out of rax, not xmm0). The default is now C's own `int`,
+  and every non-int return comes from ONE table (`include/libc_signatures.h` —
+  gcc's builtins.def model). The 56 C99 math roots moved into that table so the
+  lexer's `__builtin_` alias map and the parser's signatures expand the SAME
+  list — six roots had been registered by hand, one bug report each, while
+  fifty read the wrong register. (2) ARGUMENTS: a zero-parameter fallback
+  declaration is the variadic convention, so float promotion made
+  `floorf(3.9f)` return 2.000 and `fmodf(7,4)` return -nan; the table now
+  carries the nine argument shapes the math families take, resolved by one
+  suffix-rule owner so return and arguments cannot disagree about a family.
+  Measured headerless against gcc -O0: `tests/testlibcnoheader.mad` (every line
+  but two DOCUMENTED divergences where gcc itself emits UB garbage — madc's
+  atof/atoll answers are the correct ones) and `tests/testlibcnoheaderargs.mad`
+  (all nine shapes x three suffixes, byte-identical). Gate:
+  `scripts/check-libc-alias-signatures.sh` (fulltest) — every alias target must
+  have an entry, negative-controlled.
+
+- **`.count()`/`.size()` on the value carrier answer the OWNER semantics** —
+  containers (array AND object kind) count elements, the text kinds count
+  length, null is an empty container, and a non-countable kind is a REAL madc
+  exception (`catch (const char *)`), never a silent 0. Before: `value s =
+  "hello"; s.count()` was 0, and so was every scalar kind — count/size were
+  bound to `madarray_size`, the range-for BOUND, which answers a different
+  question (object kind must read 0 there; range-fors are pinned unchanged by
+  the test). Two questions, two functions now: the bound keeps its name and its
+  behaviour; the methods bind to `madarray_count` over
+  `ns_common::value_length`. New `src/rt/rt_except.h` carries the throw-family
+  prototypes so the first HOST caller of the exception runtime is
+  compiler-checked. Gate: `tests/testvaluecount.mad`.
+
+- **Range-for takes an `auto` element** — `for (auto &kv : m)` over a std::map,
+  `for (auto x : v)` over a std::vector, raw arrays, and the madc array (which
+  deduces `string`, the #91 subscript ruling). The element type is deduced at
+  parse time from the container through the SAME shared recognizers the loop
+  lowering and the dumper key on (positional: `operator[]`'s return; iterator:
+  `operator*`'s — their third consumer, so deduction cannot disagree with what
+  the loop iterates). The parser now parses the container BEFORE declaring the
+  element ([stmt.ranged]), and the raw-array lowering captures the range into a
+  unique temp first — so `for (auto x : x)` binds the range to the OUTER array
+  (the previous order was a silent shadowing divergence from g++, and a
+  pointer-element shadow COMPILED and read garbage). Oracled against g++ AND
+  clang++ -O0: `tests/testforeachauto.mad`, `tests/testforeachautoarray.mad`.
+
+## [v0.85.0] — 2026-08-18
+
+php::print_r and php::var_dump over ANY madc type — the arc complete, all 20
+probe shapes rendering, and every silent wrong answer it uncovered in the
+compiler fixed with its own reducer and gate.
+
+php::print_r and php::var_dump over ANY madc type — the compiler is their
+implementation, and PHP is the oracle to the byte. **The arc is complete: all 20
+probe shapes render**, and the one remaining refusal is a principled limit that
+names itself.
+
+- **`php::print_r` / `php::var_dump` render `std::map`, `std::set` and
+  `std::list`** — the last uncovered shape. What was missing was never language
+  support (a hand-written `for (std::map<int,int>::iterator it = m.begin(); it !=
+  m.end(); ++it)` always compiled): madc had exactly ONE structural recognizer for
+  "is this class iterable" and it knew only the POSITIONAL `size()`+`operator[]`
+  shape, so both of its consumers stopped at a map. The twin,
+  `class_iterator_iteration_protocol`, lives beside it and is shared the same way
+  — **the range-for is its second consumer, so `for (std::pair<const int,int> &kv
+  : m)` works now too.** Both iterator SHAPES are covered: a class iterator
+  (member `operator*` / prefix `operator++`) and a raw pointer one (dereference /
+  `+= 1`), so a hand-rolled container over a plain array renders as well.
+  ⚠️ The generated loop is **COUNTED off `size()`**, not `it != c.end()`:
+  libstdc++ declares `operator==`/`operator!=` on every one of these iterators as
+  friend FREE functions, so there is no member to dispatch and a comparison cannot
+  be generated at all. It costs nothing — var_dump's head line states the count
+  anyway — and it is why a container with `begin()`/`end()` and no `size()` is
+  refused, by its own name, saying exactly which piece is missing.
+  A KEYED container renders `[key] => value` and never the `std::pair` its
+  `value_type` is; keyed is decided STRUCTURALLY (the container names a
+  `mapped_type`), so a set and a list render positionally like a vector — PHP has
+  no set, and a list of values is a list. The key goes through the SAME walk as
+  any other value, between one new primitive pair, with print_r's bare-value form
+  under both flavors and var_dump's quotes decided from the key's TYPE at compile
+  time. All TEN print_r blocks php-cli 8.3.6 produces for this data are reproduced
+  byte for byte. `tests/testphpdumpiter.mad`, `tests/testforeachiter.mad`.
+- **Fixed, before it shipped: that guard then refused a struct dumped BY VALUE
+  holding a pointer to itself.** The set bounds an EXPANSION and a generated dumper
+  function's body is not one — the recursion there is a CALL, already bounded by the
+  memo — so `dump_pointer_fn` starts a new path, beside the four context names it
+  already swaps for the same reason. **A 1084/0 fulltest did not catch it:** every
+  pointer test dumps a POINTER at top level (`print_r(&a)`), so the by-value shape
+  had no coverage in 1084 tests. Re-measuring the probe set found it, which is the
+  argument for measuring coverage rather than trusting a slice.
+  `tests/testphpdumpselfref.mad` now carries the three by-value shapes.
+- **Fixed: a type that contains ITSELF expanded forever.**
+  `struct Node { long size(); Node &operator[](long); };` is legal C++ — a
+  JSON-tree shape — and the dump walk is expanded per nesting level, so nothing
+  bounded it: 4 GB, then `tree build failed (std::bad_alloc)`. The guard is an
+  ancestor set in the TYPE domain, the compile-time analogue of the runtime
+  ancestor stack the pointer walk uses, and a PATH set for the same reason that
+  one is a stack — a struct with two members of one type must still print both.
+  The pointer path stays exempt because its memo already bounds it. The outcome
+  is not a refusal: the container arm declines and the existing member-walk
+  fallback prints the type's real members. `tests/testphpdumpselfref.mad`.
+- **Fixed: a pointer comparison against a base subobject omitted the base
+  adjustment.** `B2 *p2 = &d; p2 == &d` answered **0** where g++ and clang++ both
+  answer 1. [expr.eq]/[expr.rel] convert both operands to their composite pointer
+  type and madc applied that conversion on assignment only; for a PRIMARY base the
+  addresses coincide so it looked like nothing worse than a c2mir "incompatible
+  pointer types in comparison" warning, but a SECONDARY base sits at a nonzero
+  offset and the answer was silently wrong. libstdc++'s own `_List_base::_M_clear`
+  is that shape — it walks a `_List_node_base *` cursor against
+  `&_M_impl._M_node`, whose static type is the derived `_List_node_header` — so
+  every program that used a `std::list` printed the warning.
+  `tests/testptrcmpupcast.mad`, oracled against both compilers.
+- **Fixed: `var_dump` printed `std::__cxx11::list<int>`.** An inline namespace is
+  transparent to qualified lookup, so nobody writes it; the strip reads
+  `Program::inline_namespace_children`, the parser's own record, so libc++'s `__1`
+  is handled by the same code. And a container's word reached through
+  `dump_type_word` came straight from the canonical spelling, so one head line
+  said `std::vector<int32_t,std::allocator<int32_t>>` while the next said
+  `std::vector<int>` — every class now routes through the two container
+  recognizers, so the word and the walk answer one question.
+- **Fixed: `class_nullary_call` could call the wrong overload.** It resolved the
+  method by name and the SYMBOL by name again, taking the first by-name match —
+  for an arity-overloaded name a coin flip, and prefix/postfix `operator++` are
+  the same spelling. It now selects the nullary overload through
+  `findMethodOverload` and takes that overload's symbol, keeping the by-name pick
+  as the fallback.
+
+- **`php::print_r` / `php::var_dump` FOLLOW a pointer, cycles and all.** PHP has
+  no pointers, so the pointee is what a PHP developer expects, at the SAME depth:
+  an indirection is not a nesting level. The pointee walk is a GENERATED FUNCTION
+  and the recursion is a CALL, guarded by a shared thread-local ancestor stack —
+  which fixes three shapes at once: a ring terminates with PHP's `*RECURSION*`
+  marker, a 5000-node list prints in full, and a 14-level fan-out-2 graph
+  compiles in 0.5s where an earlier inline expansion took 57s and then crashed.
+  It is an ANCESTOR STACK and not a visited set because PHP prints an object
+  reachable twice acyclically IN FULL BOTH TIMES and marks only a real cycle; it
+  is keyed on (address, pointee TYPE) because without the type
+  `struct T { int v; int *p; }` with `p = &t.v` reports a false cycle — `&t` and
+  `&t.v` are the same address. `tests/testphpdumpptr.mad`, PHP-oracled
+  byte-for-byte.
+- **An enum names its enumerator.** `DataDefENUM` now owns its enumerators —
+  they lived in three stores (a scoped enum's pseudo-namespace, a class-nested
+  enum's static members, a plain enum's global constants), none of which could be
+  asked the question from the TYPE. `forest_record_enum` reads that owner instead
+  of a name-keyed reverse lookup into `namespace_map`. Rendering follows PHP 8.1,
+  which has real enums: `Color Enum:unsigned int` with `[name]`/`[value]` for
+  `print_r`, `enum(Color::GREEN)` for `var_dump`, with the REAL backing type
+  (which g++ and clang++ both confirm). A value naming no enumerator — `(Color)7`,
+  legal C with no PHP form — shows an empty `[name]` and `enum Color(7)` rather
+  than inventing a case. `tests/testphpdumpenum.mad`, PHP-oracled.
+- **Fixed: a `madc::value` MEMBER was misaligned, and the -O2 lane crashed on
+  it.** `DataDefARRAY` reported alignment **1** for a 48-byte 16-aligned object
+  (a member-less `DDClass`, so `compute_layout` never ran and `max_align` stayed
+  at its default), so a `value` member landed at offset 4 where gcc and clang
+  both place it at 16. madc's settled layout is what c2mir consumes verbatim, so
+  the `_Alignas(16)` in the emitted declaration could not correct it — and
+  `--emit=c11` compiled by gcc disagreed with madc's own JIT about where the
+  member lives. Invisible at -O0; in the packed -O2 lane `madc::value::operator=`
+  uses an aligned SSE move and faults. `h.v = "x"` was enough to trigger it.
+  `tests/testvaluealign.mad` asserts the offsets directly, so it fails in every
+  lane rather than only the optimized one.
+- **Fixed: a `madc::value`'s base type fell through to `int`.**
+  `append_type_specs` had no `dtARRAY` arm, so every site spelling a value's base
+  type through a DECLARATOR got the `default: int` — `value *p` emitted `int *p`,
+  a four-byte declaration of a forty-eight-byte object, silent apart from one
+  c2mir warning because the pointer VALUE was still right. Fixing the specifier
+  then required `&v` to stop being `N_ADDR` of the storage array (that yields
+  `long long (*)[6]`); the array NAME already decays correctly.
+  `tests/testvalueptr.mad`, with `.expect_quiet` so the warning cannot return
+  unnoticed.
+
+- **`php::print_r($x, true)` — PHP's `$return` parameter.** PHP's own signature:
+  ONE function, a default second parameter, and a `string|true` return, which is
+  what `madc::value` models — the captured text when `$return` is true, boolean
+  `true` when it is not. Declared
+  `template<class T> madc::value &print_r(const T &v, bool ret = false)`. Every
+  `rt_dump.c` primitive now takes a leading `void *sink` routed through one
+  writer: NULL prints to stdout, non-NULL appends to an opaque growable buffer.
+  A runtime flag costs one walk, not two. **When the result is unused — every
+  call before this — nothing changes:** no sink, no `madc::value`, pure C11
+  runtime, still ledger-clean for a `-static-libmadc` image.
+  `tests/testphpprintrreturn.mad`, PHP-oracled.
+- **Fixed: a `madc::value` declared with an initializer silently dropped it.**
+  Block scope got storage and a constructor and then skipped the initializer;
+  file scope returned before the dynamic-init queueing, so it never reached
+  `__madc_global_init` (and destructed unconstructed storage). `value a = "x";`
+  came out EMPTY while `value a; a = "x";` worked, which is why it went unnoticed.
+  `tests/testvalueinit.mad`.
+- **Fixed: a qualified return type on a bodyless namespace template silently
+  became `int64`.** The backward scan tried each token as a standalone identifier
+  against the flat datatype map, so `madc::value &` fell through to the
+  `ddINT64` fallback — and the call site then assigned an ADDRESS through the
+  integer path, printing a decimal. Qualified return types now route through the
+  canonical resolver the template-id branch already used. **Merged to `develop`,
+deliberately UNRELEASED:** the arc is incomplete (pointers, the `begin()`/`end()`
+protocol, associative containers, `madc::value`, and `print_r($x, true)` are all
+still refused by name), and the owner's call on 2026-08-17 was no version bump
+until it is done.
+
+- **`php::print_r(v)` and `php::var_dump(v, ...)` render any madc value the way a
+  PHP developer expects PHP to render it.** Not just `array` / `value`: a
+  `struct`, a `class` with private and protected members, a base-flattened
+  derived class, a `union`, an anonymous union, a bit-field, a fixed array and a
+  `char[]` all work today. Both are declared in `<ns_php>` as function templates
+  with **no definition anywhere** — "any type" has no signature a host could
+  satisfy, so the CIR builder generates a dumper for whatever type the argument
+  has (`src/cir_dump.cpp`), and the runtime carries only output primitives
+  (`src/rt/rt_dump.c`, strict C11, ledger-registered so a `-static-libmadc`
+  program that dumps links on Mach-O too). A program that never dumps carries
+  nothing: no runtime type-descriptor table exists.
+- **Positional containers are sequences, decided structurally.** A
+  `std::vector<int>` prints the way PHP prints an array of ints, a `std::string`
+  prints as its text (a sequence whose ELEMENT is a character type is text), and a
+  `std::string` member inside a struct takes the same path — the owner's own two
+  examples. The predicate is `class_index_iteration_protocol`, the type-checked
+  `size()`+`operator[]` test S0 wrote for the range-for, now shared as one owner;
+  `operator[]`'s return type answers "of what". Nothing is matched by name: no
+  `c_str`, no `length`, no container allow-list, which is why an associative
+  container fails the same predicate and falls back to its members instead of
+  being iterated wrongly. Two supporting consolidations: new `class_nullary_call`
+  is the one owner for an `obj.size()`-shaped call and routes an externally bound
+  method to its real `emit_symbol` (the hand-rolled `Class__size` in
+  `translate_foreach_class` could not, a latent undefined import), and the element
+  access goes through `class_subscript_addr_on` like the range-for's. A container
+  count is a runtime value, evaluated ONCE into a local so the printed count and
+  the loop bound cannot disagree; and a class that is positional but whose element
+  has no dumper yet falls BACK to the member walk, because an enhancement must not
+  turn a working dump into an error.
+- **A type is named what the SOURCE calls it, by identity and never by pattern.**
+  `std::string(2) "hi"`, not
+  `std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>(2) "hi"`.
+  `Program::namespace_datatype_map` maps `name -> TokenDataType`, and a
+  `TokenDataType` carries `DataDef &definition` — so a `typedef` already binds the
+  spelling the source wrote to the type it names, and inverting that table by
+  DataDef IDENTITY answers the question. Two keys are the type's own registration
+  rather than a name anybody wrote and are skipped: the template-id spelling and
+  the mangled tag madc registers the instantiation under (without the second, the
+  "alias" found for `std::vector<int>` was
+  `std::vector_int32_t_std__allocator_int32_t_` — worse than the spelling it
+  replaced, and the probe caught it before it shipped). `std::vector` has no alias,
+  so a second rule finishes it: a SEQUENCE's word is the template's own name plus
+  its ELEMENT type — `std::vector<int>`, `std::vector<std::string>` — where the
+  element is `operator[]`'s return type and the defaulted allocator/traits
+  arguments are dropped as implementation detail. A plain aggregate still prints
+  `struct Point` (already the source's spelling) and a union still keeps its
+  keyword. Because an alias is flavor-stable where the canonical spelling is not
+  (`std::__cxx11::` vs `std::__1::`), the fixture pins these lines in full.
+- **PHP is the oracle, to the byte.** Every shape PHP can express was captured
+  from php-cli 8.3.6 with `cat -A` and matched exactly: the 4-space entry indent,
+  the 8-space step of a nested `(`, the blank line after a nested block,
+  `[prot:protected]` and `[priv:Foo:private]`, `1` for `true` and the empty
+  string for `false`, and PHP's 14-significant-digit float — including the `.0`
+  mantissa PHP puts in an exponent form (`1.0E+25`) that C's `%G` drops.
+  `var_dump` keeps PHP's frame and makes exactly one deliberate change, the one
+  the owner asked for: it names the REAL C/C++/madc type. `double(3.5)` not
+  `float(3.5)`, `long(42)` not `int(42)`, `char *(2) "hi"` not `string(2) "hi"`,
+  `struct Point(2)` not `object(Point)#1 (2)`.
+- **The walk never computes — or even reads — a layout fact.** Members are
+  emitted as `obj.member` ACCESS nodes, so c2mir resolves them against the same
+  struct the rest of the compiler emits: bit-field shift/mask, anonymous-aggregate
+  transparency and base flattening all keep their single owner and the dumper
+  cannot drift from them. Arrays get a real loop, never an unrolled one, so
+  `char buf[4096]` costs one element dumper. Nesting depth is a compile-time
+  constant, so PHP's columns are literals with no runtime depth counter.
+- **Refusals are by NAME of the type, never a guess.** `is_integer()` is true for
+  a pointer, for a pointer-to-data-member and for a function pointer, and a SIMD
+  vector's follows its element — any of those in the integer arm would print an
+  address as a decimal. Pointers, enums, ASSOCIATIVE containers and `value`
+  itself each say "no dumper for type 'X' yet" until their slice lands. A
+  multidimensional array is refused too: `member_counts` holds the flattened
+  total, so walking it flat would index past the first row.
+- **A range-for crash fixed on the way in (prerequisite).** `for (int v :
+  std::map<int,int>)` SIGSEGV'd at (nil) where g++ and clang both REJECT the
+  source, because the iteration protocol matched `size()` and `operator[]` by
+  NAME and then handed the loop counter to `map::operator[](const key_type &)` —
+  a pointer parameter fed an integer. The match is type-checked now (integral
+  index, integral `size()`, and no `key_type`: a keyed container has no index
+  protocol), and the element accessor delegates to `class_subscript_addr_on`, the
+  ONE `operator[]` call builder, which reads the index argument's shape from the
+  parameter. That also fixed a second live crash: a container whose positional
+  `operator[]` takes `const long &` now iterates correctly instead of
+  dereferencing an integer. `std::set` says why it cannot be iterated instead of
+  failing inside c2mir.
+
+## [v0.84.0] — 2026-08-17
+
+The forest pack stops degrading silently: one gate over all three packs, and the
+first defect it found was a `long double` member disappearing at bind.
+
+- **The forest pack's silent degradation is now gated (task #63).** A pack run
+  exits 0 while tolerating parse failures, and a bind can lose an entire
+  aggregate without a word — task #64 was exactly that, and it shipped.
+  `scripts/forest_pack_gate.sh` is the one owner, called by each pack script on
+  its own log: `forest_pack.sh` (linux), `forest_pack_windows.sh` (win64),
+  `forest_pack_darwin.sh` (darwin, once per arch). Baselines are **per profile**,
+  because the number recorded in the hand-off was the *darwin* one: the macOS log
+  splits at its two `forest_pack_darwin: OK` lines into 58 + 58, while linux and
+  win64 both read 93 over libstdc++ classes that share almost nothing with
+  libc++'s — one number for all three would have been 35 free slots. The count
+  anchors on `: error: ` over an ANSI-stripped stream; on one linux pack log
+  `grep -c error` says 339 (it matches `filesystem_error` in the deliberate
+  `pack drop:` lines), `grep -c 'error:'` says 102 (it matches
+  `system_error:616:6:` in a path), and the anchored pattern says 93. Three
+  strictnesses, each earned by a measurement: **hard zero** for
+  `materialize fill: DROPPED` and `forest_restore_decls: SKIPPED` — a record the
+  consumer admitted and then could not use, with no live parse to rescue it,
+  `fill: DROPPED` being the counter #64 would have tripped; **ratchet** for the
+  DK_NONE census, closure drops, and MIR-cache blob skips; and **uncounted** for
+  `UNRESOLVED` without `kind=0`, of which 139 are normal. Every load-side
+  diagnostic is `DBG`-gated, so the gate REQUIRES the `materialize filter:`
+  marker and refuses a verdict without it rather than scoring a clean sweep of
+  zeros on a run that bound nothing. `--selftest` is hermetic and wired into
+  `fulltest`: 17 legs, both directions of every boundary. Reasoning and every
+  number: [docs/plans/2026-08-17-pack-degradation-gate.md](docs/plans/2026-08-17-pack-degradation-gate.md).
+- **A `long double` member vanished when bound from a forest container.**
+  `madc_primitive_for_slot()` still returned NULL for slot 18, marked "reserved:
+  P0 wide-value work", even though `ddLDOUBLE` has existed since real long double
+  landed in v0.78.0. With no pinned id the freeze minted `long double` a *project*
+  id that no record walk writes, so at bind it was a DK_NONE cross-reference and
+  could not swizzle: `struct { long double lo; long double *pp; int tag; }`
+  live-parsed `ld=1.5 2.5 7 32` (== g++ 13 == clang++ 18) while the identical
+  source through `--freeze` + `--forest-bind` failed with
+  `Unidentified member 'lo'`. The same loss family as task #64, on a primitive
+  instead of an enum. Pinning the slot also cleared every
+  `materialize closure: DROPPED` on both the linux and win64 packs (1 → 0 and
+  3 → 0) — those dropped records were the long-double-bearing ones, so the
+  container now carries strictly more than it did. Found by the new gate's first
+  real run; gated by `tests/unit/test_datadef.cpp` and `forest_bind_gate`'s
+  `[ldouble]` case. Slots 21/22 stay reserved: `DataDefCOMPLEX` is constructed
+  per element type, so there is no global singleton to pin.
+- **`materialize derived: UNRESOLVED` now names the record kind in both arms.**
+  It spelled `kind=` only for fn-ptr params, so a DK_NONE reached as a
+  ptr/ref/const/carray operand printed a bare `operand` — indistinguishable from
+  the routine case of an operand outside the bound closure, and those chains are
+  the majority of derived ids. Task #64 happened to land in the arm that spelled
+  the kind. Widening it immediately named 57 previously-invisible DK_NONE
+  cross-references, 55 of them legitimate (a pointer to a template parameter has
+  no concrete record by construction) and 2 the `long double` defect above.
+- **Both macOS packs ship with no MIR cache blob** — newly *visible*, not newly
+  broken. Linux packs a 467 KB module blob and win64 a 497 KB one; both darwin
+  arches skip theirs, arm64 on `wrong result type in proto proto138` and x86-64
+  on `duration<double, nano>::operator%=` lowering `%` to an integer `umods`
+  with a floating operand. Correctness survives — which is why the pack exits
+  0 — but every consumer compile on macOS then pays full price. Pre-existing and
+  byte-identical before and after this release's code changes, so it is baselined
+  at `darwin mir-blob-skips 1` with both causes and reducer shapes recorded
+  rather than left silent.
+- **One owner for "every listed entry point must be a unit"** (pre-merge
+  `/dupaudit`). Pack verification is implemented three times, and this rule was
+  in two of them: `forest_pack_windows.sh` and `forest_pack_darwin.sh` each
+  carried their own `unit_present()` loop, both commenting on why it matters,
+  while `forest_pack.sh` — the linux lane every other lane is measured against —
+  had no such check, so a dropped unit there was invisible until the headerless
+  lane rescued it by the very live parse the check forbids. Consolidated into the
+  gate (`--dump` / `--units-from` / `--sources-from`), with literal matching
+  instead of an interpolated ERE, and two properties the inlined loops lacked: a
+  list that verifies NOTHING now fails, and an entry point is matched
+  exact-or-path-tail so `tor` no longer passes because `vector` is a unit.
+
+## [v0.83.0] — 2026-08-17
+
+UFCS: `x.f(y)` and `f(x, y)` become interchangeable spellings in the madc
+dialect, in both directions, with no auto-dereference and no merged overload set.
+
+- **UFCS — uniform function call syntax, in the madc dialect only.** `x.f(y)`
+  and `f(x, y)` are now interchangeable spellings under `--std=madc`:
+
+  ```
+  x.f(y)   -> viable member f?         use it  -> otherwise f(x, y)
+  f(x, y)  -> viable declared free f?  use it  -> otherwise x.f(y)
+                                               -> otherwise the usual
+                                                  unresolved-symbol handling
+  ```
+
+  Two separate ordered fallbacks, never a merged overload set — Stroustrup's
+  unified-call model (N4174 / the 2016 background note), which C++ did not
+  adopt. **A fallback fires only where the code was already a hard error**, so
+  no program that compiled before can change meaning, and every explicit
+  `--std=c*` / `--std=c++*` mode is byte-identical to before. Receivers of any
+  kind participate — classes, plain structs, `int`, `char *`, arrays, operator
+  results — and the receiver is passed **exactly as written**: no implicit `&`,
+  no implicit `*`, no type change. That makes `.` and `->` the same operator in
+  the fallback leg, so `fp->fclose()` is `fclose(fp)`. Calls chain
+  (`n.twice().inc().twice()`), mixing members and free functions in either
+  order, with no machinery added for it: both fallbacks resolve into ordinary
+  call nodes, so the existing call-result path carries the chain. Member-only
+  container operations gain the free spelling (`count(m, k)` → `m.count(k)`);
+  `size`/`begin`/`end`/`empty` need no help, since the standard library already
+  declares free versions and those keep resolving to the real `std::` ones.
+  A static member never captures a call, access control is enforced on the
+  selected overload, and both misses produce one error naming both attempts.
+  Docs: [docs/language/ufcs.md](docs/language/ufcs.md). Gated by
+  `scripts/ufcs_gate.sh` (in `fulltest`), which sweeps the whole `--std=` matrix
+  — 12 C and 9 C++ modes — to keep the feature inside the dialect.
+- `madc --version` / `-V` reports the version, with `scripts/version_flag_gate.sh`
+  asserting the CLI flag, the `MADC_VERSION` macro and `madc::sys.version` all
+  agree with the `VERSION` file.
+
 ## [v0.82.0] — 2026-08-17
 
 The three-platform release: Linux, macOS and Windows ship together from one

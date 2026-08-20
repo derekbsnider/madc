@@ -8814,8 +8814,10 @@ static mir_llong get_indexed_initializer_type_size (c2m_ctx_t c2m_ctx, struct ty
             : -1);
 }
 
-static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type *value_type,
-                                    int list_p) {
+static int init_compatible_string_p (node_t n, struct type *el_type);
+
+static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, node_t value,
+                                    struct type *value_type, int list_p) {
   init_object_t init_object;
   struct type *el_type;
   mir_llong size_val;
@@ -8865,6 +8867,18 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
     if ((el_type->mode == TM_STRUCT || el_type->mode == TM_UNION) && value_type != NULL
         && el_type->u.tag_type == value_type->u.tag_type)
       return TRUE;
+    /* A STRING initializing this array sub-object consumes it WHOLE, exactly as
+       the brace list and the whole-struct value above do, so the path must not
+       descend into it.  Without this, `char n[2][8] = {"ada", "bob"}` left the
+       path pointing INSIDE row 0, and the next initializer advanced to
+       row0[1] -- offset 1 instead of 8.  So "bob" was memcpy'd over the middle
+       of row 0 and row 1 stayed empty, silently, with no diagnostic:
+       gcc and clang both print [ada][bob], c2m printed [ada][].  The same
+       one-off hit every deeper nesting (`char[2][2][4]` gave [ab][][ef][]) and
+       every char-array member of a struct.  */
+    if (el_type->mode == TM_ARR && value != NULL
+        && init_compatible_string_p (value, el_type->u.arr_type->el_type))
+      return TRUE;
     init_object.container_type = el_type;
     init_object.field_designator_p = FALSE;
     if (indexed_initializer_type_p (el_type)) {
@@ -8903,7 +8917,8 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
   struct type *el_type;
   struct expr *value_expr = value->attr;
 
-  if (!update_init_object_path (c2m_ctx, mark, value_expr == NULL ? NULL : value_expr->type,
+  if (!update_init_object_path (c2m_ctx, mark, value,
+                                value_expr == NULL ? NULL : value_expr->type,
                                 !go_inside_p || value->code == N_LIST
                                   || value->code == N_COMPOUND_LITERAL)) {
     error (c2m_ctx, pos, "excess elements in %s initializer", detail);
@@ -11875,8 +11890,17 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       error (c2m_ctx, POS (r), "statement expression is not a part of C11 standard");
       break;
     }
-    check (c2m_ctx, block, r);
+    /* The value statement is the block's last statement AS WRITTEN — read it
+       BEFORE check(): checking the block appends the scope's
+       __attribute__((cleanup)) calls (emit_scope_cleanups) AFTER the value
+       expression, so reading the tail afterwards typed the whole statement
+       expression as the (void) cleanup call.  GNU semantics agree with this
+       order: the value is computed first, then the scope's cleanups run.
+       The chosen statement is stashed in the attr's def_node (unused for a
+       statement expression) for the gen arm, which must not re-derive it
+       from the post-cleanup tail. */
     node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
+    check (c2m_ctx, block, r);
     if (!last_stmt || last_stmt->code != N_EXPR) {
       error (c2m_ctx, POS (r), "last statement in statement expression is not an expression");
       break;
@@ -11886,6 +11910,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     t1 = e1->type;
     e = create_expr (c2m_ctx, r);
     *e->type = *t1;
+    e->def_node = last_stmt;
     /* Reserve a frame slot for struct/union results so that sibling statement-expressions get
        independent storage without a dynamic ALLOCA (which would overflow the stack in a loop): */
     if (func_block_scope != NULL && (t1->mode == TM_STRUCT || t1->mode == TM_UNION)) {
@@ -12362,6 +12387,9 @@ struct gen_ctx {
   int reg_free_mark;
   MIR_label_t continue_label, break_label;
   op_t top_gen_last_op;
+  op_t stmtexpr_last_val;    /* the op the marked stmtexpr_last_expr produced —
+                                read by N_STMTEXPR instead of top_gen_last_op,
+                                which trailing cleanup statements overwrite */
   node_t stmtexpr_last_expr; /* the value-producing last expression of the
                                statement-expression currently being gen'd, so
                                its expression-statement is evaluated in value
@@ -12405,6 +12433,7 @@ struct gen_ctx {
 #define continue_label gen_ctx->continue_label
 #define break_label gen_ctx->break_label
 #define top_gen_last_op gen_ctx->top_gen_last_op
+#define stmtexpr_last_val gen_ctx->stmtexpr_last_val
 #define stmtexpr_last_expr gen_ctx->stmtexpr_last_expr
 #define proto_info gen_ctx->proto_info
 #define init_els gen_ctx->init_els
@@ -19534,18 +19563,26 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_STMTEXPR: {
     struct type *stmtexpr_type = ((struct expr *) r->attr)->type;
     node_t block = NL_HEAD (r->u.ops);
-    node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
+    /* The value statement was chosen by the check arm BEFORE the scope's
+       __attribute__((cleanup)) calls were appended to the block, and stashed
+       in def_node — the tail here may be a cleanup call, never the value. */
+    node_t last_stmt = ((struct expr *) r->attr)->def_node;
     node_t saved_last_expr = stmtexpr_last_expr;
+    op_t saved_last_val = stmtexpr_last_val;
 
-    /* The value of the statement expression is its block's last expression.  Mark that expression
-       so its expression-statement is gen'd in value context (val_p): ops that only materialize
-       their result when used -- post ++/-- -- otherwise leave an undef operand here.  Save/restore
-       for nested statement expressions. */
+    /* The value of the statement expression is its block's last expression AS
+       WRITTEN.  Mark that expression so its expression-statement is gen'd in
+       value context (val_p): ops that only materialize their result when used
+       -- post ++/-- -- otherwise leave an undef operand here.  Its op is
+       captured into stmtexpr_last_val at that moment, because statements gen'd
+       AFTER it (the scope's cleanup calls) overwrite top_gen_last_op.
+       Save/restore both for nested statement expressions. */
     stmtexpr_last_expr
       = (last_stmt != NULL && last_stmt->code == N_EXPR) ? NL_EL (last_stmt->u.ops, 1) : NULL;
     gen (c2m_ctx, block, NULL, NULL, FALSE, NULL, NULL);
+    res = stmtexpr_last_expr != NULL ? stmtexpr_last_val : top_gen_last_op;
     stmtexpr_last_expr = saved_last_expr;
-    res = top_gen_last_op;
+    stmtexpr_last_val = saved_last_val;
     /* A statement expression whose value is a struct/union yields the lvalue of an in-block local,
        but that local's stack storage can be reused by a sibling scope -- e.g. `({..A..}).x -
        ({..B..}).x`, where c2mir assigns the A and B block-locals the same fp slot.  Copy the
@@ -19963,8 +20000,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     emit_label (c2m_ctx, r);
     if (e == stmtexpr_last_expr)
       /* Value-producing last expression of a statement expression: evaluate in
-         value context so post ++/-- materialize their result (see N_STMTEXPR). */
-      top_gen_last_op = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
+         value context so post ++/-- materialize their result, and capture the
+         op where trailing cleanup statements cannot overwrite it (see
+         N_STMTEXPR). */
+      top_gen_last_op = stmtexpr_last_val = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
     else
       top_gen (c2m_ctx, e, NULL, NULL, NULL);
     break;

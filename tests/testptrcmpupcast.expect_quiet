@@ -1,0 +1,4 @@
+Presence enables the check: the JIT run must produce EMPTY stderr. Every
+derived->base pointer comparison in this test used to emit a c2mir
+"incompatible pointer types in comparison" warning, including the one inside
+libstdc++'s own _List_base::_M_clear.

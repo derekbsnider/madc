@@ -1,0 +1,57 @@
+// value(N) construction — functional-cast temporaries AND parens direct-init
+// declarations construct through the registered madarray_construct_* ctor
+// set (placement-new into raw storage; the assign family reads the OLD kind
+// and must never run on an unconstructed buffer). Before the registration
+// ddARRAY had NO ctors: the ObjTemp arm emitted NOTHING, the temp's kind
+// byte was stack garbage, and `cout << value(-7)` printed an "instance"
+// notice then SIGSEGV'd walking a garbage payload; `value v(7);` did not
+// even parse. The double lines additionally gate the external-ctor extern
+// prototypes adopting native_param_shape: the hand-rolled shape flat-typed
+// every scalar param long long, so value(3.5) marshalled 3.5 through a GPR
+// the callee never read and constructed real(0).
+// Streaming follows the contained-type ruling: bool without boolalpha
+// prints 1, like `cout << true`.
+#include <cstdio>
+#include <iostream>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	// Functional-cast temporaries, streamed directly.
+	cout << value(-7) << endl;
+	cout << value(3.5) << endl;
+	cout << "null:" << value() << ":" << endl;
+
+	// Parens direct-init declarations, one per ctor overload.
+	value v(7);
+	cout << v << endl;
+	value s("hi");
+	cout << s << endl;
+	value d(2.5);
+	cout << d << endl;
+	value b(true);
+	cout << b << endl;
+	value e;
+	cout << "e:" << e << ":" << endl;
+
+	// Copy ctor from another carrier — kind preserved.
+	value c(s);
+	cout << c << endl;
+
+	// Copy-init from a temporary.
+	value w = value(42);
+	cout << w << endl;
+
+	// A temporary as a call argument keeps its kind AND its payload.
+	array a;
+	php::array_push(a, value(3.5));
+	php::array_push(a, value("text"));
+	php::var_dump(a);
+
+	// Kinds of the direct-init locals. (The for-init declarator form of
+	// parens direct-init is testforinitctor's gate.)
+	php::var_dump(d);
+	php::var_dump(b);
+	return 0;
+}

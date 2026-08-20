@@ -1,0 +1,49 @@
+// php::array_push is ONE overloaded name (PHP parity — no array_push_int /
+// array_push_array madc-isms; those spellings are retired) and RETURNS the
+// array's new element count, like PHP's array_push(). One overload per
+// argument type: const char*, int64_t, double, bool, value& (the carrier —
+// `value` and `array` are the same tagged type, so an array argument nests
+// through the same overload), std::string&.
+//
+// The float line gates the score_arg_to_param numeric grading
+// (testoverloadnumrank): a float argument must select the double overload
+// (promotion), never truncate through int64. The literal-0 line gates the
+// null-pointer-constant ranking: 0 must stay an integer push, not a
+// const char* push.
+#include <cstdio>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	array a;
+	int64_t n;
+	n = php::array_push(a, "one");
+	printf("n1=%ld\n", n);
+	n = php::array_push(a, 7);
+	printf("n2=%ld\n", n);
+	n = php::array_push(a, 0);
+	printf("n3=%ld\n", n);
+	n = php::array_push(a, 3.5);
+	printf("n4=%ld\n", n);
+	float f = 2.5f;
+	n = php::array_push(a, f);
+	printf("n5=%ld\n", n);
+	n = php::array_push(a, true);
+	printf("n6=%ld\n", n);
+	std::string s = "via-string";
+	n = php::array_push(a, s);
+	printf("n7=%ld\n", n);
+	value v;
+	v = 42;
+	n = php::array_push(a, v);
+	printf("n8=%ld\n", n);
+	array inner;
+	php::array_push(inner, 1);
+	php::array_push(inner, 2);
+	n = php::array_push(a, inner);
+	printf("n9=%ld\n", n);
+	printf("count=%ld\n", a.count());
+	php::var_dump(a);
+	return 0;
+}

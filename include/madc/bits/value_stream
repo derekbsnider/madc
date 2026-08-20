@@ -1,0 +1,21 @@
+// bits/value_stream — the always-available half of the madc value
+// stream inserter. madc::value is an INHERENT madc-mode type (owner
+// law 2026-08-19: it requires no #include), so streaming one must not
+// depend on <ns_madc> or on include order. The declaration still
+// cannot precede std::ostream's, so the lexer injects this fragment
+// ONCE, at the completion of whichever include first defines the
+// ostream guard (_GLIBCXX_OSTREAM / _LIBCPP_OSTREAM — <iostream>,
+// <fstream>, <sstream>, or the bare-cout auto-include), madc dialect
+// only. Strict C/C++ modes never see it; <ns_madc>'s guarded twin is
+// their opt-in, and redeclaration beside it is safe (the overload
+// registry dedups same-spelling redeclarations).
+//
+// Stream a value EXACTLY as the contained type would stream (owner
+// ruling 2026-08-19): each kind forwards to the real inserter, so
+// std::hex / setprecision / boolalpha apply the way they do to a plain
+// int / double / bool; null streams nothing; array/object/instance are
+// not streamable (a stderr notice, nothing written). Resolves
+// mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+namespace madc {
+    std::ostream &operator<<(std::ostream &os, const value &v);
+}

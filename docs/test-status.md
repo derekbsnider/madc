@@ -1,6 +1,204 @@
 # Test Status
 
-> **Current (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
+> **Current (2026-08-20, v0.92.0 — bare `cout << value` + std::format/
+> print/println intrinsics):** authoritative Linux fulltest **1104 passed /
+> 0 failed / 0 timed out / 9 skipped**; **1113 tests compiled with ZERO
+> warnings**; EXE **1063/0**, OBJ **1063/0**, packed **1104/0/0/9**,
+> headerless **1077/0/36skip**, release rc=0 — one merge-wave battery.
+> New: `testvaluecout`/`testvaluecoutorder`/`testvaluecoutsstream` (the
+> value inserter as always-included surface, guard-keyed injection),
+> `teststdprint`/`teststdformat`/`teststdprintvalue`/`teststdformaterr`
+> (the formatting intrinsics; plus `test_rt_format`, 4334 unit assertions
+> against 1430 generated libstdc++ oracle rows), `testcastsizeof` (cast of
+> paren-less sizeof — front-end fix found by the AOT ledger parse of the
+> new engine).
+>
+> **Previous (2026-08-19, v0.91.0 — `<iomanip>` manipulator objects):**
+> authoritative Linux fulltest **1096 passed / 0 failed / 0 timed out /
+> 9 skipped**; **1105 tests compiled with ZERO warnings**; EXE **1056/0**,
+> OBJ **1056/0**, packed **1096/0/0/9**, headerless **1069/0/36skip**
+> (testiomanip carries a headerless_skip — <iomanip> is a documented
+> pack-corpus blocker, forest_pack_headers.txt v3), release rc=0 — full
+> battery. New: `testiomanip`
+> (setprecision/setw/setfill/fixed, g++ AND clang++ oracle byte-identical,
+> plus a manipulator applying to a streamed `value`). Both v0.88.0 priority
+> residues are now closed (value(N) construction in v0.90.0, manipulator
+> objects here).
+>
+> **Previous (2026-08-19, v0.90.0 — `value(N)` constructs):** authoritative
+> Linux fulltest **1095 passed / 0 failed / 0 timed out / 9 skipped**;
+> **1104 tests compiled with ZERO warnings**; EXE **1055/0**, OBJ
+> **1055/0**, packed **1095/0/0/9**, headerless **1069/0/35skip**, release
+> rc=0, MIR c-tests **1143/2286/0** (exact baseline) — full battery. New:
+> `testvaluector` (ctor overloads on the carrier: temporaries, direct-init,
+> carrier copy, temps as call args with kind AND payload preserved) and
+> `testforinitctor` (for-init parens direct-init + per-iteration while-header
+> temporary; g++ AND clang++ oracle, byte-identical). Recorded with
+> reducers: madc's front end ignores user __attribute__((cleanup)) on
+> locals; declaration-flow ';' conventions remain asymmetric.
+>
+> **Previous (2026-08-19, v0.89.0 — `php::array_push` overload set):**
+> authoritative Linux fulltest **1093 passed / 0 failed / 0 timed out /
+> 9 skipped**; **1102 tests compiled with ZERO warnings**; EXE **1053/0**,
+> OBJ **1053/0**, packed **1093/0/0/9**, headerless **1067/0/35skip**,
+> release rc=0 — full battery. New: `testarraypush` (one overloaded name,
+> PHP-parity count returns, every kind's var_dump word — float arg lands on
+> the double overload, literal 0 stays an integer push) and
+> `testoverloadnumrank` (numeric overload GRADING: float selects double —
+> promotion — never the truncating int64 by registration order; g++ and
+> clang++ oracle both agree, unambiguous). Retired spellings
+> `array_push_int` / `array_push_array` migrated across 7 tests + 4 docs
+> pages.
+>
+> **Previous (2026-08-19, v0.88.0 — `cout << value`):** authoritative Linux
+> fulltest **1091 passed / 0 failed / 0 timed out / 9 skipped**; **1100 tests
+> compiled with ZERO warnings**; EXE **1051/0**, OBJ **1051/0**, packed
+> **1091/0/0/9**, headerless **1065/0/35skip**, release rc=0 — full battery.
+> New: `testvaluestream` (each kind streams via the REAL inserter — hex,
+> boolalpha, chaining — byte-identical to the plain-type twin program, which
+> g++ and clang++ agree on; null empty; the array line = stderr notice +
+> nothing streamed + the stream survives). Found and recorded with reducers:
+> `value(N)` functional-cast temporaries build a garbage-kind temp;
+> `std::setprecision` (manipulator OBJECTS) fails with plain doubles too.
+>
+> **Previous (2026-08-19, v0.87.0 — `for (value v : a)`):** authoritative Linux
+> fulltest **1090 passed / 0 failed / 0 timed out / 9 skipped**; **1099 tests
+> compiled with ZERO warnings**; EXE **1050/0**, OBJ **1050/0**, packed
+> **1090/0/0/9**, headerless **1064/0/35skip**, release rc=0 — full battery.
+> New: `testforeachvalue` (the loop element is the carrier itself: kind
+> preserved through the copy — string lengths + the caught integer throw in one
+> loop; mutation leaves the source intact; empty array = zero iterations;
+> `value &v` refusal pinned). The other half of the original probe —
+> `cout << value` — fails identically with NO loop (a streaming/operator gap,
+> recorded in docs/plans/2026-08-19-range-for-auto-deduction.md).
+>
+> **Previous (2026-08-19, v0.86.0 — the compiler knows the C library's
+> signatures):** authoritative Linux fulltest **1089 passed / 0 failed / 0 timed
+> out / 9 skipped**; **1098 tests compiled with ZERO warnings** (full all-zero
+> baseline); EXE **1049/0**, OBJ **1049/0**, packed **1089/0/0/9**, headerless
+> **1063/0/35skip**, release rc=0 — the full battery run per code commit (three
+> times: once per arc).
+>
+> Five new tests, and what each is the gate for:
+> `testlibcnoheader` (an UNDECLARED libc call's RETURN type, headerless, gcc -O0
+> oracle — before the fix `strcmp(a,b) < 0` was FALSE and `floor(2.7)` was 1.0;
+> two deliberate, documented divergences where gcc's own output is UB garbage:
+> madc's atof/atoll answers are the correct ones), `testlibcnoheaderargs` (the
+> ARGUMENT convention — all nine C99-math argument shapes × three suffixes,
+> byte-identical to gcc; `floorf(3.9f)` was 2.000 through float promotion),
+> `testvaluecount` (the owner .count()/.size() semantics: elements / length /
+> catchable error — `value s = "hello"; s.count()` was a silent 0; the range-for
+> bound pinned unchanged by the visited=0/count=2 line), `testforeachauto` (the
+> `auto` range-for element, g++ AND clang++ -O0 oracle, including the
+> [stmt.ranged] shadowing case `for (auto x : x)`), `testforeachautoarray` (the
+> madc array deduces `string`, the #91 subscript ruling). New fulltest gate:
+> `scripts/check-libc-alias-signatures.sh` — every `__builtin_` alias target
+> must carry a signature entry, with a negative control that must fail.
+>
+> **Previous (2026-08-18, v0.85.0 — php::print_r / php::var_dump over ANY madc
+> type, THE ARC COMPLETE):** authoritative Linux fulltest **1083 passed / 0
+> failed / 0 timed out / 9 skipped**; **1092 tests compiled with ZERO warnings**
+> under the c2mir ratchet (baseline 0, and it is a full all-zero baseline);
+> trailer gate 456 code commits / 0 missing. The dump tests are oracled against
+> **php-cli 8.3.6** — every `print_r` block is byte-identical to PHP's for the
+> corresponding PHP value, captured with `cat -A`; for the iterator containers all
+> TEN blocks PHP produces for that data match byte for byte
+> (`tmp/or/map.php`, `tmp/or/iter_pr.php`). `php-cli` is in
+> `scripts/provision_container.sh`: it is an oracle like g++ and clang++, and its
+> absence would have read as green.
+>
+> New in session #104: `testphpdumpiter` (std::map / set / list — int and string
+> keys, nested sequence and map values, struct and string values, empty, inside a
+> struct, through a pointer, captured, plus a hand-rolled container for EACH
+> iterator shape: a class iterator and a raw-pointer one — 196 expect lines),
+> `testforeachiter` (the range-based `for` over the same containers, oracled
+> against `g++ -O0` and `clang++ -O0`, including a `T&` loop variable mutating an
+> element and a `continue` that must still advance), and `testptrcmpupcast` (a
+> derived->base pointer COMPARISON owes the base adjustment — `B2 *p2 = &d;
+> p2 == &d` answered 0 where both compilers answer 1). `testforeachkeyed` was
+> retargeted: madc no longer refuses the container, so the rejection moved to the
+> element assignment where c2mir reports it, and `testphpdumprefuse` was rebuilt
+> on the one PERMANENT refusal (a container with begin()/end() and no size()).
+> `testphpdumpselfref` gates the type-path guard — a container whose element type
+> is the container used to consume 4 GB and die in `std::bad_alloc`, and its
+> `Twice` case is the negative control that a visited set (rather than a PATH set)
+> would fail.
+>
+> `--emit=c11` parity spot-checked for the new walk: the generated C compiles
+> under `gcc -std=c11` and its output is byte-identical to the JIT's
+> (`tmp/probe/emitc_iter.mad`). Native lanes: **EXE 1044/0**, **OBJ 1044/0**,
+> packed **1084/0/0/9**, headerless **1058/0/35skip**, release rc=0 — the whole
+> battery re-run over the five code commits.
+>
+> ⚠️ **A 1084/0 run is a SLICE, and this session proved it.** `d237d83b`'s
+> type-path guard refused `php::print_r(k)` on
+> `struct Link { int v; Link *next; }` — a struct dumped BY VALUE holding a pointer
+> to itself — and fulltest was **1084 / 0 with that bug in**, because every pointer
+> test dumps a POINTER at top level (`php::print_r(&a)`) so the by-value shape had
+> no coverage in 1084 tests. It was found by re-measuring the probe set AFTER the
+> release commit (`54da4e38` is the fix). `tests/testphpdumpselfref.mad` now carries
+> the three by-value shapes. Coverage on the container's v0.85.0 binary: **21 OK,
+> 0 not-OK**.
+>
+> **Previous (2026-08-17, the dump arc merged to `develop` and still
+> UNRELEASED at that point):** authoritative Linux fulltest **1071 passed / 0 failed / 0
+> timed out / 9 skipped** (eight new tests: four for the dump intrinsics, two for
+> the range-for protocol fix, one for print_r's $return, one for madc::value
+> initializers); zero warnings under `-Werror`. The dump tests are
+> oracled against **php-cli 8.3.6** — every `print_r` block is byte-identical to
+> PHP's for the corresponding PHP value, captured with `cat -A` (the captures
+> live in `docs/plans/2026-08-17-php-print-r-var-dump-plan.md` §2). `php-cli` is
+> now in `scripts/provision_container.sh`: it is an oracle like g++ and clang++,
+> and its absence would have read as green.
+>
+> New tests: `testphpprintr` (scalars), `testphpprintrstruct` (structs, classes
+> with access, inheritance, unions, anonymous unions, bit-fields, fixed arrays),
+> `testphpvardump`, `testphpseq` (`std::string` as text, `std::vector` as an
+> array, a string member inside a struct, a vector of strings),
+> `testforeachkeyed` (a keyed container's range-for is a compile ERROR, as g++
+> and clang say — it used to SIGSEGV), `testforeachrefindex` (a positional
+> `operator[](const long &)` container iterates instead of dereferencing an
+> integer). The dump + foreach + string + vector + subscript families — the
+> blast radius of the two `operator[]`/nullary call owners — are green in JIT,
+> `--exe` and `--obj` (36 tests per lane).
+>
+> **Previous (2026-08-17, v0.84.0 on `develop` — the pack degradation gate,
+> task #63):** authoritative Linux fulltest **1064 passed / 0 failed / 0 timed
+> out / 9 skipped**; native **EXE 1026/0** and **OBJ 1026/0**; zero warnings
+> under `-Werror`. Two new gates inside fulltest: `forest_pack_gate --selftest`
+> **17 legs** (hermetic, both directions of every boundary) and
+> `forest_bind_gate` **26/26** — up from 25/25 with the new `[ldouble]` case,
+> which pins the `long double`-member-lost-at-bind fix against g++/clang.
+> Suite counts are unchanged because the release adds gates and a bind case, not
+> `.mad` tests.
+>
+> All three packs re-measured with the gate wired in, and every number is now a
+> baseline in `docs/parity/pack-degradation-baseline.txt`:
+> **linux** 93 pack parse errors, 0 mir-blob-skips, dk-none 55, closure-drops 0,
+> 41 listed headers checked / 0 missing; **win64** 93, 0, 55, 0, 34/0;
+> **darwin** 58 + 1 mir-blob-skip and 55/0 headers on EACH arch. The load-side
+> hard-zero halves (`materialize fill: DROPPED`, `forest_restore_decls: SKIPPED`)
+> are 0 on both profiles that can run a consumer. Trailer gate 438/0.
+> Logs: `tmp/logs/rb-20260817-142741.log` (fulltest/exe/obj) and
+> `tmp/logs/rb-20260817-142423.log` (release/release-win/release-macos).
+>
+> Known and now GATED rather than silent: both macOS packs ship with **no MIR
+> cache blob** (linux packs 467 KB, win64 497 KB), baselined at
+> `darwin mir-blob-skips 1`. Pre-existing — byte-identical before and after this
+> release's code changes.
+>
+> **Previous (2026-08-17, v0.83.0 on `develop` — UFCS):** authoritative Linux
+> fulltest **1064 passed / 0 failed / 0 timed out / 9 skipped**; native
+> **EXE 1026/0** and **OBJ 1026/0**; zero warnings under `-Werror` on every
+> lane. `ufcs_gate` green inside fulltest (12 C + 9 C++ `--std=` modes x 3
+> probes, plus the one-owner check on the entry condition), and negative-
+> controlled against the shipped pre-UFCS `madc-release-v0.82.0` binary.
+> The ten new `tests/testufcs*.mad` reducers all carry g++ 13 and clang++ 18
+> oracles. Windows, macOS and the packed/headerless lanes were last measured at
+> v0.82.0 and are unchanged by UFCS, which is a front-end-only feature.
+> Log: `tmp/logs/rb-20260817-0*.log`.
+>
+> **Previous (2026-08-16, `feature/win3-pe-coff-codex` W5-close content):**
 > authoritative Linux fulltest **1050 passed / 0 failed / 0 timed out /
 > 9 skipped**; emitted-code warning census **1059 compiles / 0 warnings**;
 > libc++ JIT **1046/0/0TO/13skip**, EXE **1013/0**, OBJ **1013/0**.

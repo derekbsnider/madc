@@ -4822,29 +4822,26 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 	// are pinned ids).
 	r.ref0    = edd->underlying
 		  ? forest_serialize_type_id(edd->underlying) : 0u;
-	// Scoped enumerators: the pseudo-namespace key is the canonical spelling
-	// when namespaced (std::__cmp_cat::_Ord) or class-nested
-	// (std::__1::ios_base::event), else the bare tag.
-	const std::string &pk = edd->canonical_cpp_spelling().empty()
-			      ? edd->name : edd->canonical_cpp_spelling();
-	std::map<std::string, variable_map_t>::iterator ni =
-		prog->namespace_map.find(pk);
+	// The enumerators come from the TAG, which owns them
+	// (DataDefENUM::enumerators, stamped at the one point in TokenENUM::parse
+	// where a name and a value are both known). This used to re-derive them
+	// with a NAME-keyed reverse lookup into prog->namespace_map on the
+	// canonical spelling — a second answer to a question the type can answer
+	// directly, and one that only worked for a tag whose pseudo-namespace
+	// happened to exist. Reading the owner also fixes the ORDER: the map was
+	// alphabetical, the tag is in DECLARATION order, which is what the source
+	// wrote and what the restore should hand back.
 	std::vector<madc::dis::constvalrec> evs;
-	if (ni != prog->namespace_map.end())
-		for (variable_map_iter vi = ni->second.begin();
-		     vi != ni->second.end(); ++vi) {
-			Variable *ev = vi->second;
-			if (!ev || !ev->is_constant())
-				continue;
-			madc::dis::constvalrec cv;
-			memset(&cv, 0, sizeof(cv));
-			cv.name_id = prog->forest_arena.strings.intern(
-				vi->first.c_str());
-			uint64_t uv = (uint64_t)ev->get<int64_t>();
-			cv.val_lo = (uint32_t)(uv & 0xffffffffu);
-			cv.val_hi = (uint32_t)(uv >> 32);
-			evs.push_back(cv);
-		}
+	for (size_t e = 0; e < edd->enumerators.size(); ++e) {
+		madc::dis::constvalrec cv;
+		memset(&cv, 0, sizeof(cv));
+		cv.name_id = prog->forest_arena.strings.intern(
+			edd->enumerators[e].first.c_str());
+		uint64_t uv = (uint64_t)edd->enumerators[e].second;
+		cv.val_lo = (uint32_t)(uv & 0xffffffffu);
+		cv.val_hi = (uint32_t)(uv >> 32);
+		evs.push_back(cv);
+	}
 	r.constval_begin = (uint32_t)prog->forest_arena.payload.size();
 	r.constval_count = (uint32_t)evs.size();
 	for (size_t e = 0; e < evs.size(); ++e)

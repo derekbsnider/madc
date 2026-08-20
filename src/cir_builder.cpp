@@ -4550,6 +4550,20 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		append(lst, simple(N_UNSIGNED));
 		append_i64(lst);
 		break;
+	// The intrinsic value carrier (madc::value). Its STORAGE is an opaque
+	// `_Alignas(alignof(madc::value)) long long name[array_obj_words()]`
+	// (array_storage_decl / the class-member arm), so its type SPECIFIER is
+	// `long long` and the shape — `[6]` for an object, a star for a pointer to
+	// one — belongs to the declarator, which is C's own model.
+	//
+	// Without this case a value fell to the `default: int` below, so every site
+	// that spells a value's base type through a DECLARATOR rather than through
+	// the storage emitter got `int`: `value *p` emitted `int *p` (c2mir:
+	// "incompatible types in assignment to a pointer") and a value-returning
+	// function emitted `int f()`. Those were SILENT except for the warning —
+	// the pointer value itself was right, so the dump printed correctly while
+	// the declared type was a 4-byte lie about a 48-byte object.
+	case DataType::dtARRAY:  append_i64(lst); break;
 	case DataType::dtINT128: append(lst, simple(N_INT128)); break;
 	case DataType::dtUINT128:
 		append(lst, simple(N_UNSIGNED));
@@ -5601,6 +5615,14 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
+node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
+{
+	if (sdcl && !sdcl->ctor_args.empty())
+		return class_ctor_call(&sdcl->var, &ddARRAY, sdcl->ctor_args,
+				       sdcl);
+	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
+}
+
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
 {
 	if (!cdd || !name) return NULL;
@@ -5613,6 +5635,38 @@ static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 					    const std::string &name)
 {
 	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
+}
+
+// The NULLARY overload of `name` on `cdd` — the one an `obj.name()` call picks.
+//
+// findMethod alone returns the FIRST by-name match, which for an ARITY-overloaded
+// name is a coin flip. Prefix `operator++()` and postfix `operator++(int)` are
+// both spelled "operator++" and differ only in the postfix dummy parameter, so a
+// by-name pick can hand back the postfix one and the emitted call then passes no
+// argument for its `int`. findMethodOverload with NO argument types is the
+// existing owner of that selection — the parse-time unary-operator lowering
+// (Program::nullary_operator_call) makes exactly this call — and its cv tiebreak
+// also prefers the non-const `begin()` over `begin() const`.
+//
+// The by-name pick stays as the FALLBACK, deliberately: findMethodOverload
+// returns NULL when every same-name candidate is rejected, and a method reached
+// through a lookup path the overload walk cannot see (alias webs,
+// using-declarations) must still resolve. So this NARROWS the choice; it never
+// loses one.
+static Variable *class_nullary_method_var(DataDefCLASS *cdd, const char *name)
+{
+	if (!cdd || !name)
+		return NULL;
+	std::vector<const DataDef *> no_args;
+	if (Variable *mv = cdd->findMethodOverload(std::string(name), no_args, 0))
+		return mv;
+	return cdd->findMethod(std::string(name));
+}
+
+static FuncDef *class_nullary_method(DataDefCLASS *cdd, const char *name)
+{
+	Variable *mv = class_nullary_method_var(cdd, name);
+	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 }
 
 static std::string class_method_symbol(DataDefCLASS *cdd, const char *name)
@@ -6528,6 +6582,20 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		}
 	}
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
+	// A format intrinsic (std::format) has no callee to emit — the
+	// compiler is its implementation. Delegate BEFORE minting the temp
+	// (lower_format_call hoists its own constructed std::string local)
+	// and take that lvalue's address, the class_method_call pattern above.
+	if (tcf && format_intrinsic_call(tcf)) {
+		node_t lv = lower_format_call(tcf, call_target_funcdef(tcf),
+					      origin);
+		if (lv) {
+			node_t addr = node2(N_CAST, void_ptr_type(),
+					    node1(N_ADDR, lv, origin), origin);
+			CIR_NODE(addr)->synth_from_origin = true;
+			return addr;
+		}
+	}
 	char name[40];
 	object_temp_decl(cdd, name, sizeof(name), origin);
 
@@ -6878,7 +6946,7 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 // -----------------------------------------------------------------------
 
 static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
-static int dd_peel_pointers(DataDef *&dd); // defined below; peels to pointee
+// dd_peel_pointers is declared in cir_builder.h (cir_dump.cpp needs it too).
 
 // Peel DataDefCArray layers off a type, collecting fixed-array dimensions
 // outermost-first. `typedef unsigned long T[2]` -> elem=unsigned long,
@@ -8382,10 +8450,23 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// model as runtime-object classes.
 	// madarray_construct is emitted as a separate statement by translate_block;
 	// the cleanup attribute on the storage handles scope-exit destruction.
-	if (is_array_object(v->type))
+	if (is_array_object(v->type)) {
+		// A FILE-SCOPE value with an initializer (`value g = "x";` at top
+		// level, which is where a script writes it) reaches this early return
+		// BEFORE the dynamic-init queueing below, so its initializer used to
+		// be dropped on the floor. Register it the same way a non-constant
+		// scalar global does: collect_global_ctors finds the TokenDecl in
+		// top_decls and queues the assignment into __madc_global_init, in
+		// declaration order. A value's storage is zero-initialized and the
+		// runtime treats zeroed storage as the empty value, so no file-scope
+		// constructor call is required — only the initializer was missing.
+		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
+		if (m_file_scope_decl && adecl && adecl->initialize)
+			m_dynamic_global_inits.insert(v);
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
 		return array_storage_decl(var_emit_name(*v).c_str(), origin);
+	}
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
@@ -8868,7 +8949,7 @@ static int dd_ptr_depth(DataDef *dd)
 // (`const unsigned short **__ctype_b_loc(void)`) keeps every level — the
 // old peel-one-level pattern emitted `unsigned short *`, and the ctype
 // macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
-static int dd_peel_pointers(DataDef *&dd)
+int dd_peel_pointers(DataDef *&dd)
 {
 	int depth = 0;
 	while (dd && dd->is_pointer()) {
@@ -11370,7 +11451,7 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
-static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
 	const std::string opname = "operator=";
@@ -11383,6 +11464,49 @@ static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 		    && fd->method_display_name != opname)
 			continue;
 		if (is_char_pointer(fd->parameters[1]))
+			return fd;
+	}
+	return NULL;
+}
+
+// The same lookup for the `operator=` overload taking a given SCALAR rawtype
+// (`madc::value`'s bool / int64 / double assign forms — parser.cpp's assign_ops
+// table registers them and OWNS which runtime entry each binds to). A caller
+// that needs "the runtime entry that assigns a bool to this class" asks here and
+// reads `emit_symbol`; spelling `madarray_assign_bool` at the call site instead
+// would put that binding in two places, free to drift.
+// The initializer a `value v = <init>;` declaration owes after its constructor.
+// Returns NULL for a bare `value v;`.
+//
+// The PARSER has already resolved the initializer into the registered
+// `operator=` call (`value v = "x"` arrives as the whole assignment, which
+// translates to `*madarray_assign_cstr(&v, "x")`), so there is nothing to select
+// here and nothing to rebuild — the initializer only needs to be EMITTED. An
+// earlier attempt selected the overload itself and produced
+// `madarray_assign_value(&v, *madarray_assign_cstr(&v, "x"))` — assigning the
+// value to itself through the wrong entry, which MIR rejected outright. The bug
+// was never a missing selection; it was a dropped statement.
+node_t CirBuilder::value_init_assign(TokenDecl *sdcl)
+{
+	if (!sdcl || !sdcl->initialize)
+		return NULL;
+	return node2(N_EXPR, list(), translate_expr(sdcl->initialize), sdcl);
+}
+
+FuncDef *class_assign_scalar_operator_def(DataDefCLASS *cdd, DataType want)
+{
+	if (!cdd) return NULL;
+	const std::string opname = "operator=";
+	const std::string mangled = cdd->name + "__" + opname;
+	for (Variable *mv : cdd->methods) {
+		if (!mv) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd || fd->parameters.size() < 2) continue;
+		if (mv->name != opname && mv->name != mangled
+		    && fd->method_display_name != opname)
+			continue;
+		DataDef *p = fd->parameters[1];
+		if (p && !p->is_pointer() && p->rawtype() == want)
 			return fd;
 	}
 	return NULL;
@@ -12182,7 +12306,7 @@ void CirBuilder::class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 }
 
 // A `struct Cls *<nm> = <init>;` pointer-binding decl (synthetic).
-node_t CirBuilder::class_ptr_bind(DataDefCLASS *cdd, const char *nm,
+node_t CirBuilder::class_ptr_bind(DataDef *cdd, const char *nm,
 				  node_t init, TokenBase *origin)
 {
 	node_t sd = simple(N_SPEC_DECL, origin);
@@ -13055,8 +13179,24 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return 3;
 		return -1;
 	}
-	if (p_num && a_num)
-		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+	if (p_num && a_num) {
+		if (adc->rawtype() == pdc->rawtype())
+			return 5;
+		// Grade within the numeric domain instead of a flat 4: staying
+		// in one domain (integer->integer, floating->floating) ranks
+		// above crossing it or landing on bool. [conv.fpprom]: a
+		// float argument reaching a double parameter is a PROMOTION —
+		// the flat 4 tied it with float->int64 and registration order
+		// picked the TRUNCATING overload (testoverloadnumrank; both
+		// g++ and clang++ select the double overload unambiguously).
+		// Landing ON bool is a boolean conversion, graded below
+		// same-domain so an integer argument never falls onto a bool
+		// overload by tie-order.
+		if (adc->is_real() == pdc->is_real()
+		    && pdc->rawtype() != DataType::dtBOOL)
+			return 4;
+		return 3;
+	}
 	return 0;            // unrecognized pairing: neutral
 }
 
@@ -14751,16 +14891,16 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	if (external_ctor) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // this
-		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
-			DataDef *pt = ctor->parameters[pi];
-			bool refp = ctor->is_ref_param(pi);
-			if (param_object_class(pt, refp) || refp)
-				eparams.push_back({ {N_VOID}, true });
-			else if (pt && pt->is_pointer())
-				eparams.push_back({ {N_CHAR}, true });
-			else
-				eparams.push_back({ {N_LONG, N_LONG}, false });
-		}
+		// native_param_shape is the ONE param-shape owner (objects/refs
+		// -> void*, pointers -> void*/char*, scalars via
+		// native_scalar_specs). The hand-rolled copy this replaces
+		// flat-typed every scalar {N_LONG, N_LONG}, so an external
+		// ctor's DOUBLE parameter was declared long long and c2mir
+		// truncated the argument into a GPR while the callee read
+		// xmm0 (value(3.5) constructed real(0)).
+		for (size_t pi = 1; pi < ctor->parameters.size(); pi++)
+			eparams.push_back(native_param_shape(
+				ctor->parameters[pi], ctor->is_ref_param(pi)));
 		if (ctor->ctor_trailing_self)
 			eparams.push_back({ {N_VOID}, true });
 		need_output_extern(sym.c_str(), false, eparams);
@@ -17806,14 +17946,83 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 // ADDRESS node (value object -> &obj, pointer receiver -> its value). Shared
 // by the named-variable (TokenSubscript) and expression-receiver
 // (TokenSubscriptExpr) subscript paths.
+// A nullary class method call (`obj.size()`), value-yielding. The ONE owner of
+// the symbol choice for such a call: class_method_symbol routes an externally
+// bound method to its real emit_symbol, which the hand-rolled `Class__size` the
+// range-for used to build could not do. The extern for that case is declared
+// from the method's own return type (ret_dd), so a size_t return does not
+// collapse to void*.
+node_t CirBuilder::class_nullary_call(DataDefCLASS *cls, const char *name,
+				      node_t recv_addr, TokenBase *origin,
+				      bool discard_value)
+{
+	// The NULLARY overload, and the symbol of THAT overload: resolving the
+	// method by name and the symbol by name again could pick two different
+	// functions for one call.
+	FuncDef *fd = class_nullary_method(cls, name);
+	if (!cls || !fd || !recv_addr)
+		return NULL;
+	std::string sym = class_method_call_symbol(cls, fd, std::string(name));
+	if (sym.empty())
+		return NULL;
+	node_t a = list();
+	if (!fd->emit_symbol.empty()) {
+		need_output_extern(sym.c_str(), false, { { {N_VOID}, true } },
+				   std::vector<c2mir_node_code_t>(), NULL,
+				   &fd->return_value_type());
+		append(a, node2(N_CAST, void_ptr_type(), recv_addr, origin));
+	} else {
+		referenced_funcs.insert(sym);
+		append(a, recv_addr);
+	}
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	// A reference-returning nullary yields the address; deref to the value.
+	// NOT when the value is DISCARDED (`++it;` as a statement): `*f(&it);` is a
+	// dereference with no effect, which is a warning in every compiler that
+	// looks — and the zero-warnings law makes that a defect, not a style note.
+	if (fd->returns_reference() && !discard_value)
+		return node1(N_DEREF, call, origin);
+	return call;
+}
+
 node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
-					   TokenBase *index, TokenBase *origin)
+					   TokenBase *index, TokenBase *origin,
+					   node_t index_lvalue)
 {
 	if (!cls || !recv_addr) return NULL;
 	std::string opname = "operator[]";
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return NULL;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+
+	// The INDEX argument (operator[] parameter 1; parameter 0 = __this) — one
+	// rule for both call shapes below, and for every caller. A SYNTHESIZED
+	// index (index == NULL, a range-for's loop counter) is integral and an
+	// lvalue by construction — class_index_iteration_protocol type-checks the
+	// parameter, and the counter is a real local — so a reference parameter
+	// takes its address directly, with no materialized temp.
+	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
+			? callee->parameters[1] : NULL;
+	bool refp = callee && callee->is_ref_param(1);
+	auto index_arg = [&]() -> node_t {
+		if (!index)
+			return refp ? node1(N_ADDR, index_lvalue, origin)
+				    : index_lvalue;
+		if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
+			return object_arg_addr(index, pc);
+		if (DataDefCLASS *vc = as_class_instance(idx_pt))
+			return object_arg_value(index, vc);
+		if (refp)
+			// A scalar reference parameter (`operator[](const key_type& k)`):
+			// an lvalue index folds to `&index`, but a prvalue index (a literal
+			// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
+			// ref_param_arg_addr materializes a temp for those, exactly as every
+			// other reference-argument site does, instead of taking `&<literal>`.
+			return ref_param_arg_addr(index, ref_param_referent(idx_pt),
+						  const_ref_param(callee, 1));
+		return translate_expr(index);
+	};
 
 	// A class-bound external operator[] names its real C++ symbol via
 	// emit_symbol and has no madc-emitted body. Emit that symbol and declare it
@@ -17824,12 +18033,17 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	if (callee && !callee->emit_symbol.empty()) {
 		node_t this_arg = node2(N_CAST, void_ptr_type(), recv_addr, origin);
 		CIR_NODE(this_arg)->synth_from_origin = true;
-		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
-		std::vector<ExternParam> eparams = { { {N_VOID}, true },
-						     { {N_LONG, N_LONG}, false } };
+		// Param 0 = this (void*); param 1 = the index — a 64-bit scalar,
+		// or a POINTER when operator[] takes its index by reference (read
+		// from the parameter, never assumed).
+		std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+		if (refp)
+			eparams.push_back({ {N_VOID}, true });
+		else
+			eparams.push_back({ {N_LONG, N_LONG}, false });
 		node_t args = list();
 		append(args, this_arg);
-		append(args, translate_expr(index));
+		append(args, index_arg());
 		// T& -> pointer return; class_subscript_call derefs it to the element
 		// lvalue so obj[i] reads and obj[i] = x writes.
 		need_output_extern(callee->emit_symbol.c_str(), true, eparams,
@@ -17843,24 +18057,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
 	node_t args = list();
 	append(args, recv_addr);
-	// Index argument (operator[] parameter 1; parameter 0 = __this).
-	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
-			? callee->parameters[1] : NULL;
-	bool refp = callee && callee->is_ref_param(1);
-	if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
-		append(args, object_arg_addr(index, pc));
-	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
-		append(args, object_arg_value(index, vc));
-	else if (refp)
-		// A scalar reference parameter (`operator[](const key_type& k)`):
-		// an lvalue index folds to `&index`, but a prvalue index (a literal
-		// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
-		// ref_param_arg_addr materializes a temp for those, exactly as every
-		// other reference-argument site does, instead of taking `&<literal>`.
-		append(args, ref_param_arg_addr(index, ref_param_referent(idx_pt),
-						const_ref_param(callee, 1)));
-	else
-		append(args, translate_expr(index));
+	append(args, index_arg());
 
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
@@ -19358,6 +19555,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			note_global_reference(ta->var);
 			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);
+			// `&valueobj` for the intrinsic value carrier: its storage is an
+			// opaque `long long name[array_obj_words()]` (array_storage_decl),
+			// so the NAME already decays to a pointer to it. N_ADDR over an
+			// array yields `long long (*)[N]` — the same VALUE but a different
+			// TYPE, which c2mir reported as "incompatible types in assignment
+			// to a pointer" as soon as `value *` had a real type to disagree
+			// with. Same shape as the reference arm above: the thing already IS
+			// the address.
+			if (is_array_object(ta->var.type))
+				return id(var_emit_name(ta->var).c_str(), tb);
 			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
 		}
 	}
@@ -19378,6 +19585,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (node_t flat = vla_flat_subscript(vroot, vidxs, tb))
 					return CIR_NODE(flat)->base.code == N_IND
 					       ? node1(N_ADDR, flat, tb) : flat;
+			// `&s.valuemember` — same decay as `&valueobj`; see the
+			// address-of-variable arm above for why N_ADDR is the wrong type.
+			if (tae->expr && is_array_object(tae->expr->datadef()))
+				return translate_expr(tae->expr);
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
 		}
 	}
@@ -20266,6 +20477,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (code == N_ASSIGN)
 				right = upcast_class_ptr(right, top->left->datadef(),
 							 top->right, tb);
+			// Derived->base pointer COMPARISON. [expr.eq]/[expr.rel]
+			// convert BOTH operands to their composite pointer type, so
+			// the adjustment can be owed on either side — and it is not
+			// merely cosmetic: a SECONDARY base subobject sits at a
+			// nonzero offset, so `B2 *p = &d; p == &d` answered 0 where
+			// gcc and clang both answer 1 (tmp/or/ptrcmp.cpp). The shape
+			// that exposed it is libstdc++'s own: _List_base::_M_clear
+			// compares a `_List_node_base *` cursor against
+			// `&_M_impl._M_node`, whose static type is the DERIVED
+			// _List_node_header. upcast_class_ptr returns its operand
+			// unchanged when no conversion applies, so at most one of the
+			// two below fires.
+			if (code == N_EQ || code == N_NE || code == N_LT
+			    || code == N_LE || code == N_GT || code == N_GE) {
+				DataDef *cldd = top->left  ? top->left->datadef()  : NULL;
+				DataDef *crdd = top->right ? top->right->datadef() : NULL;
+				left  = upcast_class_ptr(left,  crdd, top->left,  tb, cldd);
+				right = upcast_class_ptr(right, cldd, top->right, tb, crdd);
+			}
 			// GNU void*/func-ptr/incomplete-ptr arithmetic (element size 1).
 			// c2mir rejects it, so cast the size-1 pointer operand(s) to
 			// `char *` — the exact size-1 semantics GCC uses — before the op.
@@ -20380,6 +20610,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (inline_fd && inline_fd->inline_builtin_kind == "destroy"
 			    && tcf->parameters.size() == 1)
 				return lower_destroy_arg(tcf->parameters[0], true);
+			// php::print_r / php::var_dump: declared in <ns_php>,
+			// defined nowhere — the compiler generates the dumper for
+			// the argument's concrete type (src/cir_dump.cpp). NULL
+			// means "not a dump intrinsic"; the call path continues.
+			if (node_t dmp = lower_dump_call(tcf, inline_fd, tb))
+				return dmp;
+			// std::format / std::print / std::println: declared in
+			// <bits/std_format>, defined nowhere — the compiler
+			// validates the literal format string and lowers each
+			// field to the rt_format engine (src/cir_format.cpp).
+			if (node_t fmc = lower_format_call(tcf, inline_fd, tb))
+				return fmc;
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow
@@ -21434,11 +21676,26 @@ node_t CirBuilder::translate_if_core(TokenIF *ti)
 	return node2(N_BLOCK, list(), items, ti);
 }
 
+node_t CirBuilder::loop_header_expr_scope(node_t expr, size_t mark,
+					  TokenBase *o)
+{
+	if (m_pending_stmts.size() <= mark)
+		return expr;
+	node_t items = list();
+	for (size_t i = mark; i < m_pending_stmts.size(); i++)
+		append(items, m_pending_stmts[i]);
+	m_pending_stmts.resize(mark);
+	append(items, node2(N_EXPR, list(), expr, o));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, o), o);
+}
+
 node_t CirBuilder::translate_while(TokenBase *tw)
 {
 	TokenWHILE *w = dynamic_cast<TokenWHILE *>(tw);
 	if (!w) return ignore();
-	node_t cond = translate_cond(w->condition);
+	size_t mark = m_pending_stmts.size();
+	node_t cond = loop_header_expr_scope(translate_cond(w->condition),
+					     mark, tw);
 	return node3(N_WHILE, list(), cond,
 		     translate_loop_body(w->statement), tw);
 }
@@ -21478,7 +21735,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 				if (is_array_object(ctd->var.type)) {
 					append(class_init_items, var_decl(&ctd->var, ctd));
 					append(class_init_items,
-					       array_ctor_call(ctd->var.name.c_str(), ctd));	// allowed-exception: for-init scope local
+					       array_decl_ctor_call(ctd));	// allowed-exception: for-init scope local
 					return;
 				}
 				// Scalar declarator: var_decl folds ctd->initialize
@@ -21508,7 +21765,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 			} else {
 				append(class_init_items, var_decl(&td->var, td));
 				append(class_init_items,
-				       array_ctor_call(td->var.name.c_str(), td));	// allowed-exception: for-init scope local
+				       array_decl_ctor_call(td));	// allowed-exception: for-init scope local
 			}
 			init = ignore();
 		} else {
@@ -21523,13 +21780,17 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	} else {
 		init = ignore();
 	}
+	size_t hdr_mark = m_pending_stmts.size();
 	node_t cond = tf->condition ? translate_cond(tf->condition) : ignore();
+	cond = loop_header_expr_scope(cond, hdr_mark, tf);
+	hdr_mark = m_pending_stmts.size();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
 	// Comma-separated increment clauses (`for (...; ...; i++, j--)`): fold the
 	// extras into the increment via N_COMMA so each runs every iteration.
 	if (tf->increment)
 		for (TokenBase *ex : tf->incr_extras)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
+	incr = loop_header_expr_scope(incr, hdr_mark, tf);
 	node_t body = translate_loop_body(tf->statement);
 	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);
 	// Class-shape for-init: the decl + construction statements precede the
@@ -21887,6 +22148,215 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	return node2(N_BLOCK, list(), items, tt);
 }
 
+// Is `name` visible as a class-scope type alias from `cls` (own aliases, then
+// bases, then enclosing scopes)? A thin name over class_alias_lookup_cir, the
+// file's one class-alias resolver, for callers that only need presence.
+static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
+{
+	std::set<DataDefCLASS *> seen;
+	return class_alias_lookup_cir(cls, name, seen) != NULL;
+}
+
+// Does `cls` support the POSITIONAL index-iteration protocol that
+// translate_foreach_class emits — `for (i = 0; i < c.size(); ++i) use(c[i])`?
+//
+// Naming `size` and `operator[]` is not the same as having that protocol.
+// std::map has both, yet `m[i]` is a KEYED lookup-that-inserts, never the i'th
+// element: g++ and clang reject `for (int v : m)` outright ("cannot convert
+// 'std::pair<const int, int>' to 'int'"), because the real range protocol is
+// begin()/end() and yields pairs. Trusting the two names emitted the index loop
+// anyway and handed the loop counter to `map::operator[](const key_type &)`,
+// which wants a pointer -> SIGSEGV at (nil). So the match is TYPE-CHECKED:
+//   - size() takes no user argument and returns an integral — it is the bound;
+//   - operator[] takes exactly one user argument that is integral, by value or
+//     through a reference (`operator[](const long &)` is a legal spelling of a
+//     positional subscript; lowering that argument is class_subscript_addr_on's
+//     job, not the caller's);
+//   - the class names no `key_type` — the standard library's own signal that its
+//     subscript is a KEY rather than a position, and the property generic C++
+//     keys on. A keyed container has no index protocol at all.
+// A class that fails this is not index-iterable, and translate_foreach_loop says
+// so out loud rather than falling through to the madc-array reader.
+/*static*/ bool CirBuilder::class_index_iteration_protocol(DataDefCLASS *cls,
+							  Variable *&szmv,
+							  Variable *&opmv)
+{
+	szmv = opmv = NULL;
+	if (!cls)
+		return false;
+	std::string szname = "size", opname = "operator[]";
+	Variable *sz = cls->findMethod(szname);
+	Variable *op = cls->findMethod(opname);
+	FuncDef *szfd = sz ? dynamic_cast<FuncDef *>(sz->type) : NULL;
+	FuncDef *opfd = op ? dynamic_cast<FuncDef *>(op->type) : NULL;
+	if (!szfd || !opfd)
+		return false;
+
+	// size(): no user argument, integral result (parameters may still carry
+	// the hidden __this slot — method_hidden_param_count owns that count).
+	size_t szhidden = method_hidden_param_count(sz, szfd, cls);
+	if (szfd->parameters.size() != szhidden
+	    || !szfd->return_value_type().is_integer())
+		return false;
+
+	// operator[]: exactly one user argument, integral. is_integer() is true
+	// for a POINTER (DataDefPTR) and for a pointer-to-data-member as well, so
+	// exclude both — neither is a position.
+	size_t ophidden = method_hidden_param_count(op, opfd, cls);
+	if (opfd->parameters.size() != ophidden + 1)
+		return false;
+	DataDef *ipt = opfd->parameters[ophidden];
+	if (DataDef *referent = ref_param_referent(ipt))
+		ipt = referent;
+	if (!ipt || !ipt->is_integer() || ipt->is_pointer()
+	    || ipt->is_member_pointer())
+		return false;
+
+	// A container that names a key_type subscripts by key, not by position.
+	if (class_has_type_alias(cls, "key_type"))
+		return false;
+
+	szmv = sz;
+	opmv = op;
+	return true;
+}
+
+// Does `cls` support C++'s own ITERATOR iteration protocol — `begin()`/`end()`
+// yielding an object with `operator*` and prefix `operator++`? The TWIN of
+// class_index_iteration_protocol above, for the containers that have no
+// position at all: std::map, std::set, std::list.
+//
+// TYPE-CHECKED for exactly the reason the positional one is. Naming `begin`
+// proves nothing, so: begin() and end() must be NULLARY and must return the SAME
+// class, and that class must itself declare a nullary `operator*` (the element)
+// and a nullary `operator++` (the advance). A by-name match here would generate a
+// loop over whatever `begin` happened to mean.
+//
+// WHY size() IS PART OF THIS PREDICATE — i.e. why the caller's loop is COUNTED
+// and not `while (it != end())`: libstdc++ declares operator== and operator!= on
+// EVERY one of these iterators as FRIEND FREE functions, not members
+// (stl_tree.h 315/320 and 396/401, stl_list.h 318/324 and 408/414). findMethod
+// cannot see a free function, so a member-dispatch comparison cannot be
+// generated at all. size() is the bound instead, and it costs nothing: var_dump
+// states the element count in its head line anyway, so the count is already
+// required. A container with begin()/end() and NO size() is therefore genuinely
+// out of reach, and this predicate says so rather than emitting an unbounded
+// loop.
+//
+// `keyed` reports the ASSOCIATIVE shape STRUCTURALLY — the container names a
+// `mapped_type`, the standard library's own signal, and the property generic C++
+// keys on. True for std::map, false for std::set / std::list, which therefore
+// render positionally exactly like a vector: PHP has no set, and a list of
+// values is the honest form.
+//
+// A MEMBER, not static like its twin: it consults class_return_via_retbuf, the
+// signature-ABI owner, to reject an iterator whose by-value return would not be
+// C's native struct return.
+/*static*/ bool CirBuilder::class_iterator_iteration_protocol(DataDefCLASS *cls,
+							      IterProtocol &ip,
+							      std::string *why,
+							      CirBuilder *abi)
+{
+	ip = IterProtocol();
+	if (!cls)
+		return false;
+	// One spelling per decline, so the refusal the dumper prints names the
+	// piece that is actually missing instead of a generic "not supported".
+	struct Decline {
+		std::string *w;
+		bool operator()(const char *m) const
+		{
+			if (w) *w = m;
+			return false;
+		}
+	} decline = { why };
+
+	// size() — the loop bound. Same nullary-integral test the positional
+	// protocol applies to it (method_hidden_param_count owns the __this slot).
+	Variable *sz = cls->findMethod(std::string("size"));
+	FuncDef *szfd = sz ? dynamic_cast<FuncDef *>(sz->type) : NULL;
+	if (!szfd)
+		return decline("it declares no size(), and the generated loop is "
+			       "COUNTED because an iterator comparison is a free "
+			       "function this walk cannot dispatch");
+	if (szfd->parameters.size() != method_hidden_param_count(sz, szfd, cls)
+	    || !szfd->return_value_type().is_integer())
+		return decline("its size() is not a nullary integral method");
+
+	Variable *bv = class_nullary_method_var(cls, "begin");
+	Variable *ev = class_nullary_method_var(cls, "end");
+	FuncDef *bfd = bv ? dynamic_cast<FuncDef *>(bv->type) : NULL;
+	FuncDef *efd = ev ? dynamic_cast<FuncDef *>(ev->type) : NULL;
+	if (!bfd || !efd)
+		return decline("it declares no begin()/end() pair");
+	if (bfd->parameters.size() != method_hidden_param_count(bv, bfd, cls)
+	    || efd->parameters.size() != method_hidden_param_count(ev, efd, cls))
+		return decline("its begin()/end() are not nullary");
+	if (bfd->returns_reference() || efd->returns_reference())
+		return decline("its begin()/end() return a reference rather than "
+			       "an iterator");
+	DataDef *brdd = &bfd->return_value_type();
+	DataDef *erdd = &efd->return_value_type();
+
+	// SHAPE 1 — a RAW POINTER iterator (`int *begin()`), which a hand-rolled
+	// container over a plain array is written with. The loop dereferences it
+	// and advances by 1; there is no operator to find, so the element type IS
+	// the pointee. void / function / member pointers are excluded for the same
+	// reason the pointer walk excludes them: they are addresses, not handles on
+	// a value.
+	if (brdd && brdd->is_pointer() && !brdd->is_reference()) {
+		DataDefPTR *bp = dynamic_cast<DataDefPTR *>(brdd->unqualified());
+		DataDef *pointee = bp ? bp->base_type : NULL;
+		if (!pointee || pointee->rawtype() == DataType::dtVOID
+		    || pointee->is_function() || brdd->is_member_pointer())
+			return decline("its begin() returns a pointer with no "
+				       "renderable pointee");
+		if (!erdd || !erdd->is_pointer())
+			return decline("its begin() and end() do not return the "
+				       "same iterator type");
+		ip.itptr = pointee;
+		ip.elem = pointee;
+		ip.keyed = class_has_type_alias(cls, "mapped_type");
+		return true;
+	}
+
+	// SHAPE 2 — a CLASS iterator, which is what every standard container has.
+	DataDefCLASS *bc = as_class_instance(brdd);
+	DataDefCLASS *ec = as_class_instance(erdd);
+	if (!bc)
+		return decline("its begin() returns neither an iterator class nor "
+			       "a pointer");
+	if (bc != ec)
+		return decline("its begin() and end() do not return the same "
+			       "iterator class");
+	// The generated loop declares the iterator as an ordinary local and copies
+	// begin()'s result into it, so the iterator must use C's native struct
+	// return. A class needing a destructor returns through the __retbuf ABI,
+	// which is a different call shape entirely. A builder-state check (the
+	// memo), so only ABI callers make it — see the declaration.
+	if (abi && abi->class_return_via_retbuf(&bfd->return_value_type()))
+		return decline("its iterator needs a destructor, so begin() "
+			       "returns through the __retbuf ABI rather than as a "
+			       "native struct");
+
+	Variable *stv = class_nullary_method_var(bc, "operator*");
+	Variable *incv = class_nullary_method_var(bc, "operator++");
+	FuncDef *stfd = stv ? dynamic_cast<FuncDef *>(stv->type) : NULL;
+	FuncDef *incfd = incv ? dynamic_cast<FuncDef *>(incv->type) : NULL;
+	if (!stfd
+	    || stfd->parameters.size() != method_hidden_param_count(stv, stfd, bc))
+		return decline("its iterator has no nullary operator*");
+	if (!incfd
+	    || incfd->parameters.size() != method_hidden_param_count(incv, incfd, bc))
+		return decline("its iterator has no PREFIX operator++ (the "
+			       "postfix one is the same spelling with a dummy int)");
+
+	ip.itcls = bc;
+	ip.elem = &stfd->return_value_type();
+	ip.keyed = class_has_type_alias(cls, "mapped_type");
+	return true;
+}
+
 // Range-based for over a madc array (madc::value): `for (T x : arr) body`.
 // The parser already declared `x` in the ENCLOSING scope (so translate_block
 // emits its storage + ctor once, and the cleanup attribute destructs it), so
@@ -21904,11 +22374,17 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 // decl shapes as translate_block's hoisted-variable walk.
 node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 {
-	node_t loop = translate_foreach_loop(fe);
+	std::vector<node_t> prelude;
+	node_t loop = translate_foreach_loop(fe, &prelude);
 	Variable *ev = fe->elemvar;
 	if (!loop || !ev)
 		return loop;
 	node_t items = list();
+	// Range capture FIRST ([stmt.ranged]: the range binds before the loop
+	// variable exists), then the element — so an element sharing the
+	// container's name cannot capture the loop's own container references.
+	for (node_t pn : prelude)
+		append(items, pn);
 	append(items, var_decl(ev, fe));
 	if (is_array_object(ev->type)) {
 		append(items, array_ctor_call(ev->name.c_str(), fe));
@@ -21934,7 +22410,8 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	return node2(N_BLOCK, list(), items, fe);
 }
 
-node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
+node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
+					  std::vector<node_t> *prelude)
 {
 	if (!fe->container || !fe->elemtype)
 		return error_node("range-for missing container or element type", fe);
@@ -21945,11 +22422,28 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	// std::vector<int> from the header template) iterates by index using
 	// its size() and operator[] methods.
 	if (DataDefCLASS *ccls = class_behind(cdd)) {
-		std::string szname = "size", opname = "operator[]";
-		Variable *szmv = ccls->findMethod(szname);
-		Variable *opmv = ccls->findMethod(opname);
-		if (szmv && opmv)
-			return translate_foreach_class(fe, ccls, szmv, opmv);
+		Variable *szmv = NULL, *opmv = NULL;
+		if (class_index_iteration_protocol(ccls, szmv, opmv))
+			return translate_foreach_class(fe, ccls, opmv);
+		// No position, but C++'s own ITERATOR protocol: std::map, std::set,
+		// std::list, and any container shaped like them. THE SAME shared
+		// recognizer the dumper keys on — one predicate, two consumers, which
+		// is the whole reason it lives here beside its positional twin rather
+		// than in cir_dump.cpp.
+		IterProtocol ip;
+		std::string ip_why;
+		if (class_iterator_iteration_protocol(ccls, ip, &ip_why, this))
+			return translate_foreach_iterator(fe, ccls, ip);
+		// A class object with no index protocol must NOT fall through to
+		// the madc-array reader below: that reads the object's own bytes as
+		// a madc::value header (garbage length -> out-of-bounds element
+		// fetch), the same trap the raw-array arm above was added for.
+		if (!is_array_object(cdd))
+			return error_node((std::string("range-for over class '")
+					   + ccls->name + "' is not supported: it has "
+					   "neither the positional size()/operator[] "
+					   "index protocol nor a usable iterator "
+					   "protocol — " + ip_why).c_str(), fe);
 	}
 
 	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
@@ -21962,7 +22456,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
 		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
 		    && ctv->var.total_elements() > 0)
-			return translate_foreach_carray(fe, ctv);
+			return translate_foreach_carray(fe, ctv, prelude);
 	}
 
 	// Reference loop var over a madc array (php/perl dynamic array) is not
@@ -22036,6 +22530,27 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 		append(a, getcall);
 		node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
 		append(body_items, node2(N_EXPR, list(), fill, fe));
+	} else if (is_array_object(fe->elemtype)) {
+		// A `value` LOOP ELEMENT (`for (value v : a)`): the element is the
+		// carrier itself, so neither fetch above fits — the int fetch loses
+		// the kind and its assignment into the 32-byte value buffer is
+		// ill-typed C (c2mir rejected it: "assignment of incompatible
+		// value"). Copy the element whole:
+		//   __php_array_get_value((void*)container, __fe_i, (void*)&v);
+		// value::operator= inside it is the one retag/freeze owner, and a
+		// COPY is the model — elements have no stable address, which is
+		// the same fact that refuses `value &v` above.
+		need_output_extern("__php_array_get_value", false,
+				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false },
+				     { {N_VOID}, true } });
+		node_t a = list();
+		append(a, container_addr());
+		append(a, id(idx, fe));
+		append(a, node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, id(fe->elemname.c_str(), fe), fe),
+				fe));
+		node_t fill = node2(N_CALL, id("__php_array_get_value", fe), a, fe);
+		append(body_items, node2(N_EXPR, list(), fill, fe));
 	} else {
 		// x = (T)__php_array_get_int((void*)container, __fe_i)
 		need_output_extern("__php_array_get_int", false,
@@ -22058,7 +22573,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe)
 }
 
 node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
-					   Variable *szmv, Variable *opmv)
+					   Variable *opmv)
 {
 	FuncDef *opfd = dynamic_cast<FuncDef *>(opmv->type);
 	bool recv_is_ptr = fe->container->datadef()
@@ -22068,9 +22583,6 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		node_t c = translate_expr(fe->container);
 		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
 	};
-	std::string szsym = cls->name + "__size";
-	std::string opsym = cls->name + "__operator[]";
-
 	char idx[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
 
@@ -22084,24 +22596,26 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	append(init, ignore());
 	append(init, integer(0, fe));
 
-	// __fe_i < c.size()
-	referenced_funcs.insert(szsym);
-	node_t sz_args = list();
-	append(sz_args, recv_addr());
-	node_t sz_call = node2(N_CALL, id(szsym.c_str(), fe), sz_args, fe);
+	// __fe_i < c.size(), through the ONE nullary-call owner (which knows about
+	// an externally bound size(); the hand-rolled `Class__size` did not).
+	node_t sz_call = class_nullary_call(cls, "size", recv_addr(), fe);
+	if (!sz_call)
+		return error_node("range-for: container has no callable size()", fe);
 	node_t cond = node2(N_LT, id(idx, fe), sz_call, fe);
 
 	// __fe_i += 1
 	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
 
-	// The element accessor `c[__fe_i]`. operator[] returns T& == a T*; the
-	// bare call is the element ADDRESS, the deref is the element lvalue.
-	referenced_funcs.insert(opsym);
+	// The element accessor `c[__fe_i]`, built by the ONE operator[] call owner
+	// (class_subscript_addr_on): it decides the index argument's shape FROM the
+	// parameter and knows about an externally-bound (emit_symbol) operator[].
+	// Hand-rolling the call here handed the loop counter BY VALUE to a
+	// `operator[](const long &)` — which wants a pointer — and SIGSEGV'd on a
+	// container g++ iterates fine. The bare call is the element ADDRESS for a
+	// T& return; the deref below turns it into the element lvalue.
 	auto op_addr = [&]() -> node_t {
-		node_t a = list();
-		append(a, recv_addr());
-		append(a, id(idx, fe));
-		return node2(N_CALL, id(opsym.c_str(), fe), a, fe);
+		return class_subscript_addr_on(cls, recv_addr(), NULL, fe,
+					       id(idx, fe));
 	};
 
 	node_t body_items = list();
@@ -22157,22 +22671,245 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	return node5(N_FOR, list(), init, cond, incr, body, fe);
 }
 
+// Range-for over an ITERATOR container: `for (T x : m)` / `for (T &x : m)` ->
+//
+//   { long n = c.size(); It it = c.begin();
+//     for (long k = 0; k < n; k += 1) { <fill x from *it>; <body>; ++it; } }
+//
+// The element FILL cases are translate_foreach_class's, unchanged in meaning —
+// reference loop variable, class element through its operator=, scalar element —
+// with the element reached through the iterator instead of through operator[].
+//
+// COUNTED off size() for the reason class_iterator_iteration_protocol owns:
+// libstdc++ declares the iterator's operator!= as a friend FREE function, so
+// `it != c.end()` has no member to dispatch and cannot be generated.
+//
+// Returns a BLOCK, not the bare N_FOR the other two arms return: the count and
+// the iterator are two statements that must precede the loop. translate_foreach
+// wraps whatever comes back in the element variable's own block, so a block here
+// nests correctly.
+node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cls,
+					      const IterProtocol &ip)
+{
+	bool recv_is_ptr = fe->container->datadef()
+			   && fe->container->datadef()->is_pointer();
+	auto recv_addr = [&]() -> node_t {
+		node_t c = translate_expr(fe->container);
+		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
+	};
+	char nm[32], kx[32], itn[32];
+	snprintf(nm, sizeof(nm), "__fe_n_%d", m_strtmp_counter++);
+	snprintf(kx, sizeof(kx), "__fe_k_%d", m_strtmp_counter++);
+	snprintf(itn, sizeof(itn), "__fe_it_%d", m_strtmp_counter++);
+
+	// long n = c.size();
+	node_t szcall = class_nullary_call(cls, "size", recv_addr(), fe);
+	if (!szcall)
+		return error_node("range-for: container has no callable size()", fe);
+	node_t nspec = list();
+	append_i64(nspec, fe);
+	node_t ndecl = simple(N_SPEC_DECL, fe);
+	append(ndecl, node1(N_SHARE, nspec));
+	append(ndecl, node2(N_DECL, id(nm, fe), list()));
+	append(ndecl, ignore());
+	append(ndecl, ignore());
+	append(ndecl, szcall);
+
+	// It it = c.begin();  — a class iterator by its struct tag, a pointer one
+	// by its pointee spec plus stars.
+	node_t bcall = class_nullary_call(cls, "begin", recv_addr(), fe);
+	if (!bcall)
+		return error_node("range-for: container has no callable begin()", fe);
+	node_t ispecs = list();
+	node_t istars = list();
+	if (ip.itcls) {
+		append(ispecs, class_tag_ref(ip.itcls));
+	} else {
+		DataDef *ibase = ip.itptr ? ip.itptr->unqualified() : NULL;
+		int stars = ibase ? 1 + dd_peel_pointers(ibase) : 0;
+		if (!ibase || !dump_pointee_specs(ibase, ispecs))
+			return error_node("range-for: iterator pointee has no "
+					  "renderable declaration", fe);
+		for (int i = 0; i < stars; i++)
+			append(istars, pointer());
+	}
+	node_t idecl = simple(N_SPEC_DECL, fe);
+	append(idecl, node1(N_SHARE, ispecs));
+	append(idecl, node2(N_DECL, id(itn, fe), istars));
+	append(idecl, ignore());
+	append(idecl, ignore());
+	append(idecl, bcall);
+
+	// The element's ADDRESS and its LVALUE, rebuilt per use. A pointer iterator
+	// IS the address. A class iterator's operator* returns a reference, which is
+	// a pointer at this level — class_nullary_call hands back that pointer when
+	// asked for it, and the dereferenced lvalue otherwise, so neither shape is
+	// spelled twice.
+	bool star_is_ref = true;
+	if (ip.itcls) {
+		FuncDef *stfd = NULL;
+		if (Variable *stv = ip.itcls->findMethod(std::string("operator*")))
+			stfd = dynamic_cast<FuncDef *>(stv->type);
+		star_is_ref = stfd && stfd->returns_reference();
+	}
+	auto elem_addr = [&]() -> node_t {
+		if (!ip.itcls)
+			return id(itn, fe);
+		return class_nullary_call(ip.itcls, "operator*",
+					  node1(N_ADDR, id(itn, fe), fe), fe, true);
+	};
+	auto elem_value = [&]() -> node_t {
+		if (!ip.itcls)
+			return node1(N_DEREF, id(itn, fe), fe);
+		return class_nullary_call(ip.itcls, "operator*",
+					  node1(N_ADDR, id(itn, fe), fe), fe);
+	};
+
+	node_t body_items = list();
+	if (fe->elem_is_ref) {
+		// `for (T &x : c)`: x is a vfREFERENCE pointer bound to the element's
+		// address, so writes through it mutate the container element. An
+		// operator* that returns BY VALUE has no element to bind to —
+		// [dcl.init.ref] rejects that in C++ too, so say so.
+		if (!star_is_ref)
+			return error_node("range-for by reference (T&) is not "
+					  "supported over this container: its "
+					  "operator* returns by value, so its "
+					  "elements have no address to bind", fe);
+		append(body_items, node2(N_EXPR, list(),
+					 node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					       elem_addr(), fe), fe));
+	} else if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
+		// A class element copies through its registered operator=, exactly as
+		// the positional arm does — a bit-copy would alias the source's owned
+		// members.
+		FuncDef *op = class_assign_operator_def(ec);
+		if (op && star_is_ref) {
+			std::string sym = class_method_call_symbol(ec, op, "operator=");
+			bool external = !op->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), true,
+						   { { {N_VOID}, true },
+						     { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			node_t dst = node1(N_ADDR, id(fe->elemname.c_str(), fe), fe);
+			node_t src = elem_addr();
+			if (external) {
+				dst = node2(N_CAST, void_ptr_type(), dst, fe);
+				src = node2(N_CAST, void_ptr_type(), src, fe);
+			}
+			node_t a = list();
+			append(a, dst);
+			append(a, src);
+			append(body_items,
+			       node2(N_EXPR, list(),
+				     node2(N_CALL, id(sym.c_str(), fe), a, fe), fe));
+		} else {
+			append(body_items,
+			       node2(N_EXPR, list(),
+				     node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					   elem_value(), fe), fe));
+		}
+	} else {
+		append(body_items,
+		       node2(N_EXPR, list(),
+			     node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+				   elem_value(), fe), fe));
+	}
+
+	node_t user_body = translate_loop_body(fe->statement);
+	if (user_body)
+		append(body_items, user_body);
+
+	// ++it LAST, so a `continue` in the user body still advances: the increment
+	// belongs in the for-header's own slot, not at the end of the body.
+	// (A body-tail increment is what a `continue` would skip.)
+	node_t advance;
+	if (!ip.itcls)
+		advance = node2(N_ADD_ASSIGN, id(itn, fe), integer(1, fe), fe);
+	else
+		advance = class_nullary_call(ip.itcls, "operator++",
+					     node1(N_ADDR, id(itn, fe), fe), fe,
+					     true);
+	if (!advance)
+		return error_node("range-for: iterator has no callable prefix "
+				  "operator++", fe);
+
+	// for (long k = 0; k < n; (k += 1, ++it))
+	node_t kspec = list();
+	append_i64(kspec, fe);
+	node_t init = simple(N_SPEC_DECL, fe);
+	append(init, node1(N_SHARE, kspec));
+	append(init, node2(N_DECL, id(kx, fe), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, fe));
+	node_t cond = node2(N_LT, id(kx, fe), id(nm, fe), fe);
+	node_t incr = node2(N_COMMA,
+			    node2(N_ADD_ASSIGN, id(kx, fe), integer(1, fe), fe),
+			    advance, fe);
+	node_t loop = node5(N_FOR, list(), init, cond, incr,
+			    node2(N_BLOCK, list(), body_items, fe), fe);
+
+	node_t items = list();
+	append(items, ndecl);
+	append(items, idecl);
+	append(items, loop);
+	return node2(N_BLOCK, list(), items, fe);
+}
+
 // Range-for over a raw fixed-size C array: `for (T x : a)` ->
 //   for (long i = 0; i < N; i += 1) { x = a[i]; <body> }
 // N is the array's compile-time element count; `a[i]` is a direct subscript
 // (N_IND), element stride sizeof(T) — c2mir handles it natively, exactly like
 // g++'s array range-for lowering. No madc-array runtime helper.
-node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
+node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
+					    std::vector<node_t> *prelude)
 {
 	// var_emit_name: the container can be a file-scope global (a class-static
 	// fixed array carries storage_alias_name) — the subscripts below must
 	// name the emitted storage, not the raw source name.
 	const std::string arrname_s = var_emit_name(ctv->var);
-	const char *arrname = arrname_s.c_str();
 	long count = (long)ctv->var.total_elements();
 
-	char idx[32];
+	char idx[32], an[32];
 	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
+	snprintf(an, sizeof(an), "__fe_a_%d", m_strtmp_counter++);
+
+	// T *__fe_a_N = <array>;  — the range captured ONCE, by a unique name,
+	// emitted (via `prelude`) BEFORE the element declaration in the wrap
+	// block. [stmt.ranged]: `for (auto x : x)` subscripts the OUTER array;
+	// subscripting `arrname` from inside the wrap would resolve to the
+	// just-declared ELEMENT when the two share a name — an int element made
+	// that loud (subscripted value is neither array nor pointer), but a
+	// POINTER element compiled and read garbage, the silent shape.
+	{
+		// Typed by the ARRAY's element (ctv->var.type), never the declared
+		// loop element: `for (long e : int_arr)` converts per element — a
+		// long* over an int array would stride 8 over 4-byte slots.
+		DataDef *abase = ctv->var.type ? ctv->var.type->unqualified() : NULL;
+		int astars_n = abase ? 1 + dd_peel_pointers(abase) : 0;
+		node_t aspecs = list();
+		node_t astars = list();
+		if (!abase || !dump_pointee_specs(abase, aspecs))
+			return error_node("range-for: array element type has no "
+					  "renderable declaration", fe);
+		for (int i = 0; i < astars_n; i++)
+			append(astars, pointer());
+		node_t adecl = simple(N_SPEC_DECL, fe);
+		append(adecl, node1(N_SHARE, aspecs));
+		append(adecl, node2(N_DECL, id(an, fe), astars));
+		append(adecl, ignore());
+		append(adecl, ignore());
+		append(adecl, id(arrname_s.c_str(), fe));
+		if (prelude)
+			prelude->push_back(adecl);
+		else
+			return error_node("range-for: raw-array capture needs the "
+					  "wrap prelude", fe);
+	}
+	const char *arrname = an;
 
 	// long __fe_i = 0;
 	node_t ispec = list();
@@ -22245,7 +22982,10 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 
 node_t CirBuilder::translate_do(TokenDO *td)
 {
-	return node3(N_DO, list(), translate_cond(td->condition),
+	size_t mark = m_pending_stmts.size();
+	node_t cond = loop_header_expr_scope(translate_cond(td->condition),
+					     mark, td);
+	return node3(N_DO, list(), cond,
 		     translate_loop_body(td->statement), td);
 }
 
@@ -22568,8 +23308,17 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	if (tb->id() == TokenID::tkSemi)
 		return NULL;
 
-	// Expression statement
-	return node2(N_EXPR, list(), translate_expr(tb), tb);
+	// Expression statement. This is the ONE place an expression's result is
+	// discarded, so it is where m_discarded_stmt_expr is published: a lowering
+	// that can emit a cheaper form when nobody reads its result (php::print_r
+	// skipping a madc::value materialization) tests its own token against it.
+	// Saved/restored because a statement can be translated while another is in
+	// flight (a nested/hoisted function body).
+	TokenBase *saved_discarded = m_discarded_stmt_expr;
+	m_discarded_stmt_expr = tb;
+	node_t stmt_expr = translate_expr(tb);
+	m_discarded_stmt_expr = saved_discarded;
+	return node2(N_EXPR, list(), stmt_expr, tb);
 }
 
 // A loop/if body is a required statement operand: c2mir always has a node
@@ -22689,7 +23438,13 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	}
 	if (ctor_args.size() == 1
 	    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
-	    && object_returning_call_class(ctor_args[0]) == cdcl) {
+	    && object_returning_call_class(ctor_args[0]) == cdcl
+	    // A format intrinsic has no symbol to elide into the declared
+	    // object — fall to the generic path, whose operand translation
+	    // routes through lower_format_call (copy-construct from the
+	    // hoisted result temp).
+	    && !format_intrinsic_call(
+			dynamic_cast<TokenCallFunc *>(ctor_args[0]))) {
 		TokenCallFunc *itcf =
 			dynamic_cast<TokenCallFunc *>(ctor_args[0]);
 		FuncDef *ifd = NULL;
@@ -22972,7 +23727,38 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
-				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));	// allowed-exception: guarded !file_global
+				{
+					// Parens direct-init (`value v(7);`): the
+					// selected madarray_construct_* entry's
+					// ARGUMENTS may materialize temporaries into
+					// m_pending_stmts — their declarations must
+					// precede the construction that reads them
+					// (the same ordering the `vi` flush below
+					// keeps for `=` initializers).
+					node_t cc = array_decl_ctor_call(sdcl);
+					for (node_t p : m_pending_stmts)
+						append(items, p);
+					m_pending_stmts.clear();
+					if (cc) append(items, cc);
+				}
+				// …and its INITIALIZER. Without this the `continue`
+				// below dropped it silently: `value v = "hello";`
+				// constructed an empty value and threw the text away,
+				// while the two-statement `value v; v = "hello";` worked.
+				//
+				// Built FIRST, because translating the initializer can
+				// materialize temporaries into m_pending_stmts (a
+				// php::print_r(x, true) initializer hoists its captured
+				// value there) — those declarations must be emitted
+				// before the assignment that reads them. This `continue`
+				// skips the loop's own flush below, so it happens here;
+				// without it the temp was used but never declared.
+				node_t vi = value_init_assign(sdcl);
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
+				if (vi)
+					append(items, vi);
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
@@ -26339,6 +27125,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_emit_sets_seen_classes.clear();
 	m_emit_sets_struct_count = 0;
 	m_emit_sets_funcdefs_done = false;
+	// Generated dump-helper state: per-module, because the helpers are STATIC
+	// functions emitted into this module. Carrying a memo across modules would
+	// hand the next one a call to a name it never defines.
+	m_dump_fn_syms.clear();
+	m_dump_enum_fn_syms.clear();
+	m_dump_fn_counter = 0;
+	m_pending_top_protos.clear();
+	m_pending_top_defs.clear();
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
@@ -28211,6 +29005,19 @@ node_t CirBuilder::translate_module(Program *prog)
 		func_def_nodes.insert(func_def_nodes.begin(),
 				      forest_bodies.begin(), forest_bodies.end());
 	}
+
+	// Generated pointer dumpers (cir_dump.cpp), minted while the function
+	// BODIES above were translated. Every PROTOTYPE ahead of every DEFINITION:
+	// mutual recursion through two struct types (`struct A { B *b; }` /
+	// `struct B { A *a; }`) needs both declared before either is defined. The
+	// whole group precedes the user's own bodies, which are its only callers.
+	for (size_t i = 0; i < m_pending_top_protos.size(); i++)
+		append(top_list, m_pending_top_protos[i]);
+	func_def_nodes.insert(func_def_nodes.begin(),
+			      m_pending_top_defs.begin(),
+			      m_pending_top_defs.end());
+	m_pending_top_protos.clear();
+	m_pending_top_defs.clear();
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)

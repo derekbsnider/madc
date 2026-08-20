@@ -1,0 +1,50 @@
+// php::print_r / php::var_dump over a MULTIDIMENSIONAL C array.
+//
+// This was refused before, and the refusal poisoned the whole dump: one
+// `int m[2][3]` member and the entire struct became a compile error. The reason
+// was real — `member_counts` holds the FLATTENED element total (6, not 2), and
+// `m[i]` on `int[2][3]` yields a ROW rather than an element, so a flat walk read
+// past the first row — but the dim chain was already recorded in
+// `member_dims` / `Variable::dims`. The walk carries it now and recurses one
+// level per dimension, which is exactly how PHP renders one: nested arrays.
+//
+// A row of a `char[][]` is TEXT, not an array of small ints — the char rule
+// applies at the LAST dimension only.
+//
+// Oracle: php-cli 8.3.6, tmp/or_multidim.php, captured with cat -A.
+
+struct Grid
+{
+	int  m[2][3];
+	char n[2][8];
+};
+
+void bare_arrays()
+{
+	int m[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+	php::print_r(m);
+	php::var_dump(m);
+
+	char n[2][8] = { "ada", "bob" };
+	php::print_r(n);
+	php::var_dump(n);
+}
+
+void members()
+{
+	Grid g = { { { 1, 2, 3 }, { 4, 5, 6 } }, { "ada", "bob" } };
+	php::print_r(g);
+	php::var_dump(g);
+}
+
+void three_dims()
+{
+	// Three dimensions, to show the recursion is general and not a special
+	// case for two.
+	int t[2][2][2] = { { { 1, 2 }, { 3, 4 } }, { { 5, 6 }, { 7, 8 } } };
+	php::print_r(t);
+}
+
+bare_arrays();
+members();
+three_dims();

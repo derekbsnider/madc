@@ -1,0 +1,115 @@
+/* An UNDECLARED C library call must get its REAL return type.
+ *
+ * NOT ONE #include, on purpose. `printf` is declared by hand below because the
+ * test needs output; every other name here is undeclared, which is legal C89 and
+ * is the shape the defect lived in. With a header in scope all of this already
+ * passed — that is why 1084 green tests never saw it.
+ *
+ * Oracle: gcc -O0 (this file is valid C; `gcc -w -x c tests/testlibcnoheader.mad`
+ * reproduces every line of tests/testlibcnoheader.expect except the two marked
+ * (!) below). clang REFUSES the file outright — "ISO C99 and later do not
+ * support implicit function declarations" — but its diagnostics state the very
+ * signatures this test asserts ("undeclared library function 'strlen' with type
+ * 'unsigned long (const char *)'"), so it is the second oracle for the CLASSES
+ * even though it will not produce output.
+ *
+ * Each line names the class it measures. The classes that were WRONG before
+ * src/libc_signatures.cpp existed are marked (*): an int read out of all of rax,
+ * or a double read out of rax instead of xmm0.
+ *
+ * (!) DELIBERATE DIVERGENCE FROM GCC, two lines: atof and atoll. gcc's builtin
+ * table is an OPTIMIZATION list (what it can fold), not a libc signature table,
+ * so gcc has no atof/atoll entry and its own output here is the UB garbage
+ * `atof("2.500") = 5.000` (the previous call's xmm0) and
+ * `atoll("-9000000000") = 3884901888` (a 32-bit truncation). madc knows the real
+ * signatures and prints 2.500 and -9000000000. Documented per the gcc-parity
+ * rule: no correct program can depend on the garbage, and `--emit=c11` stays
+ * consistent because the emitted C carries the explicit prototype.
+ */
+
+int printf(const char *, ...);
+
+int main(void)
+{
+	/* (*) int — the comparison family. `strcmp(a,b) < 0` was FALSE. */
+	printf("int strcmp lt   = %d\n", strcmp("abc", "abd") < 0 ? 1 : 0);
+	printf("int strcmp gt   = %d\n", strcmp("abd", "abc") > 0 ? 1 : 0);
+	printf("int strcmp eq   = %d\n", strcmp("abc", "abc") == 0 ? 1 : 0);
+	printf("int strncmp lt  = %d\n", strncmp("abc", "abd", 3) < 0 ? 1 : 0);
+	printf("int memcmp lt   = %d\n", memcmp("abc", "abd", 3) < 0 ? 1 : 0);
+	printf("int strcmp raw  = %lld\n", (long long)strcmp("abc", "abd"));
+
+	/* int — other members of the same class, correct by the C default. */
+	printf("int atoi        = %d\n", atoi("-42"));
+	printf("int abs         = %d\n", abs(-7));
+	printf("int isdigit     = %d\n", isdigit('5') != 0 ? 1 : 0);
+	printf("int toupper     = %c\n", toupper('q'));
+
+	/* size_t */
+	printf("size strlen     = %llu\n", (unsigned long long)strlen("abcde"));
+	printf("size strspn     = %llu\n", (unsigned long long)strspn("abcxyz", "abc"));
+
+	/* char * — a pointer read as int would truncate the high half. */
+	{
+		const char *hay = "hello world";
+		const char *hit = strchr(hay, 'w');
+		printf("cptr strchr    = %lld\n", (long long)(hit - hay));
+		printf("cptr strstr    = %lld\n", (long long)(strstr(hay, "lo w") - hay));
+	}
+
+	/* void * */
+	{
+		char buf[8];
+		void *p = memcpy(buf, "1234567", 8);
+		printf("vptr memcpy    = %d\n", p == (void *)buf ? 1 : 0);
+		printf("vptr memcpy s  = %s\n", buf);
+	}
+
+	/* (*) double — every one of these read rax. floor(2.7) was 1.0. */
+	printf("dbl floor       = %.3f\n", floor(2.7));
+	printf("dbl ceil        = %.3f\n", ceil(2.1));
+	printf("dbl exp         = %.3f\n", exp(0.0));
+	printf("dbl log         = %.3f\n", log(1.0));
+	printf("dbl log10       = %.3f\n", log10(100.0));
+	printf("dbl tan         = %.3f\n", tan(0.0));
+	printf("dbl fmod        = %.3f\n", fmod(7.0, 4.0));
+	printf("dbl hypot       = %.3f\n", hypot(3.0, 4.0));
+	printf("dbl atof        = %.3f\n", atof("2.500"));
+
+	/* double — the roots that were already registered by hand, one bug
+	 * report each. They must keep working. */
+	printf("dbl sqrt        = %.3f\n", sqrt(16.0));
+	printf("dbl fabs        = %.3f\n", fabs(-2.5));
+	printf("dbl pow         = %.3f\n", pow(2.0, 10.0));
+
+	/* float — sqrtf is one of the six roots that were registered by hand,
+	 * WITH a declared float parameter, and it is the only reason this line
+	 * works. The f and l suffixes of every OTHER root are covered by
+	 * tests/testlibcnoheaderargs.mad: a return class alone is not enough for
+	 * them, because an undeclared call promotes a float argument to double
+	 * and the real function takes a float. That is an argument-convention
+	 * defect, not a return-type one, so it is measured separately. */
+	printf("flt sqrtf       = %.3f\n", (double)sqrtf(9.0f));
+
+	/* The five math roots that return an INTEGER at every suffix — the
+	 * suffix picks the width for the real families and nothing here. */
+	printf("long lround     = %lld\n", (long long)lround(2.6));
+	printf("i64 llround     = %lld\n", llround(-2.6));
+	printf("int ilogb       = %d\n", ilogb(8.0));
+
+	/* platform long / long long */
+	printf("long labs       = %lld\n", (long long)labs(-9));
+	printf("long strtol     = %lld\n", (long long)strtol("-1234567890", 0, 10));
+	printf("i64 llabs       = %lld\n", llabs(-9000000000LL));
+	printf("i64 atoll       = %lld\n", atoll("-9000000000"));
+
+	/* void — a `long` prototype types the ternary's void branch as long,
+	 * which c2mir rejects outright. */
+	{
+		void *m = malloc(16);
+		printf("vptr malloc     = %d\n", m != 0 ? 1 : 0);
+		free(m);
+		printf("void free       = 1\n");
+	}
+	return 0;
+}

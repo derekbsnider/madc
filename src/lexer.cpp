@@ -34,6 +34,7 @@
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
 #include "madc_mangle.h"	// std ABI namespace push (note_std_abi_define)
 #include "spelling_delim.h"
+#include "libc_signatures.h"	// THE C99 math root list (shared with the parser)
 
 // Out-of-line anchor for intern_keyed_map's env-gated write trap
 // (MADC_MAPWRITE_TRAP=<key>): break on madcdis_mapwrite_trap_hit in gdb to
@@ -676,6 +677,13 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"map", "map"},
 	{"set", "set"},
 
+	// std::format / std::print / std::println — compiler-implemented
+	// intrinsics; the fragment declares them (madc dialect only, like
+	// every entry here — auto_includes_enabled gates the scan).
+	{"format", "bits/std_format"},
+	{"print", "bits/std_format"},
+	{"println", "bits/std_format"},
+
 	{"php", "ns_php"},
 	{"perl", "ns_perl"},
 	{"python", "ns_python"},
@@ -989,6 +997,52 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	mark_embedded_include_flag(name);
 }
 
+// The madc dialect's value stream inserter (bits/value_stream) is part of
+// madc's own always-included surface: madc::value is an inherent madc-mode
+// type, so streaming one must not depend on any user #include. Its
+// DECLARATION still cannot precede std::ostream's, so it rides the include
+// machinery's completions: the first time an include finishes with the
+// ostream guard defined (a live #define, a PCH replay, or a forest bind's
+// PP-export install — macro_name_defined sees all three), the fragment is
+// tokenized once, landing right after that header's tokens. The PROTOCOL
+// serving mode keeps it out of the pack: no unit, no edge.
+//
+// TOP-LEVEL completions only: the guard is defined at the TOP of <ostream>,
+// long before basic_ostream / the ostream typedef are declared, so a NESTED
+// include's completion inside it would inject the fragment mid-header into
+// undeclared territory. suppress_auto_include_scan is true exactly while a
+// header (or synthetic prelude) serving is in flight, so it doubles as the
+// at-top-level test; the prelude's own servings are covered by the explicit
+// call in inject_pending_auto_includes, after suppression is restored.
+void Program::maybe_inject_value_stream_operator()
+{
+    if ( _value_stream_operator_injected )
+	return;
+    if ( suppress_auto_include_scan )
+	return;
+    if ( language_std != STD_MADC )
+	return;
+    if ( !macro_name_defined("_GLIBCXX_OSTREAM")
+      && !macro_name_defined("_LIBCPP_OSTREAM") )
+	return;
+    const std::string *fragment = find_embedded_header("bits/value_stream");
+    if ( !fragment )
+	return;
+    _value_stream_operator_injected = true;	// before serving: reentry guard
+    tokenize_embedded_header_text("bits/value_stream", *fragment, true);
+}
+
+// Every include-serving arm returns through here once its serving is
+// COMPLETE (tokens pushed / unit bound / PCH replayed) — the one place
+// include-completion side effects fire. Skip/defer arms (once-only dedup,
+// auto-include deferral) keep the plain getToken() return: they changed no
+// preprocessor state. Keep new serving arms on this return.
+TokenBase *Program::include_completed_token()
+{
+    maybe_inject_value_stream_operator();
+    return getToken();
+}
+
 void Program::expand_pending_auto_include_macros(size_t original_start)
 {
     if ( pending_auto_include_identifiers.empty() )
@@ -1061,6 +1115,13 @@ void Program::inject_pending_auto_includes()
 	    tokenize_synthetic_system_include(header, "<auto-include>");
 	}
     }
+
+    // The prelude's synthetic includes complete under suppression, so the
+    // include-completion seam could not fire for them; this is their
+    // top-level completion point (a bare-cout script's <iostream> arrives
+    // here). Appending before the move keeps the fragment inside the
+    // relocated prelude range.
+    maybe_inject_value_stream_operator();
 
     if ( tokens.size() > include_start )
     {
@@ -1827,6 +1888,7 @@ void Program::_tokenizer_init()
     _include_stdio = false;
     _include_string = false;
     _include_ns_madc = false;
+    _value_stream_operator_injected = false;
     included_files.clear();
     include_guard_by_file.clear();
     pending_auto_include_headers.clear();
@@ -2078,17 +2140,13 @@ void Program::_tokenizer_init()
     // RESOLUTION on win64 is the fork map's flavor-pin job
     // (mir-mingw-stdio.h class 3): ucrtbase lacks most *l exports and
     // mis-flavors the rest (MSVC 8-byte long double).
+    // The root list itself lives in include/libc_signatures.h's owner, because
+    // the parser expands the SAME list into return types for an undeclared call
+    // (madc_libc_return_class). A second copy here is how five of these ended up
+    // registered by hand, one bug report at a time, while fifty-one silently read
+    // xmm0 out of rax.
     {
-	static const char *const c99_math_roots[] = {
-	    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
-	    "cbrt", "ceil", "copysign", "cos", "cosh", "erf", "erfc",
-	    "exp", "exp2", "expm1", "fabs", "fdim", "floor", "fma",
-	    "fmax", "fmin", "fmod", "frexp", "hypot", "ilogb", "ldexp",
-	    "lgamma", "llrint", "llround", "log", "log10", "log1p",
-	    "log2", "logb", "lrint", "lround", "modf", "nearbyint",
-	    "nextafter", "nexttoward", "pow", "remainder", "remquo",
-	    "rint", "round", "scalbln", "scalbn", "sin", "sinh", "sqrt",
-	    "tan", "tanh", "tgamma", "trunc", NULL };
+	const char *const *c99_math_roots = madc_libc_math_roots();
 	for ( int i = 0; c99_math_roots[i]; ++i )
 	{
 	    std::string root = c99_math_roots[i];
@@ -5280,7 +5338,7 @@ TokenBase *Program::_getToken()
 				}
 				if ( bound_real_provider )
 				    tokenize_posix_header_supplement(incfile);
-				return getToken();
+				return include_completed_token();
 			    }
 			}
 			// The NAME-level once-only key gates ONLY the named
@@ -5324,7 +5382,7 @@ TokenBase *Program::_getToken()
 				    0, pch_path.size() - sizeof(".madh") + 1);
 				if ( is_system_header_path(pch_source_path.c_str()) )
 				    tokenize_posix_header_supplement(incfile);
-				return getToken();
+				return include_completed_token();
 			    }
 			    DBG(std::cout << "#include <" << incfile
 				<< "> filesystem PCH failed, trying embedded PCH" << std::endl);
@@ -5338,7 +5396,7 @@ TokenBase *Program::_getToken()
 			    {
 				push_precompiled_header_tokens(*this, incfile, pch_tokens);
 				tokenize_posix_header_supplement(incfile);
-				return getToken();
+				return include_completed_token();
 			    }
 			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
 			}
@@ -5373,7 +5431,7 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
 			    tokenize_embedded_header_text(incfile, *embedded,
 							  protocol_visit);
-			    return getToken();
+			    return include_completed_token();
 			}
 		    }
 		    std::string full_path = is_include_next
@@ -5385,7 +5443,7 @@ TokenBase *Program::_getToken()
 		    // actual outcome rather than a predicted one.
 		    if ( is_system && !is_include_next
 		      && tokenize_posix_whole_provider(incfile, full_path) )
-			return getToken();
+			return include_completed_token();
 		    // Phase 6 (--forest-bind), v25: a grove-backed QUOTED /
 		    // filesystem include BINDS instead of tokenizing, exactly like
 		    // the angle branch above — the forest holds EVERY #include's
@@ -5416,7 +5474,7 @@ TokenBase *Program::_getToken()
 				tokenize_posix_header_supplement(incfile);
 			    // Item 5: decl restore rides the post-tokenize
 			    // flush (see the system-include bind site).
-			    return getToken();
+			    return include_completed_token();
 			}
 		    }
 		    if ( !should_tokenize_include(full_path) )
@@ -5506,7 +5564,7 @@ TokenBase *Program::_getToken()
 		    if ( is_system && !protocol_visit
 		      && is_system_header_path(full_path.c_str()) )
 			tokenize_posix_header_supplement(incfile);
-		    return getToken(); // continue with current file
+		    return include_completed_token(); // continue with current file
 		}
 		if ( directive == "load" )
 		{

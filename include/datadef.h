@@ -1701,6 +1701,22 @@ public:
     // enums are int-sized).
     DataDef *underlying = NULL;
 
+    // The tag's OWN enumerators, in DECLARATION order — the one live owner of
+    // "which enumerators belong to this enum, and what are their values".
+    //
+    // The three live registrations (TokenENUM::parse) each index a constant by
+    // NAME in a different store: a scoped enum's pseudo-namespace, a
+    // class-nested enum's static-member maps, a plain enum's global constants.
+    // None of them can be asked the REVERSE question, and none of them can be
+    // asked it from the TYPE — which is what rendering an enum-typed value
+    // needs (php::var_dump must name the enumerator, not ship a bare number).
+    //
+    // Declaration order, and DUPLICATE VALUES ARE KEPT: `enum { A = 1, B = 1 }`
+    // is legal C, both names are real, and dropping one here would make this
+    // list disagree with the source. Consumers that must pick ONE name for a
+    // value take the first (see CirBuilder::dump_enum_name_fn).
+    std::vector<std::pair<std::string, int64_t> > enumerators;
+
     DataDefENUM(const std::string &name)
 	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
 
@@ -1791,6 +1807,22 @@ public:
     DataDefARRAY(): DDClass("array", sizeof(madc::value), DataType::dtARRAY)
     {
 	set_canonical_spelling("madc::value");
+	// The carrier's ALIGNMENT, stated because nothing else can derive it.
+	// This is a DDClass with NO members, so compute_layout never runs on it
+	// and max_align stays at its ctor default of 1 — which made
+	// alignment() report 1 for a 48-byte, 16-aligned object. Every consumer
+	// that asks the TYPE got that 1: DataDefSTRUCT::field_align placed a
+	// `value` member at the next byte (offset 4 after an `int`), so a struct
+	// holding one was misaligned, and madc's SETTLED layout is what c2mir
+	// consumes verbatim — so the `_Alignas(16)` the member emitter writes
+	// could not correct it. It surfaced only in the -O2 lane, where
+	// madc::value's own operator= uses an aligned SSE move and faults
+	// (SIGSEGV with si_addr 0); at -O0 the unaligned copy quietly worked.
+	// Both fields, together: cir_freeze restores them as a pair, and
+	// finalize() rounds the struct SIZE by max_align while alignment()
+	// reads class_align.
+	class_align = alignof(madc::value);
+	max_align   = alignof(madc::value);
     }
 };
 

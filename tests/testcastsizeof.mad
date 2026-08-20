@@ -1,0 +1,19 @@
+// A cast applied to a PAREN-LESS sizeof/alignof operand ([expr.sizeof]
+// allows a unary-expression operand): `(long long)sizeof chunk`. The
+// C-style cast's operand dispatch resolved `sizeof` as a variable
+// ("undeclared identifier 'sizeof'") — found when the AOT ledger parsed
+// src/rt/rt_format.c. Oracle: gcc/clang -std=c11 accept and both print
+// 64/64/64/8 (reducer tmp/fmt/szred2.c).
+#include <stdio.h>
+
+int main(void)
+{
+	char chunk[64];
+	chunk[0] = 0;
+	long long a = (long long)sizeof chunk;
+	long long b = (long long)sizeof(chunk);
+	unsigned c = sizeof chunk;
+	int d = (int)_Alignof(long long);
+	printf("%lld %lld %u %d\n", a, b, c, d);
+	return 0;
+}

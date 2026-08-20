@@ -4250,6 +4250,7 @@ public:
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
     bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
+    bool _value_stream_operator_injected; // bits/value_stream fragment served (one-shot; see maybe_inject_value_stream_operator)
     // Intern file paths so TokenBase::file pointers stay stable for
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the
@@ -4296,6 +4297,15 @@ public:
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
+    // Current declaration is a for-init clause (TokenFOR::parse sets it around
+    // parseDeclaration). The class ctor-call arm consumes the trailing ';' in
+    // STATEMENT contexts — long-standing behavior with an unmeasured reliance
+    // surface — but must leave it for the for-init tail, which still needs to
+    // SEE it: `for (string s("x"); ...)` threw "Expecting ';' after for init"
+    // at the condition. The `=`-initializer flow never consumes the ';' in
+    // either context; unifying the two conventions is a recorded follow-up
+    // (docs/plans/2026-08-19-array-push-overloads.md §residue arc).
+    bool parsing_for_init = false;
     bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
@@ -4394,6 +4404,11 @@ public:
     // language_std; this flag only controls strictness presentation.
     bool gnu_dialect;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
+    // `auto x = expr` deduction is C++11+ and C23+; in C89..C17 `auto` is a
+    // storage-class specifier, not a deduced type (I4). ONE owner of that
+    // gate — the declaration-`auto` path and the range-for element deduction
+    // both key on it.
+    bool auto_deduction_allowed() const { return !is_c_mode() || language_std == STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
     // (gcc's default dialect) does not — real glibc headers branch on it
@@ -4429,6 +4444,13 @@ public:
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // Uniform function call syntax is a madc-DIALECT feature: `x.f(y)` falls
+    // back to the ordinary call `f(x, y)` when the receiver type has no member
+    // named `f`. Member lookup runs first and wins outright, so the fallback
+    // only ever fires where the parser was about to raise a hard error — every
+    // strict --std=c*/c++* mode stays byte-identical. Same gating shape as
+    // madc_dialect_type_spelling() (parser.cpp), the other STD_MADC feature.
+    bool ufcs_enabled() const { return language_std == STD_MADC; }
     // A C++ reserved keyword introduced in `min_std` is active iff we are in the
     // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
     // at/after that standard. The C++ enumerators are contiguous and ordered
@@ -4866,6 +4888,12 @@ public:
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
 							  const TokenBase *origin);
     void mark_embedded_include_flag(const std::string &incfile);
+    // Every include-serving arm's completion return (lexer.cpp): fires the
+    // include-completion side effects, then continues the outer scan.
+    TokenBase *include_completed_token();
+    // One-shot: serve bits/value_stream once the ostream guard is defined
+    // (madc dialect only) — madc::value's inserter is always-included surface.
+    void maybe_inject_value_stream_operator();
     void push_runtime_scope();
     void pop_runtime_scope();
     static Program *active_runtime_program();
@@ -5215,6 +5243,12 @@ public:
     // A CALL operand types by its RESOLVED callee's return — see
     // resolved_call_funcdef.
     DataDef *operand_value_datadef(TokenBase *operand);
+    // The element type of `for (auto x : container)`, deduced from the
+    // container expression — the shared iteration recognizers answer it
+    // (positional: operator[]'s return; iterator: operator*'s return), the
+    // raw-array and madc-array cases directly. Throws, naming the container,
+    // when no protocol answers. Gated on auto_deduction_allowed().
+    DataDef *range_for_deduce_element(TokenBase *container, TokenBase *where);
     // The RESOLVED callee of a call token whose parse-bound Variable may be an
     // arbitrary member of a late-bound namespace overload set (overloads /
     // fn-template instantiations register after the call site parses). Re-ranks
@@ -5375,6 +5409,32 @@ public:
 				     std::stack<TokenBase *> &exStack,
 				     std::stack<TokenBase *> &opStack,
 				     TokenCpnd *code);
+    // UFCS (--std=madc): re-form `receiver.f(args)` / `receiver->f(args)` as
+    // the ordinary call `f(receiver, args)` when the receiver has no member
+    // `f`. `.` and `->` are the same operator here — the receiver is argument
+    // 0 EXACTLY as written, with no implicit & and no implicit *. Returns true
+    // when it fired: the receiver has moved off exStack into argument 0, the
+    // access operator is off opStack, the call is on opStack, and `tb`/`done`
+    // are left as any other call site in the arm leaves them.
+    // The ONE owner of "would UFCS be attempted at this point?": the dialect
+    // gate, the operator-function-id exclusion (an operator-id is a NAME, never
+    // a UFCS candidate), and the requirement that a call actually follows.
+    // Both fallbacks AND the combined diagnostic ask this — if the diagnostic
+    // asked separately it could claim a UFCS form was tried when it was not.
+    bool ufcs_attempts_here(bool operator_id);
+    bool ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
+			      bool operator_id,
+			      std::stack<TokenBase *> &exStack,
+			      std::stack<TokenBase *> &opStack,
+			      TokenBase *&tb, bool &done);
+    // UFCS (--std=madc), the other direction: re-form `f(x, args)` as
+    // `x.f(args)` when no free `f` is declared and x's type has an
+    // arity-viable member. Runs BEFORE the unresolved-symbol guesses (dlsym,
+    // C89 implicit int) — a member of the argument's own type beats a blind
+    // guess at a libc symbol of the same name.
+    bool ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
+			    std::stack<TokenBase *> &opStack,
+			    TokenBase *&tb, bool &done, TokenCpnd *code);
     // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
     // shunting-yard core (precedence climbing, unary/binary disambiguation,
     // parentheses/subscript/ternary/cast/comma). Mutates `brackets` (by ref)

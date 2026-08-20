@@ -28,6 +28,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "ns_common.h"
+#include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
 #include "libmadc/sysinfo.h"
 
 extern "C" {
@@ -65,6 +66,21 @@ void *madarray_construct(void *ptr)
     { return new(ptr) madc::value; }
 void madarray_destruct(void *ptr)
     { ((madc::value *)ptr)->~value(); }
+// Value-carrying placement construction into the same buffer — the ctor
+// family add_array_methods registers on ddARRAY (`value(-7)` temporaries,
+// `value v(7);` direct-init). Placement-new like madarray_construct: the
+// storage is RAW here, so the assign family (whose operator= reads the OLD
+// kind to release the previous payload) must not run. Returns the receiver.
+void *madarray_construct_cstr(void *ptr, const char *s)
+    { return new(ptr) madc::value(s ? s : ""); }
+void *madarray_construct_int(void *ptr, int64_t i)
+    { return new(ptr) madc::value(i); }
+void *madarray_construct_real(void *ptr, double d)
+    { return new(ptr) madc::value(d); }
+void *madarray_construct_bool(void *ptr, int64_t b)
+    { return new(ptr) madc::value(b != 0); }
+void *madarray_construct_value(void *ptr, void *src)
+    { return new(ptr) madc::value(*(const madc::value *)src); }
 // Range-for length over a script array. Intentionally NOT
 // ns_common::value_count: foreach iterates indexed elements only, so an
 // object-kind ctx must read as length 0 here.
@@ -74,6 +90,37 @@ int64_t madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;
 	return v->is_array() ? (int64_t)v->as_array().size() : 0;
+    }
+
+// The script .count()/.size() methods (add_array_methods binds both here).
+// NOT madarray_size: that is the range-for BOUND above, where an object-kind
+// carrier must read 0; a question the user asked gets the owner semantics
+// (ns_common::value_length — containers count elements, text kinds count
+// length) and a kind with no answer is a real madc exception, catchable as
+// `catch (const char *)`, never a silent 0. The longjmp crosses only this
+// frame, which holds no destructors. The message is a LITERAL: the throw
+// stores the pointer and the handler reads it after the jump.
+int64_t madarray_count(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	bool ok = true;
+	size_t n = ns_common::value_length(*v, &ok);
+	if ( !ok )
+	{
+	    const char *msg = "count(): value of this kind is not countable";
+	    switch ( v->type() )
+	    {
+	    case madc::value::kind::boolean:
+		msg = "count(): boolean value is not countable"; break;
+	    case madc::value::kind::integer:
+		msg = "count(): integer value is not countable"; break;
+	    case madc::value::kind::real:
+		msg = "count(): real value is not countable"; break;
+	    default: break;
+	    }
+	    __madc_throw_cstr(msg);
+	}
+	return (int64_t)n;
     }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —

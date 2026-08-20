@@ -1,0 +1,22 @@
+// Range-for `auto` over the madc array carrier: the element deduces STRING —
+// task #91 R0's subscript ruling (string-first, the Python/PHP element model
+// behind sys.argv[i]), so `auto` answers exactly what `a[i]` answers. Kept
+// apart from tests/testforeachauto.mad because that one is pure C++ with a
+// g++/clang++ oracle; this shape is madc dialect (fixture is the oracle).
+#include <iostream>
+#include <ns_php>
+using namespace std;
+
+int main()
+{
+	array a;
+	php::array_push(a, "one");
+	php::array_push(a, "two");
+	php::array_push(a, "three");
+	for ( auto s : a )
+		cout << "elem: " << s << endl;
+	// The deduced element is a real string: methods resolve on it.
+	for ( auto s : a )
+		cout << "len: " << s.size() << endl;
+	return 0;
+}

@@ -1,0 +1,31 @@
+[captured]
+Point Object
+(
+    [x] => 3
+    [y] => 4
+)
+[end]
+Point Object
+(
+    [x] => 3
+    [y] => 4
+)
+[t=true]
+Point Object
+(
+    [x] => 7
+    [y] => 8
+)
+[flag1]
+Point Object
+(
+    [x] => 1
+    [y] => 2
+)
+Point Object
+(
+    [x] => 1
+    [y] => 2
+)
+[flag0=true]
+[n=42]

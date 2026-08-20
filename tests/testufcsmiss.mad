@@ -1,0 +1,18 @@
+// UFCS diagnostics: when BOTH lookups miss, madc must raise ONE error naming
+// both attempts — a UFCS miss must never read like a plain typo.
+// Companion to tests/testufcs.mad.
+#include <stdio.h>
+
+class Empty
+{
+public:
+	int z;
+};
+
+int main()
+{
+	Empty e;
+	e.z = 1;
+	printf("%d\n", e.nosuch(2));
+	return 0;
+}

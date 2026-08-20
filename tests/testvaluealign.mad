@@ -1,0 +1,46 @@
+// A madc::value has 16-byte ALIGNMENT, and a struct holding one must honour it.
+//
+// DataDefARRAY declares size = sizeof(madc::value) but is a DDClass with no
+// members, so compute_layout never ran on it and max_align stayed 1 — making
+// alignment() report 1 for a 48-byte, 16-aligned object. field_align then placed
+// a `value` member at the very next byte: offset 4 after an `int`. madc's
+// SETTLED layout is what c2mir consumes verbatim, so the `_Alignas(16)` in the
+// emitted member declaration could not correct it, and `--emit=c11` compiled by
+// gcc disagreed with madc's own JIT about where the member lives.
+//
+// It was INVISIBLE at -O0: the unaligned copy just worked. It surfaced only in
+// the -O2 packed lane, where madc::value's operator= uses an aligned SSE move
+// and faults — SIGSEGV with si_addr 0, which is that instruction's signature.
+//
+// This test asserts the alignment DIRECTLY rather than relying on a crash, so it
+// fails in every lane instead of only the optimized one.
+#include <ns_php>
+
+struct Lead  { int t; value v; };          // a value AFTER a smaller member
+struct First { value v; int t; };          // a value as the FIRST member
+struct Two   { value a; value b; };        // two of them, back to back
+
+int main()
+{
+	Lead l; First f; Two w;
+	value loc = 1;
+	l.t = 7;
+	f.t = 9;
+
+	printf("lead   %d\n", (int)((long)&l.v % 16 == 0));
+	printf("first  %d\n", (int)((long)&f.v % 16 == 0));
+	printf("two_a  %d\n", (int)((long)&w.a % 16 == 0));
+	printf("two_b  %d\n", (int)((long)&w.b % 16 == 0));
+	printf("local  %d\n", (int)((long)&loc % 16 == 0));
+	// The offsets themselves, which is what c2mir consumes: gcc and clang
+	// both place `v` at 16 in Lead and pad First to 64 with t at 48.
+	printf("lead_off %d\n", (int)((long)&l.v - (long)&l));
+	printf("two_off  %d\n", (int)((long)&w.b - (long)&w.a));
+
+	// And the assignment that faulted: a value member must be usable.
+	l.v = "text";
+	f.v = 42;
+	w.a = 1.5;
+	php::var_dump(&l);
+	return 0;
+}

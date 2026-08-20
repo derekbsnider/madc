@@ -26,12 +26,28 @@ Merges develop into master, tags the release, and pushes.
 3. **Tag the release**: `git tag vX.Y.Z` (from VERSION file)
    - If the tag already exists, skip tagging and warn the user
 
-4. **Push to GitHub**:
+4. **Write the MASTER release notes** (owner rule, 2026-08-20):
+   - A promotion's notes summarize EVERYTHING since the PREVIOUS MASTER
+     release (`git describe --tags --abbrev=0 master` before the merge),
+     never just the last develop-to-develop delta — humans reading the
+     GitHub release see only master releases.
+   - **FEATURES FIRST, prominently**: the important and interesting
+     capabilities a user gains, in plain language, each with a one-line
+     example where it helps. Bugfixes, internals, infrastructure and
+     process changes go in a compact section AT THE BOTTOM.
+   - Source material: every CHANGELOG section between the two master
+     tags. Group related increments into ONE feature entry (e.g. a
+     feature and its follow-up releases are one story).
+   - Save as `docs/release-notes/vX.Y.Z-master.md`, committed on develop
+     before the merge. The per-develop-release notes files stay as they
+     are — this file is the promotion-facing summary.
+
+5. **Push to GitHub**:
    - Push master
    - Push tags: `git push --tags`
    - If `gh auth status` succeeds, publish the GitHub Release for madc:
      `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
-     --notes-file docs/release-notes/vX.Y.Z.md --latest`
+     --notes-file docs/release-notes/vX.Y.Z-master.md --latest`
      (if gh is not authed, note it in the report and continue)
    - Build and attach the distribution packages: run
      `bash scripts/package_release.sh` on the build container (it
@@ -44,6 +60,6 @@ Merges develop into master, tags the release, and pushes.
    so the madc tag versions it — subtree migration 2026-08-11. The
    macOS tarballs, when the release ships them, ride the same upload.)
 
-5. **Switch back to develop**
+6. **Switch back to develop**
 
-6. **Report**: Print confirmation with version number, tag, and GitHub URL
+7. **Report**: Print confirmation with version number, tag, and GitHub URL

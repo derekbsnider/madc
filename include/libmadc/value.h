@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <iosfwd>
 #include <map>
 #include <memory>
 #include <string>
@@ -142,6 +143,22 @@ private:
     std::unique_ptr<std::vector<value>>           _array;
     std::unique_ptr<std::map<std::string, value>> _object;
 };
+
+// Stream a value EXACTLY as the contained type would stream (owner ruling,
+// 2026-08-19): each kind forwards to the REAL ostream inserter, so stream
+// state — std::hex, setprecision, boolalpha — applies the way it does to a
+// plain int / double / bool. NOT the text renderer (value_to_string):
+// that produces "4.000000" where `os << 4.0` prints "4". null streams
+// nothing (PHP's echo null). string/bytes write the payload byte count
+// exactly, so an embedded NUL neither truncates nor is scanned for.
+//
+// array / object / instance follow the containers' own convention — C++
+// gives std::vector no operator<< — but the kind is only known at RUN time,
+// so the refusal is the ns_common report convention (a stderr notice,
+// nothing streamed), NOT a C++ throw: this one symbol is also the script
+// binding (<ns_madc>, mangled-direct), and no C++ exception may cross into
+// JIT frames (see report_frozen, src/ns_common.cpp).
+std::ostream &operator<<(std::ostream &os, const value &v);
 
 } // namespace madc
 

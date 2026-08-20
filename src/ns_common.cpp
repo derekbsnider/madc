@@ -210,6 +210,34 @@ size_t value_count(const madc::value &v)
 	return 0;
 }
 
+size_t value_length(const madc::value &v, bool *ok)
+{
+	if ( ok )
+		*ok = true;
+	switch ( v.type() )
+	{
+	case madc::value::kind::array:
+		return v.as_array().size();
+	case madc::value::kind::object:
+		return v.as_object().size();
+	case madc::value::kind::string:
+	case madc::value::kind::bytes:
+		// The payload byte count IS the length for the text kinds.
+		return v.size();
+	case madc::value::kind::null:
+		// An unfilled carrier is an EMPTY container (see header).
+		return 0;
+	case madc::value::kind::boolean:
+	case madc::value::kind::integer:
+	case madc::value::kind::real:
+	case madc::value::kind::instance:
+		break;
+	}
+	if ( ok )
+		*ok = false;
+	return 0;
+}
+
 void split_by_delim(madc::value &out, const std::string &s,
 		    const std::string &delim)
 {

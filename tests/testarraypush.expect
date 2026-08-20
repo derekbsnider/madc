@@ -1,0 +1,35 @@
+n1=1
+n2=2
+n3=3
+n4=4
+n5=5
+n6=6
+n7=7
+n8=8
+n9=9
+count=9
+array(9) {
+  [0]=>
+  string(3) "one"
+  [1]=>
+  integer(7)
+  [2]=>
+  integer(0)
+  [3]=>
+  real(3.5)
+  [4]=>
+  real(2.5)
+  [5]=>
+  boolean(true)
+  [6]=>
+  string(10) "via-string"
+  [7]=>
+  integer(42)
+  [8]=>
+  array(2) {
+    [0]=>
+    integer(1)
+    [1]=>
+    integer(2)
+  }
+}

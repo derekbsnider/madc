@@ -1,0 +1,47 @@
+// A container php::print_r cannot render must be refused BY ITS OWN NAME, and
+// must say WHICH piece is missing.
+//
+// This used to descend four levels into libstdc++'s red-black tree and refuse
+// there:
+//
+//   php::print_r: member '_M_t': member '_M_impl': member '_M_header':
+//   member '_M_color': no dumper for type '_Rb_tree_color' yet
+//
+// — naming a type the user never wrote and never once saying std::map. A
+// container's members are the library's internals, not the user's data, so a
+// container is refused (or walked) AT ITSELF, before any descent.
+//
+// std::map, std::set and std::list are no longer the subject: they RENDER now,
+// through the generated iterator loop (tests/testphpdumpiter.mad). What remains
+// refused is a genuine and PERMANENT limit rather than an arbitrary one, and the
+// message states it:
+//
+// the generated loop is COUNTED off size(), because libstdc++ declares
+// operator== / operator!= on every standard iterator as FRIEND FREE functions
+// (stl_tree.h 315/320, stl_list.h 318/324) — findMethod cannot see a free
+// function, so `it != c.end()` cannot be generated at all. A container with
+// begin()/end() and NO size() therefore has no bound, and saying so is the only
+// honest answer. It costs nothing for the containers that DO render: var_dump's
+// head line states the count anyway.
+//
+// The gate is the MESSAGE. A refusal that goes back to naming _Rb_tree_color, or
+// that stops naming the missing piece, no longer matches this fixture.
+struct It {
+	int *p;
+	int &operator*() { return *p; }
+	It &operator++() { p = p + 1; return *this; }
+};
+
+struct NoSize {
+	int d[3];
+	It begin() { It i; i.p = d; return i; }
+	It end() { It i; i.p = d + 3; return i; }
+};
+
+int main()
+{
+	NoSize n;
+	n.d[0] = 1;
+	php::print_r(n);
+	return 0;
+}

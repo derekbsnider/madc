@@ -1,0 +1,27 @@
+// Parametrized manipulator OBJECTS (<iomanip>: setprecision/setw/setfill —
+// plain structs consumed by free operator<< templates). The char inserter
+// template used to CLAIM these calls: free_operator_concrete_param_matches'
+// arithmetic arm rejected class arguments but not PLAIN-STRUCT ones, and
+// _Setprecision never earns class-hood — the whole struct passed by value
+// as the char ("incompatible argument type for arithmetic type parameter",
+// naming no operator). Oracle: g++ AND clang++ -O0 twin, byte-identical.
+// The last line crosses into the value carrier: a manipulator applies to a
+// streamed value exactly as it does to the contained type (the cout<<value
+// contract, v0.88.0).
+#include <cstdio>
+#include <iostream>
+#include <iomanip>
+#include <ns_madc>
+
+int main()
+{
+	double d = 3.14159265;
+	std::cout << std::setprecision(3) << d << std::endl;
+	std::cout << std::setw(8) << 42 << std::endl;
+	std::cout << std::setfill('*') << std::setw(6) << 7 << std::endl;
+	std::cout << std::fixed << std::setprecision(2) << d << std::endl;
+	value v;
+	v = 2.718281828;
+	std::cout << std::setprecision(4) << v << std::endl;
+	return 0;
+}

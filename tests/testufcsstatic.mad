@@ -1,0 +1,33 @@
+// UFCS must DECLINE when the only same-named member is STATIC.
+//
+// A static member has no `this` slot, so a method call built around it passes
+// the receiver as a REAL argument. The dot arm splits statics off into a plain
+// function call for exactly that reason; the call-syntax fallback declines
+// instead of duplicating the split, for a form whose whole point is passing the
+// receiver.
+//
+// MEASURED with the guard removed: this file does NOT compile and print -1 (an
+// earlier draft of this comment claimed it did). It dies at the downstream
+// arity check with "Incorrect number of parameters for 'Gauge__reading':
+// expected 0 got 1". So the guard is a DIAGNOSTIC fix, not a correctness one —
+// it keeps a mangled internal name out of a message about source that never
+// mentioned it. There is deliberately no free `reading`, so the fallback really
+// is reached and the guard really is what changes the outcome; the expected
+// message differs with and without it, which is what makes this test able to
+// fail.
+#include <stdio.h>
+
+class Gauge
+{
+public:
+	int n;
+	static int reading() { return -1; }
+};
+
+int main()
+{
+	Gauge g;
+	g.n = 0;
+	printf("%d\n", reading(g));
+	return 0;
+}

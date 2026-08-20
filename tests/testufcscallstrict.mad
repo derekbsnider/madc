@@ -1,0 +1,24 @@
+// UFCS call-syntax negative control: the shape tests/testufcscall.mad compiles
+// and runs under the madc dialect must FAIL under an explicit C++ standard.
+//
+// The .flags fixture selects --std=c++17. If UFCS ever leaked into a strict
+// mode this source would compile and exit 0, and .expect_err (which requires a
+// nonzero exit) would fail — that is the control, not the message text.
+// Oracle: g++ -std=c++17 and clang++ -std=c++17 both reject `tally(b)`
+// ("'tally' was not declared in this scope" / "use of undeclared identifier").
+#include <stdio.h>
+
+class Bag
+{
+public:
+	int n;
+	int tally() { return this->n * 3; }
+};
+
+int main()
+{
+	Bag b;
+	b.n = 5;
+	printf("tally=%d\n", tally(b));
+	return 0;
+}

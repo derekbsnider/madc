@@ -1,0 +1,104 @@
+/* The ARGUMENT convention for an undeclared <math.h> call.
+ *
+ * Companion to tests/testlibcnoheader.mad, which measures what such a call
+ * RETURNS. This one measures what it PASSES, and they are different defects: a
+ * declaration with zero parameters is the variadic convention, so C's default
+ * argument promotion turns a `float` into a `double` and the real `floorf` reads
+ * a float out of half of one. floorf(3.9f) was 2.000; fmodf(7,4) was -nan.
+ *
+ * NOT ONE #include, on purpose — `printf` is declared by hand. One call per
+ * argument shape (include/libc_signatures.h owns the nine), at all three
+ * suffixes, because the suffix is what selects the parameter type.
+ *
+ * Oracle: gcc -O0 — `gcc -w -x c tests/testlibcnoheaderargs.mad -lm`. Every line
+ * here matches it, with no deliberate divergence: gcc has all of these as
+ * builtins, so its knowledge and this table's agree exactly.
+ */
+
+int printf(const char *, ...);
+
+int main(void)
+{
+	/* shape (T) — the 1-argument majority, at all three widths. */
+	printf("T      floor  = %.3f %.3f %.3f\n",
+	       floor(3.9), (double)floorf(3.9f), (double)floorl(3.9));
+	printf("T      ceil   = %.3f %.3f %.3f\n",
+	       ceil(3.1), (double)ceilf(3.1f), (double)ceill(3.1));
+	printf("T      sqrt   = %.3f %.3f %.3f\n",
+	       sqrt(9.0), (double)sqrtf(9.0f), (double)sqrtl(9.0));
+	printf("T      trunc  = %.3f %.3f %.3f\n",
+	       trunc(-3.7), (double)truncf(-3.7f), (double)truncl(-3.7));
+
+	/* shape (T,T) */
+	printf("T_T    fmod   = %.3f %.3f %.3f\n",
+	       fmod(7.0, 4.0), (double)fmodf(7.0f, 4.0f), (double)fmodl(7.0, 4.0));
+	printf("T_T    pow    = %.3f %.3f %.3f\n",
+	       pow(2.0, 10.0), (double)powf(2.0f, 10.0f), (double)powl(2.0, 10.0));
+	printf("T_T    hypot  = %.3f %.3f %.3f\n",
+	       hypot(3.0, 4.0), (double)hypotf(3.0f, 4.0f), (double)hypotl(3.0, 4.0));
+	printf("T_T    fmax   = %.3f %.3f %.3f\n",
+	       fmax(2.0, 5.0), (double)fmaxf(2.0f, 5.0f), (double)fmaxl(2.0, 5.0));
+
+	/* shape (T,T,T) */
+	printf("T_T_T  fma    = %.3f %.3f %.3f\n",
+	       fma(2.0, 3.0, 4.0), (double)fmaf(2.0f, 3.0f, 4.0f),
+	       (double)fmal(2.0, 3.0, 4.0));
+
+	/* shape (T,int) */
+	printf("T_Int  ldexp  = %.3f %.3f %.3f\n",
+	       ldexp(1.0, 3), (double)ldexpf(1.0f, 3), (double)ldexpl(1.0, 3));
+	printf("T_Int  scalbn = %.3f %.3f %.3f\n",
+	       scalbn(1.0, 4), (double)scalbnf(1.0f, 4), (double)scalbnl(1.0, 4));
+
+	/* shape (T,long) */
+	printf("T_Long scalbln= %.3f %.3f %.3f\n",
+	       scalbln(1.0, 5), (double)scalblnf(1.0f, 5), (double)scalblnl(1.0, 5));
+
+	/* shape (T,T*) — the out-parameter must be the FAMILY's pointer type. */
+	{
+		/* Sequenced, not folded into the printf: argument evaluation
+		 * order is unspecified, so reading `ip` in the same call can
+		 * read it BEFORE modf writes it. */
+		double ip = 0.0;
+		float ipf = 0.0f;
+		double fr = modf(3.75, &ip);
+		float frf = modff(3.75f, &ipf);
+		printf("T_Tptr modf   = %.3f %.3f | %.3f %.3f\n",
+		       fr, ip, (double)frf, (double)ipf);
+	}
+
+	/* shape (T,int*) */
+	{
+		int e = 0, ef = 0;
+		double m = frexp(8.0, &e);
+		float mf = frexpf(8.0f, &ef);
+		printf("T_Intp frexp  = %.3f %d | %.3f %d\n",
+		       m, e, (double)mf, ef);
+	}
+
+	/* shape (T,T,int*) */
+	{
+		int q = 0, qf = 0;
+		double r = remquo(7.0, 4.0, &q);
+		float rf = remquof(7.0f, 4.0f, &qf);
+		printf("T_T_Ip remquo = %.3f %d | %.3f %d\n",
+		       r, q, (double)rf, qf);
+	}
+
+	/* shape (T,long double) — the second parameter is `long double` at every
+	 * suffix (C99: float nexttowardf(float, long double)). */
+	printf("T_LD   nexttow= %d %d\n",
+	       nexttoward(1.0, 2.0) > 1.0 ? 1 : 0,
+	       nexttowardf(1.0f, 2.0) > 1.0f ? 1 : 0);
+
+	/* The five roots that return an INTEGER at every suffix: the suffix
+	 * selects the PARAMETER type and nothing about the return. */
+	printf("T      lround = %lld %lld %lld\n",
+	       (long long)lround(2.6), (long long)lroundf(2.6f),
+	       (long long)lroundl(2.6));
+	printf("T      llround= %lld %lld %lld\n",
+	       llround(-2.6), llroundf(-2.6f), llroundl(-2.6));
+	printf("T      ilogb  = %d %d %d\n",
+	       ilogb(8.0), ilogbf(8.0f), ilogbl(8.0));
+	return 0;
+}

@@ -1,0 +1,33 @@
+// Numeric overload GRADING — a float argument selects the double overload
+// (float->double is a PROMOTION, [conv.fpprom]), never the int64 one by
+// registration-order tie. Oracle: g++ AND clang++ -O0 on the identical C++
+// twin (tmp reducer, 2026-08-19) both print flt=2 dbl=2 bool=3 long=1,
+// unambiguously. Before the score_arg_to_param numeric grading fix madc
+// printed flt=1 — the truncating overload won by declaration order.
+#include <cstdio>
+
+namespace t {
+	int64_t f(int64_t v) { return 1; }
+	int64_t f(double v) { return 2; }
+	int64_t f(bool v) { return 3; }
+}
+
+int main()
+{
+	float fl = 2.5f;
+	double d = 3.5;
+	bool b = true;
+	int64_t l = 9;
+	printf("flt=%ld\n", t::f(fl));
+	printf("dbl=%ld\n", t::f(d));
+	printf("bool=%ld\n", t::f(b));
+	printf("long=%ld\n", t::f(l));
+	// madc-dialect liberal pick (NOT in the C++ oracle twin: ISO C++
+	// rejects this call as ambiguous — long/double/bool are all
+	// "conversion" rank for an int argument). madc grades same-domain
+	// integer->integer above the cross-domain and bool lanes, so the
+	// obvious overload wins deterministically.
+	int i32 = 7;
+	printf("i32=%ld\n", t::f(i32));
+	return 0;
+}

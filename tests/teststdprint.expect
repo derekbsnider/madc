@@ -1,0 +1,5 @@
+hello world!
+a=42 b=0003.142 c=    ok|
+a-b-c
+{literal} +7 0xff -2a
+d=0.1 t=false c=Z chex=0x5a

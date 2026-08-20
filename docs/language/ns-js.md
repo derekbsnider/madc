@@ -65,7 +65,7 @@ int main()
     // JSON
     array data;
     php::array_push(data, "hello");
-    php::array_push_int(data, 42);
+    php::array_push(data, 42);
     string json;
     js::stringify(json, data);
     cout << json << endl;       // ["hello",42]

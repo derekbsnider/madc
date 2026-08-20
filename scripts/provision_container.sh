@@ -82,8 +82,15 @@ PKGS_package="rpm"
 # msvcrt-flavor archive cannot serve -D_UCRT builds) is staged by
 # scripts/build_win_ucrt_libstdcxx.sh — run below.
 PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-mingw-w64-dev"
+# php-cli is an ORACLE, exactly like g++ and clang++: php::print_r and
+# php::var_dump must render a madc value the way PHP renders it, and every
+# fixture in tests/testphpprintr*.mad / tests/testphpvardump.mad was captured
+# from a real `php` run (docs/plans/2026-08-17-php-print-r-var-dump-plan.md holds
+# the captures). Without it the next reader can only compare against a comment.
+# Nothing madc BUILDS needs it, which is why its absence would read as green.
+PKGS_oracle="php-cli"
 
-ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane"
+ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane $PKGS_oracle"
 
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
@@ -91,7 +98,8 @@ ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package
 BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
       qemu-aarch64-static
-      x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine"
+      x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine
+      php"
 
 report() {
 	local missing=0

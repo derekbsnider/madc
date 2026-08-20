@@ -131,7 +131,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -916,12 +916,15 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-one-error-composer.sh
+	@cd .. && bash scripts/check-libc-alias-signatures.sh
 	@cd .. && bash scripts/check-storage-seam-adoption.sh
 	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
 	@cd .. && bash scripts/class_pattern_equivalence.sh
+	@cd .. && bash scripts/version_flag_gate.sh
+	@cd .. && bash scripts/ufcs_gate.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
@@ -931,6 +934,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_library_gate.sh
 	@cd .. && bash scripts/forest_ledger_gate.sh
 	@cd .. && bash scripts/forest_config_gate.sh
+	@cd .. && bash scripts/forest_pack_gate.sh --selftest
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
 	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/emitc_sret_gate.sh
@@ -964,6 +968,11 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
 $(BINDIR)/test_process: $(PROCESS_FIXTURE)
+
+# test_rt_format bakes the oracle fixture in via #include — without this
+# prerequisite a regenerated .inc leaves a STALE test binary asserting the
+# old rows (the 2026-08-20 battery ran 1428 phantom failures that way).
+$(BINDIR)/test_rt_format: $(TESTDIR)/rt_format_oracle.inc
 
 $(PROCESS_FIXTURE): ../tests/helpers/process_fixture.cpp
 	mkdir -p $(BINDIR)

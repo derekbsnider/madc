@@ -23,8 +23,8 @@ int main()
 	cout << "reassigned: " << joined << endl;
 
 	array nums;
-	php::array_push_int(nums, 40);
-	php::array_push_int(nums, 2);
+	php::array_push(nums, 40);
+	php::array_push(nums, 2);
 	int sum = 0;
 	for (int n : nums)
 		sum = sum + n;

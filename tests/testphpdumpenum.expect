@@ -1,0 +1,56 @@
+--- plain pr
+Color Enum:unsigned int
+(
+    [name] => GREEN
+    [value] => 1
+)
+--- plain vd
+enum(Color::GREEN)
+--- fixed base vd
+enum(Flags::F_C)
+--- scoped vd
+enum(Suit::Spades)
+--- duplicate value vd
+enum(Dup::D_FIRST)
+--- signed pr
+Signed Enum:int
+(
+    [name] => S_NEG
+    [value] => -1
+)
+--- signed vd
+enum(Signed::S_NEG)
+--- in struct pr
+Card Object
+(
+    [c] => Color Enum:unsigned int
+        (
+            [name] => BLUE
+            [value] => 2
+        )
+
+    [n] => 3
+)
+--- in struct vd
+struct Card(2) {
+  ["c"]=>
+  enum(Color::BLUE)
+  ["n"]=>
+  int(3)
+}
+--- class nested vd
+struct Deck(2) {
+  ["k"]=>
+  enum(Deck::Kind::Tarot)
+  ["size"]=>
+  int(78)
+}
+--- unnamed value vd
+enum Color(7)
+--- unnamed value pr
+Color Enum:unsigned int
+(
+    [name] => 
+    [value] => 7
+)
+--- end

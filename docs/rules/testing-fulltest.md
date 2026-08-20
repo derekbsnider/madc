@@ -2,7 +2,22 @@
 
 See `.claude/rules/testing-fulltest.md` for the rule itself.
 
-## Why `make -C src fulltest` stays the default gate
+## Why fulltest moved from per-change to per-merge-wave (owner, 2026-08-19)
+
+The rule originally read "fulltest after every change." In practice that
+compounded into multiple full batteries plus release-lane ceremonies in a
+single day (v0.89/0.90/0.91 each ran fulltest + exe + packed + headerless),
+which the owner called out directly: it "wastes time and cpu and disk
+grinding away with thousands of tests for every little change" — the fifth
+repetition of the same feedback. The battery's job is to keep `develop`
+stable at the point work MERGES, not to re-prove every incremental commit;
+a targeted run (the new gates plus the touched subsystem's tests) catches
+the same regressions at a fraction of the cost, and the full battery still
+runs once, where it counts. The blast-radius exception exists because some
+layers (lexer include machinery, shared codegen) genuinely touch every
+test — there a targeted run cannot bound the risk.
+
+## Why `make -C src fulltest` stays the merge-wave gate
 
 That target is still the single command that exercises the normal unit
 and integration suite the way the repo expects. It catches the common

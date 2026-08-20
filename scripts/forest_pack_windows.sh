@@ -94,7 +94,16 @@ ulimit -t 1800
 # --no-config for the same reason as the native pack: an ambient madc.ini
 # must never change the frozen corpus's producer config. The wall cap is
 # wider than the Linux pack's — the freeze pays the wine translation tax.
-timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$BIN" "$TU"
+#
+# Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
+# why this is redirect-then-cat and never `| tee`.
+PACK_LOG=tmp/forest_pack_win_freeze.log
+if ! timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$BIN" "$TU" > "$PACK_LOG" 2>&1; then
+    cat "$PACK_LOG"
+    echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
+    exit 1
+fi
+cat "$PACK_LOG"
 
 # Verify through the PACKED exe itself (self-image arm: the running
 # executable's own trailer). Wine's CRT writes CRLF: the greps below are
@@ -122,33 +131,15 @@ while IFS= read -r src; do
     fi
 done <<<"$LEDGER_SOURCES"
 # Every listed entry point must be a directory unit — a missing unit means a
-# consumer's #include of that name silently live-parses (the G2 class), and
-# on a run-only Windows box live parse cannot succeed at all.
-unit_present() {
-    grep -Eq "^unit	[0-9]+	([^	]*/)?$1	" tmp/forest_pack_win_dump.txt
-}
-missing=0
-while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    if ! unit_present "$h"; then
-        echo "forest_pack_windows: MISSING unit for <$h>" >&2
-        missing=1
-    fi
-done < <(grep -vE '^[[:space:]]*(#|$)' "$LIST")
-# The guarded roots are not public entry points, but their raw source must be
-# in the same default-flavor profile selected by a C++20 live fallback.
-while IFS= read -r guarded; do
-    [ -n "$guarded" ] || continue
-    guarded_pattern=$'^unit\t[0-9]+\t.*'"$guarded"$'\t'
-    if ! grep -Eq "$guarded_pattern" tmp/forest_pack_win_dump.txt; then
-        echo "forest_pack_windows: MISSING guarded source unit: $guarded" >&2
-        missing=1
-    fi
-done < <(grep -vE '^[[:space:]]*(#|$)' "$GUARDED_LIST")
-if [ "$missing" -ne 0 ]; then
-    echo "forest_pack_windows: FAILED - see missing units above" >&2
-    exit 1
-fi
+# consumer's #include of that name silently live-parses (the G2 class), and on a
+# run-only Windows box live parse cannot succeed at all. The guarded roots are
+# not public entry points, but their raw source must be in the same
+# default-flavor profile a C++20 live fallback selects.
+#
+# Both checks now belong to scripts/forest_pack_gate.sh (--dump / --units-from /
+# --sources-from), together with the linux and darwin packs: a /dupaudit found
+# this loop reimplemented here and in forest_pack_darwin.sh while the LINUX pack
+# had no such check at all. The gate call at the end of this script runs it.
 
 # Default-lane product smoke: the PACKED exe compiles and runs a real
 # C++ test through its forest-served include world, byte-correct.
@@ -163,6 +154,18 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # is default-off, so the shipped artifact's default path is unaffected
 # and verified above + by the packed suite lanes. Restore the
 # equivalence leg (forest_pack.sh's shape) when #55 is fixed.
+
+# Degradation gate (task #63) — producer ratchet + consumer hard zero, the
+# same two halves as the Linux pack. The load probe is its own -v run of the
+# shipped exe (the smoke above compares OUTPUT, which a degraded bind can still
+# get right); the wall cap is wider than Linux's because every line of the -v
+# trace pays the wine translation tax.
+LOAD_LOG=tmp/forest_pack_win_load.log
+timeout 900 "$WINE" "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+bash scripts/forest_pack_gate.sh --profile win64 \
+    --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
+    --dump tmp/forest_pack_win_dump.txt \
+    --units-from "$LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
 echo "forest_pack_windows: OK (1 profile, $units units appended to $BIN; product smokes green)"
