@@ -36,9 +36,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "json.hpp"
 
 #include "madcdis/hub.h"
 #include "madcdis/source_adapter.h"
@@ -102,19 +105,106 @@ inline std::vector<std::string> wt_words(const std::string &s)
     return out;
 }
 
-// Kind inference: full-consume integer, true/false boolean, else string.
-inline madc::value wt_value(const std::string &text)
+// The value<->JSON bridge (A2, docs/plans/2026-08-20-adventure-430-plan.md):
+// NESTED prop values (arrays, object bags) and AMBIGUOUS strings ride the
+// format as single-line JSON through the repo's one JSON owner (json.hpp —
+// the --project driver's library). Deterministic by construction: nlohmann
+// objects iterate in key order, dump() is canonical — parse(dump(x)) == x.
+// bytes/instance kinds have no serial form and refuse LOUDLY (std::
+// runtime_error on the host-side save path), never a silent placeholder.
+inline nlohmann::json wt_value_to_json(const madc::value &v)
+{
+    if ( v.is_null() )
+	return nlohmann::json();
+    if ( v.is_boolean() )
+	return nlohmann::json(v.as_boolean());
+    if ( v.is_integer() )
+	return nlohmann::json(v.as_integer());
+    if ( v.is_real() )
+	return nlohmann::json(v.as_real());
+    if ( v.is_string() )
+	return nlohmann::json(v.as_string());
+    if ( v.is_array() )
+    {
+	nlohmann::json a = nlohmann::json::array();
+	for ( const madc::value &e : v.as_array() )
+	    a.push_back(wt_value_to_json(e));
+	return a;
+    }
+    if ( v.is_object() )
+    {
+	nlohmann::json o = nlohmann::json::object();
+	for ( const std::pair<const std::string, madc::value> &f : v.as_object() )
+	    o[f.first] = wt_value_to_json(f.second);
+	return o;
+    }
+    throw std::runtime_error(
+	"world: bytes/instance props have no serial form");
+}
+
+inline madc::value wt_json_to_value(const nlohmann::json &j)
+{
+    if ( j.is_null() )
+	return madc::value();
+    if ( j.is_boolean() )
+	return madc::value(j.get<bool>());
+    if ( j.is_number_integer() || j.is_number_unsigned() )
+	return madc::value((int64_t)j.get<long long>());
+    if ( j.is_number_float() )
+	return madc::value(j.get<double>());
+    if ( j.is_string() )
+	return madc::value(j.get<std::string>());
+    if ( j.is_array() )
+    {
+	madc::value v = madc::value::make_array();
+	for ( nlohmann::json::const_iterator it = j.begin(); it != j.end(); ++it )
+	    v.array().push_back(wt_json_to_value(*it));
+	return v;
+    }
+    madc::value v = madc::value::make_object();
+    for ( nlohmann::json::const_iterator it = j.begin(); it != j.end(); ++it )
+	v.object()[it.key()] = wt_json_to_value(it.value());
+    return v;
+}
+
+// Kind inference: exact true/false/null, full-consume integer, full-consume
+// real, a leading `[` `{` or `"` parses the whole text as JSON (the nested
+// form above), anything else is a string to end of line. `err` (optional)
+// reports a malformed JSON payload — the caller owns the line number.
+inline madc::value wt_value(const std::string &text, std::string *err = 0)
 {
     if ( text == "true" )
 	return madc::value(true);
     if ( text == "false" )
 	return madc::value(false);
+    if ( text == "null" )
+	return madc::value();
     if ( !text.empty() )
     {
 	char *end = (char *)0;
 	long long n = strtoll(text.c_str(), &end, 10);
 	if ( end && *end == '\0' && end != text.c_str() )
 	    return madc::value((int64_t)n);
+	// Real inference over a strict decimal charset only: bare strtod
+	// also accepts inf/nan/hex spellings, which JSON cannot emit back
+	// (dump(inf) is null) — those stay strings.
+	if ( text.find_first_not_of("0123456789+-.eE") == std::string::npos )
+	{
+	    double d = strtod(text.c_str(), &end);
+	    if ( end && *end == '\0' && end != text.c_str() )
+		return madc::value(d);
+	}
+	if ( text[0] == '[' || text[0] == '{' || text[0] == '"' )
+	{
+	    nlohmann::json j = nlohmann::json::parse(text, 0, false);
+	    if ( j.is_discarded() )
+	    {
+		if ( err )
+		    *err = "malformed JSON prop value";
+		return madc::value();
+	    }
+	    return wt_json_to_value(j);
+	}
     }
     return madc::value(text);
 }
@@ -123,9 +213,14 @@ inline madc::value wt_value(const std::string &text)
 // output must round-trip through wt_value unchanged (the format's law).
 // prose::text_of is display coercion (%g reals, empty null) and may
 // drift from this freely; consolidating the two would break one law or
-// the other.
+// the other. A string whose bare spelling would re-parse as some OTHER
+// kind (numeric spellings, true/false/null, a JSON lead character, an
+// embedded newline, trim-vulnerable edges) emits as a JSON-quoted
+// string — which the parse side reads back as the same string.
 inline std::string wt_value_text(const madc::value &v)
 {
+    if ( v.is_null() )
+	return "null";
     if ( v.is_boolean() )
 	return v.as_boolean() ? "true" : "false";
     if ( v.is_integer() )
@@ -134,7 +229,26 @@ inline std::string wt_value_text(const madc::value &v)
 	os << v.as_integer();
 	return os.str();
     }
-    return v.as_string();
+    if ( v.is_real() || v.is_array() || v.is_object() )
+	return wt_value_to_json(v).dump();
+    const std::string &s = v.as_string();
+    bool ambiguous = s.empty() ? false
+	: ( s[0] == '[' || s[0] == '{' || s[0] == '"'
+	 || s == "true" || s == "false" || s == "null"
+	 || s.find('\n') != std::string::npos
+	 || s.find('\r') != std::string::npos
+	 || s[0] == ' ' || s[0] == '\t'
+	 || s[s.size() - 1] == ' ' || s[s.size() - 1] == '\t' );
+    if ( !ambiguous && !s.empty() )
+    {
+	char *end = (char *)0;
+	strtod(s.c_str(), &end);
+	if ( end && *end == '\0' && end != s.c_str() )
+	    ambiguous = true;	// numeric spelling would re-parse as a number
+    }
+    if ( ambiguous )
+	return nlohmann::json(s).dump();
+    return s;
 }
 
 // Parse one "%verb"/"%require" argument tail: NAME [key=K]* [domain=D]
@@ -317,8 +431,16 @@ inline bool world_doc_parse(const std::string &text, world_doc &out,
 	    err = os.str();
 	    return false;
 	}
-	open_entity->props.push_back(
-	    std::make_pair(key, detail::wt_value(val)));
+	std::string verr;
+	madc::value pv = detail::wt_value(val, &verr);
+	if ( !verr.empty() )
+	{
+	    std::ostringstream os;
+	    os << "line " << lineno << ": " << verr;
+	    err = os.str();
+	    return false;
+	}
+	open_entity->props.push_back(std::make_pair(key, pv));
     }
     if ( !saw_version )
     {

@@ -131,6 +131,84 @@ TEST_CASE("world_doc — round-trip: emit(extract(apply(parse(T)))) is stable")
 		    w2.intern("north")) == w2.find("dead-end"));
 }
 
+TEST_CASE("world_doc — nested values: JSON props round-trip with kinds (A2)")
+{
+    // Single-line JSON is the nested form (docs/plans/2026-08-20-adventure-
+    // 430-plan.md, Wave E1): arrays, object bags, reals, null, multi-line
+    // prose as a quoted string, and AMBIGUOUS bare strings that must
+    // re-parse as themselves.
+    static const char *NESTED =
+	"%world 1\n"
+	"%entity grate-room\n"
+	"  weight = 2.5\n"
+	"  nothing = null\n"
+	"  long = \"You are in a maze.\\nAll alike.\"\n"
+	"  travel = [{\"action\":[\"goto\",\"hill\"],\"cond\":null,"
+	"\"verbs\":[\"WEST\",\"UPWAR\"]},"
+	"{\"action\":[\"speak\",\"DONT_FIT\"],\"cond\":[\"not\",\"GRATE\",0],"
+	"\"verbs\":[\"IN\"]}]\n"
+	"  states = {\"closed\":0,\"open\":1}\n";
+    world_doc d;
+    std::string err;
+    REQUIRE(world_doc_parse(NESTED, d, err));
+    REQUIRE(d.entities.size() == 1u);
+    const world_doc::entity_decl &e = d.entities[0];
+    REQUIRE(e.props.size() == 5u);
+    CHECK(e.props[0].second.as_real() == 2.5);
+    CHECK(e.props[1].second.is_null());
+    CHECK(e.props[2].second.as_string() == "You are in a maze.\nAll alike.");
+    const madc::value &travel = e.props[3].second;
+    REQUIRE(travel.is_array());
+    REQUIRE(travel.as_array().size() == 2u);
+    const madc::value &rule0 = travel.as_array()[0];
+    REQUIRE(rule0.is_object());
+    CHECK(rule0.as_object().at("verbs").as_array()[1].as_string() == "UPWAR");
+    CHECK(rule0.as_object().at("cond").is_null());
+    CHECK(e.props[4].second.as_object().at("open").as_integer() == 1);
+
+    // Fixed point through the world: apply -> extract -> emit -> parse ->
+    // apply -> extract -> emit is byte-identical.
+    world w;
+    REQUIRE(world_doc_apply(d, w, err));
+    world_doc out = world_doc_extract(w);
+    std::string emitted = world_doc_emit(out);
+    world_doc d2;
+    REQUIRE(world_doc_parse(emitted, d2, err));
+    world w2;
+    REQUIRE(world_doc_apply(d2, w2, err));
+    CHECK(world_doc_emit(world_doc_extract(w2)) == emitted);
+    CHECK(w2.get(w2.find("grate-room"))->bag.as_object().at("travel")
+	      .as_array()[1].as_object().at("cond").as_array()[1]
+	      .as_string() == "GRATE");
+}
+
+TEST_CASE("world_doc — ambiguous strings emit JSON-quoted and re-parse (A2)")
+{
+    // A STRING whose bare spelling collides with another kind's inference
+    // must round-trip as the same string: numeric spellings, keywords,
+    // JSON lead characters, trim-vulnerable edges.
+    using madc::hub::detail::wt_value;
+    using madc::hub::detail::wt_value_text;
+    const char *cases[] = { "42", "2.5", "true", "false", "null",
+			    "[not json", "{brace", "\"quoted\"",
+			    " leading", "trailing " };
+    for ( const char *c : cases )
+    {
+	madc::value s = madc::value(std::string(c));
+	std::string emitted = wt_value_text(s);
+	madc::value back = wt_value(emitted);
+	REQUIRE(back.is_string());
+	CHECK(back.as_string() == std::string(c));
+    }
+    // And the non-string kinds keep their kinds through the same law.
+    CHECK(wt_value(wt_value_text(madc::value(2.5))).as_real() == 2.5);
+    CHECK(wt_value(wt_value_text(madc::value())).is_null());
+    // Malformed JSON is a LOUD parse error, never a silent string.
+    std::string verr;
+    wt_value("[1, 2", &verr);
+    CHECK(!verr.empty());
+}
+
 TEST_CASE("world_doc — loud errors name the line and the reason")
 {
     world_doc d;
