@@ -35870,6 +35870,35 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else if ( cast_expr_tb
 		      && cast_expr_tb->type() == TokenType::ttIdentifier
+		      && (((TokenIdent *)cast_expr_tb)->spelling_is("sizeof")
+		       || is_alignof_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
+		    {
+			// (long long)sizeof chunk — sizeof/alignof as the cast
+			// operand, BOTH forms ([expr.sizeof] allows a paren-less
+			// unary-expression operand). The plain identifier arms
+			// below would resolve `sizeof` as a variable ("undeclared
+			// identifier 'sizeof'" — the rt_format.c ledger parse),
+			// the same trap as the __real__/__imag__ arm above. One
+			// owner: the same resolver trio the main expression arm
+			// uses (dynamic type query, VLA sizeof, constant fold).
+			const char *qname = ((TokenIdent *)cast_expr_tb)->spelling();
+			if ( TokenBase *query_tb = try_parse_dynamic_type_query(cast_expr_tb, qname) )
+			    cast_expr = query_tb;
+			else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(cast_expr_tb, qname) )
+			    cast_expr = vla_tb;
+			else
+			{
+			    size_t query_value = evaluate_type_query(cast_expr_tb, qname);
+			    TokenInt *ti = new TokenInt((int64_t)query_value);
+			    ti->setDataType(&ddUINT64);
+			    ti->file = cast_expr_tb->file;
+			    ti->line = cast_expr_tb->line;
+			    ti->column = cast_expr_tb->column;
+			    cast_expr = ti;
+			}
+		    }
+		    else if ( cast_expr_tb
+		      && cast_expr_tb->type() == TokenType::ttIdentifier
 		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		      && (cast_expr = parse_cast_function_call_operand(cast_expr_tb)) )
 		    {
