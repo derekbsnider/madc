@@ -925,6 +925,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/version_flag_gate.sh
 	@cd .. && bash scripts/ufcs_gate.sh
+	@cd .. && bash scripts/adventure_roundtrip_gate.sh
+	@cd .. && bash scripts/check-hub-write-path.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh

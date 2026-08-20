@@ -1,5 +1,17 @@
 # Track 7 Phase 1 — the Text-Adventure Pilot (hub projections + Level 0)
 
+**PROGRESS (2026-08-20): S0 ✅ (results below) · S1 ✅ hub.h 53/53 ·
+S2 ✅ verbs.h 21/21 · S3 ✅ uinode/prose/render_text/projection 40/40 ·
+S4a ✅ world_text.h 71/71 · S4b ✅ <ns_ui> + adventure catalog + the two
+pilot fixture tests (runner 2/2, .expect_quiet clean) · S5 ✅ gates
+(adventure_roundtrip_gate + check-hub-write-path in fulltest, both
+negative-controlled). All four gates demonstrated: G1 player-refused /
+builder-open inspect over one world; G2 stitched-transcript
+byte-identity + save fixed point + corrupt-save refusal; G3 the
+inventory-derived brass key, data refusal prose, leveled verbs; G4 one
+write path, planted-violation control. Remaining: the merge wave
+(fulltest + EXE lane once, scoped /dupaudit, merge WITH a release).**
+
 Status: implementation plan, 2026-08-20, executing the APPROVED design
 [2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md).
 Work happens on `feature/track7-hub-projections-claude` off `develop`;
