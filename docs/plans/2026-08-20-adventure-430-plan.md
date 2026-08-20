@@ -243,6 +243,35 @@ Every src/include commit carries the four rule trailers.
 - **A5** Game skeleton: loop, vocab, intent, travel interpreter,
   describe/abbrev view, LCG + `seed` verb. Parity gate live on the
   motion-only log subset.
+  **A5 recon banked (2026-08-20, from the reference's I/O layer):** the
+  transcript rhythm is `\n` + text + `\n` for EVERY message (vspeak's
+  leading blank; empty/null messages print NOTHING) and `\n` + `> line`
+  for every input (prompt echoed with the line under non-tty — the
+  transcripts START with a newline byte). speak() carries the
+  floor→ground rewrite when outside, %d/%s/%S(pluralize-by-previous-%d)/
+  %V substitution. Vocab: first two whitespace words, 5-char
+  case-insensitive prefix match, lookup order motions→objects→actions→
+  zzword→numeric. describe: short unless abbrev%abbnum==0 or no short;
+  dark→PITCH_DARK (unless forced); TAME_BEAR prefix; LOC_Y2 25%
+  SAYS_PLUGH. listobjects: only when lit; increments abbrev; treasure
+  first-sight tally + RUG/CHAIN/EGGS specials; STEPS suppressed when
+  toting nugget, STEPS state by fixed-side. preprocess: enter water/
+  stream; OV→VO swap; bare GRATE→DEPRESSION/ENTRANCE by region;
+  water/oil plant/door→pour; cage bird→carry; typeless word[0]→motion.
+  init: abbnum=5, limit=330, clock1=30 clock2=50, chloc=LOC_MAZEEND12
+  chloc2=LOC_DEADEND13, dwarves from dwarflocs, tally=treasure count,
+  treasures start NOTFOUND (state -1 semantics beside the state LABELS
+  — model as a per-object `found` flag reading the C prop=-1/stashify
+  contract in bag terms).
+  **⚠️ OBJECT LISTING ORDER (A6 converter addendum):** C's atloc lists
+  PREPEND on drop — listing order == placement timestamp DESCENDING.
+  Init's effective order: plain objects ascending objnum, then
+  two-placed ascending (their drop loops run high→low, two-placed loop
+  first). The converter must emit a per-object `seq` prop replaying C's
+  init drop order (two-placed desc objnum first, then plain desc); the
+  game bumps `seq` from a world counter on every move and lists
+  contents by seq descending. ui::contents order alone is append-order
+  and diverges after the first mid-game drop.
 - **A6** Verb systems wave 1 (take/drop/open/lock/on/off/inventory/
   drink/eat...) — parity subset grows.
 - **A7** Dwarves + pirate + combat (RNG parity proves here), knife,
