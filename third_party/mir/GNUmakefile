@@ -378,7 +378,7 @@ clean-mir-tests: clean-mir-utility-tests clean-mir-interp-tests clean-mir-gen-te
 
 # ------------------ MIR utility tests ------------------------
 
-.PHONY: simplify-test scan-test io-test clean-mir-utility-tests
+.PHONY: simplify-test scan-test io-test aarch64-mem-disp-test clean-mir-utility-tests
 
 simplify-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/simplify.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/simplify-test $(LDLIBS) && $(BUILD_DIR)/simplify-test$(EXE)
@@ -389,6 +389,10 @@ hello-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_
 scan-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/scan-test.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/scan-test $(LDLIBS) && $(BUILD_DIR)/scan-test$(EXE)
 
+# aarch64 hosts only: the target_memory_ok_p gate-vs-encoder check (PR #466).
+aarch64-mem-disp-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(SRC_DIR)/mir-tests/aarch64-mem-disp.c
+	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/aarch64-mem-disp-test $(LDLIBS) && $(BUILD_DIR)/aarch64-mem-disp-test$(EXE)
+
 io-test: $(BUILD_DIR)/mir.$(OBJSUFF) $(SRC_DIR)/mir-tests/io.c
 	$(COMPILE_AND_LINK) $^ $(EXEO)$(BUILD_DIR)/io-test $(LDLIBS) && $(BUILD_DIR)/io-test$(EXE)
 
@@ -396,6 +400,7 @@ clean-mir-utility-tests:
 	$(RM) $(BUILD_DIR)/run-test$(EXE) $(BUILD_DIR)/simplify-test$(EXE)
 	$(RM) $(BUILD_DIR)/hello-test$(EXE)
 	$(RM) $(BUILD_DIR)/scan-test$(EXE) $(BUILD_DIR)/io-test$(EXE)
+	$(RM) $(BUILD_DIR)/aarch64-mem-disp-test$(EXE)
 
 # ------------------ MIR interp tests --------------------------
 

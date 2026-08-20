@@ -2547,7 +2547,15 @@ static int target_memory_ok_p (gen_ctx_t gen_ctx, MIR_op_t *op_ref) {
   gen_assert (op_ref->mode == MIR_OP_VAR_MEM);
   MIR_context_t ctx = gen_ctx->ctx;
   size_t size = _MIR_type_size (ctx, op_ref->u.var_mem.type);
-  int scale = gen_int_log2 ((int64_t) size);
+  /* The scaled forms encode disp/size and require mem.scale == size:
+     pattern_match_p checks both with `1 << (ch - '0')`, i.e. the access size
+     in bytes.  Comparing against its log2 here made this disagree with the
+     encoder in BOTH directions: disp 12 on an i64 passed 12 % 3 == 0 and then
+     nothing could encode it ("fatal failure in matching insn"), while disp 8
+     failed 8 % 3 and kept a foldable displacement as a separate ADD.
+     ADOPTED-FROM: upstream PR #466 (richarddd); its gate-vs-encoder test
+     rides along as mir-tests/aarch64-mem-disp.c (aarch64 hosts). */
+  int scale = (int) size;
 
   if (op_ref->u.var_mem.disp == 0
       && ((op_ref->u.var_mem.index == MIR_NON_VAR || op_ref->u.var_mem.scale == 1
