@@ -258,6 +258,17 @@ public:
 		out.push_back(_links[i].key);
 	return out;
     }
+    // Every link touching an entity, either end — the inspector's and the
+    // exporter's enumeration (copies; the store stays private).
+    std::vector<link> links_of(entity_id e) const
+    {
+	std::vector<link> out;
+	for ( size_t i = 0; i < _links.size(); ++i )
+	    if ( _links[i].from == e || _links[i].to == e )
+		out.push_back(_links[i]);
+	return out;
+    }
+    std::vector<link> all_links() const { return _links; }
 
     // --- key layering: `master` provides `granted` (and, transitively,
     // whatever `granted` provides). Folded at credential build; cycle-safe.
