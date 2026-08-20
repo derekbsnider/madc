@@ -138,6 +138,25 @@ def convert(doc):
     out = WorldOut()
     counts = {}
 
+    # Travel-rule verbs in the YAML are vocabulary WORDS (BUILD, ROAD),
+    # not motion names — the reference's make_dungeon.py resolves them
+    # against the motion word lists. Resolve here too, so the world file
+    # carries ONE id space (motion names) and the game's vocabulary
+    # lookup and rule matching meet in it. Unresolvable verbs are a data
+    # breach: fail loud.
+    word_to_motion = {}
+    for mname, m in doc["motions"]:
+        mname = key_name(mname)
+        for w in (m or {}).get("words") or []:
+            word_to_motion.setdefault(w.lower(), mname)
+
+    def motion_of(verb_word):
+        m = word_to_motion.get(str(verb_word).lower())
+        if m is None:
+            raise SystemExit("advent_yaml_to_world: travel verb %r "
+                             "matches no motion word" % verb_word)
+        return m
+
     # ---- locations -------------------------------------------------------
     locations = doc["locations"]
     counts["locations"] = len(locations)
@@ -165,7 +184,7 @@ def convert(doc):
             props["hints"] = [h["name"] for h in hints]
         travel = []
         for rule in loc.get("travel") or []:
-            r = {"verbs": rule.get("verbs") or [],
+            r = {"verbs": [motion_of(v) for v in rule.get("verbs") or []],
                  "cond": rule.get("cond"),
                  "action": rule.get("action")}
             if rule.get("nodwarves"):

@@ -1,4 +1,4 @@
-first: 3 verbs, first=ROAD action=goto->LOC_HILL
+first: 3 verbs, first=MOT_2 action=goto->LOC_HILL
 rules=5
 lit=true
 You are standing at the end of a road before a small brick building.
