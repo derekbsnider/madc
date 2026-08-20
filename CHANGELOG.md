@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [v0.94.0] — 2026-08-20
+
+Upstream-community MIR hardening: three codegen correctness fixes adopted
+or authored, each attributed to its original contributor.
+
+- **ssa_combine no longer folds an address base through a loop-header
+  PHI** (wrong code at `-O2`/`-O3`: wrong addresses presenting as a
+  segfault and a hang; level 1 unaffected). The `cycle_phi_p` guard only
+  recognized single-BB self-loops — a multi-BB loop's backedge operand is
+  defined in the loop body, so exactly the loops needing the guard fell
+  through. It now asks the structural question: does the PHI's block have
+  an incoming back edge (MIR's DFS already marks `e->back_edge_p`;
+  ssa_combine recomputes the marks at entry). Diamond-join PHIs keep
+  folding. Reported with API-level reducers by **ThePeiLin** (upstream
+  issue vnmakarov/mir#467); both reproduced on our fork verbatim
+  (rc=139 / hang) and both return 0 at every level after the fix. Our
+  fix — an upstream PR candidate alongside the v0.93.0 cvt work.
+- **The register allocator's spilled-reg rewrite table is bounded at run
+  time** (adopted from upstream PR #468 by **Bill Hlavacek**): the undo
+  table was guarded only by an assert compiled out under NDEBUG; our
+  fork's earlier 2→4 raise covered `x = x*x` but not `MIR_USE`, whose
+  operand count is unbounded. The bound now tests before any rewrite and
+  declines cleanly when full.
+- **aarch64: the memory-displacement gate compares against the access
+  size in bytes** (adopted from upstream PR #466 by **Richard Davison**),
+  not its log2 — the old gate disagreed with the encoder in both
+  directions (legal disp 12 = fatal generation failure; foldable disp 8
+  kept as a separate ADD; the contributor measured −4.2% instructions on
+  Octane in an M1 JS JIT). Directly serves madc's darwin arm64 lane; the
+  contributor's gate-vs-encoder test rides along
+  (`make aarch64-mem-disp-test` on aarch64 hosts).
+- **Upstream issue #429 (ARM64 by-value struct >16B; pointer to static
+  array) verified NOT to affect our fork**: both reducers pass on real
+  Apple Silicon at levels 1 and 2 — the darwin ABI arc already covers
+  those patterns; the crashes are stock-upstream-only.
+
+Validation: c2mir-gen-test AND c2mir-gen-test3 both 1143/2286/0 (exact
+baseline), issue-467 reducers 0/0/0/0 across levels, PR-468 reducer
+rc=0, fulltest and EXE lane at baseline (counts in docs/test-status.md).
+
 ## [v0.93.0] — 2026-08-20
 
 Floating-point codegen at gcc speed: the MIR false-dependency fix.

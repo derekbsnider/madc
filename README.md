@@ -210,12 +210,14 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.93.0** — floating-point codegen at gcc
-speed: a six-year-old upstream MIR defect (false dependencies on the
-scalar SSE converts) fixed in the in-tree fork, making call-heavy FP
-code ~2.8× faster — donut.c now beats gcc -O0 (0.493s vs 0.514s per 300
-frames, byte-identical output). Diagnosed from identical instruction
-counts down to a one-`pxor` A/B proof; queued for upstreaming.
+The current release is **v0.94.0** — upstream-community MIR hardening:
+the `-O2`/`-O3` wrong-code ssa_combine loop-PHI fold fixed (reported
+with reducers by ThePeiLin, upstream #467; our fix, queued for
+upstream), the register-allocator spill-table bound adopted from Bill
+Hlavacek (upstream PR #468), and the aarch64 displacement gate adopted
+from Richard Davison (upstream PR #466). The v0.93.0 release just
+before it made call-heavy FP code ~2.8× faster by breaking the false
+dependency on MIR's scalar SSE converts — donut.c now beats gcc -O0.
 
 The prior v0.92 line made the C++23 formatting surface simply part of
 madc — `std::println("x={} y={:.3f}", x, y)` in a bare script with zero
@@ -251,6 +253,8 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.94.0](docs/release-notes/v0.94.0.md) — upstream-community MIR
+  hardening: -O2 wrong-code loop-PHI fold, spill-table bound, aarch64 gate.
 - [v0.93.0](docs/release-notes/v0.93.0.md) — FP codegen at gcc speed: the
   upstream MIR convert false-dependency fixed; donut.c beats gcc -O0.
 - [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:

@@ -1,6 +1,16 @@
 # Test Status
 
-> **Current (2026-08-20, v0.93.0 — the MIR convert false-dependency
+> **Current (2026-08-20, v0.94.0 — upstream-community MIR hardening):**
+> authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
+> 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test AND c2mir-gen-test3
+> both **1143/2286/0 (exact baseline)**. Reducers: upstream issue #467's
+> min_repro/min_repro_loop 0/0/0/0 across gen levels (were SIGSEGV/hang
+> at level 2); PR #468's `t*t` reducer rc=0 at `-O2 -eg`; upstream issue
+> #429's two reducers PASS on real Apple Silicon at levels 1 and 2
+> (fork not affected — darwin ABI arc covers them). New in-fork test:
+> `make aarch64-mem-disp-test` (aarch64 hosts, from PR #466).
+>
+> **Previous (2026-08-20, v0.93.0 — the MIR convert false-dependency
 > fix):** authoritative Linux fulltest **1104 passed / 0 failed / 0
 > timed out / 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test
 > **1143/2286/0 (exact baseline)** — the merge-wave battery for the
