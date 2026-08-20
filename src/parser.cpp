@@ -47621,6 +47621,13 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	    DataDef *cv_type = &ddINT64; // default
 	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
+	    else if ( catch_types.back() == 3 && ptr_depth > 0 )
+		// cstr catch (`catch (const char *m)`): the variable IS a
+		// char pointer — register the real type so typed consumers
+		// (the std::format classifier, cstr parameters) see text.
+		// As int64 it printed the POINTER BITS through std::println;
+		// printf %s only worked because varargs pass bits through.
+		cv_type = &ddCHARptr;
 	    else if ( catch_types.back() == 4 && ctype )
 	    {
 		// class/pointer catch: register the REAL type so the handler
