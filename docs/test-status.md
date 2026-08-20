@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-08-20, v0.92.0 — bare `cout << value` + std::format/
+> **Current (2026-08-20, v0.92.1 — the v0.92 binary-shipping patch):**
+> authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
+> 9 skipped**; EXE **1063/0**, OBJ **1063/0**, release rc=0 — one
+> merge-wave battery at the fixed content. Windows: wine packed suite
+> **1061 passed / 0 failed / 52 skipped** (both v0.92.0-era regressions
+> fixed: `testlibcnoheaderargs` — the four float-math names ucrtbase
+> hides are pinned; `testphpvardump` — the LLP64 platform `long` words
+> as its source name). macOS: both arches cross-built and
+> verify_macho_release green. First three-platform asset set since
+> v0.82.0 (deb/rpm, windows zip, two macOS tarballs, SHA256SUMS).
+>
+> **Previous (2026-08-20, v0.92.0 — bare `cout << value` + std::format/
 > print/println intrinsics):** authoritative Linux fulltest **1104 passed /
 > 0 failed / 0 timed out / 9 skipped**; **1113 tests compiled with ZERO
 > warnings**; EXE **1063/0**, OBJ **1063/0**, packed **1104/0/0/9**,

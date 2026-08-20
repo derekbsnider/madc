@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [v0.92.1] — 2026-08-20
+
+The v0.92 line's binary-shipping patch: two win64 regressions caught by the
+new three-platform promotion gate, fixed before any asset shipped.
+
+- **win64: headerless `hypotf` resolves** — ucrtbase.dll does not export
+  `fabsf`/`frexpf`/`hypotf`/`ldexpf` (header inlines / the `_hypotf`
+  oldname; mingw-gcc statically binds libmingwex's), so the headerless
+  existence probe died at parse on `testlibcnoheaderargs`. The complete
+  C99 `<math.h>` float-suffix surface was audited against the genuine
+  export list (import-lib `__imp_` stubs, cross-checked with
+  GetProcAddress under wine): exactly those four are hidden, now pinned
+  in the fork's one name map (`third_party/mir/mir-mingw-stdio.h`
+  class 3) — closed as the complete hidden set, like the long-double
+  family before it.
+- **win64: `var_dump(long)` says `long(42)`** — the scalar type word came
+  from the rank, and the LLP64 platform `long` is dtINT32-ranked by
+  design (task #46b), so it printed `int(42)`. The word now comes from
+  the platform singleton's own source name; identical `long(42)` on
+  every target, LP64 provably unaffected (it never instantiates the
+  platform classes). Gate: `testphpvardump`, same fixture both
+  platforms.
+- **Process: every master promotion is THREE-PLATFORM and the platform
+  suites GATE it** (owner rule 2026-08-20, codified in `/promote`):
+  Linux, Windows, and macOS packages are built, verified, and
+  suite-validated BEFORE any asset uploads; a platform regression blocks
+  the promotion, never ships as a recorded residue.
+
+Validation (merge-wave battery at this content): fulltest 1104/0/0/9,
+EXE 1063/0, OBJ 1063/0, release + packed + platform lanes recorded in
+docs/test-status.md.
+
 ## [v0.92.0] — 2026-08-20
 
 Bare `cout << value` with ZERO includes, and `std::format` / `std::print` /

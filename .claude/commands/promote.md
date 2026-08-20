@@ -49,16 +49,36 @@ Merges develop into master, tags the release, and pushes.
      `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
      --notes-file docs/release-notes/vX.Y.Z-master.md --latest`
      (if gh is not authed, note it in the report and continue)
-   - Build and attach the distribution packages: run
-     `bash scripts/package_release.sh` on the build container (it
-     rebuilds in the distribution configuration, runs the packed suite
-     against the exact packaged binary, and restores the tree), pull
-     `dist/` back, then
-     `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm dist/SHA256SUMS`
+   - **Every master promotion is THREE-PLATFORM, and the platform
+     suites GATE it** (owner rule, 2026-08-20). Assets upload only
+     after ALL THREE lanes are built, verified, and green — a Windows
+     or macOS regression BLOCKS the promotion and gets fixed first,
+     never recorded as a residue.
+     1. Linux: `bash scripts/package_release.sh` on the build container
+        (rebuilds in the distribution configuration, runs the packed
+        suite against the exact packaged binary, restores the tree;
+        TRUNCATES `dist/SHA256SUMS`).
+     2. Windows: `scripts/remote_build.sh release-win` (build +
+        verify_pe_release), then the wine packed suite
+        (`WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin'
+        MADC_BIN=bin/madc-release-x86-64-windows.exe MADC_WRAPPER=wine
+        MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh`) —
+        must be green — then `bash scripts/package_release_windows.sh`
+        (appends to SHA256SUMS).
+     3. macOS: `scripts/remote_build.sh release-macos` (both arches +
+        verify_macho_release), then
+        `bash scripts/package_release_macos.sh` (appends to SHA256SUMS);
+        run the Mac battery (ssh derek@192.168.1.79, `LC_ALL=C`) when
+        the Mac is reachable — a darwin regression blocks too.
+     Pull `dist/` back via scp (NEVER `remote_build.sh sync` before the
+     pull — sync clobbers container `dist/`), then upload the SIX
+     assets:
+     `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm
+     dist/madc-*-windows-x86_64.zip dist/madc-*-macos-arm64.tar.gz
+     dist/madc-*-macos-x86_64.tar.gz dist/SHA256SUMS`
 
    (MIR needs nothing separate: it lives in-tree at `third_party/mir`,
-   so the madc tag versions it — subtree migration 2026-08-11. The
-   macOS tarballs, when the release ships them, ride the same upload.)
+   so the madc tag versions it — subtree migration 2026-08-11.)
 
 6. **Switch back to develop**
 
