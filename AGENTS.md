@@ -321,6 +321,7 @@ no matter how small.
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
+| [value-first.md](.claude/rules/value-first.md)   |    21 | madc-dialect code: var/value over std::string, std::print/println over cout; missing string capability = fix the CARRIER, never a std::string fallback |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 
