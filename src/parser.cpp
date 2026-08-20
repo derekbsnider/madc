@@ -23040,6 +23040,38 @@ void Program::add_array_methods()
 	ddARRAY.method_map[name] = var;
     }
 
+    // Strict kind accessors mirroring madc::value's own contract
+    // (include/libmadc/value.h): as_integer/as_boolean/as_real demand the
+    // exact kind (mismatch = catchable script error in the runtime entry,
+    // madc_mir_backend.cpp), is_null answers kind::null. The same
+    // declaration-only emit_symbol path count()/c_str() ride.
+    struct ArrayAccessor { const char *name; typespec_t ret; const char *sym; };
+    const ArrayAccessor accessors[] = {
+	{ "as_integer", DataType::dtINT64,  "madarray_as_integer" },
+	{ "as_boolean", DataType::dtBOOL,   "madarray_as_boolean" },
+	{ "as_real",    DataType::dtDOUBLE, "madarray_as_real"    },
+	{ "is_null",    DataType::dtBOOL,   "madarray_is_null"    },
+    };
+    for ( const ArrayAccessor &ac : accessors )
+    {
+	Variable *var = addFunction(ac.name,
+	    datatype_vec_t{ac.ret, ptr_of(ddARRAY)}, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = ac.sym;
+	    fd->method_display_name = ac.name;
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[ac.name] = var;
+    }
+
     // Scalar (re)assignment surface (slice V1): native operator= overloads
     // binding to the madarray_assign_* runtime entries (madc_mir_backend.cpp).
     // One registration per scalar kind + the value copy-assign; expression

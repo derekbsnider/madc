@@ -130,6 +130,37 @@ int64_t madarray_count(void *ptr)
 	return (int64_t)n;
     }
 
+// Strict kind accessors — the script .as_integer()/.as_boolean()/.as_real()
+// methods and the .is_null() predicate (add_array_methods binds them here),
+// mirroring madc::value's own accessor contract: the value's kind must BE
+// the asked-for kind; a mismatch is a real madc exception (catchable as
+// `catch (const char *)`), never a silent coercion. The carrier's C++
+// throw is converted at this boundary — a C++ exception must not cross
+// the MIR frame.
+int64_t madarray_as_integer(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_integer() )
+	    __madc_throw_cstr("as_integer(): value kind is not integer");
+	return v->as_integer();
+    }
+int64_t madarray_as_boolean(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_boolean() )
+	    __madc_throw_cstr("as_boolean(): value kind is not boolean");
+	return v->as_boolean() ? 1 : 0;
+    }
+double madarray_as_real(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_real() )
+	    __madc_throw_cstr("as_real(): value kind is not real");
+	return v->as_real();
+    }
+int64_t madarray_is_null(void *ptr)
+    { return ((madc::value *)ptr)->is_null() ? 1 : 0; }
+
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.
 // Each retags the carrier in place through madc::value's own operator=
