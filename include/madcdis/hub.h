@@ -176,9 +176,11 @@ public:
     }
 
     // --- names: one interned namespace for entity names, keys, domains,
-    // relation kinds. Interning is how a spelling becomes checkable in O(1).
-    name_id intern(const std::string &s) { return _names.intern(s); }
-    name_id intern(const char *s)        { return _names.intern(s); }
+    // relation kinds. Interning is how a spelling becomes checkable in
+    // O(1). Const like the intern table itself: a memoizing dedup adds a
+    // spelling but changes no observable state.
+    name_id intern(const std::string &s) const { return _names.intern(s); }
+    name_id intern(const char *s)        const { return _names.intern(s); }
     const char *spelling(name_id id) const { return _names.c_str(id); }
 
     // --- entities
@@ -195,9 +197,9 @@ public:
     // First entity whose canonical name interns equal (linear; pilot scale).
     entity_id find(const std::string &name) const
     {
-	uint32_t want = _names.intern(name);
+	name_id want = intern(name);
 	for ( size_t i = 0; i < _owned.size(); ++i )
-	    if ( _owned[i]->name == (name_id)want )
+	    if ( _owned[i]->name == want )
 		return _owned[i]->id;
 	return 0;
     }

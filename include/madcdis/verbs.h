@@ -87,11 +87,15 @@ struct verb_outcome
 
 // Handler contract: mutate ONLY through mc; return true for ok (out = the
 // player-facing content the projection will carry), false for failed
-// (out = why). `target` may be 0 for intransitive verbs; `arg` carries the
-// raw word/rest-of-line the driver resolved nothing for.
-typedef bool (*verb_handler)(mutation_context &mc, entity_id actor,
-			     entity_id target, const std::string &arg,
-			     std::string &out);
+// (out = why). `creds` is the invoker's credential set — the VERB's own
+// requirement is already checked by dispatch, but ENTITY-ATTACHED
+// conditions (a locked door's data requirement) are the handler's to
+// check against these same credentials. `target` may be 0 for
+// intransitive verbs; `arg` carries the raw word/rest-of-line the driver
+// resolved nothing for.
+typedef bool (*verb_handler)(mutation_context &mc, const credentials &creds,
+			     entity_id actor, entity_id target,
+			     const std::string &arg, std::string &out);
 
 class verb_table
 {
@@ -141,7 +145,7 @@ public:
 	    return verb_outcome(verb_status::refused, v->refusal);
 	mutation_context mc(w);
 	std::string out;
-	bool ok = v->fn(mc, actor, target, arg, out);
+	bool ok = v->fn(mc, creds, actor, target, arg, out);
 	return verb_outcome(ok ? verb_status::ok : verb_status::failed, out);
     }
 };

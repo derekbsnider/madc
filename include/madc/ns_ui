@@ -1,0 +1,53 @@
+// madc embedded <ns_ui> — the data-hub projection surface (Track 7
+// Phase 1). Declaration-only: the ui:: publics below resolve
+// mangled-direct (Itanium symbols) to the real namespace ui
+// implementations in the host, src/ns_ui.cpp (cpp-first-api.md).
+//
+// VALUE-FIRST: typed in madc's `value` carrier, int64_t handles, and
+// const char* — this header deliberately includes nothing. Rendered
+// projections return as string-kind values through `value &out`
+// parameters (the <ns_madc> convention; value-by-value returns are a
+// standing carrier open).
+//
+// Phase 1 surface: handle-based world sessions over the tagged world
+// format, session credentials (keys + per-domain levels), level-0
+// projections, and verb dispatch. The Phase 1 session layer binds the
+// compiled adventure catalog named by the world file's %verb lines;
+// pluggable catalogs and stored views arrive with later phases.
+
+namespace ui {
+    // Open a world file (the %world tagged format). Returns a session
+    // handle (> 0), or 0 with the reason on stderr. Sessions are
+    // independent; close releases one.
+    int64_t world_open(const char *path);
+    bool    world_save(int64_t w, const char *path);
+    void    world_close(int64_t w);
+
+    // Entity lookup by canonical name (0 = absent).
+    int64_t entity_by_name(int64_t w, const char *name);
+
+    // Where an entity is (its containment target; 0 = nowhere). The
+    // driver's room-change detection for auto-look.
+    int64_t location(int64_t w, int64_t entity);
+
+    // Session credentials: role keys and per-domain levels. Data-derived
+    // credentials (carried grants) are added per actor at each use.
+    void session_grant(int64_t w, const char *key);
+    void session_level(int64_t w, const char *domain, int64_t level);
+
+    // Level-0 projections, rendered to text in a string-kind value.
+    // render_inspect is gated by the world's `%require inspect` line —
+    // projection selection IS the access decision.
+    value &render_look(value &out, int64_t w, int64_t actor);
+    value &render_inspect(value &out, int64_t w, int64_t target);
+
+    // Verb dispatch: the driver sends the verb word and the rest of the
+    // line; target resolution, gating, execution, and the turn tick
+    // happen host-side. The result text is player-facing; an empty
+    // result means the verb is unknown (the driver phrases that).
+    value &act(value &out, int64_t w, int64_t actor, const char *verb,
+	       const char *rest);
+
+    // The world clock (the `world-state` turn counter; 0 when absent).
+    int64_t turn_count(int64_t w);
+}

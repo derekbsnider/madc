@@ -24,9 +24,9 @@ using madc::hub::verb_outcome;
 using madc::hub::verb_status;
 
 // A "take" shape: relink the target from wherever it is into the actor.
-static bool take_handler(mutation_context &mc, entity_id actor,
-			 entity_id target, const std::string &,
-			 std::string &out)
+static bool take_handler(mutation_context &mc, const credentials &,
+			 entity_id actor, entity_id target,
+			 const std::string &, std::string &out)
 {
     if ( target == 0 )
     {
@@ -43,8 +43,8 @@ static bool take_handler(mutation_context &mc, entity_id actor,
 }
 
 // A "light" shape: bag mutation through the context, with a data condition.
-static bool light_handler(mutation_context &mc, entity_id,
-			  entity_id target, const std::string &,
+static bool light_handler(mutation_context &mc, const credentials &,
+			  entity_id, entity_id target, const std::string &,
 			  std::string &out)
 {
     madc::hub::entity *e = mc.edit(target);

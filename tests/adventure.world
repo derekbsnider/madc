@@ -1,0 +1,58 @@
+# The Track 7 Phase 1 pilot world: a maze of twisty passages, a brass
+# lantern, a brass key that IS the door's permission, and a dark vault.
+%world 1
+%entity world-state
+  turn = 0
+%entity hero
+%entity twisty-passage
+  title = Twisty Passage
+  desc = You are in a maze of twisty little passages, all alike.
+%entity twisty-passage-2
+  title = Twisty Passage
+  desc = You are in a maze of twisty little passages, all alike.
+%entity dead-end
+  title = Dead End
+  desc = A rough wall of rock blocks the way. Scratched into the stone: TAKE THE KEY.
+%entity vault
+  title = The Vault
+  desc = A small round chamber glittering with mica.
+  dark = true
+%entity brass-lantern
+  noun = lantern
+  short = a brass lantern
+  desc = A dented brass lantern.
+  portable = true
+  fuel = 6
+  lit = false
+%entity brass-key
+  noun = key
+  short = a brass key
+  portable = true
+  grants = opens-brass-door
+%entity brass-door
+  noun = door
+  short = a heavy brass door
+  closed = true
+  requires = opens-brass-door
+  refusal = The brass door is locked. A key-shaped hole winks at you.
+  blocks = down
+  blocked_msg = The brass door is closed.
+%link hero in twisty-passage
+%link brass-lantern in twisty-passage
+%link brass-key in dead-end
+%link brass-door in twisty-passage-2
+%link twisty-passage exit twisty-passage-2 north
+%link twisty-passage exit dead-end east
+%link twisty-passage-2 exit twisty-passage south
+%link twisty-passage-2 exit vault down
+%link dead-end exit twisty-passage west
+%link vault exit twisty-passage-2 up
+%verb go
+%verb take
+%verb drop
+%verb open
+%verb light
+%verb douse
+%verb inventory
+%verb edit key=builder refusal=Only a builder may reshape the world.
+%require inspect key=builder refusal=Only a builder sees the bones.

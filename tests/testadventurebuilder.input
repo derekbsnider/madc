@@ -1,0 +1,6 @@
+inspect brass-door
+go north
+edit door short a polished brass door
+inspect brass-door
+edit lantern noun lamp
+quit

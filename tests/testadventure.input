@@ -1,0 +1,15 @@
+take lantern
+inventory
+go east
+take key
+go west
+go north
+go down
+open door
+go down
+light lantern
+look
+turns
+inspect brass-door
+xyzzy
+quit
