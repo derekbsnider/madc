@@ -1,0 +1,62 @@
+// A3 end-to-end probe: the Adventure engine loop's core reads/writes over
+// the REAL dungeon through ui:: — travel-rule iteration (range-for over an
+// array of rule bags), keyed reads, bag writes, containment, moves.
+#include <cstdio>
+#include <ns_ui>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	long w = ui::world_open("examples/adventure/adventure.world");
+	if ( !w )
+	{
+		printf("open failed\n");
+		return 1;
+	}
+	long start = ui::entity_by_name(w, "LOC_START");
+
+	var travel;
+	ui::get(travel, w, start, "travel");
+	long n = 0;
+	for ( value r : travel )
+	{
+		if ( n == 0 )
+		{
+			var verbs = r["verbs"];
+			var act = r["action"];
+			printf("first: %lld verbs, first=%s action=%s->%s\n",
+			       verbs.count(), verbs[0].c_str(),
+			       act[0].c_str(), act[1].c_str());
+		}
+		n = n + 1;
+	}
+	printf("rules=%ld\n", n);
+
+	var conds;
+	ui::get(conds, w, start, "conditions");
+	printf("lit=%s\n", conds["LIT"]);
+
+	var lg;
+	ui::get(lg, w, start, "long");
+	printf("%s\n", lg.c_str());
+
+	ui::set(w, start, "visited", (long)3);
+	var vis;
+	ui::get(vis, w, start, "visited");
+	printf("visited=%s\n", vis);
+
+	long bld = ui::entity_by_name(w, "LOC_BUILDING");
+	var held;
+	ui::contents(held, w, bld);
+	printf("held=%lld\n", held.count());
+	for ( value h : held )
+		printf("- %s\n", h.c_str());
+
+	long lamp = ui::entity_by_name(w, "LAMP");
+	ui::move(w, lamp, start);
+	printf("lamp-at-start=%d\n", (int)(ui::location(w, lamp) == start));
+
+	ui::world_close(w);
+	return 0;
+}

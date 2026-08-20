@@ -50,4 +50,27 @@ namespace ui {
 
     // The world clock (the `world-state` turn counter; 0 when absent).
     int64_t turn_count(int64_t w);
+
+    // ---- entity bag access (E2, the Adventure feeder wave) -------------
+    // Reads copy OUT of the world and never vivify its bags; writes route
+    // through the hub's mutation context — the one write surface.
+
+    // The value at `key` in the entity's bag, copied into `out`
+    // (null kind when the entity or key is absent).
+    value &get(value &out, int64_t w, int64_t entity, const char *key);
+    // The entity's canonical name (string kind; empty when absent).
+    value &name_of(value &out, int64_t w, int64_t entity);
+    // Containment enumeration: out = array of the NAMES of the entities
+    // held by `container` (the world's `in` relation), in link order.
+    value &contents(value &out, int64_t w, int64_t container);
+
+    // Bag writes: one overloaded name, any value kind (nested trees ride
+    // the carrier overload).
+    void set(int64_t w, int64_t entity, const char *key, const value &v);
+    void set(int64_t w, int64_t entity, const char *key, const char *v);
+    void set(int64_t w, int64_t entity, const char *key, int64_t v);
+    void set(int64_t w, int64_t entity, const char *key, bool v);
+    void set(int64_t w, int64_t entity, const char *key, double v);
+    // Move `entity` into `dest`'s containment (dest 0 = out of the world).
+    void move(int64_t w, int64_t entity, int64_t dest);
 }

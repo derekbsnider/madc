@@ -287,4 +287,85 @@ int64_t turn_count(int64_t w)
 		 : 0;
 }
 
+// ---- entity bag access (E2, the Adventure feeder wave) ---------------------
+// Reads copy OUT of the world and never vivify its bags; writes route
+// through the hub's mutation_context — the one write surface (G4).
+
+madc::value &get(madc::value &out, int64_t w, int64_t entity, const char *key)
+{
+    out = madc::value();
+    ui_session *s = ui_get(w);
+    const madc::hub::entity *e = s ? s->w.get((entity_id)entity)
+				   : (const madc::hub::entity *)0;
+    if ( !e || !key || !e->bag.is_object() )
+	return out;
+    const std::map<std::string, madc::value> &m = e->bag.as_object();
+    std::map<std::string, madc::value>::const_iterator it = m.find(key);
+    if ( it != m.end() )
+	out = it->second;
+    return out;
+}
+
+madc::value &name_of(madc::value &out, int64_t w, int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    const madc::hub::entity *e = s ? s->w.get((entity_id)entity)
+				   : (const madc::hub::entity *)0;
+    return ui_text_out(out,
+		       e ? std::string(s->w.spelling(e->name))
+			 : std::string());
+}
+
+madc::value &contents(madc::value &out, int64_t w, int64_t container)
+{
+    out = madc::value::make_array();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return out;
+    std::vector<entity_id> held =
+	s->w.sources((entity_id)container, s->w.intern("in"));
+    for ( entity_id id : held )
+    {
+	const madc::hub::entity *e = s->w.get(id);
+	if ( e )
+	    out.array().push_back(madc::value(s->w.spelling(e->name)));
+    }
+    return out;
+}
+
+void set(int64_t w, int64_t entity, const char *key, const madc::value &v)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !key || !*key )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    madc::hub::entity *e = mc.edit((entity_id)entity);
+    if ( e )
+	e->bag.object()[key] = v;
+}
+
+void set(int64_t w, int64_t entity, const char *key, const char *v)
+    { set(w, entity, key, madc::value(v ? v : "")); }
+void set(int64_t w, int64_t entity, const char *key, int64_t v)
+    { set(w, entity, key, madc::value(v)); }
+void set(int64_t w, int64_t entity, const char *key, bool v)
+    { set(w, entity, key, madc::value(v)); }
+void set(int64_t w, int64_t entity, const char *key, double v)
+    { set(w, entity, key, madc::value(v)); }
+
+void move(int64_t w, int64_t entity, int64_t dest)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    name_id rel_in = mc.intern("in");
+    std::vector<entity_id> holders =
+	s->w.targets((entity_id)entity, rel_in);
+    for ( entity_id h : holders )
+	mc.link_remove((entity_id)entity, rel_in, h);
+    if ( dest )
+	mc.link_add((entity_id)entity, rel_in, (entity_id)dest);
+}
+
 } // namespace ui
