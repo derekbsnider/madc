@@ -584,6 +584,168 @@ int64_t php_intval_value(const madc::value *v)
 	return 0;
 }
 
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// PHP-parity NON-MUTATING forms of the string transforms whose guarded
+// std::string& publics mutate in place (that mutation is a C++-interop
+// convenience, not PHP's semantics: PHP always returns a NEW string).
+// Each copies the subject into the lent ring slot, runs the SAME in-place
+// core the std::string public uses, and returns ring-lifetime text (the
+// c_str contract). Value-out element returns ride ns_common's move-out
+// owners.
+
+// The two subject adapters for single-argument cores.
+static const char *php_ring_apply(const char *s,
+				  std::string *(*core)(std::string *))
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	core(&slot);
+	return slot.c_str();
+}
+static const char *php_ring_apply(const madc::value *v,
+				  std::string *(*core)(std::string *))
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	core(&slot);
+	return slot.c_str();
+}
+
+const char *php_trim_cstr(const char *s)	{ return php_ring_apply(s, php_trim); }
+const char *php_trim_value(const madc::value *v)	{ return php_ring_apply(v, php_trim); }
+const char *php_ltrim_cstr(const char *s)	{ return php_ring_apply(s, php_ltrim); }
+const char *php_ltrim_value(const madc::value *v)	{ return php_ring_apply(v, php_ltrim); }
+const char *php_rtrim_cstr(const char *s)	{ return php_ring_apply(s, php_rtrim); }
+const char *php_rtrim_value(const madc::value *v)	{ return php_ring_apply(v, php_rtrim); }
+const char *php_lcfirst_cstr(const char *s)	{ return php_ring_apply(s, php_lcfirst); }
+const char *php_lcfirst_value(const madc::value *v)	{ return php_ring_apply(v, php_lcfirst); }
+const char *php_nl2br_cstr(const char *s)	{ return php_ring_apply(s, php_nl2br); }
+const char *php_nl2br_value(const madc::value *v)	{ return php_ring_apply(v, php_nl2br); }
+const char *php_str_rot13_cstr(const char *s)	{ return php_ring_apply(s, php_str_rot13); }
+const char *php_str_rot13_value(const madc::value *v)	{ return php_ring_apply(v, php_str_rot13); }
+
+const char *php_str_repeat_cstr(const char *s, int64_t count)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	php_str_repeat(&slot, count);
+	return slot.c_str();
+}
+const char *php_str_repeat_value(const madc::value *v, int64_t count)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	php_str_repeat(&slot, count);
+	return slot.c_str();
+}
+
+const char *php_str_replace_cstr(const char *search, const char *replace,
+				 const char *subject)
+{
+	std::string se(search ? search : ""), re(replace ? replace : "");
+	std::string &slot = ns_common::ring_slot();
+	slot = subject ? subject : "";
+	php_str_replace(&se, &re, &slot);
+	return slot.c_str();
+}
+const char *php_str_replace_value(const char *search, const char *replace,
+				  const madc::value *subject)
+{
+	std::string se(search ? search : ""), re(replace ? replace : "");
+	std::string &slot = ns_common::value_text_slot(subject);
+	php_str_replace(&se, &re, &slot);
+	return slot.c_str();
+}
+
+const char *php_str_pad_cstr(const char *s, int64_t length, const char *pad)
+{
+	std::string p(pad ? pad : "");
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	php_str_pad(&slot, length, &p);
+	return slot.c_str();
+}
+const char *php_str_pad_value(const madc::value *v, int64_t length,
+			      const char *pad)
+{
+	std::string p(pad ? pad : "");
+	std::string &slot = ns_common::value_text_slot(v);
+	php_str_pad(&slot, length, &p);
+	return slot.c_str();
+}
+
+int64_t php_str_word_count_cstr(const char *s)
+{
+	std::string t(s ? s : "");
+	return php_str_word_count(&t);
+}
+int64_t php_str_word_count_value(const madc::value *v)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_str_word_count(&slot);
+}
+
+const char *php_chunk_split_cstr(const char *s, int64_t chunklen,
+				 const char *sep)
+{
+	std::string sp(sep ? sep : "");
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	php_chunk_split(&slot, chunklen, &sp);
+	return slot.c_str();
+}
+const char *php_chunk_split_value(const madc::value *v, int64_t chunklen,
+				  const char *sep)
+{
+	std::string sp(sep ? sep : "");
+	std::string &slot = ns_common::value_text_slot(v);
+	php_chunk_split(&slot, chunklen, &sp);
+	return slot.c_str();
+}
+
+const char *php_number_format_sep(int64_t number, const char *sep)
+{
+	std::string sp(sep ? sep : "");
+	std::string &slot = ns_common::ring_slot();
+	php_number_format(&slot, number, &sp);
+	return slot.c_str();
+}
+
+const char *php_wordwrap_cstr(const char *s, int64_t width, const char *brk)
+{
+	std::string b(brk ? brk : "");
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	php_wordwrap(&slot, width, &b);
+	return slot.c_str();
+}
+const char *php_wordwrap_value(const madc::value *v, int64_t width,
+			       const char *brk)
+{
+	std::string b(brk ? brk : "");
+	std::string &slot = ns_common::value_text_slot(v);
+	php_wordwrap(&slot, width, &b);
+	return slot.c_str();
+}
+
+const char *php_implode_cstr(const char *glue, madc::value *arr)
+{
+	std::string &slot = ns_common::ring_slot();
+	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""));
+	return slot.c_str();
+}
+
+// Value-out element returns — PHP's array_pop/array_shift return the
+// element itself (mixed), which only the carrier can represent.
+madc::value *php_array_pop_value(madc::value *out, madc::value *arr)
+{
+	ns_common::value_pop_element(*arr, *out, "php::array_pop");
+	return out;
+}
+madc::value *php_array_shift_value(madc::value *out, madc::value *arr)
+{
+	ns_common::value_shift_element(*arr, *out, "php::array_shift");
+	return out;
+}
+
 // php::array_search — find index of value in array, returns -1 if not found.
 // The carrier's index() core (madc_mir_backend.cpp) is the one owner of
 // the scan; array-only semantics stay here.
@@ -772,6 +934,34 @@ void __php_array_reverse(madc::value *a) { php_array_reverse(a); }
 int64_t __php_in_array(const char *a, madc::value *b) { return php_in_array(a, b); }
 int64_t __php_array_key_exists(const char *a, madc::value *b) { return php_array_key_exists(a, b); }
 int64_t __php_array_key_exists_int(int64_t a, madc::value *b) { return php_array_key_exists_int(a, b); }
+const char *__php_trim_cstr(const char *a) { return php_trim_cstr(a); }
+const char *__php_trim_value(madc::value *a) { return php_trim_value(a); }
+const char *__php_ltrim_cstr(const char *a) { return php_ltrim_cstr(a); }
+const char *__php_ltrim_value(madc::value *a) { return php_ltrim_value(a); }
+const char *__php_rtrim_cstr(const char *a) { return php_rtrim_cstr(a); }
+const char *__php_rtrim_value(madc::value *a) { return php_rtrim_value(a); }
+const char *__php_lcfirst_cstr(const char *a) { return php_lcfirst_cstr(a); }
+const char *__php_lcfirst_value(madc::value *a) { return php_lcfirst_value(a); }
+const char *__php_nl2br_cstr(const char *a) { return php_nl2br_cstr(a); }
+const char *__php_nl2br_value(madc::value *a) { return php_nl2br_value(a); }
+const char *__php_str_rot13_cstr(const char *a) { return php_str_rot13_cstr(a); }
+const char *__php_str_rot13_value(madc::value *a) { return php_str_rot13_value(a); }
+const char *__php_str_repeat_cstr(const char *a, int64_t b) { return php_str_repeat_cstr(a, b); }
+const char *__php_str_repeat_value(madc::value *a, int64_t b) { return php_str_repeat_value(a, b); }
+const char *__php_str_replace_cstr(const char *a, const char *b, const char *c) { return php_str_replace_cstr(a, b, c); }
+const char *__php_str_replace_value(const char *a, const char *b, madc::value *c) { return php_str_replace_value(a, b, c); }
+const char *__php_str_pad_cstr(const char *a, int64_t b, const char *c) { return php_str_pad_cstr(a, b, c); }
+const char *__php_str_pad_value(madc::value *a, int64_t b, const char *c) { return php_str_pad_value(a, b, c); }
+int64_t __php_str_word_count_cstr(const char *a) { return php_str_word_count_cstr(a); }
+int64_t __php_str_word_count_value(madc::value *a) { return php_str_word_count_value(a); }
+const char *__php_chunk_split_cstr(const char *a, int64_t b, const char *c) { return php_chunk_split_cstr(a, b, c); }
+const char *__php_chunk_split_value(madc::value *a, int64_t b, const char *c) { return php_chunk_split_value(a, b, c); }
+const char *__php_number_format_sep(int64_t a, const char *b) { return php_number_format_sep(a, b); }
+const char *__php_wordwrap_cstr(const char *a, int64_t b, const char *c) { return php_wordwrap_cstr(a, b, c); }
+const char *__php_wordwrap_value(madc::value *a, int64_t b, const char *c) { return php_wordwrap_value(a, b, c); }
+const char *__php_implode_cstr(const char *a, madc::value *b) { return php_implode_cstr(a, b); }
+madc::value *__php_array_pop_value(madc::value *a, madc::value *b) { return php_array_pop_value(a, b); }
+madc::value *__php_array_shift_value(madc::value *a, madc::value *b) { return php_array_shift_value(a, b); }
 const char *__php_strtolower(madc::value *a) { return php_strtolower_value(a); }
 const char *__php_strtolower_cstr(const char *a) { return php_strtolower(a); }
 const char *__php_strtoupper(madc::value *a) { return php_strtoupper_value(a); }

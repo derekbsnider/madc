@@ -47,6 +47,35 @@ extern "C" {
     void __php_array_slice(array *, array *, int64_t, int64_t);
     void __php_array_merge(array *, array *);
     void __php_array_column(array *, array *, int64_t);
+    const char *__php_trim_cstr(const char *);
+    const char *__php_trim_value(value *);
+    const char *__php_ltrim_cstr(const char *);
+    const char *__php_ltrim_value(value *);
+    const char *__php_rtrim_cstr(const char *);
+    const char *__php_rtrim_value(value *);
+    const char *__php_lcfirst_cstr(const char *);
+    const char *__php_lcfirst_value(value *);
+    const char *__php_nl2br_cstr(const char *);
+    const char *__php_nl2br_value(value *);
+    const char *__php_str_rot13_cstr(const char *);
+    const char *__php_str_rot13_value(value *);
+    const char *__php_str_repeat_cstr(const char *, int64_t);
+    const char *__php_str_repeat_value(value *, int64_t);
+    const char *__php_str_replace_cstr(const char *, const char *, const char *);
+    const char *__php_str_replace_value(const char *, const char *, value *);
+    const char *__php_str_pad_cstr(const char *, int64_t, const char *);
+    const char *__php_str_pad_value(value *, int64_t, const char *);
+    int64_t __php_str_word_count_cstr(const char *);
+    int64_t __php_str_word_count_value(value *);
+    const char *__php_chunk_split_cstr(const char *, int64_t, const char *);
+    const char *__php_chunk_split_value(value *, int64_t, const char *);
+    const char *__php_number_format_sep(int64_t, const char *);
+    const char *__php_wordwrap_cstr(const char *, int64_t, const char *);
+    const char *__php_wordwrap_value(value *, int64_t, const char *);
+    const char *__php_implode_cstr(const char *, array *);
+    value *__php_array_pop_value(value *, array *);
+    value *__php_array_shift_value(value *, array *);
+    void __php_array_get_value(array *, int64_t, value *);
 }
 
 namespace php {
@@ -94,6 +123,50 @@ namespace php {
     // through, real truncates, bool 1/0, containers 0.
     int64_t intval(value &v) { return __php_intval(&v); }
     int64_t intval(const char *s) { return __php_intval_cstr(s); }
+    // Lean PRIMARIES (dialect-lean.md, PHP parity): PHP string functions
+    // return a NEW string and never mutate the subject — these return
+    // ring-lifetime text (the c_str contract: pass onward or capture
+    // immediately). The guarded std::string& forms below are C++-interop
+    // conveniences that mutate in place (historical shape); the lean
+    // forms are the semantics of record.
+    const char *trim(value &s) { return __php_trim_value(&s); }
+    const char *trim(const char *s) { return __php_trim_cstr(s); }
+    const char *ltrim(value &s) { return __php_ltrim_value(&s); }
+    const char *ltrim(const char *s) { return __php_ltrim_cstr(s); }
+    const char *rtrim(value &s) { return __php_rtrim_value(&s); }
+    const char *rtrim(const char *s) { return __php_rtrim_cstr(s); }
+    // PHP chop is an alias of rtrim.
+    const char *chop(value &s) { return __php_rtrim_value(&s); }
+    const char *chop(const char *s) { return __php_rtrim_cstr(s); }
+    const char *lcfirst(value &s) { return __php_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __php_lcfirst_cstr(s); }
+    const char *nl2br(value &s) { return __php_nl2br_value(&s); }
+    const char *nl2br(const char *s) { return __php_nl2br_cstr(s); }
+    const char *str_rot13(value &s) { return __php_str_rot13_value(&s); }
+    const char *str_rot13(const char *s) { return __php_str_rot13_cstr(s); }
+    const char *str_repeat(value &s, int64_t count) { return __php_str_repeat_value(&s, count); }
+    const char *str_repeat(const char *s, int64_t count) { return __php_str_repeat_cstr(s, count); }
+    // PHP argument order: (search, replace, subject).
+    const char *str_replace(const char *search, const char *replace, value &subject) { return __php_str_replace_value(search, replace, &subject); }
+    const char *str_replace(const char *search, const char *replace, const char *subject) { return __php_str_replace_cstr(search, replace, subject); }
+    const char *str_pad(value &s, int64_t length, const char *pad) { return __php_str_pad_value(&s, length, pad); }
+    const char *str_pad(const char *s, int64_t length, const char *pad) { return __php_str_pad_cstr(s, length, pad); }
+    int64_t str_word_count(value &s) { return __php_str_word_count_value(&s); }
+    int64_t str_word_count(const char *s) { return __php_str_word_count_cstr(s); }
+    const char *chunk_split(value &s, int64_t chunklen, const char *separator) { return __php_chunk_split_value(&s, chunklen, separator); }
+    const char *chunk_split(const char *s, int64_t chunklen, const char *separator) { return __php_chunk_split_cstr(s, chunklen, separator); }
+    const char *number_format(int64_t number, const char *separator) { return __php_number_format_sep(number, separator); }
+    const char *wordwrap(value &s, int64_t width, const char *brk) { return __php_wordwrap_value(&s, width, brk); }
+    const char *wordwrap(const char *s, int64_t width, const char *brk) { return __php_wordwrap_cstr(s, width, brk); }
+    // PHP parity signature: implode(separator, array) -> the joined text.
+    const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
+    // Value-out element returns (the python::format out-param shape,
+    // pre-L3): PHP's array_pop/array_shift/array_get return the element
+    // itself (mixed), which only the carrier can represent. Empty (or
+    // degraded) containers leave `out` null.
+    value &array_pop(value &out, array &values) { return *__php_array_pop_value(&out, &values); }
+    value &array_shift(value &out, array &values) { return *__php_array_shift_value(&out, &values); }
+    value &array_get(value &out, array &values, int64_t index) { __php_array_get_value(&values, index, &out); return out; }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
     void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
