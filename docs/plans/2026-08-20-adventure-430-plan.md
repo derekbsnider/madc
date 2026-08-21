@@ -24,6 +24,47 @@ value&), quip()/verb_quip()/one_of()/fixed_quip() shapes,
 data tables over ladders — adv_actions.inc (1637) is now smaller than
 actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
 
+**NEXT ARC — THE MODERNIZATION PASS (owner directives, 2026-08-21,
+verbatim intent: "we should be using this example project as a way to
+show off as many features of how madc makes coding easier, and more
+compact, and more like Python/PHP/etc than plain old C... we want to
+modernize this ancient game, not make the code look like it was ported
+from Fortran"). Execute in this order, EVERY slice under the 94-log
+parity gate + targeted tests; fulltest once per merge wave:**
+
+M1. **The walrus/init sweep** — `:=` is a LONG-STANDING madc feature
+    (Go-style short declaration with type inference: tests/testcolon.mad;
+    it also unpacks multi-returns, docs/language/multiple-returns.md —
+    it is NOT new, do not "implement" it): every `var x; x = <expr>;`
+    pair becomes `x := <expr>;` (owner: the walrus is the PREFERRED,
+    more compact spelling; `var x = <expr>;` is the fallback where
+    inference would pick the wrong kind). 56 bare `var x;` decls exist;
+    ONLY merge where the next statement is a direct assignment — the
+    out-param fill shape `var r; render_msg(r, ...)` cannot merge and
+    stays.
+M2. **value→var sweep**: ~90 `value` spellings in examples/adventure/
+    become `var` — ALL of them (owner: consistency + brevity; var and
+    value are THE SAME TYPE, one alias table entry), including
+    parameters (`var &x`) and range-for heads (`for ( var v : bag )`).
+M3. **--project restructure (owner issue #2)**: replace the
+    `#include "adv_*.inc"` textual modules with multi-file project
+    support — adv_*.mad TUs + a compile-commands-style JSON manifest
+    (shape: tests/testproject*.cc.json; the driver auto-detects a
+    positional .json). RECON FIRST: how madc TUs share
+    globals/functions (the 3-TU project_gate + SMAUG --project docs
+    are the precedent); expect tests/<game>.obj_skip if the runner
+    ever drives it (multi-TU = outside the single-object domain,
+    test-fixtures.md). ⚠️ scripts/adventure_parity.sh invokes the game
+    — it must learn the project invocation in the same slice.
+M4. **OOP + UFCS pass** (after M1–M3 settle the spellings): the ~30
+    file-scope globals in adv_state.inc (W, LOC, LIMIT, TALLY, ENT,
+    FIXEDSIDES, ...) move into a class ("they should at least all go
+    into a class or something") — propose the class shape to the owner
+    BEFORE the big rewrite (one Game/World instance vs a couple of
+    focused classes; don't over-OOP, owner's explicit caution); adopt
+    UFCS `.method()` spellings where they read better than procedural
+    calls (UFCS is live since v0.83.0, both directions, no auto-deref).
+
 **REMAINING before the owner ceremonies:**
 1. Merge-wave battery: the @c73a3a4d rerun came back GREEN on every
    stage (rb-20260821-041339.log: fulltest/exe/obj/release/packed/

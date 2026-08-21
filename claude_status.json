@@ -10,7 +10,7 @@
   "date": "2026-08-21",
   "branch": "feature/track7-hub-projections-claude",
   "head": "79d6e10f (pushed pending)",
-  "headline": "BOUNDARY MET; wave 4 = the ZERO-INCLUDE CONTRACT landed (auto-include reaches user modules; println(stderr,...); madc::getline; php::file_exists; adventure = zero includes/using/std::, 4264 lines, 94/94 byte-identical, fulltest 1116/0); NEXT owner issue #2: multi-file project restructure of the adv_*.inc modules",
+  "headline": "BOUNDARY MET; waves 3+4 banked (value literals + .push; the zero-include contract); NEXT = THE MODERNIZATION ARC (owner directives 2026-08-21): M1 walrus sweep (:= EXISTS \u2014 testcolon.mad, NOT new), M2 value->var (~90 sites, same type), M3 --project restructure of adv_*.inc, M4 OOP/UFCS pass (globals into a class, propose shape first) \u2014 all under the 94-log parity net",
   "landed": [
    "bear chain + drop-bear-scares-troll (63 logs)",
    "value.index() carrier feeder; php::array_search adopts the core",
@@ -24,10 +24,10 @@
    "wave 4 (414e5637..79d6e10f): zero-include contract \u2014 lexer scan serves quoted user modules + prelude inserts before first user-code token; C++23 stream print forms via FILE sink; madc::getline(value&); php::file_exists; adventure preamble deleted, bare print/println/format, println-ified; value-first.md states the law; LESSON: plain std::getline value overload stole the namespace name slot from the libstdc++ template (string getline stack overflow) \u2014 reverted, std-side overload needs overload-import design"
   ],
   "next": [
-   "OWNER ISSUE #2: replace #include \"adv_*.inc\" textual modules with multi-file --project support (adv_*.mad TUs + manifest) \u2014 under the 94-log parity net",
-   "ONE fresh merge-wave battery (scripts/remote_build.sh battery) at the actual merge gate \u2014 new src commits landed after the green c73a3a4d run; do NOT re-run per commit",
+   "READ the MODERNIZATION-PASS section atop docs/plans/2026-08-20-adventure-430-plan.md and execute M1->M4 in order; := is a LONG-STANDING feature (tests/testcolon.mad) \u2014 sweep, never implement",
+   "ONE fresh merge-wave battery (scripts/remote_build.sh battery) at the actual merge gate \u2014 src commits landed after the green c73a3a4d run",
    "OWNER CALLS: merge timing; release (batches v0.93+v0.94+Track 7) + three-platform master promotion; VERSION stays 0.94.0 until cut",
-   "residues: nested brace lists = loud error (future lowering); keyed literals { k: v } unspelled; carrier surface has NO docs/language page; L3 by-value returns; auto-include in user modules; h_listen positional walk vs pspeak_prop; php::array_unique could adopt the index core; python::format/std::format = deliberate spec twins (dupaudit disposition recorded)"
+   "residues: nested brace lists = loud error; keyed literals { k: v } unspelled; carrier surface has NO docs/language page; std-side value overloads need overload-import design (the getline lesson); L3 by-value returns; h_listen positional walk; php::array_unique could adopt the index core"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
