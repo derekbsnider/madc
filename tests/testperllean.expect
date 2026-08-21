@@ -1,0 +1,18 @@
+chomp=1
+[hello]
+chop=111
+[hell]
+hello
+mixed
+MIXED
+World
+world
+cba
+DeXiM
+[world]
+[perl]
+[MiXeD]
+[perl text]
+one|two|three
+last=three scalar=2
+head=one scalar=1

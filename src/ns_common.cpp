@@ -313,6 +313,22 @@ std::string &value_text_slot(const madc::value *v)
 	return slot;
 }
 
+const char *ring_apply(const char *s, std::string *(*core)(std::string *))
+{
+	std::string &slot = ring_slot();
+	slot = s ? s : "";
+	core(&slot);
+	return slot.c_str();
+}
+
+const char *ring_apply(const madc::value *v,
+		       std::string *(*core)(std::string *))
+{
+	std::string &slot = value_text_slot(v);
+	core(&slot);
+	return slot.c_str();
+}
+
 bool value_pop_element(madc::value &arr, madc::value &dst, const char *who)
 {
 	std::vector<madc::value> &data = value_array_for_write(arr, who);

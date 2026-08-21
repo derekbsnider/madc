@@ -126,6 +126,15 @@ const char *ring_text(std::string s);
 // place, then return its c_str().
 std::string &value_text_slot(const madc::value *v);
 
+// THE lean-primary adapter pair: copy the subject into the lent ring
+// slot, run an in-place std::string core over it, return the slot's
+// text. The core is any namespace's in-place transform (std::string*
+// in, same pointer out) — the lean form and the guarded std::string
+// public share that ONE core by construction.
+const char *ring_apply(const char *s, std::string *(*core)(std::string *));
+const char *ring_apply(const madc::value *v,
+		       std::string *(*core)(std::string *));
+
 // ---- Element move-out (the value-out return convention) ----------------
 
 // Move the last/first element of `arr` into `dst`; `dst` becomes null when

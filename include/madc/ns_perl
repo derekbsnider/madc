@@ -14,6 +14,23 @@ extern "C" {
     int64_t __perl_index(const char *, const char *);
     int64_t __perl_rindex(const char *, const char *);
     int64_t __perl_length(const char *);
+    int64_t __perl_chop_value(value *);
+    int64_t __perl_chomp_value(value *);
+    value *__perl_pop_value(value *, array *);
+    value *__perl_shift_value(value *, array *);
+    const char *__perl_join_cstr(const char *, array *);
+    const char *__perl_reverse_cstr(const char *);
+    const char *__perl_reverse_value(value *);
+    const char *__perl_lc_cstr(const char *);
+    const char *__perl_lc_value(value *);
+    const char *__perl_uc_cstr(const char *);
+    const char *__perl_uc_value(value *);
+    const char *__perl_ucfirst_cstr(const char *);
+    const char *__perl_ucfirst_value(value *);
+    const char *__perl_lcfirst_cstr(const char *);
+    const char *__perl_lcfirst_value(value *);
+    const char *__perl_substr_cstr(const char *, int64_t, int64_t);
+    const char *__perl_substr_value(value *, int64_t, int64_t);
 }
 
 namespace perl {
@@ -26,6 +43,29 @@ namespace perl {
     int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
     int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
     int64_t length(const char *text) { return __perl_length(text); }
+    // Lean PRIMARIES (dialect-lean.md, Perl parity). chop/chomp MUTATE the
+    // value's text — that IS Perl — returning the removed char / count.
+    // pop/shift return the ELEMENT via a value out-param (empty leaves it
+    // null). Text returns are ring-lifetime (the c_str contract): pass
+    // onward or capture immediately.
+    int64_t chop(value &s) { return __perl_chop_value(&s); }
+    int64_t chomp(value &s) { return __perl_chomp_value(&s); }
+    value &pop(value &out, array &values) { return *__perl_pop_value(&out, &values); }
+    value &shift(value &out, array &values) { return *__perl_shift_value(&out, &values); }
+    // Perl parity signature: join(separator, list).
+    const char *join(const char *separator, array &values) { return __perl_join_cstr(separator, &values); }
+    const char *reverse(value &s) { return __perl_reverse_value(&s); }
+    const char *reverse(const char *s) { return __perl_reverse_cstr(s); }
+    const char *lc(value &s) { return __perl_lc_value(&s); }
+    const char *lc(const char *s) { return __perl_lc_cstr(s); }
+    const char *uc(value &s) { return __perl_uc_value(&s); }
+    const char *uc(const char *s) { return __perl_uc_cstr(s); }
+    const char *ucfirst(value &s) { return __perl_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __perl_ucfirst_cstr(s); }
+    const char *lcfirst(value &s) { return __perl_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __perl_lcfirst_cstr(s); }
+    const char *substr(value &text, int64_t offset, int64_t length) { return __perl_substr_value(&text, offset, length); }
+    const char *substr(const char *text, int64_t offset, int64_t length) { return __perl_substr_cstr(text, offset, length); }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

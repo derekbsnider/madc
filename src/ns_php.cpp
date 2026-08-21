@@ -593,35 +593,20 @@ int64_t php_intval_value(const madc::value *v)
 // c_str contract). Value-out element returns ride ns_common's move-out
 // owners.
 
-// The two subject adapters for single-argument cores.
-static const char *php_ring_apply(const char *s,
-				  std::string *(*core)(std::string *))
-{
-	std::string &slot = ns_common::ring_slot();
-	slot = s ? s : "";
-	core(&slot);
-	return slot.c_str();
-}
-static const char *php_ring_apply(const madc::value *v,
-				  std::string *(*core)(std::string *))
-{
-	std::string &slot = ns_common::value_text_slot(v);
-	core(&slot);
-	return slot.c_str();
-}
+using ns_common::ring_apply;
 
-const char *php_trim_cstr(const char *s)	{ return php_ring_apply(s, php_trim); }
-const char *php_trim_value(const madc::value *v)	{ return php_ring_apply(v, php_trim); }
-const char *php_ltrim_cstr(const char *s)	{ return php_ring_apply(s, php_ltrim); }
-const char *php_ltrim_value(const madc::value *v)	{ return php_ring_apply(v, php_ltrim); }
-const char *php_rtrim_cstr(const char *s)	{ return php_ring_apply(s, php_rtrim); }
-const char *php_rtrim_value(const madc::value *v)	{ return php_ring_apply(v, php_rtrim); }
-const char *php_lcfirst_cstr(const char *s)	{ return php_ring_apply(s, php_lcfirst); }
-const char *php_lcfirst_value(const madc::value *v)	{ return php_ring_apply(v, php_lcfirst); }
-const char *php_nl2br_cstr(const char *s)	{ return php_ring_apply(s, php_nl2br); }
-const char *php_nl2br_value(const madc::value *v)	{ return php_ring_apply(v, php_nl2br); }
-const char *php_str_rot13_cstr(const char *s)	{ return php_ring_apply(s, php_str_rot13); }
-const char *php_str_rot13_value(const madc::value *v)	{ return php_ring_apply(v, php_str_rot13); }
+const char *php_trim_cstr(const char *s)	{ return ring_apply(s, php_trim); }
+const char *php_trim_value(const madc::value *v)	{ return ring_apply(v, php_trim); }
+const char *php_ltrim_cstr(const char *s)	{ return ring_apply(s, php_ltrim); }
+const char *php_ltrim_value(const madc::value *v)	{ return ring_apply(v, php_ltrim); }
+const char *php_rtrim_cstr(const char *s)	{ return ring_apply(s, php_rtrim); }
+const char *php_rtrim_value(const madc::value *v)	{ return ring_apply(v, php_rtrim); }
+const char *php_lcfirst_cstr(const char *s)	{ return ring_apply(s, php_lcfirst); }
+const char *php_lcfirst_value(const madc::value *v)	{ return ring_apply(v, php_lcfirst); }
+const char *php_nl2br_cstr(const char *s)	{ return ring_apply(s, php_nl2br); }
+const char *php_nl2br_value(const madc::value *v)	{ return ring_apply(v, php_nl2br); }
+const char *php_str_rot13_cstr(const char *s)	{ return ring_apply(s, php_str_rot13); }
+const char *php_str_rot13_value(const madc::value *v)	{ return ring_apply(v, php_str_rot13); }
 
 const char *php_str_repeat_cstr(const char *s, int64_t count)
 {
