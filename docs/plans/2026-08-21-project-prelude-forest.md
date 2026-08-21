@@ -202,6 +202,52 @@ gate byte-identical + testproject*/testprojectinit*/testnsdmiglobal +
 the timing table re-measured and recorded. fulltest once per merge
 wave. The A10 gate's 8m23s collapses with S2 (it runs the dev binary).
 
+### S0 findings (2026-08-21, session 115 — measured on the fresh release binary)
+
+- **Post-Leg-0b numbers hold at HEAD:** lean probe TU 15–16 ms; the
+  11-TU game 0.81–0.84 s.
+- **The 14-frame / 11.6 MB decode at ZERO units bound** (probe stats:
+  map+open 0.009 s, decode 0.008 s — essentially the whole forest
+  cost) is complete_open decoding the ALWAYS-BOUND container globals,
+  per Program: the release pack compresses the intern spines
+  (container pool + arena pool — task #37: 3.74→0.81 MB stored) plus
+  arena defs/payload/tokbytes and the PP surfaces, and
+  forest_pool_block's raw_ptr returns NULL for a compressed segment,
+  so each open pays the owned-buffer zstd decode. S3 levers, in
+  preference order: S1's process-level sharing makes it once per
+  LAUNCH free of charge; true lazy per-segment decode on first query
+  (the extern-locs segment already works this way); storing the
+  always-touched spine raw is a pack-size trade (owner sizing call).
+- **S1 feasibility confirmed:** CirFrozenForest state is Program-FREE
+  (mmap, directory, decoded owned buffers, read-only arena bindings —
+  the code's own comment: DataDefs "materialize lazily at bind ...
+  never at open", into the PROGRAM's structures). Per-Program residue
+  on the object is only the _work_secs/_work_depth stat pointers
+  (trivially movable). Choke point: ensure_bind_forest /
+  probe_forest_chain — a process-level cache keyed (image identity,
+  producer config, defines hash) hands out one shared instance.
+  Thread contract to state: read-only after complete_open; the
+  memoized lazy decodes (ensure_template_payload, extern-loc map)
+  fill once; TU compiles are sequential today.
+- **S4 PREMISE CORRECTED — thaw does NOT live-parse.** The
+  c++locale.h diagnostic that drove the "live-parses real headers"
+  claim is a c2mir WARNING carrying a thawed node's file:line (the
+  MC11-IR position, by design); it disappears under the MIR cache,
+  which skips c2mir entirely. Measured: LEAN TU thaw+run 8 ms plain,
+  **6 ms with --freeze-mir-cache** (node rebuild skipped) — load-only
+  already holds, and the warm-launch target (≤50 ms) is ALREADY MET
+  for lean dialect TUs by existing machinery. INTEROP TU (the
+  <string> closure): 0.77–0.83 s plain = c2mir + codegen over the
+  drained library closure (not parsing); **0.33 s with the MIR
+  cache** (+150 KB container) = MIR_read/link of the big drained
+  module — an interop-only residue for a later slice.
+- **S5 reframes to plumbing:** transparent per-manifest freeze
+  (content-hash keyed, refreeze on mismatch) + project-mode
+  integration of the MIR cache. Projected warm 11-TU launch ≈ 11 ×
+  ~6 ms + link — well under Python's 0.10 s floor.
+- Queued small fix joins the list: --show-stats is silent under
+  --run-frozen (same family as project mode ignoring it).
+
 ## Non-goals / rejected
 
 - Pointing the fulltest gate at the packed binary (tests must run the
