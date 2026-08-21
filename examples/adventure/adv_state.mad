@@ -33,7 +33,7 @@ void Game::put(long f, bool on)	{ if ( on ) flags |= f; else flags &= ~f; }
 // atloc-prepend law). This helper owns the key law.
 void listing_insert(var &byseq, long seq, const char *name)
 {
-	byseq[format("{:09}", 999999999 - seq).c_str()] = name;
+	byseq[format("{:09}", 999999999 - seq)] = name;
 }
 
 // Memoized entity lookup (the world's find is linear; 255 entities).
@@ -338,7 +338,7 @@ void juggle_object(long o, const char *name)
 // The i'th dwarf actor entity (1..6; 6 = the pirate).
 long dwarf_ent(long i)
 {
-	return E(format("dwarf{}", i).c_str());
+	return E(format("dwarf{}", i));
 }
 
 // First dwarf at a location (0 = none / dwarves not active; the pirate
@@ -419,7 +419,7 @@ void init_game()
 	for ( var d : dl )
 	{
 		di++;
-		long dw = ui::create(G.w, format("dwarf{}", di).c_str());
+		long dw = ui::create(G.w, format("dwarf{}", di));
 		ui::set(G.w, dw, "is_pirate", di == 6);
 		ui::set(G.w, dw, "seen", false);
 		ui::move(G.w, dw, E(d.c_str()));

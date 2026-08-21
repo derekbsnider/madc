@@ -16,7 +16,9 @@
  *   - each literal run and each replacement field lowers to one typed call
  *     into the engine's primitives, against the dump runtime's byte sink
  *     (NULL -> stdout for print/println, a capture sink for format whose
- *     bytes __madc_fmt_take hands to the caller's std::string).
+ *     bytes __madc_fmt_take_cstr hands to the shared text ring — format
+ *     returns ring-lifetime const char*, the c_str() contract, so dialect
+ *     TUs never pull the <string> closure).
  *
  * libstdc++'s real std::format is the oracle for every emission behavior
  * (tests/unit/rt_format_oracle.inc); this file owns only the compile-time
@@ -619,47 +621,28 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 
 	if ( fl == ffFormat )
 	{
-		// The result: a default-constructed std::string local, HOISTED
-		// through m_pending_stmts (the dump_result_value_temp route —
-		// a temp declared inside the statement expression would be
-		// destroyed by its cleanup attribute before the caller copied
-		// it), filled by __madc_fmt_take from the sink's bytes.
-		DataDef *rdd = tcf->datadef();
-		DataDefCLASS *scls = rdd
-			? dynamic_cast<DataDefCLASS *>(rdd->unqualified())
-			: NULL;
-		if ( !scls )
-			scls = dynamic_cast<DataDefCLASS *>(&fd->returns);
-		if ( !scls )
-			return error_node("std::format: the std::string "
-					  "return type is unresolved",
-					  origin);
-		char rname[40];
-		snprintf(rname, sizeof rname, "__madc_fmtres_%d",
-			 m_strtmp_counter++);
-		Variable *tmp = new Variable(rname, *scls, 1, NULL, false);
-		tmp->flags |= vfLOCAL;
-		m_pending_stmts.push_back(var_decl(tmp, origin));
-		{
-			std::vector<TokenBase *> noargs;
-			m_pending_stmts.push_back(class_ctor_call(tmp, scls,
-								  noargs,
-								  origin));
-		}
-		for ( size_t i = 0; i < stmts.size(); i++ )
-			m_pending_stmts.push_back(stmts[i]);
-		need_output_extern("__madc_fmt_take", false,
-				   { { {N_VOID}, true },
-				     { {N_VOID}, true } });
+		// The result: ring-lifetime const char* (the c_str() contract
+		// — the fragment declares `const char *format(...)`, so
+		// dialect TUs never pull the <string> closure). One statement
+		// expression: the sink decl + field statements, closed by the
+		// take call that moves the sink's bytes into the shared text
+		// ring and closes the sink. Nothing here owns a destructor,
+		// so the old hoisted-std::string shape (and its cleanup
+		// choreography) is gone with the std::string return.
+		need_output_extern("__madc_fmt_take_cstr", true,
+				   { { {N_VOID}, true } });
 		node_t a = list();
-		append(a, node2(N_CAST, void_ptr_type(),
-				object_addr(rname, origin), origin));
 		append(a, id(sink_var.c_str(), origin));
-		m_pending_stmts.push_back(
-			node2(N_EXPR, list(),
-			      node2(N_CALL, id("__madc_fmt_take", origin), a,
-				    origin), origin));
-		return id(rname, origin);
+		node_t take = node2(N_CAST, char_ptr_type(),
+				    node2(N_CALL,
+					  id("__madc_fmt_take_cstr", origin),
+					  a, origin), origin);
+		node_t items = list();
+		for ( size_t i = 0; i < stmts.size(); i++ )
+			append(items, stmts[i]);
+		append(items, node2(N_EXPR, list(), take, origin));
+		return node1(N_STMTEXPR,
+			     node2(N_BLOCK, list(), items, origin), origin);
 	}
 
 	// print/println in expression position: one statement expression,

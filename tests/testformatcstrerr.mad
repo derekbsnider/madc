@@ -1,0 +1,10 @@
+// NEGATIVE reducer (owner ruling 2026-08-21): dialect std::format
+// returns ring-lifetime const char*, and a stale .c_str() spelling on
+// that result must be a LOUD compile error — never a silently-tolerated
+// identity. The sibling .expect_err fixture pins the diagnostic.
+int main()
+{
+	var x = format("y={}", 1).c_str();
+	println("{}", x);
+	return 0;
+}

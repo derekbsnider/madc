@@ -39,7 +39,7 @@ long verb_quip()
 // Is x one of the SPACE-PADDED, space-delimited words? (" A B C ")
 bool one_of(var &x, const char *words)
 {
-	return strstr(words, format(" {} ", x.c_str()).c_str()) != NULL;
+	return strstr(words, format(" {} ", x.c_str())) != NULL;
 }
 
 bool is_gemstone(var &obj)

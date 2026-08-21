@@ -1,7 +1,7 @@
-// std::format returns a real std::string, through every consumption
-// shape the class-return lanes own: declaration-init (the elision lane
-// falls back to the generic path for an intrinsic), expression operand
-// of cout <<, and a plain statement value.
+// std::format returns ring-lifetime const char* (the c_str() contract;
+// the <string> closure stays out of dialect TUs). These shapes pin the
+// C++-interop consumption: declaration-init of a real std::string from
+// the ring text, and expression operand of cout <<.
 std::string t = std::format("n={:#06X}", 255);
 cout << t << endl;
 cout << std::format("inline {}", 99) << endl;

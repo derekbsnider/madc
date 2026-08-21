@@ -1,6 +1,5 @@
-#include <string>
 // bits/std_format — std::format / std::print / std::println, the madc
-// dialect's ALWAYS-AVAILABLE C++23 formatting surface. These are
+// dialect's ALWAYS-AVAILABLE C++23-style formatting surface. These are
 // COMPILER-IMPLEMENTED intrinsics (the php::print_r / php::var_dump
 // carrier): declared here, defined NOWHERE — the call site knows every
 // argument's concrete type, so src/cir_format.cpp parses and validates
@@ -10,13 +9,23 @@
 // <format>/<print> header is ever parsed — that is the point (owner
 // directive 2026-08-19: part of madc, not an expensive header).
 //
+// ZERO INCLUDES — deliberately (owner standing rule 2026-08-21: the
+// --std=madc surface must not depend on C++ system header parsing).
+// format returns ring-lifetime const char* — the c_str() contract
+// (ns_common::ring_slot, 8 thread-local slots): pass it onward or
+// capture into a var/value immediately; a pointer stays valid until
+// its slot recycles. The declaration flips to a `value` return when
+// L3 (value by-value returns) lands. It does NOT return std::string —
+// that would make every dialect TU pay the <string> closure for one
+// declaration (owner ruling 2026-08-21).
+//
 // The lexer's auto-include serves this fragment when a bare
 // format/print/println identifier appears (madc dialect only), so a
 // zero-include script just calls std::println("x={}", x). The oracle
 // for every formatting behavior is libstdc++'s real std::format —
 // tests/unit/rt_format_oracle.inc pins it.
 namespace std {
-    template<class... Ts> std::string format(const char *__fmt, const Ts &...__vs);
+    template<class... Ts> const char *format(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void print(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void println(const char *__fmt, const Ts &...__vs);
     // C++23 [print.fun] stream-directed forms — std::print(stderr, ...).

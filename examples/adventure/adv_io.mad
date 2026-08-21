@@ -45,7 +45,7 @@ void render_msg(var &out, var &text, var &dargs, var &sval)
 				{
 					long dval = darg_at(dargs, di);
 					di++;
-					out += format("{}", dval).c_str();
+					out += format("{}", dval);
 					plural = dval != 1;
 				}
 				else if ( f == 's' )
