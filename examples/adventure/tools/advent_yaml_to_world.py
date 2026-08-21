@@ -163,6 +163,12 @@ def convert(doc):
     travel_rules = 0
     for name, loc in locations:
         name = key_name(name)
+        # LOC_NOWHERE is the C's location 0 — the null location, never a
+        # real entity. Leaving it out makes every "goto LOC_NOWHERE"
+        # travel action resolve to entity 0, which IS the death/void
+        # semantics the game loop expects.
+        if name == "LOC_NOWHERE":
+            continue
         props = {}
         desc = loc.get("description") or {}
         if desc.get("long") is not None:

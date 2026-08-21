@@ -1,7 +1,4 @@
 %world 1
-%entity LOC_NOWHERE
-  maptag = Nowhere
-  travel = []
 %entity LOC_START
   conditions = {"ABOVE":true,"FLUID":true,"LIT":true}
   long = "You are standing at the end of a road before a small brick building.\nAround you is a forest.  A small stream flows out of the building and\ndown a gully."

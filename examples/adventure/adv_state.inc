@@ -108,15 +108,31 @@ bool forced_loc(long l)
 
 // ---- object state -------------------------------------------------------
 
-long obj_state(long o)            { return bag_int(o, "state", 0); }
-void obj_set_state(long o, long s) { ui::set(W, o, "state", s); }
-bool obj_found(long o)            { return bag_flag(o, "found"); }
-bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
-
 // Stashed = the reference's negative prop: the description stays
 // suppressed until the object is picked up and put down again.
 bool obj_stashed(long o)             { return bag_flag(o, "stashed"); }
 void obj_set_stashed(long o, bool s) { ui::set(W, o, "stashed", s); }
+
+// obj_state mirrors the reference's raw prop: a stashed object READS
+// as the encoded negative (-1 - state), so every == comparison against
+// a real state fails while stashed. Assigning a state UNSTASHES (the
+// reference's plain prop overwrite).
+long obj_state(long o)
+{
+	long s = bag_int(o, "state", 0);
+	if ( obj_stashed(o) )
+		return -1 - s;
+	return s;
+}
+
+void obj_set_state(long o, long s)
+{
+	ui::set(W, o, "state", s);
+	ui::set(W, o, "stashed", false);
+}
+
+bool obj_found(long o)            { return bag_flag(o, "found"); }
+bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
 
 bool toting(long o)  { return o != 0 && ui::location(W, o) == PLAYER; }
 

@@ -31,7 +31,10 @@ long score_game(long mode)
 			k = 16;
 		if ( obj_found(o) )
 			sc = sc + 2;
-		if ( ui::location(W, o) == E("LOC_BUILDING") && obj_found(o) )
+		// The building bonus needs prop EXACTLY 0 (the reference's
+		// STATE_FOUND) — a broken vase or cavity-set gem earns none.
+		if ( ui::location(W, o) == E("LOC_BUILDING")
+		  && obj_found(o) && obj_state(o) == 0 )
 			sc = sc + k - 2;
 		MXSCOR = MXSCOR + k;
 	}
