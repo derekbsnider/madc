@@ -119,13 +119,9 @@ std::string *perl_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	std::vector<madc::value> &data
-		= ns_common::value_array_for_write(*arr, "perl::pop");
-	if ( data.empty() )
-		return result;
-	madc::value v = std::move(data.back());
-	data.pop_back();
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_pop_element(*arr, v, "perl::pop") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -134,13 +130,9 @@ std::string *perl_shift(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	std::vector<madc::value> &data
-		= ns_common::value_array_for_write(*arr, "perl::shift");
-	if ( data.empty() )
-		return result;
-	madc::value v = std::move(data.front());
-	data.erase(data.begin());
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_shift_element(*arr, v, "perl::shift") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 

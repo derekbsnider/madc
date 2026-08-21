@@ -301,4 +301,42 @@ const char *ring_text(std::string s)
 	return slot.c_str();
 }
 
+std::string &value_text_slot(const madc::value *v)
+{
+	std::string &slot = ring_slot();
+	if ( !v || v->is_null() )
+		slot.clear();
+	else if ( v->is_string() )
+		slot.assign((const char *)v->data(), v->size());
+	else if ( !value_to_string(*v, slot) )
+		slot.clear();
+	return slot;
+}
+
+bool value_pop_element(madc::value &arr, madc::value &dst, const char *who)
+{
+	std::vector<madc::value> &data = value_array_for_write(arr, who);
+	if ( data.empty() )
+	{
+		dst = madc::value();
+		return false;
+	}
+	dst = std::move(data.back());
+	data.pop_back();
+	return true;
+}
+
+bool value_shift_element(madc::value &arr, madc::value &dst, const char *who)
+{
+	std::vector<madc::value> &data = value_array_for_write(arr, who);
+	if ( data.empty() )
+	{
+		dst = madc::value();
+		return false;
+	}
+	dst = std::move(data.front());
+	data.erase(data.begin());
+	return true;
+}
+
 }  // namespace ns_common

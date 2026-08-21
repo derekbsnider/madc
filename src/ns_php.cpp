@@ -314,13 +314,9 @@ std::string *php_array_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	std::vector<madc::value> &data
-		= ns_common::value_array_for_write(*arr, "php::array_pop");
-	if ( data.empty() )
-		return result;
-	madc::value v = std::move(data.back());
-	data.pop_back();
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_pop_element(*arr, v, "php::array_pop") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -400,7 +396,9 @@ void php_array_get_value(madc::value *arr, int64_t index, madc::value *dst)
 
 const char *php_array_get_cstr(madc::value *arr, int64_t index)
 {
-	thread_local std::string res;
+	// Ring-lifetime return (the c_str contract) — the ONE text ring,
+	// never a private static buffer (ns_common.h).
+	std::string &res = ns_common::ring_slot();
 	res.clear();
 	if ( const madc::value *v = php_container_nth(arr, index) )
 		ns_common::value_to_string(*v, res);
@@ -460,19 +458,6 @@ int64_t php_array_key_exists_int(int64_t key, madc::value *arr)
 // value-first.md): the transform builds IN the lent ring slot — one
 // bounded pass, zero temporary allocations at steady state.
 
-// Fill the lent slot with the value's PHP text view (no temp string).
-static std::string &php_text_slot(const madc::value *v)
-{
-	std::string &slot = ns_common::ring_slot();
-	if ( !v || v->is_null() )
-		slot.clear();
-	else if ( v->is_string() )
-		slot.assign((const char *)v->data(), v->size());
-	else if ( !ns_common::value_to_string(*v, slot) )
-		slot.clear();
-	return slot;
-}
-
 static void php_ascii_case_inplace(std::string &s, bool up)
 {
 	for ( size_t i = 0; i < s.size(); ++i )
@@ -494,7 +479,7 @@ static const char *php_case_cstr(const char *s, bool up)
 }
 static const char *php_case_value(const madc::value *v, bool up)
 {
-	std::string &slot = php_text_slot(v);
+	std::string &slot = ns_common::value_text_slot(v);
 	php_ascii_case_inplace(slot, up);
 	return slot.c_str();
 }
@@ -518,7 +503,7 @@ const char *php_ucfirst_cstr(const char *s)
 }
 const char *php_ucfirst_value(const madc::value *v)
 {
-	std::string &slot = php_text_slot(v);
+	std::string &slot = ns_common::value_text_slot(v);
 	if ( !slot.empty() && slot[0] >= 'a' && slot[0] <= 'z' )
 		slot[0] = (char)(slot[0] - 32);
 	return slot.c_str();
@@ -630,13 +615,9 @@ std::string *php_array_shift(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	std::vector<madc::value> &data
-		= ns_common::value_array_for_write(*arr, "php::array_shift");
-	if ( data.empty() )
-		return result;
-	madc::value v = std::move(data.front());
-	data.erase(data.begin());
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_shift_element(*arr, v, "php::array_shift") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 

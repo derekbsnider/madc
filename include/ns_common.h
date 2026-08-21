@@ -119,6 +119,22 @@ void split_by_delim(madc::value &out, const std::string &s,
 std::string &ring_slot();
 const char *ring_text(std::string s);
 
+// Fill the NEXT ring slot with `v`'s text view (string kinds copy their
+// payload; other scalar kinds render via value_to_string; null and
+// containers clear) and return the slot. The value-argument twin of
+// ring_slot() for lean `const char*` returns: transform the slot in
+// place, then return its c_str().
+std::string &value_text_slot(const madc::value *v);
+
+// ---- Element move-out (the value-out return convention) ----------------
+
+// Move the last/first element of `arr` into `dst`; `dst` becomes null when
+// the container is empty (or the write degrades). Container access routes
+// through value_array_for_write, so a frozen/mismatched `arr` reports and
+// no-ops. Returns true when an element actually moved.
+bool value_pop_element(madc::value &arr, madc::value &dst, const char *who);
+bool value_shift_element(madc::value &arr, madc::value &dst, const char *who);
+
 // Join `arr`'s string-coercible elements with `sep` into `out`. `out`
 // is cleared first. A non-array `arr` (null included) joins as empty.
 // Elements that are not string/integer/real are skipped silently

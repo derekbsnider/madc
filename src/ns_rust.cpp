@@ -171,13 +171,9 @@ std::string *rust_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	std::vector<madc::value> &data
-		= ns_common::value_array_for_write(*arr, "rust::pop");
-	if ( data.empty() )
-		return result;
-	madc::value v = std::move(data.back());
-	data.pop_back();
-	ns_common::value_to_string(v, res);
+	madc::value v;
+	if ( ns_common::value_pop_element(*arr, v, "rust::pop") )
+		ns_common::value_to_string(v, res);
 	return result;
 }
 
