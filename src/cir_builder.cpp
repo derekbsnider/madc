@@ -22638,6 +22638,13 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 	// keeps the translated decay.
 	auto container_addr = [&]() -> node_t {
 		TokenVar *cv = dynamic_cast<TokenVar *>(fe->container);
+		// A MEMBER (s.a) IS-A TokenVar (via TokenCallFunc), but its
+		// var is the bare FIELD — object_var_addr would address it by
+		// name and lose the receiver ("undeclared identifier a").
+		// Only a plain variable takes the stored-pointer shortcut;
+		// a member keeps its translated field lvalue's decay.
+		if (dynamic_cast<TokenMember *>(fe->container))
+			cv = NULL;
 		node_t raw;
 		if (cv && carrier_behind(cv->var.type))
 			raw = object_var_addr(cv->var, fe);
