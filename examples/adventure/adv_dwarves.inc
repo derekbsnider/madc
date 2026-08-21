@@ -18,7 +18,7 @@ void pirate_spots()
 	bool robplayer = false;
 	long pyr_plac = static_place(E("PYRAMID"));
 	long eme_plac = static_place(E("EMERALD"));
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		long o = E(on.c_str());
 		if ( !o || !obj_treasure(o) )
@@ -62,7 +62,7 @@ void pirate_spots()
 	if ( robplayer )
 	{
 		rspeak("PIRATE_POUNCES");
-		for ( value on : OBJ_NAMES )
+		for ( var on : OBJ_NAMES )
 		{
 			long o = E(on.c_str());
 			if ( !o || !obj_treasure(o) )
@@ -144,7 +144,7 @@ bool dwarfmove()
 		ui::get(tr, W, dloc, "travel");
 		if ( !tr.is_null() )
 		{
-			for ( value r : tr )
+			for ( var r : tr )
 			{
 				var act = r["action"];
 				if ( act[0] != "goto" )
@@ -177,7 +177,7 @@ bool dwarfmove()
 		{
 			long pick = randrange(j);
 			long ii = 0;
-			for ( value t : tk )
+			for ( var t : tk )
 			{
 				if ( ii == pick )
 					newdloc = t.as_integer();

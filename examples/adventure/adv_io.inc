@@ -5,10 +5,10 @@
 // transcript IS stdin+stdout). Comment lines (#) are consumed silently.
 
 // The idx'th integer of a d-args array.
-long darg_at(value &a, long idx)
+long darg_at(var &a, long idx)
 {
 	long i = 0;
-	for ( value x : a )
+	for ( var x : a )
 	{
 		if ( i == idx )
 			return x.as_integer();
@@ -21,7 +21,7 @@ long darg_at(value &a, long idx)
 // by the previous %d) / %V substitution plus the floor->ground rewrite
 // when the player is outside — the reference's vspeak, verbatim-run
 // batched.
-void render_msg(value &out, value &text, value &dargs, value &sval)
+void render_msg(var &out, var &text, var &dargs, var &sval)
 {
 	out = "";
 	long len = text.length();
@@ -83,14 +83,14 @@ void render_msg(value &out, value &text, value &dargs, value &sval)
 		out += text.substr(run, i - run);
 }
 
-void speak_rendered(value &text)
+void speak_rendered(var &text)
 {
 	if ( text.empty() )
 		return;
 	println("\n{}", text);
 }
 
-void speak_msg(value &text)
+void speak_msg(var &text)
 {
 	var r;
 	var none = "";
@@ -100,7 +100,7 @@ void speak_msg(value &text)
 }
 
 // vspeak with blank=false — inventory listings print consecutively.
-void speak_msg_noblank(value &text)
+void speak_msg_noblank(var &text)
 {
 	var r;
 	var none = "";
@@ -111,7 +111,7 @@ void speak_msg_noblank(value &text)
 	println("{}", r);
 }
 
-void speak_msg_d(value &text, long d)
+void speak_msg_d(var &text, long d)
 {
 	var r;
 	var none = "";
@@ -120,7 +120,7 @@ void speak_msg_d(value &text, long d)
 	speak_rendered(r);
 }
 
-void speak_msg_d3(value &text, long a, long b, long c)
+void speak_msg_d3(var &text, long a, long b, long c)
 {
 	var r;
 	var none = "";
@@ -129,7 +129,7 @@ void speak_msg_d3(value &text, long a, long b, long c)
 	speak_rendered(r);
 }
 
-void speak_msg_s(value &text, value &s)
+void speak_msg_s(var &text, var &s)
 {
 	var r;
 	var nod;
@@ -137,7 +137,7 @@ void speak_msg_s(value &text, value &s)
 	speak_rendered(r);
 }
 
-void msg_of(value &out, const char *name)
+void msg_of(var &out, const char *name)
 {
 	ui::get(out, W, E("adv-messages"), name);
 }
@@ -163,7 +163,7 @@ void rspeak_d3(const char *name, long a, long b, long c)
 	speak_msg_d3(t, a, b, c);
 }
 
-void rspeak_s(const char *name, value &s)
+void rspeak_s(const char *name, var &s)
 {
 	var t;
 	msg_of(t, name);
@@ -173,12 +173,11 @@ void rspeak_s(const char *name, value &s)
 // The reference's sspeak lane (DONT_KNOW / DO_WHAT / NO_SEE): plain
 // printf %s substitution — NO floor rewrite (the raw word "floor" must
 // echo verbatim), NO empty suppression.
-void sspeak_s(const char *name, value &s)
+void sspeak_s(const char *name, var &s)
 {
 	var t;
 	msg_of(t, name);
-	var out;
-	out = "";
+	var out = "";
 	long len = t.length();
 	long i = 0;
 	long run = 0;
@@ -201,7 +200,7 @@ void sspeak_s(const char *name, value &s)
 }
 
 // One input line: leading blank, comments skipped, EOF -> false, echo.
-bool get_input(value &out)
+bool get_input(var &out)
 {
 	println("");
 	for (;;)
@@ -222,7 +221,7 @@ bool get_input(value &out)
 }
 
 // First whitespace word of a line (the yes/no reader's sscanf %s).
-void first_word(value &out, value &line)
+void first_word(var &out, var &line)
 {
 	out = "";
 	long len = line.length();

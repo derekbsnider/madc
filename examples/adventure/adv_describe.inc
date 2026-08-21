@@ -12,7 +12,7 @@ void pspeak_prop(long o, const char *prop, long kk, bool blank)
 	if ( ds.is_null() )
 		return;
 	long i = 0;
-	for ( value d : ds )
+	for ( var d : ds )
 	{
 		if ( i == kk )
 		{
@@ -94,7 +94,7 @@ void listobjects()
 	var nm_loc;
 	ui::name_of(nm_loc, W, LOC);
 	var byseq;
-	for ( value side : FIXEDSIDES )
+	for ( var side : FIXEDSIDES )
 	{
 		var l = side["loc"];
 		if ( l == nm_loc )
@@ -106,7 +106,7 @@ void listobjects()
 	}
 	var held;
 	ui::contents(held, W, LOC);
-	for ( value h : held )
+	for ( var h : held )
 	{
 		long o = E(h.c_str());
 		var sq;
@@ -115,7 +115,7 @@ void listobjects()
 			continue;	// actors and singletons are not listed
 		listing_insert(byseq, sq.as_integer(), h.c_str());
 	}
-	for ( value onm : byseq )
+	for ( var onm : byseq )
 	{
 		long o = E(onm.c_str());
 		if ( onm == "STEPS" && toting(E("NUGGET")) )

@@ -12,7 +12,7 @@ long T_NUMERIC = 4;
 long T_NOTFOUND = 5;
 
 // Whitespace word count of the whole line (the two-word gate).
-long word_count(value &line)
+long word_count(var &line)
 {
 	long count = 0;
 	long len = line.length();
@@ -34,7 +34,7 @@ long word_count(value &line)
 }
 
 // Extract the first two raw words into CMD["raw0"] / CMD["raw1"].
-void split_words(value &line)
+void split_words(var &line)
 {
 	CMD["raw0"] = "";
 	CMD["raw1"] = "";
@@ -60,7 +60,7 @@ void split_words(value &line)
 }
 
 // Classify one raw word into (type, id) — id is the vocab NAME.
-void classify_word(value &raw, const char *typekey, const char *idkey)
+void classify_word(var &raw, const char *typekey, const char *idkey)
 {
 	if ( raw.empty() )
 	{
@@ -122,7 +122,7 @@ void classify_word(value &raw, const char *typekey, const char *idkey)
 	CMD[idkey] = "";
 }
 
-void tokenize_command(value &line)
+void tokenize_command(var &line)
 {
 	split_words(line);
 	var r0 = CMD["raw0"];

@@ -40,7 +40,7 @@ var OLDOBJ;			// previous command's object (clear_command)
 // One listing-order insert: byseq keys on zero-padded (999999999 - seq)
 // so ascending map key order IS descending placement order (the
 // atloc-prepend law). This helper owns the key law.
-void listing_insert(value &byseq, long seq, const char *name)
+void listing_insert(var &byseq, long seq, const char *name)
 {
 	byseq[format("{:09}", 999999999 - seq).c_str()] = name;
 }
@@ -99,7 +99,7 @@ bool forced_loc(long l)
 	ui::get(tr, W, l, "travel");
 	if ( tr.is_null() )
 		return false;
-	for ( value r : tr )
+	for ( var r : tr )
 	{
 		var vb = r["verbs"];
 		return vb.empty();
@@ -189,7 +189,7 @@ bool here_obj(long o) { return at_obj(o) || toting(o); }
 
 // The index of a named state in the object's states array (labels from
 // the YAML; a numeric spelling converts directly).
-long state_index(long o, value &label)
+long state_index(long o, var &label)
 {
 	if ( php::ctype_digit(label) )
 		return php::intval(label);
@@ -287,7 +287,7 @@ long static_fixed(long o)
 }
 
 // The liquid in the bottle: "WATER", "OIL", or "" — by bottle state.
-void liquid_in_bottle(value &out)
+void liquid_in_bottle(var &out)
 {
 	out = "";
 	long b = E("BOTTLE");
@@ -300,7 +300,7 @@ void liquid_in_bottle(value &out)
 
 // Count of the listing chain (placed objects + live fixed sides) at a
 // location; `only` = the single entry's name when the count is 1.
-long objects_at_loc(value &only, long at)
+long objects_at_loc(var &only, long at)
 {
 	only = "";
 	long n = 0;
@@ -308,7 +308,7 @@ long objects_at_loc(value &only, long at)
 		return 0;
 	var nm_loc;
 	ui::name_of(nm_loc, W, at);
-	for ( value side : FIXEDSIDES )
+	for ( var side : FIXEDSIDES )
 	{
 		var l = side["loc"];
 		if ( l == nm_loc )
@@ -320,7 +320,7 @@ long objects_at_loc(value &only, long at)
 	}
 	var held;
 	ui::contents(held, W, at);
-	for ( value h : held )
+	for ( var h : held )
 	{
 		long o = E(h.c_str());
 		var sq;
@@ -373,7 +373,7 @@ bool is_dark()
 }
 
 // The liquid at a location: "WATER", "OIL", or "" (dry).
-void liq_loc(value &out, long l)
+void liq_loc(var &out, long l)
 {
 	out = "";
 	if ( loccond(l, "FLUID") )
@@ -405,7 +405,7 @@ void init_game()
 	ui::get(OBJ_NAMES, W, tables, "objects");
 	var na;
 	ui::get(na, W, tables, "noaction");
-	for ( value n : na )
+	for ( var n : na )
 		NOACT[n.c_str()] = true;
 	long ve = E("adv-vocabulary");
 	ui::get(VOC_M, W, ve, "motions");
@@ -425,7 +425,7 @@ void init_game()
 	var dl;
 	ui::get(dl, W, tables, "dwarflocs");
 	long di = 0;
-	for ( value d : dl )
+	for ( var d : dl )
 	{
 		di++;
 		long dw = ui::create(W, format("dwarf{}", di).c_str());
@@ -439,7 +439,7 @@ void init_game()
 	// is found.
 	long tally = 0;
 	long objnum = 0;
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		objnum++;
 		OBJ_INDEX[on.c_str()] = objnum;
@@ -476,7 +476,7 @@ void init_game()
 	// Hints in NUMBER order (converter hints_by_number — the checkhints
 	// scan order); lives from the obituary count.
 	ui::get(HINT_ORDER, W, tables, "hints_by_number");
-	for ( value hn : HINT_ORDER )
+	for ( var hn : HINT_ORDER )
 		HINT_LC[hn.c_str()] = (long)0;
 	var tbl;
 	ui::get(tbl, W, tables, "obituaries");

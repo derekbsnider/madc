@@ -14,7 +14,7 @@ long score_game(long mode)
 	MXSCOR = 0;
 	long chest_num = OBJ_INDEX["CHEST"].as_integer();
 	long objnum = 0;
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		objnum++;
 		long o = E(on.c_str());
@@ -68,7 +68,7 @@ long score_game(long mode)
 	MXSCOR = MXSCOR + 2;
 
 	// Hint / novice / oyster-clue / turn / save penalties.
-	for ( value hn : HINT_ORDER )
+	for ( var hn : HINT_ORDER )
 	{
 		if ( php::array_key_exists(hn.c_str(), HINT_USED ) )
 		{
@@ -100,7 +100,7 @@ void terminate_game(long mode)
 	ui::get(classes, W, E("adv-tables"), "classes");
 	long ncls = classes.count();
 	long i = 0;
-	for ( value cls : classes )
+	for ( var cls : classes )
 	{
 		i++;
 		if ( i == 1 )
@@ -125,11 +125,11 @@ void terminate_game(long mode)
 }
 
 // The name at a 1-based objnum (counter walk; reverse drops use it).
-void obj_name_at(value &out, long idx)
+void obj_name_at(var &out, long idx)
 {
 	out = "";
 	long i = 0;
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		i++;
 		if ( i == idx )
@@ -149,7 +149,7 @@ void croak()
 	ui::get(obits, W, E("adv-tables"), "obituaries");
 	var q, yr;
 	long i = 0;
-	for ( value ob : obits )
+	for ( var ob : obits )
 	{
 		if ( i == NUMDIE )
 		{
@@ -235,13 +235,13 @@ void checkhints()
 	ui::get(lochints, W, LOC, "hints");
 	if ( lochints.empty() )
 		return;
-	for ( value hn : HINT_ORDER )
+	for ( var hn : HINT_ORDER )
 	{
 		if ( php::array_key_exists(hn.c_str(), HINT_USED) )
 			continue;
 		// Not a hint of THIS location? counter resets to -1.
 		bool here = false;
-		for ( value lh : lochints )
+		for ( var lh : lochints )
 			if ( lh == hn )
 				here = true;
 		if ( !here )
@@ -347,8 +347,7 @@ void checkhints()
 		// The offer: question, cost, then the hint itself.
 		HINT_LC[hn.c_str()] = 0;
 		var q = hd["question"];
-		var qh;
-		qh = q.c_str();
+		var qh = q.c_str();
 		var none;
 		msg_of(none, "NO_MESSAGE");
 		var okm;
@@ -388,8 +387,7 @@ void checkhints()
 		var hq;
 		msg_of(hq, "WANT_HINT");
 		var htext = hd["hint"];
-		var ht;
-		ht = htext.c_str();
+		var ht = htext.c_str();
 		bool took = false;
 		for (;;)
 		{

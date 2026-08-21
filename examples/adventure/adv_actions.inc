@@ -21,7 +21,7 @@ long P_TRANSITIVE = 2;
 
 bool BLOODED = false;		// drunk the dragon's blood (A8 listen uses it)
 
-void action_default(value &out, value &verb)
+void action_default(var &out, var &verb)
 {
 	ui::get(out, W, E("adv-action-defaults"), verb.c_str());
 }
@@ -50,19 +50,19 @@ long verb_quip()
 }
 
 // Is x one of the SPACE-PADDED, space-delimited words? (" A B C ")
-bool one_of(value &x, const char *words)
+bool one_of(var &x, const char *words)
 {
 	return strstr(words, format(" {} ", x.c_str()).c_str()) != NULL;
 }
 
-bool is_gemstone(value &obj)
+bool is_gemstone(var &obj)
 {
 	return one_of(obj, " EMERALD RUBY AMBER SAPPH ");
 }
 
 // Why a fixed object won't budge — four state-conditional quips, four
 // constant ones, YOU_JOKING otherwise.
-const char *fixed_quip(value &obj, long o)
+const char *fixed_quip(var &obj, long o)
 {
 	if ( obj == "PLANT" )
 		return obj_state(o) == 0 || obj_stashed(o)
@@ -92,7 +92,7 @@ const char *fixed_quip(value &obj, long o)
 
 // ---- fill (bottle / urn / vase) ------------------------------------------
 
-long h_fill(value &obj)
+long h_fill(var &obj)
 {
 	long bottle = E("BOTTLE");
 	long urn = E("URN");
@@ -159,7 +159,7 @@ long h_fill(value &obj)
 
 // ---- carry --------------------------------------------------------------
 
-long h_vcarry(value &obj)
+long h_vcarry(var &obj)
 {
 	if ( obj == "" )
 	{
@@ -250,7 +250,7 @@ long h_vcarry(value &obj)
 
 // ---- drop ---------------------------------------------------------------
 
-long h_discard(value &obj)
+long h_discard(var &obj)
 {
 	long o = E(obj.c_str());
 	if ( obj == "ROD" && !toting(o) && toting(E("ROD2")) )
@@ -389,7 +389,7 @@ long h_discard(value &obj)
 
 // The bear's chain (the reference's chain()): unlock frees the chain
 // and the bear; lock only works back at the chain's original wall.
-long bear_chain(value &verb)
+long bear_chain(var &verb)
 {
 	long chain = E("CHAIN");
 	long bear = E("BEAR");
@@ -423,7 +423,7 @@ long bear_chain(value &verb)
 	return quip("CHAIN_LOCKED");
 }
 
-long h_lock(value &verb, value &obj)
+long h_lock(var &verb, var &obj)
 {
 	if ( obj == "" )
 	{
@@ -499,7 +499,7 @@ long h_lock(value &verb, value &obj)
 
 // ---- light / extinguish -------------------------------------------------
 
-long h_light(value &obj)
+long h_light(var &obj)
 {
 	long lamp = E("LAMP");
 	long urn = E("URN");
@@ -542,7 +542,7 @@ long h_light(value &obj)
 	return verb_quip();
 }
 
-long h_extinguish(value &obj)
+long h_extinguish(var &obj)
 {
 	long lamp = E("LAMP");
 	long urn = E("URN");
@@ -583,7 +583,7 @@ long h_extinguish(value &obj)
 long h_inven()
 {
 	bool empty = true;
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		if ( on == "BEAR" )
 			continue;
@@ -604,7 +604,7 @@ long h_inven()
 	return G_CLEAROBJ;
 }
 
-long h_eat(value &obj)
+long h_eat(var &obj)
 {
 	if ( obj == "" )
 	{
@@ -623,7 +623,7 @@ long h_eat(value &obj)
 	return verb_quip();
 }
 
-long h_drink(value &obj)
+long h_drink(var &obj)
 {
 	var lq;
 	liq_loc(lq, LOC);
@@ -653,7 +653,7 @@ long h_drink(value &obj)
 
 // ---- attack ---------------------------------------------------------------
 
-long h_attack(value &obj)
+long h_attack(var &obj)
 {
 	var verb = CMD["verb"];
 	if ( obj == "" )
@@ -770,7 +770,7 @@ long h_attack(value &obj)
 		move_object(dragon, secret5);
 		move_object(rug, secret5);
 		drop_object(E("BLOOD"), "BLOOD", secret5);
-		for ( value on : OBJ_NAMES )
+		for ( var on : OBJ_NAMES )
 		{
 			long oo = E(on.c_str());
 			if ( !oo )
@@ -830,7 +830,7 @@ long h_attack(value &obj)
 
 // ---- feed -----------------------------------------------------------------
 
-long h_feed(value &obj)
+long h_feed(var &obj)
 {
 	if ( obj == "BIRD" )
 		return quip("BIRD_PINING");
@@ -911,7 +911,7 @@ long throw_support(const char *msg)
 	return G_MOVE;
 }
 
-long h_throw(value &obj)
+long h_throw(var &obj)
 {
 	long o = E(obj.c_str());
 	if ( !toting(o) )
@@ -977,7 +977,7 @@ long h_throw(value &obj)
 
 // ---- wave / rub / magic ----------------------------------------------------
 
-long h_wave(value &obj)
+long h_wave(var &obj)
 {
 	long o = E(obj.c_str());
 	long bird = E("BIRD");
@@ -1020,7 +1020,7 @@ long h_wave(value &obj)
 	return G_CLEAROBJ;
 }
 
-long h_rub(value &obj)
+long h_rub(var &obj)
 {
 	long urn = E("URN");
 	if ( obj == "URN"
@@ -1059,14 +1059,14 @@ long h_reservoir()
 }
 
 // FEE=1 .. FUM=5, 0 for anything else (index answers -1 on a miss).
-long foo_stage(value &id)
+long foo_stage(var &id)
 {
 	var w;
 	php::explode(w, " ", "FEE FIE FOE FOO FUM");
 	return w.index(id) + 1;
 }
 
-long h_bigwords(value &id)
+long h_bigwords(var &id)
 {
 	long stage = foo_stage(id);
 	long fb = FOOBAR;
@@ -1133,13 +1133,13 @@ long h_say()
 
 // ---- read / quit / blast / break / brief / listen --------------------------
 
-long h_read(value &obj)
+long h_read(var &obj)
 {
 	if ( obj == "" )
 	{
 		long matches = 0;
 		var resolved;
-		for ( value on : OBJ_NAMES )
+		for ( var on : OBJ_NAMES )
 		{
 			long oo = E(on.c_str());
 			if ( !oo || !here_obj(oo) || obj_stashed(oo) )
@@ -1212,7 +1212,7 @@ long h_blast()
 	return G_CLEAROBJ;
 }
 
-long h_vbreak(value &obj)
+long h_vbreak(var &obj)
 {
 	if ( obj == "MIRROR" )
 	{
@@ -1253,7 +1253,7 @@ long h_listen()
 		rspeak(snd.c_str());
 		heard = true;
 	}
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		long o = E(on.c_str());
 		if ( !o || !here_obj(o) || !obj_found(o) || obj_stashed(o) )
@@ -1269,7 +1269,7 @@ long h_listen()
 		// The bird sounds carry the reservoir word (%s).
 		var tx;
 		long i2 = 0;
-		for ( value d : snds )
+		for ( var d : snds )
 		{
 			if ( i2 == mi )
 			{
@@ -1294,7 +1294,7 @@ long h_listen()
 
 // ---- pour / find / fly / wake ----------------------------------------------
 
-long h_pour(value &obj)
+long h_pour(var &obj)
 {
 	if ( obj == "BOTTLE" || obj == "" )
 	{
@@ -1342,7 +1342,7 @@ long h_pour(value &obj)
 	return G_CLEAROBJ;
 }
 
-long h_find(value &obj)
+long h_find(var &obj)
 {
 	long o = E(obj.c_str());
 	if ( toting(o) )
@@ -1359,7 +1359,7 @@ long h_find(value &obj)
 	return verb_quip();
 }
 
-long h_fly(value &obj)
+long h_fly(var &obj)
 {
 	long rug = E("RUG");
 	if ( obj == "" )
@@ -1393,7 +1393,7 @@ long h_fly(value &obj)
 	return G_TERMINATE;
 }
 
-long h_wake(value &obj)
+long h_wake(var &obj)
 {
 	if ( obj != "DWARF" || !CLOSED )
 		return verb_quip();

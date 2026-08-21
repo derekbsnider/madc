@@ -251,7 +251,7 @@ void close_clock2()
 	put_object(E("PILLOW"), "PILLOW", sw, 0);
 	put_object(E("MIRROR"), "MIRROR", ne, 0);
 	move_fixed_side("MIRROR", sw);
-	for ( value on : OBJ_NAMES )
+	for ( var on : OBJ_NAMES )
 	{
 		long o = E(on.c_str());
 		if ( o && toting(o) )
@@ -268,7 +268,7 @@ bool closecheck()
 {
 	var ths;
 	ui::get(ths, W, E("adv-tables"), "turn_thresholds");
-	for ( value th : ths )
+	for ( var th : ths )
 	{
 		if ( TURNS == th["threshold"].as_integer() + 1 )
 		{
@@ -430,7 +430,7 @@ bool do_command_once()
 				if ( (!obj_found(oyster) || obj_stashed(oyster))
 				  && toting(oyster) )
 					pspeak_look(oyster, 1);
-				for ( value on : OBJ_NAMES )
+				for ( var on : OBJ_NAMES )
 				{
 					long o = E(on.c_str());
 					if ( !o || !toting(o) )

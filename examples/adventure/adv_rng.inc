@@ -26,8 +26,7 @@ void rng_seed(long seedval)
 	// (they ADVANCE the stream — part of RNG parity), then the second
 	// character is forced to an apostrophe.
 	var alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-	var zz;
-	zz = "";
+	var zz = "";
 	long i = 0;
 	while ( i < 5 )
 	{

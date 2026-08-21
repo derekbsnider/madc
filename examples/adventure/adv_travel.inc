@@ -4,12 +4,12 @@
 // Condition failure skips past every consecutive rule with the same
 // (cond, action) signature — the reference's traveleq law.
 
-bool rule_matches(value &r, value &motion)
+bool rule_matches(var &r, var &motion)
 {
 	var vb = r["verbs"];
 	if ( vb.empty() )
 		return true;
-	for ( value v : vb )
+	for ( var v : vb )
 		if ( v == motion )
 			return true;
 	return false;
@@ -17,7 +17,7 @@ bool rule_matches(value &r, value &motion)
 
 // Travel-rule condition forms: null | [pct N] | [carry OBJ] |
 // [with OBJ] | [not OBJ STATE].
-bool cond_pass(value &r)
+bool cond_pass(var &r)
 {
 	var c = r["cond"];
 	if ( c.is_null() )
@@ -47,11 +47,11 @@ void quip_class(const char *msg, const char *words)
 {
 	var w;
 	php::explode(w, " ", words);
-	for ( value m : w )
+	for ( var m : w )
 		MOTION_QUIPS[m.c_str()] = msg;
 }
 
-void bad_motion(value &motion)
+void bad_motion(var &motion)
 {
 	if ( MOTION_QUIPS.is_null() )
 	{
@@ -66,13 +66,13 @@ void bad_motion(value &motion)
 	rspeak(q.is_null() ? "CANT_APPLY" : q.c_str());
 }
 
-void travel_apply(value &motion)
+void travel_apply(var &motion)
 {
 	var tr;
 	ui::get(tr, W, LOC, "travel");
 	long phase = 0;		// 0 = searching, 1 = evaluating, 2 = skipping
 	var skip_cond, skip_act;
-	for ( value r : tr )
+	for ( var r : tr )
 	{
 		if ( phase == 0 )
 		{
@@ -190,7 +190,7 @@ long first_goto_dest(long l)
 	ui::get(tr, W, l, "travel");
 	if ( tr.is_null() )
 		return 0;
-	for ( value r : tr )
+	for ( var r : tr )
 	{
 		var act = r["action"];
 		if ( act[0] == "goto" )
@@ -200,7 +200,7 @@ long first_goto_dest(long l)
 	return 0;
 }
 
-void playermove(value &motion)
+void playermove(var &motion)
 {
 	NEWLOC = LOC;
 	if ( motion == "NUL" )
@@ -224,15 +224,13 @@ void playermove(value &motion)
 		}
 		// First rule going straight to tgt wins; otherwise the LAST
 		// rule whose forced destination's first hop lands on tgt.
-		var via;
-		via = "";
+		var via = "";
 		bool via_found = false;
-		var thru;
-		thru = "";
+		var thru = "";
 		bool thru_found = false;
 		var tr;
 		ui::get(tr, W, LOC, "travel");
-		for ( value r : tr )
+		for ( var r : tr )
 		{
 			var act = r["action"];
 			if ( act[0] != "goto" )
