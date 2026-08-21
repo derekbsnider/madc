@@ -3182,11 +3182,17 @@ public:
     // `zero_args` (parallel to argtypes, optional) marks literal-0 arguments —
     // the null-pointer-constant rule ([conv.ptr]) must survive the re-rank
     // (global ::operator== sets rank here too: testfreeop's `a == 0`).
+    // `strict_no_viable` (optional): set true when the set was RANKED (>= 2
+    // members) yet no candidate is viable AND every candidate is a plain
+    // concrete function (no varargs, no template machinery) — the caller
+    // must NOT fall back to the parse-bound by-name member (a silent
+    // wrong-ABI bind); it reports a loud no-matching-overload error.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
 					       const std::vector<bool> *zero_args = NULL,
-					       const std::vector<DataDef *> *explicit_template_args = NULL);
+					       const std::vector<DataDef *> *explicit_template_args = NULL,
+					       bool *strict_no_viable = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`

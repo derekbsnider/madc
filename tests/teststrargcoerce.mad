@@ -1,0 +1,22 @@
+// The ranker scores what the lowering supports: a std::string argument
+// converts to a char* parameter (object_cstr_arg, the one class-to-cstr
+// owner) — here against the LEAN overload sets (<ns_php> parsed before
+// <string>, so the guarded std::string interop forms do not exist and
+// ranking must pick the const char* lean forms via the conversion).
+// Before the scorer arm this exact push shape was the no-viable SEGV
+// reducer (the fallback bound array_push(array&, value&) and read the
+// std::string object as a value carrier).
+#include <ns_php>
+#include <string>
+int main()
+{
+	array a;
+	std::string s = "hello";
+	php::array_push(a, s);
+	println("count={}", php::count(a));
+	println("elem={}", php::array_get_cstr(a, 0));
+	std::string padded = "  mid  ";
+	println("[{}]", php::trim(padded));
+	println("[{}]", padded);
+	return 0;
+}

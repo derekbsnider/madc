@@ -6,7 +6,9 @@
 void shout(value &out, value &word)
 {
 	var up = php::strtoupper(word);
-	out = format("{}!", up.c_str()).c_str();
+	// format() returns ring-lifetime const char* (the c_str contract);
+	// capture it straight into the value out-param.
+	out = format("{}!", up);
 	println("module says {}", out);
 }
 

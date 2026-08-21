@@ -17273,6 +17273,17 @@ DataDef *Program::array_decay_pointer(TokenBase *operand)
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	    return getPointerType(tv->var.type);
     }
+    else if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(operand) )
+    {
+	// A PARTIAL subscript of a multi-dimensional fixed array denotes the
+	// row sub-array, which decays to a pointer to the element type in a
+	// VALUE context ([expr.sub] + [conv.array]): `char s[2][4]` makes
+	// `s[1]` rank as char*, not char. A full subscript (one index per
+	// dimension) denotes the element — no decay.
+	if ( ts->object.is_fixed_array() && ts->object.type
+	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
+	    return getPointerType(ts->object.type);
+    }
     if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(operand->datadef()) )
 	if ( ca->element_type )
 	    return getPointerType(ca->element_type);
@@ -17932,8 +17943,11 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::string &name,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args,
-		const std::vector<DataDef *> *explicit_template_args)
+		const std::vector<DataDef *> *explicit_template_args,
+		bool *strict_no_viable)
 {
+    if ( strict_no_viable )
+	*strict_no_viable = false;
     std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
 	namespace_fn_overload_sets.find(ns + "::" + name);
     if ( oi == namespace_fn_overload_sets.end() || oi->second.size() < 2 )
@@ -17953,6 +17967,28 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
 	      << (best ? best->name : "(none)") << std::endl;
 #endif
+    // No viable candidate in a set the caller could otherwise silently
+    // fall back from (the parse-bound BY-NAME member — a mis-bind that
+    // compiles a call through the wrong ABI). Answer "strict" only when
+    // every candidate is a plain concrete function: a varargs candidate
+    // is outside the ranker's arity model, and a template set (the
+    // placeholder marker or recorded template args) has its own
+    // instantiate-on-miss lanes — both keep the historical fallback.
+    if ( !best && strict_no_viable )
+    {
+	bool strict = true;
+	for ( const NamespaceFnOverload &e : oi->second )
+	{
+	    if ( e.param_spelling == "\x01fn-template-placeholder"
+	      || !e.template_arg_names.empty() )
+	    { strict = false; break; }
+	    FuncDef *cfd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
+	    if ( !cfd || cfd->is_varargs || cfd->is_member_template
+	      || cfd->dependent_pattern || cfd->tsubst_source )
+	    { strict = false; break; }
+	}
+	*strict_no_viable = strict;
+    }
     return best;
 }
 

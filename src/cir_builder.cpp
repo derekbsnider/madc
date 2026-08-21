@@ -210,6 +210,20 @@ node_t CirBuilder::error_node(const char *reason, TokenBase *origin)
 	return cn->as_node();
 }
 
+// Human-readable type name for user-facing diagnostics: the parsed C++
+// source spelling when one was recorded (e.g. "std::basic_string<char, ...>"
+// — namespaced source syntax), else the internal DataDef name. The one owner
+// for describing a DataDef in an error message (no-matching-overload and
+// no-matching-constructor both render through it).
+static std::string describe_datadef(const DataDef *dd)
+{
+	if (!dd)
+		return "<unknown>";
+	if (!dd->canonical_cpp_spelling().empty())
+		return dd->canonical_cpp_spelling();
+	return dd->name.empty() ? std::string("<unnamed>") : dd->name;
+}
+
 // Human-readable description of a parse token, for internal-error diagnostics.
 // madc is open source — there are no internals to hide — so name the concrete
 // TokenBase subclass via RTTI (e.g. "TokenMember") plus the lexeme it carries,
@@ -4780,9 +4794,11 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
 			}
+			bool strict_no_viable = false;
 			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
-					at, &zeros, &tcf->explicit_template_args);
+					at, &zeros, &tcf->explicit_template_args,
+					&strict_no_viable);
 			if (::getenv("MADC_OVL_PROBE"))
 				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
 					fd->namespace_name.c_str(),
@@ -4795,6 +4811,26 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 						*fd_out = wfd;
 					return w;
 				}
+			// A ranked overload set with NO viable candidate: falling
+			// back to the arbitrary parse-bound member compiles the
+			// call through the wrong ABI (a std::string argument read
+			// as a value carrier SEGV'd in madc_value_copy). Only
+			// strict sets error — varargs candidates and template
+			// sets keep the historical fallback (their lanes above
+			// own instantiate-on-miss).
+			if (strict_no_viable && m_prog) {
+				std::string ats;
+				for (size_t i = 0; i < at.size(); ++i) {
+					if (i)
+						ats += ", ";
+					ats += describe_datadef(at[i]);
+				}
+				m_prog->Throw(tcf) << "no matching overload for '"
+					<< fd->namespace_name << "::"
+					<< fd->function_display_name
+					<< "' with argument types (" << ats
+					<< ")" << std::flush;
+			}
 		}
 	}
 	if (fd_out)
@@ -13273,6 +13309,17 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		if (au && au->rawtype() == DataType::dtARRAY
 		    && !au->is_pointer() && is_char_pointer((DataDef *)pdc))
 			return allow_udc ? 2 : -1;
+		// A std::string ARGUMENT converts to a char* parameter the same
+		// way: build_call_args lowers exactly this shape through
+		// object_cstr_arg (the one class-to-cstr owner), so the ranker
+		// must score what the lowering supports — the silent no-viable
+		// fallback used to paper over this gap (php::implode's
+		// std::string glue into the const char* interop param).
+		// marshals_value_text-gated: only the class whose c_str coercion
+		// the lowering guarantees.
+		if (au && au->is_object() && au->marshals_value_text()
+		    && is_char_pointer((DataDef *)pdc))
+			return allow_udc ? 2 : -1;
 	}
 	// A class-object ARGUMENT only binds the same-class parameter (handled
 	// above); there is no implicit object->scalar/pointer conversion here.
@@ -13967,8 +14014,7 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 		DataDef *ad = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
 		if (DataDefCLASS *rc = object_returning_call_class(ctor_args[i]))
 			ad = rc;
-		args_desc += (ad && !ad->name.empty()) ? ad->name
-						       : std::string("<unknown>");
+		args_desc += describe_datadef(ad);
 	}
 	char buf[256];
 	snprintf(buf, sizeof(buf),

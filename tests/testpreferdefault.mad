@@ -3,6 +3,12 @@
 // NO `prefer` directive once the namespace's header is in — here `trim`
 // finds php::trim. An explicit `prefer` still REPLACES the default wholly;
 // standards modes get no default (see testautoceremonystd).
+//
+// This test exercises the std::string INTEROP form (in-place mutation), so
+// per the dialect-lean convention an explicit includer writes <string>
+// ABOVE the namespace header — that is what declares php::trim's guarded
+// std::string& overload.
+#include <string>
 #include <ns_php>
 
 string s = "  pad  ";
