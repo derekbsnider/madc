@@ -43,7 +43,7 @@ void render_msg(value &out, value &text, value &dargs, value &sval)
 				{
 					long dval = darg_at(dargs, di);
 					di++;
-					out += to_string(dval).c_str();
+					out += format("{}", dval).c_str();
 					plural = dval != 1;
 				}
 				else if ( f == 's' )
@@ -87,7 +87,7 @@ void speak_rendered(value &text)
 {
 	if ( text.empty() )
 		return;
-	std::print("\n{}\n", text);
+	println("\n{}", text);
 }
 
 void speak_msg(value &text)
@@ -108,7 +108,7 @@ void speak_msg_noblank(value &text)
 	render_msg(r, text, nod, none);
 	if ( r.empty() )
 		return;
-	std::print("{}\n", r);
+	println("{}", r);
 }
 
 void speak_msg_d(value &text, long d)
@@ -197,36 +197,25 @@ void sspeak_s(const char *name, value &s)
 	}
 	if ( i > run )
 		out += t.substr(run, i - run);
-	std::print("\n{}\n", out);
+	println("\n{}", out);
 }
 
 // One input line: leading blank, comments skipped, EOF -> false, echo.
 bool get_input(value &out)
 {
-	std::print("\n");
+	println("");
 	for (;;)
 	{
-		if ( !cin.good() )
+		var line;
+		if ( !madc::getline(line) )
 		{
 			// The reference prints the prompt once at EOF.
-			std::print("> ");
+			print("> ");
 			return false;
 		}
-		string raw;
-		getline(cin, raw);
-		if ( !cin.good() && raw.empty() )
-		{
-			std::print("> ");
-			return false;
-		}
-		var line = raw.c_str();
-		if ( !line.empty() )
-		{
-			var h = line.substr(0, 1);
-			if ( h == "#" )
-				continue;
-		}
-		std::print("> {}\n", line);
+		if ( !line.empty() && line.at(0) == '#' )
+			continue;
+		println("> {}", line);
 		out = line;
 		return true;
 	}

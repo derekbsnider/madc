@@ -37,11 +37,12 @@ var HINT_USED;			// hint name -> true once taken
 var CMD;			// the current command bag
 var OLDOBJ;			// previous command's object (clear_command)
 
-// Listing-order key: zero-padded (999999999 - seq), so ascending map
-// key order IS descending placement order (the atloc-prepend law).
-string pad_seq_key(long seq)
+// One listing-order insert: byseq keys on zero-padded (999999999 - seq)
+// so ascending map key order IS descending placement order (the
+// atloc-prepend law). This helper owns the key law.
+void listing_insert(value &byseq, long seq, const char *name)
 {
-	return std::format("{:09}", 999999999 - seq);
+	byseq[format("{:09}", 999999999 - seq).c_str()] = name;
 }
 
 // Memoized entity lookup (the world's find is linear; 255 entities).
@@ -346,8 +347,7 @@ void juggle_object(long o, const char *name)
 // The i'th dwarf actor entity (1..6; 6 = the pirate).
 long dwarf_ent(long i)
 {
-	string dn = std::format("dwarf{}", i);
-	return E(dn.c_str());
+	return E(format("dwarf{}", i).c_str());
 }
 
 // First dwarf at a location (0 = none / dwarves not active; the pirate
@@ -389,13 +389,8 @@ void liq_loc(value &out, long l)
 
 bool world_boot()
 {
-	ifstream probe;
-	probe.open("examples/adventure/adventure.world");
-	if ( probe.good() )
-	{
-		probe.close();
+	if ( php::file_exists("examples/adventure/adventure.world") )
 		W = ui::world_open("examples/adventure/adventure.world");
-	}
 	else
 		W = ui::world_open("adventure.world");
 	return W != 0;
@@ -433,8 +428,7 @@ void init_game()
 	for ( value d : dl )
 	{
 		di++;
-		string dn = std::format("dwarf{}", di);
-		long dw = ui::create(W, dn.c_str());
+		long dw = ui::create(W, format("dwarf{}", di).c_str());
 		ui::set(W, dw, "is_pirate", di == 6);
 		ui::set(W, dw, "seen", false);
 		ui::move(W, dw, E(d.c_str()));

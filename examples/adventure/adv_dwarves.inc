@@ -165,8 +165,7 @@ bool dwarfmove()
 				var nod = r["nodwarves"];
 				if ( !nod.is_null() && nod.as_boolean() )
 					continue;
-				string tkkey = to_string(10 + j);
-				tk[tkkey.c_str()] = d;
+				tk[format("{}", 10 + j).c_str()] = d;
 				prev = d;
 				j++;
 			}

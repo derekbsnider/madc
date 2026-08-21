@@ -100,9 +100,8 @@ void listobjects()
 		if ( l == nm_loc )
 		{
 			var sq = side["seq"];
-			string key = pad_seq_key(sq.as_integer());
 			var snm = side["name"];
-			byseq[key.c_str()] = snm.c_str();
+			listing_insert(byseq, sq.as_integer(), snm.c_str());
 		}
 	}
 	var held;
@@ -114,8 +113,7 @@ void listobjects()
 		ui::get(sq, W, o, "seq");
 		if ( sq.is_null() )
 			continue;	// actors and singletons are not listed
-		string key = pad_seq_key(sq.as_integer());
-		byseq[key.c_str()] = h.c_str();
+		listing_insert(byseq, sq.as_integer(), h.c_str());
 	}
 	for ( value onm : byseq )
 	{

@@ -178,7 +178,7 @@ void travel_apply(value &motion)
 		bad_motion(motion);
 		return;
 	}
-	fprintf(stderr, "advent: conditional travel group with no tail\n");
+	println(stderr, "advent: conditional travel group with no tail");
 	exit(3);
 }
 

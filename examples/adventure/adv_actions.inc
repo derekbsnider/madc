@@ -52,8 +52,7 @@ long verb_quip()
 // Is x one of the SPACE-PADDED, space-delimited words? (" A B C ")
 bool one_of(value &x, const char *words)
 {
-	string pat = std::format(" {} ", x.c_str());
-	return strstr(words, pat.c_str()) != NULL;
+	return strstr(words, format(" {} ", x.c_str()).c_str()) != NULL;
 }
 
 bool is_gemstone(value &obj)
@@ -1538,14 +1537,14 @@ long act_dispatch(long part)
 				// Binary save is out of scope (our save is
 				// the .world round-trip); the logs using it
 				// are the corpus's excluded class.
-				fprintf(stderr,
-					"advent: save/resume out of scope\n");
+				println(stderr,
+					"advent: save/resume out of scope");
 				exit(3);
 			}
 			if ( one_of(verb, " DROP WAVE TAME RUB THROW FIND FEED BREAK WAKE ") )
 				return G_UNKNOWN;
-			fprintf(stderr,
-				"advent: intransitive verb %s unimplemented\n",
+			println(stderr,
+				"advent: intransitive verb {} unimplemented",
 				verb.c_str());
 			exit(3);
 		}
@@ -1633,7 +1632,7 @@ long act_dispatch(long part)
 			speak_msg_d(dm, LIMIT);
 			return G_TOP;
 		}
-		fprintf(stderr, "advent: verb %s unimplemented\n",
+		println(stderr, "advent: verb {} unimplemented",
 			verb.c_str());
 		exit(3);
 	}

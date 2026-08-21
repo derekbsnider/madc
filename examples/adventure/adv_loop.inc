@@ -398,7 +398,7 @@ long word_loop()
 		}
 		if ( g == G_TOP )
 			return 3;
-		fprintf(stderr, "advent: unhandled phase code %ld\n", g);
+		println(stderr, "advent: unhandled phase code {}", g);
 		exit(3);
 	}
 }
