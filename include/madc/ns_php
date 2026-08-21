@@ -40,6 +40,8 @@ extern "C" {
     const char *__php_ucfirst_cstr2(const char *);
     int64_t __php_ctype_digit(value *);
     int64_t __php_ctype_digit_cstr(const char *);
+    int64_t __php_file_exists(value *);
+    int64_t __php_file_exists_cstr(const char *);
     int64_t __php_intval(value *);
     int64_t __php_intval_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
@@ -111,6 +113,10 @@ namespace php {
     // PHP parity: true iff non-empty and every byte is 0-9.
     bool ctype_digit(value &s) { return __php_ctype_digit(&s) != 0; }
     bool ctype_digit(const char *s) { return __php_ctype_digit_cstr(s) != 0; }
+    // file_exists — true for an existing file OR directory (PHP parity;
+    // no stat-cache emulation, madc answers the live filesystem).
+    bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
+    bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
     // PHP parity (base 10): longest digit prefix converts; int passes
     // through, real truncates, bool 1/0, containers 0.
     int64_t intval(value &v) { return __php_intval(&v); }

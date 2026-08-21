@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <sys/stat.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -541,6 +542,28 @@ int64_t php_ctype_digit_value(const madc::value *v)
 	return 1;
 }
 
+// php::file_exists — PHP parity: true iff the path names an existing
+// file OR directory (directories count in PHP). An empty/null path or a
+// non-string value answers false, warning-free like PHP. The stat-cache
+// PHP layers on top is deliberately not mirrored (madc answers the live
+// filesystem).
+int64_t php_file_exists(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+	struct stat st;
+	return ::stat(path, &st) == 0 ? 1 : 0;
+}
+int64_t php_file_exists_value(const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	// The payload is not NUL-terminated by contract — copy to a bounded
+	// C string for stat.
+	std::string p((const char *)v->data(), v->size());
+	return php_file_exists(p.c_str());
+}
+
 // php::intval — PHP parity (base 10): leading whitespace, optional sign,
 // then the longest digit prefix converts ("12abc" -> 12, "abc" -> 0).
 // Integer kind passes through; real truncates toward zero; bool 1/0;
@@ -754,6 +777,8 @@ const char *__php_ucfirst_value(madc::value *a) { return php_ucfirst_value(a); }
 const char *__php_ucfirst_cstr2(const char *a) { return php_ucfirst_cstr(a); }
 int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
+int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
+int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
 int64_t __php_intval(madc::value *a) { return php_intval_value(a); }
 int64_t __php_intval_cstr(const char *a) { return php_intval_cstr(a); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }
