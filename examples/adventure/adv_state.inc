@@ -316,6 +316,23 @@ long objects_at_loc(value &only, long at)
 	return n;
 }
 
+// Juggle: re-front both sides of an object in the listing order (the
+// reference's pick-up-and-put-down).
+void juggle_object(long o, const char *name)
+{
+	move_object(o, ui::location(W, o));
+	if ( php::array_key_exists(name, FIXEDSIDES) )
+		move_fixed_side(name, fixed_side_loc(name));
+}
+
+// The i'th dwarf actor entity (1..6; 6 = the pirate).
+long dwarf_ent(long i)
+{
+	var dn = "dwarf";
+	dn += to_string(i).c_str();
+	return E(dn.c_str());
+}
+
 // First dwarf at a location (0 = none / dwarves not active; the pirate
 // never counts). Dead-dwarf bookkeeping lands with A7.
 long atdwrf(long l)

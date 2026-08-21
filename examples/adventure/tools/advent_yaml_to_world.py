@@ -187,7 +187,11 @@ def convert(doc):
             r = {"verbs": [motion_of(v) for v in rule.get("verbs") or []],
                  "cond": rule.get("cond"),
                  "action": rule.get("action")}
-            if rule.get("nodwarves"):
+            # The [nodwarves] cond IS the no-dwarves flag (the reference
+            # encodes it as cond 100 and derives the flag from it); the
+            # cond itself stays — the player's travel rolls PCT(100) on
+            # it (a wasted draw that is part of RNG parity).
+            if rule.get("nodwarves") or rule.get("cond") == ["nodwarves"]:
                 r["nodwarves"] = True
             travel.append(r)
             travel_rules += 1

@@ -4,22 +4,6 @@
 // word_loop 1 = executed (move next), 2 = read another command,
 // 3 = re-describe without moving (GO_TOP).
 
-void dwarfmove_stub()
-{
-	if ( LOC == 0 || forced_loc(LOC) || loccond(NEWLOC, "NOARRR") )
-		return;
-	if ( DFLAG == 0 )
-	{
-		if ( loccond(LOC, "DEEP") )
-			DFLAG = 1;
-		return;
-	}
-	// Dwarf activity (rolls RNG) is slice A7 — loud, not wrong.
-	fprintf(stderr, "advent: dwarfmove dflag=%ld unimplemented (A7)\n",
-		DFLAG);
-	exit(3);
-}
-
 // Apply the move the travel system chose. False = the player died.
 bool do_move_step()
 {
@@ -52,7 +36,8 @@ bool do_move_step()
 	}
 	LOC = NEWLOC;
 	ui::move(W, PLAYER, LOC);
-	dwarfmove_stub();
+	if ( !dwarfmove() )
+		croak();
 	if ( LOC == 0 )
 		croak();
 	if ( !forced_loc(LOC) && is_dark() && WZDARK && pct(35) )

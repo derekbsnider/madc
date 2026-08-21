@@ -678,15 +678,6 @@ long h_drink(value &obj)
 	return G_CLEAROBJ;
 }
 
-// ---- juggle: re-front both sides of an object in the listing order ------
-
-void juggle_object(long o, const char *name)
-{
-	move_object(o, ui::location(W, o));
-	if ( php::array_key_exists(name, FIXEDSIDES) )
-		move_fixed_side(name, fixed_side_loc(name));
-}
-
 // ---- attack ---------------------------------------------------------------
 
 long h_attack(value &obj)
@@ -827,7 +818,27 @@ long h_attack(value &obj)
 		rspeak("OGRE_DODGE");
 		if ( atdwrf(LOC) == 0 )
 			return G_CLEAROBJ;
-		a8_wall("ogre vs dwarves");
+		// The dwarves' knives ricochet into the ogre.
+		rspeak("KNIFE_THROWN");
+		destroy_object(E("OGRE"), "OGRE");
+		long dwarves = 0;
+		long di = 1;
+		while ( di <= 5 )
+		{
+			long dw = dwarf_ent(di);
+			if ( ui::location(W, dw) == LOC )
+			{
+				dwarves = dwarves + 1;
+				ui::move(W, dw, E("LOC_LONGWEST"));
+				ui::set(W, dw, "seen", false);
+			}
+			di = di + 1;
+		}
+		if ( dwarves > 1 )
+			rspeak("OGRE_PANIC1");
+		else
+			rspeak("OGRE_PANIC2");
+		return G_CLEAROBJ;
 	}
 	if ( obj == "" )
 	{

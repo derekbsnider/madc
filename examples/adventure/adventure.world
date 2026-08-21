@@ -326,7 +326,7 @@
   long = "You are at the west end of a very long featureless hall.  The hall\njoins up with a narrow north/south passage."
   maptag = Maze all alike.
   short = You're at west end of long hall.
-  travel = [{"action":["goto","LOC_LONGEAST"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT1"],"cond":["nodwarves"],"verbs":["SOUTH"]}]
+  travel = [{"action":["goto","LOC_LONGEAST"],"cond":null,"verbs":["EAST"]},{"action":["goto","LOC_CROSSOVER"],"cond":null,"verbs":["NORTH"]},{"action":["goto","LOC_DIFFERENT1"],"cond":["nodwarves"],"nodwarves":true,"verbs":["SOUTH"]}]
 %entity LOC_CROSSOVER
   conditions = {"DEEP":true}
   long = You are at a crossover of a high n/s passage and a low e/w one.

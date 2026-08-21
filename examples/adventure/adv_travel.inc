@@ -47,6 +47,10 @@ bool cond_pass(value &r)
 	if ( c.is_null() )
 		return true;
 	var kind = c[0].c_str();
+	if ( kind == "nodwarves" )
+		// The reference encodes this as cond 100 — PCT(100) always
+		// passes but CONSUMES a draw (RNG parity).
+		return pct(100);
 	if ( kind == "pct" )
 		return pct(php::intval(c[1].c_str()));
 	var objname = c[1].c_str();
@@ -126,11 +130,71 @@ void travel_apply(value &motion)
 			NEWLOC = LOC;
 			return;
 		}
-		// Special travel (plover passage / transport, troll
-		// bridge) — slice A8. Loud so a fragment reaching one is
-		// visibly out of scope, never silently wrong.
-		fprintf(stderr, "advent: special travel unimplemented (A8)\n");
-		NEWLOC = LOC;
+		// Special travel.
+		long sp = php::intval(act[1].c_str());
+		if ( sp == 1 )
+		{
+			// Plover-alcove passage: only the emerald fits through.
+			if ( LOC == E("LOC_PLOVER") )
+				NEWLOC = E("LOC_ALCOVE");
+			else
+				NEWLOC = E("LOC_PLOVER");
+			if ( HOLDING > 1
+			  || (HOLDING == 1 && !toting(E("EMERALD"))) )
+			{
+				NEWLOC = LOC;
+				rspeak("MUST_DROP");
+			}
+			return;
+		}
+		if ( sp == 2 )
+		{
+			// Plover transport: drop the emerald and pretend he
+			// wasn't carrying it — skip this rule group and keep
+			// evaluating.
+			drop_object(E("EMERALD"), "EMERALD", LOC);
+			rule_sig(skip_sig, r);
+			phase = 2;
+			continue;
+		}
+		// Special 3: the troll bridge.
+		long troll = E("TROLL");
+		long paidonce = state_index_c(troll, "TROLL_PAIDONCE");
+		if ( obj_state(troll) == paidonce )
+		{
+			pspeak_look(troll, paidonce);
+			obj_set_state(troll,
+				      state_index_c(troll, "TROLL_UNPAID"));
+			long troll2 = E("TROLL2");
+			move_object(troll2, 0);
+			move_fixed_side("TROLL2", 0);
+			move_object(troll, static_place(troll));
+			move_fixed_side("TROLL", static_fixed(troll));
+			juggle_object(E("CHASM"), "CHASM");
+			NEWLOC = LOC;
+			return;
+		}
+		// Cross to the other side.
+		long plac = static_place(troll);
+		long fixd = static_fixed(troll);
+		if ( LOC == plac )
+			NEWLOC = fixd;
+		else
+			NEWLOC = plac;
+		if ( obj_state(troll)
+		     == state_index_c(troll, "TROLL_UNPAID") )
+			obj_set_state(troll, paidonce);
+		if ( !toting(E("BEAR")) )
+			return;
+		// The bear is too heavy: the bridge collapses.
+		state_change_c(E("CHASM"), "BRIDGE_WRECKED");
+		obj_set_state(troll, state_index_c(troll, "TROLL_GONE"));
+		long bear = E("BEAR");
+		drop_object(bear, "BEAR", NEWLOC);
+		obj_set_fixed(bear, -1);
+		obj_set_state(bear, state_index_c(bear, "BEAR_DEAD"));
+		OLDLC2 = NEWLOC;
+		croak();
 		return;
 	}
 	if ( phase == 0 )

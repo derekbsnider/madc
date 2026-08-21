@@ -28,6 +28,7 @@ using namespace std;
 #include "adv_vocab.inc"
 #include "adv_describe.inc"
 #include "adv_score.inc"
+#include "adv_dwarves.inc"
 #include "adv_travel.inc"
 #include "adv_actions.inc"
 #include "adv_loop.inc"
