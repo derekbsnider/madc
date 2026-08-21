@@ -35,16 +35,59 @@ void speak_verb_default()
 	speak_msg(dm);
 }
 
-void a8_wall(const char *what)
+// Speak one message and finish the command — the file's most common
+// exit shape.
+long quip(const char *msg)
 {
-	fprintf(stderr, "advent: %s unimplemented (A8)\n", what);
-	exit(3);
+	rspeak(msg);
+	return G_CLEAROBJ;
+}
+
+long verb_quip()
+{
+	speak_verb_default();
+	return G_CLEAROBJ;
+}
+
+// Is x one of the SPACE-PADDED, space-delimited words? (" A B C ")
+bool one_of(value &x, const char *words)
+{
+	string pat = std::format(" {} ", x.c_str());
+	return strstr(words, pat.c_str()) != NULL;
 }
 
 bool is_gemstone(value &obj)
 {
-	return obj == "EMERALD" || obj == "RUBY" || obj == "AMBER"
-	    || obj == "SAPPH";
+	return one_of(obj, " EMERALD RUBY AMBER SAPPH ");
+}
+
+// Why a fixed object won't budge — four state-conditional quips, four
+// constant ones, YOU_JOKING otherwise.
+const char *fixed_quip(value &obj, long o)
+{
+	if ( obj == "PLANT" )
+		return obj_state(o) <= 0 ? "DEEP_ROOTS" : "YOU_JOKING";
+	if ( obj == "BEAR" )
+		return obj_state(o) == state_index_c(o, "SITTING_BEAR")
+		       ? "BEAR_CHAINED" : "YOU_JOKING";
+	if ( obj == "CHAIN" )
+	{
+		long bear = E("BEAR");
+		return obj_state(bear) != state_index_c(bear, "UNTAMED_BEAR")
+		       ? "STILL_LOCKED" : "YOU_JOKING";
+	}
+	if ( obj == "RUG" )
+		return obj_state(o) == state_index_c(o, "RUG_HOVER")
+		       ? "RUG_HOVERS" : "YOU_JOKING";
+	if ( obj == "URN" )
+		return "URN_NOBUDGE";
+	if ( obj == "CAVITY" )
+		return "DOUGHNUT_HOLES";
+	if ( obj == "BLOOD" )
+		return "FEW_DROPS";
+	if ( obj == "SIGN" )
+		return "HAND_PASSTHROUGH";
+	return "YOU_JOKING";
 }
 
 // ---- fill (bottle / urn / vase) ------------------------------------------
@@ -60,15 +103,9 @@ long h_fill(value &obj)
 	if ( obj == "VASE" )
 	{
 		if ( lq == "" )
-		{
-			rspeak("FILL_INVALID");
-			return G_CLEAROBJ;
-		}
+			return quip("FILL_INVALID");
 		if ( !toting(E("VASE")) )
-		{
-			rspeak("ARENT_CARRYING");
-			return G_CLEAROBJ;
-		}
+			return quip("ARENT_CARRYING");
 		rspeak("SHATTER_VASE");
 		long vase = E("VASE");
 		obj_set_state(vase, state_index_c(vase, "VASE_BROKEN"));
@@ -79,15 +116,9 @@ long h_fill(value &obj)
 	if ( obj == "URN" )
 	{
 		if ( obj_state(urn) != state_index_c(urn, "URN_EMPTY") )
-		{
-			rspeak("FULL_URN");
-			return G_CLEAROBJ;
-		}
+			return quip("FULL_URN");
 		if ( !here_obj(bottle) )
-		{
-			rspeak("FILL_INVALID");
-			return G_CLEAROBJ;
-		}
+			return quip("FILL_INVALID");
 		if ( lb == "WATER" )
 		{
 			obj_set_state(bottle,
@@ -102,36 +133,21 @@ long h_fill(value &obj)
 			rspeak("OIL_URN");
 		}
 		else
-		{
-			rspeak("FILL_INVALID");
-			return G_CLEAROBJ;
-		}
+			return quip("FILL_INVALID");
 		ui::move(W, E(lb.c_str()), 0);
 		return G_CLEAROBJ;
 	}
 	if ( obj != "" && obj != "BOTTLE" )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	if ( obj == "" && !here_obj(bottle) )
 		return G_UNKNOWN;
 	if ( here_obj(urn) && obj_state(urn)
 	     != state_index_c(urn, "URN_EMPTY") )
-	{
-		rspeak("URN_NOPOUR");
-		return G_CLEAROBJ;
-	}
+		return quip("URN_NOPOUR");
 	if ( lb != "" )
-	{
-		rspeak("BOTTLE_FULL");
-		return G_CLEAROBJ;
-	}
+		return quip("BOTTLE_FULL");
 	if ( lq == "" )
-	{
-		rspeak("NO_LIQUID");
-		return G_CLEAROBJ;
-	}
+		return quip("NO_LIQUID");
 	if ( lq == "OIL" )
 		state_change_c(bottle, "OIL_BOTTLE");
 	else
@@ -155,10 +171,7 @@ long h_vcarry(value &obj)
 	}
 	long o = E(obj.c_str());
 	if ( toting(o) )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	if ( obj == "MESSAG" )
 	{
 		rspeak("REMOVE_MESSAGE");
@@ -166,49 +179,7 @@ long h_vcarry(value &obj)
 		return G_CLEAROBJ;
 	}
 	if ( obj_is_fixed(o) )
-	{
-		if ( obj == "PLANT" )
-		{
-			if ( obj_state(o) <= 0 )
-				rspeak("DEEP_ROOTS");
-			else
-				rspeak("YOU_JOKING");
-		}
-		else if ( obj == "BEAR" )
-		{
-			long bear = E("BEAR");
-			if ( obj_state(bear) == state_index_c(bear, "SITTING_BEAR") )
-				rspeak("BEAR_CHAINED");
-			else
-				rspeak("YOU_JOKING");
-		}
-		else if ( obj == "CHAIN" )
-		{
-			long bear = E("BEAR");
-			if ( obj_state(bear) != state_index_c(bear, "UNTAMED_BEAR") )
-				rspeak("STILL_LOCKED");
-			else
-				rspeak("YOU_JOKING");
-		}
-		else if ( obj == "RUG" )
-		{
-			if ( obj_state(o) == state_index_c(o, "RUG_HOVER") )
-				rspeak("RUG_HOVERS");
-			else
-				rspeak("YOU_JOKING");
-		}
-		else if ( obj == "URN" )
-			rspeak("URN_NOBUDGE");
-		else if ( obj == "CAVITY" )
-			rspeak("DOUGHNUT_HOLES");
-		else if ( obj == "BLOOD" )
-			rspeak("FEW_DROPS");
-		else if ( obj == "SIGN" )
-			rspeak("HAND_PASSTHROUGH");
-		else
-			rspeak("YOU_JOKING");
-		return G_CLEAROBJ;
-	}
+		return quip(fixed_quip(obj, o));
 	if ( obj == "WATER" || obj == "OIL" )
 	{
 		long bottle = E("BOTTLE");
@@ -217,27 +188,20 @@ long h_vcarry(value &obj)
 		if ( !here_obj(bottle) || lb != obj )
 		{
 			if ( !toting(bottle) )
-			{
-				rspeak("NO_CONTAINER");
-				return G_CLEAROBJ;
-			}
+				return quip("NO_CONTAINER");
 			if ( obj_state(bottle)
 			     == state_index_c(bottle, "EMPTY_BOTTLE") )
 			{
 				var bo = "BOTTLE";
 				return h_fill(bo);
 			}
-			rspeak("BOTTLE_FULL");
-			return G_CLEAROBJ;
+			return quip("BOTTLE_FULL");
 		}
 		obj = "BOTTLE";
 		o = bottle;
 	}
 	if ( HOLDING >= 7 )
-	{
-		rspeak("CARRY_LIMIT");
-		return G_CLEAROBJ;
-	}
+		return quip("CARRY_LIMIT");
 	long bird = E("BIRD");
 	if ( obj == "BIRD"
 	  && obj_state(bird) != state_index_c(bird, "BIRD_CAGED") )
@@ -246,19 +210,12 @@ long h_vcarry(value &obj)
 		     == state_index_c(bird, "BIRD_FOREST_UNCAGED") )
 		{
 			destroy_object(bird, "BIRD");
-			rspeak("BIRD_CRAP");
-			return G_CLEAROBJ;
+			return quip("BIRD_CRAP");
 		}
 		if ( !toting(E("CAGE")) )
-		{
-			rspeak("CANNOT_CARRY");
-			return G_CLEAROBJ;
-		}
+			return quip("CANNOT_CARRY");
 		if ( toting(E("ROD")) )
-		{
-			rspeak("BIRD_EVADES");
-			return G_CLEAROBJ;
-		}
+			return quip("BIRD_EVADES");
 		obj_set_state(bird, state_index_c(bird, "BIRD_CAGED"));
 	}
 	if ( (obj == "BIRD" || obj == "CAGE")
@@ -284,8 +241,7 @@ long h_vcarry(value &obj)
 		long cav = E("CAVITY");
 		obj_set_state(cav, state_index_c(cav, "CAVITY_EMPTY"));
 	}
-	rspeak("OK_MAN");
-	return G_CLEAROBJ;
+	return quip("OK_MAN");
 }
 
 // ---- drop ---------------------------------------------------------------
@@ -299,10 +255,7 @@ long h_discard(value &obj)
 		o = E("ROD2");
 	}
 	if ( !toting(o) )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	long cav = E("CAVITY");
 	if ( is_gemstone(obj) && at_obj(cav)
 	  && obj_state(cav) != state_index_c(cav, "CAVITY_FULL") )
@@ -436,15 +389,9 @@ long bear_chain(value &verb)
 	if ( verb != "LOCK" )
 	{
 		if ( obj_state(bear) == state_index_c(bear, "UNTAMED_BEAR") )
-		{
-			rspeak("BEAR_BLOCKS");
-			return G_CLEAROBJ;
-		}
+			return quip("BEAR_BLOCKS");
 		if ( obj_state(chain) == heap )
-		{
-			rspeak("ALREADY_UNLOCKED");
-			return G_CLEAROBJ;
-		}
+			return quip("ALREADY_UNLOCKED");
 		obj_set_state(chain, heap);
 		obj_set_fixed(chain, 0);
 		if ( obj_state(bear) == state_index_c(bear, "BEAR_DEAD") )
@@ -455,25 +402,17 @@ long bear_chain(value &verb)
 				      state_index_c(bear, "CONTENTED_BEAR"));
 			obj_set_fixed(bear, 0);
 		}
-		rspeak("CHAIN_UNLOCKED");
-		return G_CLEAROBJ;
+		return quip("CHAIN_UNLOCKED");
 	}
 	if ( obj_state(chain) != heap )
-	{
-		rspeak("ALREADY_LOCKED");
-		return G_CLEAROBJ;
-	}
+		return quip("ALREADY_LOCKED");
 	if ( LOC != static_place(chain) )
-	{
-		rspeak("NO_LOCKSITE");
-		return G_CLEAROBJ;
-	}
+		return quip("NO_LOCKSITE");
 	obj_set_state(chain, state_index_c(chain, "CHAIN_FIXED"));
 	if ( toting(chain) )
 		drop_object(chain, "CHAIN", LOC);
 	obj_set_fixed(chain, -1);
-	rspeak("CHAIN_LOCKED");
-	return G_CLEAROBJ;
+	return quip("CHAIN_LOCKED");
 }
 
 long h_lock(value &verb, value &obj)
@@ -491,18 +430,14 @@ long h_lock(value &verb, value &obj)
 		if ( here_obj(E("CHAIN")) )
 			obj = "CHAIN";
 		if ( obj == "" )
-		{
-			rspeak("NOTHING_LOCKED");
-			return G_CLEAROBJ;
-		}
+			return quip("NOTHING_LOCKED");
 	}
 	long o = E(obj.c_str());
 	if ( obj == "CHAIN" )
 	{
 		if ( here_obj(E("KEYS")) )
 			return bear_chain(verb);
-		rspeak("NO_KEYS");
-		return G_CLEAROBJ;
+		return quip("NO_KEYS");
 	}
 	if ( obj == "GRATE" )
 	{
@@ -528,43 +463,30 @@ long h_lock(value &verb, value &obj)
 	{
 		bool oyster = obj == "OYSTER";
 		if ( verb == "LOCK" )
-			rspeak("HUH_MAN");
-		else if ( toting(o) )
-			rspeak(oyster ? "DROP_OYSTER" : "DROP_CLAM");
-		else if ( !toting(E("TRIDENT")) )
-			rspeak(oyster ? "OYSTER_OPENER" : "CLAM_OPENER");
-		else if ( oyster )
-			rspeak("OYSTER_OPENS");
-		else
-		{
-			destroy_object(E("CLAM"), "CLAM");
-			drop_object(E("OYSTER"), "OYSTER", LOC);
-			drop_object(E("PEARL"), "PEARL", E("LOC_CULDESAC"));
-			rspeak("PEARL_FALLS");
-		}
-		return G_CLEAROBJ;
+			return quip("HUH_MAN");
+		if ( toting(o) )
+			return quip(oyster ? "DROP_OYSTER" : "DROP_CLAM");
+		if ( !toting(E("TRIDENT")) )
+			return quip(oyster ? "OYSTER_OPENER" : "CLAM_OPENER");
+		if ( oyster )
+			return quip("OYSTER_OPENS");
+		destroy_object(E("CLAM"), "CLAM");
+		drop_object(E("OYSTER"), "OYSTER", LOC);
+		drop_object(E("PEARL"), "PEARL", E("LOC_CULDESAC"));
+		return quip("PEARL_FALLS");
 	}
 	if ( obj == "DOOR" )
 	{
 		long door = E("DOOR");
-		if ( obj_state(door) == state_index_c(door, "DOOR_UNRUSTED") )
-			rspeak("OK_MAN");
-		else
-			rspeak("RUSTY_DOOR");
-		return G_CLEAROBJ;
+		return quip(obj_state(door)
+			    == state_index_c(door, "DOOR_UNRUSTED")
+			    ? "OK_MAN" : "RUSTY_DOOR");
 	}
 	if ( obj == "CAGE" )
-	{
-		rspeak("NO_LOCK");
-		return G_CLEAROBJ;
-	}
+		return quip("NO_LOCK");
 	if ( obj == "KEYS" )
-	{
-		rspeak("CANNOT_UNLOCK");
-		return G_CLEAROBJ;
-	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+		return quip("CANNOT_UNLOCK");
+	return verb_quip();
 }
 
 // ---- light / extinguish -------------------------------------------------
@@ -603,17 +525,13 @@ long h_light(value &obj)
 	if ( obj == "LAMP" )
 	{
 		if ( LIMIT < 0 )
-		{
-			rspeak("LAMP_OUT");
-			return G_CLEAROBJ;
-		}
+			return quip("LAMP_OUT");
 		state_change_c(lamp, "LAMP_BRIGHT");
 		if ( WZDARK )
 			return G_TOP;
 		return G_CLEAROBJ;
 	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+	return verb_quip();
 }
 
 long h_extinguish(value &obj)
@@ -648,12 +566,8 @@ long h_extinguish(value &obj)
 		return G_CLEAROBJ;
 	}
 	if ( obj == "DRAGON" || obj == "VOLCANO" )
-	{
-		rspeak("BEYOND_POWER");
-		return G_CLEAROBJ;
-	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+		return quip("BEYOND_POWER");
+	return verb_quip();
 }
 
 // ---- inventory / eat / drink ---------------------------------------------
@@ -693,18 +607,12 @@ long h_eat(value &obj)
 	if ( obj == "FOOD" )
 	{
 		destroy_object(E("FOOD"), "FOOD");
-		rspeak("THANKS_DELICIOUS");
-		return G_CLEAROBJ;
+		return quip("THANKS_DELICIOUS");
 	}
-	if ( obj == "BIRD" || obj == "SNAKE" || obj == "CLAM"
-	  || obj == "OYSTER" || obj == "DWARF" || obj == "DRAGON"
-	  || obj == "TROLL" || obj == "BEAR" || obj == "OGRE" )
-	{
-		rspeak("LOST_APPETITE");
-		return G_CLEAROBJ;
-	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+	if ( one_of(obj,
+		    " BIRD SNAKE CLAM OYSTER DWARF DRAGON TROLL BEAR OGRE " ) )
+		return quip("LOST_APPETITE");
+	return verb_quip();
 }
 
 long h_drink(value &obj)
@@ -725,18 +633,14 @@ long h_drink(value &obj)
 		return G_CLEAROBJ;
 	}
 	if ( obj != "" && obj != "WATER" )
-	{
-		rspeak("RIDICULOUS_ATTEMPT");
-		return G_CLEAROBJ;
-	}
+		return quip("RIDICULOUS_ATTEMPT");
 	if ( lb == "WATER" && here_obj(bottle) )
 	{
 		ui::move(W, E("WATER"), 0);
 		state_change_c(bottle, "EMPTY_BOTTLE");
 		return G_CLEAROBJ;
 	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+	return verb_quip();
 }
 
 // ---- attack ---------------------------------------------------------------
@@ -827,12 +731,10 @@ long h_attack(value &obj)
 		long bear = E("BEAR");
 		long st = obj_state(bear);
 		if ( st == state_index_c(bear, "UNTAMED_BEAR") )
-			rspeak("BEAR_HANDS");
-		else if ( st == state_index_c(bear, "BEAR_DEAD") )
-			rspeak("ALREADY_DEAD");
-		else
-			rspeak("BEAR_CONFUSED");
-		return G_CLEAROBJ;
+			return quip("BEAR_HANDS");
+		if ( st == state_index_c(bear, "BEAR_DEAD") )
+			return quip("ALREADY_DEAD");
+		return quip("BEAR_CONFUSED");
 	}
 	long dragon = E("DRAGON");
 	if ( obj == "DRAGON"
@@ -883,8 +785,7 @@ long h_attack(value &obj)
 		rspeak("KNIFE_THROWN");
 		destroy_object(E("OGRE"), "OGRE");
 		long dwarves = 0;
-		long di = 1;
-		while ( di <= 5 )
+		for ( long di = 1; di <= 5; di++ )
 		{
 			long dw = dwarf_ent(di);
 			if ( ui::location(W, dw) == LOC )
@@ -893,7 +794,6 @@ long h_attack(value &obj)
 				ui::move(W, dw, E("LOC_LONGWEST"));
 				ui::set(W, dw, "seen", false);
 			}
-			di++;
 		}
 		if ( dwarves > 1 )
 			rspeak("OGRE_PANIC1");
@@ -902,39 +802,22 @@ long h_attack(value &obj)
 		return G_CLEAROBJ;
 	}
 	if ( obj == "" )
-	{
-		rspeak("NO_TARGET");
-		return G_CLEAROBJ;
-	}
+		return quip("NO_TARGET");
 	if ( obj == "CLAM" || obj == "OYSTER" )
-	{
-		rspeak("SHELL_IMPERVIOUS");
-		return G_CLEAROBJ;
-	}
+		return quip("SHELL_IMPERVIOUS");
 	if ( obj == "SNAKE" )
-	{
-		rspeak("SNAKE_WARNING");
-		return G_CLEAROBJ;
-	}
+		return quip("SNAKE_WARNING");
 	if ( obj == "DWARF" )
 	{
 		if ( CLOSED )
 			return G_DWARFWAKE;
-		rspeak("BARE_HANDS_QUERY");
-		return G_CLEAROBJ;
+		return quip("BARE_HANDS_QUERY");
 	}
 	if ( obj == "DRAGON" )
-	{
-		rspeak("ALREADY_DEAD");
-		return G_CLEAROBJ;
-	}
+		return quip("ALREADY_DEAD");
 	if ( obj == "TROLL" )
-	{
-		rspeak("ROCKY_TROLL");
-		return G_CLEAROBJ;
-	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+		return quip("ROCKY_TROLL");
+	return verb_quip();
 }
 
 // ---- feed -----------------------------------------------------------------
@@ -942,10 +825,7 @@ long h_attack(value &obj)
 long h_feed(value &obj)
 {
 	if ( obj == "BIRD" )
-	{
-		rspeak("BIRD_PINING");
-		return G_CLEAROBJ;
-	}
+		return quip("BIRD_PINING");
 	if ( obj == "DRAGON" )
 	{
 		long dragon = E("DRAGON");
@@ -968,10 +848,7 @@ long h_feed(value &obj)
 		return G_CLEAROBJ;
 	}
 	if ( obj == "TROLL" )
-	{
-		rspeak("TROLL_VICES");
-		return G_CLEAROBJ;
-	}
+		return quip("TROLL_VICES");
 	if ( obj == "DWARF" )
 	{
 		if ( here_obj(E("FOOD")) )
@@ -988,10 +865,7 @@ long h_feed(value &obj)
 		long bear = E("BEAR");
 		long st = obj_state(bear);
 		if ( st == state_index_c(bear, "BEAR_DEAD") )
-		{
-			rspeak("RIDICULOUS_ATTEMPT");
-			return G_CLEAROBJ;
-		}
+			return quip("RIDICULOUS_ATTEMPT");
 		if ( st == state_index_c(bear, "UNTAMED_BEAR") )
 		{
 			if ( here_obj(E("FOOD")) )
@@ -1007,8 +881,7 @@ long h_feed(value &obj)
 				rspeak("NOTHING_EDIBLE");
 			return G_CLEAROBJ;
 		}
-		speak_verb_default();
-		return G_CLEAROBJ;
+		return verb_quip();
 	}
 	if ( obj == "OGRE" )
 	{
@@ -1018,8 +891,7 @@ long h_feed(value &obj)
 			speak_verb_default();
 		return G_CLEAROBJ;
 	}
-	rspeak("AM_GAME");
-	return G_CLEAROBJ;
+	return quip("AM_GAME");
 }
 
 // ---- throw ----------------------------------------------------------------
@@ -1035,10 +907,7 @@ long h_throw(value &obj)
 {
 	long o = E(obj.c_str());
 	if ( !toting(o) )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	if ( obj_treasure(o) && at_obj(E("TROLL")) )
 	{
 		// Snarf a treasure for the troll.
@@ -1051,8 +920,7 @@ long h_throw(value &obj)
 		drop_object(troll2, "TROLL2", static_place(troll));
 		move_fixed_side("TROLL2", static_fixed(troll));
 		juggle_object(E("CHASM"), "CHASM");
-		rspeak("TROLL_SATISFIED");
-		return G_CLEAROBJ;
+		return quip("TROLL_SATISFIED");
 	}
 	if ( obj == "FOOD" && here_obj(E("BEAR")) )
 	{
@@ -1122,8 +990,7 @@ long h_wave(value &obj)
 		drop_object(jade, "JADE", LOC);
 		ui::set(W, jade, "found", true);
 		TALLY--;
-		rspeak("NECKLACE_FLY");
-		return G_CLEAROBJ;
+		return quip("NECKLACE_FLY");
 	}
 	bool caged = obj_state(bird) == state_index_c(bird, "BIRD_CAGED");
 	if ( CLOSED )
@@ -1170,10 +1037,7 @@ long h_reservoir()
 {
 	long reser = E("RESER");
 	if ( !at_obj(reser) && LOC != E("LOC_RESBOTTOM") )
-	{
-		rspeak("NOTHING_HAPPENS");
-		return G_CLEAROBJ;
-	}
+		return quip("NOTHING_HAPPENS");
 	if ( obj_state(reser) == state_index_c(reser, "WATERS_PARTED") )
 		state_change_c(reser, "WATERS_UNPARTED");
 	else
@@ -1186,19 +1050,12 @@ long h_reservoir()
 	return G_TERMINATE;
 }
 
+// FEE=1 .. FUM=5, 0 for anything else (index answers -1 on a miss).
 long foo_stage(value &id)
 {
-	if ( id == "FEE" )
-		return 1;
-	if ( id == "FIE" )
-		return 2;
-	if ( id == "FOE" )
-		return 3;
-	if ( id == "FOO" )
-		return 4;
-	if ( id == "FUM" )
-		return 5;
-	return 0;
+	var w;
+	php::explode(w, " ", "FEE FIE FOE FOO FUM");
+	return w.index(id) + 1;
 }
 
 long h_bigwords(value &id)
@@ -1208,27 +1065,18 @@ long h_bigwords(value &id)
 	if ( fb < 0 )
 		fb = -fb;
 	if ( fb == 0 && stage >= 2 )
-	{
-		rspeak("NOTHING_HAPPENS");
-		return G_CLEAROBJ;
-	}
+		return quip("NOTHING_HAPPENS");
 	if ( (fb == 0 && stage == 1) || (fb + 1 == stage && stage <= 4) )
 	{
 		FOOBAR = stage;
 		if ( stage != 4 )
-		{
-			rspeak("OK_MAN");
-			return G_CLEAROBJ;
-		}
+			return quip("OK_MAN");
 		FOOBAR = 0;
 		long eggs = E("EGGS");
 		long eplac = static_place(eggs);
 		if ( ui::location(W, eggs) == eplac
 		  || (toting(eggs) && LOC == eplac) )
-		{
-			rspeak("NOTHING_HAPPENS");
-			return G_CLEAROBJ;
-		}
+			return quip("NOTHING_HAPPENS");
 		// Bring back the troll if the eggs were his toll.
 		long troll = E("TROLL");
 		if ( ui::location(W, eggs) == 0
@@ -1268,9 +1116,7 @@ long h_say()
 		return G_WORD2;
 	if ( t1 == T_ACTION && id1 == "PART" )
 		return h_reservoir();
-	if ( t1 == T_ACTION
-	  && (id1 == "FEE" || id1 == "FIE" || id1 == "FOE"
-	   || id1 == "FOO" || id1 == "FUM" || id1 == "PART") )
+	if ( t1 == T_ACTION && foo_stage(id1) > 0 )
 		return h_bigwords(id1);
 	var raw1 = CMD["raw1"];
 	sspeak_s("OKEY_DOKEY", raw1);
@@ -1322,10 +1168,7 @@ long h_read(value &obj)
 	var tx;
 	ui::get(tx, W, o, "texts");
 	if ( tx.empty() || !obj_found(o) )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	pspeak_prop(o, "texts", obj_state(o), true);
 	return G_CLEAROBJ;
 }
@@ -1341,10 +1184,7 @@ long h_blast()
 {
 	long rod2 = E("ROD2");
 	if ( !obj_found(rod2) || !CLOSED )
-	{
-		rspeak("REQUIRES_DYNAMITE");
-		return G_CLEAROBJ;
-	}
+		return quip("REQUIRES_DYNAMITE");
 	if ( here_obj(rod2) )
 	{
 		BONUS = 1;
@@ -1373,8 +1213,7 @@ long h_vbreak(value &obj)
 			state_change_c(E("MIRROR"), "MIRROR_BROKEN");
 			return G_DWARFWAKE;
 		}
-		rspeak("TOO_FAR");
-		return G_CLEAROBJ;
+		return quip("TOO_FAR");
 	}
 	long vase = E("VASE");
 	if ( obj == "VASE"
@@ -1386,16 +1225,14 @@ long h_vbreak(value &obj)
 		obj_set_fixed(vase, -1);
 		return G_CLEAROBJ;
 	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+	return verb_quip();
 }
 
 long h_brief()
 {
 	ABBNUM = 10000;
 	DETAIL = 3;
-	rspeak("BRIEF_CONFIRM");
-	return G_CLEAROBJ;
+	return quip("BRIEF_CONFIRM");
 }
 
 long h_listen()
@@ -1461,15 +1298,9 @@ long h_pour(value &obj)
 	}
 	long o = E(obj.c_str());
 	if ( !toting(o) )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	if ( obj != "OIL" && obj != "WATER" )
-	{
-		rspeak("CANT_POUR");
-		return G_CLEAROBJ;
-	}
+		return quip("CANT_POUR");
 	long urn = E("URN");
 	if ( here_obj(urn)
 	  && obj_state(urn) == state_index_c(urn, "URN_EMPTY") )
@@ -1481,10 +1312,7 @@ long h_pour(value &obj)
 	obj_set_state(bottle, state_index_c(bottle, "EMPTY_BOTTLE"));
 	ui::move(W, o, 0);
 	if ( !(at_obj(E("PLANT")) || at_obj(E("DOOR"))) )
-	{
-		rspeak("GROUND_WET");
-		return G_CLEAROBJ;
-	}
+		return quip("GROUND_WET");
 	if ( !at_obj(E("DOOR")) )
 	{
 		if ( obj == "WATER" )
@@ -1496,8 +1324,7 @@ long h_pour(value &obj)
 			obj_set_state(E("PLANT2"), ns);
 			return G_MOVE;
 		}
-		rspeak("SHAKING_LEAVES");
-		return G_CLEAROBJ;
+		return quip("SHAKING_LEAVES");
 	}
 	long door = E("DOOR");
 	if ( obj == "OIL" )
@@ -1511,27 +1338,17 @@ long h_find(value &obj)
 {
 	long o = E(obj.c_str());
 	if ( toting(o) )
-	{
-		rspeak("ALREADY_CARRYING");
-		return G_CLEAROBJ;
-	}
+		return quip("ALREADY_CARRYING");
 	if ( CLOSED )
-	{
-		rspeak("NEEDED_NEARBY");
-		return G_CLEAROBJ;
-	}
+		return quip("NEEDED_NEARBY");
 	var lb;
 	liquid_in_bottle(lb);
 	var lq;
 	liq_loc(lq, LOC);
 	if ( at_obj(o) || (lb == obj && at_obj(E("BOTTLE"))) || lq == obj
 	  || (obj == "DWARF" && atdwrf(LOC) > 0) )
-	{
-		rspeak("YOU_HAVEIT");
-		return G_CLEAROBJ;
-	}
-	speak_verb_default();
-	return G_CLEAROBJ;
+		return quip("YOU_HAVEIT");
+	return verb_quip();
 }
 
 long h_fly(value &obj)
@@ -1540,27 +1357,15 @@ long h_fly(value &obj)
 	if ( obj == "" )
 	{
 		if ( !here_obj(rug) )
-		{
-			rspeak("FLAP_ARMS");
-			return G_CLEAROBJ;
-		}
+			return quip("FLAP_ARMS");
 		if ( obj_state(rug) != state_index_c(rug, "RUG_HOVER") )
-		{
-			rspeak("RUG_NOTHING2");
-			return G_CLEAROBJ;
-		}
+			return quip("RUG_NOTHING2");
 		obj = "RUG";
 	}
 	if ( obj != "RUG" )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	if ( obj_state(rug) != state_index_c(rug, "RUG_HOVER") )
-	{
-		rspeak("RUG_NOTHING1");
-		return G_CLEAROBJ;
-	}
+		return quip("RUG_NOTHING1");
 	if ( LOC == E("LOC_CLIFF") )
 	{
 		OLDLC2 = OLDLOC;
@@ -1583,10 +1388,7 @@ long h_fly(value &obj)
 long h_wake(value &obj)
 {
 	if ( obj != "DWARF" || !CLOSED )
-	{
-		speak_verb_default();
-		return G_CLEAROBJ;
-	}
+		return verb_quip();
 	rspeak("PROD_DWARF");
 	return G_DWARFWAKE;
 }
@@ -1635,8 +1437,7 @@ long act_dispatch(long part)
 		else if ( obj == "KNIFE" && KNFLOC == LOC )
 		{
 			KNFLOC = -1;
-			rspeak("KNIVES_VANISH");
-			return G_CLEAROBJ;
+			return quip("KNIVES_VANISH");
 		}
 		else if ( obj == "ROD" && here_obj(E("ROD2")) )
 			obj = "ROD2";
@@ -1694,15 +1495,9 @@ long act_dispatch(long part)
 				return G_UNKNOWN;
 			}
 			if ( verb == "NOTHING" )
-			{
-				rspeak("OK_MAN");
-				return G_CLEAROBJ;
-			}
+				return quip("OK_MAN");
 			if ( verb == "GO" )
-			{
-				speak_verb_default();
-				return G_CLEAROBJ;
-			}
+				return verb_quip();
 			if ( verb == "QUIT" )
 				return h_quit();
 			if ( verb == "SCORE" )
@@ -1710,8 +1505,7 @@ long act_dispatch(long part)
 				score_game(M_SCOREGAME);
 				return G_CLEAROBJ;
 			}
-			if ( verb == "FEE" || verb == "FIE" || verb == "FOE"
-			  || verb == "FOO" || verb == "FUM" )
+			if ( foo_stage(verb) > 0 )
 				return h_bigwords(verb);
 			if ( verb == "BRIEF" )
 				return h_brief();
@@ -1739,10 +1533,7 @@ long act_dispatch(long part)
 					"advent: save/resume out of scope\n");
 				exit(3);
 			}
-			if ( verb == "DROP" || verb == "WAVE" || verb == "TAME"
-			  || verb == "RUB" || verb == "THROW" || verb == "FIND"
-			  || verb == "FEED" || verb == "BREAK"
-			  || verb == "WAKE" )
+			if ( one_of(verb, " DROP WAVE TAME RUB THROW FIND FEED BREAK WAKE ") )
 				return G_UNKNOWN;
 			fprintf(stderr,
 				"advent: intransitive verb %s unimplemented\n",
@@ -1806,21 +1597,14 @@ long act_dispatch(long part)
 		if ( verb == "LISTEN" )
 		{
 			// The reference's transitive LISTEN only quips.
-			speak_verb_default();
-			return G_CLEAROBJ;
+			return verb_quip();
 		}
 		if ( verb == "PART" )
 			return h_reservoir();
 		if ( verb == "NOTHING" )
-		{
-			rspeak("OK_MAN");
-			return G_CLEAROBJ;
-		}
+			return quip("OK_MAN");
 		if ( verb == "GO" || verb == "TAME" )
-		{
-			speak_verb_default();
-			return G_CLEAROBJ;
-		}
+			return verb_quip();
 		if ( verb == "SEED" )
 		{
 			var raw1 = CMD["raw1"];
