@@ -4,7 +4,18 @@
 // answers false, never a throw); mutation/extraction keep the
 // strict-kind contract as catchable script errors. substr returns
 // ring-lifetime text (the c_str contract) until L3 lands.
+#include <ns_php>
 #include <ns_madc>
+
+// Range-for over a value& PARAMETER (the container-address unwrap in
+// the foreach lowering — a reference must not decay-load).
+long sum_ref(value &arr)
+{
+	long total = 0;
+	for ( value x : arr )
+		total = total + x.as_integer();
+	return total;
+}
 
 // Carrier methods AND std::println {} on a value& PARAMETER — the
 // reference-to-carrier unwrap lanes (carrier_behind, the format
@@ -72,6 +83,13 @@ int main()
 
 	long es = ref_scan(s);
 	std::println("es={}", es);
+
+	var nums;
+	php::array_push(nums, (long)3);
+	php::array_push(nums, (long)4);
+	php::array_push(nums, (long)5);
+	long total = sum_ref(nums);
+	std::println("sum={}", total);
 
 	// strict-kind and range errors stay catchable
 	try {

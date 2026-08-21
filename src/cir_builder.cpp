@@ -22626,10 +22626,23 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 				  "this container (only raw arrays and "
 				  "size()/operator[] containers)", fe);
 
-	// (void*)container — the madc::value object address (the var name decays to
-	// its long[] buffer, normalized to void*).
+	// (void*)container — the madc::value object address. A NAMED variable
+	// goes through object_var_addr (buffer -> &buffer; a value& parameter
+	// reads its stored pointer — the decay the old form relied on LOADS
+	// through a reference and fed garbage to madarray_size); a keyed
+	// subscript re-wraps to the slot address (&* folds); anything else
+	// keeps the translated decay.
 	auto container_addr = [&]() -> node_t {
-		return node2(N_CAST, void_ptr_type(), translate_expr(fe->container), fe);
+		TokenVar *cv = dynamic_cast<TokenVar *>(fe->container);
+		node_t raw;
+		if (cv && carrier_behind(cv->var.type))
+			raw = object_var_addr(cv->var, fe);
+		else {
+			raw = translate_expr(fe->container);
+			if (is_carrier_keyed_subscript(fe->container))
+				raw = node1(N_ADDR, raw, fe);
+		}
+		return node2(N_CAST, void_ptr_type(), raw, fe);
 	};
 
 	char idx[32];
