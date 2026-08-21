@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+- **JIT launch Leg 0 — the dialect prelude no longer pulls the
+  `<string>` closure** (the Python-contender plan,
+  docs/plans/2026-08-21-project-prelude-forest.md). Dialect
+  `std::format` returns ring-lifetime `const char *` (owner decision;
+  a stale `.c_str()` on the result is a loud compile error, and
+  `var x = format(...)` now compiles), and the six polyglot fragments
+  (`ns_php`/`python`/`perl`/`ruby`/`js`/`rust`) gate their
+  `std::string` interop overloads on the standard library's own include
+  guards (the `<ns_madc>` convention). Measured on the packed binary: a
+  php+format probe TU went 0.17s / 138-of-339 units / 66.5 MB decoded →
+  **0.016s / 0 units / 11.6 MB**; the 11-TU adventure launch 1.5s →
+  **0.85–0.90s**. New owner law codified as
+  `.claude/rules/dialect-lean.md`, gated by
+  `scripts/check-dialect-lean.sh` in fulltest.
+- **Fixed (silent): `arr[i] = x` wrote a hidden temp** — the carrier's
+  int-indexed element model typed element reads as `std::string` (when
+  `<string>` had been seen), so an element write landed in the
+  materialized temp and was dropped at exit 0, and element semantics
+  varied with a TU's includes. Every carrier subscript is now a value
+  LVALUE over the element SLOT (`madarray_index_slot`, the keyed slot's
+  twin): writes land, access extends, and element methods
+  (`vb[0].c_str()`, `.as_integer()`) resolve through the carrier with
+  zero `<string>` dependence. Interop kept: a carrier converts into
+  `char*` parameters (ctor and operator lanes included), so
+  `string s = arr[i];` still constructs. Pinned by
+  tests/testarrayslot.mad.
+- **`python::format` rides the one `std::format` engine** — the naive
+  `{}`-substituter is gone; the same rt_format iterator and field
+  primitives serve it with per-kind runtime value dispatch, adding
+  `{0}` manual indexing, real format specs, `{{ }}` escaping, and loud
+  inline error markers — plus a `value`-out lean primary. Pinned by
+  tests/testpythonformat.mad.
 - **Fixed (silent): file-scope NSDMI never applied** — a ctorless
   class global (`class C { long x = 42; }; C GC;`) read `GC.x == 0`
   where g++/clang++ read 42; the local lane applied member defaults all

@@ -1,8 +1,26 @@
 # JIT launch — the Python-contender plan
 
-**Status: APPROVED (owner, 2026-08-21) — executing. Order: S0 recon →
-Leg 0 → Leg 1 → Leg 2. The format-return decision is SETTLED (see
-Leg 0).**
+**Status: APPROVED (owner, 2026-08-21) — LEG 0 LANDED the same day
+(@dfa6668e..@417a80bc + the dialect-lean rule/gate @d9cd5306). Measured:
+the probe TU went 0.17s/138-units/66.5MB → 0.016s/0-units/11.6MB; the
+11-TU game 1.5s → 0.85–0.90s. Remaining: Leg 0b (lean value-parity for
+the polyglot publics that exist only in std::string shape — mandated by
+owner ruling #2 below), then S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
+
+**Owner rulings (2026-08-21, during Leg 0 — codified as
+`.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
+fulltest): (1) "as far as --std=madc goes, we try to avoid depending on
+C++ system header parsing unless we can reduce the overhead
+significantly... until such time... we lean more heavily on madc
+builtins, and polyglot conveniences (php, python, etc)"; (2) "nothing
+the madc language defines within its own dialect or the polyglot
+functionality should depend on std::string (beyond potential internal
+to the madc source code usage)." Ruling (2) also drove the carrier
+element SLOT model (@dfa6668e): `arr[i]` is a value lvalue over
+madarray_index_slot — which fixed a pre-existing SILENT bug (the
+string-first element model dropped `arr[i] = x` writes in a hidden
+std::string temp, exit 0) — and python::format now rides the ONE
+std::format engine with a value-out lean primary (@417a80bc).**
 
 **Owner priority (2026-08-21, verbatim intent): "I need for madc to be a
 JIT-language contender for Python... the fact that we can also do AOT
@@ -85,6 +103,25 @@ calls. That single `<string>` closure is the 145-unit / 66 MB bind.
   noise even before Leg 1 — and the dev binary's live-parse cost
   shrinks by the same closure. This is the highest-leverage slice and
   it enforces the design instead of optimizing around it.
+- **LANDED + MEASURED (2026-08-21, container, packed):** probe TU
+  (php+format profile) 0.164–0.182s → **0.016s**, 138/339 units bound →
+  **0**, 66.5 MB decoded → 11.6 MB (14 decl-index frames — the S3
+  lazy-decode target); the 11-TU game 1.46–1.59s → **0.85–0.90s**. The
+  dominant residue is now user-code compile (~0.04s/TU) + the per-TU
+  container open/decode (~20 ms × 11) — precisely S1/S3 — and the warm
+  launch (S5) still recompiles everything.
+- **Leg 0b (REMAINING — mandated by owner ruling #2):** every polyglot
+  public gets a lean PRIMARY form. Today ~50 functions exist only in
+  std::string shape (php::trim/str_replace/implode/array_pop/...,
+  perl::join/lc/substr/..., python::title/center/..., ruby::gsub/...,
+  js::btoa/..., rust::trim/join/...) — behind the guards they vanish
+  from lean TUs entirely. Each needs a value/char* primary (ring
+  returns pre-L3) beside the guarded convenience, python::format's
+  value-out shape being the template. Also queued from Leg 0 fallout:
+  the no-viable-overload FALLBACK defect (parser reselect returns the
+  by-name FuncDef when ranking finds no viable candidate — a
+  std::string arg mis-bound a value& param and SEGV'd; needs a
+  suite-wide fallout pass to turn into a loud error).
 
 ### Leg 1 — cold launch: bind the forest ONCE per process
 
