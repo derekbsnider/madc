@@ -43,7 +43,7 @@ declare -A observed_reason=()
 
 for file in "$TESTS"/*.mad; do
 	base="${file%.mad}"
-	if [ "${file##*/}" = "include_helper.mad" ]; then
+	if [ -f "$base.helper" ]; then
 		continue
 	fi
 	if [ -f "$base.mir_skip" ]; then

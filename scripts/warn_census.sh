@@ -67,7 +67,7 @@ tests_improved=0
 
 for f in tests/*.mad; do
 	base="$(basename "$f")"
-	[ "$base" = "include_helper.mad" ] && continue
+	[ -f "${f%.mad}.helper" ] && continue
 
 	flags=()
 	args=()

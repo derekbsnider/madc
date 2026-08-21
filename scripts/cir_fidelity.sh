@@ -17,7 +17,7 @@ set -u
 if [ "${1:-}" = "--all" ]; then
 	for t in tests/*.mad tests/fidelity/*.c; do
 		b=$(basename "$t" | sed 's/\.[^.]*$//')
-		[ "$b" = "include_helper" ] && continue
+		[ -f "${t%.*}.helper" ] && continue
 		[ -f "tests/$b.mir_skip" ] && continue
 		timeout 20 bash "$0" "$t" 2>/dev/null | head -1
 	done

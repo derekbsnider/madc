@@ -28,7 +28,7 @@ tot_fb=0
 tests_with=0
 
 for f in "$TESTS"/*.mad; do
-	[ "$(basename "$f")" = "include_helper.mad" ] && continue
+	[ -f "${f%.mad}.helper" ] && continue
 	out=$(timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats "$f" 2>&1)
 	line=$(printf '%s\n' "$out" | grep -oE '[0-9]+ hit / [0-9]+ fallback' | head -1)
 	[ -z "$line" ] && continue

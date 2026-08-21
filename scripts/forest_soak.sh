@@ -4,7 +4,7 @@
 # equivalence), with rc + stdout compared. Failures are recorded per test with
 # their first error line so the burn-down classifies by STATE FAMILY, never
 # per test. Fixture conventions mirror scripts/run_tests.sh (.flags/.input/
-# .argv/.timeout; include_helper + .mir_skip + .expect_err skipped).
+# .argv/.timeout; .helper + .mir_skip + .expect_err skipped).
 set -u
 cd "$(dirname "$0")/.."
 
@@ -17,7 +17,7 @@ ulimit -t 7200 2>/dev/null
 
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
-    [ "$base" = "include_helper" ] && continue
+    [ -f "tests/$base.helper" ] && continue
 
     if [ -f "tests/$base.mir_skip" ]; then
         printf '%s\tSKIP_MIRSKIP\n' "$base" >> "$OUT/results.tsv"

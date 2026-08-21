@@ -217,8 +217,9 @@ Per-test stdin / argv / expected-output fixtures live next to each
 `docs/test-status.md` and `README.md` — never hard-coded in these
 instructions.
 
-Skip `tests/include_helper.mad` when running by hand; it is included
-by `testinclude.mad`, not a standalone test.
+A test with a sibling `tests/<name>.helper` fixture (e.g.
+`include_helper.mad`, project-mode TU sources) is a compilation unit of
+another test — runners skip it; skip it when running by hand too.
 
 ## Duplication audit
 
