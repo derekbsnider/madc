@@ -221,7 +221,7 @@ long h_vcarry(value &obj)
 		obj_set_state(bird, state_index_c(bird, "BIRD_CAGED"));
 	}
 	if ( (obj == "BIRD" || obj == "CAGE")
-	  && obj_state(bird) == state_index_c(bird, "BIRD_CAGED") )
+	  && obj_state_equals(bird, state_index_c(bird, "BIRD_CAGED")) )
 	{
 		// bird and cage travel together
 		if ( obj == "BIRD" )
@@ -282,17 +282,21 @@ long h_discard(value &obj)
 				rspeak("RUG_RISES");
 			if ( !toting(rug) || obj == "RUBY" )
 			{
+				// The reference's fixed-side LOCATION is also
+				// the fixedness flag: hovering pins the rug.
 				if ( obj_state(rug) != hover )
 				{
 					obj_set_state(rug, hover);
 					move_fixed_side("RUG",
 						static_place(E("SAPPH")));
+					obj_set_fixed(rug, -1);
 				}
 				else
 				{
 					obj_set_state(rug,
 						state_index_c(rug, "RUG_FLOOR"));
 					move_fixed_side("RUG", 0);
+					obj_set_fixed(rug, 0);
 				}
 			}
 		}
@@ -1590,13 +1594,12 @@ long act_dispatch(long part)
 			return h_wake(obj);
 		if ( verb == "FLY" )
 			return h_fly(obj);
-		if ( verb == "QUIT" )
-			return h_quit();
-		if ( verb == "SCORE" )
-		{
-			score_game(M_SCOREGAME);
-			return G_CLEAROBJ;
-		}
+		// Intransitive-only verbs used WITH an object just speak
+		// their default message (the reference's transitive switch).
+		if ( verb == "QUIT" || verb == "SCORE" || verb == "BRIEF"
+		  || verb == "SAVE" || verb == "RESUME"
+		  || foo_stage(verb) > 0 )
+			return verb_quip();
 		if ( verb == "BLAST" )
 			return h_blast();
 		if ( verb == "LISTEN" )

@@ -131,6 +131,14 @@ void obj_set_state(long o, long s)
 	ui::set(W, o, "stashed", false);
 }
 
+// The reference's OBJECT_STATE_EQUALS — stash-TRANSPARENT equality:
+// true for the state or its stashed encoding.
+bool obj_state_equals(long o, long pval)
+{
+	long s = obj_state(o);
+	return s == pval || s == -1 - pval;
+}
+
 bool obj_found(long o)            { return bag_flag(o, "found"); }
 bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
 

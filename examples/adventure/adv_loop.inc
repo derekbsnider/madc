@@ -312,8 +312,12 @@ long word_loop()
 		}
 		if ( t0 == T_NONE )
 		{
-			clear_command();
-			return 2;
+			// A whitespace-only line: the reference applies the
+			// empty word as a motion — no rule matches, so the
+			// CANT_APPLY quip speaks and the room re-describes.
+			var m = CMD["id0"];
+			playermove(m);
+			return 1;
 		}
 		// Shortcut hints (the west/go counters).
 		var low0 = php::strtolower(raw0);
