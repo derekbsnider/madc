@@ -117,7 +117,13 @@ the probe and freezes its own.
   never bind).
 - **S3 — measurements banked**: the table above re-run on both
   binaries; the A10 gate wall time recorded in docs/test-status.md.
-  Perf target: gate ≤ 2.5 min on the dev binary; game invocation ≤ 1.2s.
+  Perf target: the dev binary lands within ~1.5x of the PACKED
+  binary's floor for the same program. Floor measured 2026-08-21: the
+  fresh packed release runs the full 11-TU game in ~1.6s (the pack
+  covers only system headers — the game's own ~4400 user-code lines,
+  MIR link, and the world load are the remainder). So: game invocation
+  on dev ≤ ~2.5s (from 5.0s), the A10 gate ≤ ~3.5 min (from 8m23s).
+  The user-code floor itself is a different lever (out of scope here).
 
 ## Interactions / gotchas (stated up front)
 
