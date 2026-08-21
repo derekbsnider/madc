@@ -25,9 +25,20 @@ data tables over ladders — adv_actions.inc (1637) is now smaller than
 actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
 
 **REMAINING before the owner ceremonies:**
-1. Merge-wave battery (remote_build.sh battery) — was RUNNING at
-   handoff time; verify rc=0 on every stage (fulltest + exe + obj +
-   release + packed + headerless) before any merge.
+1. Merge-wave battery (remote_build.sh battery) — the FIRST run was
+   RED: it caught two foreach regressions from @dcc16f6f (the value&-
+   param fix), both fixed with reducers+trailers: @ee0cc241 (a MEMBER
+   container `s.a` matched the named-var shortcut — TokenMember IS-A
+   TokenVar — and lost its receiver) and @c73a3a4d (a BY-VALUE `array`
+   parameter is pointer-stored — emitted `void *name` — so `&name`
+   addressed the pointer slot and the loop ran zero times; fixed in
+   object_var_addr). testarraymember + testforeachheaderbody + the
+   94-log gate re-verified green. A FULL battery rerun was IN FLIGHT
+   at handoff (@c73a3a4d) — verify the newest tmp/logs/rb-*.log shows
+   rc=0 on EVERY stage (fulltest/exe/obj/release/packed/headerless)
+   before any merge; rerun `scripts/remote_build.sh battery` if in
+   doubt. ⚠️ Lesson re-learned: a test's raw exit code is NOT the
+   runner's verdict — diff against the .expect fixture.
 2. Release + master promotion = OWNER CALLS (release batches
    v0.93+v0.94+Track 7 into the three-platform promotion; VERSION
    stays 0.94.0 until the owner cuts it).
