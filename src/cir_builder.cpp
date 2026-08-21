@@ -10427,6 +10427,12 @@ node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 	// `msg.method()`) emitted `&msg` referencing an undeclared outer name.
 	if (note_capture(const_cast<Variable *>(&v)))
 		return base;
+	// A by-value carrier PARAMETER is emitted `void *name` (carriers
+	// pass by pointer): the name IS the object address, and `&name`
+	// would address the pointer slot (a range-for over such a
+	// parameter iterated zero times).
+	if ((v.flags & vfPARAM) && carrier_behind(v.type))
+		return base;
 	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
 
