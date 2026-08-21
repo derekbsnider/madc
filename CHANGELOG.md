@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **The zero-include contract** — a madc-dialect program needs no
+  `#include`, no `using`, no `std::`: the auto-include scan now serves
+  QUOTED USER MODULES (system headers stay inert), the auto-include
+  prelude inserts before the first user-code token (module or main),
+  print/println gained the C++23 stream forms
+  (`println(stderr, ...)` — pass-through FILE sink in the one rt_dump
+  writer), `madc::getline(value&)` reads a line of stdin into the
+  carrier (std::getline contract; false only on clean EOF), and
+  `php::file_exists` lands (PHP parity: directories count).
+  stderr/stdout/stdin and ui:: join the auto-include table. Pinned by
+  testautoincmodule (+ zero-include helper module), testvaluegetline,
+  testprintstderr. The adventure dropped its whole preamble: 4264
+  lines vs the reference's 4681, still 94/94 logs byte-identical.
 - **Brace-list value literals + `.push()`** — `var ds = { a, b, c };`
   (and `var ds{ a, b, c }`) builds an array-kind value: default
   construction plus one element push per entry, heterogeneous elements

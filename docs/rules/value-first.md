@@ -7,6 +7,18 @@ madc::value extra robust, and std::print and std::println and
 std::format [are] hard-coded into madc because std::string and iostream
 are slow and terrible with way too much overhead."
 
+Owner directive (2026-08-21, the zero-include Adventure rewrite): madc
+does auto-including and auto-namespace resolution — a madc program
+spelling `#include <...>` walls or `std::` prefixes reads like
+"a plain-old-C project", not madc. The intrinsics are bare
+`print`/`println` ("why are you prefixing with std::?? madc makes this
+unnecessary"), and a `print("...\n")` is a `println` in disguise. The
+compiler gaps that once forced the spellings (the module-blind
+auto-include scan, the main-file-only prelude insertion, the
+using-directive-only std call fallback) were fixed the same day —
+which is the rule's mechanism: the SPELLING gap always indicts the
+compiler, never the script.
+
 ## Why the rule exists
 
 - The value carrier (include/libmadc/value.h + the madarray_* runtime

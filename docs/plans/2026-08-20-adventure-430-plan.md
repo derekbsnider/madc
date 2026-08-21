@@ -38,6 +38,26 @@ actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
    parity gate (byte-identical).
    ⚠️ Lesson re-learned: a test's raw exit code is NOT the runner's
    verdict — diff against the .expect fixture.
+1c. OWNER-DIRECTED wave 4 — THE ZERO-INCLUDE CONTRACT (@414e5637..@79d6e10f):
+   advent.mad + modules now carry ZERO includes, ZERO using, ZERO std::
+   (owner: "it's like you completely forgot what madc is"). Compiler
+   fixes at the owners: the auto-include scan serves QUOTED USER
+   MODULES (system headers stay inert; classify by resolved path); the
+   prelude inserts before the first USER-CODE token (module or main —
+   auto_include_user_units); print/println gained the C++23 STREAM
+   forms (println(stderr, ...) — pass-through FILE sink in rt_dump's
+   one writer); madc::getline(value&)->bool line input (ns_madc
+   public); php::file_exists (directories count). value-first.md now
+   STATES the law (bare print/println/format; a spelling gap indicts
+   the compiler). ⚠️ RECORDED LESSON: a std::getline(istream&, value&)
+   plain-decl fragment STOLE the namespace-map name slot from
+   libstdc++'s template — string getline recursed to stack overflow
+   (testofstreamwrite/testmanipview, fulltest 1111/2) — REVERTED; a
+   std-side value overload needs overload-import design first.
+   Adventure now 4264 lines vs reference 4681; 94/94 byte-identical;
+   fulltest 1116/0. REMAINING OWNER ISSUE #2 (NEXT): replace the
+   `#include "adv_*.inc"` textual modules with MULTI-FILE PROJECT
+   support (--project) — restructure adv_*.inc -> .mad TUs + manifest.
 1b. OWNER-DIRECTED ELEGANCE, wave 3 (@bf04d070 + @a6776e1c, pushed):
    brace-list value literals `var ds = { a, b, c };` (+ `var ds{...}`,
    `{}` = empty ARRAY, one-element law, file-scope literals) and the
