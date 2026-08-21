@@ -1,0 +1,23 @@
+// The carrier SLOT model (owner law 2026-08-21): an int-indexed carrier
+// subscript is a value LVALUE — the element slot (madarray_index_slot) —
+// exactly like the keyed subscript. Writes land in the LIVE element (the
+// retired string-first element model dropped them in a hidden std::string
+// temp — a silent no-op at exit 0), element methods resolve through the
+// carrier with zero <string> dependence, and access extends the array.
+int main()
+{
+	var bag;
+	bag[0] = "x";
+	println("element0=[{}]", bag[0].c_str());
+	println("count={}", bag.length());
+	bag[2] = "z";
+	println("count-after-extend={}", bag.length());
+	var nest;
+	nest["k"][0] = "hello";
+	println("nested=[{}]", nest["k"][0].c_str());
+	println("len={}", nest["k"][0].length());
+	bag[1] = 42;
+	println("num={}", bag[1].as_integer());
+	println("direct={}", bag[0]);
+	return 0;
+}

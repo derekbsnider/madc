@@ -2431,22 +2431,6 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     return lazy_resolve_type(name);
 }
 
-// The element type a madc `array` (madc::value) subscript READ produces.
-// String-first — the Python/PHP element model (`sys.argv[1]`, `arr[i]` in
-// string contexts): typed as the real std::string class when <string> has
-// been seen. Falls back to the legacy long typing otherwise, which keeps
-// numeric reads working in string-less TUs. Numeric reads under the string
-// typing are a LOUD type error (never a silent raw-buffer word read); use
-// range-for or the php:: getters for mixed numeric access.
-DataDef *Program::madc_array_element_type()
-{
-    DataDef *dd = resolve_named_datadef("string");
-    if ( dd && dd->basetype() == BaseType::btClass
-      && dd->rawtype() == DataType::dtRESERVED && !dd->is_pointer() )
-	return dd;
-    return &ddINT64;
-}
-
 // Is this subscript INDEX a string KEY (`bag["k"]`, `bag[word]`) — the
 // carrier's object-kind keyed access — rather than an element index?
 // Char pointers (string literals included) and c_str()-bearing class
@@ -2471,16 +2455,24 @@ bool Program::madc_array_key_index(TokenBase *idx)
     return cls && cls->findMethod(cstr_name) != NULL;
 }
 
-// The type a madc array subscript produces, INDEX-AWARE: a string key
-// yields the carrier itself (`bag["k"]` is a value lvalue — the keyed
-// slot madarray_key_slot returns), any other index keeps the string-first
-// element model above. The token's ddARRAY typing IS the keyed marker the
-// CIR builder reads — element reads are never typed ddARRAY, so no flag
-// travels beside the type.
-DataDef *Program::madc_array_subscript_type(TokenBase *idx)
+// The type a madc array subscript produces: the CARRIER ITSELF, for BOTH
+// index kinds — the SLOT model. A subscript is a value lvalue (the slot
+// address the runtime returns: madarray_key_slot for a string key's map
+// entry, madarray_index_slot for an integer index's array element), so
+// elements carry the carrier's whole method surface (c_str/length/substr/
+// at/as_integer), writes land in the LIVE slot, and the semantics never
+// vary with which headers a TU parsed. OWNER LAW (2026-08-21): nothing
+// the dialect or polyglot surface depends on std::string — the retired
+// string-first element model (std::string typing when <string> was seen,
+// int64 otherwise) typed element READS as a std::string TEMP, which made
+// `arr[i] = x` a SILENT no-op (the write landed in the temp) and left
+// element methods unresolvable in <string>-less TUs. The ddARRAY typing
+// IS the slot marker the CIR builder reads; the CIR side picks the key
+// vs index runtime entry via madc_array_key_index (the one owner of the
+// key-vs-element question).
+DataDef *Program::madc_array_subscript_type()
 {
-    return madc_array_key_index(idx) ? (DataDef *)&ddARRAY
-				     : madc_array_element_type();
+    return &ddARRAY;
 }
 
 // The ONE builtin-spelling -> canonical-DataDef table. Every C/C++ source
@@ -26359,10 +26351,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
 	    }
 	    else if ( !handled_fixed_array && base_type && base_type->is_madc_array() )
-		// madc array member chain (`s.a[0]`, `s.bag["k"]`): index-aware —
-		// string keys type as the carrier (the keyed slot), element reads
-		// keep string-first typing (madc_array_subscript_type).
-		elem_type = madc_array_subscript_type(idx_expr);
+		// madc array member chain (`s.a[0]`, `s.bag["k"]`): every carrier
+		// subscript types as the carrier — the slot model
+		// (madc_array_subscript_type).
+		elem_type = madc_array_subscript_type();
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
@@ -35358,16 +35350,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
-			// madc array subscript, index-aware: a string KEY types
-			// as the carrier (the keyed slot); an element read keeps
-			// string-first typing (the Python/PHP element model —
-			// see madc_array_subscript_type). A `value &` receiver
-			// (reference parameter) denotes its referent carrier.
+			// madc array subscript: every carrier subscript types as
+			// the carrier — the slot model (madc_array_subscript_type).
+			// A `value &` receiver (reference parameter) denotes its
+			// referent carrier.
 			DataDef *sub_recv = tv->var.type;
 			if ( DataDef *ref = referent_if_reference(sub_recv) )
 			    sub_recv = ref;
 			if ( sub_recv && sub_recv->is_madc_array() )
-			    tsn->setDataType(madc_array_subscript_type(idx));
+			    tsn->setDataType(madc_array_subscript_type());
 			exStack.push(tsn);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
@@ -35457,11 +35448,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( elem_type && elem_type->is_simd() )
 			    elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
 			// madc array member/chain (`s.a[0]`, `bag["k"]["j"]`):
-			// index-aware — a string KEY types as the carrier (the
-			// keyed slot), an element read keeps string-first typing
-			// (madc_array_subscript_type).
+			// every carrier subscript types as the carrier — the
+			// slot model (madc_array_subscript_type).
 			if ( elem_type && elem_type->is_madc_array() )
-			    elem_type = madc_array_subscript_type(idx);
+			    elem_type = madc_array_subscript_type();
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and

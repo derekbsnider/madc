@@ -1875,16 +1875,13 @@ public:
 					 const char *recv_ptr,
 					 const std::string &mname,
 					 TokenBase *origin);
-	// madc `array` element READ (`arr[i]`): string temp filled from
-	// __php_array_get_cstr (string typing) or __php_array_get_int value.
-	node_t madc_array_subscript_read(node_t container_void, node_t index_node,
-					 DataDefCLASS *scls, TokenBase *origin);
-	// KEYED carrier subscript (`bag["k"]`): the parser types it ddARRAY
-	// (the keyed marker); the lowering is N_DEREF(madarray_key_slot(...)),
+	// Carrier SLOT subscript (`bag["k"]`, `arr[i]` — both index kinds):
+	// the parser types every carrier subscript ddARRAY (the slot marker);
+	// the lowering is N_DEREF(madarray_key_slot/madarray_index_slot(...)),
 	// a value lvalue whose address folds back to the slot call.
 	static bool is_carrier_keyed_subscript(TokenBase *tb);
-	node_t carrier_key_slot_call(node_t recv_void, TokenBase *key,
-				     TokenBase *origin);
+	node_t carrier_slot_call(node_t recv_void, TokenBase *index,
+				 TokenBase *origin);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
 	// Aggregate list-initialization of a member ([dcl.init.aggr]):

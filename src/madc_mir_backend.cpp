@@ -201,6 +201,35 @@ void *madarray_key_slot(void *ptr, const char *key)
 	return NULL;	// unreachable: __madc_throw_cstr does not return
     }
 
+// Integer-indexed SLOT on the array kind — the lvalue behind `arr[i]`,
+// the keyed slot's index twin (owner law 2026-08-21: the carrier owns its
+// element surface; the old string-first element model typed element reads
+// as a std::string TEMP, so `arr[i] = x` was a silent no-op and element
+// methods needed <string>). Vivifies a null carrier to an empty array and
+// extends with null elements through idx (access creates, the keyed
+// model's rule — `arr[3] = x` on a shorter array must land), then returns
+// the element's address. vector storage: the slot stays valid until the
+// array next GROWS (the C++ vector-iterator contract) — expression
+// lifetime, exactly how the CIR consumes it. A negative index or a
+// non-array kind is a catchable script error, never a crash or a temp.
+void *madarray_index_slot(void *ptr, int64_t idx)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( idx < 0 )
+	    __madc_throw_cstr("[index]: negative index on a madc array");
+	if ( !v->is_null() && !v->is_array() )
+	    __madc_throw_cstr("[index]: value of this kind has no indexed elements");
+	try {
+	    std::vector<madc::value> &vec = v->array();
+	    if ( (size_t)idx >= vec.size() )
+		vec.resize((size_t)idx + 1);
+	    return &vec[(size_t)idx];
+	} catch ( const std::exception & ) {
+	    __madc_throw_cstr("[index]: value is frozen");
+	}
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
 // Text view of a value for C varargs (printf "%s") — the coercion the CIR
 // builder applies to a value argument in a variadic call. String kind
 // returns the value's own payload (stable, value-owned). Other kinds

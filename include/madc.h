@@ -5741,14 +5741,14 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
-    // Element type for madc `array` subscript READS (string-first — the
-    // Python/PHP element model; long fallback when no string class is known).
-    DataDef *madc_array_element_type();
-    // Keyed-subscript classification for the carrier: string-typed index =
-    // object-kind KEY access; the subscript then types as ddARRAY (the
-    // keyed marker the CIR builder reads). See parser.cpp for the rules.
+    // Key-vs-element classification for a carrier subscript INDEX: a
+    // string-typed index is an object-kind KEY, anything else an array
+    // element. One owner — the CIR's slot-call routing reads it too.
     static bool madc_array_key_index(TokenBase *idx);
-    DataDef *madc_array_subscript_type(TokenBase *idx);
+    // Every carrier subscript types as the carrier itself — the SLOT model
+    // (a value lvalue over madarray_key_slot / madarray_index_slot). See
+    // parser.cpp for the rules and the owner law behind it.
+    DataDef *madc_array_subscript_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in

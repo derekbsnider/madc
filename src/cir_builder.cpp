@@ -5403,10 +5403,15 @@ static bool is_size1_pointer(DataDef *dd)
 
 static bool is_char_pointer(DataDef *dd)
 {
+	// Unqualify BOTH layers: a real-header `const _CharT*` parameter
+	// arrives const-wrapped at the pointer and/or the pointee, and a
+	// const char pointer IS a char pointer for every caller of this
+	// question (coercions, key classification, ranking).
+	dd = unqualified_type(dd);
 	if (!dd || !dd->is_pointer()) return false;
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p || !p->base_type) return false;
-	return p->base_type->rawtype() == DataType::dtCHAR;
+	return unqualified_type(p->base_type)->rawtype() == DataType::dtCHAR;
 }
 
 // The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
@@ -11765,72 +11770,10 @@ node_t CirBuilder::array_member_runtime_call(const char *sym, bool returns_value
 	return node2(N_EXPR, list(), call, origin);
 }
 
-// A madc `array` (madc::value) element READ — `arr[i]`, `sys.argv[1]`,
-// `s.a[0]`. Elements are tagged madc::value entries with no stable typed
-// lvalue to alias, so reads materialize through the runtime getters (the
-// range-for element-fill model as an expression):
-//   string-typed (the parser's string-first element typing, scls != NULL):
-//   a scope-lived default-constructed string temp filled via
-//   operator=(char*) from __php_array_get_cstr; the expression is the
-//   temp's lvalue (decl/ctor/fill ride m_pending_stmts, which the block
-//   translator flushes ahead of the consuming statement).
-//   long-typed (legacy / no-<string> fallback): __php_array_get_int value.
-// container_void: (void*)-cast node addressing the array object.
-node_t CirBuilder::madc_array_subscript_read(node_t container_void,
-					     node_t index_node,
-					     DataDefCLASS *scls,
-					     TokenBase *origin)
-{
-	if (!scls) {
-		need_output_extern("__php_array_get_int", false,
-				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
-		referenced_funcs.insert("__php_array_get_int");
-		node_t a = list();
-		append(a, container_void);
-		append(a, index_node);
-		return node2(N_CALL, id("__php_array_get_int", origin), a, origin);
-	}
-	FuncDef *op = class_assign_cstr_operator_def(scls);
-	if (!op)
-		return error_node("madc array element read requires "
-				  "operator=(char*) on the element type", origin);
-	char name[32];
-	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
-	Variable *tmp = new Variable(name, *scls, 1, NULL, false);
-	tmp->flags |= vfLOCAL;
-	m_pending_stmts.push_back(var_decl(tmp, origin));
-	node_t cc = class_ctor_call(tmp, scls, std::vector<TokenBase *>(), origin);
-	if (cc) m_pending_stmts.push_back(cc);
-	need_output_extern("__php_array_get_cstr", true,
-			   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
-	node_t ga = list();
-	append(ga, container_void);
-	append(ga, index_node);
-	node_t getcall = node2(N_CALL, id("__php_array_get_cstr", origin), ga,
-			       origin);
-	std::string sym = class_method_call_symbol(scls, op, "operator=");
-	bool external = !op->emit_symbol.empty();
-	if (external)
-		need_output_extern(sym.c_str(), true,
-				   { { {N_VOID}, true }, { {N_CHAR}, true } });
-	else
-		referenced_funcs.insert(sym);
-	node_t fa = list();
-	node_t dst = node1(N_ADDR, id(name, origin), origin);
-	if (external)
-		dst = node2(N_CAST, void_ptr_type(), dst, origin);
-	append(fa, dst);
-	append(fa, getcall);
-	m_pending_stmts.push_back(node2(N_EXPR, list(),
-		node2(N_CALL, id(sym.c_str(), origin), fa, origin), origin));
-	return id(name, origin);
-}
-
-// Is this token a KEYED carrier subscript (`bag["k"]`, `bag[word]`)? The
-// parser's typing IS the marker: madc_array_subscript_type types a keyed
-// subscript as ddARRAY itself, and element reads are never typed ddARRAY —
-// so the test is the token shape plus its recorded type, re-deriving
+// Is this token a carrier SLOT subscript (`bag["k"]`, `arr[i]`)? The
+// parser's typing IS the marker: madc_array_subscript_type types EVERY
+// carrier subscript as ddARRAY itself (the slot model, both index kinds)
+// — so the test is the token shape plus its recorded type, re-deriving
 // nothing. Covers both the named-variable (TokenSubscript) and
 // expression-base (TokenSubscriptExpr) shapes.
 bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
@@ -11856,29 +11799,42 @@ bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
 	return false;
 }
 
-// The keyed-slot call for a carrier subscript: madarray_key_slot(recv, key)
-// — the runtime returns the (vivified) map entry's address, so the call IS
-// the slot lvalue's address; N_DEREF of it is the value lvalue the
-// expression lanes return (&* folds back to the call at every consumer
-// that addresses it). recv_void: (void*)-cast node addressing the carrier.
-// The key argument: a char pointer passes through; a c_str()-bearing class
-// (std::string) coerces through object_cstr_arg — the one existing
-// class-to-cstr owner.
-node_t CirBuilder::carrier_key_slot_call(node_t recv_void, TokenBase *key,
-					 TokenBase *origin)
+// The slot call for a carrier subscript — the ONE value-lvalue lane for
+// both index kinds: madarray_key_slot(recv, key) for a string KEY (the
+// vivified map entry), madarray_index_slot(recv, idx) for an integer
+// index (the vivified/extended array element). The runtime returns the
+// slot's address, so the call IS the value lvalue's address; N_DEREF of
+// it is the value lvalue the expression lanes return (&* folds back to
+// the call at every consumer that addresses it). recv_void: (void*)-cast
+// node addressing the carrier. Key vs index is Program::madc_array_key_index
+// — the one owner of that question (char pointers and c_str()-bearing
+// classes are keys; every other index is an element). The key argument: a
+// char pointer passes through; a c_str()-bearing class (std::string)
+// coerces through object_cstr_arg — the one existing class-to-cstr owner.
+node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
+				     TokenBase *origin)
 {
-	need_output_extern("madarray_key_slot", true,
-			   { { {N_VOID}, true }, { {N_CHAR}, true } },
-			   { N_CHAR });
-	node_t karg;
-	if (is_char_pointer(key ? key->datadef() : NULL))
-		karg = translate_expr(key);
-	else
-		karg = object_cstr_arg(key);
 	node_t a = list();
 	append(a, recv_void);
-	append(a, karg);
-	node_t call = node2(N_CALL, id("madarray_key_slot", origin), a, origin);
+	const char *entry;
+	if (Program::madc_array_key_index(index)) {
+		entry = "madarray_key_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true }, { {N_CHAR}, true } },
+				   { N_CHAR });
+		if (is_char_pointer(index ? index->datadef() : NULL))
+			append(a, translate_expr(index));
+		else
+			append(a, object_cstr_arg(index));
+	} else {
+		entry = "madarray_index_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true },
+				     { {N_LONG, N_LONG}, false } },
+				   { N_CHAR });
+		append(a, translate_expr(index));
+	}
+	node_t call = node2(N_CALL, id(entry, origin), a, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;
 }
@@ -13305,6 +13261,19 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		}
 		return best >= 0 ? 2 : -1;   // a viable converting ctor => conversion
 	}
+	// The intrinsic value carrier converts to TEXT: madarray_cstr is the
+	// carrier's c_str() (value-first: a string-kind value is usable like a
+	// std::string), and the general-call arg lowering already coerces a
+	// carrier into a char* parameter through object_cstr_arg. Rank it as a
+	// user-defined conversion so an exact char* argument still wins —
+	// without this arm `string s = arr[i];` (a slot-typed element into
+	// basic_string(const char*)) found no viable constructor.
+	{
+		const DataDef *au = unqualified_type(adc);
+		if (au && au->rawtype() == DataType::dtARRAY
+		    && !au->is_pointer() && is_char_pointer((DataDef *)pdc))
+			return allow_udc ? 2 : -1;
+	}
 	// A class-object ARGUMENT only binds the same-class parameter (handled
 	// above); there is no implicit object->scalar/pointer conversion here.
 	if (adc->is_object())
@@ -14416,6 +14385,12 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			explicit_nodes.push_back(ref_param_arg_addr(arg,
 				ref_param_referent(pt), const_ref_param(ctor, pi)));
+		else if (is_char_pointer(pt) && is_class_object_value(arg))
+			// A c_str()-bearing object/carrier into a char* ctor
+			// parameter (`string s = arr[i];` — the slot-typed
+			// element into basic_string(const char*)): the same
+			// coercion the general call path applies.
+			explicit_nodes.push_back(object_cstr_arg(arg));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -15121,6 +15096,11 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
 							const_ref_param(ctor, pi)));
+		else if (is_char_pointer(pt) && is_class_object_value(arg))
+			// A c_str()-bearing object/carrier into a char* ctor
+			// parameter (`string s = arr[i];`): the same coercion
+			// the general call path applies (its is_char_pointer arm).
+			append(args, object_cstr_arg(arg));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -16519,6 +16499,13 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		eparams.push_back(native_param_shape(pt, true));
 		append(args, ref_param_arg_addr(top->right,
 			ref_param_referent(pt), const_ref_param(callee, 1)));
+	} else if (is_char_pointer(pt) && is_class_object_value(top->right)) {
+		// A c_str()-bearing object/carrier into a char* operator
+		// parameter (`joined = arr[i];` — the slot-typed element into
+		// basic_string::operator=(const char*)): the same coercion the
+		// general call path applies.
+		eparams.push_back(native_param_shape(pt, false));
+		append(args, object_cstr_arg(top->right));
 	} else {
 		eparams.push_back(native_param_shape(pt, false));
 		append(args, translate_expr(top->right));
@@ -17379,6 +17366,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		else if (refp)
 			append(args, ref_param_arg_addr(top->right,
 				ref_param_referent(pt), const_ref_param(callee, 1)));
+		else if (is_char_pointer(pt) && is_class_object_value(top->right))
+			// carrier/object into a char* operator parameter — the
+			// external-call twin's coercion (object_cstr_arg).
+			append(args, object_cstr_arg(top->right));
 		else
 			append(args, translate_expr(top->right));
 	}
@@ -19966,28 +19957,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
-			// KEYED carrier access (`bag["k"]` — parser-typed ddARRAY;
-			// `value &` receivers included, whose stored pointer IS
-			// the carrier's address): the value lvalue over the
-			// vivified map slot. Checked before the plain-carrier
-			// gate below, which sees only the unwrapped object type.
-			if (is_carrier_keyed_subscript(tsub))
-				return node1(N_DEREF, carrier_key_slot_call(
-					node2(N_CAST, void_ptr_type(), base, tb),
-					tsub->index, tb), tb);
-			// madc array element read (`arr[i]`): route through the
-			// runtime getters — a raw N_IND would index the value
-			// object's long[] buffer words.
-			if (is_array_object(tsub->object.type)) {
+			// Carrier SLOT access (`bag["k"]`, `arr[i]` — parser-typed
+			// ddARRAY for both index kinds; `value &` receivers
+			// included, whose stored pointer IS the carrier's
+			// address): the value lvalue over the vivified map or
+			// element slot. Checked before the plain-carrier gate
+			// below, which sees only the unwrapped object type.
+			if (is_carrier_keyed_subscript(tsub)) {
 				if (!tsub->extra_indices.empty())
 					return error_node("multi-dimensional subscript is "
 							  "not supported on a madc array",
 							  tb);
-				return madc_array_subscript_read(
+				return node1(N_DEREF, carrier_slot_call(
 					node2(N_CAST, void_ptr_type(), base, tb),
-					translate_expr(tsub->index),
-					as_class_instance(tsub->datadef()), tb);
+					tsub->index, tb), tb);
 			}
+			// The parser types EVERY carrier subscript ddARRAY (the
+			// slot model) — an array receiver reaching here untyped
+			// is a broken contract; a raw N_IND would silently index
+			// the value object's buffer words.
+			if (is_array_object(tsub->object.type))
+				return error_node("carrier subscript did not type "
+						  "as a slot (parser/CIR slot-model "
+						  "contract)", tb);
 			node_t n = node2(N_IND, base,
 				translate_expr(tsub->index), tb);
 			// Multi-dim fixed array: a[i][j] -> IND(IND(a,i),j)
@@ -20042,11 +20034,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 							  translate_expr(tse->base_expr),
 							  tb), tb);
 				if (is_carrier_keyed_subscript(tse))
-					return node1(N_DEREF, carrier_key_slot_call(
+					return node1(N_DEREF, carrier_slot_call(
 						recv, tse->index, tb), tb);
-				return madc_array_subscript_read(recv,
-					translate_expr(tse->index),
-					as_class_instance(tse->datadef()), tb);
+				return error_node("carrier subscript did not type "
+						  "as a slot (parser/CIR slot-model "
+						  "contract)", tb);
 			}
 			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
