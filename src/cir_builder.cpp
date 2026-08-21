@@ -26198,7 +26198,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// main), so two ctor TUs no longer collide on __madc_global_init.
 	bool want_sys_init = tf->var.name == "main"
 			     && m_prog && m_prog->_include_ns_madc;
-	if (!madc_object_mode && tf->var.name == "main"
+	// Project JIT TUs skip the wrap the same way object mode does: their
+	// per-TU init (engine-called before main) carries both calls.
+	if (!madc_object_mode && !m_project_tu && tf->var.name == "main"
 	    && (want_sys_init || !m_global_ctor_stmts.empty())) {
 		node_t outer = list();
 		if (want_sys_init) {
@@ -26470,6 +26472,23 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		m_pending_stmts.clear();
 		if (cc)
 			grp_stmts.push_back(cc);
+		// C++11 NSDMI on a DEFAULT-constructed no-ctor class GLOBAL
+		// (`Game G;`) — the same rule as translate_block's local arm: a
+		// whole-object initializer supplies every member (skip), a user
+		// ctor applies NSDMI in its prologue (skip). The local lane has
+		// applied these all along; this lane silently dropped them, so
+		// a file-scope instance read 0 where g++ reads the default.
+		bool bare_decl = !decl
+		    || (!decl->initialize && decl->ctor_args.empty()
+			&& decl->init_list.empty() && !decl->ctor_args_braced);
+		if (!cdd->has_user_ctor && bare_decl) {
+			std::vector<node_t> nsdmi_stmts;
+			if (emit_member_default_inits(cdd,
+					var_emit_name(*v).c_str(), false,
+					nsdmi_stmts, decl, NULL))
+				for (node_t ns : nsdmi_stmts)
+					grp_stmts.push_back(ns);
+		}
 		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }
@@ -29175,7 +29194,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	node_t gi_items = NULL;		// rung 3: the init body's stmt list —
 	node_t gi_def = NULL;		// the filter prunes dead ctor groups here
 	m_tu_init_name.clear();
-	bool obj_sys_init = madc_object_mode && m_prog && m_prog->_include_ns_madc;
+	// Project JIT TUs take the object-mode shape too: the engine calls each
+	// TU's unique init before main (its ld.so/.init_array role), so the
+	// sys-init ride-along applies the same way.
+	bool tu_unique_init = madc_object_mode || m_project_tu;
+	bool obj_sys_init = tu_unique_init && m_prog && m_prog->_include_ns_madc;
 	if (!m_global_ctor_stmts.empty() || obj_sys_init) {
 		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
 		// asm, initializer) — c2mir.c:538.
@@ -29221,7 +29244,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t iparams = list();
 		const char *gi_name = "__madc_global_init";
 		std::string tu_sym;
-		if (madc_object_mode) {
+		if (tu_unique_init) {
 			tu_sym = tu_init_symbol(m_tu_name);
 			gi_name = tu_sym.c_str();
 			m_tu_init_name = tu_sym;

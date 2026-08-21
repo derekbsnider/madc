@@ -1,0 +1,10 @@
+// The ENTRY TU: reads the other TU's initialized globals.
+long cfg_span();
+extern var TAG;
+extern long BASE;
+
+int main()
+{
+	println("span={} tag={} base={}", cfg_span(), TAG, BASE);
+	return 0;
+}

@@ -1,0 +1,34 @@
+// C++11 default member initializers on FILE-SCOPE instances.
+// The silent failure this pins: the global-ctor lane never applied
+// NSDMI for a ctorless class global, so GC.x read 0 (exit 0) where
+// g++/clang++ read 42. The local lane always applied them — the two
+// lanes must agree.
+class C
+{
+    public:
+	long x = 42;
+	double d = 2.5;
+	long y;			// no NSDMI: stays zero-initialized
+};
+C GC;
+
+// Control: a USER-ctor class applies NSDMI in the ctor prologue, and
+// the ctor body then overrides it — file scope must match local scope.
+class D
+{
+    public:
+	long n = 7;
+	D(long v) { n = v; }
+};
+D GD(3);
+
+int main()
+{
+	println("global x={} d={} y={}", GC.x, GC.d, GC.y);
+	println("global n={}", GD.n);
+	// lc.y is default-initialized = indeterminate ([dcl.init]; the
+	// zero guarantee is static storage only) — never pinned here.
+	C lc;
+	println("local x={} d={}", lc.x, lc.d);
+	return 0;
+}

@@ -1,0 +1,3 @@
+// Project-mode dynamic-init test. The real build is driven by
+// testprojectinit.cc.json via the --project flag in
+// testprojectinit.flags. This file is an ignored positional.

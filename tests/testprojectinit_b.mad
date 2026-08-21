@@ -1,0 +1,20 @@
+// The NON-ENTRY TU: its dynamic global initializers must run before
+// main — the engine calls each TU's unique init (ld.so's .init_array
+// role). Before the fix, N TUs exported ONE __madc_global_init, MIR's
+// redef permission let the last module win, and every other TU's
+// initializers silently never ran (exit 0, zeros everywhere).
+class Cfg
+{
+    public:
+	long span = 11;		// NSDMI on a file-scope instance
+	long zero;
+};
+Cfg CFG;
+
+var TAG = "ready";		// carrier global with a dynamic initializer
+long BASE = 40 + 2;		// non-constant-folded scalar shape
+
+long cfg_span()
+{
+	return CFG.span;
+}

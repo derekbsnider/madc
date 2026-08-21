@@ -790,7 +790,8 @@ static void check_attrib_note(node_t item, int index, unsigned n_errs,
 // success the caller owns the returned builder (it backs the tree's arena).
 static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    const char *source_name,
-				    CirBuilder *&out_builder)
+				    CirBuilder *&out_builder,
+				    bool project_tu = false)
 {
     out_builder = NULL;
     // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
@@ -810,6 +811,8 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
     builder->set_tu_name(source_name);
+    // Project JIT TU: per-TU init shape, engine-called (see cir_builder.h).
+    builder->set_project_tu(project_tu);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
     // slice D: forest-work clock advance inside this timed window = the
@@ -865,7 +868,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 				    Program *prog, const char *source_name,
 				    bool dump_tree, bool dump_nodes,
 				    bool dump_checked,
-				    CirBuilder *&out_builder, bool &out_stop)
+				    CirBuilder *&out_builder, bool &out_stop,
+				    bool project_tu = false)
 {
     out_builder = NULL;
     out_stop = false;
@@ -886,7 +890,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // drifted from this backend — e.g. mislowering backward `goto` loops — and
     // a stale unit test pointed at it once hung the suite. One backend, no A/B.)
     CirBuilder *builder = NULL;
-    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder,
+					project_tu);
     if (!tree)
 	return NULL;
 
@@ -5882,7 +5887,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
 						   pt.name.c_str(),
 						   false, false, false,
-						   builder, stop);
+						   builder, stop,
+						   /*project_tu=*/true);
 		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
 		if (!mod) {
 			teardown();
@@ -5924,6 +5930,38 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			manifest.entry.c_str());
 		teardown();
 		return -1;
+	}
+
+	// Dynamic global initialization, every TU (the engine plays ld.so's
+	// .init_array role): each TU's builder recorded its unique static init
+	// (translate_module, project_tu shape — sys-init-once + ctor groups).
+	// Manifest order, before main. With the old single `__madc_global_init`
+	// export, MIR's redef permission made the LAST module's copy win and
+	// every other TU's initializers silently never ran.
+	for (size_t bi = 0; bi < builders.size(); bi++) {
+		if (!builders[bi] || bi >= modules.size())
+			continue;
+		const std::string &ini = builders[bi]->tu_init_name();
+		if (ini.empty())
+			continue;
+		void *icode = nullptr;
+		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, modules[bi]->items);
+		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+			if (item->item_type == MIR_func_item
+			    && strcmp(item->u.func->name, ini.c_str()) == 0) {
+				icode = MIR_gen(ctx, item);
+				break;
+			}
+		}
+		if (!icode) {
+			fprintf(stderr, "madc_project_execute: %s: TU init '%s'"
+				" not found in its module\n",
+				parsed[bi].name.c_str(), ini.c_str());
+			teardown();
+			return -1;
+		}
+		((void (*)(int, char **, char **))icode)(user_argc, user_argv,
+							 nullptr);
 	}
 
 	// Expose the entry's module to the crash handler for JIT symbolization.

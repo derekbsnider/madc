@@ -124,7 +124,14 @@ class CirBuilder {
 	// Object mode (ELF-completion S3): the TU-unique STATIC init function
 	// translate_module synthesized (empty = this TU has none). madc_cir
 	// registers it into the capture's .init_array after generation.
+	// Project JIT mode reuses the same shape — the engine plays ld.so's
+	// init_array role and calls each TU's init before main.
 	std::string m_tu_init_name;
+	// True when this TU is one of a --project JIT build: the per-TU init
+	// takes the object-mode shape (TU-unique static, sys-init-once inside)
+	// instead of `__madc_global_init` + the main-prologue call — N TUs
+	// exporting ONE init name means only the last one's ctors ever ran.
+	bool m_project_tu = false;
 	// True while translating the body of a void-returning function — lets
 	// translate_return lower a gcc-accepted `return <expr>;` to `<expr>;
 	// return;` (c2mir rejects a value in a void return).
@@ -2128,6 +2135,7 @@ public:
 	// TU identity for the object-mode per-TU init symbol; call before
 	// translate_module (harmless in JIT mode — unused there).
 	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }
+	void set_project_tu(bool b) { m_project_tu = b; }
 	// The synthesized per-TU init's symbol (object mode; empty = none).
 	const std::string &tu_init_name() const { return m_tu_init_name; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
