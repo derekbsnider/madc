@@ -2,6 +2,28 @@
 
 Perl-unique string and array functions. Perl's `chop`/`chomp`, `grep`, `glob`, and array manipulation functions (`push`, `pop`, `shift`, `unshift`, `split`, `join`).
 
+## Dialect (lean) forms — the primary surface
+
+Available in every madc TU with zero includes (dialect-lean, 2026-08-21).
+Text returns are ring-lifetime `const char *` (capture into a `value` or
+pass onward immediately); `chop`/`chomp` mutate the value — that IS Perl.
+
+```c
+value s = "hello\n";
+perl::chomp(s);                       // mutates s, returns count removed
+perl::chop(s);                        // mutates s, returns removed char
+perl::lc(s); perl::uc(s);             // NEW string (value& or const char*)
+perl::ucfirst("x"); perl::lcfirst(s); // NEW string
+perl::reverse(s);                     // NEW reversed string
+perl::substr("hello world", 6, 5);    // NEW substring
+perl::join("|", a);                   // joined text
+value last;  perl::pop(last, a);      // element out (null when empty)
+value head;  perl::shift(head, a);    // element out (null when empty)
+```
+
+The `std::string`-flavored forms below remain as C++-interop
+conveniences, declared only when `<string>` precedes `<ns_perl>`.
+
 ## String Functions
 
 | Function | Description | Example |
@@ -16,7 +38,7 @@ Perl-unique string and array functions. Perl's `chop`/`chomp`, `grep`, `glob`, a
 | `index(str, substr)` | Find first position (-1 if missing) | `i = perl::index(s, "foo")` |
 | `rindex(str, substr)` | Find last position (-1 if missing) | `i = perl::rindex(s, "foo")` |
 | `length(str)` | String length | `n = perl::length(s)` |
-| `substr(result, str, offset, len)` | Extract substring | `perl::substr(r, s, 2, 5)` |
+| `substr(result, str, offset, len)` | Extract substring (interop form; the lean form is `substr(str, offset, len)`) | `perl::substr(r, s, 2, 5)` |
 
 ## Array Functions
 

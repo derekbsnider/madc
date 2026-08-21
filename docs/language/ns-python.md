@@ -2,6 +2,19 @@
 
 Python-unique string operations: title case, case swapping, string alignment, zero-padding, character class testing, substring counting, and `format()` with `{}` placeholders.
 
+## Dialect (lean) forms — the primary surface
+
+Available in every madc TU with zero includes (dialect-lean,
+2026-08-21), with Python's real semantics: strings are immutable, every
+method returns a NEW string. Text returns are ring-lifetime
+`const char *`; subjects can be a `value` or a `const char *`:
+`python::title(s)`, `swapcase(s)`, `center(s, w, fill)`,
+`ljust(s, w, fill)`, `rjust(s, w, fill)`, `zfill(s, w)`,
+`replace(s, old, new)` — plus the value-out
+`python::format(out, fmt, args)`. The `std::string`-flavored forms are
+C++-interop conveniences, declared only when `<string>` precedes
+`<ns_python>`.
+
 ## Case Transforms
 
 | Function | Description | Example |

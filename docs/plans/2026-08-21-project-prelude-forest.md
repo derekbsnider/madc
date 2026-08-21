@@ -3,9 +3,18 @@
 **Status: APPROVED (owner, 2026-08-21) — LEG 0 LANDED the same day
 (@dfa6668e..@417a80bc + the dialect-lean rule/gate @d9cd5306). Measured:
 the probe TU went 0.17s/138-units/66.5MB → 0.016s/0-units/11.6MB; the
-11-TU game 1.5s → 0.85–0.90s. Remaining: Leg 0b (lean value-parity for
-the polyglot publics that exist only in std::string shape — mandated by
-owner ruling #2 below), then S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
+11-TU game 1.5s → 0.85–0.90s. LEG 0b LANDED session 115
+(@93e7fcb8..@cb42d6d7): all 57 guarded-only polyglot publics now have
+lean primaries (php 18, perl 11, python 7, ruby 6, js 5, rust 10) —
+six pure-dialect tests (test{php,perl,py,ruby,js,rust}lean.mad), the
+94-log parity gate byte-identical, check-dialect-lean green. En route:
+frozen-carrier mutation defect fixed (29 direct value::array() sites
+would throw across the extern-C boundary into JIT frames — now routed
+through value_array_for_write/_reset_for_write with the
+test_ns_frozen.cpp reducer), ns_common gained the shared lean plumbing
+(value_text_slot / ring_apply / value_pop_element / value_shift_element).
+Remaining: the no-viable-overload FALLBACK defect below, then
+S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
 
 **Owner rulings (2026-08-21, during Leg 0 — codified as
 `.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
@@ -110,18 +119,29 @@ calls. That single `<string>` closure is the 145-unit / 66 MB bind.
   dominant residue is now user-code compile (~0.04s/TU) + the per-TU
   container open/decode (~20 ms × 11) — precisely S1/S3 — and the warm
   launch (S5) still recompiles everything.
-- **Leg 0b (REMAINING — mandated by owner ruling #2):** every polyglot
-  public gets a lean PRIMARY form. Today ~50 functions exist only in
-  std::string shape (php::trim/str_replace/implode/array_pop/...,
-  perl::join/lc/substr/..., python::title/center/..., ruby::gsub/...,
-  js::btoa/..., rust::trim/join/...) — behind the guards they vanish
-  from lean TUs entirely. Each needs a value/char* primary (ring
-  returns pre-L3) beside the guarded convenience, python::format's
-  value-out shape being the template. Also queued from Leg 0 fallout:
-  the no-viable-overload FALLBACK defect (parser reselect returns the
-  by-name FuncDef when ranking finds no viable candidate — a
-  std::string arg mis-bound a value& param and SEGV'd; needs a
-  suite-wide fallout pass to turn into a loud error).
+- **Leg 0b (LANDED session 115, @93e7fcb8..@cb42d6d7 — mandated by
+  owner ruling #2):** every polyglot public has a lean PRIMARY form.
+  The 57 guarded-only functions (php 18, perl 11, python 7, ruby 6,
+  js 5, rust 10) gained value/char* primaries with SOURCE-LANGUAGE
+  parity semantics of record: PHP/Python/Ruby(non-bang)/JS/Rust text
+  functions return a NEW ring-lifetime string and never mutate the
+  subject (the guarded std::string& in-place forms are documented as
+  C++-interop conveniences); perl::chop/chomp MUTATE the value —
+  that IS Perl; element returns (php::array_pop/shift/get,
+  perl::pop/shift, rust::first/last/get/pop) use the value out-param
+  shape (null when empty). One algorithm per concern: the lean forms
+  run the SAME in-place cores via ns_common::ring_apply /
+  value_text_slot; element moves via value_pop_element /
+  value_shift_element. Six pure-dialect tests pin every public + the
+  non-mutation contracts; docs/language/ns-*.md updated. En-route
+  found-defect fixes (own commits): the frozen-carrier mutation abort
+  class (@93e7fcb8, reducer tests/unit/test_ns_frozen.cpp) and
+  php::intval's unbounded payload read (@eae431ae).
+  Still queued from Leg 0 fallout: the no-viable-overload FALLBACK
+  defect (parser reselect returns the by-name FuncDef when ranking
+  finds no viable candidate — a std::string arg mis-bound a value&
+  param and SEGV'd; needs a suite-wide fallout pass to turn into a
+  loud error).
 
 ### Leg 1 — cold launch: bind the forest ONCE per process
 

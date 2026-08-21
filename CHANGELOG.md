@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **JIT launch Leg 0b — every polyglot public has a lean primary**
+  (dialect-lean owner law; the Python-contender plan). The 57 functions
+  that existed only in `std::string` shape gained value/char* primaries
+  with source-language parity semantics of record: PHP / Python /
+  Ruby(non-bang) / JS / Rust text functions return a NEW ring-lifetime
+  string and never mutate the subject (the guarded `std::string&`
+  in-place forms remain as C++-interop conveniences);
+  `perl::chop`/`chomp` mutate the value — that IS Perl; element returns
+  (`php::array_pop`/`array_shift`/`array_get`, `perl::pop`/`shift`,
+  `rust::first`/`last`/`get`/`pop`) use a `value` out-param (null when
+  empty). One algorithm per concern: the lean forms run the same
+  in-place cores through new ns_common owners (`ring_apply`,
+  `value_text_slot`, `value_pop_element`/`value_shift_element`). Pinned
+  by six pure-dialect tests (test{php,perl,py,ruby,js,rust}lean.mad);
+  the 94-log adventure parity gate stayed byte-identical.
+- **Fixed (crash): polyglot array mutations on a frozen value aborted
+  the process** — 29 helpers (pop/shift/reverse/sort/unique/slice/
+  column/explode/grep/glob/split/chars/rotate/compact/flatten) called
+  `value::array()` directly; on a frozen carrier its designed throw
+  crossed the extern-C boundary into JIT frames. All container
+  mutations now route through `ns_common::value_array_for_write` (or
+  the new reset-for-write variant for out-params): a frozen or
+  kind-mismatched carrier reports one stderr diagnostic naming the
+  script-facing function and the write degrades to a no-op. Reducer:
+  tests/unit/test_ns_frozen.cpp.
 - **JIT launch Leg 0 — the dialect prelude no longer pulls the
   `<string>` closure** (the Python-contender plan,
   docs/plans/2026-08-21-project-prelude-forest.md). Dialect

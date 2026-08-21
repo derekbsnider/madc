@@ -2,6 +2,15 @@
 
 JavaScript/web-oriented functions: base64 encoding/decoding, URL encoding/decoding, parseInt with radix support, and JSON serialization.
 
+## Dialect (lean) forms — the primary surface
+
+Available in every madc TU with zero includes (dialect-lean,
+2026-08-21). Each returns a NEW string as ring-lifetime `const char *`:
+`js::btoa(input)`, `atob(input)`, `encodeURIComponent(input)`,
+`decodeURIComponent(input)`, `stringify(values)`. The out-param
+`std::string` forms below are C++-interop conveniences, declared only
+when `<string>` precedes `<ns_js>`.
+
 ## Base64
 
 | Function | Description | Example |
