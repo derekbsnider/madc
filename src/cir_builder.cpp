@@ -5546,12 +5546,16 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 // `__attribute__`-emptying issue doesn't apply).
 node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 				    const char *dtor_sym, TokenBase *origin,
-				    size_t align)
+				    size_t align, bool is_extern)
 {
 	node_t spec = list();
+	if (is_extern)
+		append(spec, simple(N_EXTERN));
 	// An object whose alignment exceeds the long[] buffer's natural 8
 	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
-	// _Alignas(align) long name[words].
+	// _Alignas(align) long name[words]. The extern shape keeps the
+	// _Alignas — C11 6.7.5p6 requires other declarations to match the
+	// definition's alignment (or carry none).
 	if (align > alignof(long long))
 		append(spec, node1(N_ALIGNAS, integer((int64_t)align, origin)));
 	append_i64(spec, origin);
@@ -5560,11 +5564,20 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 	append(decl_list, node3(N_ARR, ignore(), list(),
 				integer((int64_t)words, origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
-	need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
-	node_t attr_args = list();
-	append(attr_args, id(dtor_sym, origin));
-	node_t attrs = list();
-	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
+	node_t attrs;
+	if (is_extern) {
+		// The object is defined — and destroyed — in another TU: no
+		// cleanup registration here (same rule as the class-instance
+		// arm in var_decl, g++ parity with `extern std::string s;`).
+		attrs = ignore();
+	} else {
+		need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
+		node_t attr_args = list();
+		append(attr_args, id(dtor_sym, origin));
+		attrs = list();
+		append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args,
+				    origin));
+	}
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, share);
 	append(sd, decl);
@@ -5610,10 +5623,11 @@ size_t CirBuilder::array_obj_words() const
 	return (sizeof(madc::value) + sizeof(long long) - 1) / sizeof(long long);
 }
 
-node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
+node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin,
+				      bool is_extern)
 {
 	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin,
-				alignof(madc::value));
+				alignof(madc::value), is_extern);
 }
 
 node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
@@ -8614,9 +8628,18 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// and were dropped the same way (g read null, SILENTLY) — queue
 		// them too; collect_global_ctors' carrier arm emits them.
 		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
-		if (m_file_scope_decl && adecl
+		bool carrier_defines = adecl
 		    && (adecl->initialize || adecl->ctor_args_braced
-			|| !adecl->ctor_args.empty()))
+			|| !adecl->ctor_args.empty());
+		// `extern var X;` is a DECLARATION: storage, construction, and
+		// cleanup live in the defining TU (the class-instance arm below
+		// applies the same rule — g++ parity with `extern std::string s;`).
+		// An initializer makes it a definition (C semantics), so only the
+		// bare form takes the extern shape.
+		if ((v->flags & vfEXTERN) && !carrier_defines)
+			return array_storage_decl(var_emit_name(*v).c_str(),
+						  origin, true);
+		if (m_file_scope_decl && carrier_defines)
 			m_dynamic_global_inits.insert(v);
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
@@ -23971,7 +23994,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		if (is_array_object(v->type)) {
 			// `array a;` — default-construct the madc::value object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
-			append(items, array_ctor_call(v->name.c_str(), tc));
+			// A block-scope `extern var X;` declares another TU's object:
+			// no construction here (var_decl already emitted extern
+			// storage with no cleanup).
+			if (!(v->flags & vfEXTERN))
+				append(items, array_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
 			// explicit constructor-call (no ctor args). class_ctor_call owns
@@ -24045,6 +24072,15 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
+				// A block-scope `extern var X;` DECLARES another TU's
+				// object: var_decl emitted the extern shape above —
+				// constructing here would placement-new an empty
+				// value over the shared definition (initializer /
+				// ctor-args make it a definition, C semantics).
+				if ((sdcl->var.flags & vfEXTERN)
+				    && !sdcl->initialize && !sdcl->ctor_args_braced
+				    && sdcl->ctor_args.empty())
+					continue;
 				{
 					// Parens direct-init (`value v(7);`): the
 					// selected madarray_construct_* entry's

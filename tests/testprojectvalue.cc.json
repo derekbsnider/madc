@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testprojectvalue_a.mad","command":"madc -c testprojectvalue_a.mad"},
+  {"directory":"tests","file":"testprojectvalue_b.mad","command":"madc -c testprojectvalue_b.mad"}
+]

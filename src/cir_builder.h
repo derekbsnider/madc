@@ -486,7 +486,7 @@ class CirBuilder {
 	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	node_t obj_storage_decl(const char *name, size_t words,
 				const char *dtor_sym, TokenBase *origin,
-				size_t align = 0);
+				size_t align = 0, bool is_extern = false);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not
@@ -689,7 +689,8 @@ class CirBuilder {
 	// reference to it (a `value &` parameter) — NULL otherwise.
 	static DataDefCLASS *carrier_behind(DataDef *dd);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
-	node_t array_storage_decl(const char *name, TokenBase *origin);
+	node_t array_storage_decl(const char *name, TokenBase *origin,
+				  bool is_extern = false);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 	// The construction statement for a DECLARED value/array local — the one
 	// owner of the parens-vs-bare decision: `value v(7);` (TokenDecl::

@@ -1,0 +1,3 @@
+// Project-mode carrier-extern test. The real build is driven by
+// testprojectvalue.cc.json via the --project flag in
+// testprojectvalue.flags. This file is an ignored positional.
