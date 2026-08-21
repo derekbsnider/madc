@@ -359,7 +359,19 @@ long h_discard(value &obj)
 	if ( obj == "BOTTLE" && lb != "" )
 		ui::move(W, E(lb.c_str()), 0);
 	if ( obj == "BEAR" && at_obj(E("TROLL")) )
-		a8_wall("bear vs troll");
+	{
+		// The bear scares the troll away for good.
+		long troll = E("TROLL");
+		state_change_c(troll, "TROLL_GONE");
+		move_object(troll, 0);
+		move_fixed_side("TROLL", 0);
+		long troll2 = E("TROLL2");
+		move_object(troll2, static_place(troll));
+		move_fixed_side("TROLL2", static_fixed(troll));
+		juggle_object(E("CHASM"), "CHASM");
+		drop_object(o, "BEAR", LOC);
+		return G_CLEAROBJ;
+	}
 	if ( obj == "VASE" && LOC != static_place(E("PILLOW")) )
 	{
 		bool whole = at_obj(E("PILLOW"));
@@ -414,6 +426,56 @@ long h_discard(value &obj)
 
 // ---- lock / unlock ------------------------------------------------------
 
+// The bear's chain (the reference's chain()): unlock frees the chain
+// and the bear; lock only works back at the chain's original wall.
+long bear_chain(value &verb)
+{
+	long chain = E("CHAIN");
+	long bear = E("BEAR");
+	long heap = state_index_c(chain, "CHAIN_HEAP");
+	if ( verb != "LOCK" )
+	{
+		if ( obj_state(bear) == state_index_c(bear, "UNTAMED_BEAR") )
+		{
+			rspeak("BEAR_BLOCKS");
+			return G_CLEAROBJ;
+		}
+		if ( obj_state(chain) == heap )
+		{
+			rspeak("ALREADY_UNLOCKED");
+			return G_CLEAROBJ;
+		}
+		obj_set_state(chain, heap);
+		obj_set_fixed(chain, 0);
+		if ( obj_state(bear) == state_index_c(bear, "BEAR_DEAD") )
+			obj_set_fixed(bear, -1);
+		else
+		{
+			obj_set_state(bear,
+				      state_index_c(bear, "CONTENTED_BEAR"));
+			obj_set_fixed(bear, 0);
+		}
+		rspeak("CHAIN_UNLOCKED");
+		return G_CLEAROBJ;
+	}
+	if ( obj_state(chain) != heap )
+	{
+		rspeak("ALREADY_LOCKED");
+		return G_CLEAROBJ;
+	}
+	if ( LOC != static_place(chain) )
+	{
+		rspeak("NO_LOCKSITE");
+		return G_CLEAROBJ;
+	}
+	obj_set_state(chain, state_index_c(chain, "CHAIN_FIXED"));
+	if ( toting(chain) )
+		drop_object(chain, "CHAIN", LOC);
+	obj_set_fixed(chain, -1);
+	rspeak("CHAIN_LOCKED");
+	return G_CLEAROBJ;
+}
+
 long h_lock(value &verb, value &obj)
 {
 	if ( obj == "" )
@@ -438,9 +500,8 @@ long h_lock(value &verb, value &obj)
 	if ( obj == "CHAIN" )
 	{
 		if ( here_obj(E("KEYS")) )
-			a8_wall("bear chain");
-		else
-			rspeak("NO_KEYS");
+			return bear_chain(verb);
+		rspeak("NO_KEYS");
 		return G_CLEAROBJ;
 	}
 	if ( obj == "GRATE" )
@@ -520,13 +581,13 @@ long h_light(value &obj)
 		  && LIMIT >= 0 )
 		{
 			obj = "LAMP";
-			selects = selects + 1;
+			selects++;
 		}
 		if ( here_obj(urn)
 		  && obj_state(urn) == state_index_c(urn, "URN_DARK") )
 		{
 			obj = "URN";
-			selects = selects + 1;
+			selects++;
 		}
 		if ( selects != 1 )
 			return G_UNKNOWN;
@@ -689,53 +750,53 @@ long h_attack(value &obj)
 		if ( atdwrf(LOC) > 0 )
 		{
 			obj = "DWARF";
-			changes = changes + 1;
+			changes++;
 		}
 		if ( here_obj(E("SNAKE")) )
 		{
 			obj = "SNAKE";
-			changes = changes + 1;
+			changes++;
 		}
 		long dragon = E("DRAGON");
 		if ( at_obj(dragon)
 		  && obj_state(dragon) == state_index_c(dragon, "DRAGON_BARS") )
 		{
 			obj = "DRAGON";
-			changes = changes + 1;
+			changes++;
 		}
 		if ( at_obj(E("TROLL")) )
 		{
 			obj = "TROLL";
-			changes = changes + 1;
+			changes++;
 		}
 		if ( at_obj(E("OGRE")) )
 		{
 			obj = "OGRE";
-			changes = changes + 1;
+			changes++;
 		}
 		long bear = E("BEAR");
 		if ( here_obj(bear)
 		  && obj_state(bear) == state_index_c(bear, "UNTAMED_BEAR") )
 		{
 			obj = "BEAR";
-			changes = changes + 1;
+			changes++;
 		}
 		if ( obj == "" )
 		{
 			if ( here_obj(E("BIRD")) && verb != "THROW" )
 			{
 				obj = "BIRD";
-				changes = changes + 1;
+				changes++;
 			}
 			if ( here_obj(E("VEND")) && verb != "THROW" )
 			{
 				obj = "VEND";
-				changes = changes + 1;
+				changes++;
 			}
 			if ( here_obj(E("CLAM")) || here_obj(E("OYSTER")) )
 			{
 				obj = "CLAM";
-				changes = changes + 1;
+				changes++;
 			}
 		}
 		if ( changes >= 2 )
@@ -828,11 +889,11 @@ long h_attack(value &obj)
 			long dw = dwarf_ent(di);
 			if ( ui::location(W, dw) == LOC )
 			{
-				dwarves = dwarves + 1;
+				dwarves++;
 				ui::move(W, dw, E("LOC_LONGWEST"));
 				ui::set(W, dw, "seen", false);
 			}
-			di = di + 1;
+			di++;
 		}
 		if ( dwarves > 1 )
 			rspeak("OGRE_PANIC1");
@@ -1029,13 +1090,10 @@ long h_throw(value &obj)
 	// Axe vs dwarf: the only way to kill one.
 	if ( randrange(7) < DFLAG )
 		return throw_support("DWARF_DODGES");
-	long di = atdwrf(LOC);
-	var dn = "dwarf";
-	dn += to_string(di).c_str();
-	long dw = E(dn.c_str());
+	long dw = dwarf_ent(atdwrf(LOC));
 	ui::set(W, dw, "seen", false);
 	ui::move(W, dw, 0);
-	DKILL = DKILL + 1;
+	DKILL++;
 	if ( DKILL == 1 )
 		return throw_support("DWARF_SMOKE");
 	return throw_support("KILLED_DWARF");
@@ -1063,7 +1121,7 @@ long h_wave(value &obj)
 	{
 		drop_object(jade, "JADE", LOC);
 		ui::set(W, jade, "found", true);
-		TALLY = TALLY - 1;
+		TALLY--;
 		rspeak("NECKLACE_FLY");
 		return G_CLEAROBJ;
 	}
@@ -1097,7 +1155,7 @@ long h_rub(value &obj)
 		long amber = E("AMBER");
 		drop_object(amber, "AMBER", LOC);
 		obj_set_state(amber, state_index_c(amber, "AMBER_IN_ROCK"));
-		TALLY = TALLY - 1;
+		TALLY--;
 		drop_object(E("CAVITY"), "CAVITY", LOC);
 		rspeak("URN_GENIES");
 	}
@@ -1234,9 +1292,9 @@ long h_read(value &obj)
 				continue;
 			var tx;
 			ui::get(tx, W, oo, "texts");
-			if ( tx.is_null() || tx.count() == 0 )
+			if ( tx.empty() )
 				continue;
-			matches = matches + 1;
+			matches++;
 			resolved = on;
 		}
 		if ( matches != 1 || is_dark() )
@@ -1263,7 +1321,7 @@ long h_read(value &obj)
 	}
 	var tx;
 	ui::get(tx, W, o, "texts");
-	if ( tx.is_null() || tx.count() == 0 || !obj_found(o) )
+	if ( tx.empty() || !obj_found(o) )
 	{
 		speak_verb_default();
 		return G_CLEAROBJ;
@@ -1345,7 +1403,7 @@ long h_listen()
 	bool heard = false;
 	var snd;
 	ui::get(snd, W, LOC, "sound");
-	if ( !snd.is_null() && snd.length() > 0 )
+	if ( !snd.is_null() && !snd.empty() )
 	{
 		rspeak(snd.c_str());
 		heard = true;
@@ -1357,7 +1415,7 @@ long h_listen()
 			continue;
 		var snds;
 		ui::get(snds, W, o, "sounds");
-		if ( snds.is_null() || snds.count() == 0 )
+		if ( snds.empty() )
 			continue;
 		long mi = obj_state(o);
 		if ( on == "BIRD" && BLOODED )
@@ -1370,7 +1428,7 @@ long h_listen()
 		{
 			if ( i2 == mi )
 			{
-				if ( !d.is_null() && d.length() > 0 )
+				if ( !d.is_null() && !d.empty() )
 				{
 					var r;
 					var nod;
@@ -1378,7 +1436,7 @@ long h_listen()
 					speak_rendered(r);
 				}
 			}
-			i2 = i2 + 1;
+			i2++;
 		}
 		if ( on == "BIRD" && mi == 5 )
 			destroy_object(o, "BIRD");
@@ -1583,7 +1641,7 @@ long act_dispatch(long part)
 		else if ( obj == "ROD" && here_obj(E("ROD2")) )
 			obj = "ROD2";
 		else if ( (verb == "FIND" || verb == "INVENTORY")
-		       && CMD["raw1"].length() == 0 )
+		       && CMD["raw1"].empty() )
 			;
 		else
 		{
@@ -1599,7 +1657,7 @@ long act_dispatch(long part)
 	if ( part == P_INTRANSITIVE )
 	{
 		var raw1 = CMD["raw1"];
-		if ( raw1.length() > 0 && verb != "SAY" )
+		if ( !raw1.empty() && verb != "SAY" )
 			return G_WORD2;
 		if ( obj == "" )
 		{
@@ -1631,7 +1689,7 @@ long act_dispatch(long part)
 			if ( verb == "SAY" )
 			{
 				var raw1b = CMD["raw1"];
-				if ( raw1b.length() > 0 )
+				if ( !raw1b.empty() )
 					return h_say();
 				return G_UNKNOWN;
 			}
@@ -1771,7 +1829,7 @@ long act_dispatch(long part)
 			action_default(dm, verb);
 			speak_msg_d(dm, sd);
 			rng_seed(sd);
-			TURNS = TURNS - 1;	// seed is turn-neutral
+			TURNS--;	// seed is turn-neutral
 			return G_TOP;
 		}
 		if ( verb == "WASTE" )
