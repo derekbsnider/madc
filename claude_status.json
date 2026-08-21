@@ -1,33 +1,34 @@
 {
  "version": "0.94.0",
- "date": "2026-08-20",
- "snapshot_note": "v0.94.0: UPSTREAM-COMMUNITY MIR HARDENING (session #107 cont., owner directive to review issues 467/429 + PRs 468/466 and adopt): (1) issue #467 ssa_combine WRONG CODE at -O2/-O3 FIXED BY US \u2014 cycle_phi_p only caught single-BB self-loops; now keyed on e->back_edge_p (DFS marks, recomputed at ssa_combine entry post-make_conventional_ssa); ThePeiLin's reducers reproduced verbatim on the fork (SIGSEGV/hang) and are 0/0 at every level after; UPSTREAM PR CANDIDATE #2. (2) PR #468 (Bill Hlavacek) ADOPTED: runtime bound on the RA spill-rewrite undo table (assert-only before; MIR_USE unbounded; our earlier 2->4 raise kept). (3) PR #466 (Richard Davison) ADOPTED: aarch64 target_memory_ok_p gates displacement by BYTE size not log2 (fatal-gen on disp 12, unfolded disp 8); + the contributor's aarch64-mem-disp-test. (4) issue #429 (ARM64 >16B by-value struct, ptr-to-static-array): VERIFIED NOT AFFECTED \u2014 both reducers pass on real Apple Silicon vs our fork (darwin ABI arc covers them); stock-upstream-only. OWNER LAW: attribute fixes to original contributors (Co-authored-by trailers) \u2014 and our own authorship likewise on upstream-bound work.",
- "head": "v0.93.0 release commit on develop (after ce95da95 the MIR cvt fix); master stays at v0.92.1 (643f6852)",
+ "date": "2026-08-21",
+ "snapshot_note": "session 113: modernization M1-M4 landed (M4 shape owner-dictated); two silent init-lane compiler fixes",
+ "head": "ea488a03",
  "branch": "develop",
- "live_handoff_previous": "docs/plans/2026-08-17-php-dump-arc-HANDOFF.md",
- "live_handoff": {
+ "live_handoff_previous": {
   "session": 112,
+  "headline": "BOUNDARY MET; waves 3+4 banked (value literals + .push; the zero-include contract); NEXT = THE MODERNIZATION ARC (owner directives 2026-08-21): M1 walrus sweep (:= EXISTS \u2014 testcolon.mad, NOT new), M2 value->var (~90 sites, same type), M3 --project restructure of adv_*.inc, M4 OOP/UFCS pass (globals into a class, propose shape first) \u2014 all under the 94-log parity net"
+ },
+ "live_handoff": {
+  "session": 113,
   "date": "2026-08-21",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "79d6e10f (pushed pending)",
-  "headline": "BOUNDARY MET; waves 3+4 banked (value literals + .push; the zero-include contract); NEXT = THE MODERNIZATION ARC (owner directives 2026-08-21): M1 walrus sweep (:= EXISTS \u2014 testcolon.mad, NOT new), M2 value->var (~90 sites, same type), M3 --project restructure of adv_*.inc, M4 OOP/UFCS pass (globals into a class, propose shape first) \u2014 all under the 94-log parity net",
+  "head": "ea488a03 (push pending)",
+  "headline": "MODERNIZATION M1-M4 ALL DONE under the 94-log gate; M4 shape = OWNER-DICTATED mid-session (Player inside Game, ONE extern Game G, grouped PF_*/GF_* bitvectors); two silent compiler defects fixed en route (@b9c5b1cb); M4 tail open = curated UFCS + accessors-as-methods (owner taste)",
   "landed": [
-   "bear chain + drop-bear-scares-troll (63 logs)",
-   "value.index() carrier feeder; php::array_search adopts the core",
-   "cir: chained-subscript receiver takes the slot ADDRESS; empty() exemption unwraps value&",
-   "owner-directed elegance waves 1+2: quip/verb_quip/one_of/fixed_quip, tables over ladders, ++/empty()/index() idioms; adv_actions.inc 1637 < actions.c 1677; game 4297 vs reference 4681 in-scope",
-   "cave closing (clock1/clock2 snapshots), stash semantics (stashed flag; obj_state returns encoded negative; obj_state_equals transparent flavor), lampcheck",
-   "the gem/cavity law (IS_FOUND == prop==0), the null location (LOC_NOWHERE = entity 0, converter fix + world regen, fixed point verified), the hover pin, verbs-with-objects defaults, the empty-word motion path",
-   "A10: corpus vendored (94 pairs + EXCLUDED.md), adventure_parity.sh whole-log stage",
-   "cir: two foreach regressions from dcc16f6f caught by the FIRST (red) battery and fixed \u2014 member containers excluded from the named-var shortcut (ee0cc241); by-value carrier params are pointer-stored, answered in object_var_addr (c73a3a4d); 94-log gate re-verified green after each",
-   "elegance wave 3 (bf04d070 + a6776e1c): brace-list value literals var ds = { a, b, c } / var ds{...} / {} = empty ARRAY / one-element law / file-scope literals, chainable .push(x) \u2014 one registered row set (madarray_push_*) serves literals AND script pushes; adv_io array_push chains retired; 3 defects fixed en route (pre-existing value g(7) global read null; ref-returning carrier call as receiver SIGSEGV; dual extern shapes hit first-shape-wins dedup = MIR wrong-type-memory); pins: testvalueinit.mad (JIT + exe lanes) + testvaluector gnum; parity gate re-verified byte-identical",
-   "wave 4 (414e5637..79d6e10f): zero-include contract \u2014 lexer scan serves quoted user modules + prelude inserts before first user-code token; C++23 stream print forms via FILE sink; madc::getline(value&); php::file_exists; adventure preamble deleted, bare print/println/format, println-ified; value-first.md states the law; LESSON: plain std::getline value overload stole the namespace name slot from the libstdc++ template (string getline stack overflow) \u2014 reverted, std-side overload needs overload-import design"
+   "M1+M2 @7b3deb43: six var-init merges (walrus FINDING: := from string-literal/c_str RHS infers const char* \u2014 probe tmp/advprobes/probe_walrus.mad \u2014 so all six took the owner-stated fallback `var x = <expr>;`) + all 90 value->var spellings",
+   "M3 @6fc67e0c: 11 real TUs (adv_*.mad) + advent.cc.json manifest; ONE include remains = adv_decls.inc (66 externs + 78 prototypes, cross-used only; 58 fns + 7 globals module-private); adventure_parity.sh drives the project invocation; 94/94 first run",
+   "@9c1329de cir FIX: `extern var` was a silent cross-TU bug \u2014 carrier lane ignored vfEXTERN (per-TU private copies; block scope placement-newed over the shared global); fixed at obj_storage_decl/var_decl/translate_block; reducer tests/testprojectvalue* pins file+block scope; trailers on the commit",
+   "@c2988ee2 tests: the .helper fixture \u2014 one convention replaced SIX hard-coded include_helper skips (run_tests/cir_fidelity/class_parse_burndown/forest_soak/tsubst_burndown/warn_census)",
+   "M4 @ea488a03: class Player inside class Game, extern Game G = the ONE extern (66-extern block deleted); 9 bools -> PF_*/GF_* grouped bitvectors w/ has/set/clear/put; constants -> enums; NSDMI defaults; module-privates stay private; 4447 lines vs reference 4681; net -11 lines vs M3",
+   "@b9c5b1cb cir+engine FIXES (both silent, exit 0): file-scope ctorless-class NSDMI never applied (testnsdmiglobal); --project non-entry-TU dynamic inits NEVER RAN (one __madc_global_init export, redef permission = last module wins; adventure SIGFPE abbnum==0) \u2014 adopted the object-mode per-TU init model, engine plays .init_array (testprojectinit*)"
   ],
+  "validation": "112/112 blast-radius subset (project/class/aggr/value/array/foreach/php/ui/static/global + both reducers); unittest rc=0; adventure parity 3+94 byte-identical on the CLASS-BASED project build; zero warnings",
+  "measured_residue": "dev binary live-parses embedded ns headers PER TU: game 0.7s->5.0s, A10 gate 99s->8m23s; packed release runs the 2-TU ns probe 0.10s vs 1.08s dev \u2014 follow-up work item = share the embedded-header parse across TU Programs under --project (startup-latency family R4). Not a per-test timeout.",
   "next": [
-   "READ the MODERNIZATION-PASS section atop docs/plans/2026-08-20-adventure-430-plan.md and execute M1->M4 in order; := is a LONG-STANDING feature (tests/testcolon.mad) \u2014 sweep, never implement",
-   "ONE fresh merge-wave battery (scripts/remote_build.sh battery) at the actual merge gate \u2014 src commits landed after the green c73a3a4d run",
-   "OWNER CALLS: merge timing; release (batches v0.93+v0.94+Track 7) + three-platform master promotion; VERSION stays 0.94.0 until cut",
-   "residues: nested brace lists = loud error; keyed literals { k: v } unspelled; carrier surface has NO docs/language page; std-side value overloads need overload-import design (the getline lesson); L3 by-value returns; h_listen positional walk; php::array_unique could adopt the index core"
+   "M4 tail (owner taste): curated UFCS .method() spellings; whether adv_state accessors become Game/Player methods (systems stay free fns)",
+   "OWNER: merge timing; release batches v0.93+v0.94+Track 7; three-platform promotion",
+   "ONE fresh scripts/remote_build.sh battery at the actual merge wave (src changed: extern-var + NSDMI/project-init fixes)",
+   "Recorded perf residue: per-TU embedded-header live-parse on the unpacked dev binary (gate 99s->8m23s; packed 0.10s) \u2014 share the parse across TU Programs (startup-latency family R4)"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

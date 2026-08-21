@@ -24,46 +24,77 @@ value&), quip()/verb_quip()/one_of()/fixed_quip() shapes,
 data tables over ladders — adv_actions.inc (1637) is now smaller than
 actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
 
-**NEXT ARC — THE MODERNIZATION PASS (owner directives, 2026-08-21,
-verbatim intent: "we should be using this example project as a way to
-show off as many features of how madc makes coding easier, and more
-compact, and more like Python/PHP/etc than plain old C... we want to
-modernize this ancient game, not make the code look like it was ported
-from Fortran"). Execute in this order, EVERY slice under the 94-log
-parity gate + targeted tests; fulltest once per merge wave:**
+**THE MODERNIZATION PASS (owner directives, 2026-08-21, verbatim
+intent: "we should be using this example project as a way to show off
+as many features of how madc makes coding easier, and more compact,
+and more like Python/PHP/etc than plain old C... we want to modernize
+this ancient game, not make the code look like it was ported from
+Fortran"). M1+M2+M3 ARE DONE; M4 awaits the owner's shape call:**
 
-M1. **The walrus/init sweep** — `:=` is a LONG-STANDING madc feature
-    (Go-style short declaration with type inference: tests/testcolon.mad;
-    it also unpacks multi-returns, docs/language/multiple-returns.md —
-    it is NOT new, do not "implement" it): every `var x; x = <expr>;`
-    pair becomes `x := <expr>;` (owner: the walrus is the PREFERRED,
-    more compact spelling; `var x = <expr>;` is the fallback where
-    inference would pick the wrong kind). 56 bare `var x;` decls exist;
-    ONLY merge where the next statement is a direct assignment — the
-    out-param fill shape `var r; render_msg(r, ...)` cannot merge and
-    stays.
-M2. **value→var sweep**: ~90 `value` spellings in examples/adventure/
-    become `var` — ALL of them (owner: consistency + brevity; var and
-    value are THE SAME TYPE, one alias table entry), including
-    parameters (`var &x`) and range-for heads (`for ( var v : bag )`).
-M3. **--project restructure (owner issue #2)**: replace the
-    `#include "adv_*.inc"` textual modules with multi-file project
-    support — adv_*.mad TUs + a compile-commands-style JSON manifest
-    (shape: tests/testproject*.cc.json; the driver auto-detects a
-    positional .json). RECON FIRST: how madc TUs share
-    globals/functions (the 3-TU project_gate + SMAUG --project docs
-    are the precedent); expect tests/<game>.obj_skip if the runner
-    ever drives it (multi-TU = outside the single-object domain,
-    test-fixtures.md). ⚠️ scripts/adventure_parity.sh invokes the game
-    — it must learn the project invocation in the same slice.
-M4. **OOP + UFCS pass** (after M1–M3 settle the spellings): the ~30
-    file-scope globals in adv_state.inc (W, LOC, LIMIT, TALLY, ENT,
-    FIXEDSIDES, ...) move into a class ("they should at least all go
-    into a class or something") — propose the class shape to the owner
-    BEFORE the big rewrite (one Game/World instance vs a couple of
-    focused classes; don't over-OOP, owner's explicit caution); adopt
-    UFCS `.method()` spellings where they read better than procedural
-    calls (UFCS is live since v0.83.0, both directions, no auto-deref).
+M1. **DONE @7b3deb43 (with M2).** All six mergeable `var x; x = <expr>;`
+    pairs merged. FINDING (probed, tmp/advprobes/probe_walrus.mad):
+    `x := "<literal>"` / `x := y.c_str()` infer **const char\*** (the
+    string-literal law), NOT the carrier — on the four mutated
+    accumulators += would be a compile error and on the two c_str()
+    sites the pointer would dangle into the ring — so all six took the
+    owner's stated fallback `var x = <expr>;`. The walrus stays
+    preferred wherever inference picks the right kind; no such site
+    exists in the game today. The remaining ~110 bare `var x;` are
+    out-param fills and stay.
+M2. **DONE @7b3deb43.** All 90 `value` spellings are `var` (params
+    `var &x` and range-for heads included). Gate: 94/94 byte-identical.
+M3. **DONE @6fc67e0c** (+ two enablers): 11 real TUs (adv_*.mad) +
+    manifest examples/adventure/advent.cc.json; the ONE include left is
+    adv_decls.inc — the cross-TU declaration surface (66 extern globals
+    + 78 prototypes; 58 helpers + 7 globals stay module-private).
+    adventure_parity.sh drives the project invocation; 94/94
+    byte-identical on the first post-restructure run. Enablers:
+    - **@9c1329de cir: `extern var` was a silent cross-TU bug** — the
+      carrier lane ignored vfEXTERN, every TU owned a private copy of
+      an extern var (writes elsewhere read back EMPTY, exit 0); block
+      scope even placement-newed over the shared global. Fixed at
+      obj_storage_decl/var_decl/translate_block; reducer
+      tests/testprojectvalue* pins both scopes.
+    - **@c2988ee2 tests: the .helper fixture** — marks a .mad as a
+      compilation unit of another test; replaced SIX hard-coded
+      include_helper name-skips across the script fleet.
+    - **MEASURED RESIDUE:** dev (unpacked) binary live-parses the
+      embedded namespace headers PER TU → game invocation 0.7s→5.0s,
+      the fulltest A10 gate 99s→8m23s. The forest-packed release binary
+      runs the 2-TU ns probe in 0.10s (vs 1.08s dev) — the pack is the
+      designed remedy; the follow-up work item is sharing the
+      embedded-header parse across TU Programs under --project
+      (startup-latency family, R4). Not a per-test timeout; recorded,
+      not a blocker.
+M4. **DONE @ea488a03 (classes) + @b9c5b1cb (the compiler fixes it
+    surfaced) — the OWNER dictated the shape mid-session (2026-08-21):**
+    "a player class and a game class... the player object should likely
+    be part of the game object, so in the end there's probably only one
+    single extern global"; "all these bools should be a single
+    bitvector using an enum of bit values... or grouped across a few
+    enums... especially if some are player-relative vs. game relative."
+    - `class Player` INSIDE `class Game`; `extern Game G;` is the
+      program's ONE extern global (M3's 66-extern block deleted).
+      NSDMI defaults in the class body (limit = 330, ...); constants
+      (M_*/T_*/G_*/P_*) are real enums — no storage.
+    - Nine bools → TWO grouped bitvectors: PF_* on Player::flags,
+      GF_* on Game::flags, via has/set/clear/put helpers.
+    - Module-private state stayed private (ENT, STATE_E, SEQ_NEXT,
+      MXSCOR, MOTION_QUIPS, LCG_X).
+    - COMPILER FIXES SURFACED (@b9c5b1cb, own commit + reducers):
+      (1) file-scope ctorless-class NSDMI never applied
+      (tests/testnsdmiglobal.mad); (2) --project non-entry-TU dynamic
+      initializers NEVER RAN — one __madc_global_init export, last
+      module won (adventure SIGFPE'd on abbnum==0 -> `% 0`); fixed by
+      adopting the object-mode per-TU init model, the engine plays
+      ld.so's .init_array role (tests/testprojectinit*).
+    - Gate: 94/94 byte-identical on the class-based project build.
+      Game total 4447 lines vs reference 4681.
+    - REMAINING M4 TAIL (open): curated UFCS `.method()` spellings
+      where they read better, and (owner taste) whether the adv_state
+      accessors (toting/at_obj/obj_state/...) become Game/Player
+      methods — the systems (h_*, playermove, dwarfmove) stay free
+      functions either way.
 
 **REMAINING before the owner ceremonies:**
 1. Merge-wave battery: the @c73a3a4d rerun came back GREEN on every

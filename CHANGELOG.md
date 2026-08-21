@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+- **Fixed (silent): file-scope NSDMI never applied** — a ctorless
+  class global (`class C { long x = 42; }; C GC;`) read `GC.x == 0`
+  where g++/clang++ read 42; the local lane applied member defaults all
+  along. The global-ctor lane now applies them under the same rule.
+  Pinned by tests/testnsdmiglobal.mad.
+- **Fixed (silent): `--project` ran only ONE TU's global initializers**
+  — every TU exported one `__madc_global_init`, and the multi-TU
+  redefinition allowance meant the last-loaded module's copy won: class
+  ctors, NSDMI, carrier and non-constant scalar initializers in every
+  other TU never ran. Project TUs now emit the object-mode per-TU init
+  (unique static symbol, `__madc_sys_init_once` ride-along) and the
+  project engine calls each TU's init in manifest order before main —
+  the JIT twin of `.init_array`. Pinned by tests/testprojectinit*.
+- **The adventure got a Game object** — all state lives on ONE
+  `class Game` global (`extern Game G;` is the program's only extern),
+  with the player as a `Player` member; the nine scattered bools are
+  two grouped flag bitvectors (player-relative `PF_*`, game-relative
+  `GF_*`) behind `has/set/clear/put`; the constant families are real
+  enums. Still 94/94 reference logs byte-identical, at 4447 lines vs
+  the reference's 4681.
+- **Fixed (silent, cross-TU): `extern var` declared a private copy** —
+  under `--project`, an `extern var X;` in a referencing TU emitted a
+  full carrier definition (storage + cleanup), so each TU owned its own
+  X and writes made in the defining TU read back EMPTY (exit 0); a
+  block-scope `extern var` even placement-newed an empty value over the
+  shared global. The carrier lane now honors the extern storage class
+  the way the scalar and class-instance lanes always did: declaration
+  only — no storage, no construction, no cleanup (an initializer keeps
+  definition semantics, as in C). Pinned by tests/testprojectvalue*
+  (two madc-dialect TUs, file scope + block scope).
+- **The `.helper` test fixture** — `tests/<name>.helper` marks a `.mad`
+  file as a compilation unit owned by another test; every suite
+  enumerator consults it, replacing six hard-coded `include_helper`
+  name-skips across the script fleet.
+- **The adventure is a real multi-file project** — 11 translation units
+  (`adv_*.mad`) compiled and MIR-linked via
+  `madc examples/adventure/advent.cc.json`; the only include left is
+  the shared declaration surface (`adv_decls.inc`, cross-TU symbols
+  only). Plus the modernization spelling sweeps: every `value` spelling
+  is now `var`, and mergeable two-line inits collapsed to one line.
+  Still 94/94 reference logs byte-identical.
 - **The zero-include contract** — a madc-dialect program needs no
   `#include`, no `using`, no `std::`: the auto-include scan now serves
   QUOTED USER MODULES (system headers stay inert), the auto-include
