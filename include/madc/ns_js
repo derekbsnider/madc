@@ -6,10 +6,23 @@
 // orders <string> first, explicit includers write it above this line).
 extern "C" {
     int64_t __js_parseInt(const char *, int64_t);
+    const char *__js_btoa_cstr(const char *);
+    const char *__js_atob_cstr(const char *);
+    const char *__js_encodeURIComponent_cstr(const char *);
+    const char *__js_decodeURIComponent_cstr(const char *);
+    const char *__js_stringify_cstr(array *);
 }
 
 namespace js {
     int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
+    // Lean PRIMARIES (dialect-lean.md, JS parity): each returns a NEW
+    // string — ring-lifetime returns (the c_str contract): pass onward
+    // or capture immediately.
+    const char *btoa(const char *input) { return __js_btoa_cstr(input); }
+    const char *atob(const char *input) { return __js_atob_cstr(input); }
+    const char *encodeURIComponent(const char *input) { return __js_encodeURIComponent_cstr(input); }
+    const char *decodeURIComponent(const char *input) { return __js_decodeURIComponent_cstr(input); }
+    const char *stringify(array &values) { return __js_stringify_cstr(&values); }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

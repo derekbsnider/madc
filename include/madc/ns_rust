@@ -13,6 +13,21 @@ extern "C" {
     void __rust_split(array *, const char *, const char *);
     void __rust_split_whitespace(array *, const char *);
     void __rust_push(array *, const char *);
+    const char *__rust_trim_cstr(const char *);
+    const char *__rust_trim_value(value *);
+    const char *__rust_trim_start_cstr(const char *);
+    const char *__rust_trim_start_value(value *);
+    const char *__rust_trim_end_cstr(const char *);
+    const char *__rust_trim_end_value(value *);
+    const char *__rust_replace_cstr(const char *, const char *, const char *);
+    const char *__rust_replace_value(value *, const char *, const char *);
+    const char *__rust_repeat_cstr(const char *, int64_t);
+    const char *__rust_repeat_value(value *, int64_t);
+    const char *__rust_join_cstr(array *, const char *);
+    value *__rust_first_value(value *, array *);
+    value *__rust_last_value(value *, array *);
+    value *__rust_get_value(value *, array *, int64_t);
+    value *__rust_pop_value(value *, array *);
 }
 
 namespace rust {
@@ -24,6 +39,25 @@ namespace rust {
     void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
     void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
     void push(array &values, const char *value) { __rust_push(&values, value); }
+    // Lean PRIMARIES (dialect-lean.md, Rust parity): trim/replace/repeat/
+    // join return NEW strings — ring-lifetime returns (the c_str
+    // contract). first/last/get/pop return the ELEMENT via a value
+    // out-param (Rust's Option: `out` stays null when there is nothing).
+    const char *trim(value &s) { return __rust_trim_value(&s); }
+    const char *trim(const char *s) { return __rust_trim_cstr(s); }
+    const char *trim_start(value &s) { return __rust_trim_start_value(&s); }
+    const char *trim_start(const char *s) { return __rust_trim_start_cstr(s); }
+    const char *trim_end(value &s) { return __rust_trim_end_value(&s); }
+    const char *trim_end(const char *s) { return __rust_trim_end_cstr(s); }
+    const char *replace(value &s, const char *from, const char *to) { return __rust_replace_value(&s, from, to); }
+    const char *replace(const char *s, const char *from, const char *to) { return __rust_replace_cstr(s, from, to); }
+    const char *repeat(value &s, int64_t count) { return __rust_repeat_value(&s, count); }
+    const char *repeat(const char *s, int64_t count) { return __rust_repeat_cstr(s, count); }
+    const char *join(array &values, const char *sep) { return __rust_join_cstr(&values, sep); }
+    value &first(value &out, array &values) { return *__rust_first_value(&out, &values); }
+    value &last(value &out, array &values) { return *__rust_last_value(&out, &values); }
+    value &get(value &out, array &values, int64_t idx) { return *__rust_get_value(&out, &values, idx); }
+    value &pop(value &out, array &values) { return *__rust_pop_value(&out, &values); }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

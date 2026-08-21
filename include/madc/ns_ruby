@@ -11,6 +11,18 @@ extern "C" {
     void __rb_rotate(array *, int64_t);
     void __rb_compact(array *);
     void __rb_flatten(array *, const char *);
+    const char *__rb_squeeze_cstr(const char *);
+    const char *__rb_squeeze_value(value *);
+    const char *__rb_capitalize_cstr(const char *);
+    const char *__rb_capitalize_value(value *);
+    const char *__rb_tr_cstr(const char *, const char *, const char *);
+    const char *__rb_tr_value(value *, const char *, const char *);
+    const char *__rb_delete_cstr(const char *, const char *);
+    const char *__rb_delete_value(value *, const char *);
+    const char *__rb_gsub_cstr(const char *, const char *, const char *);
+    const char *__rb_gsub_value(value *, const char *, const char *);
+    const char *__rb_sub_cstr(const char *, const char *, const char *);
+    const char *__rb_sub_value(value *, const char *, const char *);
 }
 
 namespace ruby {
@@ -20,6 +32,21 @@ namespace ruby {
     void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
     void compact(array &values) { __rb_compact(&values); }
     void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
+    // Lean PRIMARIES (dialect-lean.md, Ruby parity): these are the
+    // NON-BANG methods — they return a NEW string. Ring-lifetime returns
+    // (the c_str contract): pass onward or capture immediately.
+    const char *squeeze(value &s) { return __rb_squeeze_value(&s); }
+    const char *squeeze(const char *s) { return __rb_squeeze_cstr(s); }
+    const char *capitalize(value &s) { return __rb_capitalize_value(&s); }
+    const char *capitalize(const char *s) { return __rb_capitalize_cstr(s); }
+    const char *tr(value &s, const char *from, const char *to) { return __rb_tr_value(&s, from, to); }
+    const char *tr(const char *s, const char *from, const char *to) { return __rb_tr_cstr(s, from, to); }
+    const char *delete(value &s, const char *chars) { return __rb_delete_value(&s, chars); }
+    const char *delete(const char *s, const char *chars) { return __rb_delete_cstr(s, chars); }
+    const char *gsub(value &s, const char *pattern, const char *replacement) { return __rb_gsub_value(&s, pattern, replacement); }
+    const char *gsub(const char *s, const char *pattern, const char *replacement) { return __rb_gsub_cstr(s, pattern, replacement); }
+    const char *sub(value &s, const char *pattern, const char *replacement) { return __rb_sub_value(&s, pattern, replacement); }
+    const char *sub(const char *s, const char *pattern, const char *replacement) { return __rb_sub_cstr(s, pattern, replacement); }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

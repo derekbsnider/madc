@@ -1,0 +1,34 @@
+// rust:: lean primaries (Leg 0b, dialect-lean.md): trim/replace/repeat/
+// join return NEW strings; first/last/get/pop return the element via a
+// value out-param (null when nothing). Pure dialect TU, zero includes.
+int main()
+{
+	println("[{}]", rust::trim("  r  "));
+	println("[{}]", rust::trim_start("  r  "));
+	println("[{}]", rust::trim_end("  r  "));
+	value s = " pad ";
+	println("[{}]", rust::trim(s));
+	println("{}", rust::replace("foo bar foo", "foo", "baz"));
+	value f = "a-b";
+	println("{}", rust::replace(f, "-", "+"));
+	println("{}", rust::repeat("ab", 3));
+
+	array a;
+	rust::push(a, "x");
+	rust::push(a, "y");
+	rust::push(a, "z");
+	println("{}", rust::join(a, "-"));
+	value e;
+	rust::first(e, a);
+	println("first={}", e);
+	rust::last(e, a);
+	println("last={}", e);
+	rust::get(e, a, 1);
+	println("get1={}", e);
+	rust::pop(e, a);
+	println("pop={} len={}", e, php::count(a));
+	// the subjects were never mutated
+	println("[{}]", s);
+	println("[{}]", f);
+	return 0;
+}

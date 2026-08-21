@@ -198,6 +198,94 @@ std::string *python_replace(std::string *ptr, const char *old_str, const char *n
 	return ptr;
 }
 
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// Python-parity NON-MUTATING forms: Python strings are immutable, every
+// str method returns a NEW string — these return ring-lifetime text (the
+// c_str contract) over the SAME in-place cores the guarded std::string
+// publics use.
+
+using ns_common::ring_apply;
+
+const char *python_title_cstr(const char *s)	{ return ring_apply(s, python_title); }
+const char *python_title_value(const madc::value *v)	{ return ring_apply(v, python_title); }
+const char *python_swapcase_cstr(const char *s)	{ return ring_apply(s, python_swapcase); }
+const char *python_swapcase_value(const madc::value *v)	{ return ring_apply(v, python_swapcase); }
+
+const char *python_center_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_center(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_center_value(const madc::value *v, int64_t width,
+				const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_center(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_ljust_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_ljust(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_ljust_value(const madc::value *v, int64_t width,
+			       const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_ljust(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_rjust_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_rjust(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_rjust_value(const madc::value *v, int64_t width,
+			       const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_rjust(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_zfill_cstr(const char *s, int64_t width)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_zfill(&slot, width);
+	return slot.c_str();
+}
+const char *python_zfill_value(const madc::value *v, int64_t width)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_zfill(&slot, width);
+	return slot.c_str();
+}
+
+const char *python_replace_cstr(const char *s, const char *old_str,
+				const char *new_str)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_replace(&slot, old_str, new_str);
+	return slot.c_str();
+}
+const char *python_replace_value(const madc::value *v, const char *old_str,
+				 const char *new_str)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_replace(&slot, old_str, new_str);
+	return slot.c_str();
+}
+
 // python::format — Python str.format on the ONE format engine
 // (src/rt/rt_format.c): the same iterator (__madc_fmt_next) and field
 // primitives std::format's compile-time lowering emits — Python's format
@@ -305,6 +393,20 @@ madc::value *python_format_value(madc::value *out, const char *fmt,
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+const char *__py_title_cstr(const char *a) { return python_title_cstr(a); }
+const char *__py_title_value(madc::value *a) { return python_title_value(a); }
+const char *__py_swapcase_cstr(const char *a) { return python_swapcase_cstr(a); }
+const char *__py_swapcase_value(madc::value *a) { return python_swapcase_value(a); }
+const char *__py_center_cstr(const char *a, int64_t b, const char *c) { return python_center_cstr(a, b, c); }
+const char *__py_center_value(madc::value *a, int64_t b, const char *c) { return python_center_value(a, b, c); }
+const char *__py_ljust_cstr(const char *a, int64_t b, const char *c) { return python_ljust_cstr(a, b, c); }
+const char *__py_ljust_value(madc::value *a, int64_t b, const char *c) { return python_ljust_value(a, b, c); }
+const char *__py_rjust_cstr(const char *a, int64_t b, const char *c) { return python_rjust_cstr(a, b, c); }
+const char *__py_rjust_value(madc::value *a, int64_t b, const char *c) { return python_rjust_value(a, b, c); }
+const char *__py_zfill_cstr(const char *a, int64_t b) { return python_zfill_cstr(a, b); }
+const char *__py_zfill_value(madc::value *a, int64_t b) { return python_zfill_value(a, b); }
+const char *__py_replace_cstr(const char *a, const char *b, const char *c) { return python_replace_cstr(a, b, c); }
+const char *__py_replace_value(madc::value *a, const char *b, const char *c) { return python_replace_value(a, b, c); }
 std::string *__py_title(std::string *a) { return python_title(a); }
 std::string *__py_swapcase(std::string *a) { return python_swapcase(a); }
 std::string *__py_center(std::string *a, int64_t b, const char *c) { return python_center(a, b, c); }

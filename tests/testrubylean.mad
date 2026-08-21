@@ -1,0 +1,22 @@
+// ruby:: lean primaries (Leg 0b, dialect-lean.md): the non-bang methods
+// return a NEW string. Pure dialect TU, zero includes.
+int main()
+{
+	println("{}", ruby::squeeze("aaabbbccc"));
+	value s = "mississippi";
+	println("{}", ruby::squeeze(s));
+	println("{}", ruby::capitalize("hELLO"));
+	value r = "ruby";
+	println("{}", ruby::capitalize(r));
+	println("{}", ruby::tr("hello", "el", "ip"));
+	println("{}", ruby::tr(r, "ur", "UR"));
+	println("{}", ruby::delete("hello", "lo"));
+	println("{}", ruby::delete(s, "sp"));
+	println("{}", ruby::gsub("aaa", "a", "b"));
+	println("{}", ruby::gsub(s, "ss", "S"));
+	println("{}", ruby::sub("aaa", "a", "b"));
+	// the subjects were never mutated
+	println("[{}]", s);
+	println("[{}]", r);
+	return 0;
+}
