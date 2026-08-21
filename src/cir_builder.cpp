@@ -10623,9 +10623,11 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// madarray_empty runtime entry (per-kind semantics, clean return) —
 	// and class_behind rejects ddARRAY, so the rewrite's size() lookup
 	// would bail to the field-emission fallback and mis-lower the call.
-	bool carrier_recv = is_array_object(tm->parent_expr
-					    ? tm->parent_expr->datadef()
-					    : tm->object.type);
+	// carrier_behind, not is_array_object: a value& parameter receiver
+	// is reference-to-carrier and needs the same exemption.
+	bool carrier_recv = carrier_behind(tm->parent_expr
+					   ? tm->parent_expr->datadef()
+					   : tm->object.type) != NULL;
 	if (method == "empty" && !carrier_recv) {
 		DataDefCLASS *owner = (!callee->parameters.empty())
 				    ? class_behind(callee->parameters[0]) : NULL;

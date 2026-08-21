@@ -22,6 +22,10 @@ long sum_ref(value &arr)
 // classifier).
 long ref_scan(value &text)
 {
+	// empty() on a value& receiver rides the carrier exemption, not the
+	// std::string size()==0 rewrite.
+	if ( text.empty() )
+		return -1;
 	long n = 0;
 	long i = 0;
 	long len = text.length();
