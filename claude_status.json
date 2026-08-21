@@ -5,7 +5,27 @@
  "head": "v0.93.0 release commit on develop (after ce95da95 the MIR cvt fix); master stays at v0.92.1 (643f6852)",
  "branch": "develop",
  "live_handoff_previous": "docs/plans/2026-08-17-php-dump-arc-HANDOFF.md",
- "live_handoff": "session #110 (2026-08-21): ADVENTURE ARC SPRINT @7bb48476 (pushed, unmerged) \u2014 56 OF 107 reference logs replay 100% BYTE-IDENTICAL (score tails included). Landed since #109: A5 skeleton + G-A gate in fulltest; A6 all verbs; A7 dwarves+pirate (RNG-parity exact; found via randrange-trace diff vs `advent -d`: the [nodwarves] travel cond is a parity-bearing PCT(100) draw AND the dwarf-walk flag); A8 specials (plover, troll bridge + bear collapse); A9 core (score/terminate/croak/checkhints/turn thresholds). OWNER LAW value-first.md minted; carrier string surface + accessors + php:: case/intval landed; five cir fixes (keyed receiver, value& method/format/foreach unwraps, catch-var cstr). NEXT (frontier order): bear chain (~25 logs), DIVERGEs footslip/death-jump/reincarnate/endobjects, A9 lampcheck+closing, A10 corpus gate + win430 (the release boundary). READ THE HANDOFF atop docs/plans/2026-08-20-adventure-430-plan.md \u2014 it carries the working method (frontier sweep, RNG-trace debugging, container world-regen-after-sync trap).",
+ "live_handoff": {
+  "session": 111,
+  "date": "2026-08-21",
+  "branch": "feature/track7-hub-projections-claude",
+  "head": "4b5d6080 (pushed)",
+  "headline": "RELEASE BOUNDARY MET: all 94 in-scope open-adventure logs (win430 included) replay 100% byte-identical; A10 corpus gate in fulltest (3 fragments + 94 logs + negative controls, 99s)",
+  "landed": [
+   "bear chain + drop-bear-scares-troll (63 logs)",
+   "value.index() carrier feeder; php::array_search adopts the core",
+   "cir: chained-subscript receiver takes the slot ADDRESS; empty() exemption unwraps value&",
+   "owner-directed elegance waves 1+2: quip/verb_quip/one_of/fixed_quip, tables over ladders, ++/empty()/index() idioms; adv_actions.inc 1637 < actions.c 1677; game 4297 vs reference 4681 in-scope",
+   "cave closing (clock1/clock2 snapshots), stash semantics (stashed flag; obj_state returns encoded negative; obj_state_equals transparent flavor), lampcheck",
+   "the gem/cavity law (IS_FOUND == prop==0), the null location (LOC_NOWHERE = entity 0, converter fix + world regen, fixed point verified), the hover pin, verbs-with-objects defaults, the empty-word motion path",
+   "A10: corpus vendored (94 pairs + EXCLUDED.md), adventure_parity.sh whole-log stage"
+  ],
+  "next": [
+   "verify the merge-wave battery (was running at handoff): remote_build.sh battery rc=0 on every stage",
+   "OWNER CALLS: merge timing; release (batches v0.93+v0.94+Track 7) + three-platform master promotion; VERSION stays 0.94.0 until cut",
+   "residues: L3 by-value returns; auto-include in user modules; h_listen positional walk vs pspeak_prop; php::array_unique could adopt the index core; python::format/std::format = deliberate spec twins"
+  ]
+ },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
  "build_status": "clean \u2014 zero warnings on every lane (-Werror), warning census 0 tests with warnings / 0 total / 0 baseline",
  "backend": "madc parser -> cir_node (MC11-IR) -> c2mir -> MIR is the SOLE backend. asmjit JIT and the Gecko parser/transpiler were both removed. --backend=mir aliases to cir; there is no --backend=jit.",

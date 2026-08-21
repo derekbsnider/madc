@@ -1,47 +1,49 @@
 # Colossal Cave Adventure (430-point) in madc — implementation plan
 
-**HANDOFF (2026-08-21, pre-compaction; session #110). READ THIS BLOCK
-FULLY, then the SETTLED section, before any work.**
+**HANDOFF (2026-08-21, session #111). READ THIS BLOCK FULLY, then the
+SETTLED section, before any work.**
 
-**WHERE THINGS STAND (@7bb48476, pushed, branch
-feature/track7-hub-projections-claude, tree has only owner strays):
-56 OF THE 107 REFERENCE LOGS REPLAY 100% BYTE-IDENTICAL end to end
-(score/rank tails included).** A5 (skeleton + G-A fragment gate in
-fulltest), A6 (all verbs incl. attack/feed/throw/wave/read/say/listen/
-pour/fill/magic words), A7 (dwarves + pirate, RNG-parity exact), the
-A8 specials (plover passage/transport, troll bridge + bear collapse),
-and the A9 core (score/terminate/croak/checkhints/turn thresholds)
-are ALL LANDED. Value-first law minted (value-first.md) with the
-carrier string surface (==/!=/+=/substr/length/empty/at, accessors,
-php:: case/intval) and five cir fixes (keyed-receiver, value& method/
-format/foreach unwraps, catch-var typing).
+**⚠️ THE RELEASE BOUNDARY IS MET (@4b5d6080, pushed, branch
+feature/track7-hub-projections-claude): ALL 94 IN-SCOPE REFERENCE LOGS
+— win430 INCLUDED — REPLAY 100% BYTE-IDENTICAL, and the A10 corpus
+gate enforces it in fulltest** (adventure_parity.sh: 3 fragments + 94
+whole logs + negative controls, 99s; the 13 excluded logs are
+documented by class in examples/adventure/tests/corpus/EXCLUDED.md —
+11 binary save/resume + 2 reference-CLI-flag logs; exclusions shrink
+only by file removal, no runner skip logic). Slices A5–A10 are ALL
+LANDED: bear chain, cave closing (clock1/clock2 snapshots, stash
+semantics via a `stashed` bag flag with obj_state returning the
+encoded negative, obj_state_equals for the one transparent site),
+lampcheck, the gem/cavity law (IS_FOUND is literally prop==0), the
+null location (LOC_NOWHERE = entity 0; converter no longer emits it),
+the hover pin, verbs-with-objects defaults, the empty-word motion
+path. OWNER-DIRECTED ELEGANCE PASS also landed: value.index() carrier
+feeder (+ php::array_search adopts the core), two more cir receiver
+fixes (chained-subscript slot address; empty() exemption unwraps
+value&), quip()/verb_quip()/one_of()/fixed_quip() shapes,
+data tables over ladders — adv_actions.inc (1637) is now smaller than
+actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
 
-**THE WORKING METHOD THAT GOT HERE (keep using it):** the frontier
-sweep — tmp/frontier.sh on the CONTAINER runs all 107 logs and
-byte-prefix-scores each against its .chk, naming the first wall/
-divergence. Oracle binary: container tmp/open-adventure (`advent`;
-`advent -d` streams `# random N` — diff it against a temporarily
-instrumented adv_rng.inc randrange to find RNG desyncs; that method
-found the [nodwarves] cond = a parity-bearing wasted PCT(100) draw).
-Fixture corpus: container tmp/oa-tests/tests/. Regenerate the world on
-the CONTAINER after every converter edit (rsync pushes local→container
-and CLOBBERS it — regen after every sync, pull back by scp before
-committing).
+**REMAINING before the owner ceremonies:**
+1. Merge-wave battery (remote_build.sh battery) — was RUNNING at
+   handoff time; verify rc=0 on every stage (fulltest + exe + obj +
+   release + packed + headerless) before any merge.
+2. Release + master promotion = OWNER CALLS (release batches
+   v0.93+v0.94+Track 7 into the three-platform promotion; VERSION
+   stays 0.94.0 until the owner cuts it).
+3. Recorded residues (not blockers): L3 value-by-value returns;
+   auto-include in user modules; h_listen's positional walk duplicates
+   pspeak_prop's (no int-subscript var read yet); php::array_unique's
+   inner scan could adopt the index core; python::format vs
+   std::format = deliberate spec twins (dupaudit verdict recorded).
 
-**NEXT (in frontier order):**
-1. The bear-chain arm (h_lock's a8_wall — actions.c chain(): unlock
-   needs keys + bear states; ~25 logs blocked ONLY on it).
-2. The remaining true DIVERGEs: footslip 95% (pfx=14174), death-jump
-   89%, reincarnate 81% (both die at the troll bridge / chasm — the
-   jump death or croak drop order), endobjects 56%.
-3. A9 remainder: lampcheck (battery dim/out), closecheck closing
-   machinery (clock1/clock2, the cave-closing snapshot, STASHED
-   semantics), atdwrf -1 when all dwarves dead.
-4. A10: wire the whole-log corpus into the gate (vendor in-scope
-   logs+chks under examples/adventure/tests/, extend
-   adventure_parity.sh, skiplist = the 10 binary save/resume logs +
-   logopt-style CLI ones that PASS anyway — re-classify), win430 is
-   the boundary. Then /dupaudit + merge wave + RELEASE + promotion.
+**THE WORKING METHOD (keep for any regression):** the frontier sweep —
+tmp/frontier.sh on the CONTAINER byte-prefix-scores all 107 logs;
+`advent -d` RNG-trace diff vs an instrumented adv_rng.inc randrange;
+regenerate the world on the CONTAINER after every converter edit
+(rsync clobbers it — regen after every sync, verify the resave fixed
+point via tmp/advprobes/probe_world_roundtrip.mad + cmp against
+tmp/adventure.world.resaved, scp back before committing).
 
 Where things stand — all pushed on
 `feature/track7-hub-projections-claude` @75205e50, working tree clean,
