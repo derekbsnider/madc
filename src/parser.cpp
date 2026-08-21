@@ -23183,6 +23183,21 @@ void Program::add_array_methods()
 	  "madarray_index_cstr" },
 	{ "index",      DataType::dtINT64,    typespec_t(array_ref),
 	  "madarray_index_value" },
+	// push(x): append one ELEMENT (operator+= owns TEXT append).
+	// Returns the receiver so pushes chain. The brace-list declaration
+	// lowering (`var v = { a, b, c };` — CirBuilder::array_list_init_call)
+	// selects these same rows, so script pushes and list literals
+	// cannot drift apart.
+	{ "push",       typespec_t(array_ref), ptr_of(ddCHAR),
+	  "madarray_push_cstr" },
+	{ "push",       typespec_t(array_ref), DataType::dtINT64,
+	  "madarray_push_int" },
+	{ "push",       typespec_t(array_ref), DataType::dtDOUBLE,
+	  "madarray_push_real" },
+	{ "push",       typespec_t(array_ref), DataType::dtBOOL,
+	  "madarray_push_bool" },
+	{ "push",       typespec_t(array_ref), typespec_t(array_ref),
+	  "madarray_push_value" },
     };
     for ( const ArrayBinOp &op : bin_ops )
     {
@@ -62699,6 +62714,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( decl_type->basetype() == BaseType::btClass )
 	decl_type = complete_class_type_on_demand(decl_type);
 
+    // The CARRIER's list literal: `var v = { a, b, c };` — copy-list-
+    // initialization spells the SAME list-initialization as the direct form
+    // `var v{ a, b, c }` ([dcl.init]/15), so consume the '=' and let the ONE
+    // ctor-args reader below take the braces (the TokenRETURN re-spell
+    // convention). Carrier-only: general class copy-list-init keeps its
+    // existing routes. The elements land in td->ctor_args with
+    // ctor_args_braced set; CirBuilder::array_list_init_call lowers them.
+    bool carrier_list_decl = !ret_is_ref && arr_dims.empty()
+	&& decl_type->rawtype() == DataType::dtARRAY
+	&& !decl_type->is_pointer();
+    if ( carrier_list_decl && nt->id() == TokenID::tkAssign
+      && tokens.size() > 1 && tokens[1]
+      && tokens[1]->id() == TokenID::tkOpBrc )
+    {
+	nextToken(); // consume '=' — the '{' now heads the stream
+	nt = peekToken();
+	if ( !nt )
+	    Throw(tb) << "Unexpected end of data in list initializer" << flush;
+    }
+
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
     // [dcl.init.list]/3: when the class has constructors, the braced list's
@@ -62727,10 +62762,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
 	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
 	// existing brace-init route below; a NON-empty list with user ctors is
-	// a ctor-argument list and belongs here.
+	// a ctor-argument list and belongs here. EXCEPT the carrier: its `{}`
+	// is an EMPTY ARRAY literal (the braces spell a container), read here
+	// as zero ctor args with ctor_args_braced set.
 	bool braced_ctor_args = nt->id() == TokenID::tkOpBrc
 	    && tokens.size() > 1 && tokens[1]
-	    && tokens[1]->id() != TokenID::tkClBrc;
+	    && (tokens[1]->id() != TokenID::tkClBrc || carrier_list_decl);
 	if ( ddc->has_user_ctor
 	  && (nt->id() == TokenID::tkOpBrk || braced_ctor_args) )
 	{
@@ -62763,6 +62800,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
 	    while ( peekToken() && peekToken()->id() != ctor_close_id )
 	    {
+		// A BARE '{' element in a carrier list literal must not reach
+		// parseExpression (no brace-head reading — the stray braces
+		// unbalance the scope stack, the TokenRETURN wall). Nested
+		// lists are a future lowering; error loudly, never silently.
+		if ( carrier_list_decl
+		  && peekToken()->id() == TokenID::tkOpBrc )
+		    Throw(peekToken()) << "Nested brace list in a value literal"
+			" is not supported (yet)" << flush;
 		TokenBase *arg = parseExpression(nextToken(), true);
 		td->ctor_args.push_back(arg);
 		if ( peekToken() && peekToken()->id() == TokenID::tkComma )

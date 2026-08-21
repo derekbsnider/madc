@@ -5621,12 +5621,133 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
+// Defined with the operator= selectors it also serves (below, beside
+// class_assign_cstr_operator_def).
+static FuncDef *class_method_def_by_param(DataDefCLASS *cdd,
+					  const char *opname_c,
+					  const std::function<bool(DataDef *)> &match);
+// The ONE owner of a registered method's extern return shape (defined
+// beside emit_symbol_method_call below).
+static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd,
+							    bool &ret_ptr);
+
 node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
 {
+	if (sdcl && sdcl->ctor_args_braced)
+		return array_list_init_call(sdcl);
 	if (sdcl && !sdcl->ctor_args.empty())
 		return class_ctor_call(&sdcl->var, &ddARRAY, sdcl->ctor_args,
 				       sdcl);
 	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
+}
+
+// Which registered `push` row serves a list element of type `ad` — the
+// element classification for the carrier's brace-list lowering. The rows
+// live in add_array_methods' bin_ops table (parser.cpp), the same ones a
+// script `v.push(x)` binds, so literals and pushes cannot drift apart.
+// NULL = no row takes this element type (the caller errors loudly).
+FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+{
+	DataDefCLASS *cdd = &ddARRAY;
+	if (is_char_pointer(ad))
+		return class_method_def_by_param(cdd, "push",
+			[](DataDef *p) { return is_char_pointer(p); });
+	if (carrier_behind(ad))
+		return class_method_def_by_param(cdd, "push",
+			[](DataDef *p) { return p && p->is_reference(); });
+	if (!ad || ad->is_pointer())
+		return NULL;
+	DataType want;
+	if (ad->rawtype() == DataType::dtBOOL)
+		want = DataType::dtBOOL;
+	else if (ad->is_integer())
+		want = DataType::dtINT64;
+	else if (ad->is_numeric())
+		want = DataType::dtDOUBLE;
+	else
+		return NULL;
+	return class_method_def_by_param(cdd, "push",
+		[want](DataDef *p) {
+			return p && !p->is_pointer() && p->rawtype() == want;
+		});
+}
+
+// The carrier's BRACE-LIST initializer — `var v = { a, b, c };`,
+// `var v{ a, b, c }`, `var v = {};`. The braces spell the carrier's own
+// list literal, not ctor overload selection: lower to default
+// construction plus one registered `push` per element. `{}` is an EMPTY
+// ARRAY, never a null value (madarray_make_array) — the braces spell a
+// container. Locals only: every site that reaches array_decl_ctor_call
+// declares fresh block-scope storage, so `&name` is the receiver.
+node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
+{
+	const std::string vname = var_emit_name(sdcl->var);
+	std::vector<node_t> stmts;
+	stmts.push_back(array_ctor_call(vname.c_str(), sdcl));
+	if (sdcl->ctor_args.empty()) {
+		const char *sym = "madarray_make_array";
+		need_output_extern(sym, true, { { {N_VOID}, true } });
+		referenced_funcs.insert(sym);
+		node_t args = list();
+		append(args, object_addr(vname.c_str(), sdcl));
+		node_t call = node2(N_CALL, id(sym, sdcl), args, sdcl);
+		CIR_NODE(call)->synth_from_origin = true;
+		stmts.push_back(node2(N_EXPR, list(), call, sdcl));
+	}
+	for (TokenBase *elem : sdcl->ctor_args) {
+		FuncDef *fd = carrier_push_def_for(ctor_arg_datadef(elem));
+		if (!fd || fd->emit_symbol.empty())
+			return error_node("cannot initialize a value list "
+					  "element of this type", elem);
+		DataDef *pt = fd->parameters[1];
+		bool refp = fd->is_ref_param(1);
+		node_t args = list();
+		append(args, object_addr(vname.c_str(), sdcl));
+		std::vector<ExternParam> eparams;
+		eparams.push_back({ {N_VOID}, true });   // receiver (void*)
+		// The same argument branch order the ctor/method call paths
+		// keep: an object behind the parameter (the value row's
+		// carrier&) passes by object address; a scalar reference by
+		// referent address; a plain scalar/pointer by value.
+		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+			append(args, object_arg_addr(elem, pc,
+				fd->is_nonconst_lref_param(1)));
+			eparams.push_back({ {N_VOID}, true });
+		} else if (refp) {
+			append(args, ref_param_arg_addr(elem,
+				ref_param_referent(pt),
+				const_ref_param(fd, 1)));
+			eparams.push_back(native_param_shape(pt, refp));
+		} else {
+			append(args, translate_expr(elem));
+			eparams.push_back(native_param_shape(pt, refp));
+		}
+		// The extern's return shape comes from the ONE owner the
+		// method-call path reads (emit_symbol_ret_specs): the script
+		// surface declares these rows `long long *` (the reference-
+		// return convention), and need_output_extern keeps only the
+		// FIRST shape per symbol — a `void *` here made a later
+		// script `v.push(x).push(y)` deref an untyped pointer ("mov:
+		// wrong type memory").
+		bool push_ret_ptr = false;
+		std::vector<c2mir_node_code_t> push_ret_specs =
+			emit_symbol_ret_specs(fd, push_ret_ptr);
+		need_output_extern(fd->emit_symbol.c_str(), push_ret_ptr,
+				   eparams, push_ret_specs);
+		referenced_funcs.insert(fd->emit_symbol);
+		node_t call = node2(N_CALL, id(fd->emit_symbol.c_str(), elem),
+				    args, elem);
+		CIR_NODE(call)->synth_from_origin = true;
+		stmts.push_back(node2(N_EXPR, list(), call, elem));
+	}
+	if (stmts.size() == 1)
+		return stmts[0];
+	node_t blk = list();
+	for (node_t s : stmts)
+		append(blk, s);
+	node_t b = node2(N_BLOCK, list(), blk, sdcl);
+	CIR_NODE(b)->synth_from_origin = true;
+	return b;
 }
 
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
@@ -8488,8 +8609,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// declaration order. A value's storage is zero-initialized and the
 		// runtime treats zeroed storage as the empty value, so no file-scope
 		// constructor call is required — only the initializer was missing.
+		// CTOR-SYNTAX and BRACE-LIST forms (`value g(7);`,
+		// `var G = { "a", "b" };`) carry ctor_args instead of initialize
+		// and were dropped the same way (g read null, SILENTLY) — queue
+		// them too; collect_global_ctors' carrier arm emits them.
 		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
-		if (m_file_scope_decl && adecl && adecl->initialize)
+		if (m_file_scope_decl && adecl
+		    && (adecl->initialize || adecl->ctor_args_braced
+			|| !adecl->ctor_args.empty()))
 			m_dynamic_global_inits.insert(v);
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
@@ -10453,19 +10580,22 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// `madc::sys.argv.count()`): ddARRAY IS-A DataDefCLASS but is
 		// deliberately not a user class (as_user_class rejects dtARRAY).
 		// The translated array lvalue decays to the value-buffer address —
-		// the same receiver convention as the subscript path. A KEYED
-		// carrier subscript receiver (`bag["k"].as_integer()`) is the one
-		// shape that must NOT ride the decay: it translates to the slot's
-		// value LVALUE (N_DEREF of the madarray_key_slot call), which as
-		// an argument LOADS the slot's first byte (the kind byte) instead
-		// of decaying. Re-wrap with & (c2mir folds &* back to the slot
-		// call) — the same receiver convention object_arg_addr's keyed
-		// arm uses.
+		// the same receiver convention as the subscript path. TWO shapes
+		// must NOT ride the decay because they translate to a value
+		// LVALUE (an N_DEREF), which as an argument LOADS the value's
+		// first word instead of decaying: a KEYED carrier subscript
+		// (`bag["k"].as_integer()` — N_DEREF of the madarray_key_slot
+		// call) and a REFERENCE-RETURNING carrier call
+		// (`e.push(5).push("x")` — push returns the receiver reference,
+		// so the chain's outer receiver is N_DEREF of the inner call;
+		// the class path's ref-returning re-wrap below is this same
+		// disease). Re-wrap with & (c2mir folds &* back to the call).
 		if (!recv_class) {
 			recv_class = carrier_behind(recv_type);
 			if (recv_class) {
 				node_t rn = translate_expr(tm->parent_expr);
-				if (is_carrier_keyed_subscript(tm->parent_expr))
+				if (is_carrier_keyed_subscript(tm->parent_expr)
+				    || ref_returning_call_type(tm->parent_expr))
 					return node1(N_ADDR, rn, origin);
 				return rn;
 			}
@@ -11522,10 +11652,18 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
-FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+// The registered overload of `opname` on `cdd` whose first USER parameter
+// (index 1, after the receiver) satisfies `match` — the ONE scanning core
+// behind the class_assign_*_operator_def selectors and the push-family
+// selector (carrier_push_def_for). parser.cpp's registration tables OWN
+// which runtime entry each shape binds to; callers read emit_symbol off
+// the returned FuncDef so the binding lives in one place.
+static FuncDef *class_method_def_by_param(DataDefCLASS *cdd,
+					  const char *opname_c,
+					  const std::function<bool(DataDef *)> &match)
 {
-	if (!cdd) return NULL;
-	const std::string opname = "operator=";
+	if (!cdd || !opname_c) return NULL;
+	const std::string opname(opname_c);
 	const std::string mangled = cdd->name + "__" + opname;
 	for (Variable *mv : cdd->methods) {
 		if (!mv) continue;
@@ -11534,10 +11672,16 @@ FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 		if (mv->name != opname && mv->name != mangled
 		    && fd->method_display_name != opname)
 			continue;
-		if (is_char_pointer(fd->parameters[1]))
+		if (match(fd->parameters[1]))
 			return fd;
 	}
 	return NULL;
+}
+
+FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+{
+	return class_method_def_by_param(cdd, "operator=",
+		[](DataDef *p) { return is_char_pointer(p); });
 }
 
 // The same lookup for the `operator=` overload taking a given SCALAR rawtype
@@ -11566,21 +11710,10 @@ node_t CirBuilder::value_init_assign(TokenDecl *sdcl)
 
 FuncDef *class_assign_scalar_operator_def(DataDefCLASS *cdd, DataType want)
 {
-	if (!cdd) return NULL;
-	const std::string opname = "operator=";
-	const std::string mangled = cdd->name + "__" + opname;
-	for (Variable *mv : cdd->methods) {
-		if (!mv) continue;
-		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
-		if (!fd || fd->parameters.size() < 2) continue;
-		if (mv->name != opname && mv->name != mangled
-		    && fd->method_display_name != opname)
-			continue;
-		DataDef *p = fd->parameters[1];
-		if (p && !p->is_pointer() && p->rawtype() == want)
-			return fd;
-	}
-	return NULL;
+	return class_method_def_by_param(cdd, "operator=",
+		[want](DataDef *p) {
+			return p && !p->is_pointer() && p->rawtype() == want;
+		});
 }
 
 void CirBuilder::flush_pending_stmts(std::vector<node_t> &out)
@@ -26233,7 +26366,33 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			for (auto &td : prog->top_decls)
 				if (td.kind == Program::DeclKind::dkGlobalVar
 				    && td.var == v) { sdecl = td.decl; break; }
-			if (!sdecl || !sdecl->initialize)
+			if (!sdecl)
+				continue;
+			// The CARRIER's ctor-syntax and brace-list globals
+			// (`value g(7);`, `var G = { "a", "b" };`): the args
+			// ride ctor_args, not initialize. The construct family
+			// placement-news over the zeroed storage, so emitting
+			// the same lowering a local gets is well-formed here.
+			// `value g(7);` used to DROP its arguments in the
+			// initialize-only gate below — g read null, silently.
+			if (is_array_object(v->type)
+			    && (sdecl->ctor_args_braced
+				|| !sdecl->ctor_args.empty())) {
+				node_t cc = sdecl->ctor_args_braced
+					  ? array_list_init_call(sdecl)
+					  : class_ctor_call(v, &ddARRAY,
+							    sdecl->ctor_args,
+							    sdecl);
+				std::vector<node_t> cgrp(m_pending_stmts.begin(),
+							 m_pending_stmts.end());
+				m_pending_stmts.clear();
+				if (cc)
+					cgrp.push_back(cc);
+				queue_global_ctor_group(v, cgrp,
+							deferred_globals);
+				continue;
+			}
+			if (!sdecl->initialize)
 				continue;
 			node_t as = translate_expr(sdecl->initialize);
 			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),

@@ -16,8 +16,16 @@
 #include <ns_php>
 #include <ns_madc>
 
+// FILE-SCOPE parens direct-init: the ctor arguments ride TokenDecl::
+// ctor_args, which the carrier global lane used to ignore (only
+// `initialize` was queued into __madc_global_init) — `value gnum(7);`
+// compiled, exited 0, and read NULL. The collect_global_ctors carrier
+// arm now emits the same class_ctor_call a local gets.
+value gnum(7);
+
 int main()
 {
+	cout << "gnum:" << gnum << endl;
 	// Functional-cast temporaries, streamed directly.
 	cout << value(-7) << endl;
 	cout << value(3.5) << endl;

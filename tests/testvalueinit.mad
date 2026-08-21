@@ -1,47 +1,70 @@
-// A madc::value DECLARED WITH AN INITIALIZER must actually be initialized.
+// Brace-list value literals — the carrier's list initializer, plus the
+// .push() element surface it lowers through (one set of registered rows;
+// script pushes and literals cannot drift apart).
 //
-// Both scopes silently dropped the initializer before: a block-scope
-// `value v = "x";` got its storage and constructor and then `continue`d past
-// the initializer, and a file-scope one returned from var_decl's array-object
-// arm before the dynamic-init queueing. Either way the value came out EMPTY
-// with no diagnostic, while the two-statement `value v; v = "x";` worked — so
-// the bug was invisible to anyone who wrote it the second way.
-//
-// Oracle: the two spellings must agree. That is the whole test.
+// - `var v = { a, b, c };` and `var v{ a, b, c }` spell the SAME
+//   list-initialization ([dcl.init]/15): default construct + one push
+//   per element, heterogeneous elements welcome.
+// - A ONE-element list is a one-element ARRAY ([over.match.list]: the
+//   braces spell a container, never scalar init) — `var v(7)` stays the
+//   scalar direct-init.
+// - `{}` is an EMPTY ARRAY, never a null value.
+// - Elements are COPIES (value semantics): mutating the source var
+//   after the literal leaves the array untouched.
+// - .push(x) returns the receiver, so pushes chain.
+#include <ns_php>
+#include <ns_madc>
 
-value g_text = "file-scope text";
-value g_int = 7;
+// A file-scope literal rides the global-ctor lane.
+var G = { "a", "b" };
 
-void block_scope()
+int main()
 {
-	value a = "block text";
-	value b = 42;
-	value c = 2.5;
-	value d = true;
+	var mixed = { 7, 2.5, "three", true };
+	std::print("mixed.size={}\n", mixed.size());
 
-	printf("a=%s\n", a);
-	printf("b=%s\n", b);
-	printf("c=%s\n", c);
-	printf("d=%s\n", d);
+	var direct{ 1, 2 };
+	std::print("direct.size={}\n", direct.size());
 
-	// Copy-initialization from another value.
-	value e = a;
-	printf("e=%s\n", e);
+	var one = { 42 };
+	std::print("one.size={}\n", one.size());
 
-	// The two-statement form must still agree with the initializer form.
-	value f;
-	f = "block text";
-	printf("same=%d\n", strcmp(a.c_str(), f.c_str()) == 0);
+	var scalar(7);
+	std::print("scalar.is_null={}\n", scalar.is_null() ? 1 : 0);
+
+	// Copy semantics: s mutates AFTER the literal; the element keeps "hi".
+	var s = "hi";
+	long n = 9;
+	var lst = { s, n };
+	s += "!";
+	std::print("lst.size={} lst.index(hi)={}\n", lst.size(),
+		   lst.index("hi"));
+
+	// Element order: ints print in insertion order.
+	var nums = { 10, 20, 30 };
+	for ( value v : nums )
+		std::print("num={}\n", v);
+
+	// Empty braces = an empty ARRAY (countable, not null).
+	var e = {};
+	std::print("e.size={} e.is_null={}\n", e.size(), e.is_null() ? 1 : 0);
+
+	// .push() — same rows the literal lowers through; returns the
+	// receiver, so pushes chain.
+	e.push(5).push("x");
+	std::print("e.size2={} e.index(x)={}\n", e.size(), e.index("x"));
+
+	// for-init declaration context.
+	for ( var fi = { 10, 20 }; fi.size() == 2; )
+	{
+		std::print("fi.size={}\n", fi.size());
+		break;
+	}
+
+	// php::array_push interops with a literal-inited array.
+	var pp = { 1 };
+	std::print("cnt={}\n", php::array_push(pp, 2));
+
+	std::print("G.size={}\n", G.size());
+	return 0;
 }
-
-void file_scope()
-{
-	// A file-scope dynamic initializer runs at main entry (madc's g++
-	// dynamic-initialization model, the same for every type), so these are
-	// read here rather than declared here.
-	printf("g_text=%s\n", g_text);
-	printf("g_int=%s\n", g_int);
-}
-
-block_scope();
-file_scope();

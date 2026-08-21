@@ -352,6 +352,59 @@ void *madarray_append_value(void *ptr, void *other)
 	return ptr;
     }
 
+// value.push(x) — append one ELEMENT (array-kind append; operator+= owns
+// TEXT append). A null receiver vivifies to an empty array; any other
+// non-array kind is a catchable script error, the carrier-method
+// convention (at/substr/count). Returns the receiver so pushes chain —
+// a script `v.push(x)` binds these entries, and the brace-list
+// declaration lowering (`var v = { a, b, c };`) emits construct + one
+// push per element through the same rows.
+static std::vector<madc::value> &madarray_push_target(madc::value *v)
+    {
+	if (v->is_frozen())
+	    __madc_throw_cstr("push(): value is frozen");
+	if (!v->is_null() && !v->is_array())
+	    __madc_throw_cstr("push(): value of this kind cannot take elements");
+	return v->array();
+    }
+void *madarray_push_cstr(void *ptr, const char *s)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(madc::value(std::string(s ? s : "")));
+	return ptr;
+    }
+void *madarray_push_int(void *ptr, int64_t i)
+    {
+	madarray_push_target((madc::value *)ptr).push_back(madc::value(i));
+	return ptr;
+    }
+void *madarray_push_real(void *ptr, double d)
+    {
+	madarray_push_target((madc::value *)ptr).push_back(madc::value(d));
+	return ptr;
+    }
+void *madarray_push_bool(void *ptr, int64_t b)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(madc::value(b != 0));
+	return ptr;
+    }
+void *madarray_push_value(void *ptr, void *other)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(*(const madc::value *)other);
+	return ptr;
+    }
+
+// `var v = {};` — an EMPTY brace list is an empty ARRAY, not a null
+// value: the braces spell a container. The declaration lowering calls
+// this once after construct; size() reads 0 and is_null() answers false.
+void *madarray_make_array(void *ptr)
+    {
+	*(madc::value *)ptr = madc::value::make_array();
+	return ptr;
+    }
+
 const char *madarray_substr(void *ptr, int64_t pos, int64_t len)
     {
 	const madc::value *v = (const madc::value *)ptr;

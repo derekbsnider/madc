@@ -1,8 +1,13 @@
-a=block text
-b=42
-c=2.500000
-d=true
-e=block text
-same=1
-g_text=file-scope text
-g_int=7
+mixed.size=4
+direct.size=2
+one.size=1
+scalar.is_null=0
+lst.size=2 lst.index(hi)=0
+num=10
+num=20
+num=30
+e.size=0 e.is_null=0
+e.size2=2 e.index(x)=1
+fi.size=2
+cnt=2
+G.size=2

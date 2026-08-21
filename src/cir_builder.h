@@ -696,8 +696,16 @@ class CirBuilder {
 	// ctor_args) selects from the registered madarray_construct_* ctor set
 	// via class_ctor_call (the entries placement-construct into the raw
 	// storage, so the default construct must NOT also run); the bare form
-	// default-constructs (madarray_construct).
+	// default-constructs (madarray_construct); a BRACED list (`var v =
+	// { a, b, c };` — ctor_args_braced) is the carrier's list literal,
+	// lowered by array_list_init_call.
 	node_t array_decl_ctor_call(TokenDecl *sdcl);
+	// The carrier's brace-list initializer: default construction plus one
+	// registered `push` per element ({} = madarray_make_array, an empty
+	// ARRAY). carrier_push_def_for classifies an element expression's type
+	// onto the push row the registry (add_array_methods) binds for it.
+	node_t array_list_init_call(TokenDecl *sdcl);
+	FuncDef *carrier_push_def_for(DataDef *ad);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
