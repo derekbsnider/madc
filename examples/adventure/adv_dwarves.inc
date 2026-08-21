@@ -28,7 +28,7 @@ void pirate_spots()
 		if ( on == "PYRAMID" && (LOC == pyr_plac || LOC == eme_plac) )
 			continue;
 		if ( toting(o) || here_obj(o) )
-			snarfed = snarfed + 1;
+			snarfed++;
 		if ( toting(o) )
 		{
 			movechest = true;
@@ -102,7 +102,7 @@ bool dwarfmove()
 			long j = 1 + randrange(5);
 			if ( pct(50) )
 				ui::move(W, dwarf_ent(j), 0);
-			k = k + 1;
+			k++;
 		}
 		k = 1;
 		while ( k <= 5 )
@@ -111,7 +111,7 @@ bool dwarfmove()
 			if ( ui::location(W, dw) == LOC )
 				ui::move(W, dw, E("LOC_NUGGET"));
 			ui::set(W, dw, "oldloc", ui::location(W, dw));
-			k = k + 1;
+			k++;
 		}
 		rspeak("DWARF_RAN");
 		drop_object(E("AXE"), "AXE", LOC);
@@ -130,7 +130,7 @@ bool dwarfmove()
 		long dloc = ui::location(W, dw);
 		if ( dloc == 0 )
 		{
-			i = i + 1;
+			i++;
 			continue;
 		}
 		long doldloc = bag_int(dw, "oldloc", 0);
@@ -147,11 +147,9 @@ bool dwarfmove()
 			for ( value r : tr )
 			{
 				var act = r["action"];
-				var kind = act[0].c_str();
-				if ( kind != "goto" )
+				if ( act[0] != "goto" )
 					continue;
-				var dest = act[1].c_str();
-				long d = E(dest.c_str());
+				long d = E(act[1].c_str());
 				if ( !loccond(d, "DEEP") )
 					continue;
 				if ( d == doldloc )
@@ -170,7 +168,7 @@ bool dwarfmove()
 				string tkkey = to_string(10 + j);
 				tk[tkkey.c_str()] = d;
 				prev = d;
-				j = j + 1;
+				j++;
 			}
 		}
 		// Fallback is the old location; excluded when there is any
@@ -184,7 +182,7 @@ bool dwarfmove()
 			{
 				if ( ii == pick )
 					newdloc = t.as_integer();
-				ii = ii + 1;
+				ii++;
 			}
 		}
 		else
@@ -196,27 +194,27 @@ bool dwarfmove()
 		ui::set(W, dw, "seen", seen);
 		if ( !seen )
 		{
-			i = i + 1;
+			i++;
 			continue;
 		}
 		ui::move(W, dw, LOC);
 		if ( i == 6 )
 		{
 			pirate_spots();
-			i = i + 1;
+			i++;
 			continue;
 		}
 		// A threatening little dwarf is in the room with him!
-		dtotal = dtotal + 1;
+		dtotal++;
 		if ( bag_int(dw, "oldloc", 0) == LOC )
 		{
-			attack = attack + 1;
+			attack++;
 			if ( KNFLOC >= 0 )
 				KNFLOC = LOC;
 			if ( randrange(1000) < 95 * (DFLAG - 2) )
-				stick = stick + 1;
+				stick++;
 		}
-		i = i + 1;
+		i++;
 	}
 	if ( dtotal == 0 )
 		return true;

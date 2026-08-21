@@ -16,7 +16,7 @@ void pspeak_prop(long o, const char *prop, long kk, bool blank)
 	{
 		if ( i == kk )
 		{
-			if ( d.is_null() || d.length() == 0 )
+			if ( d.empty() )
 				return;
 			if ( blank )
 				speak_msg(d);
@@ -24,7 +24,7 @@ void pspeak_prop(long o, const char *prop, long kk, bool blank)
 				speak_msg_noblank(d);
 			return;
 		}
-		i = i + 1;
+		i++;
 	}
 }
 
@@ -39,7 +39,7 @@ void pspeak_touch(long o)
 {
 	var inv;
 	ui::get(inv, W, o, "inventory");
-	if ( !inv.is_null() && inv.length() > 0 )
+	if ( !inv.is_null() && !inv.empty() )
 		speak_msg_noblank(inv);
 }
 
@@ -135,7 +135,7 @@ void listobjects()
 				obj_set_state(o, state_index_c(o, "CHAINING_BEAR"));
 			if ( onm == "EGGS" )
 				SEENBIGWORDS = true;
-			TALLY = TALLY - 1;
+			TALLY--;
 		}
 		long kk = obj_state(o);
 		if ( onm == "STEPS" )

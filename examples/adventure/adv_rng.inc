@@ -32,7 +32,7 @@ void rng_seed(long seedval)
 	while ( i < 5 )
 	{
 		zz += alpha.substr(randrange(26), 1);
-		i = i + 1;
+		i++;
 	}
 	var rebuilt = zz.substr(0, 1);
 	rebuilt += "'";

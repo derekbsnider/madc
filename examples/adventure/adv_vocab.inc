@@ -26,9 +26,9 @@ long word_count(value &line)
 		else if ( !inword )
 		{
 			inword = true;
-			count = count + 1;
+			count++;
 		}
-		i = i + 1;
+		i++;
 	}
 	return count;
 }
@@ -44,17 +44,17 @@ void split_words(value &line)
 	while ( i < len && word < 2 )
 	{
 		while ( i < len && (line.at(i) == ' ' || line.at(i) == '\t') )
-			i = i + 1;
+			i++;
 		long start = i;
 		while ( i < len && line.at(i) != ' ' && line.at(i) != '\t' )
-			i = i + 1;
+			i++;
 		if ( i > start )
 		{
 			if ( word == 0 )
 				CMD["raw0"] = line.substr(start, i - start);
 			else
 				CMD["raw1"] = line.substr(start, i - start);
-			word = word + 1;
+			word++;
 		}
 	}
 }
@@ -62,7 +62,7 @@ void split_words(value &line)
 // Classify one raw word into (type, id) — id is the vocab NAME.
 void classify_word(value &raw, const char *typekey, const char *idkey)
 {
-	if ( raw.length() == 0 )
+	if ( raw.empty() )
 	{
 		CMD[typekey] = T_NONE;
 		CMD[idkey] = "";
@@ -74,22 +74,19 @@ void classify_word(value &raw, const char *typekey, const char *idkey)
 		tok = full.substr(0, 5);
 	if ( php::array_key_exists(tok.c_str(), VOC_M) )
 	{
-		var ids = VOC_M[tok.c_str()];
 		CMD[typekey] = T_MOTION;
-		CMD[idkey] = ids[0].c_str();
+		CMD[idkey] = VOC_M[tok.c_str()][0].c_str();
 		return;
 	}
 	if ( php::array_key_exists(tok.c_str(), VOC_O) )
 	{
-		var ids = VOC_O[tok.c_str()];
 		CMD[typekey] = T_OBJECT;
-		CMD[idkey] = ids[0].c_str();
+		CMD[idkey] = VOC_O[tok.c_str()][0].c_str();
 		return;
 	}
 	if ( php::array_key_exists(tok.c_str(), VOC_A) )
 	{
-		var ids = VOC_A[tok.c_str()];
-		var first = ids[0].c_str();
+		var first = VOC_A[tok.c_str()][0].c_str();
 		// The magic-word placeholder action is special-cased below.
 		if ( first != "PART" )
 		{
@@ -99,7 +96,7 @@ void classify_word(value &raw, const char *typekey, const char *idkey)
 		}
 	}
 	// The reservoir magic word: full case-insensitive match.
-	if ( ZZWORD.length() > 0 )
+	if ( !ZZWORD.empty() )
 	{
 		var zlow = php::strtolower(ZZWORD);
 		if ( full == zlow )
@@ -111,8 +108,7 @@ void classify_word(value &raw, const char *typekey, const char *idkey)
 	}
 	// Numbers (optional leading minus).
 	bool digits = false;
-	var h = full.substr(0, 1);
-	if ( h == "-" && full.length() > 1 )
+	if ( full.at(0) == '-' && full.length() > 1 )
 		digits = php::ctype_digit(full.substr(1, full.length() - 1));
 	else
 		digits = php::ctype_digit(full);

@@ -18,12 +18,9 @@ bool do_move_step()
 	// A dwarf blocking the way (it came from where we are going).
 	if ( NEWLOC != LOC && !forced_loc(LOC) && !loccond(LOC, "NOARRR") )
 	{
-		long di = 1;
-		while ( di <= 5 )
+		for ( long di = 1; di <= 5; di++ )
 		{
-			var dn = "dwarf";
-			dn += to_string(di).c_str();
-			long dw = E(dn.c_str());
+			long dw = dwarf_ent(di);
 			if ( bag_flag(dw, "seen")
 			  && bag_int(dw, "oldloc", 0) == NEWLOC )
 			{
@@ -31,7 +28,6 @@ bool do_move_step()
 				rspeak("DWARF_BLOCK");
 				break;
 			}
-			di = di + 1;
 		}
 	}
 	LOC = NEWLOC;
@@ -63,7 +59,7 @@ bool read_command()
 			rspeak("TWO_WORDS");
 			continue;
 		}
-		if ( line.length() > 0 )
+		if ( !line.empty() )
 		{
 			tokenize_command(line);
 			return true;
@@ -189,15 +185,15 @@ long word_loop()
 		var low0 = php::strtolower(raw0);
 		if ( low0 == "west" )
 		{
-			IWEST = IWEST + 1;
+			IWEST++;
 			if ( IWEST == 10 )
 				rspeak("W_IS_WEST");
 		}
 		var raw1 = CMD["raw1"];
 		long t1 = CMD["type1"].as_integer();
-		if ( low0 == "go" && raw1.length() > 0 && t1 != T_NUMERIC )
+		if ( low0 == "go" && !raw1.empty() && t1 != T_NUMERIC )
 		{
-			IGO = IGO + 1;
+			IGO++;
 			if ( IGO == 10 )
 				rspeak("GO_UNNEEDED");
 		}
@@ -293,7 +289,7 @@ bool do_command_once()
 				FOOBAR = -FOOBAR;
 			else
 				FOOBAR = 0;
-			TURNS = TURNS + 1;
+			TURNS++;
 			if ( !preprocess_command() )
 				continue;
 			turn_bookkeeping();

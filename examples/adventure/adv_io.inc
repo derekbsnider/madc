@@ -12,7 +12,7 @@ long darg_at(value &a, long idx)
 	{
 		if ( i == idx )
 			return x.as_integer();
-		i = i + 1;
+		i++;
 	}
 	return 0;
 }
@@ -42,7 +42,7 @@ void render_msg(value &out, value &text, value &dargs, value &sval)
 				if ( f == 'd' )
 				{
 					long dval = darg_at(dargs, di);
-					di = di + 1;
+					di++;
 					out += to_string(dval).c_str();
 					plural = dval != 1;
 				}
@@ -85,7 +85,7 @@ void render_msg(value &out, value &text, value &dargs, value &sval)
 
 void speak_rendered(value &text)
 {
-	if ( text.length() == 0 )
+	if ( text.empty() )
 		return;
 	std::print("\n{}\n", text);
 }
@@ -106,7 +106,7 @@ void speak_msg_noblank(value &text)
 	var none = "";
 	var nod;
 	render_msg(r, text, nod, none);
-	if ( r.length() == 0 )
+	if ( r.empty() )
 		return;
 	std::print("{}\n", r);
 }
@@ -218,13 +218,13 @@ bool get_input(value &out)
 		}
 		string raw;
 		getline(cin, raw);
-		if ( !cin.good() && raw.length() == 0 )
+		if ( !cin.good() && raw.empty() )
 		{
 			std::print("> ");
 			return false;
 		}
 		var line = raw.c_str();
-		if ( line.length() > 0 )
+		if ( !line.empty() )
 		{
 			var h = line.substr(0, 1);
 			if ( h == "#" )
@@ -243,10 +243,10 @@ void first_word(value &out, value &line)
 	long len = line.length();
 	long i = 0;
 	while ( i < len && (line.at(i) == ' ' || line.at(i) == '\t') )
-		i = i + 1;
+		i++;
 	long start = i;
 	while ( i < len && line.at(i) != ' ' && line.at(i) != '\t' )
-		i = i + 1;
+		i++;
 	if ( i > start )
 		out = line.substr(start, i - start);
 }
@@ -263,7 +263,7 @@ bool silent_ask()
 		var w;
 		first_word(w, reply);
 		var lw = php::strtolower(w);
-		if ( lw.length() == 0 )
+		if ( lw.empty() )
 		{
 			rspeak("PLEASE_ANSWER");
 			continue;
@@ -294,7 +294,7 @@ bool ask_yes_no(const char *qname, const char *yname, const char *nname)
 		var w;
 		first_word(w, reply);
 		var lw = php::strtolower(w);
-		if ( lw.length() == 0 )
+		if ( lw.empty() )
 		{
 			rspeak("PLEASE_ANSWER");
 			continue;

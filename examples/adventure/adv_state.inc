@@ -40,16 +40,7 @@ var OLDOBJ;			// previous command's object (clear_command)
 // key order IS descending placement order (the atloc-prepend law).
 string pad_seq_key(long seq)
 {
-	string s = to_string(999999999 - seq);
-	string z = "";
-	long i = s.length();
-	while ( i < 9 )
-	{
-		z += "0";
-		i = i + 1;
-	}
-	z += s;
-	return z;
+	return std::format("{:09}", 999999999 - seq);
 }
 
 // Memoized entity lookup (the world's find is linear; 255 entities).
@@ -109,7 +100,7 @@ bool forced_loc(long l)
 	for ( value r : tr )
 	{
 		var vb = r["verbs"];
-		return vb.count() == 0;
+		return vb.empty();
 	}
 	return false;
 }
@@ -131,7 +122,7 @@ long fixed_side_loc(const char *name)
 		return 0;
 	var side = FIXEDSIDES[name];
 	var l = side["loc"];
-	if ( l.is_null() || l.length() == 0 )
+	if ( l.empty() )
 		return 0;
 	return E(l.c_str());
 }
@@ -149,7 +140,7 @@ void move_fixed_side(const char *name, long dest)
 	else
 		FIXEDSIDES[name]["loc"] = "";
 	FIXEDSIDES[name]["seq"] = SEQ_NEXT;
-	SEQ_NEXT = SEQ_NEXT + 1;
+	SEQ_NEXT++;
 }
 
 bool at_obj(long o)
@@ -172,17 +163,7 @@ long state_index(long o, value &label)
 		return php::intval(label);
 	var st;
 	ui::get(st, W, o, "states");
-	if ( !st.is_null() )
-	{
-		long i = 0;
-		for ( value s : st )
-		{
-			if ( s == label )
-				return i;
-			i = i + 1;
-		}
-	}
-	return -1;
+	return st.index(label);
 }
 
 long state_index_c(long o, const char *label)
@@ -198,7 +179,7 @@ void move_object(long o, long dest)
 {
 	ui::move(W, o, dest);
 	ui::set(W, o, "seq", SEQ_NEXT);
-	SEQ_NEXT = SEQ_NEXT + 1;
+	SEQ_NEXT++;
 }
 
 // Carry/drop with the holding-count law (the reference's carry/drop:
@@ -207,17 +188,15 @@ void carry_object(long o, const char *name)
 {
 	if ( toting(o) )
 		return;
-	var nm = name;
-	if ( nm != "BIRD" )
-		HOLDING = HOLDING + 1;
+	if ( strcmp(name, "BIRD") != 0 )
+		HOLDING++;
 	move_object(o, PLAYER);
 }
 
 void drop_object(long o, const char *name, long dest)
 {
-	var nm = name;
-	if ( toting(o) && nm != "BIRD" )
-		HOLDING = HOLDING - 1;
+	if ( toting(o) && strcmp(name, "BIRD") != 0 )
+		HOLDING--;
 	move_object(o, dest);
 }
 
@@ -296,7 +275,7 @@ long objects_at_loc(value &only, long at)
 		{
 			var snm = side["name"];
 			only = snm;
-			n = n + 1;
+			n++;
 		}
 	}
 	var held;
@@ -309,7 +288,7 @@ long objects_at_loc(value &only, long at)
 		if ( sq.is_null() )
 			continue;
 		only = h;
-		n = n + 1;
+		n++;
 	}
 	if ( n != 1 )
 		only = "";
@@ -328,8 +307,7 @@ void juggle_object(long o, const char *name)
 // The i'th dwarf actor entity (1..6; 6 = the pirate).
 long dwarf_ent(long i)
 {
-	var dn = "dwarf";
-	dn += to_string(i).c_str();
+	string dn = std::format("dwarf{}", i);
 	return E(dn.c_str());
 }
 
@@ -339,16 +317,9 @@ long atdwrf(long l)
 {
 	if ( DFLAG < 2 )
 		return 0;
-	long di = 1;
-	while ( di <= 5 )
-	{
-		var dn = "dwarf";
-		dn += to_string(di).c_str();
-		long dw = E(dn.c_str());
-		if ( ui::location(W, dw) == l )
+	for ( long di = 1; di <= 5; di++ )
+		if ( ui::location(W, dwarf_ent(di)) == l )
 			return di;
-		di = di + 1;
-	}
 	return 0;
 }
 
@@ -422,9 +393,8 @@ void init_game()
 	long di = 0;
 	for ( value d : dl )
 	{
-		di = di + 1;
-		var dn = "dwarf";
-		dn += to_string(di).c_str();
+		di++;
+		string dn = std::format("dwarf{}", di);
 		long dw = ui::create(W, dn.c_str());
 		ui::set(W, dw, "is_pirate", di == 6);
 		ui::set(W, dw, "seen", false);
@@ -438,7 +408,7 @@ void init_game()
 	long objnum = 0;
 	for ( value on : OBJ_NAMES )
 	{
-		objnum = objnum + 1;
+		objnum++;
 		OBJ_INDEX[on.c_str()] = objnum;
 		long o = E(on.c_str());
 		if ( !o )
@@ -446,7 +416,7 @@ void init_game()
 		bool found = true;
 		if ( obj_treasure(o) )
 		{
-			tally = tally + 1;
+			tally++;
 			var inv;
 			ui::get(inv, W, o, "inventory");
 			if ( !inv.is_null() )

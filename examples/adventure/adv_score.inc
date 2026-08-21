@@ -16,7 +16,7 @@ long score_game(long mode)
 	long objnum = 0;
 	for ( value on : OBJ_NAMES )
 	{
-		objnum = objnum + 1;
+		objnum++;
 		long o = E(on.c_str());
 		if ( !o || !obj_treasure(o) )
 			continue;
@@ -59,8 +59,8 @@ long score_game(long mode)
 	}
 	MXSCOR = MXSCOR + 45;
 	if ( ui::location(W, E("MAGAZINE")) == E("LOC_WITTSEND") )
-		sc = sc + 1;
-	MXSCOR = MXSCOR + 1;
+		sc++;
+	MXSCOR++;
 	sc = sc + 2;
 	MXSCOR = MXSCOR + 2;
 
@@ -99,7 +99,7 @@ void terminate_game(long mode)
 	long i = 0;
 	for ( value cls : classes )
 	{
-		i = i + 1;
+		i++;
 		if ( i == 1 )
 			continue;	// the reference starts at index 1
 		var th = cls["threshold"];
@@ -128,7 +128,7 @@ void obj_name_at(value &out, long idx)
 	long i = 0;
 	for ( value on : OBJ_NAMES )
 	{
-		i = i + 1;
+		i++;
 		if ( i == idx )
 		{
 			out = on;
@@ -153,9 +153,9 @@ void croak()
 			q = ob["query"];
 			yr = ob["yes_response"];
 		}
-		i = i + 1;
+		i++;
 	}
-	NUMDIE = NUMDIE + 1;
+	NUMDIE++;
 	if ( CLOSNG )
 	{
 		rspeak("DEATH_CLOSING");
@@ -175,7 +175,7 @@ void croak()
 			var w;
 			first_word(w, reply);
 			var lw = php::strtolower(w);
-			if ( lw.length() == 0 )
+			if ( lw.empty() )
 			{
 				rspeak("PLEASE_ANSWER");
 				continue;
@@ -216,7 +216,7 @@ void croak()
 			else
 				drop_object(o, nm2.c_str(), OLDLC2);
 		}
-		j = j - 1;
+		j--;
 	}
 	LOC = E("LOC_BUILDING");
 	OLDLOC = LOC;
@@ -230,7 +230,7 @@ void checkhints()
 {
 	var lochints;
 	ui::get(lochints, W, LOC, "hints");
-	if ( lochints.is_null() || lochints.count() == 0 )
+	if ( lochints.empty() )
 		return;
 	for ( value hn : HINT_ORDER )
 	{
@@ -360,7 +360,7 @@ void checkhints()
 			var w;
 			first_word(w, reply);
 			var lw = php::strtolower(w);
-			if ( lw.length() == 0 )
+			if ( lw.empty() )
 			{
 				rspeak("PLEASE_ANSWER");
 				continue;
@@ -397,7 +397,7 @@ void checkhints()
 			var w;
 			first_word(w, reply);
 			var lw = php::strtolower(w);
-			if ( lw.length() == 0 )
+			if ( lw.empty() )
 			{
 				rspeak("PLEASE_ANSWER");
 				continue;

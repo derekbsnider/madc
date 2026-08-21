@@ -7,36 +7,12 @@
 bool rule_matches(value &r, value &motion)
 {
 	var vb = r["verbs"];
-	if ( vb.count() == 0 )
+	if ( vb.empty() )
 		return true;
 	for ( value v : vb )
 		if ( v == motion )
 			return true;
 	return false;
-}
-
-void rule_sig(value &out, value &r)
-{
-	out = "";
-	var c = r["cond"];
-	if ( !c.is_null() )
-	{
-		for ( value x : c )
-		{
-			out += x.c_str();
-			out += ",";
-		}
-	}
-	out += "|";
-	var a = r["action"];
-	if ( !a.is_null() )
-	{
-		for ( value x : a )
-		{
-			out += x.c_str();
-			out += ",";
-		}
-	}
 }
 
 // Travel-rule condition forms: null | [pct N] | [carry OBJ] |
@@ -46,20 +22,18 @@ bool cond_pass(value &r)
 	var c = r["cond"];
 	if ( c.is_null() )
 		return true;
-	var kind = c[0].c_str();
-	if ( kind == "nodwarves" )
+	if ( c[0] == "nodwarves" )
 		// The reference encodes this as cond 100 — PCT(100) always
 		// passes but CONSUMES a draw (RNG parity).
 		return pct(100);
-	if ( kind == "pct" )
+	if ( c[0] == "pct" )
 		return pct(php::intval(c[1].c_str()));
-	var objname = c[1].c_str();
-	long o = E(objname.c_str());
-	if ( kind == "carry" )
+	long o = E(c[1].c_str());
+	if ( c[0] == "carry" )
 		return toting(o);
-	if ( kind == "with" )
+	if ( c[0] == "with" )
 		return toting(o) || at_obj(o);
-	if ( kind == "not" )
+	if ( c[0] == "not" )
 	{
 		var st = c[2].c_str();
 		return obj_state(o) != state_index(o, st);
@@ -67,24 +41,29 @@ bool cond_pass(value &r)
 	return true;
 }
 
+var MOTION_QUIPS;	// motion word -> refusal message (data, not a ladder)
+
+void quip_class(const char *msg, const char *words)
+{
+	var w;
+	php::explode(w, " ", words);
+	for ( value m : w )
+		MOTION_QUIPS[m.c_str()] = msg;
+}
+
 void bad_motion(value &motion)
 {
-	if ( motion == "EAST" || motion == "WEST" || motion == "SOUTH"
-	  || motion == "NORTH" || motion == "NE" || motion == "NW"
-	  || motion == "SW" || motion == "SE" || motion == "UP"
-	  || motion == "DOWN" )
-		rspeak("BAD_DIRECTION");
-	else if ( motion == "FORWARD" || motion == "LEFT"
-	       || motion == "RIGHT" )
-		rspeak("UNSURE_FACING");
-	else if ( motion == "OUTSIDE" || motion == "INSIDE" )
-		rspeak("NO_INOUT_HERE");
-	else if ( motion == "XYZZY" || motion == "PLUGH" )
-		rspeak("NOTHING_HAPPENS");
-	else if ( motion == "CRAWL" )
-		rspeak("WHICH_WAY");
-	else
-		rspeak("CANT_APPLY");
+	if ( MOTION_QUIPS.is_null() )
+	{
+		quip_class("BAD_DIRECTION",
+			   "EAST WEST SOUTH NORTH NE NW SW SE UP DOWN");
+		quip_class("UNSURE_FACING", "FORWARD LEFT RIGHT");
+		quip_class("NO_INOUT_HERE", "OUTSIDE INSIDE");
+		quip_class("NOTHING_HAPPENS", "XYZZY PLUGH");
+		quip_class("WHICH_WAY", "CRAWL");
+	}
+	var q = MOTION_QUIPS[motion.c_str()];
+	rspeak(q.is_null() ? "CANT_APPLY" : q.c_str());
 }
 
 void travel_apply(value &motion)
@@ -92,7 +71,7 @@ void travel_apply(value &motion)
 	var tr;
 	ui::get(tr, W, LOC, "travel");
 	long phase = 0;		// 0 = searching, 1 = evaluating, 2 = skipping
-	var skip_sig;
+	var skip_cond, skip_act;
 	for ( value r : tr )
 	{
 		if ( phase == 0 )
@@ -103,30 +82,26 @@ void travel_apply(value &motion)
 		}
 		else if ( phase == 2 )
 		{
-			var sig;
-			rule_sig(sig, r);
-			if ( sig == skip_sig )
+			if ( r["cond"] == skip_cond && r["action"] == skip_act )
 				continue;
 			phase = 1;
 		}
 		if ( !cond_pass(r) )
 		{
-			rule_sig(skip_sig, r);
+			skip_cond = r["cond"];
+			skip_act = r["action"];
 			phase = 2;
 			continue;
 		}
 		var act = r["action"];
-		var kind = act[0].c_str();
-		if ( kind == "goto" )
+		if ( act[0] == "goto" )
 		{
-			var dest = act[1].c_str();
-			NEWLOC = E(dest.c_str());
+			NEWLOC = E(act[1].c_str());
 			return;
 		}
-		if ( kind == "speak" )
+		if ( act[0] == "speak" )
 		{
-			var mn = act[1].c_str();
-			rspeak(mn.c_str());
+			rspeak(act[1].c_str());
 			NEWLOC = LOC;
 			return;
 		}
@@ -153,7 +128,8 @@ void travel_apply(value &motion)
 			// wasn't carrying it — skip this rule group and keep
 			// evaluating.
 			drop_object(E("EMERALD"), "EMERALD", LOC);
-			rule_sig(skip_sig, r);
+			skip_cond = r["cond"];
+			skip_act = r["action"];
 			phase = 2;
 			continue;
 		}
@@ -217,12 +193,8 @@ long first_goto_dest(long l)
 	for ( value r : tr )
 	{
 		var act = r["action"];
-		var kind = act[0].c_str();
-		if ( kind == "goto" )
-		{
-			var dest = act[1].c_str();
-			return E(dest.c_str());
-		}
+		if ( act[0] == "goto" )
+			return E(act[1].c_str());
 		return 0;
 	}
 	return 0;
@@ -263,15 +235,13 @@ void playermove(value &motion)
 		for ( value r : tr )
 		{
 			var act = r["action"];
-			var kind = act[0].c_str();
-			if ( kind != "goto" )
+			if ( act[0] != "goto" )
 				continue;
-			var dest = act[1].c_str();
-			long d = E(dest.c_str());
+			long d = E(act[1].c_str());
 			var vb = r["verbs"];
 			if ( d == tgt )
 			{
-				if ( vb.count() == 0 )
+				if ( vb.empty() )
 					via = "__FORCED";
 				else
 					via = vb[0].c_str();
@@ -280,7 +250,7 @@ void playermove(value &motion)
 			}
 			if ( forced_loc(d) && first_goto_dest(d) == tgt )
 			{
-				if ( vb.count() == 0 )
+				if ( vb.empty() )
 					thru = "__FORCED";
 				else
 					thru = vb[0].c_str();
@@ -305,7 +275,7 @@ void playermove(value &motion)
 		// Pretend it is not dark so staring into the gloom is safe.
 		if ( DETAIL < 3 )
 			rspeak("NO_MORE_DETAIL");
-		DETAIL = DETAIL + 1;
+		DETAIL++;
 		WZDARK = false;
 		ui::set(W, LOC, "abbrev", (long)0);
 		return;
