@@ -17,6 +17,22 @@
   `value_text_slot`, `value_pop_element`/`value_shift_element`). Pinned
   by six pure-dialect tests (test{php,perl,py,ruby,js,rust}lean.mad);
   the 94-log adventure parity gate stayed byte-identical.
+- **Fixed (crash): a call with no viable overload silently bound the
+  wrong function** — when a ranked overload set had no viable
+  candidate, the builder fell back to the arbitrary parse-bound
+  by-name member and compiled the call through its ABI (a
+  `std::string` argument read as a value carrier SEGV'd in
+  madc_value_copy). A strict set (all candidates plain concrete
+  functions) now refuses loudly: `no matching overload for 'ns::fn'
+  with argument types (...)`. The suite fallout exposed two coercions
+  the fallback had been carrying, now modeled by the ranker itself: a
+  `std::string` argument converts to a `char*` parameter (the same
+  `object_cstr_arg` coercion the lowering performs — which also makes
+  `php::array_push(a, stdString)` genuinely viable against the lean
+  overloads), and a partial subscript of a multi-dimensional fixed
+  array decays to a row pointer (`memchr(s2d[1], ...)`). Pinned by
+  tests/testnoviableovl.mad (.expect_err) and
+  tests/teststrargcoerce.mad.
 - **Fixed (crash): polyglot array mutations on a frozen value aborted
   the process** — 29 helpers (pop/shift/reverse/sort/unique/slice/
   column/explode/grep/glob/split/chars/rotate/compact/flatten) called

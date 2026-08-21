@@ -13,8 +13,10 @@ would throw across the extern-C boundary into JIT frames — now routed
 through value_array_for_write/_reset_for_write with the
 test_ns_frozen.cpp reducer), ns_common gained the shared lean plumbing
 (value_text_slot / ring_apply / value_pop_element / value_shift_element).
-Remaining: the no-viable-overload FALLBACK defect below, then
-S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
+The no-viable-overload FALLBACK defect is also FIXED (@cfcd255e —
+loud "no matching overload" error + the two ranker coercion gaps the
+fallback had been papering over; full suite 1131/0).
+Remaining: S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
 
 **Owner rulings (2026-08-21, during Leg 0 — codified as
 `.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
@@ -137,11 +139,16 @@ calls. That single `<string>` closure is the 145-unit / 66 MB bind.
   found-defect fixes (own commits): the frozen-carrier mutation abort
   class (@93e7fcb8, reducer tests/unit/test_ns_frozen.cpp) and
   php::intval's unbounded payload read (@eae431ae).
-  Still queued from Leg 0 fallout: the no-viable-overload FALLBACK
-  defect (parser reselect returns the by-name FuncDef when ranking
-  finds no viable candidate — a std::string arg mis-bound a value&
-  param and SEGV'd; needs a suite-wide fallout pass to turn into a
-  loud error).
+  The no-viable-overload FALLBACK defect is FIXED (@cfcd255e): a
+  ranked strict set with no viable candidate is a loud
+  "no matching overload" compile error instead of a silent wrong-ABI
+  bind; the suite fallout pass exposed (and fixed) the two coercions
+  the fallback had been carrying — std::string→char* argument
+  conversion (a marshals_value_text UDC arm in score_arg_to_param,
+  mirroring build_call_args' object_cstr_arg lowering) and
+  partial-subscript row decay of multi-dim fixed arrays (a
+  TokenSubscript arm in array_decay_pointer). Full JIT suite 1131/0 +
+  the 94-log parity gate green after.
 
 ### Leg 1 — cold launch: bind the forest ONCE per process
 

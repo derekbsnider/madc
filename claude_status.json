@@ -12,7 +12,7 @@
   "session": 115,
   "date": "2026-08-21",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "cb42d6d7 + docs commit pending",
+  "head": "cfcd255e + docs commit pending",
   "headline": "JIT PYTHON-CONTENDER LEG 0b LANDED: all 57 guarded-only polyglot publics now have lean value/char* PRIMARIES (php 18, perl 11, python 7, ruby 6, js 5, rust 10) with SOURCE-LANGUAGE parity semantics of record (PHP/Python/Ruby-nonbang/JS/Rust return NEW ring-lifetime strings, never mutate; perl chop/chomp MUTATE the value - that IS Perl; element returns = value out-param, null when empty). 94-log parity byte-identical; check-dialect-lean green; six pure-dialect tests.",
   "landed": [
    "@93e7fcb8 FOUND DEFECT FIXED (crash class): 29 extern-C-reachable helpers called value::array() directly - on a FROZEN carrier the designed throw crossed the extern-C boundary into JIT frames = process abort (pop/shift/reverse/sort/unique/slice/column/explode/grep/glob/split/chars/rotate/compact/flatten). All container mutations now via ns_common::value_array_for_write or NEW value_array_reset_for_write (out-param fillers); split_by_delim gains who param. Reducer tests/unit/test_ns_frozen.cpp (36 assertions, was: uncaught std::runtime_error terminate)",
@@ -20,15 +20,15 @@
    "@eae431ae php::intval bounds the string payload before strtoll (latent contract violation; payload is length-based per the value ABI)",
    "@5e19f599 php lean wave (18): trim/ltrim/rtrim/chop/lcfirst/nl2br/str_rot13/str_repeat/str_replace/str_pad/str_word_count/chunk_split/number_format/wordwrap/implode ring returns over the SAME cores via ring_apply; array_pop/shift/get value-out; testphplean",
    "@bd6b8fa6 perl lean wave (11): chop/chomp MUTATE value (Perl semantics, frozen degrades loud returning 0); pop/shift value-out; join(sep,list); reverse/lc/uc/ucfirst/lcfirst/substr ring pairs; ring_apply promoted to ns_common (second consumer); testperllean byte-identical",
-   "@cb42d6d7 python/ruby/js/rust waves (28): py title/swapcase/center/ljust/rjust/zfill/replace; rb squeeze/capitalize/tr/delete/gsub/sub (delete parses fine lean); js btoa/atob/encodeURIComponent/decodeURIComponent/stringify; rust trim*3/replace/repeat/join + first/last/get/pop value-out (Option: null when nothing); 4 lean tests, expects verified against the source-language oracles"
+   "@cb42d6d7 python/ruby/js/rust waves (28): py title/swapcase/center/ljust/rjust/zfill/replace; rb squeeze/capitalize/tr/delete/gsub/sub (delete parses fine lean); js btoa/atob/encodeURIComponent/decodeURIComponent/stringify; rust trim*3/replace/repeat/join + first/last/get/pop value-out (Option: null when nothing); 4 lean tests, expects verified against the source-language oracles",
+   "@cfcd255e no-viable-overload FALLBACK defect FIXED: ranked strict set w/ no viable candidate = LOUD 'no matching overload' error (Throw at CIR, the final resolution authority) instead of silent wrong-ABI bind; suite fallout exposed + fixed the 2 coercions the fallback carried: std::string->char* arg (marshals_value_text UDC arm in score_arg_to_param, = build_call_args' object_cstr_arg lowering) and partial-subscript row decay of multi-dim fixed arrays (TokenSubscript arm in array_decay_pointer); describe_datadef = ONE diagnostic type-name owner (ctor no-match adopted); testpreferdefault gains <string>-first per convention; autoincmod_helper.inc stale format().c_str() dropped; reducers testnoviableovl (.expect_err) + teststrargcoerce"
   ],
-  "validation": "container: build green each slice; test_ns_frozen 36/36; ns/format subset 45/45 (incl. 6 new lean tests); check-dialect-lean OK; adventure_parity 3 fragments + 94 logs byte-identical (+negative controls); docs/language/ns-*.md updated (lean = primary surface, std::string forms = guarded interop)",
+  "validation": "container: FULL JIT suite 1131/0 (fallout pass for the suite-wide overload change) + adventure_parity 3+94 byte-identical; test_ns_frozen 36/36; ns/format subset 45/45; check-dialect-lean OK; check-rule-trailers green",
   "next": [
-   "no-viable-overload FALLBACK defect (parser reselect ~51250 returns by-name FuncDef when NO candidate viable; SEGV reducer shape: std::string arg mis-binds value& param) - loud error + suite-wide fallout pass",
    "S0-for-Leg-1 recon: which forest layers are Program-free; why 14 decl-index frames = 11.6MB decode at 0 units bound; why --run-frozen thaw live-parses c++locale.h (0.8s)",
    "S1 share bound forest per process -> S2 dev scratch prelude container -> S3 lazy frame decode; then S4 load-only thaw + S5 per-manifest program cache (warm <=50ms target)",
    "queued small fixes: project mode silently ignores --emit/--show-stats; --project --emit=c11 dup __madc_global_init link failure",
-   "merge-wave: ONE fresh remote_build.sh battery before merge (src changed: frozen routing + lean primaries + Leg 0 slot model); owner ceremonies (merge/release/promote) pending"
+   "merge-wave: full battery stages beyond JIT (exe/obj/release/packed/headerless) at the merge gate; owner ceremonies (merge/release/promote) pending"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
