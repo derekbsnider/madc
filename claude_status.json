@@ -1,8 +1,8 @@
 {
  "version": "0.94.0",
  "date": "2026-08-21",
- "snapshot_note": "session 113: modernization M1-M4 landed (M4 shape owner-dictated); two silent init-lane compiler fixes",
- "head": "ea488a03",
+ "snapshot_note": "session 113 end: modernization arc done; JIT Python-contender plan banked, awaiting owner approval + format-return decision",
+ "head": "3cda3d83",
  "branch": "develop",
  "live_handoff_previous": {
   "session": 112,
@@ -12,8 +12,8 @@
   "session": 113,
   "date": "2026-08-21",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "ea488a03 (push pending)",
-  "headline": "MODERNIZATION M1-M4 ALL DONE under the 94-log gate; M4 shape = OWNER-DICTATED mid-session (Player inside Game, ONE extern Game G, grouped PF_*/GF_* bitvectors); two silent compiler defects fixed en route (@b9c5b1cb); M4 tail open = curated UFCS + accessors-as-methods (owner taste)",
+  "head": "3cda3d83 (pushed)",
+  "headline": "MODERNIZATION M1-M4 DONE (94/94 byte-identical, class-based 11-TU --project build); NEW ARC = JIT PYTHON-CONTENDER (owner: \"JIT contender for Python... AOT is a secondary bonus\") \u2014 PLAN READY @3cda3d83 docs/plans/2026-08-21-project-prelude-forest.md, READ IT FIRST; OPEN OWNER DECISION: dialect format() return = ring const char* now vs value at L3 (24 game sites use format(...).c_str())",
   "landed": [
    "M1+M2 @7b3deb43: six var-init merges (walrus FINDING: := from string-literal/c_str RHS infers const char* \u2014 probe tmp/advprobes/probe_walrus.mad \u2014 so all six took the owner-stated fallback `var x = <expr>;`) + all 90 value->var spellings",
    "M3 @6fc67e0c: 11 real TUs (adv_*.mad) + advent.cc.json manifest; ONE include remains = adv_decls.inc (66 externs + 78 prototypes, cross-used only; 58 fns + 7 globals module-private); adventure_parity.sh drives the project invocation; 94/94 first run",
@@ -23,12 +23,13 @@
    "@b9c5b1cb cir+engine FIXES (both silent, exit 0): file-scope ctorless-class NSDMI never applied (testnsdmiglobal); --project non-entry-TU dynamic inits NEVER RAN (one __madc_global_init export, redef permission = last module wins; adventure SIGFPE abbnum==0) \u2014 adopted the object-mode per-TU init model, engine plays .init_array (testprojectinit*)"
   ],
   "validation": "112/112 blast-radius subset (project/class/aggr/value/array/foreach/php/ui/static/global + both reducers); unittest rc=0; adventure parity 3+94 byte-identical on the CLASS-BASED project build; zero warnings",
-  "measured_residue": "dev binary live-parses embedded ns headers PER TU: game 0.7s->5.0s, A10 gate 99s->8m23s; packed release runs the 2-TU ns probe 0.10s vs 1.08s dev \u2014 follow-up work item = share the embedded-header parse across TU Programs under --project (startup-latency family R4). Not a per-test timeout.",
+  "measured_residue": "JIT launch numbers (container): Python 0.10s; packed 11-TU 1.5s (~0.12s/TU FOREST work: 66MB zstd decode, 145/339 units \u2014 the <string> closure from bits/std_format+ns_php preludes); dev 5.2s; AOT game binary 0.007s; thaw 0.8s not-load-only. Game code itself is header-clean (owner ruling honored in code, violated by prelude decls).",
   "next": [
-   "M4 tail (owner taste): curated UFCS .method() spellings; whether adv_state accessors become Game/Player methods (systems stay free fns)",
-   "OWNER: merge timing; release batches v0.93+v0.94+Track 7; three-platform promotion",
-   "ONE fresh scripts/remote_build.sh battery at the actual merge wave (src changed: extern-var + NSDMI/project-init fixes)",
-   "Recorded perf residue: per-TU embedded-header live-parse on the unpacked dev binary (gate 99s->8m23s; packed 0.10s) \u2014 share the parse across TU Programs (startup-latency family R4)"
+   "READ docs/plans/2026-08-21-project-prelude-forest.md (the JIT plan: Leg 0 dialect-lean fragments kill the <string> closure; Leg 1 share forest per process; Leg 2 native .pyc). Execute on owner approval; format-return decision gates the S-lean sweep",
+   "Queued small fixes: project mode silently ignores --emit/--show-stats (loop TUs or error loudly); --project --emit=c11 (per-TU unique inits + __attribute__((constructor)) \u2014 measured: 9 dup __madc_global_init is the ONLY gcc link failure); thaw is 0.8s and NOT load-only (live-parses c++locale.h \u2014 bug, Leg 2 S4)",
+   "M4 tail (owner taste): curated UFCS; accessors-as-methods. Offered: isatty-gated echo/prompt for interactive play (keeps 94-log parity)",
+   "ONE fresh scripts/remote_build.sh battery at the merge wave (src changed: extern-var + NSDMI/project-init fixes)",
+   "Owner ceremonies: merge; release batches v0.93+v0.94+Track 7; three-platform promotion"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

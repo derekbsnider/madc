@@ -1,7 +1,18 @@
 # Colossal Cave Adventure (430-point) in madc — implementation plan
 
-**HANDOFF (2026-08-21, session #111). READ THIS BLOCK FULLY, then the
+**HANDOFF (2026-08-21, session #113). READ THIS BLOCK FULLY, then the
 SETTLED section, before any work.**
+
+**⚠️ THE ACTIVE ARC MOVED: the modernization pass (M1–M4 below) is
+DONE; the next arc is the JIT PYTHON-CONTENDER plan —
+`docs/plans/2026-08-21-project-prelude-forest.md` (@3cda3d83). Owner
+priority verbatim: "I need for madc to be a JIT-language contender for
+Python... the fact that we can also do AOT is a secondary bonus."
+READ THAT PLAN FIRST. It awaits owner approval + ONE owner decision
+(dialect `format()` return: ring const char* now vs value at L3 — 24
+game sites spell `format(...).c_str()`). This file remains the
+adventure/parity reference (the 94-log gate, the working method, the
+corpus).**
 
 **⚠️ THE RELEASE BOUNDARY IS MET (@4b5d6080, pushed, branch
 feature/track7-hub-projections-claude): ALL 94 IN-SCOPE REFERENCE LOGS
