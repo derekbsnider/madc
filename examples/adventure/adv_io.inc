@@ -4,15 +4,30 @@
 // \n + "> line" + \n (the reference echoes under non-tty — the
 // transcript IS stdin+stdout). Comment lines (#) are consumed silently.
 
-// Render one message: %d / %s / %S (pluralize by the previous %d) / %V
-// substitution plus the floor->ground rewrite when the player is
-// outside — the reference's vspeak, verbatim-run batched.
-void render_msg(value &out, value &text, long dval, value &sval)
+// The idx'th integer of a d-args array.
+long darg_at(value &a, long idx)
+{
+	long i = 0;
+	for ( value x : a )
+	{
+		if ( i == idx )
+			return x.as_integer();
+		i = i + 1;
+	}
+	return 0;
+}
+
+// Render one message: %d (consumes the next d-arg) / %s / %S (pluralize
+// by the previous %d) / %V substitution plus the floor->ground rewrite
+// when the player is outside — the reference's vspeak, verbatim-run
+// batched.
+void render_msg(value &out, value &text, value &dargs, value &sval)
 {
 	out = "";
 	long len = text.length();
 	long i = 0;
 	long run = 0;
+	long di = 0;
 	bool plural = false;
 	while ( i < len )
 	{
@@ -26,6 +41,8 @@ void render_msg(value &out, value &text, long dval, value &sval)
 					out += text.substr(run, i - run);
 				if ( f == 'd' )
 				{
+					long dval = darg_at(dargs, di);
+					di = di + 1;
 					out += to_string(dval).c_str();
 					plural = dval != 1;
 				}
@@ -77,7 +94,8 @@ void speak_msg(value &text)
 {
 	var r;
 	var none = "";
-	render_msg(r, text, 0, none);
+	var nod;
+	render_msg(r, text, nod, none);
 	speak_rendered(r);
 }
 
@@ -86,7 +104,8 @@ void speak_msg_noblank(value &text)
 {
 	var r;
 	var none = "";
-	render_msg(r, text, 0, none);
+	var nod;
+	render_msg(r, text, nod, none);
 	if ( r.length() == 0 )
 		return;
 	std::print("{}\n", r);
@@ -96,7 +115,29 @@ void speak_msg_d(value &text, long d)
 {
 	var r;
 	var none = "";
-	render_msg(r, text, d, none);
+	var ds;
+	php::array_push(ds, d);
+	render_msg(r, text, ds, none);
+	speak_rendered(r);
+}
+
+void speak_msg_d3(value &text, long a, long b, long c)
+{
+	var r;
+	var none = "";
+	var ds;
+	php::array_push(ds, a);
+	php::array_push(ds, b);
+	php::array_push(ds, c);
+	render_msg(r, text, ds, none);
+	speak_rendered(r);
+}
+
+void speak_msg_s(value &text, value &s)
+{
+	var r;
+	var nod;
+	render_msg(r, text, nod, s);
 	speak_rendered(r);
 }
 
@@ -117,6 +158,20 @@ void rspeak_d(const char *name, long d)
 	var t;
 	msg_of(t, name);
 	speak_msg_d(t, d);
+}
+
+void rspeak_d3(const char *name, long a, long b, long c)
+{
+	var t;
+	msg_of(t, name);
+	speak_msg_d3(t, a, b, c);
+}
+
+void rspeak_s(const char *name, value &s)
+{
+	var t;
+	msg_of(t, name);
+	speak_msg_s(t, s);
 }
 
 // The reference's sspeak lane (DONT_KNOW / DO_WHAT / NO_SEE): plain
@@ -156,11 +211,18 @@ bool get_input(value &out)
 	for (;;)
 	{
 		if ( !cin.good() )
+		{
+			// The reference prints the prompt once at EOF.
+			std::print("> ");
 			return false;
+		}
 		string raw;
 		getline(cin, raw);
 		if ( !cin.good() && raw.length() == 0 )
+		{
+			std::print("> ");
 			return false;
+		}
 		var line = raw.c_str();
 		if ( line.length() > 0 )
 		{
@@ -187,6 +249,32 @@ void first_word(value &out, value &line)
 		i = i + 1;
 	if ( i > start )
 		out = line.substr(start, i - start);
+}
+
+// The reference's silent_yes_or_no: read an answer with no question
+// speak (the dragon bare-hands prompt already spoke).
+bool silent_ask()
+{
+	for (;;)
+	{
+		var reply;
+		if ( !get_input(reply) )
+			exit(0);
+		var w;
+		first_word(w, reply);
+		var lw = php::strtolower(w);
+		if ( lw.length() == 0 )
+		{
+			rspeak("PLEASE_ANSWER");
+			continue;
+		}
+		var h = lw.substr(0, 1);
+		if ( h == "y" )
+			return true;
+		if ( h == "n" )
+			return false;
+		rspeak("PLEASE_ANSWER");
+	}
 }
 
 // The reference's yes_or_no: re-speaks the question each round; any

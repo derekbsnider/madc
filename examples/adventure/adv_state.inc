@@ -16,14 +16,23 @@ long TURNS = 0, LIMIT = 330, ABBNUM = 5, DETAIL = 0;
 long CLOCK1 = 30, CLOCK2 = 50, DFLAG = 0, TALLY = 0;
 long IWEST = 0, IGO = 0, FOOBAR = 0, KNFLOC = 0, HOLDING = 0;
 bool CLOSNG = false, CLOSED = false, PANIC = false, WZDARK = false;
-bool NOVICE = false, SEENBIGWORDS = false;
+bool NOVICE = false, SEENBIGWORDS = false, CLSHNT = false;
+long NUMDIE = 0, NDEATHS = 3;	// deaths so far / lives (obituary count)
+long TRNLUZ = 0, SAVED = 0;	// turn/save score penalties
+long BONUS = 0;			// closing bonus: 0 none 1 splat 2 defeat 3 win
+long DKILL = 0;			// dwarves killed (A7)
 long SEQ_NEXT = 0;		// listing-order stamp for the next drop
 var ZZWORD;			// the reservoir magic word (rng_seed builds it)
 var VOC_M, VOC_A, VOC_O;	// vocabulary: word -> [ids], by class
 var NOACT;			// message-only verbs: name -> true
-var FIXEDAT;			// locname -> { seqkey: objname } fixed sides
+var FIXEDSIDES;			// objname -> {loc, seq}: the LIVE second
+				// placement of two-placed objects
 var ENT;			// entity-id memo: name -> id
 var OBJ_NAMES;			// object names in objnum order
+var OBJ_INDEX;			// object name -> objnum (1-based)
+var HINT_ORDER;			// padded-number key -> hint name
+var HINT_LC;			// hint name -> turn counter at hinted locs
+var HINT_USED;			// hint name -> true once taken
 var CMD;			// the current command bag
 var OLDOBJ;			// previous command's object (clear_command)
 
@@ -113,17 +122,45 @@ bool obj_found(long o)            { return bag_flag(o, "found"); }
 bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
 
 bool toting(long o)  { return o != 0 && ui::location(W, o) == PLAYER; }
+
+// The LIVE location of an object's fixed (second) side; 0 when it has
+// none or it is off the map.
+long fixed_side_loc(const char *name)
+{
+	if ( !php::array_key_exists(name, FIXEDSIDES) )
+		return 0;
+	var side = FIXEDSIDES[name];
+	var l = side["loc"];
+	if ( l.is_null() || l.length() == 0 )
+		return 0;
+	return E(l.c_str());
+}
+
+// Move an object's fixed side (the reference's move(obj+NOBJECTS, loc)):
+// re-stamps its listing seq; dest 0 removes it from the map.
+void move_fixed_side(const char *name, long dest)
+{
+	if ( dest )
+	{
+		var dn;
+		ui::name_of(dn, W, dest);
+		FIXEDSIDES[name]["loc"] = dn;
+	}
+	else
+		FIXEDSIDES[name]["loc"] = "";
+	FIXEDSIDES[name]["seq"] = SEQ_NEXT;
+	SEQ_NEXT = SEQ_NEXT + 1;
+}
+
 bool at_obj(long o)
 {
 	if ( !o )
 		return false;
 	if ( ui::location(W, o) == LOC )
 		return true;
-	var fx;
-	ui::get(fx, W, o, "fixed_at");
-	if ( fx.is_null() )
-		return false;
-	return E(fx.c_str()) == LOC;
+	var nm;
+	ui::name_of(nm, W, o);
+	return fixed_side_loc(nm.c_str()) == LOC;
 }
 bool here_obj(long o) { return at_obj(o) || toting(o); }
 
@@ -220,6 +257,16 @@ long static_place(long o)
 	return E(p.c_str());
 }
 
+// The STATIC original fixed-side location (converter `fixed_at`).
+long static_fixed(long o)
+{
+	var p;
+	ui::get(p, W, o, "fixed_at");
+	if ( p.is_null() )
+		return 0;
+	return E(p.c_str());
+}
+
 // The liquid in the bottle: "WATER", "OIL", or "" — by bottle state.
 void liquid_in_bottle(value &out)
 {
@@ -230,6 +277,43 @@ void liquid_in_bottle(value &out)
 		out = "WATER";
 	else if ( st == state_index_c(b, "OIL_BOTTLE") )
 		out = "OIL";
+}
+
+// Count of the listing chain (placed objects + live fixed sides) at a
+// location; `only` = the single entry's name when the count is 1.
+long objects_at_loc(value &only, long at)
+{
+	only = "";
+	long n = 0;
+	if ( !at )
+		return 0;
+	var nm_loc;
+	ui::name_of(nm_loc, W, at);
+	for ( value side : FIXEDSIDES )
+	{
+		var l = side["loc"];
+		if ( l == nm_loc )
+		{
+			var snm = side["name"];
+			only = snm;
+			n = n + 1;
+		}
+	}
+	var held;
+	ui::contents(held, W, at);
+	for ( value h : held )
+	{
+		long o = E(h.c_str());
+		var sq;
+		ui::get(sq, W, o, "seq");
+		if ( sq.is_null() )
+			continue;
+		only = h;
+		n = n + 1;
+	}
+	if ( n != 1 )
+		only = "";
+	return n;
 }
 
 // First dwarf at a location (0 = none / dwarves not active; the pirate
@@ -330,11 +414,15 @@ void init_game()
 		ui::move(W, dw, E(d.c_str()));
 	}
 
-	// Treasure bookkeeping + the fixed-side listing index. Treasures
-	// with an inventory line start NOTFOUND; everything else is found.
+	// Treasure bookkeeping, objnum index, and the LIVE fixed-side map.
+	// Treasures with an inventory line start NOTFOUND; everything else
+	// is found.
 	long tally = 0;
+	long objnum = 0;
 	for ( value on : OBJ_NAMES )
 	{
+		objnum = objnum + 1;
+		OBJ_INDEX[on.c_str()] = objnum;
 		long o = E(on.c_str());
 		if ( !o )
 			continue;
@@ -356,10 +444,21 @@ void init_game()
 			ui::get(sf, W, o, "seq_fixed");
 			if ( !sf.is_null() )
 			{
-				string key = pad_seq_key(sf.as_integer());
-				FIXEDAT[fx.c_str()][key.c_str()] = on.c_str();
+				FIXEDSIDES[on.c_str()]["name"] = on;
+				FIXEDSIDES[on.c_str()]["loc"] = fx;
+				FIXEDSIDES[on.c_str()]["seq"]
+					= sf.as_integer();
 			}
 		}
 	}
 	TALLY = tally;
+
+	// Hints in NUMBER order (converter hints_by_number — the checkhints
+	// scan order); lives from the obituary count.
+	ui::get(HINT_ORDER, W, tables, "hints_by_number");
+	for ( value hn : HINT_ORDER )
+		HINT_LC[hn.c_str()] = (long)0;
+	var tbl;
+	ui::get(tbl, W, tables, "obituaries");
+	NDEATHS = tbl.count();
 }

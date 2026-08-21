@@ -27,6 +27,7 @@ using namespace std;
 #include "adv_io.inc"
 #include "adv_vocab.inc"
 #include "adv_describe.inc"
+#include "adv_score.inc"
 #include "adv_travel.inc"
 #include "adv_actions.inc"
 #include "adv_loop.inc"
@@ -39,6 +40,9 @@ int main()
 		return 1;
 	}
 	init_game();
+	// The command bag starts CLEARED: an untouched keyed slot is
+	// null-kind, and the dispatch compares against "" (strict kinds).
+	clear_command();
 	// Deterministic default; transcripts re-seed with `seed N`.
 	rng_seed(0);
 	if ( ask_yes_no("WELCOME_YOU", "CAVE_NEARBY", "NO_MESSAGE") )
@@ -53,7 +57,7 @@ int main()
 		if ( !do_command_once() )
 			break;
 	}
-	// EOF: the reference scores and exits (slice A9); the skeleton
-	// ends quietly so fragment diffs stop at the tail.
+	// EOF: score and exit (the reference's terminate(quitgame)).
+	terminate_game(M_QUIT);
 	return 0;
 }

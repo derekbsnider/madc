@@ -337,6 +337,11 @@ def convert(doc):
         # the game's iteration order for inventory, init bookkeeping,
         # and scoring.
         "objects": [key_name(n) for n, _ in objects[1:]],
+        # Hint names in number order — the checkhints scan order (the
+        # adv-hints entity's props are not enumerable from script).
+        "hints_by_number": [h["hint"]["name"] for h in
+                            sorted(doc["hints"],
+                                   key=lambda x: x["hint"]["number"])],
         "seq_next": seq_next})
 
     return out, counts

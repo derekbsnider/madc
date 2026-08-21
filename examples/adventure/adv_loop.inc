@@ -4,14 +4,6 @@
 // word_loop 1 = executed (move next), 2 = read another command,
 // 3 = re-describe without moving (GO_TOP).
 
-void croak_stub()
-{
-	// Death/reincarnation is slice A9 — a fragment reaching it is out
-	// of scope and must FAIL loudly, never improvise output.
-	fprintf(stderr, "advent: death/croak unimplemented (A9)\n");
-	exit(3);
-}
-
 void dwarfmove_stub()
 {
 	if ( LOC == 0 || forced_loc(LOC) || loccond(NEWLOC, "NOARRR") )
@@ -62,15 +54,12 @@ bool do_move_step()
 	ui::move(W, PLAYER, LOC);
 	dwarfmove_stub();
 	if ( LOC == 0 )
-	{
-		croak_stub();
-		return false;
-	}
+		croak();
 	if ( !forced_loc(LOC) && is_dark() && WZDARK && pct(35) )
 	{
 		rspeak("PIT_FALL");
 		OLDLC2 = LOC;
-		croak_stub();
+		croak();
 		return false;
 	}
 	return true;
@@ -170,6 +159,26 @@ bool preprocess_command()
 		}
 	}
 	return true;
+}
+
+// The per-turn bookkeeping half of the reference's closecheck: turn
+// thresholds penalize and announce. The cave-closing clock machinery
+// (clock1/clock2, tally==0 deep states) is slice A9.
+void turn_bookkeeping()
+{
+	var ths;
+	ui::get(ths, W, E("adv-tables"), "turn_thresholds");
+	for ( value th : ths )
+	{
+		var t = th["threshold"];
+		if ( TURNS == t.as_integer() + 1 )
+		{
+			var pl = th["point_loss"];
+			TRNLUZ = TRNLUZ + pl.as_integer();
+			var m = th["message"];
+			speak_msg(m);
+		}
+	}
 }
 
 // Process the tokenized words: 1 = executed, 2 = read another command,
@@ -282,13 +291,17 @@ bool do_command_once()
 			return true;
 		}
 		listobjects();
+		// The reference clears the command at each re-describe (so a
+		// GO_TOP verb's object never leaks into the next command);
+		// verb/object persistence across re-INPUT (rc 2) is preserved.
+		clear_command();
 		for (;;)
 		{
 			// (closing-time stash checks land with A9)
 			WZDARK = is_dark();
 			if ( KNFLOC > 0 && KNFLOC != LOC )
 				KNFLOC = 0;
-			// (checkhints lands with A8)
+			checkhints();
 			if ( !read_command() )
 				return false;
 			if ( FOOBAR > 0 )
@@ -298,7 +311,7 @@ bool do_command_once()
 			TURNS = TURNS + 1;
 			if ( !preprocess_command() )
 				continue;
-			// (closecheck lands with A9)
+			turn_bookkeeping();
 			long rc = word_loop();
 			if ( rc == 1 )
 				return true;

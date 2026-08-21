@@ -90,12 +90,21 @@ void listobjects()
 	// LISTING-ORDER LAW: the reference's atloc lists PREPEND on drop —
 	// list by placement stamp DESCENDING. Zero-padded (999999999-seq)
 	// keys make the object bag iterate in exactly that order, and the
-	// location's fixed-side entries (converter seq_fixed) merge in.
+	// LIVE fixed-side entries merge in.
 	var nm_loc;
 	ui::name_of(nm_loc, W, LOC);
 	var byseq;
-	if ( php::array_key_exists(nm_loc.c_str(), FIXEDAT) )
-		byseq = FIXEDAT[nm_loc.c_str()];
+	for ( value side : FIXEDSIDES )
+	{
+		var l = side["loc"];
+		if ( l == nm_loc )
+		{
+			var sq = side["seq"];
+			string key = pad_seq_key(sq.as_integer());
+			var snm = side["name"];
+			byseq[key.c_str()] = snm.c_str();
+		}
+	}
 	var held;
 	ui::contents(held, W, LOC);
 	for ( value h : held )
