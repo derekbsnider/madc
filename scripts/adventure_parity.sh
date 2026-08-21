@@ -2,7 +2,8 @@
 # adventure_parity.sh — Track 7 Phase 2 gate G-A (fragment stage, slice A5;
 # plan docs/plans/2026-08-20-adventure-430-plan.md): every fragment under
 # examples/adventure/tests/fragments/ replays BYTE-IDENTICALLY through the
-# madc game. <name>.input feeds `bin/madc examples/adventure/advent.mad`;
+# madc game. <name>.input feeds `bin/madc examples/adventure/advent.cc.json`
+# (a --project build: 11 translation units, MIR-linked, advent.mad's main);
 # stdout must equal <name>.oracle exactly (cmp).
 #
 # Oracle bytes come from the reference implementation (open-adventure's
@@ -18,7 +19,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 9
 MADC=${MADC_BIN:-bin/madc}
 FRAG=examples/adventure/tests/fragments
-GAME=examples/adventure/advent.mad
+GAME=examples/adventure/advent.cc.json
 TMP=tmp/advent_parity.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT

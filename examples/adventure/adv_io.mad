@@ -5,6 +5,8 @@
 // transcript IS stdin+stdout). Comment lines (#) are consumed silently.
 
 // The idx'th integer of a d-args array.
+#include "adv_decls.inc"
+
 long darg_at(var &a, long idx)
 {
 	long i = 0;

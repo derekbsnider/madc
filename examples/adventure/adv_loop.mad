@@ -5,6 +5,8 @@
 // 3 = re-describe without moving (GO_TOP).
 
 // Apply the move the travel system chose. False = the player died.
+#include "adv_decls.inc"
+
 bool do_move_step()
 {
 	if ( outside_loc(NEWLOC) && NEWLOC != 0 && CLOSNG )

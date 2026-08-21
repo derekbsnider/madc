@@ -6,6 +6,8 @@
 // seam: PLAYER is an actor entity, not a semantic singleton — systems
 // take an actor id.
 
+#include "adv_decls.inc"
+
 long W = 0;			// hub session handle
 long PLAYER = 0;		// the player actor entity
 long STATE_E = 0;		// world-state singleton entity

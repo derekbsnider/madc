@@ -1,0 +1,13 @@
+[
+  {"file":"advent.mad","command":"madc -c advent.mad"},
+  {"file":"adv_state.mad","command":"madc -c adv_state.mad"},
+  {"file":"adv_rng.mad","command":"madc -c adv_rng.mad"},
+  {"file":"adv_io.mad","command":"madc -c adv_io.mad"},
+  {"file":"adv_vocab.mad","command":"madc -c adv_vocab.mad"},
+  {"file":"adv_describe.mad","command":"madc -c adv_describe.mad"},
+  {"file":"adv_score.mad","command":"madc -c adv_score.mad"},
+  {"file":"adv_dwarves.mad","command":"madc -c adv_dwarves.mad"},
+  {"file":"adv_travel.mad","command":"madc -c adv_travel.mad"},
+  {"file":"adv_actions.mad","command":"madc -c adv_actions.mad"},
+  {"file":"adv_loop.mad","command":"madc -c adv_loop.mad"}
+]

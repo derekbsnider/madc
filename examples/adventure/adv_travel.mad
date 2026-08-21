@@ -4,6 +4,8 @@
 // Condition failure skips past every consecutive rule with the same
 // (cond, action) signature — the reference's traveleq law.
 
+#include "adv_decls.inc"
+
 bool rule_matches(var &r, var &motion)
 {
 	var vb = r["verbs"];

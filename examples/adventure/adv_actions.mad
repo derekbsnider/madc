@@ -6,6 +6,8 @@
 // words, scoring) lands with A7-A9 — those paths exit LOUD, never
 // silently wrong.
 
+#include "adv_decls.inc"
+
 long G_TERMINATE = 1;
 long G_MOVE = 2;
 long G_WORD2 = 3;

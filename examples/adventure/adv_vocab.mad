@@ -4,6 +4,8 @@
 // -> objects -> actions -> zzword -> numeric. Word classes ride CMD as
 // small int constants; ids are the data's NAMES.
 
+#include "adv_decls.inc"
+
 long T_NONE = 0;
 long T_MOTION = 1;
 long T_OBJECT = 2;

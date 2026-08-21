@@ -6,6 +6,8 @@
 
 // The pirate spotted the player (always "handled" — he never counts as
 // a threatening dwarf). Treasure snarfing and the chest drop.
+#include "adv_decls.inc"
+
 void pirate_spots()
 {
 	long chest = E("CHEST");

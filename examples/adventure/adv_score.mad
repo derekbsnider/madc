@@ -1,5 +1,7 @@
 // ---- scoring, wrap-up, death, hints (score.c + main.c pieces) -----------
 
+#include "adv_decls.inc"
+
 long M_QUIT = 0;	// terminate modes
 long M_ENDGAME = 1;
 long M_SCOREGAME = 2;

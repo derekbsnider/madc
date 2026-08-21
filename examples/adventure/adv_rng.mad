@@ -3,6 +3,8 @@
 // dwarf walks and pct rolls then replay exactly. State is a script
 // global for the single session (A10 banks it into world-state).
 
+#include "adv_decls.inc"
+
 long LCG_X = 0;
 
 long randrange(long range)

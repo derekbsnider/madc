@@ -3,6 +3,8 @@
 // Speak the kk'th entry of an object's per-state text array (the
 // reference's pspeak): descriptions = look, changes = change, sounds =
 // hear, texts = study. A null or missing entry prints nothing.
+#include "adv_decls.inc"
+
 void pspeak_prop(long o, const char *prop, long kk, bool blank)
 {
 	if ( kk < 0 )
