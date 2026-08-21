@@ -1,0 +1,24 @@
+// python::format on the ONE format engine (rt_format.c — the same
+// iterator + field primitives std::format lowers to): {} automatic and
+// {0} manual indexing, real format specs, {{ }} escaping, per-kind value
+// dispatch. The value-out form is the dialect-lean primary; errors render
+// the engine's loud inline marker (never silence).
+int main()
+{
+	var args;
+	php::array_push(args, "World");
+	php::array_push(args, 42);
+	var result;
+	python::format(result, "Hello {}, the answer is {}", args);
+	println("{}", result);
+	var manual;
+	python::format(manual, "{1} then {0}", args);
+	println("{}", manual);
+	var spec;
+	python::format(spec, "[{0:>7}] {{literal}} [{1:#06x}]", args);
+	println("{}", spec);
+	var overflow;
+	python::format(overflow, "{} {} {}", args);
+	println("{}", overflow);
+	return 0;
+}

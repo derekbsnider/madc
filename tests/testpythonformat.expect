@@ -1,0 +1,4 @@
+Hello World, the answer is 42
+42 then World
+[  World] {literal} [0x002a]
+World 42 [python format failed: argument index out of range]

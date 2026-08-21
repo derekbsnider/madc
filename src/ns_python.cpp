@@ -25,6 +25,8 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include "rt/rt_dump.h"
+#include "rt/rt_format.h"
 
 using namespace std;
 
@@ -196,27 +198,108 @@ std::string *python_replace(std::string *ptr, const char *old_str, const char *n
 	return ptr;
 }
 
-// python::format — simple Python-style string formatting
-// "Hello {}, you are {}" with positional args from array
+// python::format — Python str.format on the ONE format engine
+// (src/rt/rt_format.c): the same iterator (__madc_fmt_next) and field
+// primitives std::format's compile-time lowering emits — Python's format
+// spec is std::format's ancestor (via fmtlib), so the grammar is shared
+// (owner directive 2026-08-21: one engine, never a second substituter).
+// The args arrive as a RUNTIME array of values, so each field dispatches
+// through __madc_fmt_value (the per-kind dispatcher, spec passthrough).
+// Gains over the retired naive {}-substituter: {0} manual indexing, real
+// specs ({:>8}, {:.2f}, {:x}), and {{ }} escaping. Errors (malformed
+// string, index out of range, manual/automatic mix) render the engine's
+// own loud inline marker — the __madc_fmt_value convention — never
+// silence and never a throw across an embedding boundary.
+static void python_format_fail(void *sink, const char *why)
+{
+	std::string m = std::string("[python format failed: ")
+		      + (why ? why : "?") + "]";
+	__madc_fmt_text(sink, m.data(), (long long)m.size());
+}
+
+static void python_format_engine(const char *f, long long n,
+				 madc::value *args, void *sink)
+{
+	const std::vector<madc::value> *data =
+		(args && args->is_array()) ? &args->as_array() : NULL;
+	long long pos = 0;
+	int automatic = -1;	// -1 unknown, 1 automatic ({}), 0 manual ({0})
+	size_t next_arg = 0;
+	for ( ;; )
+	{
+		madc_fmt_item it;
+		const char *err = NULL;
+		long long nx = __madc_fmt_next(f, n, pos, &it, &err);
+		if ( nx == -1 )
+			break;
+		if ( nx == -2 )
+		{
+			python_format_fail(sink, err);
+			break;
+		}
+		pos = nx;
+		if ( it.kind == MADC_FMT_TEXT )
+		{
+			if ( it.text_n > 0 )
+				__madc_fmt_text(sink, it.text, it.text_n);
+			continue;
+		}
+		size_t ai;
+		if ( it.arg_id >= 0 )
+		{
+			if ( automatic == 1 )
+			{
+				python_format_fail(sink,
+					"cannot mix manual and automatic indexing");
+				break;
+			}
+			automatic = 0;
+			ai = (size_t)it.arg_id;
+		}
+		else
+		{
+			if ( automatic == 0 )
+			{
+				python_format_fail(sink,
+					"cannot mix manual and automatic indexing");
+				break;
+			}
+			automatic = 1;
+			ai = next_arg++;
+		}
+		if ( !data || ai >= data->size() )
+		{
+			python_format_fail(sink, "argument index out of range");
+			continue;
+		}
+		__madc_fmt_value(sink, it.spec, it.spec_n, &(*data)[ai]);
+	}
+}
+
 std::string *python_format(std::string *result, const char *fmt, madc::value *args)
 {
-	std::string &res = *result;
 	std::string f = python_text_arg(fmt);
-	res = f;
-	if ( !args->is_array() )
-		return result;
-	const std::vector<madc::value> &data = args->as_array();
-	size_t arg_idx = 0;
-	size_t pos = 0;
-	while ( (pos = res.find("{}", pos)) != std::string::npos && arg_idx < data.size() )
-	{
-		std::string val;
-		ns_common::value_to_string(data[arg_idx], val);
-		res.replace(pos, 2, val);
-		pos += val.length();
-		++arg_idx;
-	}
+	void *sink = __madc_dump_sink_open();
+	python_format_engine(f.data(), (long long)f.size(), args, sink);
+	result->assign(__madc_dump_sink_text(sink),
+		       __madc_dump_sink_length(sink));
+	__madc_dump_sink_close(sink);
 	return result;
+}
+
+// The dialect-lean primary (value out — dialect-lean.md: every polyglot
+// public needs a lean form; the std::string shape above is the guarded
+// C++-interop convenience).
+madc::value *python_format_value(madc::value *out, const char *fmt,
+				 madc::value *args)
+{
+	std::string f = python_text_arg(fmt);
+	void *sink = __madc_dump_sink_open();
+	python_format_engine(f.data(), (long long)f.size(), args, sink);
+	*out = madc::value(std::string(__madc_dump_sink_text(sink),
+				       (size_t)__madc_dump_sink_length(sink)));
+	__madc_dump_sink_close(sink);
+	return out;
 }
 
 
@@ -237,4 +320,5 @@ int64_t __py_isalnum(const char *a) { return python_isalnum(a); }
 int64_t __py_isspace(const char *a) { return python_isspace(a); }
 std::string *__py_replace(std::string *a, const char *b, const char *c) { return python_replace(a, b, c); }
 std::string *__py_format(std::string *a, const char *b, madc::value *c) { return python_format(a, b, c); }
+madc::value *__py_format_value(madc::value *a, const char *b, madc::value *c) { return python_format_value(a, b, c); }
 }

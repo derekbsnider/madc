@@ -1,22 +1,21 @@
-// Embedded namespace headers are SELF-CONTAINED: including <ns_php> /
-// <ns_rust> FIRST — before any <string>/<iostream> — must compile and run.
-// The script-facing ns_* headers declare their publics over std::string but
-// carried no #include <string>, so `#include <ns_php>` as the first line
-// errored INSIDE the embedded header ("ns_php:2:15: use of undeclared
-// identifier 'string'"). g++ canon: a header includes what it uses.
+// Embedded namespace headers are SELF-CONTAINED under the dialect-lean
+// law (dialect-lean.md, owner 2026-08-21): including <ns_php> /
+// <ns_rust> FIRST — before any <string> — must compile and serve the
+// LEAN (value/array/char*) surface. The std::string overloads are
+// guarded C++-INTEROP conveniences that exist only when <string>
+// precedes the header (the <ns_madc> convention; the pre-law contract
+// this test used to pin — headers self-include <string> — is reversed:
+// the always-served surface must never depend on the <string> parse).
+// The <string>-first interop half is pinned by testarraypush.
 #include <ns_php>
 #include <ns_rust>
 #include <cstdio>
 
 int main()
 {
-	std::string s = "  hello  ";
-	php::trim(s);
-	printf("[%s]\n", s.c_str());
-
-	std::string r = "  world  ";
-	rust::trim(r);
-	printf("[%s]\n", r.c_str());
+	printf("[%s]\n", php::strtolower("HeLLo"));
+	printf("[%ld]\n", rust::len("world"));
+	printf("%d\n", rust::contains("haystack", "st") != 0);
 
 	array a;
 	php::array_push(a, "one");

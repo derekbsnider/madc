@@ -45,18 +45,28 @@ Python-unique string operations: title case, case swapping, string alignment, ze
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `format(result, fmt, args)` | Python-style `{}` formatting | See below |
+| `format(result, fmt, args)` | Python-style formatting on the shared `std::format` engine | See below |
 
-The `format` function takes a format string with `{}` placeholders and a MadArray of values:
+`format` runs the same engine as madc's `std::format` (Python's format
+spec is std::format's ancestor, so the grammar is shared): `{}`
+automatic and `{0}` manual indexing, format specs (`{:>8}`, `{:.2f}`,
+`{:#06x}`), and `{{ }}` escaping, with each argument formatted by its
+runtime value kind. Errors (malformed string, index out of range,
+manual/automatic mix) render a loud inline
+`[python format failed: ...]` marker — never silence.
+
+The primary form takes a `value` result (dialect-lean); a `std::string`
+result overload exists when `<string>` precedes `<ns_python>`:
 
 ```c
-array args;
+var args;
 php::array_push(args, "World");
 php::array_push(args, 42);
-string fmt = "Hello {}, the answer is {}";
-string result;
-python::format(result, fmt, args);
+var result;
+python::format(result, "Hello {}, the answer is {}", args);
 // result: "Hello World, the answer is 42"
+python::format(result, "{1:#06x} before {0:>8}", args);
+// result: "0x002a before    World"
 ```
 
 ## Example

@@ -5,6 +5,7 @@
 // BEFORE this header (the <ns_madc> guard convention; auto-include
 // orders <string> first, explicit includers write it above this line).
 extern "C" {
+    value *__py_format_value(value *, const char *, array *);
     int64_t __py_count(const char *, const char *);
     int64_t __py_startswith(const char *, const char *);
     int64_t __py_endswith(const char *, const char *);
@@ -15,6 +16,10 @@ extern "C" {
 }
 
 namespace python {
+    // Python str.format on the shared std::format engine ({} automatic,
+    // {0} manual, format specs, {{ }} escaping); the value-out lean
+    // primary — the std::string form below is the guarded convenience.
+    value &format(value &out, const char *fmt, array &args) { __py_format_value(&out, fmt, &args); return out; }
     int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
     int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
     int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
