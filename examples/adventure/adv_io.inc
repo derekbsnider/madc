@@ -115,8 +115,7 @@ void speak_msg_d(value &text, long d)
 {
 	var r;
 	var none = "";
-	var ds;
-	php::array_push(ds, d);
+	var ds = { d };
 	render_msg(r, text, ds, none);
 	speak_rendered(r);
 }
@@ -125,10 +124,7 @@ void speak_msg_d3(value &text, long a, long b, long c)
 {
 	var r;
 	var none = "";
-	var ds;
-	php::array_push(ds, a);
-	php::array_push(ds, b);
-	php::array_push(ds, c);
+	var ds = { a, b, c };
 	render_msg(r, text, ds, none);
 	speak_rendered(r);
 }
