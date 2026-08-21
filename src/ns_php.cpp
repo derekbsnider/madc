@@ -575,7 +575,12 @@ int64_t php_intval_value(const madc::value *v)
 	if ( v->is_real() )
 		return (int64_t)v->as_real();
 	if ( v->is_string() )
-		return php_intval_cstr((const char *)v->data());
+	{
+		// The payload is not NUL-terminated by contract (the
+		// file_exists_value convention) — bound it before strtoll.
+		std::string p((const char *)v->data(), v->size());
+		return php_intval_cstr(p.c_str());
+	}
 	return 0;
 }
 
