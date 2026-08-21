@@ -52,6 +52,10 @@ struct madc_dump_sink {
     size_t len;
     size_t cap;
     int    oom;			/* a failed grow is remembered, never silent */
+    void  *out;			/* non-NULL: a pass-through FILE* sink (the
+				   std::print(stderr, ...) form) — bytes go
+				   straight to that stream, the buffer
+				   machinery stays unused */
 };
 
 void *__madc_dump_sink_open(void)
@@ -64,6 +68,23 @@ void *__madc_dump_sink_open(void)
     s->len = 0;
     s->cap = 0;
     s->oom = 0;
+    s->out = NULL;
+    return (void *)s;
+}
+
+/* A pass-through sink onto an open stdio stream (FILE* as void* — the
+ * extern-C boundary never names FILE). std::print(stderr, ...) lowers
+ * against one of these; __madc_dump_sink_close releases it like any
+ * sink. A NULL stream degrades to the NULL sink (stdout), never a
+ * crash. */
+void *__madc_dump_sink_file(void *stream)
+{
+    struct madc_dump_sink *s;
+    if (!stream)
+	return NULL;
+    s = (struct madc_dump_sink *)__madc_dump_sink_open();
+    if (s)
+	s->out = stream;
     return (void *)s;
 }
 
@@ -114,6 +135,10 @@ static void sink_write(void *sink, const char *s, size_t n)
 	return;
     if (!k) {
 	fwrite(s, 1, n, stdout);
+	return;
+    }
+    if (k->out) {
+	fwrite(s, 1, n, (FILE *)k->out);
 	return;
     }
     if (k->oom)

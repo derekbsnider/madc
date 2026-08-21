@@ -1,0 +1,18 @@
+// madc::getline — line input, value-first, zero includes: one
+// '\n'-terminated line from stdin into a string-kind value per call
+// (newline consumed, not stored). false only when NOTHING was read
+// (clean EOF); an empty line and a final unterminated line both
+// deliver true — the std::getline(cin, string&) contract, carried by
+// the carrier. The bare `madc` head auto-includes <ns_madc>.
+int main()
+{
+	long n = 0;
+	var line;
+	while ( madc::getline(line) )
+	{
+		n++;
+		println("{}: {} ({})", n, line, line.size());
+	}
+	println("lines {}", n);
+	return 0;
+}

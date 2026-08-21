@@ -684,6 +684,13 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"print", "bits/std_format"},
 	{"println", "bits/std_format"},
 
+	// The stdio streams: std::print(stderr, ...) in a zero-include
+	// script needs stderr's lazy registration, which rides the
+	// stdio.h include flag.
+	{"stderr", "stdio.h"},
+	{"stdout", "stdio.h"},
+	{"stdin", "stdio.h"},
+
 	{"php", "ns_php"},
 	{"perl", "ns_perl"},
 	{"python", "ns_python"},
@@ -691,6 +698,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"js", "ns_js"},
 	{"rust", "ns_rust"},
 	{"madc", "ns_madc"},
+	{"ui", "ns_ui"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -780,6 +788,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_js",
 	"ns_rust",
 	"ns_madc",
+	"ns_ui",
 	NULL
     };
 
@@ -803,14 +812,24 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 
 static size_t auto_include_insertion_index(const TokenStream &tokens,
 					   size_t limit,
-					   const char *source_name)
+					   const char *source_name,
+					   const std::set<const char *> &user_units)
 {
     if ( !source_name || !*source_name )
 	return 0;
     for ( size_t i = 0; i < limit; ++i )
     {
 	TokenBase *tb = tokens[i];
-	if ( tb && tb->file && strcmp(tb->file, source_name) == 0 )
+	if ( !tb || !tb->file )
+	    continue;
+	// The prelude belongs BEFORE the first USER-CODE token: the main
+	// file, or any QUOTED user module (auto_include_user_units — the
+	// same system-vs-user discriminator the identifier scan applies).
+	// Matching only the main file put the fragment AFTER a module's
+	// tokens, so a bare `format` inside `#include "mod.inc"` parsed
+	// before its declaration existed.
+	if ( strcmp(tb->file, source_name) == 0
+	  || user_units.count(tb->file) )
 	    return i;
     }
     return limit;
@@ -1092,7 +1111,8 @@ void Program::inject_pending_auto_includes()
 
     size_t include_start = tokens.size();
     size_t insert_at = auto_include_insertion_index(tokens, include_start,
-						    source.fname());
+						    source.fname(),
+						    auto_include_user_units);
 
     while ( !pending_auto_include_headers.empty() )
     {
@@ -1889,6 +1909,7 @@ void Program::_tokenizer_init()
     _include_string = false;
     _include_ns_madc = false;
     _value_stream_operator_injected = false;
+    auto_include_user_units.clear();
     included_files.clear();
     include_guard_by_file.clear();
     pending_auto_include_headers.clear();
@@ -5506,7 +5527,21 @@ TokenBase *Program::_getToken()
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-		    suppress_auto_include_scan = true;
+		    // A SYSTEM header's internal identifiers must never trigger
+		    // the auto-include convenience scan. A QUOTED include of the
+		    // user's own file is the user's dialect code — bare
+		    // print/php::/value identifiers there get the same
+		    // auto-include service the main file gets (suppressing both
+		    // is the residue that forced advent.mad to spell out its
+		    // includes). A quoted include that resolves INTO a system
+		    // path stays suppressed — classify by the resolved path,
+		    // not the spelling. User units are also RECORDED: the
+		    // auto-include prelude must insert before the first
+		    // user-code token, module or main.
+		    if ( is_system || is_system_header_path(full_path.c_str()) )
+			suppress_auto_include_scan = true;
+		    else
+			auto_include_user_units.insert(intern_file(full_path));
 		    source = Source();
 		    // ONE owner for "this resolved include's bytes" (disk,
 		    // then the forest's raw-source slot) — the same reader

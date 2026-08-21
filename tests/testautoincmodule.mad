@@ -1,0 +1,19 @@
+// Auto-include + auto-namespace resolution reach QUOTED USER MODULES —
+// the zero-include contract (the advent.mad residue): bare
+// print/println/format resolve as the always-available intrinsics, and
+// php:: auto-includes, with the identifiers' FIRST use inside a
+// `#include "module"` file. The prelude inserts before the module's
+// tokens (auto_include_user_units), and the scan stays suppressed only
+// for system headers. Also pins php::file_exists (PHP parity:
+// directories count) and the bare std-call fallback under --std=madc.
+#include "autoincmod_helper.inc"
+
+int main()
+{
+	var w = "ok";
+	var loud;
+	shout(loud, w);
+	println("main got {}", loud);
+	println("paths {}", probe_paths() ? 1 : 0);
+	return 0;
+}

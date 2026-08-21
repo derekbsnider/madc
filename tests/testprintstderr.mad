@@ -1,0 +1,17 @@
+// std::print / println to a STREAM — the C++23 [print.fun] FILE* forms,
+// bare-spelled (madc dialect): println(stderr, ...) / print(stderr, ...)
+// lower through a pass-through FILE sink (__madc_dump_sink_file) with
+// the same compile-time format validation as the stdout forms. The
+// .expect pins the stdout lines only (the exe/obj lanes drop stderr);
+// the fd ROUTING itself is pinned by the JIT lane's merged capture
+// ordering plus a one-time manual 2>/dev/null verification recorded in
+// the commit.
+int main()
+{
+	println("out one {}", 1);
+	println(stderr, "err two {}", 2);
+	print(stderr, "err {}+{}", 3, 4);
+	println(stderr, "");
+	println("out five {:>4}", 5);
+	return 0;
+}

@@ -65,6 +65,14 @@ namespace madc {
     void context_set_string(value &ctx, const char *key, const char *v);
     void context_set_array(value &ctx, const char *key, value &v);
 
+    // Line input, value-first: read one '\n'-terminated line from stdin
+    // into a string-kind value (newline consumed, not stored). Returns
+    // false only when NOTHING was read (clean EOF) — a final unterminated
+    // line still returns true with its text, and an empty line returns
+    // true with "". The std::getline(cin, string&) contract, carried by
+    // the carrier.
+    bool getline(value &out);
+
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes
     // this header in this translation unit (libstdc++/libc++ guard).

@@ -19,4 +19,12 @@ namespace std {
     template<class... Ts> std::string format(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void print(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void println(const char *__fmt, const Ts &...__vs);
+    // C++23 [print.fun] stream-directed forms — std::print(stderr, ...).
+    // The stream parameter is spelled void* so this always-available
+    // fragment never depends on <stdio.h>'s FILE: any FILE* converts
+    // implicitly, while a const char* format string cannot (const loss),
+    // so the two-overload set stays unambiguous. The lowering
+    // (cir_format.cpp) routes on the ARGUMENT's type either way.
+    template<class... Ts> void print(void *__stream, const char *__fmt, const Ts &...__vs);
+    template<class... Ts> void println(void *__stream, const char *__fmt, const Ts &...__vs);
 }
