@@ -1,0 +1,56 @@
+## Pirate mustn't take pyramid from plover/dark rooms (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1830473132
+in
+take lamp
+xyzzy
+on
+e
+take cage
+w
+w
+w
+take bird
+w
+d
+d
+free bird
+w
+e
+s
+n
+u
+s
+n
+d
+n
+n
+plugh
+extin
+plugh
+on
+s
+s
+sw
+w
+kill
+y
+e
+e
+d
+n
+n
+plugh
+out
+s
+w
+n
+s
+s
+n
+in
+plugh
+plove
+inven

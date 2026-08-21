@@ -1,0 +1,9 @@
+## Carry when only one object is present
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+in
+carry lamp
+out
+drop lamp
+carry

@@ -1,0 +1,120 @@
+## Elicit the maze hint.
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1071883378
+in
+take lamp
+say xyzzy
+take rod
+e
+take cage
+w
+on
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+drop rod
+take bird
+take jade
+e
+e
+e
+off
+xyzzy
+drop jade
+xyzzy
+on
+w
+w
+w
+take rod
+d
+w
+wave rod
+drop rod
+ew
+w
+w
+s
+s
+s
+n
+look
+w
+e
+e
+w
+n
+n
+sw
+up
+take axe
+e
+e
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+throw axe
+take axe
+w
+w
+w
+w
+throw axe
+take axe
+throw axe
+take axe
+throw axe
+take axe
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+w
+n
+s
+e
+w
+n
+s
+e
+sw
+y
+y

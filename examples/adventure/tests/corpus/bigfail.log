@@ -1,0 +1,316 @@
+## Test many nonlethal failure conditions
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# See comments in this log
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+take rod
+e
+take cage
+w
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take necklace
+drop rod
+take bird
+take rod
+d
+d
+free bird
+drop rod
+drop cage
+take cage
+take bird
+w
+take coins
+e
+s
+take jewelry
+n
+up
+s
+take gold
+n
+d
+n
+n
+plugh
+extinguish lamp
+drop coins
+drop jewelry
+drop necklace
+drop gold
+plugh
+on
+s
+take silver
+s
+sw
+take axe
+w
+kill dragon
+yes
+drink blood
+take rug
+e
+e
+up
+d
+n
+n
+off
+plugh
+inven
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+s
+plover
+s
+s
+take rod
+up
+w
+wave rod
+drop rod
+west
+take diamonds
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+e
+e
+throw axe
+take axe
+n
+n
+n
+off
+plugh
+drop ruby
+drop diamonds
+drop pyramid
+plugh
+on
+s
+s
+u
+n
+n
+d
+bedquilt
+throw axe
+take axe
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+H'CFL
+n
+n
+nw
+u
+u
+u
+u
+ne
+take ebony
+sw
+d
+d
+d
+d
+d
+take water
+s
+s
+s
+s
+d
+s
+d
+water plant
+u
+drop appendage
+e
+d
+get oil
+u
+w
+d
+climb
+w
+n
+oil door
+drop bottle
+n
+take trident
+w
+d
+se
+n
+w
+drop trident
+drop ebony
+drop axe
+drop lantern
+e
+take emerald
+w
+take lamp
+take axe
+take ebony
+take trident
+nw
+s
+take vase
+# Test vase breakage
+break vase
+break vase
+se
+throw axe
+take axe
+e
+w
+ne
+e
+n
+# Here we are at the Shell Room.  Fail to carry out bivalves
+take clam
+unlock clam
+s
+open clam
+drop clam
+open clam
+read oyster
+take oyster
+s
+drop oyster
+s
+# OK, bivalve-carry test is done
+u
+e
+u
+n
+off
+plugh
+drop pillow
+drop trident
+drop emerald
+drop ebony
+take keys
+take food
+take coins
+plugh
+on
+s
+d
+w
+d
+n
+d
+d
+take pearl
+u
+u
+s
+w
+w
+w
+w
+d
+climb
+w
+get eggs
+n
+take bottle
+n
+w
+d
+sw
+u
+toss eggs
+ne
+ne
+# Bear-verb test. Try feeding without food before feeding with
+barren
+drop food
+in
+attack
+unlock chain
+feed bear
+out
+take food
+in
+feed bear
+carry bear
+unlock chain
+take chain
+attack bear
+feed bear
+take bear
+fork
+ne
+e
+take spices
+drop keys
+fork
+w
+w
+sw
+free bear
+take bear
+sw
+n
+quit

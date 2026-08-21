@@ -1,0 +1,19 @@
+## Elicit hint for dealing with urn (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE Policy decision - no point in emulating advent430's extra \n here
+n
+seed 1495951709
+u
+n
+n
+n
+z
+z
+z
+z
+z
+z
+z
+y
+y

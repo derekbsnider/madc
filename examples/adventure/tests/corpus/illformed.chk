@@ -1,0 +1,153 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> foo
+
+Please answer the question.
+
+Welcome to Adventure!!  Would you like instructions?
+
+> 
+
+Please answer the question.
+
+Welcome to Adventure!!  Would you like instructions?
+
+> y
+
+Somewhere nearby is Colossal Cave, where others have found fortunes in
+treasure and gold, though it is rumored that some who enter are never
+seen again.  Magic is said to work in the cave.  I will be your eyes
+and hands.  Direct me with commands of 1 or 2 words.  I should warn
+you that I look at only the first five letters of each word, so you'll
+have to enter "northeast" as "ne" to distinguish it from "north".
+You can type "help" for some general hints.  For information on how
+to end your adventure, scoring, etc., type "info".
+			      - - -
+This program was originally developed by Willie Crowther.  Most of the
+features of the current program were added by Don Woods.
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1635997320
+
+Seed set to 1635997320
+
+You're in front of building.
+
+> back
+
+You can't get there from here.
+
+You're in front of building.
+
+> take grate
+
+I see no grate here.
+
+> no rub
+
+OK
+
+> say axe
+
+Okay, "axe".
+
+> say rub
+
+Okay, "rub".
+
+> say grate
+
+Okay, "grate".
+
+> _
+
+Sorry, I don't know the word "_".
+
+> back
+
+Sorry, but I no longer seem to remember how it was you got here.
+
+You're in front of building.
+
+> waste
+
+This command requires a numeric argument.
+
+You're in front of building.
+
+> seed
+
+This command requires a numeric argument.
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> eat grate
+
+I see no grate here.
+
+> 23
+
+Sorry, I don't know the word "23".
+
+> eat building
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> in
+
+I don't know in from out here.  Use compass points or name something
+in the general direction you want to go.
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> say F'UNJ
+
+Nothing happens.
+
+> in
+
+I don't know in from out here.  Use compass points or name something
+in the general direction you want to go.
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> keys
+
+What do you want to do with the keys?
+
+> 
+You scored 27 out of a possible 430, using 17 turns.
+
+You are obviously a rank amateur.  Better luck next time.
+
+To achieve the next higher rating, you need 19 more points.

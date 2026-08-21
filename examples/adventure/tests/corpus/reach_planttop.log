@@ -1,0 +1,55 @@
+## LOC_PLANTTOP (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+e
+take
+w
+w
+w
+take
+w
+d
+d
+free bird
+w
+e
+s
+s
+n
+d
+n
+n
+off
+plugh
+take water
+plugh
+on
+w
+w
+w
+s
+w
+s
+s
+s
+w
+d
+e
+s
+s
+u
+n
+n
+d
+bedqu
+s
+s
+d
+water plant
+climb

@@ -1,0 +1,29 @@
+## Jump into a pit and die, refuse reincarnation
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1495774850
+in
+take keys
+take lamp
+out
+s
+s
+s
+open grate
+d
+# go back up and down again because of coverage
+u
+d
+w
+w
+light lamp
+w
+w
+w
+# attempt and fail to traverse the crack because coverage
+crack
+down
+w
+jump
+n

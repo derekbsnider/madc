@@ -1,0 +1,366 @@
+## Test verbs on urn
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+take rod
+e
+take cage
+w
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take necklace
+drop rod
+take bird
+take rod
+d
+d
+free bird
+drop rod
+drop cage
+take cage
+take bird
+w
+take coins
+e
+s
+take jewelry
+n
+up
+s
+take gold
+n
+d
+n
+n
+plugh
+extinguish lamp
+drop coins
+drop jewelry
+drop necklace
+drop gold
+plugh
+on
+s
+take silver
+s
+sw
+take axe
+w
+kill dragon
+yes
+carry blood
+drink blood
+take rug
+e
+e
+up
+d
+n
+n
+off
+plugh
+inven
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+s
+plover
+s
+s
+take rod
+up
+w
+wave rod
+drop rod
+west
+take diamonds
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+e
+e
+throw axe
+take axe
+n
+n
+n
+off
+plugh
+drop ruby
+drop diamonds
+drop pyramid
+plugh
+on
+s
+s
+u
+n
+n
+d
+bedquilt
+throw axe
+take axe
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+H'CFL
+n
+n
+nw
+u
+u
+u
+u
+ne
+take ebony
+sw
+d
+d
+d
+d
+d
+take water
+s
+s
+s
+s
+d
+s
+d
+water plant
+u
+w
+u
+reservoir
+take water
+s
+s
+d
+s
+drop appendage
+e
+d
+drink oil
+get oil
+drink water
+get oil
+u
+w
+d
+climb
+w
+n
+oil door
+drop bottle
+n
+take trident
+w
+d
+se
+n
+w
+drop trident
+drop ebony
+drop axe
+drop lantern
+e
+take emerald
+w
+take lamp
+take axe
+take ebony
+take trident
+nw
+s
+take vase
+se
+e
+take pillow
+w
+drop axe
+ne
+e
+n
+open clam
+s
+u
+e
+u
+n
+off
+plugh
+drop pillow
+drop vase
+drop trident
+drop emerald
+drop ebony
+take keys
+take food
+plugh
+on
+s
+d
+w
+d
+n
+d
+d
+take pearl
+u
+u
+s
+w
+w
+w
+w
+d
+climb
+w
+get eggs
+n
+take bottle
+n
+w
+d
+sw
+u
+toss eggs
+ne
+ne
+barren
+in
+feed bear
+unlock chain
+take chain
+take bear
+fork
+ne
+e
+take spices
+drop keys
+fork
+w
+w
+sw
+free bear
+inven
+sw
+sw
+d
+se
+se
+w
+d
+get oil
+up
+e
+take axe
+w
+w
+d
+climb
+w
+fee
+fie
+foe
+foo
+take eggs
+s
+d
+u
+w
+u
+s
+e
+e
+n
+n
+off
+plugh
+drop eggs
+drop pearl
+drop spices
+drop chain
+take rug
+take ruby
+take emerald
+out
+w
+n
+n
+n
+# Everything to here copied from endgame428
+carry urn
+light urn
+# Changed below from "fill urn" in order to test more code
+pour bottle
+fill bottle
+drink oil
+light
+light urn
+fill urn
+read urn
+look
+extinguish
+extinguish
+look
+light urn
+light
+look
+extinguish urn
+extinguish
+look
+fly

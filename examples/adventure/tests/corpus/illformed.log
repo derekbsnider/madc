@@ -1,0 +1,31 @@
+## Test for various cases not found in walkthroughs.
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE This is busted under advent430 -- see comments within.
+foo
+
+y
+seed 1635997320
+back
+# Caused crashes and hangs before
+take grate
+no rub
+# Next three lines were buggy
+say axe
+say rub
+say grate
+_
+back
+# advent430 doesn't have this command
+waste
+# seed should cause a compint when argumentless,
+seed
+eat grate
+23
+eat building
+in
+# Z'ZZZ Word correct, but does nothing
+say F'UNJ
+# Meant to evoke "I don't know in from out here."
+in
+keys

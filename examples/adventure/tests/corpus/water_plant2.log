@@ -1,0 +1,91 @@
+## Check that pour correctly switches among plant states (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE Behavior differs due to a parser bug fix.
+n
+seed 183847312
+in
+take lamp
+xyzzy
+on
+e
+take cage
+w
+w
+w
+take bird
+w
+d
+d
+free bird
+w
+e
+n
+n
+d
+n
+n
+plugh
+extin
+plugh
+on
+s
+s
+sw
+w
+kill
+y
+e
+e
+u
+d
+n
+n
+off
+plugh
+out
+s
+w
+n
+s
+s
+n
+in
+take water
+plugh
+on
+s
+s
+s
+u
+w
+s
+w
+s
+w
+n
+n
+n
+d
+e
+u
+n
+n
+d
+bedqu
+slab
+s
+d
+water plant
+u
+w
+u
+reser
+n
+take water
+s
+s
+s
+d
+s
+water plant

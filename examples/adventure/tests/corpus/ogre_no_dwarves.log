@@ -1,0 +1,28 @@
+## Try to attack ogre with no dwarves present (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 25508795
+in
+take lamp
+xyzzy
+on
+take rod
+w
+w
+w
+d
+w
+wave rod
+w
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+attack

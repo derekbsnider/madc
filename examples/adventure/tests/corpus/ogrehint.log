@@ -1,0 +1,117 @@
+## Elicit the ogre hint.
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 437547289
+seed 1071883378
+in
+take lamp
+xyzzy
+take rod
+e
+take cage
+w
+on
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+drop rod
+take bird
+take jade
+e
+e
+e
+off
+xyzzy
+drop jade
+xyzzy
+on
+w
+w
+w
+take rod
+d
+w
+wave rod
+drop rod
+e
+n
+free bird
+take bird
+s
+take jewelry
+n
+sw
+w
+kill dragon
+yes
+drink blood
+e
+e
+n
+take silver
+n
+off
+plugh
+drop jewelry
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take food
+plugh
+on
+plover
+ne
+take pyramid
+take axe
+s
+plover
+s
+d
+u
+s
+up
+w
+w
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+n
+n
+kill dwarf
+throw axe
+take axe
+throw axe
+take axe
+throw axe
+feed ogre
+y
+y
+w
+drop food
+back
+feed ogre
+inven

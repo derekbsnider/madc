@@ -62,9 +62,51 @@ if cmp -s "$TMP/nc.out" "$TMP/corrupt.oracle"; then
     fail=1
 fi
 
+# ---- the whole-log corpus (gate stage A10) --------------------------------
+# Every vendored open-adventure transcript replays byte-identically:
+# <name>.log feeds the game, stdout must equal <name>.chk exactly.
+# Exclusions shrink only by removing a pair (see corpus/EXCLUDED.md) —
+# the runner has no skip logic.
+CORPUS=examples/adventure/tests/corpus
+cran=0
+if [ -d "$CORPUS" ]; then
+    for log in "$CORPUS"/*.log; do
+	[ -e "$log" ] || continue
+	name=$(basename "$log" .log)
+	chk="$CORPUS/$name.chk"
+	if [ ! -f "$chk" ]; then
+	    echo "adventure_parity: $name has no .chk oracle"
+	    fail=1
+	    continue
+	fi
+	( ulimit -t 120; timeout 120 "$MADC" "$GAME" < "$log" ) \
+	    > "$TMP/$name.out" 2> "$TMP/$name.err"
+	if ! cmp -s "$TMP/$name.out" "$chk"; then
+	    echo "adventure_parity: LOG $name DIVERGES:"
+	    cmp "$TMP/$name.out" "$chk" 2>&1 | head -2
+	    sed -e 's/^/  stderr: /' "$TMP/$name.err" | head -4
+	    fail=1
+	fi
+	cran=$((cran + 1))
+    done
+    if [ "$cran" -eq 0 ]; then
+	echo "adventure_parity: corpus dir present but empty"
+	fail=1
+    fi
+    # Corpus negative control: a corrupted oracle must be caught.
+    firstlog=$(ls "$CORPUS"/*.log | head -1)
+    cname=$(basename "$firstlog" .log)
+    cat "$CORPUS/$cname.chk" > "$TMP/corrupt.chk"
+    printf 'X' >> "$TMP/corrupt.chk"
+    if cmp -s "$TMP/$cname.out" "$TMP/corrupt.chk"; then
+	echo "adventure_parity: CORPUS NEGATIVE CONTROL FAILED"
+	fail=1
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "adventure_parity: FAIL"
     exit 1
 fi
-echo "adventure_parity: $ran fragment(s) byte-identical (+ negative control)"
+echo "adventure_parity: $ran fragment(s) + $cran whole log(s) byte-identical (+ negative controls)"
 exit 0

@@ -1,0 +1,313 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1635997320
+
+Seed set to 1635997320
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take lamp
+
+OK
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> take rod
+
+OK
+
+> e
+
+You are crawling over cobbles in a low passage.  There is a dim light
+at the east end of the passage.
+
+There is a small wicker cage discarded nearby.
+
+> take cage
+
+OK
+
+> w
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+> w
+
+You are in an awkward sloping east/west canyon.
+
+> w
+
+You are in a splendid chamber thirty feet high.  The walls are frozen
+rivers of orange stone.  An awkward canyon and a good passage exit
+from east and west sides of the chamber.
+
+A cheerful little bird is sitting here singing.
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take rod
+
+OK
+
+> w
+
+At your feet is a small pit breathing traces of white mist.  An east
+passage ends here except for a small crack leading on.
+
+Rough stone steps lead down the pit.
+
+> free bird
+
+OK
+
+> wave rod
+
+The bird flies about agitatedly for a moment, then disappears through
+the crack.  It reappears shortly, carrying in its beak a jade
+necklace, which it drops at your feet.
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take jade
+
+OK
+
+> e
+
+You're in bird chamber.
+
+> e
+
+You are in an awkward sloping east/west canyon.
+
+> e
+
+You're in debris room.
+
+> off
+
+Your lamp is now off.
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> xyzzy
+
+>>Foof!<<
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> drop jade
+
+OK
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You're in debris room.
+
+> w
+
+You are in an awkward sloping east/west canyon.
+
+> w
+
+You're in bird chamber.
+
+> w
+
+You're at top of small pit.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+Rough stone steps lead down the pit.
+
+> take rod
+
+OK
+
+> d
+
+You are at one end of a vast hall stretching forward out of sight to
+the west.  There are openings to either side.  Nearby, a wide stone
+staircase leads downward.  The hall is filled with wisps of white mist
+swaying to and fro almost as if alive.  A cold wind blows up the
+staircase.  There is a passage at the top of a dome behind you.
+
+Rough stone steps lead up the dome.
+
+> w
+
+You are on the east bank of a fissure slicing clear across the hall.
+The mist is quite thick here, and the fissure is too wide to jump.
+
+> wave rod
+
+The bird flies agitatedly about the cage.
+
+A crystal bridge now spans the fissure.
+
+> drop rod
+
+OK
+
+> e
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> n
+
+You are in the Hall of the Mountain King, with passages off in all
+directions.
+
+A huge green fierce snake bars the way!
+
+> free bird
+
+The little bird attacks the green snake, and in an astounding flurry
+drives the snake away.
+
+> take bird
+
+OK
+
+> w
+
+You are in the west side chamber of the Hall of the Mountain King.
+A passage continues west and up here.
+
+There are many coins here!
+
+> take coins
+
+OK
+
+> up
+
+You are at a crossover of a high n/s passage and a low e/w one.
+
+> s
+
+You are at the west end of a very long featureless hall.  The hall
+joins up with a narrow north/south passage.
+
+> s
+
+You are in a maze of twisty little passages, all different.
+
+> sw
+
+You are in a little maze of twisty passages, all different.
+
+> se
+
+You are in a little maze of twisting passages, all different.
+
+> s
+
+Dead end
+
+There is a massive and somewhat battered vending machine here.  The
+instructions on it read: "Drop coins here to receive fresh batteries."
+
+> read machine
+
+"Drop coins here to receive fresh batteries."
+
+> drop coins
+
+There are fresh batteries here.
+
+> take batteries
+
+OK
+
+> read machine
+
+"Drop coins here to receive fresh batteries."
+
+> throw batteries
+
+OK
+
+> take machine
+
+You can't be serious!
+
+> kill machine
+
+As you strike the vending machine, it pivots backward along with a
+section of wall, revealing a dark passage leading south.
+
+> attack
+
+Attack what?
+
+> attack machine
+
+The vending machine swings back to block the passage.
+
+> 
+You scored 75 out of a possible 430, using 56 turns.
+
+Your score qualifies you as a novice class adventurer.
+
+To achieve the next higher rating, you need 46 more points.

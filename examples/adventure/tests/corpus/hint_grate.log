@@ -1,0 +1,17 @@
+## Elicit hint for dealing with grate
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1495774850
+in
+take lamp
+out
+s
+stream
+s
+s
+open grate
+open grate
+open grate
+y
+y

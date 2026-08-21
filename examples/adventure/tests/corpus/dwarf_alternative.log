@@ -1,0 +1,13 @@
+## Check that dwarf spawns in alternative location (fuzzed)
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 383847
+in
+xyzzy
+w
+w
+w
+d
+d
+n

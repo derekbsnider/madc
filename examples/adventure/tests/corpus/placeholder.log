@@ -1,0 +1,158 @@
+## Test behavior of placeholder magic word at reservoir
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Based on walkthrough at http://www.ecsoftwareconsulting.com/node/56
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+take rod
+e
+take cage
+w
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take necklace
+drop rod
+take bird
+take rod
+d
+d
+free bird
+drop rod
+drop cage
+take cage
+take bird
+w
+take coins
+e
+s
+take jewelry
+n
+up
+s
+take gold
+n
+d
+n
+n
+plugh
+extinguish lamp
+drop coins
+drop jewelry
+drop necklace
+drop gold
+plugh
+on
+s
+take silver
+s
+sw
+take axe
+w
+kill dragon
+yes
+feed dragon
+drink blood
+take rug
+e
+e
+up
+d
+n
+n
+off
+plugh
+inven
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+s
+plover
+s
+s
+take rod
+up
+w
+wave rod
+drop rod
+west
+take diamonds
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+e
+e
+throw axe
+take axe
+n
+n
+n
+off
+plugh
+drop ruby
+drop diamonds
+drop pyramid
+plugh
+on
+s
+s
+n
+d
+bedquilt
+slab
+s
+d
+water plant
+H'CFL
+u
+w
+u
+reservoir
+Z'ZZZ
+

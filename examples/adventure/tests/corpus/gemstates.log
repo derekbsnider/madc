@@ -1,0 +1,371 @@
+## Observe amber, ruby, sapphire after state change
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1635997320
+in
+take lamp
+xyzzy
+take rod
+e
+take cage
+w
+on
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+drop rod
+take bird
+take jade
+e
+e
+e
+off
+xyzzy
+drop jade
+xyzzy
+on
+w
+w
+w
+take rod
+d
+w
+wave rod
+drop rod
+e
+n
+free bird
+take bird
+s
+take jewelry
+n
+sw
+w
+kill dragon
+yes
+drink blood
+take rug
+e
+e
+n
+take silver
+n
+off
+plugh
+drop jewelry
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+s
+plover
+s
+d
+take axe
+u
+s
+up
+w
+w
+w
+w
+throw axe
+take axe
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+take diamonds
+e
+e
+drop bottle
+s
+take gold
+n
+n
+n
+n
+off
+plugh
+drop gold
+drop diamonds
+drop pyramid
+drop ruby
+plugh
+on
+s
+s
+u
+take water
+throw axe
+take axe
+n
+n
+d
+bedquilt
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+F'UNJ
+n
+n
+nw
+u
+u
+u
+u
+ne
+take ebony
+sw
+d
+d
+d
+d
+d
+take water
+s
+s
+s
+s
+d
+s
+d
+water plant
+u
+e
+d
+get oil
+u
+w
+d
+climb
+w
+n
+oil door
+drop bottle
+drop appendage
+n
+take trident
+w
+d
+se
+n
+w
+inven
+drop trident
+drop ebony
+drop axe
+drop lantern
+e
+take emerald
+w
+take lamp
+take axe
+take ebony
+take trident
+nw
+s
+take vase
+se
+e
+take pillow
+w
+ne
+e
+n
+open clam
+s
+u
+e
+u
+s
+drop axe
+e
+w
+w
+w
+s
+e
+s
+s
+s
+n
+e
+e
+nw
+inven
+take ebony
+take vase
+take trident
+take chest
+take emerald
+se
+n
+d
+e
+e
+off
+xyzzy
+drop chest
+drop ebony
+drop pillow
+drop vase
+drop trident
+take keys
+take food
+plugh
+on
+s
+d
+w
+d
+n
+d
+d
+take pearl
+u
+u
+s
+w
+w
+w
+w
+d
+climb
+w
+get eggs
+n
+take bottle
+n
+w
+d
+sw
+u
+toss eggs
+ne
+ne
+barren
+in
+feed bear
+look
+take chain
+unlock chain
+take chain
+take bear
+fork
+ne
+e
+drop keys
+take spices
+fork
+w
+w
+sw
+free bear
+sw
+sw
+d
+se
+se
+w
+d
+get oil
+up
+w
+d
+climb
+w
+fee
+fie
+foe
+foo
+take eggs
+s
+d
+u
+w
+u
+s
+e
+e
+n
+n
+off
+plugh
+drop eggs
+drop pearl
+drop spices
+drop chain
+take rug
+take ruby
+take emerald
+out
+w
+n
+n
+n
+inven
+drop bottle
+look
+take bottle
+fill urn
+light urn
+rub urn
+look
+take amber
+look
+drop rug
+drop emerald
+fly rug
+take sapphire
+fly rug
+take emerald
+drop sapphire
+look
+take sapphire
+drop ruby
+look

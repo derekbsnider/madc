@@ -1,0 +1,144 @@
+## Attempt to listen at a loud location
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Based on walkthrough at http://www.ecsoftwareconsulting.com/node/56
+n
+seed 1495951709
+in
+take lamp
+on
+xyzzy
+take rod
+e
+take cage
+w
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take jade
+drop rod
+take bird
+take rod
+d
+w
+wave rod
+drop rod
+e
+n
+free bird
+take bird
+s
+take jewelry
+n
+sw
+w
+kill dragon
+yes
+drink blood
+take rug
+e
+e
+n
+take silver
+n
+plugh
+drop silver
+drop jewelry
+drop jade
+drop rug
+out
+s
+w
+n
+take appendage
+free bird
+listen
+s
+s
+n
+in
+take water
+plugh
+plover
+ne
+take axe
+take pyramid
+s
+dark
+s
+plover
+s
+d
+u
+u
+throw axe
+take axe
+throw axe
+take axe
+throw axe
+take axe
+throw axe
+take axe
+s
+e
+w
+drop cage
+w
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+take diamonds
+e
+e
+s
+take gold
+n
+y2
+d
+plugh
+drop diamonds
+drop pyramid
+drop ruby
+plugh
+plugh
+drop coins
+plugh
+s
+d
+bedquilt
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+Q'IBJ
+n
+listen

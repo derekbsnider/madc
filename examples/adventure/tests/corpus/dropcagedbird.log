@@ -1,0 +1,30 @@
+## Try to carry the bird after freeing it instead of listening
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1495951709
+in
+take lamp
+on
+xyzzy
+take rod
+e
+take cage
+w
+w
+w
+wave rod
+take bird
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take jade
+drop rod
+take bird
+drop cage
+d
+d
+feed snake

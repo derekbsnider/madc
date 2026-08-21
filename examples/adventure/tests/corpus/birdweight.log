@@ -1,0 +1,90 @@
+## Verify that the bird is weightless in inventory
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Checks fix for GitLab issue #40
+#NOCOMPARE Bird was not weightless in cage in advent430 so this test is invalid.
+n
+#seed 687800971
+seed 976729036
+in
+take lamp
+take food
+take bottle
+inventory
+out
+s
+w
+n
+take appendage
+s
+s
+n
+in
+xyzzy
+on
+e
+take cage
+w
+w
+w
+take bird
+e
+e
+take rod
+w
+w
+w
+d
+inventory
+w
+wave rod
+drop rod
+e
+s
+take gold
+n
+w
+w
+drop gold
+take diamonds
+w
+w
+w
+inventory
+s
+sw
+se
+s
+drop food
+drop water
+take axe
+kill machine
+s
+s
+drop diamonds
+w
+w
+n
+# Back at vending machine
+n
+n
+nw
+d
+e
+e
+e
+take gold
+w
+w
+w
+s
+sw
+se
+s
+take bottle
+take food
+s
+s
+throw appendage
+kill ogre
+take appendage

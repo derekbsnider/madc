@@ -1,0 +1,16 @@
+## Death by pitfall
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Die 3 times so we can cover all the obituary messages
+n
+seed 780351908
+enter building
+xyzzy
+s
+y
+xyzzy
+n
+y
+xyzzy
+w
+y
