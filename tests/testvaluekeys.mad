@@ -93,6 +93,17 @@ int main()
 	fill(lamp);
 	printf("fill-fuel=%s fill-lit=%s\n", lamp["fuel"], lamp["lit"]);
 
+	// A keyed read chained into an element read: the keyed slot is the
+	// element read's receiver (`r["k"][i]` — the &*slot fold).
+	var rule;
+	var act;
+	php::array_push(act, "goto");
+	php::array_push(act, "LOC_START");
+	rule["action"] = act;
+	var k0 = rule["action"][0].c_str();
+	printf("chain0=%s chain-eq=%d\n", k0,
+	       rule["action"][1] == "LOC_START" ? 1 : 0);
+
 	// Keyed access on a scalar kind is a catchable script error.
 	var s;
 	s = 42;

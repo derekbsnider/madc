@@ -11,4 +11,5 @@ ghost-after-touch=1
 visited=3
 arr0=1 arr9=0
 fill-fuel=6 fill-lit=false
+chain0=goto chain-eq=1
 caught: ["key"]: value of this kind has no keyed members

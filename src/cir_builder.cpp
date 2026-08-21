@@ -19864,21 +19864,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// long[] buffer words.
 			if (tse->base_expr && tse->base_expr->datadef()
 			    && is_array_object(tse->base_expr->datadef())) {
-				// KEYED access on an expression base (`s.bag["k"]`,
-				// a `bag["a"]["b"]` chain): the base's own
-				// translation is a value lvalue (a buffer field, or
-				// the previous link's N_DEREF(slot)); its address is
-				// the receiver — &* folds chains back to slot calls.
+				// The receiver is the base VALUE's address: the base's
+				// own translation is a value lvalue (a buffer field,
+				// or a keyed-chain link's N_DEREF(slot)); &* folds a
+				// chain back to the slot pointer, and a buffer
+				// field's address equals its old decay-cast. ONE
+				// computation for the keyed and element arms — the
+				// element arm's former decay-cast read the value's
+				// first word as a pointer when the base was itself a
+				// keyed subscript (`r["k"][0]` SIGSEGV).
+				node_t recv = node2(N_CAST, void_ptr_type(),
+						    node1(N_ADDR,
+							  translate_expr(tse->base_expr),
+							  tb), tb);
 				if (is_carrier_keyed_subscript(tse))
 					return node1(N_DEREF, carrier_key_slot_call(
-						node2(N_CAST, void_ptr_type(),
-						      node1(N_ADDR,
-							    translate_expr(tse->base_expr),
-							    tb), tb),
-						tse->index, tb), tb);
-				return madc_array_subscript_read(
-					node2(N_CAST, void_ptr_type(),
-					      translate_expr(tse->base_expr), tb),
+						recv, tse->index, tb), tb);
+				return madc_array_subscript_read(recv,
 					translate_expr(tse->index),
 					as_class_instance(tse->datadef()), tb);
 			}
