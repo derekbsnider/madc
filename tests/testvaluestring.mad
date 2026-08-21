@@ -91,6 +91,17 @@ int main()
 	long total = sum_ref(nums);
 	std::println("sum={}", total);
 
+	// index(): Python's list.index / str.find shape, -1 when absent
+	var states;
+	php::array_push(states, "CHAIN_HEAP");
+	php::array_push(states, "CHAINING_BEAR");
+	php::array_push(states, "CHAIN_FIXED");
+	var needle = "CHAINING_BEAR";
+	std::println("idx={} {} {}", states.index("CHAIN_FIXED"),
+		     states.index(needle), states.index("NOPE"));
+	std::println("find={} {} {}", s.index("east"), s.index(""),
+		     s.index("west"));
+
 	// strict-kind and range errors stay catchable
 	try {
 		var bad = s.substr(20, 1);

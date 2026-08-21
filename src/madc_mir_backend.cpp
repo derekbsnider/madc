@@ -246,6 +246,72 @@ int64_t madarray_eq_value(void *ptr, void *other)
 int64_t madarray_ne_value(void *ptr, void *other)
     { return !(*(const madc::value *)ptr == *(const madc::value *)other); }
 
+// First byte position of needle[0..n) in hay[0..len): memchr rides the
+// libc vectorized scan, memcmp confirms. No allocations, portable (no
+// memmem — the win64 lane's C runtime lacks it).
+static int64_t text_index_of(const char *hay, size_t len,
+			     const char *s, size_t n)
+    {
+	if (n == 0)
+	    return 0;
+	if (n > len)
+	    return -1;
+	const char *end = hay + len - n;
+	for (const char *p = hay; p <= end; )
+	{
+	    const char *c = (const char *)memchr(p, s[0],
+						 (size_t)(end - p) + 1);
+	    if (!c)
+		return -1;
+	    if (memcmp(c, s, n) == 0)
+		return (int64_t)(c - hay);
+	    p = c + 1;
+	}
+	return -1;
+    }
+
+// index(needle): Python's list.index / str.find shape. An array-kind
+// receiver answers the first position whose element equals the needle;
+// a string-kind receiver answers the byte position of the needle
+// substring; -1 when absent (a question, never a throw). One strlen,
+// zero allocations.
+int64_t madarray_index_cstr(void *ptr, const char *s)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!s)
+	    return -1;
+	size_t n = strlen(s);
+	if (v->is_string())
+	    return text_index_of((const char *)v->data(), v->size(), s, n);
+	if (!v->is_array())
+	    return -1;
+	const std::vector<madc::value> &data = v->as_array();
+	for (size_t i = 0; i < data.size(); ++i)
+	    if (data[i].is_string() && data[i].size() == n
+		&& memcmp(data[i].data(), s, n) == 0)
+		return (int64_t)i;
+	return -1;
+    }
+int64_t madarray_index_value(void *ptr, void *other)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	const madc::value *o = (const madc::value *)other;
+	if (v->is_string())
+	{
+	    if (!o->is_string())
+		return -1;
+	    return text_index_of((const char *)v->data(), v->size(),
+				 (const char *)o->data(), o->size());
+	}
+	if (!v->is_array())
+	    return -1;
+	const std::vector<madc::value> &data = v->as_array();
+	for (size_t i = 0; i < data.size(); ++i)
+	    if (data[i] == *o)
+		return (int64_t)i;
+	return -1;
+    }
+
 // Append text onto a string-kind (or null — vivifies to string) value.
 // One exact-reserved temp + one copy into the cell (NUL-transparent via
 // the std::string ctor → madc_value_set_string_n; no strlen). The

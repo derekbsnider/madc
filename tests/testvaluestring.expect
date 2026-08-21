@@ -13,5 +13,7 @@ at=yes
 ref=Northeast sub=North
 es=1
 sum=12
+idx=2 1 -1
+find=5 0 -1
 caught: substr(): position out of range
 caught: +=: value of this kind cannot append text

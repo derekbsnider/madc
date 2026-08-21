@@ -565,17 +565,15 @@ int64_t php_intval_value(const madc::value *v)
 	return 0;
 }
 
-// php::array_search — find index of value in array, returns -1 if not found
+// php::array_search — find index of value in array, returns -1 if not found.
+// The carrier's index() core (madc_mir_backend.cpp) is the one owner of
+// the scan; array-only semantics stay here.
+extern "C" int64_t madarray_index_cstr(void *ptr, const char *s);
 int64_t php_array_search(const char *needle, madc::value *arr)
 {
 	if ( !arr->is_array() )
 		return -1;
-	std::string n(needle ? needle : "");
-	const std::vector<madc::value> &data = arr->as_array();
-	for ( size_t i = 0; i < data.size(); ++i )
-		if ( data[i].is_string() && data[i].as_string() == n )
-			return (int64_t)i;
-	return -1;
+	return madarray_index_cstr(arr, needle);
 }
 
 // php::array_unique — remove duplicate string values

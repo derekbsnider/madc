@@ -23176,6 +23176,13 @@ void Program::add_array_methods()
 	  "madarray_append_cstr" },
 	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
 	  "madarray_append_value" },
+	// index(needle): Python's list.index / str.find shape — first
+	// position of the needle (element-equal for arrays, substring
+	// for strings), -1 when absent (a question, never a throw).
+	{ "index",      DataType::dtINT64,    ptr_of(ddCHAR),
+	  "madarray_index_cstr" },
+	{ "index",      DataType::dtINT64,    typespec_t(array_ref),
+	  "madarray_index_value" },
     };
     for ( const ArrayBinOp &op : bin_ops )
     {
