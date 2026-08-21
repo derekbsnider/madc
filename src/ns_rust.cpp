@@ -101,13 +101,14 @@ void rust_split(madc::value *arr, const char *str, const char *delim)
 {
 	std::string s = rust_text_arg(str);
 	std::string d = rust_text_arg(delim);
-	ns_common::split_by_delim(*arr, s, d);
+	ns_common::split_by_delim(*arr, s, d, "rust::split");
 }
 
 void rust_split_whitespace(madc::value *arr, const char *str)
 {
 	std::string s = rust_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "rust::split_whitespace");
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -115,7 +116,7 @@ void rust_split_whitespace(madc::value *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				arr->array().push_back(madc::value(word));
+				data.push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -123,7 +124,7 @@ void rust_split_whitespace(madc::value *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		arr->array().push_back(madc::value(word));
+		data.push_back(madc::value(word));
 }
 
 std::string *rust_join(std::string *result, madc::value *arr, const char *sep)
@@ -170,10 +171,12 @@ std::string *rust_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "rust::pop");
+	if ( data.empty() )
 		return result;
-	madc::value v = std::move(arr->array().back());
-	arr->array().pop_back();
+	madc::value v = std::move(data.back());
+	data.pop_back();
 	ns_common::value_to_string(v, res);
 	return result;
 }

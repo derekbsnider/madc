@@ -70,17 +70,19 @@ std::string *ruby_tr(std::string *ptr, const char *from, const char *to)
 void ruby_chars(madc::value *arr, const char *str)
 {
 	std::string s = ruby_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "ruby::chars");
 	for ( size_t i = 0; i < s.length(); ++i )
-		arr->array().push_back(madc::value(std::string(1, s[i])));
+		data.push_back(madc::value(std::string(1, s[i])));
 }
 
 // ruby::rotate — rotate array elements by n positions
 // [1,2,3,4,5].rotate(2) -> [3,4,5,1,2]
 void ruby_rotate(madc::value *arr, int64_t n)
 {
-	if ( !arr->is_array() || arr->as_array().empty() ) return;
-	std::vector<madc::value> &data = arr->array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "ruby::rotate");
+	if ( data.empty() ) return;
 	int64_t sz = (int64_t)data.size();
 	n = ((n % sz) + sz) % sz; // handle negative rotation
 	std::rotate(data.begin(), data.begin() + n, data.end());
@@ -89,22 +91,24 @@ void ruby_rotate(madc::value *arr, int64_t n)
 // ruby::compact — remove empty string entries from array
 void ruby_compact(madc::value *arr)
 {
-	if ( !arr->is_array() ) return;
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "ruby::compact");
 	std::vector<madc::value> cleaned;
-	for ( auto &v : arr->as_array() )
+	for ( auto &v : data )
 	{
 		if ( v.is_string() && v.as_string().empty() )
 			continue;
 		cleaned.push_back(v);
 	}
-	arr->array() = std::move(cleaned);
+	data = std::move(cleaned);
 }
 
 // ruby::flatten — flatten nested string (split by any whitespace into array)
 void ruby_flatten(madc::value *arr, const char *str)
 {
 	std::string s = ruby_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "ruby::flatten");
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -112,7 +116,7 @@ void ruby_flatten(madc::value *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				arr->array().push_back(madc::value(word));
+				data.push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -120,7 +124,7 @@ void ruby_flatten(madc::value *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		arr->array().push_back(madc::value(word));
+		data.push_back(madc::value(word));
 }
 
 // ruby::capitalize — capitalize first char, lowercase rest (Ruby semantics)

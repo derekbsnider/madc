@@ -238,7 +238,8 @@ void php_explode(madc::value *arr, const char *delim, const char *str)
 	const char *d = (const char *)delim;
 	ns_common::split_by_delim(*arr,
 				  std::string(s ? s : ""),
-				  std::string(d ? d : ""));
+				  std::string(d ? d : ""),
+				  "php::explode");
 }
 
 // php::implode — join array elements with glue string
@@ -305,15 +306,20 @@ int64_t php_array_push_value(madc::value *arr, madc::value *value)
 	return (int64_t)ns_common::value_count(*arr);
 }
 
-// php::array_pop — remove and return last element as string
+// php::array_pop — remove and return last element as string. Container
+// access routes through value_array_for_write: a frozen array degrades to
+// a loud no-op instead of value::array()'s throw escaping the extern-C
+// boundary into JIT frames (the value_array_for_write contract).
 std::string *php_array_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::array_pop");
+	if ( data.empty() )
 		return result;
-	madc::value v = std::move(arr->array().back());
-	arr->array().pop_back();
+	madc::value v = std::move(data.back());
+	data.pop_back();
 	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
@@ -404,9 +410,9 @@ const char *php_array_get_cstr(madc::value *arr, int64_t index)
 // php::array_reverse — reverse array in place
 void php_array_reverse(madc::value *arr)
 {
-	if ( !arr->is_array() )
-		return;
-	std::reverse(arr->array().begin(), arr->array().end());
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::array_reverse");
+	std::reverse(data.begin(), data.end());
 }
 
 // php::in_array — check if value exists in array (string comparison)
@@ -602,10 +608,10 @@ int64_t php_array_search(const char *needle, madc::value *arr)
 // php::array_unique — remove duplicate string values
 void php_array_unique(madc::value *arr)
 {
-	if ( !arr->is_array() )
-		return;
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::array_unique");
 	std::vector<madc::value> unique;
-	for ( auto &v : arr->as_array() )
+	for ( auto &v : data )
 	{
 		bool found = false;
 		if ( v.is_string() )
@@ -616,7 +622,7 @@ void php_array_unique(madc::value *arr)
 		}
 		if ( !found ) unique.push_back(v);
 	}
-	arr->array() = std::move(unique);
+	data = std::move(unique);
 }
 
 // php::array_shift — remove first element, shift rest down
@@ -624,10 +630,12 @@ std::string *php_array_shift(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::array_shift");
+	if ( data.empty() )
 		return result;
-	madc::value v = std::move(arr->array().front());
-	arr->array().erase(arr->array().begin());
+	madc::value v = std::move(data.front());
+	data.erase(data.begin());
 	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
@@ -641,12 +649,12 @@ void php_array_unshift(madc::value *arr, const char *str)
 	data.insert(data.begin(), madc::value(std::string(s ? s : "")));
 }
 
-// php::sort — sort array (string comparison)
-void php_sort(madc::value *arr)
+// php::sort / php::rsort — sort array (string comparison). The comparator
+// pass is shared; each entry acquires the container ONCE through
+// value_array_for_write so a frozen array reports a single diagnostic
+// naming the function the script actually called.
+static void php_sort_data(std::vector<madc::value> &data)
 {
-	if ( !arr->is_array() )
-		return;
-	std::vector<madc::value> &data = arr->array();
 	std::sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
 		if ( a.is_string() && b.is_string() )
 			return a.as_string() < b.as_string();
@@ -656,17 +664,25 @@ void php_sort(madc::value *arr)
 	});
 }
 
+void php_sort(madc::value *arr)
+{
+	php_sort_data(ns_common::value_array_for_write(*arr, "php::sort"));
+}
+
 // php::rsort — sort array in reverse
 void php_rsort(madc::value *arr)
 {
-	php_sort(arr);
-	php_array_reverse(arr);
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::rsort");
+	php_sort_data(data);
+	std::reverse(data.begin(), data.end());
 }
 
 // php::array_slice — extract a slice of the array
 void php_array_slice(madc::value *dest, madc::value *src, int64_t offset, int64_t length)
 {
-	*dest = madc::value::make_array();
+	std::vector<madc::value> &d
+		= ns_common::value_array_reset_for_write(*dest, "php::array_slice");
 	if ( !src->is_array() )
 		return;
 	const std::vector<madc::value> &s = src->as_array();
@@ -675,7 +691,7 @@ void php_array_slice(madc::value *dest, madc::value *src, int64_t offset, int64_
 	if ( length < 0 ) length = (int64_t)s.size() + length - offset;
 	if ( length < 0 ) length = 0;
 	for ( int64_t i = offset; i < offset + length && (size_t)i < s.size(); ++i )
-		dest->array().push_back(s[(size_t)i]);
+		d.push_back(s[(size_t)i]);
 }
 
 // php::array_merge — merge two arrays
@@ -693,7 +709,8 @@ void php_array_merge(madc::value *dest, madc::value *src)
 // php::array_column — extract one integer-indexed column from nested arrays
 void php_array_column(madc::value *dest, madc::value *src, int64_t column_index)
 {
-	*dest = madc::value::make_array();
+	std::vector<madc::value> &d
+		= ns_common::value_array_reset_for_write(*dest, "php::array_column");
 	if ( column_index < 0 || !src->is_array() )
 		return;
 	for ( auto &row : src->as_array() )
@@ -706,7 +723,7 @@ void php_array_column(madc::value *dest, madc::value *src, int64_t column_index)
 			continue;
 		std::string value;
 		if ( ns_common::value_to_string(row_arr[idx], value) )
-			dest->array().push_back(madc::value(value));
+			d.push_back(madc::value(value));
 	}
 }
 

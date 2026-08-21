@@ -71,6 +71,15 @@ std::vector<madc::value> &value_array_for_write(madc::value &v,
 std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 							    const char *who);
 
+// Reset-and-fill variant for OUT-parameter arrays (explode / split / grep /
+// glob / slice / column / chars ...): the destination becomes a fresh empty
+// array and its live container is returned. A frozen destination reports
+// once and returns the per-thread dummy so the fill degrades to a no-op;
+// any non-frozen kind is retagged to array (the same semantics as assigning
+// value::make_array() over it, which these helpers historically did).
+std::vector<madc::value> &value_array_reset_for_write(madc::value &v,
+						      const char *who);
+
 // ---- Array helpers ---------------------------------------------------
 
 // Element count of a madc::value: array size, object size, or 0 for any
@@ -89,10 +98,12 @@ size_t value_count(const madc::value &v);
 size_t value_length(const madc::value &v, bool *ok);
 
 // Split `s` by literal `delim` and store the pieces as strings in `out`.
-// `out` is reset to an empty kind::array first. An empty delim pushes the
-// whole string as a single element.
+// `out` is reset to an empty kind::array first (via
+// value_array_reset_for_write — a frozen `out` degrades to a loud no-op).
+// An empty delim pushes the whole string as a single element. `who` names
+// the script-facing caller in the degrade diagnostics.
 void split_by_delim(madc::value &out, const std::string &s,
-		    const std::string &delim);
+		    const std::string &delim, const char *who);
 
 // ---- Transient text returns ------------------------------------------
 

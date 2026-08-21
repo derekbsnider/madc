@@ -66,7 +66,8 @@ int64_t perl_chomp(std::string *ptr)
 void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 {
 	std::string n = perl_text_arg(needle);
-	*dest = madc::value::make_array();
+	std::vector<madc::value> &d
+		= ns_common::value_array_reset_for_write(*dest, "perl::grep");
 	if ( !src->is_array() )
 		return;
 	try {
@@ -74,14 +75,14 @@ void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && std::regex_search(v.as_string(), re) )
-				dest->array().push_back(v);
+				d.push_back(v);
 		}
 	} catch (std::regex_error &) {
 		// fallback to substring match on invalid regex
 		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && v.as_string().find(n) != std::string::npos )
-				dest->array().push_back(v);
+				d.push_back(v);
 		}
 	}
 }
@@ -91,12 +92,13 @@ void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 void perl_glob(madc::value *arr, const char *pattern)
 {
 	std::string p = perl_text_arg(pattern);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "perl::glob");
 
 	std::vector<std::string> matches;
 	madc::detail::glob_paths(p, matches);
 	for ( size_t i = 0; i < matches.size(); ++i )
-		arr->array().push_back(madc::value(matches[i]));
+		data.push_back(madc::value(matches[i]));
 }
 
 // perl::scalar — return count of elements in array (Perl's scalar @array)
@@ -117,10 +119,12 @@ std::string *perl_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "perl::pop");
+	if ( data.empty() )
 		return result;
-	madc::value v = std::move(arr->array().back());
-	arr->array().pop_back();
+	madc::value v = std::move(data.back());
+	data.pop_back();
 	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
@@ -130,10 +134,12 @@ std::string *perl_shift(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "perl::shift");
+	if ( data.empty() )
 		return result;
-	madc::value v = std::move(arr->array().front());
-	arr->array().erase(arr->array().begin());
+	madc::value v = std::move(data.front());
+	data.erase(data.begin());
 	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
@@ -171,23 +177,24 @@ void perl_split(madc::value *arr, const char *delim, const char *str)
 {
 	std::string d = perl_text_arg(delim);
 	std::string s = perl_text_arg(str);
-	*arr = madc::value::make_array();
-	if ( d.empty() ) { arr->array().push_back(madc::value(s)); return; }
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "perl::split");
+	if ( d.empty() ) { data.push_back(madc::value(s)); return; }
 	try {
 		std::regex re(d);
 		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
 		std::sregex_token_iterator end;
 		for ( ; it != end; ++it )
-			arr->array().push_back(madc::value(it->str()));
+			data.push_back(madc::value(it->str()));
 	} catch (std::regex_error &) {
 		// fallback to literal delimiter on invalid regex
 		size_t start = 0, pos;
 		while ( (pos = s.find(d, start)) != std::string::npos )
 		{
-			arr->array().push_back(madc::value(s.substr(start, pos - start)));
+			data.push_back(madc::value(s.substr(start, pos - start)));
 			start = pos + d.length();
 		}
-		arr->array().push_back(madc::value(s.substr(start)));
+		data.push_back(madc::value(s.substr(start)));
 	}
 }
 

@@ -201,6 +201,20 @@ std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 	return dummy.object();
 }
 
+std::vector<madc::value> &value_array_reset_for_write(madc::value &v,
+						      const char *who)
+{
+	if ( v.is_frozen() )
+	{
+		report_frozen(who);
+		thread_local madc::value dummy;
+		dummy = madc::value::make_array();
+		return dummy.array();
+	}
+	v = madc::value::make_array();
+	return v.array();
+}
+
 size_t value_count(const madc::value &v)
 {
 	if ( v.is_array() )
@@ -239,22 +253,22 @@ size_t value_length(const madc::value &v, bool *ok)
 }
 
 void split_by_delim(madc::value &out, const std::string &s,
-		    const std::string &delim)
+		    const std::string &delim, const char *who)
 {
-	out = madc::value::make_array();
+	std::vector<madc::value> &data = value_array_reset_for_write(out, who);
 	if ( delim.empty() )
 	{
-		out.array().push_back(madc::value(s));
+		data.push_back(madc::value(s));
 		return;
 	}
 	size_t start = 0;
 	size_t end;
 	while ( (end = s.find(delim, start)) != std::string::npos )
 	{
-		out.array().push_back(madc::value(s.substr(start, end - start)));
+		data.push_back(madc::value(s.substr(start, end - start)));
 		start = end + delim.length();
 	}
-	out.array().push_back(madc::value(s.substr(start)));
+	data.push_back(madc::value(s.substr(start)));
 }
 
 void join_with_sep(std::string &out, const madc::value &arr,
