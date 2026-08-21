@@ -62,7 +62,7 @@ void render_msg(var &out, var &text, var &dargs, var &sval)
 				continue;
 			}
 		}
-		if ( c == 'f' && i + 5 <= len && !inside_loc(LOC) )
+		if ( c == 'f' && i + 5 <= len && !inside_loc(G.player.loc) )
 		{
 			if ( i + 5 == len || text.at(i + 5) == ' '
 			     || text.at(i + 5) == '.' )
@@ -141,7 +141,7 @@ void speak_msg_s(var &text, var &s)
 
 void msg_of(var &out, const char *name)
 {
-	ui::get(out, W, E("adv-messages"), name);
+	ui::get(out, G.w, E("adv-messages"), name);
 }
 
 void rspeak(const char *name)

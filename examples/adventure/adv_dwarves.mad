@@ -1,6 +1,6 @@
 // ---- dwarves + the pirate (the reference's dwarfmove/spotted_by_pirate) --
 // Actors dwarf1..dwarf6 (6 = the pirate). Activity ratchets through
-// DFLAG: 0 = asleep until the player is DEEP, 1 = armed (the axe-throw
+// G.dflag: 0 = asleep until the player is DEEP, 1 = armed (the axe-throw
 // encounter), 2+ = full swing. Every randrange call below is RNG
 // parity — order and count mirror the reference exactly.
 
@@ -13,21 +13,21 @@ void pirate_spots()
 	long chest = E("CHEST");
 	long pirate = dwarf_ent(6);
 	long chloc = E("LOC_MAZEEND12");
-	if ( LOC == chloc || obj_found(chest) )
+	if ( G.player.loc == chloc || obj_found(chest) )
 		return;
 	long snarfed = 0;
 	bool movechest = false;
 	bool robplayer = false;
 	long pyr_plac = static_place(E("PYRAMID"));
 	long eme_plac = static_place(E("EMERALD"));
-	for ( var on : OBJ_NAMES )
+	for ( var on : G.obj_names )
 	{
 		long o = E(on.c_str());
 		if ( !o || !obj_treasure(o) )
 			continue;
 		// The pirate won't take the pyramid from the plover room
 		// or the dark room (too easy).
-		if ( on == "PYRAMID" && (LOC == pyr_plac || LOC == eme_plac) )
+		if ( on == "PYRAMID" && (G.player.loc == pyr_plac || G.player.loc == eme_plac) )
 			continue;
 		if ( toting(o) || here_obj(o) )
 			snarfed++;
@@ -39,7 +39,7 @@ void pirate_spots()
 	}
 	// Force chest placement before the player finds the last treasure.
 	long lamp = E("LAMP");
-	if ( TALLY == 1 && snarfed == 0 && ui::location(W, chest) == 0
+	if ( G.tally == 1 && snarfed == 0 && ui::location(G.w, chest) == 0
 	  && here_obj(lamp)
 	  && obj_state(lamp) == state_index_c(lamp, "LAMP_BRIGHT") )
 	{
@@ -51,26 +51,26 @@ void pirate_spots()
 	{
 		move_object(chest, chloc);
 		move_object(E("MESSAG"), E("LOC_DEADEND13"));
-		ui::move(W, pirate, chloc);
-		ui::set(W, pirate, "oldloc", chloc);
-		ui::set(W, pirate, "seen", false);
+		ui::move(G.w, pirate, chloc);
+		ui::set(G.w, pirate, "oldloc", chloc);
+		ui::set(G.w, pirate, "seen", false);
 	}
 	else
 	{
-		if ( bag_int(pirate, "oldloc", 0) != ui::location(W, pirate)
+		if ( bag_int(pirate, "oldloc", 0) != ui::location(G.w, pirate)
 		  && pct(20) )
 			rspeak("PIRATE_RUSTLES");
 	}
 	if ( robplayer )
 	{
 		rspeak("PIRATE_POUNCES");
-		for ( var on : OBJ_NAMES )
+		for ( var on : G.obj_names )
 		{
 			long o = E(on.c_str());
 			if ( !o || !obj_treasure(o) )
 				continue;
 			if ( on == "PYRAMID"
-			  && (LOC == pyr_plac || LOC == eme_plac) )
+			  && (G.player.loc == pyr_plac || G.player.loc == eme_plac) )
 				continue;
 			if ( at_obj(o) && !obj_is_fixed(o) )
 				carry_object(o, on.c_str());
@@ -83,40 +83,40 @@ void pirate_spots()
 // Move the dwarves; false = the player dies (a knife stuck).
 bool dwarfmove()
 {
-	if ( LOC == 0 || forced_loc(LOC) || loccond(NEWLOC, "NOARRR") )
+	if ( G.player.loc == 0 || forced_loc(G.player.loc) || loccond(G.player.newloc, "NOARRR") )
 		return true;
-	if ( DFLAG == 0 )
+	if ( G.dflag == 0 )
 	{
-		if ( loccond(LOC, "DEEP") )
-			DFLAG = 1;
+		if ( loccond(G.player.loc, "DEEP") )
+			G.dflag = 1;
 		return true;
 	}
 	// The first encounter: kill 0-2 dwarves, dodge onto the axe.
-	if ( DFLAG == 1 )
+	if ( G.dflag == 1 )
 	{
-		if ( !loccond(LOC, "DEEP")
-		  || (pct(95) && (!loccond(LOC, "NOBACK") || pct(85))) )
+		if ( !loccond(G.player.loc, "DEEP")
+		  || (pct(95) && (!loccond(G.player.loc, "NOBACK") || pct(85))) )
 			return true;
-		DFLAG = 2;
+		G.dflag = 2;
 		long k = 1;
 		while ( k <= 2 )
 		{
 			long j = 1 + randrange(5);
 			if ( pct(50) )
-				ui::move(W, dwarf_ent(j), 0);
+				ui::move(G.w, dwarf_ent(j), 0);
 			k++;
 		}
 		k = 1;
 		while ( k <= 5 )
 		{
 			long dw = dwarf_ent(k);
-			if ( ui::location(W, dw) == LOC )
-				ui::move(W, dw, E("LOC_NUGGET"));
-			ui::set(W, dw, "oldloc", ui::location(W, dw));
+			if ( ui::location(G.w, dw) == G.player.loc )
+				ui::move(G.w, dw, E("LOC_NUGGET"));
+			ui::set(G.w, dw, "oldloc", ui::location(G.w, dw));
 			k++;
 		}
 		rspeak("DWARF_RAN");
-		drop_object(E("AXE"), "AXE", LOC);
+		drop_object(E("AXE"), "AXE", G.player.loc);
 		return true;
 	}
 	// Full swing: every dwarf walks (random DEEP neighbor, no
@@ -129,7 +129,7 @@ bool dwarfmove()
 	while ( i <= 6 )
 	{
 		long dw = dwarf_ent(i);
-		long dloc = ui::location(W, dw);
+		long dloc = ui::location(G.w, dw);
 		if ( dloc == 0 )
 		{
 			i++;
@@ -143,7 +143,7 @@ bool dwarfmove()
 		long j = 0;
 		long prev = 0;
 		var tr;
-		ui::get(tr, W, dloc, "travel");
+		ui::get(tr, G.w, dloc, "travel");
 		if ( !tr.is_null() )
 		{
 			for ( var r : tr )
@@ -188,17 +188,17 @@ bool dwarfmove()
 		}
 		else
 			randrange(1);
-		ui::set(W, dw, "oldloc", dloc);
-		ui::move(W, dw, newdloc);
-		bool seen = (bag_flag(dw, "seen") && loccond(LOC, "DEEP"))
-			 || newdloc == LOC || dloc == LOC;
-		ui::set(W, dw, "seen", seen);
+		ui::set(G.w, dw, "oldloc", dloc);
+		ui::move(G.w, dw, newdloc);
+		bool seen = (bag_flag(dw, "seen") && loccond(G.player.loc, "DEEP"))
+			 || newdloc == G.player.loc || dloc == G.player.loc;
+		ui::set(G.w, dw, "seen", seen);
 		if ( !seen )
 		{
 			i++;
 			continue;
 		}
-		ui::move(W, dw, LOC);
+		ui::move(G.w, dw, G.player.loc);
 		if ( i == 6 )
 		{
 			pirate_spots();
@@ -207,12 +207,12 @@ bool dwarfmove()
 		}
 		// A threatening little dwarf is in the room with him!
 		dtotal++;
-		if ( bag_int(dw, "oldloc", 0) == LOC )
+		if ( bag_int(dw, "oldloc", 0) == G.player.loc )
 		{
 			attack++;
-			if ( KNFLOC >= 0 )
-				KNFLOC = LOC;
-			if ( randrange(1000) < 95 * (DFLAG - 2) )
+			if ( G.player.knfloc >= 0 )
+				G.player.knfloc = G.player.loc;
+			if ( randrange(1000) < 95 * (G.dflag - 2) )
 				stick++;
 		}
 		i++;
@@ -225,8 +225,8 @@ bool dwarfmove()
 		rspeak_d("DWARF_PACK", dtotal);
 	if ( attack == 0 )
 		return true;
-	if ( DFLAG == 2 )
-		DFLAG = 3;
+	if ( G.dflag == 2 )
+		G.dflag = 3;
 	if ( attack > 1 )
 	{
 		rspeak_d("THROWN_KNIVES", attack);
@@ -247,6 +247,6 @@ bool dwarfmove()
 	}
 	if ( stick == 0 )
 		return true;
-	OLDLC2 = LOC;
+	G.player.oldlc2 = G.player.loc;
 	return false;
 }

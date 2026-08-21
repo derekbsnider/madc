@@ -36,8 +36,8 @@ int main()
 	rng_seed(0);
 	if ( ask_yes_no("WELCOME_YOU", "CAVE_NEARBY", "NO_MESSAGE") )
 	{
-		NOVICE = true;
-		LIMIT = 1000;
+		G.player.set(PF_NOVICE);
+		G.limit = 1000;
 	}
 	for (;;)
 	{

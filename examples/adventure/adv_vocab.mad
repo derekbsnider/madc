@@ -1,17 +1,10 @@
 // ---- vocabulary: tokenize + classify (the reference's misc.c) ----------
 // First two whitespace words; 5-char case-insensitive match (TOKLEN —
 // the vocabulary words are stored pre-truncated); lookup order motions
-// -> objects -> actions -> zzword -> numeric. Word classes ride CMD as
+// -> objects -> actions -> zzword -> numeric. Word classes ride G.player.cmd as
 // small int constants; ids are the data's NAMES.
 
 #include "adv_decls.inc"
-
-long T_NONE = 0;
-long T_MOTION = 1;
-long T_OBJECT = 2;
-long T_ACTION = 3;
-long T_NUMERIC = 4;
-long T_NOTFOUND = 5;
 
 // Whitespace word count of the whole line (the two-word gate).
 long word_count(var &line)
@@ -35,11 +28,11 @@ long word_count(var &line)
 	return count;
 }
 
-// Extract the first two raw words into CMD["raw0"] / CMD["raw1"].
+// Extract the first two raw words into G.player.cmd["raw0"] / G.player.cmd["raw1"].
 void split_words(var &line)
 {
-	CMD["raw0"] = "";
-	CMD["raw1"] = "";
+	G.player.cmd["raw0"] = "";
+	G.player.cmd["raw1"] = "";
 	long len = line.length();
 	long i = 0;
 	long word = 0;
@@ -53,9 +46,9 @@ void split_words(var &line)
 		if ( i > start )
 		{
 			if ( word == 0 )
-				CMD["raw0"] = line.substr(start, i - start);
+				G.player.cmd["raw0"] = line.substr(start, i - start);
 			else
-				CMD["raw1"] = line.substr(start, i - start);
+				G.player.cmd["raw1"] = line.substr(start, i - start);
 			word++;
 		}
 	}
@@ -66,45 +59,45 @@ void classify_word(var &raw, const char *typekey, const char *idkey)
 {
 	if ( raw.empty() )
 	{
-		CMD[typekey] = T_NONE;
-		CMD[idkey] = "";
+		G.player.cmd[typekey] = T_NONE;
+		G.player.cmd[idkey] = "";
 		return;
 	}
 	var full = php::strtolower(raw);
 	var tok = full;
 	if ( full.length() > 5 )
 		tok = full.substr(0, 5);
-	if ( php::array_key_exists(tok.c_str(), VOC_M) )
+	if ( php::array_key_exists(tok.c_str(), G.voc_m) )
 	{
-		CMD[typekey] = T_MOTION;
-		CMD[idkey] = VOC_M[tok.c_str()][0].c_str();
+		G.player.cmd[typekey] = T_MOTION;
+		G.player.cmd[idkey] = G.voc_m[tok.c_str()][0].c_str();
 		return;
 	}
-	if ( php::array_key_exists(tok.c_str(), VOC_O) )
+	if ( php::array_key_exists(tok.c_str(), G.voc_o) )
 	{
-		CMD[typekey] = T_OBJECT;
-		CMD[idkey] = VOC_O[tok.c_str()][0].c_str();
+		G.player.cmd[typekey] = T_OBJECT;
+		G.player.cmd[idkey] = G.voc_o[tok.c_str()][0].c_str();
 		return;
 	}
-	if ( php::array_key_exists(tok.c_str(), VOC_A) )
+	if ( php::array_key_exists(tok.c_str(), G.voc_a) )
 	{
-		var first = VOC_A[tok.c_str()][0].c_str();
+		var first = G.voc_a[tok.c_str()][0].c_str();
 		// The magic-word placeholder action is special-cased below.
 		if ( first != "PART" )
 		{
-			CMD[typekey] = T_ACTION;
-			CMD[idkey] = first;
+			G.player.cmd[typekey] = T_ACTION;
+			G.player.cmd[idkey] = first;
 			return;
 		}
 	}
 	// The reservoir magic word: full case-insensitive match.
-	if ( !ZZWORD.empty() )
+	if ( !G.zzword.empty() )
 	{
-		var zlow = php::strtolower(ZZWORD);
+		var zlow = php::strtolower(G.zzword);
 		if ( full == zlow )
 		{
-			CMD[typekey] = T_ACTION;
-			CMD[idkey] = "PART";
+			G.player.cmd[typekey] = T_ACTION;
+			G.player.cmd[idkey] = "PART";
 			return;
 		}
 	}
@@ -116,42 +109,42 @@ void classify_word(var &raw, const char *typekey, const char *idkey)
 		digits = php::ctype_digit(full);
 	if ( digits )
 	{
-		CMD[typekey] = T_NUMERIC;
-		CMD[idkey] = "";
+		G.player.cmd[typekey] = T_NUMERIC;
+		G.player.cmd[idkey] = "";
 		return;
 	}
-	CMD[typekey] = T_NOTFOUND;
-	CMD[idkey] = "";
+	G.player.cmd[typekey] = T_NOTFOUND;
+	G.player.cmd[idkey] = "";
 }
 
 void tokenize_command(var &line)
 {
 	split_words(line);
-	var r0 = CMD["raw0"];
-	var r1 = CMD["raw1"];
+	var r0 = G.player.cmd["raw0"];
+	var r1 = G.player.cmd["raw1"];
 	classify_word(r0, "type0", "id0");
 	classify_word(r1, "type1", "id1");
 }
 
 void shift_words()
 {
-	CMD["raw0"] = CMD["raw1"];
-	CMD["type0"] = CMD["type1"];
-	CMD["id0"] = CMD["id1"];
-	CMD["raw1"] = "";
-	CMD["type1"] = T_NONE;
-	CMD["id1"] = "";
+	G.player.cmd["raw0"] = G.player.cmd["raw1"];
+	G.player.cmd["type0"] = G.player.cmd["type1"];
+	G.player.cmd["id0"] = G.player.cmd["id1"];
+	G.player.cmd["raw1"] = "";
+	G.player.cmd["type1"] = T_NONE;
+	G.player.cmd["id1"] = "";
 }
 
 void clear_command()
 {
-	OLDOBJ = CMD["obj"];
-	CMD["raw0"] = "";
-	CMD["raw1"] = "";
-	CMD["type0"] = T_NONE;
-	CMD["type1"] = T_NONE;
-	CMD["id0"] = "";
-	CMD["id1"] = "";
-	CMD["verb"] = "";
-	CMD["obj"] = "";
+	G.player.oldobj = G.player.cmd["obj"];
+	G.player.cmd["raw0"] = "";
+	G.player.cmd["raw1"] = "";
+	G.player.cmd["type0"] = T_NONE;
+	G.player.cmd["type1"] = T_NONE;
+	G.player.cmd["id0"] = "";
+	G.player.cmd["id1"] = "";
+	G.player.cmd["verb"] = "";
+	G.player.cmd["obj"] = "";
 }

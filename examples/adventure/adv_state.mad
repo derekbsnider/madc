@@ -1,43 +1,32 @@
 // ---- state: the world session, the actor, and the hub access layer ----
 // ECS over the madc hub: per-entity state (object state/found/seq,
 // location abbrev, containment) lives in world bags via ui::; the hot
-// per-turn scalars below are script globals for the single session —
-// the save slice (A10) banks them into the world-state entity. MUD
-// seam: PLAYER is an actor entity, not a semantic singleton — systems
-// take an actor id.
+// per-turn scalars live on the ONE Game object (the player's on its
+// Player member) — the save slice (A10) banks them into the
+// world-state entity. MUD seam: the player is an actor entity in the
+// hub (G.player.ent), not a semantic singleton — systems take an
+// actor id.
 
 #include "adv_decls.inc"
 
-long W = 0;			// hub session handle
-long PLAYER = 0;		// the player actor entity
-long STATE_E = 0;		// world-state singleton entity
-long LOC = 0;			// current location entity
-long NEWLOC = 0;		// destination the travel system chose
-long OLDLOC = 0, OLDLC2 = 0;	// BACK targets (oldlc2 = pre-death safe spot)
-long TURNS = 0, LIMIT = 330, ABBNUM = 5, DETAIL = 0;
-long CLOCK1 = 30, CLOCK2 = 50, DFLAG = 0, TALLY = 0;
-long IWEST = 0, IGO = 0, FOOBAR = 0, KNFLOC = 0, HOLDING = 0;
-bool CLOSNG = false, CLOSED = false, PANIC = false, WZDARK = false;
-bool LMWARN = false;		// lamp-dim warning given
-bool NOVICE = false, SEENBIGWORDS = false, CLSHNT = false;
-long NUMDIE = 0, NDEATHS = 3;	// deaths so far / lives (obituary count)
-long TRNLUZ = 0, SAVED = 0;	// turn/save score penalties
-long BONUS = 0;			// closing bonus: 0 none 1 splat 2 defeat 3 win
-long DKILL = 0;			// dwarves killed (A7)
+// THE game object — the one global in the program (class Game and its
+// Player member are in adv_decls.inc; every other TU sees `extern`).
+Game G;
+
+long STATE_E = 0;		// world-state singleton entity (module-private)
 long SEQ_NEXT = 0;		// listing-order stamp for the next drop
-var ZZWORD;			// the reservoir magic word (rng_seed builds it)
-var VOC_M, VOC_A, VOC_O;	// vocabulary: word -> [ids], by class
-var NOACT;			// message-only verbs: name -> true
-var FIXEDSIDES;			// objname -> {loc, seq}: the LIVE second
-				// placement of two-placed objects
-var ENT;			// entity-id memo: name -> id
-var OBJ_NAMES;			// object names in objnum order
-var OBJ_INDEX;			// object name -> objnum (1-based)
-var HINT_ORDER;			// padded-number key -> hint name
-var HINT_LC;			// hint name -> turn counter at hinted locs
-var HINT_USED;			// hint name -> true once taken
-var CMD;			// the current command bag
-var OLDOBJ;			// previous command's object (clear_command)
+var ENT;			// entity-id memo: name -> id (module-private)
+
+// The flag helpers: one bitvector per owner, tested and set through
+// these so an assign-from-expression site stays a one-liner.
+bool Player::has(long f)	{ return (flags & f) != 0; }
+void Player::set(long f)	{ flags |= f; }
+void Player::clear(long f)	{ flags &= ~f; }
+void Player::put(long f, bool on) { if ( on ) flags |= f; else flags &= ~f; }
+bool Game::has(long f)		{ return (flags & f) != 0; }
+void Game::set(long f)		{ flags |= f; }
+void Game::clear(long f)	{ flags &= ~f; }
+void Game::put(long f, bool on)	{ if ( on ) flags |= f; else flags &= ~f; }
 
 // One listing-order insert: byseq keys on zero-padded (999999999 - seq)
 // so ascending map key order IS descending placement order (the
@@ -51,14 +40,14 @@ void listing_insert(var &byseq, long seq, const char *name)
 long E(const char *name)
 {
 	if ( !php::array_key_exists(name, ENT) )
-		ENT[name] = ui::entity_by_name(W, name);
+		ENT[name] = ui::entity_by_name(G.w, name);
 	return ENT[name].as_integer();
 }
 
 long bag_int(long e, const char *key, long dflt)
 {
 	var v;
-	ui::get(v, W, e, key);
+	ui::get(v, G.w, e, key);
 	if ( v.is_null() )
 		return dflt;
 	return v.as_integer();
@@ -67,7 +56,7 @@ long bag_int(long e, const char *key, long dflt)
 bool bag_flag(long e, const char *key)
 {
 	var v;
-	ui::get(v, W, e, key);
+	ui::get(v, G.w, e, key);
 	if ( v.is_null() )
 		return false;
 	return v.as_boolean();
@@ -80,7 +69,7 @@ bool loccond(long l, const char *flag)
 	if ( !l )
 		return false;
 	var c;
-	ui::get(c, W, l, "conditions");
+	ui::get(c, G.w, l, "conditions");
 	if ( c.is_null() )
 		return false;
 	var f = c[flag];
@@ -98,7 +87,7 @@ bool forced_loc(long l)
 	if ( !l )
 		return false;
 	var tr;
-	ui::get(tr, W, l, "travel");
+	ui::get(tr, G.w, l, "travel");
 	if ( tr.is_null() )
 		return false;
 	for ( var r : tr )
@@ -114,7 +103,7 @@ bool forced_loc(long l)
 // Stashed = the reference's negative prop: the description stays
 // suppressed until the object is picked up and put down again.
 bool obj_stashed(long o)             { return bag_flag(o, "stashed"); }
-void obj_set_stashed(long o, bool s) { ui::set(W, o, "stashed", s); }
+void obj_set_stashed(long o, bool s) { ui::set(G.w, o, "stashed", s); }
 
 // obj_state mirrors the reference's raw prop: a stashed object READS
 // as the encoded negative (-1 - state), so every == comparison against
@@ -130,8 +119,8 @@ long obj_state(long o)
 
 void obj_set_state(long o, long s)
 {
-	ui::set(W, o, "state", s);
-	ui::set(W, o, "stashed", false);
+	ui::set(G.w, o, "state", s);
+	ui::set(G.w, o, "stashed", false);
 }
 
 // The reference's OBJECT_STATE_EQUALS — stash-TRANSPARENT equality:
@@ -145,15 +134,15 @@ bool obj_state_equals(long o, long pval)
 bool obj_found(long o)            { return bag_flag(o, "found"); }
 bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
 
-bool toting(long o)  { return o != 0 && ui::location(W, o) == PLAYER; }
+bool toting(long o)  { return o != 0 && ui::location(G.w, o) == G.player.ent; }
 
 // The LIVE location of an object's fixed (second) side; 0 when it has
 // none or it is off the map.
 long fixed_side_loc(const char *name)
 {
-	if ( !php::array_key_exists(name, FIXEDSIDES) )
+	if ( !php::array_key_exists(name, G.fixedsides) )
 		return 0;
-	var side = FIXEDSIDES[name];
+	var side = G.fixedsides[name];
 	var l = side["loc"];
 	if ( l.empty() )
 		return 0;
@@ -167,13 +156,13 @@ void move_fixed_side(const char *name, long dest)
 	if ( dest )
 	{
 		var dn;
-		ui::name_of(dn, W, dest);
-		FIXEDSIDES[name]["loc"] = dn;
+		ui::name_of(dn, G.w, dest);
+		G.fixedsides[name]["loc"] = dn;
 	}
 	else
-		FIXEDSIDES[name]["loc"] = "";
-	FIXEDSIDES[name]["name"] = name;	// a NEW entry needs its key
-	FIXEDSIDES[name]["seq"] = SEQ_NEXT;
+		G.fixedsides[name]["loc"] = "";
+	G.fixedsides[name]["name"] = name;	// a NEW entry needs its key
+	G.fixedsides[name]["seq"] = SEQ_NEXT;
 	SEQ_NEXT++;
 }
 
@@ -181,11 +170,11 @@ bool at_obj(long o)
 {
 	if ( !o )
 		return false;
-	if ( ui::location(W, o) == LOC )
+	if ( ui::location(G.w, o) == G.player.loc )
 		return true;
 	var nm;
-	ui::name_of(nm, W, o);
-	return fixed_side_loc(nm.c_str()) == LOC;
+	ui::name_of(nm, G.w, o);
+	return fixed_side_loc(nm.c_str()) == G.player.loc;
 }
 bool here_obj(long o) { return at_obj(o) || toting(o); }
 
@@ -196,7 +185,7 @@ long state_index(long o, var &label)
 	if ( php::ctype_digit(label) )
 		return php::intval(label);
 	var st;
-	ui::get(st, W, o, "states");
+	ui::get(st, G.w, o, "states");
 	return st.index(label);
 }
 
@@ -211,8 +200,8 @@ long state_index_c(long o, const char *label)
 // listings read seq DESCENDING.
 void move_object(long o, long dest)
 {
-	ui::move(W, o, dest);
-	ui::set(W, o, "seq", SEQ_NEXT);
+	ui::move(G.w, o, dest);
+	ui::set(G.w, o, "seq", SEQ_NEXT);
 	SEQ_NEXT++;
 }
 
@@ -223,14 +212,14 @@ void carry_object(long o, const char *name)
 	if ( toting(o) )
 		return;
 	if ( strcmp(name, "BIRD") != 0 )
-		HOLDING++;
-	move_object(o, PLAYER);
+		G.player.holding++;
+	move_object(o, G.player.ent);
 }
 
 void drop_object(long o, const char *name, long dest)
 {
 	if ( toting(o) && strcmp(name, "BIRD") != 0 )
-		HOLDING--;
+		G.player.holding--;
 	move_object(o, dest);
 }
 
@@ -253,26 +242,26 @@ void put_object(long o, const char *name, long dest, long pval)
 bool obj_is_fixed(long o)
 {
 	var f;
-	ui::get(f, W, o, "fixed");
+	ui::get(f, G.w, o, "fixed");
 	if ( !f.is_null() )
 		return f.as_integer() != 0;
 	if ( bag_flag(o, "immovable") )
 		return true;
 	var fx;
-	ui::get(fx, W, o, "fixed_at");
+	ui::get(fx, G.w, o, "fixed_at");
 	return !fx.is_null();
 }
 
 void obj_set_fixed(long o, long fixedness)
 {
-	ui::set(W, o, "fixed", fixedness);
+	ui::set(G.w, o, "fixed", fixedness);
 }
 
 // The STATIC original placement (converter `place` prop; 0 = nowhere).
 long static_place(long o)
 {
 	var p;
-	ui::get(p, W, o, "place");
+	ui::get(p, G.w, o, "place");
 	if ( p.is_null() )
 		return 0;
 	return E(p.c_str());
@@ -282,7 +271,7 @@ long static_place(long o)
 long static_fixed(long o)
 {
 	var p;
-	ui::get(p, W, o, "fixed_at");
+	ui::get(p, G.w, o, "fixed_at");
 	if ( p.is_null() )
 		return 0;
 	return E(p.c_str());
@@ -309,8 +298,8 @@ long objects_at_loc(var &only, long at)
 	if ( !at )
 		return 0;
 	var nm_loc;
-	ui::name_of(nm_loc, W, at);
-	for ( var side : FIXEDSIDES )
+	ui::name_of(nm_loc, G.w, at);
+	for ( var side : G.fixedsides )
 	{
 		var l = side["loc"];
 		if ( l == nm_loc )
@@ -321,12 +310,12 @@ long objects_at_loc(var &only, long at)
 		}
 	}
 	var held;
-	ui::contents(held, W, at);
+	ui::contents(held, G.w, at);
 	for ( var h : held )
 	{
 		long o = E(h.c_str());
 		var sq;
-		ui::get(sq, W, o, "seq");
+		ui::get(sq, G.w, o, "seq");
 		if ( sq.is_null() )
 			continue;
 		only = h;
@@ -341,8 +330,8 @@ long objects_at_loc(var &only, long at)
 // reference's pick-up-and-put-down).
 void juggle_object(long o, const char *name)
 {
-	move_object(o, ui::location(W, o));
-	if ( php::array_key_exists(name, FIXEDSIDES) )
+	move_object(o, ui::location(G.w, o));
+	if ( php::array_key_exists(name, G.fixedsides) )
 		move_fixed_side(name, fixed_side_loc(name));
 }
 
@@ -356,17 +345,17 @@ long dwarf_ent(long i)
 // never counts). Dead-dwarf bookkeeping lands with A7.
 long atdwrf(long l)
 {
-	if ( DFLAG < 2 )
+	if ( G.dflag < 2 )
 		return 0;
 	for ( long di = 1; di <= 5; di++ )
-		if ( ui::location(W, dwarf_ent(di)) == l )
+		if ( ui::location(G.w, dwarf_ent(di)) == l )
 			return di;
 	return 0;
 }
 
 bool is_dark()
 {
-	if ( loccond(LOC, "LIT") )
+	if ( loccond(G.player.loc, "LIT") )
 		return false;
 	long lamp = E("LAMP");
 	if ( obj_state(lamp) != 0 && here_obj(lamp) )
@@ -392,48 +381,48 @@ void liq_loc(var &out, long l)
 bool world_boot()
 {
 	if ( php::file_exists("examples/adventure/adventure.world") )
-		W = ui::world_open("examples/adventure/adventure.world");
+		G.w = ui::world_open("examples/adventure/adventure.world");
 	else
-		W = ui::world_open("adventure.world");
-	return W != 0;
+		G.w = ui::world_open("adventure.world");
+	return G.w != 0;
 }
 
 void init_game()
 {
 	long tables = E("adv-tables");
 	var sq;
-	ui::get(sq, W, tables, "seq_next");
+	ui::get(sq, G.w, tables, "seq_next");
 	SEQ_NEXT = sq.as_integer();
-	ui::get(OBJ_NAMES, W, tables, "objects");
+	ui::get(G.obj_names, G.w, tables, "objects");
 	var na;
-	ui::get(na, W, tables, "noaction");
+	ui::get(na, G.w, tables, "noaction");
 	for ( var n : na )
-		NOACT[n.c_str()] = true;
+		G.noact[n.c_str()] = true;
 	long ve = E("adv-vocabulary");
-	ui::get(VOC_M, W, ve, "motions");
-	ui::get(VOC_A, W, ve, "actions");
-	ui::get(VOC_O, W, ve, "objwords");
+	ui::get(G.voc_m, G.w, ve, "motions");
+	ui::get(G.voc_a, G.w, ve, "actions");
+	ui::get(G.voc_o, G.w, ve, "objwords");
 
 	// Runtime entities ride the same world as the dungeon (one save).
-	PLAYER = ui::create(W, "player");
-	STATE_E = ui::create(W, "world-state");
-	LOC = E("LOC_START");
-	NEWLOC = LOC;
-	OLDLOC = 0;
-	OLDLC2 = 0;
-	ui::move(W, PLAYER, LOC);
+	G.player.ent = ui::create(G.w, "player");
+	STATE_E = ui::create(G.w, "world-state");
+	G.player.loc = E("LOC_START");
+	G.player.newloc = G.player.loc;
+	G.player.oldloc = 0;
+	G.player.oldlc2 = 0;
+	ui::move(G.w, G.player.ent, G.player.loc);
 
 	// Dwarves (actors; the 6th is the pirate) at their start rooms.
 	var dl;
-	ui::get(dl, W, tables, "dwarflocs");
+	ui::get(dl, G.w, tables, "dwarflocs");
 	long di = 0;
 	for ( var d : dl )
 	{
 		di++;
-		long dw = ui::create(W, format("dwarf{}", di).c_str());
-		ui::set(W, dw, "is_pirate", di == 6);
-		ui::set(W, dw, "seen", false);
-		ui::move(W, dw, E(d.c_str()));
+		long dw = ui::create(G.w, format("dwarf{}", di).c_str());
+		ui::set(G.w, dw, "is_pirate", di == 6);
+		ui::set(G.w, dw, "seen", false);
+		ui::move(G.w, dw, E(d.c_str()));
 	}
 
 	// Treasure bookkeeping, objnum index, and the LIVE fixed-side map.
@@ -441,10 +430,10 @@ void init_game()
 	// is found.
 	long tally = 0;
 	long objnum = 0;
-	for ( var on : OBJ_NAMES )
+	for ( var on : G.obj_names )
 	{
 		objnum++;
-		OBJ_INDEX[on.c_str()] = objnum;
+		G.obj_index[on.c_str()] = objnum;
 		long o = E(on.c_str());
 		if ( !o )
 			continue;
@@ -453,34 +442,34 @@ void init_game()
 		{
 			tally++;
 			var inv;
-			ui::get(inv, W, o, "inventory");
+			ui::get(inv, G.w, o, "inventory");
 			if ( !inv.is_null() )
 				found = false;
 		}
-		ui::set(W, o, "found", found);
+		ui::set(G.w, o, "found", found);
 		var fx;
-		ui::get(fx, W, o, "fixed_at");
+		ui::get(fx, G.w, o, "fixed_at");
 		if ( !fx.is_null() )
 		{
 			var sf;
-			ui::get(sf, W, o, "seq_fixed");
+			ui::get(sf, G.w, o, "seq_fixed");
 			if ( !sf.is_null() )
 			{
-				FIXEDSIDES[on.c_str()]["name"] = on;
-				FIXEDSIDES[on.c_str()]["loc"] = fx;
-				FIXEDSIDES[on.c_str()]["seq"]
+				G.fixedsides[on.c_str()]["name"] = on;
+				G.fixedsides[on.c_str()]["loc"] = fx;
+				G.fixedsides[on.c_str()]["seq"]
 					= sf.as_integer();
 			}
 		}
 	}
-	TALLY = tally;
+	G.tally = tally;
 
 	// Hints in NUMBER order (converter hints_by_number — the checkhints
 	// scan order); lives from the obituary count.
-	ui::get(HINT_ORDER, W, tables, "hints_by_number");
-	for ( var hn : HINT_ORDER )
-		HINT_LC[hn.c_str()] = (long)0;
+	ui::get(G.hint_order, G.w, tables, "hints_by_number");
+	for ( var hn : G.hint_order )
+		G.hint_lc[hn.c_str()] = (long)0;
 	var tbl;
-	ui::get(tbl, W, tables, "obituaries");
-	NDEATHS = tbl.count();
+	ui::get(tbl, G.w, tables, "obituaries");
+	G.ndeaths = tbl.count();
 }

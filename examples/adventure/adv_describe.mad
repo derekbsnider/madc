@@ -10,7 +10,7 @@ void pspeak_prop(long o, const char *prop, long kk, bool blank)
 	if ( kk < 0 )
 		return;
 	var ds;
-	ui::get(ds, W, o, prop);
+	ui::get(ds, G.w, o, prop);
 	if ( ds.is_null() )
 		return;
 	long i = 0;
@@ -40,7 +40,7 @@ void pspeak_look(long o, long kk)
 void pspeak_touch(long o)
 {
 	var inv;
-	ui::get(inv, W, o, "inventory");
+	ui::get(inv, G.w, o, "inventory");
 	if ( !inv.is_null() && !inv.empty() )
 		speak_msg_noblank(inv);
 }
@@ -62,25 +62,25 @@ void state_change_c(long o, const char *label)
 long steps_state(long o)
 {
 	var fx;
-	ui::get(fx, W, o, "fixed_at");
-	if ( !fx.is_null() && E(fx.c_str()) == LOC )
+	ui::get(fx, G.w, o, "fixed_at");
+	if ( !fx.is_null() && E(fx.c_str()) == G.player.loc )
 		return state_index_c(o, "STEPS_UP");
 	return state_index_c(o, "STEPS_DOWN");
 }
 
 void describe_location()
 {
-	long ab = bag_int(LOC, "abbrev", 0);
+	long ab = bag_int(G.player.loc, "abbrev", 0);
 	var m;
-	ui::get(m, W, LOC, "short");
-	if ( ab % ABBNUM == 0 || m.is_null() )
-		ui::get(m, W, LOC, "long");
-	if ( !forced_loc(LOC) && is_dark() )
+	ui::get(m, G.w, G.player.loc, "short");
+	if ( ab % G.abbnum == 0 || m.is_null() )
+		ui::get(m, G.w, G.player.loc, "long");
+	if ( !forced_loc(G.player.loc) && is_dark() )
 		msg_of(m, "PITCH_DARK");
 	if ( toting(E("BEAR")) )
 		rspeak("TAME_BEAR");
 	speak_msg(m);
-	if ( LOC == E("LOC_Y2") && pct(25) && !CLOSNG )
+	if ( G.player.loc == E("LOC_Y2") && pct(25) && !G.has(GF_CLOSING) )
 		rspeak("SAYS_PLUGH");
 }
 
@@ -88,15 +88,15 @@ void listobjects()
 {
 	if ( is_dark() )
 		return;
-	ui::set(W, LOC, "abbrev", bag_int(LOC, "abbrev", 0) + 1);
+	ui::set(G.w, G.player.loc, "abbrev", bag_int(G.player.loc, "abbrev", 0) + 1);
 	// LISTING-ORDER LAW: the reference's atloc lists PREPEND on drop —
 	// list by placement stamp DESCENDING. Zero-padded (999999999-seq)
 	// keys make the object bag iterate in exactly that order, and the
 	// LIVE fixed-side entries merge in.
 	var nm_loc;
-	ui::name_of(nm_loc, W, LOC);
+	ui::name_of(nm_loc, G.w, G.player.loc);
 	var byseq;
-	for ( var side : FIXEDSIDES )
+	for ( var side : G.fixedsides )
 	{
 		var l = side["loc"];
 		if ( l == nm_loc )
@@ -107,12 +107,12 @@ void listobjects()
 		}
 	}
 	var held;
-	ui::contents(held, W, LOC);
+	ui::contents(held, G.w, G.player.loc);
 	for ( var h : held )
 	{
 		long o = E(h.c_str());
 		var sq;
-		ui::get(sq, W, o, "seq");
+		ui::get(sq, G.w, o, "seq");
 		if ( sq.is_null() )
 			continue;	// actors and singletons are not listed
 		listing_insert(byseq, sq.as_integer(), h.c_str());
@@ -124,9 +124,9 @@ void listobjects()
 			continue;
 		if ( !obj_found(o) || obj_stashed(o) )
 		{
-			if ( CLOSED )
+			if ( G.has(GF_CLOSED) )
 				continue;
-			ui::set(W, o, "found", true);
+			ui::set(G.w, o, "found", true);
 			obj_set_stashed(o, false);
 			// Treasure first-sight specials (the reference's
 			// prop hacks: full score needs prop 0 later).
@@ -135,8 +135,8 @@ void listobjects()
 			if ( onm == "CHAIN" )
 				obj_set_state(o, state_index_c(o, "CHAINING_BEAR"));
 			if ( onm == "EGGS" )
-				SEENBIGWORDS = true;
-			TALLY--;
+				G.player.set(PF_SEENBIGWORDS);
+			G.tally--;
 		}
 		long kk = obj_state(o);
 		if ( onm == "STEPS" )

@@ -38,5 +38,5 @@ void rng_seed(long seedval)
 	var rebuilt = zz.substr(0, 1);
 	rebuilt += "'";
 	rebuilt += zz.substr(2, 3);
-	ZZWORD = rebuilt;
+	G.zzword = rebuilt;
 }

@@ -71,7 +71,7 @@ void bad_motion(var &motion)
 void travel_apply(var &motion)
 {
 	var tr;
-	ui::get(tr, W, LOC, "travel");
+	ui::get(tr, G.w, G.player.loc, "travel");
 	long phase = 0;		// 0 = searching, 1 = evaluating, 2 = skipping
 	var skip_cond, skip_act;
 	for ( var r : tr )
@@ -98,13 +98,13 @@ void travel_apply(var &motion)
 		var act = r["action"];
 		if ( act[0] == "goto" )
 		{
-			NEWLOC = E(act[1].c_str());
+			G.player.newloc = E(act[1].c_str());
 			return;
 		}
 		if ( act[0] == "speak" )
 		{
 			rspeak(act[1].c_str());
-			NEWLOC = LOC;
+			G.player.newloc = G.player.loc;
 			return;
 		}
 		// Special travel.
@@ -112,14 +112,14 @@ void travel_apply(var &motion)
 		if ( sp == 1 )
 		{
 			// Plover-alcove passage: only the emerald fits through.
-			if ( LOC == E("LOC_PLOVER") )
-				NEWLOC = E("LOC_ALCOVE");
+			if ( G.player.loc == E("LOC_PLOVER") )
+				G.player.newloc = E("LOC_ALCOVE");
 			else
-				NEWLOC = E("LOC_PLOVER");
-			if ( HOLDING > 1
-			  || (HOLDING == 1 && !toting(E("EMERALD"))) )
+				G.player.newloc = E("LOC_PLOVER");
+			if ( G.player.holding > 1
+			  || (G.player.holding == 1 && !toting(E("EMERALD"))) )
 			{
-				NEWLOC = LOC;
+				G.player.newloc = G.player.loc;
 				rspeak("MUST_DROP");
 			}
 			return;
@@ -129,7 +129,7 @@ void travel_apply(var &motion)
 			// Plover transport: drop the emerald and pretend he
 			// wasn't carrying it — skip this rule group and keep
 			// evaluating.
-			drop_object(E("EMERALD"), "EMERALD", LOC);
+			drop_object(E("EMERALD"), "EMERALD", G.player.loc);
 			skip_cond = r["cond"];
 			skip_act = r["action"];
 			phase = 2;
@@ -149,16 +149,16 @@ void travel_apply(var &motion)
 			move_object(troll, static_place(troll));
 			move_fixed_side("TROLL", static_fixed(troll));
 			juggle_object(E("CHASM"), "CHASM");
-			NEWLOC = LOC;
+			G.player.newloc = G.player.loc;
 			return;
 		}
 		// Cross to the other side.
 		long plac = static_place(troll);
 		long fixd = static_fixed(troll);
-		if ( LOC == plac )
-			NEWLOC = fixd;
+		if ( G.player.loc == plac )
+			G.player.newloc = fixd;
 		else
-			NEWLOC = plac;
+			G.player.newloc = plac;
 		if ( obj_state(troll)
 		     == state_index_c(troll, "TROLL_UNPAID") )
 			obj_set_state(troll, paidonce);
@@ -168,10 +168,10 @@ void travel_apply(var &motion)
 		state_change_c(E("CHASM"), "BRIDGE_WRECKED");
 		obj_set_state(troll, state_index_c(troll, "TROLL_GONE"));
 		long bear = E("BEAR");
-		drop_object(bear, "BEAR", NEWLOC);
+		drop_object(bear, "BEAR", G.player.newloc);
 		obj_set_fixed(bear, -1);
 		obj_set_state(bear, state_index_c(bear, "BEAR_DEAD"));
-		OLDLC2 = NEWLOC;
+		G.player.oldlc2 = G.player.newloc;
 		croak();
 		return;
 	}
@@ -189,7 +189,7 @@ void travel_apply(var &motion)
 long first_goto_dest(long l)
 {
 	var tr;
-	ui::get(tr, W, l, "travel");
+	ui::get(tr, G.w, l, "travel");
 	if ( tr.is_null() )
 		return 0;
 	for ( var r : tr )
@@ -204,22 +204,22 @@ long first_goto_dest(long l)
 
 void playermove(var &motion)
 {
-	NEWLOC = LOC;
+	G.player.newloc = G.player.loc;
 	if ( motion == "NUL" )
 		return;
 	if ( motion == "BACK" )
 	{
-		long tgt = OLDLOC;
+		long tgt = G.player.oldloc;
 		if ( forced_loc(tgt) )
-			tgt = OLDLC2;
-		OLDLC2 = OLDLOC;
-		OLDLOC = LOC;
-		if ( loccond(LOC, "NOBACK") )
+			tgt = G.player.oldlc2;
+		G.player.oldlc2 = G.player.oldloc;
+		G.player.oldloc = G.player.loc;
+		if ( loccond(G.player.loc, "NOBACK") )
 		{
 			rspeak("TWIST_TURN");
 			return;
 		}
-		if ( tgt == LOC )
+		if ( tgt == G.player.loc )
 		{
 			rspeak("FORGOT_PATH");
 			return;
@@ -231,7 +231,7 @@ void playermove(var &motion)
 		var thru = "";
 		bool thru_found = false;
 		var tr;
-		ui::get(tr, W, LOC, "travel");
+		ui::get(tr, G.w, G.player.loc, "travel");
 		for ( var r : tr )
 		{
 			var act = r["action"];
@@ -273,22 +273,22 @@ void playermove(var &motion)
 	if ( motion == "LOOK" )
 	{
 		// Pretend it is not dark so staring into the gloom is safe.
-		if ( DETAIL < 3 )
+		if ( G.player.detail < 3 )
 			rspeak("NO_MORE_DETAIL");
-		DETAIL++;
-		WZDARK = false;
-		ui::set(W, LOC, "abbrev", (long)0);
+		G.player.detail++;
+		G.player.clear(PF_WZDARK);
+		ui::set(G.w, G.player.loc, "abbrev", (long)0);
 		return;
 	}
 	if ( motion == "CAVE" )
 	{
-		if ( outside_loc(LOC) && LOC != E("LOC_GRATE") )
+		if ( outside_loc(G.player.loc) && G.player.loc != E("LOC_GRATE") )
 			rspeak("FOLLOW_STREAM");
 		else
 			rspeak("NEED_DETAIL");
 		return;
 	}
-	OLDLC2 = OLDLOC;
-	OLDLOC = LOC;
+	G.player.oldlc2 = G.player.oldloc;
+	G.player.oldloc = G.player.loc;
 	travel_apply(motion);
 }
