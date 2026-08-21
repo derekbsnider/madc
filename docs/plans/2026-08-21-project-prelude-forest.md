@@ -1,151 +1,149 @@
-# Project prelude forest — parse the embedded headers once per project
+# JIT launch — the Python-contender plan
 
 **Status: PLAN — awaiting owner approval. Nothing here is implemented.**
 
-## The problem (measured, 2026-08-21, container, interleaved A/B)
+**Owner priority (2026-08-21, verbatim intent): "I need for madc to be a
+JIT-language contender for Python... the fact that we can also do AOT
+is a secondary bonus."** The JIT launch is the product; AOT stays the
+bonus. This plan replaces the earlier draft of this file (which only
+attacked the dev binary's live parse) — the packed-binary measurements
+below showed the true shape.
 
-Under `--project`, every madc-dialect TU is a fresh `Program`
-(deliberate: file-scope isolation, per-TU flags — same isolation the C
-TUs rely on). On an **unpacked** binary each Program live-parses the
-embedded namespace headers its prelude pulls (bits/std_format, ns_php,
-ns_ui, ns_madc — real C++ surfaces). The monolithic adventure paid that
-once; the 11-TU project pays it eleven times:
+## The measurements (2026-08-21, container; adventure = 11 dialect TUs)
 
-| shape                                   | dev bin/madc | packed release |
-|-----------------------------------------|-------------:|---------------:|
-| adventure, single-TU monolith           |        0.7s  |              — |
-| adventure, 11-TU --project              |        5.0s  |              — |
-| 2-TU probe, trivial (println only)      |        0.48s |              — |
-| 2-TU probe using php::/ui::/madc::      |        1.08s |          0.10s |
+| launch                                             | wall  |
+|----------------------------------------------------|------:|
+| Python port (advent.py: interp + source + DB)      | ~0.10s |
+| madc packed JIT, single tiny file                  | ~0.10s |
+| madc packed JIT, ONE 1644-line TU (--show-stats)   | 0.18s |
+| madc packed JIT, the 11-TU project                 | ~1.5s |
+| madc dev (unpacked) JIT, the 11-TU project         | ~5.2s |
+| madc `--run-frozen` thaw of one frozen TU          | ~0.8s |
+| madc AOT binary of the whole game (world+run)      | 0.007s |
+| gcc -O0 compile+link of the emitted C11            | 0.42s |
 
-- ~0.3–0.4s per namespace-using TU; zero penalty for trivial TUs.
-- fulltest's A10 adventure gate (99 invocations): 99s → 8m23s.
-- The packed binary is UNAFFECTED (each TU binds the embedded forest —
-  LOADED == parsed). SMAUG's 51 C TUs are unaffected (no dialect
-  prelude). Correctness is unaffected (94/94 byte-identical).
+The 0.18s single-TU split (packed, `--show-stats`): user-code compile
+is ~0.04s (lex 0.031 + parse 0.007 + cir 0.039 + c2mir 0.006, part
+forest-carved); **~0.12s is FOREST CONTAINER work — map+open 0.011,
+restore 0.049 (decl-index sweep + materialize + register), unit loads
+0.024, zstd decode 0.036 (797 frames → 66 MB decompressed to bind 145
+of 339 units)**. Eleven TUs repeat that container work eleven times —
+~730 MB of decompression per game launch. That ≈ the whole 1.5s.
 
-So: shipped quality is fine; the costs are the dev loop (5s per game
-run) and the merge-wave battery (+7 min), and they grow with any future
-dialect multi-TU work.
+So THREE compounding causes, one root — per-Program header state with
+no process-level sharing and no laziness:
+1. **Packed, multi-TU**: the same immutable container is re-mapped,
+   re-decoded, re-materialized, re-registered PER TU.
+2. **Unpacked (dev), any dialect TU**: no container at all → full live
+   parse of the embedded headers per TU (the original draft's target).
+3. **Warm launches**: nothing is cached between runs — every `madc
+   game` recompiles everything; `--freeze`/`--run-frozen` exists but
+   thaw measures ~0.8s for one TU and still live-parses real headers
+   (a c++locale.h diagnostic fires during thaw) — it is not load-only
+   today, so it is not yet the warm-launch answer.
 
-## The design (recommended shape)
+Python's counterpart numbers: interpreter ~0.01s, and it CACHES
+compiled bytecode (.pyc) so warm launches never re-compile. To be a
+contender the JIT needs the same two properties: a cheap cold start
+and a warm start that loads instead of compiling.
 
-**Freeze the PRELUDE once, bind it N times — inside the project lane,
-using the existing freeze + probe/bind machinery verbatim. No new
-sharing mechanism, no new cache type.** (`no-parallel-implementations`:
-the frozen-forest container IS the one designed vehicle for "parsed
-state crosses Program boundaries"; live products can't be shared
-directly — they live in per-Program pools behind activate_token_pools.)
+## The plan — eliminate first, then share, then cache
 
-1. **A synthetic prelude TU.** The engine synthesizes a tiny dialect
-   source that touches every auto-include surface (bare
-   print/println/format, php::, perl::, python::, ruby::, js::, rust::,
-   ui::, madc::, cin, stderr) — generated FROM the auto-include table,
-   never a hand-kept list (`design-principles`: data drives it). Only
-   system/embedded headers land in it, so no user code can leak into
-   the shared container and shadow per-TU state.
-2. **Freeze it** with the existing `madc_cir_freeze` (arena-enabled
-   parse → translate → serialize) to a scratch container:
-   `tmp/prelude-<config-hash>.forest` (scratch-files rule: tmp/ only).
-3. **Bind it for every TU**: `project_parse_all` sets each TU Program's
-   `forest_bind_path` to the container (probe arm 0 — explicit path
-   beats every discovery arm). The producer-config exact-match gate
-   (`forestMatchExact`) is the staleness/invalidation mechanism —
-   a rebuilt binary or changed config MISSES and re-freezes; never
-   an mtime heuristic of our own.
-4. **Cache across runs**: if the container exists and the config gate
-   accepts it, skip the freeze. Run 1 pays parse+freeze; every later
-   run binds only. Expected: game invocation 5.0s → ~1s; the A10 gate
-   → ~2 min (from 8m23s).
-5. **Precedence**: an explicit user `--forest-bind` / a packed binary's
-   own forest wins — the prelude container is only built/used when the
-   normal probe chain found nothing (the packed lane must keep testing
-   its own pack).
+### Leg 0 — the dialect prelude must not pull the C++ headers AT ALL
 
-### Thread-safety contract (owner law)
+**Owner ruling (2026-08-21): "is any of this game depending on C++
+system header parsing/usage? this should _not_ be the case... that's
+why we're not using std::string, iostream, fstream, set/map/vector/etc
+within the game code."** Measured root: the GAME code is clean, but
+the prelude is not — `bits/std_format` does `#include <string>` for
+exactly ONE declaration (`std::string format(...)`'s return type), and
+`ns_php` / `ns_madc` include/require it for their std::string-flavored
+C++-INTEROP overloads (40 / 25 mentions) that dialect code never
+calls. That single `<string>` closure is the 145-unit / 66 MB bind.
 
-The container is read-only mmap'd state, opened per Program — the same
-contract the packed binary's embedded blob already has (concurrent
-readers safe; no mutation after freeze). TU compilation stays
-sequential in the project lane. The cross-run cache file is written
-once via atomic rename (write to `<path>.tmp.<pid>`, rename), so a
-concurrent second madc either sees the complete container or misses
-the probe and freezes its own.
+- **S-lean: split every dialect-serving fragment into two layers.**
+  A DIALECT-LEAN fragment — value& / const char* / long declarations
+  ONLY, ZERO includes — served by the auto-include scan under
+  --std=madc; the full C++-interop fragment (std::string overloads,
+  `#include <string>`) stays what `#include <ns_php>` means in C/C++
+  modes and for embedding hosts. One publics list, two renderings —
+  never two hand-maintained copies (generate the lean layer or gate
+  lines by mode within one file; no drift).
+- **format's return type is the one real design decision.** Today
+  dialect code writes `format(...).c_str()` (24 game sites) because
+  format is declared returning std::string. Options for dialect mode:
+  (a) ring-lifetime `const char *` (the pre-L3 carrier convention;
+  add a `.c_str()` identity on char* so existing spellings keep
+  working during the sweep), or (b) a `value` return — the value-first
+  end state, but it lands with L3 (value by-value returns). Owner
+  picks; (a) is available now, (b) is the destination.
+- Expected effect: a dialect TU binds a HANDFUL of units instead of
+  145; the 66 MB decode disappears; the per-TU forest cost drops to
+  noise even before Leg 1 — and the dev binary's live-parse cost
+  shrinks by the same closure. This is the highest-leverage slice and
+  it enforces the design instead of optimizing around it.
 
-## Why not the alternatives
+### Leg 1 — cold launch: bind the forest ONCE per process
 
-- **Share live parsed products across Programs** (no serialization):
-  fights the pool-activation architecture; the forest serialization
-  exists precisely because unit products live in per-Program pools.
-  The long-term home for a shared immutable header layer is the
-  2026-06-09 front-end representation refactor
-  (`docs/plans/…header-forest…`) — this plan is the project-lane slice
-  that reuses its shipping vehicle (the container) today.
-- **Freeze from TU[0]'s own parse** instead of a synthetic prelude:
-  risks user-code units leaking into the shared container, and TU[0]'s
-  header coverage may under-serve other TUs. The synthetic prelude is
-  total by construction.
-- **Build a dev sidecar pack in `make -C src`** (probe arm 3,
-  `<exe>.forest`): biggest win (fixes single-file dev startup too —
-  the R4 arc) but flips the ENTIRE dev suite from live-parse testing to
-  bind testing — a testing-surface change that is an explicit OWNER
-  decision, not a side effect of this fix. Recorded as a separate
-  lever; not part of this plan.
-- **Point the fulltest gate at the packed binary**: fulltest tests the
-  binary it builds. Rejected.
+- **S1. One shared bound forest across the project's TU Programs.**
+  The container is immutable, read-only-mmap'd state; today each
+  Program owns a private CirFrozenForest with private decoded frames
+  and private materialization. Share the expensive read-only layers
+  (mapping, decoded frames, unit records) engine-wide; what is
+  genuinely per-Program (registration into that Program's
+  namespace/decl tables) stays per-Program. Thread-safety contract:
+  read-only after open, same as the embedded blob today; TU compiles
+  stay sequential. Expected: 11-TU cold 1.5s → ~0.5s.
+- **S2. The dev binary joins the same shape** (the original draft):
+  when no container binds, live-parse the prelude ONCE into a scratch
+  container (synthetic prelude TU generated from the auto-include
+  table; `tmp/prelude-<config-hash>.forest`; existing freeze + probe
+  arm 0; producer-config exact-match is the invalidation). Expected:
+  dev 5.2s → the packed number, and it inherits S1's sharing.
+- **S3. Shrink the single restore itself** (helps every launch,
+  single-file included — this is the R4 startup arc): decode ONLY the
+  frames backing bound units (66 MB for 145 units is the tell), bulk
+  decl-index import instead of per-entry registration. Target: per-TU
+  forest cost ≤ 20 ms; single-file cold launch clearly UNDER Python's
+  0.1s; 11-TU cold ≈ 0.2–0.3s.
 
-## Slices
+### Leg 2 — warm launch: a transparent program cache (.pyc, but native)
 
-- **S0 — verify the load-bearing assumptions (recon, no code):**
-  (a) bind granularity — a bound TU that needs a unit the container
-  lacks falls through to live parse PER UNIT, not per container
-  (if false, the synthetic prelude must be provably total — enumerate
-  the auto-include table and assert coverage at freeze time);
-  (b) freeze content — confirm a dialect TU's freeze carries only the
-  units it should (system/embedded headers) and what user-unit
-  filtering exists; (c) arena-enabled parse cost on the prelude TU;
-  (d) confirm the config-gate fields cover binary identity (a rebuilt
-  dev binary must not bind yesterday's container).
-- **S1 — the prelude freeze-and-bind in `project_parse_all`** behind
-  the precedence rule (only when the normal probe found nothing), no
-  cross-run cache yet (freeze every run). Gate: testproject* family,
-  testprojectinit*, testprojectvalue*, the 94-log parity gate
-  byte-identical, and the timing table re-measured.
-- **S2 — the cross-run cache** (config-gated reuse, atomic rename,
-  scratch location). Gate: same + a stale-container negative control
-  (corrupt/mismatched container must MISS loudly into a re-freeze,
-  never bind).
-- **S3 — measurements banked**: the table above re-run on both
-  binaries; the A10 gate wall time recorded in docs/test-status.md.
-  Perf target: the dev binary lands within ~1.5x of the PACKED
-  binary's floor for the same program. Floor measured 2026-08-21: the
-  fresh packed release runs the full 11-TU game in ~1.6s (the pack
-  covers only system headers — the game's own ~4400 user-code lines,
-  MIR link, and the world load are the remainder). So: game invocation
-  on dev ≤ ~2.5s (from 5.0s), the A10 gate ≤ ~3.5 min (from 8m23s).
-  The user-code floor itself is a different lever (out of scope here).
+- **S4. Make thaw load-only.** Find why --run-frozen re-parses real
+  headers and costs 0.8s for one TU (the c++locale.h diagnostic is the
+  thread to pull); a thaw must touch source zero times (LOADED ==
+  parsed law). MIR cache: madc_cir_freeze already carries a mir_cache
+  flag — a frozen program that also carries its MIR skips c2mir AND
+  codegen at launch.
+- **S5. Project-aware, automatic caching.** `madc advent.cc.json`
+  transparently maintains a frozen container per manifest (keyed:
+  source content hashes + config + binary identity — the same
+  exact-match gate; stale = recompile + refreeze, never a wrong run).
+  First launch pays the compile; every later launch thaws. Target:
+  warm 11-TU launch ≤ 50 ms — under Python's floor, with native code.
+- Explicit flags (`--freeze-run`, `--run-frozen`) stay; S5 only makes
+  the default path do what .pyc does without being asked.
 
-## Interactions / gotchas (stated up front)
+### Sequencing and gates
 
-- **Pack-degradation gate (#63)** concerns the RELEASE pack's
-  profiles; this scratch container never enters that lane. State in
-  the freeze diag (DBG-gated, marker discipline) which container a TU
-  bound, so a surprise bind is diagnosable.
-- **The headerless lane** masks nothing new: it runs the packed
-  binary with include roots masked; the prelude container is a dev-lane
-  artifact and must be ABSENT there (headerless negative control
-  unaffected — verify in S2's negative control).
-- **Testing surface**: the ~1100 single-file tests keep live-parsing
-  every embedded header on every fulltest run; only the project lane
-  binds the prelude. The gate keeps exercising the full game logic
-  live; only the identical header prefix is bound.
-- The freeze lane's ordering rule holds: the freeze runs in its OWN
-  MIR bracket BEFORE the project's bracket opens (project_parse_all
-  is pre-bracket by design — same rule that keeps throws outside).
+S0 (recon, no code): confirm which forest layers are Program-free
+(decoded frames, unit records) vs Program-bound (DefArena
+materialization, registration); the exact accounting of the 0.18s
+(the stats buckets overlap); why thaw live-parses. Then S1 → S2 → S3
+(leg 1 lands as a wave), then S4 → S5. Every slice: the 94-log parity
+gate byte-identical + testproject*/testprojectinit*/testnsdmiglobal +
+the timing table re-measured and recorded. fulltest once per merge
+wave. The A10 gate's 8m23s collapses with S2 (it runs the dev binary).
 
-## Cost/benefit
+## Non-goals / rejected
 
-One-time: S0 recon + ~a day of engine work + gates. Recurring win:
-–7 min per merge-wave battery, dev game runs 5x faster, and every
-future madc-dialect multi-TU project (the SMAUG-scale dialect end
-state) inherits the fix.
+- Pointing the fulltest gate at the packed binary (tests must run the
+  binary they build).
+- A dev sidecar pack by default (flips the whole suite from live-parse
+  testing to bind testing — separate owner lever).
+- Sharing LIVE parse products across Programs without the container
+  (fights the pool-activation model; the container is the designed
+  vehicle — and after S1/S3 it is fast enough).
+- Chasing gcc's compile throughput as the primary lever: user-code
+  compile is ~0.04s/TU — real but second-order next to the container
+  work; it stays on the front-end performance arc.
