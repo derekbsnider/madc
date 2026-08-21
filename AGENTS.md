@@ -323,6 +323,7 @@ no matter how small.
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
 | [value-first.md](.claude/rules/value-first.md)   |    30 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
+| [dialect-lean.md](.claude/rules/dialect-lean.md) |    35 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 

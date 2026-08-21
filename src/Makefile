@@ -906,6 +906,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-one-spawn-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
+	@cd .. && bash scripts/check-dialect-lean.sh
 	@cd .. && bash scripts/check-cross-mode-compiles.sh
 	@cd .. && bash scripts/check-i64-spec-spelling.sh
 	@cd .. && bash scripts/check-ns-header-widths.sh
