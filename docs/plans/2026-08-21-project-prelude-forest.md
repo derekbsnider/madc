@@ -1,6 +1,8 @@
 # JIT launch — the Python-contender plan
 
-**Status: PLAN — awaiting owner approval. Nothing here is implemented.**
+**Status: APPROVED (owner, 2026-08-21) — executing. Order: S0 recon →
+Leg 0 → Leg 1 → Leg 2. The format-return decision is SETTLED (see
+Leg 0).**
 
 **Owner priority (2026-08-21, verbatim intent): "I need for madc to be a
 JIT-language contender for Python... the fact that we can also do AOT
@@ -69,14 +71,15 @@ calls. That single `<string>` closure is the 145-unit / 66 MB bind.
   modes and for embedding hosts. One publics list, two renderings —
   never two hand-maintained copies (generate the lean layer or gate
   lines by mode within one file; no drift).
-- **format's return type is the one real design decision.** Today
-  dialect code writes `format(...).c_str()` (24 game sites) because
-  format is declared returning std::string. Options for dialect mode:
-  (a) ring-lifetime `const char *` (the pre-L3 carrier convention;
-  add a `.c_str()` identity on char* so existing spellings keep
-  working during the sweep), or (b) a `value` return — the value-first
-  end state, but it lands with L3 (value by-value returns). Owner
-  picks; (a) is available now, (b) is the destination.
+- **format's return type — SETTLED (owner, 2026-08-21).** Dialect
+  `format()` returns ring-lifetime `const char *` (the pre-L3 carrier
+  convention); the declaration flips to a `value` return when L3
+  (value by-value returns) lands. The game's `format(...).c_str()`
+  sites are ~7 (the earlier "24" was a miscount; the other ~92
+  `.c_str()` sites are var-carrier ring reads, unaffected) — they
+  drop `.c_str()` in the same sweep. NO `.c_str()` identity on
+  `char*`: a stale `format(...).c_str()` spelling must be a loud
+  compile error, not a silently-tolerated wart (owner ruling).
 - Expected effect: a dialect TU binds a HANDFUL of units instead of
   145; the 66 MB decode disappears; the per-TU forest cost drops to
   noise even before Leg 1 — and the dev binary's live-parse cost
