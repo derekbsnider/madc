@@ -122,11 +122,12 @@ void listobjects()
 		long o = E(onm.c_str());
 		if ( onm == "STEPS" && toting(E("NUGGET")) )
 			continue;
-		if ( !obj_found(o) )
+		if ( !obj_found(o) || obj_stashed(o) )
 		{
 			if ( CLOSED )
 				continue;
 			ui::set(W, o, "found", true);
+			obj_set_stashed(o, false);
 			// Treasure first-sight specials (the reference's
 			// prop hacks: full score needs prop 0 later).
 			if ( onm == "RUG" )

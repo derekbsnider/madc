@@ -142,24 +142,158 @@ bool preprocess_command()
 	return true;
 }
 
-// The per-turn bookkeeping half of the reference's closecheck: turn
-// thresholds penalize and announce. The cave-closing clock machinery
-// (clock1/clock2, tally==0 deep states) is slice A9.
-void turn_bookkeeping()
+// The lamp timers (the reference's lampcheck): burn a turn of battery,
+// warn as it dims, swap in fresh batteries, go dark at zero.
+void lampcheck()
+{
+	long lamp = E("LAMP");
+	if ( obj_state(lamp) == state_index_c(lamp, "LAMP_BRIGHT") )
+		LIMIT--;
+	long battery = E("BATTERY");
+	if ( LIMIT <= 30 )
+	{
+		if ( here_obj(battery) && here_obj(lamp)
+		  && obj_state(battery)
+		     == state_index_c(battery, "FRESH_BATTERIES") )
+		{
+			rspeak("REPLACE_BATTERIES");
+			obj_set_state(battery,
+				state_index_c(battery, "DEAD_BATTERIES"));
+			LIMIT = LIMIT + 2500;
+			LMWARN = false;
+		}
+		else if ( !LMWARN && here_obj(lamp) )
+		{
+			LMWARN = true;
+			if ( obj_state(battery)
+			     == state_index_c(battery, "DEAD_BATTERIES") )
+				rspeak("MISSING_BATTERIES");
+			else if ( ui::location(W, battery) == 0 )
+				rspeak("LAMP_DIM");
+			else
+				rspeak("GET_BATTERIES");
+		}
+	}
+	if ( LIMIT == 0 )
+	{
+		LIMIT = -1;
+		obj_set_state(lamp, state_index_c(lamp, "LAMP_DARK"));
+		if ( here_obj(lamp) )
+			rspeak("LAMP_OUT");
+	}
+}
+
+// clock1 expired: lock the grate, clear the bridge, banish the dwarves,
+// the troll, and the (live) bear; the axe and chain free up.
+void close_clock1()
+{
+	long grate = E("GRATE");
+	obj_set_state(grate, state_index_c(grate, "GRATE_CLOSED"));
+	long fissure = E("FISSURE");
+	obj_set_state(fissure, state_index_c(fissure, "UNBRIDGED"));
+	for ( long di = 1; di <= 6; di++ )
+	{
+		long dw = dwarf_ent(di);
+		ui::set(W, dw, "seen", false);
+		ui::move(W, dw, 0);
+	}
+	long troll = E("TROLL");
+	destroy_object(troll, "TROLL");
+	move_fixed_side("TROLL", 0);
+	long troll2 = E("TROLL2");
+	move_object(troll2, static_place(troll));
+	move_fixed_side("TROLL2", static_fixed(troll));
+	juggle_object(E("CHASM"), "CHASM");
+	long bear = E("BEAR");
+	if ( obj_state(bear) != state_index_c(bear, "BEAR_DEAD") )
+		destroy_object(bear, "BEAR");
+	long chain = E("CHAIN");
+	obj_set_state(chain, state_index_c(chain, "CHAIN_HEAP"));
+	obj_set_fixed(chain, 0);
+	long axe = E("AXE");
+	obj_set_state(axe, state_index_c(axe, "AXE_HERE"));
+	obj_set_fixed(axe, 0);
+	rspeak("CAVE_CLOSING");
+	CLOCK1 = -1;
+	CLOSNG = true;
+}
+
+// clock2 expired: transport to the storage room (the reference's
+// hardwired LOC_NE / LOC_SW endgame), stash the props, drop the load.
+void close_clock2()
+{
+	long ne = E("LOC_NE");
+	long sw = E("LOC_SW");
+	long bottle = E("BOTTLE");
+	put_object(bottle, "BOTTLE", ne,
+		   state_index_c(bottle, "EMPTY_BOTTLE"));
+	long plant = E("PLANT");
+	put_object(plant, "PLANT", ne, 0);
+	put_object(E("OYSTER"), "OYSTER", ne, 0);
+	long lamp = E("LAMP");
+	put_object(lamp, "LAMP", ne, state_index_c(lamp, "LAMP_DARK"));
+	put_object(E("ROD"), "ROD", ne, 0);
+	put_object(E("DWARF"), "DWARF", ne, 0);
+	LOC = ne;
+	OLDLOC = ne;
+	NEWLOC = ne;
+	ui::move(W, PLAYER, ne);
+	move_object(E("GRATE"), sw);
+	long sign = E("SIGN");
+	move_object(sign, sw);
+	obj_set_state(sign, state_index_c(sign, "ENDGAME_SIGN"));
+	long snake = E("SNAKE");
+	put_object(snake, "SNAKE", sw, state_index_c(snake, "SNAKE_CHASED"));
+	long bird = E("BIRD");
+	put_object(bird, "BIRD", sw, state_index_c(bird, "BIRD_CAGED"));
+	put_object(E("CAGE"), "CAGE", sw, 0);
+	put_object(E("ROD2"), "ROD2", sw, 0);
+	put_object(E("PILLOW"), "PILLOW", sw, 0);
+	put_object(E("MIRROR"), "MIRROR", ne, 0);
+	move_fixed_side("MIRROR", sw);
+	for ( value on : OBJ_NAMES )
+	{
+		long o = E(on.c_str());
+		if ( o && toting(o) )
+			destroy_object(o, on.c_str());
+	}
+	rspeak("CAVE_CLOSED");
+	CLOSED = true;
+}
+
+// The reference's closecheck: turn thresholds, the closing clocks, the
+// cave-closed snapshot, then the lamp timers. True = the cave just
+// closed (abandon the command and start a fresh described turn).
+bool closecheck()
 {
 	var ths;
 	ui::get(ths, W, E("adv-tables"), "turn_thresholds");
 	for ( value th : ths )
 	{
-		var t = th["threshold"];
-		if ( TURNS == t.as_integer() + 1 )
+		if ( TURNS == th["threshold"].as_integer() + 1 )
 		{
-			var pl = th["point_loss"];
-			TRNLUZ = TRNLUZ + pl.as_integer();
+			TRNLUZ = TRNLUZ + th["point_loss"].as_integer();
 			var m = th["message"];
 			speak_msg(m);
 		}
 	}
+	// The closing clock only ticks well inside the cave (never at Y2).
+	if ( TALLY == 0 && loccond(LOC, "DEEP") && LOC != E("LOC_Y2") )
+		CLOCK1--;
+	if ( CLOCK1 == 0 )
+	{
+		close_clock1();
+		return CLOSED;
+	}
+	if ( CLOCK1 < 0 )
+		CLOCK2--;
+	if ( CLOCK2 == 0 )
+	{
+		close_clock2();
+		return true;
+	}
+	lampcheck();
+	return false;
 }
 
 // Process the tokenized words: 1 = executed, 2 = read another command,
@@ -247,6 +381,12 @@ long word_loop()
 		}
 		if ( g == G_CHECKHINT )
 			return 2;
+		if ( g == G_DWARFWAKE )
+		{
+			// Oh dear, he's disturbed the dwarves.
+			rspeak("DWARVES_AWAKEN");
+			terminate_game(M_ENDGAME);
+		}
 		if ( g == G_CLEAROBJ )
 		{
 			clear_command();
@@ -278,7 +418,25 @@ bool do_command_once()
 		clear_command();
 		for (;;)
 		{
-			// (closing-time stash checks land with A9)
+			// At closing time, unstash toted objects so they get
+			// described once picked up and put down again.
+			if ( CLOSED )
+			{
+				long oyster = E("OYSTER");
+				if ( (!obj_found(oyster) || obj_stashed(oyster))
+				  && toting(oyster) )
+					pspeak_look(oyster, 1);
+				for ( value on : OBJ_NAMES )
+				{
+					long o = E(on.c_str());
+					if ( !o || !toting(o) )
+						continue;
+					if ( obj_stashed(o) )
+						obj_set_stashed(o, false);
+					else if ( !obj_found(o) )
+						ui::set(W, o, "found", true);
+				}
+			}
 			WZDARK = is_dark();
 			if ( KNFLOC > 0 && KNFLOC != LOC )
 				KNFLOC = 0;
@@ -292,7 +450,8 @@ bool do_command_once()
 			TURNS++;
 			if ( !preprocess_command() )
 				continue;
-			turn_bookkeeping();
+			if ( closecheck() )
+				return true;	// the cave just closed
 			long rc = word_loop();
 			if ( rc == 1 )
 				return true;

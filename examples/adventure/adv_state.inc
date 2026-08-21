@@ -16,6 +16,7 @@ long TURNS = 0, LIMIT = 330, ABBNUM = 5, DETAIL = 0;
 long CLOCK1 = 30, CLOCK2 = 50, DFLAG = 0, TALLY = 0;
 long IWEST = 0, IGO = 0, FOOBAR = 0, KNFLOC = 0, HOLDING = 0;
 bool CLOSNG = false, CLOSED = false, PANIC = false, WZDARK = false;
+bool LMWARN = false;		// lamp-dim warning given
 bool NOVICE = false, SEENBIGWORDS = false, CLSHNT = false;
 long NUMDIE = 0, NDEATHS = 3;	// deaths so far / lives (obituary count)
 long TRNLUZ = 0, SAVED = 0;	// turn/save score penalties
@@ -112,6 +113,11 @@ void obj_set_state(long o, long s) { ui::set(W, o, "state", s); }
 bool obj_found(long o)            { return bag_flag(o, "found"); }
 bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
 
+// Stashed = the reference's negative prop: the description stays
+// suppressed until the object is picked up and put down again.
+bool obj_stashed(long o)             { return bag_flag(o, "stashed"); }
+void obj_set_stashed(long o, bool s) { ui::set(W, o, "stashed", s); }
+
 bool toting(long o)  { return o != 0 && ui::location(W, o) == PLAYER; }
 
 // The LIVE location of an object's fixed (second) side; 0 when it has
@@ -139,6 +145,7 @@ void move_fixed_side(const char *name, long dest)
 	}
 	else
 		FIXEDSIDES[name]["loc"] = "";
+	FIXEDSIDES[name]["name"] = name;	// a NEW entry needs its key
 	FIXEDSIDES[name]["seq"] = SEQ_NEXT;
 	SEQ_NEXT++;
 }
@@ -203,6 +210,14 @@ void drop_object(long o, const char *name, long dest)
 void destroy_object(long o, const char *name)
 {
 	drop_object(o, name, 0);
+}
+
+// The reference's put(): move somewhere AND stash.
+void put_object(long o, const char *name, long dest, long pval)
+{
+	drop_object(o, name, dest);
+	obj_set_state(o, pval);
+	obj_set_stashed(o, true);
 }
 
 // Is the object fixed in place? A runtime `fixed` bag prop (0 = freed,

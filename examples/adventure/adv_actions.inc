@@ -66,7 +66,8 @@ bool is_gemstone(value &obj)
 const char *fixed_quip(value &obj, long o)
 {
 	if ( obj == "PLANT" )
-		return obj_state(o) <= 0 ? "DEEP_ROOTS" : "YOU_JOKING";
+		return obj_state(o) == 0 || obj_stashed(o)
+		       ? "DEEP_ROOTS" : "YOU_JOKING";
 	if ( obj == "BEAR" )
 		return obj_state(o) == state_index_c(o, "SITTING_BEAR")
 		       ? "BEAR_CHAINED" : "YOU_JOKING";
@@ -204,7 +205,8 @@ long h_vcarry(value &obj)
 		return quip("CARRY_LIMIT");
 	long bird = E("BIRD");
 	if ( obj == "BIRD"
-	  && obj_state(bird) != state_index_c(bird, "BIRD_CAGED") )
+	  && obj_state(bird) != state_index_c(bird, "BIRD_CAGED")
+	  && !obj_stashed(bird) )
 	{
 		if ( obj_state(bird)
 		     == state_index_c(bird, "BIRD_FOREST_UNCAGED") )
@@ -235,9 +237,12 @@ long h_vcarry(value &obj)
 		if ( lb2 != "" )
 			ui::move(W, E(lb2.c_str()), PLAYER);
 	}
-	if ( is_gemstone(obj) && !obj_found(o) )
+	// The reference's IS_FOUND is literally "prop == 0": a gem taken
+	// out of the cavity (state 1) resets to 0 and empties the cavity.
+	if ( is_gemstone(obj) && (!obj_found(o) || obj_state(o) != 0) )
 	{
 		ui::set(W, o, "found", true);
+		obj_set_state(o, 0);
 		long cav = E("CAVITY");
 		obj_set_state(cav, state_index_c(cav, "CAVITY_EMPTY"));
 	}
@@ -1134,7 +1139,7 @@ long h_read(value &obj)
 		for ( value on : OBJ_NAMES )
 		{
 			long oo = E(on.c_str());
-			if ( !oo || !here_obj(oo) )
+			if ( !oo || !here_obj(oo) || obj_stashed(oo) )
 				continue;
 			var tx;
 			ui::get(tx, W, oo, "texts");
@@ -1248,7 +1253,7 @@ long h_listen()
 	for ( value on : OBJ_NAMES )
 	{
 		long o = E(on.c_str());
-		if ( !o || !here_obj(o) || !obj_found(o) )
+		if ( !o || !here_obj(o) || !obj_found(o) || obj_stashed(o) )
 			continue;
 		var snds;
 		ui::get(snds, W, o, "sounds");
