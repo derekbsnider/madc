@@ -1,11 +1,10 @@
-#include <string>
+// madc embedded <ns_python> — Python-style string conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    std::string *__py_title(std::string *);
-    std::string *__py_swapcase(std::string *);
-    std::string *__py_center(std::string *, int64_t, const char *);
-    std::string *__py_ljust(std::string *, int64_t, const char *);
-    std::string *__py_rjust(std::string *, int64_t, const char *);
-    std::string *__py_zfill(std::string *, int64_t);
     int64_t __py_count(const char *, const char *);
     int64_t __py_startswith(const char *, const char *);
     int64_t __py_endswith(const char *, const char *);
@@ -13,6 +12,28 @@ extern "C" {
     int64_t __py_isalpha(const char *);
     int64_t __py_isalnum(const char *);
     int64_t __py_isspace(const char *);
+}
+
+namespace python {
+    int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    int64_t isdigit(const char *text) { return __py_isdigit(text); }
+    int64_t isalpha(const char *text) { return __py_isalpha(text); }
+    int64_t isalnum(const char *text) { return __py_isalnum(text); }
+    int64_t isspace(const char *text) { return __py_isspace(text); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    std::string *__py_title(std::string *);
+    std::string *__py_swapcase(std::string *);
+    std::string *__py_center(std::string *, int64_t, const char *);
+    std::string *__py_ljust(std::string *, int64_t, const char *);
+    std::string *__py_rjust(std::string *, int64_t, const char *);
+    std::string *__py_zfill(std::string *, int64_t);
     std::string *__py_replace(std::string *, const char *, const char *);
     std::string *__py_format(std::string *, const char *, array *);
 }
@@ -24,13 +45,7 @@ namespace python {
     std::string &ljust(std::string &s, int64_t width, const char *fill) { return *__py_ljust(&s, width, fill); }
     std::string &rjust(std::string &s, int64_t width, const char *fill) { return *__py_rjust(&s, width, fill); }
     std::string &zfill(std::string &s, int64_t width) { return *__py_zfill(&s, width); }
-    int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
-    int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
-    int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
-    int64_t isdigit(const char *text) { return __py_isdigit(text); }
-    int64_t isalpha(const char *text) { return __py_isalpha(text); }
-    int64_t isalnum(const char *text) { return __py_isalnum(text); }
-    int64_t isspace(const char *text) { return __py_isspace(text); }
     std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
     std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
 }
+#endif

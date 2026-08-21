@@ -1,30 +1,45 @@
-#include <string>
+// madc embedded <ns_ruby> — Ruby-style string + array conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*/array-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    std::string *__rb_squeeze(std::string *);
-    std::string *__rb_tr(std::string *, const char *, const char *);
     void __rb_chars(array *, const char *);
-    std::string *__rb_capitalize(std::string *);
-    std::string *__rb_delete(std::string *, const char *);
     int64_t __rb_count(const char *, const char *);
     int64_t __rb_include(const char *, const char *);
-    std::string *__rb_gsub(std::string *, const char *, const char *);
-    std::string *__rb_sub(std::string *, const char *, const char *);
     void __rb_rotate(array *, int64_t);
     void __rb_compact(array *);
     void __rb_flatten(array *, const char *);
 }
 
 namespace ruby {
-    std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
-    std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
     void chars(array &out, const char *text) { __rb_chars(&out, text); }
-    std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
-    std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
     int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
     int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
-    std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
-    std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
     void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
     void compact(array &values) { __rb_compact(&values); }
     void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    std::string *__rb_squeeze(std::string *);
+    std::string *__rb_tr(std::string *, const char *, const char *);
+    std::string *__rb_capitalize(std::string *);
+    std::string *__rb_delete(std::string *, const char *);
+    std::string *__rb_gsub(std::string *, const char *, const char *);
+    std::string *__rb_sub(std::string *, const char *, const char *);
+}
+
+namespace ruby {
+    std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+    std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+    std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+    std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+}
+#endif
