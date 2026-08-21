@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **Brace-list value literals + `.push()`** — `var ds = { a, b, c };`
+  (and `var ds{ a, b, c }`) builds an array-kind value: default
+  construction plus one element push per entry, heterogeneous elements
+  welcome; `{}` is an empty ARRAY (countable, not null); a one-element
+  list is a one-element array ([over.match.list]); file-scope literals
+  ride the global-init lane. `v.push(x)` is the matching chainable
+  script surface — both bind the same registered rows
+  (`madarray_push_*`), so literals and script pushes cannot drift.
+  Nested brace lists error loudly (future lowering). Pinned by
+  tests/testvalueinit.mad (JIT + native-exe lanes).
+- **Fixed (pre-existing, silent): file-scope `value g(7);` read null** —
+  the carrier global lane queued only `=`-initializers into
+  `__madc_global_init`; ctor-syntax arguments were dropped. Pinned in
+  tests/testvaluector.mad.
+- Adventure: adv_io speak helpers build their arg lists as value
+  literals (the four php::array_push chains retired); 94-log corpus
+  gate re-verified byte-identical.
+
 ## [v0.94.0] — 2026-08-20
 
 Upstream-community MIR hardening: three codegen correctness fixes adopted

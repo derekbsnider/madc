@@ -25,20 +25,36 @@ data tables over ladders — adv_actions.inc (1637) is now smaller than
 actions.c (1677); game total 4297 vs the reference's 4681 in-scope.
 
 **REMAINING before the owner ceremonies:**
-1. Merge-wave battery (remote_build.sh battery) — the FIRST run was
-   RED: it caught two foreach regressions from @dcc16f6f (the value&-
-   param fix), both fixed with reducers+trailers: @ee0cc241 (a MEMBER
-   container `s.a` matched the named-var shortcut — TokenMember IS-A
-   TokenVar — and lost its receiver) and @c73a3a4d (a BY-VALUE `array`
-   parameter is pointer-stored — emitted `void *name` — so `&name`
-   addressed the pointer slot and the loop ran zero times; fixed in
-   object_var_addr). testarraymember + testforeachheaderbody + the
-   94-log gate re-verified green. A FULL battery rerun was IN FLIGHT
-   at handoff (@c73a3a4d) — verify the newest tmp/logs/rb-*.log shows
-   rc=0 on EVERY stage (fulltest/exe/obj/release/packed/headerless)
-   before any merge; rerun `scripts/remote_build.sh battery` if in
-   doubt. ⚠️ Lesson re-learned: a test's raw exit code is NOT the
-   runner's verdict — diff against the .expect fixture.
+1. Merge-wave battery: the @c73a3a4d rerun came back GREEN on every
+   stage (rb-20260821-041339.log: fulltest/exe/obj/release/packed/
+   headerless all rc=0; 1113 passed / 0 failed — the two earlier RED
+   logs at 02:57/03:35 predate the @c73a3a4d fix, don't re-diagnose
+   them). ⚠️ BUT new src commits landed AFTER that battery (the
+   brace-list literal wave below), so the merge gate needs ONE fresh
+   `scripts/remote_build.sh battery` at the actual merge wave — not
+   per commit. Targeted validation for the new wave is green: the
+   18-test value/array/foreach/php blast-radius subset, the new
+   testvalueinit in BOTH the JIT and native-exe lanes, and the 94-log
+   parity gate (byte-identical).
+   ⚠️ Lesson re-learned: a test's raw exit code is NOT the runner's
+   verdict — diff against the .expect fixture.
+1b. OWNER-DIRECTED ELEGANCE, wave 3 (@bf04d070 + @a6776e1c, pushed):
+   brace-list value literals `var ds = { a, b, c };` (+ `var ds{...}`,
+   `{}` = empty ARRAY, one-element law, file-scope literals) and the
+   chainable `.push(x)` carrier method — one registered row set
+   (madarray_push_*) serves both, adv_io's four php::array_push lines
+   retired. Three defects fixed en route (all pinned): file-scope
+   `value g(7);` silently read null (pre-existing — carrier global
+   lane dropped ctor_args); a ref-returning carrier call as method
+   RECEIVER loaded the payload word (chain SIGSEGV — class_this_arg
+   carrier arm now re-wraps it like keyed subscripts); push externs
+   declared with TWO shapes (void* vs long long*) hit
+   need_output_extern's first-shape-wins dedup → MIR "mov: wrong type
+   memory" (the list lowering now reads emit_symbol_ret_specs, the one
+   return-shape owner). Residues: nested brace lists = loud error
+   (future lowering); keyed literals `{ k: v }` not spelled yet; the
+   carrier surface (size/count/index/push/at/substr/keyed slots/
+   literals) still has NO docs/language page.
 2. Release + master promotion = OWNER CALLS (release batches
    v0.93+v0.94+Track 7 into the three-platform promotion; VERSION
    stays 0.94.0 until the owner cuts it).

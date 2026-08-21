@@ -6,11 +6,11 @@
  "branch": "develop",
  "live_handoff_previous": "docs/plans/2026-08-17-php-dump-arc-HANDOFF.md",
  "live_handoff": {
-  "session": 111,
+  "session": 112,
   "date": "2026-08-21",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "c73a3a4d (pushed)",
-  "headline": "RELEASE BOUNDARY MET: all 94 in-scope open-adventure logs (win430 included) replay 100% byte-identical; A10 corpus gate in fulltest (3 fragments + 94 logs + negative controls, 99s)",
+  "head": "a6776e1c (pushed)",
+  "headline": "RELEASE BOUNDARY MET + battery VERIFIED GREEN at c73a3a4d (rb-20260821-041339.log, all stages rc=0); elegance wave 3 landed after it (brace-list value literals + .push) so the merge gate needs ONE fresh battery at the merge wave",
   "landed": [
    "bear chain + drop-bear-scares-troll (63 logs)",
    "value.index() carrier feeder; php::array_search adopts the core",
@@ -19,12 +19,13 @@
    "cave closing (clock1/clock2 snapshots), stash semantics (stashed flag; obj_state returns encoded negative; obj_state_equals transparent flavor), lampcheck",
    "the gem/cavity law (IS_FOUND == prop==0), the null location (LOC_NOWHERE = entity 0, converter fix + world regen, fixed point verified), the hover pin, verbs-with-objects defaults, the empty-word motion path",
    "A10: corpus vendored (94 pairs + EXCLUDED.md), adventure_parity.sh whole-log stage",
-   "cir: two foreach regressions from dcc16f6f caught by the FIRST (red) battery and fixed \u2014 member containers excluded from the named-var shortcut (ee0cc241); by-value carrier params are pointer-stored, answered in object_var_addr (c73a3a4d); 94-log gate re-verified green after each"
+   "cir: two foreach regressions from dcc16f6f caught by the FIRST (red) battery and fixed \u2014 member containers excluded from the named-var shortcut (ee0cc241); by-value carrier params are pointer-stored, answered in object_var_addr (c73a3a4d); 94-log gate re-verified green after each",
+   "elegance wave 3 (bf04d070 + a6776e1c): brace-list value literals var ds = { a, b, c } / var ds{...} / {} = empty ARRAY / one-element law / file-scope literals, chainable .push(x) \u2014 one registered row set (madarray_push_*) serves literals AND script pushes; adv_io array_push chains retired; 3 defects fixed en route (pre-existing value g(7) global read null; ref-returning carrier call as receiver SIGSEGV; dual extern shapes hit first-shape-wins dedup = MIR wrong-type-memory); pins: testvalueinit.mad (JIT + exe lanes) + testvaluector gnum; parity gate re-verified byte-identical"
   ],
   "next": [
-   "verify the battery RERUN (in flight at handoff, @c73a3a4d): newest tmp/logs/rb-*.log must show rc=0 on EVERY stage; rerun scripts/remote_build.sh battery if in doubt",
+   "ONE fresh merge-wave battery (scripts/remote_build.sh battery) at the actual merge gate \u2014 new src commits landed after the green c73a3a4d run; do NOT re-run per commit",
    "OWNER CALLS: merge timing; release (batches v0.93+v0.94+Track 7) + three-platform master promotion; VERSION stays 0.94.0 until cut",
-   "residues: L3 by-value returns; auto-include in user modules; h_listen positional walk vs pspeak_prop; php::array_unique could adopt the index core; python::format/std::format = deliberate spec twins"
+   "residues: nested brace lists = loud error (future lowering); keyed literals { k: v } unspelled; carrier surface has NO docs/language page; L3 by-value returns; auto-include in user modules; h_listen positional walk vs pspeak_prop; php::array_unique could adopt the index core; python::format/std::format = deliberate spec twins (dupaudit disposition recorded)"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
