@@ -9,29 +9,30 @@
   "headline": "BOUNDARY MET; waves 3+4 banked (value literals + .push; the zero-include contract); NEXT = THE MODERNIZATION ARC (owner directives 2026-08-21): M1 walrus sweep (:= EXISTS \u2014 testcolon.mad, NOT new), M2 value->var (~90 sites, same type), M3 --project restructure of adv_*.inc, M4 OOP/UFCS pass (globals into a class, propose shape first) \u2014 all under the 94-log parity net"
  },
  "live_handoff": {
-  "session": 116,
+  "session": 117,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "revert commit (see git log) \u2014 push it before anything else if not already pushed",
-  "headline": "OWNER RULINGS (this session, SETTLED \u2014 three escalating messages): (1) no AUTOMATIC cache files; (2) no user-program .forest caching AT ALL, not even opt-in \u2014 'if we want madc to save something for next time, it would either be a .o file or an AOT executable'; (3) 'the only frozen forest we want is the built-in one that has all the precompiled system headers'. S5 (per-manifest program cache, @f13938f9+@4054b4de) was FULLY REVERTED the same day it landed. THE DIRECTIVE: 'work on making madc faster' = the COMPILER ITSELF (cold path / compile throughput), not caching around it. DIRECTIVE (owner, verbatim): 'what we DO want is for you to continue to optimize madc... use this examples/adventure as a test case, and I'd like you to pursue decreasing the cold JIT startup time PROPERLY.'",
+  "head": "2581d1eb (5 commits this session, all pushed)",
+  "headline": "COLD-STARTUP ARC LEG 1 LANDED: adventure packed 760 -> ~215ms (3.5x), dev 1.9s -> ~0.29s (6.5x); the bar is TINYCC PARITY (owner refined the directive: adventure is C-shaped, so 'chase the ability for madc to JIT start the game on full parity as tinycc' \u2014 measured tcc bar: ~22ms for the ORIGINAL 18K-line C adventure, compile+link+run). Parity 3+94 byte-identical re-run after EVERY slice. Governing doc: docs/plans/2026-08-22-cold-jit-startup.md (measurements, residue table, traps).",
   "settled": [
-   "S5 revert = git revert of 4054b4de + f13938f9 in one commit + docs corrections (CHANGELOG S5 entry replaced with a ruling record; plan doc Leg 2 = DEAD BY OWNER RULING; usage.md: 'madc never writes cache files beside your project'; S5 design section stubbed to a git-history pointer)",
-   "the pre-existing --freeze/--freeze-run/--run-frozen machinery STAYS \u2014 it builds/tests the ONE built-in system-header pack (forest_pack.sh), never user artifacts",
-   "S1 (one mapping+decode per carrier per process, @21c57941) STAYS \u2014 it serves the built-in forest; S2/S3 closed without code (measured: dev live-parses the lean prelude in 12ms < 16ms bind cost)",
-   "reusable facts from the reverted experiment (git history @f13938f9): thaw works N-module into one shared MIR ctx; S1's map cache assumes stable path->content (any future in-process container rewriter must invalidate); tu_init_symbol derivable from TU path; warm thaw floor measured 92ms packed for 11 TUs (NOT a product surface)",
-   "a git stash exists ('opt-in flip WIP, superseded by owner ruling') \u2014 dead intermediate work, safe to drop"
+   "@59b3f7a3 --show-stats reaches project + frozen lanes (per-TU walls + link/gen/exec; printed BEFORE the entry call \u2014 the game exit()s)",
+   "@f1fc27d5 THE BIG ONE: auto-include position gates \u2014 member access (.set) and non-std qualifiers (madc::getline, ui::set) no longer pull <set>/<string>; 776K -> 62.5K tokens, front-end 1.71s -> 0.18s; gate scripts/check-autoinclude-position.sh (two-sided) + tests/testautoincpos.mad",
+   "@f848c0fe forest template payload/tokens = process-shared spans (S1 gap: they bypassed the decoded-segment cache; per-TU multi-MB decode+copy gone); pod_read gained a span overload (vector form delegates)",
+   "@ff6de290 project lane links MIR_set_lazy_gen_interface (the eager one MIR_gen()s ALL funcs at link = 91% of link wall); entry+TU inits stay eager; -g stays eager (debug registration reads machine code); link 58 -> 11ms",
+   "@2581d1eb recordability fixpoint once per blob per process (S1 doctrine) \u2014 HONEST: no measurable packed delta (-O2 fixpoint share is small; -O0 profile overweights map/set machinery)",
+   "tcc reference measured on container: apt tcc 0.9.27; multi-file -run misparses \u2014 use compile-to-/tmp + run; -DVERSION quoting needs a script file"
   ],
   "validation": [
-   "PRE-revert tree was fully green (JIT 1131/0, packed 1131/0, parity live+warm 3+94, units); the revert textually restores that exact pre-S5 src/ state plus S1",
-   "POST-revert: container build + testproject* subset + parity fragments = REQUIRED NEXT if not yet run (check git log / recent shell history for a post-revert validation before re-running)"
+   "adventure_parity.sh (3 fragments + 94 whole logs) byte-identical after EVERY slice \u2014 the last run at HEAD",
+   "subsets green at each step: 29/29 autoinc/value; 15/15 + 8/8 freeze/frozen/project(+template); packed 35/35 + 22/22 (map/vector/subscript/template/set/string/iostream); new gate green incl. negative control",
+   "OWED AT MERGE WAVE: one full battery (JIT + packed + exe/obj + units) \u2014 targeted-only so far, per testing-fulltest.md"
   ],
   "next": [
-   "1. verify the revert commit exists, is validated (build + testproject*/testfreeze* subset + adventure_parity), and is PUSHED",
-   "2. THE WORK (owner directive, verbatim above): decrease COLD JIT startup PROPERLY, test case = examples/adventure (11 TUs; cold 0.75s packed / 1.9s dev vs Python ~0.10s; user-code compile ~40ms/TU at -O2-engine dominates). Read memory/project_frontend_performance.md FULLY first (north star: madc lex+parse+cir <= g++ -fsyntax-only; banked callgrind rankings; settled principles: REMOVE C++ machinery from hot paths, flat structures, interning; -O0 must be fast per owner law). Step 0 = PROFILE (callgrind the game cold launch, both binaries) before designing.",
-   "3. step 0 of that work = PROFILE the game cold launch (callgrind bin/madc-release + per-phase --show-stats); the queued --show-stats-in-project-mode fix is the natural instrumentation first commit",
-   "4. queued small fixes: --show-stats silent under project mode AND --run-frozen; --project --emit=c11 dup __madc_global_init",
-   "5. merge wave (when owner calls it): non-JIT battery legs (exe/obj/headerless/warnscan) + /dupaudit scoped to forest/project + ns_* subsystems",
-   "6. container hygiene: rm -rf examples/adventure/__madcache__ + any tmp/progcache_gate.* leftovers"
+   "1. R4-lite design+build: ONE bound forest surface per process \u2014 shared strpool across sibling TU Programs (content-addressed, semantically clean; Program::strpool is by-value today -> ownership refactor), then shared CirFrozenForest keyed (blob, config, pool); kills per-TU open (~2ms x11) + materialize + declidx sweep (14ms x binding TUs); register stays per-Program. THREAD CONTRACT must be stated (thread-safety.md). Projected packed floor ~130-150ms.",
+   "2. then front-end throughput (lex 32ms/parse 23ms/cir 29ms/c2mir 20ms packed) \u2014 the project_frontend_performance arc's levers (flat structures, spans, one interned table) applied to the per-TU machinery; 'other' ~25ms (engine init) after that",
+   "3. remaining stats residue: per-TU lean-prelude re-parse x11 is inside the lex line \u2014 R4 full shape (share the parse) is the tcc-bar endgame",
+   "4. traps: container wall drifts over minutes (compare --show-stats phase lines, interleave A/B); -O0 callgrind for STRUCTURE only; release binary stripped -> profile dev + --forest-bind=bin/madc-release; MADC_FOREST_CACHE_PROBE=1 = S1 hit/miss probe",
+   "5. merge wave (owner call): full battery + /dupaudit scoped to lexer/forest/project; queued small fix still open: --project --emit=c11 dup __madc_global_init"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

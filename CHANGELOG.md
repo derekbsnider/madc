@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: adventure 760 → ~215 ms packed, 1.9 s → ~0.29 s
+  dev** (the tinycc-parity arc, docs/plans/2026-08-22-cold-jit-startup.md;
+  tcc's bar on the original 18K-line C adventure is ~22 ms). Four levers,
+  each parity-gated (3 fragments + 94 whole logs byte-identical after
+  every slice):
+  - **Fixed: the auto-include scan matched std-surface names in
+    positions where the std entity cannot be meant.** `G.player.set(...)`
+    / `ui::set(...)` pulled `<set>` and `madc::getline(...)` pulled
+    `<string>` into 8 of adventure's 11 TUs — ~1 MB of libstdc++ source
+    each, 776K tokens lexed for a 4.4K-line program. An identifier after
+    `.`/`->`, or after a `::` whose qualifier is not `std`, no longer
+    matches (`std::set` still pulls; declaration heads were already
+    guarded). 776K → 62.5K tokens; the front-end fell 1.71 s → 0.18 s.
+    Gated by `scripts/check-autoinclude-position.sh` (fulltest,
+    two-sided) + tests/testautoincpos.mad.
+  - **Project lane links with lazy first-call codegen.**
+    `MIR_set_gen_interface` is eager — it MIR_gen()s every function at
+    link (91% of the link wall; 271 functions before main ran). Functions
+    now generate on first call; the entry + per-TU inits keep explicit
+    eager gen, and `-g` keeps the eager interface. Link 58 → 11 ms.
+  - **Forest template payload/token segments bind as process-shared
+    spans** (they had bypassed the S1 decoded-segment cache: per-TU
+    multi-MB decode + copy). One decode per process, zero per-forest
+    copies.
+  - **The arena recordability fixpoint runs once per blob per process**
+    (S1 doctrine; structural — no measurable packed delta, honestly
+    recorded).
+  - **`--show-stats` now works under `--project` and `--run-frozen`** —
+    per-TU front-end walls plus the lanes' shared phases (link, entry
+    gen + TU inits, execution), printed before the entry call so a
+    program that `exit()`s still reports; these numbers found every
+    lever above.
 - **JIT launch S2/S3 closed without code** — measurement showed Leg 0
   had already dissolved their premises (the dev binary live-parses the
   lean prelude in 12 ms, cheaper than binding a container costs the
