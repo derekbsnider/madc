@@ -1274,7 +1274,7 @@ struct CirRestoredFuncDefaults
 // connector (or node_for) touches it, never at open. The image must stay
 // mapped for the forest's lifetime (cir_forest_map_image never unmaps).
 // Rung 2a (closure-filtered materialization): the demand filter the parser
-// installs BEFORE the first materialize_from_arena call. It carries the SAME
+// hands to materialize_for (forest_restore_decls). It carries the SAME
 // verdict map item 5's registration filter builds (forest_restore_decls):
 // decl-index name -> "some declaring unit is in the TU's bound-include
 // closure". materialize_from_arena consults it with the SAME fallback chain
@@ -1413,8 +1413,27 @@ class CirFrozenForest
 	std::vector<CirRestoredFuncDefaults> _restored_param_defaults;
 	bool _types_materialized;
 	// Rung 2a: the closure demand filter (inactive by default — whole
-	// container). Installed by forest_restore_decls before materialization.
+	// container). materialize_for installs it on the first generation and
+	// UNIONS later, wider filters in (S2 incremental materialization).
 	CirMaterializeFilter _mat_filter;
+	// S2 (R4-lite): what earlier generations already EMITTED, so a later,
+	// wider filter re-runs the passes without duplicating. _mat_done_slots
+	// covers the arena-slot-keyed walks (typedef / ns-surface / enum-record
+	// / free-func — one record kind per slot, marked only on PUSH, so a
+	// slot a narrower filter skipped is re-judged); globals/templates are
+	// indexes into their record vectors. _method_by_func_id persists method
+	// DEFINERS so a later generation's using-decl import resolves a definer
+	// built in an earlier one. Aggregate/enum dedup needs no set: pass 1/1a
+	// skip tids already in _defs_by_tid, and pass 2 fills only this
+	// generation's fresh allocations.
+	std::set<uint32_t> _mat_done_slots;
+	std::set<size_t> _mat_done_globals;
+	std::set<size_t> _mat_done_templates;
+	std::map<uint32_t, Variable *> _method_by_func_id;
+	// The pass engine both entry points share: runs every materialization
+	// pass under the CURRENT _mat_filter, skipping records earlier
+	// generations built (the guards above).
+	void materialize_pass();
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -1460,14 +1479,16 @@ public:
 	// method body load at emit time). Safe iff no segment has materialized yet.
 	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
 
-	// Rung 2a: install the closure demand filter. No-op after the (memoized)
-	// materialization has run — the first caller's view wins, and a filter-
-	// less first caller (e.g. --run-frozen) correctly gets the whole container.
-	void set_materialize_filter(CirMaterializeFilter &&f)
-	{
-		if (!_types_materialized)
-			_mat_filter = std::move(f);
-	}
+	// Rung 2a + S2 (R4-lite): ensure everything `want` admits is
+	// materialized — THE restore entry (forest_restore_decls). The first
+	// caller installs `want` and materializes under it; a later, WIDER
+	// filter (a bound verdict flipping false -> true, or want.active ==
+	// false = whole container) unions in and re-runs the passes, which
+	// skip already-built records. A narrower or equal filter is a no-op —
+	// monotone widening, so shared-forest consumers can never lose records
+	// to another TU's earlier, narrower view.
+	const std::vector<CirRestoredType> &materialize_for(
+		const CirMaterializeFilter &want);
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability

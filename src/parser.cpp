@@ -21547,6 +21547,11 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // surface, exactly like live.
     std::unordered_map<std::string, bool> forest_declared_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
+    // The demand filter this TU asks materialize_for to satisfy — inactive
+    // (whole container) when the closure is empty, else the verdict map the
+    // sweep below builds. S2: on a shared forest a later TU's wider verdicts
+    // union in and materialize incrementally.
+    CirMaterializeFilter mf;
     double _t_declidx0 = forest_restore_now();
     if ( forest_closure_filter )
     {
@@ -21581,10 +21586,8 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    forest_declared_system[nm] = true;
 	    }
 	}
-	CirMaterializeFilter mf;
 	mf.active = true;
 	mf.declared_bound = forest_declared_bound;
-	forest.set_materialize_filter(std::move(mf));
     }
     _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
 
@@ -21600,7 +21603,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	return false;
     };
 
-    const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
+    const std::vector<CirRestoredType> &types = forest.materialize_for(mf);
 
     // v25: advance the anonymous-tag gensym PAST every restored `__anon_N` —
     // exactly where a live parse of the same headers would have left the

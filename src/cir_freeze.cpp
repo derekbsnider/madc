@@ -1981,6 +1981,53 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	if (_types_materialized)
 		return _restored;
 	_types_materialized = true;
+	materialize_pass();
+	return _restored;
+}
+
+// S2 (R4-lite): monotone widening — see the declaration. The union is per
+// name: a bound verdict (true) absorbs an unbound one (false); a key only
+// `want` carries is inserted ONLY when true (an absent key already reads as
+// unindexed = derived = kept, so inserting false would NARROW, never widen).
+// Growth = any false -> true flip, or widening to the whole container.
+const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
+	const CirMaterializeFilter &want)
+{
+	if (!_types_materialized) {
+		_mat_filter = want;
+		_types_materialized = true;
+		materialize_pass();
+		return _restored;
+	}
+	if (!_mat_filter.active)
+		return _restored;	// whole container already built
+	bool grew = false;
+	if (!want.active) {
+		_mat_filter.active = false;
+		grew = true;
+	} else {
+		for (std::unordered_map<std::string, bool>::const_iterator it =
+		     want.declared_bound.begin();
+		     it != want.declared_bound.end(); ++it) {
+			if (!it->second)
+				continue;
+			std::unordered_map<std::string, bool>::iterator oi =
+				_mat_filter.declared_bound.find(it->first);
+			if (oi == _mat_filter.declared_bound.end())
+				_mat_filter.declared_bound[it->first] = true;
+			else if (!oi->second) {
+				oi->second = true;
+				grew = true;
+			}
+		}
+	}
+	if (grew)
+		materialize_pass();
+	return _restored;
+}
+
+void CirFrozenForest::materialize_pass()
+{
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	double _t0 = forest_now();
 
@@ -2384,12 +2431,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// (_defs_by_tid) so post-restore consumers — lazy ClassPattern payload
 	// reads — can swizzle serialized producer tids.
 	std::map<uint32_t, DataDef *> &by_id = _defs_by_tid;
+	// S2: this generation's fresh aggregate allocations — pass 2 fills
+	// exactly these (earlier generations already filled theirs).
+	std::set<uint32_t> fresh_aggs;
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
 		if (!recordable.count(tid))
 			continue;
 		if (_mat_filter.active && !admitted.count(tid))
 			continue;
+		if (by_id.count(tid))
+			continue;	// built by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
@@ -2419,6 +2471,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		sdd->forest_restored = true;	// mixed bind/live seam provenance (task #57)
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
+		fresh_aggs.insert(tid);
 	}
 
 	// Pass 1a (v21): ENUM types — leaves of the type graph, allocated before
@@ -2427,6 +2480,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// bytes, not the ctor's int default).
 	for (uint32_t s = 0; s < nslots; ++s) {
 		uint32_t tid = madc::dis::arena_id_of(s);
+		if (by_id.count(tid))
+			continue;	// built by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
 			continue;
@@ -2636,7 +2691,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// "calls un-emittable symbol"). Definers build first, keyed by the
 	// methodrec's DK_FUNC id (one live FuncDef == one id == one record);
 	// importers resolve to the shared object in a post-pass below.
-	std::map<uint32_t, Variable *> method_by_func_id;
+	// S2: the definer map persists on the forest so a later generation's
+	// import resolves a definer an earlier generation built.
+	std::map<uint32_t, Variable *> &method_by_func_id = _method_by_func_id;
 	struct PendingMethodImport {
 		DataDefCLASS *cdd;
 		uint32_t      func_id;
@@ -2664,6 +2721,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// class extras + methods under the v6 selection rules.
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
+		if (!fresh_aggs.count(tid))
+			continue;	// filled by an earlier generation
 		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(tid);
 		if (ai == by_id.end())
 			continue;
@@ -3272,6 +3331,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			ns && *ns ? "::" : "", nm, r.ref0, verdict);
 	};
 	for (uint32_t s = 0; s < nslots; ++s) {
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_TYPEDEF)
@@ -3305,6 +3366,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.tag_alias  =
 			(r.flags & madc::dis::DF_TYPEDEF_TAG_ALIAS) != 0;
 		_restored.push_back(rt);
+		_mat_done_slots.insert(s);
 	}
 
 	// Pass 3a (v25): namespace-surface records — inline-namespace links
@@ -3312,6 +3374,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// imports (NSBIND: the flush rebinds namespace_map[ns][name] to the
 	// restored fn's Variable).
 	for (uint32_t s = 0; s < nslots; ++s) {
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r))
 			continue;
@@ -3319,8 +3383,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			CirRestoredNsLink l;
 			l.parent = r.ns_id ? a.c_str(r.ns_id) : NULL;
 			l.child  = r.name_id ? a.c_str(r.name_id) : NULL;
-			if (l.child && *l.child)
+			if (l.child && *l.child) {
 				_restored_nslinks.push_back(l);
+				_mat_done_slots.insert(s);
+			}
 		} else if (r.kind == madc::dis::DK_NSBIND) {
 			CirRestoredNsBind b;
 			b.ns   = r.ns_id ? a.c_str(r.ns_id) : NULL;
@@ -3328,8 +3394,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
 			b.ov_member =
 				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
-			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
+			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key) {
 				_restored_nsbinds.push_back(b);
+				_mat_done_slots.insert(s);
+			}
 		} else if (r.kind == madc::dis::DK_DEFBODY) {
 			// v26: a deferred method body — four token runs (word
 			// quads: off/bytes/count/file_id) at params_begin.
@@ -3362,8 +3430,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (run.count)
 					run.bytes = a.tok_run(a.payload[off], run.len);
 			}
-			if (ok)
+			if (ok) {
 				_restored_defbodies.push_back(d);
+				_mat_done_slots.insert(s);
+			}
 		}
 	}
 
@@ -3373,6 +3443,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// tag's pseudo-namespace on the parser side.
 	for (uint32_t s = 0; s < nslots; ++s) {
 		uint32_t tid = madc::dis::arena_id_of(s);
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
 			continue;
@@ -3412,6 +3484,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.enumerators.push_back(std::make_pair(en, val));
 		}
 		_restored.push_back(rt);
+		_mat_done_slots.insert(s);
 	}
 
 	// RC2: restore file-scope FREE-FUNCTION declarations — every DK_FUNC
@@ -3425,6 +3498,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// (declaration-only + function_display_name + namespace_name — the
 	// resolution chokepoint a qualified `std::_Destroy(...)` call needs).
 	for (uint32_t s = 0; s < nslots; ++s) {
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_FUNC
@@ -3567,6 +3642,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rf.mparams.push_back(std::make_pair(pn, ptp));
 		}
 		_restored_funcs.push_back(rf);
+		_mat_done_slots.insert(s);
 		if (!def_runs.empty()) {
 			CirRestoredFuncDefaults rd;
 			rd.fd    = fd;
@@ -3585,6 +3661,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// passes emit the global + queue its ctor into __madc_global_init (class)
 	// or emit its constant data item (scalar init_value).
 	for (size_t i = 0; i < _globals.size(); ++i) {
+		if (_mat_done_globals.count(i))
+			continue;		// pushed by an earlier generation
 		const cir_forest_global_record &g = _globals[i];
 		if (g.gflags & CIR_GLOBALF_TU_ROOT)
 			continue;		// v24: the program's own global — fenced
@@ -3615,6 +3693,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rg.ctor_file  = g.ctor_file_id ? a.c_str(g.ctor_file_id) : NULL;
 		}
 		_restored_globals.push_back(rg);
+		_mat_done_globals.insert(i);
 	}
 
 	// v20 (widening slice 2): build the restored TEMPLATE-NAME view — names
@@ -3626,6 +3705,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// member-template pattern without its class cannot instantiate anyway).
 	{
 		for (size_t i = 0; i < _templates.size(); ++i) {
+			if (_mat_done_templates.count(i))
+				continue;	// pushed by an earlier generation
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
 				continue;	// v24: the program's own pattern — fenced
@@ -3698,11 +3779,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
 			_restored_templates.push_back(rt);
+			_mat_done_templates.insert(i);
 		}
 	}
 
-	_stat_mat_secs = forest_now() - _t0;
-	return _restored;
+	_stat_mat_secs += forest_now() - _t0;
 }
 
 // Typeid -> arena name, derived per query (R1): the arena is id-addressed
