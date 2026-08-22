@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>	// the process-level decoded-segment cache's guard
 #include <queue>	// madc.h uses std::queue (included below) and relies on the TU providing it
 #include <set>
 #include <string>
@@ -839,12 +840,33 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 			return false;
 		path = selfpath.c_str();
 	}
+	// Process-level mapping cache: ONE read-only mapping per carrier file.
+	// The mappings were already deliberately never munmap'd (thawed
+	// segments read string bytes and pool blocks from them for the
+	// process lifetime) — but each Program re-mapping the same file
+	// multiplied identical page tables AND gave the same blob a
+	// different base address per TU, defeating the decoded-segment
+	// cache's (blob base, offset) keys. Mutex-guarded; entries are
+	// immutable once inserted (the thread contract the decode cache
+	// states).
+	static std::mutex map_mu;
+	static std::map<std::string, std::pair<void *, size_t> > map_cache;
+	void *m = NULL;
 	size_t maplen = 0;
-	void *m = madc::detail::map_file_readonly(path, maplen);
-	if (!m)
-		return false;
-	// Deliberately never munmap'd: thawed segments read string bytes and
-	// pool blocks from the mapping for the process lifetime.
+	{
+		std::lock_guard<std::mutex> lk(map_mu);
+		std::map<std::string, std::pair<void *, size_t> >::iterator mi =
+			map_cache.find(path);
+		if (mi == map_cache.end()) {
+			m = madc::detail::map_file_readonly(path, maplen);
+			if (!m)
+				return false;
+			mi = map_cache.emplace(std::string(path),
+					       std::make_pair(m, maplen)).first;
+		}
+		m = mi->second.first;
+		maplen = mi->second.second;
+	}
 	// Mach-O file: the container is the __MADC,__forest section slice
 	// (page-aligned in file, so 16-aligned payload offsets hold), not an
 	// EOF trailer. Anything else keeps the whole file (footer at EOF).
@@ -1115,6 +1137,52 @@ CirFrozenForest::~CirFrozenForest()
 // Bind one pool block: in place from the image when stored uncompressed
 // (the zero-copy path the per-segment codec field exists for), otherwise
 // decompressed into `own`.
+// Process-level decoded-segment cache (S1, the JIT Python-contender plan,
+// docs/plans/2026-08-21-project-prelude-forest.md). Forest images are
+// process-lifetime mappings (cir_forest_map_image deliberately never
+// munmaps), and a compressed container-global segment decodes IDENTICALLY
+// for every Program that opens the same blob — so the owned-buffer zstd
+// decode happens ONCE per process per segment instead of once per TU
+// Program (an 11-TU project launch paid the ~14-frame / 11.6 MB global
+// decode eleven times; --show-stats now shows the decode on the FIRST
+// Program only, which is the truth). Keyed (blob base, segment offset):
+// profile stacks append several blobs to one image, so the blob base — not
+// the image base — identifies a directory's segments.
+//
+// Thread contract (thread-safety.md): the map is mutex-guarded; a cached
+// buffer is IMMUTABLE after insertion and never evicted (process
+// lifetime), so readers hold const pointers into it across threads safely
+// (the C++ stdlib convention). The entries deliberately outlive every
+// CirFrozenForest — materialized state pointing into them can never
+// dangle.
+static const uint8_t *forest_decoded_segment_cached(
+	const madc::dis::snapshot_reader &r,
+	const madc::dis::snapshot_segment &s)
+{
+	static std::mutex mu;
+	static std::map<std::pair<const void *, uint64_t>,
+			madc::dis::decode_bytes> cache;
+	std::lock_guard<std::mutex> lk(mu);
+	std::pair<const void *, uint64_t> key(r.blob_base(), s.offset);
+	std::map<std::pair<const void *, uint64_t>,
+		 madc::dis::decode_bytes>::iterator it = cache.find(key);
+	bool miss = it == cache.end();
+	if (miss) {
+		madc::dis::decode_bytes d;
+		if (!r.read_segment(s, d))
+			return NULL;
+		it = cache.emplace(key, std::move(d)).first;
+	}
+	// Env-gated probe (MADC_FOREST_CACHE_PROBE=1): per-segment hit/miss
+	// evidence — the observable for "N Programs, one decode".
+	if (::getenv("MADC_FOREST_CACHE_PROBE"))
+		fprintf(stderr, "[forest-cache] %s seg=%u off=%llu raw=%llu\n",
+			miss ? "MISS" : "hit", s.seg_id,
+			(unsigned long long)s.offset,
+			(unsigned long long)s.raw_size);
+	return it->second.data();
+}
+
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
 					madc::dis::decode_bytes &own, size_t &len)
@@ -1125,9 +1193,10 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	len = (size_t)s->raw_size;
 	if (const uint8_t *p = r.raw_ptr(*s))
 		return p;
-	if (!r.read_segment(*s, own))
-		return NULL;
-	return own.data();
+	// Compressed: bind the process-cached decode. `own` stays empty by
+	// design — the cache owns the bytes for the process lifetime.
+	(void)own;
+	return forest_decoded_segment_cached(r, *s);
 }
 
 // --show-stats wall clock (R0 startup instrumentation).

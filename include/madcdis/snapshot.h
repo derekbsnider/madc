@@ -193,6 +193,11 @@ public:
 
     uint32_t segment_count() const { return (uint32_t)_dir.size(); }
     uint64_t context_hash()  const { return _hdr.context_hash; }
+    // Stable identity of the OPENED BLOB within its carrier (profile stacks
+    // append several blobs to one image, so the image base alone does not
+    // identify a directory's segments; blob base + segment offset does).
+    // For cache keys only — never dereference through it.
+    const void *blob_base() const { return _blob; }
     const snapshot_segment *segment_at(uint32_t idx) const
 	{ return idx < _dir.size() ? &_dir[idx] : (const snapshot_segment *)0; }
     const snapshot_segment *find(uint32_t seg_id) const;
