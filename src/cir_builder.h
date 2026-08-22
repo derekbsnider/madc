@@ -55,12 +55,15 @@ class RefFuncSet {
 	std::vector<std::string> journal_;	// keys newly inserted while marked
 	std::vector<size_t> marks_;
 public:
+	typedef std::unordered_set<std::string>::const_iterator const_iterator;
 	void insert(const std::string &k)
 	{
 		if (s_.insert(k).second && !marks_.empty())
 			journal_.push_back(k);
 	}
 	size_t count(const std::string &k) const { return s_.count(k); }
+	const_iterator begin() const { return s_.begin(); }
+	const_iterator end() const { return s_.end(); }
 	void mark() { marks_.push_back(journal_.size()); }
 	void rollback()
 	{

@@ -961,10 +961,17 @@ fi
 vec_bind=$(timeout 120 "$BIN" --forest-bind="$vec_snap" "$vec_cons" 2>/dev/null)
 [ "$vec_bind" = "sum=7" ] || fail "[vecbind] bind output '$vec_bind' != 'sum=7' (== live == g++; template-name restore regressed?)"
 # Prove <vector> actually BOUND from the container (no silent live fall-through).
-timeout 120 "$BIN" -v --forest-bind="$vec_snap" "$vec_cons" >"$vec_vlog" 2>&1
+timeout 120 "$BIN" -v --show-stats --forest-bind="$vec_snap" "$vec_cons" >"$vec_vlog" 2>&1
 if ! grep -aq "bound to grove unit.*vector" "$vec_vlog"; then
     rm -f "$vec_snap" "$vec_gcc" "$vec_vlog"
     fail "[vecbind] consumer did NOT bind the <vector> grove (live fall-through?)"
+fi
+# Demand-driven derived-function restore must be observable on this exact-match
+# consumer: the producer's cached instantiation products are deferred, the
+# called subset activates, and a dead remainder stays unregistered.
+if ! grep -aEq "forest functions \.{4} [0-9]+ eager \+ [1-9][0-9]* derived deferred; [1-9][0-9]* activated / [1-9][0-9]* remain" "$vec_vlog"; then
+    rm -f "$vec_snap" "$vec_gcc" "$vec_vlog"
+    fail "[vecbind] derived forest functions did not defer + activate on demand"
 fi
 # Item-SET identity vs live: every func/export/import present in live must be
 # present in bind and vice versa (emission ORDER may still differ — the

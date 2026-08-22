@@ -4059,6 +4059,8 @@ public:
 	unsigned long long zstd_frames = 0, zstd_bytes = 0;
 	double zstd_secs = 0.0;
 	unsigned long long copy_calls = 0, copy_bytes = 0;
+	unsigned long long funcs_eager = 0, funcs_deferred = 0;
+	unsigned long long funcs_activated = 0, funcs_remaining = 0;
     };
     ForestBindStats forest_bind_stats() const;
     // --show-stats: template-instantiation time + count, carved out of parse
@@ -4689,8 +4691,14 @@ public:
     void add_host_callbacks();	// declares host_callback_regs prototypes (libmadc register_function)
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
     void add_stdio();		// placeholder for #include <stdio.h> registration
+    struct PendingForestFunc;
     Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
+    Variable *register_forest_func(const PendingForestFunc &pf);
+    Variable *activate_forest_func(const std::string &name);
+    void activate_forest_function_family(const std::string &ns,
+	const std::string &display_name);
+    void activate_forest_function_display(const std::string &display_name);
     // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
     // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
     // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
@@ -4804,6 +4812,17 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // Verdict-0 FREE functions are compiler-derived identities, not names the
+    // bound headers declared. Keep their immutable restored FuncDefs indexed
+    // here without eagerly constructing parser Variables/Methods. A source
+    // overload-family lookup or a CIR reference promotes only the demanded
+    // records through the same registration owner used by eager declarations.
+    std::map<std::string, PendingForestFunc> forest_deferred_funcs;
+    std::map<std::string, std::vector<std::string> >
+	forest_deferred_func_families;
+    unsigned long long _forest_funcs_eager = 0;
+    unsigned long long _forest_funcs_deferred = 0;
+    unsigned long long _forest_funcs_activated = 0;
     // v26: origin file of each plain/anonymous-enum ENUMERATOR constant
     // (TokenENUM's global branch — the constants live in tkProgram->variables
     // with no TopDecl and no back-link to the enum tag). Stamped at the one

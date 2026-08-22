@@ -6062,6 +6062,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		double t_read = 0, t_lex = 0, t_parse = 0, t_inst = 0;
 		double t_cir = 0, t_c2m = 0, t_forest = 0;
 		unsigned long long t_tok = 0;
+		unsigned long long t_forest_eager = 0, t_forest_deferred = 0;
+		unsigned long long t_forest_activated = 0, t_forest_remaining = 0;
 		for (const CirParsedTU &pt : parsed) {
 			const Program *p = pt.prog.get();
 			double cir_secs = p->_cir_build_seconds - p->_cir_forest_seconds;
@@ -6082,6 +6084,10 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			t_c2m += p->_c2mir_seconds;
 			t_forest += pt.forest_secs + p->_cir_forest_seconds;
 			t_tok += p->_tok_produced;
+			t_forest_eager += p->_forest_funcs_eager;
+			t_forest_deferred += p->_forest_funcs_deferred;
+			t_forest_activated += p->_forest_funcs_activated;
+			t_forest_remaining += p->forest_deferred_funcs.size();
 		}
 		fprintf(stderr,
 			"[stats] front-end (%zu TUs) . read %.3fs lex %.3fs"
@@ -6089,12 +6095,15 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			" forest %.3fs (%llu tokens)\n"
 			"[stats] shared prelude ....... %zu hits / %zu misses"
 			" (%zu fresh shells)\n"
+			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n"
 			"[stats] link ................ %.3f s\n"
 			"[stats] entry gen + TU inits  %.3f s\n",
 			parsed.size(), t_read, t_lex, t_parse, t_inst, t_cir,
 			t_c2m, t_forest, t_tok,
 			group.shared_prelude_hits, group.shared_prelude_misses,
 			group.shared_prelude_tokens,
+			t_forest_eager, t_forest_deferred,
+			t_forest_activated, t_forest_remaining,
 			std::chrono::duration<double>(_lk1 - _lk0).count(),
 			std::chrono::duration<double>(_gi1 - _lk1).count());
 	}

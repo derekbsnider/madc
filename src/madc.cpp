@@ -1601,6 +1601,10 @@ int main(int argc, char **argv)
 			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
 			fs.copy_calls, fs.copy_bytes / 1024.0,
 			fw_lex, fw_parse, fw_cir);
+		    fprintf(stderr,
+			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
+			fs.funcs_eager, fs.funcs_deferred,
+			fs.funcs_activated, fs.funcs_remaining);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<std::string, double> > rows =

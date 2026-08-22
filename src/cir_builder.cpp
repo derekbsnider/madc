@@ -25490,7 +25490,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			else if (external_symbol_available(s)) { ok = true; why = 3; }
 			else if (synth_dtor_syms.count(s)) { ok = true; why = 4; }
 			else if (forest_body_syms.count(s)) { ok = true; why = 6; }
-			else for (TokenBase *pb : m_prog->pending_funcs) {
+			else {
+				auto fi = m_prog->forest_deferred_funcs.find(s);
+				if (fi != m_prog->forest_deferred_funcs.end()
+				    && fi->second.fd && fi->second.fd->has_forest_body)
+					{ ok = true; why = 7; }
+			}
+			if (!ok) for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
 						  : NULL;
@@ -28022,6 +28028,27 @@ node_t CirBuilder::translate_module(Program *prog)
 					forest_lazy_root.insert(kv.first);
 			}
 		}
+		// Verdict-0 free functions keep only their restored FuncDef/body
+		// identity until demanded. Include those immutable body sources in
+		// the reachability index without constructing parser Variables for
+		// the whole forest surface.
+		for (auto &kv : prog->forest_deferred_funcs) {
+			// Consumer parsing may already have derived the same compiler
+			// identity (a NEW specialization built from restored pattern
+			// tokens). Live first-registration wins: that newly-derived
+			// FuncDef/body shadows the cached product, so never queue both.
+			if (prog->funcdef_map.count(kv.first))
+				continue;
+			FuncDef *fd = kv.second.fd;
+			if (fd && fd->has_forest_body && !kv.first.empty()
+			    && !forest_method_fds.count(fd)) {
+				forest_lazy[kv.first] = fd;
+				const char *up =
+					prog->bind_forest->unit_name(fd->forest_body_unit);
+				if (!up || !prog->is_system_header_path(up))
+					forest_lazy_root.insert(kv.first);
+			}
+		}
 		// Symbols with a funcdef_map declaration source: those keep riding
 		// Pass 0.75's referenced sweep (typed protos at live's sorted map
 		// positions — the #23 byte-identity mechanism), NEVER the loaded-
@@ -28154,6 +28181,19 @@ node_t CirBuilder::translate_module(Program *prog)
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
+			// Promote only verdict-0 forest functions whose compiler
+			// identity is now reachable. This updates funcdef_map and the
+			// parser-visible Variable/overload surfaces before Pass 0.75,
+			// while untouched products stay indexed without parser surfaces.
+			std::vector<std::string> demanded_forest_funcs;
+			for (RefFuncSet::const_iterator ri = referenced_funcs.begin();
+			     ri != referenced_funcs.end(); ++ri)
+				if (prog->forest_deferred_funcs.count(*ri))
+					demanded_forest_funcs.push_back(*ri);
+			for (const std::string &name : demanded_forest_funcs)
+				prog->activate_forest_func(name);
+			if (!demanded_forest_funcs.empty())
+				grew = true;
 			if (!prog->deferred_lazy_bodies.empty()) {
 				std::vector<std::pair<std::string, bool> > ready;
 				for (auto &db : prog->deferred_lazy_bodies) {
@@ -28420,7 +28460,9 @@ node_t CirBuilder::translate_module(Program *prog)
 					    && !prog->deferred_lazy_bodies.count(*ci)
 					    && (pass075_done
 						? !typed_proto_syms.count(*ci)
-						: !forest_funcdef_syms.count(*ci))
+						: !forest_funcdef_syms.count(*ci)
+						  && !prog->funcdef_map.count(*ci)
+						  && !prog->forest_deferred_funcs.count(*ci))
 					    && !m_output_externs.count(*ci)) {
 						uint32_t xu = 0, xi = 0;
 						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {

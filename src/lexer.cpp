@@ -3714,6 +3714,10 @@ Program::ForestBindStats Program::forest_bind_stats() const
     s.restore_secs = _forest_restore_seconds;
     s.declidx_secs = _forest_declidx_seconds;
     s.units_bound  = forest_chain.size();
+    s.funcs_eager = _forest_funcs_eager;
+    s.funcs_deferred = _forest_funcs_deferred;
+    s.funcs_activated = _forest_funcs_activated;
+    s.funcs_remaining = forest_deferred_funcs.size();
     if ( bind_forest )
     {
 	s.opened         = true;

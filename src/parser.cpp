@@ -17950,6 +17950,7 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::vector<DataDef *> *explicit_template_args,
 		bool *strict_no_viable)
 {
+    activate_forest_function_family(ns, name);
     if ( strict_no_viable )
 	*strict_no_viable = false;
     std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
@@ -18019,6 +18020,7 @@ Variable *Program::find_free_operator_function(const std::string &opname,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args)
 {
+    activate_forest_function_display(opname);
     const std::string suffix = "::" + opname;
     std::vector<NamespaceFnOverload> cands;
     for ( std::map<std::string, std::vector<NamespaceFnOverload>>::iterator mi =
@@ -20713,6 +20715,8 @@ void Program::add_stdio()
 // on-demand variable/function registration — called from parseExpression()
 Variable *Program::lazy_resolve(const std::string &name)
 {
+    if ( Variable *forest_var = activate_forest_func(name) )
+	return forest_var;
     std::map<std::string, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -21687,22 +21691,26 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 
     // Registration's verdict lambdas read the map built above (one predicate,
     // two consumers — see the rung-2a block before materialize_from_arena).
-    auto forest_name_permitted = [&](const std::string &nm,
-				     const char *ns) -> bool {
+    auto forest_name_verdict = [&](const std::string &nm,
+				   const char *ns) -> int {
 	if ( !forest_closure_filter )
-	    return true;
+	    return 1;
 	if ( ns && *ns )
 	{
 	    std::unordered_map<std::string, bool>::const_iterator qi =
 		forest_declared_bound.find(std::string(ns) + "::" + nm);
 	    if ( qi != forest_declared_bound.end() )
-		return qi->second;
+		return qi->second ? 1 : -1;
 	}
 	std::unordered_map<std::string, bool>::const_iterator bi =
 	    forest_declared_bound.find(nm);
 	if ( bi != forest_declared_bound.end() )
-	    return bi->second;
-	return true;	// unindexed = derived entity
+	    return bi->second ? 1 : -1;
+	return 0;		// unindexed = derived entity
+    };
+    auto forest_name_permitted = [&](const std::string &nm,
+				     const char *ns) -> bool {
+	return forest_name_verdict(nm, ns) >= 0;
     };
     // A template-INSTANTIATION product's mangled record name is never indexed,
     // but its identity IS a template-id — its canonical spelling's head
@@ -22036,23 +22044,43 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	// Closure filter: the funcdef_map key ("printf") is what the index
 	// tapped; a namespace public's __ns_* key falls back to its
 	// ns::display source form when the key itself is unindexed.
-	{
-	    FuncDef *ffd = funcs[i].fd;
-	    bool ok = forest_name_permitted(funcs[i].name, NULL);
-	    if ( ok && forest_closure_filter
-	      && !forest_declared_bound.count(funcs[i].name)
-	      && !ffd->namespace_name.empty()
-	      && !ffd->function_display_name.empty() )
-		ok = forest_name_permitted(ffd->function_display_name,
-					   ffd->namespace_name.c_str());
-	    if ( !ok )
-		continue;
-	}
+	FuncDef *ffd = funcs[i].fd;
+	int verdict = forest_name_verdict(funcs[i].name, NULL);
+	if ( verdict == 0 && forest_closure_filter
+	  && !ffd->namespace_name.empty()
+	  && !ffd->function_display_name.empty() )
+	    verdict = forest_name_verdict(ffd->function_display_name,
+					  ffd->namespace_name.c_str());
+	if ( verdict < 0 )
+	    continue;
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
-	pf.fd   = funcs[i].fd;
+	pf.fd   = ffd;
 	pf.mparams = funcs[i].mparams;	// v26 piece (a): named params for the Method
-	forest_pending_funcs.push_back(pf);
+	if ( verdict == 0 )
+	{
+	    // The record's name is a compiler-derived identity. Keep the
+	    // signature/body source available, but do not build its parser-visible
+	    // Variable/Method and overload entries until source lookup or CIR
+	    // reachability names it. std::map::insert preserves the old flush's
+	    // first-registration-wins rule for duplicate arena records.
+	    if ( funcdef_map.find(pf.name) == funcdef_map.end()
+	      && forest_deferred_funcs.insert(std::make_pair(pf.name, pf)).second )
+	    {
+		++_forest_funcs_deferred;
+		if ( !ffd->function_display_name.empty() )
+		{
+		    std::string family = ffd->namespace_name + "::"
+				       + ffd->function_display_name;
+		    forest_deferred_func_families[family].push_back(pf.name);
+		}
+	    }
+	}
+	else
+	{
+	    forest_pending_funcs.push_back(pf);
+	    ++_forest_funcs_eager;
+	}
     }
 
     // v20 (widening slice 2): restore the TEMPLATE-NAME state — the pattern
@@ -22405,6 +22433,145 @@ void madc_thaw_member_template(FuncDef *fd)
 	<< ")" << std::endl);
 }
 
+// ONE owner for turning a restored function record into the live parser
+// surfaces. Declared names call it during the post-tokenize flush; verdict-0
+// derived identities call it only after source lookup or CIR reachability asks
+// for them. Keeping both lanes here prevents the lazy path from drifting from
+// parseFunction's restored Variable/Method/overload contract.
+Variable *Program::register_forest_func(const PendingForestFunc &pf)
+{
+    if ( !tkProgram || !pf.fd || pf.name.empty() )
+	return NULL;
+    funcdef_map_iter fit = funcdef_map.find(pf.name);
+    if ( fit != funcdef_map.end() )
+	return tkProgram->findVariable(strpool, pf.name);
+    if ( Variable *old = tkProgram->findVariable(strpool, pf.name) )
+	return old;
+
+    funcdef_map[pf.name] = pf.fd;
+    Variable *fv = pf.mvar;
+    if ( pf.mvar )
+    {
+	// A restored class METHOD: live keeps ONE Variable (parseFunction's)
+	// shared by tkProgram scope and the class's methods/method_map, and
+	// its Method(owner_class) was attached at materialization — reuse the
+	// class's Variable rather than minting a duplicate.
+	tkProgram->variables.push_back(pf.mvar);
+    }
+    else
+    {
+	fv = addVariable(NULL, *pf.fd, pf.name);
+	Method *fm = new Method(*fv);
+	fv->data = (void *)fm;
+	// v26 piece (a): the fn's NAMED parameter Variables (live parity
+	// with parseFunction's param loop) — the scope a deferred free-fn
+	// body's re-parse resolves its parameters against
+	// (parse_deferred_function_body sets code->method).
+	for ( size_t mp = 0; mp < pf.mparams.size(); ++mp )
+	{
+	    Variable *pv = new Variable(std::string(pf.mparams[mp].first),
+					*pf.mparams[mp].second, 1, NULL, false);
+	    pv->flags |= vfPARAM | vfLOCAL;
+	    fm->parameters.push_back(pv);
+	}
+	// v21: a restored free function with a SOURCE IDENTITY (display name
+	// + namespace) reproduces the live registration-site state.
+	if ( !pf.fd->function_display_name.empty() )
+	{
+	    std::string ovkey = pf.fd->namespace_name + "::"
+			      + pf.fd->function_display_name;
+	    if ( !pf.fd->namespace_name.empty() )
+	    {
+		variable_map_t &nsmap = namespace_variables_for_write(
+		    pf.fd->namespace_name);
+		if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
+		    nsmap[pf.fd->function_display_name] = fv;
+	    }
+	    bool tmpl_placeholder = pf.fd->declaration_only
+		&& !pf.fd->namespace_name.empty()
+		&& fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
+	    // A CONCRETE declaration-only C++ namespace function binds its
+	    // external Itanium symbol through storage_alias_name. A template
+	    // placeholder never gets an alias on the live path.
+	    if ( !tmpl_placeholder && pf.fd->declaration_only
+	      && !pf.fd->namespace_name.empty() )
+		fv->storage_alias_name = namespace_cpp_function_symbol(
+		    pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[ovkey];
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == fv )
+		    known = true;
+	    if ( !known )
+	    {
+		NamespaceFnOverload e;
+		if ( tmpl_placeholder )
+		    e.param_spelling = "\x01fn-template-placeholder";
+		e.var = fv;
+		ovset.push_back(e);
+	    }
+	}
+    }
+    DBG(std::cout << "register_forest_func: "
+	<< (pf.mvar ? "method " : "free function ") << pf.name
+	<< " (" << pf.fd->parameters.size() << " params"
+	<< (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
+	<< " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
+	<< std::endl);
+    return fv;
+}
+
+Variable *Program::activate_forest_func(const std::string &name)
+{
+    std::map<std::string, PendingForestFunc>::iterator it =
+	forest_deferred_funcs.find(name);
+    if ( it == forest_deferred_funcs.end() )
+	return NULL;
+    PendingForestFunc pf = it->second;
+    forest_deferred_funcs.erase(it);
+    Variable *var = register_forest_func(pf);
+    funcdef_map_iter fit = funcdef_map.find(pf.name);
+    if ( fit != funcdef_map.end() && fit->second == pf.fd )
+	++_forest_funcs_activated;
+    return var;
+}
+
+void Program::activate_forest_function_family(const std::string &ns,
+					       const std::string &display_name)
+{
+    std::string family = ns + "::" + display_name;
+    std::map<std::string, std::vector<std::string> >::iterator fi =
+	forest_deferred_func_families.find(family);
+    if ( fi == forest_deferred_func_families.end() )
+	return;
+    std::vector<std::string> names;
+    names.swap(fi->second);
+    forest_deferred_func_families.erase(fi);
+    for ( size_t i = 0; i < names.size(); ++i )
+	activate_forest_func(names[i]);
+}
+
+void Program::activate_forest_function_display(const std::string &display_name)
+{
+    const std::string suffix = "::" + display_name;
+    std::vector<std::string> families;
+    for ( std::map<std::string, std::vector<std::string> >::const_iterator it =
+	      forest_deferred_func_families.begin();
+	  it != forest_deferred_func_families.end(); ++it )
+    {
+	if ( it->first.size() >= suffix.size()
+	  && it->first.compare(it->first.size() - suffix.size(), suffix.size(),
+			       suffix) == 0 )
+	    families.push_back(it->first);
+    }
+    for ( size_t i = 0; i < families.size(); ++i )
+    {
+	size_t sep = families[i].size() - suffix.size();
+	activate_forest_function_family(families[i].substr(0, sep), display_name);
+    }
+}
+
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
 // once tkProgram exists (called at the end of tokenize()). Idempotent per name:
 // a global already present (a user redeclaration, or a second flush) is skipped.
@@ -22452,111 +22619,12 @@ void Program::flush_forest_pending_globals()
     forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
-    // RC2 + #23: register the staged free-function AND method declarations
-    // exactly as parseFunction's prototype tail does — funcdef_map[name] + a
-    // program-scope Variable whose data is a Method (owner_class set for a
-    // method). The flush runs at the end of tokenize(), BEFORE the consumer
-    // parses, so a call site resolves the real signature (never the dlsym
-    // implicit-variadic fallback) and Pass 0.75 emits the real extern proto —
-    // the same pre-consumer state a live header parse leaves.
-    // A name already present (an embedded-header registration, or a second
-    // flush) is skipped — first registration wins, as on the live path.
+    // RC2 + #23: source-declared functions and class methods stay eager so the
+    // consumer starts with the same lookup surface as a live header parse.
+    // Verdict-0 derived free functions were indexed separately above and
+    // promote through this SAME owner only when demanded.
     for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
-    {
-	const PendingForestFunc &pf = forest_pending_funcs[i];
-	if ( !pf.fd || pf.name.empty() )
-	    continue;
-	if ( funcdef_map.find(pf.name) != funcdef_map.end() )
-	    continue;
-	if ( findVariable(pf.name) )
-	    continue;
-	funcdef_map[pf.name] = pf.fd;
-	if ( pf.mvar )
-	{
-	    // A restored class METHOD: live keeps ONE Variable (parseFunction's)
-	    // shared by tkProgram scope and the class's methods/method_map, and
-	    // its Method(owner_class) was attached at materialization — reuse the
-	    // class's Variable rather than minting a duplicate.
-	    tkProgram->variables.push_back(pf.mvar);
-	}
-	else
-	{
-	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
-	    Method *fm = new Method(*fv);
-	    fv->data = (void *)fm;
-	    // v26 piece (a): the fn's NAMED parameter Variables (live parity
-	    // with parseFunction's param loop) — the scope a deferred free-fn
-	    // body's re-parse resolves its parameters against
-	    // (parse_deferred_function_body sets code->method).
-	    for ( size_t mp = 0; mp < pf.mparams.size(); ++mp )
-	    {
-		Variable *pv = new Variable(std::string(pf.mparams[mp].first),
-					    *pf.mparams[mp].second, 1, NULL, false);
-		pv->flags |= vfPARAM | vfLOCAL;
-		fm->parameters.push_back(pv);
-	    }
-	    // v21: a restored free function with a SOURCE IDENTITY (display name
-	    // + namespace) reproduces the live registration-site state.
-	    // A skipped-ns-fn-template PLACEHOLDER (declaration-only, a
-	    // body-bearing pattern retained in the restored fn_template_map —
-	    // __ns_std__Destroy) gets the first-wins namespace_map[ns][display]
-	    // binding (the resolution chokepoint a qualified `std::_Destroy(...)`
-	    // call reads) and the "\x01" overload-set seed. Every OTHER
-	    // display-bearing entry — the <new> allocation-operator overloads
-	    // (ns is GLOBAL/"", key "::operatornew"), concrete namespace
-	    // overloads, restored __oN instantiations — gets a concrete
-	    // overload-set entry, so resolved_call_funcdef ranks a 2-arg
-	    // aligned `operator new(size, align_val_t)` to operatornew__o2
-	    // instead of falling back to the 1-param base ("too many
-	    // arguments"). Ranking reads the FuncDef's parameters, so no
-	    // param spelling is needed; live conditions on restored state,
-	    // never a name special-case.
-	    if ( !pf.fd->function_display_name.empty() )
-	    {
-		std::string ovkey = pf.fd->namespace_name + "::"
-				  + pf.fd->function_display_name;
-		if ( !pf.fd->namespace_name.empty() )
-		{
-		    variable_map_t &nsmap = namespace_variables_for_write(
-			pf.fd->namespace_name);
-		    if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
-			nsmap[pf.fd->function_display_name] = fv;
-		}
-		bool tmpl_placeholder = pf.fd->declaration_only
-		    && !pf.fd->namespace_name.empty()
-		    && fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
-		// A CONCRETE declaration-only C++ namespace function binds its
-		// external Itanium symbol via the Variable's storage_alias_name
-		// (parseFunction's tail, e.g. std::__throw_bad_alloc ->
-		// _ZSt17__throw_bad_allocv) — reproduce it; a placeholder never
-		// gets one on the live path.
-		if ( !tmpl_placeholder && pf.fd->declaration_only
-		  && !pf.fd->namespace_name.empty() )
-		    fv->storage_alias_name = namespace_cpp_function_symbol(
-			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
-		std::vector<NamespaceFnOverload> &ovset =
-		    namespace_fn_overload_sets[ovkey];
-		bool known = false;
-		for ( size_t oi = 0; oi < ovset.size(); ++oi )
-		    if ( ovset[oi].var == fv )
-			known = true;
-		if ( !known )
-		{
-		    NamespaceFnOverload e;
-		    if ( tmpl_placeholder )
-			e.param_spelling = "\x01fn-template-placeholder";
-		    e.var = fv;
-		    ovset.push_back(e);
-		}
-	    }
-	}
-	DBG(std::cout << "flush_forest_pending_globals: "
-	    << (pf.mvar ? "method " : "free function ") << pf.name
-	    << " (" << pf.fd->parameters.size() << " params"
-	    << (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
-	    << " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
-	    << std::endl);
-    }
+	register_forest_func(forest_pending_funcs[i]);
     forest_pending_funcs.clear();
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
     // restored VERBATIM from its methodrec (its saved __oN rank — registered
@@ -24225,6 +24293,7 @@ std::vector<std::string> Program::inline_namespace_descendants(
 
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
 {
+    activate_forest_function_family(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
     // namespace set, TRANSITIVELY — and they are visible while the inline
     // namespace block is still OPEN, not only after
@@ -41610,12 +41679,17 @@ bool Program::desugar_abbreviated_fn_template()
 // selection among same-arity overloads by argument TYPE is separate, later work.)
 std::string Program::unique_overload_symbol(std::string base)
 {
-    if ( !findVariable(base) )
+    // A deferred forest identity still OCCUPIES its producer-assigned rank.
+    // Treat it as a name reservation without promoting its Variable: a new
+    // consumer specialization must mint the same later __oN key the eager
+    // restore would have chosen, while the untouched cached product remains
+    // unregistered.
+    if ( !findVariable(base) && !forest_deferred_funcs.count(base) )
 	return base;
     for ( int n = 2; ; ++n )
     {
 	std::string cand = base + "__o" + std::to_string(n);
-	if ( !findVariable(cand) )
+	if ( !findVariable(cand) && !forest_deferred_funcs.count(cand) )
 	    return cand;
     }
 }
