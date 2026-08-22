@@ -4872,7 +4872,11 @@ public:
     void note_std_abi_define(const std::string &name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
-    bool auto_include_standard_identifier(const std::string &word);
+    // positional=false skips the token-stream position gates (declaration
+    // head, member access, non-std qualifier) for callers feeding names
+    // that have no stream position (the `#pragma prefer` char-level read).
+    bool auto_include_standard_identifier(const std::string &word,
+					  bool positional = true);
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);

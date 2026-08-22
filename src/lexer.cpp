@@ -850,7 +850,17 @@ void Program::mark_embedded_include_flag(const std::string &incfile)
 	_include_ns_madc = true;
 }
 
-bool Program::auto_include_standard_identifier(const std::string &word)
+// Trivia tokens exist in the stream only under keep_trivia; every
+// backward position probe must step over them the same way.
+static bool is_trivia_token(const TokenBase *t)
+{
+    TokenType tt = t->type();
+    return tt == TokenType::ttSpace || tt == TokenType::ttTab
+	|| tt == TokenType::ttEOL || tt == TokenType::ttComment;
+}
+
+bool Program::auto_include_standard_identifier(const std::string &word,
+					       bool positional)
 {
     if ( skip_includes )
 	return false;
@@ -863,12 +873,12 @@ bool Program::auto_include_standard_identifier(const std::string &word)
     // defining the identifier, not using the standard header surface.
     // Auto-including here injects the embedded header in the middle of
     // the declarator and leaves a duplicate alias token behind.
-    for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
+    for ( auto it = tokens.rbegin(); positional && it != tokens.rend(); ++it )
     {
 	TokenBase *t = *it;
 	TokenID tid = t->id();
 	TokenType tt = t->type();
-	if ( tid == TokenID::tkMul )
+	if ( tid == TokenID::tkMul || is_trivia_token(t) )
 	    continue;
 	if ( tt == TokenType::ttDataType
 	  || tid == TokenID::tkSTRUCT
@@ -881,6 +891,27 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 	  || tid == TokenID::tkTYPEDEF
 	  || tid == TokenID::tkRESTRICT )
 	    return false;
+	// An identifier in member-access position (`G.player.set`, `p->set`)
+	// or qualified by anything other than `std` (`ui::set`,
+	// `madc::getline`) cannot denote the std-header surface — matching
+	// it would pull that header's whole include tree into the TU.
+	// `std::set` still qualifies; the qualifier itself (`ui` in
+	// `ui::set`) is scanned at its own lex time, unaffected.
+	if ( tid == TokenID::tkDot || tid == TokenID::tkDeRef )
+	    return false;
+	if ( tid == TokenID::tkNS )
+	{
+	    for ( ++it; it != tokens.rend(); ++it )
+	    {
+		TokenBase *q = *it;
+		if ( is_trivia_token(q) )
+		    continue;
+		if ( q->type() != TokenType::ttIdentifier
+		  || !((TokenIdent *)q)->spelling_is("std") )
+		    return false;
+		break;
+	    }
+	}
 	break;
     }
 
@@ -8291,7 +8322,9 @@ void Program::handle_pragma_body()
 		// hook the statement form gets for free, or `#pragma prefer
 		// rust, ...` fails "Unknown namespace" while `prefer rust, ...;`
 		// works (the ns_* header injects before parse-time validation).
-		auto_include_standard_identifier(name);
+		// positional=false: these names have no token-stream position,
+		// so the stream-position gates must not read a stale one.
+		auto_include_standard_identifier(name, /*positional=*/false);
 	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )
 		source.get();
