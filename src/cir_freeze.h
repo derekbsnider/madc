@@ -1575,6 +1575,9 @@ public:
 	// (pinned primitives resolve regardless). Lazy ClassPattern payload
 	// reads use this to swizzle serialized concrete_type_id values.
 	DataDef *restored_def_by_tid(uint32_t tid) const;
+	// Max __anon_N across the arena's named records (the restore's anon-tag
+	// gensym floor) — served from the process-level blob cache, no scan.
+	size_t max_restored_anon_tag();
 	// v13: the restored file-scope globals (type-ids swizzled to DataDef*). Valid
 	// after materialize_from_arena() — call it first (it builds this view
 	// alongside the types, reusing the same arena-id -> DataDef* map).

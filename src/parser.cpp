@@ -21647,22 +21647,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // counter — so the consumer's own anonymous aggregates never mint a name
     // that collides with a restored tag of a different kind.
     {
-	const madc::dis::FrozenDefArena &fa = forest.arena();
-	size_t max_anon = 0;
-	for ( uint32_t s = 0; s < fa.def_slots(); ++s )
-	{
-	    madc::dis::defrec r;
-	    if ( !fa.get_def_at(madc::dis::arena_id_of(s), r)
-	      || r.kind == madc::dis::DK_NONE || !r.name_id )
-		continue;
-	    const char *nm = fa.c_str(r.name_id);
-	    if ( !nm || strncmp(nm, "__anon_", 7) != 0 )
-		continue;
-	    char *end = NULL;
-	    unsigned long n = strtoul(nm + 7, &end, 10);
-	    if ( end && *end == '\0' && n > max_anon )
-		max_anon = (size_t)n;
-	}
+	size_t max_anon = forest.max_restored_anon_tag();
 	if ( max_anon )
 	    madc_anon_tag_counter_at_least(max_anon);
     }
@@ -23928,7 +23913,10 @@ void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out)
 Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
 {
     Variable *var;
-    const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
+    // static: one getenv per process, not one per lookup — this is THE
+    // hottest name-resolution entry (the -O2 profile put a measurable share
+    // of the whole launch inside per-call getenv here).
+    static const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
     // Intern the query name ONCE; the same sid probes every scope (local chain +
     // global) without re-hashing the std::string per level (C2).
     uint32_t qsid = strpool.intern(id);

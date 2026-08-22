@@ -1881,6 +1881,20 @@ DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
 struct ForestRecordable {
 	std::vector<uint32_t> agg_ids;	// slot order == id-stamp order
 	std::set<uint32_t> recordable;
+	// Per-kind SLOT lists, filled by the same one-scan-per-blob builder:
+	// the materialize passes and the seed walk iterate exactly their kind
+	// instead of re-scanning every slot per pass per generation (the -O2
+	// profile's materialize_pass self cost was 6+ full-arena scans per
+	// generation). Slot values feed madc::dis::arena_id_of.
+	std::vector<uint32_t> typedef_slots;	// DK_TYPEDEF
+	std::vector<uint32_t> enum_slots;	// DK_ENUM
+	std::vector<uint32_t> derived_slots;	// DK_PTR/REF/CONST/CARRAY/FPTR
+	std::vector<uint32_t> ns_slots;		// DK_NSLINK/NSBIND/DEFBODY
+	std::vector<uint32_t> free_func_slots;	// DK_FUNC with DF_IS_FREE_FUNC
+	// Max __anon_N across named records — the anon-tag gensym floor the
+	// restore advances to. A pure blob function; the per-restore full-arena
+	// scan moved here.
+	size_t max_anon_tag = 0;
 };
 
 // Process-level recordability cache (the S1 decoded-segment doctrine): the
@@ -1906,6 +1920,41 @@ static const ForestRecordable &forest_recordable_cached(
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
+		switch (r.kind) {
+		case madc::dis::DK_TYPEDEF:
+			e.typedef_slots.push_back(s);
+			break;
+		case madc::dis::DK_ENUM:
+			e.enum_slots.push_back(s);
+			break;
+		case madc::dis::DK_PTR:
+		case madc::dis::DK_REF:
+		case madc::dis::DK_CONST:
+		case madc::dis::DK_CARRAY:
+		case madc::dis::DK_FPTR:
+			e.derived_slots.push_back(s);
+			break;
+		case madc::dis::DK_NSLINK:
+		case madc::dis::DK_NSBIND:
+		case madc::dis::DK_DEFBODY:
+			e.ns_slots.push_back(s);
+			break;
+		case madc::dis::DK_FUNC:
+			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
+				e.free_func_slots.push_back(s);
+			break;
+		default:
+			break;
+		}
+		if (r.kind != madc::dis::DK_NONE && r.name_id) {
+			const char *nm = a.c_str(r.name_id);
+			if (nm && strncmp(nm, "__anon_", 7) == 0) {
+				char *end = NULL;
+				unsigned long n = strtoul(nm + 7, &end, 10);
+				if (end && *end == '\0' && n > e.max_anon_tag)
+					e.max_anon_tag = (size_t)n;
+			}
+		}
 		if (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
 		    && r.kind != madc::dis::DK_CLASS)
 			continue;
@@ -1976,6 +2025,14 @@ static const ForestRecordable &forest_recordable_cached(
 	return cache.emplace(blob_key, std::move(e)).first->second;
 }
 
+// The anon-tag gensym floor: max __anon_N across the arena's named records —
+// a pure blob function served from the process-level recordability cache
+// (the per-restore full-arena scan moved into its one-scan builder).
+size_t CirFrozenForest::max_restored_anon_tag()
+{
+	return forest_recordable_cached(_reader.blob_base(), _arena).max_anon_tag;
+}
+
 const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 {
 	if (_types_materialized)
@@ -2032,9 +2089,9 @@ void CirFrozenForest::materialize_pass()
 	double _t0 = forest_now();
 
 	// A type-less freeze binds an empty arena view: every aggregate pass
-	// below no-ops (nslots == 0) and only pinned-typed globals restore.
+	// below no-ops (empty slot buckets) and only pinned-typed globals
+	// restore.
 	const madc::dis::FrozenDefArena &a = _arena;
-	uint32_t nslots = a.def_slots();
 
 	// Pass 0 (recordability) comes from the process cache — one fixpoint
 	// per blob per process, shared by every TU Program that binds it.
@@ -2042,6 +2099,13 @@ void CirFrozenForest::materialize_pass()
 		forest_recordable_cached(_reader.blob_base(), a);
 	const std::vector<uint32_t> &agg_ids = rec0.agg_ids;
 	const std::set<uint32_t> &recordable = rec0.recordable;
+	// Per-kind slot lists from the same blob cache — each pass below walks
+	// exactly its kind (the full-arena rescans were the profile's cost).
+	const std::vector<uint32_t> &typedef_slots = rec0.typedef_slots;
+	const std::vector<uint32_t> &enum_slots = rec0.enum_slots;
+	const std::vector<uint32_t> &derived_slots = rec0.derived_slots;
+	const std::vector<uint32_t> &ns_slots = rec0.ns_slots;
+	const std::vector<uint32_t> &free_func_slots = rec0.free_func_slots;
 
 	// Permanent -v diagnostic (the load-side twin of the freeze-completeness
 	// probe): name every candidate aggregate the closure DROPPED and the
@@ -2206,25 +2270,30 @@ void CirFrozenForest::materialize_pass()
 		// aliases pull their ref0 chain, free functions their return +
 		// param chains, file-scope globals their type chain, template
 		// records their owner class.
-		for (uint32_t s = 0; s < nslots; ++s) {
+		for (size_t bi = 0; bi < typedef_slots.size(); ++bi) {
 			madc::dis::defrec r;
-			if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+			if (!a.get_def_at(madc::dis::arena_id_of(typedef_slots[bi]), r))
 				continue;
 			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 				continue;
-			if (r.kind == madc::dis::DK_TYPEDEF) {
-				if (name_verdict(r.name_id, r.ns_id) >= 0) {
-					DBG(fprintf(stderr,
-						    "forest td seed v=%d name=%s ns=%s"
-						    " flags=%x\n",
-						    name_verdict(r.name_id, r.ns_id),
-						    r.name_id ? a.c_str(r.name_id) : "-",
-						    r.ns_id ? a.c_str(r.ns_id) : "-",
-						    (unsigned)r.flags));
-					tq.push_back(r.ref0);
-				}
-			} else if (r.kind == madc::dis::DK_FUNC
-				   && (r.flags & madc::dis::DF_IS_FREE_FUNC)) {
+			if (name_verdict(r.name_id, r.ns_id) >= 0) {
+				DBG(fprintf(stderr,
+					    "forest td seed v=%d name=%s ns=%s"
+					    " flags=%x\n",
+					    name_verdict(r.name_id, r.ns_id),
+					    r.name_id ? a.c_str(r.name_id) : "-",
+					    r.ns_id ? a.c_str(r.ns_id) : "-",
+					    (unsigned)r.flags));
+				tq.push_back(r.ref0);
+			}
+		}
+		for (size_t bi = 0; bi < free_func_slots.size(); ++bi) {
+			madc::dis::defrec r;
+			if (!a.get_def_at(madc::dis::arena_id_of(free_func_slots[bi]), r))
+				continue;
+			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+				continue;
+			{
 				int v = name_verdict(r.name_id, 0);
 				if (v == 0 && r.disp_id && r.ns_id)
 					v = name_verdict(r.disp_id, r.ns_id);
@@ -2478,8 +2547,8 @@ void CirFrozenForest::materialize_pass()
 	// the derived fixpoint so pointer/const chains over an enum resolve.
 	// Size + canonical spelling load verbatim (a scoped `: size_t` enum is 8
 	// bytes, not the ctor's int default).
-	for (uint32_t s = 0; s < nslots; ++s) {
-		uint32_t tid = madc::dis::arena_id_of(s);
+	for (size_t bi = 0; bi < enum_slots.size(); ++bi) {
+		uint32_t tid = madc::dis::arena_id_of(enum_slots[bi]);
 		if (by_id.count(tid))
 			continue;	// built by an earlier generation
 		madc::dis::defrec r;
@@ -2515,8 +2584,8 @@ void CirFrozenForest::materialize_pass()
 	bool dprog = true;
 	while (dprog) {
 		dprog = false;
-		for (uint32_t s = 0; s < nslots; ++s) {
-			uint32_t tid = madc::dis::arena_id_of(s);
+		for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+			uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 			if (by_id.count(tid))
 				continue;
 			madc::dis::defrec r;
@@ -2609,8 +2678,8 @@ void CirFrozenForest::materialize_pass()
 	// such a member. Without naming it here the loss surfaces only as a class
 	// that is simply absent, layers later (task #64: std::ios_base died on
 	// `event_callback *__fn_`, and took the whole iostream family with it).
-	DBG(for (uint32_t s = 0; s < nslots; ++s) {
-		uint32_t tid = madc::dis::arena_id_of(s);
+	DBG(for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+		uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 		if (by_id.count(tid))
 			continue;
 		madc::dis::defrec r;
@@ -3330,7 +3399,8 @@ void CirFrozenForest::materialize_pass()
 		fprintf(stderr, "ALIAS %s%s%s ref0=%u %s\n", ns ? ns : "",
 			ns && *ns ? "::" : "", nm, r.ref0, verdict);
 	};
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < typedef_slots.size(); ++bi) {
+		uint32_t s = typedef_slots[bi];
 		if (_mat_done_slots.count(s))
 			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
@@ -3373,7 +3443,8 @@ void CirFrozenForest::materialize_pass()
 	// (NSLINK: the flush re-runs the live mirror) and using-declaration fn
 	// imports (NSBIND: the flush rebinds namespace_map[ns][name] to the
 	// restored fn's Variable).
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < ns_slots.size(); ++bi) {
+		uint32_t s = ns_slots[bi];
 		if (_mat_done_slots.count(s))
 			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
@@ -3441,7 +3512,8 @@ void CirFrozenForest::materialize_pass()
 	// DataDefENUM was allocated in pass 1a; the scoped enumerator values ride
 	// the record's constvalrec run and rebuild as constant Variables in the
 	// tag's pseudo-namespace on the parser side.
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < enum_slots.size(); ++bi) {
+		uint32_t s = enum_slots[bi];
 		uint32_t tid = madc::dis::arena_id_of(s);
 		if (_mat_done_slots.count(s))
 			continue;	// pushed by an earlier generation
@@ -3497,7 +3569,8 @@ void CirFrozenForest::materialize_pass()
 	// v21 additionally restores the skipped-ns-fn-template PLACEHOLDERS
 	// (declaration-only + function_display_name + namespace_name — the
 	// resolution chokepoint a qualified `std::_Destroy(...)` call needs).
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < free_func_slots.size(); ++bi) {
+		uint32_t s = free_func_slots[bi];
 		if (_mat_done_slots.count(s))
 			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
