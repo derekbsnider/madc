@@ -2085,6 +2085,24 @@ struct MadcCompileGroup
 {
     std::shared_ptr<madc::dis::intern_table> strpool;
     std::shared_ptr<madc::dis::id_table<DataDef> > project_types;
+    // S3: ONE bound forest instance per dialect — keyed (producer-config
+    // word, -D defines hash), the same pair the probe's config gate
+    // matches — so sibling TUs adopt it instead of re-opening and
+    // re-materializing the same container. Valid ONLY because the group
+    // also shares strpool/project_types above: the instance's live-id
+    // remap and its DataDefs' type_id memos are bound to them.
+    std::map<std::pair<uint32_t, uint32_t>,
+	     std::shared_ptr<CirFrozenForest> > bind_forests;
+    // S3: decl-index verdict maps keyed by (instance, bound-include
+    // closure) — a sibling TU with the same closure skips the all-units
+    // decl-index sweep. Config-coherent because the instance key is.
+    struct DeclVerdicts
+    {
+	std::unordered_map<std::string, bool> bound;
+	std::unordered_map<std::string, bool> system;
+    };
+    std::map<std::pair<const void *, std::vector<uint32_t> >,
+	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
     MadcCompileGroup()
 	: strpool(std::make_shared<madc::dis::intern_table>()),
 	  project_types(std::make_shared<madc::dis::id_table<DataDef> >(
@@ -4638,6 +4656,15 @@ public:
 	return f && *f && !forest_root_file.empty() && forest_root_file == f;
     }
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
+    // S3 (R4-lite): ownership of bind_forest. A private probe result and a
+    // group-shared instance both live here; ~Program releases the holder
+    // (never a raw delete), so N sibling TUs can hold ONE instance.
+    std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // S3: the compile group this Program is a sibling of (NULL = standalone).
+    // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
+    // copies of everything they adopt from it, except this backpointer, which
+    // is only consulted during compile (the group is alive for all of it).
+    MadcCompileGroup *compile_group = NULL;
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually

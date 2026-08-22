@@ -19475,6 +19475,7 @@ Program::Program(MadcCompileGroup *group)
       skip_includes(false),
       root_fn(NULL)
 {
+    compile_group = group;
 }
 
 Program::Program(MadcEngine *eng, MadcCompileGroup *group)
@@ -19516,6 +19517,7 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
       skip_includes(false),
       root_fn(NULL)
 {
+    compile_group = group;
     attach_engine(eng);
 }
 
@@ -21537,7 +21539,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // (the CirMaterializeFilter installed here) consume the SAME map — one
     // predicate, two consumers (rung 2a moved the skip from "register fewer"
     // to "never build the DataDefs at all").
-    std::unordered_map<std::string, bool> forest_declared_bound;
+    std::unordered_map<std::string, bool> swept_bound;
     // Rung 3: the emission-side system-origin verdict for restored decls. A
     // restored TopDecl carries no parse position, so the referenced-surface
     // filter (translate_module) reads TopDecl.forest_system instead: true iff
@@ -21545,15 +21547,32 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
-    std::unordered_map<std::string, bool> forest_declared_system;
+    std::unordered_map<std::string, bool> swept_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
     // The demand filter this TU asks materialize_for to satisfy — inactive
     // (whole container) when the closure is empty, else the verdict map the
     // sweep below builds. S2: on a shared forest a later TU's wider verdicts
     // union in and materialize incrementally.
     CirMaterializeFilter mf;
+    // S3: the verdict maps are a pure function of (instance, closure) within
+    // one compile group (sibling TUs share dialect config, and the system-path
+    // classification rides the instance's config key) — a sibling with the
+    // same closure adopts them and skips the all-units sweep.
+    std::shared_ptr<const MadcCompileGroup::DeclVerdicts> cached_verdicts;
+    std::pair<const void *, std::vector<uint32_t> > verdict_key;
+    if ( compile_group && forest_closure_filter )
+    {
+	verdict_key.first = (const void *)&forest;
+	verdict_key.second.assign(forest_chain_set.begin(),
+				  forest_chain_set.end());
+	std::map<std::pair<const void *, std::vector<uint32_t> >,
+		 std::shared_ptr<const MadcCompileGroup::DeclVerdicts> >
+	    ::const_iterator ci = compile_group->decl_verdicts.find(verdict_key);
+	if ( ci != compile_group->decl_verdicts.end() )
+	    cached_verdicts = ci->second;
+    }
     double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter )
+    if ( forest_closure_filter && !cached_verdicts )
     {
 	std::vector<cir_forest_decl_entry> ents;
 	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
@@ -21577,19 +21596,37 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 				nm, upath ? upath : "?", (int)bound);
 		}
 		std::unordered_map<std::string, bool>::iterator di =
-		    forest_declared_bound.find(nm);
-		if ( di == forest_declared_bound.end() )
-		    forest_declared_bound[nm] = bound;
+		    swept_bound.find(nm);
+		if ( di == swept_bound.end() )
+		    swept_bound[nm] = bound;
 		else if ( bound )
 		    di->second = true;
 		if ( sys )
-		    forest_declared_system[nm] = true;
+		    swept_system[nm] = true;
 	    }
 	}
+	if ( compile_group )
+	{
+	    std::shared_ptr<MadcCompileGroup::DeclVerdicts> dv =
+		std::make_shared<MadcCompileGroup::DeclVerdicts>();
+	    dv->bound.swap(swept_bound);
+	    dv->system.swap(swept_system);
+	    compile_group->decl_verdicts[verdict_key] = dv;
+	    cached_verdicts = dv;
+	}
+    }
+    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
+    // ONE name for the verdicts from here down, cached or freshly swept —
+    // every consumer below (mf, registration lambdas, rung 3) reads these.
+    const std::unordered_map<std::string, bool> &forest_declared_bound =
+	cached_verdicts ? cached_verdicts->bound : swept_bound;
+    const std::unordered_map<std::string, bool> &forest_declared_system =
+	cached_verdicts ? cached_verdicts->system : swept_system;
+    if ( forest_closure_filter )
+    {
 	mf.active = true;
 	mf.declared_bound = forest_declared_bound;
     }
-    _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
 
     // Rung 3: the system-origin verdict lookup — qualified form first, then
     // bare (a namespaced decl may be indexed only as "std::name"), the same
@@ -23391,7 +23428,8 @@ Program::~Program()
 	delete source_forest;
     if ( ledger_forest && ledger_forest != bind_forest )
 	delete ledger_forest;
-    delete bind_forest;
+    // bind_forest is released by _bind_forest_holder (S3): a group-shared
+    // instance survives until its LAST sibling dies; a private one dies here.
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )

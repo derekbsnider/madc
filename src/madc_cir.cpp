@@ -5797,6 +5797,7 @@ struct CirParsedTU {
 // Programs own the arenas their modules will be built from, so the caller
 // holds `parsed` for its whole compile.
 static bool project_parse_all(MadcEngine &engine,
+			      MadcCompileGroup &group,
 			      const ProjectManifest &manifest,
 			      bool forest_bind,
 			      const std::string &forest_bind_path,
@@ -5804,10 +5805,9 @@ static bool project_parse_all(MadcEngine &engine,
 			      std::vector<CirParsedTU> &parsed)
 {
 	// R4-lite: sibling TUs of one project share ONE compile group — one
-	// spelling universe + one type-id universe (the ODR shape). The group
-	// object is local; the Programs hold shared_ptr copies, so the pools
-	// outlive it for as long as any TU Program does.
-	MadcCompileGroup group;
+	// spelling universe, one type-id universe, one bound forest instance
+	// per dialect (the ODR shape). The caller declares the group before
+	// `parsed` so it outlives every TU Program that backpoints to it.
 	for (const ProjectTU &tu : manifest.tus) {
 		std::unique_ptr<Program> prog = engine.create_program(&group);
 		prog->colors = true;
@@ -5879,8 +5879,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	}
 
 	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
+	// The compile group (R4-lite: shared strpool / type-id table / bound
+	// forest across sibling TUs) is declared BEFORE `parsed` so it outlives
+	// every TU Program that backpoints to it.
+	MadcCompileGroup group;
 	std::vector<CirParsedTU> parsed;
-	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
+	if (!project_parse_all(engine, group, manifest, forest_bind,
+			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
 
@@ -6101,9 +6106,12 @@ int madc_project_emit_native(MadcEngine &engine,
 	}
 	madc_object_mode = true;   // one-shot CLI path; process exits after
 
+	// Group before `parsed`: it must outlive the TU Programs (see
+	// madc_project_execute).
+	MadcCompileGroup group;
 	std::vector<CirParsedTU> parsed;
-	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
-			       false, parsed))
+	if (!project_parse_all(engine, group, manifest, forest_bind,
+			       forest_bind_path, false, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
 
 	// Standalone executables — and every non--shared artifact of an

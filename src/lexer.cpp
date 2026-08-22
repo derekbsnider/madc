@@ -2852,10 +2852,35 @@ CirFrozenForest *Program::ensure_bind_forest()
     // forest gets the clock installed so its own on-demand entries (unit
     // loads, materialize, template payload) accumulate on the same clock.
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+    // S3 (R4-lite): a sibling TU adopts the group's already-bound instance
+    // for this dialect — the (config word, -D hash) pair IS the probe's own
+    // config gate, so a group hit is exactly what the probe would re-open.
+    // The clock pointers re-install per adopter (sequential compile: the
+    // forest's on-demand work accumulates on whoever is currently compiling).
+    std::pair<uint32_t, uint32_t> group_key(0, 0);
+    if ( compile_group )
+    {
+	group_key = std::make_pair(madc_forest_config_word(this),
+				   madc_forest_defines_hash(this));
+	std::map<std::pair<uint32_t, uint32_t>,
+		 std::shared_ptr<CirFrozenForest> >::iterator gi =
+	    compile_group->bind_forests.find(group_key);
+	if ( gi != compile_group->bind_forests.end() )
+	{
+	    _bind_forest_holder = gi->second;
+	    bind_forest = _bind_forest_holder.get();
+	    bind_forest->_work_secs = &_forest_work_seconds;
+	    bind_forest->_work_depth = &_forest_work_depth;
+	    return bind_forest;
+	}
+    }
     bool cfg_mismatch = false;
     bind_forest = probe_forest_chain(forestMatchExact, cfg_mismatch);
     if ( bind_forest )
     {
+	_bind_forest_holder.reset(bind_forest);
+	if ( compile_group )
+	    compile_group->bind_forests[group_key] = _bind_forest_holder;
 	bind_forest->_work_secs = &_forest_work_seconds;
 	bind_forest->_work_depth = &_forest_work_depth;
 	return bind_forest;
