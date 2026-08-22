@@ -18,13 +18,20 @@ loud "no matching overload" error + the two ranker coercion gaps the
 fallback had been papering over; full suite 1131/0).
 S1 LANDED @21c57941 (2026-08-22, game 829→760 ms). S2 and S3 CLOSED
 without code the same day — their premises dissolved under
-measurement (see "S2/S3 findings" below). S5 LANDED @f13938f9 the
-same day: **warm 11-TU launch 92 ms packed (176 ms dev) — under the
-Python port's ~0.10 s — with the 94-log corpus byte-identical from
-cache. THE PLAN'S LEGS ARE COMPLETE.** Residue: the ≤50 ms warm
-stretch, the S4 interop cached-thaw 0.33 s, and the queued small
-fixes (--show-stats silent under project mode and --run-frozen;
---project --emit=c11 dup __madc_global_init).**
+measurement (see "S2/S3 findings" below). S5 was IMPLEMENTED
+(@f13938f9; warm 11-TU thaw measured 92 ms packed, 94-log corpus
+byte-identical from cache) and then **REVERTED the same day by OWNER
+RULING (2026-08-22, session 116): madc never writes cache files
+beside user projects — not by default, not opt-in; the ONLY frozen
+forest is the BUILT-IN one carrying the precompiled system headers
+(the release pack), and explicit save-for-next-time is a `.o` or an
+AOT executable (both exist: `madc -c`, `madc -o`, `madc prog.o` runs
+objects as a precompiled cache).** Leg 2 as designed is DEAD; the
+92 ms measurement stands only as proof of the thaw floor. The
+remaining performance work is the COLD path — compiler throughput
+(the front-end performance arc) — plus the queued small fixes
+(--show-stats silent under project mode and --run-frozen; --project
+--emit=c11 dup __madc_global_init).**
 
 **Owner rulings (2026-08-21, during Leg 0 — codified as
 `.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
@@ -193,42 +200,27 @@ their consumers for post-decode mutation.
   cold 16 ms). The lazy-decode and raw-spine mechanisms stay banked
   for interop/headerless lanes. See "S2/S3 findings" below.
 
-### Leg 2 — warm launch: a transparent program cache (.pyc, but native)
+### Leg 2 — warm launch: DEAD BY OWNER RULING (2026-08-22)
 
-**S5 LANDED (@f13938f9 + gate @4054b4de, 2026-08-22, session 116).**
-Implemented exactly per the S5 design section below. Measured
-(container, `echo quit |`, output byte-identical to the live run in
-every lane): **packed warm 754 → 92 ms — UNDER the Python port's
-~0.10 s, with native JIT code**; dev warm 1914 → 176 ms; cold (first
-launch, pays parse + freeze) packed 1.35 s / dev 3.6 s. Evidence:
-per-TU staleness verified (an edited adv_score.mad refroze alone —
-ten containers kept their mtimes); the **warm-cache adventure parity
-replay is byte-identical across all 3 fragments + 94 whole logs**;
-`scripts/check-program-cache.sh` (in fulltest) gates cold/warm
-equality, the MIR fast path engaging, staleness biting (negative
-control), corruption self-heal, and both kill switches. The suite
-runners + adventure_parity.sh export MADC_NO_PROGRAM_CACHE=1 so
-existing project tests keep testing the live compile. En route: the
-S1 mapping cache gained cir_forest_map_invalidate (a refreeze's
-atomic rename is the one in-process writer that breaks its
-path→content assumption). Residue for later: warm 92 ms vs the ≤50 ms
-stretch target — the remaining per-TU cost is container open/decode +
-MIR_read + link, profile before squeezing.
+**OWNER RULING (2026-08-22, session 116): no `.forest` caching of user
+programs — ever.** madc never writes cache files beside user projects
+(not automatically, not opt-in); the only frozen forest is the
+BUILT-IN system-header pack; a user who wants to skip recompiling
+produces a real artifact explicitly (`-c` objects — `madc prog.o`
+already runs them as a precompiled cache — or `-o` AOT). S5 was
+implemented (@f13938f9 + gate @4054b4de) and REVERTED the same day.
+For the record, the experiment measured: warm 11-TU thaw 92 ms packed
+/ 176 ms dev, 94-log corpus byte-identical from cache — the thaw
+floor exists in the existing freeze machinery; it is not a product
+surface. S4's findings (thaw is load-only; 6 ms lean; the 0.33 s
+interop MIR_read residue) remain true of the pack machinery itself.
 
-- **S4. Make thaw load-only.** Find why --run-frozen re-parses real
-  headers and costs 0.8s for one TU (the c++locale.h diagnostic is the
-  thread to pull); a thaw must touch source zero times (LOADED ==
-  parsed law). MIR cache: madc_cir_freeze already carries a mir_cache
-  flag — a frozen program that also carries its MIR skips c2mir AND
-  codegen at launch.
-- **S5. Project-aware, automatic caching.** `madc advent.cc.json`
-  transparently maintains a frozen container per manifest (keyed:
-  source content hashes + config + binary identity — the same
-  exact-match gate; stale = recompile + refreeze, never a wrong run).
-  First launch pays the compile; every later launch thaws. Target:
-  warm 11-TU launch ≤ 50 ms — under Python's floor, with native code.
-- Explicit flags (`--freeze-run`, `--run-frozen`) stay; S5 only makes
-  the default path do what .pyc does without being asked.
+(The original S4/S5 slice descriptions are superseded by the ruling
+above: S4's premise was corrected by the S0 findings — thaw was
+already load-only — and S5 is rejected outright. `--freeze` /
+`--freeze-run` / `--run-frozen` remain what they always were:
+developer/pack machinery for the ONE built-in system-header forest,
+never user-program artifacts.)
 
 ### Sequencing and gates
 
@@ -313,75 +305,20 @@ is the 0.33 s MIR_read/link of the drained module).
   drained library closure (not parsing); **0.33 s with the MIR
   cache** (+150 KB container) = MIR_read/link of the big drained
   module — an interop-only residue for a later slice.
-- **S5 reframes to plumbing:** transparent per-manifest freeze
-  (content-hash keyed, refreeze on mismatch) + project-mode
-  integration of the MIR cache. Projected warm 11-TU launch ≈ 11 ×
-  ~6 ms + link — well under Python's 0.10 s floor.
+- ~~S5 reframes to plumbing~~ — overtaken by the owner ruling above
+  (no user-program `.forest` artifacts).
 - Queued small fix joins the list: --show-stats is silent under
   --run-frozen (same family as project mode ignoring it).
 
-### S5 design (2026-08-22, session 116 — recon-verified against the code)
+### S5 design — REJECTED (kept only as a pointer)
 
-**Shape: per-TU cache containers + ONE run path.** `madc <manifest>`
-maintains `<manifest-dir>/__madcache__/<tu-stem>-<key8>.forest` — one
-standard standalone container per TU (the `--freeze` format; N files,
-not a stacked one, so each is independently inspectable with
-`--dump-forest` and one edited TU refreezes ALONE — per-TU .pyc
-semantics). The project JIT lane becomes: probe each TU's cache →
-MISS: parse + freeze it (then thaw what was just written — the
---freeze-run precedent, in-process) → thaw every TU's module into the
-ONE shared MIR context → link → per-TU inits → entry. Warm and cold
-launches share the thaw path, so it is exercised on every run, not
-only warm ones.
-
-- **Key (the "never a wrong run" gate), validated in two layers:**
-  filename key8 = fnv64(TU path | producer config word | defines hash
-  | context pin | self-exe mtime+size — the BINARY-IDENTITY term the
-  pin alone lacks: the pin folds only VERSION+format, and a dev
-  rebuild must invalidate); inside the container a NEW small segment
-  `SRC_STAMPS` records (path, content-hash) for the TU + every USER
-  source file the parse read from disk (embedded/forest sources are
-  covered by pin+config). Thaw re-hashes every stamped file; any
-  mismatch = MISS = refreeze. Manifest edits need no extra key: per-TU
-  flags live in the config word/defines hash, entry + TU list are
-  read live at thaw.
-- **Freeze side:** `madc_cir_freeze` gains the project_tu shape
-  (threaded to CirBuilder) so each frozen TU takes the TU-unique
-  STATIC init (`tu_init_symbol(tu.file)` — deterministic from the
-  path, so the thaw side RECOMPUTES it; no format field needed) and
-  main carries no init prologue — the engine keeps its ld.so role.
-  No pack_recording (no groves, no drain gate — the cheap
-  --freeze-run shape) + `--freeze-mir-cache` semantics always on.
-  forest_arena_enabled set before tokenize for miss TUs.
-- **Thaw side:** per TU: map + open_header (pin) + exact config gate
-  + stamp validation, then MIR_read the module blob into the shared
-  ctx (fallback: materialize the frozen root and cir_compile it in
-  the shared c2m — build_frozen's own fallback, shared-context
-  flavor). dlopen each container's recorded libs (the flavor runtime
-  closure) before link. Trap prebinding generalizes
-  cir_prebind_cache_traps to N modules: only a name NO module defines
-  and the resolver cannot find is trap-bound.
-- **Failure policy: the cache is DERIVED state.** Any cache failure
-  (unwritable dir, freeze failure, corrupt container) falls back to
-  the live compile for that TU — never fails the run (the MIR-cache
-  precedent); diagnostics DBG-gated. Writes are mkstemp +
-  atomic-rename (concurrent runs safe; readers keep the old inode).
-- **Transparency + kill switch:** default ON for the `--project` JIT
-  lane only (AOT lanes unchanged). `MADC_NO_PROGRAM_CACHE=1` (env)
-  and `--no-program-cache` (flag) disable. **The suite runners and
-  adventure_parity.sh export the env kill-switch** so existing
-  project tests keep testing LIVE compile (the dev-sidecar-pack
-  lesson — a cache must not silently flip the suite from live-parse
-  testing to thaw testing); dedicated `testprojectcache*` fixtures +
-  an explicit warm parity leg exercise the cache lanes.
-- **Cost model:** miss TU ≈ parse + translate (freeze) + thaw-compile
-  (MIR blob) + MIR_read (~2× today's compile, first launch only);
-  hit TU ≈ open + MIR_read (~few ms). Projected warm 11-TU launch:
-  11 × ~6 ms + link ≈ well under Python's 0.10 s floor.
-- **Gates:** parity 3+94 byte-identical on BOTH lanes (env-off live;
-  warm-cache leg), testproject*/testprojectinit*/testnsdmiglobal,
-  staleness tests (edit one TU → exactly that TU refreezes; binary
-  swap → full refreeze), kill-switch test, timing table re-measured.
+The full per-TU cache design that was implemented and reverted lives
+in the git history (@f13938f9 and its revert). Owner ruling above:
+no user-program `.forest` artifacts, period. Reusable facts learned:
+the thaw path works N-module into one shared MIR context; the S1
+mapping cache assumes stable path→content (any future in-process
+container rewriter must invalidate); `tu_init_symbol` is derivable
+from the TU path.
 
 ## Non-goals / rejected
 

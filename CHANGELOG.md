@@ -2,27 +2,17 @@
 
 ## [Unreleased]
 
-- **JIT launch S5 — the transparent per-manifest program cache
-  (Python's `.pyc`, native).** `madc <manifest>` keeps one frozen
-  container per TU under `__madcache__/` beside the manifest: the
-  first launch compiles and freezes (project-shaped tree + MIR module
-  blob + source stamps), every later launch thaws the compiled
-  modules into the shared project context. **Warm 11-TU adventure
-  launch: 754 → 92 ms packed (1914 → 176 ms dev) — under the Python
-  port's ~0.10 s, with native JIT code**; the whole 94-log parity
-  corpus replays byte-identically from cache. Staleness is two-layer
-  (filename key: config word, -D fold, context pin, the binary's own
-  mtime+size; in-container SRC_STAMPS: a content hash per disk source
-  the parse consumed, re-hashed at probe) and per-TU — an edited file
-  refreezes exactly its TU. The cache is derived state: unwritable
-  dirs, corrupt containers, or freeze failures fall back to the live
-  compile, never a wrong run. `--no-program-cache` /
-  `MADC_NO_PROGRAM_CACHE=1` disable it; the suite runners pin the
-  live lane, and `scripts/check-program-cache.sh` (fulltest) gates
-  the cached lanes (staleness negative control included). S2/S3 of
-  the same plan closed without code — measurement showed Leg 0 had
-  already dissolved their premises (the dev binary live-parses the
-  lean prelude in 12 ms, cheaper than binding a container).
+- **JIT launch S2/S3 closed without code** — measurement showed Leg 0
+  had already dissolved their premises (the dev binary live-parses the
+  lean prelude in 12 ms, cheaper than binding a container costs the
+  packed binary). An S5 per-manifest `.forest` program cache was built
+  and then REVERTED the same day by owner ruling: madc never writes
+  cache files beside user projects — the only frozen forest is the
+  built-in system-header pack, and explicit persistence is a `.o` or
+  an AOT executable. (The experiment's numbers, kept for the record:
+  a warm 11-TU thaw ran in 92 ms packed with the 94-log corpus
+  byte-identical — the thaw floor exists; the mechanism is not a
+  product surface.)
 - **JIT launch S1 — one mapping + one decode per forest carrier per
   process.** Each TU Program re-mapped the packed container and
   re-decompressed the same ~14 container-global segments (11.6 MB);

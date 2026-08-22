@@ -4889,23 +4889,7 @@ public:
 	// The READING twin of the predicate above — same provider order, one
 	// owner. Every consumer that needs a resolved include's BYTES goes
 	// through it, so none can see a header the others cannot.
-	// from_disk (optional): true when the bytes came from ordinary storage,
-	// false when the packed forest's raw-source slot served them — the
-	// source-stamp recorder stamps only disk provenance (forest-served
-	// bytes are covered by the carrier's own identity).
-	bool read_resolved_include(const std::string &path, std::string &text,
-				   bool *from_disk = NULL);
-	// Source stamps (project program cache, S5): while recording, every
-	// source file whose bytes the tokenizer consumed FROM DISK — the main
-	// file and each disk-resolved include — lands here as
-	// (path, content hash). The freeze ships them as the SRC_STAMPS
-	// segment; the thaw re-hashes each listed file and any mismatch is a
-	// cache MISS (staleness = refreeze, never a wrong run). Deduped by
-	// path; recording is off outside the caching project lane.
-	bool source_stamp_recording = false;
-	std::vector<std::pair<std::string, uint64_t> > source_stamps;
-	void record_source_stamp(const std::string &path,
-				 const void *bytes, size_t len);
+	bool read_resolved_include(const std::string &path, std::string &text);
 	std::string detect_include_guard(const std::string &file_path);
     void expand_pending_auto_include_macros(size_t original_start);
     std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,

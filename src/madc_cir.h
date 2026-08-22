@@ -288,23 +288,10 @@ struct cir_ledger_module
 // (--freeze-mir-cache; blob failure never fails the freeze).
 // `ledger` (non-empty) packs the AOT ledger segment — the C-lane runtime
 // modules a -static-libmadc emit merges into the produced image (S5).
-// `project_tu` freezes the tree in the project-TU shape (TU-unique static
-// init the ENGINE calls before main — ld.so's role — instead of the
-// single-file shape where main's prologue calls __madc_global_init); the
-// program-cache freeze uses it so a thawed TU links exactly like a live
-// project TU. Also ships the Program's source stamps (SRC_STAMPS segment)
-// when tokenize recorded any.
 // Returns 0 on success, -1 on failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
-		    const std::vector<cir_ledger_module> *ledger = NULL,
-		    bool project_tu = false);
-
-// Program cache (S5): the deterministic per-TU init symbol
-// (__madc_init_<stem>_<fnv32(path)>) — the thaw side recomputes it from the
-// manifest's TU path instead of recording it. Defined in cir_builder.cpp
-// beside the derivation the freeze uses.
-std::string cir_tu_init_symbol(const std::string &tu);
+		    const std::vector<cir_ledger_module> *ledger = NULL);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with

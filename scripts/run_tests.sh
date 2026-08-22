@@ -84,11 +84,6 @@ MADC="${MADC_BIN:-bin/madc}"
 # their child must exercise this lane's artifact, including the default lane
 # where the caller did not need to set MADC_BIN explicitly.
 export MADC_BIN="$MADC"
-# The suite tests the LIVE compile: without this, --project tests would thaw
-# frozen __madcache__ containers on re-runs instead of exercising the parse +
-# CIR + c2mir path they exist to gate (the program cache is tested by its own
-# gate, scripts/check-program-cache.sh).
-export MADC_NO_PROGRAM_CACHE=1
 MADC_WRAPPER="${MADC_WRAPPER:-}"
 while [ $# -gt 0 ]; do
     case "$1" in

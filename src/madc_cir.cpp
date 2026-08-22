@@ -5318,8 +5318,7 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
-		    const std::vector<cir_ledger_module> *ledger,
-		    bool project_tu)
+		    const std::vector<cir_ledger_module> *ledger)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -5355,8 +5354,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	// container carries translated func-defs, not DK_DEFBODY token runs.
 	// Report the drain so the left-deferred fallback count is visible.
 	size_t db_before = prog->deferred_lazy_bodies.size();
-	node_t tree = cir_translate_guarded(c2m, prog, source_name, builder,
-					    project_tu);
+	node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
 	size_t db_after = prog->deferred_lazy_bodies.size();
 	if (prog->pack_recording && db_before)
 	    fprintf(stderr, "%s: pack drain: %zu deferred bodies evaluated, "
@@ -5465,7 +5463,6 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		}
 		f.language_std = madc_forest_config_word(prog);	// v27 producer-config gate
 		f.defines_hash = madc_forest_defines_hash(prog);
-		f.src_stamps = prog->source_stamps;	// program cache (S5): empty = no segment
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		cir_forest_arena_refresh(prog,
 					 builder ? &builder->pack_uncarriable_syms()
@@ -5767,208 +5764,7 @@ static bool is_c_source_file(const std::string &path)
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
 	std::string name;
-	// Program cache (S5): a thawed TU compiles from its cache container
-	// at cache_path instead of this Program — which is then configured
-	// (flags, for the key derivation and the flavor lookup) but never
-	// parsed. On a miss the TU parses, freezes into cache_path, and is
-	// thawed from what it just wrote (one run path, the --freeze-run
-	// precedent in-process).
-	bool thawed = false;
-	std::string cache_path;
 };
-
-// One owner for a project TU's Program configuration — the parse lane and
-// the program-cache key derivation must agree on the flags or the v27
-// config gate compares different worlds. NULL on a bad -stdlib (diagnostic
-// printed).
-static std::unique_ptr<Program> project_configure_program(
-	MadcEngine &engine, const ProjectTU &tu,
-	bool forest_bind, const std::string &forest_bind_path,
-	bool class_pattern_live_capture)
-{
-	std::unique_ptr<Program> prog = engine.create_program();
-	prog->colors = true;
-	// Each TU binds the one embedded/standalone forest (compiles
-	// BIND; only the build-time pack freezes). ensure_bind_forest()
-	// falls through to live parse when no container is present.
-	prog->registration_policy.enable_forest_bind = forest_bind;
-	prog->forest_bind_path = forest_bind_path;
-	prog->class_pattern_live_capture = class_pattern_live_capture;
-	for (const std::string &inc : tu.include_dirs)
-		prog->add_include_dir(inc);
-	for (const std::string &d : tu.defines)
-		prog->add_cli_define(d);
-	if (!tu.stdlib_option.empty()
-	 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
-		fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
-			tu.file.c_str(), tu.stdlib_option.c_str(),
-			prog->stdlib_flavor_names().c_str());
-		return std::unique_ptr<Program>();
-	}
-	if (!tu.std_option.empty())
-		prog->set_language_standard_option("--std=" + tu.std_option);
-	else if (is_c_source_file(tu.file))
-		// No explicit -std and a .c file → gcc's actual default C
-		// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
-		// C++ keywords stay usable as C identifiers AND glibc's
-		// feature gates (timercmp, strdup, …) match plain gcc.
-		prog->set_language_standard_option("--std=gnu17");
-	return prog;
-}
-
-// --- Project program cache (S5) -------------------------------------------
-// `madc <manifest>` transparently maintains one frozen container per TU
-// under <manifest-dir>/__madcache__/ (madc's .pyc). Staleness is gated in
-// two layers: the FILENAME key folds the config identity (TU path, producer
-// config word, -D fold, context pin, the running binary's mtime+size — a
-// dev rebuild must invalidate — and any explicit --forest-bind path), and
-// the container's SRC_STAMPS segment records (path, content hash) for every
-// disk source the parse consumed — the probe re-hashes each one. Any
-// mismatch is a MISS (refreeze), any IO/cache failure falls back to the
-// live compile: the cache is DERIVED state and never fails a run.
-
-static uint64_t project_cache_key(const ProjectTU &tu, Program *prog,
-				  const std::string &forest_bind_path)
-{
-	long long exe_mtime = 0, exe_size = 0;
-	std::string exe = madc_self_exe_path();
-	struct stat st;
-	if (!exe.empty() && ::stat(exe.c_str(), &st) == 0) {
-		exe_mtime = (long long)st.st_mtime;
-		exe_size = (long long)st.st_size;
-	}
-	char meta[192];
-	snprintf(meta, sizeof meta, "|cfg%08x|def%08x|pin%016llx|exe%lld.%lld|",
-		 madc_forest_config_word(prog), madc_forest_defines_hash(prog),
-		 (unsigned long long)madc_cir_context_hash(),
-		 exe_mtime, exe_size);
-	std::string sig = tu.file + meta + forest_bind_path;
-	return madc_pch::hash_content(sig.data(), sig.size());
-}
-
-static std::string project_cache_path(const ProjectManifest &manifest,
-				      const ProjectTU &tu, uint64_t key)
-{
-	std::string stem = tu.file;
-	size_t sl = stem.rfind('/');
-	if (sl != std::string::npos)
-		stem = stem.substr(sl + 1);
-	size_t dot = stem.rfind('.');
-	if (dot != std::string::npos && dot > 0)
-		stem = stem.substr(0, dot);
-	for (size_t i = 0; i < stem.size(); i++) {
-		char c = stem[i];
-		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-			  || (c >= '0' && c <= '9');
-		if (!ok)
-			stem[i] = '_';
-	}
-	char hx[24];
-	snprintf(hx, sizeof hx, "-%016llx", (unsigned long long)key);
-	std::string dir = manifest.manifest_dir.empty() ? "."
-						       : manifest.manifest_dir;
-	return dir + "/__madcache__/" + stem + hx + ".forest";
-}
-
-// Probe: is the cache container at `path` valid for THIS compile? Reads the
-// file RAW (plain ifstream, never through the process mapping cache — a
-// stale file here is about to be REPLACED, and the mapping cache must not
-// learn a dying inode under a path the thaw will then re-map), checks the
-// header pins + exact producer config, then re-hashes every stamped source
-// file. False = MISS.
-static bool project_cache_probe(Program *prog, const std::string &path)
-{
-	std::ifstream in(path.c_str(), std::ios::binary | std::ios::ate);
-	if (!in)
-		return false;
-	std::streampos end = in.tellg();
-	if (end <= 0)
-		return false;
-	std::vector<uint8_t> buf((size_t)end);
-	in.seekg(0);
-	in.read((char *)buf.data(), buf.size());
-	if (!in)
-		return false;
-	CirFrozenForest f;
-	if (!f.open_header(buf.data(), buf.size(), /*quiet_missing=*/true))
-		return false;
-	if (f.language_std() != madc_forest_config_word(prog)
-	    || f.defines_hash() != madc_forest_defines_hash(prog))
-		return false;
-	std::vector<std::pair<std::string, uint64_t> > stamps;
-	if (!f.src_stamps(stamps) || stamps.empty())
-		return false;
-	for (size_t i = 0; i < stamps.size(); i++) {
-		std::ifstream sf(stamps[i].first.c_str(),
-				 std::ios::binary | std::ios::ate);
-		if (!sf)
-			return false;
-		std::streampos se = sf.tellg();
-		std::vector<char> sb(se > 0 ? (size_t)se : 0);
-		sf.seekg(0);
-		if (!sb.empty())
-			sf.read(sb.data(), sb.size());
-		if (!sf)
-			return false;
-		if (madc_pch::hash_content(sb.data(), sb.size())
-		    != stamps[i].second)
-			return false;
-	}
-	return true;
-}
-
-// Preflight the STORE side before the parse invests in stamp recording +
-// arena population: the cache dir must exist (created here) and be
-// writable. A read-only tree just compiles live every launch — the common
-// IO failure must not cost a cache-bail double parse.
-static bool project_cache_preflight(const std::string &path)
-{
-	size_t sl = path.rfind('/');
-	if (sl == std::string::npos || sl == 0)
-		return false;
-	std::string dir = path.substr(0, sl);
-	if (!madc::detail::create_directory(dir.c_str()))
-		return false;
-	std::string tmp = dir + "/.madcache_probe";
-	FILE *tf = fopen(tmp.c_str(), "wb");
-	if (!tf)
-		return false;
-	fclose(tf);
-	remove(tmp.c_str());
-	return true;
-}
-
-// Store: freeze the parsed TU (project shape, MIR cache on) into a temp
-// file beside the target and atomically rename it in, then retire the
-// path's mapping-cache entry so the thaw maps the NEW inode. False = the
-// freeze itself failed (rare — the caller bails out of caching for the
-// whole run and recompiles live, because the freeze TRANSLATED the Program
-// once and a second translate of the same Program is not a supported
-// sequence).
-static bool project_cache_store(Program *prog, const char *tu_file,
-				const std::string &path)
-{
-	unsigned long long u = (unsigned long long)time(NULL);
-	u = (u << 20) ^ (unsigned long long)(uintptr_t)&u;
-	char tsuf[32];
-	snprintf(tsuf, sizeof tsuf, ".tmp.%llx", u);
-	std::string tmp = path + tsuf;
-	if (madc_cir_freeze(prog, tu_file, tmp.c_str(), /*append=*/false,
-			    /*mir_cache=*/true, /*ledger=*/NULL,
-			    /*project_tu=*/true) != 0) {
-		remove(tmp.c_str());
-		return false;
-	}
-#ifdef _WIN32
-	remove(path.c_str());	// Win32 rename refuses an existing target
-#endif
-	if (rename(tmp.c_str(), path.c_str()) != 0) {
-		remove(tmp.c_str());
-		return false;
-	}
-	cir_forest_map_invalidate(path.c_str());
-	return true;
-}
 
 // Phase 1 of every project lane (run + native-emit): tokenize + parse EVERY
 // TU before any MIR/c2m context exists. tokenize()/parse() can throw in this
@@ -5978,68 +5774,41 @@ static bool project_cache_store(Program *prog, const char *tu_file,
 // tokenize/parse run in main() before the MIR bracket is ever entered.)
 // Programs own the arenas their modules will be built from, so the caller
 // holds `parsed` for its whole compile.
-//
-// program_cache (JIT lane only): probe each TU's cache container first — a
-// hit skips the parse entirely (the TU thaws in phase 2); a miss parses
-// with stamp recording + arena population ON and freezes the result into
-// the cache before phase 2 thaws it. Cache-miss TUs parse with the forest
-// bind OFF — the same exclusion every freeze mode applies (madc.cpp's
-// bind default), so the frozen container is self-contained; a lean TU's
-// live parse is cheap (12 ms measured, S2 findings). out_cache_bail: a
-// freeze failure after the Program was translated — the caller must retry
-// the whole run with the cache off (rare; a plain IO failure is caught by
-// the preflight and just compiles that TU live).
 static bool project_parse_all(MadcEngine &engine,
 			      const ProjectManifest &manifest,
 			      bool forest_bind,
 			      const std::string &forest_bind_path,
 			      bool class_pattern_live_capture,
-			      std::vector<CirParsedTU> &parsed,
-			      bool program_cache = false,
-			      bool *out_cache_bail = NULL)
+			      std::vector<CirParsedTU> &parsed)
 {
 	for (const ProjectTU &tu : manifest.tus) {
-		bool cache_this_tu = program_cache;
-		std::unique_ptr<Program> prog = project_configure_program(
-			engine, tu, forest_bind,
-			forest_bind_path, class_pattern_live_capture);
-		if (!prog)
+		std::unique_ptr<Program> prog = engine.create_program();
+		prog->colors = true;
+		// Each TU binds the one embedded/standalone forest (compiles
+		// BIND; only the build-time pack freezes). ensure_bind_forest()
+		// falls through to live parse when no container is present.
+		prog->registration_policy.enable_forest_bind = forest_bind;
+		prog->forest_bind_path = forest_bind_path;
+		prog->class_pattern_live_capture = class_pattern_live_capture;
+		for (const std::string &inc : tu.include_dirs)
+			prog->add_include_dir(inc);
+		for (const std::string &d : tu.defines)
+			prog->add_cli_define(d);
+		if (!tu.stdlib_option.empty()
+		 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+			fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
+				tu.file.c_str(), tu.stdlib_option.c_str(),
+				prog->stdlib_flavor_names().c_str());
 			return false;
-
-		CirParsedTU pt;
-		pt.name = tu.file;
-		if (cache_this_tu) {
-			uint64_t key = project_cache_key(tu, prog.get(),
-							 forest_bind_path);
-			pt.cache_path = project_cache_path(manifest, tu, key);
-			if (project_cache_probe(prog.get(), pt.cache_path)) {
-				DBG(std::cout << "program cache: " << tu.file
-				    << " thawing from " << pt.cache_path
-				    << std::endl);
-				pt.thawed = true;
-				pt.prog = std::move(prog);
-				parsed.push_back(std::move(pt));
-				continue;
-			}
-			cache_this_tu = project_cache_preflight(pt.cache_path);
-			if (cache_this_tu) {
-				prog->source_stamp_recording = true;
-				// The DefArena is the freeze's type-graph
-				// serialization; it must populate DURING the
-				// parse (madc_cir_freeze refuses otherwise).
-				prog->forest_arena_enabled = true;
-				// The same exclusion every freeze mode
-				// applies: a freeze PRODUCES forest state
-				// from a live parse (self-contained
-				// container); an unwritable cache dir keeps
-				// the ordinary bound compile instead.
-				prog->registration_policy.enable_forest_bind
-					= false;
-			} else
-				DBG(std::cout << "program cache: " << tu.file
-				    << ": cache dir not writable — compiling"
-				       " live" << std::endl);
 		}
+		if (!tu.std_option.empty())
+			prog->set_language_standard_option("--std=" + tu.std_option);
+		else if (is_c_source_file(tu.file))
+			// No explicit -std and a .c file → gcc's actual default C
+			// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
+			// C++ keywords stay usable as C identifiers AND glibc's
+			// feature gates (timercmp, strdup, …) match plain gcc.
+			prog->set_language_standard_option("--std=gnu17");
 
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {
@@ -6051,155 +5820,18 @@ static bool project_parse_all(MadcEngine &engine,
 			return false;
 		}
 
-		if (cache_this_tu) {
-			if (!project_cache_store(prog.get(), tu.file.c_str(),
-						 pt.cache_path)) {
-				fprintf(stderr, "%s: program cache: freeze"
-					" failed — recompiling with the cache"
-					" off\n", tu.file.c_str());
-				if (out_cache_bail)
-					*out_cache_bail = true;
-				return false;
-			}
-			DBG(std::cout << "program cache: " << tu.file
-			    << " frozen to " << pt.cache_path << std::endl);
-			pt.thawed = true;
-		}
-
+		CirParsedTU pt;
 		pt.prog = std::move(prog);
+		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
 	}
 	return true;
 }
 
-// Thaw one cached TU container into the SHARED project context: map + open,
-// recreate its dlopen closure, MIR_read its module blob (fallback:
-// materialize the frozen root and c2mir-compile it — build_frozen's own
-// fallback, shared-context flavor). NULL = thaw failed; the caller retries
-// the run with the cache off (the container VALIDATED at probe, so this is
-// corruption-rare).
-static MIR_module_t project_thaw_module(MIR_context_t ctx, c2m_ctx_t c2m,
-					const CirParsedTU &pt,
-					std::vector<CirFrozenForest *> &forests)
-{
-	const void *image = NULL;
-	size_t image_len = 0;
-	if (!cir_forest_map_image(pt.cache_path.c_str(), image, image_len))
-		return NULL;
-	CirFrozenForest *ff = new CirFrozenForest();
-	if (!ff->open(image, image_len, c2m)) {
-		delete ff;
-		return NULL;
-	}
-	forests.push_back(ff);
-	// Recreate the freezing parse's link environment (#load / -l / the
-	// flavor runtime sonames) BEFORE link, exactly as build_frozen does.
-	for (size_t i = 0; i < ff->libs().size(); ++i)
-		if (!madcdl_open_global(ff->libs()[i].c_str())) {
-			fprintf(stderr, "madc: program cache: %s needs %s: %s\n",
-				pt.name.c_str(), ff->libs()[i].c_str(),
-				madcdl_error());
-			return NULL;
-		}
-	MIR_module_t mod = NULL;
-	if (!getenv("MADC_NO_MIR_CACHE")) {
-		std::vector<uint8_t> mblob;
-		if (ff->mir_module_bytes(mblob)) {
-			if (setjmp(cir_mir_error_jmp)) {
-				// The bmir stream's internal check (or a
-				// corrupt blob) fataled — fall back to the
-				// node rebuild below.
-				cir_mir_error_armed = false;
-				cir_mir_cache_read_src = NULL;
-				mod = NULL;
-				fprintf(stderr, "%s: program cache: MIR_read"
-					" failed: %s — falling back to node"
-					" materialization\n",
-					pt.name.c_str(), cir_mir_error_text);
-			} else {
-				cir_mir_error_armed = true;
-				cir_mir_cache_read_src = &mblob;
-				cir_mir_cache_read_pos = 0;
-				MIR_read_with_func(ctx, cir_mir_cache_read_byte);
-				cir_mir_cache_read_src = NULL;
-				cir_mir_error_armed = false;
-				mod = DLIST_TAIL(MIR_module_t,
-						 *MIR_get_module_list(ctx));
-				DBG(std::cout << "program cache: " << pt.name
-				    << ": module loaded from container ("
-				    << mblob.size() << " bytes; node rebuild"
-				       " skipped)" << std::endl);
-			}
-		}
-	}
-	if (!mod) {
-		cir_node *root = ff->root();
-		if (!root || cir_report_errors(stderr, root->as_node()))
-			return NULL;
-		if (!cir_compile(ctx, c2m, root->as_node(), pt.name.c_str()))
-			return NULL;
-		mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
-	}
-	return mod;
-}
-
-// Trap prebinding for the project shape — cir_prebind_cache_traps' policy
-// generalized to N modules: a thawed module carries its TU's whole drained
-// library, so it legitimately imports names outside the executed closure;
-// bind those to loud trap stubs ONLY when no module (live or thawed)
-// defines the name, no LIVE module also imports it (an unresolved live
-// import stays the strict correctness signal it is today), and the
-// resolver cannot find it. Must run before MIR_link.
-static void cir_prebind_project_traps(MIR_context_t ctx,
-				      const std::vector<MIR_module_t> &mods,
-				      const std::vector<CirParsedTU> &parsed)
-{
-	std::set<std::string> defined;
-	for (size_t i = 0; i < mods.size(); ++i)
-		cir_collect_module_defs(ctx, mods[i], defined);
-	std::set<std::string> live_imports;
-	for (size_t i = 0; i < mods.size(); ++i) {
-		if (i < parsed.size() && parsed[i].thawed)
-			continue;
-		for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mods[i]->items); it;
-		     it = DLIST_NEXT(MIR_item_t, it))
-			if (it->item_type == MIR_import_item && it->u.import_id)
-				live_imports.insert(it->u.import_id);
-	}
-	std::vector<std::string> undef;
-	std::set<std::string> seen;
-	for (size_t i = 0; i < mods.size(); ++i) {
-		if (i >= parsed.size() || !parsed[i].thawed)
-			continue;
-		for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mods[i]->items); it;
-		     it = DLIST_NEXT(MIR_item_t, it)) {
-			if (it->item_type != MIR_import_item || !it->u.import_id)
-				continue;
-			std::string nm = it->u.import_id;
-			if (defined.count(nm) || live_imports.count(nm)
-			    || !seen.insert(nm).second)
-				continue;
-			if (cir_import_resolver(nm.c_str()))
-				continue;
-			undef.push_back(nm);
-		}
-	}
-	if (undef.empty())
-		return;
-	fprintf(stderr, "madc: program cache: %zu unresolved drained-library "
-		"import(s) bound to trap stubs (-v lists them)\n", undef.size());
-	DBG(for (const std::string &nm : undef)
-		std::cerr << "  trap-bound: " << nm << std::endl);
-	cir_bind_trap_module(ctx, undef);
-}
-
-static int madc_project_execute_impl(MadcEngine &engine,
-				     const ProjectManifest &manifest,
-				     int user_argc, char **user_argv,
-				     bool forest_bind,
-				     const std::string &forest_bind_path,
-				     bool class_pattern_live_capture,
-				     bool program_cache, bool &cache_bail)
+int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
+			 int user_argc, char **user_argv,
+			 bool forest_bind, const std::string &forest_bind_path,
+			 bool class_pattern_live_capture)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -6209,8 +5841,7 @@ static int madc_project_execute_impl(MadcEngine &engine,
 	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
 	std::vector<CirParsedTU> parsed;
 	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
-			       class_pattern_live_capture, parsed,
-			       program_cache, &cache_bail))
+			       class_pattern_live_capture, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
 
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
@@ -6238,44 +5869,19 @@ static int madc_project_execute_impl(MadcEngine &engine,
 		return -1;
 	}
 
-	// Builders must outlive MIR_gen()+run: their arenas back the modules
-	// (and thawed forests back THEIR modules the same way). Hold them
-	// (and the already-parsed Programs) for the whole call.
+	// Builders must outlive MIR_gen()+run: their arenas back the modules.
+	// Hold them (and the already-parsed Programs) for the whole call.
 	std::vector<CirBuilder *> builders;
 	std::vector<MIR_module_t> modules;
-	std::vector<CirFrozenForest *> forests;
 	auto teardown = [&]() {
 		for (CirBuilder *b : builders) delete b;
 		cir_finish(c2m);
 		MIR_gen_finish(ctx);
 		c2mir_finish(ctx);
 		MIR_finish(ctx);
-		for (CirFrozenForest *f : forests) delete f;
 	};
 
 	for (CirParsedTU &pt : parsed) {
-		if (pt.thawed) {
-			// Program cache: this TU compiles from its container
-			// (validated at probe, or written moments ago). The
-			// thaw interns through the ACTIVE pools exactly as a
-			// live build does (build_tu_module's own first step) —
-			// the TU's configured Program owns them.
-			if (pt.prog)
-				pt.prog->activate_token_pools();
-			MIR_module_t mod = project_thaw_module(ctx, c2m, pt,
-							       forests);
-			builders.push_back(NULL);
-			if (!mod) {
-				fprintf(stderr, "%s: program cache: thaw"
-					" failed — recompiling with the cache"
-					" off\n", pt.name.c_str());
-				cache_bail = true;
-				teardown();
-				return -1;
-			}
-			modules.push_back(mod);
-			continue;
-		}
 		CirBuilder *builder = NULL;
 		bool stop = false;
 		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
@@ -6299,10 +5905,6 @@ static int madc_project_execute_impl(MadcEngine &engine,
 	// Program answers for all of them.
 	if (!parsed.empty() && parsed[0].prog)
 		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
-	// Thawed modules carry their TU's drained library — trap-bind only
-	// what nothing defines and nothing live imports (no-op when every TU
-	// compiled live).
-	cir_prebind_project_traps(ctx, modules, parsed);
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
@@ -6337,18 +5939,9 @@ static int madc_project_execute_impl(MadcEngine &engine,
 	// export, MIR's redef permission made the LAST module's copy win and
 	// every other TU's initializers silently never ran.
 	for (size_t bi = 0; bi < builders.size(); bi++) {
-		if (bi >= modules.size())
+		if (!builders[bi] || bi >= modules.size())
 			continue;
-		// A live TU's builder recorded its init name exactly; a
-		// thawed TU's is RECOMPUTED (the symbol is a pure function of
-		// the TU path — cir_tu_init_symbol), and an absent item then
-		// means the frozen TU simply had no init to run.
-		std::string ini;
-		bool thawed_tu = bi < parsed.size() && parsed[bi].thawed;
-		if (builders[bi])
-			ini = builders[bi]->tu_init_name();
-		else if (thawed_tu)
-			ini = cir_tu_init_symbol(parsed[bi].name);
+		const std::string &ini = builders[bi]->tu_init_name();
 		if (ini.empty())
 			continue;
 		void *icode = nullptr;
@@ -6361,8 +5954,6 @@ static int madc_project_execute_impl(MadcEngine &engine,
 			}
 		}
 		if (!icode) {
-			if (thawed_tu)
-				continue;	// derived name; no init was frozen
 			fprintf(stderr, "madc_project_execute: %s: TU init '%s'"
 				" not found in its module\n",
 				parsed[bi].name.c_str(), ini.c_str());
@@ -6380,35 +5971,6 @@ static int madc_project_execute_impl(MadcEngine &engine,
 
 	teardown();
 	return result;
-}
-
-int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
-			 int user_argc, char **user_argv,
-			 bool forest_bind, const std::string &forest_bind_path,
-			 bool class_pattern_live_capture, bool program_cache)
-{
-	// The ONE kill switch every consumer honors (the suite runners export
-	// it so project tests keep testing the LIVE compile); the CLI's
-	// --no-program-cache flag arrives through the parameter.
-	if (getenv("MADC_NO_PROGRAM_CACHE"))
-		program_cache = false;
-	bool cache_bail = false;
-	int rc = madc_project_execute_impl(engine, manifest,
-					   user_argc, user_argv,
-					   forest_bind, forest_bind_path,
-					   class_pattern_live_capture,
-					   program_cache, cache_bail);
-	// A freeze/thaw failure mid-run poisons nothing but the cache lane —
-	// the cache is DERIVED state, so the run itself retries once with the
-	// cache off (rare: probe-validated containers, preflighted IO).
-	if (rc < 0 && cache_bail)
-		rc = madc_project_execute_impl(engine, manifest,
-					       user_argc, user_argv,
-					       forest_bind, forest_bind_path,
-					       class_pattern_live_capture,
-					       /*program_cache=*/false,
-					       cache_bail);
-	return rc;
 }
 
 // Native AOT over a whole project (task #85): the project twin of

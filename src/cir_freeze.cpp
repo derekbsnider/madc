@@ -694,31 +694,6 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.canon_order.data(),
 			f.canon_order.size() * sizeof(uint32_t), codec))
 		return false;
-	// Source stamps (program cache, S5) — OPTIONAL: only a cache freeze
-	// records any, and an ordinary container simply lacks the segment.
-	if (!f.src_stamps.empty()) {
-		std::vector<uint8_t> sb;
-		cir_forest_src_stamp_header sh;
-		sh.count = (uint32_t)f.src_stamps.size();
-		sh._pad = 0;
-		sb.insert(sb.end(), (const uint8_t *)&sh,
-			  (const uint8_t *)&sh + sizeof(sh));
-		for (size_t i = 0; i < f.src_stamps.size(); ++i) {
-			cir_forest_src_stamp_entry e;
-			e.hash = f.src_stamps[i].second;
-			e.path_bytes = (uint32_t)f.src_stamps[i].first.size();
-			e._pad = 0;
-			sb.insert(sb.end(), (const uint8_t *)&e,
-				  (const uint8_t *)&e + sizeof(e));
-		}
-		for (size_t i = 0; i < f.src_stamps.size(); ++i)
-			sb.insert(sb.end(), f.src_stamps[i].first.begin(),
-				  f.src_stamps[i].first.end());
-		if (!add_seg(w, CIR_FOREST_SEG_SRC_STAMPS,
-			     SNAP_KIND_CIR_SRC_STAMPS,
-			     sb.data(), sb.size(), codec))
-			return false;
-	}
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
 		const cir_forest_unit &fu = f.units[u];
@@ -835,26 +810,6 @@ static bool cir_macho_find_forest(const uint8_t *m, size_t sz,
 	return false;
 }
 
-// The S1 process-level mapping cache's state (shared with the invalidate
-// below — the cache assumes path -> content is stable, and the ONE writer
-// that breaks that assumption in-process, the program cache's refreeze,
-// must drop the entry after its atomic rename).
-static std::mutex cir_forest_map_mu;
-static std::map<std::string, std::pair<void *, size_t> > cir_forest_map_cache;
-
-// Program cache (S5): a carrier file at `path` was just REPLACED (mkstemp +
-// rename). Drop its mapping-cache entry so the next map sees the new inode.
-// The old mapping is deliberately left mapped — readers materialized from it
-// hold pointers into it for the process lifetime (the same immortality
-// contract every forest mapping has); only the path KEY is retired.
-void cir_forest_map_invalidate(const char *path)
-{
-	if (!path)
-		return;
-	std::lock_guard<std::mutex> lk(cir_forest_map_mu);
-	cir_forest_map_cache.erase(path);
-}
-
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 {
 	std::string selfpath;
@@ -893,20 +848,20 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 	// different base address per TU, defeating the decoded-segment
 	// cache's (blob base, offset) keys. Mutex-guarded; entries are
 	// immutable once inserted (the thread contract the decode cache
-	// states). A REWRITTEN carrier (the program cache's refreeze) must
-	// drop its entry via cir_forest_map_invalidate — the cache assumes
-	// path -> content is otherwise stable.
+	// states).
+	static std::mutex map_mu;
+	static std::map<std::string, std::pair<void *, size_t> > map_cache;
 	void *m = NULL;
 	size_t maplen = 0;
 	{
-		std::lock_guard<std::mutex> lk(cir_forest_map_mu);
+		std::lock_guard<std::mutex> lk(map_mu);
 		std::map<std::string, std::pair<void *, size_t> >::iterator mi =
-			cir_forest_map_cache.find(path);
-		if (mi == cir_forest_map_cache.end()) {
+			map_cache.find(path);
+		if (mi == map_cache.end()) {
 			m = madc::detail::map_file_readonly(path, maplen);
 			if (!m)
 				return false;
-			mi = cir_forest_map_cache.emplace(std::string(path),
+			mi = map_cache.emplace(std::string(path),
 					       std::make_pair(m, maplen)).first;
 		}
 		m = mi->second.first;
@@ -1633,55 +1588,6 @@ bool CirFrozenForest::mir_module_bytes(std::vector<uint8_t> &out) const
 	}
 	out.assign(payload.begin() + sizeof(cir_forest_mir_header),
 		   payload.end());
-	return true;
-}
-
-// Source-stamp read-back (program cache, S5). Layout: header, count entries,
-// then the path-byte blocks in entry order. Bounds-checked like the ledger —
-// a truncated segment is a loud refusal (which the cache consumer treats as
-// a MISS, never a wrong run).
-bool CirFrozenForest::src_stamps(
-	std::vector<std::pair<std::string, uint64_t> > &out) const
-{
-	out.clear();
-	const madc::dis::snapshot_segment *s =
-		_reader.find(CIR_FOREST_SEG_SRC_STAMPS);
-	if (!s || s->kind != SNAP_KIND_CIR_SRC_STAMPS
-	    || s->raw_size < sizeof(cir_forest_src_stamp_header))
-		return false;	// no stamps segment: not a cache container
-	madc::dis::decode_bytes payload;
-	if (!_reader.read_segment(*s, payload)
-	    || payload.size() < sizeof(cir_forest_src_stamp_header)) {
-		fprintf(stderr, "madc: program cache: malformed source-stamp "
-			"segment\n");
-		return false;
-	}
-	cir_forest_src_stamp_header sh;
-	memcpy(&sh, payload.data(), sizeof(sh));
-	size_t pos = sizeof(sh);
-	size_t dir_bytes = (size_t)sh.count * sizeof(cir_forest_src_stamp_entry);
-	if (payload.size() < pos + dir_bytes) {
-		fprintf(stderr, "madc: program cache: truncated source-stamp "
-			"directory (%u stamp(s))\n", sh.count);
-		return false;
-	}
-	std::vector<cir_forest_src_stamp_entry> dir(sh.count);
-	if (sh.count)
-		memcpy(dir.data(), payload.data() + pos, dir_bytes);
-	pos += dir_bytes;
-	for (const cir_forest_src_stamp_entry &e : dir) {
-		if (payload.size() - pos < e.path_bytes) {
-			fprintf(stderr, "madc: program cache: truncated "
-				"source-stamp payload\n");
-			out.clear();
-			return false;
-		}
-		out.push_back(std::make_pair(
-			std::string((const char *)payload.data() + pos,
-				    e.path_bytes),
-			e.hash));
-		pos += e.path_bytes;
-	}
 	return true;
 }
 

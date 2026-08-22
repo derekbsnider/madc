@@ -61,15 +61,9 @@ madc --project compile_commands.json -o app   # emit one native executable
 madc file.json                                # .json input implies --project
 ```
 
-Project JIT runs keep a transparent **program cache** — Python's `.pyc`,
-native: one frozen container per TU under `__madcache__/` beside the
-manifest. The first launch compiles and freezes; every later launch thaws
-the compiled modules instead of recompiling (the 11-TU adventure example:
-~0.09 s warm vs ~1.3 s cold). An edited source, changed flags/defines, or
-a rebuilt madc refreezes exactly the affected TUs — automatically, never a
-stale run. The directory is safe to delete at any time (it regrows), and
-`--no-program-cache` or `MADC_NO_PROGRAM_CACHE=1` disables the cache
-outright.
+madc never writes cache files beside your project. To skip recompiling on
+later runs, produce a real artifact explicitly: `-c` per-TU objects (madc
+runs `.o` files directly as a precompiled cache) or `-o` an AOT executable.
 
 ## Native output (AOT)
 

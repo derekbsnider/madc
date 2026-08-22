@@ -453,12 +453,6 @@ static void print_usage(const char *prog)
 "                          Remaining arguments become the program's argv\n"
 "  --freeze-run            freeze to a temp container, then re-exec this\n"
 "                          madc in a FRESH process to run it (round-trip)\n"
-"  --no-program-cache      project runs only: skip the transparent per-\n"
-"                          manifest program cache (__madcache__/ beside the\n"
-"                          manifest — one frozen TU container each; stale\n"
-"                          sources/config/binary refreeze automatically).\n"
-"                          MADC_NO_PROGRAM_CACHE=1 in the environment does\n"
-"                          the same\n"
 "  --pack-forest=<file>    with -o/-shared: the emitted native image also\n"
 "                          carries this frozen container in its self-image\n"
 "                          carrier (ELF: appended trailer; Mach-O: a\n"
@@ -629,7 +623,6 @@ int main(int argc, char **argv)
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
-    bool no_program_cache = false;        // --no-program-cache: --project skips __madcache__
     bool dump_forest = false;             // --dump-forest[=path]: print container surfaces
     const char *dump_forest_path = NULL;  // NULL = the blob appended to this executable
     bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
@@ -811,9 +804,6 @@ int main(int argc, char **argv)
             // libSystem) and is reserved for a future true full-static on
             // Linux — same promise either way today.
             madc_static_libmadc = true;
-            filearg = i + 1;
-        } else if (strcmp(argv[i], "--no-program-cache") == 0) {
-            no_program_cache = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--run-frozen") == 0) {
             run_frozen = true;
@@ -1336,8 +1326,7 @@ int main(int argc, char **argv)
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
 				      prog->registration_policy.enable_forest_bind,
 				      prog->forest_bind_path,
-				      prog->class_pattern_live_capture,
-				      /*program_cache=*/!no_program_cache);
+				      prog->class_pattern_live_capture);
 	return (rc < 0) ? 1 : rc;
     }
 

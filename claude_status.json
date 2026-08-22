@@ -12,28 +12,26 @@
   "session": 116,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "f11fb38b \u2014 ALL PUSHED",
-  "headline": "S5 LANDED (@f13938f9 + gate @4054b4de): transparent per-manifest program cache (native .pyc) \u2014 WARM 11-TU LAUNCH 92ms PACKED / 176ms DEV (was 754/1914ms), UNDER the Python port's ~0.10s, 94-log parity corpus byte-identical FROM CACHE. S2+S3 CLOSED WITHOUT CODE (@d238b289): measurement showed Leg 0 dissolved their premises (dev live-parses the lean prelude in 12ms \u2014 cheaper than binding, 16ms; S3 targets already met). THE PYTHON-CONTENDER PLAN'S LEGS ARE COMPLETE.",
-  "landed": [
-   "@d238b289 docs: S2/S3 closed under measurement (dev lean TU 12ms vs packed 16ms; dev game 1.91s = -O0 user-code compile, the plan's non-goal); S5 design recon-verified",
-   "@f13938f9 S5: per-TU frozen containers under <manifest-dir>/__madcache__/; probe (filename key: config word|-D fold|context pin|binary mtime+size|forest-bind path; SRC_STAMPS segment re-hash per disk source) -> miss parses live (forest bind OFF, freeze-mode exclusion) + freezes (project_tu shape, MIR blob) -> ALL TUs thaw into the shared ctx -> link -> inits (cir_tu_init_symbol recomputed) -> entry. Derived state: preflight, corrupt->refreeze, freeze/thaw failure -> one retry with cache off. Machinery: Program::record_source_stamp (main-file buffer + read_resolved_include from_disk out-param = the two disk choke points); CIR_FOREST_SEG_SRC_STAMPS(22) optional segment + bounds-checked reader; madc_cir_freeze project_tu param; cir_forest_map_invalidate (refreeze rename breaks S1 map cache's path->content assumption); cir_prebind_project_traps (cache-traps policy N-module); madc::detail::create_directory; --no-program-cache + MADC_NO_PROGRAM_CACHE=1 (env honored inside madc_project_execute so hosts get it)",
-   "@4054b4de gate scripts/check-program-cache.sh in fulltest: cold/warm byte-identical vs live, MIR fast path engages (-v evidence), per-TU staleness bites (negative control: edited TU MUST change output + only its container refreezes), truncated container self-heals, both kill switches clean. Runners (run_tests.sh, adventure_parity.sh) export MADC_NO_PROGRAM_CACHE=1 = project tests keep testing the LIVE compile"
+  "head": "revert commit (see git log) \u2014 push it before anything else if not already pushed",
+  "headline": "OWNER RULINGS (this session, SETTLED \u2014 three escalating messages): (1) no AUTOMATIC cache files; (2) no user-program .forest caching AT ALL, not even opt-in \u2014 'if we want madc to save something for next time, it would either be a .o file or an AOT executable'; (3) 'the only frozen forest we want is the built-in one that has all the precompiled system headers'. S5 (per-manifest program cache, @f13938f9+@4054b4de) was FULLY REVERTED the same day it landed. THE DIRECTIVE: 'work on making madc faster' = the COMPILER ITSELF (cold path / compile throughput), not caching around it. DIRECTIVE (owner, verbatim): 'what we DO want is for you to continue to optimize madc... use this examples/adventure as a test case, and I'd like you to pursue decreasing the cold JIT startup time PROPERLY.'",
+  "settled": [
+   "S5 revert = git revert of 4054b4de + f13938f9 in one commit + docs corrections (CHANGELOG S5 entry replaced with a ruling record; plan doc Leg 2 = DEAD BY OWNER RULING; usage.md: 'madc never writes cache files beside your project'; S5 design section stubbed to a git-history pointer)",
+   "the pre-existing --freeze/--freeze-run/--run-frozen machinery STAYS \u2014 it builds/tests the ONE built-in system-header pack (forest_pack.sh), never user artifacts",
+   "S1 (one mapping+decode per carrier per process, @21c57941) STAYS \u2014 it serves the built-in forest; S2/S3 closed without code (measured: dev live-parses the lean prelude in 12ms < 16ms bind cost)",
+   "reusable facts from the reverted experiment (git history @f13938f9): thaw works N-module into one shared MIR ctx; S1's map cache assumes stable path->content (any future in-process container rewriter must invalidate); tu_init_symbol derivable from TU path; warm thaw floor measured 92ms packed for 11 TUs (NOT a product surface)",
+   "a git stash exists ('opt-in flip WIP, superseded by owner ruling') \u2014 dead intermediate work, safe to drop"
   ],
   "validation": [
-   "unit tests green (container)",
-   "testproject*/testfreeze*/testfrozen*/testnsdmiglobal* 9/9",
-   "adventure parity LIVE lane 3+94 byte-identical; WARM-CACHE lane 3+94 byte-identical (one-time evidence run)",
-   "check-program-cache.sh green vs BOTH bin/madc and bin/madc-release (all six lanes)",
-   "staleness probe: edited adv_score.mad refroze ALONE (10 containers kept mtimes)",
-   "FULL JIT suite 1131/0; PACKED suite 1131/0"
+   "PRE-revert tree was fully green (JIT 1131/0, packed 1131/0, parity live+warm 3+94, units); the revert textually restores that exact pre-S5 src/ state plus S1",
+   "POST-revert: container build + testproject* subset + parity fragments = REQUIRED NEXT if not yet run (check git log / recent shell history for a post-revert validation before re-running)"
   ],
   "next": [
-   "S5 residue: warm 92ms vs <=50ms stretch (profile per-TU open/decode + MIR_read + link first)",
-   "S4 interop residue: cached thaw 0.33s = MIR_read/link of the drained module",
-   "S1 residue: unit-record segs + template payload still decode per Program (audit consumers for mutation first)",
-   "queued small fixes: --show-stats silent under project mode AND --run-frozen; --project --emit=c11 dup __madc_global_init",
-   "merge wave: non-JIT battery legs (exe/obj/headerless/warnscan) + /dupaudit scoped to forest/project subsystem; owner ceremonies (merge, release batching, promotion) = OWNER CALLS",
-   "container cleanup: tmp/madc-release.pre-s1 snapshot deletable; examples/adventure/__madcache__ regrows"
+   "1. verify the revert commit exists, is validated (build + testproject*/testfreeze* subset + adventure_parity), and is PUSHED",
+   "2. THE WORK (owner directive, verbatim above): decrease COLD JIT startup PROPERLY, test case = examples/adventure (11 TUs; cold 0.75s packed / 1.9s dev vs Python ~0.10s; user-code compile ~40ms/TU at -O2-engine dominates). Read memory/project_frontend_performance.md FULLY first (north star: madc lex+parse+cir <= g++ -fsyntax-only; banked callgrind rankings; settled principles: REMOVE C++ machinery from hot paths, flat structures, interning; -O0 must be fast per owner law). Step 0 = PROFILE (callgrind the game cold launch, both binaries) before designing.",
+   "3. step 0 of that work = PROFILE the game cold launch (callgrind bin/madc-release + per-phase --show-stats); the queued --show-stats-in-project-mode fix is the natural instrumentation first commit",
+   "4. queued small fixes: --show-stats silent under project mode AND --run-frozen; --project --emit=c11 dup __madc_global_init",
+   "5. merge wave (when owner calls it): non-JIT battery legs (exe/obj/headerless/warnscan) + /dupaudit scoped to forest/project + ns_* subsystems",
+   "6. container hygiene: rm -rf examples/adventure/__madcache__ + any tmp/progcache_gate.* leftovers"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

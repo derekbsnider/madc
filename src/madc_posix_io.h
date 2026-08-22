@@ -90,12 +90,6 @@ void glob_paths(const std::string &pattern, std::vector<std::string> &out);
 // this signature only.
 void *map_file_readonly(const char *path, std::size_t &length);
 
-// Create a directory whose PARENT already exists; true when it now exists
-// (created here or already present, either way a directory). POSIX arm =
-// mkdir 0777 (umask applies); Win32 arm = _mkdir. Single level on purpose —
-// the program cache's __madcache__ sits directly beside its manifest.
-bool create_directory(const char *path);
-
 // Create + open a fresh uniquely-named temporary file: the fd (read/write,
 // binary) is returned, its path through `path_out`; -1 on failure. `prefix`
 // names the purpose ("madc_exec_stdout") — the owner owns placement and

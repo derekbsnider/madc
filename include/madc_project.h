@@ -19,9 +19,6 @@ struct ProjectManifest {
 	std::vector<ProjectTU> tus;
 	std::string entry = "main";	// entry symbol
 	std::string output_name;	// informational in v1 (no object output)
-	std::string manifest_dir;	// the manifest's own directory (set by
-					// read_compile_commands) — the program
-					// cache's __madcache__ lives beside it
 };
 
 // Reader: parse a compile_commands.json at `path` into `out`.
@@ -42,17 +39,10 @@ class MadcEngine;
 // class_pattern_live_capture: per-TU lazy live ClassPattern capture (the
 // MADC_CLASS_PATTERN_LIVE opt-in, resolved by the CLI onto its Program and
 // forwarded here so the lever reaches every TU).
-// program_cache: the transparent per-manifest program cache (S5, madc's
-// .pyc) — one frozen container per TU under <manifest-dir>/__madcache__/;
-// a valid container thaws instead of compiling, staleness (source stamps /
-// config / binary identity) refreezes, any cache failure falls back to the
-// live compile. Default ON for the JIT lane; --no-program-cache (CLI) and
-// MADC_NO_PROGRAM_CACHE=1 (env, honored inside) turn it off.
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
 			 bool forest_bind = true,
 			 const std::string &forest_bind_path = std::string(),
-			 bool class_pattern_live_capture = false,
-			 bool program_cache = true);
+			 bool class_pattern_live_capture = false);
 
 #endif

@@ -131,14 +131,7 @@ enum : uint32_t
 	SNAP_KIND_CIR_BRANCH_DEPS      = madc::dis::SNAP_KIND_CONSUMER + 23, // per-unit: uint32 [name_id, flags, value_id, definer_unit] tuples
 	// v41: exact source bytes before preprocessing. A config-mismatched
 	// consumer may re-tokenize these without binding producer semantic state.
-	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24,
-	// --- Source stamps (project program cache, S5): (path, content hash)
-	// for every DISK source file the producer's tokenize consumed — the TU
-	// and its disk-resolved includes. The cache thaw re-hashes each listed
-	// file; any mismatch or unreadable file is a MISS (stale = refreeze,
-	// never a wrong run). OPTIONAL segment: absent = not a cache container
-	// (a consumer that REQUIRES stamps treats absence as a miss). ---
-	SNAP_KIND_CIR_SRC_STAMPS       = madc::dis::SNAP_KIND_CONSUMER + 25
+	SNAP_KIND_CIR_UNIT_SOURCE      = madc::dis::SNAP_KIND_CONSUMER + 24
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -602,7 +595,6 @@ enum : uint32_t
 	CIR_FOREST_SEG_ARENA_TOKBYTES   = 19,	// v23: DefArena::tokbytes (param-default token runs)
 	CIR_FOREST_SEG_MIR_MODULE       = 20,	// MIR module cache (optional; absent = no cache)
 	CIR_FOREST_SEG_LEDGER           = 21,	// S5 AOT ledger (optional; absent = no ledger)
-	CIR_FOREST_SEG_SRC_STAMPS       = 22,	// program-cache source stamps (optional; absent = not a cache container)
 	CIR_FOREST_SEG_UNIT_BASE     = 24,
 	CIR_FOREST_SEGS_PER_UNIT     = 10	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -667,26 +659,6 @@ struct cir_forest_ledger_entry
 	uint32_t name_bytes;	// module name (the ledger source path)
 	uint32_t sym_bytes;	// NUL-separated defined-symbol names
 	uint32_t mir_bytes;	// MIR_write_module bytes
-	uint32_t _pad;
-};
-
-// --- Source stamps (project program cache, S5) ---------------------------
-// (path, content hash) for every DISK source file the producer's tokenize
-// consumed. Layout: header, then count entries (wire PODs below, in record
-// order), then the path-byte blocks concatenated in the same order (no
-// NULs). OPTIONAL segment — absent = not a cache container — so no
-// format-version bump; a consumer that REQUIRES stamps treats absence as a
-// cache miss.
-struct cir_forest_src_stamp_header
-{
-	uint32_t count;
-	uint32_t _pad;
-};
-
-struct cir_forest_src_stamp_entry
-{
-	uint64_t hash;		// madc_pch::hash_content of the file bytes
-	uint32_t path_bytes;	// length of this entry's path block
 	uint32_t _pad;
 };
 
@@ -1012,9 +984,6 @@ struct cir_frozen_forest
 	// provenance (decl_file), which differs when a header prototype meets a
 	// root-file definition. Falls back to the unit name when absent.
 	std::map<std::string, const char *> funcdef_files;
-	// --- Source stamps (program cache, S5): copied from the producing
-	// Program's source_stamps by madc_cir_freeze; empty = no segment. ---
-	std::vector<std::pair<std::string, uint64_t> > src_stamps;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -1072,12 +1041,6 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 // blob placement. The mapping is never unmapped (thawed segments read from
 // it for the process lifetime). False = no file / no blob.
 bool cir_forest_map_image(const char *path, const void *&image, size_t &len);
-
-// Program cache (S5): drop the mapping-cache entry for a carrier file that
-// was just atomically REPLACED (refreeze), so the next map sees the new
-// inode. The old mapping stays mapped (process-lifetime immortality
-// contract); only the path key is retired.
-void cir_forest_map_invalidate(const char *path);
 
 class CirFrozenForest;
 
@@ -1567,13 +1530,6 @@ public:
 	// deliberately NOT gated on the producer-config match — the ledger is
 	// madc's own runtime, not dialect-dependent parse state.
 	bool ledger_modules(std::vector<cir_ledger_module> &out) const;
-	// Source stamps (program cache, S5): the (path, content hash) list the
-	// producer's tokenize recorded for every DISK source file it consumed.
-	// False = no stamps segment (an ordinary non-cache container) or a
-	// malformed one — a consumer that requires stamps treats false as a
-	// cache MISS. Reader-only; works after open_header (reads the segment
-	// directly, no pool or unit state).
-	bool src_stamps(std::vector<std::pair<std::string, uint64_t> > &out) const;
 	// B3 (v18): reconstruct the type graph from the dumped DefArena (idempotent;
 	// lazy — allocates on the first call). Reads defrec/memberrec/baserec/
 	// methodrec/anonrec/paramrec, applying at LOAD time the same selection rules
