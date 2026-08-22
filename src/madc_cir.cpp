@@ -5803,8 +5803,13 @@ static bool project_parse_all(MadcEngine &engine,
 			      bool class_pattern_live_capture,
 			      std::vector<CirParsedTU> &parsed)
 {
+	// R4-lite: sibling TUs of one project share ONE compile group — one
+	// spelling universe + one type-id universe (the ODR shape). The group
+	// object is local; the Programs hold shared_ptr copies, so the pools
+	// outlive it for as long as any TU Program does.
+	MadcCompileGroup group;
 	for (const ProjectTU &tu : manifest.tus) {
-		std::unique_ptr<Program> prog = engine.create_program();
+		std::unique_ptr<Program> prog = engine.create_program(&group);
 		prog->colors = true;
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()

@@ -83,25 +83,94 @@ Key structural facts found:
 - The per-forest `open` (~2ms/TU × 11) is intern-spine rebind + name
   indexes over already-cached bytes — per-instance state.
 
-## NEXT — R4-lite: one bound forest surface per process (design owed)
+## NEXT — R4-lite: one bound forest surface per multi-TU compile (DESIGN LOCKED 2026-08-22)
 
 The remaining forest cost is per-TU repetition over one immutable blob.
-The full fix is sharing the BOUND SURFACE, which requires:
+Coupling audit (session 118, code-verified):
 
-1. **Shared string pool across sibling TU Programs** (project mode):
-   interning is content-addressed, so a shared pool is semantically
-   clean; `Program::strpool` is a by-value member today — needs a
-   pointer/ownership refactor with lifetime owned above the TU Programs
-   (engine or the project driver). This also makes `CirFrozenForest`
-   sharable (its `_live_ids` remap and materialized handles are
-   pool-bound).
-2. **Shared CirFrozenForest instance** keyed (blob, config, pool):
-   kills per-TU open/materialize entirely (TUs 2..N).
-3. **register stays per-Program** (symbol tables) until the full R4
-   (shared parse surface) — but is proportional to the closure, small.
-4. Thread contract must be STATED (thread-safety.md): today the project
-   lane is sequential; the shared objects follow the S1 contract
-   (immutable-after-build or mutex-guarded).
+- `CirFrozenForest::live_str_id` memoizes frozen→live ids into the
+  AMBIENT `TokenBase::_active_strpool` — a shared instance is only
+  valid across Programs that share ONE string pool.
+- `materialize_from_arena` (cir_freeze.cpp:1979) references ZERO
+  Program state — its products (DataDef/FuncDef/Variable in
+  `_mat_storage`/`_defs_by_tid`/`_restored*`) are Program-independent.
+- BUT `dd->type_id` is a memo stamped ON the DataDef
+  (`madc_type_id_for`, parser.cpp:17010) pointing INTO the stamping
+  Program's `project_types` id_table — shared DataDefs therefore force
+  a shared `project_types` too (semantically right: one type-id
+  universe per program, the ODR shape).
+- Node segments materialize into `_c2m`; the project lane already uses
+  ONE c2m for ALL TUs (madc_cir.cpp:5898, created after all parsing) —
+  the set_c2m constraint is satisfied by construction.
+- The demand filter (`set_materialize_filter`) is first-caller-wins on
+  the memoized materialization; sibling TUs have DIFFERENT closures
+  (adventure: stdio ×4, stddef ×1) — a shared instance requires
+  monotone filter-union + INCREMENTAL materialization.
+- The closure is complete only at each TU's parse start (includes
+  discovered during its lex) — sharing keyed by closure is impossible
+  at open time; incremental is the only honest shape.
+- `intern_keyed_map._slot` = 4 bytes × max-key-id — shared-pool slot
+  growth is tens of KB per map at adventure scale (measure, non-issue).
+
+### The design: `MadcCompileGroup`
+
+A group object owning the substrate sibling TU Programs share, created
+by the project lane (`project_parse_all`), passed to
+`MadcEngine::create_program` per TU. NOT engine-scoped: a long-lived
+embedding engine creating many independent Programs must not
+accumulate one ever-growing pool. Default (no group) = private pools =
+today's behavior; single-TU lanes and unit tests untouched.
+
+- `std::shared_ptr<madc::dis::intern_table> strpool`
+- `std::shared_ptr<madc::dis::id_table<DataDef>> project_types`
+- `std::shared_ptr<CirFrozenForest> bind_forest` + the probe key it
+  was opened under (config word + defines hash) — adopt only on exact
+  match, else private probe (loud gate, never silent divergence)
+- declidx verdict cache: closure-set → (declared_bound,
+  declared_system) verdict maps (repeat closures skip the all-units
+  decl-index sweep)
+
+`Program::strpool` / `Program::project_types` become reference members
+backed by shared_ptr owners injected at construction (default ctor arg
+= make own). Forest ownership moves from raw `delete bind_forest` in
+~Program to shared_ptr holders (kills the alias-aware delete dance for
+ledger/source too).
+
+### Slices (each its own commit, targeted tests per change)
+
+1. **S1 shared pools:** Program ctor injection + MadcCompileGroup +
+   project lane wiring. No behavior change anywhere (group unused
+   until S3); project lane gains cross-TU spelling dedup.
+2. **S2 incremental materialize:** persist the admitted-tid set
+   (`_mat_admitted`); on a LATER, WIDER filter (union of verdict maps,
+   monotone), re-run the pass sequence gated on newly-admitted tids
+   (aggregate alloc/fill) and on verdict-flip (name-keyed surface
+   loops: typedef/enum/func/global/template/nslink/defbody/defaults —
+   admitted-now && denied-before, evaluated against old + new maps).
+   Per-TU instances see one filter, one generation — behavior
+   preserved; the suite is the oracle.
+3. **S3 shared forest instance:** ensure_bind_forest consults the
+   group first (config-key match), parks its probe result for
+   siblings; set_materialize_filter on a materialized shared forest
+   unions + increments (S2); declidx verdict cache keyed by
+   closure-set. Register stays per-Program (R4-full territory).
+4. **S4 measure:** packed/dev adventure `--show-stats`; expect the
+   79ms forest line → ~30–45ms (opens ×10 ≈ 20ms, materialize ×3 ≈
+   21ms, declidx ×3 ≈ 9ms reclaimed; register 8ms × binding TUs
+   stays). Record honestly either way.
+
+### Thread contract (thread-safety.md — STATED)
+
+`MadcCompileGroup` and everything it shares (intern_table, id_table,
+CirFrozenForest instance) follow the C++ standard-library convention:
+concurrent READS are safe once the compile completes; MUTATION IS
+SINGLE-THREADED. The project lane compiles TUs sequentially on one
+thread — the group adds no locks. Parallel TU compilation (the F2
+programs-use-cores arc) must synchronize the group's mutation points
+before going wide: `intern_table::intern`, `id_table::add`
+(`madc_type_id_for`), forest bind/unit-load/materialize entry, and the
+group's own maps. The existing PROCESS-level caches (S1 decoded
+segments, recordability fixpoint) keep their mutexes — unchanged.
 
 After R4-lite the projected packed floor is ~130–150ms; the rest is
 front-end throughput (lex/parse/cir per-TU machinery — the

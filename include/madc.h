@@ -2069,6 +2069,29 @@ public:
     }
 };
 
+// R4-lite (cold-startup arc, docs/plans/2026-08-22-cold-jit-startup.md): the
+// substrate the sibling TU Programs of ONE multi-TU compile share. The project
+// driver creates one and hands it to MadcEngine::create_program per TU; a
+// Program built without a group owns private instances (the single-TU shape,
+// unchanged). Interning is content-addressed and the project type-id table is
+// append-only, so one spelling universe + one type-id universe per program is
+// the ODR shape, not a cache.
+// Thread contract (thread-safety.md): C++ stdlib convention — concurrent reads
+// are safe once the compile completes; MUTATION IS SINGLE-THREADED (the
+// project lane compiles TUs sequentially on one thread). Parallel TU
+// compilation (F2) must synchronize intern()/add() and this struct's members
+// before going wide.
+struct MadcCompileGroup
+{
+    std::shared_ptr<madc::dis::intern_table> strpool;
+    std::shared_ptr<madc::dis::id_table<DataDef> > project_types;
+    MadcCompileGroup()
+	: strpool(std::make_shared<madc::dis::intern_table>()),
+	  project_types(std::make_shared<madc::dis::id_table<DataDef> >(
+			MADC_TYPEID_PROJECT_BASE))
+    {}
+};
+
 // program class, keep things somewhat contained
 class Program
 {
@@ -2382,7 +2405,12 @@ public:
     // pointers not values — DataDef is polymorphic and ids survive growth);
     // type_id_for/type_from_id own the id policy (the dd->type_id memo + the
     // primitive/system/project segment dispatch).
-    madc::dis::id_table<DataDef> project_types{MADC_TYPEID_PROJECT_BASE};
+    // R4-lite: ownership sits in the shared_ptr (a MadcCompileGroup shares ONE
+    // table across sibling TU Programs — dd->type_id memos stamped by one TU
+    // must resolve in every sibling); `project_types` stays the only access
+    // path. Both are set in the ctor init list (group or private).
+    std::shared_ptr<madc::dis::id_table<DataDef> > _project_types_owner;
+    madc::dis::id_table<DataDef> &project_types;
     uint32_t type_id_for(DataDef *dd);	// THE lazy-stamp chokepoint
     DataDef *type_from_id(uint32_t id);	// segment-dispatching reverse lookup
     // B3 arena-native DataDef storage (docs/plans/2026-07-06-forest-b3-record-layout-DESIGN.md).
@@ -4284,7 +4312,12 @@ public:
     // include/stringpool.h and docs/plans/2026-06-23-arena-interning-HANDOFF.md).
     // P0 step 2: getToken() interns each ttIdentifier spelling -> uint32 id on the
     // token. Steps 3/4 re-key the hot string maps and drop the per-token string.
-    madc::dis::intern_table strpool;
+    // R4-lite: ownership sits in the shared_ptr (a MadcCompileGroup shares ONE
+    // pool across sibling TU Programs — the frozen forest's live_str_id remap
+    // and every cross-TU spelling id are pool-bound); `strpool` stays the only
+    // access path. Both are set in the ctor init list (group or private).
+    std::shared_ptr<madc::dis::intern_table> _strpool_owner;
+    madc::dis::intern_table &strpool;
     uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
     // Wide-value pool (P0 slice 2): >64-bit integer values live here behind a
@@ -4525,8 +4558,10 @@ public:
     std::vector<AotDataRange> aot_layout_ranges;
     fVOIDFUNC root_fn;
 
-    Program();
-    explicit Program(MadcEngine *eng);
+    // R4-lite: a non-null group makes this Program a SIBLING — it adopts the
+    // group's shared strpool/project_types instead of owning private ones.
+    explicit Program(MadcCompileGroup *group = NULL);
+    explicit Program(MadcEngine *eng, MadcCompileGroup *group = NULL);
     // Releases the process-ambient token pools (TokenBase::_active_strpool /
     // _active_valpool, madc_active_project_types) when they point at THIS
     // Program's members — a token constructed after its owning Program dies
@@ -6196,7 +6231,9 @@ public:
     void reset_standard_streams();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
-    std::unique_ptr<Program> create_program();
+    // R4-lite: a non-null group makes the Program a sibling TU of one
+    // multi-TU compile (shared strpool/project_types — see MadcCompileGroup).
+    std::unique_ptr<Program> create_program(MadcCompileGroup *group = NULL);
     void bind_log_streams();
     static void unbind_log_streams();
 };

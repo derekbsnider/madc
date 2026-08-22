@@ -19436,7 +19436,7 @@ int MadcTeeBuf::sync()
     return (primary_sync == 0 && secondary_sync == 0) ? 0 : -1;
 }
 
-Program::Program()
+Program::Program(MadcCompileGroup *group)
     : _braces(0),
       _prv_token(NULL),
       _cur_token(NULL),
@@ -19446,6 +19446,10 @@ Program::Program()
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      _project_types_owner(group ? group->project_types
+			   : std::make_shared<madc::dis::id_table<DataDef> >(
+			     MADC_TYPEID_PROJECT_BASE)),
+      project_types(*_project_types_owner),
       instantiating_dependent_surface(false),
       parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
@@ -19458,6 +19462,9 @@ Program::Program()
       _include_iostream(false),
       _include_stdio(false),
       _include_string(false),
+      _strpool_owner(group ? group->strpool
+		     : std::make_shared<madc::dis::intern_table>()),
+      strpool(*_strpool_owner),
       colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
@@ -19470,7 +19477,7 @@ Program::Program()
 {
 }
 
-Program::Program(MadcEngine *eng)
+Program::Program(MadcEngine *eng, MadcCompileGroup *group)
     : _braces(0),
       _prv_token(NULL),
       _cur_token(NULL),
@@ -19480,6 +19487,10 @@ Program::Program(MadcEngine *eng)
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      _project_types_owner(group ? group->project_types
+			   : std::make_shared<madc::dis::id_table<DataDef> >(
+			     MADC_TYPEID_PROJECT_BASE)),
+      project_types(*_project_types_owner),
       instantiating_dependent_surface(false),
       parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
@@ -19492,6 +19503,9 @@ Program::Program(MadcEngine *eng)
       _include_iostream(false),
       _include_stdio(false),
       _include_string(false),
+      _strpool_owner(group ? group->strpool
+		     : std::make_shared<madc::dis::intern_table>()),
+      strpool(*_strpool_owner),
       colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
@@ -20275,10 +20289,10 @@ void MadcEngine::configure_program(Program &pgm) const
     pgm.namespace_registry = namespace_registry;
 }
 
-std::unique_ptr<Program> MadcEngine::create_program()
+std::unique_ptr<Program> MadcEngine::create_program(MadcCompileGroup *group)
 {
     populate_default_registries();
-    std::unique_ptr<Program> pgm(new Program());
+    std::unique_ptr<Program> pgm(new Program(group));
     configure_program(*pgm);
     return pgm;
 }
