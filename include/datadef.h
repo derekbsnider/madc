@@ -80,6 +80,21 @@ DataDef *dd_platform_long();
 DataDef *dd_platform_ulong();
 DataDef *dd_platform_wchar();
 
+// Kind-accessor forward declarations (DataDef::as_*() below). FuncDef and its
+// override live in madc.h.
+class DataDefSTRUCT;
+class DataDefCLASS;
+class DataDefCOMPLEX;
+class DataDefPTR;
+class DataDefREF;
+class DataDefCONST;
+class DataDefCArray;
+class DataDefENUM;
+class DataDefTemplateParam;
+class DataDefFPTR;
+class DataDefSIMD;
+class FuncDef;
+
 // Resolved absolute path of the running executable, empty when unresolvable.
 // The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
 // _NSGetExecutablePath on macOS.
@@ -306,12 +321,45 @@ public:
     // scripts/check-no-std-hardcoding.sh gates any second copy.
     bool is_std_initializer_list() const;
     // This type with any top-level `const` peeled off (a DataDefCONST wrapper
-    // returns its base_type; everything else returns itself). Defined in
-    // parser.cpp — DataDefCONST is not complete at this point in the header.
-    // The CIR builder's unqualified_type() helpers delegate here, so the rule
-    // has one home.
-    DataDef *unqualified();
-    const DataDef *unqualified() const;
+    // returns its base_type; everything else returns itself). Virtual so the
+    // wrapper class owns the peel — DataDefCONST overrides below. The CIR
+    // builder's unqualified_type() helpers delegate here, so the rule has one
+    // home.
+    virtual DataDef *unqualified() { return this; }
+    virtual const DataDef *unqualified() const { return this; }
+    // Kind accessors — the O(1) replacement for dynamic_cast<DataDefX *> on
+    // hot type-dispatch paths (the -O2 launch profile put ~9% of a cold start
+    // in libstdc++ __dynamic_cast). Each subclass overrides its own accessor
+    // with `return this;`, so derived classes INHERIT the override and the
+    // closure matches dynamic_cast semantics exactly (DataDefREF answers
+    // as_pointer_dd() through DataDefPTR the way dynamic_cast<DataDefPTR *>
+    // succeeds on it). Callers must null-check the RECEIVER; dynamic_cast
+    // accepted a null operand, a virtual call does not.
+    virtual DataDefSTRUCT        *as_struct_dd()   { return NULL; }
+    virtual DataDefCLASS         *as_class_dd()    { return NULL; }
+    virtual DataDefCOMPLEX       *as_complex_dd()  { return NULL; }
+    virtual DataDefPTR           *as_pointer_dd()  { return NULL; }
+    virtual DataDefREF           *as_reference_dd(){ return NULL; }
+    virtual DataDefCONST         *as_const_dd()    { return NULL; }
+    virtual DataDefCArray        *as_carray_dd()   { return NULL; }
+    virtual DataDefENUM          *as_enum_dd()     { return NULL; }
+    virtual DataDefTemplateParam *as_template_param_dd() { return NULL; }
+    virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
+    virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
+    virtual FuncDef              *as_funcdef_dd()  { return NULL; }
+    // Const twins (non-virtual; funnel through the virtuals above).
+    const DataDefSTRUCT  *as_struct_dd()  const { return const_cast<DataDef *>(this)->as_struct_dd(); }
+    const DataDefCLASS   *as_class_dd()   const { return const_cast<DataDef *>(this)->as_class_dd(); }
+    const DataDefCOMPLEX *as_complex_dd() const { return const_cast<DataDef *>(this)->as_complex_dd(); }
+    const DataDefPTR     *as_pointer_dd() const { return const_cast<DataDef *>(this)->as_pointer_dd(); }
+    const DataDefREF     *as_reference_dd() const { return const_cast<DataDef *>(this)->as_reference_dd(); }
+    const DataDefCONST   *as_const_dd()   const { return const_cast<DataDef *>(this)->as_const_dd(); }
+    const DataDefCArray  *as_carray_dd()  const { return const_cast<DataDef *>(this)->as_carray_dd(); }
+    const DataDefENUM    *as_enum_dd()    const { return const_cast<DataDef *>(this)->as_enum_dd(); }
+    const DataDefTemplateParam *as_template_param_dd() const { return const_cast<DataDef *>(this)->as_template_param_dd(); }
+    const DataDefFPTR    *as_fptr_dd()    const { return const_cast<DataDef *>(this)->as_fptr_dd(); }
+    const DataDefSIMD    *as_simd_dd()    const { return const_cast<DataDef *>(this)->as_simd_dd(); }
+    const FuncDef        *as_funcdef_dd() const { return const_cast<DataDef *>(this)->as_funcdef_dd(); }
     // Itanium desugaring for a PLAIN SCALAR (a typedef alias dd like
     // std::streamoff, or a builtin scalar dd): the builtin C spelling for
     // its DataType ("long", "unsigned int", ...), or "" when this dd is not
@@ -1214,6 +1262,7 @@ public:
     {
 	return m_bitfield(member) != NULL;
     }
+    virtual DataDefSTRUCT *as_struct_dd() { return this; }
 };
 
 class DataDefCLASS;
@@ -1452,6 +1501,7 @@ public:
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
+    virtual DataDefCLASS *as_class_dd() { return this; }
 };
 
 typedef DataDefCLASS DDClass;
@@ -1535,6 +1585,7 @@ public:
     // (docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md).
     virtual RefType reftype() const { return RefType::rtPointer; }
     virtual DataType rawtype() const { return base_type ? base_type->rawtype() : DataType::dtVOID; }
+    virtual DataDefPTR *as_pointer_dd() { return this; }
 };
 
 // LPSTR is `char *`. It IS-A DataDefPTR(ddCHAR) — a structural pointer with a
@@ -1568,6 +1619,7 @@ public:
     // referred type, so classify as that (never DataDefPTR's pointer class).
     virtual int gcc_type_class() const
     { return base_type ? base_type->gcc_type_class() : -1; }
+    virtual DataDefREF *as_reference_dd() { return this; }
 };
 
 // `void&` — the reference-slot placeholder for MADC_TYPEID_VOID_REF. IS-A
@@ -1610,6 +1662,9 @@ public:
     virtual bool is_unsigned() const { return base_type->is_unsigned(); }
     virtual size_t alignment() const { return base_type->alignment(); }
     virtual int gcc_type_class() const { return base_type->gcc_type_class(); }
+    virtual DataDefCONST *as_const_dd() { return this; }
+    virtual DataDef *unqualified() { return base_type ? base_type : this; }
+    virtual const DataDef *unqualified() const { return base_type ? base_type : this; }
 };
 
 // is_cstr() — declared in DataDef above; defined here where DataDefPTR /
@@ -1682,6 +1737,7 @@ public:
 		return true;
 	return false;
     }
+    virtual DataDefCArray *as_carray_dd() { return this; }
 };
 
 class DataDefENUM : public DataDef
@@ -1735,6 +1791,7 @@ public:
 	    _type = (uint32_t)u->rawtype();
 	}
     }
+    virtual DataDefENUM *as_enum_dd() { return this; }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT
@@ -1791,6 +1848,7 @@ public:
 	std::string member = imag_part ? "__im" : "__re";
 	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
     }
+    virtual DataDefCOMPLEX *as_complex_dd() { return this; }
 };
 
 // The script `array` / `madc::array` builtin IS the public `madc::value`
@@ -1845,6 +1903,7 @@ public:
 	if ( size >= 8 ) return 8;
 	return size ? size : 1;
     }
+    virtual DataDefSIMD *as_simd_dd() { return this; }
 };
 
 extern DataDefVOID ddVOID;
@@ -1909,6 +1968,7 @@ public:
 	: DataDef(nm, 0, DataType::dtVOID), param_index(idx) {}
     virtual BaseType basetype() const { return BaseType::btTemplateParam; }
     virtual bool is_template_param() const { return true; }
+    virtual DataDefTemplateParam *as_template_param_dd() { return this; }
 };
 
 // Type table identity layer — slot <-> global-primitive mapping (the single
@@ -1947,6 +2007,7 @@ public:
     virtual bool is_function() const { return true; }
     virtual bool is_numeric()  const { return true; }
     virtual bool is_integer()  const { return true; }
+    virtual DataDefFPTR *as_fptr_dd() { return this; }
 };
 
 #endif // __DATADEF_H

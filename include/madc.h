@@ -509,6 +509,7 @@ public:
     // definitions [ELF-completion S4].
     bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
     bool is_multi_return() const { return return_types.size() > 1; }
+    virtual FuncDef *as_funcdef_dd() { return this; }
 };
 
 // Generic overload-resolution ranking — NO type is special-cased. Ranks binding
@@ -662,6 +663,7 @@ public:
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
     Variable *findVariableLocal(const madc::dis::intern_table &sp, const std::string &id);
+    virtual TokenCpnd *as_cpnd_tok() { return this; }
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd
@@ -683,6 +685,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
+    virtual TokenFunc *as_func_tok() { return this; }
 };
 
 class TokenDecl: public TokenVar
@@ -723,6 +726,7 @@ public:
     bool block_extern_redecl = false;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
+    virtual TokenDecl *as_decl_tok() { return this; }
 };
 
 // AST node for a typedef declaration. Returned by TokenTYPEDEF::parse()
@@ -736,6 +740,7 @@ public:
     DataDef *target_type;    // what the typedef resolves to
     TokenTypedefDecl(const std::string &a, DataDef *t) : alias(a), target_type(t) {}
     virtual TokenType type() const { return TokenType::ttTypedefDecl; }
+    virtual TokenTypedefDecl *as_typedef_decl_tok() { return this; }
 };
 
 // AST node for a standalone struct/union definition (no variable
@@ -771,6 +776,7 @@ public:
     DataDef *array_elem_dd = nullptr;
     TokenStructLit() {}
     virtual TokenType type() const { return TokenType::ttStructLit; }
+    virtual TokenStructLit *as_struct_lit_tok() { return this; }
 };
 
 // Tree-1 marker for a C++ pack expansion pattern (`expr...`) captured during a
@@ -797,6 +803,7 @@ public:
 	t->column = column;
 	return t;
     }
+    virtual TokenPackExpansion *as_pack_expansion_tok() { return this; }
 };
 
 class TokenCallFunc: public TokenVar
@@ -834,7 +841,7 @@ public:
     virtual DataDef *returns()  const {
 	if ( return_override )
 	    return return_override;
-	if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(var.type) )
+	if ( DataDefFPTR *fptr = var.type ? var.type->as_fptr_dd() : NULL )
 	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
 	return &((FuncDef *)var.type)->returns;
     }
@@ -860,6 +867,7 @@ public:
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
     virtual size_t argc() const override { return parameters.size(); }
     virtual TokenType type() const override { return TokenType::ttCallFunc; }
+    virtual TokenCallFunc *as_callfunc_tok() { return this; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -915,6 +923,7 @@ public:
     {
 	return bitfield_info() != NULL;
     }
+    virtual TokenMember *as_member_tok() { return this; }
 };
 
 // & address-of operator — emits LEA to get address of a variable
@@ -926,6 +935,7 @@ public:
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual TokenAddrOf *as_addr_of_tok() { return this; }
 };
 
 // &(expr) address-of operator for member/subscript/deref lvalues
@@ -937,6 +947,7 @@ public:
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual TokenAddrExpr *as_addr_expr_tok() { return this; }
 };
 
 // GNU computed-goto label address: `&&label`
@@ -971,6 +982,7 @@ public:
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDeref *as_deref_tok() { return this; }
 };
 
 // *(expr) dereference for cast/member/subscript pointer expressions
@@ -982,6 +994,7 @@ public:
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDerefExpr *as_deref_expr_tok() { return this; }
 };
 
 class TokenComplexPart: public TokenBase
@@ -1020,6 +1033,7 @@ public:
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDerefStep *as_deref_step_tok() { return this; }
 };
 
 // (TYPE *) cast expression — type annotation, no codegen for pointer casts
@@ -1031,6 +1045,7 @@ public:
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
+    virtual TokenCast *as_cast_tok() { return this; }
 };
 
 class TokenCallMethod: public TokenMember
@@ -1045,6 +1060,7 @@ public:
     // them would veto the very overload that supplied them).
     // (size_t)-1 = no defaults appended; every argument is user-written.
     size_t user_argc = (size_t)-1;
+    virtual TokenCallMethod *as_callmethod_tok() { return this; }
 };
 
 // subscript access: container[index]
@@ -1106,6 +1122,7 @@ public:
     // fixed-array indexing; that path is gone, so return the stored
     // element type directly. The CIR backend derives types independently.
     virtual DataDef *datadef() const override { return _datatype; }
+    virtual TokenSubscript *as_subscript_tok() { return this; }
 };
 
 class TokenSubscriptExpr: public TokenBase
@@ -1129,6 +1146,7 @@ public:
     // emit_ir_value which loads through Mem and yields a Gp holding
     // the value — chaining through that returned a numeric value as
     // if it were an address and crashed at NULL/garbage.
+    virtual TokenSubscriptExpr *as_subscript_expr_tok() { return this; }
 };
 
 class TokenProgram: public TokenCpnd

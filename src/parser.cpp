@@ -1062,7 +1062,7 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
 {
     int stars = 0;
-    bool fnptr_base = (dynamic_cast<DataDefFPTR *>(dd) != NULL);
+    bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
@@ -1217,7 +1217,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 
 static bool is_gnu_asm_identifier_token(TokenBase *tb)
 {
-    TokenIdent *ident = dynamic_cast<TokenIdent *>(tb);
+    TokenIdent *ident = (tb ? tb->as_ident_tok() : NULL);
     if ( !ident )
 	return false;
     std::string name = ident->spelling();
@@ -16343,7 +16343,7 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     // (DataDefFPTR, size 8) are a pointer slot and DO need allocation.
     if ( alloc && count == 1
       && ((type->basetype() != BaseType::btFunct && type->size > 0)
-	|| dynamic_cast<DataDefFPTR *>(type) != NULL) )
+	|| (type ? type->as_fptr_dd() : NULL) != NULL) )
     {
 	// Scalar slot: slot_size, not d.size — ddINT slots are read and
 	// written 64-bit (see Variable::slot_size).
@@ -16425,7 +16425,7 @@ static Variable *find_method_by_callable_arity(DataDefCLASS *cls,
 	Variable *mv = *vvi;
 	if ( !mv )
 	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	if ( !fd )
 	    continue;
 	const std::string &disp = fd->method_display_name.empty()
@@ -16599,7 +16599,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	Variable *mv = *vvi;
 	if ( !mv )
 	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	if ( !fd )
 	    continue;
 	// Methods are keyed by their MANGLED name (`Box__take`, `Box__take__o2`);
@@ -17217,15 +17217,15 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
     if ( !operand )
 	return NULL;
     DataDef *dd = operand->datadef();
-    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd) )
+    if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
 	return c;
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
-	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
-    TokenVar *tv = dynamic_cast<TokenVar *>(operand);
+	if ( DataDefPTR *rp = (dd ? dd->as_pointer_dd() : NULL) )
+	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
     if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
-	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
     return NULL;
 }
 
@@ -17263,17 +17263,17 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 DataDef *Program::array_decay_pointer(TokenBase *operand)
 {
     if ( !operand ) return NULL;
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(operand) )
+    if ( TokenMember *tm = (operand ? operand->as_member_tok() : NULL) )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	    return getPointerType(tm->var.type);
     }
-    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(operand) )
+    else if ( TokenVar *tv = (operand ? operand->as_var_tok() : NULL) )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	    return getPointerType(tv->var.type);
     }
-    else if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(operand) )
+    else if ( TokenSubscript *ts = (operand ? operand->as_subscript_tok() : NULL) )
     {
 	// A PARTIAL subscript of a multi-dimensional fixed array denotes the
 	// row sub-array, which decays to a pointer to the element type in a
@@ -17284,7 +17284,7 @@ DataDef *Program::array_decay_pointer(TokenBase *operand)
 	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
 	    return getPointerType(ts->object.type);
     }
-    if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(operand->datadef()) )
+    if ( DataDefCArray *ca = operand->datadef()->as_carray_dd() )
 	if ( ca->element_type )
 	    return getPointerType(ca->element_type);
     return NULL;
@@ -19058,18 +19058,6 @@ void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
 	if ( bs.is_virtual && seen.insert(bs.base).second )
 	    out.push_back(bs.base);
     }
-}
-
-DataDef *DataDef::unqualified()
-{
-    DataDefCONST *cd = dynamic_cast<DataDefCONST *>(this);
-    return cd && cd->base_type ? cd->base_type : this;
-}
-
-const DataDef *DataDef::unqualified() const
-{
-    const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(this);
-    return cd && cd->base_type ? cd->base_type : this;
 }
 
 void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) const
@@ -25225,7 +25213,7 @@ bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
 	for ( size_t i = 0; i < oi->second.size(); ++i )
 	{
 	    FuncDef *ofd = oi->second[i].var
-		? dynamic_cast<FuncDef *>(oi->second[i].var->type) : NULL;
+		? (oi->second[i].var->type ? oi->second[i].var->type->as_funcdef_dd() : NULL) : NULL;
 	    if ( ofd && (ofd->is_varargs || ofd->parameters.size() > argc) )
 		return true;
 	}
@@ -25234,9 +25222,9 @@ bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
 
 FuncDef *Program::call_signature_funcdef(const Variable &var)
 {
-    if ( FuncDef *fd = dynamic_cast<FuncDef *>(var.type) )
+    if ( FuncDef *fd = (var.type ? var.type->as_funcdef_dd() : NULL) )
 	return fd;
-    if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(var.type) )
+    if ( DataDefFPTR *fp = (var.type ? var.type->as_fptr_dd() : NULL) )
 	return fp->target;
     return NULL;
 }
@@ -25403,16 +25391,16 @@ static bool token_tree_has_pack_expansion(TokenBase *tb)
 {
     if ( !tb )
 	return false;
-    if ( dynamic_cast<TokenPackExpansion *>(tb) )
+    if ( (tb ? tb->as_pack_expansion_tok() : NULL) )
 	return true;
-    if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
+    if ( TokenCallFunc *tc = (tb ? tb->as_callfunc_tok() : NULL) )
     {
 	for ( TokenBase *p : tc->parameters )
 	    if ( token_tree_has_pack_expansion(p) )
 		return true;
 	return token_tree_has_pack_expansion(tc->src_node);
     }
-    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+    if ( TokenOperator *op = (tb ? tb->as_operator_tok() : NULL) )
 	return token_tree_has_pack_expansion(op->left)
 	    || token_tree_has_pack_expansion(op->right);
     return false;
@@ -51409,7 +51397,7 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
     // parse-bound Variable can be an arbitrary member of a late-bound
     // overload set (deduction read `auto` from __niter_base's bound
     // placeholder while the re-rank winner returned the real iterator type).
-    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(operand) )
+    if ( TokenCallFunc *tcf = (operand ? operand->as_callfunc_tok() : NULL) )
 	if ( !tcf->return_override )
 	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
 	    {
@@ -51428,9 +51416,9 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 	    }
     if ( dd->is_reference() )
 	return static_cast<DataDefPTR *>(dd)->base_type;
-    TokenVar *tv = dynamic_cast<TokenVar *>(operand);
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
     if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
 	    return rp->base_type;
     return dd;
 }
@@ -60039,7 +60027,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    continue;
 	}
 	if ( DataDefTemplateParam *template_param =
-		dynamic_cast<DataDefTemplateParam *>(&pb->definition) )
+		pb->definition.as_template_param_dd() )
 	    param_template_param_spelled_directly =
 		param_base_spelling == template_param->name;
 	rtype = RefType::rtValue;
@@ -61038,16 +61026,16 @@ paramdecl:
 	{
 	    if ( !pv )
 		continue;
-	    DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pv->type);
-	    DataDefCArray *pc = pp ? dynamic_cast<DataDefCArray *>(pp->base_type)
+	    DataDefPTR *pp = (pv->type ? pv->type->as_pointer_dd() : NULL);
+	    DataDefCArray *pc = pp ? (pp->base_type ? pp->base_type->as_carray_dd() : NULL)
 				   : NULL;
 	    if ( !pc )
 		continue;
 	    std::set<TokenBase *> captured;
 	    for ( DataDefCArray *c = pc; c;
-		  c = dynamic_cast<DataDefCArray *>(c->element_type) )
+		  c = (c->element_type ? c->element_type->as_carray_dd() : NULL) )
 	    {
-		if ( !c->count_expr || dynamic_cast<TokenInt *>(c->count_expr) )
+		if ( !c->count_expr || c->count_expr->as_int_tok() )
 		    continue;
 		TokenBase *orig = c->count_expr;
 		if ( TokenBase *cap = materialize_vla_dim_capture(code, c->count_expr, orig) )
@@ -64136,7 +64124,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( ovset.size() >= 2 )
 		    for ( size_t i = 0; i < ovset.size(); ++i )
 			if ( FuncDef *ofd = ovset[i].var
-			     ? dynamic_cast<FuncDef *>(ovset[i].var->type) : NULL )
+			     ? (ovset[i].var->type ? ovset[i].var->type->as_funcdef_dd() : NULL) : NULL )
 			{
 			    if ( !ofd->emit_symbol.empty() )
 				continue;

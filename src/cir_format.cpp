@@ -413,7 +413,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		return NULL;
 	if ( getenv("MADC_FMT_DEBUG") )
 	{
-		FuncDef *vfd = dynamic_cast<FuncDef *>(tcf->var.type);
+		FuncDef *vfd = (tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL);
 		fprintf(stderr, "[fmt-hook] name=%s fd_kind=%s var_kind=%s\n",
 			tcf->var.name.c_str(),
 			fd ? fd->inline_builtin_kind.c_str() : "(no fd)",
@@ -423,7 +423,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	if ( fl == ffNone )
 		// Same placeholder situation as lower_dump_call: the intrinsic
 		// tag lives on the DECLARATION the call token is bound to.
-		fl = format_flavor(dynamic_cast<FuncDef *>(tcf->var.type));
+		fl = format_flavor((tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL));
 	if ( fl == ffNone )
 		return NULL;
 	const char *fname = format_flavor_name(fl);

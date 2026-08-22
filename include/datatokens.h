@@ -283,6 +283,7 @@ public:
     virtual bool is_constant() const override { return var.is_constant(); }
     virtual bool is_real() const override { return _datatype->is_real(); }
     virtual void set(int64_t c) override { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
+    virtual TokenVar *as_var_tok() { return this; }
 };
 
 #endif // __TOKENDATA_H

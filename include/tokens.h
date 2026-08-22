@@ -18,6 +18,52 @@
 class Program;
 //class DataDef;
 
+// Kind-accessor forward declarations (TokenBase::as_*() below). Classes not
+// defined in this header live in datatokens.h / madc.h.
+class TokenOperator;
+class TokenAssign;
+class TokenTerQ;
+class TokenDynamicCast;
+class TokenTypeid;
+class TokenTypeQuery;
+class TokenReal;
+class TokenIdent;
+class TokenStr;
+class TokenGOTO;
+class TokenLabel;
+class TokenTRY;
+class TokenTHROW;
+class TokenSWITCH;
+class TokenMatch;
+class TokenNEW;
+class TokenDELETE;
+class TokenObjTemp;
+class TokenExplicitDtor;
+class TokenIF;
+class TokenRETURN;
+class TokenDO;
+class TokenFOR;
+class TokenFOREACH;
+class TokenVar;
+class TokenCpnd;
+class TokenFunc;
+class TokenInt;
+class TokenDecl;
+class TokenCallFunc;
+class TokenMember;
+class TokenCallMethod;
+class TokenSubscript;
+class TokenSubscriptExpr;
+class TokenTypedefDecl;
+class TokenStructLit;
+class TokenPackExpansion;
+class TokenAddrOf;
+class TokenAddrExpr;
+class TokenDeref;
+class TokenDerefExpr;
+class TokenDerefStep;
+class TokenCast;
+
 enum class TokenType {
 //	0	1	 2	3	4	  5		6	  7
 	ttBase, ttSpace, ttTab, ttEOL, ttComment, ttOperator, ttMultiOp, ttSymbol,
@@ -180,6 +226,58 @@ public:
     virtual DataType datatype() const { return _datatype ? _datatype->type() : DataType::dtVOID; }
     virtual DataDef *datadef()  const { return _datatype ? _datatype : &ddVOID; }
     virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
+    // Kind accessors — the O(1) replacement for dynamic_cast<TokenX *> on the
+    // hot dispatch paths (the -O2 launch profile put ~9% of a cold start in
+    // libstdc++ __dynamic_cast; the token tree's virtual bases make each cast
+    // a type_info graph walk). Each class overrides its own accessor with
+    // `return this;`, so derived classes INHERIT the override and the closure
+    // matches dynamic_cast semantics exactly (TokenMember answers as_var()
+    // through TokenCallFunc -> TokenVar the same way dynamic_cast<TokenVar *>
+    // succeeds on it). Callers must null-check the RECEIVER; dynamic_cast
+    // accepted a null operand, a virtual call does not.
+    virtual TokenOperator      *as_operator_tok()   { return NULL; }
+    virtual TokenAssign        *as_assign_tok()     { return NULL; }
+    virtual TokenTerQ          *as_terq_tok()       { return NULL; }
+    virtual TokenDynamicCast   *as_dyncast_tok()    { return NULL; }
+    virtual TokenTypeid        *as_typeid_tok()     { return NULL; }
+    virtual TokenTypeQuery     *as_typequery_tok()  { return NULL; }
+    virtual TokenReal          *as_real_tok()       { return NULL; }
+    virtual TokenIdent         *as_ident_tok()      { return NULL; }
+    virtual TokenStr           *as_str_tok()        { return NULL; }
+    virtual TokenGOTO          *as_goto_tok()       { return NULL; }
+    virtual TokenLabel         *as_label_tok()      { return NULL; }
+    virtual TokenTRY           *as_try_tok()        { return NULL; }
+    virtual TokenTHROW         *as_throw_tok()      { return NULL; }
+    virtual TokenSWITCH        *as_switch_tok()     { return NULL; }
+    virtual TokenMatch         *as_match_tok()      { return NULL; }
+    virtual TokenNEW           *as_new_tok()        { return NULL; }
+    virtual TokenDELETE        *as_delete_tok()     { return NULL; }
+    virtual TokenObjTemp       *as_objtemp_tok()    { return NULL; }
+    virtual TokenExplicitDtor  *as_explicit_dtor_tok() { return NULL; }
+    virtual TokenIF            *as_if_tok()         { return NULL; }
+    virtual TokenRETURN        *as_return_tok()     { return NULL; }
+    virtual TokenDO            *as_do_tok()         { return NULL; }
+    virtual TokenFOR           *as_for_tok()        { return NULL; }
+    virtual TokenFOREACH       *as_foreach_tok()    { return NULL; }
+    virtual TokenVar           *as_var_tok()        { return NULL; }
+    virtual TokenCpnd          *as_cpnd_tok()       { return NULL; }
+    virtual TokenFunc          *as_func_tok()       { return NULL; }
+    virtual TokenInt           *as_int_tok()        { return NULL; }
+    virtual TokenDecl          *as_decl_tok()       { return NULL; }
+    virtual TokenCallFunc      *as_callfunc_tok()   { return NULL; }
+    virtual TokenMember        *as_member_tok()     { return NULL; }
+    virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
+    virtual TokenSubscript     *as_subscript_tok()  { return NULL; }
+    virtual TokenSubscriptExpr *as_subscript_expr_tok() { return NULL; }
+    virtual TokenTypedefDecl   *as_typedef_decl_tok()   { return NULL; }
+    virtual TokenStructLit     *as_struct_lit_tok() { return NULL; }
+    virtual TokenPackExpansion *as_pack_expansion_tok() { return NULL; }
+    virtual TokenAddrOf        *as_addr_of_tok()    { return NULL; }
+    virtual TokenAddrExpr      *as_addr_expr_tok()  { return NULL; }
+    virtual TokenDeref         *as_deref_tok()      { return NULL; }
+    virtual TokenDerefExpr     *as_deref_expr_tok() { return NULL; }
+    virtual TokenDerefStep     *as_deref_step_tok() { return NULL; }
+    virtual TokenCast          *as_cast_tok()       { return NULL; }
 };
 
 // whitespace
@@ -256,6 +354,7 @@ public:
 	    return associativity() > op.associativity();
 	return precedence() < op.precedence(); // lower number is "higher" precedence
     }
+    virtual TokenOperator *as_operator_tok() { return this; }
 };
 
 // multi-symbol operator base class
@@ -458,6 +557,7 @@ public:
     }
     virtual inline int precedence()   const override { return 14; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual TokenAssign *as_assign_tok() { return this; }
 };
 
 // assignment operator += (assignment by sum)
@@ -687,6 +787,7 @@ public:
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
+    virtual TokenTerQ *as_terq_tok() { return this; }
 };
 
 // ternary operator : (else)
@@ -939,6 +1040,7 @@ public:
     virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) override { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
+    virtual TokenInt *as_int_tok() { return this; }
 };
 
 // A C++ null-pointer constant: an integer LITERAL of value zero ([conv.ptr]).
@@ -974,6 +1076,7 @@ public:
     TokenDynamicCast() : TokenBase(), target_type(NULL), target_is_ptr(false), operand(NULL) {}
     virtual TokenID id() const { return TokenID::tkDynamicCast; }
     virtual TokenBase *clone() { return new TokenDynamicCast(*this); }
+    virtual TokenDynamicCast *as_dyncast_tok() { return this; }
 };
 
 // typeid(e) / typeid(T) — RTTI query (S5). static_type set for the type form;
@@ -987,6 +1090,7 @@ public:
     TokenTypeid() : TokenBase(), static_type(NULL), operand(NULL) {}
     virtual TokenID id() const { return TokenID::tkTypeid; }
     virtual TokenBase *clone() { return new TokenTypeid(*this); }
+    virtual TokenTypeid *as_typeid_tok() { return this; }
 };
 
 class TokenTypeQuery: public TokenBase
@@ -1015,6 +1119,7 @@ public:
 	return c;
     }
     virtual TokenID id() const { return TokenID::tkInt; }
+    virtual TokenTypeQuery *as_typequery_tok() { return this; }
 };
 
 class TokenReal: public TokenBase
@@ -1039,6 +1144,7 @@ public:
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
     virtual void setDataType(DataDef *d) override { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
+    virtual TokenReal *as_real_tok() { return this; }
 };
 
 // string based tokens
@@ -1070,6 +1176,7 @@ public:
     virtual TokenID   id()   const { return TokenID::tkIdent; }
     virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(); t->rec.spelling_id = rec.spelling_id; return t; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
+    virtual TokenIdent *as_ident_tok() { return this; }
 };
 
 // quoted string. `str` holds the literal CONTENT (embedded NULs, mutated by the
@@ -1091,6 +1198,7 @@ public:
     virtual TokenType type() const override { return TokenType::ttString; }
     virtual TokenID   id()   const override { return TokenID::tkStr; }
     virtual TokenBase *clone() override     { return new TokenStr(str, wide); }
+    virtual TokenStr *as_str_tok() { return this; }
 };
 
 // comment. `str` holds the comment CONTENT (arbitrary text) — retained here.
@@ -1191,6 +1299,7 @@ public:
     virtual TokenID id() const { return TokenID::tkGOTO; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenGOTO *as_goto_tok() { return this; }
 };
 
 // `name:` — label statement (function-scoped). Binds the enclosing
@@ -1214,6 +1323,7 @@ public:
 	    t->labeled = labeled->clone();
 	return t;
     }
+    virtual TokenLabel *as_label_tok() { return this; }
 };
 class TokenCASE: public TokenKeyword
 {
@@ -1239,6 +1349,7 @@ public:
     virtual TokenID id() const { return TokenID::tkTRY; }
     virtual TokenBase *clone() { return new TokenTRY(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenTRY *as_try_tok() { return this; }
 };
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
 // throw expr — throws an exception
@@ -1250,6 +1361,7 @@ public:
     virtual TokenID id() const { return TokenID::tkTHROW; }
     virtual TokenBase *clone() { return new TokenTHROW(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenTHROW *as_throw_tok() { return this; }
 };
 class TokenSWITCH: public TokenKeyword
 {
@@ -1264,6 +1376,7 @@ public:
     virtual TokenID id() const { return TokenID::tkSWITCH; }
     virtual TokenBase *clone() { return new TokenSWITCH(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenSWITCH *as_switch_tok() { return this; }
 };
 class TokenCLASS: public TokenKeyword
 {
@@ -1341,6 +1454,7 @@ public:
     virtual TokenID id() const { return TokenID::tkMATCH; }
     virtual TokenBase *clone() { return new TokenMatch(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenMatch *as_match_tok() { return this; }
 };
 
 // defer keyword: register a statement to run at scope exit (LIFO)
@@ -1381,6 +1495,7 @@ public:
     virtual TokenID id() const { return TokenID::tkNEW; }
     virtual TokenBase *clone() { return new TokenNEW(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenNEW *as_new_tok() { return this; }
 };
 class TokenDELETE: public TokenKeyword
 {
@@ -1392,6 +1507,7 @@ public:
     virtual TokenID id() const { return TokenID::tkDELETE; }
     virtual TokenBase *clone() { return new TokenDELETE(); }
     virtual TokenBase *parse(Program &);
+    virtual TokenDELETE *as_delete_tok() { return this; }
 };
 
 // Functional-construction temporary: `T(args)` in expression position constructs
@@ -1409,6 +1525,7 @@ public:
     virtual TokenID id() const { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const { return (DataDef *)obj_class; }
     virtual TokenBase *clone() { return new TokenObjTemp(*this); }
+    virtual TokenObjTemp *as_objtemp_tok() { return this; }
 };
 
 // Explicit / pseudo destructor call: `obj.~T()` or `ptr->~T()`. Built by the
@@ -1428,6 +1545,7 @@ public:
     virtual TokenID id() const { return TokenID::tkExplicitDtor; }
     virtual DataDef *datadef() const { return &ddVOID; }
     virtual TokenBase *clone() { return new TokenExplicitDtor(*this); }
+    virtual TokenExplicitDtor *as_explicit_dtor_tok() { return this; }
 };
 
 class TokenSTRUCT: public TokenKeyword
@@ -1568,6 +1686,7 @@ public:
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
+    virtual TokenIF *as_if_tok() { return this; }
 };
 
 class TokenRETURN: public TokenKeyword
@@ -1579,6 +1698,7 @@ public:
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkRETURN; }
     virtual TokenBase *clone() { return new TokenRETURN(); }
+    virtual TokenRETURN *as_return_tok() { return this; }
 };
 
 class TokenDO: public TokenKeyword
@@ -1590,6 +1710,7 @@ public:
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkDO; }
     virtual TokenBase *clone() { return new TokenDO(); }
+    virtual TokenDO *as_do_tok() { return this; }
 };
 
 class TokenWHILE: public TokenKeyword
@@ -1620,6 +1741,7 @@ public:
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOR(); }
+    virtual TokenFOR *as_for_tok() { return this; }
 };
 
 // range-based for: for (type var : container) { ... }
@@ -1635,6 +1757,7 @@ public:
     TokenFOREACH() : TokenKeyword("for") { elemtype = NULL; elemvar = NULL; container = statement = NULL; elem_is_ref = false; }
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOREACH(); }
+    virtual TokenFOREACH *as_foreach_tok() { return this; }
 };
 
 
