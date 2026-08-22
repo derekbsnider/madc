@@ -1202,7 +1202,19 @@ int main(int argc, char **argv)
         for ( int i = filearg; i < argc; ++i )
             rargv.push_back(argv[i]);
         int rc = madc_cir_execute_frozen(run_frozen_path,
-                                         (int)rargv.size(), rargv.data());
+                                         (int)rargv.size(), rargv.data(),
+                                         show_stats);
+        // --show-stats: the lane printed its phase walls; append the process
+        // total only main() can see (same closing line as the parse lanes).
+        if ( show_stats )
+        {
+            struct timeval _t_now;
+            gettimeofday(&_t_now, NULL);
+            fprintf(stderr, "[stats] total (in-process) .. %.3f s"
+                    "  (excl. pre-main load + teardown)\n",
+                    (_t_now.tv_sec - _t_main.tv_sec)
+                    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
+        }
         return (rc < 0) ? 1 : rc;
     }
 
@@ -1326,7 +1338,19 @@ int main(int argc, char **argv)
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
 				      prog->registration_policy.enable_forest_bind,
 				      prog->forest_bind_path,
-				      prog->class_pattern_live_capture);
+				      prog->class_pattern_live_capture,
+				      show_stats);
+	// --show-stats: the lane printed its phase report; append the process
+	// total only main() can see (same closing line as the single-TU lane).
+	if ( show_stats )
+	{
+	    struct timeval _t_now;
+	    gettimeofday(&_t_now, NULL);
+	    fprintf(stderr, "[stats] total (in-process) .. %.3f s"
+		    "  (excl. pre-main load + teardown)\n",
+		    (_t_now.tv_sec - _t_main.tv_sec)
+		    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
+	}
 	return (rc < 0) ? 1 : rc;
     }
 

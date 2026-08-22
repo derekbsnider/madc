@@ -5600,8 +5600,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 }
 
 int madc_cir_execute_frozen(const char *container_path,
-			    int user_argc, char **user_argv)
+			    int user_argc, char **user_argv, bool show_stats)
 {
+    auto _mp0 = std::chrono::steady_clock::now();  // --show-stats: map wall
     const void *image = NULL;
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
@@ -5617,16 +5618,29 @@ int madc_cir_execute_frozen(const char *container_path,
 	TokenBase::_active_strpool = &frozen_run_pool;
     }
 
+    auto _th0 = std::chrono::steady_clock::now();  // --show-stats: thaw wall
     CirJitSession session;
     if (!session.build_frozen(image, image_len, "frozen"))
 	return -1;
+    auto _th1 = std::chrono::steady_clock::now();
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok, /*out_secs=*/0);
+    double exec_secs = 0.0;
+    int result = session.run_main(user_argc, user_argv, &ok, &exec_secs);
     if (!ok) {
 	fprintf(stderr, "madc: frozen module has no main()\n");
 	return -1;
     }
+    // --show-stats: the frozen lane's phases (no parse — map, thaw+link,
+    // run). main() appends the process total.
+    if (show_stats)
+	fprintf(stderr,
+		"[stats] map container ....... %.3f s\n"
+		"[stats] thaw + link ......... %.3f s\n"
+		"[stats] execution ........... %.3f s\n",
+		std::chrono::duration<double>(_th0 - _mp0).count(),
+		std::chrono::duration<double>(_th1 - _th0).count(),
+		exec_secs);
     return result;
 }
 
@@ -5764,6 +5778,14 @@ static bool is_c_source_file(const std::string &path)
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
 	std::string name;
+	// --show-stats: per-TU front-end walls, recorded by project_parse_all.
+	// The deeper phase clocks (_read/_inst/_cir_build/_c2mir_seconds) are
+	// stamped on the Program at their own layers; only the tokenize/parse
+	// windows are visible here. Same netting as the single-TU lane: lex is
+	// net of read + forest share, parse is net of forest share.
+	double lex_secs = 0.0;
+	double parse_secs = 0.0;
+	double forest_secs = 0.0;
 };
 
 // Phase 1 of every project lane (run + native-emit): tokenize + parse EVERY
@@ -5810,17 +5832,30 @@ static bool project_parse_all(MadcEngine &engine,
 			// feature gates (timercmp, strdup, …) match plain gcc.
 			prog->set_language_standard_option("--std=gnu17");
 
+		auto _tk0 = std::chrono::steady_clock::now();
+		double _fw0 = prog->_forest_work_seconds;
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {
 			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
 			return false;
 		}
+		auto _tk1 = std::chrono::steady_clock::now();
+		double _fw1 = prog->_forest_work_seconds;
 		if (!prog->parse(tp)) {
 			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
 			return false;
 		}
+		auto _ps1 = std::chrono::steady_clock::now();
+		double _fw2 = prog->_forest_work_seconds;
 
 		CirParsedTU pt;
+		pt.lex_secs = std::chrono::duration<double>(_tk1 - _tk0).count()
+			    - prog->_read_seconds - (_fw1 - _fw0);
+		if (pt.lex_secs < 0) pt.lex_secs = 0;
+		pt.parse_secs = std::chrono::duration<double>(_ps1 - _tk1).count()
+			      - (_fw2 - _fw1);
+		if (pt.parse_secs < 0) pt.parse_secs = 0;
+		pt.forest_secs = _fw2 - _fw0;
 		pt.prog = std::move(prog);
 		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
@@ -5831,7 +5866,7 @@ static bool project_parse_all(MadcEngine &engine,
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
 			 bool forest_bind, const std::string &forest_bind_path,
-			 bool class_pattern_live_capture)
+			 bool class_pattern_live_capture, bool show_stats)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -5897,6 +5932,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		modules.push_back(mod);
 	}
 
+	auto _lk0 = std::chrono::steady_clock::now();  // --show-stats: link wall
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
 	// Same link environment the single-TU JIT builds: the active flavor's
@@ -5908,6 +5944,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
+	auto _lk1 = std::chrono::steady_clock::now();
 
 	// Find the entry symbol across all modules. First match wins; a
 	// duplicate entry (e.g. two main()s across TUs) is not diagnosed here.
@@ -5964,10 +6001,63 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 							 nullptr);
 	}
 
+	auto _gi1 = std::chrono::steady_clock::now();  // --show-stats: entry gen + inits end
+
+	// --show-stats: the project lane's phase report — per-TU front-end walls
+	// (recorded by project_parse_all + the phase clocks each TU's Program
+	// stamped during its own build), then the shared phases this function
+	// owns (link, entry gen + TU inits). Printed BEFORE the entry call: a
+	// program that exits via exit() never returns here, and the compile-side
+	// phases — the cold-startup cost — must survive that. The execution
+	// line prints after a normal return; main() appends the process total.
+	// MIR_set_gen_interface is lazy, so all non-entry/init codegen lands
+	// inside the execution bucket, on first call.
+	if (show_stats) {
+		double t_read = 0, t_lex = 0, t_parse = 0, t_inst = 0;
+		double t_cir = 0, t_c2m = 0, t_forest = 0;
+		unsigned long long t_tok = 0;
+		for (const CirParsedTU &pt : parsed) {
+			const Program *p = pt.prog.get();
+			double cir_secs = p->_cir_build_seconds - p->_cir_forest_seconds;
+			if (cir_secs < 0) cir_secs = 0;
+			fprintf(stderr,
+				"[stats] TU %s: lex %.3fs parse %.3fs (inst %.0f%%)"
+				" cir %.3fs c2mir %.3fs forest %.3fs (%llu tokens)\n",
+				pt.name.c_str(), pt.lex_secs, pt.parse_secs,
+				pt.parse_secs > 0 ? 100.0 * p->_inst_seconds / pt.parse_secs : 0.0,
+				cir_secs, p->_c2mir_seconds,
+				pt.forest_secs + p->_cir_forest_seconds,
+				p->_tok_produced);
+			t_read += p->_read_seconds;
+			t_lex += pt.lex_secs;
+			t_parse += pt.parse_secs;
+			t_inst += p->_inst_seconds;
+			t_cir += cir_secs;
+			t_c2m += p->_c2mir_seconds;
+			t_forest += pt.forest_secs + p->_cir_forest_seconds;
+			t_tok += p->_tok_produced;
+		}
+		fprintf(stderr,
+			"[stats] front-end (%zu TUs) . read %.3fs lex %.3fs"
+			" parse %.3fs (inst %.3fs) cir %.3fs c2mir %.3fs"
+			" forest %.3fs (%llu tokens)\n"
+			"[stats] link ................ %.3f s\n"
+			"[stats] entry gen + TU inits  %.3f s\n",
+			parsed.size(), t_read, t_lex, t_parse, t_inst, t_cir,
+			t_c2m, t_forest, t_tok,
+			std::chrono::duration<double>(_lk1 - _lk0).count(),
+			std::chrono::duration<double>(_gi1 - _lk1).count());
+	}
+
 	// Expose the entry's module to the crash handler for JIT symbolization.
 	g_jit_module = entry_mod;
 	int result = ((int (*)(int, char **))code)(user_argc, user_argv);
 	g_jit_module = nullptr;
+
+	if (show_stats)
+		fprintf(stderr, "[stats] execution ........... %.3f s\n",
+			std::chrono::duration<double>(
+			    std::chrono::steady_clock::now() - _gi1).count());
 
 	teardown();
 	return result;
