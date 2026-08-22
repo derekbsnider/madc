@@ -1,5 +1,17 @@
 # Test Status
 
+> **Current incremental (2026-08-22, R4-full shared prelude images):**
+> new `testpreludecache` is a three-TU `--project` reducer. TU A captures
+> the ordinary embedded `ns_php` fragment, TU B changes its incoming
+> macro context (`count` → `count_alt`) and must capture a distinct image,
+> and TU C reuses B's image through fresh mutable token shells. Dev and
+> packed-release output match the fixture exactly; `project_gate` is
+> green, `forest_bind_gate` is **26/26**, Adventure parity is **3 + 94**,
+> and the final packed forest gate holds the **93/93** parse-error
+> baseline. The last merge-wave fulltest remains **1133/0**; it was not
+> repeated for this incremental slice, and the new test count will be
+> banked by the next merge-wave battery.
+>
 > **Current (2026-08-20, v0.94.0 — upstream-community MIR hardening):**
 > authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
 > 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test AND c2mir-gen-test3

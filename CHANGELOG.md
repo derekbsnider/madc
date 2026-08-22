@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup R4-full: sibling project TUs share exact immutable
+  prelude images — packed Adventure 917.37M → 889.34M Ir (−3.055%,
+  same-binary interleaved A/B).** Pure direct embedded auto-includes are
+  keyed by dialect, include state, and transitive incoming macro state,
+  then lexed once per `MadcCompileGroup`; every hit materializes fresh
+  mutable `TokenBase` shells and replays only the fragment's observed
+  macro delta. Adventure records 19 hits / 4 compulsory misses / 15,426
+  fresh shells. `testpreludecache` pins both exact macro-context
+  separation and same-context reuse; project parity, forest bind 26/26,
+  Adventure parity 3+94, and the packed forest 93/93 gate remain green.
 - **Cold JIT startup: lazy MEMBER-template hydration — launch 1.042B →
   0.970B Ir (−7.0%, same-session A/B); the 6.4MB template payload+TOKENS
   segments never decode on a C-shaped launch** (zstd 108M → 59.6M Ir;

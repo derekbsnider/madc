@@ -1,9 +1,9 @@
 {
  "version": "0.94.0",
  "date": "2026-08-22",
- "snapshot_note": "session 113 end: modernization arc done; JIT Python-contender plan banked, awaiting owner approval + format-return decision",
- "head": "1f820fdd",
- "branch": "develop",
+ "snapshot_note": "session 121: R4-full shared immutable prelude images landed; next measured lever is demand-driven derived restore",
+ "head": "44c4e9fa",
+ "branch": "feature/track7-hub-projections-claude",
  "live_handoff_previous": {
   "session": 119,
   "date": "2026-08-22",
@@ -32,32 +32,32 @@
   ]
  },
  "live_handoff": {
-  "session": 120,
+  "session": 121,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "1f820fdd (lazy MEMBER-template hydration) + docs commit",
-  "headline": "LAZY MEMBER-TEMPLATE HYDRATION LANDED: packed adventure launch 1.042B -> 0.970B Ir (-7.0%, SAME-SESSION interleaved A/B); the 6.4MB template payload+TOKENS segments (16/17) NEVER decode on a C-shaped launch (zstd 108M -> 59.6M Ir; --show-stats forest 38 -> 32ms). Mechanism: the freeze banks the registration SKELETON as CIR_TMPLK_MEMBER record identity (return type '#<arena-typeid>#<flatname>' in the unused extra slot; CIR_TMPLF_MEMBER_CTOR / _DECL_ONLY flags; static-ness already on INSTANCE_METHOD) so the flush registers the varargs stub payload-free (register_member_template_stub, ONE implementation shared with the live path) and the pattern thaws at first content read (madc_thaw_member_template, memoized on FuncDef::member_tmpl_frozen; ensure hooks at the 11 pattern-content lanes). KEY RECON FACT: the placeholder-stamp path was only 8/372 records - 364 rode the dropped-placeholder FALLBACK (register_skipped_class_template_function); the record-contract change is what made them lazy. Bar remains TINYCC PARITY (~22ms).",
+  "head": "44c4e9fa (R4-full shared prelude images) + docs commit",
+  "headline": "R4-FULL SHARED PRELUDE IMAGES LANDED: packed Adventure launch 917,365,100 -> 889,338,452 Ir and 917,365,100 -> 889,338,422 Ir (-28.03M / -3.055%, SAME-BINARY interleaved A/B), output byte-identical. One MadcCompileGroup owns immutable exact post-preprocessor images for eligible pure direct embedded auto-includes; sibling TUs materialize FRESH mutable TokenBase shells and replay only observed macro deltas. Final Adventure stats: 19 hits / 4 compulsory misses / 15,426 fresh shells. The measurement-only disable switch is absent from production. Bar remains TINYCC PARITY (~22ms).",
   "settled": [
-   "@1f820fdd lazy MEMBER hydration: CIR_TMPLK_MEMBER joins the B2 lazy-kind set (identity-only staging, no hydrate); flush arms: placeholder-found -> defer on fd; dropped+skeleton -> payload-free stub via restored_def_by_tid -> flat-name composition (getPointerType/getReferenceType/getConstType caches; DataDefREF spells base+'*' so references bank base+'&') -> owner->type_aliases (size_type); dropped+DECL_ONLY -> register nothing (cold verdict); empty-extra/unresolvable -> exact pre-change eager path (old-pack compat)",
-   "thaw contract: pure token work (hydrate + forest_restore_run + the one stamp derivation) - no name resolution, no scope stack; mid-parse safe; frozen ref carries the staging Program (same lifetime web as the eager stamp's interned token file ptrs); single compile thread mutates the shared placeholder fd (B2 thaw-owner convention)",
-   "hook funnel (the correctness mechanism): findMethodOverload post-name-match, reselect_static_member_overload, resolve_member_template_call_return_type, tsubst_eligible, instantiate_member_fn_template_for_call + mti sibling scan, instantiate_member_ctor_template_candidate, ClassMethodPattern capture, register_outofline_member_instantiations, clone_funcdef_with_return, CirBuilder::member_template_method_call, the freeze member-record emit walk; identity (display name / is_member_template / is_const_method / parameters) restores verbatim, member_template_owner stamps at flush",
-   "MEASUREMENT LESSON: the banked cross-session '0.970B post-de-RTTI' did NOT reproduce (parent re-measured 1.042B today, same method) - Ir totals are only comparable as SAME-SESSION interleaved A/B pairs; never subtract absolute figures across sessions/doc sections"
+   "@44c4e9fa contract: cache key = header + LanguageStd/GNU posture + include-once bit + transitive lexically-visible macro state; ## falls back to full macro state. Eligibility is direct embedded text with only define/undef/conditionals, one textual mutation per name, no forest/PCH/nested include and no trivia/pack/conditional transaction; every other path stays with the literal include owner",
+   "ROM/RAM split: TokenImage stores immutable TokenRec + kind payload + observed macro delta; restore allocates a new shell through Program factories, preserves the new arena slot id, restores lexer fields, interns each distinct file name into Program stable storage, then replays the delta. Parser-owned fields are never shared",
+   "testpreludecache makes exactness observable: ordinary ns_php image in TU A; incoming count->count_alt macro forces a distinct image in TU B; matching TU C reuses B through fresh shells. The initial full-table diff/source-rescan implementation saved only 0.24%; cached dependency IDs + textual-mutation-only snapshots yielded the final 3.055%",
+   "en-route O2 lifetime fix: restored token file pointers cannot retain strpool.c_str() because later intern growth moves that backing vector; materialization now uses Program::intern_file stable storage",
+   "MEASUREMENT LAW HOLDS: Ir totals are session-local; only interleaved same-binary A/B pairs are compared. Measurement switch removed before commit"
   ],
   "validation": [
-   "fulltest 1133/0 @1f820fdd: forest_bind_gate 26/26 (declonlymt/vecnewspec/strbind/strops exercise BOTH new-record arms - the gate freezes fresh groves with the new producer), project_gate, sret/emitc/pack-selftest gates, delim+dialect+tsubst+warning+trailer ratchets, adventure parity 3+94 inside the battery",
-   "adventure parity 3 fragments + 94 whole logs byte-identical on the NEW-FORMAT packed release (MADC_BIN=bin/madc-release)",
-   "launch probe (MADC_FOREST_CACHE_PROBE): segs 16/17 absent; 364 skeleton + 8 deferred + 0 eager + 0 thaws",
-   "packed suite on the final new-format release: 1133/0, pack parse-errors at baseline 93/93",
-   "OWED AT MERGE WAVE (owner call): exe/obj lanes + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 dup __madc_global_init"
+   "new three-TU macro-context reducer byte-exact on dev + final packed release; stats show the expected context miss then same-context hit",
+   "project_gate GREEN; forest_bind_gate GREEN 26/26; Adventure parity 3 fragments + 94 whole logs byte-identical",
+   "release rebuilt and packed after production-only cleanup; forest_pack_gate OK with parse-errors at baseline 93/93; final packed Adventure 19 hits / 4 misses / 15,426 shells",
+   "last merge-wave fulltest remains 1133/0 from session 120 and was not rerun for this incremental slice",
+   "OWED AT MERGE WAVE (owner call): fulltest with new reducer, EXE/OBJ lanes + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 dup __madc_global_init"
   ],
   "next": [
-   "1. R4-full shared prelude: inject_pending_auto_includes 5.5% (11x per-TU fragment lex); needs the ROM/RAM token split",
-   "2. demand-driven derived-entity restore: ~9K verdict-0 free funcs staged+registered per binding TU (findVariable 31.7M / 3.27% in the fresh profile)",
-   "3. malloc/flat-structures arc (malloc family ~131M / 13.5%) + zstd spine/arena remainder (59.6M; raw spine = owner size-trade)",
-   "4. merge wave (owner call): exe/obj + /dupaudit; queued: --project --emit=c11 dup __madc_global_init",
-   "5. traps: Ir baselines are SESSION-LOCAL (interleave A/B - the 1.042B-vs-banked-0.970B lesson); wall drifts (phase lines only); .c/gnu17 TUs use EMBEDDED headers not the forest; gate reproducers need the gate's OWN env (MADC_FOREST_ENV_CHECK=1); debug binary + --forest-bind=bin/madc-release = line-level attribution"
+   "1. demand-driven derived-entity restore: ~9K verdict-0 free funcs staged+registered per binding TU (findVariable 31.7M / 3.27% in the prior profile)",
+   "2. malloc/flat-structures arc (malloc family ~13.5%) + zstd spine/arena remainder (raw spine remains an owner size-trade)",
+   "3. merge wave (owner call): fulltest + EXE/OBJ + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 duplicate __madc_global_init",
+   "4. traps: Ir baselines are SESSION-LOCAL (interleave same-binary A/B); restored file names require Program stable storage; wall drifts; .c/gnu17 TUs use embedded headers, not forest; gate reproducers need the gate's own env"
   ],
-  "handoff_to": "CODEX (GPT-4.6-Sol) takes the next round — owner-directed 2026-08-22. Branch feature/track7-hub-projections-claude is HANDED OFF explicitly (one active agent per branch; continue on it or fork a -codex WIP branch per .claude/rules/branching.md). Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md (the lever table + the two LANDED sections carry the measurement method and traps). Container does ALL builds/tests: bash scripts/remote_build.sh [sync build fulltest release packed ...] or ssh -p 2299 dev@localhost; QNAP never builds. Rule trailers (Hypothesis/Layer/Searched/Oracle) on every src/include commit — gated. Never touch owner strays (donut.c, test.mad, testsort.mad); never git add -A."
+  "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude remains the explicitly transferred active branch. Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md. Continue with demand-driven derived-entity restore unless the owner calls the merge wave. Container does all builds/tests. Rule trailers remain gated. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir — ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
  "build_status": "clean — zero warnings on every lane (-Werror), warning census 0 tests with warnings / 0 total / 0 baseline",

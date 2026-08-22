@@ -227,16 +227,15 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 | dynamic_cast (493K calls) | ~8.8% | FIXED @a19bca42 (as_X kind accessors, below): 99M → 6.6M Ir (0.68%) |
 | materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
 | flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | getenv FIXED @da1ffcd3; the ~9K pending funcs/TU are the verdict-0 derived surface — narrowing it = demand-driven derived-entity restore, own slice |
-| inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | the R4-full "share the prelude parse" target |
+| inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | FIXED @44c4e9fa (R4-full immutable images + fresh shells, below): same-binary launch −3.055% Ir |
 | strcmp/memcmp/strlen/string== | ~9% | spread string machinery |
 
-NEXT, in measured order: (1) the de-RTTI dispatch sweep (~9ms+) —
-LANDED @a19bca42, (2) lazy MEMBER-template hydration at the flush —
-LANDED @1f820fdd (both below), (3) R4-full shared prelude lex/parse
-(~9ms+ in inject_pending_auto_includes alone), (4) demand-driven
-derived-entity restore (the ~9K verdict-0 funcs per binding TU). The
-tcc bar (~22ms) needs several of these plus the malloc/flat-structures
-arc.
+NEXT, in measured order: (1) the de-RTTI dispatch sweep — LANDED
+@a19bca42, (2) lazy MEMBER-template hydration at the flush — LANDED
+@1f820fdd, (3) R4-full shared prelude lex/parse — LANDED @44c4e9fa
+(all below), (4) demand-driven derived-entity restore (the ~9K
+verdict-0 funcs per binding TU). The tcc bar (~22ms) still needs that
+slice plus the malloc/flat-structures arc.
 
 ## The de-RTTI sweep — LANDED (session 119, 2026-08-22, @a19bca42)
 
@@ -341,6 +340,58 @@ declonlymt/vecnewspec/strops with the new record format, project_gate,
 sret/emitc gates, all ratchets); adventure parity 3 fragments + 94
 whole logs byte-identical on the packed release; packed suite green
 (pack parse-errors at baseline).
+
+## R4-full shared prelude images — LANDED (session 121, 2026-08-22, @44c4e9fa)
+
+**Measured (same binary, interleaved A/B, packed Adventure launch):**
+cache disabled = **917,365,100 / 917,365,100 Ir**; cache enabled =
+**889,338,452 / 889,338,422 Ir**. The deterministic reduction is
+**28.03M Ir (−3.055%)**, with byte-identical output. The production
+path has no disable/A-B branch; that measurement-only switch was
+removed before the commit. Final `--show-stats`: **19 hits / 4
+compulsory misses / 15,426 fresh shells** across the 11 TUs.
+
+**Mechanism — immutable image, mutable shell.** A `MadcCompileGroup`
+now owns exact post-preprocessor images for eligible auto-included
+embedded fragments. The key carries the header, language standard,
+GNU-dialect bit, include-once state, and the transitive states of the
+macros lexically visible to the fragment (token-paste falls back to the
+complete macro state). Static source dependencies are discovered once
+as shared spelling IDs; compulsory misses snapshot only the macro names
+the fragment can actually mutate. Eligibility is deliberately narrow:
+direct embedded text, pure conditional/define/undef directives, no
+forest/PCH/nested include, no trivia/pack/conditional transaction, and
+at most one textual mutation per macro name. Everything else continues
+through the literal include owner.
+
+The image stores `TokenRec` plus the payload needed by each token kind
+and the observed macro delta. A hit allocates a **new TokenBase shell**
+through the Program's token factory for every image record, restores
+its immutable lexer fields, replays only that fragment's macro delta,
+then marks the ordinary embedded-include state. Parser-owned fields are
+never shared across TUs. The new `testpreludecache` project reducer makes
+the key observable: TU A captures ordinary `php::count`, TU B maps
+`count` to `count_alt` and therefore must capture a different image,
+and TU C reuses B's context through fresh shells.
+
+**Attribution lesson:** the first correct implementation saved only
+2.54M Ir (0.24%). Its dependency key rescanned every embedded source
+on every hit, while a compulsory miss copied and diffed the entire
+preprocessor map. Those two cache bookkeeping paths cost almost all of
+the lexing they avoided. Caching dependency spelling IDs and restricting
+the before/after snapshot to textual macro mutations produced the final
+28.03M-Ir win. An O2-only crash found during the work was a separate
+lifetime trap: a restored token's `file` pointer cannot retain
+`strpool.c_str()` across later interning because that backing vector can
+move. Materialization now interns each distinct restored file name into
+the Program's stable file store.
+
+Validation @44c4e9fa: new macro-context project reducer byte-exact on
+dev and packed release; `project_gate` green; `forest_bind_gate` 26/26;
+Adventure parity 3 fragments + 94 whole logs byte-identical; final
+release rebuilt and packed with forest-pack parse errors at baseline
+93/93. The merge-wave fulltest/EXE/OBJ batteries were not repeated on
+this incremental slice.
 
 ## Traps for the next session
 
