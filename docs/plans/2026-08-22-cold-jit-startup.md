@@ -222,7 +222,7 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 
 | cost | Ir share | status |
 |------|---------|--------|
-| zstd decodes (11 container-global segs, ~18MB raw: spine 4.1MB, arena 6.5MB, template payload+TOKENS 6.4MB, misc 0.9MB) | ~9.6% | PARKED: raw spine = +10MB binary (owner size-trade); template segs decode because the flush HYDRATES 364 derived member-template records (register_skipped_class_template_function) — lazy MEMBER-kind stubs are B2-entangled (parser.cpp:22046 kinds) — own slice |
+| zstd decodes (11 container-global segs, ~18MB raw: spine 4.1MB, arena 6.5MB, template payload+TOKENS 6.4MB, misc 0.9MB) | ~9.6% | template segs FIXED @1f820fdd (lazy MEMBER hydration, below): segs 16/17 never decode on a C-shaped launch — zstd 108M → 59.6M Ir. Remaining spine/arena decode PARKED: raw spine = +10MB binary (owner size-trade) |
 | malloc/free family | ~12% | spread; the flat-structures territory |
 | dynamic_cast (493K calls) | ~8.8% | FIXED @a19bca42 (as_X kind accessors, below): 99M → 6.6M Ir (0.68%) |
 | materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
@@ -230,13 +230,13 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 | inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | the R4-full "share the prelude parse" target |
 | strcmp/memcmp/strlen/string== | ~9% | spread string machinery |
 
-NEXT, in measured order: (1) the de-RTTI dispatch sweep (~9ms+), (2)
-lazy MEMBER-template hydration at the flush (kills the 6.4MB template
-segment decodes + 364 hydrations for C-shaped TUs; B2 entanglement),
-(3) R4-full shared prelude lex/parse (~9ms+ in
-inject_pending_auto_includes alone), (4) demand-driven derived-entity
-restore (the ~9K verdict-0 funcs per binding TU). The tcc bar (~22ms)
-needs several of these plus the malloc/flat-structures arc.
+NEXT, in measured order: (1) the de-RTTI dispatch sweep (~9ms+) —
+LANDED @a19bca42, (2) lazy MEMBER-template hydration at the flush —
+LANDED @1f820fdd (both below), (3) R4-full shared prelude lex/parse
+(~9ms+ in inject_pending_auto_includes alone), (4) demand-driven
+derived-entity restore (the ~9K verdict-0 funcs per binding TU). The
+tcc bar (~22ms) needs several of these plus the malloc/flat-structures
+arc.
 
 ## The de-RTTI sweep — LANDED (session 119, 2026-08-22, @a19bca42)
 
@@ -287,6 +287,60 @@ current change.
 Validation @1e6bc464: fulltest 1133/0 + forest_bind_gate 26/26 +
 adventure parity 3+94 byte-identical + all ratchets; packed suite
 1133/0, pack parse-errors at baseline 93/93.
+
+## Lazy MEMBER-template hydration — LANDED (session 120, 2026-08-22, @1f820fdd)
+
+**Measured (same-session interleaved A/B, O2sym packed launch, same
+method):** parent @a25eac19 = 1.042B Ir, HEAD = **0.970B Ir (−72.7M,
+−7.0%)**; zstd 108M → 59.6M (segs 16/17 — the 6.4MB template
+payload+TOKENS — **never decode** on the launch,
+MADC_FOREST_CACHE_PROBE); `--show-stats` forest phase 38 → 32ms.
+Launch record disposition: 364 skeleton-registered + 8
+placeholder-deferred, 0 eager, 0 thaws.
+
+**The surprise that shaped the fix:** the flush's placeholder-stamp
+path was only 8 of the 372 records — 364 went through the
+dropped-placeholder FALLBACK (`register_skipped_class_template_function`),
+which needed the decl tokens only to derive facts the producer already
+knew. So the record CONTRACT changed: the freeze banks the registration
+SKELETON as identity — return type as `"#<arena-typeid>#<flatname>"` in
+the MEMBER record's unused `extra` slot (a reference return banks
+base+"&" — DataDefREF spells itself base+"*"), ctor-hood as
+`CIR_TMPLF_MEMBER_CTOR`, decl-only-ness as
+`CIR_TMPLF_MEMBER_DECL_ONLY`; static-ness already rode
+`CIR_TMPLF_INSTANCE_METHOD`. The flush registers the varargs stub
+payload-free (`register_member_template_stub`, extracted from the full
+registration — one implementation) resolving the return via
+`restored_def_by_tid` → flat-name composition through the
+getPointerType/getReferenceType/getConstType caches → the owner's
+restored `type_aliases` (basic_string::size_type). CIR_TMPLK_MEMBER
+joined the B2 lazy-kind set; the pattern fields thaw at first content
+read (`madc_thaw_member_template`, memoized on
+`FuncDef::member_tmpl_frozen`) through `ensure_member_template_thawed()`
+hooks at the 11 pattern-content lanes (findMethodOverload
+post-name-match, reselect_static_member_overload,
+resolve_member_template_call_return_type, tsubst_eligible,
+instantiate_member_fn_template_for_call + sibling scan,
+instantiate_member_ctor_template_candidate, pattern capture, OOL
+matcher, clone_funcdef_with_return, CirBuilder::member_template_method_call,
+the freeze's member-record emit walk). Identity never thaws:
+display name / is_member_template / is_const_method / parameters
+restore verbatim with the methodrec; member_template_owner stamps at
+the flush. Old records (empty extra) and unresolvable skeletons degrade
+to the exact pre-change eager path.
+
+**Measurement lesson (banked):** the cross-session "0.970B post-de-RTTI"
+baseline did NOT reproduce — the parent re-measured at 1.042B with
+today's method. Ir comparisons are only trustworthy as SAME-SESSION
+interleaved A/B pairs (the wall-time rule now provably applies to
+cross-session Ir too); never subtract this doc's absolute figures
+across sections.
+
+Validation @1f820fdd: fulltest 1133/0 (forest_bind_gate 26/26 incl.
+declonlymt/vecnewspec/strops with the new record format, project_gate,
+sret/emitc gates, all ratchets); adventure parity 3 fragments + 94
+whole logs byte-identical on the packed release; packed suite green
+(pack parse-errors at baseline).
 
 ## Traps for the next session
 

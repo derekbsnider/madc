@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: lazy MEMBER-template hydration — launch 1.042B →
+  0.970B Ir (−7.0%, same-session A/B); the 6.4MB template payload+TOKENS
+  segments never decode on a C-shaped launch** (zstd 108M → 59.6M Ir;
+  `--show-stats` forest phase 38 → 32ms). The freeze banks the
+  registration-skeleton facts as CIR_TMPLK_MEMBER record identity
+  (return type as `#<arena-typeid>#<flatname>` in the unused extra
+  slot, ctor-hood / decl-only-ness as flags), so the flush registers
+  the varargs placeholder payload-free and the pattern fields thaw at
+  first content read (`madc_thaw_member_template`, the B2 thaw-owner
+  model at FuncDef granularity, `ensure_member_template_thawed()` hooks
+  at the 11 pattern-content lanes). The adventure launch's 364
+  per-closure hydrations + token deserializes + stamp clones drop to
+  zero; old records degrade to the exact eager path. fulltest 1133/0,
+  forest_bind_gate 26/26 with the new record format, adventure parity
+  3 + 94 byte-identical on the packed release.
 - **Cold JIT startup: the de-RTTI sweep — launch 1.13B → 0.970B Ir
   (−14.2%); `__dynamic_cast` 8.8% → 0.68%** — hot front-end dispatch
   (the `translate_expr`/`translate_stmt` rung ladders,
