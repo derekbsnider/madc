@@ -17976,16 +17976,29 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     // instantiate-on-miss lanes — both keep the historical fallback.
     if ( !best && strict_no_viable )
     {
+	static const char *ovl_probe = ::getenv("MADC_OVL_PROBE");
 	bool strict = true;
 	for ( const NamespaceFnOverload &e : oi->second )
 	{
+	    FuncDef *cfd = e.var && e.var->type ? e.var->type->as_funcdef_dd()
+						: NULL;
+	    if ( ovl_probe )
+		fprintf(stderr,
+			"[ovl]   cand %s spell=%s targs=%zu va=%d mt=%d dep=%d ts=%d\n",
+			e.var ? e.var->name.c_str() : "(null)",
+			e.param_spelling == "\x01fn-template-placeholder"
+			    ? "PLACEHOLDER" : e.param_spelling.c_str(),
+			e.template_arg_names.size(),
+			cfd ? (int)cfd->is_varargs : -1,
+			cfd ? (int)cfd->is_member_template : -1,
+			cfd ? (cfd->dependent_pattern != NULL) : -1,
+			cfd ? (cfd->tsubst_source != NULL) : -1);
 	    if ( e.param_spelling == "\x01fn-template-placeholder"
 	      || !e.template_arg_names.empty() )
-	    { strict = false; break; }
-	    FuncDef *cfd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
+	    { strict = false; if ( !ovl_probe ) break; continue; }
 	    if ( !cfd || cfd->is_varargs || cfd->is_member_template
 	      || cfd->dependent_pattern || cfd->tsubst_source )
-	    { strict = false; break; }
+	    { strict = false; if ( !ovl_probe ) break; continue; }
 	}
 	*strict_no_viable = strict;
     }
@@ -59723,8 +59736,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // sets it for this call) — stamped BEFORE the body parses so the
     // hidden-friend access grant (current_function_friend_name) sees
     // "operator<" while parsing the body, not the internal overload symbol.
+    // CONSUME-ONCE: cleared at the stamp. The slot names exactly the function
+    // parseDeclaration set it for; a NESTED parseFunction during this body
+    // (a member-template __mti product minted mid-instantiation) must not
+    // inherit it — the leaked identity rode the freeze and the restore flush
+    // registered _Destroy_aux<>::__destroy products as "::_Destroy" overloads,
+    // poisoning the ranked set a bound consumer resolves against.
     if ( !pending_function_display_name.empty() )
+    {
 	func->function_display_name = pending_function_display_name;
+	pending_function_display_name.clear();
+    }
     // A function parsed inside a template instantiation is an instantiation
     // product (e.g. a namespace free-template instance) — the C++ vague-
     // linkage set: any TU using the template mints an identical copy. Record
