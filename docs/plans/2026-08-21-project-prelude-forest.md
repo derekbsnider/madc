@@ -16,7 +16,10 @@ test_ns_frozen.cpp reducer), ns_common gained the shared lean plumbing
 The no-viable-overload FALLBACK defect is also FIXED (@cfcd255e —
 loud "no matching overload" error + the two ranker coercion gaps the
 fallback had been papering over; full suite 1131/0).
-Remaining: S0-for-Leg-1 recon → S1/S2/S3 → Leg 2.**
+S1 LANDED @21c57941 (2026-08-22, game 829→760 ms). S2 and S3 CLOSED
+without code the same day — their premises dissolved under
+measurement (see "S2/S3 findings" below). Remaining: S5 (+ the S4
+interop residue + the queued small fixes).**
 
 **Owner rulings (2026-08-21, during Leg 0 — codified as
 `.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
@@ -176,18 +179,14 @@ their consumers for post-decode mutation.
   namespace/decl tables) stays per-Program. Thread-safety contract:
   read-only after open, same as the embedded blob today; TU compiles
   stay sequential. Expected: 11-TU cold 1.5s → ~0.5s.
-- **S2. The dev binary joins the same shape** (the original draft):
-  when no container binds, live-parse the prelude ONCE into a scratch
-  container (synthetic prelude TU generated from the auto-include
-  table; `tmp/prelude-<config-hash>.forest`; existing freeze + probe
-  arm 0; producer-config exact-match is the invalidation). Expected:
-  dev 5.2s → the packed number, and it inherits S1's sharing.
-- **S3. Shrink the single restore itself** (helps every launch,
-  single-file included — this is the R4 startup arc): decode ONLY the
-  frames backing bound units (66 MB for 145 units is the tell), bulk
-  decl-index import instead of per-entry registration. Target: per-TU
-  forest cost ≤ 20 ms; single-file cold launch clearly UNDER Python's
-  0.1s; 11-TU cold ≈ 0.2–0.3s.
+- **S2. CLOSED 2026-08-22 without code** — the premise (dev live-parse
+  of the prelude worth sharing) dissolved with Leg 0: the lean prelude
+  live-parse costs less than binding a container would (12 ms dev vs
+  16 ms packed, whole launch). See "S2/S3 findings" below.
+- **S3. CLOSED 2026-08-22 without code** — its targets were already
+  met by Leg 0 + S1 (first-TU forest cost 17 ms, ~0 after; single-file
+  cold 16 ms). The lazy-decode and raw-spine mechanisms stay banked
+  for interop/headerless lanes. See "S2/S3 findings" below.
 
 ### Leg 2 — warm launch: a transparent program cache (.pyc, but native)
 
@@ -215,7 +214,40 @@ materialization, registration); the exact accounting of the 0.18s
 (leg 1 lands as a wave), then S4 → S5. Every slice: the 94-log parity
 gate byte-identical + testproject*/testprojectinit*/testnsdmiglobal +
 the timing table re-measured and recorded. fulltest once per merge
-wave. The A10 gate's 8m23s collapses with S2 (it runs the dev binary).
+wave. (The A10 gate's 8m23s already collapsed with Leg 0 — the dev
+binary's per-launch prelude cost is now 12 ms, so S2 had nothing left
+to collapse.)
+
+### S2/S3 findings (2026-08-22, session 116 — measured at HEAD, container)
+
+**S2's premise dissolved with Leg 0 — slice CLOSED, no code.** Measured
+(dev bin/madc, no container anywhere — stats confirm "no container —
+live parse"; no sidecar/env/ini): a single lean TU launches in **12 ms
+on the dev binary vs 16 ms packed** — the lean prelude live-parse is now
+CHEAPER than binding the container. The scratch prelude container would
+share a ≤12 ms cost and pay ~16 ms to do it. The 11-TU game on dev is
+1.91 s vs packed 0.75 s, but the delta is the -O0 ENGINE compiling user
+code (per-TU fixed cost ×11 ≈ 130 ms of it only) — a prelude container
+cannot touch that, and user-code compile throughput is this plan's
+explicit non-goal (front-end performance arc). The A10-gate collapse S2
+promised already happened via Leg 0 (the gate's dev launches carry the
+12 ms prelude, not the old <string> closure). A scratch container for
+C++-INTEROP dev compiles remains the "dev sidecar pack" NON-GOAL (it
+would flip live-parse testing to bind testing — separate owner lever).
+
+**S3's targets are ALREADY MET by Leg 0 + S1 — slice CLOSED, no code.**
+Targets vs measured: per-TU forest cost ≤20 ms → 17 ms first TU
+(map+open 9 + decode 8), ~0 for TUs 2..N under S1; single-file cold
+clearly under Python's 0.1 s → 16 ms packed / 12 ms dev; 11-TU cold
+0.2–0.3 s → 0.75 s, but the residue is user-code compile (~0.44 s
+at -O2), not forest cost — same non-goal. The two S3 mechanisms stay
+banked for the interop/headerless lanes if their numbers ever warrant
+them: lazy per-segment decode on first query (extern-locs precedent)
+and raw-spine storage (a pack-size trade = owner sizing call).
+
+**Leg 1 is therefore COMPLETE (S1); Leg 2 = S5 is the remaining real
+slice** (S4 already met for lean TUs — 6 ms thaw; its interop residue
+is the 0.33 s MIR_read/link of the drained module).
 
 ### S0 findings (2026-08-21, session 115 — measured on the fresh release binary)
 
@@ -262,6 +294,69 @@ wave. The A10 gate's 8m23s collapses with S2 (it runs the dev binary).
   ~6 ms + link — well under Python's 0.10 s floor.
 - Queued small fix joins the list: --show-stats is silent under
   --run-frozen (same family as project mode ignoring it).
+
+### S5 design (2026-08-22, session 116 — recon-verified against the code)
+
+**Shape: per-TU cache containers + ONE run path.** `madc <manifest>`
+maintains `<manifest-dir>/__madcache__/<tu-stem>-<key8>.forest` — one
+standard standalone container per TU (the `--freeze` format; N files,
+not a stacked one, so each is independently inspectable with
+`--dump-forest` and one edited TU refreezes ALONE — per-TU .pyc
+semantics). The project JIT lane becomes: probe each TU's cache →
+MISS: parse + freeze it (then thaw what was just written — the
+--freeze-run precedent, in-process) → thaw every TU's module into the
+ONE shared MIR context → link → per-TU inits → entry. Warm and cold
+launches share the thaw path, so it is exercised on every run, not
+only warm ones.
+
+- **Key (the "never a wrong run" gate), validated in two layers:**
+  filename key8 = fnv64(TU path | producer config word | defines hash
+  | context pin | self-exe mtime+size — the BINARY-IDENTITY term the
+  pin alone lacks: the pin folds only VERSION+format, and a dev
+  rebuild must invalidate); inside the container a NEW small segment
+  `SRC_STAMPS` records (path, content-hash) for the TU + every USER
+  source file the parse read from disk (embedded/forest sources are
+  covered by pin+config). Thaw re-hashes every stamped file; any
+  mismatch = MISS = refreeze. Manifest edits need no extra key: per-TU
+  flags live in the config word/defines hash, entry + TU list are
+  read live at thaw.
+- **Freeze side:** `madc_cir_freeze` gains the project_tu shape
+  (threaded to CirBuilder) so each frozen TU takes the TU-unique
+  STATIC init (`tu_init_symbol(tu.file)` — deterministic from the
+  path, so the thaw side RECOMPUTES it; no format field needed) and
+  main carries no init prologue — the engine keeps its ld.so role.
+  No pack_recording (no groves, no drain gate — the cheap
+  --freeze-run shape) + `--freeze-mir-cache` semantics always on.
+  forest_arena_enabled set before tokenize for miss TUs.
+- **Thaw side:** per TU: map + open_header (pin) + exact config gate
+  + stamp validation, then MIR_read the module blob into the shared
+  ctx (fallback: materialize the frozen root and cir_compile it in
+  the shared c2m — build_frozen's own fallback, shared-context
+  flavor). dlopen each container's recorded libs (the flavor runtime
+  closure) before link. Trap prebinding generalizes
+  cir_prebind_cache_traps to N modules: only a name NO module defines
+  and the resolver cannot find is trap-bound.
+- **Failure policy: the cache is DERIVED state.** Any cache failure
+  (unwritable dir, freeze failure, corrupt container) falls back to
+  the live compile for that TU — never fails the run (the MIR-cache
+  precedent); diagnostics DBG-gated. Writes are mkstemp +
+  atomic-rename (concurrent runs safe; readers keep the old inode).
+- **Transparency + kill switch:** default ON for the `--project` JIT
+  lane only (AOT lanes unchanged). `MADC_NO_PROGRAM_CACHE=1` (env)
+  and `--no-program-cache` (flag) disable. **The suite runners and
+  adventure_parity.sh export the env kill-switch** so existing
+  project tests keep testing LIVE compile (the dev-sidecar-pack
+  lesson — a cache must not silently flip the suite from live-parse
+  testing to thaw testing); dedicated `testprojectcache*` fixtures +
+  an explicit warm parity leg exercise the cache lanes.
+- **Cost model:** miss TU ≈ parse + translate (freeze) + thaw-compile
+  (MIR blob) + MIR_read (~2× today's compile, first launch only);
+  hit TU ≈ open + MIR_read (~few ms). Projected warm 11-TU launch:
+  11 × ~6 ms + link ≈ well under Python's 0.10 s floor.
+- **Gates:** parity 3+94 byte-identical on BOTH lanes (env-off live;
+  warm-cache leg), testproject*/testprojectinit*/testnsdmiglobal,
+  staleness tests (edit one TU → exactly that TU refreezes; binary
+  swap → full refreeze), kill-switch test, timing table re-measured.
 
 ## Non-goals / rejected
 
