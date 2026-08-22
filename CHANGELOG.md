@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **JIT launch S1 — one mapping + one decode per forest carrier per
+  process.** Each TU Program re-mapped the packed container and
+  re-decompressed the same ~14 container-global segments (11.6 MB);
+  both are now process-cached at the forest layer (mutex-guarded,
+  immutable, never evicted). The 11-TU adventure launch: 829 → 760 ms
+  median. Also from the same recon: `--run-frozen` was never
+  re-parsing headers (the c++locale.h line is a c2mir warning carrying
+  thawed node positions), and a lean dialect TU frozen with
+  `--freeze-mir-cache` thaws and runs in ~6 ms.
 - **JIT launch Leg 0b — every polyglot public has a lean primary**
   (dialect-lean owner law; the Python-contender plan). The 57 functions
   that existed only in `std::string` shape gained value/char* primaries
