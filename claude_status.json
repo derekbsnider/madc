@@ -12,7 +12,7 @@
   "session": 116,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "4054b4de (S5 gate) \u2014 pending push after suite legs",
+  "head": "f11fb38b \u2014 ALL PUSHED",
   "headline": "S5 LANDED (@f13938f9 + gate @4054b4de): transparent per-manifest program cache (native .pyc) \u2014 WARM 11-TU LAUNCH 92ms PACKED / 176ms DEV (was 754/1914ms), UNDER the Python port's ~0.10s, 94-log parity corpus byte-identical FROM CACHE. S2+S3 CLOSED WITHOUT CODE (@d238b289): measurement showed Leg 0 dissolved their premises (dev live-parses the lean prelude in 12ms \u2014 cheaper than binding, 16ms; S3 targets already met). THE PYTHON-CONTENDER PLAN'S LEGS ARE COMPLETE.",
   "landed": [
    "@d238b289 docs: S2/S3 closed under measurement (dev lean TU 12ms vs packed 16ms; dev game 1.91s = -O0 user-code compile, the plan's non-goal); S5 design recon-verified",
@@ -23,12 +23,11 @@
    "unit tests green (container)",
    "testproject*/testfreeze*/testfrozen*/testnsdmiglobal* 9/9",
    "adventure parity LIVE lane 3+94 byte-identical; WARM-CACHE lane 3+94 byte-identical (one-time evidence run)",
-   "check-program-cache.sh green first run (all six lanes)",
+   "check-program-cache.sh green vs BOTH bin/madc and bin/madc-release (all six lanes)",
    "staleness probe: edited adv_score.mad refroze ALONE (10 containers kept mtimes)",
-   "full JIT suite: RUNNING at handoff-write time (background); packed suite leg owed after"
+   "FULL JIT suite 1131/0; PACKED suite 1131/0"
   ],
   "next": [
-   "confirm full JIT suite + run packed suite once (S5 touched lexer = suite-wide blast radius), then push",
    "S5 residue: warm 92ms vs <=50ms stretch (profile per-TU open/decode + MIR_read + link first)",
    "S4 interop residue: cached thaw 0.33s = MIR_read/link of the drained module",
    "S1 residue: unit-record segs + template payload still decode per Program (audit consumers for mutation first)",
