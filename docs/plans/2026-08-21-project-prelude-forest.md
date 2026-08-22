@@ -152,6 +152,21 @@ calls. That single `<string>` closure is the 145-unit / 66 MB bind.
 
 ### Leg 1 — cold launch: bind the forest ONCE per process
 
+**S1 LANDED (@21c57941, 2026-08-22):** two process-level caches at the
+forest layer — cir_forest_map_image maps each carrier file ONCE (the
+mappings were already never munmap'd; per-TU re-maps also gave the same
+blob different base addresses), and forest_pool_block binds compressed
+container-global segments from a decoded-segment cache keyed (blob
+base, segment offset). Evidence: MADC_FOREST_CACHE_PROBE on the 11-TU
+game went 99 miss/0 hit → 9 miss/90 hit; interleaved A/B ×8: launch
+829 → **760 ms** median. Gates: parity 3+94 byte-identical, project/
+freeze subset, PACKED suite 1131/0. Materialization stays per-Program
+by design (the class audit: _mat_storage/_restored* are Program-bound;
+sharing DataDef objects across Programs is a correctness risk). Residue
+for a later slice: unit-record segments (read_unit_seg) and the
+template payload still decode per Program — cache only after auditing
+their consumers for post-decode mutation.
+
 - **S1. One shared bound forest across the project's TU Programs.**
   The container is immutable, read-only-mmap'd state; today each
   Program owns a private CirFrozenForest with private decoded frames
