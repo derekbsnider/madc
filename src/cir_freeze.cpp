@@ -1183,6 +1183,21 @@ static const uint8_t *forest_decoded_segment_cached(
 	return it->second.data();
 }
 
+// The one segment-bytes resolver: zero-copy from the mapped image when the
+// segment is stored raw (no codec, no transform), the process-level decoded
+// cache otherwise. Returned bytes live for the PROCESS (image mapping or
+// cache entry — both outlive every CirFrozenForest), so consumers bind spans
+// instead of owning per-forest copies.
+static const uint8_t *forest_segment_bytes(const madc::dis::snapshot_reader &r,
+					   const madc::dis::snapshot_segment &s,
+					   size_t &len)
+{
+	len = (size_t)s.raw_size;
+	if (const uint8_t *p = r.raw_ptr(s))
+		return p;
+	return forest_decoded_segment_cached(r, s);
+}
+
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
 					madc::dis::decode_bytes &own, size_t &len)
@@ -1190,13 +1205,10 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	const madc::dis::snapshot_segment *s = r.find(seg_id);
 	if (!s || s->kind != kind)
 		return NULL;
-	len = (size_t)s->raw_size;
-	if (const uint8_t *p = r.raw_ptr(*s))
-		return p;
-	// Compressed: bind the process-cached decode. `own` stays empty by
-	// design — the cache owns the bytes for the process lifetime.
+	// `own` stays empty by design — image or cache owns the bytes for the
+	// process lifetime.
 	(void)own;
-	return forest_decoded_segment_cached(r, *s);
+	return forest_segment_bytes(r, *s, len);
 }
 
 // --show-stats wall clock (R0 startup instrumentation).
@@ -3725,10 +3737,14 @@ const char *CirFrozenForest::restored_template_string(uint32_t id) const
 	return pool_cstr(id, len);
 }
 
-// R1: decode the TEMPLATE_PAYLOAD + TEMPLATE_TOKENS segments on first
-// demand (memoized) — from materialize's first filter-surviving template
-// record, or a late ClassPattern token-run read. A decode failure logs
-// loud and leaves the pair empty: every run read then cleanly lacks.
+// R1: bind the TEMPLATE_PAYLOAD + TEMPLATE_TOKENS segments on first demand
+// (memoized) — from materialize's first filter-surviving template record,
+// or a late ClassPattern token-run read. SPANS into the mapped image or the
+// process-level decoded cache (forest_segment_bytes): one decode per
+// process, zero per-forest copies. Segment payloads are 16-aligned in the
+// image and the cache buffers are heap-allocated, so the uint32 view is
+// aligned on both paths. A bind failure logs loud and leaves the pair
+// empty: every run read then cleanly lacks.
 bool CirFrozenForest::ensure_template_payload() const
 {
 	if (_template_payload_loaded)
@@ -3737,24 +3753,32 @@ bool CirFrozenForest::ensure_template_payload() const
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
-		madc::dis::decode_bytes d;
+		size_t len = 0;
+		const uint8_t *p = NULL;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
-		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
+		    || (tp->raw_size
+			&& !(p = forest_segment_bytes(_reader, *tp, len)))
+		    || len % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
 			return false;
 		}
-		_template_payload.resize(d.size() / sizeof(uint32_t));
-		if (!d.empty())
-			memcpy(_template_payload.data(), d.data(), d.size());
+		_template_payload = (const uint32_t *)p;
+		_template_payload_words = len / sizeof(uint32_t);
 	}
 	if (const madc::dis::snapshot_segment *tt =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
+		size_t len = 0;
+		const uint8_t *p = NULL;
 		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
-		    || !_reader.read_segment(*tt, _template_tokens)) {
-			_template_tokens.clear();
+		    || (tt->raw_size
+			&& !(p = forest_segment_bytes(_reader, *tt, len)))) {
+			_template_tokens = NULL;
+			_template_tokens_len = 0;
 			fprintf(stderr, "madc: forest template tokens corrupt\n");
 			return false;
 		}
+		_template_tokens = p;
+		_template_tokens_len = len;
 	}
 	return true;
 }
@@ -3781,11 +3805,12 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 		rr.count = 0;
 		rr.file = NULL;
 		cir_forest_token_run tr;
-		if (!madc::dis::pod_read(_template_payload, word_off, tr))
+		if (!madc::dis::pod_read(_template_payload,
+					 _template_payload_words, word_off, tr))
 			return rr;
 		if (tr.tok_count
-		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
-			rr.bytes = _template_tokens.data() + tr.tok_off;
+		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens_len) {
+			rr.bytes = _template_tokens + tr.tok_off;
 			rr.len   = tr.tok_bytes;
 			rr.count = tr.tok_count;
 		}
@@ -3800,15 +3825,16 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 	if (rt.rec_pattern_words) {
 		size_t begin = rt.rec_pattern_begin;
 		size_t count = rt.rec_pattern_words;
-		if (begin > _template_payload.size()
-		    || count > _template_payload.size() - begin)
+		if (begin > _template_payload_words
+		    || count > _template_payload_words - begin)
 			return false;
-		rt.pattern = _template_payload.data() + begin;
+		rt.pattern = _template_payload + begin;
 		rt.pattern_words = rt.rec_pattern_words;
 	}
 	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
 		cir_forest_template_param pr;
 		if (!madc::dis::pod_read(_template_payload,
+					 _template_payload_words,
 					 rt.rec_param_begin + p * pw, pr))
 			return false;
 		uint32_t plen = 0;
@@ -3844,9 +3870,9 @@ CirRestoredTemplateRun CirFrozenForest::restored_template_run(
 	restored.count = 0;
 	restored.file = NULL;
 	if (run.tok_count
-	    && (size_t)run.tok_off <= _template_tokens.size()
-	    && (size_t)run.tok_bytes <= _template_tokens.size() - run.tok_off) {
-		restored.bytes = _template_tokens.data() + run.tok_off;
+	    && (size_t)run.tok_off <= _template_tokens_len
+	    && (size_t)run.tok_bytes <= _template_tokens_len - run.tok_off) {
+		restored.bytes = _template_tokens + run.tok_off;
 		restored.len = run.tok_bytes;
 		restored.count = run.tok_count;
 	}

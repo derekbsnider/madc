@@ -1378,9 +1378,15 @@ class CirFrozenForest
 	// ensure_template_payload(): at the first filter-surviving template
 	// record in materialize, or at a late ClassPattern run read. A TU
 	// whose bound closure declares no templates (trivial C) never pays.
+	// SPANS, not owned copies: the bytes live in the mapped image or the
+	// process-level decoded-segment cache (both process-lifetime), so N
+	// forests in one process share ONE decode and zero per-forest copies
+	// (an 11-TU launch paid the multi-MB decode + copy per TU).
 	// Mutable: restored_template_run is a const reader.
-	mutable std::vector<uint32_t> _template_payload;
-	mutable madc::dis::decode_bytes _template_tokens;
+	mutable const uint32_t *_template_payload = NULL;
+	mutable size_t _template_payload_words = 0;
+	mutable const uint8_t *_template_tokens = NULL;
+	mutable size_t _template_tokens_len = 0;
 	mutable bool _template_payload_loaded = false;
 	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
