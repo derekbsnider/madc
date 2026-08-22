@@ -9,28 +9,32 @@
   "headline": "BOUNDARY MET; waves 3+4 banked (value literals + .push; the zero-include contract); NEXT = THE MODERNIZATION ARC (owner directives 2026-08-21): M1 walrus sweep (:= EXISTS \u2014 testcolon.mad, NOT new), M2 value->var (~90 sites, same type), M3 --project restructure of adv_*.inc, M4 OOP/UFCS pass (globals into a class, propose shape first) \u2014 all under the 94-log parity net"
  },
  "live_handoff": {
-  "session": 115,
+  "session": 116,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "21c57941 + docs commit, ALL PUSHED",
-  "headline": "LEG 0b LANDED (57 lean primaries) + no-viable-overload defect FIXED (suite 1131/0) + S0 RECON BANKED (thaw never live-parsed - the c++locale.h line was a c2mir warning; lean thaw 8ms/6ms MIR-cached = warm target MET; interop thaw 0.77s->0.33s cached) + S1 LANDED (@21c57941): one mapping + one decoded-segment cache per carrier per process - game 829->760ms median, cache probe 9 miss/90 hit; ALL GATES GREEN (parity 3+94, project subset 9/9, PACKED suite 1131/0).",
+  "head": "4054b4de (S5 gate) \u2014 pending push after suite legs",
+  "headline": "S5 LANDED (@f13938f9 + gate @4054b4de): transparent per-manifest program cache (native .pyc) \u2014 WARM 11-TU LAUNCH 92ms PACKED / 176ms DEV (was 754/1914ms), UNDER the Python port's ~0.10s, 94-log parity corpus byte-identical FROM CACHE. S2+S3 CLOSED WITHOUT CODE (@d238b289): measurement showed Leg 0 dissolved their premises (dev live-parses the lean prelude in 12ms \u2014 cheaper than binding, 16ms; S3 targets already met). THE PYTHON-CONTENDER PLAN'S LEGS ARE COMPLETE.",
   "landed": [
-   "@93e7fcb8 FOUND DEFECT FIXED (crash class): 29 extern-C-reachable helpers called value::array() directly - on a FROZEN carrier the designed throw crossed the extern-C boundary into JIT frames = process abort (pop/shift/reverse/sort/unique/slice/column/explode/grep/glob/split/chars/rotate/compact/flatten). All container mutations now via ns_common::value_array_for_write or NEW value_array_reset_for_write (out-param fillers); split_by_delim gains who param. Reducer tests/unit/test_ns_frozen.cpp (36 assertions, was: uncaught std::runtime_error terminate)",
-   "@e929b519 ns_common lean plumbing: value_text_slot (promoted from ns_php static php_text_slot), value_pop_element/value_shift_element (ONE move-out rule; string pop/shift trios now ride it), php_array_get_cstr off its private thread_local onto ring_slot",
-   "@eae431ae php::intval bounds the string payload before strtoll (latent contract violation; payload is length-based per the value ABI)",
-   "@5e19f599 php lean wave (18): trim/ltrim/rtrim/chop/lcfirst/nl2br/str_rot13/str_repeat/str_replace/str_pad/str_word_count/chunk_split/number_format/wordwrap/implode ring returns over the SAME cores via ring_apply; array_pop/shift/get value-out; testphplean",
-   "@bd6b8fa6 perl lean wave (11): chop/chomp MUTATE value (Perl semantics, frozen degrades loud returning 0); pop/shift value-out; join(sep,list); reverse/lc/uc/ucfirst/lcfirst/substr ring pairs; ring_apply promoted to ns_common (second consumer); testperllean byte-identical",
-   "@cb42d6d7 python/ruby/js/rust waves (28): py title/swapcase/center/ljust/rjust/zfill/replace; rb squeeze/capitalize/tr/delete/gsub/sub (delete parses fine lean); js btoa/atob/encodeURIComponent/decodeURIComponent/stringify; rust trim*3/replace/repeat/join + first/last/get/pop value-out (Option: null when nothing); 4 lean tests, expects verified against the source-language oracles",
-   "@cfcd255e no-viable-overload FALLBACK defect FIXED: ranked strict set w/ no viable candidate = LOUD 'no matching overload' error (Throw at CIR, the final resolution authority) instead of silent wrong-ABI bind; suite fallout exposed + fixed the 2 coercions the fallback carried: std::string->char* arg (marshals_value_text UDC arm in score_arg_to_param, = build_call_args' object_cstr_arg lowering) and partial-subscript row decay of multi-dim fixed arrays (TokenSubscript arm in array_decay_pointer); describe_datadef = ONE diagnostic type-name owner (ctor no-match adopted); testpreferdefault gains <string>-first per convention; autoincmod_helper.inc stale format().c_str() dropped; reducers testnoviableovl (.expect_err) + teststrargcoerce",
-   "@1de8c96a S0 findings in the plan doc (S4 premise CORRECTED: no live parse; S5 = plumbing; 14-frame decode = compressed container globals per Program)",
-   "@21c57941 S1: cir_forest_map_image one-mapping-per-path cache + forest_pool_block decoded-segment cache keyed (blob_base, seg offset); snapshot_reader::blob_base() identity accessor; MADC_FOREST_CACHE_PROBE env probe; mutex-guarded, immutable entries, never evicted (thread contract stated)"
+   "@d238b289 docs: S2/S3 closed under measurement (dev lean TU 12ms vs packed 16ms; dev game 1.91s = -O0 user-code compile, the plan's non-goal); S5 design recon-verified",
+   "@f13938f9 S5: per-TU frozen containers under <manifest-dir>/__madcache__/; probe (filename key: config word|-D fold|context pin|binary mtime+size|forest-bind path; SRC_STAMPS segment re-hash per disk source) -> miss parses live (forest bind OFF, freeze-mode exclusion) + freezes (project_tu shape, MIR blob) -> ALL TUs thaw into the shared ctx -> link -> inits (cir_tu_init_symbol recomputed) -> entry. Derived state: preflight, corrupt->refreeze, freeze/thaw failure -> one retry with cache off. Machinery: Program::record_source_stamp (main-file buffer + read_resolved_include from_disk out-param = the two disk choke points); CIR_FOREST_SEG_SRC_STAMPS(22) optional segment + bounds-checked reader; madc_cir_freeze project_tu param; cir_forest_map_invalidate (refreeze rename breaks S1 map cache's path->content assumption); cir_prebind_project_traps (cache-traps policy N-module); madc::detail::create_directory; --no-program-cache + MADC_NO_PROGRAM_CACHE=1 (env honored inside madc_project_execute so hosts get it)",
+   "@4054b4de gate scripts/check-program-cache.sh in fulltest: cold/warm byte-identical vs live, MIR fast path engages (-v evidence), per-TU staleness bites (negative control: edited TU MUST change output + only its container refreezes), truncated container self-heals, both kill switches clean. Runners (run_tests.sh, adventure_parity.sh) export MADC_NO_PROGRAM_CACHE=1 = project tests keep testing the LIVE compile"
   ],
-  "validation": "S1 slice: adventure_parity 3+94 byte-identical; project/freeze subset 9/9; PACKED suite 1131/0 GREEN. Earlier this session: full JIT suite 1131/0; test_ns_frozen 36/36; ns/format 45/45; check-dialect-lean OK; check-rule-trailers green.",
+  "validation": [
+   "unit tests green (container)",
+   "testproject*/testfreeze*/testfrozen*/testnsdmiglobal* 9/9",
+   "adventure parity LIVE lane 3+94 byte-identical; WARM-CACHE lane 3+94 byte-identical (one-time evidence run)",
+   "check-program-cache.sh green first run (all six lanes)",
+   "staleness probe: edited adv_score.mad refroze ALONE (10 containers kept mtimes)",
+   "full JIT suite: RUNNING at handoff-write time (background); packed suite leg owed after"
+  ],
   "next": [
-   "S1 residue: unit-record segments (read_unit_seg) and template payload still decode per Program - cache only after auditing consumers for mutation; S2 dev scratch prelude container; S3 lazy per-segment decode on first query (or raw spine - owner sizing call)",
-   "S4 residue: interop cached thaw 0.33s = MIR_read/link of the drained module; S5 = transparent per-manifest freeze + project MIR-cache integration (lean floor already 6ms)",
-   "queued small fixes: project mode + --run-frozen both silently ignore --show-stats; --project --emit=c11 dup __madc_global_init",
-   "merge-wave: non-JIT battery legs (exe/obj/headerless/warnscan) at the merge gate; owner ceremonies pending; container tmp/madc-release.pre-s1 snapshot can be deleted"
+   "confirm full JIT suite + run packed suite once (S5 touched lexer = suite-wide blast radius), then push",
+   "S5 residue: warm 92ms vs <=50ms stretch (profile per-TU open/decode + MIR_read + link first)",
+   "S4 interop residue: cached thaw 0.33s = MIR_read/link of the drained module",
+   "S1 residue: unit-record segs + template payload still decode per Program (audit consumers for mutation first)",
+   "queued small fixes: --show-stats silent under project mode AND --run-frozen; --project --emit=c11 dup __madc_global_init",
+   "merge wave: non-JIT battery legs (exe/obj/headerless/warnscan) + /dupaudit scoped to forest/project subsystem; owner ceremonies (merge, release batching, promotion) = OWNER CALLS",
+   "container cleanup: tmp/madc-release.pre-s1 snapshot deletable; examples/adventure/__madcache__ regrows"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

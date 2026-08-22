@@ -18,8 +18,13 @@ loud "no matching overload" error + the two ranker coercion gaps the
 fallback had been papering over; full suite 1131/0).
 S1 LANDED @21c57941 (2026-08-22, game 829→760 ms). S2 and S3 CLOSED
 without code the same day — their premises dissolved under
-measurement (see "S2/S3 findings" below). Remaining: S5 (+ the S4
-interop residue + the queued small fixes).**
+measurement (see "S2/S3 findings" below). S5 LANDED @f13938f9 the
+same day: **warm 11-TU launch 92 ms packed (176 ms dev) — under the
+Python port's ~0.10 s — with the 94-log corpus byte-identical from
+cache. THE PLAN'S LEGS ARE COMPLETE.** Residue: the ≤50 ms warm
+stretch, the S4 interop cached-thaw 0.33 s, and the queued small
+fixes (--show-stats silent under project mode and --run-frozen;
+--project --emit=c11 dup __madc_global_init).**
 
 **Owner rulings (2026-08-21, during Leg 0 — codified as
 `.claude/rules/dialect-lean.md` + `scripts/check-dialect-lean.sh` in
@@ -189,6 +194,26 @@ their consumers for post-decode mutation.
   for interop/headerless lanes. See "S2/S3 findings" below.
 
 ### Leg 2 — warm launch: a transparent program cache (.pyc, but native)
+
+**S5 LANDED (@f13938f9 + gate @4054b4de, 2026-08-22, session 116).**
+Implemented exactly per the S5 design section below. Measured
+(container, `echo quit |`, output byte-identical to the live run in
+every lane): **packed warm 754 → 92 ms — UNDER the Python port's
+~0.10 s, with native JIT code**; dev warm 1914 → 176 ms; cold (first
+launch, pays parse + freeze) packed 1.35 s / dev 3.6 s. Evidence:
+per-TU staleness verified (an edited adv_score.mad refroze alone —
+ten containers kept their mtimes); the **warm-cache adventure parity
+replay is byte-identical across all 3 fragments + 94 whole logs**;
+`scripts/check-program-cache.sh` (in fulltest) gates cold/warm
+equality, the MIR fast path engaging, staleness biting (negative
+control), corruption self-heal, and both kill switches. The suite
+runners + adventure_parity.sh export MADC_NO_PROGRAM_CACHE=1 so
+existing project tests keep testing the live compile. En route: the
+S1 mapping cache gained cir_forest_map_invalidate (a refreeze's
+atomic rename is the one in-process writer that breaks its
+path→content assumption). Residue for later: warm 92 ms vs the ≤50 ms
+stretch target — the remaining per-TU cost is container open/decode +
+MIR_read + link, profile before squeezing.
 
 - **S4. Make thaw load-only.** Find why --run-frozen re-parses real
   headers and costs 0.8s for one TU (the c++locale.h diagnostic is the
