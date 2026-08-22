@@ -5941,7 +5941,17 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Program answers for all of them.
 	if (!parsed.empty() && parsed[0].prog)
 		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
+	// link (adventure: 271 funcs, 91% of the link wall) before main ever
+	// runs. Ride the lazy interface: functions generate on FIRST CALL, so
+	// startup pays only for what the run actually reaches. c2mir already
+	// checked every function; the entry and the TU inits below stay
+	// explicitly MIR_gen'd (their failure surface is unchanged). -g keeps
+	// the eager interface: source-debug registration reads machine code.
+	MIR_link(ctx,
+		 madc_debug_info ? MIR_set_gen_interface
+				 : MIR_set_lazy_gen_interface,
+		 cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
 	auto _lk1 = std::chrono::steady_clock::now();
@@ -6010,8 +6020,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// program that exits via exit() never returns here, and the compile-side
 	// phases — the cold-startup cost — must survive that. The execution
 	// line prints after a normal return; main() appends the process total.
-	// MIR_set_gen_interface is lazy, so all non-entry/init codegen lands
-	// inside the execution bucket, on first call.
+	// The lazy gen interface defers all non-entry/init codegen to first
+	// call, so it lands inside the execution bucket.
 	if (show_stats) {
 		double t_read = 0, t_lex = 0, t_parse = 0, t_inst = 0;
 		double t_cir = 0, t_c2m = 0, t_forest = 0;
