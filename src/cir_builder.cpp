@@ -27545,6 +27545,14 @@ static std::string tu_init_symbol(const std::string &tu)
 	return out;
 }
 
+// Program cache (S5): the thaw side recomputes a frozen project TU's init
+// symbol with the SAME derivation the freeze used — the name is a pure
+// function of the TU path, so nothing needs recording in the container.
+std::string cir_tu_init_symbol(const std::string &tu)
+{
+	return tu_init_symbol(tu);
+}
+
 node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;

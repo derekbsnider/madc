@@ -4490,8 +4490,11 @@ bool Program::resolved_include_provider_exists(const std::string &path)
 // one header (<stdc-predef.h>, whose guard madc predefines exactly so it can be
 // skipped). Read failure and absent-guard are different answers; only a shared
 // reader keeps them apart.
-bool Program::read_resolved_include(const std::string &path, std::string &text)
+bool Program::read_resolved_include(const std::string &path, std::string &text,
+				    bool *from_disk)
 {
+    if ( from_disk )
+	*from_disk = false;
     if ( path.empty() )
 	return false;
     std::ifstream in(path.c_str(), std::ios::binary);
@@ -4500,9 +4503,29 @@ bool Program::read_resolved_include(const std::string &path, std::string &text)
 	std::ostringstream tmp;
 	tmp << in.rdbuf();
 	text = tmp.str();
+	if ( from_disk )
+	    *from_disk = true;
 	return true;
     }
     return forest_source_text(path, text);
+}
+
+// Source stamps (project program cache, S5): record (path, content hash) for
+// a source file whose bytes the tokenizer consumed from DISK. Deduped by
+// path — a file included twice under require-once/guard semantics stamps
+// once, and re-tokenized multi-include system headers stamp their first
+// content (one launch reads one version of a file).
+void Program::record_source_stamp(const std::string &path,
+				  const void *bytes, size_t len)
+{
+    if ( !source_stamp_recording || path.empty() )
+	return;
+    for ( size_t i = 0; i < source_stamps.size(); ++i )
+	if ( source_stamps[i].first == path )
+	    return;
+    source_stamps.push_back(std::make_pair(path,
+					   madc_pch::hash_content(
+					       (const char *)bytes, len)));
 }
 
 static void add_pch_candidate(std::vector<std::string> &candidates,
@@ -5549,7 +5572,9 @@ TokenBase *Program::_getToken()
 		    // multiple-include optimization can never disagree about
 		    // which headers are readable.
 		    std::string include_text;
-		    if ( !read_resolved_include(full_path, include_text) )
+		    bool include_from_disk = false;
+		    if ( !read_resolved_include(full_path, include_text,
+						&include_from_disk) )
 		    {
 			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
@@ -5557,6 +5582,9 @@ TokenBase *Program::_getToken()
 			    pack_protocol_serving_end(_proto_saved);
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
+		    if ( include_from_disk )
+			record_source_stamp(full_path, include_text.data(),
+					    include_text.size());
 		    source.fname(full_path.c_str());
 		    const char *_interned2 = intern_file(full_path);
 		    {
@@ -8824,6 +8852,8 @@ TokenProgram *Program::tokenize(const char *fname)
 	file.seekg(0);
 	source.copybuf(file.rdbuf());
     }
+    // S5 source stamp: the main file's bytes, already in the buffer.
+    record_source_stamp(fname, source.text().data(), source.text().size());
     pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
 

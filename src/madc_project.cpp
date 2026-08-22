@@ -85,6 +85,7 @@ bool read_compile_commands(const std::string &path,
 		manifest_dir = (s == std::string::npos) ? std::string(".")
 						       : path.substr(0, s);
 	}
+	out.manifest_dir = manifest_dir;	// program cache: __madcache__ home
 
 	for (const auto &entry : root) {
 		if (!entry.is_object()) { err = "entry is not an object"; return false; }

@@ -17,6 +17,10 @@ src/sys_include_paths.cpp
 
 tmp/
 
+# The transparent per-manifest program cache (S5): derived state the JIT
+# maintains beside each --project manifest — never committed.
+__madcache__/
+
 # SMAUG-derived content lives in a separate MadSMAUG repository due to
 # the Diku/Merc/SMAUG license stack (see https://github.com/derekbsnider/MadSMAUG).
 # ./MadSMAUG is a symlink to that repo for dev convenience; the tarball

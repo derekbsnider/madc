@@ -18,6 +18,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 9
 MADC=${MADC_BIN:-bin/madc}
+# This gate tests the LIVE project compile 94+ times over one manifest — the
+# exact shape the transparent program cache accelerates. Keep it live here;
+# scripts/check-program-cache.sh owns the cached lane (including a warm
+# byte-identical replay).
+export MADC_NO_PROGRAM_CACHE=1
 FRAG=examples/adventure/tests/fragments
 GAME=examples/adventure/advent.cc.json
 TMP=tmp/advent_parity.$$

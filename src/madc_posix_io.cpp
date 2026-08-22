@@ -9,6 +9,7 @@
 #ifdef _WIN32
 #include <cstdio>
 #include <cstring>
+#include <direct.h>	// _mkdir — create_directory's Win arm
 #include <fcntl.h>	// _O_CREAT/_O_EXCL — make_temp_file's atomic claim
 #include <io.h>
 #include <limits.h>
@@ -453,6 +454,23 @@ void *map_file_readonly(const char *path, std::size_t &length)
 	length = (std::size_t)st.st_size;
 	return m;
 #endif
+}
+
+bool create_directory(const char *path)
+{
+	if ( !path || !*path )
+		return false;
+#ifdef _WIN32
+	if ( _mkdir(path) == 0 )
+		return true;
+#else
+	if ( ::mkdir(path, 0777) == 0 )
+		return true;
+#endif
+	if ( errno != EEXIST )
+		return false;
+	struct stat st;
+	return ::stat(path, &st) == 0 && (st.st_mode & S_IFDIR) != 0;
 }
 
 int make_temp_file(const char *prefix, std::string &path_out)
