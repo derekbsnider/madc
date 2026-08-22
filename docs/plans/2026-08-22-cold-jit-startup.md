@@ -83,7 +83,43 @@ Key structural facts found:
 - The per-forest `open` (~2ms/TU × 11) is intern-spine rebind + name
   indexes over already-cached bytes — per-instance state.
 
-## NEXT — R4-lite: one bound forest surface per multi-TU compile (DESIGN LOCKED 2026-08-22)
+## R4-lite: one bound forest surface per multi-TU compile — LANDED (session 118, 2026-08-22)
+
+**Results (packed adventure, container):** forest phase 79ms → **45ms**;
+wall ~210–225ms → **~171–175ms** (5-run spread 171–175). Dev lane
+unchanged (~0.3s — no carrier; the win is packed-lane-specific by
+construction). The three commits:
+
+1. **@b1141126 S1 shared pools** — `MadcCompileGroup` (madc.h): sibling
+   TU Programs share ONE strpool + ONE project type-id table via
+   shared_ptr owners behind unchanged reference members. Also fixes the
+   latent multi-TU hazard where `madc_active_project_types`
+   (last-binder-wins) resolved runtime type-id queries against
+   whichever TU's table was ambient.
+2. **@2fffddd3 S2 incremental materialization** — `materialize_for()`
+   unions a later, WIDER demand filter in (per-name verdict OR,
+   monotone) and re-runs the passes; done-guards (`_defs_by_tid`,
+   fresh-set for pass 2, `_mat_done_slots`/`_mat_done_globals`/
+   `_mat_done_templates`, persisted `_method_by_func_id`) make the
+   generations append-only. `set_materialize_filter` retired.
+3. **@5078dbe0 S3 shared instance** — group map keyed (config word,
+   -D hash); ensure_bind_forest adopts before probing; ownership via
+   `_bind_forest_holder` shared_ptr (raw delete removed); declidx
+   verdict cache keyed (instance, closure). Gate:
+   `tests/testprojectwiden` — probe-verified FILE bound=0 in TU 1's
+   sweep, bound=1 + union materialization on the ADOPTED instance in
+   TU 2 (forest 29ms → 11ms, no re-open), byte-equal to the C oracle.
+
+**Forest residue (~45ms):** first TU 28ms = the S1-miss intern-spine
+decode (14-frame 11.6MB zstd — a pack-format / lazy-spine lever);
+adv_actions 10ms + adv_travel/adv_loop ~3ms each = DISTINCT closures
+paying their own sweep + union increment + register (the verdict cache
+hits only on identical closure sets); register stays per-Program (R4
+full shape). Validation: units 7/7, dev subsets 8/8, packed 42/42,
+testprojectwiden both lanes, adventure parity 3+94 byte-identical
+after every slice.
+
+### The design as landed (was: DESIGN LOCKED)
 
 The remaining forest cost is per-TU repetition over one immutable blob.
 Coupling audit (session 118, code-verified):
@@ -172,10 +208,14 @@ before going wide: `intern_table::intern`, `id_table::add`
 group's own maps. The existing PROCESS-level caches (S1 decoded
 segments, recordability fixpoint) keep their mutexes — unchanged.
 
-After R4-lite the projected packed floor is ~130–150ms; the rest is
-front-end throughput (lex/parse/cir per-TU machinery — the
-project_frontend_performance arc's territory: flat structures, spans,
-interning) and c2mir. The tcc bar (~22ms) likely also needs the per-TU
+R4-lite landed at ~171–175ms against the ~130–150ms projection — the
+gap is the residue named above (first-TU spine decode, per-closure
+increments, per-TU register). NEXT levers, in measured order (packed
+phase lines): lex 31ms / cir 30ms / parse 23ms / c2mir 19ms — the
+front-end throughput territory (project_frontend_performance arc:
+flat structures, spans, one interned table), then the 28ms spine
+decode (lazy/raw spine in the pack format), then engine init inside
+"other" ~25ms. The tcc bar (~22ms) likely also needs the per-TU
 lean-prelude parse shared (the R4 full shape).
 
 ## Traps for the next session

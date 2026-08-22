@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup leg 2 (R4-lite): adventure packed ~215 → ~172 ms —
+  sibling TUs of one `--project` compile share ONE compile substrate**
+  (`MadcCompileGroup`, docs/plans/2026-08-22-cold-jit-startup.md; forest
+  phase 79 → 45 ms). Three parity-gated slices:
+  - **S1: one string pool + one project type-id table per program**
+    (shared_ptr owners behind the unchanged `strpool`/`project_types`
+    reference members; group created by the project driver, private
+    pools everywhere else). Also fixes a latent multi-TU hazard: the
+    ambient `madc_active_project_types` is last-binder-wins, so runtime
+    type-id queries could resolve against the wrong TU's table.
+  - **S2: incremental filter-union materialization** —
+    `materialize_for()` widens a shared forest's demand filter
+    monotonically (per-name verdict OR) and re-runs the passes with
+    done-guards, so a later TU's wider closure adds records instead of
+    being starved by the first TU's view.
+  - **S3: one bound `CirFrozenForest` per dialect per group** (keyed
+    producer-config word + -D hash; adopted before probing; shared_ptr
+    ownership replaces the raw delete) plus an (instance, closure)
+    decl-index verdict cache that skips repeat all-units sweeps.
+    Gated by `tests/testprojectwiden` — TU 1 binds only `<stddef.h>`,
+    TU 2 binds `<stdio.h>` and uses `FILE`, which exists only if the
+    union generation ran on the adopted instance (probe-verified:
+    `FILE bound=0` in TU 1's sweep, `bound=1` in TU 2's).
+  - Thread contract stated on the struct (thread-safety.md): mutation
+    single-threaded (sequential project lane); F2 parallel-TU work must
+    synchronize the group's members.
 - **Cold JIT startup: adventure 760 → ~215 ms packed, 1.9 s → ~0.29 s
   dev** (the tinycc-parity arc, docs/plans/2026-08-22-cold-jit-startup.md;
   tcc's bar on the original 18K-line C adventure is ~22 ms). Four levers,
