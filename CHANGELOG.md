@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: compiler-derived forest functions register their
+  parser surfaces only on demand — 890.037M → 889.552M Ir (−0.0545%,
+  same-binary interleaved A/B on the current filtered baseline).** The
+  decl-index verdict is now tri-state: source declarations stay eager,
+  excluded names drop, and unindexed compiler products retain immutable
+  `FuncDef`/body identity without allocating a `Variable`, `Method`,
+  namespace entry, or overload entry. Exact lookup, overload-family
+  lookup, and CIR reachability promote only demanded records through one
+  shared registration owner. Deferred identities still reserve their
+  producer-assigned `__oN` ranks, preventing a new consumer specialization
+  from colliding with a cached product. The vector gate observes 20
+  deferred products with 7 activated / 13 untouched; project gate,
+  forest bind 26/26, packed Adventure parity 3+94, and packed forest
+  93/93 remain green.
 - **Cold JIT startup R4-full: sibling project TUs share exact immutable
   prelude images — packed Adventure 917.37M → 889.34M Ir (−3.055%,
   same-binary interleaved A/B).** Pure direct embedded auto-includes are

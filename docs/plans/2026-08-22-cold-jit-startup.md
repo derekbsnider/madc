@@ -226,16 +226,16 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 | malloc/free family | ~12% | spread; the flat-structures territory |
 | dynamic_cast (493K calls) | ~8.8% | FIXED @a19bca42 (as_X kind accessors, below): 99M → 6.6M Ir (0.68%) |
 | materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
-| flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | getenv FIXED @da1ffcd3; the ~9K pending funcs/TU are the verdict-0 derived surface — narrowing it = demand-driven derived-entity restore, own slice |
+| flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | FIXED @da1ffcd3 + @cf40dc2f: getenv cached; verdict-0 derived funcs retain FuncDef/body identity but register parser surfaces only on demand (current already-filtered Adventure baseline −0.0545% Ir) |
 | inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | FIXED @44c4e9fa (R4-full immutable images + fresh shells, below): same-binary launch −3.055% Ir |
 | strcmp/memcmp/strlen/string== | ~9% | spread string machinery |
 
 NEXT, in measured order: (1) the de-RTTI dispatch sweep — LANDED
 @a19bca42, (2) lazy MEMBER-template hydration at the flush — LANDED
 @1f820fdd, (3) R4-full shared prelude lex/parse — LANDED @44c4e9fa
-(all below), (4) demand-driven derived-entity restore (the ~9K
-verdict-0 funcs per binding TU). The tcc bar (~22ms) still needs that
-slice plus the malloc/flat-structures arc.
+(all below), (4) demand-driven derived-entity restore — LANDED
+@cf40dc2f. The tcc bar (~22ms) now points at the malloc/flat-structures
+arc and the remaining zstd spine/arena size trade.
 
 ## The de-RTTI sweep — LANDED (session 119, 2026-08-22, @a19bca42)
 
@@ -393,6 +393,48 @@ release rebuilt and packed with forest-pack parse errors at baseline
 93/93. The merge-wave fulltest/EXE/OBJ batteries were not repeated on
 this incremental slice.
 
+## Demand-driven derived-function restore — LANDED (session 122, 2026-08-22, @cf40dc2f)
+
+**Measured (same binary, interleaved A/B, packed Adventure launch):**
+eager derived registration = **890,037,417 / 890,037,387 Ir**;
+demand-driven = **889,551,968 / 889,551,968 Ir**. The deterministic
+reduction is **485,434 Ir (−0.0545%)**, with byte-identical output.
+This is smaller than the session-118 attribution suggested because the
+intervening materialization and closure filters had already reduced the
+residual surface: the single-TU Adventure launch exposes only 7
+verdict-0 products, not the historical ~9K. The measurement-only eager
+switch was removed before commit.
+
+**Mechanism — identity now, parser surface on demand.** The decl-index
+verdict is tri-state: positive is source-declared and registers eagerly,
+negative is outside the bound closure and drops, zero is a compiler-
+derived identity. A zero-verdict free function retains its immutable
+restored `FuncDef`, signature, and optional forest-body locator in
+`forest_deferred_funcs`, but does not allocate a `Variable`, `Method`,
+namespace entry, or overload entry. Exact lazy lookup, namespace-family
+lookup, free-operator lookup, and CIR reachability promote only the
+demanded record through `register_forest_func`, the one registration
+owner shared with the eager path. The maps and counters are Program-local;
+the existing sequential compile contract is unchanged.
+
+One hidden contract mattered: a deferred producer identity still owns
+its saved overload rank. `unique_overload_symbol` therefore treats
+deferred keys as occupied without hydrating them. Without that
+reservation, a consumer-created `vector<long>` specialization reused a
+bare symbol held by the cached `vector<int>` product and MIR diagnosed a
+repeated function with incompatible signatures. The exact-match vector
+gate now also requires nonzero deferred, activated, and remaining counts;
+its observed disposition is **349 eager + 20 deferred; 7 activated / 13
+remain**. The new-specialization reducer reports **349 + 20; 0 / 20** and
+matches live madc and g++.
+
+Validation @cf40dc2f: `project_gate` green; `forest_bind_gate` 26/26;
+final release rebuilt and packed with forest-pack parse errors at the
+93/93 baseline; packed Adventure parity 3 fragments + 94 whole logs
+byte-identical. Packed project stats report **408 eager + 28 deferred;
+0 activated / 28 remain** across 11 TUs. The merge-wave fulltest/EXE/OBJ
+batteries were not repeated on this incremental slice.
+
 ## Traps for the next session
 
 - Wall time drifts on the container across minutes (thermal/load) — the
@@ -409,3 +451,6 @@ this incremental slice.
 - Release binary is stripped: profile the DEV binary with
   `--forest-bind=bin/madc-release` (config gate accepts it — the
   verify_macho_release.sh precedent).
+- Deferred forest identities reserve their producer-assigned `__oN`
+  ranks even before registration; rank allocation must query the deferred
+  index without activating it.

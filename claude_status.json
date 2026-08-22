@@ -1,8 +1,8 @@
 {
  "version": "0.94.0",
  "date": "2026-08-22",
- "snapshot_note": "session 121: R4-full shared immutable prelude images landed; next measured lever is demand-driven derived restore",
- "head": "44c4e9fa",
+ "snapshot_note": "session 122: demand-driven derived-function forest restore landed; next measured lever is malloc/flat structures",
+ "head": "cf40dc2f",
  "branch": "feature/track7-hub-projections-claude",
  "live_handoff_previous": {
   "session": 119,
@@ -32,32 +32,32 @@
   ]
  },
  "live_handoff": {
-  "session": 121,
+  "session": 122,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "44c4e9fa (R4-full shared prelude images) + docs commit",
-  "headline": "R4-FULL SHARED PRELUDE IMAGES LANDED: packed Adventure launch 917,365,100 -> 889,338,452 Ir and 917,365,100 -> 889,338,422 Ir (-28.03M / -3.055%, SAME-BINARY interleaved A/B), output byte-identical. One MadcCompileGroup owns immutable exact post-preprocessor images for eligible pure direct embedded auto-includes; sibling TUs materialize FRESH mutable TokenBase shells and replay only observed macro deltas. Final Adventure stats: 19 hits / 4 compulsory misses / 15,426 fresh shells. The measurement-only disable switch is absent from production. Bar remains TINYCC PARITY (~22ms).",
+  "head": "cf40dc2f (demand-driven derived-function restore) + docs commit",
+  "headline": "DEMAND-DRIVEN DERIVED-FUNCTION RESTORE LANDED: current packed Adventure baseline 890,037,417/387 -> 889,551,968/968 Ir (-485,434 / -0.0545%, SAME-BINARY interleaved A/B), output byte-identical. Verdict-0 compiler products retain immutable FuncDef/body identity but build Variable/Method/namespace/overload surfaces only after exact lookup, family lookup, free-operator lookup, or CIR reachability demands them. Deferred keys reserve their producer __oN ranks without hydration. Final packed Adventure project stats: 408 eager + 28 deferred; 0 activated / 28 remain. Measurement switch absent from production. Bar remains TINYCC PARITY (~22ms).",
   "settled": [
-   "@44c4e9fa contract: cache key = header + LanguageStd/GNU posture + include-once bit + transitive lexically-visible macro state; ## falls back to full macro state. Eligibility is direct embedded text with only define/undef/conditionals, one textual mutation per name, no forest/PCH/nested include and no trivia/pack/conditional transaction; every other path stays with the literal include owner",
-   "ROM/RAM split: TokenImage stores immutable TokenRec + kind payload + observed macro delta; restore allocates a new shell through Program factories, preserves the new arena slot id, restores lexer fields, interns each distinct file name into Program stable storage, then replays the delta. Parser-owned fields are never shared",
-   "testpreludecache makes exactness observable: ordinary ns_php image in TU A; incoming count->count_alt macro forces a distinct image in TU B; matching TU C reuses B through fresh shells. The initial full-table diff/source-rescan implementation saved only 0.24%; cached dependency IDs + textual-mutation-only snapshots yielded the final 3.055%",
-   "en-route O2 lifetime fix: restored token file pointers cannot retain strpool.c_str() because later intern growth moves that backing vector; materialization now uses Program::intern_file stable storage",
-   "MEASUREMENT LAW HOLDS: Ir totals are session-local; only interleaved same-binary A/B pairs are compared. Measurement switch removed before commit"
+   "@cf40dc2f contract: decl-index verdict +1 remains eager, -1 drops, 0 keeps restored FuncDef/signature/body identity in Program-local deferred indexes without parser surfaces",
+   "register_forest_func is the one restored-function registration owner. Exact lazy lookup, namespace/display family lookup, free-operator lookup, and the CIR referenced-function fixpoint activate through it; untouched records stay deferred",
+   "OVERLOAD-RANK LAW: deferred identities still occupy their producer-assigned bare/__oN names. unique_overload_symbol queries the deferred index without activation; otherwise a new vector<long> specialization collides with a cached vector<int> product",
+   "forest_bind vec exact-match disposition is 349 eager + 20 deferred; 7 activated / 13 remain. The new-specialization reducer is 349 + 20; 0 / 20 and matches live madc + g++",
+   "MEASUREMENT LAW HOLDS: Ir totals are session-local; only interleaved same-binary A/B pairs are compared. The measurement-only eager switch was removed before commit"
   ],
   "validation": [
-   "new three-TU macro-context reducer byte-exact on dev + final packed release; stats show the expected context miss then same-context hit",
    "project_gate GREEN; forest_bind_gate GREEN 26/26; Adventure parity 3 fragments + 94 whole logs byte-identical",
-   "release rebuilt and packed after production-only cleanup; forest_pack_gate OK with parse-errors at baseline 93/93; final packed Adventure 19 hits / 4 misses / 15,426 shells",
+   "release rebuilt and packed after production-only cleanup; forest_pack_gate OK with parse-errors at baseline 93/93; final packed Adventure 408 eager + 28 derived deferred, 0 activated / 28 remain",
+   "interleaved same-binary callgrind A/B: eager 890,037,417/387; demand-driven 889,551,968/968; deterministic -485,434 Ir (-0.0545%)",
    "last merge-wave fulltest remains 1133/0 from session 120 and was not rerun for this incremental slice",
    "OWED AT MERGE WAVE (owner call): fulltest with new reducer, EXE/OBJ lanes + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 dup __madc_global_init"
   ],
   "next": [
-   "1. demand-driven derived-entity restore: ~9K verdict-0 free funcs staged+registered per binding TU (findVariable 31.7M / 3.27% in the prior profile)",
-   "2. malloc/flat-structures arc (malloc family ~13.5%) + zstd spine/arena remainder (raw spine remains an owner size-trade)",
+   "1. malloc/flat-structures arc: malloc family was ~13.5% in the last attribution; re-profile the current packed same-session baseline before choosing the deepest allocation owner",
+   "2. zstd spine/arena remainder: raw spine avoids decode but remains an explicit ~10MB release-binary size trade requiring owner direction",
    "3. merge wave (owner call): fulltest + EXE/OBJ + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 duplicate __madc_global_init",
-   "4. traps: Ir baselines are SESSION-LOCAL (interleave same-binary A/B); restored file names require Program stable storage; wall drifts; .c/gnu17 TUs use embedded headers, not forest; gate reproducers need the gate's own env"
+   "4. traps: deferred identities reserve __oN ranks without activation; Ir baselines are SESSION-LOCAL; wall drifts; .c/gnu17 TUs use embedded headers, not forest; gate reproducers need the gate's own env"
   ],
-  "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude remains the explicitly transferred active branch. Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md. Continue with demand-driven derived-entity restore unless the owner calls the merge wave. Container does all builds/tests. Rule trailers remain gated. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
+  "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude remains the explicitly transferred active branch. Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md. Re-profile and continue with the malloc/flat-structures arc unless the owner calls the merge wave. Container does all builds/tests. Rule trailers remain gated. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir — ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
  "build_status": "clean — zero warnings on every lane (-Werror), warning census 0 tests with warnings / 0 total / 0 baseline",
