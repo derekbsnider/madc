@@ -67,8 +67,599 @@ struct ReadTimer
 // From precompiled_headers.cpp (generated)
 struct PrecompiledHeader { const uint8_t *data; size_t size; };
 extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
+static bool find_filesystem_precompiled_header(Program &pgm,
+					       const std::string &incfile,
+					       bool is_system,
+					       std::string &outpath);
 
 using namespace std;
+
+// R4-full shared prelude cache. A cached image is immutable lexer output plus
+// the exact post-preprocessor state produced by ONE pure embedded fragment.
+// TokenBase itself is deliberately absent: parser-side fields on those shells
+// are mutable, so every sibling TU materializes a fresh shell from TokenRec.
+struct MadcSharedPreludeCache
+{
+    struct TokenImage
+    {
+	TokenRec rec;
+	TokenType type = TokenType::ttBase;
+	std::string spelling;
+	std::string source_text;
+	long double real_value = 0;
+	DataDef *datatype = NULL;
+	int trivia_count = 0;
+	bool wide = false;
+    };
+
+    struct Entry
+    {
+	struct MacroDelta
+	{
+	    enum Kind { undefine, define_object, define_function } kind;
+	    std::string name;
+	    std::string value;
+	    Program::MacroDef macro;
+	};
+	std::vector<TokenImage> tokens;
+	std::vector<MacroDelta> macro_deltas;
+	std::string header;
+	std::string include_key;
+    };
+
+    struct MacroState
+    {
+	enum Kind { absent, object, function } kind = absent;
+	std::string name;
+	std::string value;
+	Program::MacroDef macro;
+    };
+
+    std::map<std::string, Entry> entries;
+
+    // The embedded text is process-constant and every Program in the group
+    // shares one spelling universe. Discover lexical dependencies and possible
+    // macro writes once, then probe each TU's flat maps by spelling id.
+    std::map<std::string, std::vector<uint32_t> > dependency_ids;
+    std::map<std::string, std::vector<std::string> > mutation_names;
+
+    static void append_u64(std::string &out, uint64_t value)
+    {
+	out.append(reinterpret_cast<const char *>(&value), sizeof(value));
+    }
+
+    static void append_blob(std::string &out, const std::string &value)
+    {
+	append_u64(out, (uint64_t)value.size());
+	out.append(value.data(), value.size());
+    }
+
+    static bool embedded_fragment_is_pure(
+	const std::string &text, std::vector<std::string> *mutations = NULL)
+    {
+	// Only conditional/object-macro directives have state fully represented
+	// by define_map/macro_map below. Includes, loads, pragmas, and line/error
+	// controls keep using the literal include owner.
+	if ( text.find("_Pragma") != std::string::npos )
+	    return false;
+	std::set<std::string> seen_mutations;
+	if ( mutations )
+	    mutations->clear();
+	for ( size_t pos = 0; pos < text.size(); )
+	{
+	    size_t end = text.find('\n', pos);
+	    if ( end == std::string::npos )
+		end = text.size();
+	    size_t p = pos;
+	    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+		++p;
+	    if ( p < end && text[p] == '#' )
+	    {
+		++p;
+		while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+		    ++p;
+		size_t word_at = p;
+		while ( p < end && (isalpha((unsigned char)text[p]) || text[p] == '_') )
+		    ++p;
+		std::string directive = text.substr(word_at, p - word_at);
+		if ( directive != "define" && directive != "undef"
+		  && directive != "if" && directive != "ifdef"
+		  && directive != "ifndef" && directive != "elif"
+		  && directive != "else" && directive != "endif" )
+		    return false;
+		if ( directive == "define" || directive == "undef" )
+		{
+		    while ( p < end && (text[p] == ' ' || text[p] == '\t') )
+			++p;
+		    size_t name_at = p;
+		    if ( p == end
+		      || !(isalpha((unsigned char)text[p]) || text[p] == '_') )
+			return false;
+		    ++p;
+		    while ( p < end
+			 && (isalnum((unsigned char)text[p]) || text[p] == '_') )
+			++p;
+		    std::string name = text.substr(name_at, p - name_at);
+		    // A single textual mutation per name makes final-state replay
+		    // equivalent to directive-event replay, including inactive arms.
+		    if ( !seen_mutations.insert(name).second )
+			return false;
+		    if ( mutations )
+			mutations->push_back(name);
+		}
+	    }
+	    pos = end < text.size() ? end + 1 : end;
+	}
+	return true;
+    }
+
+    static bool candidate(Program &pgm, const std::string &header)
+    {
+	if ( !pgm.compile_group || pgm.pack_recording || pgm.keep_trivia
+	  || pgm.suppress_auto_include_scan || !pgm._pending_pack_ops.empty()
+	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty()
+	  || !pgm._macro_save_stack.empty() )
+	    return false;
+	const std::string *embedded = find_embedded_header(header);
+	if ( !embedded || !pgm.is_embedded_header_allowed(header)
+	  || pgm.embedded_header_outranked(header)
+	  || find_precompiled_header(header) )
+	    return false;
+	std::string pch_path;
+	if ( find_filesystem_precompiled_header(pgm, header, true, pch_path) )
+	    return false;
+	return embedded_fragment_is_pure(*embedded);
+    }
+
+    static void collect_identifiers(const std::string &text,
+				    std::set<std::string> &names)
+    {
+	bool line_comment = false;
+	bool block_comment = false;
+	char quote = 0;
+	for ( size_t i = 0; i < text.size(); )
+	{
+	    char ch = text[i];
+	    char next = i + 1 < text.size() ? text[i + 1] : 0;
+	    if ( line_comment )
+	    {
+		if ( ch == '\n' ) line_comment = false;
+		++i;
+		continue;
+	    }
+	    if ( block_comment )
+	    {
+		if ( ch == '*' && next == '/' )
+		{
+		    block_comment = false;
+		    i += 2;
+		}
+		else
+		    ++i;
+		continue;
+	    }
+	    if ( quote )
+	    {
+		if ( ch == '\\' && next )
+		    i += 2;
+		else
+		{
+		    if ( ch == quote ) quote = 0;
+		    ++i;
+		}
+		continue;
+	    }
+	    if ( ch == '/' && next == '/' )
+	    {
+		line_comment = true;
+		i += 2;
+		continue;
+	    }
+	    if ( ch == '/' && next == '*' )
+	    {
+		block_comment = true;
+		i += 2;
+		continue;
+	    }
+	    if ( ch == '\'' || ch == '"' )
+	    {
+		quote = ch;
+		++i;
+		continue;
+	    }
+	    if ( isalpha((unsigned char)ch) || ch == '_' )
+	    {
+		size_t begin = i++;
+		while ( i < text.size()
+		     && (isalnum((unsigned char)text[i]) || text[i] == '_') )
+		    ++i;
+		names.insert(text.substr(begin, i - begin));
+		continue;
+	    }
+	    ++i;
+	}
+    }
+
+    static bool macro_equal(const Program::MacroDef &a,
+			    const Program::MacroDef &b)
+    {
+	return a.params == b.params && a.variadic == b.variadic
+	    && a.variadic_param == b.variadic_param && a.body == b.body;
+    }
+
+    static void append_all_macro_state(Program &pgm, std::string &key)
+    {
+	append_u64(key, (uint64_t)pgm.define_map.size());
+	pgm.define_map.for_each([&key](const char *name, std::string &value) {
+	    append_blob(key, name ? std::string(name) : std::string());
+	    append_blob(key, value);
+	    return false;
+	});
+	append_u64(key, (uint64_t)pgm.macro_map.size());
+	pgm.macro_map.for_each([&key](const char *name, Program::MacroDef &macro) {
+	    append_blob(key, name ? std::string(name) : std::string());
+	    append_u64(key, (uint64_t)macro.params.size());
+	    for ( size_t i = 0; i < macro.params.size(); ++i )
+		append_blob(key, macro.params[i]);
+	    append_u64(key, macro.variadic ? 1 : 0);
+	    append_blob(key, macro.variadic_param);
+	    append_blob(key, macro.body);
+	    return false;
+	});
+    }
+
+    const std::vector<uint32_t> &dependencies_for(Program &pgm,
+						   const std::string &header)
+    {
+	std::map<std::string, std::vector<uint32_t> >::iterator cached =
+	    dependency_ids.find(header);
+	if ( cached != dependency_ids.end() )
+	    return cached->second;
+	std::set<std::string> names;
+	const std::string *text = find_embedded_header(header);
+	if ( text )
+	    collect_identifiers(*text, names);
+	std::vector<uint32_t> ids;
+	ids.reserve(names.size());
+	for ( std::set<std::string>::const_iterator ni = names.begin();
+	      ni != names.end(); ++ni )
+	    ids.push_back(pgm.strpool.intern(*ni));
+	return dependency_ids.insert(std::make_pair(header, ids)).first->second;
+    }
+
+    const std::vector<std::string> &mutations_for(const std::string &header)
+    {
+	std::map<std::string, std::vector<std::string> >::iterator cached =
+	    mutation_names.find(header);
+	if ( cached != mutation_names.end() )
+	    return cached->second;
+	std::vector<std::string> names;
+	const std::string *text = find_embedded_header(header);
+	if ( text )
+	    embedded_fragment_is_pure(*text, &names);
+	return mutation_names.insert(std::make_pair(header, names)).first->second;
+    }
+
+    std::string make_key(Program &pgm, const std::string &header)
+    {
+	std::string key;
+	append_blob(key, header);
+	append_u64(key, (uint64_t)pgm.language_std);
+	append_u64(key, pgm.gnu_dialect ? 1 : 0);
+	const std::vector<uint32_t> &base = dependencies_for(pgm, header);
+	std::set<uint32_t> dependencies(base.begin(), base.end());
+	std::vector<uint32_t> work(base.begin(), base.end());
+	bool needs_full_state = false;
+	for ( size_t wi = 0; wi < work.size(); ++wi )
+	{
+	    uint32_t name = work[wi];
+	    const std::string *object = pgm.define_map.find_readonly(name);
+	    const Program::MacroDef *function = pgm.macro_map.find_readonly(name);
+	    if ( object )
+	    {
+		append_u64(key, 1);
+		append_blob(key, *object);
+		std::set<std::string> nested;
+		collect_identifiers(*object, nested);
+		for ( std::set<std::string>::const_iterator ni = nested.begin();
+		      ni != nested.end(); ++ni )
+		{
+		    uint32_t nested_id = pgm.strpool.intern(*ni);
+		    if ( dependencies.insert(nested_id).second )
+			work.push_back(nested_id);
+		}
+		if ( object->find("##") != std::string::npos )
+		    needs_full_state = true;
+	    }
+	    else if ( function )
+	    {
+		append_u64(key, 2);
+		append_u64(key, (uint64_t)function->params.size());
+		for ( size_t i = 0; i < function->params.size(); ++i )
+		    append_blob(key, function->params[i]);
+		append_u64(key, function->variadic ? 1 : 0);
+		append_blob(key, function->variadic_param);
+		append_blob(key, function->body);
+		std::set<std::string> nested;
+		collect_identifiers(function->body, nested);
+		for ( std::set<std::string>::const_iterator ni = nested.begin();
+		      ni != nested.end(); ++ni )
+		{
+		    uint32_t nested_id = pgm.strpool.intern(*ni);
+		    if ( dependencies.insert(nested_id).second )
+			work.push_back(nested_id);
+		}
+		if ( function->body.find("##") != std::string::npos )
+		    needs_full_state = true;
+	    }
+	    else
+		append_u64(key, 0);
+	}
+	// Token-paste can synthesize a macro name that is not lexically visible.
+	// Keep such fragments exact by falling back to the full preprocessor key.
+	append_u64(key, needs_full_state ? 1 : 0);
+	if ( needs_full_state )
+	    append_all_macro_state(pgm, key);
+	std::string include_key = "<" + header + ">";
+	std::map<std::string, bool>::const_iterator ii =
+	    pgm.included_files.find(include_key);
+	append_u64(key, ii != pgm.included_files.end() && ii->second ? 1 : 0);
+	return key;
+    }
+
+    static MacroState macro_state(Program &pgm, const std::string &name)
+    {
+	MacroState state;
+	state.name = name;
+	const std::string *object = pgm.define_map.find_readonly(name);
+	const Program::MacroDef *function = pgm.macro_map.find_readonly(name);
+	if ( object )
+	{
+	    state.kind = MacroState::object;
+	    state.value = *object;
+	}
+	else if ( function )
+	{
+	    state.kind = MacroState::function;
+	    state.macro = *function;
+	}
+	return state;
+    }
+
+    static void capture_macro_deltas(Program &pgm,
+				      const std::vector<MacroState> &before,
+				      Entry &entry)
+    {
+	for ( size_t i = 0; i < before.size(); ++i )
+	{
+	    const MacroState &old = before[i];
+	    MacroState now = macro_state(pgm, old.name);
+	    if ( old.kind == now.kind
+	      && (now.kind != MacroState::object || old.value == now.value)
+	      && (now.kind != MacroState::function
+		  || macro_equal(old.macro, now.macro)) )
+		continue;
+	    Entry::MacroDelta delta;
+	    delta.name = now.name;
+	    if ( now.kind == MacroState::object )
+	    {
+		delta.kind = Entry::MacroDelta::define_object;
+		delta.value = now.value;
+	    }
+	    else if ( now.kind == MacroState::function )
+	    {
+		delta.kind = Entry::MacroDelta::define_function;
+		delta.macro = now.macro;
+	    }
+	    else
+		delta.kind = Entry::MacroDelta::undefine;
+	    entry.macro_deltas.push_back(delta);
+	}
+    }
+
+    static bool snapshot_token(Program &pgm, TokenBase *tb, TokenImage &image)
+    {
+	if ( !tb || !tb->leading_trivia.empty()
+	  || pgm._pragma_pack_events.count(tb) )
+	    return false;
+	image.rec = tb->rec;
+	image.rec.slot_id = 0;
+	image.type = tb->type();
+	image.datatype = tb->datadef();
+	if ( image.type == TokenType::ttIdentifier
+	  || image.type == TokenType::ttString
+	  || image.type == TokenType::ttComment
+	  || image.type == TokenType::ttKeyword
+	  || image.type == TokenType::ttDataType )
+	{
+	    TokenIdent *ident = (TokenIdent *)tb;
+	    image.spelling.assign(ident->spelling(), ident->spelling_len());
+	}
+
+	switch ( image.type )
+	{
+	case TokenType::ttInteger:
+	    image.source_text = ((TokenInt *)tb)->source_text;
+	    return true;
+	case TokenType::ttReal:
+	    image.real_value = ((TokenReal *)tb)->ldval();
+	    image.source_text = ((TokenReal *)tb)->source_text;
+	    return true;
+	case TokenType::ttString:
+	    image.wide = ((TokenStr *)tb)->wide;
+	    return true;
+	case TokenType::ttSpace:
+	    image.trivia_count = ((TokenSpace *)tb)->cnt;
+	    return true;
+	case TokenType::ttTab:
+	    image.trivia_count = ((TokenTab *)tb)->cnt;
+	    return true;
+	case TokenType::ttEOL:
+	    image.trivia_count = ((TokenEOL *)tb)->cnt;
+	    return true;
+	case TokenType::ttComment:
+	case TokenType::ttIdentifier:
+	case TokenType::ttChar:
+	case TokenType::ttDataType:
+	case TokenType::ttKeyword:
+	case TokenType::ttOperator:
+	case TokenType::ttMultiOp:
+	case TokenType::ttSymbol:
+	    return true;
+	default:
+	    if ( getenv("MADC_PRELUDE_CACHE_PROBE") )
+		fprintf(stderr, "[prelude-cache] unsupported token type=%d id=%d\n",
+			(int)image.type, (int)tb->id());
+	    return false;
+	}
+    }
+
+    static bool entry_compatible(Program &pgm, const Entry &entry)
+    {
+	for ( size_t i = 0; i < entry.tokens.size(); ++i )
+	{
+	    const TokenImage &image = entry.tokens[i];
+	    if ( image.type == TokenType::ttDataType
+	      && pgm.datatype_map.find(image.spelling) == pgm.datatype_map.end() )
+		return false;
+	}
+	return true;
+    }
+
+    static TokenBase *materialize_token(Program &pgm, const TokenImage &image,
+					uint32_t &last_file_id,
+					const char *&last_file)
+    {
+	TokenBase *tb = NULL;
+	TokenID kind = (TokenID)image.rec.kind;
+	switch ( image.type )
+	{
+	case TokenType::ttIdentifier:
+	    tb = pgm.make_ident(image.spelling);
+	    break;
+	case TokenType::ttInteger:
+	    tb = image.source_text.empty()
+	       ? pgm.make_int(image.rec.value)
+	       : pgm.make_int(image.rec.value, image.source_text);
+	    break;
+	case TokenType::ttReal:
+	    tb = pgm.make_real(image.real_value);
+	    ((TokenReal *)tb)->source_text = image.source_text;
+	    break;
+	case TokenType::ttString:
+	    tb = pgm.make_str(image.spelling, image.wide);
+	    break;
+	case TokenType::ttChar:
+	    tb = pgm.make_char((int)image.rec.value);
+	    break;
+	case TokenType::ttDataType:
+	{
+	    flat_datatype_map_iter di = pgm.datatype_map.find(image.spelling);
+	    if ( di == pgm.datatype_map.end() )
+		return NULL;
+	    tb = pgm.make_datatype(image.spelling.c_str(), (*di)->definition);
+	    break;
+	}
+	case TokenType::ttComment:
+	    tb = pgm.make_rem(image.spelling);
+	    break;
+	case TokenType::ttSpace:
+	    tb = pgm.make_space(image.trivia_count);
+	    break;
+	case TokenType::ttTab:
+	    tb = pgm.make_tab(image.trivia_count);
+	    break;
+	case TokenType::ttEOL:
+	    tb = pgm.make_eol(image.trivia_count);
+	    break;
+	case TokenType::ttKeyword:
+	    if ( kind == TokenID::tkCPPKEYWORD )
+		tb = new TokenCppKeyword(image.spelling);
+	    else
+		tb = pgm.make_token(kind);
+	    break;
+	case TokenType::ttOperator:
+	case TokenType::ttMultiOp:
+	case TokenType::ttSymbol:
+	    tb = pgm.make_token(kind);
+	    break;
+	default:
+	    return NULL;
+	}
+	if ( !tb )
+	    return NULL;
+	if ( image.datatype )
+	    tb->setDataType(image.datatype);
+	uint32_t slot_id = tb->rec.slot_id;
+	tb->rec = image.rec;
+	tb->rec.slot_id = slot_id;
+	if ( image.rec.file_id != last_file_id )
+	{
+	    last_file_id = image.rec.file_id;
+	    last_file = last_file_id
+		? pgm.intern_file(pgm.strpool.str(last_file_id)) : NULL;
+	}
+	tb->file = last_file;
+	tb->line = image.rec.line;
+	tb->column = image.rec.column;
+	return tb;
+    }
+
+    static bool restore(Program &pgm, const Entry &entry)
+    {
+	if ( !entry_compatible(pgm, entry) )
+	    return false;
+	uint32_t last_file_id = 0;
+	const char *last_file = NULL;
+	for ( size_t i = 0; i < entry.tokens.size(); ++i )
+	{
+	    TokenBase *tb = materialize_token(pgm, entry.tokens[i],
+				       last_file_id, last_file);
+	    if ( !tb )
+		return false;
+	    ++pgm._tok_produced;
+	    pgm.tokens.push_back(tb);
+	}
+	for ( size_t i = 0; i < entry.macro_deltas.size(); ++i )
+	{
+	    const Entry::MacroDelta &delta = entry.macro_deltas[i];
+	    pgm.define_map.erase(delta.name);
+	    pgm.macro_map.erase(delta.name);
+	    if ( delta.kind == Entry::MacroDelta::define_object )
+	    {
+		pgm.define_map[delta.name] = delta.value;
+		pgm.note_std_abi_define(delta.name, delta.value);
+	    }
+	    else if ( delta.kind == Entry::MacroDelta::define_function )
+		pgm.macro_map[delta.name] = delta.macro;
+	}
+	pgm.included_files[entry.include_key] = true;
+	pgm.mark_embedded_include_flag(entry.header);
+	return true;
+    }
+
+    static bool capture(
+	Program &pgm, const std::string &header, size_t begin,
+	const std::vector<MacroState> &before_macros,
+	Entry &entry)
+    {
+	if ( !pgm._pending_pack_ops.empty() || !pgm._macro_save_stack.empty()
+	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty() )
+	    return false;
+	entry.tokens.reserve(pgm.tokens.size() - begin);
+	for ( size_t i = begin; i < pgm.tokens.size(); ++i )
+	{
+	    TokenImage image;
+	    if ( !snapshot_token(pgm, pgm.tokens[i], image) )
+		return false;
+	    entry.tokens.push_back(image);
+	}
+	capture_macro_deltas(pgm, before_macros, entry);
+	entry.header = header;
+	entry.include_key = "<" + header + ">";
+	return true;
+    }
+};
 
 static bool find_filesystem_precompiled_header(Program &pgm,
 					       const std::string &incfile,
@@ -1129,6 +1720,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 
 void Program::inject_pending_auto_includes()
 {
+    static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
     if ( skip_includes )
 	return;
     if ( !auto_includes_enabled() )
@@ -1154,6 +1746,42 @@ void Program::inject_pending_auto_includes()
 	      hi != ordered.end(); ++hi )
 	{
 	    const std::string &header = *hi;
+	    MadcSharedPreludeCache *preludes = NULL;
+	    std::string prelude_key;
+	    std::vector<MadcSharedPreludeCache::MacroState> prelude_before_macros;
+	    if ( MadcSharedPreludeCache::candidate(*this, header) )
+	    {
+		if ( !compile_group->shared_preludes )
+		    compile_group->shared_preludes.reset(new MadcSharedPreludeCache());
+		preludes = compile_group->shared_preludes.get();
+		prelude_key = preludes->make_key(*this, header);
+		std::map<std::string, MadcSharedPreludeCache::Entry>::const_iterator ci =
+		    preludes->entries.find(prelude_key);
+		if ( ci != preludes->entries.end()
+		  && MadcSharedPreludeCache::restore(*this, ci->second) )
+		{
+		    ++compile_group->shared_prelude_hits;
+		    compile_group->shared_prelude_tokens += ci->second.tokens.size();
+		    if ( prelude_probe )
+			fprintf(stderr, "[prelude-cache] hit %s (%zu tokens)\n",
+				header.c_str(), ci->second.tokens.size());
+		    continue;
+		}
+		++compile_group->shared_prelude_misses;
+		if ( prelude_probe )
+		    fprintf(stderr, "[prelude-cache] miss %s\n", header.c_str());
+		const std::vector<std::string> &mutations =
+		    preludes->mutations_for(header);
+		prelude_before_macros.reserve(mutations.size());
+		for ( size_t mi = 0; mi < mutations.size(); ++mi )
+		    prelude_before_macros.push_back(
+			MadcSharedPreludeCache::macro_state(*this, mutations[mi]));
+	    }
+
+	    size_t fragment_start = tokens.size();
+	    uint32_t boundary_spelling = fragment_start
+		? tokens[fragment_start - 1]->rec.spelling_id : 0;
+	    size_t forest_units_before = forest_chain_set.size();
 	    // Delegate to the LITERAL include owner: feed a synthetic
 	    // `#include <hdr>` line through the real directive handler, so
 	    // forest bind, PCH discovery, embedded text, the filesystem
@@ -1164,6 +1792,26 @@ void Program::inject_pending_auto_includes()
 	    // which is how retiring the embedded <string>/<sstream> twins
 	    // broke the C++ arm of auto-include unnoticed.
 	    tokenize_synthetic_system_include(header, "<auto-include>");
+
+	    // A direct embedded serving is pure lexer/preprocessor work. Cache its
+	    // immutable output only when the literal owner confirms that no forest
+	    // unit was adopted and no leading string literal merged backward across
+	    // the captured range. Forest/PCH/nested-include paths stay authoritative.
+	    bool boundary_unchanged = !fragment_start
+		|| tokens[fragment_start - 1]->rec.spelling_id == boundary_spelling;
+	    if ( preludes && forest_chain_set.size() == forest_units_before
+	      && boundary_unchanged )
+	    {
+		MadcSharedPreludeCache::Entry entry;
+		bool captured = MadcSharedPreludeCache::capture(
+			*this, header, fragment_start, prelude_before_macros, entry);
+		if ( captured )
+		    preludes->entries[prelude_key] = entry;
+		if ( prelude_probe )
+		    fprintf(stderr, "[prelude-cache] %s %s (%zu tokens)\n",
+			    captured ? "store" : "decline", header.c_str(),
+			    entry.tokens.size());
+	    }
 	}
     }
 

@@ -6087,10 +6087,14 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			"[stats] front-end (%zu TUs) . read %.3fs lex %.3fs"
 			" parse %.3fs (inst %.3fs) cir %.3fs c2mir %.3fs"
 			" forest %.3fs (%llu tokens)\n"
+			"[stats] shared prelude ....... %zu hits / %zu misses"
+			" (%zu fresh shells)\n"
 			"[stats] link ................ %.3f s\n"
 			"[stats] entry gen + TU inits  %.3f s\n",
 			parsed.size(), t_read, t_lex, t_parse, t_inst, t_cir,
 			t_c2m, t_forest, t_tok,
+			group.shared_prelude_hits, group.shared_prelude_misses,
+			group.shared_prelude_tokens,
 			std::chrono::duration<double>(_lk1 - _lk0).count(),
 			std::chrono::duration<double>(_gi1 - _lk1).count());
 	}

@@ -1,0 +1,11 @@
+// The embedded fragment declares php::count; this rename makes its token image
+// observably dependent on the incoming macro context while `php::` still
+// selects the ordinary auto-include provider.
+#define count count_alt
+
+long remapped_count()
+{
+	array xs;
+	php::array_push(xs, "x");
+	return php::count(xs);
+}

@@ -36,6 +36,7 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
@@ -2153,6 +2154,14 @@ struct MadcCompileGroup
     };
     std::map<std::pair<const void *, std::vector<uint32_t> >,
 	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
+    // R4-full: exact post-preprocessor token images for pure embedded
+    // auto-include fragments. The cache owns immutable TokenRec-based images;
+    // every adopting Program materializes fresh mutable TokenBase shells.
+    // Opaque here because the image also carries lexer-private macro state.
+    std::shared_ptr<MadcSharedPreludeCache> shared_preludes;
+    size_t shared_prelude_hits = 0;
+    size_t shared_prelude_misses = 0;
+    size_t shared_prelude_tokens = 0;
     MadcCompileGroup()
 	: strpool(std::make_shared<madc::dis::intern_table>()),
 	  project_types(std::make_shared<madc::dis::id_table<DataDef> >(
@@ -2163,6 +2172,7 @@ struct MadcCompileGroup
 // program class, keep things somewhat contained
 class Program
 {
+    friend struct MadcSharedPreludeCache;
 public:
     struct FunctionRegistrationSpec
     {
