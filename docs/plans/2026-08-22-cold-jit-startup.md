@@ -224,7 +224,7 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 |------|---------|--------|
 | zstd decodes (11 container-global segs, ~18MB raw: spine 4.1MB, arena 6.5MB, template payload+TOKENS 6.4MB, misc 0.9MB) | ~9.6% | PARKED: raw spine = +10MB binary (owner size-trade); template segs decode because the flush HYDRATES 364 derived member-template records (register_skipped_class_template_function) — lazy MEMBER-kind stubs are B2-entangled (parser.cpp:22046 kinds) — own slice |
 | malloc/free family | ~12% | spread; the flat-structures territory |
-| dynamic_cast (493K calls) | ~8.8% | the de-RTTI sweep: hot dispatch chains in parse/cir on C-shaped code (the old "0.36% negligible" finding was template-workload-specific) — own slice |
+| dynamic_cast (493K calls) | ~8.8% | FIXED @a19bca42 (as_X kind accessors, below): 99M → 6.6M Ir (0.68%) |
 | materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
 | flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | getenv FIXED @da1ffcd3; the ~9K pending funcs/TU are the verdict-0 derived surface — narrowing it = demand-driven derived-entity restore, own slice |
 | inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | the R4-full "share the prelude parse" target |
@@ -237,6 +237,56 @@ segment decodes + 364 hydrations for C-shaped TUs; B2 entanglement),
 inject_pending_auto_includes alone), (4) demand-driven derived-entity
 restore (the ~9K verdict-0 funcs per binding TU). The tcc bar (~22ms)
 needs several of these plus the malloc/flat-structures arc.
+
+## The de-RTTI sweep — LANDED (session 119, 2026-08-22, @a19bca42)
+
+**Measured (O2sym packed launch, same method):** program totals
+**1.13B → 0.970B Ir (−14.2%)**; `__dynamic_cast` **99.2M (8.8%) →
+6.6M (0.68%)** — the remaining 6.6M is the unconverted cold tail.
+(The 160M delta also contains @da1ffcd3's buckets+getenv, ~45M,
+measured pre-buckets in the 1.13B baseline.) Wall quiet-floor
+152–157ms in a drifty window (Ir is the comparator).
+
+**Mechanism — as_X kind accessors.** Attribution first: a debug-build
+(`make -C src debug`, -O0 -ggdb) callgrind with `--forest-bind=
+bin/madc-release`, parsed for per-line `__dynamic_cast` call edges
+(scratch parser over the callgrind file; the PLT stub is the only
+direct caller — its callers carry the lines). 495,874 calls over 422
+sites; the hot mass: the translate_expr/translate_stmt rung ladders
+(~32%), DataDef::unqualified (15%), and small type-kind helpers.
+Every hot test became a subclass-owned virtual: `TokenBase::as_<k>_tok()`
+/ `DataDef::as_<k>_dd()` default NULL, each class overrides `return
+this;`. Derived classes INHERIT the override, so closure matches
+dynamic_cast exactly — including across the token tree's
+virtual-base diamond (TokenFunc : TokenVar + TokenCpnd, both virtual
+TokenBase), which is WHY __dynamic_cast was expensive there (~200
+Ir/call type_info graph walk → ~10 Ir vcall). unqualified() is now
+virtual with the peel owned by DataDefCONST. ~150 measured-hot sites
+converted (null-guarded ternary; a vcall has no dynamic_cast NULL
+tolerance); the ~360-site cold tail keeps dynamic_cast and converts
+opportunistically via the now-standing accessor surface.
+
+**En-route fix (own commit @1e6bc464):** fulltest's forest_bind_gate
+[vecnewspec] was RED — and the pre-change binary failed identically.
+Bisect landed on @cfcd255e ("no-viable in a strict set errs LOUD") as
+the messenger; the defect was `pending_function_display_name` leaking
+into NESTED parseFunction runs (a member-template __mti product minted
+mid-instantiation inherited display "_Destroy"), the freeze
+serializing the bogus identity, and the restore flush registering
+_Destroy_aux<>::__destroy products as "::_Destroy" free-function
+overloads — a strict concrete-only set that threw where live parse
+early-NULLed. The stamp is now consume-once. MADC_OVL_PROBE gained
+per-candidate marker lines in the strict loop (the probe that found
+it). Lesson banked: the [vecnewspec] break was invisible to every
+targeted subset for two sessions — the arc's slices keep passing
+targeted suites while a fulltest-only gate sits broken; when a gate
+regression surfaces, bisect with the GATE'S OWN env
+(MADC_FOREST_ENV_CHECK=1) and reproducer before suspecting the
+current change.
+
+Validation @1e6bc464: fulltest 1133/0 + forest_bind_gate 26/26 +
+adventure parity 3+94 byte-identical + all ratchets; packed suite
+1133/0, pack parse-errors at baseline 93/93.
 
 ## Traps for the next session
 

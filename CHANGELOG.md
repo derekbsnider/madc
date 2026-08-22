@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: the de-RTTI sweep — launch 1.13B → 0.970B Ir
+  (−14.2%); `__dynamic_cast` 8.8% → 0.68%** — hot front-end dispatch
+  (the `translate_expr`/`translate_stmt` rung ladders,
+  `DataDef::unqualified`, the type-kind helpers and overload walkers —
+  495,874 calls over 422 sites, line-attributed by callgrind) no longer
+  queries RTTI. `TokenBase`/`DataDef` grew subclass-owned `as_X()` kind
+  accessors (default NULL, `return this;` overrides) whose closure
+  matches `dynamic_cast` exactly by override inheritance — including
+  across the token tree's virtual-base diamond, which is what made each
+  cast a ~200-Ir type_info walk. ~150 measured-hot sites converted; the
+  cold tail keeps `dynamic_cast` and migrates opportunistically.
+- **forest bind: a restored consumer's NEW template specialization could
+  hit a poisoned overload set** (`forest_bind_gate [vecnewspec]`:
+  vector<long> from a vector<int> producer died "no matching overload
+  for '::_Destroy'"). `pending_function_display_name` leaked into
+  NESTED `parseFunction` runs, so member-template `__mti` products
+  minted mid-instantiation inherited the outer function's display
+  identity; the freeze serialized it and the restore flush registered
+  `_Destroy_aux<>::__destroy` products as global `_Destroy` overloads —
+  a strict no-viable set once @cfcd255e made those err loud. The stamp
+  is consume-once now; `MADC_OVL_PROBE` prints strict-set candidate
+  markers. fulltest 1133/0 + forest_bind_gate 26/26 + packed 1133/0.
 - **Cold JIT startup: packed adventure ~172 → ~164 ms** — the blob-keyed
   recordability cache now also carries per-kind slot buckets (typedef /
   enum / derived / ns-surface / free-func + the anon-tag gensym floor),
