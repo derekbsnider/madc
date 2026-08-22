@@ -12,28 +12,32 @@
   "session": 118,
   "date": "2026-08-22",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "5078dbe0 (3 commits this session: S1 @b1141126, S2 @2fffddd3, S3 @5078dbe0)",
-  "headline": "COLD-STARTUP LEG 2 (R4-lite) LANDED: adventure packed ~215 -> ~172ms (forest 79 -> 45ms) via MadcCompileGroup \u2014 sibling TUs of one --project compile share ONE strpool + ONE type-id table (S1), materialization widens incrementally via filter union (S2), and ONE bound CirFrozenForest per dialect is adopted instead of re-opened, with an (instance,closure) declidx verdict cache (S3). Bar remains TINYCC PARITY (~22ms). Governing doc: docs/plans/2026-08-22-cold-jit-startup.md (results + residue updated).",
+  "head": "da1ffcd3 (5 commits this session: S1 @b1141126, S2 @2fffddd3, S3 @5078dbe0, docs @d340f0de, buckets+getenv @da1ffcd3)",
+  "headline": "COLD-STARTUP LEG 2 LANDED + ATTRIBUTED: adventure packed ~215 -> ~164ms (forest 79 -> 38ms). R4-lite (MadcCompileGroup: shared strpool/type-table/bound-forest, incremental filter-union materialize, gate tests/testprojectwiden) + per-kind slot buckets in the blob cache + findVariable per-call getenv fixed. The ranked -O2 lever table for the remaining ~164ms is IN THE PLAN DOC (docs/plans/2026-08-22-cold-jit-startup.md): de-RTTI dispatch sweep ~8.8%, zstd segment decodes ~9.6% (template hydration B2-entangled; raw spine = owner size-trade), malloc ~12%, per-TU prelude lex 5.5% (R4-full). Bar remains TINYCC PARITY (~22ms).",
   "settled": [
    "@b1141126 S1 shared pools: Program::strpool/project_types = reference members over shared_ptr owners; group param on ctors/create_program; fixes latent multi-TU ambient-table hazard (madc_active_project_types last-binder-wins)",
    "@2fffddd3 S2 incremental materialize: materialize_for() unions wider filters (monotone per-name OR; absent key = kept, never insert false); done-guards: _defs_by_tid + fresh-set (pass 1/2), ONE _mat_done_slots for slot-keyed passes (marked on PUSH only), _mat_done_globals/_mat_done_templates, persisted _method_by_func_id; set_materialize_filter retired (single caller)",
    "@5078dbe0 S3 shared instance: group.bind_forests keyed (config word, defines hash); ensure_bind_forest adopts-then-probes; _bind_forest_holder shared_ptr replaces raw delete in ~Program (ledger/source keep alias-guarded deletes); decl_verdicts cache keyed (instance ptr, sorted closure); group hoisted to CALLERS (declared before `parsed` \u2014 outlives the TU Programs that backpoint via Program::compile_group)",
    "gate: tests/testprojectwiden (.mad TUs; NULL->stddef.h narrow closure TU1, stdout->stdio.h wider TU2 using FILE) \u2014 probe-verified union path: MADC_DECLIDX_PROBE=FILE shows bound=0 sweep then bound=1 sweep, TU2 forest 11ms (no re-open); .c/gnu17 TUs resolve via EMBEDDED headers and never reach the forest (first reducer attempt was blind \u2014 trap recorded)",
    "thread contract stated on MadcCompileGroup (thread-safety.md): stdlib convention, mutation single-threaded, F2 must lock intern/add/forest mutation points",
-   "residue: forest 45ms = 28ms first-TU S1-miss intern-spine zstd decode + 3-10ms per DISTINCT closure (adv_actions/travel/loop: sweep+union+register) + per-TU register (R4-full territory)"
+   "residue: forest 45ms = 28ms first-TU S1-miss intern-spine zstd decode + 3-10ms per DISTINCT closure (adv_actions/travel/loop: sweep+union+register) + per-TU register (R4-full territory)",
+   "@da1ffcd3 per-kind slot buckets (ForestRecordable: typedef/enum/derived/ns/free-func slot lists + max_anon_tag, filled by the existing one-scan-per-blob builder; all 8 full-arena rescans converted incl. the derived fixpoint + the per-restore anon scan -> max_restored_anon_tag()); findVariable's MADC_DEBUG_AOT_VAR getenv now static (was per-lookup, 35K+ calls under the flush)",
+   "-O2 ATTRIBUTION METHOD (reusable): relink unstripped release objects -> bin/madc-O2sym, forest_pack it as its OWN carrier (self-image probe works, config matches), callgrind that; restore stripped release with strip + re-pack. 1.13B Ir total; the lever table is in the plan doc"
   ],
   "validation": [
    "each slice: container build clean (-Wall -Werror), units 7/7 (111 asserts), dev subset testproject*/testfreeze*/testfrozen*/testforest* 8/8, packed subset (map/vector/set/string/iostream/template/subscript + project) 42/42, adventure parity 3 fragments + 94 whole logs byte-identical",
    "testprojectwiden: gcc oracle 'widen n=5 ok=1'; dev + packed lanes 1/1",
    "packed wall 5-run: 171-175ms (was 210-225); dev ~0.3s unchanged (no carrier \u2014 win is packed-specific)",
-   "OWED AT MERGE WAVE: one full battery (JIT + packed + exe/obj + units) + /dupaudit scoped lexer/forest/project \u2014 targeted-only so far"
+   "OWED AT MERGE WAVE: one full battery (JIT + packed + exe/obj + units) + /dupaudit scoped lexer/forest/project \u2014 targeted-only so far",
+   "@da1ffcd3: parity 3+94 byte-identical; packed subset 43/43 (incl. testprojectwiden); dev subset 9/9; units 7/7; packed wall 163-166ms x5"
   ],
   "next": [
-   "1. front-end throughput (packed phase lines: lex 31ms / cir 30ms / parse 23ms / c2mir 19ms) \u2014 project_frontend_performance levers (flat structures, spans, one interned table) applied to per-TU machinery",
-   "2. first-TU 28ms spine decode: lazy/raw intern-spine in the pack format (S1-miss killer)",
-   "3. 'other' ~25ms (engine/MIR init, manifest) after that; tcc bar ~22ms endgame likely needs R4-full (share the lean-prelude parse across TUs)",
-   "4. traps: wall drifts (compare --show-stats phase lines; interleave A/B); -O0 callgrind = structure only; release stripped -> profile dev + --forest-bind=bin/madc-release; MADC_DECLIDX_PROBE=<substr> proves sweep/verdict paths; .c/gnu17 TUs use embedded headers NOT the forest",
-   "5. merge wave (owner call): full battery + /dupaudit; queued small fix: --project --emit=c11 dup __madc_global_init"
+   "1. de-RTTI dispatch sweep: 493K dynamic_cast calls = ~8.8% of the launch (C-shaped code; the old 'negligible' finding was template-workload-specific) \u2014 find the hot parse/cir dispatch chains (callers hide behind a PLT stub; use --dump-instr or targeted counters), convert to TokenType/TokenID switches",
+   "2. lazy MEMBER-template hydration at the flush: 364 derived member-template records hydrate eagerly per compile -> decodes the 6.4MB template payload+TOKENS segments (segs 16/17) even for C-shaped TUs; B2 placeholder-stamp entanglement (parser.cpp:22046 eager kinds) \u2014 own slice",
+   "3. R4-full shared prelude: inject_pending_auto_includes = 5.5% (11x per-TU fragment lex); sharing the prelude lex/parse across the group needs the ROM/RAM token split (pop-1 shells still carry mutable tree state \u2014 project_frontend_performance memory, 2.3 step 2 never landed)",
+   "4. demand-driven derived-entity restore: ~9K verdict-0 (unindexed=derived=kept) free funcs staged+registered per binding TU \u2014 narrow to reachable-from-admitted-owners",
+   "5. merge wave (owner call): full battery + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 dup __madc_global_init",
+   "6. traps: .c/gnu17 TUs use EMBEDDED headers not the forest; wall drifts (phase lines); -O0 callgrind structure only; MADC_DECLIDX_PROBE / MADC_FOREST_CACHE_PROBE"
   ]
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",

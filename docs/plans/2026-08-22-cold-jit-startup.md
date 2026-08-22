@@ -208,15 +208,35 @@ before going wide: `intern_table::intern`, `id_table::add`
 group's own maps. The existing PROCESS-level caches (S1 decoded
 segments, recordability fixpoint) keep their mutexes — unchanged.
 
-R4-lite landed at ~171–175ms against the ~130–150ms projection — the
-gap is the residue named above (first-TU spine decode, per-closure
-increments, per-TU register). NEXT levers, in measured order (packed
-phase lines): lex 31ms / cir 30ms / parse 23ms / c2mir 19ms — the
-front-end throughput territory (project_frontend_performance arc:
-flat structures, spans, one interned table), then the 28ms spine
-decode (lazy/raw spine in the pack format), then engine init inside
-"other" ~25ms. The tcc bar (~22ms) likely also needs the per-TU
-lean-prelude parse shared (the R4 full shape).
+R4-lite landed at ~171–175ms; the follow-on slice @da1ffcd3 (per-kind
+slot buckets in the blob cache + the findVariable per-call getenv)
+took it to **~163–166ms** (forest 45 → 38ms).
+
+## The -O2 attribution (session 118 — the ranked lever list)
+
+Method: relink the unstripped -O2 objects (`rm bin/madc-release; make
+-C src MODE=release ../bin/madc-release; cp` → `bin/madc-O2sym`), pack
+it as its own carrier (`forest_pack.sh bin/madc-O2sym`), then restore
+the stripped release (strip + re-pack). callgrind on the O2sym packed
+launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
+
+| cost | Ir share | status |
+|------|---------|--------|
+| zstd decodes (11 container-global segs, ~18MB raw: spine 4.1MB, arena 6.5MB, template payload+TOKENS 6.4MB, misc 0.9MB) | ~9.6% | PARKED: raw spine = +10MB binary (owner size-trade); template segs decode because the flush HYDRATES 364 derived member-template records (register_skipped_class_template_function) — lazy MEMBER-kind stubs are B2-entangled (parser.cpp:22046 kinds) — own slice |
+| malloc/free family | ~12% | spread; the flat-structures territory |
+| dynamic_cast (493K calls) | ~8.8% | the de-RTTI sweep: hot dispatch chains in parse/cir on C-shaped code (the old "0.36% negligible" finding was template-workload-specific) — own slice |
+| materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
+| flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | getenv FIXED @da1ffcd3; the ~9K pending funcs/TU are the verdict-0 derived surface — narrowing it = demand-driven derived-entity restore, own slice |
+| inject_pending_auto_includes (11×, the per-TU lean-prelude/fragment lex) | 5.5% | the R4-full "share the prelude parse" target |
+| strcmp/memcmp/strlen/string== | ~9% | spread string machinery |
+
+NEXT, in measured order: (1) the de-RTTI dispatch sweep (~9ms+), (2)
+lazy MEMBER-template hydration at the flush (kills the 6.4MB template
+segment decodes + 364 hydrations for C-shaped TUs; B2 entanglement),
+(3) R4-full shared prelude lex/parse (~9ms+ in
+inject_pending_auto_includes alone), (4) demand-driven derived-entity
+restore (the ~9K verdict-0 funcs per binding TU). The tcc bar (~22ms)
+needs several of these plus the malloc/flat-structures arc.
 
 ## Traps for the next session
 

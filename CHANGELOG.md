@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: packed adventure ~172 → ~164 ms** — the blob-keyed
+  recordability cache now also carries per-kind slot buckets (typedef /
+  enum / derived / ns-surface / free-func + the anon-tag gensym floor),
+  so every materialize pass walks exactly its kind instead of
+  re-scanning the whole arena per pass per generation; and
+  `Program::findVariable` no longer calls `getenv` per lookup (the
+  MADC_DEBUG_AOT_VAR probe is static now, like every other probe).
+  Ranked -O2 attribution of the remaining ~164 ms recorded in
+  docs/plans/2026-08-22-cold-jit-startup.md.
 - **Cold JIT startup leg 2 (R4-lite): adventure packed ~215 → ~172 ms —
   sibling TUs of one `--project` compile share ONE compile substrate**
   (`MadcCompileGroup`, docs/plans/2026-08-22-cold-jit-startup.md; forest
