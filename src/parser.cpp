@@ -16610,6 +16610,10 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	if ( name.compare(disp) != 0 )
 	    continue;
 	any_named = true;
+	// Lazy member-template hydration: scoring below reads the pattern
+	// fields (spellings, param type runs, [temp.func.order] compares) —
+	// thaw a still-frozen candidate now that its name matched.
+	fd->ensure_member_template_thawed();
 	Method *md = (Method *)mv->data;
 	size_t hidden = (md && md->owner_class && !(mv->flags & vfSTATIC)) ? 1 : 0;
 	size_t pn = fd->parameters.size() >= hidden
@@ -18320,6 +18324,10 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 		const std::vector<DataDef *> &explicit_targs)
 {
+    // Lazy member-template hydration: this lane reads the return-token range,
+    // param defaults/constraints, and param type runs — thaw first.
+    if ( fd )
+	fd->ensure_member_template_thawed();
     if ( vri_debug_enabled() && fd )
 	fprintf(stderr, "[vriprobe] MTRT enter %s ret=%zu defs=%zu\n",
 		fd->method_display_name.c_str(),
@@ -18507,6 +18515,9 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
     if ( !fd )
 	return tc;
+    // Lazy member-template hydration: the template arm below reads pattern
+    // content on this fd and on same-name siblings via the resolve lane.
+    fd->ensure_member_template_thawed();
     if ( !fd->is_member_template )
     {
 	// A NON-template same-arity static overload set is disambiguated by
@@ -22076,18 +22087,22 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	else if ( !forest_name_permitted(key, rt.ns) )
 	    continue;
-	// task #25 B2: CLASS/PARTIAL/ALIAS/FN/FN_DECL register as STUBS —
+	// task #25 B2: CLASS/PARTIAL/ALIAS/FN/FN_DECL/MEMBER register as STUBS —
 	// identity only, payload deferred to the thaw owners
-	// (thaw_template_def / thaw_alias_def / thaw_fn_def) so only names
-	// whose content is actually read pay the hydrate + token deserialize.
-	// The remaining kinds stay eager: VAR/CONCEPT are tiny populations;
-	// OUTOFLINE/MEMBER are entangled with the placeholder stamp flush
-	// (re-judged from the post-B profile).
+	// (thaw_template_def / thaw_alias_def / thaw_fn_def /
+	// madc_thaw_member_template) so only names whose content is actually
+	// read pay the hydrate + token deserialize. MEMBER thaws at first
+	// pattern-content read on the restored placeholder FuncDef — a
+	// C-shaped TU whose closure admits template-bearing classes no longer
+	// decodes the template payload/TOKENS segments at all. The remaining
+	// kinds stay eager: VAR/CONCEPT are tiny populations; OUTOFLINE is
+	// consumed at class-template instantiation (own slice if it shows up).
 	bool lazy_kind = rt.kind == CIR_TMPLK_CLASS
 		      || rt.kind == CIR_TMPLK_PARTIAL
 		      || rt.kind == CIR_TMPLK_ALIAS
 		      || rt.kind == CIR_TMPLK_FN
-		      || rt.kind == CIR_TMPLK_FN_DECL;
+		      || rt.kind == CIR_TMPLK_FN_DECL
+		      || rt.kind == CIR_TMPLK_MEMBER;
 	// slice B1 (task #25): the walk restored IDENTITY only; the payload-
 	// backed fields (params / token runs / pattern slice) decode here for
 	// the eager kinds, at first content read for the lazy ones.
@@ -22226,50 +22241,25 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // A member function template of a restored class. Body-bearing:
 	    // the decl+body token run. Decl-only (v34): no decl tokens exist —
 	    // the record carries the dependent return-type range in the
-	    // (otherwise empty) constraint-run slot instead. Stage the tokens
-	    // + params keyed by the placeholder's funcdef_map symbol (the
-	    // record key); the post-tkProgram flush hydrates the
-	    // verbatim-restored placeholder with the pattern fields — or, for
-	    // a body-bearing record whose placeholder did not restore, falls
-	    // back to the full live registration
+	    // (otherwise empty) constraint-run slot instead. Staged IDENTITY-
+	    // ONLY (no hydrate — the payload segments stay frozen), keyed by
+	    // the placeholder's funcdef_map symbol (the record key); the
+	    // post-tkProgram flush attaches the frozen source to the
+	    // verbatim-restored placeholder, and the pattern fields thaw at
+	    // first content read (madc_thaw_member_template) — or, for a
+	    // record whose placeholder did not restore, the flush hydrates
+	    // eagerly and falls back to the full live registration
 	    // (register_skipped_class_template_function). An owner the load
 	    // dropped cleanly lacks.
-	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
+	    DataDefCLASS *owner = rt.owner ? rt.owner->as_class_dd() : NULL;
 	    if ( !owner )
 		break;
 	    PendingForestMemberTmpl pm;
-	    pm.owner = owner;
-	    pm.key   = rt.key  ? rt.key  : "";
-	    pm.disp  = rt.name ? rt.name : "";
-	    forest_restore_run(rt.body, pm.tokens);
-	    forest_restore_run(rt.constraint, pm.ret_tokens);
-	    if ( pm.tokens.empty() && pm.ret_tokens.empty() )
-		break;
-	    for ( size_t p = 0; p < rt.params.size(); ++p )
-	    {
-		pm.typeparams.push_back(rt.params[p].first);
-		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-		pm.is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-		// v36 semantics: the per-param default runs (always in the
-		// record layout, empty until now) carry the member template's
-		// [temp.deduct]/8 SFINAE defaults.
-		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
-		if ( p < rt.defaults.size() )
-		    forest_restore_run(rt.defaults[p], pm.typeparam_defaults.back());
-		// v38: the per-param CONSTRAINT runs ride the record's spec
-		// slot (the FN lane's v33 convention). An older record has
-		// rt.spec empty — cleared below so the size mismatch
-		// downstream degrades to clearing every non-type default,
-		// the pre-v38 behavior (no info ≠ all-unconstrained).
-		pm.typeparam_constraints.push_back(std::vector<TokenBase *>());
-		if ( p < rt.spec.size() )
-		    forest_restore_run(rt.spec[p], pm.typeparam_constraints.back());
-		if ( vri_debug_enabled() )
-		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
-			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
-	    }
-	    if ( rt.spec.empty() )
-		pm.typeparam_constraints.clear();
+	    pm.owner  = owner;
+	    pm.key    = rt.key  ? rt.key  : "";
+	    pm.disp   = rt.name ? rt.name : "";
+	    pm.rt     = &rt;		// stable: &tmpls[i] lives in the bound forest
+	    pm.forest = &forest;
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
 	}
@@ -22305,6 +22295,115 @@ static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
 	uint32_t access_flags, const std::string &ctor_source_name);
+static Variable *register_member_template_stub(
+	Program &pgm, DataDefCLASS *owner, const std::string &name,
+	bool is_static, DataDef *ret, uint32_t access_flags);
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle);
+
+// Resolve a producer-banked flat return-type name (the DataDef::name
+// spelling: base name + '*' / '&' derivation suffixes, 'const ' prefixes)
+// back to the live DataDef, composing derived types through the SAME
+// getPointerType / getReferenceType / getConstType caches the compiler uses.
+// NULL = unresolvable — the caller degrades to the eager hydrate+register
+// arm, so a miss costs the decode, never correctness.
+static DataDef *resolve_flat_return_name(Program &pgm, const std::string &nm)
+{
+    if ( nm.empty() )
+	return NULL;
+    if ( nm[nm.size() - 1] == '*' || nm[nm.size() - 1] == '&' )
+    {
+	DataDef *base = resolve_flat_return_name(pgm,
+						 nm.substr(0, nm.size() - 1));
+	if ( !base )
+	    return NULL;
+	return nm[nm.size() - 1] == '*'
+	     ? (DataDef *)pgm.getPointerType(base)
+	     : (DataDef *)pgm.getReferenceType(base);
+    }
+    if ( nm.compare(0, 6, "const ") == 0 )
+    {
+	DataDef *base = resolve_flat_return_name(pgm, nm.substr(6));
+	return base ? (DataDef *)pgm.getConstType(base) : NULL;
+    }
+    flat_datatype_map_iter dmi = pgm.datatype_map.find(nm);
+    if ( dmi != pgm.datatype_map.end() )
+	return &(*dmi)->definition;
+    return NULL;
+}
+
+// Lazy MEMBER-template thaw owner (task #25 B2, MEMBER arm): hydrate the
+// deferred CIR_TMPLK_MEMBER record, restore its token runs, and run the ONE
+// stamp derivation onto the restored placeholder — exactly what the flush used
+// to do eagerly for every closure-admitted record. Memoized by NULLing
+// member_tmpl_frozen up front (re-entrancy safe: a nested read during the
+// stamp sees an already-consumed source). Pure token work — no name
+// resolution, no scope stack — so a mid-parse thaw cannot disturb parse state.
+void madc_thaw_member_template(FuncDef *fd)
+{
+    if ( !fd )
+	return;
+    CirFrozenMemberTmpl *fz = fd->member_tmpl_frozen;
+    fd->member_tmpl_frozen = NULL;
+    if ( !fz || !fz->owner || !fz->rt || !fz->forest || !fz->pgm )
+	return;
+    Program &pgm = *fz->pgm;
+    CirRestoredTemplate &rt = *fz->rt;
+    if ( !fz->forest->hydrate_restored_template(rt) )
+	return;
+    ForestWorkFrame _fw(&pgm._forest_work_seconds, &pgm._forest_work_depth);
+    std::string disp = rt.name ? rt.name : "";
+    std::vector<TokenBase *> tokens;
+    std::vector<TokenBase *> ret_tokens;
+    pgm.forest_restore_run(rt.body, tokens);
+    pgm.forest_restore_run(rt.constraint, ret_tokens);
+    if ( tokens.empty() && ret_tokens.empty() )
+	return;
+    std::vector<std::string> typeparams;
+    std::vector<bool> is_pack, is_type;
+    std::vector<std::vector<TokenBase *> > typeparam_defaults;
+    std::vector<std::vector<TokenBase *> > typeparam_constraints;
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	typeparams.push_back(rt.params[p].first);
+	is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	// v36 semantics: the per-param default runs (always in the record
+	// layout) carry the member template's [temp.deduct]/8 SFINAE defaults.
+	typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    pgm.forest_restore_run(rt.defaults[p], typeparam_defaults.back());
+	// v38: the per-param CONSTRAINT runs ride the record's spec slot (the
+	// FN lane's v33 convention). An older record has rt.spec empty —
+	// cleared below so the size mismatch downstream degrades to clearing
+	// every non-type default, the pre-v38 behavior.
+	typeparam_constraints.push_back(std::vector<TokenBase *>());
+	if ( p < rt.spec.size() )
+	    pgm.forest_restore_run(rt.spec[p], typeparam_constraints.back());
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
+		    disp.c_str(), p, typeparam_defaults.back().size());
+    }
+    if ( rt.spec.empty() )
+	typeparam_constraints.clear();
+    if ( !tokens.empty() )
+	stamp_member_template_pattern(fz->owner, fd, tokens, typeparams,
+				      is_pack, is_type, disp,
+				      typeparam_defaults, typeparam_constraints);
+    else
+	// v34 decl-only record: no decl tokens to derive from — stamp the
+	// restored return-type range + params directly.
+	stamp_member_template_pattern_decl_only(fz->owner, fd, ret_tokens,
+						typeparams, is_pack, is_type,
+						disp, typeparam_defaults,
+						typeparam_constraints);
+    DBG(std::cout << "madc_thaw_member_template: member template of "
+	<< fz->owner->name << " thawed (" << typeparams.size()
+	<< " param(s), " << tokens.size() << " tokens, "
+	<< ret_tokens.size() << " ret tokens, decl="
+	<< fd->member_template_decl.size() << ", fd=" << (void *)fd
+	<< ")" << std::endl);
+}
 
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
 // once tkProgram exists (called at the end of tokenize()). Idempotent per name:
@@ -22461,75 +22560,184 @@ void Program::flush_forest_pending_globals()
     forest_pending_funcs.clear();
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
     // restored VERBATIM from its methodrec (its saved __oN rank — registered
-    // by the pending-funcs flush above), so the normal path HYDRATES its
-    // pattern fields from the record's tokens; re-running the registration
-    // here would mint a SECOND, rank-shifted placeholder family and the
-    // loaded bodies' calls into the restored ranks would die as undefined
-    // imports. Only a placeholder the load dropped falls back to the full
-    // live registration (fresh-surface robustness — same one production path).
+    // by the pending-funcs flush above), so the normal path DEFERS: attach the
+    // frozen record to the placeholder and thaw (hydrate + token restore +
+    // pattern stamp) at first content read (madc_thaw_member_template) —
+    // re-running the registration here would mint a SECOND, rank-shifted
+    // placeholder family and the loaded bodies' calls into the restored ranks
+    // would die as undefined imports. Only a placeholder the load dropped
+    // falls back to the full live registration, hydrated eagerly HERE because
+    // that path needs live parse machinery (class_scope_stack, addFunction) a
+    // mid-parse thaw must not touch (fresh-surface robustness — same one
+    // production path).
     for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
     {
 	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
-	if ( !pm.owner || (pm.tokens.empty() && pm.ret_tokens.empty()) )
+	if ( !pm.owner || !pm.rt || !pm.forest )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
 					      : funcdef_map.find(pm.key);
 	if ( fit != funcdef_map.end() && fit->second
 	  && fit->second->is_member_template )
 	{
-	    if ( !pm.tokens.empty() )
-		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					      pm.typeparams, pm.is_pack,
-					      pm.is_type, pm.disp,
-					      pm.typeparam_defaults,
-					      pm.typeparam_constraints);
-	    else
-		// v34 decl-only record: no decl tokens to derive from — stamp
-		// the restored return-type range + params directly.
-		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
-		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.is_type,
-		    pm.disp, pm.typeparam_defaults, pm.typeparam_constraints);
+	    CirFrozenMemberTmpl fz;
+	    fz.owner  = pm.owner;
+	    fz.rt     = pm.rt;
+	    fz.forest = pm.forest;
+	    fz.pgm    = this;
+	    forest_frozen_member_tmpls.push_back(fz);
+	    fit->second->member_tmpl_frozen = &forest_frozen_member_tmpls.back();
+	    // Identity stamp: the owner is read as plain identity (lane gates,
+	    // sibling scans) — the payload-derived fields wait for the thaw.
+	    // Display name / is_member_template / is_const_method restored
+	    // verbatim with the methodrec.
+	    fit->second->member_template_owner = pm.owner;
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
-		<< pm.owner->name << " hydrated placeholder " << pm.key
-		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens, "
-		<< pm.ret_tokens.size() << " ret tokens, decl="
-		<< fit->second->member_template_decl.size() << ", owner="
-		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
-		<< (void *)fit->second << ", cls=" << (void *)pm.owner
-		<< ")" << std::endl);
+		<< pm.owner->name << " deferred on placeholder " << pm.key
+		<< " (fd=" << (void *)fit->second << ", cls="
+		<< (void *)pm.owner << ")" << std::endl);
 	    continue;
 	}
-	// A DECL-ONLY record cannot fall back to the live registration — there
-	// are no declaration tokens to re-run it over; the placeholder either
-	// restored (hydrated above) or the member stays a bare method.
-	if ( pm.tokens.empty() )
+	// Dropped placeholder, SKELETON record: the producer banked the
+	// identity facts (return-type flat name in the extra slot, static-ness
+	// via CIR_TMPLF_INSTANCE_METHOD, ctor-hood via CIR_TMPLF_MEMBER_CTOR),
+	// so the varargs stub registers payload-free — the record stays
+	// frozen, the template segments stay cold, and the pattern thaws at
+	// first content read exactly like the deferred-placeholder arm above.
+	// An unresolvable return name (or an older record's empty extra)
+	// degrades to the eager hydrate+register arm below.
+	// A decl-only record (v34) whose placeholder dropped registers
+	// NOTHING today — reproduce that verdict from the identity flag,
+	// without hydrating (the eager arm's tokens-empty skip, decided cold).
+	if ( pm.rt->flags & CIR_TMPLF_MEMBER_DECL_ONLY )
 	    continue;
+	if ( pm.rt->extra && *pm.rt->extra && !pm.disp.empty() )
+	{
+	    // Banked form "#<typeid>#<flatname>": the arena type-id first
+	    // (restored_def_by_tid — covers mangled class names), the flat
+	    // name spelling as the fallback (pinned/derived compositions).
+	    DataDef *sret = NULL;
+	    const char *bank = pm.rt->extra;
+	    const char *bank_name = NULL;
+	    if ( bank[0] == '#' )
+	    {
+		char *namepart = NULL;
+		unsigned long tid = strtoul(bank + 1, &namepart, 10);
+		if ( tid )
+		    sret = pm.forest->restored_def_by_tid((uint32_t)tid);
+		if ( namepart && namepart[0] == '#' && namepart[1] )
+		    bank_name = namepart + 1;
+	    }
+	    else
+		bank_name = bank;
+	    if ( !sret && bank_name )
+		sret = resolve_flat_return_name(*this, bank_name);
+	    // Class-scope alias returns (basic_string::size_type): the name
+	    // resolves in the OWNER's restored alias map — the same class
+	    // scope the full registration's return resolution reads.
+	    if ( !sret && bank_name )
+	    {
+		std::map<std::string, DataDef *>::iterator ai =
+		    pm.owner->type_aliases.find(bank_name);
+		if ( ai != pm.owner->type_aliases.end() )
+		    sret = ai->second;
+	    }
+	    DBG(if ( !sret ) std::cout << "flush_forest_pending_globals: member"
+		" template of " << pm.owner->name << " skeleton degrade: ret '"
+		<< pm.rt->extra << "' unresolved (" << pm.disp << ")"
+		<< std::endl);
+	    if ( sret )
+	    {
+		bool is_static = !(pm.rt->flags & CIR_TMPLF_INSTANCE_METHOD);
+		Variable *var = register_member_template_stub(
+		    *this, pm.owner, pm.disp, is_static, sret, 0);
+		FuncDef *sfd = (var && var->type) ? var->type->as_funcdef_dd()
+						  : NULL;
+		if ( sfd )
+		{
+		    sfd->is_member_template = true;
+		    sfd->method_display_name = pm.disp;
+		    sfd->member_template_owner = pm.owner;
+		    CirFrozenMemberTmpl fz;
+		    fz.owner  = pm.owner;
+		    fz.rt     = pm.rt;
+		    fz.forest = pm.forest;
+		    fz.pgm    = this;
+		    forest_frozen_member_tmpls.push_back(fz);
+		    sfd->member_tmpl_frozen = &forest_frozen_member_tmpls.back();
+		    if ( pm.rt->flags & CIR_TMPLF_MEMBER_CTOR )
+		    {
+			if ( !vector_contains_variable(pm.owner->ctors, var) )
+			    pm.owner->ctors.push_back(var);
+			pm.owner->has_user_ctor = true;
+		    }
+		    DBG(std::cout << "flush_forest_pending_globals: member"
+			" template of " << pm.owner->name
+			<< " skeleton-registered " << var->name
+			<< " ret=" << sret->name
+			<< (is_static ? " static" : "")
+			<< ((pm.rt->flags & CIR_TMPLF_MEMBER_CTOR) ? " ctor" : "")
+			<< " deferred (fd=" << (void *)sfd << ")" << std::endl);
+		    continue;
+		}
+	    }
+	}
+	// Dropped placeholder: hydrate the record NOW (the rare path pays the
+	// decode) and re-run the live registration over the restored tokens.
+	if ( !pm.forest->hydrate_restored_template(*pm.rt) )
+	    continue;
+	CirRestoredTemplate &rrt = *pm.rt;
+	std::vector<TokenBase *> tokens;
+	forest_restore_run(rrt.body, tokens);
+	// A DECL-ONLY record (v34: no decl tokens, only the return-type range
+	// in the constraint slot) cannot fall back to the live registration —
+	// there are no declaration tokens to re-run it over; the placeholder
+	// either restored (deferred above) or the member stays a bare method.
+	if ( tokens.empty() )
+	    continue;
+	std::vector<std::string> typeparams;
+	std::vector<bool> is_pack, is_type;
+	std::vector<std::vector<TokenBase *> > typeparam_defaults;
+	std::vector<std::vector<TokenBase *> > typeparam_constraints;
+	for ( size_t p = 0; p < rrt.params.size(); ++p )
+	{
+	    typeparams.push_back(rrt.params[p].first);
+	    is_pack.push_back((rrt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	    is_type.push_back((rrt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	    typeparam_defaults.push_back(std::vector<TokenBase *>());
+	    if ( p < rrt.defaults.size() )
+		forest_restore_run(rrt.defaults[p], typeparam_defaults.back());
+	    typeparam_constraints.push_back(std::vector<TokenBase *>());
+	    if ( p < rrt.spec.size() )
+		forest_restore_run(rrt.spec[p], typeparam_constraints.back());
+	}
+	if ( rrt.spec.empty() )
+	    typeparam_constraints.clear();
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
-	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	last_skipped_template_typeparam_is_pack = is_pack;
 	std::vector<bool> saved_is_type = last_skipped_template_typeparam_is_type;
-	last_skipped_template_typeparam_is_type = pm.is_type;
+	last_skipped_template_typeparam_is_type = is_type;
 	std::vector<std::vector<TokenBase *> > saved_defaults =
 	    last_skipped_template_typeparam_defaults;
-	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
+	last_skipped_template_typeparam_defaults = typeparam_defaults;
 	std::vector<std::vector<TokenBase *> > saved_constraints =
 	    last_skipped_template_typeparam_constraints;
-	last_skipped_template_typeparam_constraints = pm.typeparam_constraints;
+	last_skipped_template_typeparam_constraints = typeparam_constraints;
 	// Live ran this registration INSIDE the owner's class body — the
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
 	// (restored) type_aliases. Reproduce that scope context.
 	class_scope_stack.push_back(pm.owner);
-	register_skipped_class_template_function(*this, pm.owner, pm.tokens,
-						 pm.typeparams, 0, std::string());
+	register_skipped_class_template_function(*this, pm.owner, tokens,
+						 typeparams, 0, std::string());
 	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
 	last_skipped_template_typeparam_is_type = saved_is_type;
 	last_skipped_template_typeparam_defaults = saved_defaults;
 	last_skipped_template_typeparam_constraints = saved_constraints;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
-	    << pm.owner->name << " (" << pm.typeparams.size()
-	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
+	    << pm.owner->name << " (" << typeparams.size()
+	    << " param(s), " << tokens.size() << " tokens)" << std::endl);
     }
     forest_pending_member_tmpls.clear();
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
@@ -29707,6 +29915,9 @@ class ClassPatternNormalizer
 	out.noexcept_spec = fd->noexcept_spec;
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
+	// Lazy member-template hydration: the capture below copies the
+	// pattern fields — a frozen fd would clone an EMPTY pattern.
+	fd->ensure_member_template_thawed();
 	out.is_member_template = fd->is_member_template;
 	out.template_param_names = fd->template_param_names;
 	out.template_param_is_type = fd->template_param_is_type;
@@ -49731,6 +49942,9 @@ void Program::register_outofline_member_instantiations(
 	    if ( !cand || !cand->data ) continue;
 	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
 	    if ( !cfd ) continue;
+	    // Lazy member-template hydration: the matcher below reads decl
+	    // tokens + template params on each candidate.
+	    cfd->ensure_member_template_thawed();
 #if MADC_DEBUG_FNTPL
 	    if ( dbg_def )
 		std::cerr << "FNTPL ool-cand var=" << cand->name
@@ -55151,6 +55365,11 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
     // when why==NULL. Keeps the fallback worklist self-diagnosing.
     auto no = [&](const char *r) -> bool { if ( why ) *why = r; return false; };
+    // Lazy member-template hydration: the decl-emptiness gate below is a
+    // pattern-content read — a frozen placeholder must thaw or it would
+    // silently classify as "not a member template".
+    if ( fd )
+	fd->ensure_member_template_thawed();
     if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
       || !fd->member_template_owner )
 	return no("not a member template");
@@ -55815,6 +56034,10 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    // Lazy member-template hydration: everything below is pattern-content
+    // (decl tokens, dependent_pattern build, sibling candidate scan).
+    if ( fd )
+	fd->ensure_member_template_thawed();
     // Env-gated probe (MADC_MTI_PROBE=<substr>): entry state + funcdef_map
     // identity for the callee — the restored-placeholder routing diagnostic.
     {
@@ -55945,6 +56168,10 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    for ( Variable *mv : ocls->methods )
 	    {
 		FuncDef *cfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		// Lazy member-template hydration: the decl/param gates below
+		// are pattern-content reads on each sibling candidate.
+		if ( cfd )
+		    cfd->ensure_member_template_thawed();
 		if ( cfd && cfd != fd && cfd->is_member_template
 		  && cfd->member_template_owner == fd->member_template_owner
 		  && !cfd->member_template_decl.empty()
@@ -56215,6 +56442,10 @@ bool Program::instantiate_member_ctor_template_candidate(
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	// Lazy member-template hydration: the decl/param gates below are
+	// pattern-content reads on each ctor-template candidate.
+	if ( cfd )
+	    cfd->ensure_member_template_thawed();
 	if ( cfd && cfd->is_member_template
 	  && !cfd->member_template_decl.empty()
 	  && cfd->member_template_owner == cdd
@@ -57386,6 +57617,47 @@ static void stamp_member_template_pattern_decl_only(
 	}
 }
 
+// The registration SKELETON a member-template placeholder needs to EXIST on
+// the class's method surface: the varargs declaration-only stub (ret [+this]
+// +marker params), the program-scope Variable, and the methods/method_map
+// entries. The ONE implementation, shared by the full live registration
+// (register_skipped_class_template_function, which then stamps the pattern)
+// and the forest flush's payload-free skeleton arm (lazy MEMBER hydration —
+// the skeleton facts ride the CIR_TMPLK_MEMBER record identity; the pattern
+// thaws at first content read).
+static Variable *register_member_template_stub(
+	Program &pgm, DataDefCLASS *owner, const std::string &name,
+	bool is_static, DataDef *ret, uint32_t access_flags)
+{
+    datatype_vec_t params;
+    params.push_back(ret ? ret : &ddINT64);
+    if ( !is_static )
+	params.push_back(pgm.getPointerType(owner));
+    params.push_back(&ddINT64); // varargs marker
+
+    std::string parse_id = owner->name + "__" + name;
+    if ( pgm.findVariable(parse_id) )
+	parse_id = pgm.unique_overload_symbol(parse_id);
+    Variable *var = pgm.addFunction(parse_id, params, NULL);
+    if ( !var )
+	return NULL;
+    if ( FuncDef *fd = var->type ? var->type->as_funcdef_dd() : NULL )
+    {
+	fd->is_varargs = true;
+	fd->declaration_only = true;
+    }
+    Method *md = static_cast<Method *>(var->data);
+    if ( md && !is_static )
+	md->owner_class = owner;
+    if ( is_static )
+	var->flags |= vfSTATIC;
+    if ( access_flags )
+	var->flags |= access_flags;
+    owner->methods.push_back(var);
+    owner->method_map[name] = var;
+    return var;
+}
+
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -57417,23 +57689,13 @@ static void register_skipped_class_template_function(
     bool is_static = skipped_template_function_is_static(tokens);
     DataDef *ret = skipped_template_function_return_type(pgm, owner, tokens, name,
 							 &typeparams);
-    datatype_vec_t params;
-    params.push_back(ret ? ret : &ddINT64);
-    if ( !is_static )
-	params.push_back(pgm.getPointerType(owner));
-    params.push_back(&ddINT64); // varargs marker
-
-    std::string parse_id = owner->name + "__" + name;
-    if ( pgm.findVariable(parse_id) )
-	parse_id = pgm.unique_overload_symbol(parse_id);
-    Variable *var = pgm.addFunction(parse_id, params, NULL);
+    Variable *var = register_member_template_stub(pgm, owner, name, is_static,
+						  ret, access_flags);
     if ( !var )
 	return;
-    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+    FuncDef *fd = var->type ? var->type->as_funcdef_dd() : NULL;
     if ( fd )
     {
-	fd->is_varargs = true;
-	fd->declaration_only = true;
 	stamp_member_template_pattern(owner, fd, tokens, typeparams,
 				      pgm.last_skipped_template_typeparam_is_pack,
 				      pgm.last_skipped_template_typeparam_is_type,
@@ -57469,15 +57731,8 @@ static void register_skipped_class_template_function(
 	    owner->name.c_str(), name.c_str(), ctor_source_name.c_str(), (int)hb, typeparams.size());
     }
 #endif
-    Method *md = static_cast<Method *>(var->data);
-    if ( md && !is_static )
-	md->owner_class = owner;
-    if ( is_static )
-	var->flags |= vfSTATIC;
-    if ( access_flags )
-	var->flags |= access_flags;
-    owner->methods.push_back(var);
-    owner->method_map[name] = var;
+    // (stub registration — params/varargs/methods/method_map — moved into
+    // register_member_template_stub above.)
     // A member template CONSTRUCTOR (declarator names the class's ctor) whose
     // parameters USE the template pack is not handled by the defaulted-ctor
     // path; it lands here. Register it as a ctor too so construction sites can
@@ -59335,6 +59590,9 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 // identically for both, as it is for every FuncDef).
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
+    // Lazy member-template hydration: the field copy below includes the
+    // pattern fields — a frozen source would clone an EMPTY pattern.
+    src->ensure_member_template_thawed();
     FuncDef *f = new FuncDef(new_ret);
     // Env-gated probe (MADC_MTI_PROBE): member-template placeholder clones —
     // the restored-placeholder routing diagnostic.

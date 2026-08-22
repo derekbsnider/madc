@@ -70,6 +70,25 @@ enum class GnuAttributeKind : uint8_t {
 };
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
 
+// Lazy MEMBER-template hydration (task #25 B2, MEMBER arm): one restored
+// CIR_TMPLK_MEMBER record whose payload decode + pattern stamp were DEFERRED at
+// the flush. The thaw (hydrate + token restore + the one stamp derivation) runs
+// at first pattern-content read — FuncDef::ensure_member_template_thawed().
+// `pgm` is the staging Program (owner of forest_restore_run / intern_file); its
+// lifetime already bounds the stamped tokens' file pointers on the eager path,
+// so the deferral adds no new lifetime coupling. Entries live in the staging
+// Program's forest_frozen_member_tmpls deque (stable addresses).
+class DataDefCLASS;
+class FuncDef;
+struct CirFrozenMemberTmpl {
+    DataDefCLASS *owner;
+    CirRestoredTemplate *rt;
+    class CirFrozenForest *forest;
+    class Program *pgm;
+    CirFrozenMemberTmpl() : owner(NULL), rt(NULL), forest(NULL), pgm(NULL) {}
+};
+void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the stamps
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -359,6 +378,19 @@ public:
     // (resolve_member_template_call_return_type), or the candidate is not
     // viable and overload resolution falls to the next same-name member.
     std::vector<std::vector<TokenBase *> > member_template_param_type_tokens;
+    // Lazy MEMBER-template hydration: non-NULL while this restored placeholder's
+    // pattern fields (member_template_decl / return + param token runs /
+    // spellings / defaults / constraints) are still FROZEN — the flush deferred
+    // the payload decode + stamp. Every read of those fields goes through
+    // ensure_member_template_thawed() first; identity (method_display_name,
+    // is_member_template, is_const_method, parameters, member_template_owner)
+    // restores/stamps eagerly and needs no thaw.
+    CirFrozenMemberTmpl *member_tmpl_frozen;
+    void ensure_member_template_thawed()
+    {
+	if ( member_tmpl_frozen )
+	    madc_thaw_member_template(this);
+    }
     // Two-tree Phase 2: the DEPENDENT parse-tree pattern for this template's body
     // — a TokenFunc parsed ONCE with the template params bound to
     // DataDefTemplateParam placeholders (via build_dependent_pattern), with eager
@@ -406,7 +438,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -4785,36 +4817,29 @@ public:
     void param_default_capture_end(const DefCapState &st,
 				   std::vector<TokenBase *> &out);
     // v21: body-bearing MEMBER function templates restored from a bound header
-    // (CIR_TMPLK_MEMBER records). The flush HYDRATES the restored placeholder
-    // FuncDef (funcdef_map[key], restored verbatim from its methodrec at its
-    // saved __oN rank) with the pattern fields the live registration derives
-    // from the tokens; only when the placeholder did not restore does it fall
-    // back to the full re-run (register_skipped_class_template_function, which
-    // mints a fresh rank). Registration needs tkProgram, hence the stage.
+    // (CIR_TMPLK_MEMBER records). Staged IDENTITY-ONLY (no payload hydrate) at
+    // forest_restore_decls; the flush attaches the frozen source to the restored
+    // placeholder FuncDef (funcdef_map[key], restored verbatim from its
+    // methodrec at its saved __oN rank) and the pattern fields thaw at first
+    // content read (madc_thaw_member_template — the lazy MEMBER arm of task #25
+    // B2). A DROPPED placeholder re-registers payload-free from the record's
+    // banked skeleton facts (return type / static / ctor-hood — see the flush)
+    // and defers the same way; only an unresolvable skeleton (or an older
+    // record) hydrates eagerly and falls back to the full re-run
+    // (register_skipped_class_template_function, which mints a fresh rank).
+    // Registration needs tkProgram, hence the stage.
     struct PendingForestMemberTmpl {
 	DataDefCLASS *owner;
 	std::string key;			// the placeholder's funcdef_map symbol (the record key)
 	std::string disp;			// live method_display_name (the declarator name)
-	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
-	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
-	std::vector<std::string> typeparams;
-	std::vector<bool> is_pack;
-	// Per-param TYPE-ness (parallel to typeparams) — the record's
-	// CIR_TMPLP_IS_TYPE bit. A non-type member-template param
-	// (`template <unsigned long __a>`) must thaw as non-type or the
-	// restored pattern instantiates as if it took a type.
-	std::vector<bool> is_type;
-	// v36: per-param DEFAULT token runs (parallel to typeparams; empty
-	// run = no default) — a member template's [temp.deduct]/8 SFINAE
-	// payload (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
-	std::vector<std::vector<TokenBase *> > typeparam_defaults;
-	// v38: per-param CONSTRAINT-type runs (parallel; empty =
-	// unconstrained) — ride the record's spec slot like the FN lane's
-	// typeparam_constraints (v33 precedent).
-	std::vector<std::vector<TokenBase *> > typeparam_constraints;
-	PendingForestMemberTmpl() : owner(NULL) {}
+	CirRestoredTemplate *rt;		// the un-hydrated record (identity walked, payload frozen)
+	CirFrozenForest *forest;		// the record's forest (stable process-cached instance)
+	PendingForestMemberTmpl() : owner(NULL), rt(NULL), forest(NULL) {}
     };
     std::vector<PendingForestMemberTmpl> forest_pending_member_tmpls;
+    // Deferred MEMBER-template frozen sources this Program staged at its flush;
+    // restored placeholder FuncDefs point at entries (deque: stable addresses).
+    std::deque<CirFrozenMemberTmpl> forest_frozen_member_tmpls;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune

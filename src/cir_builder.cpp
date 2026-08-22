@@ -15908,6 +15908,11 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	#define MTCALL_BAIL(reason) do { if (probing) fprintf(stderr, \
 		"[mtcall] %s: bail %s\n", tm->var.name.c_str(), reason); \
 		return NULL; } while (0)
+	// Lazy member-template hydration: an arity-picked callee can reach this
+	// emit lane without any parse-side content read — the spelling-driven
+	// deduction below needs the thawed pattern.
+	if (callee)
+		callee->ensure_member_template_thawed();
 	if (!tm || !callee || !callee->is_member_template
 	    || !callee->declaration_only || !callee->is_varargs)
 		MTCALL_BAIL("flags");

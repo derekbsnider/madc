@@ -2998,8 +2998,9 @@ void CirFrozenForest::materialize_pass()
 			// and unresolvable signatures all lack). MEMBER-TEMPLATE
 			// records restore VERBATIM: the decl-only placeholders at
 			// their saved __oN ranks (live registers each pattern as one —
-			// register_skipped_class_template_function; the flush hydrates
-			// the pattern fields from the CIR_TMPLK_MEMBER tokens) and the
+			// register_skipped_class_template_function; the flush attaches
+			// the CIR_TMPLK_MEMBER record and the pattern fields thaw at
+			// first content read — madc_thaw_member_template) and the
 			// bodied instantiations (a loaded _Rb_tree body calls
 			// pair(...)__oN directly — without the def the MIR link dies
 			// on an undefined import).

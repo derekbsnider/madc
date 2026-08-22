@@ -4065,6 +4065,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	FuncDef *fd = fi->second;
 	if (!fd || !fd->is_member_template)
 	    continue;
+	// Lazy member-template hydration: a still-frozen restored placeholder
+	// must thaw before this walk, or its record would re-freeze EMPTY and
+	// the next consumer would silently lose the pattern.
+	fd->ensure_member_template_thawed();
 	bool body_bearing = !fd->member_template_decl.empty();
 	if (!body_bearing && fd->member_template_return_tokens.empty())
 	    continue;	// nothing restorable: no body, no return range
@@ -4090,9 +4094,31 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// the same convention the FN lane adopted at v33 for its
 	// typeparam_constraints. A reader of an older record sees spec
 	// empty and degrades to clearing every non-type default.
+	// Lazy-hydration SKELETON facts (identity, no payload): the extra slot
+	// (unused on MEMBER records until now) carries the placeholder's
+	// resolved RETURN type flat name, and CIR_TMPLF_MEMBER_CTOR marks
+	// ctor-hood — enough for the flush to register the varargs stub
+	// without hydrating the record. An older record's empty extra keeps
+	// the eager hydrate+register path.
+	bool as_ctor = false;
+	for (size_t ci = 0; !as_ctor && ci < owner->ctors.size(); ++ci)
+	    as_ctor = owner->ctors[ci] && owner->ctors[ci]->type == fd;
+	// A reference return spells itself base+"*" (DataDefREF inherits the
+	// pointer ctor's name) — bank it as base+"&" so the flush rebuilds a
+	// DataDefREF, not a pointer. The banked form is "#<typeid>#<flatname>":
+	// the arena type-id resolves via restored_def_by_tid (covers mangled
+	// class names datatype_map never keys); the flat name is the fallback
+	// (pinned/derived spellings); either miss degrades to the eager arm.
+	std::string ret_flat = fd->returns.is_reference()
+			     ? fd->return_value_type().name + "&"
+			     : fd->returns.name;
+	uint32_t ret_tid = madc_type_id_for(&fd->returns);
+	std::string ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
-	     std::string(), std::string(), owner,
-	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
+	     std::string(), ret_bank, owner,
+	     (instance ? CIR_TMPLF_INSTANCE_METHOD : 0)
+	     | (as_ctor ? CIR_TMPLF_MEMBER_CTOR : 0)
+	     | (body_bearing ? 0 : CIR_TMPLF_MEMBER_DECL_ONLY),
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, fd->member_template_param_defaults,
 	     fd->member_template_decl,

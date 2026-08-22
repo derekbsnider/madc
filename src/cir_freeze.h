@@ -838,10 +838,19 @@ enum : uint32_t {
 enum : uint32_t {
 	CIR_TMPLF_HAS_NON_TYPE_PARAMS = 1u << 0,	// TemplateDef/AliasDef/FnTemplateDef
 	CIR_TMPLF_IS_PARTIAL_SPEC     = 1u << 1,	// TemplateDef::is_partial_specialization
-	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2,	// FnTemplateDef::instance_method
+	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2,	// FnTemplateDef::instance_method; on a
+							// MEMBER record: this-taking (static == absent)
 	CIR_TMPLF_OOL_MEMBER_TMPL     = 1u << 3,	// OutOfLineMemberDef::is_member_template
-	CIR_TMPLF_TU_ROOT             = 1u << 4		// v24: pattern captured in the TU's ROOT file —
+	CIR_TMPLF_TU_ROOT             = 1u << 4,	// v24: pattern captured in the TU's ROOT file —
 							// fenced from the bind restore
+	CIR_TMPLF_MEMBER_CTOR         = 1u << 5,	// MEMBER record: the producer registered the
+							// placeholder as a CONSTRUCTOR of its owner
+							// (lazy-hydration skeleton fact; rides beside
+							// the return-type name in the extra slot)
+	CIR_TMPLF_MEMBER_DECL_ONLY    = 1u << 6		// MEMBER record: v34 decl-only (no decl tokens,
+							// only the return-type range) — a dropped
+							// placeholder registers NOTHING, decided
+							// without hydrating the record
 };
 enum : uint32_t {	// cir_forest_template_param::pflags
 	CIR_TMPLP_IS_TYPE = 1u << 0,
