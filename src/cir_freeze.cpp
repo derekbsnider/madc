@@ -1869,29 +1869,38 @@ DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
 	return arena_swizzle(tid, _defs_by_tid);
 }
 
-const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
+// Recordability closure — the v6 save-side fixpoint reproduced at load as
+// a pure analysis over the records: an aggregate is recordable iff every
+// member's type chain resolves (self allowed), every base is recordable
+// (base-before-derived) and every anonymous sub-aggregate is recordable.
+// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
+// virtual-base-carrying classes are ADMITTED — the records carry the full
+// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
+// restores it verbatim. Union-layout classes stay fenced (their own
+// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
+struct ForestRecordable {
+	std::vector<uint32_t> agg_ids;	// slot order == id-stamp order
+	std::set<uint32_t> recordable;
+};
+
+// Process-level recordability cache (the S1 decoded-segment doctrine): the
+// fixpoint is a PURE function of the frozen arena bytes — identical for
+// every Program that binds the same blob — so an 11-TU launch computes it
+// once, not once per TU. Same thread contract as the segment cache:
+// mutex-guarded map, entries immutable after insertion and never evicted
+// (process lifetime), so const refs into them can never dangle.
+static const ForestRecordable &forest_recordable_cached(
+	const void *blob_key, const madc::dis::FrozenDefArena &a)
 {
-	if (_types_materialized)
-		return _restored;
-	_types_materialized = true;
-	ForestWorkFrame _fw(_work_secs, _work_depth);
-	double _t0 = forest_now();
-
-	// A type-less freeze binds an empty arena view: every aggregate pass
-	// below no-ops (nslots == 0) and only pinned-typed globals restore.
-	const madc::dis::FrozenDefArena &a = _arena;
+	static std::mutex mu;
+	static std::map<const void *, ForestRecordable> cache;
+	std::lock_guard<std::mutex> lk(mu);
+	std::map<const void *, ForestRecordable>::iterator it =
+		cache.find(blob_key);
+	if (it != cache.end())
+		return it->second;
+	ForestRecordable e;
 	uint32_t nslots = a.def_slots();
-
-	// Recordability closure — the v6 save-side fixpoint reproduced at load as
-	// a pure analysis over the records: an aggregate is recordable iff every
-	// member's type chain resolves (self allowed), every base is recordable
-	// (base-before-derived) and every anonymous sub-aggregate is recordable.
-	// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
-	// virtual-base-carrying classes are ADMITTED — the records carry the full
-	// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
-	// restores it verbatim. Union-layout classes stay fenced (their own
-	// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
-	std::vector<uint32_t> agg_ids;		// slot order == id-stamp order
 	for (uint32_t s = 0; s < nslots; ++s) {
 		uint32_t tid = madc::dis::arena_id_of(s);
 		madc::dis::defrec r;
@@ -1910,7 +1919,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (r.kind == madc::dis::DK_CLASS
 		    && (r.flags & madc::dis::DF_UNION_LAYOUT))
 			continue;
-		agg_ids.push_back(tid);
+		e.agg_ids.push_back(tid);
 	}
 	// GREATEST fixpoint (v22): start from ALL candidates and iteratively
 	// REMOVE any aggregate with an unresolvable member / base / anon group
@@ -1922,17 +1931,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// (pass 1 allocates every survivor before pass 1b resolves the pointer),
 	// exactly the C incomplete-type rule; a failure still cascades to its
 	// dependents through the removal rounds.
-	std::set<uint32_t> recordable(agg_ids.begin(), agg_ids.end());
+	e.recordable.insert(e.agg_ids.begin(), e.agg_ids.end());
 	bool removed = true;
 	while (removed) {
 		removed = false;
-		for (size_t i = 0; i < agg_ids.size(); ++i) {
-			uint32_t tid = agg_ids[i];
-			if (!recordable.count(tid))
+		for (size_t i = 0; i < e.agg_ids.size(); ++i) {
+			uint32_t tid = e.agg_ids[i];
+			if (!e.recordable.count(tid))
 				continue;
 			madc::dis::defrec r;
 			if (!a.get_def_at(tid, r)) {
-				recordable.erase(tid);
+				e.recordable.erase(tid);
 				removed = true;
 				continue;
 			}
@@ -1940,30 +1949,52 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
 				madc::dis::memberrec mr;
 				if (!a.get_payload(r.members_begin, m, mr)
-				    || !arena_chain_ok(a, mr.type_id, tid, recordable)
-				    || (mr.vbase_id && !recordable.count(mr.vbase_id)))
+				    || !arena_chain_ok(a, mr.type_id, tid, e.recordable)
+				    || (mr.vbase_id && !e.recordable.count(mr.vbase_id)))
 					ok = false;
 			}
 			if (ok && r.kind == madc::dis::DK_CLASS) {
 				for (uint32_t b = 0; ok && b < r.bases_count; ++b) {
 					madc::dis::baserec br;
 					if (!a.get_payload(r.bases_begin, b, br)
-					    || !recordable.count(br.base_id))
+					    || !e.recordable.count(br.base_id))
 						ok = false;
 				}
 			}
 			for (uint32_t g = 0; ok && g < r.anon_count; ++g) {
 				madc::dis::anonrec ar;
 				if (!a.get_payload(r.anon_begin, g, ar)
-				    || !recordable.count(ar.sub_type_id))
+				    || !e.recordable.count(ar.sub_type_id))
 					ok = false;
 			}
 			if (!ok) {
-				recordable.erase(tid);
+				e.recordable.erase(tid);
 				removed = true;
 			}
 		}
 	}
+	return cache.emplace(blob_key, std::move(e)).first->second;
+}
+
+const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
+{
+	if (_types_materialized)
+		return _restored;
+	_types_materialized = true;
+	ForestWorkFrame _fw(_work_secs, _work_depth);
+	double _t0 = forest_now();
+
+	// A type-less freeze binds an empty arena view: every aggregate pass
+	// below no-ops (nslots == 0) and only pinned-typed globals restore.
+	const madc::dis::FrozenDefArena &a = _arena;
+	uint32_t nslots = a.def_slots();
+
+	// Pass 0 (recordability) comes from the process cache — one fixpoint
+	// per blob per process, shared by every TU Program that binds it.
+	const ForestRecordable &rec0 =
+		forest_recordable_cached(_reader.blob_base(), a);
+	const std::vector<uint32_t> &agg_ids = rec0.agg_ids;
+	const std::set<uint32_t> &recordable = rec0.recordable;
 
 	// Permanent -v diagnostic (the load-side twin of the freeze-completeness
 	// probe): name every candidate aggregate the closure DROPPED and the
