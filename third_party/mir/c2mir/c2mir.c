@@ -23,6 +23,7 @@
 #include <math.h>
 #include <wchar.h>
 #include <limits.h>
+#include <stddef.h>
 #include "mir-alloc.h"
 #include "mir.h"
 #define MIR_INT128_EXPORT_ALIASES 1 /* AOT: c2mir.c is the one exporting TU */
@@ -97,9 +98,6 @@ DEF_VARR (stream_t);
 typedef const char *char_ptr_t;
 DEF_VARR (char_ptr_t);
 
-typedef void *void_ptr_t;
-DEF_VARR (void_ptr_t);
-
 typedef struct {
   const char *s;
   size_t len;
@@ -148,6 +146,12 @@ typedef struct parse_ctx *parse_ctx_t;
 typedef struct check_ctx *check_ctx_t;
 typedef struct gen_ctx *gen_ctx_t;
 
+typedef struct reg_page {
+  struct reg_page *next;
+  size_t used, capacity;
+  max_align_t data[];
+} *reg_page_t;
+
 DEF_VARR (pos_t);
 
 struct c2m_ctx {
@@ -158,7 +162,7 @@ struct c2m_ctx {
   VARR (char_ptr_t) * system_headers;
   const char **header_dirs, **system_header_dirs;
   void (*error_func) (c2m_ctx_t, C_error_code_t code, const char *message);
-  VARR (void_ptr_t) * reg_memory;
+  reg_page_t reg_pages;
   VARR (stream_t) * streams; /* stack of streams */
   stream_t cs, eof_s;        /* current stream and stream corresponding the last EOF */
   HTAB (tab_str_t) * str_tab;
@@ -191,7 +195,7 @@ typedef struct c2m_ctx *c2m_ctx_t;
 #define header_dirs c2m_ctx->header_dirs
 #define system_header_dirs c2m_ctx->system_header_dirs
 #define error_func c2m_ctx->error_func
-#define reg_memory c2m_ctx->reg_memory
+#define reg_pages c2m_ctx->reg_pages
 #define str_tab c2m_ctx->str_tab
 #define streams c2m_ctx->streams
 #define cs c2m_ctx->cs
@@ -385,32 +389,45 @@ typedef struct {
 
 static inline MIR_alloc_t c2m_alloc (c2m_ctx_t c2m_ctx) { return MIR_get_alloc (c2m_ctx->ctx); }
 
+#define REG_PAGE_BYTES (256 * 1024)
+
+/* The registry has one lifetime: c2mir_init through c2mir_finish.  Its former
+   pointer vector never used the mark/pop path before dropping every object, so
+   allocate those objects from max-aligned pages and release the pages in bulk. */
 static void *reg_malloc (c2m_ctx_t c2m_ctx, size_t s) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
-  void *mem = MIR_malloc (alloc, s);
+  const size_t alignment = _Alignof (max_align_t);
+  const size_t header_size = offsetof (struct reg_page, data);
+  reg_page_t page = reg_pages;
+  void *mem;
 
-  if (mem == NULL) alloc_error (c2m_ctx, "no memory");
-  VARR_PUSH (void_ptr_t, reg_memory, mem);
+  if (s == 0) s = alignment;
+  if (s > (size_t) -1 - (alignment - 1)) alloc_error (c2m_ctx, "no memory");
+  s = (s + alignment - 1) & ~(alignment - 1);
+  if (page == NULL || page->capacity - page->used < s) {
+    size_t capacity = REG_PAGE_BYTES > header_size ? REG_PAGE_BYTES - header_size : 0;
+    if (capacity < s) capacity = s;
+    if (capacity > (size_t) -1 - header_size) alloc_error (c2m_ctx, "no memory");
+    page = MIR_malloc (alloc, header_size + capacity);
+    if (page == NULL) alloc_error (c2m_ctx, "no memory");
+    page->next = reg_pages;
+    page->used = 0;
+    page->capacity = capacity;
+    reg_pages = page;
+  }
+  mem = (char *) page->data + page->used;
+  page->used += s;
   return mem;
 }
 
-static void reg_memory_pop (c2m_ctx_t c2m_ctx, size_t mark) {
+static void reg_pages_finish (c2m_ctx_t c2m_ctx) {
   MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
-  while (VARR_LENGTH (void_ptr_t, reg_memory) > mark)
-    MIR_free (alloc, VARR_POP (void_ptr_t, reg_memory));
-}
+  reg_page_t page;
 
-static size_t MIR_UNUSED reg_memory_mark (c2m_ctx_t c2m_ctx) {
-  return VARR_LENGTH (void_ptr_t, reg_memory);
-}
-static void reg_memory_finish (c2m_ctx_t c2m_ctx) {
-  reg_memory_pop (c2m_ctx, 0);
-  VARR_DESTROY (void_ptr_t, reg_memory);
-}
-
-static void reg_memory_init (c2m_ctx_t c2m_ctx) {
-  MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
-  VARR_CREATE (void_ptr_t, reg_memory, alloc, 4096);
+  while ((page = reg_pages) != NULL) {
+    reg_pages = page->next;
+    MIR_free (alloc, page);
+  }
 }
 
 static int char_is_signed_p (void) { return MIR_CHAR_MAX == MIR_SCHAR_MAX; }
@@ -495,7 +512,6 @@ void c2mir_init (MIR_context_t ctx) {
   if (c2m_ctx == NULL) (*MIR_get_error_func (ctx)) (MIR_alloc_error, "no memory");
 
   c2m_ctx->ctx = ctx;
-  reg_memory_init (c2m_ctx);
   str_init (c2m_ctx);
 }
 
@@ -503,10 +519,11 @@ static void c2m_dbg_reset (void); /* defined with the debug-capture state below 
 
 void c2mir_finish (MIR_context_t ctx) {
   struct c2m_ctx **c2m_ctx_ptr = c2m_ctx_loc (ctx), *c2m_ctx = *c2m_ctx_ptr;
+  MIR_alloc_t alloc = c2m_alloc (c2m_ctx);
 
   str_finish (c2m_ctx);
-  reg_memory_finish (c2m_ctx);
-  free (c2m_ctx);
+  reg_pages_finish (c2m_ctx);
+  MIR_free (alloc, c2m_ctx);
   *c2m_ctx_ptr = NULL;
   c2m_dbg_reset ();
 }
@@ -959,15 +976,16 @@ static void init_streams (c2m_ctx_t c2m_ctx) {
   VARR_CREATE (stream_t, streams, alloc, 32);
 }
 
-static void free_stream (stream_t s) {
+static void free_stream (c2m_ctx_t c2m_ctx, stream_t s) {
   VARR_DESTROY (char, s->ln);
-  free (s);
+  MIR_free (c2m_alloc (c2m_ctx), s);
 }
 
 static void finish_streams (c2m_ctx_t c2m_ctx) {
-  if (eof_s != NULL) free_stream (eof_s);
+  if (eof_s != NULL) free_stream (c2m_ctx, eof_s);
   if (streams == NULL) return;
-  while (VARR_LENGTH (stream_t, streams) != 0) free_stream (VARR_POP (stream_t, streams));
+  while (VARR_LENGTH (stream_t, streams) != 0)
+    free_stream (c2m_ctx, VARR_POP (stream_t, streams));
   VARR_DESTROY (stream_t, streams);
 }
 
@@ -1116,7 +1134,7 @@ static void set_string_stream (c2m_ctx_t c2m_ctx, const char *str, pos_t pos,
 
 static void remove_string_stream (c2m_ctx_t c2m_ctx) {
   assert (cs->f == NULL && cs->f == NULL);
-  free_stream (VARR_POP (stream_t, streams));
+  free_stream (c2m_ctx, VARR_POP (stream_t, streams));
   cs = VARR_LAST (stream_t, streams);
 }
 
@@ -1597,7 +1615,7 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
     case ']': return new_token (c2m_ctx, cs->pos, "]", curr_c, N_IGNORE);
     case EOF: {
       pos = cs->pos;
-      if (eof_s != NULL) free_stream (eof_s);
+      if (eof_s != NULL) free_stream (c2m_ctx, eof_s);
       if (eof_s != cs && cs->f != stdin && cs->f != NULL) {
         fclose (cs->f);
         cs->f = NULL;
@@ -2290,7 +2308,7 @@ static void pre_finish (c2m_ctx_t c2m_ctx) {
       free_macro_call (VARR_POP (macro_call_t, macro_call_stack));
     VARR_DESTROY (macro_call_t, macro_call_stack);
   }
-  free (c2m_ctx->pre_ctx);
+  MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->pre_ctx);
 }
 
 static void add_include_stream (c2m_ctx_t c2m_ctx, const char *fname, const char *content,
@@ -5777,7 +5795,7 @@ static void parse_finish (c2m_ctx_t c2m_ctx) {
   pre_finish (c2m_ctx);
   tpname_finish (c2m_ctx);
   finish_streams (c2m_ctx);
-  free (c2m_ctx->parse_ctx);
+  MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->parse_ctx);
 }
 
 #undef P
@@ -12319,7 +12337,7 @@ static void context_finish (c2m_ctx_t c2m_ctx) {
   if (case_tab != NULL) HTAB_DESTROY (case_t, case_tab);
   if (func_decls_for_allocation != NULL) VARR_DESTROY (decl_t, func_decls_for_allocation);
   if (possible_incomplete_decls != NULL) VARR_DESTROY (node_t, possible_incomplete_decls);
-  free (c2m_ctx->check_ctx);
+  MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->check_ctx);
 }
 
 /* ------------------------ Context Checker Finish ---------------------------- */
@@ -20184,7 +20202,7 @@ static void gen_finish (c2m_ctx_t c2m_ctx) {
   if (init_els != NULL) VARR_DESTROY (init_el_t, init_els);
   if (node_stack != NULL) VARR_DESTROY (node_t, node_stack);
   if (union_alias_done != NULL) VARR_DESTROY (MIR_alias_t, union_alias_done);
-  free (c2m_ctx->gen_ctx);
+  MIR_free (c2m_alloc (c2m_ctx), c2m_ctx->gen_ctx);
 }
 
 static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {

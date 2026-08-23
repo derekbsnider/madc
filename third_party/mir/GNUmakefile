@@ -374,7 +374,7 @@ $(BUILD_DIR)/run-test$(EXE): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(
 
 .PHONY: clean-mir-tests
 clean-mir-tests: clean-mir-utility-tests clean-mir-interp-tests clean-mir-gen-tests clean-readme-example-test
-	$(RM) $(BUILD_DIR)/run-test$(EXE)
+	$(RM) $(BUILD_DIR)/run-test$(EXE) $(BUILD_DIR)/mir-tests/c2mir-custom-alloc$(EXE)
 
 # ------------------ MIR utility tests ------------------------
 
@@ -606,14 +606,20 @@ clean-mir2c-test:
 
 # ------------------ c2m tests --------------------------
 
-.PHONY: c2mir-test c2mir-simple-test c2mir-full-test c2mir-interp-test
+.PHONY: c2mir-test c2mir-simple-test c2mir-custom-alloc-test c2mir-full-test c2mir-interp-test
 .PHONY: c2mir-gen-test c2mir-parallel-gen-test c2mir-gen-test0 c2mir-gen-test1 c2mir-gen-test3
 .PHONY: c2mir-object-test c2mir-load-object-test
 
 c2mir-test: c2mir-simple-test c2mir-full-test
 
-c2mir-simple-test: $(BUILD_DIR)/c2m$(EXE)
+c2mir-simple-test: $(BUILD_DIR)/c2m$(EXE) c2mir-custom-alloc-test
 	$(BUILD_DIR)/c2m$(EXE) -v $(SRC_DIR)/sieve.c -ei
+
+$(BUILD_DIR)/mir-tests/c2mir-custom-alloc$(EXE): $(SRC_DIR)/mir-tests/c2mir-custom-alloc.c $(BUILD_DIR)/libmir.$(LIBSUFF) | $(BUILD_DIR)/mir-tests
+	$(COMPILE_AND_LINK) $^ $(LDLIBS) $(EXEO)$@
+
+c2mir-custom-alloc-test: $(BUILD_DIR)/mir-tests/c2mir-custom-alloc$(EXE)
+	$(BUILD_DIR)/mir-tests/c2mir-custom-alloc$(EXE)
 
 c2mir-full-test: c2mir-interp-test c2mir-gen-test c2mir-bb-gen-test c2mir-gen-test0 c2mir-gen-test1 c2mir-gen-test3 c2mir-bootstrap
 
