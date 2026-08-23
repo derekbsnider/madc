@@ -805,7 +805,7 @@ public:
     // same aggregate kind, same non-synthetic tag, both complete, identical
     // size and member count.
     virtual bool denotes_same_type(DataDef &d)
-    {
+ override    {
 	if ( &d == this )
 	    return true;
 	DataDefSTRUCT *o = dynamic_cast<DataDefSTRUCT *>(&d);
@@ -852,10 +852,10 @@ public:
     virtual ~DataDefSTRUCT()
     {
     }
-    virtual BaseType basetype() const { return BaseType::btStruct; }
-    virtual size_t alignment() const { return max_align ? max_align : 1; }
+    virtual BaseType basetype() const override { return BaseType::btStruct; }
+    virtual size_t alignment() const override { return max_align ? max_align : 1; }
     // record_type_class vs union_type_class (classes inherit: a class is a record)
-    virtual int gcc_type_class() const { return union_layout ? 13 : 12; }
+    virtual int gcc_type_class() const override { return union_layout ? 13 : 12; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void setReverseScalarStorage(bool reverse)
     {
@@ -1262,7 +1262,7 @@ public:
     {
 	return m_bitfield(member) != NULL;
     }
-    virtual DataDefSTRUCT *as_struct_dd() { return this; }
+    virtual DataDefSTRUCT *as_struct_dd() override { return this; }
 };
 
 class DataDefCLASS;
@@ -1344,7 +1344,7 @@ public:
     // A class's alignment is the strongest of its members, bases, and (if
     // polymorphic) the vptr — computed by compute_layout and cached in
     // class_align. Until then, fall back to the own-member alignment (max_align).
-    virtual size_t alignment() const { return class_align ? class_align : DataDefSTRUCT::alignment(); }
+    virtual size_t alignment() const override { return class_align ? class_align : DataDefSTRUCT::alignment(); }
     bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
     // Placeholder minted OUTSIDE a dependent (pattern) parse — a CONCRETE
     // forward tag (the empty-pack recursion tail _Tuple_impl<1>): live
@@ -1458,7 +1458,7 @@ public:
 	  opaque_concrete_tag(false),
 	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
 	  from_system_header(false), is_extern_template_instantiated(false) {}
-    virtual BaseType basetype() const { return BaseType::btClass; }
+    virtual BaseType basetype() const override { return BaseType::btClass; }
     Variable *findMethod(const std::string &s);
     // Among the same-name method overloads (this class + base chain), pick the
     // one whose parameter types best match `argtypes` (overload resolution by
@@ -1501,7 +1501,7 @@ public:
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
-    virtual DataDefCLASS *as_class_dd() { return this; }
+    virtual DataDefCLASS *as_class_dd() override { return this; }
 };
 
 typedef DataDefCLASS DDClass;
@@ -1544,10 +1544,10 @@ class DataDefPlatformULONG: public DataDef { public:
 // long double — see DataDefLDOUBLE below).
 class DataDefINT128:    public DataDef { public:
 	DataDefINT128():  DataDef("__int128", 16, DataType::dtINT128) {}
-	virtual size_t alignment() const { return 16; } };
+	virtual size_t alignment() const override { return 16; } };
 class DataDefUINT128:   public DataDef { public:
 	DataDefUINT128(): DataDef("unsigned __int128", 16, DataType::dtUINT128) {}
-	virtual size_t alignment() const { return 16; } };
+	virtual size_t alignment() const override { return 16; } };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
 // x86-64 SysV: the x87 80-bit extended type, 10 significant bytes but sizeof 16
@@ -1563,7 +1563,7 @@ class DataDefLDOUBLE:   public DataDef { public:
 	// override struct layout placed long double members on 8-byte
 	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
 	// out as 32 — gcc/clang: 32).
-	virtual size_t alignment() const { return 16; } };
+	virtual size_t alignment() const override { return 16; } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1573,9 +1573,9 @@ public:
     DataDef *base_type;  // what this pointer points to
     DataDefPTR(DataDef &base)
 	: DataDef(base.name + "*", 8, base.type()), base_type(&base) {}
-    virtual bool is_pointer() const { return true; }
-    virtual bool is_numeric() const { return true; }
-    virtual bool is_integer() const { return true; }
+    virtual bool is_pointer() const override { return true; }
+    virtual bool is_numeric() const override { return true; }
+    virtual bool is_integer() const override { return true; }
     // Classify STRUCTURALLY, not from the _type tag-band (mirrors DataDefCONST,
     // which already forwards these to base_type). A pointer's reftype is
     // rtPointer by construction; its rawtype is the pointee's rawtype (so T**
@@ -1583,9 +1583,9 @@ public:
     // tag behaviour). Part of retiring the +10000/+20000 tag encoding: the
     // structural object stops depending on the offset math
     // (docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md).
-    virtual RefType reftype() const { return RefType::rtPointer; }
-    virtual DataType rawtype() const { return base_type ? base_type->rawtype() : DataType::dtVOID; }
-    virtual DataDefPTR *as_pointer_dd() { return this; }
+    virtual RefType reftype() const override { return RefType::rtPointer; }
+    virtual DataType rawtype() const override { return base_type ? base_type->rawtype() : DataType::dtVOID; }
+    virtual DataDefPTR *as_pointer_dd() override { return this; }
 };
 
 // LPSTR is `char *`. It IS-A DataDefPTR(ddCHAR) — a structural pointer with a
@@ -1607,19 +1607,19 @@ class DataDefREF : public DataDefPTR
 {
 public:
     DataDefREF(DataDef &base) : DataDefPTR(base) {}
-    virtual bool is_reference() const { return true; }
+    virtual bool is_reference() const override { return true; }
     // A reference's reftype is rtReference — STRUCTURAL, overriding DataDefPTR's
     // rtPointer. (Historically a DataDefREF's _type sat in the POINTER band
     // because the ctor chains through DataDefPTR/rtPtr, so the inherited tag
     // reftype() reported rtPointer while is_reference() said true — the "three
     // encodings" disagreement. This override makes the two agree. rawtype()
     // is inherited from DataDefPTR (base_type->rawtype()), unchanged.)
-    virtual RefType reftype() const { return RefType::rtReference; }
+    virtual RefType reftype() const override { return RefType::rtReference; }
     // An expression never has reference type — it is an lvalue of the
     // referred type, so classify as that (never DataDefPTR's pointer class).
     virtual int gcc_type_class() const
-    { return base_type ? base_type->gcc_type_class() : -1; }
-    virtual DataDefREF *as_reference_dd() { return this; }
+ override    { return base_type ? base_type->gcc_type_class() : -1; }
+    virtual DataDefREF *as_reference_dd() override { return this; }
 };
 
 // `void&` — the reference-slot placeholder for MADC_TYPEID_VOID_REF. IS-A
@@ -1644,27 +1644,27 @@ public:
     DataDef *base_type;
     DataDefCONST(DataDef &base)
 	: DataDef("const " + base.name, base.size, base.type()), base_type(&base) {}
-    virtual BaseType basetype() const { return base_type->basetype(); }
-    virtual DataType rawtype() const { return base_type->rawtype(); }
-    virtual RefType reftype() const { return base_type->reftype(); }
-    virtual bool is_const() const { return true; }
-    virtual bool is_complex() const { return base_type->is_complex(); }
-    virtual bool is_pointer() const { return base_type->is_pointer(); }
-    virtual bool is_reference() const { return base_type->is_reference(); }
-    virtual bool is_member_pointer() const { return base_type->is_member_pointer(); }
-    virtual bool is_struct() const { return base_type->is_struct(); }
-    virtual bool is_object() const { return base_type->is_object(); }
-    virtual bool is_function() const { return base_type->is_function(); }
-    virtual bool is_numeric() const { return base_type->is_numeric(); }
-    virtual bool is_integer() const { return base_type->is_integer(); }
-    virtual bool is_real() const { return base_type->is_real(); }
-    virtual bool is_simd() const { return base_type->is_simd(); }
-    virtual bool is_unsigned() const { return base_type->is_unsigned(); }
-    virtual size_t alignment() const { return base_type->alignment(); }
-    virtual int gcc_type_class() const { return base_type->gcc_type_class(); }
-    virtual DataDefCONST *as_const_dd() { return this; }
-    virtual DataDef *unqualified() { return base_type ? base_type : this; }
-    virtual const DataDef *unqualified() const { return base_type ? base_type : this; }
+    virtual BaseType basetype() const override { return base_type->basetype(); }
+    virtual DataType rawtype() const override { return base_type->rawtype(); }
+    virtual RefType reftype() const override { return base_type->reftype(); }
+    virtual bool is_const() const override { return true; }
+    virtual bool is_complex() const override { return base_type->is_complex(); }
+    virtual bool is_pointer() const override { return base_type->is_pointer(); }
+    virtual bool is_reference() const override { return base_type->is_reference(); }
+    virtual bool is_member_pointer() const override { return base_type->is_member_pointer(); }
+    virtual bool is_struct() const override { return base_type->is_struct(); }
+    virtual bool is_object() const override { return base_type->is_object(); }
+    virtual bool is_function() const override { return base_type->is_function(); }
+    virtual bool is_numeric() const override { return base_type->is_numeric(); }
+    virtual bool is_integer() const override { return base_type->is_integer(); }
+    virtual bool is_real() const override { return base_type->is_real(); }
+    virtual bool is_simd() const override { return base_type->is_simd(); }
+    virtual bool is_unsigned() const override { return base_type->is_unsigned(); }
+    virtual size_t alignment() const override { return base_type->alignment(); }
+    virtual int gcc_type_class() const override { return base_type->gcc_type_class(); }
+    virtual DataDefCONST *as_const_dd() override { return this; }
+    virtual DataDef *unqualified() override { return base_type ? base_type : this; }
+    virtual const DataDef *unqualified() const override { return base_type ? base_type : this; }
 };
 
 // is_cstr() — declared in DataDef above; defined here where DataDefPTR /
@@ -1702,9 +1702,9 @@ public:
     DataDefMemberPtr(DataDef *owner, const std::string &owner_nm, DataDef &member)
 	: DataDef(member.name + " " + owner_nm + "::*", 8, DataType::dtINT64),
 	  owner_class(owner), owner_name(owner_nm), member_type(&member) {}
-    virtual bool is_numeric() const { return true; }
-    virtual bool is_integer() const { return true; }
-    virtual bool is_member_pointer() const { return true; }
+    virtual bool is_numeric() const override { return true; }
+    virtual bool is_integer() const override { return true; }
+    virtual bool is_member_pointer() const override { return true; }
 };
 
 class DataDefCArray : public DataDef
@@ -1720,7 +1720,7 @@ public:
 	  element_type(&elem), count(cnt), count_expr(expr) {}
 
     virtual size_t alignment() const
-    {
+ override    {
 	return element_type ? element_type->alignment() : DataDef::alignment();
     }
 
@@ -1737,7 +1737,7 @@ public:
 		return true;
 	return false;
     }
-    virtual DataDefCArray *as_carray_dd() { return this; }
+    virtual DataDefCArray *as_carray_dd() override { return this; }
 };
 
 class DataDefENUM : public DataDef
@@ -1791,7 +1791,7 @@ public:
 	    _type = (uint32_t)u->rawtype();
 	}
     }
-    virtual DataDefENUM *as_enum_dd() { return this; }
+    virtual DataDefENUM *as_enum_dd() override { return this; }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT
@@ -1829,14 +1829,14 @@ public:
 	is_complete = !is_native();
     }
 
-    virtual bool is_complex() const { return true; }
+    virtual bool is_complex() const override { return true; }
     // True: c2mir represents the type natively (TP_CFLOAT/TP_CDOUBLE/
     // TP_CLDOUBLE). False: integer element — the CIR builder lowers to the
     // struct spine (c2mir rejects integer _Complex).
     bool is_native() const { return element_type && element_type->is_real(); }
 
     virtual bool is_compatible(DataDef &d)
-    {
+ override    {
 	if ( &d == this )
 	    return true;
 	DataDefCOMPLEX *other = dynamic_cast<DataDefCOMPLEX *>(&d);
@@ -1848,7 +1848,7 @@ public:
 	std::string member = imag_part ? "__im" : "__re";
 	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
     }
-    virtual DataDefCOMPLEX *as_complex_dd() { return this; }
+    virtual DataDefCOMPLEX *as_complex_dd() override { return this; }
 };
 
 // The script `array` / `madc::array` builtin IS the public `madc::value`
@@ -1893,17 +1893,17 @@ public:
     DataDefSIMD(DataDef *elem, const std::string &name, size_t bytes)
 	: DataDef(name, bytes, DataType::dtSIMD), element_type(elem),
 	  vector_bytes(bytes), lane_count((elem && elem->size) ? (bytes / elem->size) : 0) {}
-    virtual bool is_numeric() const { return true; }
-    virtual bool is_integer() const { return element_type && element_type->is_integer(); }
-    virtual bool is_real() const { return element_type && element_type->is_real(); }
-    virtual bool is_simd() const { return true; }
+    virtual bool is_numeric() const override { return true; }
+    virtual bool is_integer() const override { return element_type && element_type->is_integer(); }
+    virtual bool is_real() const override { return element_type && element_type->is_real(); }
+    virtual bool is_simd() const override { return true; }
     virtual size_t alignment() const
-    {
+ override    {
 	if ( size >= 16 ) return 16;
 	if ( size >= 8 ) return 8;
 	return size ? size : 1;
     }
-    virtual DataDefSIMD *as_simd_dd() { return this; }
+    virtual DataDefSIMD *as_simd_dd() override { return this; }
 };
 
 extern DataDefVOID ddVOID;
@@ -1966,9 +1966,9 @@ public:
     unsigned param_index;   // 0-based position in the template parameter list
     DataDefTemplateParam(const std::string &nm, unsigned idx)
 	: DataDef(nm, 0, DataType::dtVOID), param_index(idx) {}
-    virtual BaseType basetype() const { return BaseType::btTemplateParam; }
-    virtual bool is_template_param() const { return true; }
-    virtual DataDefTemplateParam *as_template_param_dd() { return this; }
+    virtual BaseType basetype() const override { return BaseType::btTemplateParam; }
+    virtual bool is_template_param() const override { return true; }
+    virtual DataDefTemplateParam *as_template_param_dd() override { return this; }
 };
 
 // Type table identity layer — slot <-> global-primitive mapping (the single
@@ -2003,11 +2003,11 @@ public:
     // typedef itself vs. defers the `*` to each use site.
     bool ptr_syntax;
     DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd), ptr_syntax(true) {}
-    virtual BaseType basetype() const { return BaseType::btFunct; }
-    virtual bool is_function() const { return true; }
-    virtual bool is_numeric()  const { return true; }
-    virtual bool is_integer()  const { return true; }
-    virtual DataDefFPTR *as_fptr_dd() { return this; }
+    virtual BaseType basetype() const override { return BaseType::btFunct; }
+    virtual bool is_function() const override { return true; }
+    virtual bool is_numeric()  const override { return true; }
+    virtual bool is_integer()  const override { return true; }
+    virtual DataDefFPTR *as_fptr_dd() override { return this; }
 };
 
 #endif // __DATADEF_H

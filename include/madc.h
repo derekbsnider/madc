@@ -441,8 +441,8 @@ public:
     // Initializer order matches member declaration order (avoids -Wreorder).
     FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
-    virtual BaseType basetype() const { return BaseType::btFunct; }
-    virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
+    virtual BaseType basetype() const override { return BaseType::btFunct; }
+    virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
     // A parsed trailing `...` rides the param arrays as a pseudo-param with an
     // empty captured spelling; give a mangle param list its "..." entry (the
@@ -542,7 +542,7 @@ public:
     // definitions [ELF-completion S4].
     bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
     bool is_multi_return() const { return return_types.size() > 1; }
-    virtual FuncDef *as_funcdef_dd() { return this; }
+    virtual FuncDef *as_funcdef_dd() override { return this; }
 };
 
 // Generic overload-resolution ranking — NO type is special-cased. Ranks binding
@@ -572,7 +572,7 @@ class DataStruct: public DataDef
 {
 public:
     std::vector<DataDef *> elements;
-    virtual BaseType basetype() const { return BaseType::btStruct; }
+    virtual BaseType basetype() const override { return BaseType::btStruct; }
 };
 
 class DataClass: public DataDef
@@ -580,7 +580,7 @@ class DataClass: public DataDef
 public:
     std::vector<DataDef *> elements;
     std::vector<FuncDef *> methods;
-    virtual BaseType basetype() const { return BaseType::btClass; }
+    virtual BaseType basetype() const override { return BaseType::btClass; }
 };
 
 enum class HoistedDeclKind
@@ -696,7 +696,7 @@ public:
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
     Variable *findVariableLocal(const madc::dis::intern_table &sp, const std::string &id);
-    virtual TokenCpnd *as_cpnd_tok() { return this; }
+    virtual TokenCpnd *as_cpnd_tok() override { return this; }
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd
@@ -716,9 +716,9 @@ public:
     // NOT survive the backend swap.)
     bool is_overridden = false;
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
-    virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
-    virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual TokenFunc *as_func_tok() { return this; }
+    virtual size_t argc() const override { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
+    virtual TokenType type() const override { return TokenType::ttFunction; }
+    virtual TokenFunc *as_func_tok() override { return this; }
 };
 
 class TokenDecl: public TokenVar
@@ -758,8 +758,8 @@ public:
     // object). Distinct from baked_static_init: this NEVER defines storage.
     bool block_extern_redecl = false;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
-    virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual TokenDecl *as_decl_tok() { return this; }
+    virtual TokenType type() const override { return TokenType::ttDeclare; }
+    virtual TokenDecl *as_decl_tok() override { return this; }
 };
 
 // AST node for a typedef declaration. Returned by TokenTYPEDEF::parse()
@@ -772,8 +772,8 @@ public:
     std::string alias;       // typedef alias name (e.g. "EXT_BV")
     DataDef *target_type;    // what the typedef resolves to
     TokenTypedefDecl(const std::string &a, DataDef *t) : alias(a), target_type(t) {}
-    virtual TokenType type() const { return TokenType::ttTypedefDecl; }
-    virtual TokenTypedefDecl *as_typedef_decl_tok() { return this; }
+    virtual TokenType type() const override { return TokenType::ttTypedefDecl; }
+    virtual TokenTypedefDecl *as_typedef_decl_tok() override { return this; }
 };
 
 // AST node for a standalone struct/union definition (no variable
@@ -785,7 +785,7 @@ public:
     DataDefSTRUCT *sdd;
     bool is_union;
     TokenStructDef(DataDefSTRUCT *s, bool u = false) : sdd(s), is_union(u) {}
-    virtual TokenType type() const { return TokenType::ttStructDef; }
+    virtual TokenType type() const override { return TokenType::ttStructDef; }
 };
 
 // { v0, v1, ... } — a nested brace initializer, used for elements of an
@@ -808,8 +808,8 @@ public:
     // faithful C99 lowering. Holds the ELEMENT type T.
     DataDef *array_elem_dd = nullptr;
     TokenStructLit() {}
-    virtual TokenType type() const { return TokenType::ttStructLit; }
-    virtual TokenStructLit *as_struct_lit_tok() { return this; }
+    virtual TokenType type() const override { return TokenType::ttStructLit; }
+    virtual TokenStructLit *as_struct_lit_tok() override { return this; }
 };
 
 // Tree-1 marker for a C++ pack expansion pattern (`expr...`) captured during a
@@ -836,7 +836,7 @@ public:
 	t->column = column;
 	return t;
     }
-    virtual TokenPackExpansion *as_pack_expansion_tok() { return this; }
+    virtual TokenPackExpansion *as_pack_expansion_tok() override { return this; }
 };
 
 class TokenCallFunc: public TokenVar
@@ -900,7 +900,7 @@ public:
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
     virtual size_t argc() const override { return parameters.size(); }
     virtual TokenType type() const override { return TokenType::ttCallFunc; }
-    virtual TokenCallFunc *as_callfunc_tok() { return this; }
+    virtual TokenCallFunc *as_callfunc_tok() override { return this; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -956,7 +956,7 @@ public:
     {
 	return bitfield_info() != NULL;
     }
-    virtual TokenMember *as_member_tok() { return this; }
+    virtual TokenMember *as_member_tok() override { return this; }
 };
 
 // & address-of operator — emits LEA to get address of a variable
@@ -968,7 +968,7 @@ public:
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
-    virtual TokenAddrOf *as_addr_of_tok() { return this; }
+    virtual TokenAddrOf *as_addr_of_tok() override { return this; }
 };
 
 // &(expr) address-of operator for member/subscript/deref lvalues
@@ -980,7 +980,7 @@ public:
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
-    virtual TokenAddrExpr *as_addr_expr_tok() { return this; }
+    virtual TokenAddrExpr *as_addr_expr_tok() override { return this; }
 };
 
 // GNU computed-goto label address: `&&label`
@@ -1002,8 +1002,8 @@ public:
     const madc::value *context_value;
     TokenExprContextObject(const std::string &p, const madc::value *v)
 	: path(p), context_value(v) {}
-    virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenBase *clone() { return new TokenExprContextObject(path, context_value); }
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenBase *clone() override { return new TokenExprContextObject(path, context_value); }
 };
 
 // *ptr dereference — reads/writes the value at the address held by a pointer
@@ -1015,7 +1015,7 @@ public:
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
-    virtual TokenDeref *as_deref_tok() { return this; }
+    virtual TokenDeref *as_deref_tok() override { return this; }
 };
 
 // *(expr) dereference for cast/member/subscript pointer expressions
@@ -1027,7 +1027,7 @@ public:
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
-    virtual TokenDerefExpr *as_deref_expr_tok() { return this; }
+    virtual TokenDerefExpr *as_deref_expr_tok() override { return this; }
 };
 
 class TokenComplexPart: public TokenBase
@@ -1066,7 +1066,7 @@ public:
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
-    virtual TokenDerefStep *as_deref_step_tok() { return this; }
+    virtual TokenDerefStep *as_deref_step_tok() override { return this; }
 };
 
 // (TYPE *) cast expression — type annotation, no codegen for pointer casts
@@ -1078,14 +1078,14 @@ public:
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
-    virtual TokenCast *as_cast_tok() { return this; }
+    virtual TokenCast *as_cast_tok() override { return this; }
 };
 
 class TokenCallMethod: public TokenMember
 {
 public:
     TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
-    virtual TokenType type() const { return TokenType::ttCallMethod; }
+    virtual TokenType type() const override { return TokenType::ttCallMethod; }
     // Number of USER-WRITTEN arguments, set when reselect_method_overload
     // appends C++ default arguments after selecting the overload — the same
     // contract as TokenCallFunc::user_argc (a re-rank must ignore appended
@@ -1093,7 +1093,7 @@ public:
     // them would veto the very overload that supplied them).
     // (size_t)-1 = no defaults appended; every argument is user-written.
     size_t user_argc = (size_t)-1;
-    virtual TokenCallMethod *as_callmethod_tok() { return this; }
+    virtual TokenCallMethod *as_callmethod_tok() override { return this; }
 };
 
 // subscript access: container[index]
@@ -1155,7 +1155,7 @@ public:
     // fixed-array indexing; that path is gone, so return the stored
     // element type directly. The CIR backend derives types independently.
     virtual DataDef *datadef() const override { return _datatype; }
-    virtual TokenSubscript *as_subscript_tok() { return this; }
+    virtual TokenSubscript *as_subscript_tok() override { return this; }
 };
 
 class TokenSubscriptExpr: public TokenBase
@@ -1179,7 +1179,7 @@ public:
     // emit_ir_value which loads through Mem and yields a Gp holding
     // the value — chaining through that returned a numeric value as
     // if it were an address and crashed at NULL/garbage.
-    virtual TokenSubscriptExpr *as_subscript_expr_tok() { return this; }
+    virtual TokenSubscriptExpr *as_subscript_expr_tok() override { return this; }
 };
 
 class TokenProgram: public TokenCpnd
@@ -1190,7 +1190,7 @@ public:
     uint32_t lines;
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
-    virtual TokenType type() const { return TokenType::ttProgram; }
+    virtual TokenType type() const override { return TokenType::ttProgram; }
 };
 
 
@@ -1845,7 +1845,7 @@ protected:
 public:
     explicit Exception(const std::string& message): _msg(message) {}
     virtual ~Exception() throw() {}
-    virtual const char *what() const throw () { return _msg.c_str(); }
+    virtual const char *what() const throw () override { return _msg.c_str(); }
 };
 
 // streambuf class to throw an exception at sync
@@ -1856,7 +1856,7 @@ protected:
     Source *_src;
 public:
     throwbuf() : std::stringbuf() { _tb = NULL; _src = NULL; }
-    virtual int sync();
+    virtual int sync() override;
     TokenBase *token() { return _tb; }
     TokenBase *token(TokenBase *t) { return (_tb=t); }
     Source *source() { return _src; }
