@@ -1,0 +1,57 @@
+## Test whether KNIVES_VANISH can be issued twice
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE avoide spuriuous failure on second "get knife"
+no
+seed 1640849217
+e
+get lamp
+xyzzy
+get rod
+on
+w
+w
+w
+d
+w
+wave rod
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+e
+w
+get knife
+look
+get knife
+quit
+yes

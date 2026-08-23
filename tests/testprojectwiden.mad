@@ -1,0 +1,5 @@
+// Project-mode test (R4-lite S2/S3 widening gate). The real build is driven
+// by testprojectwiden.cc.json via the --project flag in testprojectwiden.flags:
+// TU 1 binds only <stddef.h>, TU 2 binds <stdio.h> — under a packed carrier
+// the SHARED forest instance must union-grow TU 2's wider closure after TU 1
+// materialized the narrow one. This file is an ignored positional.

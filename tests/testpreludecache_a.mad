@@ -1,0 +1,17 @@
+// First ns_php image: the ordinary macro context.
+long lean_count()
+{
+	array xs;
+	php::array_push(xs, "x");
+	return php::count(xs);
+}
+
+long remapped_count();
+long remapped_count_again();
+
+int main()
+{
+	println("base={} remap={} again={}", lean_count(), remapped_count(),
+		remapped_count_again());
+	return 0;
+}

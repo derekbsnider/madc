@@ -1,0 +1,469 @@
+// ---- the frame loop (the reference's main / do_move / do_command) ------
+// The turn IS the frame: apply the pending move, describe, read an
+// intent, dispatch. Loop levels mirror the reference's state machine:
+// word_loop 1 = executed (move next), 2 = read another command,
+// 3 = re-describe without moving (GO_TOP).
+
+// Apply the move the travel system chose. False = the player died.
+#include "adv_decls.inc"
+
+bool do_move_step()
+{
+	if ( outside_loc(G.player.newloc) && G.player.newloc != 0 && G.has(GF_CLOSING) )
+	{
+		rspeak("EXIT_CLOSED");
+		G.player.newloc = G.player.loc;
+		if ( !G.has(GF_PANIC) )
+			G.clock2 = 15;
+		G.set(GF_PANIC);
+	}
+	// A dwarf blocking the way (it came from where we are going).
+	if ( G.player.newloc != G.player.loc && !forced_loc(G.player.loc) && !loccond(G.player.loc, "NOARRR") )
+	{
+		for ( long di = 1; di <= 5; di++ )
+		{
+			long dw = dwarf_ent(di);
+			if ( bag_flag(dw, "seen")
+			  && bag_int(dw, "oldloc", 0) == G.player.newloc )
+			{
+				G.player.newloc = G.player.loc;
+				rspeak("DWARF_BLOCK");
+				break;
+			}
+		}
+	}
+	G.player.loc = G.player.newloc;
+	ui::move(G.w, G.player.ent, G.player.loc);
+	if ( !dwarfmove() )
+		croak();
+	if ( G.player.loc == 0 )
+		croak();
+	if ( !forced_loc(G.player.loc) && is_dark() && G.player.has(PF_WZDARK) && pct(35) )
+	{
+		rspeak("PIT_FALL");
+		G.player.oldlc2 = G.player.loc;
+		croak();
+		return false;
+	}
+	return true;
+}
+
+// Read one command into G.player.cmd (two-word gate, empty-line reread).
+bool read_command()
+{
+	for (;;)
+	{
+		var line;
+		if ( !get_input(line) )
+			return false;
+		if ( word_count(line) > 2 )
+		{
+			rspeak("TWO_WORDS");
+			continue;
+		}
+		if ( !line.empty() )
+		{
+			tokenize_command(line);
+			return true;
+		}
+	}
+}
+
+// The enter-water tease-outs and word rewrites (the reference's
+// preprocess_command). False = command consumed, read another.
+bool preprocess_command()
+{
+	long t0 = G.player.cmd["type0"].as_integer();
+	long t1 = G.player.cmd["type1"].as_integer();
+	var id0 = G.player.cmd["id0"];
+	var id1 = G.player.cmd["id1"];
+	if ( t0 == T_MOTION && id0 == "ENTER"
+	  && ((t1 == T_MOTION && id1 == "STREAM")
+	   || (t1 == T_OBJECT && id1 == "WATER")) )
+	{
+		var lq;
+		liq_loc(lq, G.player.loc);
+		if ( lq == "WATER" )
+			rspeak("FEET_WET");
+		else
+			rspeak("WHERE_QUERY");
+		return false;
+	}
+	if ( t0 == T_OBJECT )
+	{
+		if ( t1 == T_ACTION )
+		{
+			// object-verb arrives; process as verb-object.
+			var sr = G.player.cmd["raw0"];
+			var st = G.player.cmd["type0"];
+			var si = G.player.cmd["id0"];
+			G.player.cmd["raw0"] = G.player.cmd["raw1"];
+			G.player.cmd["type0"] = G.player.cmd["type1"];
+			G.player.cmd["id0"] = G.player.cmd["id1"];
+			G.player.cmd["raw1"] = sr;
+			G.player.cmd["type1"] = st;
+			G.player.cmd["id1"] = si;
+			t0 = G.player.cmd["type0"].as_integer();
+			t1 = G.player.cmd["type1"].as_integer();
+			id0 = G.player.cmd["id0"];
+			id1 = G.player.cmd["id1"];
+		}
+		if ( t0 == T_OBJECT && id0 == "GRATE" )
+		{
+			G.player.cmd["type0"] = T_MOTION;
+			if ( G.player.loc == E("LOC_START") || G.player.loc == E("LOC_VALLEY")
+			  || G.player.loc == E("LOC_SLIT") )
+				G.player.cmd["id0"] = "DEPRESSION";
+			else if ( G.player.loc == E("LOC_COBBLE")
+			       || G.player.loc == E("LOC_DEBRIS")
+			       || G.player.loc == E("LOC_AWKWARD")
+			       || G.player.loc == E("LOC_BIRDCHAMBER")
+			       || G.player.loc == E("LOC_PITTOP") )
+				G.player.cmd["id0"] = "ENTRANCE";
+		}
+		if ( (id0 == "WATER" || id0 == "OIL")
+		  && (id1 == "PLANT" || id1 == "DOOR") )
+		{
+			if ( at_obj(E(id1.c_str())) )
+			{
+				G.player.cmd["raw1"] = G.player.cmd["raw0"];
+				G.player.cmd["id1"] = G.player.cmd["id0"];
+				G.player.cmd["type1"] = T_OBJECT;
+				G.player.cmd["raw0"] = "pour";
+				G.player.cmd["id0"] = "POUR";
+				G.player.cmd["type0"] = T_ACTION;
+			}
+		}
+		if ( id0 == "CAGE" && id1 == "BIRD" && here_obj(E("CAGE"))
+		  && here_obj(E("BIRD")) )
+		{
+			G.player.cmd["id0"] = "CARRY";
+			G.player.cmd["type0"] = T_ACTION;
+		}
+	}
+	return true;
+}
+
+// The lamp timers (the reference's lampcheck): burn a turn of battery,
+// warn as it dims, swap in fresh batteries, go dark at zero.
+void lampcheck()
+{
+	long lamp = E("LAMP");
+	if ( obj_state(lamp) == state_index_c(lamp, "LAMP_BRIGHT") )
+		G.limit--;
+	long battery = E("BATTERY");
+	if ( G.limit <= 30 )
+	{
+		if ( here_obj(battery) && here_obj(lamp)
+		  && obj_state(battery)
+		     == state_index_c(battery, "FRESH_BATTERIES") )
+		{
+			rspeak("REPLACE_BATTERIES");
+			obj_set_state(battery,
+				state_index_c(battery, "DEAD_BATTERIES"));
+			G.limit = G.limit + 2500;
+			G.player.clear(PF_LMWARN);
+		}
+		else if ( !G.player.has(PF_LMWARN) && here_obj(lamp) )
+		{
+			G.player.set(PF_LMWARN);
+			if ( obj_state(battery)
+			     == state_index_c(battery, "DEAD_BATTERIES") )
+				rspeak("MISSING_BATTERIES");
+			else if ( ui::location(G.w, battery) == 0 )
+				rspeak("LAMP_DIM");
+			else
+				rspeak("GET_BATTERIES");
+		}
+	}
+	if ( G.limit == 0 )
+	{
+		G.limit = -1;
+		obj_set_state(lamp, state_index_c(lamp, "LAMP_DARK"));
+		if ( here_obj(lamp) )
+			rspeak("LAMP_OUT");
+	}
+}
+
+// clock1 expired: lock the grate, clear the bridge, banish the dwarves,
+// the troll, and the (live) bear; the axe and chain free up.
+void close_clock1()
+{
+	long grate = E("GRATE");
+	obj_set_state(grate, state_index_c(grate, "GRATE_CLOSED"));
+	long fissure = E("FISSURE");
+	obj_set_state(fissure, state_index_c(fissure, "UNBRIDGED"));
+	for ( long di = 1; di <= 6; di++ )
+	{
+		long dw = dwarf_ent(di);
+		ui::set(G.w, dw, "seen", false);
+		ui::move(G.w, dw, 0);
+	}
+	long troll = E("TROLL");
+	destroy_object(troll, "TROLL");
+	move_fixed_side("TROLL", 0);
+	long troll2 = E("TROLL2");
+	move_object(troll2, static_place(troll));
+	move_fixed_side("TROLL2", static_fixed(troll));
+	juggle_object(E("CHASM"), "CHASM");
+	long bear = E("BEAR");
+	if ( obj_state(bear) != state_index_c(bear, "BEAR_DEAD") )
+		destroy_object(bear, "BEAR");
+	long chain = E("CHAIN");
+	obj_set_state(chain, state_index_c(chain, "CHAIN_HEAP"));
+	obj_set_fixed(chain, 0);
+	long axe = E("AXE");
+	obj_set_state(axe, state_index_c(axe, "AXE_HERE"));
+	obj_set_fixed(axe, 0);
+	rspeak("CAVE_CLOSING");
+	G.clock1 = -1;
+	G.set(GF_CLOSING);
+}
+
+// clock2 expired: transport to the storage room (the reference's
+// hardwired LOC_NE / LOC_SW endgame), stash the props, drop the load.
+void close_clock2()
+{
+	long ne = E("LOC_NE");
+	long sw = E("LOC_SW");
+	long bottle = E("BOTTLE");
+	put_object(bottle, "BOTTLE", ne,
+		   state_index_c(bottle, "EMPTY_BOTTLE"));
+	long plant = E("PLANT");
+	put_object(plant, "PLANT", ne, 0);
+	put_object(E("OYSTER"), "OYSTER", ne, 0);
+	long lamp = E("LAMP");
+	put_object(lamp, "LAMP", ne, state_index_c(lamp, "LAMP_DARK"));
+	put_object(E("ROD"), "ROD", ne, 0);
+	put_object(E("DWARF"), "DWARF", ne, 0);
+	G.player.loc = ne;
+	G.player.oldloc = ne;
+	G.player.newloc = ne;
+	ui::move(G.w, G.player.ent, ne);
+	move_object(E("GRATE"), sw);
+	long sign = E("SIGN");
+	move_object(sign, sw);
+	obj_set_state(sign, state_index_c(sign, "ENDGAME_SIGN"));
+	long snake = E("SNAKE");
+	put_object(snake, "SNAKE", sw, state_index_c(snake, "SNAKE_CHASED"));
+	long bird = E("BIRD");
+	put_object(bird, "BIRD", sw, state_index_c(bird, "BIRD_CAGED"));
+	put_object(E("CAGE"), "CAGE", sw, 0);
+	put_object(E("ROD2"), "ROD2", sw, 0);
+	put_object(E("PILLOW"), "PILLOW", sw, 0);
+	put_object(E("MIRROR"), "MIRROR", ne, 0);
+	move_fixed_side("MIRROR", sw);
+	for ( var on : G.obj_names )
+	{
+		long o = E(on.c_str());
+		if ( o && toting(o) )
+			destroy_object(o, on.c_str());
+	}
+	rspeak("CAVE_CLOSED");
+	G.set(GF_CLOSED);
+}
+
+// The reference's closecheck: turn thresholds, the closing clocks, the
+// cave-closed snapshot, then the lamp timers. True = the cave just
+// closed (abandon the command and start a fresh described turn).
+bool closecheck()
+{
+	var ths;
+	ui::get(ths, G.w, E("adv-tables"), "turn_thresholds");
+	for ( var th : ths )
+	{
+		if ( G.turns == th["threshold"].as_integer() + 1 )
+		{
+			G.trnluz = G.trnluz + th["point_loss"].as_integer();
+			var m = th["message"];
+			speak_msg(m);
+		}
+	}
+	// The closing clock only ticks well inside the cave (never at Y2).
+	if ( G.tally == 0 && loccond(G.player.loc, "DEEP") && G.player.loc != E("LOC_Y2") )
+		G.clock1--;
+	if ( G.clock1 == 0 )
+	{
+		close_clock1();
+		return G.has(GF_CLOSED);
+	}
+	if ( G.clock1 < 0 )
+		G.clock2--;
+	if ( G.clock2 == 0 )
+	{
+		close_clock2();
+		return true;
+	}
+	lampcheck();
+	return false;
+}
+
+// Process the tokenized words: 1 = executed, 2 = read another command,
+// 3 = re-describe without moving.
+long word_loop()
+{
+	for (;;)
+	{
+		long t0 = G.player.cmd["type0"].as_integer();
+		var raw0 = G.player.cmd["raw0"];
+		if ( t0 == T_NOTFOUND )
+		{
+			sspeak_s("DONT_KNOW", raw0);
+			clear_command();
+			return 2;
+		}
+		if ( t0 == T_NONE )
+		{
+			// A whitespace-only line: the reference applies the
+			// empty word as a motion — no rule matches, so the
+			// CANT_APPLY quip speaks and the room re-describes.
+			var m = G.player.cmd["id0"];
+			playermove(m);
+			return 1;
+		}
+		// Shortcut hints (the west/go counters).
+		var low0 = php::strtolower(raw0);
+		if ( low0 == "west" )
+		{
+			G.player.iwest++;
+			if ( G.player.iwest == 10 )
+				rspeak("W_IS_WEST");
+		}
+		var raw1 = G.player.cmd["raw1"];
+		long t1 = G.player.cmd["type1"].as_integer();
+		if ( low0 == "go" && !raw1.empty() && t1 != T_NUMERIC )
+		{
+			G.player.igo++;
+			if ( G.player.igo == 10 )
+				rspeak("GO_UNNEEDED");
+		}
+		if ( t0 == T_MOTION )
+		{
+			var m = G.player.cmd["id0"];
+			playermove(m);
+			return 1;
+		}
+		long part = P_UNKNOWN;
+		if ( t0 == T_OBJECT )
+		{
+			part = P_UNKNOWN;
+			G.player.cmd["obj"] = G.player.cmd["id0"];
+		}
+		else if ( t0 == T_ACTION )
+		{
+			G.player.cmd["verb"] = G.player.cmd["id0"];
+			if ( t1 == T_NUMERIC )
+				part = P_TRANSITIVE;
+			else
+				part = P_INTRANSITIVE;
+		}
+		else
+		{
+			// A bare number: the reference says don't-know.
+			sspeak_s("DONT_KNOW", raw0);
+			clear_command();
+			return 2;
+		}
+		long g = act_dispatch(part);
+		if ( g == G_TERMINATE )
+			return 1;
+		if ( g == G_MOVE )
+		{
+			var nul = "NUL";
+			playermove(nul);
+			return 1;
+		}
+		if ( g == G_WORD2 )
+		{
+			shift_words();
+			continue;
+		}
+		if ( g == G_UNKNOWN )
+		{
+			var cap = php::ucfirst(raw0);
+			sspeak_s("DO_WHAT", cap);
+			G.player.cmd["obj"] = "";
+			return 2;
+		}
+		if ( g == G_CHECKHINT )
+			return 2;
+		if ( g == G_DWARFWAKE )
+		{
+			// Oh dear, he's disturbed the dwarves.
+			rspeak("DWARVES_AWAKEN");
+			terminate_game(M_ENDGAME);
+		}
+		if ( g == G_CLEAROBJ )
+		{
+			clear_command();
+			return 2;
+		}
+		if ( g == G_TOP )
+			return 3;
+		println(stderr, "advent: unhandled phase code {}", g);
+		exit(3);
+	}
+}
+
+// One described turn: false only at EOF.
+bool do_command_once()
+{
+	for (;;)
+	{
+		describe_location();
+		if ( forced_loc(G.player.loc) )
+		{
+			var fm = "__FORCED";
+			playermove(fm);
+			return true;
+		}
+		listobjects();
+		// The reference clears the command at each re-describe (so a
+		// GO_TOP verb's object never leaks into the next command);
+		// verb/object persistence across re-INPUT (rc 2) is preserved.
+		clear_command();
+		for (;;)
+		{
+			// At closing time, unstash toted objects so they get
+			// described once picked up and put down again.
+			if ( G.has(GF_CLOSED) )
+			{
+				long oyster = E("OYSTER");
+				if ( (!obj_found(oyster) || obj_stashed(oyster))
+				  && toting(oyster) )
+					pspeak_look(oyster, 1);
+				for ( var on : G.obj_names )
+				{
+					long o = E(on.c_str());
+					if ( !o || !toting(o) )
+						continue;
+					if ( obj_stashed(o) )
+						obj_set_stashed(o, false);
+					else if ( !obj_found(o) )
+						ui::set(G.w, o, "found", true);
+				}
+			}
+			G.player.put(PF_WZDARK, is_dark());
+			if ( G.player.knfloc > 0 && G.player.knfloc != G.player.loc )
+				G.player.knfloc = 0;
+			checkhints();
+			if ( !read_command() )
+				return false;
+			if ( G.player.foobar > 0 )
+				G.player.foobar = -G.player.foobar;
+			else
+				G.player.foobar = 0;
+			G.turns++;
+			if ( !preprocess_command() )
+				continue;
+			if ( closecheck() )
+				return true;	// the cave just closed
+			long rc = word_loop();
+			if ( rc == 1 )
+				return true;
+			if ( rc == 3 )
+				break;
+			// rc == 2: read another command
+		}
+	}
+}

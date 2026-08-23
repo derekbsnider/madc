@@ -1,0 +1,16 @@
+// The DEFINING TU: owns the carrier globals and the mutators.
+var BAG;
+var MSG;
+long N;
+
+long peer()
+{
+	return 100;
+}
+
+void fill()
+{
+	BAG["k"] = "v";
+	MSG["m"] = "hello";
+	N = 42;
+}

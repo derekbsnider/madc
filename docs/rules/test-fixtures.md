@@ -121,3 +121,17 @@ properties of individual tests, not of the runner:
 
 The first listed domain with a fixture wins, so layered runs (wine over
 win64) resolve deterministically.
+
+## The `.helper` marker — why it exists
+
+`tests/<name>.helper` marks a `.mad` file that is a compilation unit of
+another test (an `#include` module, a `--project` TU source) rather than
+a standalone test. Before the convention, `include_helper.mad` was
+excluded by NAME in six different scripts (`run_tests.sh`,
+`cir_fidelity.sh`, `class_parse_burndown.sh`, `forest_soak.sh`,
+`tsubst_burndown.sh`, `warn_census.sh`) — six hand-rolled copies of one
+rule, exactly the drift pattern the first bullet of the rules file
+forbids, and every new helper file would have needed a seventh, eighth,
+… edit. The marker moves the fact onto the test it describes (one
+fixture file, co-located, contents name the owner) and every enumerator
+consults it the same way it consults the other fixtures.

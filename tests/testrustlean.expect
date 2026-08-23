@@ -1,0 +1,14 @@
+[r]
+[r  ]
+[  r]
+[pad]
+baz bar baz
+a+b
+ababab
+x-y-z
+first=x
+last=z
+get1=y
+pop=z len=2
+[ pad ]
+[a-b]

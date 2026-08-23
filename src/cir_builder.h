@@ -55,12 +55,15 @@ class RefFuncSet {
 	std::vector<std::string> journal_;	// keys newly inserted while marked
 	std::vector<size_t> marks_;
 public:
+	typedef std::unordered_set<std::string>::const_iterator const_iterator;
 	void insert(const std::string &k)
 	{
 		if (s_.insert(k).second && !marks_.empty())
 			journal_.push_back(k);
 	}
 	size_t count(const std::string &k) const { return s_.count(k); }
+	const_iterator begin() const { return s_.begin(); }
+	const_iterator end() const { return s_.end(); }
 	void mark() { marks_.push_back(journal_.size()); }
 	void rollback()
 	{
@@ -124,7 +127,14 @@ class CirBuilder {
 	// Object mode (ELF-completion S3): the TU-unique STATIC init function
 	// translate_module synthesized (empty = this TU has none). madc_cir
 	// registers it into the capture's .init_array after generation.
+	// Project JIT mode reuses the same shape — the engine plays ld.so's
+	// init_array role and calls each TU's init before main.
 	std::string m_tu_init_name;
+	// True when this TU is one of a --project JIT build: the per-TU init
+	// takes the object-mode shape (TU-unique static, sys-init-once inside)
+	// instead of `__madc_global_init` + the main-prologue call — N TUs
+	// exporting ONE init name means only the last one's ctors ever ran.
+	bool m_project_tu = false;
 	// True while translating the body of a void-returning function — lets
 	// translate_return lower a gcc-accepted `return <expr>;` to `<expr>;
 	// return;` (c2mir rejects a value in a void return).
@@ -486,7 +496,7 @@ class CirBuilder {
 	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	node_t obj_storage_decl(const char *name, size_t words,
 				const char *dtor_sym, TokenBase *origin,
-				size_t align = 0);
+				size_t align = 0, bool is_extern = false);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not
@@ -685,16 +695,28 @@ class CirBuilder {
 	// always passed by pointer and the long[] buffer name decays to that pointer
 	// at the call site.
 	static bool is_array_object(DataDef *dd);    // dtARRAY value type, not a pointer
+	// The carrier class behind a receiver type: the carrier itself OR a
+	// reference to it (a `value &` parameter) — NULL otherwise.
+	static DataDefCLASS *carrier_behind(DataDef *dd);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
-	node_t array_storage_decl(const char *name, TokenBase *origin);
+	node_t array_storage_decl(const char *name, TokenBase *origin,
+				  bool is_extern = false);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 	// The construction statement for a DECLARED value/array local — the one
 	// owner of the parens-vs-bare decision: `value v(7);` (TokenDecl::
 	// ctor_args) selects from the registered madarray_construct_* ctor set
 	// via class_ctor_call (the entries placement-construct into the raw
 	// storage, so the default construct must NOT also run); the bare form
-	// default-constructs (madarray_construct).
+	// default-constructs (madarray_construct); a BRACED list (`var v =
+	// { a, b, c };` — ctor_args_braced) is the carrier's list literal,
+	// lowered by array_list_init_call.
 	node_t array_decl_ctor_call(TokenDecl *sdcl);
+	// The carrier's brace-list initializer: default construction plus one
+	// registered `push` per element ({} = madarray_make_array, an empty
+	// ARRAY). carrier_push_def_for classifies an element expression's type
+	// onto the push row the registry (add_array_methods) binds for it.
+	node_t array_list_init_call(TokenDecl *sdcl);
+	FuncDef *carrier_push_def_for(DataDef *ad);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
@@ -1856,10 +1878,13 @@ public:
 					 const char *recv_ptr,
 					 const std::string &mname,
 					 TokenBase *origin);
-	// madc `array` element READ (`arr[i]`): string temp filled from
-	// __php_array_get_cstr (string typing) or __php_array_get_int value.
-	node_t madc_array_subscript_read(node_t container_void, node_t index_node,
-					 DataDefCLASS *scls, TokenBase *origin);
+	// Carrier SLOT subscript (`bag["k"]`, `arr[i]` — both index kinds):
+	// the parser types every carrier subscript ddARRAY (the slot marker);
+	// the lowering is N_DEREF(madarray_key_slot/madarray_index_slot(...)),
+	// a value lvalue whose address folds back to the slot call.
+	static bool is_carrier_keyed_subscript(TokenBase *tb);
+	node_t carrier_slot_call(node_t recv_void, TokenBase *index,
+				 TokenBase *origin);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
 	// Aggregate list-initialization of a member ([dcl.init.aggr]):
@@ -2110,6 +2135,7 @@ public:
 	// TU identity for the object-mode per-TU init symbol; call before
 	// translate_module (harmless in JIT mode — unused there).
 	void set_tu_name(const char *s) { m_tu_name = s ? s : ""; }
+	void set_project_tu(bool b) { m_project_tu = b; }
 	// The synthesized per-TU init's symbol (object mode; empty = none).
 	const std::string &tu_init_name() const { return m_tu_init_name; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by

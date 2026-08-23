@@ -1,0 +1,123 @@
+// The carrier's string surface (value-first.md): a string-kind value is
+// usable like a std::string — ==/!= against literals and values, +=
+// append, substr, length/empty. Equality is a QUESTION (kind mismatch
+// answers false, never a throw); mutation/extraction keep the
+// strict-kind contract as catchable script errors. substr returns
+// ring-lifetime text (the c_str contract) until L3 lands.
+#include <ns_php>
+#include <ns_madc>
+
+// Range-for over a value& PARAMETER (the container-address unwrap in
+// the foreach lowering — a reference must not decay-load).
+long sum_ref(value &arr)
+{
+	long total = 0;
+	for ( value x : arr )
+		total = total + x.as_integer();
+	return total;
+}
+
+// Carrier methods AND std::println {} on a value& PARAMETER — the
+// reference-to-carrier unwrap lanes (carrier_behind, the format
+// classifier).
+long ref_scan(value &text)
+{
+	// empty() on a value& receiver rides the carrier exemption, not the
+	// std::string size()==0 rewrite.
+	if ( text.empty() )
+		return -1;
+	long n = 0;
+	long i = 0;
+	long len = text.length();
+	while ( i < len )
+	{
+		if ( text.at(i) == 'e' )
+			n = n + 1;
+		i = i + 1;
+	}
+	std::println("ref={} sub={}", text, text.substr(0, 5));
+	return n;
+}
+
+int main()
+{
+	var s = "Northeast";
+	std::println("len={} count={}", s.length(), s.count());
+
+	if ( s == "Northeast" )
+		std::println("eq=yes");
+	if ( s != "Southwest" )
+		std::println("ne=yes");
+	// kind mismatch answers false, never a throw
+	var n = 42;
+	if ( n == "42" )
+		std::println("inteq=BAD");
+	else
+		std::println("inteq=no");
+
+	var cut = s.substr(0, 5);
+	std::println("cut={}", cut);
+	if ( cut == "North" )
+		std::println("cuteq=yes");
+
+	var u = "north";
+	u += "east";
+	u += s.substr(5, 4);
+	std::println("concat={}", u);
+
+	var t = s;
+	if ( t == s )
+		std::println("valeq=yes");
+	if ( u != s )
+		std::println("valne=yes");
+
+	// += vivifies a null carrier to string
+	var z;
+	z += "grown";
+	std::println("vivify={}", z);
+
+	var e = "";
+	var nul;
+	std::println("empty={} nullempty={} fullempty={}",
+		     e.empty(), nul.empty(), s.empty());
+
+	// at(): the byte at pos as an int (scanner surface)
+	if ( s.at(0) == 'N' && s.at(5) == 'e' )
+		std::println("at=yes");
+
+	long es = ref_scan(s);
+	std::println("es={}", es);
+
+	var nums;
+	php::array_push(nums, (long)3);
+	php::array_push(nums, (long)4);
+	php::array_push(nums, (long)5);
+	long total = sum_ref(nums);
+	std::println("sum={}", total);
+
+	// index(): Python's list.index / str.find shape, -1 when absent
+	var states;
+	php::array_push(states, "CHAIN_HEAP");
+	php::array_push(states, "CHAINING_BEAR");
+	php::array_push(states, "CHAIN_FIXED");
+	var needle = "CHAINING_BEAR";
+	std::println("idx={} {} {}", states.index("CHAIN_FIXED"),
+		     states.index(needle), states.index("NOPE"));
+	std::println("find={} {} {}", s.index("east"), s.index(""),
+		     s.index("west"));
+
+	// strict-kind and range errors stay catchable
+	try {
+		var bad = s.substr(20, 1);
+		std::println("no-throw {}", bad);
+	} catch (const char *m) {
+		std::println("caught: {}", m);
+	}
+	try {
+		n += "text";
+		std::println("no-throw-append");
+	} catch (const char *m) {
+		std::println("caught: {}", m);
+	}
+	return 0;
+}

@@ -1,0 +1,451 @@
+## Test many nonlethal failure conditions
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# This variant elicits the prompt to go back for batteries
+# See comments in this log
+#NOCOMPARE Relies on "waste"
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+take rod
+e
+take cage
+w
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+take necklace
+drop rod
+take bird
+take rod
+d
+d
+free bird
+drop rod
+drop cage
+take cage
+take bird
+w
+take coins
+e
+s
+take jewelry
+n
+up
+s
+take gold
+n
+d
+n
+n
+plugh
+extinguish lamp
+drop coins
+drop jewelry
+drop necklace
+drop gold
+plugh
+on
+s
+take silver
+s
+sw
+take axe
+w
+kill dragon
+yes
+drink blood
+take rug
+e
+e
+up
+d
+n
+n
+off
+plugh
+inven
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+s
+plover
+s
+s
+take rod
+up
+w
+wave rod
+drop rod
+west
+take diamonds
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+take ruby
+s
+w
+n
+n
+n
+nw
+d
+e
+e
+e
+e
+e
+throw axe
+take axe
+n
+n
+n
+off
+plugh
+drop ruby
+drop diamonds
+drop pyramid
+plugh
+on
+s
+s
+u
+n
+n
+d
+bedquilt
+throw axe
+take axe
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+H'CFL
+n
+n
+nw
+u
+u
+u
+u
+ne
+take ebony
+sw
+d
+d
+d
+d
+d
+take water
+s
+s
+s
+s
+d
+s
+d
+water plant
+u
+drop appendage
+e
+d
+get oil
+u
+w
+d
+climb
+w
+n
+oil door
+drop bottle
+n
+take trident
+w
+d
+se
+n
+w
+drop trident
+drop ebony
+drop axe
+drop lantern
+e
+take emerald
+w
+take lamp
+take axe
+take ebony
+take trident
+nw
+s
+take vase
+# Test vase breakage
+break vase
+break vase
+se
+throw axe
+take axe
+e
+w
+ne
+e
+n
+# Here we are at the Shell Room.  Fail to carry out bivalves
+take clam
+s
+drop clam
+open clam
+take oyster
+s
+drop oyster
+s
+# OK, bivalve-carry test is done
+u
+e
+u
+n
+off
+plugh
+drop pillow
+drop trident
+drop emerald
+drop ebony
+take keys
+take food
+take coins
+plugh
+on
+s
+d
+w
+d
+n
+d
+d
+take pearl
+u
+u
+s
+w
+w
+w
+w
+d
+climb
+w
+get eggs
+n
+take bottle
+n
+w
+d
+sw
+u
+toss eggs
+ne
+ne
+# Bear-verb test. Try feeding without food before feeding with
+barren
+drop food
+in
+attack
+unlock chain
+feed bear
+out
+take food
+in
+feed bear
+carry bear
+unlock chain
+take chain
+attack bear
+feed bear
+take bear
+fork
+ne
+e
+take spices
+drop keys
+fork
+w
+w
+sw
+free bear
+take bear
+sw
+yes
+inven
+out
+take lamp
+light lamp
+in
+plugh
+s
+d
+bedquilt
+n
+sw
+up
+over
+feed bear
+attack bear
+# We'll need these when the game times out
+take coins
+take axe
+# Back to fissure to vanish the bridge and then test OVER
+sw
+d
+se
+se
+ne
+e
+up
+e
+up
+s
+up
+w
+take rod
+wave rod
+across
+# Next, buy batteries but don't take them.
+wave rod
+across
+w
+w
+w
+s
+s
+sw
+se
+s
+s
+drop coins
+look
+n
+z
+z
+z
+z
+# Battery warning happens here.
+s
+take batteries
+# We now have 2500 more turns of life. Into the maze...
+n
+# Show that trying to back up in the maze fails
+back
+n
+nw
+d
+# Out of maze. Drink where nothing is eligible.
+drink
+e
+e
+# PARALLEL1 coverage
+n
+# If we go to hall of mists we'll meet a killer dwarf with the drop on us
+#e
+#e
+w
+w
+n
+e
+d
+e
+u
+throw axe
+d
+n
+d
+# Coverage of LOC_SMALLPIT and LOC_SMALLPITBRINK
+e
+d
+listen
+u
+w
+# Coverage of LOC_THREEJUNCTION, LOC_WINDOW2, LOC_SECRET2, LOC_TOPSTALACTITE,
+# LOC_NECKBROKE. Only accessible via stalactite from big maze or by random
+# exit from Bedquilt.
+bedquilt
+z
+z
+z
+n
+n
+n
+n
+# In secret canyon
+w
+n
+w
+s
+# LOC_TOPSTALACTITE
+s
+n
+s
+n
+n
+n
+jump
+y
+# Reincarnation, cover LOC_SEWER
+out
+take lamp
+in
+downstream
+plugh
+on lamp
+# Cover WINDOW1
+w
+e
+# Retrieve axe
+s
+s
+e
+take axe
+listen
+# At Hall of Mists
+score
+inven
+# Timewarp forward to test exhaustion of replacement batteries
+waste 2443
+z
+# MISSING_BATTERIES is uttered

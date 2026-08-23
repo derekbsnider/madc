@@ -1,0 +1,26 @@
+// The REFERENCING TU: `extern var X;` must emit a DECLARATION — no
+// storage, no construction, no cleanup — exactly like `extern long N;`
+// (g++ parity: `extern std::string s;`). The silent failure mode this
+// pins: each TU owned its own BAG, so fill() wrote "v" into TU b's BAG
+// while main read TU a's, printing empty with exit 0.
+long peer();
+extern var BAG;
+extern long N;
+void fill();
+
+// The block-scope extern shape: declares another TU's object inside a
+// function — no local construction may be injected for it.
+long msg_len()
+{
+	extern var MSG;
+	return MSG["m"].length();
+}
+
+int main()
+{
+	println("peer={}", peer());
+	fill();
+	println("bag={} n={}", BAG["k"], N);
+	println("len={}", msg_len());
+	return 0;
+}

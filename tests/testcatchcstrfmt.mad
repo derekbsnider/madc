@@ -1,0 +1,17 @@
+// A cstr catch variable (`catch (const char *m)`) is a REAL char
+// pointer: std::println's {} formats the message text. Before the fix
+// the catch var was registered as int64 — println printed the POINTER
+// BITS (printf %s only worked because varargs pass bits through).
+#include <ns_madc>
+
+int main()
+{
+	try {
+		var s = 42;
+		s["k"] = 1;
+		std::println("no-throw");
+	} catch (const char *m) {
+		std::println("caught={}", m);
+	}
+	return 0;
+}

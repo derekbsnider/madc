@@ -24,6 +24,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 
@@ -214,8 +215,48 @@ std::string *js_typeof_int(std::string *result, int64_t val)
 }
 
 
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// The cores are already result-out over cstr inputs; the lean forms just
+// aim them at the lent ring slot (the c_str contract).
+
+const char *js_btoa_cstr(const char *input)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_btoa(&slot, input);
+	return slot.c_str();
+}
+const char *js_atob_cstr(const char *input)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_atob(&slot, input);
+	return slot.c_str();
+}
+const char *js_encodeURIComponent_cstr(const char *input)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_encodeURIComponent(&slot, input);
+	return slot.c_str();
+}
+const char *js_decodeURIComponent_cstr(const char *input)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_decodeURIComponent(&slot, input);
+	return slot.c_str();
+}
+const char *js_stringify_cstr(madc::value *arr)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_stringify(&slot, arr);
+	return slot.c_str();
+}
+
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+const char *__js_btoa_cstr(const char *a) { return js_btoa_cstr(a); }
+const char *__js_atob_cstr(const char *a) { return js_atob_cstr(a); }
+const char *__js_encodeURIComponent_cstr(const char *a) { return js_encodeURIComponent_cstr(a); }
+const char *__js_decodeURIComponent_cstr(const char *a) { return js_decodeURIComponent_cstr(a); }
+const char *__js_stringify_cstr(madc::value *a) { return js_stringify_cstr(a); }
 std::string *__js_btoa(std::string *a, const char *b) { return js_btoa(a, b); }
 std::string *__js_atob(std::string *a, const char *b) { return js_atob(a, b); }
 std::string *__js_encodeURIComponent(std::string *a, const char *b) { return js_encodeURIComponent(a, b); }

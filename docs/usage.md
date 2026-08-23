@@ -61,6 +61,10 @@ madc --project compile_commands.json -o app   # emit one native executable
 madc file.json                                # .json input implies --project
 ```
 
+madc never writes cache files beside your project. To skip recompiling on
+later runs, produce a real artifact explicitly: `-c` per-TU objects (madc
+runs `.o` files directly as a precompiled cache) or `-o` an AOT executable.
+
 ## Native output (AOT)
 
 madc emits native artifacts itself — MIR assembles the ELF/Mach-O image

@@ -1,0 +1,5 @@
+// The Track 7 Phase 1 pilot, builder role: the SAME world as
+// testadventure, projected for the curator — the %require-gated inspect
+// opens (gate G1's builder half), and the builder-only edit verb reshapes
+// a bag property the next inspect shows (gate G3's role half).
+#include "adventure_driver.inc"

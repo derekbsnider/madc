@@ -11,7 +11,11 @@
  *                         in the whole arc, because a value's kind is a
  *                         property of the value, not of the type
  *   __madc_fmt_take       std::format's result hand-off into the caller's
- *                         std::string temporary (and the sink close)
+ *                         std::string temporary (and the sink close) —
+ *                         the strict-C++ shape, kept for hosts
+ *   __madc_fmt_take_cstr  dialect std::format's hand-off into the shared
+ *                         text ring (the c_str() contract; the fragment
+ *                         declares `const char *format(...)`)
  *
  * The value dispatch follows the `cout << value` contract (owner ruling
  * 2026-08-19): each kind formats EXACTLY as the contained type would — the
@@ -25,6 +29,7 @@
 #include <string>
 
 #include "libmadc/value.h"
+#include "ns_common.h"
 #include "rt/rt_dump.h"
 #include "rt/rt_format.h"
 
@@ -40,6 +45,14 @@ extern "C" void __madc_fmt_take(void *strp, void *sink)
 	std::string *s = static_cast<std::string *>(strp);
 	s->assign(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
 	__madc_dump_sink_close(sink);
+}
+
+extern "C" const char *__madc_fmt_take_cstr(void *sink)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot.assign(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
+	__madc_dump_sink_close(sink);
+	return slot.c_str();
 }
 
 extern "C" void __madc_fmt_value(void *sink, const char *spec,

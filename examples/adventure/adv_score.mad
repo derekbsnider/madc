@@ -1,0 +1,425 @@
+// ---- scoring, wrap-up, death, hints (score.c + main.c pieces) -----------
+
+#include "adv_decls.inc"
+
+// The scoring algorithm, verbatim from the reference (430 total).
+// Returns the score; also computes the possible maximum.
+long MXSCOR = 0;
+
+long score_game(long mode)
+{
+	long sc = 0;
+	MXSCOR = 0;
+	long chest_num = G.obj_index["CHEST"].as_integer();
+	long objnum = 0;
+	for ( var on : G.obj_names )
+	{
+		objnum++;
+		long o = E(on.c_str());
+		if ( !o || !obj_treasure(o) )
+			continue;
+		var inv;
+		ui::get(inv, G.w, o, "inventory");
+		if ( inv.is_null() )
+			continue;
+		long k = 12;
+		if ( objnum == chest_num )
+			k = 14;
+		else if ( objnum > chest_num )
+			k = 16;
+		if ( obj_found(o) )
+			sc = sc + 2;
+		// The building bonus needs prop EXACTLY 0 (the reference's
+		// STATE_FOUND) — a broken vase or cavity-set gem earns none.
+		if ( ui::location(G.w, o) == E("LOC_BUILDING")
+		  && obj_found(o) && obj_state(o) == 0 )
+			sc = sc + k - 2;
+		MXSCOR = MXSCOR + k;
+	}
+	sc = sc + (G.ndeaths - G.player.numdie) * 10;
+	MXSCOR = MXSCOR + G.ndeaths * 10;
+	if ( mode == M_ENDGAME )
+		sc = sc + 4;
+	MXSCOR = MXSCOR + 4;
+	if ( G.dflag != 0 )
+		sc = sc + 25;
+	MXSCOR = MXSCOR + 25;
+	if ( G.has(GF_CLOSING) )
+		sc = sc + 25;
+	MXSCOR = MXSCOR + 25;
+	if ( G.has(GF_CLOSED) )
+	{
+		if ( G.bonus == 0 )
+			sc = sc + 10;
+		if ( G.bonus == 1 )
+			sc = sc + 25;
+		if ( G.bonus == 2 )
+			sc = sc + 30;
+		if ( G.bonus == 3 )
+			sc = sc + 45;
+	}
+	MXSCOR = MXSCOR + 45;
+	if ( ui::location(G.w, E("MAGAZINE")) == E("LOC_WITTSEND") )
+		sc++;
+	MXSCOR++;
+	sc = sc + 2;
+	MXSCOR = MXSCOR + 2;
+
+	// Hint / novice / oyster-clue / turn / save penalties.
+	for ( var hn : G.hint_order )
+	{
+		if ( php::array_key_exists(hn.c_str(), G.hint_used ) )
+		{
+			var hd;
+			ui::get(hd, G.w, E("adv-hints"), hn.c_str());
+			sc = sc - hd["penalty"].as_integer();
+		}
+	}
+	if ( G.player.has(PF_NOVICE) )
+		sc = sc - 5;
+	if ( G.player.has(PF_CLSHNT) )
+		sc = sc - 10;
+	sc = sc - G.trnluz - G.saved;
+
+	if ( mode == M_SCOREGAME )
+		rspeak_d3("GARNERED_POINTS", sc, MXSCOR, G.turns);
+	return sc;
+}
+
+void terminate_game(long mode)
+{
+	long points = score_game(mode);
+	if ( points + G.trnluz + 1 >= MXSCOR && G.trnluz != 0 )
+		rspeak("TOOK_LONG");
+	if ( points + G.saved + 1 >= MXSCOR && G.saved != 0 )
+		rspeak("WITHOUT_SUSPENDS");
+	rspeak_d3("TOTAL_SCORE", points, MXSCOR, G.turns);
+	var classes;
+	ui::get(classes, G.w, E("adv-tables"), "classes");
+	long ncls = classes.count();
+	long i = 0;
+	for ( var cls : classes )
+	{
+		i++;
+		if ( i == 1 )
+			continue;	// the reference starts at index 1
+		var th = cls["threshold"];
+		if ( th.as_integer() >= points )
+		{
+			var m = cls["message"];
+			speak_msg(m);
+			if ( i < ncls )
+			{
+				long nxt = th.as_integer() + 1 - points;
+				rspeak_d("NEXT_HIGHER", nxt);
+			}
+			else
+				rspeak("NO_HIGHER");
+			exit(0);
+		}
+	}
+	rspeak("OFF_SCALE");
+	exit(0);
+}
+
+// The name at a 1-based objnum (counter walk; reverse drops use it).
+void obj_name_at(var &out, long idx)
+{
+	out = "";
+	long i = 0;
+	for ( var on : G.obj_names )
+	{
+		i++;
+		if ( i == idx )
+		{
+			out = on;
+			return;
+		}
+	}
+}
+
+// Death: obituary prompt, then either the end or reincarnation at the
+// building (liquids gone, lamp off, belongings left where he died —
+// dropped in REVERSE objnum order, the lamp accessible above ground).
+void croak()
+{
+	var obits;
+	ui::get(obits, G.w, E("adv-tables"), "obituaries");
+	var q, yr;
+	long i = 0;
+	for ( var ob : obits )
+	{
+		if ( i == G.player.numdie )
+		{
+			q = ob["query"];
+			yr = ob["yes_response"];
+		}
+		i++;
+	}
+	G.player.numdie++;
+	if ( G.has(GF_CLOSING) )
+	{
+		rspeak("DEATH_CLOSING");
+		terminate_game(M_ENDGAME);
+	}
+	bool again = false;
+	{
+		// yes_or_no over already-fetched texts.
+		var nm;
+		msg_of(nm, "OK_MAN");
+		for (;;)
+		{
+			speak_msg(q);
+			var reply;
+			if ( !get_input(reply) )
+				exit(0);
+			var w;
+			first_word(w, reply);
+			var lw = php::strtolower(w);
+			if ( lw.empty() )
+			{
+				rspeak("PLEASE_ANSWER");
+				continue;
+			}
+			var h = lw.substr(0, 1);
+			if ( h == "y" )
+			{
+				speak_msg(yr);
+				again = true;
+				break;
+			}
+			if ( h == "n" )
+			{
+				speak_msg(nm);
+				break;
+			}
+			rspeak("PLEASE_ANSWER");
+		}
+	}
+	if ( !again || G.player.numdie == G.ndeaths )
+		terminate_game(M_ENDGAME);
+	ui::move(G.w, E("WATER"), 0);
+	ui::move(G.w, E("OIL"), 0);
+	long lamp = E("LAMP");
+	if ( toting(lamp) )
+		obj_set_state(lamp, state_index_c(lamp, "LAMP_DARK"));
+	long n = G.obj_names.count();
+	long j = n;
+	while ( j >= 1 )
+	{
+		var nm2;
+		obj_name_at(nm2, j);
+		long o = E(nm2.c_str());
+		if ( o && toting(o) )
+		{
+			if ( nm2 == "LAMP" )
+				drop_object(o, "LAMP", E("LOC_START"));
+			else
+				drop_object(o, nm2.c_str(), G.player.oldlc2);
+		}
+		j--;
+	}
+	G.player.loc = E("LOC_BUILDING");
+	G.player.oldloc = G.player.loc;
+	G.player.newloc = G.player.loc;
+	ui::move(G.w, G.player.ent, G.player.loc);
+}
+
+// Hint machinery (main.c checkhints): per-hint turn counters at hinted
+// locations, per-hint eligibility gates, the two-step prompt.
+void checkhints()
+{
+	var lochints;
+	ui::get(lochints, G.w, G.player.loc, "hints");
+	if ( lochints.empty() )
+		return;
+	for ( var hn : G.hint_order )
+	{
+		if ( php::array_key_exists(hn.c_str(), G.hint_used) )
+			continue;
+		// Not a hint of THIS location? counter resets to -1.
+		bool here = false;
+		for ( var lh : lochints )
+			if ( lh == hn )
+				here = true;
+		if ( !here )
+			G.hint_lc[hn.c_str()] = -1;
+		G.hint_lc[hn.c_str()] = G.hint_lc[hn.c_str()].as_integer() + 1;
+		var hd;
+		ui::get(hd, G.w, E("adv-hints"), hn.c_str());
+		if ( G.hint_lc[hn.c_str()].as_integer()
+		     < hd["turns"].as_integer() )
+			continue;
+		// Eligibility per hint (the reference's switch).
+		bool offer = false;
+		if ( hn == "CAVE" )
+		{
+			long grate = E("GRATE");
+			offer = obj_state(grate)
+				== state_index_c(grate, "GRATE_CLOSED")
+			     && !here_obj(E("KEYS"));
+			if ( !offer )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else if ( hn == "BIRD" )
+		{
+			var ob = G.player.oldobj;
+			offer = ui::location(G.w, E("BIRD")) == G.player.loc
+			     && toting(E("ROD")) && ob == "BIRD";
+			if ( !offer )
+				continue;
+		}
+		else if ( hn == "SNAKE" )
+		{
+			offer = here_obj(E("SNAKE")) && !here_obj(E("BIRD"));
+			if ( !offer )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else if ( hn == "MAZE" || hn == "WOODS" )
+		{
+			var only;
+			bool bare = objects_at_loc(only, G.player.loc) == 0
+				 && objects_at_loc(only, G.player.oldloc) == 0
+				 && objects_at_loc(only, G.player.oldlc2) == 0;
+			if ( hn == "MAZE" )
+				offer = bare && G.player.holding > 1;
+			else
+				offer = bare;
+			if ( !offer )
+			{
+				if ( hn == "MAZE" )
+					G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else if ( hn == "DARK" )
+		{
+			offer = obj_found(E("EMERALD"))
+			     && !obj_found(E("PYRAMID"));
+			if ( !offer )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else if ( hn == "WITT" )
+			offer = true;
+		else if ( hn == "CLIFF" )
+		{
+			offer = G.dflag == 0;
+			if ( !offer )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else if ( hn == "OGRE" )
+		{
+			long i = atdwrf(G.player.loc);
+			if ( i < 0 )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+			offer = here_obj(E("OGRE")) && i == 0;
+			if ( !offer )
+				continue;
+		}
+		else if ( hn == "JADE" )
+		{
+			offer = G.tally == 1 && !obj_found(E("JADE"));
+			if ( !offer )
+			{
+				G.hint_lc[hn.c_str()] = 0;
+				continue;
+			}
+		}
+		else
+			offer = true;
+		// The offer: question, cost, then the hint itself.
+		G.hint_lc[hn.c_str()] = 0;
+		var q = hd["question"];
+		var qh = q.c_str();
+		var none;
+		msg_of(none, "NO_MESSAGE");
+		var okm;
+		msg_of(okm, "OK_MAN");
+		bool wants = false;
+		for (;;)
+		{
+			speak_msg(qh);
+			var reply;
+			if ( !get_input(reply) )
+				exit(0);
+			var w;
+			first_word(w, reply);
+			var lw = php::strtolower(w);
+			if ( lw.empty() )
+			{
+				rspeak("PLEASE_ANSWER");
+				continue;
+			}
+			var h = lw.substr(0, 1);
+			if ( h == "y" )
+			{
+				wants = true;
+				break;
+			}
+			if ( h == "n" )
+			{
+				speak_msg(okm);
+				break;
+			}
+			rspeak("PLEASE_ANSWER");
+		}
+		if ( !wants )
+			return;
+		long penalty = hd["penalty"].as_integer();
+		rspeak_d("HINT_COST", penalty);
+		var hq;
+		msg_of(hq, "WANT_HINT");
+		var htext = hd["hint"];
+		var ht = htext.c_str();
+		bool took = false;
+		for (;;)
+		{
+			speak_msg(hq);
+			var reply;
+			if ( !get_input(reply) )
+				exit(0);
+			var w;
+			first_word(w, reply);
+			var lw = php::strtolower(w);
+			if ( lw.empty() )
+			{
+				rspeak("PLEASE_ANSWER");
+				continue;
+			}
+			var h = lw.substr(0, 1);
+			if ( h == "y" )
+			{
+				speak_msg(ht);
+				took = true;
+				break;
+			}
+			if ( h == "n" )
+			{
+				speak_msg(okm);
+				break;
+			}
+			rspeak("PLEASE_ANSWER");
+		}
+		if ( took )
+		{
+			G.hint_used[hn.c_str()] = true;
+			if ( G.limit > 30 )
+				G.limit = G.limit + 30 * penalty;
+		}
+	}
+}

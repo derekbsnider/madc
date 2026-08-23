@@ -1,0 +1,146 @@
+// ---- the describe/listobjects view (the transcript's room text) --------
+
+// Speak the kk'th entry of an object's per-state text array (the
+// reference's pspeak): descriptions = look, changes = change, sounds =
+// hear, texts = study. A null or missing entry prints nothing.
+#include "adv_decls.inc"
+
+void pspeak_prop(long o, const char *prop, long kk, bool blank)
+{
+	if ( kk < 0 )
+		return;
+	var ds;
+	ui::get(ds, G.w, o, prop);
+	if ( ds.is_null() )
+		return;
+	long i = 0;
+	for ( var d : ds )
+	{
+		if ( i == kk )
+		{
+			if ( d.empty() )
+				return;
+			if ( blank )
+				speak_msg(d);
+			else
+				speak_msg_noblank(d);
+			return;
+		}
+		i++;
+	}
+}
+
+void pspeak_look(long o, long kk)
+{
+	pspeak_prop(o, "descriptions", kk, true);
+}
+
+// The touch mode: the object's inventory line (no leading blank —
+// inventory listings print consecutively).
+void pspeak_touch(long o)
+{
+	var inv;
+	ui::get(inv, G.w, o, "inventory");
+	if ( !inv.is_null() && !inv.empty() )
+		speak_msg_noblank(inv);
+}
+
+// state_change: set the state and speak its change message.
+void state_change(long o, long kk)
+{
+	obj_set_state(o, kk);
+	pspeak_prop(o, "changes", kk, true);
+}
+
+void state_change_c(long o, const char *label)
+{
+	state_change(o, state_index_c(o, label));
+}
+
+// STEPS describe by which side the player stands on (the reference's
+// fixed-side check).
+long steps_state(long o)
+{
+	var fx;
+	ui::get(fx, G.w, o, "fixed_at");
+	if ( !fx.is_null() && E(fx.c_str()) == G.player.loc )
+		return state_index_c(o, "STEPS_UP");
+	return state_index_c(o, "STEPS_DOWN");
+}
+
+void describe_location()
+{
+	long ab = bag_int(G.player.loc, "abbrev", 0);
+	var m;
+	ui::get(m, G.w, G.player.loc, "short");
+	if ( ab % G.abbnum == 0 || m.is_null() )
+		ui::get(m, G.w, G.player.loc, "long");
+	if ( !forced_loc(G.player.loc) && is_dark() )
+		msg_of(m, "PITCH_DARK");
+	if ( toting(E("BEAR")) )
+		rspeak("TAME_BEAR");
+	speak_msg(m);
+	if ( G.player.loc == E("LOC_Y2") && pct(25) && !G.has(GF_CLOSING) )
+		rspeak("SAYS_PLUGH");
+}
+
+void listobjects()
+{
+	if ( is_dark() )
+		return;
+	ui::set(G.w, G.player.loc, "abbrev", bag_int(G.player.loc, "abbrev", 0) + 1);
+	// LISTING-ORDER LAW: the reference's atloc lists PREPEND on drop —
+	// list by placement stamp DESCENDING. Zero-padded (999999999-seq)
+	// keys make the object bag iterate in exactly that order, and the
+	// LIVE fixed-side entries merge in.
+	var nm_loc;
+	ui::name_of(nm_loc, G.w, G.player.loc);
+	var byseq;
+	for ( var side : G.fixedsides )
+	{
+		var l = side["loc"];
+		if ( l == nm_loc )
+		{
+			var sq = side["seq"];
+			var snm = side["name"];
+			listing_insert(byseq, sq.as_integer(), snm.c_str());
+		}
+	}
+	var held;
+	ui::contents(held, G.w, G.player.loc);
+	for ( var h : held )
+	{
+		long o = E(h.c_str());
+		var sq;
+		ui::get(sq, G.w, o, "seq");
+		if ( sq.is_null() )
+			continue;	// actors and singletons are not listed
+		listing_insert(byseq, sq.as_integer(), h.c_str());
+	}
+	for ( var onm : byseq )
+	{
+		long o = E(onm.c_str());
+		if ( onm == "STEPS" && toting(E("NUGGET")) )
+			continue;
+		if ( !obj_found(o) || obj_stashed(o) )
+		{
+			if ( G.has(GF_CLOSED) )
+				continue;
+			ui::set(G.w, o, "found", true);
+			obj_set_stashed(o, false);
+			// Treasure first-sight specials (the reference's
+			// prop hacks: full score needs prop 0 later).
+			if ( onm == "RUG" )
+				obj_set_state(o, state_index_c(o, "RUG_DRAGON"));
+			if ( onm == "CHAIN" )
+				obj_set_state(o, state_index_c(o, "CHAINING_BEAR"));
+			if ( onm == "EGGS" )
+				G.player.set(PF_SEENBIGWORDS);
+			G.tally--;
+		}
+		long kk = obj_state(o);
+		if ( onm == "STEPS" )
+			kk = steps_state(o);
+		pspeak_look(o, kk);
+	}
+}

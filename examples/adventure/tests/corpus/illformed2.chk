@@ -1,0 +1,553 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1635997320
+
+Seed set to 1635997320
+
+You're in front of building.
+
+> back
+
+You can't get there from here.
+
+You're in front of building.
+
+> say axe
+
+Okay, "axe".
+
+> say rub
+
+Okay, "rub".
+
+> say grate
+
+Okay, "grate".
+
+> _
+
+Sorry, I don't know the word "_".
+
+> back
+
+Sorry, but I no longer seem to remember how it was you got here.
+
+You're in front of building.
+
+> 23
+
+Sorry, I don't know the word "23".
+
+> say F'UNJ
+
+Nothing happens.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> keys
+
+What do you want to do with the keys?
+
+> throw food
+
+You aren't carrying it!
+
+> nothing food
+
+OK
+
+> calm food
+
+I'm game.  Would you care to explain how?
+
+> walk food
+
+Where?
+
+> score food
+
+Huh?
+
+> foo food
+
+I don't know how.
+
+> brief food
+
+On what?
+
+> blast food
+
+Blasting requires dynamite.
+
+> find grate
+
+I can only tell you what you see as you move about and manipulate
+things.  I cannot tell you where remote things are.
+
+> light food
+
+I'm afraid I don't understand.
+
+> lock food
+
+I don't know how to lock or unlock such a thing.
+
+> unlock food
+
+I don't know how to lock or unlock such a thing.
+
+> extinguish food
+
+I'm afraid I don't understand.
+
+> suspend food
+
+Huh?
+
+> resume food
+
+Huh?
+
+> crawl
+
+Which way?
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> out
+
+You're in front of building.
+
+> stream
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> lock
+
+There is nothing here with a lock!
+
+> take water
+
+You have nothing in which to carry it.
+
+> blast
+
+Blasting requires dynamite.
+
+> building
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> cave
+
+I don't know where the cave is, but hereabouts no stream can run on
+the surface for long.  I would try the stream.
+
+You're in front of building.
+
+> enter stream
+
+Your feet are now wet.
+
+> try three words
+
+Please stick to 1- and 2-word commands.
+
+> listen
+
+The stream is gurgling placidly.
+
+> carry
+
+Carry what?
+
+> forward
+
+I am unsure how you are facing.  Use compass points or nearby objects.
+
+You're in front of building.
+
+> eat
+
+Eat what?
+
+> drink
+
+You have taken a drink from the stream.  The water tastes strongly of
+minerals, but is not unpleasant.  It is extremely cold.
+
+> throw keys
+
+I see no keys here.
+
+> find keys
+
+I can only tell you what you see as you move about and manipulate
+things.  I cannot tell you where remote things are.
+
+> inven keys
+
+I can only tell you what you see as you move about and manipulate
+things.  I cannot tell you where remote things are.
+
+> nothing
+
+OK
+
+> in
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> listen
+
+The stream is gurgling placidly.
+
+> find keys
+
+I believe what you want is right here with you.
+
+> unlock keys
+
+You can't unlock the keys.
+
+> find bar
+
+Sorry, I don't know the word "bar".
+
+> carry
+
+Carry what?
+
+> blast
+
+Blasting requires dynamite.
+
+> take bottle
+
+OK
+
+> find bottle
+
+You are already carrying it!
+
+> drink water
+
+The bottle of water is now empty.
+
+> fill bottle
+
+Your bottle is now full of water.
+
+> throw axe
+
+I see no axe here.
+
+> throw knife
+
+I see no knife here.
+
+> lock
+
+There is nothing here with a lock!
+
+> unlock
+
+There is nothing here with a lock!
+
+> throw
+
+Throw what?
+
+> attack
+
+There is nothing here to attack.
+
+> unlock chain
+
+I see no chain here.
+
+> fill urn
+
+I see no urn here.
+
+> eat keys
+
+Don't be ridiculous!
+
+> discard keys
+
+You aren't carrying it!
+
+> drink keys
+
+Don't be ridiculous!
+
+> off keys
+
+I'm afraid I don't understand.
+
+> break keys
+
+It is beyond your power to do that.
+
+> wake keys
+
+Don't be ridiculous!
+
+> take keys
+
+OK
+
+> feed keys
+
+I'm game.  Would you care to explain how?
+
+> fly keys
+
+I'm game.  Would you care to explain how?
+
+> pour keys
+
+You can't pour that.
+
+> throw keys
+
+OK
+
+> foo up
+
+There is no way to go that direction.
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+> get
+
+Get what?
+
+> food
+
+OK
+
+> eat food
+
+Thank you, it was delicious!
+
+> drink blood
+
+I see no blood here.
+
+> drink keys
+
+Don't be ridiculous!
+
+> light keys
+
+I'm afraid I don't understand.
+
+> brief
+
+Okay, from now on I'll only describe a place in full the first time
+you come to it.  To get the full description, say "look".
+
+> frob grate
+
+Sorry, I don't know the word "frob".
+
+> read grate
+
+I see no grate here.
+
+> pour bottle
+
+Your bottle is empty and the ground is wet.
+
+> fill bottle
+
+Your bottle is now full of water.
+
+> building
+
+I don't know how to apply that word here.
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+> on
+
+Your lamp is now on.
+
+> pour bottle
+
+Your bottle is empty and the ground is wet.
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> take rod
+
+OK
+
+> wave rod
+
+Nothing happens.
+
+> listen
+
+All is silent.
+
+> quit
+
+Do you really want to quit now?
+
+> n
+
+OK
+
+> read
+
+Read what?
+
+> look
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> go back
+
+>>Foof!<<
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is a lamp shining nearby.
+
+> fuck
+
+Watch it!
+
+> walk
+
+Where?
+
+> fly
+
+Though you flap your arms furiously, it is to no avail.
+
+> say boo
+
+Okay, "boo".
+
+> score
+
+You have garnered 32 out of a possible 430 points, using 101 turns.
+
+> z
+
+OK
+
+> score
+
+You have garnered 32 out of a possible 430 points, using 103 turns.
+
+> quit keys
+
+Huh?
+
+> out
+
+You're in front of building.
+
+> s
+
+You're in valley.
+
+> s
+
+At your feet all the water of the stream splashes into a 2-inch slit
+in the rock.  Downstream the streambed is bare rock.
+
+> down
+
+You don't fit through a two-inch slit!
+
+You're at slit in streambed.
+
+> s
+
+You are in a 20-foot depression floored with bare dirt.  Set into the
+dirt is a strong steel grate mounted in concrete.  A dry streambed
+leads into the depression.
+
+The grate is locked.
+
+> in
+
+You can't go through a locked steel grate!
+
+You're outside grate.
+
+The grate is locked.
+
+> seed -123
+
+Seed set to -123
+
+You're outside grate.
+
+The grate is locked.
+
+> 
+You scored 32 out of a possible 430, using 110 turns.
+
+You are obviously a rank amateur.  Better luck next time.
+
+To achieve the next higher rating, you need 14 more points.

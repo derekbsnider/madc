@@ -163,6 +163,7 @@ functions from several language ecosystems in one program.
 | [`ruby::`](docs/language/ns-ruby.md) | Transliteration, squeeze, character, rotation, and compact operations |
 | [`js::`](docs/language/ns-js.md) | Base64, URL encoding, integer parsing, and JSON utilities |
 | [`rust::`](docs/language/ns-rust.md) | String, collection, option-like, and `match` utilities |
+| [`ui::`](docs/language/ns-ui.md) | The data-hub surface: worlds, projections, verbs, and `ui::prompt` |
 | `std::` | C++ strings, streams, containers, conversions, and algorithms |
 | `madc::` | Native madc types and services, including regular expressions |
 
@@ -210,37 +211,40 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.92.1** — the v0.92 line's binary-shipping
-patch, promoted to `master` with packages on all three platforms.
+The current release is **v0.95.0** — the `ui::` data-hub namespace
+with its proof: **Colossal Cave Adventure fully playable as a pure
+madc project** (11 translation units, one `class Game` extern,
+byte-identical to the original C game across all 94 reference
+transcripts — a permanent test gate). `ui::` gives a madc program
+worlds, entity bags behind one hub write path, projections as the
+access decision, verbs, and `ui::prompt` — see
+[docs/language/ns-ui.md](docs/language/ns-ui.md). Around it: the
+zero-include dialect contract (bare scripts need no `#include`, no
+`std::`; array literals `var ds = { a, b, c };` with chainable
+`.push()`), lean `value`/`char*` primaries for all 57
+std::string-only polyglot functions, and the cold-startup arc — the
+packed 11-TU project launch fell from 829 ms to the ~150 ms class
+(dev binary 1.9 s → ~0.3 s). Just before it, v0.93.0 made call-heavy
+FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
+MIR codegen with three community-attributed fixes.
 
-The v0.92 line makes the C++23 formatting surface simply part of madc:
-`std::println("x={} y={:.3f}", x, y)` works in a bare script with zero
-header parse, literal format strings are validated at compile time, and
-the strict-C11 engine underneath is pinned byte-for-byte to real
-libstdc++ `std::format` by 1430 generated oracle rows. `cout << value`
-needs no includes either — the inserter declaration is injected at the
-completion of whichever include first defines the ostream guard. The
-v0.92.1 patch carries the two win64 fixes the new three-platform
-promotion gate caught before any binary shipped: the headerless
-existence probe could not see the four float-math names ucrtbase hides
-(`fabsf`/`frexpf`/`hypotf`/`ldexpf`, now pinned as the complete audited
-set), and `var_dump` of a `long` printed the LLP64 rank's `int(42)`
-instead of the source name's `long(42)`.
-
-Branch state: v0.92.1 is promoted — `develop` and `master` both carry it,
-with public binaries published for Linux (deb/rpm), Windows x86-64, and
-macOS (Apple Silicon + Intel).
+Branch state: v0.95.0 is released on `develop` and promoted to
+`master`, with public binaries published for Linux (deb/rpm),
+Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results:
 
-- Linux JIT: **1104 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1063/0**, OBJ lane **1063/0**; packed suite **1104/0/0/9**
+- Linux JIT: **1134 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1091/0**, OBJ lane **1091/0**; packed suite **1134/0/0/9**
+- Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
+  byte-identical** to the original C game (a permanent fulltest gate)
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1077/0/0/36**,
-  Win64 **1011/0/0/52** — the only lanes that can see an artifact fail
-  to serve a standard header from its own frozen corpus
+- headerless (no headers on disk anywhere): Linux **1107/0/0/36**,
+  Win64 **1011/0/0/52** (v0.92.1 gate run; re-validated at promotion) —
+  the only lanes that can see an artifact fail to serve a standard
+  header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
   leg-for-leg parity with the shipped v0.82.0 binary (re-run as a negative
   control on the same host); the three are standing known-opens (groves
@@ -255,6 +259,13 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
+  Colossal Cave Adventure fully playable (94/94 logs byte-identical);
+  cold startup 829 ms → ~150 ms class; the zero-include contract.
+- [v0.94.0](docs/release-notes/v0.94.0.md) — upstream-community MIR
+  hardening: -O2 wrong-code loop-PHI fold, spill-table bound, aarch64 gate.
+- [v0.93.0](docs/release-notes/v0.93.0.md) — FP codegen at gcc speed: the
+  upstream MIR convert false-dependency fixed; donut.c beats gcc -O0.
 - [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:
   two win64 fixes from the new three-platform promotion gate; six assets.
 - [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
@@ -269,10 +280,6 @@ Latest validated results:
   as the contained type would; two pre-existing gaps found and recorded.
 - [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
   element can be the carrier itself, kind-preserving, copy semantics.
-- [v0.86.0](docs/release-notes/v0.86.0.md) — undeclared libc calls get real
-  signatures; .count()/.size() owner semantics; range-for `auto` elements.
-- [v0.85.0](docs/release-notes/v0.85.0.md) — `php::print_r` / `php::var_dump`
-  over any madc type; all 20 probe shapes, and four silent wrong answers fixed.
 
 ## Building from source
 

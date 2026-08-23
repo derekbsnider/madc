@@ -313,9 +313,11 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 // `container_path`, or from the blob appended to the running executable
 // when NULL (the /proc/self/exe placement). No parse happens — this is the
 // cross-process consumer of madc_cir_freeze's output. Backs --run-frozen.
-// Returns main()'s exit code, or -1 on failure.
+// Returns main()'s exit code, or -1 on failure. show_stats prints the
+// lane's phase walls (map, thaw+link, execution) to stderr (--show-stats).
 int madc_cir_execute_frozen(const char *container_path,
-			    int user_argc, char **user_argv);
+			    int user_argc, char **user_argv,
+			    bool show_stats = false);
 
 // Print a container's directory + grove payload v2 surfaces (decl index,
 // PP exports, edges, branch macros, canonical order) as stable

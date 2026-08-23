@@ -1,0 +1,864 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1495951709
+
+Seed set to 1495951709
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take lamp
+
+OK
+
+> on
+
+Your lamp is now on.
+
+> xyzzy
+
+>>Foof!<<
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> take rod
+
+OK
+
+> e
+
+You are crawling over cobbles in a low passage.  There is a dim light
+at the east end of the passage.
+
+There is a small wicker cage discarded nearby.
+
+> take cage
+
+OK
+
+> w
+
+You're in debris room.
+
+> w
+
+You are in an awkward sloping east/west canyon.
+
+> w
+
+You are in a splendid chamber thirty feet high.  The walls are frozen
+rivers of orange stone.  An awkward canyon and a good passage exit
+from east and west sides of the chamber.
+
+A cheerful little bird is sitting here singing.
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take rod
+
+OK
+
+> w
+
+At your feet is a small pit breathing traces of white mist.  An east
+passage ends here except for a small crack leading on.
+
+Rough stone steps lead down the pit.
+
+> free bird
+
+OK
+
+> wave rod
+
+The bird flies about agitatedly for a moment, then disappears through
+the crack.  It reappears shortly, carrying in its beak a jade
+necklace, which it drops at your feet.
+
+> take jade
+
+OK
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take rod
+
+OK
+
+> d
+
+You are at one end of a vast hall stretching forward out of sight to
+the west.  There are openings to either side.  Nearby, a wide stone
+staircase leads downward.  The hall is filled with wisps of white mist
+swaying to and fro almost as if alive.  A cold wind blows up the
+staircase.  There is a passage at the top of a dome behind you.
+
+Rough stone steps lead up the dome.
+
+> w
+
+You are on the east bank of a fissure slicing clear across the hall.
+The mist is quite thick here, and the fissure is too wide to jump.
+
+> wave rod
+
+The bird flies agitatedly about the cage.
+
+A crystal bridge now spans the fissure.
+
+> drop rod
+
+OK
+
+> e
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> n
+
+You are in the Hall of the Mountain King, with passages off in all
+directions.
+
+A huge green fierce snake bars the way!
+
+> free bird
+
+The little bird attacks the green snake, and in an astounding flurry
+drives the snake away.
+
+> take bird
+
+OK
+
+> s
+
+You are in the south side chamber.
+
+There is precious jewelry here!
+
+> take jewelry
+
+OK
+
+> n
+
+You're in Hall of Mt King.
+
+> sw
+
+You are in a secret canyon which here runs e/w.  It crosses over a
+very tight canyon 15 feet below.  If you go down you may not be able
+to get back up.
+
+> w
+
+You are in a secret canyon which exits to the north and east.
+
+A huge green fierce dragon bars the way!
+
+The dragon is sprawled out on a Persian rug!!
+
+> kill dragon
+
+With what?  Your bare hands?
+
+> yes
+
+Congratulations!  You have just vanquished a dragon with your bare
+hands!  (Unbelievable, isn't it?)
+
+You are in a secret canyon which exits to the north and east.
+
+There is a Persian rug spread out on the floor!
+
+The blood-specked body of a huge green dead dragon lies to one side.
+
+> drink blood
+
+Your head buzzes strangely for a moment.
+
+> take rug
+
+OK
+
+> e
+
+You're in secret e/w canyon above tight canyon.
+
+> e
+
+You're in Hall of Mt King.
+
+> n
+
+You are in a low n/s passage at a hole in the floor.  The hole goes
+down to an e/w passage.
+
+There are bars of silver here!
+
+> take silver
+
+OK
+
+> n
+
+You are in a large room, with a passage to the south, a passage to the
+west, and a wall of broken rock to the east.  There is a large "Y2" on
+a rock in the room's center.
+
+> plugh
+
+>>Foof!<<
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> drop silver
+
+OK
+
+> drop jewelry
+
+OK
+
+> drop jade
+
+OK
+
+> drop rug
+
+OK
+
+> out
+
+You're in front of building.
+
+> s
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> w
+
+You are wandering aimlessly through the forest.
+
+> n
+
+You are wandering aimlessly through the forest.
+
+Your keen eye spots a severed leporine appendage lying on the ground.
+
+> take appendage
+
+OK
+
+> free bird
+
+OK
+
+> listen
+
+The bird is singing to you in gratitude for your having returned it to
+its home.  In return, it informs you of a magic word which it thinks
+you may find useful somewhere near the Hall of Mists.  The magic word
+changes frequently, but for now the bird believes it is "Q'IBJ".  You
+thank the bird for this information, and it flies off into the forest.
+
+> s
+
+You are wandering aimlessly through the forest.
+
+> s
+
+You're in valley.
+
+> n
+
+You're in front of building.
+
+> in
+
+You're inside building.
+
+There is a Persian rug spread out on the floor!
+
+A precious jade necklace has been dropped here!
+
+There is precious jewelry here!
+
+There are bars of silver here!
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take water
+
+OK
+
+> plugh
+
+>>Foof!<<
+
+You're at "Y2".
+
+> plover
+
+>>Foof!<<
+
+You're in a small chamber lit by an eerie green light.  An extremely
+narrow tunnel exits to the west.  A dark corridor leads ne.
+
+There is an emerald here the size of a plover's egg!
+
+> ne
+
+A little dwarf just walked around a corner, saw you, threw a little
+axe at you which missed, cursed, and ran away.
+
+You're in the dark-room.  A corridor leading south is the only exit.
+
+There is a little axe here.
+
+A massive stone tablet embedded in the wall reads:
+"Congratulations on bringing light into the dark-room!"
+
+There is a platinum pyramid here, 8 inches on a side!
+
+> take axe
+
+OK
+
+> take pyramid
+
+OK
+
+> s
+
+You're in Plover Room.
+
+There is an emerald here the size of a plover's egg!
+
+> dark
+
+You're in dark-room.
+
+A massive stone tablet embedded in the wall reads:
+"Congratulations on bringing light into the dark-room!"
+
+> s
+
+You're in Plover Room.
+
+There is an emerald here the size of a plover's egg!
+
+> plover
+
+>>Foof!<<
+
+You're at "Y2".
+
+> s
+
+You're in n/s passage above e/w passage.
+
+> d
+
+You are in a dirty broken passage.  To the east is a crawl.  To the
+west is a large passage.  Above you is a hole to another passage.
+
+> u
+
+You're in n/s passage above e/w passage.
+
+> u
+
+There is no way to go that direction.
+
+You're in n/s passage above e/w passage.
+
+> throw axe
+
+There is nothing here to attack.
+
+> take axe
+
+You are already carrying it!
+
+> throw axe
+
+There is nothing here to attack.
+
+> take axe
+
+You are already carrying it!
+
+> throw axe
+
+There is nothing here to attack.
+
+> take axe
+
+You are already carrying it!
+
+> throw axe
+
+There is nothing here to attack.
+
+> take axe
+
+You are already carrying it!
+
+> s
+
+You're in Hall of Mt King.
+
+> e
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> w
+
+You're on east bank of fissure.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+A crystal bridge spans the fissure.
+
+> drop cage
+
+OK
+
+> w
+
+You are on the west side of the fissure in the Hall of Mists.
+
+There are diamonds here!
+
+A crystal bridge spans the fissure.
+
+> w
+
+You are at the west end of the Hall of Mists.  A low wide crawl
+continues west and another goes north.  To the south is a little
+passage 6 feet off the floor.
+
+> w
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You are at the east end of a very long hall apparently without side
+chambers.  To the east a low wide crawl slants up.  To the north a
+round two foot hole slants down.
+
+> w
+
+There is a threatening little dwarf in the room with you!
+
+You are at the west end of a very long featureless hall.  The hall
+joins up with a narrow north/south passage.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a maze of twisty little passages, all different.
+
+> sw
+
+There is a threatening little dwarf in the room with you!
+
+You are in a little maze of twisty passages, all different.
+
+> se
+
+There is a threatening little dwarf in the room with you!
+
+You are in a little maze of twisting passages, all different.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+Dead end
+
+There is a massive and somewhat battered vending machine here.  The
+instructions on it read: "Drop coins here to receive fresh batteries."
+
+> kill machine
+
+As you strike the vending machine, it pivots backward along with a
+section of wall, revealing a dark passage leading south.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a long, rough-hewn, north/south corridor.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a large chamber with passages to the west and north.
+
+A formidable ogre bars the northern exit.
+
+> kill ogre
+
+The ogre, who despite his bulk is quite agile, easily dodges your
+attack.  He seems almost amused by your puny effort.
+
+One sharp nasty knife is thrown at you!
+
+The ogre, distracted by your rush, is struck by the knife.  With a
+blood-curdling yell he turns and bounds after the dwarf, who flees
+in panic.  You are left alone in the room.
+
+> n
+
+You are in the ogre's storeroom.  The only exit is to the south.
+
+There is an enormous ruby here!
+
+> take ruby
+
+OK
+
+> s
+
+You are in a large chamber with passages to the west and north.
+
+> w
+
+You are in a long, rough-hewn, north/south corridor.
+
+> n
+
+Dead end
+
+There is a massive vending machine here, swung back to reveal a
+southward passage.
+
+> n
+
+You are in a little maze of twisting passages, all different.
+
+> n
+
+You are in a little maze of twisty passages, all different.
+
+> nw
+
+You are in a maze of twisty little passages, all different.
+
+> d
+
+You're at west end of long hall.
+
+> e
+
+You're at east end of long hall.
+
+> e
+
+You're at west end of Hall of Mists.
+
+> e
+
+You're on west bank of fissure.
+
+There are diamonds here!
+
+A crystal bridge spans the fissure.
+
+> take diamonds
+
+OK
+
+> e
+
+You're on east bank of fissure.
+
+There is a small wicker cage discarded nearby.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+A crystal bridge spans the fissure.
+
+> e
+
+There is a threatening little dwarf in the room with you!
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+This is a low room with a crude note on the wall.  The note says,
+"You won't get it up the steps".
+
+There is a large sparkling nugget of gold here!
+
+> take gold
+
+You can't carry anything more.  You'll have to drop something first.
+
+> n
+
+A little dwarf with a big knife blocks your way.
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You're in nugget-of-gold room.
+
+There is a large sparkling nugget of gold here!
+
+> y2
+
+I don't know how to apply that word here.
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It gets you!
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> d
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> plugh
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> drop diamonds
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> drop pyramid
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> drop ruby
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> plugh
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> plugh
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> drop coins
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> plugh
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> s
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> d
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> bedquilt
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> slab
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> s
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> d
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> water plant
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> u
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> w
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> u
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> reservoir
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> Q'IBJ
+
+Please answer the question.
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> n
+
+OK
+
+You scored 117 out of a possible 430, using 114 turns.
+
+Your score qualifies you as a novice class adventurer.
+
+To achieve the next higher rating, you need 4 more points.

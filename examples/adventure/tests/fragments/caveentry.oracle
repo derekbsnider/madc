@@ -1,0 +1,174 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> no
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 43
+
+Seed set to 43
+
+You're in front of building.
+
+> e
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> get lamp
+
+OK
+
+> get keys
+
+OK
+
+> take food
+
+OK
+
+> eat food
+
+Thank you, it was delicious!
+
+> get bottle
+
+OK
+
+> drink
+
+The bottle of water is now empty.
+
+> drink
+
+You have taken a drink from the stream.  The water tastes strongly of
+minerals, but is not unpleasant.  It is extremely cold.
+
+> inventory
+
+You are currently holding the following:
+Set of keys
+Brass lantern
+Small bottle
+
+> w
+
+You're in front of building.
+
+> s
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> s
+
+At your feet all the water of the stream splashes into a 2-inch slit
+in the rock.  Downstream the streambed is bare rock.
+
+> s
+
+You are in a 20-foot depression floored with bare dirt.  Set into the
+dirt is a strong steel grate mounted in concrete.  A dry streambed
+leads into the depression.
+
+The grate is locked.
+
+> unlock grate
+
+The grate is now unlocked.
+
+> open grate
+
+The grate is now unlocked.
+
+> d
+
+You are in a small chamber beneath a 3x3 steel grate to the surface.
+A low crawl over cobbles leads inward to the west.
+
+The grate is open.
+
+> w
+
+You are crawling over cobbles in a low passage.  There is a dim light
+at the east end of the passage.
+
+There is a small wicker cage discarded nearby.
+
+> on lamp
+
+Your lamp is now on.
+
+> w
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> get cage
+
+I see no cage here.
+
+> xyzzy
+
+>>Foof!<<
+
+You're inside building.
+
+> off lamp
+
+Your lamp is now off.
+
+> drop cage
+
+I see no cage here.
+
+> drop keys
+
+OK
+
+> inventory
+
+You are currently holding the following:
+Brass lantern
+Small bottle
+
+> take keys
+
+OK
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> e
+
+You're in cobble crawl.
+
+There is a small wicker cage discarded nearby.
+
+> back
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> 
+You scored 32 out of a possible 430, using 29 turns.
+
+You are obviously a rank amateur.  Better luck next time.
+
+To achieve the next higher rating, you need 14 more points.

@@ -1,0 +1,40 @@
+// perl:: lean primaries (Leg 0b, dialect-lean.md): chop/chomp mutate the
+// value (Perl semantics); pop/shift return the element via a value
+// out-param; text transforms return ring-lifetime copies. Pure dialect
+// TU — zero includes.
+int main()
+{
+	value s = "hello\n";
+	println("chomp={}", perl::chomp(s));
+	println("[{}]", s);
+	println("chop={}", perl::chop(s));
+	println("[{}]", s);
+
+	println("{}", perl::lc("HeLLo"));
+	value m = "MiXeD";
+	println("{}", perl::lc(m));
+	println("{}", perl::uc(m));
+	println("{}", perl::ucfirst("world"));
+	println("{}", perl::lcfirst("World"));
+	println("{}", perl::reverse("abc"));
+	println("{}", perl::reverse(m));
+	println("[{}]", perl::substr("hello world", 6, 5));
+	value t = "perl text";
+	println("[{}]", perl::substr(t, 0, 4));
+	// the subjects were never mutated
+	println("[{}]", m);
+	println("[{}]", t);
+
+	array a;
+	perl::push(a, "one");
+	perl::push(a, "two");
+	perl::push(a, "three");
+	println("{}", perl::join("|", a));
+	value last;
+	perl::pop(last, a);
+	println("last={} scalar={}", last, perl::scalar(a));
+	value head;
+	perl::shift(head, a);
+	println("head={} scalar={}", head, perl::scalar(a));
+	return 0;
+}

@@ -1,0 +1,27 @@
+## Check that listen command hears all objects as well as location sound
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+no
+seed 1181530211
+e
+get lamp
+xyzzy
+on
+e
+get cage
+pit
+e
+get bird
+debri
+xyzzy
+listen
+xyzzy
+pit
+d
+d
+listen
+secret
+w
+listen
+quit
+yes

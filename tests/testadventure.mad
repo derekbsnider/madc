@@ -1,0 +1,9 @@
+// The Track 7 Phase 1 pilot, player role: one world, played at level 0
+// through the ui:: hub surface. The scripted playthrough exercises the
+// whole hub end-to-end: ingestion (%world file), verbs through the one
+// write surface, the inventory-derived brass-key credential opening the
+// door (gate G3's data half), the dark vault lit by the carried lantern,
+// the turn clock, and the %require-gated inspect refusal (gate G1's
+// player half). Fixtures: .argv = world file, .input = commands,
+// .expect = transcript lines, .expect_quiet = stderr must stay empty.
+#include "adventure_driver.inc"

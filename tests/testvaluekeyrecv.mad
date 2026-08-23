@@ -1,0 +1,32 @@
+// A method call DIRECTLY on a keyed carrier subscript: bag["k"].count(),
+// bag["k"].c_str(). The keyed subscript translates to the slot's value
+// LVALUE (N_DEREF of the madarray_key_slot call); the method-receiver
+// lane must take the slot's ADDRESS (&* folds back to the slot call) —
+// the array-lvalue decay convention the other carrier receivers ride
+// would LOAD the slot's first byte (the kind byte) as `this` and
+// SIGSEGV inside the runtime entry.
+#include <cstdio>
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	var bag;
+	bag["msg"] = "hello";
+	bag["n"] = 7;
+
+	// c_str() on the keyed slot directly (string kind: the payload).
+	printf("msg=%s\n", bag["msg"].c_str());
+
+	// count() on an object-kind slot directly.
+	var inner;
+	inner["x"] = 1;
+	inner["y"] = 2;
+	bag["obj"] = inner;
+	printf("obj-count=%lld\n", bag["obj"].count());
+
+	// The two-step form stays equivalent (the already-pinned lane).
+	var t = bag["obj"];
+	printf("two-step=%lld\n", t.count());
+	return 0;
+}

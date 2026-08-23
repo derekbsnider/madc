@@ -5755,11 +5755,23 @@ static int get_int_const (gen_ctx_t gen_ctx, MIR_op_t *op_ref, int64_t *c) {
   return TRUE;
 }
 
-static int cycle_phi_p (bb_insn_t bb_insn) { /* we are not in pure SSA at this stage */
-  ssa_edge_t se;
+/* TRUE for a PHI at a LOOP HEADER: a block with an incoming back edge.  We
+   are not in pure SSA at this stage -- such a PHI's target register is
+   rewritten along the backedge (the conventional-SSA copy lives in the loop
+   body), so at any use reached after that copy the register holds the NEXT
+   iteration's value, and an address fold that walks through the PHI would
+   read the wrong snapshot.  The old test here (some operand defined in the
+   PHI's own block) only recognized single-BB self-loops; a multi-BB loop's
+   backedge operand is defined in the loop body, so those slipped through and
+   ssa_combine folded wrong addresses (upstream issue #467: segfault and hang
+   at optimize level 2, correct at level 1).  Callers need CURRENT
+   back_edge_p marks -- ssa_combine recomputes them at entry. */
+static int cycle_phi_p (bb_insn_t bb_insn) {
+  edge_t e;
   if (bb_insn->insn->code != MIR_PHI) return FALSE;
-  for (size_t i = 1; i < bb_insn->insn->nops; i++)
-    if ((se = bb_insn->insn->ops[i].data) != NULL && se->def->bb == bb_insn->bb) return TRUE;
+  for (e = DLIST_HEAD (in_edge_t, bb_insn->bb->in_edges); e != NULL;
+       e = DLIST_NEXT (in_edge_t, e))
+    if (e->back_edge_p) return TRUE;
   return FALSE;
 }
 
@@ -5996,6 +6008,14 @@ static void ssa_combine (gen_ctx_t gen_ctx) {  // tied reg, alias ???
   ssa_edge_t se;
   addr_info_t addr_info;
 
+  /* cycle_phi_p consults back_edge_p, and the CFG may have changed since the
+     last enumeration (make_conventional_ssa runs just before us).  DFS only
+     ever SETS the mark, so clear first, then recompute for the CFG we see. */
+  for (bb_t bb = DLIST_HEAD (bb_t, curr_cfg->bbs); bb != NULL; bb = DLIST_NEXT (bb_t, bb))
+    for (edge_t e = DLIST_HEAD (out_edge_t, bb->out_edges); e != NULL;
+         e = DLIST_NEXT (out_edge_t, e))
+      e->back_edge_p = FALSE;
+  enumerate_bbs (gen_ctx);
   for (bb_t bb = DLIST_HEAD (bb_t, curr_cfg->bbs); bb != NULL; bb = DLIST_NEXT (bb_t, bb)) {
     DEBUG (2, { fprintf (debug_file, "Processing bb%lu\n", (unsigned long) bb->index); });
     for (bb_insn = DLIST_TAIL (bb_insn_t, bb->bb_insns); bb_insn != NULL; bb_insn = prev_bb_insn) {
@@ -8127,7 +8147,13 @@ struct rewrite_data {
    base/index reuse); the per-insn op_nums[] must hold them all or it overflows
    (gen_assert is compiled out in release).  Was 2.
    ADOPTED-FROM: github.com/theMackabu/mir @ dbfc84fe0
-   ("backport community fixes for codegen correctness"). */
+   ("backport community fixes for codegen correctness").
+   No fixed table size is provably enough: this path is reached for MIR_USE
+   too, whose operand count is unbounded, so the loop below also checks the
+   bound at RUN time and declines (undoing its rewrites) when the table is
+   full -- the same decline it already takes when target_insn_ok_p rejects.
+   ADOPTED-FROM: upstream PR #468 (wshlavacek) -- the bug behind upstream
+   issue #410; found via `o[0] = t * t` after a call (stack-canary abort). */
 #define MAX_INSN_RELOAD_MEM_OPS 4
 static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR_reg_t loc,
                                 MIR_reg_t base_reg) {
@@ -8142,8 +8168,11 @@ static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR
   int n = 0, op_nums[MAX_INSN_RELOAD_MEM_OPS];
   for (int i = nop; i < (int) insn->nops; i++)
     if (insn->ops[i].mode == MIR_OP_VAR && insn->ops[i].u.var == reg) {
+      if (n >= MAX_INSN_RELOAD_MEM_OPS) { /* cannot record the undo -- give up */
+        for (int j = 0; j < n; j++) insn->ops[op_nums[j]] = saved_op;
+        return FALSE;
+      }
       insn->ops[i] = mem_op;
-      gen_assert (n < MAX_INSN_RELOAD_MEM_OPS);
       op_nums[n++] = i;
     }
   if (target_insn_ok_p (gen_ctx, insn)) return TRUE;

@@ -1,0 +1,15 @@
+// R4-lite widening reducer, TU 1 — the NARROW closure. `NULL` auto-includes
+// <stddef.h> only, so under a packed carrier this TU materializes the shared
+// forest instance under a stddef-only demand filter; TU 2 then binds
+// <stdio.h> and must union-grow that SAME instance (S2/S3).
+size_t narrow_len(const char *s)
+{
+	if ( s == NULL )
+		return 0;
+
+	size_t n = 0;
+
+	while ( s[n] )
+		++n;
+	return n;
+}

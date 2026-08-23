@@ -838,10 +838,19 @@ enum : uint32_t {
 enum : uint32_t {
 	CIR_TMPLF_HAS_NON_TYPE_PARAMS = 1u << 0,	// TemplateDef/AliasDef/FnTemplateDef
 	CIR_TMPLF_IS_PARTIAL_SPEC     = 1u << 1,	// TemplateDef::is_partial_specialization
-	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2,	// FnTemplateDef::instance_method
+	CIR_TMPLF_INSTANCE_METHOD     = 1u << 2,	// FnTemplateDef::instance_method; on a
+							// MEMBER record: this-taking (static == absent)
 	CIR_TMPLF_OOL_MEMBER_TMPL     = 1u << 3,	// OutOfLineMemberDef::is_member_template
-	CIR_TMPLF_TU_ROOT             = 1u << 4		// v24: pattern captured in the TU's ROOT file —
+	CIR_TMPLF_TU_ROOT             = 1u << 4,	// v24: pattern captured in the TU's ROOT file —
 							// fenced from the bind restore
+	CIR_TMPLF_MEMBER_CTOR         = 1u << 5,	// MEMBER record: the producer registered the
+							// placeholder as a CONSTRUCTOR of its owner
+							// (lazy-hydration skeleton fact; rides beside
+							// the return-type name in the extra slot)
+	CIR_TMPLF_MEMBER_DECL_ONLY    = 1u << 6		// MEMBER record: v34 decl-only (no decl tokens,
+							// only the return-type range) — a dropped
+							// placeholder registers NOTHING, decided
+							// without hydrating the record
 };
 enum : uint32_t {	// cir_forest_template_param::pflags
 	CIR_TMPLP_IS_TYPE = 1u << 0,
@@ -1274,7 +1283,7 @@ struct CirRestoredFuncDefaults
 // connector (or node_for) touches it, never at open. The image must stay
 // mapped for the forest's lifetime (cir_forest_map_image never unmaps).
 // Rung 2a (closure-filtered materialization): the demand filter the parser
-// installs BEFORE the first materialize_from_arena call. It carries the SAME
+// hands to materialize_for (forest_restore_decls). It carries the SAME
 // verdict map item 5's registration filter builds (forest_restore_decls):
 // decl-index name -> "some declaring unit is in the TU's bound-include
 // closure". materialize_from_arena consults it with the SAME fallback chain
@@ -1378,9 +1387,15 @@ class CirFrozenForest
 	// ensure_template_payload(): at the first filter-surviving template
 	// record in materialize, or at a late ClassPattern run read. A TU
 	// whose bound closure declares no templates (trivial C) never pays.
+	// SPANS, not owned copies: the bytes live in the mapped image or the
+	// process-level decoded-segment cache (both process-lifetime), so N
+	// forests in one process share ONE decode and zero per-forest copies
+	// (an 11-TU launch paid the multi-MB decode + copy per TU).
 	// Mutable: restored_template_run is a const reader.
-	mutable std::vector<uint32_t> _template_payload;
-	mutable madc::dis::decode_bytes _template_tokens;
+	mutable const uint32_t *_template_payload = NULL;
+	mutable size_t _template_payload_words = 0;
+	mutable const uint8_t *_template_tokens = NULL;
+	mutable size_t _template_tokens_len = 0;
 	mutable bool _template_payload_loaded = false;
 	bool ensure_template_payload() const;
 	std::vector<CirRestoredTemplate> _restored_templates;
@@ -1407,8 +1422,27 @@ class CirFrozenForest
 	std::vector<CirRestoredFuncDefaults> _restored_param_defaults;
 	bool _types_materialized;
 	// Rung 2a: the closure demand filter (inactive by default — whole
-	// container). Installed by forest_restore_decls before materialization.
+	// container). materialize_for installs it on the first generation and
+	// UNIONS later, wider filters in (S2 incremental materialization).
 	CirMaterializeFilter _mat_filter;
+	// S2 (R4-lite): what earlier generations already EMITTED, so a later,
+	// wider filter re-runs the passes without duplicating. _mat_done_slots
+	// covers the arena-slot-keyed walks (typedef / ns-surface / enum-record
+	// / free-func — one record kind per slot, marked only on PUSH, so a
+	// slot a narrower filter skipped is re-judged); globals/templates are
+	// indexes into their record vectors. _method_by_func_id persists method
+	// DEFINERS so a later generation's using-decl import resolves a definer
+	// built in an earlier one. Aggregate/enum dedup needs no set: pass 1/1a
+	// skip tids already in _defs_by_tid, and pass 2 fills only this
+	// generation's fresh allocations.
+	std::set<uint32_t> _mat_done_slots;
+	std::set<size_t> _mat_done_globals;
+	std::set<size_t> _mat_done_templates;
+	std::map<uint32_t, Variable *> _method_by_func_id;
+	// The pass engine both entry points share: runs every materialization
+	// pass under the CURRENT _mat_filter, skipping records earlier
+	// generations built (the guards above).
+	void materialize_pass();
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -1454,14 +1488,16 @@ public:
 	// method body load at emit time). Safe iff no segment has materialized yet.
 	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
 
-	// Rung 2a: install the closure demand filter. No-op after the (memoized)
-	// materialization has run — the first caller's view wins, and a filter-
-	// less first caller (e.g. --run-frozen) correctly gets the whole container.
-	void set_materialize_filter(CirMaterializeFilter &&f)
-	{
-		if (!_types_materialized)
-			_mat_filter = std::move(f);
-	}
+	// Rung 2a + S2 (R4-lite): ensure everything `want` admits is
+	// materialized — THE restore entry (forest_restore_decls). The first
+	// caller installs `want` and materializes under it; a later, WIDER
+	// filter (a bound verdict flipping false -> true, or want.active ==
+	// false = whole container) unions in and re-runs the passes, which
+	// skip already-built records. A narrower or equal filter is a no-op —
+	// monotone widening, so shared-forest consumers can never lose records
+	// to another TU's earlier, narrower view.
+	const std::vector<CirRestoredType> &materialize_for(
+		const CirMaterializeFilter &want);
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability
@@ -1548,6 +1584,9 @@ public:
 	// (pinned primitives resolve regardless). Lazy ClassPattern payload
 	// reads use this to swizzle serialized concrete_type_id values.
 	DataDef *restored_def_by_tid(uint32_t tid) const;
+	// Max __anon_N across the arena's named records (the restore's anon-tag
+	// gensym floor) — served from the process-level blob cache, no scan.
+	size_t max_restored_anon_tag();
 	// v13: the restored file-scope globals (type-ids swizzled to DataDef*). Valid
 	// after materialize_from_arena() — call it first (it builds this view
 	// alongside the types, reusing the same arena-id -> DataDef* map).

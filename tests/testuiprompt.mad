@@ -1,0 +1,21 @@
+// ui::prompt scripted-mode contract (the runner pipes stdin): prompt
+// written and flushed before the read, then the returned line echoed —
+// "<text><line>\n" in the transcript, the reference shape; '#'-led lines
+// are script comments, consumed silently with no re-prompt ("read 2"
+// pins that 3 input lines yield 2 returns); EOF leaves the trailing
+// prompt already written. The interactive arm differs only in skipping
+// the echo (the terminal echoes) and re-showing the prompt after a
+// comment; it needs a tty, outside the piped runner's reach.
+int main()
+{
+	var line;
+	long n = 0;
+	while ( ui::prompt(line, "> ") )
+	{
+		n += 1;
+		println("[{}]", line);
+	}
+	println("");
+	println("read {}", n);
+	return 0;
+}

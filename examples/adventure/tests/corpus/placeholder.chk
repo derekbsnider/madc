@@ -1,0 +1,944 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1838473132
+
+Seed set to 1838473132
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take lamp
+
+OK
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> take rod
+
+OK
+
+> e
+
+You are crawling over cobbles in a low passage.  There is a dim light
+at the east end of the passage.
+
+There is a small wicker cage discarded nearby.
+
+> take cage
+
+OK
+
+> w
+
+You're in debris room.
+
+> w
+
+You are in an awkward sloping east/west canyon.
+
+> w
+
+You are in a splendid chamber thirty feet high.  The walls are frozen
+rivers of orange stone.  An awkward canyon and a good passage exit
+from east and west sides of the chamber.
+
+A cheerful little bird is sitting here singing.
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take rod
+
+OK
+
+> w
+
+At your feet is a small pit breathing traces of white mist.  An east
+passage ends here except for a small crack leading on.
+
+Rough stone steps lead down the pit.
+
+> free bird
+
+OK
+
+> wave rod
+
+The bird flies about agitatedly for a moment, then disappears through
+the crack.  It reappears shortly, carrying in its beak a jade
+necklace, which it drops at your feet.
+
+> take necklace
+
+OK
+
+> drop rod
+
+OK
+
+> take bird
+
+OK
+
+> take rod
+
+OK
+
+> d
+
+You are at one end of a vast hall stretching forward out of sight to
+the west.  There are openings to either side.  Nearby, a wide stone
+staircase leads downward.  The hall is filled with wisps of white mist
+swaying to and fro almost as if alive.  A cold wind blows up the
+staircase.  There is a passage at the top of a dome behind you.
+
+Rough stone steps lead up the dome.
+
+> d
+
+You are in the Hall of the Mountain King, with passages off in all
+directions.
+
+A huge green fierce snake bars the way!
+
+> free bird
+
+The little bird attacks the green snake, and in an astounding flurry
+drives the snake away.
+
+> drop rod
+
+OK
+
+> drop cage
+
+OK
+
+> take cage
+
+OK
+
+> take bird
+
+OK
+
+> w
+
+You are in the west side chamber of the Hall of the Mountain King.
+A passage continues west and up here.
+
+There are many coins here!
+
+> take coins
+
+OK
+
+> e
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> s
+
+You are in the south side chamber.
+
+There is precious jewelry here!
+
+> take jewelry
+
+OK
+
+> n
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> up
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> s
+
+This is a low room with a crude note on the wall.  The note says,
+"You won't get it up the steps".
+
+There is a large sparkling nugget of gold here!
+
+> take gold
+
+OK
+
+> n
+
+You're in Hall of Mists.
+
+> d
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> n
+
+You are in a low n/s passage at a hole in the floor.  The hole goes
+down to an e/w passage.
+
+There are bars of silver here!
+
+> n
+
+You are in a large room, with a passage to the south, a passage to the
+west, and a wall of broken rock to the east.  There is a large "Y2" on
+a rock in the room's center.
+
+A hollow voice says "PLUGH".
+
+> plugh
+
+>>Foof!<<
+
+You're inside building.
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> extinguish lamp
+
+Your lamp is now off.
+
+> drop coins
+
+OK
+
+> drop jewelry
+
+OK
+
+> drop necklace
+
+OK
+
+> drop gold
+
+OK
+
+> plugh
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You're at "Y2".
+
+> s
+
+You're in n/s passage above e/w passage.
+
+There are bars of silver here!
+
+> take silver
+
+OK
+
+> s
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> sw
+
+A little dwarf just walked around a corner, saw you, threw a little
+axe at you which missed, cursed, and ran away.
+
+You are in a secret canyon which here runs e/w.  It crosses over a
+very tight canyon 15 feet below.  If you go down you may not be able
+to get back up.
+
+There is a little axe here.
+
+> take axe
+
+OK
+
+> w
+
+You are in a secret canyon which exits to the north and east.
+
+A huge green fierce dragon bars the way!
+
+The dragon is sprawled out on a Persian rug!!
+
+> kill dragon
+
+With what?  Your bare hands?
+
+> yes
+
+Congratulations!  You have just vanquished a dragon with your bare
+hands!  (Unbelievable, isn't it?)
+
+You are in a secret canyon which exits to the north and east.
+
+There is a Persian rug spread out on the floor!
+
+The blood-specked body of a huge green dead dragon lies to one side.
+
+> feed dragon
+
+Don't be ridiculous!
+
+> drink blood
+
+Your head buzzes strangely for a moment.
+
+> take rug
+
+OK
+
+> e
+
+You're in secret e/w canyon above tight canyon.
+
+> e
+
+You are in the Hall of the Mountain King, with passages off in all
+directions.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> up
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> d
+
+There is a threatening little dwarf in the room with you!
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> n
+
+There is a threatening little dwarf in the room with you!
+
+You're in n/s passage above e/w passage.
+
+> n
+
+There is a threatening little dwarf in the room with you!
+
+You're at "Y2".
+
+A hollow voice says "PLUGH".
+
+> off
+
+Your lamp is now off.
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> plugh
+
+>>Foof!<<
+
+You're inside building.
+
+There is a large sparkling nugget of gold here!
+
+A precious jade necklace has been dropped here!
+
+There is precious jewelry here!
+
+There are many coins here!
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> inven
+
+You are currently holding the following:
+Brass lantern
+Wicker cage
+Little bird in cage
+Dwarf's axe
+Bars of silver
+Persian rug
+
+> drop rug
+
+OK
+
+> drop silver
+
+OK
+
+> out
+
+You're in front of building.
+
+> s
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> w
+
+You are wandering aimlessly through the forest.
+
+> n
+
+You are wandering aimlessly through the forest.
+
+Your keen eye spots a severed leporine appendage lying on the ground.
+
+> take appendage
+
+OK
+
+> free bird
+
+OK
+
+> drop cage
+
+OK
+
+> listen
+
+The bird is singing to you in gratitude for your having returned it to
+its home.  In return, it informs you of a magic word which it thinks
+you may find useful somewhere near the Hall of Mists.  The magic word
+changes frequently, but for now the bird believes it is "H'CFL".  You
+thank the bird for this information, and it flies off into the forest.
+
+> s
+
+You are wandering aimlessly through the forest.
+
+> s
+
+You're in valley.
+
+> n
+
+You're in front of building.
+
+> in
+
+You're inside building.
+
+There are bars of silver here!
+
+There is a Persian rug spread out on the floor!
+
+There is a large sparkling nugget of gold here!
+
+A precious jade necklace has been dropped here!
+
+There is precious jewelry here!
+
+There are many coins here!
+
+There are some keys on the ground here.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take water
+
+OK
+
+> plugh
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You're at "Y2".
+
+> plover
+
+>>Foof!<<
+
+You're in a small chamber lit by an eerie green light.  An extremely
+narrow tunnel exits to the west.  A dark corridor leads ne.
+
+There is an emerald here the size of a plover's egg!
+
+> ne
+
+You're in the dark-room.  A corridor leading south is the only exit.
+
+A massive stone tablet embedded in the wall reads:
+"Congratulations on bringing light into the dark-room!"
+
+There is a platinum pyramid here, 8 inches on a side!
+
+> take pyramid
+
+OK
+
+> s
+
+You're in Plover Room.
+
+There is an emerald here the size of a plover's egg!
+
+> plover
+
+>>Foof!<<
+
+You're at "Y2".
+
+A hollow voice says "PLUGH".
+
+> s
+
+You're in n/s passage above e/w passage.
+
+> s
+
+You're in Hall of Mt King.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> take rod
+
+OK
+
+> up
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> w
+
+You are on the east bank of a fissure slicing clear across the hall.
+The mist is quite thick here, and the fissure is too wide to jump.
+
+> wave rod
+
+A crystal bridge now spans the fissure.
+
+> drop rod
+
+OK
+
+> west
+
+You are on the west side of the fissure in the Hall of Mists.
+
+There are diamonds here!
+
+A crystal bridge spans the fissure.
+
+> take diamonds
+
+OK
+
+> w
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You are at the west end of the Hall of Mists.  A low wide crawl
+continues west and another goes north.  To the south is a little
+passage 6 feet off the floor.
+
+> w
+
+There is a threatening little dwarf in the room with you!
+
+You are at the east end of a very long hall apparently without side
+chambers.  To the east a low wide crawl slants up.  To the north a
+round two foot hole slants down.
+
+> w
+
+There is a threatening little dwarf in the room with you!
+
+You are at the west end of a very long featureless hall.  The hall
+joins up with a narrow north/south passage.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a maze of twisty little passages, all different.
+
+> sw
+
+There is a threatening little dwarf in the room with you!
+
+You are in a little maze of twisty passages, all different.
+
+> se
+
+There is a threatening little dwarf in the room with you!
+
+You are in a little maze of twisting passages, all different.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+Dead end
+
+There is a massive and somewhat battered vending machine here.  The
+instructions on it read: "Drop coins here to receive fresh batteries."
+
+> kill machine
+
+As you strike the vending machine, it pivots backward along with a
+section of wall, revealing a dark passage leading south.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a long, rough-hewn, north/south corridor.
+
+> s
+
+There is a threatening little dwarf in the room with you!
+
+You are in a large chamber with passages to the west and north.
+
+A formidable ogre bars the northern exit.
+
+> kill ogre
+
+The ogre, who despite his bulk is quite agile, easily dodges your
+attack.  He seems almost amused by your puny effort.
+
+One sharp nasty knife is thrown at you!
+
+The ogre, distracted by your rush, is struck by the knife.  With a
+blood-curdling yell he turns and bounds after the dwarf, who flees
+in panic.  You are left alone in the room.
+
+> n
+
+You are in the ogre's storeroom.  The only exit is to the south.
+
+There is an enormous ruby here!
+
+> take ruby
+
+OK
+
+> s
+
+You are in a large chamber with passages to the west and north.
+
+> w
+
+You are in a long, rough-hewn, north/south corridor.
+
+> n
+
+Dead end
+
+There is a massive vending machine here, swung back to reveal a
+southward passage.
+
+> n
+
+You are in a little maze of twisting passages, all different.
+
+> n
+
+You are in a little maze of twisty passages, all different.
+
+> nw
+
+You are in a maze of twisty little passages, all different.
+
+> d
+
+You're at west end of long hall.
+
+> e
+
+You're at east end of long hall.
+
+> e
+
+You're at west end of Hall of Mists.
+
+> e
+
+You're on west bank of fissure.
+
+A crystal bridge spans the fissure.
+
+> e
+
+You're on east bank of fissure.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+A crystal bridge spans the fissure.
+
+> e
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You are at one end of a vast hall stretching forward out of sight to
+the west.  There are openings to either side.  Nearby, a wide stone
+staircase leads downward.  The hall is filled with wisps of white mist
+swaying to and fro almost as if alive.  A cold wind blows up the
+staircase.  There is a passage at the top of a dome behind you.
+
+Rough stone steps lead up the dome.
+
+> throw axe
+
+You killed a little dwarf.  The body vanishes in a cloud of greasy
+black smoke.
+
+You're in Hall of Mists.
+
+There is a little axe here.
+
+Rough stone steps lead up the dome.
+
+> take axe
+
+OK
+
+> n
+
+You're in Hall of Mt King.
+
+> n
+
+You're in n/s passage above e/w passage.
+
+> n
+
+You are in a large room, with a passage to the south, a passage to the
+west, and a wall of broken rock to the east.  There is a large "Y2" on
+a rock in the room's center.
+
+A hollow voice says "PLUGH".
+
+> off
+
+Your lamp is now off.
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> plugh
+
+>>Foof!<<
+
+You're inside building.
+
+There are bars of silver here!
+
+There is a Persian rug spread out on the floor!
+
+There is a large sparkling nugget of gold here!
+
+A precious jade necklace has been dropped here!
+
+There is precious jewelry here!
+
+There are many coins here!
+
+There are some keys on the ground here.
+
+There is food here.
+
+> drop ruby
+
+OK
+
+> drop diamonds
+
+OK
+
+> drop pyramid
+
+OK
+
+> plugh
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You're at "Y2".
+
+A hollow voice says "PLUGH".
+
+> s
+
+You are in a low n/s passage at a hole in the floor.  The hole goes
+down to an e/w passage.
+
+> s
+
+You're in Hall of Mt King.
+
+> n
+
+You're in n/s passage above e/w passage.
+
+> d
+
+You are in a dirty broken passage.  To the east is a crawl.  To the
+west is a large passage.  Above you is a hole to another passage.
+
+> bedquilt
+
+You are in Bedquilt, a long east/west passage with holes everywhere.
+To explore at random select north, south, up, or down.
+
+> slab
+
+You are in a large low circular chamber whose floor is an immense slab
+fallen from the ceiling (Slab Room).  East and west there once were
+large passages, but they are now filled with boulders.  Low small
+passages go north and south, and the south one quickly bends west
+around the boulders.
+
+> s
+
+You are at the west end of the Twopit Room.  There is a large hole in
+the wall above the pit at this end of the room.
+
+> d
+
+You are at the bottom of the western pit in the Twopit Room.  There is
+a large hole in the wall about 25 feet above you.
+
+There is a tiny little plant in the pit, murmuring "water, water, ..."
+
+> water plant
+
+The plant spurts into furious growth for a few seconds.
+
+You're in west pit.
+
+There is a 12-foot-tall beanstalk stretching up out of the pit,
+bellowing "WATER!! WATER!!"
+
+> H'CFL
+
+Nothing happens.
+
+> u
+
+You're at west end of Twopit Room.
+
+The top of a 12-foot-tall beanstalk is poking out of the west pit.
+
+> w
+
+You're in Slab Room.
+
+> u
+
+You are in a secret n/s canyon above a large room.
+
+> reservoir
+
+You are at the edge of a large underground reservoir.  An opaque cloud
+of white mist fills the room and rises rapidly upward.  The lake is
+fed by a stream, which tumbles out of a hole in the wall about 10 feet
+overhead and splashes noisily into the water somewhere within the
+mist.  There is a passage going back toward the south.
+
+> Z'ZZZ
+
+Sorry, I don't know the word "Z'ZZZ".
+
+> 
+
+> 
+You scored 183 out of a possible 430, using 150 turns.
+
+You may now consider yourself a "Seasoned Adventurer".
+
+To achieve the next higher rating, you need 68 more points.

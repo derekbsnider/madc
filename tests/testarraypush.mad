@@ -11,6 +11,10 @@
 // null-pointer-constant ranking: 0 must stay an integer push, not a
 // const char* push.
 #include <cstdio>
+// <string> BEFORE <ns_php>: the std::string overload below is a guarded
+// C++-interop convenience (dialect-lean.md — the <ns_madc> convention:
+// explicit includers write #include <string> above the namespace header).
+#include <string>
 #include <ns_php>
 #include <ns_madc>
 

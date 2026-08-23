@@ -1,0 +1,430 @@
+### Check that water is unavailable in endgame
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Addresses GitLab issue #55: in endgame, some object starting states are incorrect
+#NOCOMPARE Bird was not weightless in cage in advent430, this test depends on that.
+no
+seed 11247848
+no
+seed 1516020414
+e
+plugh
+plove
+get emerald
+w
+drop emerald
+e
+ne
+get pyramid
+s
+plove
+plugh
+drop pyramid
+get lamp
+xyzzy
+on
+get rod
+e
+get cage
+pit
+d
+w
+wave rod
+w
+get diamonds
+e
+e
+u
+drop rod
+e
+get bird
+w
+free bird
+get rod
+wave rod
+get necklace
+drop rod
+get bird
+d
+s
+get gold
+n
+d
+free bird
+get bird
+s
+get jewelry
+n
+sw
+w
+kill dragon
+yes
+drink blood
+get rug
+e
+e
+n
+n
+plugh
+drop necklace
+drop gold
+drop jewelry
+drop diamonds
+w
+s
+w
+n
+get appendage
+free bird
+drop cage
+listen
+s
+s
+n
+e
+plugh
+s
+s
+sw
+w
+n
+reserv
+U'SIM
+n
+n
+u
+u
+u
+u
+u
+ne
+get statuette
+sw
+d
+d
+d
+d
+d
+s
+s
+s
+s
+s
+get axe
+e
+e
+e
+w
+w
+w
+w
+s
+sw
+se
+s
+hit machine
+s
+s
+hit ogre
+s
+n
+get ruby
+s
+w
+n
+n
+d
+d
+d
+e
+e
+e
+e
+e
+d
+throw axe
+get axe
+n
+get silver
+n
+plugh
+drop silver
+drop ebony
+drop appendage
+get water
+plugh
+throw axe
+get axe
+s
+d
+bedquilt
+w
+w
+w
+d
+pour water
+u
+e
+d
+get oil
+u
+e
+e
+get pillow
+w
+orien
+get vase
+n
+w
+get emerald
+nw
+s
+se
+ne
+slab
+u
+s
+e
+e
+n
+n
+plugh
+drop pillow
+drop vase
+drop emerald
+xyzzy
+pit
+d
+w
+w
+w
+s
+e
+s
+s
+s
+n
+throw axe
+get axe
+e
+e
+nw
+get chest
+get ruby
+get rug
+se
+se
+w
+throw axe
+s
+d
+debris
+xyzzy
+drop chest
+get emerald
+w
+w
+n
+n
+n
+fill urn
+light urn
+rub urn
+get amber
+drop rug
+drop emerald
+fly rug
+get sapphire
+fly rug
+get emerald
+drop ruby
+get rug
+get ruby
+e
+s
+e
+e
+e
+drop ruby
+drop sapphire
+drop amber
+drop emerald
+drop rug
+get water
+get keys
+get food
+plugh
+s
+s
+sw
+w
+n
+d
+s
+d
+pour water
+u
+e
+d
+get oil
+u
+w
+d
+climb
+w
+get eggs
+n
+oil door
+n
+get trident
+w
+d
+sw
+u
+toss eggs
+cross
+barren
+e
+feed bear
+unlock chain
+get chain
+get bear
+fork
+ne
+e
+drop keys
+get spices
+fork
+w
+w
+cross
+free bear
+cross
+sw
+d
+bedquilt
+w
+w
+w
+d
+climb
+w
+fee
+fie
+foe
+foo
+get eggs
+s
+d
+u
+e
+e
+ne
+e
+n
+open clam
+d
+d
+get pearl
+shell
+s
+u
+e
+u
+s
+w
+drop bottle
+get coins
+e
+n
+n
+plugh
+drop chain
+drop spices
+drop trident
+drop pearl
+drop eggs
+drop coins
+plugh
+s
+d
+w
+d
+e
+get magazine
+e
+drop magazine
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+no
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+no
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+look
+no
+look
+look
+get water
+get bottle
+inven
+sw
+get cage
+# In the original game, the bird is in the cage at this point
+inven
+get bird
+inven
+quit
+yes

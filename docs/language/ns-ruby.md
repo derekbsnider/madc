@@ -2,6 +2,16 @@
 
 Ruby-unique string and array operations: character transliteration, consecutive duplicate squeezing, character splitting, array rotation, and more.
 
+## Dialect (lean) forms — the primary surface
+
+Available in every madc TU with zero includes (dialect-lean,
+2026-08-21). These are Ruby's NON-BANG methods — they return a NEW
+string. Text returns are ring-lifetime `const char *`; subjects can be
+a `value` or a `const char *`: `ruby::squeeze(s)`, `capitalize(s)`,
+`tr(s, from, to)`, `delete(s, chars)`, `gsub(s, pat, rep)`,
+`sub(s, pat, rep)`. The `std::string`-flavored forms are C++-interop
+conveniences, declared only when `<string>` precedes `<ns_ruby>`.
+
 ## String Functions
 
 | Function | Description | Example |

@@ -1,0 +1,61 @@
+## In which the dwarf kills you
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1494912171
+in
+take keys
+take lamp
+out
+down
+s
+s
+open grate
+down
+west
+take cage
+west
+light lamp
+take rod
+xyzzy
+xyzzy
+west
+drop rod
+west
+take bird
+east
+take rod
+west
+west
+down
+south
+take gold
+n
+n
+drop bird
+west
+take coins
+e
+s
+drop cage
+take jewelry
+take axe
+n
+n
+n
+plugh
+inven
+drop jewelry
+drop gold
+inven
+drop keys
+plugh
+s
+s
+up
+w
+wave rod
+w
+take diamonds
+e
+n

@@ -1,0 +1,150 @@
+// ---- vocabulary: tokenize + classify (the reference's misc.c) ----------
+// First two whitespace words; 5-char case-insensitive match (TOKLEN —
+// the vocabulary words are stored pre-truncated); lookup order motions
+// -> objects -> actions -> zzword -> numeric. Word classes ride G.player.cmd as
+// small int constants; ids are the data's NAMES.
+
+#include "adv_decls.inc"
+
+// Whitespace word count of the whole line (the two-word gate).
+long word_count(var &line)
+{
+	long count = 0;
+	long len = line.length();
+	bool inword = false;
+	long i = 0;
+	while ( i < len )
+	{
+		long c = line.at(i);
+		if ( c == ' ' || c == '\t' )
+			inword = false;
+		else if ( !inword )
+		{
+			inword = true;
+			count++;
+		}
+		i++;
+	}
+	return count;
+}
+
+// Extract the first two raw words into G.player.cmd["raw0"] / G.player.cmd["raw1"].
+void split_words(var &line)
+{
+	G.player.cmd["raw0"] = "";
+	G.player.cmd["raw1"] = "";
+	long len = line.length();
+	long i = 0;
+	long word = 0;
+	while ( i < len && word < 2 )
+	{
+		while ( i < len && (line.at(i) == ' ' || line.at(i) == '\t') )
+			i++;
+		long start = i;
+		while ( i < len && line.at(i) != ' ' && line.at(i) != '\t' )
+			i++;
+		if ( i > start )
+		{
+			if ( word == 0 )
+				G.player.cmd["raw0"] = line.substr(start, i - start);
+			else
+				G.player.cmd["raw1"] = line.substr(start, i - start);
+			word++;
+		}
+	}
+}
+
+// Classify one raw word into (type, id) — id is the vocab NAME.
+void classify_word(var &raw, const char *typekey, const char *idkey)
+{
+	if ( raw.empty() )
+	{
+		G.player.cmd[typekey] = T_NONE;
+		G.player.cmd[idkey] = "";
+		return;
+	}
+	var full = php::strtolower(raw);
+	var tok = full;
+	if ( full.length() > 5 )
+		tok = full.substr(0, 5);
+	if ( php::array_key_exists(tok.c_str(), G.voc_m) )
+	{
+		G.player.cmd[typekey] = T_MOTION;
+		G.player.cmd[idkey] = G.voc_m[tok.c_str()][0].c_str();
+		return;
+	}
+	if ( php::array_key_exists(tok.c_str(), G.voc_o) )
+	{
+		G.player.cmd[typekey] = T_OBJECT;
+		G.player.cmd[idkey] = G.voc_o[tok.c_str()][0].c_str();
+		return;
+	}
+	if ( php::array_key_exists(tok.c_str(), G.voc_a) )
+	{
+		var first = G.voc_a[tok.c_str()][0].c_str();
+		// The magic-word placeholder action is special-cased below.
+		if ( first != "PART" )
+		{
+			G.player.cmd[typekey] = T_ACTION;
+			G.player.cmd[idkey] = first;
+			return;
+		}
+	}
+	// The reservoir magic word: full case-insensitive match.
+	if ( !G.zzword.empty() )
+	{
+		var zlow = php::strtolower(G.zzword);
+		if ( full == zlow )
+		{
+			G.player.cmd[typekey] = T_ACTION;
+			G.player.cmd[idkey] = "PART";
+			return;
+		}
+	}
+	// Numbers (optional leading minus).
+	bool digits = false;
+	if ( full.at(0) == '-' && full.length() > 1 )
+		digits = php::ctype_digit(full.substr(1, full.length() - 1));
+	else
+		digits = php::ctype_digit(full);
+	if ( digits )
+	{
+		G.player.cmd[typekey] = T_NUMERIC;
+		G.player.cmd[idkey] = "";
+		return;
+	}
+	G.player.cmd[typekey] = T_NOTFOUND;
+	G.player.cmd[idkey] = "";
+}
+
+void tokenize_command(var &line)
+{
+	split_words(line);
+	var r0 = G.player.cmd["raw0"];
+	var r1 = G.player.cmd["raw1"];
+	classify_word(r0, "type0", "id0");
+	classify_word(r1, "type1", "id1");
+}
+
+void shift_words()
+{
+	G.player.cmd["raw0"] = G.player.cmd["raw1"];
+	G.player.cmd["type0"] = G.player.cmd["type1"];
+	G.player.cmd["id0"] = G.player.cmd["id1"];
+	G.player.cmd["raw1"] = "";
+	G.player.cmd["type1"] = T_NONE;
+	G.player.cmd["id1"] = "";
+}
+
+void clear_command()
+{
+	G.player.oldobj = G.player.cmd["obj"];
+	G.player.cmd["raw0"] = "";
+	G.player.cmd["raw1"] = "";
+	G.player.cmd["type0"] = T_NONE;
+	G.player.cmd["type1"] = T_NONE;
+	G.player.cmd["id0"] = "";
+	G.player.cmd["id1"] = "";
+	G.player.cmd["verb"] = "";
+	G.player.cmd["obj"] = "";
+}

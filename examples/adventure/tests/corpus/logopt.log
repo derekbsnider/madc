@@ -1,0 +1,7 @@
+## Exercise logging option and seed dump
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#options: -l scratch.tmp
+n
+in
+

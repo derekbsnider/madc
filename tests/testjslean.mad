@@ -1,0 +1,15 @@
+// js:: lean primaries (Leg 0b, dialect-lean.md). Pure dialect TU, zero
+// includes.
+int main()
+{
+	println("{}", js::btoa("hello"));
+	println("{}", js::atob("aGVsbG8="));
+	println("{}", js::encodeURIComponent("a b&c"));
+	println("{}", js::decodeURIComponent("a%20b%26c"));
+	array a;
+	php::array_push(a, "x");
+	php::array_push(a, "y");
+	php::array_push(a, 42);
+	println("{}", js::stringify(a));
+	return 0;
+}

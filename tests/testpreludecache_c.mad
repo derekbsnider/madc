@@ -1,0 +1,10 @@
+#define count count_alt
+
+// Same context as TU b: this must adopt its immutable image through fresh
+// mutable token shells rather than lexing the fragment a third time.
+long remapped_count_again()
+{
+	array xs;
+	php::array_push(xs, "x");
+	return php::count(xs);
+}

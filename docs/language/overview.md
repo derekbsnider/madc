@@ -81,6 +81,7 @@ php::trim(s);
 | `<ns_js>` | [`js::`](ns-js.md) — base64, URL encoding, JSON |
 | `<ns_rust>` | [`rust::`](ns-rust.md) — string/collection utilities, `match` |
 | `<ns_madc>` | `madc::` — regex, eval, native madc services |
+| `<ns_ui>` | [`ui::`](ns-ui.md) — data-hub worlds, projections, verbs, prompt |
 
 Unqualified calls (`trim(s)` instead of `php::trim(s)`) resolve after a
 `using namespace php;` or a [`prefer`](prefer.md) directive, which also

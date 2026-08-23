@@ -1,46 +1,101 @@
-#include <string>
+// madc embedded <ns_perl> — Perl-style string + list conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*/array-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    int64_t __perl_chop(std::string *);
-    int64_t __perl_chomp(std::string *);
     void __perl_grep(array *, const char *, array *);
     void __perl_glob(array *, const char *);
     int64_t __perl_scalar(array *);
     void __perl_push(array *, const char *);
+    void __perl_unshift(array *, const char *);
+    void __perl_split(array *, const char *, const char *);
+    int64_t __perl_index(const char *, const char *);
+    int64_t __perl_rindex(const char *, const char *);
+    int64_t __perl_length(const char *);
+    int64_t __perl_chop_value(value *);
+    int64_t __perl_chomp_value(value *);
+    value *__perl_pop_value(value *, array *);
+    value *__perl_shift_value(value *, array *);
+    const char *__perl_join_cstr(const char *, array *);
+    const char *__perl_reverse_cstr(const char *);
+    const char *__perl_reverse_value(value *);
+    const char *__perl_lc_cstr(const char *);
+    const char *__perl_lc_value(value *);
+    const char *__perl_uc_cstr(const char *);
+    const char *__perl_uc_value(value *);
+    const char *__perl_ucfirst_cstr(const char *);
+    const char *__perl_ucfirst_value(value *);
+    const char *__perl_lcfirst_cstr(const char *);
+    const char *__perl_lcfirst_value(value *);
+    const char *__perl_substr_cstr(const char *, int64_t, int64_t);
+    const char *__perl_substr_value(value *, int64_t, int64_t);
+}
+
+namespace perl {
+    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
+    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
+    int64_t scalar(array &values) { return __perl_scalar(&values); }
+    void push(array &values, const char *text) { __perl_push(&values, text); }
+    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
+    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+    int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+    int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+    int64_t length(const char *text) { return __perl_length(text); }
+    // Lean PRIMARIES (dialect-lean.md, Perl parity). chop/chomp MUTATE the
+    // value's text — that IS Perl — returning the removed char / count.
+    // pop/shift return the ELEMENT via a value out-param (empty leaves it
+    // null). Text returns are ring-lifetime (the c_str contract): pass
+    // onward or capture immediately.
+    int64_t chop(value &s) { return __perl_chop_value(&s); }
+    int64_t chomp(value &s) { return __perl_chomp_value(&s); }
+    value &pop(value &out, array &values) { return *__perl_pop_value(&out, &values); }
+    value &shift(value &out, array &values) { return *__perl_shift_value(&out, &values); }
+    // Perl parity signature: join(separator, list).
+    const char *join(const char *separator, array &values) { return __perl_join_cstr(separator, &values); }
+    const char *reverse(value &s) { return __perl_reverse_value(&s); }
+    const char *reverse(const char *s) { return __perl_reverse_cstr(s); }
+    const char *lc(value &s) { return __perl_lc_value(&s); }
+    const char *lc(const char *s) { return __perl_lc_cstr(s); }
+    const char *uc(value &s) { return __perl_uc_value(&s); }
+    const char *uc(const char *s) { return __perl_uc_cstr(s); }
+    const char *ucfirst(value &s) { return __perl_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __perl_ucfirst_cstr(s); }
+    const char *lcfirst(value &s) { return __perl_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __perl_lcfirst_cstr(s); }
+    const char *substr(value &text, int64_t offset, int64_t length) { return __perl_substr_value(&text, offset, length); }
+    const char *substr(const char *text, int64_t offset, int64_t length) { return __perl_substr_cstr(text, offset, length); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    int64_t __perl_chop(std::string *);
+    int64_t __perl_chomp(std::string *);
     std::string *__perl_pop(std::string *, array *);
     std::string *__perl_shift(std::string *, array *);
-    void __perl_unshift(array *, const char *);
     std::string *__perl_join(std::string *, const char *, array *);
-    void __perl_split(array *, const char *, const char *);
     std::string *__perl_reverse(std::string *);
     std::string *__perl_lc(std::string *);
     std::string *__perl_uc(std::string *);
     std::string *__perl_ucfirst(std::string *);
     std::string *__perl_lcfirst(std::string *);
-    int64_t __perl_index(const char *, const char *);
-    int64_t __perl_rindex(const char *, const char *);
-    int64_t __perl_length(const char *);
     std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
 }
 
 namespace perl {
     int64_t chop(std::string &s) { return __perl_chop(&s); }
     int64_t chomp(std::string &s) { return __perl_chomp(&s); }
-    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
-    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
-    int64_t scalar(array &values) { return __perl_scalar(&values); }
-    void push(array &values, const char *text) { __perl_push(&values, text); }
     std::string &pop(std::string &result, array &values) { return *__perl_pop(&result, &values); }
     std::string &shift(std::string &result, array &values) { return *__perl_shift(&result, &values); }
-    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
     std::string &join(std::string &result, const char *separator, array &values) { return *__perl_join(&result, separator, &values); }
-    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
     std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
     std::string &lc(std::string &s) { return *__perl_lc(&s); }
     std::string &uc(std::string &s) { return *__perl_uc(&s); }
     std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
     std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
-    int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
-    int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
-    int64_t length(const char *text) { return __perl_length(text); }
     std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *__perl_substr(&result, text, offset, length); }
 }
+#endif

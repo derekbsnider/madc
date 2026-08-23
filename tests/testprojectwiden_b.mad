@@ -1,0 +1,13 @@
+// R4-lite widening reducer, TU 2 — the WIDER closure. `stdout` auto-includes
+// <stdio.h> (size_t pulls <stddef.h> again), so this TU's restore finds the
+// shared forest already materialized under TU 1's stddef-only filter and must
+// union in the stdio closure — FILE only materializes on the incremental pass.
+size_t narrow_len(const char *s);
+
+int main()
+{
+	FILE *out = stdout;
+
+	fprintf(out, "widen n=%d ok=%d\n", (int)narrow_len("widen"), 1);
+	return 0;
+}

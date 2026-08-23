@@ -211,6 +211,20 @@ void context_set_string(value &ctx, const char *key, const char *v)
 void context_set_array(value &ctx, const char *key, value &v)
 	{ std::string k = key ? key : ""; ns_common::value_object_for_write(ctx, "madc::context_set_array")[k] = v; }
 
+// madc::getline — line input, value-first (the <ns_madc> declaration
+// carries the contract). std::getline(cin, string&) is the oracle:
+// failbit means NOTHING was extracted (clean EOF -> false); a final
+// unterminated line and an empty line both deliver (true). The value
+// takes the line through its own assignment, so freeze rejection stays
+// with the one owner.
+bool getline(value &out)
+{
+	std::string line;
+	bool got = (bool)std::getline(std::cin, line);
+	out = value(line);
+	return got;
+}
+
 } // namespace madc
 
 // ---- C-linkage API for C hosts (libmadc.a/.so) --------------------------

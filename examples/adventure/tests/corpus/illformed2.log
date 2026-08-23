@@ -1,0 +1,138 @@
+## Test for various cases not found in walkthroughs (advent430-compatible).
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Commented-out lines cause troble in advent430
+n
+seed 1635997320
+back
+# Next three lines were buggy
+say axe
+say rub
+say grate
+_
+back
+#eat grate
+23
+#eat building
+#in
+# Z'ZZZ Word correct, but does nothing
+say F'UNJ
+# Say bigwords when giant isn't around
+#say fee
+#say fie
+#say foe
+#say fum
+# Meant to evoke "I don't know in from out here."
+in
+keys
+throw food
+nothing food
+calm food
+walk food
+score food
+foo food
+brief food
+blast food
+find grate
+light food
+lock food
+unlock food
+extinguish food
+suspend food
+resume food
+crawl
+out
+stream
+lock
+take water
+blast
+building
+cave
+enter stream
+try three words
+listen
+carry
+forward
+eat
+drink
+throw keys
+find keys
+inven keys
+nothing
+in
+listen
+find keys
+unlock keys
+find bar
+carry
+blast
+take bottle
+find bottle
+drink water
+fill bottle
+throw axe
+throw knife
+lock
+unlock
+throw
+attack
+unlock chain
+fill urn
+eat keys
+discard keys
+drink keys
+off keys
+break keys
+wake keys
+take keys
+feed keys
+fly keys
+pour keys
+throw keys
+foo up
+get
+food
+eat food
+drink blood
+drink keys
+light keys
+brief
+frob grate
+read grate
+#grate
+pour bottle
+fill bottle
+building
+on
+pour bottle
+xyzzy
+take rod
+wave rod
+listen
+quit
+n
+read
+look
+#l
+#x
+#i
+#news
+go back
+fuck
+walk
+fly
+say boo
+score
+z
+score
+quit keys
+out
+s
+s
+down
+s
+in
+seed -123
+#no
+#quit
+#yes

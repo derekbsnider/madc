@@ -712,6 +712,10 @@ int main(int argc, char **argv)
             // (embedded_header_is_system_library_shim). This is the incremental
             // shim-retirement lever; it replaces the old disallow-everything gate,
             // which wrongly also dropped ns_php etc.
+            // Rides the engine as well as the current Program so --project
+            // translation units inherit the same target surface (per-TU
+            // Programs copy only the engine's policy, configure_program).
+            engine.registration_policy.bypass_system_library_headers = true;
             prog->registration_policy.bypass_system_library_headers = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
@@ -1202,7 +1206,19 @@ int main(int argc, char **argv)
         for ( int i = filearg; i < argc; ++i )
             rargv.push_back(argv[i]);
         int rc = madc_cir_execute_frozen(run_frozen_path,
-                                         (int)rargv.size(), rargv.data());
+                                         (int)rargv.size(), rargv.data(),
+                                         show_stats);
+        // --show-stats: the lane printed its phase walls; append the process
+        // total only main() can see (same closing line as the parse lanes).
+        if ( show_stats )
+        {
+            struct timeval _t_now;
+            gettimeofday(&_t_now, NULL);
+            fprintf(stderr, "[stats] total (in-process) .. %.3f s"
+                    "  (excl. pre-main load + teardown)\n",
+                    (_t_now.tv_sec - _t_main.tv_sec)
+                    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
+        }
         return (rc < 0) ? 1 : rc;
     }
 
@@ -1326,7 +1342,19 @@ int main(int argc, char **argv)
 	int rc = madc_project_execute(engine, manifest, run_argc, run_argv,
 				      prog->registration_policy.enable_forest_bind,
 				      prog->forest_bind_path,
-				      prog->class_pattern_live_capture);
+				      prog->class_pattern_live_capture,
+				      show_stats);
+	// --show-stats: the lane printed its phase report; append the process
+	// total only main() can see (same closing line as the single-TU lane).
+	if ( show_stats )
+	{
+	    struct timeval _t_now;
+	    gettimeofday(&_t_now, NULL);
+	    fprintf(stderr, "[stats] total (in-process) .. %.3f s"
+		    "  (excl. pre-main load + teardown)\n",
+		    (_t_now.tv_sec - _t_main.tv_sec)
+		    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
+	}
 	return (rc < 0) ? 1 : rc;
     }
 
@@ -1577,6 +1605,10 @@ int main(int argc, char **argv)
 			fs.zstd_secs, fs.zstd_frames, fs.zstd_bytes / 1024.0,
 			fs.copy_calls, fs.copy_bytes / 1024.0,
 			fw_lex, fw_parse, fw_cir);
+		    fprintf(stderr,
+			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n",
+			fs.funcs_eager, fs.funcs_deferred,
+			fs.funcs_activated, fs.funcs_remaining);
 		    if ( !prog->_forest_unit_bind_costs.empty() )
 		    {
 			std::vector<std::pair<std::string, double> > rows =

@@ -16,7 +16,9 @@
  *   - each literal run and each replacement field lowers to one typed call
  *     into the engine's primitives, against the dump runtime's byte sink
  *     (NULL -> stdout for print/println, a capture sink for format whose
- *     bytes __madc_fmt_take hands to the caller's std::string).
+ *     bytes __madc_fmt_take_cstr hands to the shared text ring — format
+ *     returns ring-lifetime const char*, the c_str() contract, so dialect
+ *     TUs never pull the <string> closure).
  *
  * libstdc++'s real std::format is the oracle for every emission behavior
  * (tests/unit/rt_format_oracle.inc); this file owns only the compile-time
@@ -127,6 +129,19 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 		return false;
 	}
 	DataDef *u = dd->unqualified();
+
+	// A value& parameter (a reference over the carrier) IS the carrier
+	// for formatting purposes — unwrap it here; the fkValue lowering's
+	// object_arg_addr already reads a reference variable's stored
+	// pointer. Without this the reference fell into the pointer arm
+	// ("no formatter for pointer type 'array*'").
+	if ( u->is_reference() )
+	{
+		DataDefPTR *rp = dynamic_cast<DataDefPTR *>(u);
+		DataDef *base = rp ? rp->base_type : NULL;
+		if ( base && base->unqualified()->is_madc_array() )
+			u = base->unqualified();
+	}
 
 	// The spec's SHAPE — parsed by the one engine parser, so the message a
 	// user sees at compile time names the same rule the runtime enforces.
@@ -398,7 +413,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		return NULL;
 	if ( getenv("MADC_FMT_DEBUG") )
 	{
-		FuncDef *vfd = dynamic_cast<FuncDef *>(tcf->var.type);
+		FuncDef *vfd = (tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL);
 		fprintf(stderr, "[fmt-hook] name=%s fd_kind=%s var_kind=%s\n",
 			tcf->var.name.c_str(),
 			fd ? fd->inline_builtin_kind.c_str() : "(no fd)",
@@ -408,7 +423,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	if ( fl == ffNone )
 		// Same placeholder situation as lower_dump_call: the intrinsic
 		// tag lives on the DECLARATION the call token is bound to.
-		fl = format_flavor(dynamic_cast<FuncDef *>(tcf->var.type));
+		fl = format_flavor((tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL));
 	if ( fl == ffNone )
 		return NULL;
 	const char *fname = format_flavor_name(fl);
@@ -417,11 +432,40 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		return error_node((std::string(fname)
 				   + " needs a format string").c_str(),
 				  origin);
+	// C++23 [print.fun]: print/println also take a LEADING stream
+	// (`std::print(stderr, "...", ...)`). The stream argument is any
+	// non-char pointer expression (FILE* — stderr/stdout/an opened
+	// stream); the format literal then sits one slot later. Detected
+	// from the actual argument's type, not from which declared overload
+	// bound, so overload-ranking subtleties cannot misroute a call.
+	// std::format has no stream form.
+	size_t fmt_at = 0;
+	TokenBase *stream_tok = NULL;
+	if ( (fl == ffPrint || fl == ffPrintln)
+	     && tcf->parameters.size() >= 2 )
+	{
+		TokenBase *a0 = tcf->parameters[0];
+		DataDef *a0dd = a0 ? a0->datadef() : NULL;
+		bool a0_char_ptr = false;
+		if ( DataDefPTR *a0p = dynamic_cast<DataDefPTR *>(a0dd) )
+			a0_char_ptr = a0p->base_type
+				   && a0p->base_type->rawtype() == DataType::dtCHAR;
+		bool a0_literal = a0 && a0->type() == TokenType::ttString;
+		if ( !a0_literal )
+			if ( TokenVar *a0v = dynamic_cast<TokenVar *>(a0) )
+				a0_literal = a0v->var.name.compare(
+					0, 11, "__literal__") == 0;
+		if ( !a0_literal && a0dd && a0dd->is_pointer() && !a0_char_ptr )
+		{
+			stream_tok = a0;
+			fmt_at = 1;
+		}
+	}
 	// The literal's two arrival shapes: a raw TokenStr, or (the usual
 	// expression path) the `__literal__<text>` const char* Variable
 	// parseExpr materializes via addLiteral — the bytes ARE the name
 	// suffix, the same read the subscript and global-init arms do.
-	TokenBase *ftok = tcf->parameters[0];
+	TokenBase *ftok = tcf->parameters[fmt_at];
 	std::string f;
 	bool have_literal = false;
 	if ( ftok && ftok->type() == TokenType::ttString )
@@ -451,18 +495,37 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 				   + ": the format string must be a string "
 				     "literal (runtime format strings arrive "
 				     "with std::vformat)").c_str(), origin);
-	size_t nargs = tcf->parameters.size() - 1;
+	size_t nargs = tcf->parameters.size() - 1 - fmt_at;
 
 	std::vector<node_t> stmts;
 	std::string sink_var;
-	if ( fl == ffFormat )
+	if ( fl == ffFormat || stream_tok )
 	{
-		// void *<sink> = __madc_dump_sink_open();
+		// void *<sink> = __madc_dump_sink_open();   (format capture)
+		// void *<sink> = __madc_dump_sink_file(f);  (stream print)
 		char sname[40];
 		snprintf(sname, sizeof sname, "__madc_fmtsink_%d",
 			 m_strtmp_counter++);
 		sink_var = sname;
-		need_output_extern("__madc_dump_sink_open", true, {});
+		node_t sinit;
+		if ( stream_tok )
+		{
+			need_output_extern("__madc_dump_sink_file", true,
+					   { { {N_VOID}, true } });
+			node_t sa = list();
+			append(sa, node2(N_CAST, void_ptr_type(),
+					 translate_expr(stream_tok), origin));
+			sinit = node2(N_CALL,
+				      id("__madc_dump_sink_file", origin),
+				      sa, origin);
+		}
+		else
+		{
+			need_output_extern("__madc_dump_sink_open", true, {});
+			sinit = node2(N_CALL,
+				      id("__madc_dump_sink_open", origin),
+				      list(), origin);
+		}
 		node_t sspec = list();
 		append(sspec, simple(N_VOID, origin));
 		node_t sdeclr = list();
@@ -472,9 +535,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		append(sdecl, node2(N_DECL, id(sname, origin), sdeclr));
 		append(sdecl, ignore());
 		append(sdecl, ignore());
-		append(sdecl, node2(N_CALL,
-				    id("__madc_dump_sink_open", origin),
-				    list(), origin));
+		append(sdecl, sinit);
 		stmts.push_back(sdecl);
 	}
 
@@ -537,7 +598,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		}
 		std::string spec(it.spec ? it.spec : "", (size_t)it.spec_n);
 		std::string why;
-		if ( !format_field_stmt(tcf->parameters[1 + ai], spec,
+		if ( !format_field_stmt(tcf->parameters[fmt_at + 1 + ai], spec,
 					sink_var, stmts, origin, why) )
 			return error_node((std::string(fname) + ": "
 					   + why).c_str(), origin);
@@ -545,50 +606,43 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	if ( fl == ffPrintln )
 		stmts.push_back(format_text_stmt(std::string("\n"), sink_var,
 						 origin));
+	// The stream sink is per-call: release it after the last byte.
+	if ( stream_tok )
+	{
+		need_output_extern("__madc_dump_sink_close", false,
+				   { { {N_VOID}, true } });
+		node_t ca = list();
+		append(ca, id(sink_var.c_str(), origin));
+		stmts.push_back(node2(N_EXPR, list(),
+				      node2(N_CALL,
+					    id("__madc_dump_sink_close",
+					       origin), ca, origin), origin));
+	}
 
 	if ( fl == ffFormat )
 	{
-		// The result: a default-constructed std::string local, HOISTED
-		// through m_pending_stmts (the dump_result_value_temp route —
-		// a temp declared inside the statement expression would be
-		// destroyed by its cleanup attribute before the caller copied
-		// it), filled by __madc_fmt_take from the sink's bytes.
-		DataDef *rdd = tcf->datadef();
-		DataDefCLASS *scls = rdd
-			? dynamic_cast<DataDefCLASS *>(rdd->unqualified())
-			: NULL;
-		if ( !scls )
-			scls = dynamic_cast<DataDefCLASS *>(&fd->returns);
-		if ( !scls )
-			return error_node("std::format: the std::string "
-					  "return type is unresolved",
-					  origin);
-		char rname[40];
-		snprintf(rname, sizeof rname, "__madc_fmtres_%d",
-			 m_strtmp_counter++);
-		Variable *tmp = new Variable(rname, *scls, 1, NULL, false);
-		tmp->flags |= vfLOCAL;
-		m_pending_stmts.push_back(var_decl(tmp, origin));
-		{
-			std::vector<TokenBase *> noargs;
-			m_pending_stmts.push_back(class_ctor_call(tmp, scls,
-								  noargs,
-								  origin));
-		}
-		for ( size_t i = 0; i < stmts.size(); i++ )
-			m_pending_stmts.push_back(stmts[i]);
-		need_output_extern("__madc_fmt_take", false,
-				   { { {N_VOID}, true },
-				     { {N_VOID}, true } });
+		// The result: ring-lifetime const char* (the c_str() contract
+		// — the fragment declares `const char *format(...)`, so
+		// dialect TUs never pull the <string> closure). One statement
+		// expression: the sink decl + field statements, closed by the
+		// take call that moves the sink's bytes into the shared text
+		// ring and closes the sink. Nothing here owns a destructor,
+		// so the old hoisted-std::string shape (and its cleanup
+		// choreography) is gone with the std::string return.
+		need_output_extern("__madc_fmt_take_cstr", true,
+				   { { {N_VOID}, true } });
 		node_t a = list();
-		append(a, node2(N_CAST, void_ptr_type(),
-				object_addr(rname, origin), origin));
 		append(a, id(sink_var.c_str(), origin));
-		m_pending_stmts.push_back(
-			node2(N_EXPR, list(),
-			      node2(N_CALL, id("__madc_fmt_take", origin), a,
-				    origin), origin));
-		return id(rname, origin);
+		node_t take = node2(N_CAST, char_ptr_type(),
+				    node2(N_CALL,
+					  id("__madc_fmt_take_cstr", origin),
+					  a, origin), origin);
+		node_t items = list();
+		for ( size_t i = 0; i < stmts.size(); i++ )
+			append(items, stmts[i]);
+		append(items, node2(N_EXPR, list(), take, origin));
+		return node1(N_STMTEXPR,
+			     node2(N_BLOCK, list(), items, origin), origin);
 	}
 
 	// print/println in expression position: one statement expression,

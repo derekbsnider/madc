@@ -1,65 +1,85 @@
-#include <string>
+// madc embedded <ns_php> — PHP-style string + array conveniences.
+// Declaration-only: the php:: publics resolve mangled-direct (Itanium
+// symbols) or route through the extern-C __php_* runtime entries below
+// (cpp-first-api.md).
+//
+// DIALECT-LEAN (owner standing rule 2026-08-21: the --std=madc surface
+// must not depend on C++ system header parsing): this header deliberately
+// does NOT include <string>, so php::-using dialect scripts never pay the
+// <string> closure. The primary surface is typed in value / array /
+// const char*. The std::string overloads below are C++-INTEROP
+// CONVENIENCES, declared only when <string> was included BEFORE this
+// header (gated on the standard library's own include guards — the
+// <ns_madc> convention). Auto-include orders <string> first, so scripts
+// with no explicit includes get them whenever they use a `string`;
+// explicit includers write `#include <string>` above `#include <ns_php>`.
 extern "C" {
-    std::string *__php_trim(std::string *);
-    std::string *__php_ltrim(std::string *);
-    std::string *__php_rtrim(std::string *);
-    std::string *__php_chop(std::string *);
-    std::string *__php_ucfirst(std::string *);
-    std::string *__php_lcfirst(std::string *);
-    std::string *__php_str_repeat(std::string *, int64_t);
-    std::string *__php_str_replace(std::string *, std::string *, std::string *);
-    std::string *__php_str_pad(std::string *, int64_t, std::string *);
-    int64_t __php_str_word_count(std::string *);
-    std::string *__php_nl2br(std::string *);
-    std::string *__php_str_rot13(std::string *);
-    std::string *__php_chunk_split(std::string *, int64_t, std::string *);
-    std::string *__php_number_format(std::string *, int64_t, std::string *);
-    std::string *__php_wordwrap(std::string *, int64_t, std::string *);
-
     void __php_explode(array *, const char *, const char *);
-    std::string *__php_implode(std::string *, const char *, array *);
     int64_t __php_count(array *);
     int64_t __php_array_push(array *, const char *);
     int64_t __php_array_push_int(array *, int64_t);
     int64_t __php_array_push_real(array *, double);
     int64_t __php_array_push_bool(array *, bool);
     int64_t __php_array_push_value(array *, value *);
-    std::string *__php_array_pop(std::string *, array *);
-    std::string *__php_array_get(std::string *, array *, int64_t);
     int64_t __php_array_get_int(array *, int64_t);
     const char *__php_array_get_cstr(array *, int64_t);
     void __php_array_reverse(array *);
     int64_t __php_in_array(const char *, array *);
+    int64_t __php_array_key_exists(const char *, value *);
+    int64_t __php_array_key_exists_int(int64_t, value *);
+    const char *__php_strtolower(value *);
+    const char *__php_strtolower_cstr(const char *);
+    const char *__php_strtoupper(value *);
+    const char *__php_strtoupper_cstr(const char *);
+    const char *__php_ucfirst_value(value *);
+    const char *__php_ucfirst_cstr2(const char *);
+    int64_t __php_ctype_digit(value *);
+    int64_t __php_ctype_digit_cstr(const char *);
+    int64_t __php_file_exists(value *);
+    int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_intval(value *);
+    int64_t __php_intval_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
-    std::string *__php_array_shift(std::string *, array *);
     void __php_array_unshift(array *, const char *);
     void __php_sort(array *);
     void __php_rsort(array *);
     void __php_array_slice(array *, array *, int64_t, int64_t);
     void __php_array_merge(array *, array *);
     void __php_array_column(array *, array *, int64_t);
+    const char *__php_trim_cstr(const char *);
+    const char *__php_trim_value(value *);
+    const char *__php_ltrim_cstr(const char *);
+    const char *__php_ltrim_value(value *);
+    const char *__php_rtrim_cstr(const char *);
+    const char *__php_rtrim_value(value *);
+    const char *__php_lcfirst_cstr(const char *);
+    const char *__php_lcfirst_value(value *);
+    const char *__php_nl2br_cstr(const char *);
+    const char *__php_nl2br_value(value *);
+    const char *__php_str_rot13_cstr(const char *);
+    const char *__php_str_rot13_value(value *);
+    const char *__php_str_repeat_cstr(const char *, int64_t);
+    const char *__php_str_repeat_value(value *, int64_t);
+    const char *__php_str_replace_cstr(const char *, const char *, const char *);
+    const char *__php_str_replace_value(const char *, const char *, value *);
+    const char *__php_str_pad_cstr(const char *, int64_t, const char *);
+    const char *__php_str_pad_value(value *, int64_t, const char *);
+    int64_t __php_str_word_count_cstr(const char *);
+    int64_t __php_str_word_count_value(value *);
+    const char *__php_chunk_split_cstr(const char *, int64_t, const char *);
+    const char *__php_chunk_split_value(value *, int64_t, const char *);
+    const char *__php_number_format_sep(int64_t, const char *);
+    const char *__php_wordwrap_cstr(const char *, int64_t, const char *);
+    const char *__php_wordwrap_value(value *, int64_t, const char *);
+    const char *__php_implode_cstr(const char *, array *);
+    value *__php_array_pop_value(value *, array *);
+    value *__php_array_shift_value(value *, array *);
+    void __php_array_get_value(array *, int64_t, value *);
 }
 
 namespace php {
-    std::string &trim(std::string &s);
-    std::string &ltrim(std::string &s);
-    std::string &rtrim(std::string &s);
-    std::string &chop(std::string &s);
-    std::string &ucfirst(std::string &s);
-    std::string &lcfirst(std::string &s);
-    std::string &str_repeat(std::string &s, int64_t count);
-    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
-    std::string &str_pad(std::string &s, int64_t length, std::string &pad);
-    int64_t str_word_count(std::string &s);
-    std::string &nl2br(std::string &s);
-    std::string &str_rot13(std::string &s);
-    std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator);
-    std::string &number_format(std::string &result, int64_t number, std::string &separator);
-    std::string &wordwrap(std::string &s, int64_t width, std::string &separator);
-
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
-    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
     int64_t count(array &values) { return __php_count(&values); }
     // array_push is ONE overloaded name, PHP parity: it accepts any value
     // type and RETURNS the array's new element count. ONE carrier overload
@@ -72,16 +92,83 @@ namespace php {
     int64_t array_push(array &values, double v) { return __php_array_push_real(&values, v); }
     int64_t array_push(array &values, bool v) { return __php_array_push_bool(&values, v); }
     int64_t array_push(array &values, value &v) { return __php_array_push_value(&values, &v); }
-    int64_t array_push(array &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
-    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
-    std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
     int64_t array_get_int(array &values, int64_t index) { return __php_array_get_int(&values, index); }
     const char *array_get_cstr(array &values, int64_t index) { return __php_array_get_cstr(&values, index); }
     void array_reverse(array &values) { __php_array_reverse(&values); }
     int64_t in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    // PHP parity (key FIRST): does the key exist in the container? The
+    // object kind answers its map; an int key answers the array kind's
+    // index range (and the int key's decimal spelling on an object bag).
+    // Never vivifies — the existence question beside the vivifying keyed
+    // subscript bag["k"].
+    bool array_key_exists(const char *key, value &values) { return __php_array_key_exists(key, &values) != 0; }
+    bool array_key_exists(int64_t key, value &values) { return __php_array_key_exists_int(key, &values) != 0; }
+    // PHP-parity case transforms: byte-wise ASCII (PHP 8 semantics,
+    // locale-independent). Ring-lifetime returns (the c_str contract):
+    // pass onward or capture into a var/value immediately.
+    const char *strtolower(value &s) { return __php_strtolower(&s); }
+    const char *strtolower(const char *s) { return __php_strtolower_cstr(s); }
+    const char *strtoupper(value &s) { return __php_strtoupper(&s); }
+    const char *strtoupper(const char *s) { return __php_strtoupper_cstr(s); }
+    const char *ucfirst(value &s) { return __php_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __php_ucfirst_cstr2(s); }
+    // PHP parity: true iff non-empty and every byte is 0-9.
+    bool ctype_digit(value &s) { return __php_ctype_digit(&s) != 0; }
+    bool ctype_digit(const char *s) { return __php_ctype_digit_cstr(s) != 0; }
+    // file_exists — true for an existing file OR directory (PHP parity;
+    // no stat-cache emulation, madc answers the live filesystem).
+    bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
+    bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+    // PHP parity (base 10): longest digit prefix converts; int passes
+    // through, real truncates, bool 1/0, containers 0.
+    int64_t intval(value &v) { return __php_intval(&v); }
+    int64_t intval(const char *s) { return __php_intval_cstr(s); }
+    // Lean PRIMARIES (dialect-lean.md, PHP parity): PHP string functions
+    // return a NEW string and never mutate the subject — these return
+    // ring-lifetime text (the c_str contract: pass onward or capture
+    // immediately). The guarded std::string& forms below are C++-interop
+    // conveniences that mutate in place (historical shape); the lean
+    // forms are the semantics of record.
+    const char *trim(value &s) { return __php_trim_value(&s); }
+    const char *trim(const char *s) { return __php_trim_cstr(s); }
+    const char *ltrim(value &s) { return __php_ltrim_value(&s); }
+    const char *ltrim(const char *s) { return __php_ltrim_cstr(s); }
+    const char *rtrim(value &s) { return __php_rtrim_value(&s); }
+    const char *rtrim(const char *s) { return __php_rtrim_cstr(s); }
+    // PHP chop is an alias of rtrim.
+    const char *chop(value &s) { return __php_rtrim_value(&s); }
+    const char *chop(const char *s) { return __php_rtrim_cstr(s); }
+    const char *lcfirst(value &s) { return __php_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __php_lcfirst_cstr(s); }
+    const char *nl2br(value &s) { return __php_nl2br_value(&s); }
+    const char *nl2br(const char *s) { return __php_nl2br_cstr(s); }
+    const char *str_rot13(value &s) { return __php_str_rot13_value(&s); }
+    const char *str_rot13(const char *s) { return __php_str_rot13_cstr(s); }
+    const char *str_repeat(value &s, int64_t count) { return __php_str_repeat_value(&s, count); }
+    const char *str_repeat(const char *s, int64_t count) { return __php_str_repeat_cstr(s, count); }
+    // PHP argument order: (search, replace, subject).
+    const char *str_replace(const char *search, const char *replace, value &subject) { return __php_str_replace_value(search, replace, &subject); }
+    const char *str_replace(const char *search, const char *replace, const char *subject) { return __php_str_replace_cstr(search, replace, subject); }
+    const char *str_pad(value &s, int64_t length, const char *pad) { return __php_str_pad_value(&s, length, pad); }
+    const char *str_pad(const char *s, int64_t length, const char *pad) { return __php_str_pad_cstr(s, length, pad); }
+    int64_t str_word_count(value &s) { return __php_str_word_count_value(&s); }
+    int64_t str_word_count(const char *s) { return __php_str_word_count_cstr(s); }
+    const char *chunk_split(value &s, int64_t chunklen, const char *separator) { return __php_chunk_split_value(&s, chunklen, separator); }
+    const char *chunk_split(const char *s, int64_t chunklen, const char *separator) { return __php_chunk_split_cstr(s, chunklen, separator); }
+    const char *number_format(int64_t number, const char *separator) { return __php_number_format_sep(number, separator); }
+    const char *wordwrap(value &s, int64_t width, const char *brk) { return __php_wordwrap_value(&s, width, brk); }
+    const char *wordwrap(const char *s, int64_t width, const char *brk) { return __php_wordwrap_cstr(s, width, brk); }
+    // PHP parity signature: implode(separator, array) -> the joined text.
+    const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
+    // Value-out element returns (the python::format out-param shape,
+    // pre-L3): PHP's array_pop/array_shift/array_get return the element
+    // itself (mixed), which only the carrier can represent. Empty (or
+    // degraded) containers leave `out` null.
+    value &array_pop(value &out, array &values) { return *__php_array_pop_value(&out, &values); }
+    value &array_shift(value &out, array &values) { return *__php_array_shift_value(&out, &values); }
+    value &array_get(value &out, array &values, int64_t index) { __php_array_get_value(&values, index, &out); return out; }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
-    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
     void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
     void sort(array &values) { __php_sort(&values); }
     void rsort(array &values) { __php_rsort(&values); }
@@ -107,3 +194,53 @@ namespace php {
     // PHP's var_dump returns void and is variadic.
     template<class... Ts> void var_dump(const Ts &...vs);
 }
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header (the <ns_madc> guard convention above).
+extern "C" {
+    std::string *__php_trim(std::string *);
+    std::string *__php_ltrim(std::string *);
+    std::string *__php_rtrim(std::string *);
+    std::string *__php_chop(std::string *);
+    std::string *__php_ucfirst(std::string *);
+    std::string *__php_lcfirst(std::string *);
+    std::string *__php_str_repeat(std::string *, int64_t);
+    std::string *__php_str_replace(std::string *, std::string *, std::string *);
+    std::string *__php_str_pad(std::string *, int64_t, std::string *);
+    int64_t __php_str_word_count(std::string *);
+    std::string *__php_nl2br(std::string *);
+    std::string *__php_str_rot13(std::string *);
+    std::string *__php_chunk_split(std::string *, int64_t, std::string *);
+    std::string *__php_number_format(std::string *, int64_t, std::string *);
+    std::string *__php_wordwrap(std::string *, int64_t, std::string *);
+    std::string *__php_implode(std::string *, const char *, array *);
+    std::string *__php_array_pop(std::string *, array *);
+    std::string *__php_array_get(std::string *, array *, int64_t);
+    std::string *__php_array_shift(std::string *, array *);
+}
+
+namespace php {
+    std::string &trim(std::string &s);
+    std::string &ltrim(std::string &s);
+    std::string &rtrim(std::string &s);
+    std::string &chop(std::string &s);
+    std::string &ucfirst(std::string &s);
+    std::string &lcfirst(std::string &s);
+    std::string &str_repeat(std::string &s, int64_t count);
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
+    std::string &str_pad(std::string &s, int64_t length, std::string &pad);
+    int64_t str_word_count(std::string &s);
+    std::string &nl2br(std::string &s);
+    std::string &str_rot13(std::string &s);
+    std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator);
+    std::string &number_format(std::string &result, int64_t number, std::string &separator);
+    std::string &wordwrap(std::string &s, int64_t width, std::string &separator);
+    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
+    int64_t array_push(array &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
+    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
+    std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+    bool array_key_exists(std::string &key, value &values) { return __php_array_key_exists(key.c_str(), &values) != 0; }
+    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
+}
+#endif

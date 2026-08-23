@@ -1,0 +1,38 @@
+// php:: case transforms + ctype_digit — PHP 8 parity: byte-wise ASCII,
+// locale-independent; ctype_digit true iff non-empty all-digits. Value
+// and cstr overloads under ONE name each; ring-lifetime returns (the
+// c_str contract, value-first.md).
+#include <ns_php>
+#include <ns_madc>
+
+int main()
+{
+	var s = "MiXeD-42 case!";
+	std::println("low={}", php::strtolower(s));
+	std::println("up={}", php::strtoupper(s));
+	std::println("lowlit={}", php::strtolower("ABC-def"));
+	std::println("uplit={}", php::strtoupper("abc-DEF"));
+	var w = "west";
+	std::println("uc={} uclit={}", php::ucfirst(w), php::ucfirst("east"));
+
+	var num = "12345";
+	var mix = "12a45";
+	var neg = "-1234";
+	var emp = "";
+	var iv42 = 42;
+	std::println("dig={} mix={} neg={} emp={} int={}",
+		     php::ctype_digit(num), php::ctype_digit(mix),
+		     php::ctype_digit(neg), php::ctype_digit(emp),
+		     php::ctype_digit(iv42));
+	std::println("diglit={} mixlit={}",
+		     php::ctype_digit("007"), php::ctype_digit("x7"));
+
+	var seedy = "1318612053";
+	var pfx = "12abc";
+	var realy = 3.9;
+	std::println("iv={} pfx={} lit={} neg={} real={} int={}",
+		     php::intval(seedy), php::intval(pfx),
+		     php::intval("0042"), php::intval("-17zz"),
+		     php::intval(realy), php::intval(iv42));
+	return 0;
+}

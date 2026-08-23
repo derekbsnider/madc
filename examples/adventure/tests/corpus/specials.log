@@ -1,0 +1,22 @@
+## Test special words
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE The news text has changed
+n
+thank
+shazam
+help
+no
+tree
+dig
+lost
+mist
+fuck
+stop
+info
+swim
+wizard
+yes
+news
+# Too much of a PITA to edit the check file after every release bump.
+#version

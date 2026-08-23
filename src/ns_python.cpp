@@ -25,6 +25,8 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include "rt/rt_dump.h"
+#include "rt/rt_format.h"
 
 using namespace std;
 
@@ -196,32 +198,215 @@ std::string *python_replace(std::string *ptr, const char *old_str, const char *n
 	return ptr;
 }
 
-// python::format — simple Python-style string formatting
-// "Hello {}, you are {}" with positional args from array
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// Python-parity NON-MUTATING forms: Python strings are immutable, every
+// str method returns a NEW string — these return ring-lifetime text (the
+// c_str contract) over the SAME in-place cores the guarded std::string
+// publics use.
+
+using ns_common::ring_apply;
+
+const char *python_title_cstr(const char *s)	{ return ring_apply(s, python_title); }
+const char *python_title_value(const madc::value *v)	{ return ring_apply(v, python_title); }
+const char *python_swapcase_cstr(const char *s)	{ return ring_apply(s, python_swapcase); }
+const char *python_swapcase_value(const madc::value *v)	{ return ring_apply(v, python_swapcase); }
+
+const char *python_center_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_center(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_center_value(const madc::value *v, int64_t width,
+				const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_center(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_ljust_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_ljust(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_ljust_value(const madc::value *v, int64_t width,
+			       const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_ljust(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_rjust_cstr(const char *s, int64_t width, const char *fill)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_rjust(&slot, width, fill);
+	return slot.c_str();
+}
+const char *python_rjust_value(const madc::value *v, int64_t width,
+			       const char *fill)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_rjust(&slot, width, fill);
+	return slot.c_str();
+}
+
+const char *python_zfill_cstr(const char *s, int64_t width)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_zfill(&slot, width);
+	return slot.c_str();
+}
+const char *python_zfill_value(const madc::value *v, int64_t width)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_zfill(&slot, width);
+	return slot.c_str();
+}
+
+const char *python_replace_cstr(const char *s, const char *old_str,
+				const char *new_str)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	python_replace(&slot, old_str, new_str);
+	return slot.c_str();
+}
+const char *python_replace_value(const madc::value *v, const char *old_str,
+				 const char *new_str)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	python_replace(&slot, old_str, new_str);
+	return slot.c_str();
+}
+
+// python::format — Python str.format on the ONE format engine
+// (src/rt/rt_format.c): the same iterator (__madc_fmt_next) and field
+// primitives std::format's compile-time lowering emits — Python's format
+// spec is std::format's ancestor (via fmtlib), so the grammar is shared
+// (owner directive 2026-08-21: one engine, never a second substituter).
+// The args arrive as a RUNTIME array of values, so each field dispatches
+// through __madc_fmt_value (the per-kind dispatcher, spec passthrough).
+// Gains over the retired naive {}-substituter: {0} manual indexing, real
+// specs ({:>8}, {:.2f}, {:x}), and {{ }} escaping. Errors (malformed
+// string, index out of range, manual/automatic mix) render the engine's
+// own loud inline marker — the __madc_fmt_value convention — never
+// silence and never a throw across an embedding boundary.
+static void python_format_fail(void *sink, const char *why)
+{
+	std::string m = std::string("[python format failed: ")
+		      + (why ? why : "?") + "]";
+	__madc_fmt_text(sink, m.data(), (long long)m.size());
+}
+
+static void python_format_engine(const char *f, long long n,
+				 madc::value *args, void *sink)
+{
+	const std::vector<madc::value> *data =
+		(args && args->is_array()) ? &args->as_array() : NULL;
+	long long pos = 0;
+	int automatic = -1;	// -1 unknown, 1 automatic ({}), 0 manual ({0})
+	size_t next_arg = 0;
+	for ( ;; )
+	{
+		madc_fmt_item it;
+		const char *err = NULL;
+		long long nx = __madc_fmt_next(f, n, pos, &it, &err);
+		if ( nx == -1 )
+			break;
+		if ( nx == -2 )
+		{
+			python_format_fail(sink, err);
+			break;
+		}
+		pos = nx;
+		if ( it.kind == MADC_FMT_TEXT )
+		{
+			if ( it.text_n > 0 )
+				__madc_fmt_text(sink, it.text, it.text_n);
+			continue;
+		}
+		size_t ai;
+		if ( it.arg_id >= 0 )
+		{
+			if ( automatic == 1 )
+			{
+				python_format_fail(sink,
+					"cannot mix manual and automatic indexing");
+				break;
+			}
+			automatic = 0;
+			ai = (size_t)it.arg_id;
+		}
+		else
+		{
+			if ( automatic == 0 )
+			{
+				python_format_fail(sink,
+					"cannot mix manual and automatic indexing");
+				break;
+			}
+			automatic = 1;
+			ai = next_arg++;
+		}
+		if ( !data || ai >= data->size() )
+		{
+			python_format_fail(sink, "argument index out of range");
+			continue;
+		}
+		__madc_fmt_value(sink, it.spec, it.spec_n, &(*data)[ai]);
+	}
+}
+
 std::string *python_format(std::string *result, const char *fmt, madc::value *args)
 {
-	std::string &res = *result;
 	std::string f = python_text_arg(fmt);
-	res = f;
-	if ( !args->is_array() )
-		return result;
-	const std::vector<madc::value> &data = args->as_array();
-	size_t arg_idx = 0;
-	size_t pos = 0;
-	while ( (pos = res.find("{}", pos)) != std::string::npos && arg_idx < data.size() )
-	{
-		std::string val;
-		ns_common::value_to_string(data[arg_idx], val);
-		res.replace(pos, 2, val);
-		pos += val.length();
-		++arg_idx;
-	}
+	void *sink = __madc_dump_sink_open();
+	python_format_engine(f.data(), (long long)f.size(), args, sink);
+	result->assign(__madc_dump_sink_text(sink),
+		       __madc_dump_sink_length(sink));
+	__madc_dump_sink_close(sink);
 	return result;
+}
+
+// The dialect-lean primary (value out — dialect-lean.md: every polyglot
+// public needs a lean form; the std::string shape above is the guarded
+// C++-interop convenience).
+madc::value *python_format_value(madc::value *out, const char *fmt,
+				 madc::value *args)
+{
+	std::string f = python_text_arg(fmt);
+	void *sink = __madc_dump_sink_open();
+	python_format_engine(f.data(), (long long)f.size(), args, sink);
+	*out = madc::value(std::string(__madc_dump_sink_text(sink),
+				       (size_t)__madc_dump_sink_length(sink)));
+	__madc_dump_sink_close(sink);
+	return out;
 }
 
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+const char *__py_title_cstr(const char *a) { return python_title_cstr(a); }
+const char *__py_title_value(madc::value *a) { return python_title_value(a); }
+const char *__py_swapcase_cstr(const char *a) { return python_swapcase_cstr(a); }
+const char *__py_swapcase_value(madc::value *a) { return python_swapcase_value(a); }
+const char *__py_center_cstr(const char *a, int64_t b, const char *c) { return python_center_cstr(a, b, c); }
+const char *__py_center_value(madc::value *a, int64_t b, const char *c) { return python_center_value(a, b, c); }
+const char *__py_ljust_cstr(const char *a, int64_t b, const char *c) { return python_ljust_cstr(a, b, c); }
+const char *__py_ljust_value(madc::value *a, int64_t b, const char *c) { return python_ljust_value(a, b, c); }
+const char *__py_rjust_cstr(const char *a, int64_t b, const char *c) { return python_rjust_cstr(a, b, c); }
+const char *__py_rjust_value(madc::value *a, int64_t b, const char *c) { return python_rjust_value(a, b, c); }
+const char *__py_zfill_cstr(const char *a, int64_t b) { return python_zfill_cstr(a, b); }
+const char *__py_zfill_value(madc::value *a, int64_t b) { return python_zfill_value(a, b); }
+const char *__py_replace_cstr(const char *a, const char *b, const char *c) { return python_replace_cstr(a, b, c); }
+const char *__py_replace_value(madc::value *a, const char *b, const char *c) { return python_replace_value(a, b, c); }
 std::string *__py_title(std::string *a) { return python_title(a); }
 std::string *__py_swapcase(std::string *a) { return python_swapcase(a); }
 std::string *__py_center(std::string *a, int64_t b, const char *c) { return python_center(a, b, c); }
@@ -237,4 +422,5 @@ int64_t __py_isalnum(const char *a) { return python_isalnum(a); }
 int64_t __py_isspace(const char *a) { return python_isspace(a); }
 std::string *__py_replace(std::string *a, const char *b, const char *c) { return python_replace(a, b, c); }
 std::string *__py_format(std::string *a, const char *b, madc::value *c) { return python_format(a, b, c); }
+madc::value *__py_format_value(madc::value *a, const char *b, madc::value *c) { return python_format_value(a, b, c); }
 }

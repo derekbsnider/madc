@@ -1,0 +1,5 @@
+[
+  {"directory":"tests","file":"testpreludecache_a.mad","command":"madc -c testpreludecache_a.mad"},
+  {"directory":"tests","file":"testpreludecache_b.mad","command":"madc -c testpreludecache_b.mad"},
+  {"directory":"tests","file":"testpreludecache_c.mad","command":"madc -c testpreludecache_c.mad"}
+]

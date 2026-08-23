@@ -1,0 +1,35 @@
+=== Twisty Passage ===
+You are in a maze of twisty little passages, all alike.
+A brass lantern is here.
+Exits: north and east.
+> take lantern
+Taken.
+You are carrying a brass lantern.
+> go east
+You go east.
+=== Dead End ===
+Scratched into the stone: TAKE THE KEY.
+A brass key is here.
+Exits: west.
+> take key
+> go west
+You go west.
+> go north
+You go north.
+A heavy brass door is here.
+Exits: south and down.
+> go down
+The brass door is closed.
+> open door
+A heavy brass door swings open.
+You go down.
+It is pitch dark. You are likely to be eaten by a grue.
+> light lantern
+A brass lantern glows warmly.
+> look
+=== The Vault ===
+A small round chamber glittering with mica.
+Exits: up.
+Turn 9.
+Only a builder sees the bones.
+I don't know how to xyzzy.

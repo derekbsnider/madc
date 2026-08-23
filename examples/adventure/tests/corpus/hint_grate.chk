@@ -1,0 +1,91 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1495774850
+
+Seed set to 1495774850
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take lamp
+
+OK
+
+> out
+
+You're in front of building.
+
+> s
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> stream
+
+Upstream or downstream?
+
+You're in valley.
+
+> s
+
+At your feet all the water of the stream splashes into a 2-inch slit
+in the rock.  Downstream the streambed is bare rock.
+
+> s
+
+You are in a 20-foot depression floored with bare dirt.  Set into the
+dirt is a strong steel grate mounted in concrete.  A dry streambed
+leads into the depression.
+
+The grate is locked.
+
+> open grate
+
+You have no keys!
+
+> open grate
+
+You have no keys!
+
+> open grate
+
+You have no keys!
+
+Are you trying to get into the cave?
+
+> y
+
+I am prepared to give you a hint, but it will cost you 2 points.
+
+Do you want the hint?
+
+> y
+
+The grate is very solid and has a hardened steel lock.  You cannot
+enter without a key, and there are no keys nearby.  I would recommend
+looking elsewhere for the keys.
+
+> 
+You scored 30 out of a possible 430, using 10 turns.
+
+You are obviously a rank amateur.  Better luck next time.
+
+To achieve the next higher rating, you need 16 more points.

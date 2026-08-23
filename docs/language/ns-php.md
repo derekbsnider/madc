@@ -1,6 +1,38 @@
 # php:: Namespace
 
-PHP-unique string and array functions. String functions modify in place and return the same pointer. Array functions use the `MadValue`-based `array` type internally for mixed-type storage.
+PHP-unique string and array functions over madc's carrier types
+(`value`/`array`).
+
+## Dialect (lean) forms — the primary surface
+
+Available in every madc TU with zero includes (dialect-lean,
+2026-08-21), with PHP's real semantics: string functions return a NEW
+string and never mutate the subject. Text returns are ring-lifetime
+`const char *` (capture into a `value` or pass onward immediately);
+subjects can be a `value` or a `const char *`.
+
+```c
+value s = "  hi  ";
+php::trim(s); php::ltrim(s); php::rtrim(s); php::chop(s);  // NEW string
+php::ucfirst("x"); php::lcfirst(s);
+php::str_repeat("ab", 3);                    // "ababab"
+php::str_replace("l", "L", "hello");         // (search, replace, subject)
+php::str_pad("7", 3, "0");                   // "700"
+php::str_word_count(s);                      // int
+php::nl2br(s); php::str_rot13(s);
+php::chunk_split("abcdef", 2, "-");          // "ab-cd-ef-"
+php::number_format(1234567, ",");            // "1,234,567"
+php::wordwrap(s, 72, "\n");
+php::implode(",", a);                        // joined text
+value e;
+php::array_pop(e, a);                        // element out (null when empty)
+php::array_shift(e, a);                      // element out
+php::array_get(e, a, 2);                     // element copy at index
+```
+
+The `std::string`-flavored forms below remain as C++-interop
+conveniences (they mutate in place and return the same reference),
+declared only when `<string>` precedes `<ns_php>`.
 
 ## String Functions
 

@@ -217,8 +217,9 @@ Per-test stdin / argv / expected-output fixtures live next to each
 `docs/test-status.md` and `README.md` — never hard-coded in these
 instructions.
 
-Skip `tests/include_helper.mad` when running by hand; it is included
-by `testinclude.mad`, not a standalone test.
+A test with a sibling `tests/<name>.helper` fixture (e.g.
+`include_helper.mad`, project-mode TU sources) is a compilation unit of
+another test — runners skip it; skip it when running by hand too.
 
 ## Duplication audit
 
@@ -321,7 +322,10 @@ no matter how small.
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
+| [value-first.md](.claude/rules/value-first.md)   |    30 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
+| [dialect-lean.md](.claude/rules/dialect-lean.md) |    35 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
+| [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -356,10 +360,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **31 rules, 867 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **33 rules, 919 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~382 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1285 lines.**
+- **Grand total loaded by Claude Code per turn: ~1339 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

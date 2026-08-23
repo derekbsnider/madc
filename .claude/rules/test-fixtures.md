@@ -12,6 +12,9 @@
     timeout) and stderr must contain each non-empty line; EXE pass skips it
   - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
     of the fixture file is ignored; presence enables the check)
+  - `tests/foo.helper` — `foo.mad` is a compilation unit owned by another
+    test (content = one line naming the owner); every suite runner skips
+    it as a standalone test
   - `tests/foo.mir_skip` — skip this test when running with `--backend=mir`
   - `tests/foo.exe_skip` — skip this test in the native-artifact passes
     (`--exe` and `--obj`; content = one line saying why the test is

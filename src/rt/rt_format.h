@@ -122,6 +122,10 @@ void __madc_fmt_value(void *sink, const char *spec, long long spec_n,
 /* std::format's result hand-off: assign the sink's captured bytes into the
  * caller's std::string (`strp`) and CLOSE the sink. */
 void __madc_fmt_take(void *strp, void *sink);
+/* Dialect std::format's result hand-off: move the sink's captured bytes
+ * into the shared text ring (ns_common::ring_slot — the c_str() contract)
+ * and CLOSE the sink. Returns the ring slot's NUL-terminated text. */
+const char *__madc_fmt_take_cstr(void *sink);
 
 #ifdef __cplusplus
 }

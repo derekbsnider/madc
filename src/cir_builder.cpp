@@ -210,6 +210,20 @@ node_t CirBuilder::error_node(const char *reason, TokenBase *origin)
 	return cn->as_node();
 }
 
+// Human-readable type name for user-facing diagnostics: the parsed C++
+// source spelling when one was recorded (e.g. "std::basic_string<char, ...>"
+// — namespaced source syntax), else the internal DataDef name. The one owner
+// for describing a DataDef in an error message (no-matching-overload and
+// no-matching-constructor both render through it).
+static std::string describe_datadef(const DataDef *dd)
+{
+	if (!dd)
+		return "<unknown>";
+	if (!dd->canonical_cpp_spelling().empty())
+		return dd->canonical_cpp_spelling();
+	return dd->name.empty() ? std::string("<unnamed>") : dd->name;
+}
+
 // Human-readable description of a parse token, for internal-error diagnostics.
 // madc is open source — there are no internals to hide — so name the concrete
 // TokenBase subclass via RTTI (e.g. "TokenMember") plus the lexeme it carries,
@@ -719,15 +733,15 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 {
 	for (int guard = 0; dd && guard < 8; ++guard) {
 		if (DataDefTemplateParam *tp =
-			    dynamic_cast<DataDefTemplateParam *>(dd))
+			    (dd ? dd->as_template_param_dd() : NULL))
 			return tp;
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+		if (DataDefCONST *cd = (dd ? dd->as_const_dd() : NULL))
 			{ dd = cd->base_type; continue; }
-		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+		if (DataDefREF *rd = (dd ? dd->as_reference_dd() : NULL))
 			{ dd = rd->base_type; continue; }
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+		if (DataDefPTR *pd = (dd ? dd->as_pointer_dd() : NULL))
 			{ dd = pd->base_type; continue; }
-		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
+		if (DataDefCArray *ad = (dd ? dd->as_carray_dd() : NULL))
 			{ dd = ad->element_type; continue; }
 		break;
 	}
@@ -4267,8 +4281,8 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 // NULL here.
 static DataDefCOMPLEX *as_lowered_complex(DataDef *dd)
 {
-	DataDefCOMPLEX *cdd =
-		dynamic_cast<DataDefCOMPLEX *>(dd ? unqualified_type(dd) : NULL);
+	DataDef *u = dd ? unqualified_type(dd) : NULL;
+	DataDefCOMPLEX *cdd = u ? u->as_complex_dd() : NULL;
 	return (cdd && !cdd->is_native()) ? cdd : NULL;
 }
 
@@ -4279,7 +4293,7 @@ static const DataDefCLASS *as_user_class(const DataDef *dd)
 	if (dd->basetype() != BaseType::btClass) return NULL;
 	if (dd->is_reference()) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
-	return dynamic_cast<const DataDefCLASS *>(dd);
+	return (dd ? dd->as_class_dd() : NULL);
 }
 
 // A plain (non-class-promoted) struct/union VALUE type — its own conversion
@@ -4294,13 +4308,13 @@ static const DataDefSTRUCT *as_plain_struct(const DataDef *dd)
 		return NULL;
 	if (dd->basetype() != BaseType::btStruct)
 		return NULL;
-	return dynamic_cast<const DataDefSTRUCT *>(dd);
+	return (dd ? dd->as_struct_dd() : NULL);
 }
 
 static const DataDefENUM *as_enum_type(const DataDef *dd)
 {
 	dd = unqualified_type(dd);
-	return dynamic_cast<const DataDefENUM *>(dd);
+	return (dd ? dd->as_enum_dd() : NULL);
 }
 
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
@@ -4501,7 +4515,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	// DataDefSIMD — casts `(V)x`, abstract type-names, params — uniformly. (A
 	// typedef alias short-circuits in type_list before reaching here; the typedef
 	// DEFINITION carries the attr on the N_SPEC_DECL attrs operand instead.)
-	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
+	if (DataDefSIMD *simd = dd ? dd->as_simd_dd() : NULL) {
 		append_type_specs(lst, simd->element_type);
 		node_t attr_args = list();
 		append(attr_args, integer((int64_t)simd->vector_bytes));
@@ -4606,6 +4620,12 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 {
 	if (class_subscript_is_object(arg) || class_array_subscript_is_object(arg))
 		return true;
+	// A KEYED carrier subscript (`bag["k"]`, `bag.k`) is a value lvalue —
+	// admit it so the coercion/addressing arms fire (object_cstr_arg in
+	// char*/varargs positions); the raw pass handed printf the slot's
+	// payload words (SIGSEGV in _IO_printf).
+	if (is_carrier_keyed_subscript(arg))
+		return true;
 	// type() discriminators gate the downcasts: TokenCallMethod derives
 	// from TokenMember which derives from TokenCallFunc which derives from
 	// TokenVar — an ungated downcast would classify a method CALL (an
@@ -4639,9 +4659,9 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 {
 	if (!tcf) return NULL;
-	if (FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type))
+	if (FuncDef *fd = (tcf->var.type ? tcf->var.type->as_funcdef_dd() : NULL))
 		return fd;
-	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(tcf->var.type))
+	if (DataDefFPTR *fp = (tcf->var.type ? tcf->var.type->as_fptr_dd() : NULL))
 		return fp->target;
 	return NULL;
 }
@@ -4774,9 +4794,11 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
 			}
+			bool strict_no_viable = false;
 			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
-					at, &zeros, &tcf->explicit_template_args);
+					at, &zeros, &tcf->explicit_template_args,
+					&strict_no_viable);
 			if (::getenv("MADC_OVL_PROBE"))
 				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
 					fd->namespace_name.c_str(),
@@ -4789,6 +4811,26 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 						*fd_out = wfd;
 					return w;
 				}
+			// A ranked overload set with NO viable candidate: falling
+			// back to the arbitrary parse-bound member compiles the
+			// call through the wrong ABI (a std::string argument read
+			// as a value carrier SEGV'd in madc_value_copy). Only
+			// strict sets error — varargs candidates and template
+			// sets keep the historical fallback (their lanes above
+			// own instantiate-on-miss).
+			if (strict_no_viable && m_prog) {
+				std::string ats;
+				for (size_t i = 0; i < at.size(); ++i) {
+					if (i)
+						ats += ", ";
+					ats += describe_datadef(at[i]);
+				}
+				m_prog->Throw(tcf) << "no matching overload for '"
+					<< fd->namespace_name << "::"
+					<< fd->function_display_name
+					<< "' with argument types (" << ats
+					<< ")" << std::flush;
+			}
 		}
 	}
 	if (fd_out)
@@ -5397,10 +5439,15 @@ static bool is_size1_pointer(DataDef *dd)
 
 static bool is_char_pointer(DataDef *dd)
 {
+	// Unqualify BOTH layers: a real-header `const _CharT*` parameter
+	// arrives const-wrapped at the pointer and/or the pointee, and a
+	// const char pointer IS a char pointer for every caller of this
+	// question (coercions, key classification, ranking).
+	dd = unqualified_type(dd);
 	if (!dd || !dd->is_pointer()) return false;
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p || !p->base_type) return false;
-	return p->base_type->rawtype() == DataType::dtCHAR;
+	return unqualified_type(p->base_type)->rawtype() == DataType::dtCHAR;
 }
 
 // The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
@@ -5429,10 +5476,10 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 {
 	if (!tb) return NULL;
-	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb))
+	if (TokenNEW *tn = (tb ? tb->as_new_tok() : NULL))
 		if (!tn->placement)
 			return as_user_class(tn->alloc_class);
-	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb)) {
+	if (TokenAddrExpr *ta = (tb ? tb->as_addr_expr_tok() : NULL)) {
 		DataDef *idd = ta->expr ? ta->expr->datadef() : NULL;
 		if (DataDefCLASS *ic = as_user_class(idd))
 			return ic;
@@ -5443,7 +5490,7 @@ static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 		if (DataDefCLASS *ic = pointee_user_class(idd))
 			return ic;
 	}
-	if (TokenAddrOf *to = dynamic_cast<TokenAddrOf *>(tb)) {
+	if (TokenAddrOf *to = (tb ? tb->as_addr_of_tok() : NULL)) {
 		if (DataDefCLASS *ic = as_user_class(to->var.type))
 			return ic;
 		// Same for a reference VARIABLE operand (`V &vr2 = vb;` with
@@ -5540,12 +5587,16 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 // `__attribute__`-emptying issue doesn't apply).
 node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 				    const char *dtor_sym, TokenBase *origin,
-				    size_t align)
+				    size_t align, bool is_extern)
 {
 	node_t spec = list();
+	if (is_extern)
+		append(spec, simple(N_EXTERN));
 	// An object whose alignment exceeds the long[] buffer's natural 8
 	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
-	// _Alignas(align) long name[words].
+	// _Alignas(align) long name[words]. The extern shape keeps the
+	// _Alignas — C11 6.7.5p6 requires other declarations to match the
+	// definition's alignment (or carry none).
 	if (align > alignof(long long))
 		append(spec, node1(N_ALIGNAS, integer((int64_t)align, origin)));
 	append_i64(spec, origin);
@@ -5554,11 +5605,20 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 	append(decl_list, node3(N_ARR, ignore(), list(),
 				integer((int64_t)words, origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
-	need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
-	node_t attr_args = list();
-	append(attr_args, id(dtor_sym, origin));
-	node_t attrs = list();
-	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
+	node_t attrs;
+	if (is_extern) {
+		// The object is defined — and destroyed — in another TU: no
+		// cleanup registration here (same rule as the class-instance
+		// arm in var_decl, g++ parity with `extern std::string s;`).
+		attrs = ignore();
+	} else {
+		need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
+		node_t attr_args = list();
+		append(attr_args, id(dtor_sym, origin));
+		attrs = list();
+		append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args,
+				    origin));
+	}
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, share);
 	append(sd, decl);
@@ -5604,10 +5664,11 @@ size_t CirBuilder::array_obj_words() const
 	return (sizeof(madc::value) + sizeof(long long) - 1) / sizeof(long long);
 }
 
-node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
+node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin,
+				      bool is_extern)
 {
 	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin,
-				alignof(madc::value));
+				alignof(madc::value), is_extern);
 }
 
 node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
@@ -5615,12 +5676,133 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
+// Defined with the operator= selectors it also serves (below, beside
+// class_assign_cstr_operator_def).
+static FuncDef *class_method_def_by_param(DataDefCLASS *cdd,
+					  const char *opname_c,
+					  const std::function<bool(DataDef *)> &match);
+// The ONE owner of a registered method's extern return shape (defined
+// beside emit_symbol_method_call below).
+static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd,
+							    bool &ret_ptr);
+
 node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
 {
+	if (sdcl && sdcl->ctor_args_braced)
+		return array_list_init_call(sdcl);
 	if (sdcl && !sdcl->ctor_args.empty())
 		return class_ctor_call(&sdcl->var, &ddARRAY, sdcl->ctor_args,
 				       sdcl);
 	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
+}
+
+// Which registered `push` row serves a list element of type `ad` — the
+// element classification for the carrier's brace-list lowering. The rows
+// live in add_array_methods' bin_ops table (parser.cpp), the same ones a
+// script `v.push(x)` binds, so literals and pushes cannot drift apart.
+// NULL = no row takes this element type (the caller errors loudly).
+FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+{
+	DataDefCLASS *cdd = &ddARRAY;
+	if (is_char_pointer(ad))
+		return class_method_def_by_param(cdd, "push",
+			[](DataDef *p) { return is_char_pointer(p); });
+	if (carrier_behind(ad))
+		return class_method_def_by_param(cdd, "push",
+			[](DataDef *p) { return p && p->is_reference(); });
+	if (!ad || ad->is_pointer())
+		return NULL;
+	DataType want;
+	if (ad->rawtype() == DataType::dtBOOL)
+		want = DataType::dtBOOL;
+	else if (ad->is_integer())
+		want = DataType::dtINT64;
+	else if (ad->is_numeric())
+		want = DataType::dtDOUBLE;
+	else
+		return NULL;
+	return class_method_def_by_param(cdd, "push",
+		[want](DataDef *p) {
+			return p && !p->is_pointer() && p->rawtype() == want;
+		});
+}
+
+// The carrier's BRACE-LIST initializer — `var v = { a, b, c };`,
+// `var v{ a, b, c }`, `var v = {};`. The braces spell the carrier's own
+// list literal, not ctor overload selection: lower to default
+// construction plus one registered `push` per element. `{}` is an EMPTY
+// ARRAY, never a null value (madarray_make_array) — the braces spell a
+// container. Locals only: every site that reaches array_decl_ctor_call
+// declares fresh block-scope storage, so `&name` is the receiver.
+node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
+{
+	const std::string vname = var_emit_name(sdcl->var);
+	std::vector<node_t> stmts;
+	stmts.push_back(array_ctor_call(vname.c_str(), sdcl));
+	if (sdcl->ctor_args.empty()) {
+		const char *sym = "madarray_make_array";
+		need_output_extern(sym, true, { { {N_VOID}, true } });
+		referenced_funcs.insert(sym);
+		node_t args = list();
+		append(args, object_addr(vname.c_str(), sdcl));
+		node_t call = node2(N_CALL, id(sym, sdcl), args, sdcl);
+		CIR_NODE(call)->synth_from_origin = true;
+		stmts.push_back(node2(N_EXPR, list(), call, sdcl));
+	}
+	for (TokenBase *elem : sdcl->ctor_args) {
+		FuncDef *fd = carrier_push_def_for(ctor_arg_datadef(elem));
+		if (!fd || fd->emit_symbol.empty())
+			return error_node("cannot initialize a value list "
+					  "element of this type", elem);
+		DataDef *pt = fd->parameters[1];
+		bool refp = fd->is_ref_param(1);
+		node_t args = list();
+		append(args, object_addr(vname.c_str(), sdcl));
+		std::vector<ExternParam> eparams;
+		eparams.push_back({ {N_VOID}, true });   // receiver (void*)
+		// The same argument branch order the ctor/method call paths
+		// keep: an object behind the parameter (the value row's
+		// carrier&) passes by object address; a scalar reference by
+		// referent address; a plain scalar/pointer by value.
+		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+			append(args, object_arg_addr(elem, pc,
+				fd->is_nonconst_lref_param(1)));
+			eparams.push_back({ {N_VOID}, true });
+		} else if (refp) {
+			append(args, ref_param_arg_addr(elem,
+				ref_param_referent(pt),
+				const_ref_param(fd, 1)));
+			eparams.push_back(native_param_shape(pt, refp));
+		} else {
+			append(args, translate_expr(elem));
+			eparams.push_back(native_param_shape(pt, refp));
+		}
+		// The extern's return shape comes from the ONE owner the
+		// method-call path reads (emit_symbol_ret_specs): the script
+		// surface declares these rows `long long *` (the reference-
+		// return convention), and need_output_extern keeps only the
+		// FIRST shape per symbol — a `void *` here made a later
+		// script `v.push(x).push(y)` deref an untyped pointer ("mov:
+		// wrong type memory").
+		bool push_ret_ptr = false;
+		std::vector<c2mir_node_code_t> push_ret_specs =
+			emit_symbol_ret_specs(fd, push_ret_ptr);
+		need_output_extern(fd->emit_symbol.c_str(), push_ret_ptr,
+				   eparams, push_ret_specs);
+		referenced_funcs.insert(fd->emit_symbol);
+		node_t call = node2(N_CALL, id(fd->emit_symbol.c_str(), elem),
+				    args, elem);
+		CIR_NODE(call)->synth_from_origin = true;
+		stmts.push_back(node2(N_EXPR, list(), call, elem));
+	}
+	if (stmts.size() == 1)
+		return stmts[0];
+	node_t blk = list();
+	for (node_t s : stmts)
+		append(blk, s);
+	node_t b = node2(N_BLOCK, list(), blk, sdcl);
+	CIR_NODE(b)->synth_from_origin = true;
+	return b;
 }
 
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
@@ -5816,6 +5998,28 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
 	if (!target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	// A KEYED carrier subscript (`bag["k"]`, `bag.k` over the carrier): its
+	// translation is N_DEREF(madarray_key_slot(...)) — a value lvalue whose
+	// address is the slot call itself (&* folds). Bind it directly so
+	// receivers and operator= writes hit the LIVE map slot; the
+	// materializing tail below would copy into a temp and silently drop
+	// every write.
+	if (target == &ddARRAY && is_carrier_keyed_subscript(arg))
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
+
+	// A REFERENCE-to-carrier variable (`value &v` parameter: `v = 5`, or
+	// v passed on as a value argument): the reference is pointer-stored —
+	// its object address is the stored pointer (object_var_addr's rule),
+	// never a materialized copy (which would silently drop writes).
+	if (target == &ddARRAY && arg
+	    && arg->type() == TokenType::ttVariable
+	    && arg->datadef() && arg->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(arg->datadef())) == &ddARRAY)
+		if (TokenVar *rtv = dynamic_cast<TokenVar *>(arg))
+			return node2(N_CAST, void_ptr_type(),
+				     object_var_addr(rtv->var, arg), arg);
 
 	// An AGGREGATE REFERENCE MEMBER (`_Alloc& __alloc_`, stored as a pointer
 	// slot) denotes its referent ([expr.ref]): the member's stored VALUE
@@ -6955,7 +7159,7 @@ static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
 // Returns the innermost element type; appends each fixed dim to `dims`.
 static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 {
-	while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
+	while (DataDefCArray *ca = (dd ? dd->as_carray_dd() : NULL)) {
 		if (ca->has_runtime_size() || !ca->element_type)
 			break;
 		dims.push_back((carray_dim_t)ca->count);
@@ -6970,7 +7174,7 @@ static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 // parameter of the type lowers to a flat scalar pointer.
 static bool carray_chain_has_runtime(DataDef *dd)
 {
-	DataDefCArray *c = dynamic_cast<DataDefCArray *>(dd);
+	DataDefCArray *c = (dd ? dd->as_carray_dd() : NULL);
 	return c && c->chain_has_runtime_size();
 }
 
@@ -8460,8 +8664,23 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// declaration order. A value's storage is zero-initialized and the
 		// runtime treats zeroed storage as the empty value, so no file-scope
 		// constructor call is required — only the initializer was missing.
+		// CTOR-SYNTAX and BRACE-LIST forms (`value g(7);`,
+		// `var G = { "a", "b" };`) carry ctor_args instead of initialize
+		// and were dropped the same way (g read null, SILENTLY) — queue
+		// them too; collect_global_ctors' carrier arm emits them.
 		TokenDecl *adecl = dynamic_cast<TokenDecl *>(origin);
-		if (m_file_scope_decl && adecl && adecl->initialize)
+		bool carrier_defines = adecl
+		    && (adecl->initialize || adecl->ctor_args_braced
+			|| !adecl->ctor_args.empty());
+		// `extern var X;` is a DECLARATION: storage, construction, and
+		// cleanup live in the defining TU (the class-instance arm below
+		// applies the same rule — g++ parity with `extern std::string s;`).
+		// An initializer makes it a definition (C semantics), so only the
+		// bare form takes the extern shape.
+		if ((v->flags & vfEXTERN) && !carrier_defines)
+			return array_storage_decl(var_emit_name(*v).c_str(),
+						  origin, true);
+		if (m_file_scope_decl && carrier_defines)
 			m_dynamic_global_inits.insert(v);
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
@@ -10267,7 +10486,7 @@ static DataDefCLASS *class_behind(DataDef *dd)
 {
 	if (!dd) return NULL;
 	if (DataDefCLASS *c = as_class_instance(dd)) return c;
-	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *p = (dd ? dd->as_pointer_dd() : NULL))
 		return as_class_instance(p->base_type);
 	return NULL;
 }
@@ -10286,7 +10505,7 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 	// `return *this = std::move(__str)` typed rhs by whichever `move`
 	// instantiation registered last (an allocator's), so operator= selection
 	// and the memberwise guard both saw the wrong class.
-	if (TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(t)) {
+	if (TokenCallFunc *tcf = (t ? t->as_callfunc_tok() : NULL)) {
 		if (!tcf->return_override) {
 			if (FuncDef *cfd = call_target_funcdef(tcf)) {
 				// return_value_type() already yields the referent
@@ -10308,7 +10527,7 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 	if (dd && dd->is_reference())
 		if (DataDefCLASS *c = class_behind(dd))
 			return c;
-	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
+	if (TokenVar *tv = (t ? t->as_var_tok() : NULL))
 		if (tv->var.is_reference())
 			return class_behind(tv->var.type);
 	return NULL;
@@ -10364,6 +10583,24 @@ static bool var_is_pointer_stored(const Variable &v)
 	return false;
 }
 
+// The carrier class behind a receiver type: the madc array/value itself
+// OR a reference to it (a `value &` parameter's declared type) — the
+// method registry and receiver conventions are the carrier's either way
+// (object_var_addr reads a reference variable's stored pointer).
+// ddARRAY IS-A DataDefCLASS but is deliberately not a user class, so
+// class_behind rejects it and callers land here.
+DataDefCLASS *CirBuilder::carrier_behind(DataDef *dd)
+{
+	if (!dd)
+		return NULL;
+	DataDef *u = dd->unqualified();
+	if (DataDef *r = ref_param_referent(u))
+		u = r->unqualified();
+	if (u && is_array_object(u))
+		return dynamic_cast<DataDefCLASS *>(unqualified_type(u));
+	return NULL;
+}
+
 // The raw object address of a NAMED variable (NOT cast to void*): the pointer
 // itself when pointer-stored, else `&name`. The single source of truth for
 // object-instance addressing; object_var_void_addr wraps this in a void* cast.
@@ -10380,6 +10617,12 @@ node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 	// `Class **`). Without this, a captured object used by address (`cout << msg`,
 	// `msg.method()`) emitted `&msg` referencing an undeclared outer name.
 	if (note_capture(const_cast<Variable *>(&v)))
+		return base;
+	// A by-value carrier PARAMETER is emitted `void *name` (carriers
+	// pass by pointer): the name IS the object address, and `&name`
+	// would address the pointer slot (a range-for over such a
+	// parameter iterated zero times).
+	if ((v.flags & vfPARAM) && carrier_behind(v.type))
 		return base;
 	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
@@ -10401,12 +10644,25 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		// `madc::sys.argv.count()`): ddARRAY IS-A DataDefCLASS but is
 		// deliberately not a user class (as_user_class rejects dtARRAY).
 		// The translated array lvalue decays to the value-buffer address —
-		// the same receiver convention as the subscript path.
-		if (!recv_class && is_array_object(recv_type)) {
-			recv_class = dynamic_cast<DataDefCLASS *>(
-				unqualified_type(recv_type));
-			if (recv_class)
-				return translate_expr(tm->parent_expr);
+		// the same receiver convention as the subscript path. TWO shapes
+		// must NOT ride the decay because they translate to a value
+		// LVALUE (an N_DEREF), which as an argument LOADS the value's
+		// first word instead of decaying: a KEYED carrier subscript
+		// (`bag["k"].as_integer()` — N_DEREF of the madarray_key_slot
+		// call) and a REFERENCE-RETURNING carrier call
+		// (`e.push(5).push("x")` — push returns the receiver reference,
+		// so the chain's outer receiver is N_DEREF of the inner call;
+		// the class path's ref-returning re-wrap below is this same
+		// disease). Re-wrap with & (c2mir folds &* back to the call).
+		if (!recv_class) {
+			recv_class = carrier_behind(recv_type);
+			if (recv_class) {
+				node_t rn = translate_expr(tm->parent_expr);
+				if (is_carrier_keyed_subscript(tm->parent_expr)
+				    || ref_returning_call_type(tm->parent_expr))
+					return node1(N_ADDR, rn, origin);
+				return rn;
+			}
 		}
 		if (!recv_class) return NULL;
 		// A by-value object-returning CALL receiver (`*begin()` — begin()
@@ -10489,12 +10745,12 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	recv_node = id(var_emit_name(tm->object).c_str(), origin);
 	from_var = true;
 	recv_class = class_behind(recv_type);
-	// madc-array receiver as a named variable (`a.count()`): same deliberate
-	// as_user_class exclusion; object_var_addr below addresses the value
-	// buffer (capture-safe, and &buffer == the decayed buffer address).
-	if (!recv_class && is_array_object(recv_type))
-		recv_class = dynamic_cast<DataDefCLASS *>(
-			unqualified_type(recv_type));
+	// madc-array receiver as a named variable (`a.count()`) or a value&
+	// parameter (`text.at(i)`): same deliberate as_user_class exclusion;
+	// object_var_addr below addresses the value buffer or reads the
+	// reference's stored pointer (capture-safe either way).
+	if (!recv_class)
+		recv_class = carrier_behind(recv_type);
 	if (!recv_class) return NULL;
 	// A NAMED object variable uses the unified addressing rule (a by-value /
 	// by-ref `string` param is stored AS the object address, so its `this` is
@@ -10563,7 +10819,16 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// empty() -> (size() == 0). The real size() member returns a clean size_t;
 	// the bool-returning empty() returns a 1-byte value (garbage upper bits as
 	// a 64-bit int). Same observable result, robust read. (g++ canon.)
-	if (method == "empty") {
+	// The madc carrier (ddARRAY) is exempt: its empty() binds our own
+	// madarray_empty runtime entry (per-kind semantics, clean return) —
+	// and class_behind rejects ddARRAY, so the rewrite's size() lookup
+	// would bail to the field-emission fallback and mis-lower the call.
+	// carrier_behind, not is_array_object: a value& parameter receiver
+	// is reference-to-carrier and needs the same exemption.
+	bool carrier_recv = carrier_behind(tm->parent_expr
+					   ? tm->parent_expr->datadef()
+					   : tm->object.type) != NULL;
+	if (method == "empty" && !carrier_recv) {
 		DataDefCLASS *owner = (!callee->parameters.empty())
 				    ? class_behind(callee->parameters[0]) : NULL;
 		std::string size_sym = class_method_symbol(owner, "size");
@@ -11451,10 +11716,18 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
-FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+// The registered overload of `opname` on `cdd` whose first USER parameter
+// (index 1, after the receiver) satisfies `match` — the ONE scanning core
+// behind the class_assign_*_operator_def selectors and the push-family
+// selector (carrier_push_def_for). parser.cpp's registration tables OWN
+// which runtime entry each shape binds to; callers read emit_symbol off
+// the returned FuncDef so the binding lives in one place.
+static FuncDef *class_method_def_by_param(DataDefCLASS *cdd,
+					  const char *opname_c,
+					  const std::function<bool(DataDef *)> &match)
 {
-	if (!cdd) return NULL;
-	const std::string opname = "operator=";
+	if (!cdd || !opname_c) return NULL;
+	const std::string opname(opname_c);
 	const std::string mangled = cdd->name + "__" + opname;
 	for (Variable *mv : cdd->methods) {
 		if (!mv) continue;
@@ -11463,10 +11736,16 @@ FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 		if (mv->name != opname && mv->name != mangled
 		    && fd->method_display_name != opname)
 			continue;
-		if (is_char_pointer(fd->parameters[1]))
+		if (match(fd->parameters[1]))
 			return fd;
 	}
 	return NULL;
+}
+
+FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+{
+	return class_method_def_by_param(cdd, "operator=",
+		[](DataDef *p) { return is_char_pointer(p); });
 }
 
 // The same lookup for the `operator=` overload taking a given SCALAR rawtype
@@ -11495,21 +11774,10 @@ node_t CirBuilder::value_init_assign(TokenDecl *sdcl)
 
 FuncDef *class_assign_scalar_operator_def(DataDefCLASS *cdd, DataType want)
 {
-	if (!cdd) return NULL;
-	const std::string opname = "operator=";
-	const std::string mangled = cdd->name + "__" + opname;
-	for (Variable *mv : cdd->methods) {
-		if (!mv) continue;
-		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
-		if (!fd || fd->parameters.size() < 2) continue;
-		if (mv->name != opname && mv->name != mangled
-		    && fd->method_display_name != opname)
-			continue;
-		DataDef *p = fd->parameters[1];
-		if (p && !p->is_pointer() && p->rawtype() == want)
-			return fd;
-	}
-	return NULL;
+	return class_method_def_by_param(cdd, "operator=",
+		[want](DataDef *p) {
+			return p && !p->is_pointer() && p->rawtype() == want;
+		});
 }
 
 void CirBuilder::flush_pending_stmts(std::vector<node_t> &out)
@@ -11538,66 +11806,73 @@ node_t CirBuilder::array_member_runtime_call(const char *sym, bool returns_value
 	return node2(N_EXPR, list(), call, origin);
 }
 
-// A madc `array` (madc::value) element READ — `arr[i]`, `sys.argv[1]`,
-// `s.a[0]`. Elements are tagged madc::value entries with no stable typed
-// lvalue to alias, so reads materialize through the runtime getters (the
-// range-for element-fill model as an expression):
-//   string-typed (the parser's string-first element typing, scls != NULL):
-//   a scope-lived default-constructed string temp filled via
-//   operator=(char*) from __php_array_get_cstr; the expression is the
-//   temp's lvalue (decl/ctor/fill ride m_pending_stmts, which the block
-//   translator flushes ahead of the consuming statement).
-//   long-typed (legacy / no-<string> fallback): __php_array_get_int value.
-// container_void: (void*)-cast node addressing the array object.
-node_t CirBuilder::madc_array_subscript_read(node_t container_void,
-					     node_t index_node,
-					     DataDefCLASS *scls,
-					     TokenBase *origin)
+// Is this token a carrier SLOT subscript (`bag["k"]`, `arr[i]`)? The
+// parser's typing IS the marker: madc_array_subscript_type types EVERY
+// carrier subscript as ddARRAY itself (the slot model, both index kinds)
+// — so the test is the token shape plus its recorded type, re-deriving
+// nothing. Covers both the named-variable (TokenSubscript) and
+// expression-base (TokenSubscriptExpr) shapes.
+bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
 {
-	if (!scls) {
-		need_output_extern("__php_array_get_int", false,
-				   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG, N_LONG});
-		referenced_funcs.insert("__php_array_get_int");
-		node_t a = list();
-		append(a, container_void);
-		append(a, index_node);
-		return node2(N_CALL, id("__php_array_get_int", origin), a, origin);
+	if (!tb || tb->type() != TokenType::ttSubscript)
+		return false;
+	if (unqualified_type(tb->datadef()) != &ddARRAY)
+		return false;
+	// A `value &` receiver (reference parameter) denotes its referent
+	// carrier — unwrap the reference representation before the test.
+	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb)) {
+		DataDef *rt = tsub->object.type;
+		if (rt && rt->is_reference())
+			rt = ref_param_referent(rt);
+		return is_array_object(rt);
 	}
-	FuncDef *op = class_assign_cstr_operator_def(scls);
-	if (!op)
-		return error_node("madc array element read requires "
-				  "operator=(char*) on the element type", origin);
-	char name[32];
-	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
-	Variable *tmp = new Variable(name, *scls, 1, NULL, false);
-	tmp->flags |= vfLOCAL;
-	m_pending_stmts.push_back(var_decl(tmp, origin));
-	node_t cc = class_ctor_call(tmp, scls, std::vector<TokenBase *>(), origin);
-	if (cc) m_pending_stmts.push_back(cc);
-	need_output_extern("__php_array_get_cstr", true,
-			   { { {N_VOID}, true }, { {N_LONG, N_LONG}, false } });
-	node_t ga = list();
-	append(ga, container_void);
-	append(ga, index_node);
-	node_t getcall = node2(N_CALL, id("__php_array_get_cstr", origin), ga,
-			       origin);
-	std::string sym = class_method_call_symbol(scls, op, "operator=");
-	bool external = !op->emit_symbol.empty();
-	if (external)
-		need_output_extern(sym.c_str(), true,
-				   { { {N_VOID}, true }, { {N_CHAR}, true } });
-	else
-		referenced_funcs.insert(sym);
-	node_t fa = list();
-	node_t dst = node1(N_ADDR, id(name, origin), origin);
-	if (external)
-		dst = node2(N_CAST, void_ptr_type(), dst, origin);
-	append(fa, dst);
-	append(fa, getcall);
-	m_pending_stmts.push_back(node2(N_EXPR, list(),
-		node2(N_CALL, id(sym.c_str(), origin), fa, origin), origin));
-	return id(name, origin);
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb)) {
+		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
+		if (bt && bt->is_reference())
+			bt = ref_param_referent(bt);
+		return is_array_object(bt);
+	}
+	return false;
+}
+
+// The slot call for a carrier subscript — the ONE value-lvalue lane for
+// both index kinds: madarray_key_slot(recv, key) for a string KEY (the
+// vivified map entry), madarray_index_slot(recv, idx) for an integer
+// index (the vivified/extended array element). The runtime returns the
+// slot's address, so the call IS the value lvalue's address; N_DEREF of
+// it is the value lvalue the expression lanes return (&* folds back to
+// the call at every consumer that addresses it). recv_void: (void*)-cast
+// node addressing the carrier. Key vs index is Program::madc_array_key_index
+// — the one owner of that question (char pointers and c_str()-bearing
+// classes are keys; every other index is an element). The key argument: a
+// char pointer passes through; a c_str()-bearing class (std::string)
+// coerces through object_cstr_arg — the one existing class-to-cstr owner.
+node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
+				     TokenBase *origin)
+{
+	node_t a = list();
+	append(a, recv_void);
+	const char *entry;
+	if (Program::madc_array_key_index(index)) {
+		entry = "madarray_key_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true }, { {N_CHAR}, true } },
+				   { N_CHAR });
+		if (is_char_pointer(index ? index->datadef() : NULL))
+			append(a, translate_expr(index));
+		else
+			append(a, object_cstr_arg(index));
+	} else {
+		entry = "madarray_index_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true },
+				     { {N_LONG, N_LONG}, false } },
+				   { N_CHAR });
+		append(a, translate_expr(index));
+	}
+	node_t call = node2(N_CALL, id(entry, origin), a, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
 }
 
 // A member flattened in from a BASE subobject (member_origin >= 0) belongs to
@@ -13022,6 +13297,30 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		}
 		return best >= 0 ? 2 : -1;   // a viable converting ctor => conversion
 	}
+	// The intrinsic value carrier converts to TEXT: madarray_cstr is the
+	// carrier's c_str() (value-first: a string-kind value is usable like a
+	// std::string), and the general-call arg lowering already coerces a
+	// carrier into a char* parameter through object_cstr_arg. Rank it as a
+	// user-defined conversion so an exact char* argument still wins —
+	// without this arm `string s = arr[i];` (a slot-typed element into
+	// basic_string(const char*)) found no viable constructor.
+	{
+		const DataDef *au = unqualified_type(adc);
+		if (au && au->rawtype() == DataType::dtARRAY
+		    && !au->is_pointer() && is_char_pointer((DataDef *)pdc))
+			return allow_udc ? 2 : -1;
+		// A std::string ARGUMENT converts to a char* parameter the same
+		// way: build_call_args lowers exactly this shape through
+		// object_cstr_arg (the one class-to-cstr owner), so the ranker
+		// must score what the lowering supports — the silent no-viable
+		// fallback used to paper over this gap (php::implode's
+		// std::string glue into the const char* interop param).
+		// marshals_value_text-gated: only the class whose c_str coercion
+		// the lowering guarantees.
+		if (au && au->is_object() && au->marshals_value_text()
+		    && is_char_pointer((DataDef *)pdc))
+			return allow_udc ? 2 : -1;
+	}
 	// A class-object ARGUMENT only binds the same-class parameter (handled
 	// above); there is no implicit object->scalar/pointer conversion here.
 	if (adc->is_object())
@@ -13072,17 +13371,17 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// manipulator `operator<<(ostream& (*)(ostream&))`, tying (rawtype 64==64)
 	// and — registered first — beating `operator<<(long)` (`cout << (long)`
 	// mangled the bogus _ZNSolsESo; int/float/double were unaffected).
-	if (dynamic_cast<const DataDefFPTR *>(pdc)) {
+	if ((pdc ? pdc->as_fptr_dd() : NULL)) {
 		const bool arg_is_fn = adc->is_function()
-		    || dynamic_cast<const DataDefFPTR *>(adc);
+		    || (adc ? adc->as_fptr_dd() : NULL);
 		if (!arg_is_fn)
 			return arg_is_zero_literal ? 3 : -1; // null binds; else reject
 		const FuncDef *pf =
-		    dynamic_cast<const DataDefFPTR *>(pdc)->target;
-		const FuncDef *af = dynamic_cast<const FuncDef *>(adc);
+		    (pdc ? pdc->as_fptr_dd() : NULL)->target;
+		const FuncDef *af = adc ? adc->as_funcdef_dd() : NULL;
 		if (!af)
 			if (const DataDefFPTR *afp =
-			    dynamic_cast<const DataDefFPTR *>(adc))
+			    adc ? adc->as_fptr_dd() : NULL)
 				af = afp->target;
 		if (!pf || !af)
 			return 4;
@@ -13715,8 +14014,7 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 		DataDef *ad = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
 		if (DataDefCLASS *rc = object_returning_call_class(ctor_args[i]))
 			ad = rc;
-		args_desc += (ad && !ad->name.empty()) ? ad->name
-						       : std::string("<unknown>");
+		args_desc += describe_datadef(ad);
 	}
 	char buf[256];
 	snprintf(buf, sizeof(buf),
@@ -14133,6 +14431,12 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			explicit_nodes.push_back(ref_param_arg_addr(arg,
 				ref_param_referent(pt), const_ref_param(ctor, pi)));
+		else if (is_char_pointer(pt) && is_class_object_value(arg))
+			// A c_str()-bearing object/carrier into a char* ctor
+			// parameter (`string s = arr[i];` — the slot-typed
+			// element into basic_string(const char*)): the same
+			// coercion the general call path applies.
+			explicit_nodes.push_back(object_cstr_arg(arg));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -14838,6 +15142,11 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
 							const_ref_param(ctor, pi)));
+		else if (is_char_pointer(pt) && is_class_object_value(arg))
+			// A c_str()-bearing object/carrier into a char* ctor
+			// parameter (`string s = arr[i];`): the same coercion
+			// the general call path applies (its is_char_pointer arm).
+			append(args, object_cstr_arg(arg));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -15599,6 +15908,11 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	#define MTCALL_BAIL(reason) do { if (probing) fprintf(stderr, \
 		"[mtcall] %s: bail %s\n", tm->var.name.c_str(), reason); \
 		return NULL; } while (0)
+	// Lazy member-template hydration: an arity-picked callee can reach this
+	// emit lane without any parse-side content read — the spelling-driven
+	// deduction below needs the thawed pattern.
+	if (callee)
+		callee->ensure_member_template_thawed();
 	if (!tm || !callee || !callee->is_member_template
 	    || !callee->declaration_only || !callee->is_varargs)
 		MTCALL_BAIL("flags");
@@ -16236,6 +16550,13 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		eparams.push_back(native_param_shape(pt, true));
 		append(args, ref_param_arg_addr(top->right,
 			ref_param_referent(pt), const_ref_param(callee, 1)));
+	} else if (is_char_pointer(pt) && is_class_object_value(top->right)) {
+		// A c_str()-bearing object/carrier into a char* operator
+		// parameter (`joined = arr[i];` — the slot-typed element into
+		// basic_string::operator=(const char*)): the same coercion the
+		// general call path applies.
+		eparams.push_back(native_param_shape(pt, false));
+		append(args, object_cstr_arg(top->right));
 	} else {
 		eparams.push_back(native_param_shape(pt, false));
 		append(args, translate_expr(top->right));
@@ -16945,6 +17266,20 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		|| top->left->type() == TokenType::ttMember)
 	    && unqualified_type(top->left->datadef()) == &ddARRAY)
 		lcls = &ddARRAY;
+	// A `value &` variable lvalue (`void f(value &v) { v = 5; }`): the
+	// reference denotes a carrier lvalue — same admission; the receiver
+	// address is the stored pointer (object_arg_addr's reference arm).
+	if (!lcls && top->left
+	    && top->left->type() == TokenType::ttVariable
+	    && top->left->datadef() && top->left->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(top->left->datadef())) == &ddARRAY)
+		lcls = &ddARRAY;
+	// A KEYED carrier subscript lvalue (`bag["k"] = x`, `bag.k = x`): the
+	// map slot is a value lvalue — admit ddARRAY so the registered
+	// operator= family (madarray_assign_*) resolves; the receiver address
+	// is the slot call itself (object_arg_addr's keyed arm).
+	if (!lcls && is_carrier_keyed_subscript(top->left))
+		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
@@ -17082,6 +17417,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		else if (refp)
 			append(args, ref_param_arg_addr(top->right,
 				ref_param_referent(pt), const_ref_param(callee, 1)));
+		else if (is_char_pointer(pt) && is_class_object_value(top->right))
+			// carrier/object into a char* operator parameter — the
+			// external-call twin's coercion (object_cstr_arg).
+			append(args, object_cstr_arg(top->right));
 		else
 			append(args, translate_expr(top->right));
 	}
@@ -18071,7 +18410,7 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	std::string opname = "operator[]";
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return NULL;
-	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *callee = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	node_t recv_addr;
 	if (callee && !callee->emit_symbol.empty())
 		// (the core adds the void* cast — together = object_var_void_addr)
@@ -18094,7 +18433,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	DataDefCLASS *cls = class_behind(tsub->object.type);
 	std::string opname = "operator[]";
 	Variable *mv = cls ? cls->findMethod(opname) : NULL;
-	FuncDef *callee = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
 	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
 	if (callee && callee->returns_reference())
@@ -18104,14 +18443,14 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 
 /*static*/ bool CirBuilder::class_subscript_is_object(TokenBase *arg)
 {
-	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg);
+	TokenSubscript *tsub = (arg ? arg->as_subscript_tok() : NULL);
 	if (!tsub) return false;
 	DataDefCLASS *cls = class_behind(tsub->object.type);
 	if (!cls) return false;
 	std::string opname = "operator[]";
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return false;
-	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *callee = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	return callee && class_behind(&callee->return_value_type()) != NULL;
 }
 
@@ -18120,20 +18459,20 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	// Exclude the operator[]-container case:
 	// there the base CLASS itself owns an operator[] returning string&.
 	if (class_subscript_is_object(arg)) return false;
-	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
+	if (TokenSubscript *tsub = (arg ? arg->as_subscript_tok() : NULL)) {
 		if (!is_class_object(tsub->datadef())) return false;
 		DataDef *bt = tsub->object.type;
 		if (!bt) return false;
 		if (tsub->object.is_fixed_array())
 			return as_class_instance(bt) != NULL;
-		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+		DataDefPTR *pdd = (bt ? bt->as_pointer_dd() : NULL);
 		return pdd && pdd->base_type
 		    && as_class_instance(pdd->base_type) != NULL;
 	}
-	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(arg)) {
+	if (TokenSubscriptExpr *tse = (arg ? arg->as_subscript_expr_tok() : NULL)) {
 		if (!is_class_object(tse->datadef())) return false;
 		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
-		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+		DataDefPTR *pdd = (bt ? bt->as_pointer_dd() : NULL);
 		return pdd && pdd->base_type
 		    && as_class_instance(pdd->base_type) != NULL;
 	}
@@ -18152,8 +18491,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// erasing the signature; build `typedef ret NAME(params)` /
 	// `typedef ret (*NAME)(params)` from the target instead.
 	{
-		DataDefFPTR *fp_td = dynamic_cast<DataDefFPTR *>(dd);
-		FuncDef *fn_td = fp_td ? fp_td->target : dynamic_cast<FuncDef *>(dd);
+		DataDefFPTR *fp_td = (dd ? dd->as_fptr_dd() : NULL);
+		FuncDef *fn_td = fp_td ? fp_td->target : (dd ? dd->as_funcdef_dd() : NULL);
 		if (fn_td) {
 			// A Form-1 function typedef `typedef RET NAME(params)` emits no
 			// pointer (so `NAME f` is a function decl, `NAME *p` a pointer);
@@ -18184,7 +18523,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// arithmetic natively. Tier-1 lowering: reuse c2mir's vector machinery rather
 	// than duplicating it. (Needs MIR's <=16B SIMD support — in third_party/mir
 	// since fork-history commit 2ffebff.)
-	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
+	if (DataDefSIMD *simd = dd ? dd->as_simd_dd() : NULL) {
 		node_t sl = list();
 		append(sl, simple(N_TYPEDEF));
 		append_type_specs(sl, simd->element_type);
@@ -18664,12 +19003,12 @@ node_t CirBuilder::vla_arith_stride(TokenBase *t, TokenBase *origin)
 	size_t level = 0;
 	if (subscript_root_indices(t, root, idxs)) {
 		level = idxs.size();
-	} else if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(t)) {
+	} else if (TokenAddrExpr *ta = (t ? t->as_addr_expr_tok() : NULL)) {
 		if (!subscript_root_indices(ta->expr, root, idxs)
 		    || idxs.empty())
 			return NULL;
 		level = idxs.size() - 1;
-	} else if (TokenVar *tv = dynamic_cast<TokenVar *>(t)) {
+	} else if (TokenVar *tv = (t ? t->as_var_tok() : NULL)) {
 		// Plain variable only — TokenMember/TokenCallFunc derive from
 		// TokenVar.
 		if (t->type() != TokenType::ttVariable)
@@ -18677,14 +19016,14 @@ node_t CirBuilder::vla_arith_stride(TokenBase *t, TokenBase *origin)
 		root = &tv->var;
 	} else
 		return NULL;
-	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
-	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+	DataDefPTR *rp = root ? (root->type ? root->type->as_pointer_dd() : NULL) : NULL;
+	DataDefCArray *rc = rp ? (rp->base_type ? rp->base_type->as_carray_dd() : NULL)
 			       : NULL;
 	if (!rc || !rc->chain_has_runtime_size())
 		return NULL;
 	std::vector<DataDefCArray *> dims;
 	for (DataDefCArray *c = rc; c;
-	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+	     c = (c->element_type ? c->element_type->as_carray_dd() : NULL))
 		dims.push_back(c);
 	if (level >= dims.size())
 		return NULL;
@@ -18713,8 +19052,8 @@ node_t CirBuilder::vla_flat_subscript(Variable *root,
 				      const std::vector<TokenBase *> &idxs,
 				      TokenBase *origin)
 {
-	DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
-	DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+	DataDefPTR *rp = root ? (root->type ? root->type->as_pointer_dd() : NULL) : NULL;
+	DataDefCArray *rc = rp ? (rp->base_type ? rp->base_type->as_carray_dd() : NULL)
 			       : NULL;
 	// Any runtime dim ANYWHERE in the chain forces the linearized form
 	// (`char a[2][3][N]` — the outer dims are constant but the flat
@@ -18723,7 +19062,7 @@ node_t CirBuilder::vla_flat_subscript(Variable *root,
 		return NULL;
 	std::vector<node_t> dims; // d1..dk (inner dims)
 	for (DataDefCArray *c = rc; c;
-	     c = dynamic_cast<DataDefCArray *>(c->element_type))
+	     c = (c->element_type ? c->element_type->as_carray_dd() : NULL))
 		dims.push_back(c->has_runtime_size()
 			       ? translate_expr(c->count_expr)
 			       : integer((int64_t)c->count));
@@ -18751,7 +19090,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// per-receiver fills) is emitted via m_pending_stmts by the unpack.
 	// tkAssign gate first: no dynamic_cast on the hot non-assign path.
 	if (tb->id() == TokenID::tkAssign)
-		if (TokenAssign *mras = dynamic_cast<TokenAssign *>(tb))
+		if (TokenAssign *mras = (tb ? tb->as_assign_tok() : NULL))
 			if (mras->multi_vars.size() > 1)
 				return multi_return_unpack(mras, tb);
 
@@ -18785,7 +19124,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// would throw away both the literal's extra mantissa bits and its
 		// width at the varargs boundary.
 		if (rdd && rdd->rawtype() == DataType::dtLDOUBLE && !rdd->is_complex())
-			if (TokenReal *tr = dynamic_cast<TokenReal *>(tb))
+			if (TokenReal *tr = (tb ? tb->as_real_tok() : NULL))
 				return real_ldouble(tr->ldval(), tb);
 		return real(tb->dval(), tb);
 	}
@@ -18794,7 +19133,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
-	if (TokenPackExpansion *tpe = dynamic_cast<TokenPackExpansion *>(tb)) {
+	if (TokenPackExpansion *tpe = (tb ? tb->as_pack_expansion_tok() : NULL)) {
 		node_t n = translate_expr(tpe->pattern);
 		cir_node *cn = CIR_NODE(n);
 		DataDefTemplateParam *tp = tpe->pattern
@@ -18817,7 +19156,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// into expression position — control never returns, so its "value" is
 	// unreachable. libstdc++'s _GLIBCXX_THROW_OR_ABORT(x) = `(throw (x))` makes
 	// the __throw_* helpers (allocator/uninitialized-copy chain) reach here.
-	if (TokenTHROW *th = dynamic_cast<TokenTHROW *>(tb))
+	if (TokenTHROW *th = (tb ? tb->as_throw_tok() : NULL))
 		return translate_throw_call(th);
 
 	// dynamic_cast<Tgt*>(e)  (S5c) ->
@@ -18827,7 +19166,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// objects are emitted file-scope in Pass 1.5 (before this body), so referencing
 	// them by name resolves. hint = offset of src within dst when src is a unique
 	// public non-virtual base of dst (g++'s optimization), else -1 (general search).
-	if (TokenDynamicCast *dc = dynamic_cast<TokenDynamicCast *>(tb)) {
+	if (TokenDynamicCast *dc = (tb ? tb->as_dyncast_tok() : NULL)) {
 		DataDefCLASS *dstC = class_behind(dc->target_type);
 		DataDefCLASS *srcC = class_behind(dc->operand ? dc->operand->datadef() : NULL);
 		if (!dstC || !srcC || !dstC->has_vtable || !srcC->has_vtable)
@@ -18858,7 +19197,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// non-polymorphic expression yield the static &_ZTI<class>; a POLYMORPHIC
 	// expression reads the runtime type from the object's vptr[-1] (the RTTI slot
 	// wired in S5b), so typeid(*base_ptr) reports the most-derived type.
-	if (TokenTypeid *ti = dynamic_cast<TokenTypeid *>(tb)) {
+	if (TokenTypeid *ti = (tb ? tb->as_typeid_tok() : NULL)) {
 		DataDefCLASS *tinfo = class_behind(tb->datadef()); // std::type_info
 		auto tinfo_ptr = [&]() -> node_t {
 			return node2(N_TYPE,
@@ -18898,7 +19237,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// must be an expression-statement (c2mir enforces this). A bare TokenCpnd
 	// only reaches translate_expr in value position — in statement position
 	// translate_stmt routes it to translate_block — so this is unambiguous.
-	if (TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb))
+	if (TokenCpnd *tc = (tb ? tb->as_cpnd_tok() : NULL))
 		return node1(N_STMTEXPR, translate_block(tc), tb);
 
 	// new ClassName(args) -> a statement expression that allocates zeroed
@@ -18913,7 +19252,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// temp.member for member access, and a plain struct copy for by-value
 	// passing / copy-initialization. (Same temp + RAII-cleanup machinery as
 	// object_call_temp_addr, minus the address-of.)
-	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb)) {
+	if (TokenObjTemp *ot = (tb ? tb->as_objtemp_tok() : NULL)) {
 		DataDefCLASS *ocdd = ot->obj_class;
 		char otname[40];
 		snprintf(otname, sizeof(otname), "__madc_objtmp_%d", m_strtmp_counter++);
@@ -18939,7 +19278,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (occ) m_pending_stmts.push_back(occ);
 		return id(otname, tb);
 	}
-	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+	if (TokenNEW *tn = (tb ? tb->as_new_tok() : NULL)) {
 		DataDef *pattern_alloc = tn->alloc_type
 				       ? tn->alloc_type : tn->alloc_class;
 		if (m_tsubst_pattern_mode && tn->placement && pattern_alloc
@@ -18993,7 +19332,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				int levels = 1;
 				DataDef *t = tn->alloc_type;
 				while (t && t->is_pointer()) {
-					DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
+					DataDefPTR *p = (t ? t->as_pointer_dd() : NULL);
 					if (!p) break;
 					t = p->base_type;
 					levels++;
@@ -19202,7 +19541,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// delete ptr -> ({ C___dtor(ptr); free(ptr); }) — dtor only when the
 	// class has a user destructor; free always. Evaluated for effect, no
 	// value (delete is a void expression).
-	if (TokenDELETE *tdl = dynamic_cast<TokenDELETE *>(tb)) {
+	if (TokenDELETE *tdl = (tb ? tb->as_delete_tok() : NULL)) {
 		DataDefCLASS *cdd = tdl->del_class;
 		// Virtual destructor: dispatch through the vtable D0 (deleting) slot,
 		// which runs the most-derived complete destructor AND frees. No
@@ -19330,7 +19669,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// lhs pointer for `->`, the lhs object's address for `.`. When T is trivial
 	// (class_needs_dtor false) or scalar (dtor_class NULL), it is a no-op — but
 	// the object expression is still evaluated for side effects. Void-valued.
-	if (TokenExplicitDtor *ted = dynamic_cast<TokenExplicitDtor *>(tb)) {
+	if (TokenExplicitDtor *ted = (tb ? tb->as_explicit_dtor_tok() : NULL)) {
 		if (m_tsubst_pattern_mode) {
 			if (DataDef *marker_dd =
 				    tsubst_explicit_dtor_marker_datadef(ted)) {
@@ -19370,14 +19709,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// String literal
 	if (tb->type() == TokenType::ttString) {
-		TokenStr *ti = dynamic_cast<TokenStr *>(tb);
+		TokenStr *ti = (tb ? tb->as_str_tok() : NULL);
 		if (ti)
 			return str(ti->str.c_str(), ti->str.size() + 1, tb);
 	}
 
 	// Variable reference
 	if (tb->type() == TokenType::ttVariable) {
-		TokenVar *tv = dynamic_cast<TokenVar *>(tb);
+		TokenVar *tv = (tb ? tb->as_var_tok() : NULL);
 		if (tv) {
 			// Constant-fold a read of an integer constant to its value —
 			// but ONLY for a constant whose value was genuinely STORED into
@@ -19428,7 +19767,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// function pointer (no slot for the captures — GCC uses a trampoline),
 			// so leaving the short name there yields a clean c2mir error rather
 			// than a callback that reads garbage captures.
-			if (FuncDef *nfd = dynamic_cast<FuncDef *>(tv->var.type)) {
+			if (FuncDef *nfd = (tv->var.type ? tv->var.type->as_funcdef_dd() : NULL)) {
 				// A function used as a VALUE (address-taken / function-pointer
 				// decay: `&abort`, `f = exit`, `{abort}`, or the hoisted symbol of
 				// a capture-free GNU nested fn). Emit its call symbol and record it
@@ -19500,14 +19839,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Identifier
 	if (tb->type() == TokenType::ttIdentifier) {
-		TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+		TokenIdent *ti = (tb ? tb->as_ident_tok() : NULL);
 		if (ti)
 			return id(ti->spelling(), tb);
 	}
 
 	// Ternary
 	{
-		TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb);
+		TokenTerQ *tq = (tb ? tb->as_terq_tok() : NULL);
 		if (tq) {
 			node_t cond = translate_cond(tq->condition);
 			// A throw-expression branch ([expr.cond]/2): the conditional's
@@ -19518,8 +19857,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// comma's right operand is unreachable at runtime (the throw
 			// transfers control); it only carries the type. Without this the
 			// void-typed N_COND branch null-derefs downstream.
-			bool t_throw = dynamic_cast<TokenTHROW *>(tq->true_expr) != NULL;
-			bool f_throw = dynamic_cast<TokenTHROW *>(tq->false_expr) != NULL;
+			bool t_throw = (tq->true_expr ? tq->true_expr->as_throw_tok() : NULL) != NULL;
+			bool f_throw = (tq->false_expr ? tq->false_expr->as_throw_tok() : NULL) != NULL;
 			if (t_throw && !f_throw)
 				return node3(N_COND, cond,
 					node2(N_COMMA, translate_expr(tq->true_expr),
@@ -19538,7 +19877,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Address-of variable
 	{
-		TokenAddrOf *ta = dynamic_cast<TokenAddrOf *>(tb);
+		TokenAddrOf *ta = (tb ? tb->as_addr_of_tok() : NULL);
 		if (ta) {
 			// `&capturedvar` inside a nested fn IS the capture pointer param.
 			if (note_capture(&ta->var))
@@ -19571,7 +19910,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Address-of expression
 	{
-		TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(tb);
+		TokenAddrExpr *tae = (tb ? tb->as_addr_expr_tok() : NULL);
 		if (tae) {
 			// `&a[i]...` on a flat runtime-sized array: a PARTIAL
 			// access already linearizes to the address VALUE
@@ -19595,7 +19934,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Dereference variable
 	{
-		TokenDeref *td = dynamic_cast<TokenDeref *>(tb);
+		TokenDeref *td = (tb ? tb->as_deref_tok() : NULL);
 		if (td) {
 			// `*p` where p is a captured pointer var: the capture param is
 			// `T **p` (&enclosing-p), so the enclosing p's value is `(*p)` and
@@ -19613,7 +19952,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Dereference expression
 	{
-		TokenDerefExpr *tde = dynamic_cast<TokenDerefExpr *>(tb);
+		TokenDerefExpr *tde = (tb ? tb->as_deref_expr_tok() : NULL);
 		if (tde)
 			return node1(N_DEREF, translate_expr(tde->expr), tb);
 	}
@@ -19623,7 +19962,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// TokenDerefStep for this idiom; without a case here it fell through to the
 	// error/IGNORE path, producing an empty operand (`( = ( == ))`).
 	{
-		TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(tb);
+		TokenDerefStep *tds = (tb ? tb->as_deref_step_tok() : NULL);
 		if (tds) {
 			// var_emit_name for the same reason as TokenDeref above.
 			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC,
@@ -19634,7 +19973,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Array subscript on a named variable: name[i] (+ multi-dim extras)
 	{
-		TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
+		TokenSubscript *tsub = (tb ? tb->as_subscript_tok() : NULL);
 		if (tsub) {
 			// User-defined `operator[]` on a class object (`v[i]`): dispatch
 			// to the method. It returns T& (a deref'd address), so the result
@@ -19669,19 +20008,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return flat;
 				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
-			// madc array element read (`arr[i]`): route through the
-			// runtime getters — a raw N_IND would index the value
-			// object's long[] buffer words.
-			if (is_array_object(tsub->object.type)) {
+			// Carrier SLOT access (`bag["k"]`, `arr[i]` — parser-typed
+			// ddARRAY for both index kinds; `value &` receivers
+			// included, whose stored pointer IS the carrier's
+			// address): the value lvalue over the vivified map or
+			// element slot. Checked before the plain-carrier gate
+			// below, which sees only the unwrapped object type.
+			if (is_carrier_keyed_subscript(tsub)) {
 				if (!tsub->extra_indices.empty())
 					return error_node("multi-dimensional subscript is "
 							  "not supported on a madc array",
 							  tb);
-				return madc_array_subscript_read(
+				return node1(N_DEREF, carrier_slot_call(
 					node2(N_CAST, void_ptr_type(), base, tb),
-					translate_expr(tsub->index),
-					as_class_instance(tsub->datadef()), tb);
+					tsub->index, tb), tb);
 			}
+			// The parser types EVERY carrier subscript ddARRAY (the
+			// slot model) — an array receiver reaching here untyped
+			// is a broken contract; a raw N_IND would silently index
+			// the value object's buffer words.
+			if (is_array_object(tsub->object.type))
+				return error_node("carrier subscript did not type "
+						  "as a slot (parser/CIR slot-model "
+						  "contract)", tb);
 			node_t n = node2(N_IND, base,
 				translate_expr(tsub->index), tb);
 			// Multi-dim fixed array: a[i][j] -> IND(IND(a,i),j)
@@ -19693,7 +20042,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Array subscript on a sub-expression: expr[i] == IND(expr, i)
 	{
-		TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb);
+		TokenSubscriptExpr *tse = (tb ? tb->as_subscript_expr_tok() : NULL);
 		if (tse) {
 			// operator[] on a class-object SUB-EXPRESSION receiver
 			// (`(*this)[n]` in vector::at, `__this->_M_current[n]` in a
@@ -19704,7 +20053,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				    tse->base_expr ? tse->base_expr->datadef() : NULL)) {
 				std::string subop = "operator[]";
 				Variable *mv = bcls->findMethod(subop);
-				FuncDef *callee = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 				if (callee) {
 					node_t recv_addr = object_arg_addr(tse->base_expr, bcls);
 					node_t addr = class_subscript_addr_on(bcls, recv_addr,
@@ -19721,12 +20070,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// getters — a raw N_IND would index the value object's
 			// long[] buffer words.
 			if (tse->base_expr && tse->base_expr->datadef()
-			    && is_array_object(tse->base_expr->datadef()))
-				return madc_array_subscript_read(
-					node2(N_CAST, void_ptr_type(),
-					      translate_expr(tse->base_expr), tb),
-					translate_expr(tse->index),
-					as_class_instance(tse->datadef()), tb);
+			    && is_array_object(tse->base_expr->datadef())) {
+				// The receiver is the base VALUE's address: the base's
+				// own translation is a value lvalue (a buffer field,
+				// or a keyed-chain link's N_DEREF(slot)); &* folds a
+				// chain back to the slot pointer, and a buffer
+				// field's address equals its old decay-cast. ONE
+				// computation for the keyed and element arms — the
+				// element arm's former decay-cast read the value's
+				// first word as a pointer when the base was itself a
+				// keyed subscript (`r["k"][0]` SIGSEGV).
+				node_t recv = node2(N_CAST, void_ptr_type(),
+						    node1(N_ADDR,
+							  translate_expr(tse->base_expr),
+							  tb), tb);
+				if (is_carrier_keyed_subscript(tse))
+					return node1(N_DEREF, carrier_slot_call(
+						recv, tse->index, tb), tb);
+				return error_node("carrier subscript did not type "
+						  "as a slot (parser/CIR slot-model "
+						  "contract)", tb);
+			}
 			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
@@ -19758,7 +20122,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// FuncDef's C++ emit_symbol; each lowering helper returns NULL for an
 	// unrecognized receiver so the others fall through.
 	if (tb->type() == TokenType::ttCallMethod) {
-		TokenMember *tcm = dynamic_cast<TokenMember *>(tb);
+		TokenMember *tcm = (tb ? tb->as_member_tok() : NULL);
 		if (tcm) {
 			// Class method call: c.method(args) -> the emit_symbol /
 			// ClassName__method call. Returns NULL when the receiver is not a
@@ -19770,7 +20134,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Struct member access
 	{
-		TokenMember *tm = dynamic_cast<TokenMember *>(tb);
+		TokenMember *tm = (tb ? tb->as_member_tok() : NULL);
 		if (tm) {
 			node_t obj;
 			if (tm->parent_expr)
@@ -19794,10 +20158,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// in which case the parent expression yields a struct element and
 			// needs `.`.
 			bool obj_is_array = !tm->object.dims.empty()
-				|| dynamic_cast<DataDefCArray *>(tm->object.type) != NULL;
+				|| (tm->object.type ? tm->object.type->as_carray_dd() : NULL) != NULL;
 			bool parent_is_subscript = tm->parent_expr
-				&& (dynamic_cast<TokenSubscript *>(tm->parent_expr)
-				 || dynamic_cast<TokenSubscriptExpr *>(tm->parent_expr));
+				&& ((tm->parent_expr ? tm->parent_expr->as_subscript_tok() : NULL)
+				 || (tm->parent_expr ? tm->parent_expr->as_subscript_expr_tok() : NULL));
 			bool ptr_like;
 			if (parent_is_subscript) {
 				// Subscripting dereferences: `p[i]`/`arr[i]` yields the
@@ -19883,7 +20247,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// sizeof
 	{
-		TokenTypeQuery *ttq = dynamic_cast<TokenTypeQuery *>(tb);
+		TokenTypeQuery *ttq = (tb ? tb->as_typequery_tok() : NULL);
 		if (ttq && ttq->query_type) {
 			// sizeof a VLA type (`typedef int c[i+2]; sizeof(c)`) is a
 			// RUNTIME value -- C11 6.5.3.4p2 evaluates the operand. c2mir has
@@ -19891,7 +20255,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// (dim0 * dim1 * ... ) * sizeof(scalar element). alignof stays the
 			// element's compile-time alignment (constant), so only sizeof is
 			// lowered this way.
-			DataDefCArray *vca = dynamic_cast<DataDefCArray *>(ttq->query_type);
+			DataDefCArray *vca = (ttq->query_type ? ttq->query_type->as_carray_dd() : NULL);
 			if (vca && vca->chain_has_runtime_size() && !ttq->want_alignof) {
 				// A constant head dim over a runtime inner dim
 				// (`char a[3][n]`) is still variably modified.
@@ -19900,7 +20264,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					       : integer((int64_t)vca->count);
 				DataDef *elem = vca->element_type;
 				while (DataDefCArray *inner =
-					       dynamic_cast<DataDefCArray *>(elem)) {
+					       (elem ? elem->as_carray_dd() : NULL)) {
 					node_t d = inner->has_runtime_size()
 						   ? translate_expr(inner->count_expr)
 						   : integer((int64_t)inner->count);
@@ -19934,7 +20298,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Cast
 	{
-		TokenCast *tc = dynamic_cast<TokenCast *>(tb);
+		TokenCast *tc = (tb ? tb->as_cast_tok() : NULL);
 		if (tc) {
 			DataDef *cast_dd = tc->cast_type;
 			// A cast to REFERENCE type is a no-op on the operand
@@ -20044,7 +20408,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// a DataDefFPTR via type_list as a bare `long`, so the cast emitted as
 			// `(long)expr` — an integer passed to a pointer parameter. Build the
 			// real `RET (*)(params)` type node from the target signature instead.
-			if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(cast_dd)) {
+			if (DataDefFPTR *fp = (cast_dd ? cast_dd->as_fptr_dd() : NULL)) {
 				node_t fspec = list();
 				node_t fdecl_list = list();
 				fnptr_decl_pieces(fp->target, true, fspec, fdecl_list,
@@ -20113,7 +20477,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// pointer (e.g. DataDefFPTR) keeps the single-pointer fallback.
 			int cast_ptr_levels = 0;
 			while (cast_dd) {
-				DataDefPTR *p = dynamic_cast<DataDefPTR *>(cast_dd);
+				DataDefPTR *p = (cast_dd ? cast_dd->as_pointer_dd() : NULL);
 				if (!p || !p->base_type) break;
 				cast_dd = p->base_type;
 				cast_ptr_levels++;
@@ -20153,12 +20517,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	}
 
 	// C99 compound literal: `(T){ init... }` as a value expression.
-	if (TokenStructLit *slit = dynamic_cast<TokenStructLit *>(tb))
+	if (TokenStructLit *slit = (tb ? tb->as_struct_lit_tok() : NULL))
 		return translate_struct_lit(slit);
 
 	// Operators
 	if (tb->is_operator()) {
-		TokenOperator *top = dynamic_cast<TokenOperator *>(tb);
+		TokenOperator *top = (tb ? tb->as_operator_tok() : NULL);
 
 		// Inc/Dec
 		if (tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec) {
@@ -20169,7 +20533,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// variable 'x'"). Checked before the class-operator dispatch so a
 			// class operator++ on a const object is rejected too. Scoped to the
 			// direct const-var case (see the binary const check).
-			if (TokenVar *itv = dynamic_cast<TokenVar *>(operand_tb)) {
+			if (TokenVar *itv = (operand_tb ? operand_tb->as_var_tok() : NULL)) {
 				if (itv->var.is_constant()) {
 					std::string msg = std::string(
 						tb->id() == TokenID::tkInc ? "increment"
@@ -20197,7 +20561,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				FuncDef *post = NULL;
 				for (Variable *mv : icls->methods) {
 					if (!mv || (mv->name != mc && mv->name != mu)) continue;
-					FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+					FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 					if (fd && fd->parameters.size() > 1) { post = fd; break; }
 				}
 				if (post) {
@@ -20205,7 +20569,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					// TokenMember/TokenCallFunc derive from TokenVar
 					// (see class_unary_operator_call's receiver).
 					node_t this_arg;
-					TokenVar *otv = dynamic_cast<TokenVar *>(operand_tb);
+					TokenVar *otv = (operand_tb ? operand_tb->as_var_tok() : NULL);
 					if (otv && operand_tb->type() == TokenType::ttVariable)
 						this_arg = object_var_addr(otv->var, tb);
 					else
@@ -20303,7 +20667,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// larger effort and intentionally NOT enforced here. gcc canon:
 			// "assignment of read-only variable 'x'".
 			if (is_assign_op(tb->id())) {
-				if (TokenVar *ltv = dynamic_cast<TokenVar *>(top->left)) {
+				if (TokenVar *ltv = (top->left ? top->left->as_var_tok() : NULL)) {
 					if (ltv->var.is_constant()) {
 						std::string msg = "assignment of read-only variable '"
 							+ ltv->var.name + "'";
@@ -20314,9 +20678,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// platform` — the madc::sys facts, task #91): the member
 				// view carries vfCONSTANT or a DataDefCONST-wrapped type.
 				// gcc canon: "assignment of read-only member 'm'".
-				if (TokenMember *ltm = dynamic_cast<TokenMember *>(top->left)) {
+				if (TokenMember *ltm = (top->left ? top->left->as_member_tok() : NULL)) {
 					if (ltm->var.is_constant()
-					    || dynamic_cast<DataDefCONST *>(ltm->var.type)) {
+					    || (ltm->var.type ? ltm->var.type->as_const_dd() : NULL)) {
 						std::string msg = "assignment of read-only member '"
 							+ ltm->var.name + "'";
 						return error_node(msg.c_str(), tb);
@@ -22471,10 +22835,30 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 				  "this container (only raw arrays and "
 				  "size()/operator[] containers)", fe);
 
-	// (void*)container — the madc::value object address (the var name decays to
-	// its long[] buffer, normalized to void*).
+	// (void*)container — the madc::value object address. A NAMED variable
+	// goes through object_var_addr (buffer -> &buffer; a value& parameter
+	// reads its stored pointer — the decay the old form relied on LOADS
+	// through a reference and fed garbage to madarray_size); a keyed
+	// subscript re-wraps to the slot address (&* folds); anything else
+	// keeps the translated decay.
 	auto container_addr = [&]() -> node_t {
-		return node2(N_CAST, void_ptr_type(), translate_expr(fe->container), fe);
+		TokenVar *cv = dynamic_cast<TokenVar *>(fe->container);
+		// A MEMBER (s.a) IS-A TokenVar (via TokenCallFunc), but its
+		// var is the bare FIELD — object_var_addr would address it by
+		// name and lose the receiver ("undeclared identifier a").
+		// Only a plain variable takes the stored-pointer shortcut;
+		// a member keeps its translated field lvalue's decay.
+		if (dynamic_cast<TokenMember *>(fe->container))
+			cv = NULL;
+		node_t raw;
+		if (cv && carrier_behind(cv->var.type))
+			raw = object_var_addr(cv->var, fe);
+		else {
+			raw = translate_expr(fe->container);
+			if (is_carrier_keyed_subscript(fe->container))
+				raw = node1(N_ADDR, raw, fe);
+		}
+		return node2(N_CAST, void_ptr_type(), raw, fe);
 	};
 
 	char idx[32];
@@ -23125,41 +23509,41 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 {
 	if (!tb) return NULL;
 
-	TokenRETURN *tr = dynamic_cast<TokenRETURN *>(tb);
+	TokenRETURN *tr = (tb ? tb->as_return_tok() : NULL);
 	if (tr) return translate_return(tr);
 
-	TokenIF *ti = dynamic_cast<TokenIF *>(tb);
+	TokenIF *ti = (tb ? tb->as_if_tok() : NULL);
 	if (ti) return translate_if(ti);
 
 	if (tb->id() == TokenID::tkWHILE)
 		return translate_while(tb);
 
 	// Range-based for (TokenFOREACH) is a sibling of TokenFOR, not a subclass,
-	// so check it first — dynamic_cast<TokenFOR*> would miss it.
-	{ TokenFOREACH *fe = dynamic_cast<TokenFOREACH *>(tb);
+	// so check it first — as_for_tok() would miss it.
+	{ TokenFOREACH *fe = (tb ? tb->as_foreach_tok() : NULL);
 	  if (fe) return translate_foreach(fe); }
 
-	TokenFOR *tf = dynamic_cast<TokenFOR *>(tb);
+	TokenFOR *tf = (tb ? tb->as_for_tok() : NULL);
 	if (tf) return translate_for(tf);
 
-	{ TokenDO *td = dynamic_cast<TokenDO *>(tb);
+	{ TokenDO *td = (tb ? tb->as_do_tok() : NULL);
 	  if (td) return translate_do(td); }
 
-	{ TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb);
+	{ TokenSWITCH *ts = (tb ? tb->as_switch_tok() : NULL);
 	  if (ts) return translate_switch(ts); }
 
-	{ TokenMatch *tm = dynamic_cast<TokenMatch *>(tb);
+	{ TokenMatch *tm = (tb ? tb->as_match_tok() : NULL);
 	  if (tm) return translate_match(tm); }
 
 	// Exceptions: try/catch (SJLJ) and throw.
-	{ TokenTRY *tt = dynamic_cast<TokenTRY *>(tb);
+	{ TokenTRY *tt = (tb ? tb->as_try_tok() : NULL);
 	  if (tt) return translate_try(tt); }
-	{ TokenTHROW *th = dynamic_cast<TokenTHROW *>(tb);
+	{ TokenTHROW *th = (tb ? tb->as_throw_tok() : NULL);
 	  if (th) return translate_throw(th); }
 
 	// Goto — label form `goto L` (N_GOTO) or GNU computed form `goto *expr`
 	// (N_INDIRECT_GOTO, the jump target is a void* label address).
-	{ TokenGOTO *tg = dynamic_cast<TokenGOTO *>(tb);
+	{ TokenGOTO *tg = (tb ? tb->as_goto_tok() : NULL);
 	  if (tg) {
 		if (tg->indirect_target)
 			return node2(N_INDIRECT_GOTO, list(),
@@ -23175,7 +23559,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	// EVERY statement context — an if/while/for body or a switch case body,
 	// not only the compound-block path. C labels are function-scoped, so the
 	// extra block introduces no scope issue.
-	{ TokenLabel *tl = dynamic_cast<TokenLabel *>(tb);
+	{ TokenLabel *tl = (tb ? tb->as_label_tok() : NULL);
 	  if (tl) {
 		node_t items = list();
 		node_t ll = list();
@@ -23189,7 +23573,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	  } }
 
 	// Declaration
-	{ TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)tb);
+	{ TokenDecl *td = tb->as_decl_tok();
 	  if (td) {
 		// A function-block-scope `extern T name;` that refers to a file-scope
 		// global: emit a REAL in-block `extern T name;` so c2mir's scope
@@ -23241,7 +23625,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	// statement stream as this node and is emitted in-place so c2mir registers
 	// the alias in this block's scope. Reuse the file-scope emitter (typedef_decl)
 	// for a single declaration shape.
-	{ TokenTypedefDecl *ttd = dynamic_cast<TokenTypedefDecl *>(tb);
+	{ TokenTypedefDecl *ttd = (tb ? tb->as_typedef_decl_tok() : NULL);
 	  if (ttd) {
 		std::set<std::string> no_emitted_structs;
 		// A user-class struct is ALWAYS emitted at file scope (Pass 0.5):
@@ -23251,7 +23635,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		// incompatible struct assignment (and mis-flattened the SSO
 		// union). Plain C block-scope struct typedefs keep the body.
 		DataDef *ttd_base = ttd->target_type;
-		while (DataDefPTR *tp = dynamic_cast<DataDefPTR *>(ttd_base))
+		while (DataDefPTR *tp = (ttd_base ? ttd_base->as_pointer_dd() : NULL))
 			ttd_base = tp->base_type;
 		bool class_alias = as_user_class(ttd_base) != NULL;
 		node_t n = typedef_decl(ttd->alias, ttd->target_type,
@@ -23269,7 +23653,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		return node1(N_CONTINUE, list(), tb);
 
 	// Compound statement (block)
-	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb);
+	TokenCpnd *tc = (tb ? tb->as_cpnd_tok() : NULL);
 	if (tc) {
 		// A GNU statement-expression `({...})` appearing in STATEMENT position
 		// is an expression-statement whose value is the block's last
@@ -23388,7 +23772,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	if (ctor_args.empty()) {
 		TokenBase *initexpr = sdcl->initialize;
 		if (TokenAssign *as =
-		    dynamic_cast<TokenAssign *>(initexpr))
+		    (initexpr ? initexpr->as_assign_tok() : NULL))
 			initexpr = as->right;
 		if (!initexpr && !sdcl->init_list.empty())
 			initexpr = sdcl->init_list[0];
@@ -23409,7 +23793,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	// call-NRVO path below, which dynamic_casts to TokenCallFunc.
 	if (ctor_args.size() == 1) {
 		if (TokenObjTemp *iot =
-		    dynamic_cast<TokenObjTemp *>(ctor_args[0]))
+		    (ctor_args[0] ? ctor_args[0]->as_objtemp_tok() : NULL))
 			if (as_class_instance(iot->obj_class) == cdcl) {
 				ctor_args = iot->ctor_args;
 				// The elided temp's braced list is a FULL list
@@ -23437,16 +23821,16 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 			}
 	}
 	if (ctor_args.size() == 1
-	    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
+	    && (ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL)
 	    && object_returning_call_class(ctor_args[0]) == cdcl
 	    // A format intrinsic has no symbol to elide into the declared
 	    // object — fall to the generic path, whose operand translation
 	    // routes through lower_format_call (copy-construct from the
 	    // hoisted result temp).
 	    && !format_intrinsic_call(
-			dynamic_cast<TokenCallFunc *>(ctor_args[0]))) {
+			(ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL))) {
 		TokenCallFunc *itcf =
-			dynamic_cast<TokenCallFunc *>(ctor_args[0]);
+			(ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL);
 		FuncDef *ifd = NULL;
 		std::string isym = call_target_emit_name(itcf, &ifd);
 		referenced_funcs.insert(isym);
@@ -23462,7 +23846,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		// free-function case (itcf not a TokenMember) is unchanged.
 		bool imeth_call = false;
 		if (TokenCallMethod *imeth =
-		    dynamic_cast<TokenCallMethod *>(itcf)) {
+		    (itcf ? itcf->as_callmethod_tok() : NULL)) {
 			DataDefCLASS *rc = NULL;
 			node_t this_arg =
 				class_this_arg(imeth, rc, sdcl);
@@ -23499,7 +23883,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	// classes keep the class_ctor_call copy path below.
 	if (ctor_args.size() == 1) {
 		TokenOperator *iop =
-			dynamic_cast<TokenOperator *>(ctor_args[0]);
+			(ctor_args[0] ? ctor_args[0]->as_operator_tok() : NULL);
 		DataDefCLASS *ilcls = (iop && iop->left)
 			? operand_object_class(iop->left)
 			: NULL;
@@ -23634,7 +24018,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 
 	std::set<std::string> decl_vars;
 	for (auto *ts : tc->statements) {
-		TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)ts);
+		TokenDecl *td = ts ? ts->as_decl_tok() : NULL;
 		if (td)
 			decl_vars.insert(td->var.name);
 	}
@@ -23648,12 +24032,16 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		// local declaration for it (calls resolve to the hoisted symbol). Without
 		// this it rendered as `void Foo;`, which c2mir tolerates but gcc rejects,
 		// breaking the portable `--emit=c11` output.
-		if (dynamic_cast<FuncDef *>(v->type)) continue;
+		if ((v->type ? v->type->as_funcdef_dd() : NULL)) continue;
 		append(items, var_decl(v));
 		if (is_array_object(v->type)) {
 			// `array a;` — default-construct the madc::value object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
-			append(items, array_ctor_call(v->name.c_str(), tc));
+			// A block-scope `extern var X;` declares another TU's object:
+			// no construction here (var_decl already emitted extern
+			// storage with no cleanup).
+			if (!(v->flags & vfEXTERN))
+				append(items, array_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
 			// explicit constructor-call (no ctor args). class_ctor_call owns
@@ -23693,7 +24081,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		// of a block (`L:` with no statement -> just the marker). This keeps
 		// a label-before-declaration in the SAME block scope (correct RAII),
 		// rather than wrapping it in a nested block.
-		while (TokenLabel *tl = dynamic_cast<TokenLabel *>(stb)) {
+		while (TokenLabel *tl = (stb ? stb->as_label_tok() : NULL)) {
 			pending_labels.push_back(tl->name);
 			stb = tl->labeled;
 		}
@@ -23714,7 +24102,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		// the initializer becomes the single ctor argument and select_ctor_overload
 		// picks the const-char*/copy/default ctor by its type.
 		{
-			TokenDecl *sdcl = dynamic_cast<TokenDecl *>(stb);
+			TokenDecl *sdcl = (stb ? stb->as_decl_tok() : NULL);
 			bool file_global = sdcl && !(sdcl->var.flags & vfLOCAL)
 					&& !(sdcl->var.flags & vfSTATIC);
 			// madc array object declaration: storage (via var_decl) + default ctor.
@@ -23727,6 +24115,15 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
+				// A block-scope `extern var X;` DECLARES another TU's
+				// object: var_decl emitted the extern shape above —
+				// constructing here would placement-new an empty
+				// value over the shared definition (initializer /
+				// ctor-args make it a definition, C semantics).
+				if ((sdcl->var.flags & vfEXTERN)
+				    && !sdcl->initialize && !sdcl->ctor_args_braced
+				    && sdcl->ctor_args.empty())
+					continue;
 				{
 					// Parens direct-init (`value v(7);`): the
 					// selected madarray_construct_* entry's
@@ -25093,7 +25490,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			else if (external_symbol_available(s)) { ok = true; why = 3; }
 			else if (synth_dtor_syms.count(s)) { ok = true; why = 4; }
 			else if (forest_body_syms.count(s)) { ok = true; why = 6; }
-			else for (TokenBase *pb : m_prog->pending_funcs) {
+			else {
+				auto fi = m_prog->forest_deferred_funcs.find(s);
+				if (fi != m_prog->forest_deferred_funcs.end()
+				    && fi->second.fd && fi->second.fd->has_forest_body)
+					{ ok = true; why = 7; }
+			}
+			if (!ok) for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
 						  : NULL;
@@ -25844,7 +26247,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// main), so two ctor TUs no longer collide on __madc_global_init.
 	bool want_sys_init = tf->var.name == "main"
 			     && m_prog && m_prog->_include_ns_madc;
-	if (!madc_object_mode && tf->var.name == "main"
+	// Project JIT TUs skip the wrap the same way object mode does: their
+	// per-TU init (engine-called before main) carries both calls.
+	if (!madc_object_mode && !m_project_tu && tf->var.name == "main"
 	    && (want_sys_init || !m_global_ctor_stmts.empty())) {
 		node_t outer = list();
 		if (want_sys_init) {
@@ -26048,7 +26453,33 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			for (auto &td : prog->top_decls)
 				if (td.kind == Program::DeclKind::dkGlobalVar
 				    && td.var == v) { sdecl = td.decl; break; }
-			if (!sdecl || !sdecl->initialize)
+			if (!sdecl)
+				continue;
+			// The CARRIER's ctor-syntax and brace-list globals
+			// (`value g(7);`, `var G = { "a", "b" };`): the args
+			// ride ctor_args, not initialize. The construct family
+			// placement-news over the zeroed storage, so emitting
+			// the same lowering a local gets is well-formed here.
+			// `value g(7);` used to DROP its arguments in the
+			// initialize-only gate below — g read null, silently.
+			if (is_array_object(v->type)
+			    && (sdecl->ctor_args_braced
+				|| !sdecl->ctor_args.empty())) {
+				node_t cc = sdecl->ctor_args_braced
+					  ? array_list_init_call(sdecl)
+					  : class_ctor_call(v, &ddARRAY,
+							    sdecl->ctor_args,
+							    sdecl);
+				std::vector<node_t> cgrp(m_pending_stmts.begin(),
+							 m_pending_stmts.end());
+				m_pending_stmts.clear();
+				if (cc)
+					cgrp.push_back(cc);
+				queue_global_ctor_group(v, cgrp,
+							deferred_globals);
+				continue;
+			}
+			if (!sdecl->initialize)
 				continue;
 			node_t as = translate_expr(sdecl->initialize);
 			std::vector<node_t> sgrp_stmts(m_pending_stmts.begin(),
@@ -26090,6 +26521,23 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		m_pending_stmts.clear();
 		if (cc)
 			grp_stmts.push_back(cc);
+		// C++11 NSDMI on a DEFAULT-constructed no-ctor class GLOBAL
+		// (`Game G;`) — the same rule as translate_block's local arm: a
+		// whole-object initializer supplies every member (skip), a user
+		// ctor applies NSDMI in its prologue (skip). The local lane has
+		// applied these all along; this lane silently dropped them, so
+		// a file-scope instance read 0 where g++ reads the default.
+		bool bare_decl = !decl
+		    || (!decl->initialize && decl->ctor_args.empty()
+			&& decl->init_list.empty() && !decl->ctor_args_braced);
+		if (!cdd->has_user_ctor && bare_decl) {
+			std::vector<node_t> nsdmi_stmts;
+			if (emit_member_default_inits(cdd,
+					var_emit_name(*v).c_str(), false,
+					nsdmi_stmts, decl, NULL))
+				for (node_t ns : nsdmi_stmts)
+					grp_stmts.push_back(ns);
+		}
 		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }
@@ -27205,7 +27653,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::vector<TokenFunc *> funcs;
 	for (auto it = prog->pending_funcs.begin();
 	     it != prog->pending_funcs.end(); ++it) {
-		TokenFunc *tf = dynamic_cast<TokenFunc *>(*it);
+		TokenFunc *tf = *it ? (*it)->as_func_tok() : NULL;
 		if (tf && !tf->is_overridden)
 			funcs.push_back(tf);
 	}
@@ -27241,7 +27689,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 		if (td.kind == Program::DeclKind::dkStruct ||
 		    td.kind == Program::DeclKind::dkUnion) {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
+			DataDefSTRUCT *sdd = (td.dd ? td.dd->as_struct_dd() : NULL);
 			// A complete definition (`struct X { ... };`) is a def point even
 			// when it has no members (`struct X {};` is a valid empty struct);
 			// a bare forward declaration (`struct X;`) is not.
@@ -27361,7 +27809,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 		case Program::DeclKind::dkStruct:
 		case Program::DeclKind::dkUnion: {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
+			DataDefSTRUCT *sdd = (td.dd ? td.dd->as_struct_dd() : NULL);
 			// A generic dependent local struct (placeholder members) is a Tree-1
 			// pattern artifact — skip global emission; the concrete per-
 			// instantiation clone is emitted instead.
@@ -27392,7 +27840,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				    && !(target->type && target->type->is_function()))
 					break;
 			}
-			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
+			if (td.var && !(td.var->type ? td.var->type->as_funcdef_dd() : NULL)) {
 				// Pass the linked TokenDecl as origin so var_decl's
 				// existing initializer logic (scalar + brace) emits the
 				// global's init in its SPEC_DECL — the single source for
@@ -27440,7 +27888,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		 && (kv.first.find("tuple") != std::string::npos
 		  || kv.first.find("Tuple_impl") != std::string::npos
 		  || kv.first.find("Head_base") != std::string::npos)) {
-			DataDefCLASS *c2 = dynamic_cast<DataDefCLASS *>(kv.second);
+			DataDefCLASS *c2 = (kv.second ? kv.second->as_class_dd() : NULL);
 			fprintf(stderr, "[EMIT] key='%s' as_user=%d base=%d raw=%d ref=%d members=%zu size=%ld dep_ph=%d\n",
 				kv.first.c_str(), (int)(as_user_class(kv.second) != NULL),
 				c2 ? (int)c2->basetype() : -1, c2 ? (int)c2->rawtype() : -1,
@@ -27580,6 +28028,27 @@ node_t CirBuilder::translate_module(Program *prog)
 					forest_lazy_root.insert(kv.first);
 			}
 		}
+		// Verdict-0 free functions keep only their restored FuncDef/body
+		// identity until demanded. Include those immutable body sources in
+		// the reachability index without constructing parser Variables for
+		// the whole forest surface.
+		for (auto &kv : prog->forest_deferred_funcs) {
+			// Consumer parsing may already have derived the same compiler
+			// identity (a NEW specialization built from restored pattern
+			// tokens). Live first-registration wins: that newly-derived
+			// FuncDef/body shadows the cached product, so never queue both.
+			if (prog->funcdef_map.count(kv.first))
+				continue;
+			FuncDef *fd = kv.second.fd;
+			if (fd && fd->has_forest_body && !kv.first.empty()
+			    && !forest_method_fds.count(fd)) {
+				forest_lazy[kv.first] = fd;
+				const char *up =
+					prog->bind_forest->unit_name(fd->forest_body_unit);
+				if (!up || !prog->is_system_header_path(up))
+					forest_lazy_root.insert(kv.first);
+			}
+		}
 		// Symbols with a funcdef_map declaration source: those keep riding
 		// Pass 0.75's referenced sweep (typed protos at live's sorted map
 		// positions — the #23 byte-identity mechanism), NEVER the loaded-
@@ -27712,6 +28181,19 @@ node_t CirBuilder::translate_module(Program *prog)
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
+			// Promote only verdict-0 forest functions whose compiler
+			// identity is now reachable. This updates funcdef_map and the
+			// parser-visible Variable/overload surfaces before Pass 0.75,
+			// while untouched products stay indexed without parser surfaces.
+			std::vector<std::string> demanded_forest_funcs;
+			for (RefFuncSet::const_iterator ri = referenced_funcs.begin();
+			     ri != referenced_funcs.end(); ++ri)
+				if (prog->forest_deferred_funcs.count(*ri))
+					demanded_forest_funcs.push_back(*ri);
+			for (const std::string &name : demanded_forest_funcs)
+				prog->activate_forest_func(name);
+			if (!demanded_forest_funcs.empty())
+				grew = true;
 			if (!prog->deferred_lazy_bodies.empty()) {
 				std::vector<std::pair<std::string, bool> > ready;
 				for (auto &db : prog->deferred_lazy_bodies) {
@@ -27978,7 +28460,9 @@ node_t CirBuilder::translate_module(Program *prog)
 					    && !prog->deferred_lazy_bodies.count(*ci)
 					    && (pass075_done
 						? !typed_proto_syms.count(*ci)
-						: !forest_funcdef_syms.count(*ci))
+						: !forest_funcdef_syms.count(*ci)
+						  && !prog->funcdef_map.count(*ci)
+						  && !prog->forest_deferred_funcs.count(*ci))
 					    && !m_output_externs.count(*ci)) {
 						uint32_t xu = 0, xi = 0;
 						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
@@ -28795,7 +29279,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	node_t gi_items = NULL;		// rung 3: the init body's stmt list —
 	node_t gi_def = NULL;		// the filter prunes dead ctor groups here
 	m_tu_init_name.clear();
-	bool obj_sys_init = madc_object_mode && m_prog && m_prog->_include_ns_madc;
+	// Project JIT TUs take the object-mode shape too: the engine calls each
+	// TU's unique init before main (its ld.so/.init_array role), so the
+	// sys-init ride-along applies the same way.
+	bool tu_unique_init = madc_object_mode || m_project_tu;
+	bool obj_sys_init = tu_unique_init && m_prog && m_prog->_include_ns_madc;
 	if (!m_global_ctor_stmts.empty() || obj_sys_init) {
 		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
 		// asm, initializer) — c2mir.c:538.
@@ -28841,7 +29329,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t iparams = list();
 		const char *gi_name = "__madc_global_init";
 		std::string tu_sym;
-		if (madc_object_mode) {
+		if (tu_unique_init) {
 			tu_sym = tu_init_symbol(m_tu_name);
 			gi_name = tu_sym.c_str();
 			m_tu_init_name = tu_sym;

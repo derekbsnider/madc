@@ -71,6 +71,15 @@ std::vector<madc::value> &value_array_for_write(madc::value &v,
 std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 							    const char *who);
 
+// Reset-and-fill variant for OUT-parameter arrays (explode / split / grep /
+// glob / slice / column / chars ...): the destination becomes a fresh empty
+// array and its live container is returned. A frozen destination reports
+// once and returns the per-thread dummy so the fill degrades to a no-op;
+// any non-frozen kind is retagged to array (the same semantics as assigning
+// value::make_array() over it, which these helpers historically did).
+std::vector<madc::value> &value_array_reset_for_write(madc::value &v,
+						      const char *who);
+
 // ---- Array helpers ---------------------------------------------------
 
 // Element count of a madc::value: array size, object size, or 0 for any
@@ -89,10 +98,51 @@ size_t value_count(const madc::value &v);
 size_t value_length(const madc::value &v, bool *ok);
 
 // Split `s` by literal `delim` and store the pieces as strings in `out`.
-// `out` is reset to an empty kind::array first. An empty delim pushes the
-// whole string as a single element.
+// `out` is reset to an empty kind::array first (via
+// value_array_reset_for_write — a frozen `out` degrades to a loud no-op).
+// An empty delim pushes the whole string as a single element. `who` names
+// the script-facing caller in the degrade diagnostics.
 void split_by_delim(madc::value &out, const std::string &s,
-		    const std::string &delim);
+		    const std::string &delim, const char *who);
+
+// ---- Transient text returns ------------------------------------------
+
+// The ONE thread-local text ring behind every ring-lifetime const char*
+// return (the c_str() contract: valid to pass onward or copy immediately;
+// a pointer stays valid until its slot recycles — 8 slots, the inet_ntoa
+// model). Runtime entries and php:: functions returning transient text
+// use this; never a private static buffer.
+// ring_slot() lends the next slot DIRECTLY — assign/build into it and
+// return its c_str(); slot capacity persists across uses, so steady-state
+// callers allocate nothing. ring_text() is the move-in convenience for a
+// string you already built.
+std::string &ring_slot();
+const char *ring_text(std::string s);
+
+// Fill the NEXT ring slot with `v`'s text view (string kinds copy their
+// payload; other scalar kinds render via value_to_string; null and
+// containers clear) and return the slot. The value-argument twin of
+// ring_slot() for lean `const char*` returns: transform the slot in
+// place, then return its c_str().
+std::string &value_text_slot(const madc::value *v);
+
+// THE lean-primary adapter pair: copy the subject into the lent ring
+// slot, run an in-place std::string core over it, return the slot's
+// text. The core is any namespace's in-place transform (std::string*
+// in, same pointer out) — the lean form and the guarded std::string
+// public share that ONE core by construction.
+const char *ring_apply(const char *s, std::string *(*core)(std::string *));
+const char *ring_apply(const madc::value *v,
+		       std::string *(*core)(std::string *));
+
+// ---- Element move-out (the value-out return convention) ----------------
+
+// Move the last/first element of `arr` into `dst`; `dst` becomes null when
+// the container is empty (or the write degrades). Container access routes
+// through value_array_for_write, so a frozen/mismatched `arr` reports and
+// no-ops. Returns true when an element actually moved.
+bool value_pop_element(madc::value &arr, madc::value &dst, const char *who);
+bool value_shift_element(madc::value &arr, madc::value &dst, const char *who);
 
 // Join `arr`'s string-coercible elements with `sep` into `out`. `out`
 // is cleared first. A non-array `arr` (null included) joins as empty.

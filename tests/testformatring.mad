@@ -1,0 +1,17 @@
+// dialect std::format returns ring-lifetime const char* (the c_str()
+// contract): the var carrier ingests it directly (this was a compile
+// error under the old std::string return), char* consumers take it
+// as-is, a keyed subscript accepts it as the key, and += appends it.
+int main()
+{
+	var g = format("n={} s={}", 42, "hi");
+	println("{}", g);
+	println("{}", format("direct {:>4}", 7));
+	var bag;
+	bag[format("k{}", 3)] = "v3";
+	println("{}", bag["k3"]);
+	var acc = "x";
+	acc += format("-{}", 1);
+	println("{}", acc);
+	return 0;
+}

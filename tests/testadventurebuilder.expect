@@ -1,0 +1,12 @@
+=== brass-door ===
+closed = true
+requires = opens-brass-door
+short = a heavy brass door
+brass-door -in-> twisty-passage-2
+> go north
+You go north.
+> edit door short a polished brass door
+Set short.
+short = a polished brass door
+> edit lantern noun lamp
+Edit what?

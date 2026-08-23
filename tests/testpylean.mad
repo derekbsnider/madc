@@ -1,0 +1,25 @@
+// python:: lean primaries (Leg 0b, dialect-lean.md): Python strings are
+// immutable — every method returns a NEW string. Pure dialect TU, zero
+// includes.
+int main()
+{
+	println("{}", python::title("hello world"));
+	value p = "python text";
+	println("{}", python::title(p));
+	println("{}", python::swapcase("MiXeD"));
+	value m = "AbC";
+	println("{}", python::swapcase(m));
+	println("[{}]", python::center("ab", 6, "*"));
+	println("[{}]", python::ljust("ab", 6, "*"));
+	println("[{}]", python::rjust("ab", 6, "*"));
+	value n = "42";
+	println("{}", python::zfill(n, 5));
+	println("{}", python::zfill("7", 3));
+	println("{}", python::replace("aaa", "a", "b"));
+	println("{}", python::replace(m, "b", "B"));
+	// the subjects were never mutated
+	println("[{}]", p);
+	println("[{}]", m);
+	println("[{}]", n);
+	return 0;
+}

@@ -59,8 +59,11 @@ static inline int madc_dump_entry_col(int flavor, int depth)
 }
 
 /* --- the capture sink (print_r's $return) ------------------------------- */
-/* NULL sink -> stdout; non-NULL -> an opaque growable buffer. */
+/* NULL sink -> stdout; non-NULL -> an opaque growable buffer, OR a
+ * pass-through stream sink from __madc_dump_sink_file (FILE* as void*
+ * — this boundary never names FILE; std::print(stderr, ...)'s target). */
 void       *__madc_dump_sink_open(void);
+void       *__madc_dump_sink_file(void *stream);
 const char *__madc_dump_sink_text(void *sink);
 size_t      __madc_dump_sink_length(void *sink);
 int         __madc_dump_sink_failed(void *sink);

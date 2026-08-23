@@ -201,6 +201,20 @@ std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
 	return dummy.object();
 }
 
+std::vector<madc::value> &value_array_reset_for_write(madc::value &v,
+						      const char *who)
+{
+	if ( v.is_frozen() )
+	{
+		report_frozen(who);
+		thread_local madc::value dummy;
+		dummy = madc::value::make_array();
+		return dummy.array();
+	}
+	v = madc::value::make_array();
+	return v.array();
+}
+
 size_t value_count(const madc::value &v)
 {
 	if ( v.is_array() )
@@ -239,22 +253,22 @@ size_t value_length(const madc::value &v, bool *ok)
 }
 
 void split_by_delim(madc::value &out, const std::string &s,
-		    const std::string &delim)
+		    const std::string &delim, const char *who)
 {
-	out = madc::value::make_array();
+	std::vector<madc::value> &data = value_array_reset_for_write(out, who);
 	if ( delim.empty() )
 	{
-		out.array().push_back(madc::value(s));
+		data.push_back(madc::value(s));
 		return;
 	}
 	size_t start = 0;
 	size_t end;
 	while ( (end = s.find(delim, start)) != std::string::npos )
 	{
-		out.array().push_back(madc::value(s.substr(start, end - start)));
+		data.push_back(madc::value(s.substr(start, end - start)));
 		start = end + delim.length();
 	}
-	out.array().push_back(madc::value(s.substr(start)));
+	data.push_back(madc::value(s.substr(start)));
 }
 
 void join_with_sep(std::string &out, const madc::value &arr,
@@ -271,6 +285,74 @@ void join_with_sep(std::string &out, const madc::value &arr,
 		if ( value_to_string(data[i], tmp) )
 			out += tmp;
 	}
+}
+
+std::string &ring_slot()
+{
+	thread_local std::string ring[8];
+	thread_local unsigned ring_i = 0;
+	return ring[ring_i++ & 7u];
+}
+
+const char *ring_text(std::string s)
+{
+	std::string &slot = ring_slot();
+	slot = std::move(s);
+	return slot.c_str();
+}
+
+std::string &value_text_slot(const madc::value *v)
+{
+	std::string &slot = ring_slot();
+	if ( !v || v->is_null() )
+		slot.clear();
+	else if ( v->is_string() )
+		slot.assign((const char *)v->data(), v->size());
+	else if ( !value_to_string(*v, slot) )
+		slot.clear();
+	return slot;
+}
+
+const char *ring_apply(const char *s, std::string *(*core)(std::string *))
+{
+	std::string &slot = ring_slot();
+	slot = s ? s : "";
+	core(&slot);
+	return slot.c_str();
+}
+
+const char *ring_apply(const madc::value *v,
+		       std::string *(*core)(std::string *))
+{
+	std::string &slot = value_text_slot(v);
+	core(&slot);
+	return slot.c_str();
+}
+
+bool value_pop_element(madc::value &arr, madc::value &dst, const char *who)
+{
+	std::vector<madc::value> &data = value_array_for_write(arr, who);
+	if ( data.empty() )
+	{
+		dst = madc::value();
+		return false;
+	}
+	dst = std::move(data.back());
+	data.pop_back();
+	return true;
+}
+
+bool value_shift_element(madc::value &arr, madc::value &dst, const char *who)
+{
+	std::vector<madc::value> &data = value_array_for_write(arr, who);
+	if ( data.empty() )
+	{
+		dst = madc::value();
+		return false;
+	}
+	dst = std::move(data.front());
+	data.erase(data.begin());
+	return true;
 }
 
 }  // namespace ns_common

@@ -790,7 +790,8 @@ static void check_attrib_note(node_t item, int index, unsigned n_errs,
 // success the caller owns the returned builder (it backs the tree's arena).
 static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    const char *source_name,
-				    CirBuilder *&out_builder)
+				    CirBuilder *&out_builder,
+				    bool project_tu = false)
 {
     out_builder = NULL;
     // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
@@ -810,6 +811,8 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
     CirBuilder *builder = new CirBuilder(c2m);
     // TU identity for the object-mode per-TU init symbol (S3 init-array).
     builder->set_tu_name(source_name);
+    // Project JIT TU: per-TU init shape, engine-called (see cir_builder.h).
+    builder->set_project_tu(project_tu);
     node_t tree = NULL;
     auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
     // slice D: forest-work clock advance inside this timed window = the
@@ -865,7 +868,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 				    Program *prog, const char *source_name,
 				    bool dump_tree, bool dump_nodes,
 				    bool dump_checked,
-				    CirBuilder *&out_builder, bool &out_stop)
+				    CirBuilder *&out_builder, bool &out_stop,
+				    bool project_tu = false)
 {
     out_builder = NULL;
     out_stop = false;
@@ -886,7 +890,8 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // drifted from this backend — e.g. mislowering backward `goto` loops — and
     // a stale unit test pointed at it once hung the suite. One backend, no A/B.)
     CirBuilder *builder = NULL;
-    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder,
+					project_tu);
     if (!tree)
 	return NULL;
 
@@ -4060,6 +4065,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	FuncDef *fd = fi->second;
 	if (!fd || !fd->is_member_template)
 	    continue;
+	// Lazy member-template hydration: a still-frozen restored placeholder
+	// must thaw before this walk, or its record would re-freeze EMPTY and
+	// the next consumer would silently lose the pattern.
+	fd->ensure_member_template_thawed();
 	bool body_bearing = !fd->member_template_decl.empty();
 	if (!body_bearing && fd->member_template_return_tokens.empty())
 	    continue;	// nothing restorable: no body, no return range
@@ -4085,9 +4094,31 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// the same convention the FN lane adopted at v33 for its
 	// typeparam_constraints. A reader of an older record sees spec
 	// empty and degrades to clearing every non-type default.
+	// Lazy-hydration SKELETON facts (identity, no payload): the extra slot
+	// (unused on MEMBER records until now) carries the placeholder's
+	// resolved RETURN type flat name, and CIR_TMPLF_MEMBER_CTOR marks
+	// ctor-hood — enough for the flush to register the varargs stub
+	// without hydrating the record. An older record's empty extra keeps
+	// the eager hydrate+register path.
+	bool as_ctor = false;
+	for (size_t ci = 0; !as_ctor && ci < owner->ctors.size(); ++ci)
+	    as_ctor = owner->ctors[ci] && owner->ctors[ci]->type == fd;
+	// A reference return spells itself base+"*" (DataDefREF inherits the
+	// pointer ctor's name) — bank it as base+"&" so the flush rebuilds a
+	// DataDefREF, not a pointer. The banked form is "#<typeid>#<flatname>":
+	// the arena type-id resolves via restored_def_by_tid (covers mangled
+	// class names datatype_map never keys); the flat name is the fallback
+	// (pinned/derived spellings); either miss degrades to the eager arm.
+	std::string ret_flat = fd->returns.is_reference()
+			     ? fd->return_value_type().name + "&"
+			     : fd->returns.name;
+	uint32_t ret_tid = madc_type_id_for(&fd->returns);
+	std::string ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;
 	emit(CIR_TMPLK_MEMBER, fi->first.c_str(), fd->method_display_name,
-	     std::string(), std::string(), owner,
-	     instance ? CIR_TMPLF_INSTANCE_METHOD : 0,
+	     std::string(), ret_bank, owner,
+	     (instance ? CIR_TMPLF_INSTANCE_METHOD : 0)
+	     | (as_ctor ? CIR_TMPLF_MEMBER_CTOR : 0)
+	     | (body_bearing ? 0 : CIR_TMPLF_MEMBER_DECL_ONLY),
 	     fd->template_param_names, fd->template_param_is_type,
 	     fd->template_param_is_pack, fd->member_template_param_defaults,
 	     fd->member_template_decl,
@@ -5595,8 +5626,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 }
 
 int madc_cir_execute_frozen(const char *container_path,
-			    int user_argc, char **user_argv)
+			    int user_argc, char **user_argv, bool show_stats)
 {
+    auto _mp0 = std::chrono::steady_clock::now();  // --show-stats: map wall
     const void *image = NULL;
     size_t image_len = 0;
     if (!cir_forest_map_image(container_path, image, image_len)) {
@@ -5612,16 +5644,29 @@ int madc_cir_execute_frozen(const char *container_path,
 	TokenBase::_active_strpool = &frozen_run_pool;
     }
 
+    auto _th0 = std::chrono::steady_clock::now();  // --show-stats: thaw wall
     CirJitSession session;
     if (!session.build_frozen(image, image_len, "frozen"))
 	return -1;
+    auto _th1 = std::chrono::steady_clock::now();
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok, /*out_secs=*/0);
+    double exec_secs = 0.0;
+    int result = session.run_main(user_argc, user_argv, &ok, &exec_secs);
     if (!ok) {
 	fprintf(stderr, "madc: frozen module has no main()\n");
 	return -1;
     }
+    // --show-stats: the frozen lane's phases (no parse — map, thaw+link,
+    // run). main() appends the process total.
+    if (show_stats)
+	fprintf(stderr,
+		"[stats] map container ....... %.3f s\n"
+		"[stats] thaw + link ......... %.3f s\n"
+		"[stats] execution ........... %.3f s\n",
+		std::chrono::duration<double>(_th0 - _mp0).count(),
+		std::chrono::duration<double>(_th1 - _th0).count(),
+		exec_secs);
     return result;
 }
 
@@ -5759,6 +5804,14 @@ static bool is_c_source_file(const std::string &path)
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
 	std::string name;
+	// --show-stats: per-TU front-end walls, recorded by project_parse_all.
+	// The deeper phase clocks (_read/_inst/_cir_build/_c2mir_seconds) are
+	// stamped on the Program at their own layers; only the tokenize/parse
+	// windows are visible here. Same netting as the single-TU lane: lex is
+	// net of read + forest share, parse is net of forest share.
+	double lex_secs = 0.0;
+	double parse_secs = 0.0;
+	double forest_secs = 0.0;
 };
 
 // Phase 1 of every project lane (run + native-emit): tokenize + parse EVERY
@@ -5770,14 +5823,19 @@ struct CirParsedTU {
 // Programs own the arenas their modules will be built from, so the caller
 // holds `parsed` for its whole compile.
 static bool project_parse_all(MadcEngine &engine,
+			      MadcCompileGroup &group,
 			      const ProjectManifest &manifest,
 			      bool forest_bind,
 			      const std::string &forest_bind_path,
 			      bool class_pattern_live_capture,
 			      std::vector<CirParsedTU> &parsed)
 {
+	// R4-lite: sibling TUs of one project share ONE compile group — one
+	// spelling universe, one type-id universe, one bound forest instance
+	// per dialect (the ODR shape). The caller declares the group before
+	// `parsed` so it outlives every TU Program that backpoints to it.
 	for (const ProjectTU &tu : manifest.tus) {
-		std::unique_ptr<Program> prog = engine.create_program();
+		std::unique_ptr<Program> prog = engine.create_program(&group);
 		prog->colors = true;
 		// Each TU binds the one embedded/standalone forest (compiles
 		// BIND; only the build-time pack freezes). ensure_bind_forest()
@@ -5805,17 +5863,30 @@ static bool project_parse_all(MadcEngine &engine,
 			// feature gates (timercmp, strdup, …) match plain gcc.
 			prog->set_language_standard_option("--std=gnu17");
 
+		auto _tk0 = std::chrono::steady_clock::now();
+		double _fw0 = prog->_forest_work_seconds;
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {
 			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
 			return false;
 		}
+		auto _tk1 = std::chrono::steady_clock::now();
+		double _fw1 = prog->_forest_work_seconds;
 		if (!prog->parse(tp)) {
 			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
 			return false;
 		}
+		auto _ps1 = std::chrono::steady_clock::now();
+		double _fw2 = prog->_forest_work_seconds;
 
 		CirParsedTU pt;
+		pt.lex_secs = std::chrono::duration<double>(_tk1 - _tk0).count()
+			    - prog->_read_seconds - (_fw1 - _fw0);
+		if (pt.lex_secs < 0) pt.lex_secs = 0;
+		pt.parse_secs = std::chrono::duration<double>(_ps1 - _tk1).count()
+			      - (_fw2 - _fw1);
+		if (pt.parse_secs < 0) pt.parse_secs = 0;
+		pt.forest_secs = _fw2 - _fw0;
 		pt.prog = std::move(prog);
 		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
@@ -5826,7 +5897,7 @@ static bool project_parse_all(MadcEngine &engine,
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
 			 bool forest_bind, const std::string &forest_bind_path,
-			 bool class_pattern_live_capture)
+			 bool class_pattern_live_capture, bool show_stats)
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
@@ -5834,8 +5905,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	}
 
 	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
+	// The compile group (R4-lite: shared strpool / type-id table / bound
+	// forest across sibling TUs) is declared BEFORE `parsed` so it outlives
+	// every TU Program that backpoints to it.
+	MadcCompileGroup group;
 	std::vector<CirParsedTU> parsed;
-	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
+	if (!project_parse_all(engine, group, manifest, forest_bind,
+			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
 
@@ -5882,7 +5958,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
 						   pt.name.c_str(),
 						   false, false, false,
-						   builder, stop);
+						   builder, stop,
+						   /*project_tu=*/true);
 		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
 		if (!mod) {
 			teardown();
@@ -5891,6 +5968,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		modules.push_back(mod);
 	}
 
+	auto _lk0 = std::chrono::steady_clock::now();  // --show-stats: link wall
 	for (MIR_module_t m : modules)
 		MIR_load_module(ctx, m);
 	// Same link environment the single-TU JIT builds: the active flavor's
@@ -5899,9 +5977,20 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Program answers for all of them.
 	if (!parsed.empty() && parsed[0].prog)
 		cir_open_stdlib_runtime(parsed[0].prog->active_stdlib_flavor());
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+	// MIR_set_gen_interface is EAGER — it MIR_gen()s every loaded func at
+	// link (adventure: 271 funcs, 91% of the link wall) before main ever
+	// runs. Ride the lazy interface: functions generate on FIRST CALL, so
+	// startup pays only for what the run actually reaches. c2mir already
+	// checked every function; the entry and the TU inits below stay
+	// explicitly MIR_gen'd (their failure surface is unchanged). -g keeps
+	// the eager interface: source-debug registration reads machine code.
+	MIR_link(ctx,
+		 madc_debug_info ? MIR_set_gen_interface
+				 : MIR_set_lazy_gen_interface,
+		 cir_import_resolver);
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
+	auto _lk1 = std::chrono::steady_clock::now();
 
 	// Find the entry symbol across all modules. First match wins; a
 	// duplicate entry (e.g. two main()s across TUs) is not diagnosed here.
@@ -5926,10 +6015,108 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		return -1;
 	}
 
+	// Dynamic global initialization, every TU (the engine plays ld.so's
+	// .init_array role): each TU's builder recorded its unique static init
+	// (translate_module, project_tu shape — sys-init-once + ctor groups).
+	// Manifest order, before main. With the old single `__madc_global_init`
+	// export, MIR's redef permission made the LAST module's copy win and
+	// every other TU's initializers silently never ran.
+	for (size_t bi = 0; bi < builders.size(); bi++) {
+		if (!builders[bi] || bi >= modules.size())
+			continue;
+		const std::string &ini = builders[bi]->tu_init_name();
+		if (ini.empty())
+			continue;
+		void *icode = nullptr;
+		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, modules[bi]->items);
+		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+			if (item->item_type == MIR_func_item
+			    && strcmp(item->u.func->name, ini.c_str()) == 0) {
+				icode = MIR_gen(ctx, item);
+				break;
+			}
+		}
+		if (!icode) {
+			fprintf(stderr, "madc_project_execute: %s: TU init '%s'"
+				" not found in its module\n",
+				parsed[bi].name.c_str(), ini.c_str());
+			teardown();
+			return -1;
+		}
+		((void (*)(int, char **, char **))icode)(user_argc, user_argv,
+							 nullptr);
+	}
+
+	auto _gi1 = std::chrono::steady_clock::now();  // --show-stats: entry gen + inits end
+
+	// --show-stats: the project lane's phase report — per-TU front-end walls
+	// (recorded by project_parse_all + the phase clocks each TU's Program
+	// stamped during its own build), then the shared phases this function
+	// owns (link, entry gen + TU inits). Printed BEFORE the entry call: a
+	// program that exits via exit() never returns here, and the compile-side
+	// phases — the cold-startup cost — must survive that. The execution
+	// line prints after a normal return; main() appends the process total.
+	// The lazy gen interface defers all non-entry/init codegen to first
+	// call, so it lands inside the execution bucket.
+	if (show_stats) {
+		double t_read = 0, t_lex = 0, t_parse = 0, t_inst = 0;
+		double t_cir = 0, t_c2m = 0, t_forest = 0;
+		unsigned long long t_tok = 0;
+		unsigned long long t_forest_eager = 0, t_forest_deferred = 0;
+		unsigned long long t_forest_activated = 0, t_forest_remaining = 0;
+		for (const CirParsedTU &pt : parsed) {
+			const Program *p = pt.prog.get();
+			double cir_secs = p->_cir_build_seconds - p->_cir_forest_seconds;
+			if (cir_secs < 0) cir_secs = 0;
+			fprintf(stderr,
+				"[stats] TU %s: lex %.3fs parse %.3fs (inst %.0f%%)"
+				" cir %.3fs c2mir %.3fs forest %.3fs (%llu tokens)\n",
+				pt.name.c_str(), pt.lex_secs, pt.parse_secs,
+				pt.parse_secs > 0 ? 100.0 * p->_inst_seconds / pt.parse_secs : 0.0,
+				cir_secs, p->_c2mir_seconds,
+				pt.forest_secs + p->_cir_forest_seconds,
+				p->_tok_produced);
+			t_read += p->_read_seconds;
+			t_lex += pt.lex_secs;
+			t_parse += pt.parse_secs;
+			t_inst += p->_inst_seconds;
+			t_cir += cir_secs;
+			t_c2m += p->_c2mir_seconds;
+			t_forest += pt.forest_secs + p->_cir_forest_seconds;
+			t_tok += p->_tok_produced;
+			t_forest_eager += p->_forest_funcs_eager;
+			t_forest_deferred += p->_forest_funcs_deferred;
+			t_forest_activated += p->_forest_funcs_activated;
+			t_forest_remaining += p->forest_deferred_funcs.size();
+		}
+		fprintf(stderr,
+			"[stats] front-end (%zu TUs) . read %.3fs lex %.3fs"
+			" parse %.3fs (inst %.3fs) cir %.3fs c2mir %.3fs"
+			" forest %.3fs (%llu tokens)\n"
+			"[stats] shared prelude ....... %zu hits / %zu misses"
+			" (%zu fresh shells)\n"
+			"[stats] forest functions .... %llu eager + %llu derived deferred; %llu activated / %llu remain\n"
+			"[stats] link ................ %.3f s\n"
+			"[stats] entry gen + TU inits  %.3f s\n",
+			parsed.size(), t_read, t_lex, t_parse, t_inst, t_cir,
+			t_c2m, t_forest, t_tok,
+			group.shared_prelude_hits, group.shared_prelude_misses,
+			group.shared_prelude_tokens,
+			t_forest_eager, t_forest_deferred,
+			t_forest_activated, t_forest_remaining,
+			std::chrono::duration<double>(_lk1 - _lk0).count(),
+			std::chrono::duration<double>(_gi1 - _lk1).count());
+	}
+
 	// Expose the entry's module to the crash handler for JIT symbolization.
 	g_jit_module = entry_mod;
 	int result = ((int (*)(int, char **))code)(user_argc, user_argv);
 	g_jit_module = nullptr;
+
+	if (show_stats)
+		fprintf(stderr, "[stats] execution ........... %.3f s\n",
+			std::chrono::duration<double>(
+			    std::chrono::steady_clock::now() - _gi1).count());
 
 	teardown();
 	return result;
@@ -5958,9 +6145,12 @@ int madc_project_emit_native(MadcEngine &engine,
 	}
 	madc_object_mode = true;   // one-shot CLI path; process exits after
 
+	// Group before `parsed`: it must outlive the TU Programs (see
+	// madc_project_execute).
+	MadcCompileGroup group;
 	std::vector<CirParsedTU> parsed;
-	if (!project_parse_all(engine, manifest, forest_bind, forest_bind_path,
-			       false, parsed))
+	if (!project_parse_all(engine, group, manifest, forest_bind,
+			       forest_bind_path, false, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
 
 	// Standalone executables — and every non--shared artifact of an

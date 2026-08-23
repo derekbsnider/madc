@@ -1,0 +1,5 @@
+int=42
+bool=1
+real=2.5
+null=1 after=0
+caught: as_integer(): value kind is not integer

@@ -1,0 +1,79 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1071883378
+
+Seed set to 1071883378
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take lamp
+
+OK
+
+> rub lamp
+
+Rubbing the electric lamp is not particularly rewarding.  Anyway,
+nothing exciting happens.
+
+> xyzzy
+
+>>Foof!<<
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> on
+
+Your lamp is now on.
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> w
+
+You are in an awkward sloping east/west canyon.
+
+> w
+
+You are in a splendid chamber thirty feet high.  The walls are frozen
+rivers of orange stone.  An awkward canyon and a good passage exit
+from east and west sides of the chamber.
+
+A cheerful little bird is sitting here singing.
+
+> take bird
+
+You can catch the bird, but you cannot carry it.
+
+> attack
+
+The little bird is now dead.  Its body disappears.
+
+> 
+You scored 32 out of a possible 430, using 9 turns.
+
+You are obviously a rank amateur.  Better luck next time.
+
+To achieve the next higher rating, you need 14 more points.

@@ -70,17 +70,19 @@ std::string *ruby_tr(std::string *ptr, const char *from, const char *to)
 void ruby_chars(madc::value *arr, const char *str)
 {
 	std::string s = ruby_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "ruby::chars");
 	for ( size_t i = 0; i < s.length(); ++i )
-		arr->array().push_back(madc::value(std::string(1, s[i])));
+		data.push_back(madc::value(std::string(1, s[i])));
 }
 
 // ruby::rotate — rotate array elements by n positions
 // [1,2,3,4,5].rotate(2) -> [3,4,5,1,2]
 void ruby_rotate(madc::value *arr, int64_t n)
 {
-	if ( !arr->is_array() || arr->as_array().empty() ) return;
-	std::vector<madc::value> &data = arr->array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "ruby::rotate");
+	if ( data.empty() ) return;
 	int64_t sz = (int64_t)data.size();
 	n = ((n % sz) + sz) % sz; // handle negative rotation
 	std::rotate(data.begin(), data.begin() + n, data.end());
@@ -89,22 +91,24 @@ void ruby_rotate(madc::value *arr, int64_t n)
 // ruby::compact — remove empty string entries from array
 void ruby_compact(madc::value *arr)
 {
-	if ( !arr->is_array() ) return;
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "ruby::compact");
 	std::vector<madc::value> cleaned;
-	for ( auto &v : arr->as_array() )
+	for ( auto &v : data )
 	{
 		if ( v.is_string() && v.as_string().empty() )
 			continue;
 		cleaned.push_back(v);
 	}
-	arr->array() = std::move(cleaned);
+	data = std::move(cleaned);
 }
 
 // ruby::flatten — flatten nested string (split by any whitespace into array)
 void ruby_flatten(madc::value *arr, const char *str)
 {
 	std::string s = ruby_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "ruby::flatten");
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -112,7 +116,7 @@ void ruby_flatten(madc::value *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				arr->array().push_back(madc::value(word));
+				data.push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -120,7 +124,7 @@ void ruby_flatten(madc::value *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		arr->array().push_back(madc::value(word));
+		data.push_back(madc::value(word));
 }
 
 // ruby::capitalize — capitalize first char, lowercase rest (Ruby semantics)
@@ -188,12 +192,97 @@ std::string *ruby_sub(std::string *ptr, const char *pattern, const char *replace
 	return ptr;
 }
 
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// Ruby-parity NON-MUTATING forms: these are the non-bang methods, which
+// return a NEW string in Ruby — ring-lifetime text (the c_str contract)
+// over the SAME in-place cores the guarded std::string publics use.
+
+using ns_common::ring_apply;
+
+const char *ruby_squeeze_cstr(const char *s)	{ return ring_apply(s, ruby_squeeze); }
+const char *ruby_squeeze_value(const madc::value *v)	{ return ring_apply(v, ruby_squeeze); }
+const char *ruby_capitalize_cstr(const char *s)	{ return ring_apply(s, ruby_capitalize); }
+const char *ruby_capitalize_value(const madc::value *v)	{ return ring_apply(v, ruby_capitalize); }
+
+const char *ruby_tr_cstr(const char *s, const char *from, const char *to)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	ruby_tr(&slot, from, to);
+	return slot.c_str();
+}
+const char *ruby_tr_value(const madc::value *v, const char *from,
+			  const char *to)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	ruby_tr(&slot, from, to);
+	return slot.c_str();
+}
+
+const char *ruby_delete_cstr(const char *s, const char *chars)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	ruby_delete_chars(&slot, chars);
+	return slot.c_str();
+}
+const char *ruby_delete_value(const madc::value *v, const char *chars)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	ruby_delete_chars(&slot, chars);
+	return slot.c_str();
+}
+
+const char *ruby_gsub_cstr(const char *s, const char *pattern,
+			   const char *replacement)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	ruby_gsub(&slot, pattern, replacement);
+	return slot.c_str();
+}
+const char *ruby_gsub_value(const madc::value *v, const char *pattern,
+			    const char *replacement)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	ruby_gsub(&slot, pattern, replacement);
+	return slot.c_str();
+}
+
+const char *ruby_sub_cstr(const char *s, const char *pattern,
+			  const char *replacement)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	ruby_sub(&slot, pattern, replacement);
+	return slot.c_str();
+}
+const char *ruby_sub_value(const madc::value *v, const char *pattern,
+			   const char *replacement)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	ruby_sub(&slot, pattern, replacement);
+	return slot.c_str();
+}
+
 // ruby::freeze / frozen check — mark string as frozen (read-only)
 // simplified: just returns the string, actual freeze enforcement would need compiler support
 
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+const char *__rb_squeeze_cstr(const char *a) { return ruby_squeeze_cstr(a); }
+const char *__rb_squeeze_value(madc::value *a) { return ruby_squeeze_value(a); }
+const char *__rb_capitalize_cstr(const char *a) { return ruby_capitalize_cstr(a); }
+const char *__rb_capitalize_value(madc::value *a) { return ruby_capitalize_value(a); }
+const char *__rb_tr_cstr(const char *a, const char *b, const char *c) { return ruby_tr_cstr(a, b, c); }
+const char *__rb_tr_value(madc::value *a, const char *b, const char *c) { return ruby_tr_value(a, b, c); }
+const char *__rb_delete_cstr(const char *a, const char *b) { return ruby_delete_cstr(a, b); }
+const char *__rb_delete_value(madc::value *a, const char *b) { return ruby_delete_value(a, b); }
+const char *__rb_gsub_cstr(const char *a, const char *b, const char *c) { return ruby_gsub_cstr(a, b, c); }
+const char *__rb_gsub_value(madc::value *a, const char *b, const char *c) { return ruby_gsub_value(a, b, c); }
+const char *__rb_sub_cstr(const char *a, const char *b, const char *c) { return ruby_sub_cstr(a, b, c); }
+const char *__rb_sub_value(madc::value *a, const char *b, const char *c) { return ruby_sub_value(a, b, c); }
 std::string *__rb_squeeze(std::string *a) { return ruby_squeeze(a); }
 std::string *__rb_tr(std::string *a, const char *b, const char *c) { return ruby_tr(a, b, c); }
 void __rb_chars(madc::value *a, const char *b) { ruby_chars(a, b); }

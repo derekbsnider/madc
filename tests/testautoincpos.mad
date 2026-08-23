@@ -1,0 +1,31 @@
+// Auto-include position gates (lexer scan): an identifier that matches a
+// std-surface name pulls its header ONLY when the std entity can be meant.
+// Here `set` appears in member-access position (c.set), as an out-of-line
+// member qualifier (Counter::set), and `getline` behind a non-std
+// qualifier (madc::getline) — all belong to the user's class / the madc::
+// namespace, and none may pull <set>/<string> into the TU (measured on
+// examples/adventure: the false pulls lexed 776K tokens for a 4.4K-line
+// program). scripts/check-autoinclude-position.sh asserts the non-pull on
+// this same file via -dM, with its own positive control.
+class Counter
+{
+    public:
+	long v;
+	void set(long x);
+};
+
+void Counter::set(long x)
+{
+	this.v = x;
+}
+
+int main()
+{
+	Counter c;
+	c.set(41);
+	println("{}", c.v + 1);
+	var line;
+	if ( madc::getline(line) )
+		println("{}", line);
+	return 0;
+}

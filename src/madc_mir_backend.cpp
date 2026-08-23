@@ -81,15 +81,22 @@ void *madarray_construct_bool(void *ptr, int64_t b)
     { return new(ptr) madc::value(b != 0); }
 void *madarray_construct_value(void *ptr, void *src)
     { return new(ptr) madc::value(*(const madc::value *)src); }
-// Range-for length over a script array. Intentionally NOT
-// ns_common::value_count: foreach iterates indexed elements only, so an
-// object-kind ctx must read as length 0 here.
+// Range-for length over a script array OR object bag. Arrays count their
+// elements; the object kind counts its map entries (`for (value v : bag)`
+// visits the VALUES in key order — php_array_get_value's object arm is the
+// matching fill). Scalars still read 0. Intentionally NOT
+// ns_common::value_count (that answers .count() with text-length semantics
+// and a script exception for uncountable kinds).
 // int64_t, never `long`: the CIR declares these thunk slots as long long
 // (the i64 spelling law), and host `long` is 32-bit on win64 (LLP64).
 int64_t madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;
-	return v->is_array() ? (int64_t)v->as_array().size() : 0;
+	if ( v->is_array() )
+	    return (int64_t)v->as_array().size();
+	if ( v->is_object() )
+	    return (int64_t)v->as_object().size();
+	return 0;
     }
 
 // The script .count()/.size() methods (add_array_methods binds both here).
@@ -123,6 +130,37 @@ int64_t madarray_count(void *ptr)
 	return (int64_t)n;
     }
 
+// Strict kind accessors — the script .as_integer()/.as_boolean()/.as_real()
+// methods and the .is_null() predicate (add_array_methods binds them here),
+// mirroring madc::value's own accessor contract: the value's kind must BE
+// the asked-for kind; a mismatch is a real madc exception (catchable as
+// `catch (const char *)`), never a silent coercion. The carrier's C++
+// throw is converted at this boundary — a C++ exception must not cross
+// the MIR frame.
+int64_t madarray_as_integer(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_integer() )
+	    __madc_throw_cstr("as_integer(): value kind is not integer");
+	return v->as_integer();
+    }
+int64_t madarray_as_boolean(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_boolean() )
+	    __madc_throw_cstr("as_boolean(): value kind is not boolean");
+	return v->as_boolean() ? 1 : 0;
+    }
+double madarray_as_real(void *ptr)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_real() )
+	    __madc_throw_cstr("as_real(): value kind is not real");
+	return v->as_real();
+    }
+int64_t madarray_is_null(void *ptr)
+    { return ((madc::value *)ptr)->is_null() ? 1 : 0; }
+
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.
 // Each retags the carrier in place through madc::value's own operator=
@@ -139,6 +177,59 @@ void *madarray_assign_bool(void *ptr, int64_t b)
 void *madarray_assign_value(void *ptr, void *src)
     { *(madc::value *)ptr = *(const madc::value *)src; return ptr; }
 
+// String-keyed SLOT on the object kind — the lvalue behind `bag["key"]`
+// (and the parser's `bag.key` member spelling over the carrier). Vivifies
+// a null carrier to an empty object, then returns the address of the
+// (default-constructed-if-missing) map entry — Perl-model autovivification:
+// ACCESS creates the slot, reads included; the non-mutating existence
+// question is php::array_key_exists, never this. std::map nodes are
+// stable, so the returned slot stays valid for the entry's lifetime.
+// A scalar already in the carrier is a real script error (replacing it
+// with an object would eat data — retag the carrier first), and freeze()
+// rejection rides madc::value::object() (the one owner); both surface as
+// catchable script errors, never a C++ throw across the MIR boundary.
+void *madarray_key_slot(void *ptr, const char *key)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( !v->is_null() && !v->is_object() )
+	    __madc_throw_cstr("[\"key\"]: value of this kind has no keyed members");
+	try {
+	    return &v->object()[key ? key : ""];
+	} catch ( const std::exception & ) {
+	    __madc_throw_cstr("[\"key\"]: value is frozen");
+	}
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
+// Integer-indexed SLOT on the array kind — the lvalue behind `arr[i]`,
+// the keyed slot's index twin (owner law 2026-08-21: the carrier owns its
+// element surface; the old string-first element model typed element reads
+// as a std::string TEMP, so `arr[i] = x` was a silent no-op and element
+// methods needed <string>). Vivifies a null carrier to an empty array and
+// extends with null elements through idx (access creates, the keyed
+// model's rule — `arr[3] = x` on a shorter array must land), then returns
+// the element's address. vector storage: the slot stays valid until the
+// array next GROWS (the C++ vector-iterator contract) — expression
+// lifetime, exactly how the CIR consumes it. A negative index or a
+// non-array kind is a catchable script error, never a crash or a temp.
+void *madarray_index_slot(void *ptr, int64_t idx)
+    {
+	madc::value *v = (madc::value *)ptr;
+	if ( idx < 0 )
+	    __madc_throw_cstr("[index]: negative index on a madc array");
+	if ( !v->is_null() && !v->is_array() )
+	    __madc_throw_cstr("[index]: value of this kind has no indexed elements");
+	try {
+	    std::vector<madc::value> &vec = v->array();
+	    if ( (size_t)idx >= vec.size() )
+		vec.resize((size_t)idx + 1);
+	    return &vec[(size_t)idx];
+	} catch ( const std::exception & ) {
+	    __madc_throw_cstr("[index]: value is frozen");
+	}
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
 // Text view of a value for C varargs (printf "%s") — the coercion the CIR
 // builder applies to a value argument in a variadic call. String kind
 // returns the value's own payload (stable, value-owned). Other kinds
@@ -151,17 +242,234 @@ const char *madarray_cstr(void *ptr)
 	const madc::value *v = (const madc::value *)ptr;
 	if (v->is_string())
 	    return (const char *)v->data();
-	thread_local std::string ring[8];
-	thread_local unsigned ring_i = 0;
-	std::string &slot = ring[ring_i++ & 7u];
+	std::string &slot = ns_common::ring_slot();
 	if (v->is_null())
-	    slot = "";
+	    slot.clear();
 	else if (v->is_boolean())
 	    slot = v->as_boolean() ? "true" : "false";
 	else if (!ns_common::value_to_string(*v, slot))
 	    slot = std::string("[") + madc::value::kind_name(v->type())
 		 + ":" + std::to_string((long long)v->size()) + "]";
 	return slot.c_str();
+    }
+
+// ---- string surface (value-first.md): a string-kind value is usable
+// like a std::string. Equality is a QUESTION — a kind mismatch answers
+// false, never a throw. Mutation (+=) and extraction (substr) keep the
+// strict-kind contract with catchable script errors. substr returns
+// ring-lifetime text (the c_str contract) until value-by-value returns
+// (L3) land.
+int64_t madarray_eq_cstr(void *ptr, const char *s)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!s || !v->is_string())
+	    return 0;
+	size_t len = v->size();
+	return strlen(s) == len
+	    && memcmp((const char *)v->data(), s, len) == 0;
+    }
+int64_t madarray_ne_cstr(void *ptr, const char *s)
+    { return !madarray_eq_cstr(ptr, s); }
+int64_t madarray_eq_value(void *ptr, void *other)
+    { return *(const madc::value *)ptr == *(const madc::value *)other; }
+int64_t madarray_ne_value(void *ptr, void *other)
+    { return !(*(const madc::value *)ptr == *(const madc::value *)other); }
+
+// First byte position of needle[0..n) in hay[0..len): memchr rides the
+// libc vectorized scan, memcmp confirms. No allocations, portable (no
+// memmem — the win64 lane's C runtime lacks it).
+static int64_t text_index_of(const char *hay, size_t len,
+			     const char *s, size_t n)
+    {
+	if (n == 0)
+	    return 0;
+	if (n > len)
+	    return -1;
+	const char *end = hay + len - n;
+	for (const char *p = hay; p <= end; )
+	{
+	    const char *c = (const char *)memchr(p, s[0],
+						 (size_t)(end - p) + 1);
+	    if (!c)
+		return -1;
+	    if (memcmp(c, s, n) == 0)
+		return (int64_t)(c - hay);
+	    p = c + 1;
+	}
+	return -1;
+    }
+
+// index(needle): Python's list.index / str.find shape. An array-kind
+// receiver answers the first position whose element equals the needle;
+// a string-kind receiver answers the byte position of the needle
+// substring; -1 when absent (a question, never a throw). One strlen,
+// zero allocations.
+int64_t madarray_index_cstr(void *ptr, const char *s)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!s)
+	    return -1;
+	size_t n = strlen(s);
+	if (v->is_string())
+	    return text_index_of((const char *)v->data(), v->size(), s, n);
+	if (!v->is_array())
+	    return -1;
+	const std::vector<madc::value> &data = v->as_array();
+	for (size_t i = 0; i < data.size(); ++i)
+	    if (data[i].is_string() && data[i].size() == n
+		&& memcmp(data[i].data(), s, n) == 0)
+		return (int64_t)i;
+	return -1;
+    }
+int64_t madarray_index_value(void *ptr, void *other)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	const madc::value *o = (const madc::value *)other;
+	if (v->is_string())
+	{
+	    if (!o->is_string())
+		return -1;
+	    return text_index_of((const char *)v->data(), v->size(),
+				 (const char *)o->data(), o->size());
+	}
+	if (!v->is_array())
+	    return -1;
+	const std::vector<madc::value> &data = v->as_array();
+	for (size_t i = 0; i < data.size(); ++i)
+	    if (data[i] == *o)
+		return (int64_t)i;
+	return -1;
+    }
+
+// Append text onto a string-kind (or null — vivifies to string) value.
+// One exact-reserved temp + one copy into the cell (NUL-transparent via
+// the std::string ctor → madc_value_set_string_n; no strlen). The
+// rebuilt payload rides madc::value's own assignment, so freeze
+// rejection stays with the one owner. A true in-place cell append is a
+// future carrier primitive if appends ever get hot.
+static void madarray_append_text(madc::value *v, const char *s, size_t n)
+    {
+	if (!v->is_null() && !v->is_string())
+	    __madc_throw_cstr("+=: value of this kind cannot append text");
+	size_t old = v->is_string() ? v->size() : 0;
+	if (n == 0 && old > 0)
+	    return;
+	std::string t;
+	t.reserve(old + n);
+	if (old)
+	    t.append((const char *)v->data(), old);
+	t.append(s, n);
+	try {
+	    *v = madc::value(t);
+	} catch (const std::exception &) {
+	    __madc_throw_cstr("+=: value is frozen");
+	}
+    }
+void *madarray_append_cstr(void *ptr, const char *s)
+    {
+	madarray_append_text((madc::value *)ptr, s ? s : "",
+			     s ? strlen(s) : 0);
+	return ptr;
+    }
+void *madarray_append_value(void *ptr, void *other)
+    {
+	const madc::value *o = (const madc::value *)other;
+	if (!o->is_string())
+	    __madc_throw_cstr("+=: appended value is not string kind");
+	madarray_append_text((madc::value *)ptr, (const char *)o->data(),
+			     o->size());
+	return ptr;
+    }
+
+// value.push(x) — append one ELEMENT (array-kind append; operator+= owns
+// TEXT append). A null receiver vivifies to an empty array; any other
+// non-array kind is a catchable script error, the carrier-method
+// convention (at/substr/count). Returns the receiver so pushes chain —
+// a script `v.push(x)` binds these entries, and the brace-list
+// declaration lowering (`var v = { a, b, c };`) emits construct + one
+// push per element through the same rows.
+static std::vector<madc::value> &madarray_push_target(madc::value *v)
+    {
+	if (v->is_frozen())
+	    __madc_throw_cstr("push(): value is frozen");
+	if (!v->is_null() && !v->is_array())
+	    __madc_throw_cstr("push(): value of this kind cannot take elements");
+	return v->array();
+    }
+void *madarray_push_cstr(void *ptr, const char *s)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(madc::value(std::string(s ? s : "")));
+	return ptr;
+    }
+void *madarray_push_int(void *ptr, int64_t i)
+    {
+	madarray_push_target((madc::value *)ptr).push_back(madc::value(i));
+	return ptr;
+    }
+void *madarray_push_real(void *ptr, double d)
+    {
+	madarray_push_target((madc::value *)ptr).push_back(madc::value(d));
+	return ptr;
+    }
+void *madarray_push_bool(void *ptr, int64_t b)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(madc::value(b != 0));
+	return ptr;
+    }
+void *madarray_push_value(void *ptr, void *other)
+    {
+	madarray_push_target((madc::value *)ptr)
+	    .push_back(*(const madc::value *)other);
+	return ptr;
+    }
+
+// `var v = {};` — an EMPTY brace list is an empty ARRAY, not a null
+// value: the braces spell a container. The declaration lowering calls
+// this once after construct; size() reads 0 and is_null() answers false.
+void *madarray_make_array(void *ptr)
+    {
+	*(madc::value *)ptr = madc::value::make_array();
+	return ptr;
+    }
+
+const char *madarray_substr(void *ptr, int64_t pos, int64_t len)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!v->is_string())
+	    __madc_throw_cstr("substr(): value kind is not string");
+	size_t sz = v->size();
+	if (pos < 0 || (size_t)pos > sz)
+	    __madc_throw_cstr("substr(): position out of range");
+	size_t n = sz - (size_t)pos;
+	if (len >= 0 && (size_t)len < n)
+	    n = (size_t)len;
+	std::string &slot = ns_common::ring_slot();
+	slot.assign((const char *)v->data() + (size_t)pos, n);
+	return slot.c_str();
+    }
+
+int64_t madarray_at(void *ptr, int64_t pos)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (!v->is_string())
+	    __madc_throw_cstr("at(): value kind is not string");
+	if (pos < 0 || (size_t)pos >= v->size())
+	    __madc_throw_cstr("at(): position out of range");
+	return (int64_t)(unsigned char)((const char *)v->data())[pos];
+    }
+
+int64_t madarray_empty(void *ptr)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	if (v->is_null())
+	    return 1;
+	bool ok = true;
+	size_t n = ns_common::value_length(*v, &ok);
+	if (!ok)
+	    __madc_throw_cstr("empty(): value of this kind is not countable");
+	return n == 0;
     }
 
 // madc::sys population (task #91) — injected by the CIR builder in TUs

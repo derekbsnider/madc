@@ -1,0 +1,15 @@
+// No-viable-overload must be a LOUD compile error, never a silent
+// mis-bind. The historical fallback bound the arbitrary parse-bound
+// by-name member and compiled the call through the wrong ABI (a
+// std::string argument read as a value carrier SEGV'd in
+// madc_value_copy before the strict error landed).
+//
+// php::trim's set is (value&) and (const char*): an int argument
+// converts to neither, so ranking finds no viable candidate and the
+// builder must refuse with the function's name and the argument types.
+#include <ns_php>
+int main()
+{
+	php::trim(42);
+	return 0;
+}

@@ -1,0 +1,475 @@
+// ---- state: the world session, the actor, and the hub access layer ----
+// ECS over the madc hub: per-entity state (object state/found/seq,
+// location abbrev, containment) lives in world bags via ui::; the hot
+// per-turn scalars live on the ONE Game object (the player's on its
+// Player member) — the save slice (A10) banks them into the
+// world-state entity. MUD seam: the player is an actor entity in the
+// hub (G.player.ent), not a semantic singleton — systems take an
+// actor id.
+
+#include "adv_decls.inc"
+
+// THE game object — the one global in the program (class Game and its
+// Player member are in adv_decls.inc; every other TU sees `extern`).
+Game G;
+
+long STATE_E = 0;		// world-state singleton entity (module-private)
+long SEQ_NEXT = 0;		// listing-order stamp for the next drop
+var ENT;			// entity-id memo: name -> id (module-private)
+
+// The flag helpers: one bitvector per owner, tested and set through
+// these so an assign-from-expression site stays a one-liner.
+bool Player::has(long f)	{ return (flags & f) != 0; }
+void Player::set(long f)	{ flags |= f; }
+void Player::clear(long f)	{ flags &= ~f; }
+void Player::put(long f, bool on) { if ( on ) flags |= f; else flags &= ~f; }
+bool Game::has(long f)		{ return (flags & f) != 0; }
+void Game::set(long f)		{ flags |= f; }
+void Game::clear(long f)	{ flags &= ~f; }
+void Game::put(long f, bool on)	{ if ( on ) flags |= f; else flags &= ~f; }
+
+// One listing-order insert: byseq keys on zero-padded (999999999 - seq)
+// so ascending map key order IS descending placement order (the
+// atloc-prepend law). This helper owns the key law.
+void listing_insert(var &byseq, long seq, const char *name)
+{
+	byseq[format("{:09}", 999999999 - seq)] = name;
+}
+
+// Memoized entity lookup (the world's find is linear; 255 entities).
+long E(const char *name)
+{
+	if ( !php::array_key_exists(name, ENT) )
+		ENT[name] = ui::entity_by_name(G.w, name);
+	return ENT[name].as_integer();
+}
+
+long bag_int(long e, const char *key, long dflt)
+{
+	var v;
+	ui::get(v, G.w, e, key);
+	if ( v.is_null() )
+		return dflt;
+	return v.as_integer();
+}
+
+bool bag_flag(long e, const char *key)
+{
+	var v;
+	ui::get(v, G.w, e, key);
+	if ( v.is_null() )
+		return false;
+	return v.as_boolean();
+}
+
+// ---- location conditions (the YAML flags bag) --------------------------
+
+bool loccond(long l, const char *flag)
+{
+	if ( !l )
+		return false;
+	var c;
+	ui::get(c, G.w, l, "conditions");
+	if ( c.is_null() )
+		return false;
+	var f = c[flag];
+	if ( f.is_null() )
+		return false;
+	return f.as_boolean();
+}
+
+bool outside_loc(long l) { return loccond(l, "ABOVE") || loccond(l, "FOREST"); }
+bool inside_loc(long l)  { return !outside_loc(l) || l == E("LOC_BUILDING"); }
+
+// FORCED(loc) == the first travel rule has no verbs (the HERE marker).
+bool forced_loc(long l)
+{
+	if ( !l )
+		return false;
+	var tr;
+	ui::get(tr, G.w, l, "travel");
+	if ( tr.is_null() )
+		return false;
+	for ( var r : tr )
+	{
+		var vb = r["verbs"];
+		return vb.empty();
+	}
+	return false;
+}
+
+// ---- object state -------------------------------------------------------
+
+// Stashed = the reference's negative prop: the description stays
+// suppressed until the object is picked up and put down again.
+bool obj_stashed(long o)             { return bag_flag(o, "stashed"); }
+void obj_set_stashed(long o, bool s) { ui::set(G.w, o, "stashed", s); }
+
+// obj_state mirrors the reference's raw prop: a stashed object READS
+// as the encoded negative (-1 - state), so every == comparison against
+// a real state fails while stashed. Assigning a state UNSTASHES (the
+// reference's plain prop overwrite).
+long obj_state(long o)
+{
+	long s = bag_int(o, "state", 0);
+	if ( obj_stashed(o) )
+		return -1 - s;
+	return s;
+}
+
+void obj_set_state(long o, long s)
+{
+	ui::set(G.w, o, "state", s);
+	ui::set(G.w, o, "stashed", false);
+}
+
+// The reference's OBJECT_STATE_EQUALS — stash-TRANSPARENT equality:
+// true for the state or its stashed encoding.
+bool obj_state_equals(long o, long pval)
+{
+	long s = obj_state(o);
+	return s == pval || s == -1 - pval;
+}
+
+bool obj_found(long o)            { return bag_flag(o, "found"); }
+bool obj_treasure(long o)         { return bag_flag(o, "treasure"); }
+
+bool toting(long o)  { return o != 0 && ui::location(G.w, o) == G.player.ent; }
+
+// The LIVE location of an object's fixed (second) side; 0 when it has
+// none or it is off the map.
+long fixed_side_loc(const char *name)
+{
+	if ( !php::array_key_exists(name, G.fixedsides) )
+		return 0;
+	var side = G.fixedsides[name];
+	var l = side["loc"];
+	if ( l.empty() )
+		return 0;
+	return E(l.c_str());
+}
+
+// Move an object's fixed side (the reference's move(obj+NOBJECTS, loc)):
+// re-stamps its listing seq; dest 0 removes it from the map.
+void move_fixed_side(const char *name, long dest)
+{
+	if ( dest )
+	{
+		var dn;
+		ui::name_of(dn, G.w, dest);
+		G.fixedsides[name]["loc"] = dn;
+	}
+	else
+		G.fixedsides[name]["loc"] = "";
+	G.fixedsides[name]["name"] = name;	// a NEW entry needs its key
+	G.fixedsides[name]["seq"] = SEQ_NEXT;
+	SEQ_NEXT++;
+}
+
+bool at_obj(long o)
+{
+	if ( !o )
+		return false;
+	if ( ui::location(G.w, o) == G.player.loc )
+		return true;
+	var nm;
+	ui::name_of(nm, G.w, o);
+	return fixed_side_loc(nm.c_str()) == G.player.loc;
+}
+bool here_obj(long o) { return at_obj(o) || toting(o); }
+
+// The index of a named state in the object's states array (labels from
+// the YAML; a numeric spelling converts directly).
+long state_index(long o, var &label)
+{
+	if ( php::ctype_digit(label) )
+		return php::intval(label);
+	var st;
+	ui::get(st, G.w, o, "states");
+	return st.index(label);
+}
+
+long state_index_c(long o, const char *label)
+{
+	var l = label;
+	return state_index(o, l);
+}
+
+// Move an object and stamp the listing-order law: a fresh drop lists
+// FIRST (the reference's atloc prepend), so it takes the next seq and
+// listings read seq DESCENDING.
+void move_object(long o, long dest)
+{
+	ui::move(G.w, o, dest);
+	ui::set(G.w, o, "seq", SEQ_NEXT);
+	SEQ_NEXT++;
+}
+
+// Carry/drop with the holding-count law (the reference's carry/drop:
+// the bird is weightless so cage+bird counting stays right).
+void carry_object(long o, const char *name)
+{
+	if ( toting(o) )
+		return;
+	if ( strcmp(name, "BIRD") != 0 )
+		G.player.holding++;
+	move_object(o, G.player.ent);
+}
+
+void drop_object(long o, const char *name, long dest)
+{
+	if ( toting(o) && strcmp(name, "BIRD") != 0 )
+		G.player.holding--;
+	move_object(o, dest);
+}
+
+void destroy_object(long o, const char *name)
+{
+	drop_object(o, name, 0);
+}
+
+// The reference's put(): move somewhere AND stash.
+void put_object(long o, const char *name, long dest, long pval)
+{
+	drop_object(o, name, dest);
+	obj_set_state(o, pval);
+	obj_set_stashed(o, true);
+}
+
+// Is the object fixed in place? A runtime `fixed` bag prop (0 = freed,
+// nonzero = fixed) overrides the static shape (immovable one-placed or
+// two-placed).
+bool obj_is_fixed(long o)
+{
+	var f;
+	ui::get(f, G.w, o, "fixed");
+	if ( !f.is_null() )
+		return f.as_integer() != 0;
+	if ( bag_flag(o, "immovable") )
+		return true;
+	var fx;
+	ui::get(fx, G.w, o, "fixed_at");
+	return !fx.is_null();
+}
+
+void obj_set_fixed(long o, long fixedness)
+{
+	ui::set(G.w, o, "fixed", fixedness);
+}
+
+// The STATIC original placement (converter `place` prop; 0 = nowhere).
+long static_place(long o)
+{
+	var p;
+	ui::get(p, G.w, o, "place");
+	if ( p.is_null() )
+		return 0;
+	return E(p.c_str());
+}
+
+// The STATIC original fixed-side location (converter `fixed_at`).
+long static_fixed(long o)
+{
+	var p;
+	ui::get(p, G.w, o, "fixed_at");
+	if ( p.is_null() )
+		return 0;
+	return E(p.c_str());
+}
+
+// The liquid in the bottle: "WATER", "OIL", or "" — by bottle state.
+void liquid_in_bottle(var &out)
+{
+	out = "";
+	long b = E("BOTTLE");
+	long st = obj_state(b);
+	if ( st == state_index_c(b, "WATER_BOTTLE") )
+		out = "WATER";
+	else if ( st == state_index_c(b, "OIL_BOTTLE") )
+		out = "OIL";
+}
+
+// Count of the listing chain (placed objects + live fixed sides) at a
+// location; `only` = the single entry's name when the count is 1.
+long objects_at_loc(var &only, long at)
+{
+	only = "";
+	long n = 0;
+	if ( !at )
+		return 0;
+	var nm_loc;
+	ui::name_of(nm_loc, G.w, at);
+	for ( var side : G.fixedsides )
+	{
+		var l = side["loc"];
+		if ( l == nm_loc )
+		{
+			var snm = side["name"];
+			only = snm;
+			n++;
+		}
+	}
+	var held;
+	ui::contents(held, G.w, at);
+	for ( var h : held )
+	{
+		long o = E(h.c_str());
+		var sq;
+		ui::get(sq, G.w, o, "seq");
+		if ( sq.is_null() )
+			continue;
+		only = h;
+		n++;
+	}
+	if ( n != 1 )
+		only = "";
+	return n;
+}
+
+// Juggle: re-front both sides of an object in the listing order (the
+// reference's pick-up-and-put-down).
+void juggle_object(long o, const char *name)
+{
+	move_object(o, ui::location(G.w, o));
+	if ( php::array_key_exists(name, G.fixedsides) )
+		move_fixed_side(name, fixed_side_loc(name));
+}
+
+// The i'th dwarf actor entity (1..6; 6 = the pirate).
+long dwarf_ent(long i)
+{
+	return E(format("dwarf{}", i));
+}
+
+// First dwarf at a location (0 = none / dwarves not active; the pirate
+// never counts). Dead-dwarf bookkeeping lands with A7.
+long atdwrf(long l)
+{
+	if ( G.dflag < 2 )
+		return 0;
+	for ( long di = 1; di <= 5; di++ )
+		if ( ui::location(G.w, dwarf_ent(di)) == l )
+			return di;
+	return 0;
+}
+
+bool is_dark()
+{
+	if ( loccond(G.player.loc, "LIT") )
+		return false;
+	long lamp = E("LAMP");
+	if ( obj_state(lamp) != 0 && here_obj(lamp) )
+		return false;
+	return true;
+}
+
+// The liquid at a location: "WATER", "OIL", or "" (dry).
+void liq_loc(var &out, long l)
+{
+	out = "";
+	if ( loccond(l, "FLUID") )
+	{
+		if ( loccond(l, "OILY") )
+			out = "OIL";
+		else
+			out = "WATER";
+	}
+}
+
+// ---- boot + init --------------------------------------------------------
+
+bool world_boot()
+{
+	if ( php::file_exists("examples/adventure/adventure.world") )
+		G.w = ui::world_open("examples/adventure/adventure.world");
+	else
+		G.w = ui::world_open("adventure.world");
+	return G.w != 0;
+}
+
+void init_game()
+{
+	long tables = E("adv-tables");
+	var sq;
+	ui::get(sq, G.w, tables, "seq_next");
+	SEQ_NEXT = sq.as_integer();
+	ui::get(G.obj_names, G.w, tables, "objects");
+	var na;
+	ui::get(na, G.w, tables, "noaction");
+	for ( var n : na )
+		G.noact[n.c_str()] = true;
+	long ve = E("adv-vocabulary");
+	ui::get(G.voc_m, G.w, ve, "motions");
+	ui::get(G.voc_a, G.w, ve, "actions");
+	ui::get(G.voc_o, G.w, ve, "objwords");
+
+	// Runtime entities ride the same world as the dungeon (one save).
+	G.player.ent = ui::create(G.w, "player");
+	STATE_E = ui::create(G.w, "world-state");
+	G.player.loc = E("LOC_START");
+	G.player.newloc = G.player.loc;
+	G.player.oldloc = 0;
+	G.player.oldlc2 = 0;
+	ui::move(G.w, G.player.ent, G.player.loc);
+
+	// Dwarves (actors; the 6th is the pirate) at their start rooms.
+	var dl;
+	ui::get(dl, G.w, tables, "dwarflocs");
+	long di = 0;
+	for ( var d : dl )
+	{
+		di++;
+		long dw = ui::create(G.w, format("dwarf{}", di));
+		ui::set(G.w, dw, "is_pirate", di == 6);
+		ui::set(G.w, dw, "seen", false);
+		ui::move(G.w, dw, E(d.c_str()));
+	}
+
+	// Treasure bookkeeping, objnum index, and the LIVE fixed-side map.
+	// Treasures with an inventory line start NOTFOUND; everything else
+	// is found.
+	long tally = 0;
+	long objnum = 0;
+	for ( var on : G.obj_names )
+	{
+		objnum++;
+		G.obj_index[on.c_str()] = objnum;
+		long o = E(on.c_str());
+		if ( !o )
+			continue;
+		bool found = true;
+		if ( obj_treasure(o) )
+		{
+			tally++;
+			var inv;
+			ui::get(inv, G.w, o, "inventory");
+			if ( !inv.is_null() )
+				found = false;
+		}
+		ui::set(G.w, o, "found", found);
+		var fx;
+		ui::get(fx, G.w, o, "fixed_at");
+		if ( !fx.is_null() )
+		{
+			var sf;
+			ui::get(sf, G.w, o, "seq_fixed");
+			if ( !sf.is_null() )
+			{
+				G.fixedsides[on.c_str()]["name"] = on;
+				G.fixedsides[on.c_str()]["loc"] = fx;
+				G.fixedsides[on.c_str()]["seq"]
+					= sf.as_integer();
+			}
+		}
+	}
+	G.tally = tally;
+
+	// Hints in NUMBER order (converter hints_by_number — the checkhints
+	// scan order); lives from the obituary count.
+	ui::get(G.hint_order, G.w, tables, "hints_by_number");
+	for ( var hn : G.hint_order )
+		G.hint_lc[hn.c_str()] = (long)0;
+	var tbl;
+	ui::get(tbl, G.w, tables, "obituaries");
+	G.ndeaths = tbl.count();
+}

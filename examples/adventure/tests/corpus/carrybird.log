@@ -1,0 +1,15 @@
+## Try to carry bird without cage, then kill bird
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1071883378
+in
+take lamp
+rub lamp
+xyzzy
+on
+w
+w
+take bird
+# test intransitive attack on bird
+attack

@@ -1,0 +1,240 @@
+## 161-point run to pirate appearance and death by dwarf
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+# Based on walkthrough at http://www.ecsoftwareconsulting.com/node/56
+n
+seed 1071883378
+in
+take lamp
+xyzzy
+take rod
+e
+take cage
+w
+on
+w
+w
+drop rod
+take bird
+take rod
+w
+free bird
+wave rod
+drop rod
+take bird
+take jade
+e
+e
+e
+off
+xyzzy
+drop jade
+xyzzy
+on
+w
+w
+w
+take rod
+d
+w
+wave rod
+drop rod
+e
+n
+free bird
+take bird
+s
+take jewelry
+n
+sw
+w
+kill dragon
+yes
+drink blood
+e
+e
+n
+take silver
+n
+off
+plugh
+drop jewelry
+drop rug
+drop silver
+out
+s
+w
+n
+take appendage
+free bird
+drop cage
+listen
+s
+s
+n
+in
+take water
+plugh
+on
+plover
+ne
+take pyramid
+take axe
+s
+plover
+s
+d
+u
+s
+up
+# Hall of Mists
+w
+w
+w
+w
+w
+s
+sw
+se
+s
+kill machine
+s
+s
+kill ogre
+n
+s
+w
+n
+n
+n
+nw
+down
+e
+e
+e
+take diamonds
+e
+e
+s
+take gold
+n
+y2
+d
+s
+s
+w
+take coins
+e
+e
+n
+n
+off
+plugh
+drop gold
+drop coins
+drop diamonds
+plugh
+on
+s
+d
+bedquilt
+slab
+s
+d
+water plant
+u
+w
+u
+reservoir
+F'JBV
+n
+n
+nw
+u
+u
+u
+u
+ne
+take ebony
+sw
+d
+d
+d
+d
+se
+s
+take water
+s
+s
+s
+s
+d
+s
+d
+water plant
+throw axe
+take axe
+u
+e
+d
+get oil
+u
+w
+d
+climb
+w
+n
+oil door
+n
+take trident
+w
+d
+se
+n
+w
+drop trident
+drop bottle
+drop axe
+drop appendage
+drop pyramid
+drop ebony
+drop lantern
+e
+take emerald
+w
+take lamp
+take ebony
+take pyramid
+take appendage
+take axe
+# Don't take trident now or pirate will snatch it on next move.
+nw
+look
+listen
+w
+take bottle
+take trident
+nw
+s
+take vase
+se
+e
+take pillow
+w
+ne
+e
+n
+open clam
+s
+u
+e
+u
+n
+off
+plugh
+drop pillow
+drop vase
+drop trident
+drop bottle
+plugh
+on

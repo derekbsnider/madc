@@ -141,7 +141,9 @@ STDLIB_SKIPPED=0
 DOMAIN_SKIPPED=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
-    [ "$base" = "include_helper" ] && continue
+    # A .helper fixture marks a compilation unit owned by another test
+    # (content = one line naming the owner) — never run standalone.
+    [ -f "tests/$base.helper" ] && continue
     if [ -n "$TEST_GLOBS" ]; then
         keep=0
         for g in $TEST_GLOBS; do

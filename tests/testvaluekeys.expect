@@ -1,0 +1,15 @@
+name=lamp fuel=6 lit=true weight=2.500000
+count=4
+owner=hero via-sub=hero
+state-via-dot=bright
+runtime-key=6
+nested=9 dark=true
+src=lamp copy=clone
+taken=lamp
+has-fuel=1 has-ghost=0
+ghost-after-touch=1
+visited=3
+arr0=1 arr9=0
+fill-fuel=6 fill-lit=false
+chain0=goto chain-eq=1
+caught: ["key"]: value of this kind has no keyed members

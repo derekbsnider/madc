@@ -1062,7 +1062,7 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
 {
     int stars = 0;
-    bool fnptr_base = (dynamic_cast<DataDefFPTR *>(dd) != NULL);
+    bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
@@ -1217,7 +1217,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 
 static bool is_gnu_asm_identifier_token(TokenBase *tb)
 {
-    TokenIdent *ident = dynamic_cast<TokenIdent *>(tb);
+    TokenIdent *ident = (tb ? tb->as_ident_tok() : NULL);
     if ( !ident )
 	return false;
     std::string name = ident->spelling();
@@ -2431,20 +2431,48 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     return lazy_resolve_type(name);
 }
 
-// The element type a madc `array` (madc::value) subscript READ produces.
-// String-first — the Python/PHP element model (`sys.argv[1]`, `arr[i]` in
-// string contexts): typed as the real std::string class when <string> has
-// been seen. Falls back to the legacy long typing otherwise, which keeps
-// numeric reads working in string-less TUs. Numeric reads under the string
-// typing are a LOUD type error (never a silent raw-buffer word read); use
-// range-for or the php:: getters for mixed numeric access.
-DataDef *Program::madc_array_element_type()
+// Is this subscript INDEX a string KEY (`bag["k"]`, `bag[word]`) — the
+// carrier's object-kind keyed access — rather than an element index?
+// Char pointers (string literals included) and c_str()-bearing class
+// instances (std::string) are keys; every other index stays the element
+// path. The carrier itself is deliberately NOT a key type: `a[v]` with a
+// var index must stay an element read (spell `a[v.c_str()]` to key).
+bool Program::madc_array_key_index(TokenBase *idx)
 {
-    DataDef *dd = resolve_named_datadef("string");
-    if ( dd && dd->basetype() == BaseType::btClass
-      && dd->rawtype() == DataType::dtRESERVED && !dd->is_pointer() )
-	return dd;
-    return &ddINT64;
+    DataDef *dd = idx ? idx->datadef() : NULL;
+    if ( !dd )
+	return false;
+    if ( dd->is_pointer() )
+    {
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	return p && p->base_type
+	    && p->base_type->rawtype() == DataType::dtCHAR;
+    }
+    if ( dd->is_madc_array() )
+	return false;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    std::string cstr_name = "c_str";
+    return cls && cls->findMethod(cstr_name) != NULL;
+}
+
+// The type a madc array subscript produces: the CARRIER ITSELF, for BOTH
+// index kinds — the SLOT model. A subscript is a value lvalue (the slot
+// address the runtime returns: madarray_key_slot for a string key's map
+// entry, madarray_index_slot for an integer index's array element), so
+// elements carry the carrier's whole method surface (c_str/length/substr/
+// at/as_integer), writes land in the LIVE slot, and the semantics never
+// vary with which headers a TU parsed. OWNER LAW (2026-08-21): nothing
+// the dialect or polyglot surface depends on std::string — the retired
+// string-first element model (std::string typing when <string> was seen,
+// int64 otherwise) typed element READS as a std::string TEMP, which made
+// `arr[i] = x` a SILENT no-op (the write landed in the temp) and left
+// element methods unresolvable in <string>-less TUs. The ddARRAY typing
+// IS the slot marker the CIR builder reads; the CIR side picks the key
+// vs index runtime entry via madc_array_key_index (the one owner of the
+// key-vs-element question).
+DataDef *Program::madc_array_subscript_type()
+{
+    return &ddARRAY;
 }
 
 // The ONE builtin-spelling -> canonical-DataDef table. Every C/C++ source
@@ -16315,7 +16343,7 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     // (DataDefFPTR, size 8) are a pointer slot and DO need allocation.
     if ( alloc && count == 1
       && ((type->basetype() != BaseType::btFunct && type->size > 0)
-	|| dynamic_cast<DataDefFPTR *>(type) != NULL) )
+	|| (type ? type->as_fptr_dd() : NULL) != NULL) )
     {
 	// Scalar slot: slot_size, not d.size — ddINT slots are read and
 	// written 64-bit (see Variable::slot_size).
@@ -16397,7 +16425,7 @@ static Variable *find_method_by_callable_arity(DataDefCLASS *cls,
 	Variable *mv = *vvi;
 	if ( !mv )
 	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	if ( !fd )
 	    continue;
 	const std::string &disp = fd->method_display_name.empty()
@@ -16571,7 +16599,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	Variable *mv = *vvi;
 	if ( !mv )
 	    continue;
-	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	if ( !fd )
 	    continue;
 	// Methods are keyed by their MANGLED name (`Box__take`, `Box__take__o2`);
@@ -16582,6 +16610,10 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	if ( name.compare(disp) != 0 )
 	    continue;
 	any_named = true;
+	// Lazy member-template hydration: scoring below reads the pattern
+	// fields (spellings, param type runs, [temp.func.order] compares) —
+	// thaw a still-frozen candidate now that its name matched.
+	fd->ensure_member_template_thawed();
 	Method *md = (Method *)mv->data;
 	size_t hidden = (md && md->owner_class && !(mv->flags & vfSTATIC)) ? 1 : 0;
 	size_t pn = fd->parameters.size() >= hidden
@@ -17189,15 +17221,15 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
     if ( !operand )
 	return NULL;
     DataDef *dd = operand->datadef();
-    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd) )
+    if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
 	return c;
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
-	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
-    TokenVar *tv = dynamic_cast<TokenVar *>(operand);
+	if ( DataDefPTR *rp = (dd ? dd->as_pointer_dd() : NULL) )
+	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
     if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
-	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    return (rp->base_type ? rp->base_type->as_class_dd() : NULL);
     return NULL;
 }
 
@@ -17235,17 +17267,28 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 DataDef *Program::array_decay_pointer(TokenBase *operand)
 {
     if ( !operand ) return NULL;
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(operand) )
+    if ( TokenMember *tm = (operand ? operand->as_member_tok() : NULL) )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	    return getPointerType(tm->var.type);
     }
-    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(operand) )
+    else if ( TokenVar *tv = (operand ? operand->as_var_tok() : NULL) )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	    return getPointerType(tv->var.type);
     }
-    if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(operand->datadef()) )
+    else if ( TokenSubscript *ts = (operand ? operand->as_subscript_tok() : NULL) )
+    {
+	// A PARTIAL subscript of a multi-dimensional fixed array denotes the
+	// row sub-array, which decays to a pointer to the element type in a
+	// VALUE context ([expr.sub] + [conv.array]): `char s[2][4]` makes
+	// `s[1]` rank as char*, not char. A full subscript (one index per
+	// dimension) denotes the element — no decay.
+	if ( ts->object.is_fixed_array() && ts->object.type
+	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
+	    return getPointerType(ts->object.type);
+    }
+    if ( DataDefCArray *ca = operand->datadef()->as_carray_dd() )
 	if ( ca->element_type )
 	    return getPointerType(ca->element_type);
     return NULL;
@@ -17904,8 +17947,12 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::string &name,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args,
-		const std::vector<DataDef *> *explicit_template_args)
+		const std::vector<DataDef *> *explicit_template_args,
+		bool *strict_no_viable)
 {
+    activate_forest_function_family(ns, name);
+    if ( strict_no_viable )
+	*strict_no_viable = false;
     std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
 	namespace_fn_overload_sets.find(ns + "::" + name);
     if ( oi == namespace_fn_overload_sets.end() || oi->second.size() < 2 )
@@ -17925,6 +17972,41 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
 	      << (best ? best->name : "(none)") << std::endl;
 #endif
+    // No viable candidate in a set the caller could otherwise silently
+    // fall back from (the parse-bound BY-NAME member — a mis-bind that
+    // compiles a call through the wrong ABI). Answer "strict" only when
+    // every candidate is a plain concrete function: a varargs candidate
+    // is outside the ranker's arity model, and a template set (the
+    // placeholder marker or recorded template args) has its own
+    // instantiate-on-miss lanes — both keep the historical fallback.
+    if ( !best && strict_no_viable )
+    {
+	static const char *ovl_probe = ::getenv("MADC_OVL_PROBE");
+	bool strict = true;
+	for ( const NamespaceFnOverload &e : oi->second )
+	{
+	    FuncDef *cfd = e.var && e.var->type ? e.var->type->as_funcdef_dd()
+						: NULL;
+	    if ( ovl_probe )
+		fprintf(stderr,
+			"[ovl]   cand %s spell=%s targs=%zu va=%d mt=%d dep=%d ts=%d\n",
+			e.var ? e.var->name.c_str() : "(null)",
+			e.param_spelling == "\x01fn-template-placeholder"
+			    ? "PLACEHOLDER" : e.param_spelling.c_str(),
+			e.template_arg_names.size(),
+			cfd ? (int)cfd->is_varargs : -1,
+			cfd ? (int)cfd->is_member_template : -1,
+			cfd ? (cfd->dependent_pattern != NULL) : -1,
+			cfd ? (cfd->tsubst_source != NULL) : -1);
+	    if ( e.param_spelling == "\x01fn-template-placeholder"
+	      || !e.template_arg_names.empty() )
+	    { strict = false; if ( !ovl_probe ) break; continue; }
+	    if ( !cfd || cfd->is_varargs || cfd->is_member_template
+	      || cfd->dependent_pattern || cfd->tsubst_source )
+	    { strict = false; if ( !ovl_probe ) break; continue; }
+	}
+	*strict_no_viable = strict;
+    }
     return best;
 }
 
@@ -17938,6 +18020,7 @@ Variable *Program::find_free_operator_function(const std::string &opname,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args)
 {
+    activate_forest_function_display(opname);
     const std::string suffix = "::" + opname;
     std::vector<NamespaceFnOverload> cands;
     for ( std::map<std::string, std::vector<NamespaceFnOverload>>::iterator mi =
@@ -18243,6 +18326,10 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 		const std::vector<DataDef *> &explicit_targs)
 {
+    // Lazy member-template hydration: this lane reads the return-token range,
+    // param defaults/constraints, and param type runs — thaw first.
+    if ( fd )
+	fd->ensure_member_template_thawed();
     if ( vri_debug_enabled() && fd )
 	fprintf(stderr, "[vriprobe] MTRT enter %s ret=%zu defs=%zu\n",
 		fd->method_display_name.c_str(),
@@ -18430,6 +18517,9 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
     if ( !fd )
 	return tc;
+    // Lazy member-template hydration: the template arm below reads pattern
+    // content on this fd and on same-name siblings via the resolve lane.
+    fd->ensure_member_template_thawed();
     if ( !fd->is_member_template )
     {
 	// A NON-template same-arity static overload set is disambiguated by
@@ -18996,18 +19086,6 @@ void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
     }
 }
 
-DataDef *DataDef::unqualified()
-{
-    DataDefCONST *cd = dynamic_cast<DataDefCONST *>(this);
-    return cd && cd->base_type ? cd->base_type : this;
-}
-
-const DataDef *DataDef::unqualified() const
-{
-    const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(this);
-    return cd && cd->base_type ? cd->base_type : this;
-}
-
 void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) const
 {
     for ( Variable *cv : ctors )
@@ -19372,7 +19450,7 @@ int MadcTeeBuf::sync()
     return (primary_sync == 0 && secondary_sync == 0) ? 0 : -1;
 }
 
-Program::Program()
+Program::Program(MadcCompileGroup *group)
     : _braces(0),
       _prv_token(NULL),
       _cur_token(NULL),
@@ -19382,6 +19460,10 @@ Program::Program()
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      _project_types_owner(group ? group->project_types
+			   : std::make_shared<madc::dis::id_table<DataDef> >(
+			     MADC_TYPEID_PROJECT_BASE)),
+      project_types(*_project_types_owner),
       instantiating_dependent_surface(false),
       parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
@@ -19394,6 +19476,9 @@ Program::Program()
       _include_iostream(false),
       _include_stdio(false),
       _include_string(false),
+      _strpool_owner(group ? group->strpool
+		     : std::make_shared<madc::dis::intern_table>()),
+      strpool(*_strpool_owner),
       colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
@@ -19404,9 +19489,10 @@ Program::Program()
       skip_includes(false),
       root_fn(NULL)
 {
+    compile_group = group;
 }
 
-Program::Program(MadcEngine *eng)
+Program::Program(MadcEngine *eng, MadcCompileGroup *group)
     : _braces(0),
       _prv_token(NULL),
       _cur_token(NULL),
@@ -19416,6 +19502,10 @@ Program::Program(MadcEngine *eng)
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      _project_types_owner(group ? group->project_types
+			   : std::make_shared<madc::dis::id_table<DataDef> >(
+			     MADC_TYPEID_PROJECT_BASE)),
+      project_types(*_project_types_owner),
       instantiating_dependent_surface(false),
       parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
@@ -19428,6 +19518,9 @@ Program::Program(MadcEngine *eng)
       _include_iostream(false),
       _include_stdio(false),
       _include_string(false),
+      _strpool_owner(group ? group->strpool
+		     : std::make_shared<madc::dis::intern_table>()),
+      strpool(*_strpool_owner),
       colors(false),
       language_std(STD_MADC),
       default_cpp_std(STD_CPP17),
@@ -19438,6 +19531,7 @@ Program::Program(MadcEngine *eng)
       skip_includes(false),
       root_fn(NULL)
 {
+    compile_group = group;
     attach_engine(eng);
 }
 
@@ -20211,10 +20305,10 @@ void MadcEngine::configure_program(Program &pgm) const
     pgm.namespace_registry = namespace_registry;
 }
 
-std::unique_ptr<Program> MadcEngine::create_program()
+std::unique_ptr<Program> MadcEngine::create_program(MadcCompileGroup *group)
 {
     populate_default_registries();
-    std::unique_ptr<Program> pgm(new Program());
+    std::unique_ptr<Program> pgm(new Program(group));
     configure_program(*pgm);
     return pgm;
 }
@@ -20621,6 +20715,8 @@ void Program::add_stdio()
 // on-demand variable/function registration — called from parseExpression()
 Variable *Program::lazy_resolve(const std::string &name)
 {
+    if ( Variable *forest_var = activate_forest_func(name) )
+	return forest_var;
     std::map<std::string, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
@@ -21459,7 +21555,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // (the CirMaterializeFilter installed here) consume the SAME map — one
     // predicate, two consumers (rung 2a moved the skip from "register fewer"
     // to "never build the DataDefs at all").
-    std::unordered_map<std::string, bool> forest_declared_bound;
+    std::unordered_map<std::string, bool> swept_bound;
     // Rung 3: the emission-side system-origin verdict for restored decls. A
     // restored TopDecl carries no parse position, so the referenced-surface
     // filter (translate_module) reads TopDecl.forest_system instead: true iff
@@ -21467,10 +21563,32 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // the same verdict a live parse's td.file would produce. A tmp/-grove
     // bind (the forest_bind_gate corpora) stays non-system → root → whole
     // surface, exactly like live.
-    std::unordered_map<std::string, bool> forest_declared_system;
+    std::unordered_map<std::string, bool> swept_system;
     const bool forest_closure_filter = !forest_chain_set.empty();
+    // The demand filter this TU asks materialize_for to satisfy — inactive
+    // (whole container) when the closure is empty, else the verdict map the
+    // sweep below builds. S2: on a shared forest a later TU's wider verdicts
+    // union in and materialize incrementally.
+    CirMaterializeFilter mf;
+    // S3: the verdict maps are a pure function of (instance, closure) within
+    // one compile group (sibling TUs share dialect config, and the system-path
+    // classification rides the instance's config key) — a sibling with the
+    // same closure adopts them and skips the all-units sweep.
+    std::shared_ptr<const MadcCompileGroup::DeclVerdicts> cached_verdicts;
+    std::pair<const void *, std::vector<uint32_t> > verdict_key;
+    if ( compile_group && forest_closure_filter )
+    {
+	verdict_key.first = (const void *)&forest;
+	verdict_key.second.assign(forest_chain_set.begin(),
+				  forest_chain_set.end());
+	std::map<std::pair<const void *, std::vector<uint32_t> >,
+		 std::shared_ptr<const MadcCompileGroup::DeclVerdicts> >
+	    ::const_iterator ci = compile_group->decl_verdicts.find(verdict_key);
+	if ( ci != compile_group->decl_verdicts.end() )
+	    cached_verdicts = ci->second;
+    }
     double _t_declidx0 = forest_restore_now();
-    if ( forest_closure_filter )
+    if ( forest_closure_filter && !cached_verdicts )
     {
 	std::vector<cir_forest_decl_entry> ents;
 	for ( uint32_t u = 0; u < forest.unit_count(); ++u )
@@ -21494,21 +21612,37 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 				nm, upath ? upath : "?", (int)bound);
 		}
 		std::unordered_map<std::string, bool>::iterator di =
-		    forest_declared_bound.find(nm);
-		if ( di == forest_declared_bound.end() )
-		    forest_declared_bound[nm] = bound;
+		    swept_bound.find(nm);
+		if ( di == swept_bound.end() )
+		    swept_bound[nm] = bound;
 		else if ( bound )
 		    di->second = true;
 		if ( sys )
-		    forest_declared_system[nm] = true;
+		    swept_system[nm] = true;
 	    }
 	}
-	CirMaterializeFilter mf;
-	mf.active = true;
-	mf.declared_bound = forest_declared_bound;
-	forest.set_materialize_filter(std::move(mf));
+	if ( compile_group )
+	{
+	    std::shared_ptr<MadcCompileGroup::DeclVerdicts> dv =
+		std::make_shared<MadcCompileGroup::DeclVerdicts>();
+	    dv->bound.swap(swept_bound);
+	    dv->system.swap(swept_system);
+	    compile_group->decl_verdicts[verdict_key] = dv;
+	    cached_verdicts = dv;
+	}
     }
     _forest_declidx_seconds = forest_restore_now() - _t_declidx0;
+    // ONE name for the verdicts from here down, cached or freshly swept —
+    // every consumer below (mf, registration lambdas, rung 3) reads these.
+    const std::unordered_map<std::string, bool> &forest_declared_bound =
+	cached_verdicts ? cached_verdicts->bound : swept_bound;
+    const std::unordered_map<std::string, bool> &forest_declared_system =
+	cached_verdicts ? cached_verdicts->system : swept_system;
+    if ( forest_closure_filter )
+    {
+	mf.active = true;
+	mf.declared_bound = forest_declared_bound;
+    }
 
     // Rung 3: the system-origin verdict lookup — qualified form first, then
     // bare (a namespaced decl may be indexed only as "std::name"), the same
@@ -21522,29 +21656,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	return false;
     };
 
-    const std::vector<CirRestoredType> &types = forest.materialize_from_arena();
+    const std::vector<CirRestoredType> &types = forest.materialize_for(mf);
 
     // v25: advance the anonymous-tag gensym PAST every restored `__anon_N` —
     // exactly where a live parse of the same headers would have left the
     // counter — so the consumer's own anonymous aggregates never mint a name
     // that collides with a restored tag of a different kind.
     {
-	const madc::dis::FrozenDefArena &fa = forest.arena();
-	size_t max_anon = 0;
-	for ( uint32_t s = 0; s < fa.def_slots(); ++s )
-	{
-	    madc::dis::defrec r;
-	    if ( !fa.get_def_at(madc::dis::arena_id_of(s), r)
-	      || r.kind == madc::dis::DK_NONE || !r.name_id )
-		continue;
-	    const char *nm = fa.c_str(r.name_id);
-	    if ( !nm || strncmp(nm, "__anon_", 7) != 0 )
-		continue;
-	    char *end = NULL;
-	    unsigned long n = strtoul(nm + 7, &end, 10);
-	    if ( end && *end == '\0' && n > max_anon )
-		max_anon = (size_t)n;
-	}
+	size_t max_anon = forest.max_restored_anon_tag();
 	if ( max_anon )
 	    madc_anon_tag_counter_at_least(max_anon);
     }
@@ -21572,22 +21691,26 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 
     // Registration's verdict lambdas read the map built above (one predicate,
     // two consumers — see the rung-2a block before materialize_from_arena).
-    auto forest_name_permitted = [&](const std::string &nm,
-				     const char *ns) -> bool {
+    auto forest_name_verdict = [&](const std::string &nm,
+				   const char *ns) -> int {
 	if ( !forest_closure_filter )
-	    return true;
+	    return 1;
 	if ( ns && *ns )
 	{
 	    std::unordered_map<std::string, bool>::const_iterator qi =
 		forest_declared_bound.find(std::string(ns) + "::" + nm);
 	    if ( qi != forest_declared_bound.end() )
-		return qi->second;
+		return qi->second ? 1 : -1;
 	}
 	std::unordered_map<std::string, bool>::const_iterator bi =
 	    forest_declared_bound.find(nm);
 	if ( bi != forest_declared_bound.end() )
-	    return bi->second;
-	return true;	// unindexed = derived entity
+	    return bi->second ? 1 : -1;
+	return 0;		// unindexed = derived entity
+    };
+    auto forest_name_permitted = [&](const std::string &nm,
+				     const char *ns) -> bool {
+	return forest_name_verdict(nm, ns) >= 0;
     };
     // A template-INSTANTIATION product's mangled record name is never indexed,
     // but its identity IS a template-id — its canonical spelling's head
@@ -21921,23 +22044,43 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	// Closure filter: the funcdef_map key ("printf") is what the index
 	// tapped; a namespace public's __ns_* key falls back to its
 	// ns::display source form when the key itself is unindexed.
-	{
-	    FuncDef *ffd = funcs[i].fd;
-	    bool ok = forest_name_permitted(funcs[i].name, NULL);
-	    if ( ok && forest_closure_filter
-	      && !forest_declared_bound.count(funcs[i].name)
-	      && !ffd->namespace_name.empty()
-	      && !ffd->function_display_name.empty() )
-		ok = forest_name_permitted(ffd->function_display_name,
-					   ffd->namespace_name.c_str());
-	    if ( !ok )
-		continue;
-	}
+	FuncDef *ffd = funcs[i].fd;
+	int verdict = forest_name_verdict(funcs[i].name, NULL);
+	if ( verdict == 0 && forest_closure_filter
+	  && !ffd->namespace_name.empty()
+	  && !ffd->function_display_name.empty() )
+	    verdict = forest_name_verdict(ffd->function_display_name,
+					  ffd->namespace_name.c_str());
+	if ( verdict < 0 )
+	    continue;
 	PendingForestFunc pf;
 	pf.name = funcs[i].name;
-	pf.fd   = funcs[i].fd;
+	pf.fd   = ffd;
 	pf.mparams = funcs[i].mparams;	// v26 piece (a): named params for the Method
-	forest_pending_funcs.push_back(pf);
+	if ( verdict == 0 )
+	{
+	    // The record's name is a compiler-derived identity. Keep the
+	    // signature/body source available, but do not build its parser-visible
+	    // Variable/Method and overload entries until source lookup or CIR
+	    // reachability names it. std::map::insert preserves the old flush's
+	    // first-registration-wins rule for duplicate arena records.
+	    if ( funcdef_map.find(pf.name) == funcdef_map.end()
+	      && forest_deferred_funcs.insert(std::make_pair(pf.name, pf)).second )
+	    {
+		++_forest_funcs_deferred;
+		if ( !ffd->function_display_name.empty() )
+		{
+		    std::string family = ffd->namespace_name + "::"
+				       + ffd->function_display_name;
+		    forest_deferred_func_families[family].push_back(pf.name);
+		}
+	    }
+	}
+	else
+	{
+	    forest_pending_funcs.push_back(pf);
+	    ++_forest_funcs_eager;
+	}
     }
 
     // v20 (widening slice 2): restore the TEMPLATE-NAME state — the pattern
@@ -21972,18 +22115,22 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	}
 	else if ( !forest_name_permitted(key, rt.ns) )
 	    continue;
-	// task #25 B2: CLASS/PARTIAL/ALIAS/FN/FN_DECL register as STUBS —
+	// task #25 B2: CLASS/PARTIAL/ALIAS/FN/FN_DECL/MEMBER register as STUBS —
 	// identity only, payload deferred to the thaw owners
-	// (thaw_template_def / thaw_alias_def / thaw_fn_def) so only names
-	// whose content is actually read pay the hydrate + token deserialize.
-	// The remaining kinds stay eager: VAR/CONCEPT are tiny populations;
-	// OUTOFLINE/MEMBER are entangled with the placeholder stamp flush
-	// (re-judged from the post-B profile).
+	// (thaw_template_def / thaw_alias_def / thaw_fn_def /
+	// madc_thaw_member_template) so only names whose content is actually
+	// read pay the hydrate + token deserialize. MEMBER thaws at first
+	// pattern-content read on the restored placeholder FuncDef — a
+	// C-shaped TU whose closure admits template-bearing classes no longer
+	// decodes the template payload/TOKENS segments at all. The remaining
+	// kinds stay eager: VAR/CONCEPT are tiny populations; OUTOFLINE is
+	// consumed at class-template instantiation (own slice if it shows up).
 	bool lazy_kind = rt.kind == CIR_TMPLK_CLASS
 		      || rt.kind == CIR_TMPLK_PARTIAL
 		      || rt.kind == CIR_TMPLK_ALIAS
 		      || rt.kind == CIR_TMPLK_FN
-		      || rt.kind == CIR_TMPLK_FN_DECL;
+		      || rt.kind == CIR_TMPLK_FN_DECL
+		      || rt.kind == CIR_TMPLK_MEMBER;
 	// slice B1 (task #25): the walk restored IDENTITY only; the payload-
 	// backed fields (params / token runs / pattern slice) decode here for
 	// the eager kinds, at first content read for the lazy ones.
@@ -22122,50 +22269,25 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // A member function template of a restored class. Body-bearing:
 	    // the decl+body token run. Decl-only (v34): no decl tokens exist —
 	    // the record carries the dependent return-type range in the
-	    // (otherwise empty) constraint-run slot instead. Stage the tokens
-	    // + params keyed by the placeholder's funcdef_map symbol (the
-	    // record key); the post-tkProgram flush hydrates the
-	    // verbatim-restored placeholder with the pattern fields — or, for
-	    // a body-bearing record whose placeholder did not restore, falls
-	    // back to the full live registration
+	    // (otherwise empty) constraint-run slot instead. Staged IDENTITY-
+	    // ONLY (no hydrate — the payload segments stay frozen), keyed by
+	    // the placeholder's funcdef_map symbol (the record key); the
+	    // post-tkProgram flush attaches the frozen source to the
+	    // verbatim-restored placeholder, and the pattern fields thaw at
+	    // first content read (madc_thaw_member_template) — or, for a
+	    // record whose placeholder did not restore, the flush hydrates
+	    // eagerly and falls back to the full live registration
 	    // (register_skipped_class_template_function). An owner the load
 	    // dropped cleanly lacks.
-	    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(rt.owner);
+	    DataDefCLASS *owner = rt.owner ? rt.owner->as_class_dd() : NULL;
 	    if ( !owner )
 		break;
 	    PendingForestMemberTmpl pm;
-	    pm.owner = owner;
-	    pm.key   = rt.key  ? rt.key  : "";
-	    pm.disp  = rt.name ? rt.name : "";
-	    forest_restore_run(rt.body, pm.tokens);
-	    forest_restore_run(rt.constraint, pm.ret_tokens);
-	    if ( pm.tokens.empty() && pm.ret_tokens.empty() )
-		break;
-	    for ( size_t p = 0; p < rt.params.size(); ++p )
-	    {
-		pm.typeparams.push_back(rt.params[p].first);
-		pm.is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-		pm.is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-		// v36 semantics: the per-param default runs (always in the
-		// record layout, empty until now) carry the member template's
-		// [temp.deduct]/8 SFINAE defaults.
-		pm.typeparam_defaults.push_back(std::vector<TokenBase *>());
-		if ( p < rt.defaults.size() )
-		    forest_restore_run(rt.defaults[p], pm.typeparam_defaults.back());
-		// v38: the per-param CONSTRAINT runs ride the record's spec
-		// slot (the FN lane's v33 convention). An older record has
-		// rt.spec empty — cleared below so the size mismatch
-		// downstream degrades to clearing every non-type default,
-		// the pre-v38 behavior (no info ≠ all-unconstrained).
-		pm.typeparam_constraints.push_back(std::vector<TokenBase *>());
-		if ( p < rt.spec.size() )
-		    forest_restore_run(rt.spec[p], pm.typeparam_constraints.back());
-		if ( vri_debug_enabled() )
-		    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
-			    pm.disp.c_str(), p, pm.typeparam_defaults.back().size());
-	    }
-	    if ( rt.spec.empty() )
-		pm.typeparam_constraints.clear();
+	    pm.owner  = owner;
+	    pm.key    = rt.key  ? rt.key  : "";
+	    pm.disp   = rt.name ? rt.name : "";
+	    pm.rt     = &rt;		// stable: &tmpls[i] lives in the bound forest
+	    pm.forest = &forest;
 	    forest_pending_member_tmpls.push_back(pm);
 	    break;
 	}
@@ -22201,6 +22323,269 @@ static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
 	uint32_t access_flags, const std::string &ctor_source_name);
+static Variable *register_member_template_stub(
+	Program &pgm, DataDefCLASS *owner, const std::string &name,
+	bool is_static, DataDef *ret, uint32_t access_flags);
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle);
+
+// Resolve a producer-banked flat return-type name (the DataDef::name
+// spelling: base name + '*' / '&' derivation suffixes, 'const ' prefixes)
+// back to the live DataDef, composing derived types through the SAME
+// getPointerType / getReferenceType / getConstType caches the compiler uses.
+// NULL = unresolvable — the caller degrades to the eager hydrate+register
+// arm, so a miss costs the decode, never correctness.
+static DataDef *resolve_flat_return_name(Program &pgm, const std::string &nm)
+{
+    if ( nm.empty() )
+	return NULL;
+    if ( nm[nm.size() - 1] == '*' || nm[nm.size() - 1] == '&' )
+    {
+	DataDef *base = resolve_flat_return_name(pgm,
+						 nm.substr(0, nm.size() - 1));
+	if ( !base )
+	    return NULL;
+	return nm[nm.size() - 1] == '*'
+	     ? (DataDef *)pgm.getPointerType(base)
+	     : (DataDef *)pgm.getReferenceType(base);
+    }
+    if ( nm.compare(0, 6, "const ") == 0 )
+    {
+	DataDef *base = resolve_flat_return_name(pgm, nm.substr(6));
+	return base ? (DataDef *)pgm.getConstType(base) : NULL;
+    }
+    flat_datatype_map_iter dmi = pgm.datatype_map.find(nm);
+    if ( dmi != pgm.datatype_map.end() )
+	return &(*dmi)->definition;
+    return NULL;
+}
+
+// ONE decoder for a MEMBER record's parameter table — names, pack/type-ness,
+// the v36 [temp.deduct]/8 SFINAE default runs, and the v38 per-param
+// CONSTRAINT runs riding the record's spec slot (the FN lane's v33
+// convention). An older record has rt.spec empty — constraints clear so the
+// size mismatch downstream degrades to clearing every non-type default, the
+// pre-v38 behavior. Shared by the lazy thaw owner and the flush's
+// dropped-placeholder eager arm; payload decode, so every caller runs it
+// inside a ForestWorkFrame.
+static void decode_member_tmpl_param_table(Program &pgm,
+					   const CirRestoredTemplate &rt,
+					   const std::string &disp,
+					   std::vector<std::string> &typeparams,
+					   std::vector<bool> &is_pack,
+					   std::vector<bool> &is_type,
+					   std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+					   std::vector<std::vector<TokenBase *> > &typeparam_constraints)
+{
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	typeparams.push_back(rt.params[p].first);
+	is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    pgm.forest_restore_run(rt.defaults[p], typeparam_defaults.back());
+	typeparam_constraints.push_back(std::vector<TokenBase *>());
+	if ( p < rt.spec.size() )
+	    pgm.forest_restore_run(rt.spec[p], typeparam_constraints.back());
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
+		    disp.c_str(), p, typeparam_defaults.back().size());
+    }
+    if ( rt.spec.empty() )
+	typeparam_constraints.clear();
+}
+
+// Lazy MEMBER-template thaw owner (task #25 B2, MEMBER arm): hydrate the
+// deferred CIR_TMPLK_MEMBER record, restore its token runs, and run the ONE
+// stamp derivation onto the restored placeholder — exactly what the flush used
+// to do eagerly for every closure-admitted record. Memoized by NULLing
+// member_tmpl_frozen up front (re-entrancy safe: a nested read during the
+// stamp sees an already-consumed source). Pure token work — no name
+// resolution, no scope stack — so a mid-parse thaw cannot disturb parse state.
+void madc_thaw_member_template(FuncDef *fd)
+{
+    if ( !fd )
+	return;
+    CirFrozenMemberTmpl *fz = fd->member_tmpl_frozen;
+    fd->member_tmpl_frozen = NULL;
+    if ( !fz || !fz->owner || !fz->rt || !fz->forest || !fz->pgm )
+	return;
+    Program &pgm = *fz->pgm;
+    CirRestoredTemplate &rt = *fz->rt;
+    if ( !fz->forest->hydrate_restored_template(rt) )
+	return;
+    ForestWorkFrame _fw(&pgm._forest_work_seconds, &pgm._forest_work_depth);
+    std::string disp = rt.name ? rt.name : "";
+    std::vector<TokenBase *> tokens;
+    std::vector<TokenBase *> ret_tokens;
+    pgm.forest_restore_run(rt.body, tokens);
+    pgm.forest_restore_run(rt.constraint, ret_tokens);
+    if ( tokens.empty() && ret_tokens.empty() )
+	return;
+    std::vector<std::string> typeparams;
+    std::vector<bool> is_pack, is_type;
+    std::vector<std::vector<TokenBase *> > typeparam_defaults;
+    std::vector<std::vector<TokenBase *> > typeparam_constraints;
+    decode_member_tmpl_param_table(pgm, rt, disp, typeparams, is_pack, is_type,
+				   typeparam_defaults, typeparam_constraints);
+    if ( !tokens.empty() )
+	stamp_member_template_pattern(fz->owner, fd, tokens, typeparams,
+				      is_pack, is_type, disp,
+				      typeparam_defaults, typeparam_constraints);
+    else
+	// v34 decl-only record: no decl tokens to derive from — stamp the
+	// restored return-type range + params directly.
+	stamp_member_template_pattern_decl_only(fz->owner, fd, ret_tokens,
+						typeparams, is_pack, is_type,
+						disp, typeparam_defaults,
+						typeparam_constraints);
+    DBG(std::cout << "madc_thaw_member_template: member template of "
+	<< fz->owner->name << " thawed (" << typeparams.size()
+	<< " param(s), " << tokens.size() << " tokens, "
+	<< ret_tokens.size() << " ret tokens, decl="
+	<< fd->member_template_decl.size() << ", fd=" << (void *)fd
+	<< ")" << std::endl);
+}
+
+// ONE owner for turning a restored function record into the live parser
+// surfaces. Declared names call it during the post-tokenize flush; verdict-0
+// derived identities call it only after source lookup or CIR reachability asks
+// for them. Keeping both lanes here prevents the lazy path from drifting from
+// parseFunction's restored Variable/Method/overload contract.
+Variable *Program::register_forest_func(const PendingForestFunc &pf)
+{
+    if ( !tkProgram || !pf.fd || pf.name.empty() )
+	return NULL;
+    funcdef_map_iter fit = funcdef_map.find(pf.name);
+    if ( fit != funcdef_map.end() )
+	return tkProgram->findVariable(strpool, pf.name);
+    if ( Variable *old = tkProgram->findVariable(strpool, pf.name) )
+	return old;
+
+    funcdef_map[pf.name] = pf.fd;
+    Variable *fv = pf.mvar;
+    if ( pf.mvar )
+    {
+	// A restored class METHOD: live keeps ONE Variable (parseFunction's)
+	// shared by tkProgram scope and the class's methods/method_map, and
+	// its Method(owner_class) was attached at materialization — reuse the
+	// class's Variable rather than minting a duplicate.
+	tkProgram->variables.push_back(pf.mvar);
+    }
+    else
+    {
+	fv = addVariable(NULL, *pf.fd, pf.name);
+	Method *fm = new Method(*fv);
+	fv->data = (void *)fm;
+	// v26 piece (a): the fn's NAMED parameter Variables (live parity
+	// with parseFunction's param loop) — the scope a deferred free-fn
+	// body's re-parse resolves its parameters against
+	// (parse_deferred_function_body sets code->method).
+	for ( size_t mp = 0; mp < pf.mparams.size(); ++mp )
+	{
+	    Variable *pv = new Variable(std::string(pf.mparams[mp].first),
+					*pf.mparams[mp].second, 1, NULL, false);
+	    pv->flags |= vfPARAM | vfLOCAL;
+	    fm->parameters.push_back(pv);
+	}
+	// v21: a restored free function with a SOURCE IDENTITY (display name
+	// + namespace) reproduces the live registration-site state.
+	if ( !pf.fd->function_display_name.empty() )
+	{
+	    std::string ovkey = pf.fd->namespace_name + "::"
+			      + pf.fd->function_display_name;
+	    if ( !pf.fd->namespace_name.empty() )
+	    {
+		variable_map_t &nsmap = namespace_variables_for_write(
+		    pf.fd->namespace_name);
+		if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
+		    nsmap[pf.fd->function_display_name] = fv;
+	    }
+	    bool tmpl_placeholder = pf.fd->declaration_only
+		&& !pf.fd->namespace_name.empty()
+		&& fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
+	    // A CONCRETE declaration-only C++ namespace function binds its
+	    // external Itanium symbol through storage_alias_name. A template
+	    // placeholder never gets an alias on the live path.
+	    if ( !tmpl_placeholder && pf.fd->declaration_only
+	      && !pf.fd->namespace_name.empty() )
+		fv->storage_alias_name = namespace_cpp_function_symbol(
+		    pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[ovkey];
+	    bool known = false;
+	    for ( size_t oi = 0; oi < ovset.size(); ++oi )
+		if ( ovset[oi].var == fv )
+		    known = true;
+	    if ( !known )
+	    {
+		NamespaceFnOverload e;
+		if ( tmpl_placeholder )
+		    e.param_spelling = "\x01fn-template-placeholder";
+		e.var = fv;
+		ovset.push_back(e);
+	    }
+	}
+    }
+    DBG(std::cout << "register_forest_func: "
+	<< (pf.mvar ? "method " : "free function ") << pf.name
+	<< " (" << pf.fd->parameters.size() << " params"
+	<< (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
+	<< " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
+	<< std::endl);
+    return fv;
+}
+
+Variable *Program::activate_forest_func(const std::string &name)
+{
+    std::map<std::string, PendingForestFunc>::iterator it =
+	forest_deferred_funcs.find(name);
+    if ( it == forest_deferred_funcs.end() )
+	return NULL;
+    PendingForestFunc pf = it->second;
+    forest_deferred_funcs.erase(it);
+    Variable *var = register_forest_func(pf);
+    funcdef_map_iter fit = funcdef_map.find(pf.name);
+    if ( fit != funcdef_map.end() && fit->second == pf.fd )
+	++_forest_funcs_activated;
+    return var;
+}
+
+void Program::activate_forest_function_family(const std::string &ns,
+					       const std::string &display_name)
+{
+    std::string family = ns + "::" + display_name;
+    std::map<std::string, std::vector<std::string> >::iterator fi =
+	forest_deferred_func_families.find(family);
+    if ( fi == forest_deferred_func_families.end() )
+	return;
+    std::vector<std::string> names;
+    names.swap(fi->second);
+    forest_deferred_func_families.erase(fi);
+    for ( size_t i = 0; i < names.size(); ++i )
+	activate_forest_func(names[i]);
+}
+
+void Program::activate_forest_function_display(const std::string &display_name)
+{
+    const std::string suffix = "::" + display_name;
+    std::vector<std::string> families;
+    for ( std::map<std::string, std::vector<std::string> >::const_iterator it =
+	      forest_deferred_func_families.begin();
+	  it != forest_deferred_func_families.end(); ++it )
+    {
+	if ( it->first.size() >= suffix.size()
+	  && it->first.compare(it->first.size() - suffix.size(), suffix.size(),
+			       suffix) == 0 )
+	    families.push_back(it->first);
+    }
+    for ( size_t i = 0; i < families.size(); ++i )
+    {
+	size_t sep = families[i].size() - suffix.size();
+	activate_forest_function_family(families[i].substr(0, sep), display_name);
+    }
+}
 
 // Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
 // once tkProgram exists (called at the end of tokenize()). Idempotent per name:
@@ -22249,183 +22634,191 @@ void Program::flush_forest_pending_globals()
     forest_pending_datatypes.clear();
     forest_pending_datatype_names.clear();
 
-    // RC2 + #23: register the staged free-function AND method declarations
-    // exactly as parseFunction's prototype tail does — funcdef_map[name] + a
-    // program-scope Variable whose data is a Method (owner_class set for a
-    // method). The flush runs at the end of tokenize(), BEFORE the consumer
-    // parses, so a call site resolves the real signature (never the dlsym
-    // implicit-variadic fallback) and Pass 0.75 emits the real extern proto —
-    // the same pre-consumer state a live header parse leaves.
-    // A name already present (an embedded-header registration, or a second
-    // flush) is skipped — first registration wins, as on the live path.
+    // RC2 + #23: source-declared functions and class methods stay eager so the
+    // consumer starts with the same lookup surface as a live header parse.
+    // Verdict-0 derived free functions were indexed separately above and
+    // promote through this SAME owner only when demanded.
     for ( size_t i = 0; i < forest_pending_funcs.size(); ++i )
-    {
-	const PendingForestFunc &pf = forest_pending_funcs[i];
-	if ( !pf.fd || pf.name.empty() )
-	    continue;
-	if ( funcdef_map.find(pf.name) != funcdef_map.end() )
-	    continue;
-	if ( findVariable(pf.name) )
-	    continue;
-	funcdef_map[pf.name] = pf.fd;
-	if ( pf.mvar )
-	{
-	    // A restored class METHOD: live keeps ONE Variable (parseFunction's)
-	    // shared by tkProgram scope and the class's methods/method_map, and
-	    // its Method(owner_class) was attached at materialization — reuse the
-	    // class's Variable rather than minting a duplicate.
-	    tkProgram->variables.push_back(pf.mvar);
-	}
-	else
-	{
-	    Variable *fv = addVariable(NULL, *pf.fd, pf.name);
-	    Method *fm = new Method(*fv);
-	    fv->data = (void *)fm;
-	    // v26 piece (a): the fn's NAMED parameter Variables (live parity
-	    // with parseFunction's param loop) — the scope a deferred free-fn
-	    // body's re-parse resolves its parameters against
-	    // (parse_deferred_function_body sets code->method).
-	    for ( size_t mp = 0; mp < pf.mparams.size(); ++mp )
-	    {
-		Variable *pv = new Variable(std::string(pf.mparams[mp].first),
-					    *pf.mparams[mp].second, 1, NULL, false);
-		pv->flags |= vfPARAM | vfLOCAL;
-		fm->parameters.push_back(pv);
-	    }
-	    // v21: a restored free function with a SOURCE IDENTITY (display name
-	    // + namespace) reproduces the live registration-site state.
-	    // A skipped-ns-fn-template PLACEHOLDER (declaration-only, a
-	    // body-bearing pattern retained in the restored fn_template_map —
-	    // __ns_std__Destroy) gets the first-wins namespace_map[ns][display]
-	    // binding (the resolution chokepoint a qualified `std::_Destroy(...)`
-	    // call reads) and the "\x01" overload-set seed. Every OTHER
-	    // display-bearing entry — the <new> allocation-operator overloads
-	    // (ns is GLOBAL/"", key "::operatornew"), concrete namespace
-	    // overloads, restored __oN instantiations — gets a concrete
-	    // overload-set entry, so resolved_call_funcdef ranks a 2-arg
-	    // aligned `operator new(size, align_val_t)` to operatornew__o2
-	    // instead of falling back to the 1-param base ("too many
-	    // arguments"). Ranking reads the FuncDef's parameters, so no
-	    // param spelling is needed; live conditions on restored state,
-	    // never a name special-case.
-	    if ( !pf.fd->function_display_name.empty() )
-	    {
-		std::string ovkey = pf.fd->namespace_name + "::"
-				  + pf.fd->function_display_name;
-		if ( !pf.fd->namespace_name.empty() )
-		{
-		    variable_map_t &nsmap = namespace_variables_for_write(
-			pf.fd->namespace_name);
-		    if ( nsmap.find(pf.fd->function_display_name) == nsmap.end() )
-			nsmap[pf.fd->function_display_name] = fv;
-		}
-		bool tmpl_placeholder = pf.fd->declaration_only
-		    && !pf.fd->namespace_name.empty()
-		    && fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
-		// A CONCRETE declaration-only C++ namespace function binds its
-		// external Itanium symbol via the Variable's storage_alias_name
-		// (parseFunction's tail, e.g. std::__throw_bad_alloc ->
-		// _ZSt17__throw_bad_allocv) — reproduce it; a placeholder never
-		// gets one on the live path.
-		if ( !tmpl_placeholder && pf.fd->declaration_only
-		  && !pf.fd->namespace_name.empty() )
-		    fv->storage_alias_name = namespace_cpp_function_symbol(
-			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
-		std::vector<NamespaceFnOverload> &ovset =
-		    namespace_fn_overload_sets[ovkey];
-		bool known = false;
-		for ( size_t oi = 0; oi < ovset.size(); ++oi )
-		    if ( ovset[oi].var == fv )
-			known = true;
-		if ( !known )
-		{
-		    NamespaceFnOverload e;
-		    if ( tmpl_placeholder )
-			e.param_spelling = "\x01fn-template-placeholder";
-		    e.var = fv;
-		    ovset.push_back(e);
-		}
-	    }
-	}
-	DBG(std::cout << "flush_forest_pending_globals: "
-	    << (pf.mvar ? "method " : "free function ") << pf.name
-	    << " (" << pf.fd->parameters.size() << " params"
-	    << (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
-	    << " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
-	    << std::endl);
-    }
+	register_forest_func(forest_pending_funcs[i]);
     forest_pending_funcs.clear();
     // v21: restored MEMBER function templates. The placeholder FuncDef itself
     // restored VERBATIM from its methodrec (its saved __oN rank — registered
-    // by the pending-funcs flush above), so the normal path HYDRATES its
-    // pattern fields from the record's tokens; re-running the registration
-    // here would mint a SECOND, rank-shifted placeholder family and the
-    // loaded bodies' calls into the restored ranks would die as undefined
-    // imports. Only a placeholder the load dropped falls back to the full
-    // live registration (fresh-surface robustness — same one production path).
+    // by the pending-funcs flush above), so the normal path DEFERS: attach the
+    // frozen record to the placeholder and thaw (hydrate + token restore +
+    // pattern stamp) at first content read (madc_thaw_member_template) —
+    // re-running the registration here would mint a SECOND, rank-shifted
+    // placeholder family and the loaded bodies' calls into the restored ranks
+    // would die as undefined imports. Only a placeholder the load dropped
+    // falls back to the full live registration, hydrated eagerly HERE because
+    // that path needs live parse machinery (class_scope_stack, addFunction) a
+    // mid-parse thaw must not touch (fresh-surface robustness — same one
+    // production path).
     for ( size_t i = 0; i < forest_pending_member_tmpls.size(); ++i )
     {
 	PendingForestMemberTmpl &pm = forest_pending_member_tmpls[i];
-	if ( !pm.owner || (pm.tokens.empty() && pm.ret_tokens.empty()) )
+	if ( !pm.owner || !pm.rt || !pm.forest )
 	    continue;
 	funcdef_map_iter fit = pm.key.empty() ? funcdef_map.end()
 					      : funcdef_map.find(pm.key);
 	if ( fit != funcdef_map.end() && fit->second
 	  && fit->second->is_member_template )
 	{
-	    if ( !pm.tokens.empty() )
-		stamp_member_template_pattern(pm.owner, fit->second, pm.tokens,
-					      pm.typeparams, pm.is_pack,
-					      pm.is_type, pm.disp,
-					      pm.typeparam_defaults,
-					      pm.typeparam_constraints);
-	    else
-		// v34 decl-only record: no decl tokens to derive from — stamp
-		// the restored return-type range + params directly.
-		stamp_member_template_pattern_decl_only(pm.owner, fit->second,
-		    pm.ret_tokens, pm.typeparams, pm.is_pack, pm.is_type,
-		    pm.disp, pm.typeparam_defaults, pm.typeparam_constraints);
+	    CirFrozenMemberTmpl fz;
+	    fz.owner  = pm.owner;
+	    fz.rt     = pm.rt;
+	    fz.forest = pm.forest;
+	    fz.pgm    = this;
+	    forest_frozen_member_tmpls.push_back(fz);
+	    fit->second->member_tmpl_frozen = &forest_frozen_member_tmpls.back();
+	    // Identity stamp: the owner is read as plain identity (lane gates,
+	    // sibling scans) — the payload-derived fields wait for the thaw.
+	    // Display name / is_member_template / is_const_method restored
+	    // verbatim with the methodrec.
+	    fit->second->member_template_owner = pm.owner;
 	    DBG(std::cout << "flush_forest_pending_globals: member template of "
-		<< pm.owner->name << " hydrated placeholder " << pm.key
-		<< " (" << pm.typeparams.size() << " param(s), "
-		<< pm.tokens.size() << " tokens, "
-		<< pm.ret_tokens.size() << " ret tokens, decl="
-		<< fit->second->member_template_decl.size() << ", owner="
-		<< (fit->second->member_template_owner ? 1 : 0) << ", fd="
-		<< (void *)fit->second << ", cls=" << (void *)pm.owner
-		<< ")" << std::endl);
+		<< pm.owner->name << " deferred on placeholder " << pm.key
+		<< " (fd=" << (void *)fit->second << ", cls="
+		<< (void *)pm.owner << ")" << std::endl);
 	    continue;
 	}
-	// A DECL-ONLY record cannot fall back to the live registration — there
-	// are no declaration tokens to re-run it over; the placeholder either
-	// restored (hydrated above) or the member stays a bare method.
-	if ( pm.tokens.empty() )
+	// Dropped placeholder, SKELETON record: the producer banked the
+	// identity facts (return-type flat name in the extra slot, static-ness
+	// via CIR_TMPLF_INSTANCE_METHOD, ctor-hood via CIR_TMPLF_MEMBER_CTOR),
+	// so the varargs stub registers payload-free — the record stays
+	// frozen, the template segments stay cold, and the pattern thaws at
+	// first content read exactly like the deferred-placeholder arm above.
+	// An unresolvable return name (or an older record's empty extra)
+	// degrades to the eager hydrate+register arm below.
+	// A decl-only record (v34) whose placeholder dropped registers
+	// NOTHING today — reproduce that verdict from the identity flag,
+	// without hydrating (the eager arm's tokens-empty skip, decided cold).
+	if ( pm.rt->flags & CIR_TMPLF_MEMBER_DECL_ONLY )
 	    continue;
+	if ( pm.rt->extra && *pm.rt->extra && !pm.disp.empty() )
+	{
+	    // Banked form "#<typeid>#<flatname>": the arena type-id first
+	    // (restored_def_by_tid — covers mangled class names), the flat
+	    // name spelling as the fallback (pinned/derived compositions).
+	    DataDef *sret = NULL;
+	    const char *bank = pm.rt->extra;
+	    const char *bank_name = NULL;
+	    if ( bank[0] == '#' )
+	    {
+		char *namepart = NULL;
+		unsigned long tid = strtoul(bank + 1, &namepart, 10);
+		if ( tid )
+		    sret = pm.forest->restored_def_by_tid((uint32_t)tid);
+		if ( namepart && namepart[0] == '#' && namepart[1] )
+		    bank_name = namepart + 1;
+	    }
+	    else
+		bank_name = bank;
+	    if ( !sret && bank_name )
+		sret = resolve_flat_return_name(*this, bank_name);
+	    // Class-scope alias returns (basic_string::size_type): the name
+	    // resolves in the OWNER's restored alias map — the same class
+	    // scope the full registration's return resolution reads.
+	    if ( !sret && bank_name )
+	    {
+		std::map<std::string, DataDef *>::iterator ai =
+		    pm.owner->type_aliases.find(bank_name);
+		if ( ai != pm.owner->type_aliases.end() )
+		    sret = ai->second;
+	    }
+	    DBG(if ( !sret ) std::cout << "flush_forest_pending_globals: member"
+		" template of " << pm.owner->name << " skeleton degrade: ret '"
+		<< pm.rt->extra << "' unresolved (" << pm.disp << ")"
+		<< std::endl);
+	    if ( sret )
+	    {
+		bool is_static = !(pm.rt->flags & CIR_TMPLF_INSTANCE_METHOD);
+		Variable *var = register_member_template_stub(
+		    *this, pm.owner, pm.disp, is_static, sret, 0);
+		FuncDef *sfd = (var && var->type) ? var->type->as_funcdef_dd()
+						  : NULL;
+		if ( sfd )
+		{
+		    sfd->is_member_template = true;
+		    sfd->method_display_name = pm.disp;
+		    sfd->member_template_owner = pm.owner;
+		    CirFrozenMemberTmpl fz;
+		    fz.owner  = pm.owner;
+		    fz.rt     = pm.rt;
+		    fz.forest = pm.forest;
+		    fz.pgm    = this;
+		    forest_frozen_member_tmpls.push_back(fz);
+		    sfd->member_tmpl_frozen = &forest_frozen_member_tmpls.back();
+		    if ( pm.rt->flags & CIR_TMPLF_MEMBER_CTOR )
+		    {
+			if ( !vector_contains_variable(pm.owner->ctors, var) )
+			    pm.owner->ctors.push_back(var);
+			pm.owner->has_user_ctor = true;
+		    }
+		    DBG(std::cout << "flush_forest_pending_globals: member"
+			" template of " << pm.owner->name
+			<< " skeleton-registered " << var->name
+			<< " ret=" << sret->name
+			<< (is_static ? " static" : "")
+			<< ((pm.rt->flags & CIR_TMPLF_MEMBER_CTOR) ? " ctor" : "")
+			<< " deferred (fd=" << (void *)sfd << ")" << std::endl);
+		    continue;
+		}
+	    }
+	}
+	// Dropped placeholder: hydrate the record NOW (the rare path pays the
+	// decode) and re-run the live registration over the restored tokens.
+	if ( !pm.forest->hydrate_restored_template(*pm.rt) )
+	    continue;
+	CirRestoredTemplate &rrt = *pm.rt;
+	std::vector<TokenBase *> tokens;
+	std::vector<std::string> typeparams;
+	std::vector<bool> is_pack, is_type;
+	std::vector<std::vector<TokenBase *> > typeparam_defaults;
+	std::vector<std::vector<TokenBase *> > typeparam_constraints;
+	{
+	    // Payload decode rides the forest clock like every other
+	    // forest_restore_run caller; the live registration below is
+	    // parse work, outside the frame.
+	    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+	    forest_restore_run(rrt.body, tokens);
+	    // A DECL-ONLY record (v34: no decl tokens, only the return-type
+	    // range in the constraint slot) cannot fall back to the live
+	    // registration — there are no declaration tokens to re-run it
+	    // over; the placeholder either restored (deferred above) or the
+	    // member stays a bare method.
+	    if ( tokens.empty() )
+		continue;
+	    decode_member_tmpl_param_table(*this, rrt,
+					   rrt.name ? rrt.name : "",
+					   typeparams, is_pack, is_type,
+					   typeparam_defaults,
+					   typeparam_constraints);
+	}
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
-	last_skipped_template_typeparam_is_pack = pm.is_pack;
+	last_skipped_template_typeparam_is_pack = is_pack;
 	std::vector<bool> saved_is_type = last_skipped_template_typeparam_is_type;
-	last_skipped_template_typeparam_is_type = pm.is_type;
+	last_skipped_template_typeparam_is_type = is_type;
 	std::vector<std::vector<TokenBase *> > saved_defaults =
 	    last_skipped_template_typeparam_defaults;
-	last_skipped_template_typeparam_defaults = pm.typeparam_defaults;
+	last_skipped_template_typeparam_defaults = typeparam_defaults;
 	std::vector<std::vector<TokenBase *> > saved_constraints =
 	    last_skipped_template_typeparam_constraints;
-	last_skipped_template_typeparam_constraints = pm.typeparam_constraints;
+	last_skipped_template_typeparam_constraints = typeparam_constraints;
 	// Live ran this registration INSIDE the owner's class body — the
 	// return-type resolution reads class-scope names (`iterator`,
 	// `pair<iterator,bool>`) through class_scope_stack + the owner's
 	// (restored) type_aliases. Reproduce that scope context.
 	class_scope_stack.push_back(pm.owner);
-	register_skipped_class_template_function(*this, pm.owner, pm.tokens,
-						 pm.typeparams, 0, std::string());
+	register_skipped_class_template_function(*this, pm.owner, tokens,
+						 typeparams, 0, std::string());
 	class_scope_stack.pop_back();
 	last_skipped_template_typeparam_is_pack = saved_pack;
 	last_skipped_template_typeparam_is_type = saved_is_type;
 	last_skipped_template_typeparam_defaults = saved_defaults;
 	last_skipped_template_typeparam_constraints = saved_constraints;
 	DBG(std::cout << "flush_forest_pending_globals: member template of "
-	    << pm.owner->name << " (" << pm.typeparams.size()
-	    << " param(s), " << pm.tokens.size() << " tokens)" << std::endl);
+	    << pm.owner->name << " (" << typeparams.size()
+	    << " param(s), " << tokens.size() << " tokens)" << std::endl);
     }
     forest_pending_member_tmpls.clear();
     for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
@@ -23004,6 +23397,75 @@ void Program::add_array_methods()
 	ddARRAY.method_map[name] = var;
     }
 
+    // Strict kind accessors mirroring madc::value's own contract
+    // (include/libmadc/value.h): as_integer/as_boolean/as_real demand the
+    // exact kind (mismatch = catchable script error in the runtime entry,
+    // madc_mir_backend.cpp), is_null answers kind::null. The same
+    // declaration-only emit_symbol path count()/c_str() ride.
+    struct ArrayAccessor { const char *name; typespec_t ret; const char *sym; };
+    const ArrayAccessor accessors[] = {
+	{ "as_integer", DataType::dtINT64,  "madarray_as_integer" },
+	{ "as_boolean", DataType::dtBOOL,   "madarray_as_boolean" },
+	{ "as_real",    DataType::dtDOUBLE, "madarray_as_real"    },
+	{ "is_null",    DataType::dtBOOL,   "madarray_is_null"    },
+    };
+    for ( const ArrayAccessor &ac : accessors )
+    {
+	Variable *var = addFunction(ac.name,
+	    datatype_vec_t{ac.ret, ptr_of(ddARRAY)}, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = ac.sym;
+	    fd->method_display_name = ac.name;
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[ac.name] = var;
+    }
+
+    // String surface (value-first.md): a string-kind value is usable like
+    // a std::string. substr returns ring-lifetime text (the c_str
+    // contract, L3 caveat); length aliases count (owner semantics);
+    // empty answers null/text/containers and errors on scalars.
+    struct ArrayStrMethod { const char *name; typespec_t ret;
+			    const char *sym; int extra_ints; };
+    const ArrayStrMethod str_methods[] = {
+	{ "substr", ptr_of(ddCHAR),    "madarray_substr", 2 },
+	{ "length", DataType::dtINT64, "madarray_count",  0 },
+	{ "empty",  DataType::dtBOOL,  "madarray_empty",  0 },
+	// at(pos): the BYTE at pos as an int (string kind; range-checked,
+	// catchable) — std::string::at's role for scanners, sized for the
+	// carrier (no char& into the cell).
+	{ "at",     DataType::dtINT64, "madarray_at",     1 },
+    };
+    for ( const ArrayStrMethod &sm : str_methods )
+    {
+	datatype_vec_t sig{sm.ret, ptr_of(ddARRAY)};
+	for ( int i = 0; i < sm.extra_ints; ++i )
+	    sig.push_back(DataType::dtINT64);
+	Variable *var = addFunction(sm.name, sig, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = sm.sym;
+	    fd->method_display_name = sm.name;
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[sm.name] = var;
+    }
+
     // Scalar (re)assignment surface (slice V1): native operator= overloads
     // binding to the madarray_assign_* runtime entries (madc_mir_backend.cpp).
     // One registration per scalar kind + the value copy-assign; expression
@@ -23048,6 +23510,72 @@ void Program::add_array_methods()
 	    md->owner_class = &ddARRAY;
 	ddARRAY.methods.push_back(var);
 	ddARRAY.method_map["operator="] = var;
+    }
+
+    // Comparison + append operators (value-first.md string surface).
+    // Equality is a QUESTION: the runtime answers false on a kind
+    // mismatch, never a throw — and registering these retires the silent
+    // pointer-compare that `v == "text"` used to lower to. operator+=
+    // returns the receiver (the operator= reference lowering); the value
+    // variants bind const array& like the copy-assign.
+    struct ArrayBinOp { const char *name; typespec_t ret; typespec_t param;
+			const char *sym; };
+    const ArrayBinOp bin_ops[] = {
+	{ "operator==", DataType::dtBOOL,     ptr_of(ddCHAR),
+	  "madarray_eq_cstr" },
+	{ "operator==", DataType::dtBOOL,     typespec_t(array_ref),
+	  "madarray_eq_value" },
+	{ "operator!=", DataType::dtBOOL,     ptr_of(ddCHAR),
+	  "madarray_ne_cstr" },
+	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
+	  "madarray_ne_value" },
+	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
+	  "madarray_append_cstr" },
+	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
+	  "madarray_append_value" },
+	// index(needle): Python's list.index / str.find shape — first
+	// position of the needle (element-equal for arrays, substring
+	// for strings), -1 when absent (a question, never a throw).
+	{ "index",      DataType::dtINT64,    ptr_of(ddCHAR),
+	  "madarray_index_cstr" },
+	{ "index",      DataType::dtINT64,    typespec_t(array_ref),
+	  "madarray_index_value" },
+	// push(x): append one ELEMENT (operator+= owns TEXT append).
+	// Returns the receiver so pushes chain. The brace-list declaration
+	// lowering (`var v = { a, b, c };` — CirBuilder::array_list_init_call)
+	// selects these same rows, so script pushes and list literals
+	// cannot drift apart.
+	{ "push",       typespec_t(array_ref), ptr_of(ddCHAR),
+	  "madarray_push_cstr" },
+	{ "push",       typespec_t(array_ref), DataType::dtINT64,
+	  "madarray_push_int" },
+	{ "push",       typespec_t(array_ref), DataType::dtDOUBLE,
+	  "madarray_push_real" },
+	{ "push",       typespec_t(array_ref), DataType::dtBOOL,
+	  "madarray_push_bool" },
+	{ "push",       typespec_t(array_ref), typespec_t(array_ref),
+	  "madarray_push_value" },
+    };
+    for ( const ArrayBinOp &op : bin_ops )
+    {
+	Variable *var = addFunction(op.name,
+	    datatype_vec_t{op.ret, ptr_of(ddARRAY), op.param}, NULL, true);
+	if ( !var )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if ( fd )
+	{
+	    fd->declaration_only = true;
+	    fd->emit_symbol = op.sym;
+	    fd->method_display_name = op.name;
+	    if ( op.param.dd == array_ref )
+		fd->const_params = { false, false, true };
+	}
+	Method *md = static_cast<Method *>(var->data);
+	if ( md )
+	    md->owner_class = &ddARRAY;
+	ddARRAY.methods.push_back(var);
+	ddARRAY.method_map[op.name] = var;
     }
 
     // Placement-construction surface: `value(-7)` temporaries and
@@ -23175,7 +23703,8 @@ Program::~Program()
 	delete source_forest;
     if ( ledger_forest && ledger_forest != bind_forest )
 	delete ledger_forest;
-    delete bind_forest;
+    // bind_forest is released by _bind_forest_holder (S3): a group-shared
+    // instance survives until its LAST sibling dies; a private one dies here.
     if ( TokenBase::_active_strpool == &strpool )
 	TokenBase::_active_strpool = NULL;
     if ( TokenBase::_active_valpool == &valpool )
@@ -23674,7 +24203,10 @@ void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out)
 Variable *Program::findVariable(TokenCpnd *code, const std::string &id)
 {
     Variable *var;
-    const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
+    // static: one getenv per process, not one per lookup — this is THE
+    // hottest name-resolution entry (the -O2 profile put a measurable share
+    // of the whole launch inside per-call getenv here).
+    static const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
     // Intern the query name ONCE; the same sid probes every scope (local chain +
     // global) without re-hashing the std::string per level (C2).
     uint32_t qsid = strpool.intern(id);
@@ -23774,6 +24306,7 @@ std::vector<std::string> Program::inline_namespace_descendants(
 
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
 {
+    activate_forest_function_family(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
     // namespace set, TRANSITIVELY — and they are visible while the inline
     // namespace block is still OPEN, not only after
@@ -24983,7 +25516,7 @@ bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
 	for ( size_t i = 0; i < oi->second.size(); ++i )
 	{
 	    FuncDef *ofd = oi->second[i].var
-		? dynamic_cast<FuncDef *>(oi->second[i].var->type) : NULL;
+		? (oi->second[i].var->type ? oi->second[i].var->type->as_funcdef_dd() : NULL) : NULL;
 	    if ( ofd && (ofd->is_varargs || ofd->parameters.size() > argc) )
 		return true;
 	}
@@ -24992,9 +25525,9 @@ bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
 
 FuncDef *Program::call_signature_funcdef(const Variable &var)
 {
-    if ( FuncDef *fd = dynamic_cast<FuncDef *>(var.type) )
+    if ( FuncDef *fd = (var.type ? var.type->as_funcdef_dd() : NULL) )
 	return fd;
-    if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(var.type) )
+    if ( DataDefFPTR *fp = (var.type ? var.type->as_fptr_dd() : NULL) )
 	return fp->target;
     return NULL;
 }
@@ -25161,16 +25694,16 @@ static bool token_tree_has_pack_expansion(TokenBase *tb)
 {
     if ( !tb )
 	return false;
-    if ( dynamic_cast<TokenPackExpansion *>(tb) )
+    if ( (tb ? tb->as_pack_expansion_tok() : NULL) )
 	return true;
-    if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
+    if ( TokenCallFunc *tc = (tb ? tb->as_callfunc_tok() : NULL) )
     {
 	for ( TokenBase *p : tc->parameters )
 	    if ( token_tree_has_pack_expansion(p) )
 		return true;
 	return token_tree_has_pack_expansion(tc->src_node);
     }
-    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+    if ( TokenOperator *op = (tb ? tb->as_operator_tok() : NULL) )
 	return token_tree_has_pack_expansion(op->left)
 	    || token_tree_has_pack_expansion(op->right);
     return false;
@@ -26188,9 +26721,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
 	    }
 	    else if ( !handled_fixed_array && base_type && base_type->is_madc_array() )
-		// madc array member chain (`s.a[0]`): element read,
-		// string-first typing (madc_array_element_type).
-		elem_type = madc_array_element_type();
+		// madc array member chain (`s.a[0]`, `s.bag["k"]`): every carrier
+		// subscript types as the carrier — the slot model
+		// (madc_array_subscript_type).
+		elem_type = madc_array_subscript_type();
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
@@ -29463,6 +29997,9 @@ class ClassPatternNormalizer
 	out.noexcept_spec = fd->noexcept_spec;
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
+	// Lazy member-template hydration: the capture below copies the
+	// pattern fields — a frozen fd would clone an EMPTY pattern.
+	fd->ensure_member_template_thawed();
 	out.is_member_template = fd->is_member_template;
 	out.template_param_names = fd->template_param_names;
 	out.template_param_is_type = fd->template_param_is_type;
@@ -33603,6 +34140,41 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 		    {
+			// The intrinsic carrier (`var o; o.name`): a dot member
+			// over the object kind is SUGAR for the keyed subscript
+			// `o["name"]` — rewrite to the same token shape
+			// (parser-typed ddARRAY) so ONE lowering owns keyed
+			// access (madarray_key_slot). Only the non-call form:
+			// real carrier methods resolved above, and a call form
+			// (`o.f(...)`) belongs to the UFCS fallback below,
+			// never to a bag slot.
+			if ( struct_type == &ddARRAY
+			  && (!peekToken() || peekToken()->id() != TokenID::tkOpBrk) )
+			{
+			    TokenStr *key = new TokenStr(id);
+			    key->file = tb->file;
+			    key->line = tb->line;
+			    key->column = tb->column;
+			    TokenBase *keyed;
+			    TokenVar *rtv = ( lhs_dot->type() == TokenType::ttVariable )
+				? dynamic_cast<TokenVar *>(lhs_dot) : NULL;
+			    if ( rtv )
+			    {
+				TokenSubscript *tsn = new TokenSubscript(rtv->var, key);
+				tsn->setDataType(&ddARRAY);
+				keyed = tsn;
+			    }
+			    else
+				keyed = new TokenSubscriptExpr(lhs_dot, key, &ddARRAY);
+			    keyed->file = tb->file;
+			    keyed->line = tb->line;
+			    keyed->column = tb->column;
+			    exStack.pop();	// the receiver
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+				opStack.pop();
+			    exStack.push(keyed);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			// [expr.ref]p4: `obj.member` naming a STATIC data member /
 			// in-class constant (possibly inherited) designates the
 			// static member; the object expression is discarded. This
@@ -35151,10 +35723,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
-			// madc array element read: string-first typing (the
-			// Python/PHP element model — see madc_array_element_type).
-			if ( tv->var.type && tv->var.type->is_madc_array() )
-			    tsn->setDataType(madc_array_element_type());
+			// madc array subscript: every carrier subscript types as
+			// the carrier — the slot model (madc_array_subscript_type).
+			// A `value &` receiver (reference parameter) denotes its
+			// referent carrier.
+			DataDef *sub_recv = tv->var.type;
+			if ( DataDef *ref = referent_if_reference(sub_recv) )
+			    sub_recv = ref;
+			if ( sub_recv && sub_recv->is_madc_array() )
+			    tsn->setDataType(madc_array_subscript_type());
 			exStack.push(tsn);
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
@@ -35243,10 +35820,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// SIMD vector subscript: v[i] yields the lane element type.
 			if ( elem_type && elem_type->is_simd() )
 			    elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
-			// madc array member (`s.a[0]`, `sys.argv[1]`): element
-			// read, string-first typing (madc_array_element_type).
+			// madc array member/chain (`s.a[0]`, `bag["k"]["j"]`):
+			// every carrier subscript types as the carrier — the
+			// slot model (madc_array_subscript_type).
 			if ( elem_type && elem_type->is_madc_array() )
-			    elem_type = madc_array_element_type();
+			    elem_type = madc_array_subscript_type();
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and
@@ -41114,12 +41692,17 @@ bool Program::desugar_abbreviated_fn_template()
 // selection among same-arity overloads by argument TYPE is separate, later work.)
 std::string Program::unique_overload_symbol(std::string base)
 {
-    if ( !findVariable(base) )
+    // A deferred forest identity still OCCUPIES its producer-assigned rank.
+    // Treat it as a name reservation without promoting its Variable: a new
+    // consumer specialization must mint the same later __oN key the eager
+    // restore would have chosen, while the untouched cached product remains
+    // unregistered.
+    if ( !findVariable(base) && !forest_deferred_funcs.count(base) )
 	return base;
     for ( int n = 2; ; ++n )
     {
 	std::string cand = base + "__o" + std::to_string(n);
-	if ( !findVariable(cand) )
+	if ( !findVariable(cand) && !forest_deferred_funcs.count(cand) )
 	    return cand;
     }
 }
@@ -47432,6 +48015,13 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	    DataDef *cv_type = &ddINT64; // default
 	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
+	    else if ( catch_types.back() == 3 && ptr_depth > 0 )
+		// cstr catch (`catch (const char *m)`): the variable IS a
+		// char pointer — register the real type so typed consumers
+		// (the std::format classifier, cstr parameters) see text.
+		// As int64 it printed the POINTER BITS through std::println;
+		// printf %s only worked because varargs pass bits through.
+		cv_type = &ddCHARptr;
 	    else if ( catch_types.back() == 4 && ctype )
 	    {
 		// class/pointer catch: register the REAL type so the handler
@@ -49439,6 +50029,9 @@ void Program::register_outofline_member_instantiations(
 	    if ( !cand || !cand->data ) continue;
 	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
 	    if ( !cfd ) continue;
+	    // Lazy member-template hydration: the matcher below reads decl
+	    // tokens + template params on each candidate.
+	    cfd->ensure_member_template_thawed();
 #if MADC_DEBUG_FNTPL
 	    if ( dbg_def )
 		std::cerr << "FNTPL ool-cand var=" << cand->name
@@ -51118,7 +51711,7 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
     // parse-bound Variable can be an arbitrary member of a late-bound
     // overload set (deduction read `auto` from __niter_base's bound
     // placeholder while the re-rank winner returned the real iterator type).
-    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(operand) )
+    if ( TokenCallFunc *tcf = (operand ? operand->as_callfunc_tok() : NULL) )
 	if ( !tcf->return_override )
 	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
 	    {
@@ -51137,9 +51730,9 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 	    }
     if ( dd->is_reference() )
 	return static_cast<DataDefPTR *>(dd)->base_type;
-    TokenVar *tv = dynamic_cast<TokenVar *>(operand);
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
     if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
 	    return rp->base_type;
     return dd;
 }
@@ -54859,6 +55452,11 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
     // when why==NULL. Keeps the fallback worklist self-diagnosing.
     auto no = [&](const char *r) -> bool { if ( why ) *why = r; return false; };
+    // Lazy member-template hydration: the decl-emptiness gate below is a
+    // pattern-content read — a frozen placeholder must thaw or it would
+    // silently classify as "not a member template".
+    if ( fd )
+	fd->ensure_member_template_thawed();
     if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
       || !fd->member_template_owner )
 	return no("not a member template");
@@ -55523,6 +56121,10 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    // Lazy member-template hydration: everything below is pattern-content
+    // (decl tokens, dependent_pattern build, sibling candidate scan).
+    if ( fd )
+	fd->ensure_member_template_thawed();
     // Env-gated probe (MADC_MTI_PROBE=<substr>): entry state + funcdef_map
     // identity for the callee — the restored-placeholder routing diagnostic.
     {
@@ -55653,6 +56255,10 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    for ( Variable *mv : ocls->methods )
 	    {
 		FuncDef *cfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+		// Lazy member-template hydration: the decl/param gates below
+		// are pattern-content reads on each sibling candidate.
+		if ( cfd )
+		    cfd->ensure_member_template_thawed();
 		if ( cfd && cfd != fd && cfd->is_member_template
 		  && cfd->member_template_owner == fd->member_template_owner
 		  && !cfd->member_template_decl.empty()
@@ -55923,6 +56529,10 @@ bool Program::instantiate_member_ctor_template_candidate(
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	// Lazy member-template hydration: the decl/param gates below are
+	// pattern-content reads on each ctor-template candidate.
+	if ( cfd )
+	    cfd->ensure_member_template_thawed();
 	if ( cfd && cfd->is_member_template
 	  && !cfd->member_template_decl.empty()
 	  && cfd->member_template_owner == cdd
@@ -57094,6 +57704,47 @@ static void stamp_member_template_pattern_decl_only(
 	}
 }
 
+// The registration SKELETON a member-template placeholder needs to EXIST on
+// the class's method surface: the varargs declaration-only stub (ret [+this]
+// +marker params), the program-scope Variable, and the methods/method_map
+// entries. The ONE implementation, shared by the full live registration
+// (register_skipped_class_template_function, which then stamps the pattern)
+// and the forest flush's payload-free skeleton arm (lazy MEMBER hydration —
+// the skeleton facts ride the CIR_TMPLK_MEMBER record identity; the pattern
+// thaws at first content read).
+static Variable *register_member_template_stub(
+	Program &pgm, DataDefCLASS *owner, const std::string &name,
+	bool is_static, DataDef *ret, uint32_t access_flags)
+{
+    datatype_vec_t params;
+    params.push_back(ret ? ret : &ddINT64);
+    if ( !is_static )
+	params.push_back(pgm.getPointerType(owner));
+    params.push_back(&ddINT64); // varargs marker
+
+    std::string parse_id = owner->name + "__" + name;
+    if ( pgm.findVariable(parse_id) )
+	parse_id = pgm.unique_overload_symbol(parse_id);
+    Variable *var = pgm.addFunction(parse_id, params, NULL);
+    if ( !var )
+	return NULL;
+    if ( FuncDef *fd = var->type ? var->type->as_funcdef_dd() : NULL )
+    {
+	fd->is_varargs = true;
+	fd->declaration_only = true;
+    }
+    Method *md = static_cast<Method *>(var->data);
+    if ( md && !is_static )
+	md->owner_class = owner;
+    if ( is_static )
+	var->flags |= vfSTATIC;
+    if ( access_flags )
+	var->flags |= access_flags;
+    owner->methods.push_back(var);
+    owner->method_map[name] = var;
+    return var;
+}
+
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -57125,23 +57776,13 @@ static void register_skipped_class_template_function(
     bool is_static = skipped_template_function_is_static(tokens);
     DataDef *ret = skipped_template_function_return_type(pgm, owner, tokens, name,
 							 &typeparams);
-    datatype_vec_t params;
-    params.push_back(ret ? ret : &ddINT64);
-    if ( !is_static )
-	params.push_back(pgm.getPointerType(owner));
-    params.push_back(&ddINT64); // varargs marker
-
-    std::string parse_id = owner->name + "__" + name;
-    if ( pgm.findVariable(parse_id) )
-	parse_id = pgm.unique_overload_symbol(parse_id);
-    Variable *var = pgm.addFunction(parse_id, params, NULL);
+    Variable *var = register_member_template_stub(pgm, owner, name, is_static,
+						  ret, access_flags);
     if ( !var )
 	return;
-    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+    FuncDef *fd = var->type ? var->type->as_funcdef_dd() : NULL;
     if ( fd )
     {
-	fd->is_varargs = true;
-	fd->declaration_only = true;
 	stamp_member_template_pattern(owner, fd, tokens, typeparams,
 				      pgm.last_skipped_template_typeparam_is_pack,
 				      pgm.last_skipped_template_typeparam_is_type,
@@ -57177,15 +57818,8 @@ static void register_skipped_class_template_function(
 	    owner->name.c_str(), name.c_str(), ctor_source_name.c_str(), (int)hb, typeparams.size());
     }
 #endif
-    Method *md = static_cast<Method *>(var->data);
-    if ( md && !is_static )
-	md->owner_class = owner;
-    if ( is_static )
-	var->flags |= vfSTATIC;
-    if ( access_flags )
-	var->flags |= access_flags;
-    owner->methods.push_back(var);
-    owner->method_map[name] = var;
+    // (stub registration — params/varargs/methods/method_map — moved into
+    // register_member_template_stub above.)
     // A member template CONSTRUCTOR (declarator names the class's ctor) whose
     // parameters USE the template pack is not handled by the defaulted-ctor
     // path; it lands here. Register it as a ctor too so construction sites can
@@ -59043,6 +59677,9 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
 // identically for both, as it is for every FuncDef).
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
 {
+    // Lazy member-template hydration: the field copy below includes the
+    // pattern fields — a frozen source would clone an EMPTY pattern.
+    src->ensure_member_template_thawed();
     FuncDef *f = new FuncDef(new_ret);
     // Env-gated probe (MADC_MTI_PROBE): member-template placeholder clones —
     // the restored-placeholder routing diagnostic.
@@ -59444,8 +60081,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // sets it for this call) — stamped BEFORE the body parses so the
     // hidden-friend access grant (current_function_friend_name) sees
     // "operator<" while parsing the body, not the internal overload symbol.
+    // CONSUME-ONCE: cleared at the stamp. The slot names exactly the function
+    // parseDeclaration set it for; a NESTED parseFunction during this body
+    // (a member-template __mti product minted mid-instantiation) must not
+    // inherit it — the leaked identity rode the freeze and the restore flush
+    // registered _Destroy_aux<>::__destroy products as "::_Destroy" overloads,
+    // poisoning the ranked set a bound consumer resolves against.
     if ( !pending_function_display_name.empty() )
+    {
 	func->function_display_name = pending_function_display_name;
+	pending_function_display_name.clear();
+    }
     // A function parsed inside a template instantiation is an instantiation
     // product (e.g. a namespace free-template instance) — the C++ vague-
     // linkage set: any TU using the template mints an identical copy. Record
@@ -59748,7 +60394,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    continue;
 	}
 	if ( DataDefTemplateParam *template_param =
-		dynamic_cast<DataDefTemplateParam *>(&pb->definition) )
+		pb->definition.as_template_param_dd() )
 	    param_template_param_spelled_directly =
 		param_base_spelling == template_param->name;
 	rtype = RefType::rtValue;
@@ -60747,16 +61393,16 @@ paramdecl:
 	{
 	    if ( !pv )
 		continue;
-	    DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pv->type);
-	    DataDefCArray *pc = pp ? dynamic_cast<DataDefCArray *>(pp->base_type)
+	    DataDefPTR *pp = (pv->type ? pv->type->as_pointer_dd() : NULL);
+	    DataDefCArray *pc = pp ? (pp->base_type ? pp->base_type->as_carray_dd() : NULL)
 				   : NULL;
 	    if ( !pc )
 		continue;
 	    std::set<TokenBase *> captured;
 	    for ( DataDefCArray *c = pc; c;
-		  c = dynamic_cast<DataDefCArray *>(c->element_type) )
+		  c = (c->element_type ? c->element_type->as_carray_dd() : NULL) )
 	    {
-		if ( !c->count_expr || dynamic_cast<TokenInt *>(c->count_expr) )
+		if ( !c->count_expr || c->count_expr->as_int_tok() )
 		    continue;
 		TokenBase *orig = c->count_expr;
 		if ( TokenBase *cap = materialize_vla_dim_capture(code, c->count_expr, orig) )
@@ -62492,6 +63138,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( decl_type->basetype() == BaseType::btClass )
 	decl_type = complete_class_type_on_demand(decl_type);
 
+    // The CARRIER's list literal: `var v = { a, b, c };` — copy-list-
+    // initialization spells the SAME list-initialization as the direct form
+    // `var v{ a, b, c }` ([dcl.init]/15), so consume the '=' and let the ONE
+    // ctor-args reader below take the braces (the TokenRETURN re-spell
+    // convention). Carrier-only: general class copy-list-init keeps its
+    // existing routes. The elements land in td->ctor_args with
+    // ctor_args_braced set; CirBuilder::array_list_init_call lowers them.
+    bool carrier_list_decl = !ret_is_ref && arr_dims.empty()
+	&& decl_type->rawtype() == DataType::dtARRAY
+	&& !decl_type->is_pointer();
+    if ( carrier_list_decl && nt->id() == TokenID::tkAssign
+      && tokens.size() > 1 && tokens[1]
+      && tokens[1]->id() == TokenID::tkOpBrc )
+    {
+	nextToken(); // consume '=' — the '{' now heads the stream
+	nt = peekToken();
+	if ( !nt )
+	    Throw(tb) << "Unexpected end of data in list initializer" << flush;
+    }
+
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
     // [dcl.init.list]/3: when the class has constructors, the braced list's
@@ -62520,10 +63186,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
 	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
 	// existing brace-init route below; a NON-empty list with user ctors is
-	// a ctor-argument list and belongs here.
+	// a ctor-argument list and belongs here. EXCEPT the carrier: its `{}`
+	// is an EMPTY ARRAY literal (the braces spell a container), read here
+	// as zero ctor args with ctor_args_braced set.
 	bool braced_ctor_args = nt->id() == TokenID::tkOpBrc
 	    && tokens.size() > 1 && tokens[1]
-	    && tokens[1]->id() != TokenID::tkClBrc;
+	    && (tokens[1]->id() != TokenID::tkClBrc || carrier_list_decl);
 	if ( ddc->has_user_ctor
 	  && (nt->id() == TokenID::tkOpBrk || braced_ctor_args) )
 	{
@@ -62556,6 +63224,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
 	    while ( peekToken() && peekToken()->id() != ctor_close_id )
 	    {
+		// A BARE '{' element in a carrier list literal must not reach
+		// parseExpression (no brace-head reading — the stray braces
+		// unbalance the scope stack, the TokenRETURN wall). Nested
+		// lists are a future lowering; error loudly, never silently.
+		if ( carrier_list_decl
+		  && peekToken()->id() == TokenID::tkOpBrc )
+		    Throw(peekToken()) << "Nested brace list in a value literal"
+			" is not supported (yet)" << flush;
 		TokenBase *arg = parseExpression(nextToken(), true);
 		td->ctor_args.push_back(arg);
 		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
@@ -63815,7 +64491,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( ovset.size() >= 2 )
 		    for ( size_t i = 0; i < ovset.size(); ++i )
 			if ( FuncDef *ofd = ovset[i].var
-			     ? dynamic_cast<FuncDef *>(ovset[i].var->type) : NULL )
+			     ? (ovset[i].var->type ? ovset[i].var->type->as_funcdef_dd() : NULL) : NULL )
 			{
 			    if ( !ofd->emit_symbol.empty() )
 				continue;

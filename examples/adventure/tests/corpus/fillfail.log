@@ -1,0 +1,14 @@
+## Attempt to fill lamp, attempt to fill bottle with no source
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+in
+carry lamp
+carry bottle
+drop water
+carry bottle
+drink
+fill bottle
+xyzzy
+fill lamp
+fill bottle

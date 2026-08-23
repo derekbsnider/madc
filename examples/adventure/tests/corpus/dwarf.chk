@@ -1,0 +1,387 @@
+
+Welcome to Adventure!!  Would you like instructions?
+
+> n
+
+You are standing at the end of a road before a small brick building.
+Around you is a forest.  A small stream flows out of the building and
+down a gully.
+
+> seed 1494912171
+
+Seed set to 1494912171
+
+You're in front of building.
+
+> in
+
+You are inside a building, a well house for a large spring.
+
+There are some keys on the ground here.
+
+There is a shiny brass lamp nearby.
+
+There is food here.
+
+There is a bottle of water here.
+
+> take keys
+
+OK
+
+> take lamp
+
+OK
+
+> out
+
+You're in front of building.
+
+> down
+
+You are in a valley in the forest beside a stream tumbling along a
+rocky bed.
+
+> s
+
+At your feet all the water of the stream splashes into a 2-inch slit
+in the rock.  Downstream the streambed is bare rock.
+
+> s
+
+You are in a 20-foot depression floored with bare dirt.  Set into the
+dirt is a strong steel grate mounted in concrete.  A dry streambed
+leads into the depression.
+
+The grate is locked.
+
+> open grate
+
+The grate is now unlocked.
+
+> down
+
+You are in a small chamber beneath a 3x3 steel grate to the surface.
+A low crawl over cobbles leads inward to the west.
+
+The grate is open.
+
+> west
+
+You are crawling over cobbles in a low passage.  There is a dim light
+at the east end of the passage.
+
+There is a small wicker cage discarded nearby.
+
+> take cage
+
+OK
+
+> west
+
+It is now pitch dark.  If you proceed you will likely fall into a pit.
+
+> light lamp
+
+Your lamp is now on.
+
+You are in a debris room filled with stuff washed in from the surface.
+A low wide passage with cobbles becomes plugged with mud and debris
+here, but an awkward canyon leads upward and west.  In the mud someone
+has scrawled, "MAGIC WORD XYZZY".
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> take rod
+
+OK
+
+> xyzzy
+
+>>Foof!<<
+
+You're inside building.
+
+There is food here.
+
+There is a bottle of water here.
+
+> xyzzy
+
+>>Foof!<<
+
+You're in debris room.
+
+> west
+
+You are in an awkward sloping east/west canyon.
+
+> drop rod
+
+OK
+
+> west
+
+You are in a splendid chamber thirty feet high.  The walls are frozen
+rivers of orange stone.  An awkward canyon and a good passage exit
+from east and west sides of the chamber.
+
+A cheerful little bird is sitting here singing.
+
+> take bird
+
+OK
+
+> east
+
+You are in an awkward sloping east/west canyon.
+
+A three foot black rod with a rusty star on an end lies nearby.
+
+> take rod
+
+OK
+
+> west
+
+You're in bird chamber.
+
+> west
+
+At your feet is a small pit breathing traces of white mist.  An east
+passage ends here except for a small crack leading on.
+
+Rough stone steps lead down the pit.
+
+> down
+
+You are at one end of a vast hall stretching forward out of sight to
+the west.  There are openings to either side.  Nearby, a wide stone
+staircase leads downward.  The hall is filled with wisps of white mist
+swaying to and fro almost as if alive.  A cold wind blows up the
+staircase.  There is a passage at the top of a dome behind you.
+
+Rough stone steps lead up the dome.
+
+> south
+
+This is a low room with a crude note on the wall.  The note says,
+"You won't get it up the steps".
+
+There is a large sparkling nugget of gold here!
+
+> take gold
+
+OK
+
+> n
+
+You're in Hall of Mists.
+
+> n
+
+You are in the Hall of the Mountain King, with passages off in all
+directions.
+
+A huge green fierce snake bars the way!
+
+> drop bird
+
+The little bird attacks the green snake, and in an astounding flurry
+drives the snake away.
+
+> west
+
+You are in the west side chamber of the Hall of the Mountain King.
+A passage continues west and up here.
+
+There are many coins here!
+
+> take coins
+
+OK
+
+> e
+
+You're in Hall of Mt King.
+
+A cheerful little bird is sitting here singing.
+
+> s
+
+A little dwarf just walked around a corner, saw you, threw a little
+axe at you which missed, cursed, and ran away.
+
+You are in the south side chamber.
+
+There is a little axe here.
+
+There is precious jewelry here!
+
+> drop cage
+
+OK
+
+> take jewelry
+
+OK
+
+> take axe
+
+OK
+
+> n
+
+There is a threatening little dwarf in the room with you!
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You're in Hall of Mt King.
+
+A cheerful little bird is sitting here singing.
+
+> n
+
+There is a threatening little dwarf in the room with you!
+
+You are in a low n/s passage at a hole in the floor.  The hole goes
+down to an e/w passage.
+
+There are bars of silver here!
+
+> n
+
+There is a threatening little dwarf in the room with you!
+
+You are in a large room, with a passage to the south, a passage to the
+west, and a wall of broken rock to the east.  There is a large "Y2" on
+a rock in the room's center.
+
+> plugh
+
+>>Foof!<<
+
+You're inside building.
+
+There is food here.
+
+There is a bottle of water here.
+
+> inven
+
+You are currently holding the following:
+Set of keys
+Brass lantern
+Black rod
+Dwarf's axe
+Large gold nugget
+Precious jewelry
+Rare coins
+
+> drop jewelry
+
+OK
+
+> drop gold
+
+OK
+
+> inven
+
+You are currently holding the following:
+Set of keys
+Brass lantern
+Black rod
+Dwarf's axe
+Rare coins
+
+> drop keys
+
+OK
+
+> plugh
+
+>>Foof!<<
+
+There are 2 threatening little dwarves in the room with you.
+
+One sharp nasty knife is thrown at you!
+
+It misses!
+
+You're at "Y2".
+
+> s
+
+There are 2 threatening little dwarves in the room with you.
+
+You're in n/s passage above e/w passage.
+
+There are bars of silver here!
+
+> s
+
+There are 2 threatening little dwarves in the room with you.
+
+You're in Hall of Mt King.
+
+A cheerful little bird is sitting here singing.
+
+> up
+
+There are 2 threatening little dwarves in the room with you.
+
+You're in Hall of Mists.
+
+Rough stone steps lead up the dome.
+
+> w
+
+There are 2 threatening little dwarves in the room with you.
+
+You are on the east bank of a fissure slicing clear across the hall.
+The mist is quite thick here, and the fissure is too wide to jump.
+
+> wave rod
+
+A crystal bridge now spans the fissure.
+
+> w
+
+There are 2 threatening little dwarves in the room with you.
+
+You are on the west side of the fissure in the Hall of Mists.
+
+There are diamonds here!
+
+A crystal bridge spans the fissure.
+
+> take diamonds
+
+OK
+
+> e
+
+A little dwarf with a big knife blocks your way.
+
+There are 2 threatening little dwarves in the room with you.
+
+2 of them throw knives at you!
+
+One of them gets you!
+
+Oh dear, you seem to have gotten yourself killed.  I might be able to
+help you out, but I've never really done this before.  Do you want me
+to try to reincarnate you?
+
+> n
+
+OK
+
+You scored 81 out of a possible 430, using 55 turns.
+
+Your score qualifies you as a novice class adventurer.
+
+To achieve the next higher rating, you need 40 more points.

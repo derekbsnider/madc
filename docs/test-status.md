@@ -1,6 +1,50 @@
 # Test Status
 
-> **Current (2026-08-20, v0.92.1 — the v0.92 binary-shipping patch):**
+> **Current (2026-08-23, v0.95.0 — ui:: + Adventure + cold startup):**
+> the merge-wave battery for feature/track7-hub-projections-claude, run
+> ONCE from clean obj/ at the final content (rb-20260823-051447):
+> authoritative Linux fulltest **1134 passed / 0 failed / 0 timed out /
+> 9 skipped**; EXE **1091/0**, OBJ **1091/0** (of 1134 JIT-passing);
+> release rc=0 and packed suite **1134/0/0/9** against the packed
+> `bin/madc-release`; headerless **1107/0/0/36**; Colossal Cave
+> Adventure parity **3 fragments + 94 whole logs byte-identical** (+
+> negative controls) and the roundtrip gate green; forest_bind_gate all
+> cells; rule trailers **537/0**; packed forest gate at the 93-error
+> baseline with hard-zero load-side counters. Suite grew +1
+> (testuiprompt — the ui::prompt scripted-arm pin). Windows/macOS lanes
+> re-validate at the v0.95.0 master promotion per promote.md step 5.
+>
+> **Previous incremental (2026-08-23, c2mir registry page arena):**
+> `mir-tests/c2mir-custom-alloc.c` supplies a shifted-pointer `MIR_alloc`
+> (so any raw-libc deallocation aborts), compiles a C reducer through
+> c2mir, and requires balanced allocation/free counts. The gate passes at
+> **828/828** and Valgrind reports zero errors / zero bytes live. c2mir's
+> simple sieve test, the repository build, and `make -C src test` are
+> green; packed Adventure output is byte-identical and the packed forest
+> gate holds the **93/93** parse-error baseline. The last merge-wave
+> fulltest remains **1133/0**; fulltest/EXE/OBJ were not repeated for this
+> incremental slice.
+>
+> **Current (2026-08-20, v0.94.0 — upstream-community MIR hardening):**
+> authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
+> 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test AND c2mir-gen-test3
+> both **1143/2286/0 (exact baseline)**. Reducers: upstream issue #467's
+> min_repro/min_repro_loop 0/0/0/0 across gen levels (were SIGSEGV/hang
+> at level 2); PR #468's `t*t` reducer rc=0 at `-O2 -eg`; upstream issue
+> #429's two reducers PASS on real Apple Silicon at levels 1 and 2
+> (fork not affected — darwin ABI arc covers them). New in-fork test:
+> `make aarch64-mem-disp-test` (aarch64 hosts, from PR #466).
+>
+> **Previous (2026-08-20, v0.93.0 — the MIR convert false-dependency
+> fix):** authoritative Linux fulltest **1104 passed / 0 failed / 0
+> timed out / 9 skipped**; EXE **1063/0**; MIR c2mir-gen-test
+> **1143/2286/0 (exact baseline)** — the merge-wave battery for the
+> one-commit fork change (`mir-gen-x86_64.c` pattern table: `pxor`
+> dep-break on scalar SSE converts). Perf evidence: donut.c 300 frames
+> 1.374s → **0.493s** (gcc -O0 0.514s), outputs md5-identical;
+> sin-only/sweep microbenchmarks unregressed. No fixture changes.
+>
+> **Previous (2026-08-20, v0.92.1 — the v0.92 binary-shipping patch):**
 > authoritative Linux fulltest **1104 passed / 0 failed / 0 timed out /
 > 9 skipped**; EXE **1063/0**, OBJ **1063/0**, release rc=0 — one
 > merge-wave battery at the fixed content. Windows: wine packed suite

@@ -1,0 +1,37 @@
+// The carrier's strict kind accessors from script — the ddARRAY method
+// mirror of madc::value's own contract (include/libmadc/value.h):
+// as_integer()/as_boolean()/as_real() demand the exact kind, is_null()
+// answers the null kind. A kind mismatch is a real script error,
+// catchable as `catch (const char *)` — never a silent coercion. These
+// are the numeric-extraction surface for keyed bag reads (`long n =
+// bag["k"].as_integer()`), where implicit long-from-value stays
+// undefined by design.
+#include <cstdio>
+#include <ns_madc>
+
+int main()
+{
+	var bag;
+	bag["turns"] = 42;
+	bag["lit"] = true;
+	bag["ratio"] = 2.5;
+
+	long n = bag["turns"].as_integer();
+	printf("int=%ld\n", n);
+	printf("bool=%d\n", (int)bag["lit"].as_boolean());
+	printf("real=%.1f\n", bag["ratio"].as_real());
+
+	// is_null: an untouched var, then a filled slot.
+	var empty;
+	printf("null=%d after=%d\n", (int)empty.is_null(),
+	       (int)bag["turns"].is_null());
+
+	// Kind mismatch is catchable, never a coercion.
+	try {
+		long bad = bag["lit"].as_integer();
+		printf("no-throw %ld\n", bad);
+	} catch (const char *m) {
+		printf("caught: %s\n", m);
+	}
+	return 0;
+}

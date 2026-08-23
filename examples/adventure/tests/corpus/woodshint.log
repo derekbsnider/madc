@@ -1,0 +1,69 @@
+## Test hinting logic - elicit forest hint
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+#NOCOMPARE Behavior differs due to a parser bug fix.
+# Also some tests of intransitive-verb cases
+n
+seed 2099333241
+in
+eat
+out
+n
+e
+n
+s
+w
+w
+w
+n
+n
+e
+e
+back
+e
+e
+e
+e
+e
+e
+drop
+say
+nothing
+wave
+calm
+walk
+pour
+rub
+find
+fill
+break
+wake
+quit nagging
+nothing doing
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+e
+y
+y
+s
+w
+w
+n
+n
+n
+w
+n

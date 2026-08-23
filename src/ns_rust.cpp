@@ -101,13 +101,14 @@ void rust_split(madc::value *arr, const char *str, const char *delim)
 {
 	std::string s = rust_text_arg(str);
 	std::string d = rust_text_arg(delim);
-	ns_common::split_by_delim(*arr, s, d);
+	ns_common::split_by_delim(*arr, s, d, "rust::split");
 }
 
 void rust_split_whitespace(madc::value *arr, const char *str)
 {
 	std::string s = rust_text_arg(str);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "rust::split_whitespace");
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -115,7 +116,7 @@ void rust_split_whitespace(madc::value *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				arr->array().push_back(madc::value(word));
+				data.push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -123,7 +124,7 @@ void rust_split_whitespace(madc::value *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		arr->array().push_back(madc::value(word));
+		data.push_back(madc::value(word));
 }
 
 std::string *rust_join(std::string *result, madc::value *arr, const char *sep)
@@ -170,16 +171,114 @@ std::string *rust_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
-		return result;
-	madc::value v = std::move(arr->array().back());
-	arr->array().pop_back();
-	ns_common::value_to_string(v, res);
+	madc::value v;
+	if ( ns_common::value_pop_element(*arr, v, "rust::pop") )
+		ns_common::value_to_string(v, res);
 	return result;
+}
+
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// Rust-parity forms: trim/replace/repeat/join return NEW strings
+// (ring-lifetime text, the c_str contract) over the SAME in-place cores
+// the guarded std::string publics use; first/last/get/pop return the
+// ELEMENT via a value out-param (Rust's Option<T>: the out value stays
+// null when there is nothing to return).
+
+using ns_common::ring_apply;
+
+const char *rust_trim_cstr(const char *s)	{ return ring_apply(s, rust_trim); }
+const char *rust_trim_value(const madc::value *v)	{ return ring_apply(v, rust_trim); }
+const char *rust_trim_start_cstr(const char *s)	{ return ring_apply(s, rust_trim_start); }
+const char *rust_trim_start_value(const madc::value *v)	{ return ring_apply(v, rust_trim_start); }
+const char *rust_trim_end_cstr(const char *s)	{ return ring_apply(s, rust_trim_end); }
+const char *rust_trim_end_value(const madc::value *v)	{ return ring_apply(v, rust_trim_end); }
+
+const char *rust_replace_cstr(const char *s, const char *from, const char *to)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	rust_replace(&slot, from, to);
+	return slot.c_str();
+}
+const char *rust_replace_value(const madc::value *v, const char *from,
+			       const char *to)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	rust_replace(&slot, from, to);
+	return slot.c_str();
+}
+
+const char *rust_repeat_cstr(const char *s, int64_t count)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = s ? s : "";
+	rust_repeat(&slot, count);
+	return slot.c_str();
+}
+const char *rust_repeat_value(const madc::value *v, int64_t count)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	rust_repeat(&slot, count);
+	return slot.c_str();
+}
+
+const char *rust_join_cstr(madc::value *arr, const char *sep)
+{
+	std::string &slot = ns_common::ring_slot();
+	rust_join(&slot, arr, sep);
+	return slot.c_str();
+}
+
+// Element COPIES by design — carrier elements have no stable address
+// (the php_array_get_value rationale); pop moves via the ns_common owner.
+madc::value *rust_first_value(madc::value *out, madc::value *arr)
+{
+	if ( arr->is_array() && !arr->as_array().empty() )
+		*out = arr->as_array().front();
+	else
+		*out = madc::value();
+	return out;
+}
+madc::value *rust_last_value(madc::value *out, madc::value *arr)
+{
+	if ( arr->is_array() && !arr->as_array().empty() )
+		*out = arr->as_array().back();
+	else
+		*out = madc::value();
+	return out;
+}
+madc::value *rust_get_value(madc::value *out, madc::value *arr, int64_t idx)
+{
+	if ( arr->is_array() && idx >= 0
+	     && (size_t)idx < arr->as_array().size() )
+		*out = arr->as_array()[(size_t)idx];
+	else
+		*out = madc::value();
+	return out;
+}
+madc::value *rust_pop_value(madc::value *out, madc::value *arr)
+{
+	ns_common::value_pop_element(*arr, *out, "rust::pop");
+	return out;
 }
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+const char *__rust_trim_cstr(const char *a) { return rust_trim_cstr(a); }
+const char *__rust_trim_value(madc::value *a) { return rust_trim_value(a); }
+const char *__rust_trim_start_cstr(const char *a) { return rust_trim_start_cstr(a); }
+const char *__rust_trim_start_value(madc::value *a) { return rust_trim_start_value(a); }
+const char *__rust_trim_end_cstr(const char *a) { return rust_trim_end_cstr(a); }
+const char *__rust_trim_end_value(madc::value *a) { return rust_trim_end_value(a); }
+const char *__rust_replace_cstr(const char *a, const char *b, const char *c) { return rust_replace_cstr(a, b, c); }
+const char *__rust_replace_value(madc::value *a, const char *b, const char *c) { return rust_replace_value(a, b, c); }
+const char *__rust_repeat_cstr(const char *a, int64_t b) { return rust_repeat_cstr(a, b); }
+const char *__rust_repeat_value(madc::value *a, int64_t b) { return rust_repeat_value(a, b); }
+const char *__rust_join_cstr(madc::value *a, const char *b) { return rust_join_cstr(a, b); }
+madc::value *__rust_first_value(madc::value *a, madc::value *b) { return rust_first_value(a, b); }
+madc::value *__rust_last_value(madc::value *a, madc::value *b) { return rust_last_value(a, b); }
+madc::value *__rust_get_value(madc::value *a, madc::value *b, int64_t c) { return rust_get_value(a, b, c); }
+madc::value *__rust_pop_value(madc::value *a, madc::value *b) { return rust_pop_value(a, b); }
 int64_t __rust_contains(const char *a, const char *b) { return rust_contains(a, b); }
 int64_t __rust_starts_with(const char *a, const char *b) { return rust_starts_with(a, b); }
 int64_t __rust_ends_with(const char *a, const char *b) { return rust_ends_with(a, b); }

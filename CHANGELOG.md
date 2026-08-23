@@ -2,6 +2,428 @@
 
 ## [Unreleased]
 
+## [v0.95.0] — 2026-08-23
+
+The `ui::` data-hub surface + Colossal Cave Adventure fully playable as
+a pure madc project (94/94 reference logs byte-identical) + the
+cold-startup arc (packed 11-TU launch 829 ms → the ~150 ms class) + the
+zero-include dialect contract.
+
+- **`docs/language/ns-ui.md`** — the `ui::` namespace reference
+  (worlds, entity bags, projections/access model, verbs, prompt).
+- **`ui::prompt` — the interaction verb (owner-directed).** Write the
+  prompt, **flush**, read a line, return it — in every mode. The flush
+  is the point: an unflushed `"> "` is invisible (stdio never flushes an
+  unterminated line and glibc never flushes stdout on stdin reads).
+  When stdin is a pipe/file, the returned line is additionally echoed
+  after the read — no terminal exists to echo it — so a piped transcript
+  reads exactly like an interactive session (`> look` lines, and the
+  trailing `> ` at EOF, exactly as the reference logs). `#`-led lines
+  are script comments, consumed silently. Reading delegates to
+  `madc::getline` — no second reader. Adventure's `get_input` collapses to the verb, so interactive
+  play finally shows its prompt while all 94 parity logs stay
+  byte-identical (re-verified, plus the roundtrip gate). The interactive
+  arm is verified under a real pty; `testuiprompt` pins the scripted
+  arm. Thread contract stated at the definition (process-global stdio
+  under stdio's own locking; one prompting thread at a time).
+- **Merge-wave ceremonies (Track 7 / startup arc): exe + obj lanes green;
+  scoped `/dupaudit` (lexer/forest/project) found four defects, all fixed
+  in-session.** Native-artifact lanes: EXE 1090/0 and OBJ 1090/0 of 1133
+  JIT-passing tests. Dupaudit fixes: (1) the flush's dropped-placeholder
+  eager arm shared no code with the lazy thaw's MEMBER param-table decode
+  and ran off the forest clock — both lanes now delegate to the one
+  `decode_member_tmpl_param_table` owner inside a `ForestWorkFrame`;
+  (2) a prelude-cache hit now records `live_tokenize_record` evidence
+  exactly like the miss path (v40 prune correctness); (3)
+  `--no-embedded-headers` never reached `--project` translation units
+  (prog-only policy write) — fixed, and `scripts/check-policy-fanout.sh`
+  (negative-controlled) now gates the whole fanout family in fulltest;
+  (4) five read-side `read_segment` calls (three in the forest-open hot
+  path) still paid the resize zero-fill — converted to `decode_bytes`.
+  Recorded for later consolidation: prelude `materialize_token` vs pch
+  `deserialize_tokens` (divergent datatype resolution),
+  `resolve_flat_return_name` vs the two established type-spelling peel
+  resolvers, and the prelude cache's fifth include-resolution-plan site.
+  En-route infra fix: `remote_build.sh sync` deleted the
+  container-generated `src/config.mk` on every transfer (rsync
+  `--delete` + gitignored file), so make-running stages without the
+  build stage's configure guard built with bare-Makefile defaults over
+  configured objects — now excluded like the host-probed sources.
+  Final battery from clean: fulltest 1133/0, adventure parity 3+94,
+  trailers 535/0.
+
+- **Cold JIT startup: c2mir registry storage is page-allocated — packed
+  Adventure 888.846M → 870.518M Ir (−2.06%, interleaved same-session
+  A/B), with peak heap slightly lower.** The registry's 100,677 small
+  context-lifetime allocations (5.92MB payload, 129-byte largest) now
+  come from max-aligned 256 KiB pages released in bulk, eliminating the
+  per-object allocation and pointer-vector bookkeeping at its deepest
+  lifetime owner. The same audit fixed streams and the preprocessor,
+  parser, checker, generator, and c2m contexts to pair `MIR_alloc` with
+  `MIR_free` instead of libc `free`. A shifted-pointer custom-allocator
+  reducer makes any allocator mismatch abort and finishes at 828/828
+  allocations/frees; c2mir sieve, madc unit tests, packed forest 93/93,
+  and byte-identical Adventure parity are green.
+- **Cold JIT startup: compiler-derived forest functions register their
+  parser surfaces only on demand — 890.037M → 889.552M Ir (−0.0545%,
+  same-binary interleaved A/B on the current filtered baseline).** The
+  decl-index verdict is now tri-state: source declarations stay eager,
+  excluded names drop, and unindexed compiler products retain immutable
+  `FuncDef`/body identity without allocating a `Variable`, `Method`,
+  namespace entry, or overload entry. Exact lookup, overload-family
+  lookup, and CIR reachability promote only demanded records through one
+  shared registration owner. Deferred identities still reserve their
+  producer-assigned `__oN` ranks, preventing a new consumer specialization
+  from colliding with a cached product. The vector gate observes 20
+  deferred products with 7 activated / 13 untouched; project gate,
+  forest bind 26/26, packed Adventure parity 3+94, and packed forest
+  93/93 remain green.
+- **Cold JIT startup R4-full: sibling project TUs share exact immutable
+  prelude images — packed Adventure 917.37M → 889.34M Ir (−3.055%,
+  same-binary interleaved A/B).** Pure direct embedded auto-includes are
+  keyed by dialect, include state, and transitive incoming macro state,
+  then lexed once per `MadcCompileGroup`; every hit materializes fresh
+  mutable `TokenBase` shells and replays only the fragment's observed
+  macro delta. Adventure records 19 hits / 4 compulsory misses / 15,426
+  fresh shells. `testpreludecache` pins both exact macro-context
+  separation and same-context reuse; project parity, forest bind 26/26,
+  Adventure parity 3+94, and the packed forest 93/93 gate remain green.
+- **Cold JIT startup: lazy MEMBER-template hydration — launch 1.042B →
+  0.970B Ir (−7.0%, same-session A/B); the 6.4MB template payload+TOKENS
+  segments never decode on a C-shaped launch** (zstd 108M → 59.6M Ir;
+  `--show-stats` forest phase 38 → 32ms). The freeze banks the
+  registration-skeleton facts as CIR_TMPLK_MEMBER record identity
+  (return type as `#<arena-typeid>#<flatname>` in the unused extra
+  slot, ctor-hood / decl-only-ness as flags), so the flush registers
+  the varargs placeholder payload-free and the pattern fields thaw at
+  first content read (`madc_thaw_member_template`, the B2 thaw-owner
+  model at FuncDef granularity, `ensure_member_template_thawed()` hooks
+  at the 11 pattern-content lanes). The adventure launch's 364
+  per-closure hydrations + token deserializes + stamp clones drop to
+  zero; old records degrade to the exact eager path. fulltest 1133/0,
+  forest_bind_gate 26/26 with the new record format, adventure parity
+  3 + 94 byte-identical on the packed release.
+- **Cold JIT startup: the de-RTTI sweep — launch 1.13B → 0.970B Ir
+  (−14.2%); `__dynamic_cast` 8.8% → 0.68%** — hot front-end dispatch
+  (the `translate_expr`/`translate_stmt` rung ladders,
+  `DataDef::unqualified`, the type-kind helpers and overload walkers —
+  495,874 calls over 422 sites, line-attributed by callgrind) no longer
+  queries RTTI. `TokenBase`/`DataDef` grew subclass-owned `as_X()` kind
+  accessors (default NULL, `return this;` overrides) whose closure
+  matches `dynamic_cast` exactly by override inheritance — including
+  across the token tree's virtual-base diamond, which is what made each
+  cast a ~200-Ir type_info walk. ~150 measured-hot sites converted; the
+  cold tail keeps `dynamic_cast` and migrates opportunistically.
+- **forest bind: a restored consumer's NEW template specialization could
+  hit a poisoned overload set** (`forest_bind_gate [vecnewspec]`:
+  vector<long> from a vector<int> producer died "no matching overload
+  for '::_Destroy'"). `pending_function_display_name` leaked into
+  NESTED `parseFunction` runs, so member-template `__mti` products
+  minted mid-instantiation inherited the outer function's display
+  identity; the freeze serialized it and the restore flush registered
+  `_Destroy_aux<>::__destroy` products as global `_Destroy` overloads —
+  a strict no-viable set once @cfcd255e made those err loud. The stamp
+  is consume-once now; `MADC_OVL_PROBE` prints strict-set candidate
+  markers. fulltest 1133/0 + forest_bind_gate 26/26 + packed 1133/0.
+- **Cold JIT startup: packed adventure ~172 → ~164 ms** — the blob-keyed
+  recordability cache now also carries per-kind slot buckets (typedef /
+  enum / derived / ns-surface / free-func + the anon-tag gensym floor),
+  so every materialize pass walks exactly its kind instead of
+  re-scanning the whole arena per pass per generation; and
+  `Program::findVariable` no longer calls `getenv` per lookup (the
+  MADC_DEBUG_AOT_VAR probe is static now, like every other probe).
+  Ranked -O2 attribution of the remaining ~164 ms recorded in
+  docs/plans/2026-08-22-cold-jit-startup.md.
+- **Cold JIT startup leg 2 (R4-lite): adventure packed ~215 → ~172 ms —
+  sibling TUs of one `--project` compile share ONE compile substrate**
+  (`MadcCompileGroup`, docs/plans/2026-08-22-cold-jit-startup.md; forest
+  phase 79 → 45 ms). Three parity-gated slices:
+  - **S1: one string pool + one project type-id table per program**
+    (shared_ptr owners behind the unchanged `strpool`/`project_types`
+    reference members; group created by the project driver, private
+    pools everywhere else). Also fixes a latent multi-TU hazard: the
+    ambient `madc_active_project_types` is last-binder-wins, so runtime
+    type-id queries could resolve against the wrong TU's table.
+  - **S2: incremental filter-union materialization** —
+    `materialize_for()` widens a shared forest's demand filter
+    monotonically (per-name verdict OR) and re-runs the passes with
+    done-guards, so a later TU's wider closure adds records instead of
+    being starved by the first TU's view.
+  - **S3: one bound `CirFrozenForest` per dialect per group** (keyed
+    producer-config word + -D hash; adopted before probing; shared_ptr
+    ownership replaces the raw delete) plus an (instance, closure)
+    decl-index verdict cache that skips repeat all-units sweeps.
+    Gated by `tests/testprojectwiden` — TU 1 binds only `<stddef.h>`,
+    TU 2 binds `<stdio.h>` and uses `FILE`, which exists only if the
+    union generation ran on the adopted instance (probe-verified:
+    `FILE bound=0` in TU 1's sweep, `bound=1` in TU 2's).
+  - Thread contract stated on the struct (thread-safety.md): mutation
+    single-threaded (sequential project lane); F2 parallel-TU work must
+    synchronize the group's members.
+- **Cold JIT startup: adventure 760 → ~215 ms packed, 1.9 s → ~0.29 s
+  dev** (the tinycc-parity arc, docs/plans/2026-08-22-cold-jit-startup.md;
+  tcc's bar on the original 18K-line C adventure is ~22 ms). Four levers,
+  each parity-gated (3 fragments + 94 whole logs byte-identical after
+  every slice):
+  - **Fixed: the auto-include scan matched std-surface names in
+    positions where the std entity cannot be meant.** `G.player.set(...)`
+    / `ui::set(...)` pulled `<set>` and `madc::getline(...)` pulled
+    `<string>` into 8 of adventure's 11 TUs — ~1 MB of libstdc++ source
+    each, 776K tokens lexed for a 4.4K-line program. An identifier after
+    `.`/`->`, or after a `::` whose qualifier is not `std`, no longer
+    matches (`std::set` still pulls; declaration heads were already
+    guarded). 776K → 62.5K tokens; the front-end fell 1.71 s → 0.18 s.
+    Gated by `scripts/check-autoinclude-position.sh` (fulltest,
+    two-sided) + tests/testautoincpos.mad.
+  - **Project lane links with lazy first-call codegen.**
+    `MIR_set_gen_interface` is eager — it MIR_gen()s every function at
+    link (91% of the link wall; 271 functions before main ran). Functions
+    now generate on first call; the entry + per-TU inits keep explicit
+    eager gen, and `-g` keeps the eager interface. Link 58 → 11 ms.
+  - **Forest template payload/token segments bind as process-shared
+    spans** (they had bypassed the S1 decoded-segment cache: per-TU
+    multi-MB decode + copy). One decode per process, zero per-forest
+    copies.
+  - **The arena recordability fixpoint runs once per blob per process**
+    (S1 doctrine; structural — no measurable packed delta, honestly
+    recorded).
+  - **`--show-stats` now works under `--project` and `--run-frozen`** —
+    per-TU front-end walls plus the lanes' shared phases (link, entry
+    gen + TU inits, execution), printed before the entry call so a
+    program that `exit()`s still reports; these numbers found every
+    lever above.
+- **JIT launch S2/S3 closed without code** — measurement showed Leg 0
+  had already dissolved their premises (the dev binary live-parses the
+  lean prelude in 12 ms, cheaper than binding a container costs the
+  packed binary). An S5 per-manifest `.forest` program cache was built
+  and then REVERTED the same day by owner ruling: madc never writes
+  cache files beside user projects — the only frozen forest is the
+  built-in system-header pack, and explicit persistence is a `.o` or
+  an AOT executable. (The experiment's numbers, kept for the record:
+  a warm 11-TU thaw ran in 92 ms packed with the 94-log corpus
+  byte-identical — the thaw floor exists; the mechanism is not a
+  product surface.)
+- **JIT launch S1 — one mapping + one decode per forest carrier per
+  process.** Each TU Program re-mapped the packed container and
+  re-decompressed the same ~14 container-global segments (11.6 MB);
+  both are now process-cached at the forest layer (mutex-guarded,
+  immutable, never evicted). The 11-TU adventure launch: 829 → 760 ms
+  median. Also from the same recon: `--run-frozen` was never
+  re-parsing headers (the c++locale.h line is a c2mir warning carrying
+  thawed node positions), and a lean dialect TU frozen with
+  `--freeze-mir-cache` thaws and runs in ~6 ms.
+- **JIT launch Leg 0b — every polyglot public has a lean primary**
+  (dialect-lean owner law; the Python-contender plan). The 57 functions
+  that existed only in `std::string` shape gained value/char* primaries
+  with source-language parity semantics of record: PHP / Python /
+  Ruby(non-bang) / JS / Rust text functions return a NEW ring-lifetime
+  string and never mutate the subject (the guarded `std::string&`
+  in-place forms remain as C++-interop conveniences);
+  `perl::chop`/`chomp` mutate the value — that IS Perl; element returns
+  (`php::array_pop`/`array_shift`/`array_get`, `perl::pop`/`shift`,
+  `rust::first`/`last`/`get`/`pop`) use a `value` out-param (null when
+  empty). One algorithm per concern: the lean forms run the same
+  in-place cores through new ns_common owners (`ring_apply`,
+  `value_text_slot`, `value_pop_element`/`value_shift_element`). Pinned
+  by six pure-dialect tests (test{php,perl,py,ruby,js,rust}lean.mad);
+  the 94-log adventure parity gate stayed byte-identical.
+- **Fixed (crash): a call with no viable overload silently bound the
+  wrong function** — when a ranked overload set had no viable
+  candidate, the builder fell back to the arbitrary parse-bound
+  by-name member and compiled the call through its ABI (a
+  `std::string` argument read as a value carrier SEGV'd in
+  madc_value_copy). A strict set (all candidates plain concrete
+  functions) now refuses loudly: `no matching overload for 'ns::fn'
+  with argument types (...)`. The suite fallout exposed two coercions
+  the fallback had been carrying, now modeled by the ranker itself: a
+  `std::string` argument converts to a `char*` parameter (the same
+  `object_cstr_arg` coercion the lowering performs — which also makes
+  `php::array_push(a, stdString)` genuinely viable against the lean
+  overloads), and a partial subscript of a multi-dimensional fixed
+  array decays to a row pointer (`memchr(s2d[1], ...)`). Pinned by
+  tests/testnoviableovl.mad (.expect_err) and
+  tests/teststrargcoerce.mad.
+- **Fixed (crash): polyglot array mutations on a frozen value aborted
+  the process** — 29 helpers (pop/shift/reverse/sort/unique/slice/
+  column/explode/grep/glob/split/chars/rotate/compact/flatten) called
+  `value::array()` directly; on a frozen carrier its designed throw
+  crossed the extern-C boundary into JIT frames. All container
+  mutations now route through `ns_common::value_array_for_write` (or
+  the new reset-for-write variant for out-params): a frozen or
+  kind-mismatched carrier reports one stderr diagnostic naming the
+  script-facing function and the write degrades to a no-op. Reducer:
+  tests/unit/test_ns_frozen.cpp.
+- **JIT launch Leg 0 — the dialect prelude no longer pulls the
+  `<string>` closure** (the Python-contender plan,
+  docs/plans/2026-08-21-project-prelude-forest.md). Dialect
+  `std::format` returns ring-lifetime `const char *` (owner decision;
+  a stale `.c_str()` on the result is a loud compile error, and
+  `var x = format(...)` now compiles), and the six polyglot fragments
+  (`ns_php`/`python`/`perl`/`ruby`/`js`/`rust`) gate their
+  `std::string` interop overloads on the standard library's own include
+  guards (the `<ns_madc>` convention). Measured on the packed binary: a
+  php+format probe TU went 0.17s / 138-of-339 units / 66.5 MB decoded →
+  **0.016s / 0 units / 11.6 MB**; the 11-TU adventure launch 1.5s →
+  **0.85–0.90s**. New owner law codified as
+  `.claude/rules/dialect-lean.md`, gated by
+  `scripts/check-dialect-lean.sh` in fulltest.
+- **Fixed (silent): `arr[i] = x` wrote a hidden temp** — the carrier's
+  int-indexed element model typed element reads as `std::string` (when
+  `<string>` had been seen), so an element write landed in the
+  materialized temp and was dropped at exit 0, and element semantics
+  varied with a TU's includes. Every carrier subscript is now a value
+  LVALUE over the element SLOT (`madarray_index_slot`, the keyed slot's
+  twin): writes land, access extends, and element methods
+  (`vb[0].c_str()`, `.as_integer()`) resolve through the carrier with
+  zero `<string>` dependence. Interop kept: a carrier converts into
+  `char*` parameters (ctor and operator lanes included), so
+  `string s = arr[i];` still constructs. Pinned by
+  tests/testarrayslot.mad.
+- **`python::format` rides the one `std::format` engine** — the naive
+  `{}`-substituter is gone; the same rt_format iterator and field
+  primitives serve it with per-kind runtime value dispatch, adding
+  `{0}` manual indexing, real format specs, `{{ }}` escaping, and loud
+  inline error markers — plus a `value`-out lean primary. Pinned by
+  tests/testpythonformat.mad.
+- **Fixed (silent): file-scope NSDMI never applied** — a ctorless
+  class global (`class C { long x = 42; }; C GC;`) read `GC.x == 0`
+  where g++/clang++ read 42; the local lane applied member defaults all
+  along. The global-ctor lane now applies them under the same rule.
+  Pinned by tests/testnsdmiglobal.mad.
+- **Fixed (silent): `--project` ran only ONE TU's global initializers**
+  — every TU exported one `__madc_global_init`, and the multi-TU
+  redefinition allowance meant the last-loaded module's copy won: class
+  ctors, NSDMI, carrier and non-constant scalar initializers in every
+  other TU never ran. Project TUs now emit the object-mode per-TU init
+  (unique static symbol, `__madc_sys_init_once` ride-along) and the
+  project engine calls each TU's init in manifest order before main —
+  the JIT twin of `.init_array`. Pinned by tests/testprojectinit*.
+- **The adventure got a Game object** — all state lives on ONE
+  `class Game` global (`extern Game G;` is the program's only extern),
+  with the player as a `Player` member; the nine scattered bools are
+  two grouped flag bitvectors (player-relative `PF_*`, game-relative
+  `GF_*`) behind `has/set/clear/put`; the constant families are real
+  enums. Still 94/94 reference logs byte-identical, at 4447 lines vs
+  the reference's 4681.
+- **Fixed (silent, cross-TU): `extern var` declared a private copy** —
+  under `--project`, an `extern var X;` in a referencing TU emitted a
+  full carrier definition (storage + cleanup), so each TU owned its own
+  X and writes made in the defining TU read back EMPTY (exit 0); a
+  block-scope `extern var` even placement-newed an empty value over the
+  shared global. The carrier lane now honors the extern storage class
+  the way the scalar and class-instance lanes always did: declaration
+  only — no storage, no construction, no cleanup (an initializer keeps
+  definition semantics, as in C). Pinned by tests/testprojectvalue*
+  (two madc-dialect TUs, file scope + block scope).
+- **The `.helper` test fixture** — `tests/<name>.helper` marks a `.mad`
+  file as a compilation unit owned by another test; every suite
+  enumerator consults it, replacing six hard-coded `include_helper`
+  name-skips across the script fleet.
+- **The adventure is a real multi-file project** — 11 translation units
+  (`adv_*.mad`) compiled and MIR-linked via
+  `madc examples/adventure/advent.cc.json`; the only include left is
+  the shared declaration surface (`adv_decls.inc`, cross-TU symbols
+  only). Plus the modernization spelling sweeps: every `value` spelling
+  is now `var`, and mergeable two-line inits collapsed to one line.
+  Still 94/94 reference logs byte-identical.
+- **The zero-include contract** — a madc-dialect program needs no
+  `#include`, no `using`, no `std::`: the auto-include scan now serves
+  QUOTED USER MODULES (system headers stay inert), the auto-include
+  prelude inserts before the first user-code token (module or main),
+  print/println gained the C++23 stream forms
+  (`println(stderr, ...)` — pass-through FILE sink in the one rt_dump
+  writer), `madc::getline(value&)` reads a line of stdin into the
+  carrier (std::getline contract; false only on clean EOF), and
+  `php::file_exists` lands (PHP parity: directories count).
+  stderr/stdout/stdin and ui:: join the auto-include table. Pinned by
+  testautoincmodule (+ zero-include helper module), testvaluegetline,
+  testprintstderr. The adventure dropped its whole preamble: 4264
+  lines vs the reference's 4681, still 94/94 logs byte-identical.
+- **Brace-list value literals + `.push()`** — `var ds = { a, b, c };`
+  (and `var ds{ a, b, c }`) builds an array-kind value: default
+  construction plus one element push per entry, heterogeneous elements
+  welcome; `{}` is an empty ARRAY (countable, not null); a one-element
+  list is a one-element array ([over.match.list]); file-scope literals
+  ride the global-init lane. `v.push(x)` is the matching chainable
+  script surface — both bind the same registered rows
+  (`madarray_push_*`), so literals and script pushes cannot drift.
+  Nested brace lists error loudly (future lowering). Pinned by
+  tests/testvalueinit.mad (JIT + native-exe lanes).
+- **Fixed (pre-existing, silent): file-scope `value g(7);` read null** —
+  the carrier global lane queued only `=`-initializers into
+  `__madc_global_init`; ctor-syntax arguments were dropped. Pinned in
+  tests/testvaluector.mad.
+- Adventure: adv_io speak helpers build their arg lists as value
+  literals (the four php::array_push chains retired); 94-log corpus
+  gate re-verified byte-identical.
+
+## [v0.94.0] — 2026-08-20
+
+Upstream-community MIR hardening: three codegen correctness fixes adopted
+or authored, each attributed to its original contributor.
+
+- **ssa_combine no longer folds an address base through a loop-header
+  PHI** (wrong code at `-O2`/`-O3`: wrong addresses presenting as a
+  segfault and a hang; level 1 unaffected). The `cycle_phi_p` guard only
+  recognized single-BB self-loops — a multi-BB loop's backedge operand is
+  defined in the loop body, so exactly the loops needing the guard fell
+  through. It now asks the structural question: does the PHI's block have
+  an incoming back edge (MIR's DFS already marks `e->back_edge_p`;
+  ssa_combine recomputes the marks at entry). Diamond-join PHIs keep
+  folding. Reported with API-level reducers by **ThePeiLin** (upstream
+  issue vnmakarov/mir#467); both reproduced on our fork verbatim
+  (rc=139 / hang) and both return 0 at every level after the fix. Our
+  fix — an upstream PR candidate alongside the v0.93.0 cvt work.
+- **The register allocator's spilled-reg rewrite table is bounded at run
+  time** (adopted from upstream PR #468 by **Bill Hlavacek**): the undo
+  table was guarded only by an assert compiled out under NDEBUG; our
+  fork's earlier 2→4 raise covered `x = x*x` but not `MIR_USE`, whose
+  operand count is unbounded. The bound now tests before any rewrite and
+  declines cleanly when full.
+- **aarch64: the memory-displacement gate compares against the access
+  size in bytes** (adopted from upstream PR #466 by **Richard Davison**),
+  not its log2 — the old gate disagreed with the encoder in both
+  directions (legal disp 12 = fatal generation failure; foldable disp 8
+  kept as a separate ADD; the contributor measured −4.2% instructions on
+  Octane in an M1 JS JIT). Directly serves madc's darwin arm64 lane; the
+  contributor's gate-vs-encoder test rides along
+  (`make aarch64-mem-disp-test` on aarch64 hosts).
+- **Upstream issue #429 (ARM64 by-value struct >16B; pointer to static
+  array) verified NOT to affect our fork**: both reducers pass on real
+  Apple Silicon at levels 1 and 2 — the darwin ABI arc already covers
+  those patterns; the crashes are stock-upstream-only.
+
+Validation: c2mir-gen-test AND c2mir-gen-test3 both 1143/2286/0 (exact
+baseline), issue-467 reducers 0/0/0/0 across levels, PR-468 reducer
+rc=0, fulltest and EXE lane at baseline (counts in docs/test-status.md).
+
+## [v0.93.0] — 2026-08-20
+
+Floating-point codegen at gcc speed: the MIR false-dependency fix.
+
+- **Call-heavy FP code runs 2.8× faster — donut.c now BEATS gcc -O0**
+  (300 frames: 1.374s → 0.493s; gcc -O0 0.514s; outputs byte-identical).
+  MIR's x86-64 generator emitted the merging scalar SSE converts
+  (`cvtsi2ss`/`cvtsi2sd`/`cvtss2sd`/`cvtsd2ss`) bare, so every convert
+  falsely depended on the destination register's previous writer — in
+  sin/cos-heavy loops that is the previous libm call's return chain,
+  serializing calls the out-of-order core could overlap (~76 vs ~24
+  cycles/call, at IDENTICAL dynamic instruction counts — invisible to
+  callgrind, misattributed to libm by samplers). The fix is the
+  dependency-breaking idiom gcc and clang emit: `pxor dst,dst` before
+  the convert (`third_party/mir/mir-gen-x86_64.c` pattern table); the
+  tied dst==src forms keep the bare encoding (real dependency there).
+  The defect is pure upstream MIR code, unchanged since 2019 — queued
+  as an upstream PR candidate (owner review gates submission).
+  Diagnosis chain (equal-Ir wall gap → state/args bit-identical →
+  rdtsc shim → construct bisection → one-pxor A/B proof) recorded in
+  the session memory; pure-arithmetic madc code was already at ~0.92×
+  gcc -O0 — the false dep was what broke the "80% of gcc" claim.
+
+Validation: MIR c2mir-gen-test 1143/2286/0 (exact baseline), fulltest
+1104/0/0/9, EXE 1063/0, donut/l1c/sinbench/sweepbench outputs
+md5-identical with no regression on the already-fast cases.
+
 ## [v0.92.1] — 2026-08-20
 
 The v0.92 line's binary-shipping patch: two win64 regressions caught by the

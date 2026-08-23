@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>	// the process-level decoded-segment cache's guard
 #include <queue>	// madc.h uses std::queue (included below) and relies on the TU providing it
 #include <set>
 #include <string>
@@ -548,7 +549,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 		return false;
 	if (recs->kind != SNAP_KIND_CIR_RECORDS || kids->kind != SNAP_KIND_CIR_CHILDREN)
 		return false;
-	std::vector<uint8_t> rbytes, kbytes;
+	madc::dis::decode_bytes rbytes, kbytes;
 	if (!r.read_segment(*recs, rbytes) || !r.read_segment(*kids, kbytes))
 		return false;
 	if (rbytes.size() % sizeof(cir_frozen_record) || kbytes.size() % sizeof(uint32_t))
@@ -839,12 +840,33 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 			return false;
 		path = selfpath.c_str();
 	}
+	// Process-level mapping cache: ONE read-only mapping per carrier file.
+	// The mappings were already deliberately never munmap'd (thawed
+	// segments read string bytes and pool blocks from them for the
+	// process lifetime) — but each Program re-mapping the same file
+	// multiplied identical page tables AND gave the same blob a
+	// different base address per TU, defeating the decoded-segment
+	// cache's (blob base, offset) keys. Mutex-guarded; entries are
+	// immutable once inserted (the thread contract the decode cache
+	// states).
+	static std::mutex map_mu;
+	static std::map<std::string, std::pair<void *, size_t> > map_cache;
+	void *m = NULL;
 	size_t maplen = 0;
-	void *m = madc::detail::map_file_readonly(path, maplen);
-	if (!m)
-		return false;
-	// Deliberately never munmap'd: thawed segments read string bytes and
-	// pool blocks from the mapping for the process lifetime.
+	{
+		std::lock_guard<std::mutex> lk(map_mu);
+		std::map<std::string, std::pair<void *, size_t> >::iterator mi =
+			map_cache.find(path);
+		if (mi == map_cache.end()) {
+			m = madc::detail::map_file_readonly(path, maplen);
+			if (!m)
+				return false;
+			mi = map_cache.emplace(std::string(path),
+					       std::make_pair(m, maplen)).first;
+		}
+		m = mi->second.first;
+		maplen = mi->second.second;
+	}
 	// Mach-O file: the container is the __MADC,__forest section slice
 	// (page-aligned in file, so 16-aligned payload offsets hold), not an
 	// EOF trailer. Anything else keeps the whole file (footer at EOF).
@@ -1115,6 +1137,67 @@ CirFrozenForest::~CirFrozenForest()
 // Bind one pool block: in place from the image when stored uncompressed
 // (the zero-copy path the per-segment codec field exists for), otherwise
 // decompressed into `own`.
+// Process-level decoded-segment cache (S1, the JIT Python-contender plan,
+// docs/plans/2026-08-21-project-prelude-forest.md). Forest images are
+// process-lifetime mappings (cir_forest_map_image deliberately never
+// munmaps), and a compressed container-global segment decodes IDENTICALLY
+// for every Program that opens the same blob — so the owned-buffer zstd
+// decode happens ONCE per process per segment instead of once per TU
+// Program (an 11-TU project launch paid the ~14-frame / 11.6 MB global
+// decode eleven times; --show-stats now shows the decode on the FIRST
+// Program only, which is the truth). Keyed (blob base, segment offset):
+// profile stacks append several blobs to one image, so the blob base — not
+// the image base — identifies a directory's segments.
+//
+// Thread contract (thread-safety.md): the map is mutex-guarded; a cached
+// buffer is IMMUTABLE after insertion and never evicted (process
+// lifetime), so readers hold const pointers into it across threads safely
+// (the C++ stdlib convention). The entries deliberately outlive every
+// CirFrozenForest — materialized state pointing into them can never
+// dangle.
+static const uint8_t *forest_decoded_segment_cached(
+	const madc::dis::snapshot_reader &r,
+	const madc::dis::snapshot_segment &s)
+{
+	static std::mutex mu;
+	static std::map<std::pair<const void *, uint64_t>,
+			madc::dis::decode_bytes> cache;
+	std::lock_guard<std::mutex> lk(mu);
+	std::pair<const void *, uint64_t> key(r.blob_base(), s.offset);
+	std::map<std::pair<const void *, uint64_t>,
+		 madc::dis::decode_bytes>::iterator it = cache.find(key);
+	bool miss = it == cache.end();
+	if (miss) {
+		madc::dis::decode_bytes d;
+		if (!r.read_segment(s, d))
+			return NULL;
+		it = cache.emplace(key, std::move(d)).first;
+	}
+	// Env-gated probe (MADC_FOREST_CACHE_PROBE=1): per-segment hit/miss
+	// evidence — the observable for "N Programs, one decode".
+	if (::getenv("MADC_FOREST_CACHE_PROBE"))
+		fprintf(stderr, "[forest-cache] %s seg=%u off=%llu raw=%llu\n",
+			miss ? "MISS" : "hit", s.seg_id,
+			(unsigned long long)s.offset,
+			(unsigned long long)s.raw_size);
+	return it->second.data();
+}
+
+// The one segment-bytes resolver: zero-copy from the mapped image when the
+// segment is stored raw (no codec, no transform), the process-level decoded
+// cache otherwise. Returned bytes live for the PROCESS (image mapping or
+// cache entry — both outlive every CirFrozenForest), so consumers bind spans
+// instead of owning per-forest copies.
+static const uint8_t *forest_segment_bytes(const madc::dis::snapshot_reader &r,
+					   const madc::dis::snapshot_segment &s,
+					   size_t &len)
+{
+	len = (size_t)s.raw_size;
+	if (const uint8_t *p = r.raw_ptr(s))
+		return p;
+	return forest_decoded_segment_cached(r, s);
+}
+
 static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 					uint32_t seg_id, uint32_t kind,
 					madc::dis::decode_bytes &own, size_t &len)
@@ -1122,12 +1205,10 @@ static const uint8_t *forest_pool_block(const madc::dis::snapshot_reader &r,
 	const madc::dis::snapshot_segment *s = r.find(seg_id);
 	if (!s || s->kind != kind)
 		return NULL;
-	len = (size_t)s->raw_size;
-	if (const uint8_t *p = r.raw_ptr(*s))
-		return p;
-	if (!r.read_segment(*s, own))
-		return NULL;
-	return own.data();
+	// `own` stays empty by design — image or cache owns the bytes for the
+	// process lifetime.
+	(void)own;
+	return forest_segment_bytes(r, *s, len);
 }
 
 // --show-stats wall clock (R0 startup instrumentation).
@@ -1166,7 +1247,7 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 
 	// Directory.
 	const madc::dis::snapshot_segment *ds = _reader.find(CIR_FOREST_SEG_DIR);
-	std::vector<uint8_t> dir;
+	madc::dis::decode_bytes dir;
 	if (!ds || ds->kind != SNAP_KIND_CIR_FOREST_DIR
 	    || !_reader.read_segment(*ds, dir)
 	    || dir.size() < sizeof(cir_forest_dir_header)) {
@@ -1392,7 +1473,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// v2 container-global payloads (zero-length segments = empty).
 	if (const madc::dis::snapshot_segment *bs =
 		_reader.find(CIR_FOREST_SEG_BRANCH_MACROS)) {
-		std::vector<uint8_t> b;
+		madc::dis::decode_bytes b;
 		if (bs->kind != SNAP_KIND_CIR_BRANCH_MACROS
 		    || !_reader.read_segment(*bs, b) || b.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest branch-macro set corrupt\n");
@@ -1404,7 +1485,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	}
 	if (const madc::dis::snapshot_segment *cs =
 		_reader.find(CIR_FOREST_SEG_CANON_ORDER)) {
-		std::vector<uint8_t> c;
+		madc::dis::decode_bytes c;
 		if (cs->kind != SNAP_KIND_CIR_CANON_ORDER
 		    || !_reader.read_segment(*cs, c) || c.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest canonical-order table corrupt\n");
@@ -1788,34 +1869,92 @@ DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
 	return arena_swizzle(tid, _defs_by_tid);
 }
 
-const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
+// Recordability closure — the v6 save-side fixpoint reproduced at load as
+// a pure analysis over the records: an aggregate is recordable iff every
+// member's type chain resolves (self allowed), every base is recordable
+// (base-before-derived) and every anonymous sub-aggregate is recordable.
+// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
+// virtual-base-carrying classes are ADMITTED — the records carry the full
+// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
+// restores it verbatim. Union-layout classes stay fenced (their own
+// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
+struct ForestRecordable {
+	std::vector<uint32_t> agg_ids;	// slot order == id-stamp order
+	std::set<uint32_t> recordable;
+	// Per-kind SLOT lists, filled by the same one-scan-per-blob builder:
+	// the materialize passes and the seed walk iterate exactly their kind
+	// instead of re-scanning every slot per pass per generation (the -O2
+	// profile's materialize_pass self cost was 6+ full-arena scans per
+	// generation). Slot values feed madc::dis::arena_id_of.
+	std::vector<uint32_t> typedef_slots;	// DK_TYPEDEF
+	std::vector<uint32_t> enum_slots;	// DK_ENUM
+	std::vector<uint32_t> derived_slots;	// DK_PTR/REF/CONST/CARRAY/FPTR
+	std::vector<uint32_t> ns_slots;		// DK_NSLINK/NSBIND/DEFBODY
+	std::vector<uint32_t> free_func_slots;	// DK_FUNC with DF_IS_FREE_FUNC
+	// Max __anon_N across named records — the anon-tag gensym floor the
+	// restore advances to. A pure blob function; the per-restore full-arena
+	// scan moved here.
+	size_t max_anon_tag = 0;
+};
+
+// Process-level recordability cache (the S1 decoded-segment doctrine): the
+// fixpoint is a PURE function of the frozen arena bytes — identical for
+// every Program that binds the same blob — so an 11-TU launch computes it
+// once, not once per TU. Same thread contract as the segment cache:
+// mutex-guarded map, entries immutable after insertion and never evicted
+// (process lifetime), so const refs into them can never dangle.
+static const ForestRecordable &forest_recordable_cached(
+	const void *blob_key, const madc::dis::FrozenDefArena &a)
 {
-	if (_types_materialized)
-		return _restored;
-	_types_materialized = true;
-	ForestWorkFrame _fw(_work_secs, _work_depth);
-	double _t0 = forest_now();
-
-	// A type-less freeze binds an empty arena view: every aggregate pass
-	// below no-ops (nslots == 0) and only pinned-typed globals restore.
-	const madc::dis::FrozenDefArena &a = _arena;
+	static std::mutex mu;
+	static std::map<const void *, ForestRecordable> cache;
+	std::lock_guard<std::mutex> lk(mu);
+	std::map<const void *, ForestRecordable>::iterator it =
+		cache.find(blob_key);
+	if (it != cache.end())
+		return it->second;
+	ForestRecordable e;
 	uint32_t nslots = a.def_slots();
-
-	// Recordability closure — the v6 save-side fixpoint reproduced at load as
-	// a pure analysis over the records: an aggregate is recordable iff every
-	// member's type chain resolves (self allowed), every base is recordable
-	// (base-before-derived) and every anonymous sub-aggregate is recordable.
-	// v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
-	// virtual-base-carrying classes are ADMITTED — the records carry the full
-	// vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
-	// restores it verbatim. Union-layout classes stay fenced (their own
-	// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
-	std::vector<uint32_t> agg_ids;		// slot order == id-stamp order
 	for (uint32_t s = 0; s < nslots; ++s) {
 		uint32_t tid = madc::dis::arena_id_of(s);
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
+		switch (r.kind) {
+		case madc::dis::DK_TYPEDEF:
+			e.typedef_slots.push_back(s);
+			break;
+		case madc::dis::DK_ENUM:
+			e.enum_slots.push_back(s);
+			break;
+		case madc::dis::DK_PTR:
+		case madc::dis::DK_REF:
+		case madc::dis::DK_CONST:
+		case madc::dis::DK_CARRAY:
+		case madc::dis::DK_FPTR:
+			e.derived_slots.push_back(s);
+			break;
+		case madc::dis::DK_NSLINK:
+		case madc::dis::DK_NSBIND:
+		case madc::dis::DK_DEFBODY:
+			e.ns_slots.push_back(s);
+			break;
+		case madc::dis::DK_FUNC:
+			if (r.flags & madc::dis::DF_IS_FREE_FUNC)
+				e.free_func_slots.push_back(s);
+			break;
+		default:
+			break;
+		}
+		if (r.kind != madc::dis::DK_NONE && r.name_id) {
+			const char *nm = a.c_str(r.name_id);
+			if (nm && strncmp(nm, "__anon_", 7) == 0) {
+				char *end = NULL;
+				unsigned long n = strtoul(nm + 7, &end, 10);
+				if (end && *end == '\0' && n > e.max_anon_tag)
+					e.max_anon_tag = (size_t)n;
+			}
+		}
 		if (r.kind != madc::dis::DK_STRUCT && r.kind != madc::dis::DK_UNION
 		    && r.kind != madc::dis::DK_CLASS)
 			continue;
@@ -1829,7 +1968,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		if (r.kind == madc::dis::DK_CLASS
 		    && (r.flags & madc::dis::DF_UNION_LAYOUT))
 			continue;
-		agg_ids.push_back(tid);
+		e.agg_ids.push_back(tid);
 	}
 	// GREATEST fixpoint (v22): start from ALL candidates and iteratively
 	// REMOVE any aggregate with an unresolvable member / base / anon group
@@ -1841,17 +1980,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// (pass 1 allocates every survivor before pass 1b resolves the pointer),
 	// exactly the C incomplete-type rule; a failure still cascades to its
 	// dependents through the removal rounds.
-	std::set<uint32_t> recordable(agg_ids.begin(), agg_ids.end());
+	e.recordable.insert(e.agg_ids.begin(), e.agg_ids.end());
 	bool removed = true;
 	while (removed) {
 		removed = false;
-		for (size_t i = 0; i < agg_ids.size(); ++i) {
-			uint32_t tid = agg_ids[i];
-			if (!recordable.count(tid))
+		for (size_t i = 0; i < e.agg_ids.size(); ++i) {
+			uint32_t tid = e.agg_ids[i];
+			if (!e.recordable.count(tid))
 				continue;
 			madc::dis::defrec r;
 			if (!a.get_def_at(tid, r)) {
-				recordable.erase(tid);
+				e.recordable.erase(tid);
 				removed = true;
 				continue;
 			}
@@ -1859,30 +1998,114 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			for (uint32_t m = 0; ok && m < r.members_count; ++m) {
 				madc::dis::memberrec mr;
 				if (!a.get_payload(r.members_begin, m, mr)
-				    || !arena_chain_ok(a, mr.type_id, tid, recordable)
-				    || (mr.vbase_id && !recordable.count(mr.vbase_id)))
+				    || !arena_chain_ok(a, mr.type_id, tid, e.recordable)
+				    || (mr.vbase_id && !e.recordable.count(mr.vbase_id)))
 					ok = false;
 			}
 			if (ok && r.kind == madc::dis::DK_CLASS) {
 				for (uint32_t b = 0; ok && b < r.bases_count; ++b) {
 					madc::dis::baserec br;
 					if (!a.get_payload(r.bases_begin, b, br)
-					    || !recordable.count(br.base_id))
+					    || !e.recordable.count(br.base_id))
 						ok = false;
 				}
 			}
 			for (uint32_t g = 0; ok && g < r.anon_count; ++g) {
 				madc::dis::anonrec ar;
 				if (!a.get_payload(r.anon_begin, g, ar)
-				    || !recordable.count(ar.sub_type_id))
+				    || !e.recordable.count(ar.sub_type_id))
 					ok = false;
 			}
 			if (!ok) {
-				recordable.erase(tid);
+				e.recordable.erase(tid);
 				removed = true;
 			}
 		}
 	}
+	return cache.emplace(blob_key, std::move(e)).first->second;
+}
+
+// The anon-tag gensym floor: max __anon_N across the arena's named records —
+// a pure blob function served from the process-level recordability cache
+// (the per-restore full-arena scan moved into its one-scan builder).
+size_t CirFrozenForest::max_restored_anon_tag()
+{
+	return forest_recordable_cached(_reader.blob_base(), _arena).max_anon_tag;
+}
+
+const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
+{
+	if (_types_materialized)
+		return _restored;
+	_types_materialized = true;
+	materialize_pass();
+	return _restored;
+}
+
+// S2 (R4-lite): monotone widening — see the declaration. The union is per
+// name: a bound verdict (true) absorbs an unbound one (false); a key only
+// `want` carries is inserted ONLY when true (an absent key already reads as
+// unindexed = derived = kept, so inserting false would NARROW, never widen).
+// Growth = any false -> true flip, or widening to the whole container.
+const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
+	const CirMaterializeFilter &want)
+{
+	if (!_types_materialized) {
+		_mat_filter = want;
+		_types_materialized = true;
+		materialize_pass();
+		return _restored;
+	}
+	if (!_mat_filter.active)
+		return _restored;	// whole container already built
+	bool grew = false;
+	if (!want.active) {
+		_mat_filter.active = false;
+		grew = true;
+	} else {
+		for (std::unordered_map<std::string, bool>::const_iterator it =
+		     want.declared_bound.begin();
+		     it != want.declared_bound.end(); ++it) {
+			if (!it->second)
+				continue;
+			std::unordered_map<std::string, bool>::iterator oi =
+				_mat_filter.declared_bound.find(it->first);
+			if (oi == _mat_filter.declared_bound.end())
+				_mat_filter.declared_bound[it->first] = true;
+			else if (!oi->second) {
+				oi->second = true;
+				grew = true;
+			}
+		}
+	}
+	if (grew)
+		materialize_pass();
+	return _restored;
+}
+
+void CirFrozenForest::materialize_pass()
+{
+	ForestWorkFrame _fw(_work_secs, _work_depth);
+	double _t0 = forest_now();
+
+	// A type-less freeze binds an empty arena view: every aggregate pass
+	// below no-ops (empty slot buckets) and only pinned-typed globals
+	// restore.
+	const madc::dis::FrozenDefArena &a = _arena;
+
+	// Pass 0 (recordability) comes from the process cache — one fixpoint
+	// per blob per process, shared by every TU Program that binds it.
+	const ForestRecordable &rec0 =
+		forest_recordable_cached(_reader.blob_base(), a);
+	const std::vector<uint32_t> &agg_ids = rec0.agg_ids;
+	const std::set<uint32_t> &recordable = rec0.recordable;
+	// Per-kind slot lists from the same blob cache — each pass below walks
+	// exactly its kind (the full-arena rescans were the profile's cost).
+	const std::vector<uint32_t> &typedef_slots = rec0.typedef_slots;
+	const std::vector<uint32_t> &enum_slots = rec0.enum_slots;
+	const std::vector<uint32_t> &derived_slots = rec0.derived_slots;
+	const std::vector<uint32_t> &ns_slots = rec0.ns_slots;
+	const std::vector<uint32_t> &free_func_slots = rec0.free_func_slots;
 
 	// Permanent -v diagnostic (the load-side twin of the freeze-completeness
 	// probe): name every candidate aggregate the closure DROPPED and the
@@ -2047,25 +2270,30 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		// aliases pull their ref0 chain, free functions their return +
 		// param chains, file-scope globals their type chain, template
 		// records their owner class.
-		for (uint32_t s = 0; s < nslots; ++s) {
+		for (size_t bi = 0; bi < typedef_slots.size(); ++bi) {
 			madc::dis::defrec r;
-			if (!a.get_def_at(madc::dis::arena_id_of(s), r))
+			if (!a.get_def_at(madc::dis::arena_id_of(typedef_slots[bi]), r))
 				continue;
 			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 				continue;
-			if (r.kind == madc::dis::DK_TYPEDEF) {
-				if (name_verdict(r.name_id, r.ns_id) >= 0) {
-					DBG(fprintf(stderr,
-						    "forest td seed v=%d name=%s ns=%s"
-						    " flags=%x\n",
-						    name_verdict(r.name_id, r.ns_id),
-						    r.name_id ? a.c_str(r.name_id) : "-",
-						    r.ns_id ? a.c_str(r.ns_id) : "-",
-						    (unsigned)r.flags));
-					tq.push_back(r.ref0);
-				}
-			} else if (r.kind == madc::dis::DK_FUNC
-				   && (r.flags & madc::dis::DF_IS_FREE_FUNC)) {
+			if (name_verdict(r.name_id, r.ns_id) >= 0) {
+				DBG(fprintf(stderr,
+					    "forest td seed v=%d name=%s ns=%s"
+					    " flags=%x\n",
+					    name_verdict(r.name_id, r.ns_id),
+					    r.name_id ? a.c_str(r.name_id) : "-",
+					    r.ns_id ? a.c_str(r.ns_id) : "-",
+					    (unsigned)r.flags));
+				tq.push_back(r.ref0);
+			}
+		}
+		for (size_t bi = 0; bi < free_func_slots.size(); ++bi) {
+			madc::dis::defrec r;
+			if (!a.get_def_at(madc::dis::arena_id_of(free_func_slots[bi]), r))
+				continue;
+			if (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
+				continue;
+			{
 				int v = name_verdict(r.name_id, 0);
 				if (v == 0 && r.disp_id && r.ns_id)
 					v = name_verdict(r.disp_id, r.ns_id);
@@ -2272,12 +2500,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// (_defs_by_tid) so post-restore consumers — lazy ClassPattern payload
 	// reads — can swizzle serialized producer tids.
 	std::map<uint32_t, DataDef *> &by_id = _defs_by_tid;
+	// S2: this generation's fresh aggregate allocations — pass 2 fills
+	// exactly these (earlier generations already filled theirs).
+	std::set<uint32_t> fresh_aggs;
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
 		if (!recordable.count(tid))
 			continue;
 		if (_mat_filter.active && !admitted.count(tid))
 			continue;
+		if (by_id.count(tid))
+			continue;	// built by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
 			continue;
@@ -2307,14 +2540,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		sdd->forest_restored = true;	// mixed bind/live seam provenance (task #57)
 		_mat_storage.push_back(sdd);
 		by_id[tid] = sdd;
+		fresh_aggs.insert(tid);
 	}
 
 	// Pass 1a (v21): ENUM types — leaves of the type graph, allocated before
 	// the derived fixpoint so pointer/const chains over an enum resolve.
 	// Size + canonical spelling load verbatim (a scoped `: size_t` enum is 8
 	// bytes, not the ctor's int default).
-	for (uint32_t s = 0; s < nslots; ++s) {
-		uint32_t tid = madc::dis::arena_id_of(s);
+	for (size_t bi = 0; bi < enum_slots.size(); ++bi) {
+		uint32_t tid = madc::dis::arena_id_of(enum_slots[bi]);
+		if (by_id.count(tid))
+			continue;	// built by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
 			continue;
@@ -2348,8 +2584,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	bool dprog = true;
 	while (dprog) {
 		dprog = false;
-		for (uint32_t s = 0; s < nslots; ++s) {
-			uint32_t tid = madc::dis::arena_id_of(s);
+		for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+			uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 			if (by_id.count(tid))
 				continue;
 			madc::dis::defrec r;
@@ -2442,8 +2678,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// such a member. Without naming it here the loss surfaces only as a class
 	// that is simply absent, layers later (task #64: std::ios_base died on
 	// `event_callback *__fn_`, and took the whole iostream family with it).
-	DBG(for (uint32_t s = 0; s < nslots; ++s) {
-		uint32_t tid = madc::dis::arena_id_of(s);
+	DBG(for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+		uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 		if (by_id.count(tid))
 			continue;
 		madc::dis::defrec r;
@@ -2524,7 +2760,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// "calls un-emittable symbol"). Definers build first, keyed by the
 	// methodrec's DK_FUNC id (one live FuncDef == one id == one record);
 	// importers resolve to the shared object in a post-pass below.
-	std::map<uint32_t, Variable *> method_by_func_id;
+	// S2: the definer map persists on the forest so a later generation's
+	// import resolves a definer an earlier generation built.
+	std::map<uint32_t, Variable *> &method_by_func_id = _method_by_func_id;
 	struct PendingMethodImport {
 		DataDefCLASS *cdd;
 		uint32_t      func_id;
@@ -2552,6 +2790,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// class extras + methods under the v6 selection rules.
 	for (size_t i = 0; i < agg_ids.size(); ++i) {
 		uint32_t tid = agg_ids[i];
+		if (!fresh_aggs.count(tid))
+			continue;	// filled by an earlier generation
 		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(tid);
 		if (ai == by_id.end())
 			continue;
@@ -2758,8 +2998,9 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			// and unresolvable signatures all lack). MEMBER-TEMPLATE
 			// records restore VERBATIM: the decl-only placeholders at
 			// their saved __oN ranks (live registers each pattern as one —
-			// register_skipped_class_template_function; the flush hydrates
-			// the pattern fields from the CIR_TMPLK_MEMBER tokens) and the
+			// register_skipped_class_template_function; the flush attaches
+			// the CIR_TMPLK_MEMBER record and the pattern fields thaw at
+			// first content read — madc_thaw_member_template) and the
 			// bodied instantiations (a loaded _Rb_tree body calls
 			// pair(...)__oN directly — without the def the MIR link dies
 			// on an undefined import).
@@ -3159,7 +3400,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		fprintf(stderr, "ALIAS %s%s%s ref0=%u %s\n", ns ? ns : "",
 			ns && *ns ? "::" : "", nm, r.ref0, verdict);
 	};
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < typedef_slots.size(); ++bi) {
+		uint32_t s = typedef_slots[bi];
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_TYPEDEF)
@@ -3193,13 +3437,17 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 		rt.tag_alias  =
 			(r.flags & madc::dis::DF_TYPEDEF_TAG_ALIAS) != 0;
 		_restored.push_back(rt);
+		_mat_done_slots.insert(s);
 	}
 
 	// Pass 3a (v25): namespace-surface records — inline-namespace links
 	// (NSLINK: the flush re-runs the live mirror) and using-declaration fn
 	// imports (NSBIND: the flush rebinds namespace_map[ns][name] to the
 	// restored fn's Variable).
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < ns_slots.size(); ++bi) {
+		uint32_t s = ns_slots[bi];
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r))
 			continue;
@@ -3207,8 +3455,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			CirRestoredNsLink l;
 			l.parent = r.ns_id ? a.c_str(r.ns_id) : NULL;
 			l.child  = r.name_id ? a.c_str(r.name_id) : NULL;
-			if (l.child && *l.child)
+			if (l.child && *l.child) {
 				_restored_nslinks.push_back(l);
+				_mat_done_slots.insert(s);
+			}
 		} else if (r.kind == madc::dis::DK_NSBIND) {
 			CirRestoredNsBind b;
 			b.ns   = r.ns_id ? a.c_str(r.ns_id) : NULL;
@@ -3216,8 +3466,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			b.key  = r.disp_id ? a.c_str(r.disp_id) : NULL;
 			b.ov_member =
 				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
-			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key)
+			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key) {
 				_restored_nsbinds.push_back(b);
+				_mat_done_slots.insert(s);
+			}
 		} else if (r.kind == madc::dis::DK_DEFBODY) {
 			// v26: a deferred method body — four token runs (word
 			// quads: off/bytes/count/file_id) at params_begin.
@@ -3250,8 +3502,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 				if (run.count)
 					run.bytes = a.tok_run(a.payload[off], run.len);
 			}
-			if (ok)
+			if (ok) {
 				_restored_defbodies.push_back(d);
+				_mat_done_slots.insert(s);
+			}
 		}
 	}
 
@@ -3259,8 +3513,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// DataDefENUM was allocated in pass 1a; the scoped enumerator values ride
 	// the record's constvalrec run and rebuild as constant Variables in the
 	// tag's pseudo-namespace on the parser side.
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < enum_slots.size(); ++bi) {
+		uint32_t s = enum_slots[bi];
 		uint32_t tid = madc::dis::arena_id_of(s);
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r) || r.kind != madc::dis::DK_ENUM)
 			continue;
@@ -3300,6 +3557,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.enumerators.push_back(std::make_pair(en, val));
 		}
 		_restored.push_back(rt);
+		_mat_done_slots.insert(s);
 	}
 
 	// RC2: restore file-scope FREE-FUNCTION declarations — every DK_FUNC
@@ -3312,7 +3570,10 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// v21 additionally restores the skipped-ns-fn-template PLACEHOLDERS
 	// (declaration-only + function_display_name + namespace_name — the
 	// resolution chokepoint a qualified `std::_Destroy(...)` call needs).
-	for (uint32_t s = 0; s < nslots; ++s) {
+	for (size_t bi = 0; bi < free_func_slots.size(); ++bi) {
+		uint32_t s = free_func_slots[bi];
+		if (_mat_done_slots.count(s))
+			continue;	// pushed by an earlier generation
 		madc::dis::defrec r;
 		if (!a.get_def_at(madc::dis::arena_id_of(s), r)
 		    || r.kind != madc::dis::DK_FUNC
@@ -3455,6 +3716,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rf.mparams.push_back(std::make_pair(pn, ptp));
 		}
 		_restored_funcs.push_back(rf);
+		_mat_done_slots.insert(s);
 		if (!def_runs.empty()) {
 			CirRestoredFuncDefaults rd;
 			rd.fd    = fd;
@@ -3473,6 +3735,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// passes emit the global + queue its ctor into __madc_global_init (class)
 	// or emit its constant data item (scalar init_value).
 	for (size_t i = 0; i < _globals.size(); ++i) {
+		if (_mat_done_globals.count(i))
+			continue;		// pushed by an earlier generation
 		const cir_forest_global_record &g = _globals[i];
 		if (g.gflags & CIR_GLOBALF_TU_ROOT)
 			continue;		// v24: the program's own global — fenced
@@ -3503,6 +3767,7 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rg.ctor_file  = g.ctor_file_id ? a.c_str(g.ctor_file_id) : NULL;
 		}
 		_restored_globals.push_back(rg);
+		_mat_done_globals.insert(i);
 	}
 
 	// v20 (widening slice 2): build the restored TEMPLATE-NAME view — names
@@ -3514,6 +3779,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 	// member-template pattern without its class cannot instantiate anyway).
 	{
 		for (size_t i = 0; i < _templates.size(); ++i) {
+			if (_mat_done_templates.count(i))
+				continue;	// pushed by an earlier generation
 			const cir_forest_template_record &t = _templates[i];
 			if (t.flags & CIR_TMPLF_TU_ROOT)
 				continue;	// v24: the program's own pattern — fenced
@@ -3586,11 +3853,11 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_from_arena()
 			rt.rec_pattern_begin = t.pattern_begin;
 			rt.rec_pattern_words = t.pattern_words;
 			_restored_templates.push_back(rt);
+			_mat_done_templates.insert(i);
 		}
 	}
 
-	_stat_mat_secs = forest_now() - _t0;
-	return _restored;
+	_stat_mat_secs += forest_now() - _t0;
 }
 
 // Typeid -> arena name, derived per query (R1): the arena is id-addressed
@@ -3656,10 +3923,14 @@ const char *CirFrozenForest::restored_template_string(uint32_t id) const
 	return pool_cstr(id, len);
 }
 
-// R1: decode the TEMPLATE_PAYLOAD + TEMPLATE_TOKENS segments on first
-// demand (memoized) — from materialize's first filter-surviving template
-// record, or a late ClassPattern token-run read. A decode failure logs
-// loud and leaves the pair empty: every run read then cleanly lacks.
+// R1: bind the TEMPLATE_PAYLOAD + TEMPLATE_TOKENS segments on first demand
+// (memoized) — from materialize's first filter-surviving template record,
+// or a late ClassPattern token-run read. SPANS into the mapped image or the
+// process-level decoded cache (forest_segment_bytes): one decode per
+// process, zero per-forest copies. Segment payloads are 16-aligned in the
+// image and the cache buffers are heap-allocated, so the uint32 view is
+// aligned on both paths. A bind failure logs loud and leaves the pair
+// empty: every run read then cleanly lacks.
 bool CirFrozenForest::ensure_template_payload() const
 {
 	if (_template_payload_loaded)
@@ -3668,24 +3939,32 @@ bool CirFrozenForest::ensure_template_payload() const
 	ForestWorkFrame _fw(_work_secs, _work_depth);
 	if (const madc::dis::snapshot_segment *tp =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_PAYLOAD)) {
-		madc::dis::decode_bytes d;
+		size_t len = 0;
+		const uint8_t *p = NULL;
 		if (tp->kind != SNAP_KIND_CIR_TEMPLATE_PAYLOAD
-		    || !_reader.read_segment(*tp, d) || d.size() % sizeof(uint32_t)) {
+		    || (tp->raw_size
+			&& !(p = forest_segment_bytes(_reader, *tp, len)))
+		    || len % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest template payload corrupt\n");
 			return false;
 		}
-		_template_payload.resize(d.size() / sizeof(uint32_t));
-		if (!d.empty())
-			memcpy(_template_payload.data(), d.data(), d.size());
+		_template_payload = (const uint32_t *)p;
+		_template_payload_words = len / sizeof(uint32_t);
 	}
 	if (const madc::dis::snapshot_segment *tt =
 		_reader.find(CIR_FOREST_SEG_TEMPLATE_TOKENS)) {
+		size_t len = 0;
+		const uint8_t *p = NULL;
 		if (tt->kind != SNAP_KIND_CIR_TEMPLATE_TOKENS
-		    || !_reader.read_segment(*tt, _template_tokens)) {
-			_template_tokens.clear();
+		    || (tt->raw_size
+			&& !(p = forest_segment_bytes(_reader, *tt, len)))) {
+			_template_tokens = NULL;
+			_template_tokens_len = 0;
 			fprintf(stderr, "madc: forest template tokens corrupt\n");
 			return false;
 		}
+		_template_tokens = p;
+		_template_tokens_len = len;
 	}
 	return true;
 }
@@ -3712,11 +3991,12 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 		rr.count = 0;
 		rr.file = NULL;
 		cir_forest_token_run tr;
-		if (!madc::dis::pod_read(_template_payload, word_off, tr))
+		if (!madc::dis::pod_read(_template_payload,
+					 _template_payload_words, word_off, tr))
 			return rr;
 		if (tr.tok_count
-		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens.size()) {
-			rr.bytes = _template_tokens.data() + tr.tok_off;
+		    && (size_t)tr.tok_off + tr.tok_bytes <= _template_tokens_len) {
+			rr.bytes = _template_tokens + tr.tok_off;
 			rr.len   = tr.tok_bytes;
 			rr.count = tr.tok_count;
 		}
@@ -3731,15 +4011,16 @@ bool CirFrozenForest::hydrate_restored_template(CirRestoredTemplate &rt) const
 	if (rt.rec_pattern_words) {
 		size_t begin = rt.rec_pattern_begin;
 		size_t count = rt.rec_pattern_words;
-		if (begin > _template_payload.size()
-		    || count > _template_payload.size() - begin)
+		if (begin > _template_payload_words
+		    || count > _template_payload_words - begin)
 			return false;
-		rt.pattern = _template_payload.data() + begin;
+		rt.pattern = _template_payload + begin;
 		rt.pattern_words = rt.rec_pattern_words;
 	}
 	for (uint32_t p = 0; p < rt.rec_param_count; ++p) {
 		cir_forest_template_param pr;
 		if (!madc::dis::pod_read(_template_payload,
+					 _template_payload_words,
 					 rt.rec_param_begin + p * pw, pr))
 			return false;
 		uint32_t plen = 0;
@@ -3775,9 +4056,9 @@ CirRestoredTemplateRun CirFrozenForest::restored_template_run(
 	restored.count = 0;
 	restored.file = NULL;
 	if (run.tok_count
-	    && (size_t)run.tok_off <= _template_tokens.size()
-	    && (size_t)run.tok_bytes <= _template_tokens.size() - run.tok_off) {
-		restored.bytes = _template_tokens.data() + run.tok_off;
+	    && (size_t)run.tok_off <= _template_tokens_len
+	    && (size_t)run.tok_bytes <= _template_tokens_len - run.tok_off) {
+		restored.bytes = _template_tokens + run.tok_off;
 		restored.len = run.tok_bytes;
 		restored.count = run.tok_count;
 	}

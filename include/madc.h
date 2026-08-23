@@ -36,6 +36,7 @@
 class Method;
 class Program;
 class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
+struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
@@ -69,6 +70,25 @@ enum class GnuAttributeKind : uint8_t {
     UsingIfExists
 };
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+
+// Lazy MEMBER-template hydration (task #25 B2, MEMBER arm): one restored
+// CIR_TMPLK_MEMBER record whose payload decode + pattern stamp were DEFERRED at
+// the flush. The thaw (hydrate + token restore + the one stamp derivation) runs
+// at first pattern-content read — FuncDef::ensure_member_template_thawed().
+// `pgm` is the staging Program (owner of forest_restore_run / intern_file); its
+// lifetime already bounds the stamped tokens' file pointers on the eager path,
+// so the deferral adds no new lifetime coupling. Entries live in the staging
+// Program's forest_frozen_member_tmpls deque (stable addresses).
+class DataDefCLASS;
+class FuncDef;
+struct CirFrozenMemberTmpl {
+    DataDefCLASS *owner;
+    CirRestoredTemplate *rt;
+    class CirFrozenForest *forest;
+    class Program *pgm;
+    CirFrozenMemberTmpl() : owner(NULL), rt(NULL), forest(NULL), pgm(NULL) {}
+};
+void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the stamps
 
 class MadcTeeBuf : public std::streambuf
 {
@@ -359,6 +379,19 @@ public:
     // (resolve_member_template_call_return_type), or the candidate is not
     // viable and overload resolution falls to the next same-name member.
     std::vector<std::vector<TokenBase *> > member_template_param_type_tokens;
+    // Lazy MEMBER-template hydration: non-NULL while this restored placeholder's
+    // pattern fields (member_template_decl / return + param token runs /
+    // spellings / defaults / constraints) are still FROZEN — the flush deferred
+    // the payload decode + stamp. Every read of those fields goes through
+    // ensure_member_template_thawed() first; identity (method_display_name,
+    // is_member_template, is_const_method, parameters, member_template_owner)
+    // restores/stamps eagerly and needs no thaw.
+    CirFrozenMemberTmpl *member_tmpl_frozen;
+    void ensure_member_template_thawed()
+    {
+	if ( member_tmpl_frozen )
+	    madc_thaw_member_template(this);
+    }
     // Two-tree Phase 2: the DEPENDENT parse-tree pattern for this template's body
     // — a TokenFunc parsed ONCE with the template params bound to
     // DataDefTemplateParam placeholders (via build_dependent_pattern), with eager
@@ -406,7 +439,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -509,6 +542,7 @@ public:
     // definitions [ELF-completion S4].
     bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
     bool is_multi_return() const { return return_types.size() > 1; }
+    virtual FuncDef *as_funcdef_dd() { return this; }
 };
 
 // Generic overload-resolution ranking — NO type is special-cased. Ranks binding
@@ -662,6 +696,7 @@ public:
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
     Variable *findVariableLocal(const madc::dis::intern_table &sp, const std::string &id);
+    virtual TokenCpnd *as_cpnd_tok() { return this; }
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd
@@ -683,6 +718,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
+    virtual TokenFunc *as_func_tok() { return this; }
 };
 
 class TokenDecl: public TokenVar
@@ -723,6 +759,7 @@ public:
     bool block_extern_redecl = false;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
+    virtual TokenDecl *as_decl_tok() { return this; }
 };
 
 // AST node for a typedef declaration. Returned by TokenTYPEDEF::parse()
@@ -736,6 +773,7 @@ public:
     DataDef *target_type;    // what the typedef resolves to
     TokenTypedefDecl(const std::string &a, DataDef *t) : alias(a), target_type(t) {}
     virtual TokenType type() const { return TokenType::ttTypedefDecl; }
+    virtual TokenTypedefDecl *as_typedef_decl_tok() { return this; }
 };
 
 // AST node for a standalone struct/union definition (no variable
@@ -771,6 +809,7 @@ public:
     DataDef *array_elem_dd = nullptr;
     TokenStructLit() {}
     virtual TokenType type() const { return TokenType::ttStructLit; }
+    virtual TokenStructLit *as_struct_lit_tok() { return this; }
 };
 
 // Tree-1 marker for a C++ pack expansion pattern (`expr...`) captured during a
@@ -797,6 +836,7 @@ public:
 	t->column = column;
 	return t;
     }
+    virtual TokenPackExpansion *as_pack_expansion_tok() { return this; }
 };
 
 class TokenCallFunc: public TokenVar
@@ -834,7 +874,7 @@ public:
     virtual DataDef *returns()  const {
 	if ( return_override )
 	    return return_override;
-	if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(var.type) )
+	if ( DataDefFPTR *fptr = var.type ? var.type->as_fptr_dd() : NULL )
 	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
 	return &((FuncDef *)var.type)->returns;
     }
@@ -860,6 +900,7 @@ public:
     virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
     virtual size_t argc() const override { return parameters.size(); }
     virtual TokenType type() const override { return TokenType::ttCallFunc; }
+    virtual TokenCallFunc *as_callfunc_tok() { return this; }
 };
 
 class TokenScopeContext: public TokenBase
@@ -915,6 +956,7 @@ public:
     {
 	return bitfield_info() != NULL;
     }
+    virtual TokenMember *as_member_tok() { return this; }
 };
 
 // & address-of operator — emits LEA to get address of a variable
@@ -926,6 +968,7 @@ public:
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual TokenAddrOf *as_addr_of_tok() { return this; }
 };
 
 // &(expr) address-of operator for member/subscript/deref lvalues
@@ -937,6 +980,7 @@ public:
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual TokenAddrExpr *as_addr_expr_tok() { return this; }
 };
 
 // GNU computed-goto label address: `&&label`
@@ -971,6 +1015,7 @@ public:
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }  // reuse member type for assignment compat
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDeref *as_deref_tok() { return this; }
 };
 
 // *(expr) dereference for cast/member/subscript pointer expressions
@@ -982,6 +1027,7 @@ public:
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDerefExpr *as_deref_expr_tok() { return this; }
 };
 
 class TokenComplexPart: public TokenBase
@@ -1020,6 +1066,7 @@ public:
         : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual TokenDerefStep *as_deref_step_tok() { return this; }
 };
 
 // (TYPE *) cast expression — type annotation, no codegen for pointer casts
@@ -1031,6 +1078,7 @@ public:
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }
+    virtual TokenCast *as_cast_tok() { return this; }
 };
 
 class TokenCallMethod: public TokenMember
@@ -1045,6 +1093,7 @@ public:
     // them would veto the very overload that supplied them).
     // (size_t)-1 = no defaults appended; every argument is user-written.
     size_t user_argc = (size_t)-1;
+    virtual TokenCallMethod *as_callmethod_tok() { return this; }
 };
 
 // subscript access: container[index]
@@ -1106,6 +1155,7 @@ public:
     // fixed-array indexing; that path is gone, so return the stored
     // element type directly. The CIR backend derives types independently.
     virtual DataDef *datadef() const override { return _datatype; }
+    virtual TokenSubscript *as_subscript_tok() { return this; }
 };
 
 class TokenSubscriptExpr: public TokenBase
@@ -1129,6 +1179,7 @@ public:
     // emit_ir_value which loads through Mem and yields a Gp holding
     // the value — chaining through that returned a numeric value as
     // if it were an address and crashed at NULL/garbage.
+    virtual TokenSubscriptExpr *as_subscript_expr_tok() { return this; }
 };
 
 class TokenProgram: public TokenCpnd
@@ -2069,9 +2120,59 @@ public:
     }
 };
 
+// R4-lite (cold-startup arc, docs/plans/2026-08-22-cold-jit-startup.md): the
+// substrate the sibling TU Programs of ONE multi-TU compile share. The project
+// driver creates one and hands it to MadcEngine::create_program per TU; a
+// Program built without a group owns private instances (the single-TU shape,
+// unchanged). Interning is content-addressed and the project type-id table is
+// append-only, so one spelling universe + one type-id universe per program is
+// the ODR shape, not a cache.
+// Thread contract (thread-safety.md): C++ stdlib convention — concurrent reads
+// are safe once the compile completes; MUTATION IS SINGLE-THREADED (the
+// project lane compiles TUs sequentially on one thread). Parallel TU
+// compilation (F2) must synchronize intern()/add() and this struct's members
+// before going wide.
+struct MadcCompileGroup
+{
+    std::shared_ptr<madc::dis::intern_table> strpool;
+    std::shared_ptr<madc::dis::id_table<DataDef> > project_types;
+    // S3: ONE bound forest instance per dialect — keyed (producer-config
+    // word, -D defines hash), the same pair the probe's config gate
+    // matches — so sibling TUs adopt it instead of re-opening and
+    // re-materializing the same container. Valid ONLY because the group
+    // also shares strpool/project_types above: the instance's live-id
+    // remap and its DataDefs' type_id memos are bound to them.
+    std::map<std::pair<uint32_t, uint32_t>,
+	     std::shared_ptr<CirFrozenForest> > bind_forests;
+    // S3: decl-index verdict maps keyed by (instance, bound-include
+    // closure) — a sibling TU with the same closure skips the all-units
+    // decl-index sweep. Config-coherent because the instance key is.
+    struct DeclVerdicts
+    {
+	std::unordered_map<std::string, bool> bound;
+	std::unordered_map<std::string, bool> system;
+    };
+    std::map<std::pair<const void *, std::vector<uint32_t> >,
+	     std::shared_ptr<const DeclVerdicts> > decl_verdicts;
+    // R4-full: exact post-preprocessor token images for pure embedded
+    // auto-include fragments. The cache owns immutable TokenRec-based images;
+    // every adopting Program materializes fresh mutable TokenBase shells.
+    // Opaque here because the image also carries lexer-private macro state.
+    std::shared_ptr<MadcSharedPreludeCache> shared_preludes;
+    size_t shared_prelude_hits = 0;
+    size_t shared_prelude_misses = 0;
+    size_t shared_prelude_tokens = 0;
+    MadcCompileGroup()
+	: strpool(std::make_shared<madc::dis::intern_table>()),
+	  project_types(std::make_shared<madc::dis::id_table<DataDef> >(
+			MADC_TYPEID_PROJECT_BASE))
+    {}
+};
+
 // program class, keep things somewhat contained
 class Program
 {
+    friend struct MadcSharedPreludeCache;
 public:
     struct FunctionRegistrationSpec
     {
@@ -2382,7 +2483,12 @@ public:
     // pointers not values — DataDef is polymorphic and ids survive growth);
     // type_id_for/type_from_id own the id policy (the dd->type_id memo + the
     // primitive/system/project segment dispatch).
-    madc::dis::id_table<DataDef> project_types{MADC_TYPEID_PROJECT_BASE};
+    // R4-lite: ownership sits in the shared_ptr (a MadcCompileGroup shares ONE
+    // table across sibling TU Programs — dd->type_id memos stamped by one TU
+    // must resolve in every sibling); `project_types` stays the only access
+    // path. Both are set in the ctor init list (group or private).
+    std::shared_ptr<madc::dis::id_table<DataDef> > _project_types_owner;
+    madc::dis::id_table<DataDef> &project_types;
     uint32_t type_id_for(DataDef *dd);	// THE lazy-stamp chokepoint
     DataDef *type_from_id(uint32_t id);	// segment-dispatching reverse lookup
     // B3 arena-native DataDef storage (docs/plans/2026-07-06-forest-b3-record-layout-DESIGN.md).
@@ -3182,11 +3288,17 @@ public:
     // `zero_args` (parallel to argtypes, optional) marks literal-0 arguments —
     // the null-pointer-constant rule ([conv.ptr]) must survive the re-rank
     // (global ::operator== sets rank here too: testfreeop's `a == 0`).
+    // `strict_no_viable` (optional): set true when the set was RANKED (>= 2
+    // members) yet no candidate is viable AND every candidate is a plain
+    // concrete function (no varargs, no template machinery) — the caller
+    // must NOT fall back to the parse-bound by-name member (a silent
+    // wrong-ABI bind); it reports a loud no-matching-overload error.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
 					       const std::vector<bool> *zero_args = NULL,
-					       const std::vector<DataDef *> *explicit_template_args = NULL);
+					       const std::vector<DataDef *> *explicit_template_args = NULL,
+					       bool *strict_no_viable = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`
@@ -3947,6 +4059,8 @@ public:
 	unsigned long long zstd_frames = 0, zstd_bytes = 0;
 	double zstd_secs = 0.0;
 	unsigned long long copy_calls = 0, copy_bytes = 0;
+	unsigned long long funcs_eager = 0, funcs_deferred = 0;
+	unsigned long long funcs_activated = 0, funcs_remaining = 0;
     };
     ForestBindStats forest_bind_stats() const;
     // --show-stats: template-instantiation time + count, carved out of parse
@@ -4251,6 +4365,7 @@ public:
     bool _include_string;		// #include <string> was seen during tokenization
     bool _include_ns_madc;		// #include <ns_madc> was seen — main gets the __madc_sys_init injection
     bool _value_stream_operator_injected; // bits/value_stream fragment served (one-shot; see maybe_inject_value_stream_operator)
+    std::set<const char *> auto_include_user_units; // interned files of QUOTED user includes — the auto-include prelude inserts before the first user-code token (module or main)
     // Intern file paths so TokenBase::file pointers stay stable for
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the
@@ -4277,7 +4392,12 @@ public:
     // include/stringpool.h and docs/plans/2026-06-23-arena-interning-HANDOFF.md).
     // P0 step 2: getToken() interns each ttIdentifier spelling -> uint32 id on the
     // token. Steps 3/4 re-key the hot string maps and drop the per-token string.
-    madc::dis::intern_table strpool;
+    // R4-lite: ownership sits in the shared_ptr (a MadcCompileGroup shares ONE
+    // pool across sibling TU Programs — the frozen forest's live_str_id remap
+    // and every cross-TU spelling id are pool-bound); `strpool` stays the only
+    // access path. Both are set in the ctor init list (group or private).
+    std::shared_ptr<madc::dis::intern_table> _strpool_owner;
+    madc::dis::intern_table &strpool;
     uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
     // Wide-value pool (P0 slice 2): >64-bit integer values live here behind a
@@ -4518,8 +4638,10 @@ public:
     std::vector<AotDataRange> aot_layout_ranges;
     fVOIDFUNC root_fn;
 
-    Program();
-    explicit Program(MadcEngine *eng);
+    // R4-lite: a non-null group makes this Program a SIBLING — it adopts the
+    // group's shared strpool/project_types instead of owning private ones.
+    explicit Program(MadcCompileGroup *group = NULL);
+    explicit Program(MadcEngine *eng, MadcCompileGroup *group = NULL);
     // Releases the process-ambient token pools (TokenBase::_active_strpool /
     // _active_valpool, madc_active_project_types) when they point at THIS
     // Program's members — a token constructed after its owning Program dies
@@ -4569,8 +4691,14 @@ public:
     void add_host_callbacks();	// declares host_callback_regs prototypes (libmadc register_function)
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
     void add_stdio();		// placeholder for #include <stdio.h> registration
+    struct PendingForestFunc;
     Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
+    Variable *register_forest_func(const PendingForestFunc &pf);
+    Variable *activate_forest_func(const std::string &name);
+    void activate_forest_function_family(const std::string &ns,
+	const std::string &display_name);
+    void activate_forest_function_display(const std::string &display_name);
     // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
     // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
     // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
@@ -4596,6 +4724,15 @@ public:
 	return f && *f && !forest_root_file.empty() && forest_root_file == f;
     }
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
+    // S3 (R4-lite): ownership of bind_forest. A private probe result and a
+    // group-shared instance both live here; ~Program releases the holder
+    // (never a raw delete), so N sibling TUs can hold ONE instance.
+    std::shared_ptr<CirFrozenForest> _bind_forest_holder;
+    // S3: the compile group this Program is a sibling of (NULL = standalone).
+    // Set by the ctor; the group outlives nothing — Programs hold shared_ptr
+    // copies of everything they adopt from it, except this backpointer, which
+    // is only consulted during compile (the group is alive for all of it).
+    MadcCompileGroup *compile_group = NULL;
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
     // AOT ledger carrier (forest-carriers S5): the container the emit lane
     // reads its C-lane runtime modules from under -static-libmadc. Usually
@@ -4675,6 +4812,17 @@ public:
 	PendingForestFunc() : fd(NULL), mvar(NULL) {}
     };
     std::vector<PendingForestFunc> forest_pending_funcs;
+    // Verdict-0 FREE functions are compiler-derived identities, not names the
+    // bound headers declared. Keep their immutable restored FuncDefs indexed
+    // here without eagerly constructing parser Variables/Methods. A source
+    // overload-family lookup or a CIR reference promotes only the demanded
+    // records through the same registration owner used by eager declarations.
+    std::map<std::string, PendingForestFunc> forest_deferred_funcs;
+    std::map<std::string, std::vector<std::string> >
+	forest_deferred_func_families;
+    unsigned long long _forest_funcs_eager = 0;
+    unsigned long long _forest_funcs_deferred = 0;
+    unsigned long long _forest_funcs_activated = 0;
     // v26: origin file of each plain/anonymous-enum ENUMERATOR constant
     // (TokenENUM's global branch — the constants live in tkProgram->variables
     // with no TopDecl and no back-link to the enum tag). Stamped at the one
@@ -4698,36 +4846,29 @@ public:
     void param_default_capture_end(const DefCapState &st,
 				   std::vector<TokenBase *> &out);
     // v21: body-bearing MEMBER function templates restored from a bound header
-    // (CIR_TMPLK_MEMBER records). The flush HYDRATES the restored placeholder
-    // FuncDef (funcdef_map[key], restored verbatim from its methodrec at its
-    // saved __oN rank) with the pattern fields the live registration derives
-    // from the tokens; only when the placeholder did not restore does it fall
-    // back to the full re-run (register_skipped_class_template_function, which
-    // mints a fresh rank). Registration needs tkProgram, hence the stage.
+    // (CIR_TMPLK_MEMBER records). Staged IDENTITY-ONLY (no payload hydrate) at
+    // forest_restore_decls; the flush attaches the frozen source to the restored
+    // placeholder FuncDef (funcdef_map[key], restored verbatim from its
+    // methodrec at its saved __oN rank) and the pattern fields thaw at first
+    // content read (madc_thaw_member_template — the lazy MEMBER arm of task #25
+    // B2). A DROPPED placeholder re-registers payload-free from the record's
+    // banked skeleton facts (return type / static / ctor-hood — see the flush)
+    // and defers the same way; only an unresolvable skeleton (or an older
+    // record) hydrates eagerly and falls back to the full re-run
+    // (register_skipped_class_template_function, which mints a fresh rank).
+    // Registration needs tkProgram, hence the stage.
     struct PendingForestMemberTmpl {
 	DataDefCLASS *owner;
 	std::string key;			// the placeholder's funcdef_map symbol (the record key)
 	std::string disp;			// live method_display_name (the declarator name)
-	std::vector<TokenBase *> tokens;	// decl + params + body (sans template<> header)
-	std::vector<TokenBase *> ret_tokens;	// v34 decl-only: the dependent return-type range (no decl tokens exist)
-	std::vector<std::string> typeparams;
-	std::vector<bool> is_pack;
-	// Per-param TYPE-ness (parallel to typeparams) — the record's
-	// CIR_TMPLP_IS_TYPE bit. A non-type member-template param
-	// (`template <unsigned long __a>`) must thaw as non-type or the
-	// restored pattern instantiates as if it took a type.
-	std::vector<bool> is_type;
-	// v36: per-param DEFAULT token runs (parallel to typeparams; empty
-	// run = no default) — a member template's [temp.deduct]/8 SFINAE
-	// payload (`typename = decltype(declval<_Tp1&>().~_Tp1())`).
-	std::vector<std::vector<TokenBase *> > typeparam_defaults;
-	// v38: per-param CONSTRAINT-type runs (parallel; empty =
-	// unconstrained) — ride the record's spec slot like the FN lane's
-	// typeparam_constraints (v33 precedent).
-	std::vector<std::vector<TokenBase *> > typeparam_constraints;
-	PendingForestMemberTmpl() : owner(NULL) {}
+	CirRestoredTemplate *rt;		// the un-hydrated record (identity walked, payload frozen)
+	CirFrozenForest *forest;		// the record's forest (stable process-cached instance)
+	PendingForestMemberTmpl() : owner(NULL), rt(NULL), forest(NULL) {}
     };
     std::vector<PendingForestMemberTmpl> forest_pending_member_tmpls;
+    // Deferred MEMBER-template frozen sources this Program staged at its flush;
+    // restored placeholder FuncDefs point at entries (deque: stable addresses).
+    std::deque<CirFrozenMemberTmpl> forest_frozen_member_tmpls;
     void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram); also registers pending free functions
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
@@ -4865,7 +5006,11 @@ public:
     void note_std_abi_define(const std::string &name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
-    bool auto_include_standard_identifier(const std::string &word);
+    // positional=false skips the token-stream position gates (declaration
+    // head, member access, non-std qualifier) for callers feeding names
+    // that have no stream position (the `#pragma prefer` char-level read).
+    bool auto_include_standard_identifier(const std::string &word,
+					  bool positional = true);
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);
@@ -5740,9 +5885,14 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
-    // Element type for madc `array` subscript READS (string-first — the
-    // Python/PHP element model; long fallback when no string class is known).
-    DataDef *madc_array_element_type();
+    // Key-vs-element classification for a carrier subscript INDEX: a
+    // string-typed index is an object-kind KEY, anything else an array
+    // element. One owner — the CIR's slot-call routing reads it too.
+    static bool madc_array_key_index(TokenBase *idx);
+    // Every carrier subscript types as the carrier itself — the SLOT model
+    // (a value lvalue over madarray_key_slot / madarray_index_slot). See
+    // parser.cpp for the rules and the owner law behind it.
+    DataDef *madc_array_subscript_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
@@ -6180,7 +6330,9 @@ public:
     void reset_standard_streams();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
-    std::unique_ptr<Program> create_program();
+    // R4-lite: a non-null group makes the Program a sibling TU of one
+    // multi-TU compile (shared strpool/project_types — see MadcCompileGroup).
+    std::unique_ptr<Program> create_program(MadcCompileGroup *group = NULL);
     void bind_log_streams();
     static void unbind_log_streams();
 };

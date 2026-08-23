@@ -1,0 +1,29 @@
+## Take nugget and fail to climb to the dome
+# SPDX-FileCopyrightText: Copyright Eric S. Raymond <esr@thyrsus.com>
+# SPDX-License-Identifier: BSD-2-Clause
+n
+seed 1838473132
+in
+take lamp
+xyzzy
+on
+e
+take cage
+w
+w
+w
+take
+w
+d
+d
+free bird
+w
+e
+s
+n
+u
+s
+take nugget
+n
+dome
+u

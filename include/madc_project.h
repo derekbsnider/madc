@@ -39,10 +39,13 @@ class MadcEngine;
 // class_pattern_live_capture: per-TU lazy live ClassPattern capture (the
 // MADC_CLASS_PATTERN_LIVE opt-in, resolved by the CLI onto its Program and
 // forwarded here so the lever reaches every TU).
+// show_stats: print the lane's phase report to stderr (--show-stats) —
+// per-TU front-end walls plus the shared link/gen/execution phases.
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv,
 			 bool forest_bind = true,
 			 const std::string &forest_bind_path = std::string(),
-			 bool class_pattern_live_capture = false);
+			 bool class_pattern_live_capture = false,
+			 bool show_stats = false);
 
 #endif

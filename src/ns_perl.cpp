@@ -66,7 +66,8 @@ int64_t perl_chomp(std::string *ptr)
 void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 {
 	std::string n = perl_text_arg(needle);
-	*dest = madc::value::make_array();
+	std::vector<madc::value> &d
+		= ns_common::value_array_reset_for_write(*dest, "perl::grep");
 	if ( !src->is_array() )
 		return;
 	try {
@@ -74,14 +75,14 @@ void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && std::regex_search(v.as_string(), re) )
-				dest->array().push_back(v);
+				d.push_back(v);
 		}
 	} catch (std::regex_error &) {
 		// fallback to substring match on invalid regex
 		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && v.as_string().find(n) != std::string::npos )
-				dest->array().push_back(v);
+				d.push_back(v);
 		}
 	}
 }
@@ -91,12 +92,13 @@ void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 void perl_glob(madc::value *arr, const char *pattern)
 {
 	std::string p = perl_text_arg(pattern);
-	*arr = madc::value::make_array();
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "perl::glob");
 
 	std::vector<std::string> matches;
 	madc::detail::glob_paths(p, matches);
 	for ( size_t i = 0; i < matches.size(); ++i )
-		arr->array().push_back(madc::value(matches[i]));
+		data.push_back(madc::value(matches[i]));
 }
 
 // perl::scalar — return count of elements in array (Perl's scalar @array)
@@ -117,11 +119,9 @@ std::string *perl_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
-		return result;
-	madc::value v = std::move(arr->array().back());
-	arr->array().pop_back();
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_pop_element(*arr, v, "perl::pop") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -130,11 +130,9 @@ std::string *perl_shift(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
 	res.clear();
-	if ( !arr->is_array() || arr->as_array().empty() )
-		return result;
-	madc::value v = std::move(arr->array().front());
-	arr->array().erase(arr->array().begin());
-	ns_common::value_to_string_no_real(v, res);
+	madc::value v;
+	if ( ns_common::value_shift_element(*arr, v, "perl::shift") )
+		ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -171,23 +169,24 @@ void perl_split(madc::value *arr, const char *delim, const char *str)
 {
 	std::string d = perl_text_arg(delim);
 	std::string s = perl_text_arg(str);
-	*arr = madc::value::make_array();
-	if ( d.empty() ) { arr->array().push_back(madc::value(s)); return; }
+	std::vector<madc::value> &data
+		= ns_common::value_array_reset_for_write(*arr, "perl::split");
+	if ( d.empty() ) { data.push_back(madc::value(s)); return; }
 	try {
 		std::regex re(d);
 		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
 		std::sregex_token_iterator end;
 		for ( ; it != end; ++it )
-			arr->array().push_back(madc::value(it->str()));
+			data.push_back(madc::value(it->str()));
 	} catch (std::regex_error &) {
 		// fallback to literal delimiter on invalid regex
 		size_t start = 0, pos;
 		while ( (pos = s.find(d, start)) != std::string::npos )
 		{
-			arr->array().push_back(madc::value(s.substr(start, pos - start)));
+			data.push_back(madc::value(s.substr(start, pos - start)));
 			start = pos + d.length();
 		}
-		arr->array().push_back(madc::value(s.substr(start)));
+		data.push_back(madc::value(s.substr(start)));
 	}
 }
 
@@ -269,6 +268,83 @@ std::string *perl_substr(std::string *result, const char *str, int64_t offset, i
 }
 
 
+// ---- Lean primaries (Leg 0b, dialect-lean.md) --------------------------
+// Perl-parity forms usable without the stdlib guards. Text returns are
+// ring-lifetime (the c_str contract) over the SAME in-place cores the
+// guarded std::string publics use; chop/chomp MUTATE the value's text
+// (that IS Perl's semantics); pop/shift return the element itself via
+// the ns_common move-out owners.
+
+using ns_common::ring_apply;
+
+// perl::chop / perl::chomp on a value: mutate the text in place, return
+// what the core returns (chop: the removed char; chomp: the count).
+// Non-string kinds are a no-op returning 0 (Perl coerces; the carrier
+// keeps kinds honest). A frozen value reports via the move-assign
+// degrade and returns 0 — no mutation is claimed that did not happen.
+int64_t perl_chop_value(madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	std::string s((const char *)v->data(), v->size());
+	int64_t r = perl_chop(&s);
+	*v = madc::value(s);
+	return v->is_frozen() ? 0 : r;
+}
+int64_t perl_chomp_value(madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	std::string s((const char *)v->data(), v->size());
+	int64_t r = perl_chomp(&s);
+	*v = madc::value(s);
+	return v->is_frozen() ? 0 : r;
+}
+
+madc::value *perl_pop_value(madc::value *out, madc::value *arr)
+{
+	ns_common::value_pop_element(*arr, *out, "perl::pop");
+	return out;
+}
+madc::value *perl_shift_value(madc::value *out, madc::value *arr)
+{
+	ns_common::value_shift_element(*arr, *out, "perl::shift");
+	return out;
+}
+
+const char *perl_join_cstr(const char *sep, madc::value *arr)
+{
+	std::string &slot = ns_common::ring_slot();
+	perl_join(&slot, sep, arr);
+	return slot.c_str();
+}
+
+const char *perl_reverse_cstr(const char *s)	{ return ring_apply(s, perl_reverse); }
+const char *perl_reverse_value(const madc::value *v)	{ return ring_apply(v, perl_reverse); }
+const char *perl_lc_cstr(const char *s)	{ return ring_apply(s, perl_lc); }
+const char *perl_lc_value(const madc::value *v)	{ return ring_apply(v, perl_lc); }
+const char *perl_uc_cstr(const char *s)	{ return ring_apply(s, perl_uc); }
+const char *perl_uc_value(const madc::value *v)	{ return ring_apply(v, perl_uc); }
+const char *perl_ucfirst_cstr(const char *s)	{ return ring_apply(s, perl_ucfirst); }
+const char *perl_ucfirst_value(const madc::value *v)	{ return ring_apply(v, perl_ucfirst); }
+const char *perl_lcfirst_cstr(const char *s)	{ return ring_apply(s, perl_lcfirst); }
+const char *perl_lcfirst_value(const madc::value *v)	{ return ring_apply(v, perl_lcfirst); }
+
+const char *perl_substr_cstr(const char *text, int64_t offset, int64_t length)
+{
+	std::string &slot = ns_common::ring_slot();
+	perl_substr(&slot, text, offset, length);
+	return slot.c_str();
+}
+const char *perl_substr_value(const madc::value *v, int64_t offset,
+			      int64_t length)
+{
+	std::string &subj = ns_common::value_text_slot(v);
+	std::string &slot = ns_common::ring_slot();
+	perl_substr(&slot, subj.c_str(), offset, length);
+	return slot.c_str();
+}
+
 // ---- Regex helper functions (used by madc:: namespace) ----
 
 // madc::regex_match(string, pattern) — returns 1 if entire string matches pattern
@@ -308,6 +384,23 @@ void *madc_regex_replace(void *result, void *str, void *pattern, void *replaceme
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
+int64_t __perl_chop_value(madc::value *a) { return perl_chop_value(a); }
+int64_t __perl_chomp_value(madc::value *a) { return perl_chomp_value(a); }
+madc::value *__perl_pop_value(madc::value *a, madc::value *b) { return perl_pop_value(a, b); }
+madc::value *__perl_shift_value(madc::value *a, madc::value *b) { return perl_shift_value(a, b); }
+const char *__perl_join_cstr(const char *a, madc::value *b) { return perl_join_cstr(a, b); }
+const char *__perl_reverse_cstr(const char *a) { return perl_reverse_cstr(a); }
+const char *__perl_reverse_value(madc::value *a) { return perl_reverse_value(a); }
+const char *__perl_lc_cstr(const char *a) { return perl_lc_cstr(a); }
+const char *__perl_lc_value(madc::value *a) { return perl_lc_value(a); }
+const char *__perl_uc_cstr(const char *a) { return perl_uc_cstr(a); }
+const char *__perl_uc_value(madc::value *a) { return perl_uc_value(a); }
+const char *__perl_ucfirst_cstr(const char *a) { return perl_ucfirst_cstr(a); }
+const char *__perl_ucfirst_value(madc::value *a) { return perl_ucfirst_value(a); }
+const char *__perl_lcfirst_cstr(const char *a) { return perl_lcfirst_cstr(a); }
+const char *__perl_lcfirst_value(madc::value *a) { return perl_lcfirst_value(a); }
+const char *__perl_substr_cstr(const char *a, int64_t b, int64_t c) { return perl_substr_cstr(a, b, c); }
+const char *__perl_substr_value(madc::value *a, int64_t b, int64_t c) { return perl_substr_value(a, b, c); }
 int64_t __perl_chop(std::string *a) { return perl_chop(a); }
 int64_t __perl_chomp(std::string *a) { return perl_chomp(a); }
 void __perl_grep(madc::value *a, const char *b, madc::value *c) { perl_grep(a, b, c); }

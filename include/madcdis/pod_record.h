@@ -54,18 +54,26 @@ inline uint32_t pod_append(std::vector<uint32_t> &buf, const T &rec)
 	return off;
 }
 
-// Read a T from buf at word offset off. Returns false (leaving out untouched)
-// when the record would run past the end of buf — the one bounds check every
-// load site owes a possibly-corrupt buffer.
+// Read a T from a word span at word offset off. Returns false (leaving out
+// untouched) when the record would run past the end of the span — the one
+// bounds check every load site owes a possibly-corrupt buffer. The span form
+// is the real implementation: buffers bound zero-copy from a mapped image or
+// a process-lifetime decode cache read through it without owning a vector.
 template <typename T>
-inline bool pod_read(const std::vector<uint32_t> &buf, size_t off, T &out)
+inline bool pod_read(const uint32_t *buf, size_t nwords, size_t off, T &out)
 {
 	static_assert(sizeof(T) % sizeof(uint32_t) == 0,
 		      "pod_read: record must be a whole number of uint32 words");
-	if (off + sizeof(T) / sizeof(uint32_t) > buf.size())
+	if (off + sizeof(T) / sizeof(uint32_t) > nwords)
 		return false;
-	memcpy(&out, &buf[off], sizeof(T));
+	memcpy(&out, buf + off, sizeof(T));
 	return true;
+}
+
+template <typename T>
+inline bool pod_read(const std::vector<uint32_t> &buf, size_t off, T &out)
+{
+	return pod_read(buf.data(), buf.size(), off, out);
 }
 
 } // namespace dis
