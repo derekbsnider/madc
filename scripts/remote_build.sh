@@ -173,22 +173,26 @@ for stage in $stages; do
 		# delete that .o and the next build compiles the stale format and
 		# fails to link madc_stdlib_flavors. rsync does not delete
 		# excluded files on the receiver, so the container keeps its own.
-		# CONTAINER-GENERATED build config must never be DELETED by the
-		# tunnel (the mirror trap of the host-probed sources above):
-		# src/config.mk is written by ./configure ON the container and
-		# gitignored, so it never exists on the NAS side — without the
-		# exclusion, --delete removes it on every sync, and any stage
-		# that runs make WITHOUT the build stage's configure guard
-		# (fulltest/exe/obj) then builds with bare-Makefile defaults
-		# (HAVE_MADCDAT ?= 1) over objects compiled under the configured
-		# state — an inconsistent libmadc.a and a 0/1133 link wipeout
-		# (2026-08-23). Excluded = rsync neither sends nor deletes it.
+		# HOST-PROBED BUILD CONFIG must never cross the tunnel either
+		# (same rule as the generated sources above): ./configure writes
+		# ROOT config.mk (the Makefile's `-include ../config.mk`), and a
+		# stale NAS-side copy (HAVE_MADCDAT=0) shipped over the
+		# container's configure output (=1, backends present) on EVERY
+		# sync. Make tracks no flag changes, so mtime-current objects
+		# built under one flag mixed with object lists computed under
+		# the other — an inconsistent libmadc.a and a 0/1133 link
+		# wipeout in any stage sequence that did not lead with `build`
+		# (whose configure re-won the file until the next sync stomped
+		# it). 2026-08-23, twice diagnosed: the first fix excluded
+		# src/config.mk — the WRONG PATH. The pattern is anchored to the
+		# transfer root; excluded = rsync neither sends nor deletes it,
+		# so the container keeps its own.
 		rsync -az --delete \
 			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
-			--exclude=src/config.mk \
+			--exclude=/config.mk \
 			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:/workspace/madc/"
 		rc=$?
 		echo "sync madc rc=$rc"
@@ -201,7 +205,10 @@ for stage in $stages; do
 		# in obj/mir/, and obj/ is excluded from the sync.
 		;;
 	build)
-		run_remote "configure" "cd /workspace/madc; test -f src/config.mk || ./configure"
+		# configure writes ROOT config.mk (never src/config.mk — the old
+		# guard tested a path that never exists, re-running configure on
+		# every build stage and masking the sync-stomp trap above).
+		run_remote "configure" "cd /workspace/madc; test -f config.mk || ./configure"
 		run_remote "build madc" "make -C /workspace/madc/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
 		# .so's DT_NEEDED resolves through must exist on this side.
