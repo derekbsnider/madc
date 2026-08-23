@@ -223,7 +223,7 @@ launch = 1.13B Ir total (~172ms pre-buckets). Ranked:
 | cost | Ir share | status |
 |------|---------|--------|
 | zstd decodes (11 container-global segs, ~18MB raw: spine 4.1MB, arena 6.5MB, template payload+TOKENS 6.4MB, misc 0.9MB) | ~9.6% | template segs FIXED @1f820fdd (lazy MEMBER hydration, below): segs 16/17 never decode on a C-shaped launch — zstd 108M → 59.6M Ir. Remaining spine/arena decode PARKED: raw spine = +10MB binary (owner size-trade) |
-| malloc/free family | ~12% | spread; the flat-structures territory |
+| malloc/free family | ~12% | first coherent owner FIXED @ad9be08d: c2mir's 100,677 context-lifetime registry allocations now use ~24 page allocations; packed Adventure −2.06% Ir with no peak-heap increase. Remaining host STL/string allocation is spread |
 | dynamic_cast (493K calls) | ~8.8% | FIXED @a19bca42 (as_X kind accessors, below): 99M → 6.6M Ir (0.68%) |
 | materialize_pass self (full-arena rescans) | 4.1% | FIXED @da1ffcd3 (per-kind slot buckets) |
 | flush_forest_pending_globals surcharge (findVariable×35K + per-call getenv) | ~4.5% | FIXED @da1ffcd3 + @cf40dc2f: getenv cached; verdict-0 derived funcs retain FuncDef/body identity but register parser surfaces only on demand (current already-filtered Adventure baseline −0.0545% Ir) |
@@ -234,8 +234,9 @@ NEXT, in measured order: (1) the de-RTTI dispatch sweep — LANDED
 @a19bca42, (2) lazy MEMBER-template hydration at the flush — LANDED
 @1f820fdd, (3) R4-full shared prelude lex/parse — LANDED @44c4e9fa
 (all below), (4) demand-driven derived-entity restore — LANDED
-@cf40dc2f. The tcc bar (~22ms) now points at the malloc/flat-structures
-arc and the remaining zstd spine/arena size trade.
+@cf40dc2f, (5) c2mir registry page arena — LANDED @ad9be08d. The tcc
+bar (~22ms) now points at the remaining host STL/string flat-structures
+arc and the zstd spine/arena size trade.
 
 ## The de-RTTI sweep — LANDED (session 119, 2026-08-22, @a19bca42)
 
@@ -434,6 +435,44 @@ final release rebuilt and packed with forest-pack parse errors at the
 byte-identical. Packed project stats report **408 eager + 28 deferred;
 0 activated / 28 remain** across 11 TUs. The merge-wave fulltest/EXE/OBJ
 batteries were not repeated on this incremental slice.
+
+## c2mir registry page arena — LANDED (session 123, 2026-08-23, @ad9be08d)
+
+**Measured (interleaved same-session packed Adventure binaries):** pointer-
+registry baseline = **888,845,962 / 888,845,962 Ir**; page arena =
+**870,517,475 / 870,517,579 Ir**. The reduction is **18.33M Ir
+(−2.06%)**, with byte-identical Adventure output. Massif peak heap also
+fell slightly, **91,239,899 → 91,028,427 bytes**, so the bulk lifetime
+does not buy speed by increasing peak memory.
+
+**Mechanism — put the region at its lifetime owner.** `reg_malloc()`
+allocated every c2mir AST/type/string registry object separately, then
+pushed every pointer into `reg_memory`; its mark/pop interface had no
+caller, and `c2mir_finish()` always released the complete vector. A
+measurement-only counter on the packed Adventure compile observed
+**100,677 allocations / 5,924,755 payload bytes / 129-byte largest**.
+The registry now bump-allocates max-aligned objects from per-context
+256 KiB pages and frees only those pages at `c2mir_finish()`—roughly two
+dozen underlying allocations for this workload. The arena is c2mir-local,
+not a global `MIR_init2` allocator override, because only the registry
+knows this drop-all lifetime; MIR modules, generator state, and other
+context allocations keep their existing individual lifetimes. The state
+is per context and adds no shared mutation or locking.
+
+**En-route allocator-contract fix.** The shifted-pointer custom-allocator
+reducer exposed six c2mir object families allocated through `MIR_alloc`
+but released through libc `free`: streams, preprocessor, parser, checker,
+generator, and the c2m context itself. They now pair with `MIR_free`.
+`mir-tests/c2mir-custom-alloc.c` returns a max-aligned address after the
+libc base (so a raw `free` aborts), compiles a C reducer, and requires every
+tracked allocation to be released. Valgrind observes **828 allocations /
+828 frees / zero errors / zero bytes live**.
+
+Validation @ad9be08d: repository build green; `make -C src test` green;
+c2mir simple sieve + custom-allocator test green; packed forest gate at
+the 93/93 baseline; Adventure transcript byte-identical; paired callgrind
+and Massif measurements above. The merge-wave fulltest/EXE/OBJ batteries
+were not repeated on this incremental slice.
 
 ## Traps for the next session
 

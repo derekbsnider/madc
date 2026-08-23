@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Cold JIT startup: c2mir registry storage is page-allocated — packed
+  Adventure 888.846M → 870.518M Ir (−2.06%, interleaved same-session
+  A/B), with peak heap slightly lower.** The registry's 100,677 small
+  context-lifetime allocations (5.92MB payload, 129-byte largest) now
+  come from max-aligned 256 KiB pages released in bulk, eliminating the
+  per-object allocation and pointer-vector bookkeeping at its deepest
+  lifetime owner. The same audit fixed streams and the preprocessor,
+  parser, checker, generator, and c2m contexts to pair `MIR_alloc` with
+  `MIR_free` instead of libc `free`. A shifted-pointer custom-allocator
+  reducer makes any allocator mismatch abort and finishes at 828/828
+  allocations/frees; c2mir sieve, madc unit tests, packed forest 93/93,
+  and byte-identical Adventure parity are green.
 - **Cold JIT startup: compiler-derived forest functions register their
   parser surfaces only on demand — 890.037M → 889.552M Ir (−0.0545%,
   same-binary interleaved A/B on the current filtered baseline).** The

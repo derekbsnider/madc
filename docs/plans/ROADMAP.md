@@ -1,6 +1,6 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-20 (v0.94.0 on
+Master plan linking all workstreams. Updated 2026-08-23 (v0.94.0 on
 `develop`, v0.92.1 promoted on `master`). **This file is forward-looking:**
 release history lives in [CHANGELOG.md](../../CHANGELOG.md) and
 [docs/release-notes/](../release-notes/), and the authoritative live snapshot
@@ -72,6 +72,7 @@ high-level" — the answer is both.**
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
+| 1.7 | **Cold JIT startup toward tinycc latency** | ongoing | **In progress** — packed Adventure has landed positional auto-include filtering, lazy MIR generation, shared forest/prelude state, lazy MEMBER hydration, demand-driven derived restore, and c2mir registry pages (@`ad9be08d`, another −2.06% Ir). Remaining measured work: re-attribute host STL/string allocation after the arena; the zstd spine/arena raw-vs-compressed size trade needs owner direction | [cold-jit-startup.md](2026-08-22-cold-jit-startup.md) |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
