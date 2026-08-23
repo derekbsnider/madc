@@ -712,6 +712,10 @@ int main(int argc, char **argv)
             // (embedded_header_is_system_library_shim). This is the incremental
             // shim-retirement lever; it replaces the old disallow-everything gate,
             // which wrongly also dropped ns_php etc.
+            // Rides the engine as well as the current Program so --project
+            // translation units inherit the same target surface (per-TU
+            // Programs copy only the engine's policy, configure_program).
+            engine.registration_policy.bypass_system_library_headers = true;
             prog->registration_policy.bypass_system_library_headers = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-posix-compat") == 0) {
