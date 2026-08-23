@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **Merge-wave ceremonies (Track 7 / startup arc): exe + obj lanes green;
+  scoped `/dupaudit` (lexer/forest/project) found four defects, all fixed
+  in-session.** Native-artifact lanes: EXE 1090/0 and OBJ 1090/0 of 1133
+  JIT-passing tests. Dupaudit fixes: (1) the flush's dropped-placeholder
+  eager arm shared no code with the lazy thaw's MEMBER param-table decode
+  and ran off the forest clock — both lanes now delegate to the one
+  `decode_member_tmpl_param_table` owner inside a `ForestWorkFrame`;
+  (2) a prelude-cache hit now records `live_tokenize_record` evidence
+  exactly like the miss path (v40 prune correctness); (3)
+  `--no-embedded-headers` never reached `--project` translation units
+  (prog-only policy write) — fixed, and `scripts/check-policy-fanout.sh`
+  (negative-controlled) now gates the whole fanout family in fulltest;
+  (4) five read-side `read_segment` calls (three in the forest-open hot
+  path) still paid the resize zero-fill — converted to `decode_bytes`.
+  Recorded for later consolidation: prelude `materialize_token` vs pch
+  `deserialize_tokens` (divergent datatype resolution),
+  `resolve_flat_return_name` vs the two established type-spelling peel
+  resolvers, and the prelude cache's fifth include-resolution-plan site.
+  En-route infra fix: `remote_build.sh sync` deleted the
+  container-generated `src/config.mk` on every transfer (rsync
+  `--delete` + gitignored file), so make-running stages without the
+  build stage's configure guard built with bare-Makefile defaults over
+  configured objects — now excluded like the host-probed sources.
+  Final battery from clean: fulltest 1133/0, adventure parity 3+94,
+  trailers 535/0.
+
 - **Cold JIT startup: c2mir registry storage is page-allocated — packed
   Adventure 888.846M → 870.518M Ir (−2.06%, interleaved same-session
   A/B), with peak heap slightly lower.** The registry's 100,677 small
