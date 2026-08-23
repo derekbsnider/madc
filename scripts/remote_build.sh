@@ -173,11 +173,22 @@ for stage in $stages; do
 		# delete that .o and the next build compiles the stale format and
 		# fails to link madc_stdlib_flavors. rsync does not delete
 		# excluded files on the receiver, so the container keeps its own.
+		# CONTAINER-GENERATED build config must never be DELETED by the
+		# tunnel (the mirror trap of the host-probed sources above):
+		# src/config.mk is written by ./configure ON the container and
+		# gitignored, so it never exists on the NAS side — without the
+		# exclusion, --delete removes it on every sync, and any stage
+		# that runs make WITHOUT the build stage's configure guard
+		# (fulltest/exe/obj) then builds with bare-Makefile defaults
+		# (HAVE_MADCDAT ?= 1) over objects compiled under the configured
+		# state — an inconsistent libmadc.a and a 0/1133 link wipeout
+		# (2026-08-23). Excluded = rsync neither sends nor deletes it.
 		rsync -az --delete \
 			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
+			--exclude=src/config.mk \
 			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:/workspace/madc/"
 		rc=$?
 		echo "sync madc rc=$rc"
