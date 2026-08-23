@@ -23,7 +23,16 @@ Merges develop into master, tags the release, and pushes.
    - Merge develop: `git merge develop`
    - If there are merge conflicts, STOP and ask the user
 
-3. **Tag the release**: `git tag vX.Y.Z` (from VERSION file)
+3. **Run the three platform lanes BEFORE tagging** (lesson of
+   2026-08-23, second occurrence of the same cascade: v0.92.0→v0.92.1
+   and v0.95.0→v0.95.1 both tagged first, then a lane caught a real
+   platform regression and the fix forced a patch tag). The lanes are
+   the ones in step 5 — build and validate all three platforms at the
+   promotion candidate BEFORE `git tag`; a lane failure gets fixed on
+   develop and the candidate moves. Tag only content all three lanes
+   have proven.
+
+   **Then tag the release**: `git tag vX.Y.Z` (from VERSION file)
    - If the tag already exists, skip tagging and warn the user
 
 4. **Write the MASTER release notes** (owner rule, 2026-08-20):
