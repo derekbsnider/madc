@@ -549,7 +549,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 		return false;
 	if (recs->kind != SNAP_KIND_CIR_RECORDS || kids->kind != SNAP_KIND_CIR_CHILDREN)
 		return false;
-	std::vector<uint8_t> rbytes, kbytes;
+	madc::dis::decode_bytes rbytes, kbytes;
 	if (!r.read_segment(*recs, rbytes) || !r.read_segment(*kids, kbytes))
 		return false;
 	if (rbytes.size() % sizeof(cir_frozen_record) || kbytes.size() % sizeof(uint32_t))
@@ -1247,7 +1247,7 @@ bool CirFrozenForest::open_header(const void *image, size_t len,
 
 	// Directory.
 	const madc::dis::snapshot_segment *ds = _reader.find(CIR_FOREST_SEG_DIR);
-	std::vector<uint8_t> dir;
+	madc::dis::decode_bytes dir;
 	if (!ds || ds->kind != SNAP_KIND_CIR_FOREST_DIR
 	    || !_reader.read_segment(*ds, dir)
 	    || dir.size() < sizeof(cir_forest_dir_header)) {
@@ -1473,7 +1473,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	// v2 container-global payloads (zero-length segments = empty).
 	if (const madc::dis::snapshot_segment *bs =
 		_reader.find(CIR_FOREST_SEG_BRANCH_MACROS)) {
-		std::vector<uint8_t> b;
+		madc::dis::decode_bytes b;
 		if (bs->kind != SNAP_KIND_CIR_BRANCH_MACROS
 		    || !_reader.read_segment(*bs, b) || b.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest branch-macro set corrupt\n");
@@ -1485,7 +1485,7 @@ bool CirFrozenForest::complete_open(c2m_ctx_t c2m)
 	}
 	if (const madc::dis::snapshot_segment *cs =
 		_reader.find(CIR_FOREST_SEG_CANON_ORDER)) {
-		std::vector<uint8_t> c;
+		madc::dis::decode_bytes c;
 		if (cs->kind != SNAP_KIND_CIR_CANON_ORDER
 		    || !_reader.read_segment(*cs, c) || c.size() % sizeof(uint32_t)) {
 			fprintf(stderr, "madc: forest canonical-order table corrupt\n");
