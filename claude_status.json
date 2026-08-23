@@ -53,11 +53,11 @@
    "OWED AT MERGE WAVE (owner call): fulltest, EXE/OBJ lanes + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 duplicate __madc_global_init"
   ],
   "next": [
-   "1. Re-attribute the remaining allocator family after @ad9be08d; coherent c2mir registry ownership is gone, so look for a measured host STL/string/container owner before changing storage",
-   "2. zstd spine/arena remainder: raw spine avoids decode but remains an explicit ~10MB release-binary size trade requiring owner direction",
-   "3. merge wave (owner call): fulltest + EXE/OBJ + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 duplicate __madc_global_init",
-   "4. traps: Adventure calls exit() inside JIT code, so teardown probes require a measurement-only pre-entry gate; Ir baselines are SESSION-LOCAL; never broaden the c2mir arena to unrelated MIR lifetimes",
-   "LESSON for cross-agent rounds: validate on the CANONICAL container (owner law) - off-container green missed a fulltest-only ratchet; also a root-owned stray examples/adventure/advent binary was left in the repo tree (scratch belongs in tmp/)"
+   "1. IMMEDIATE (owner-directed 2026-08-23): the merge-wave lanes — `bash scripts/remote_build.sh exe obj` (native-artifact passes: run_tests.sh --exe and --obj on the container; respect .exe_skip/.obj_skip fixtures). Tree is GREEN at 7cbb5328: fulltest 1133/0 on the canonical container, gate 26/26, parity 3+94.",
+   "2. THEN /dupaudit scoped to the subsystems this arc touched: lexer (prelude cache, auto-include), forest (lazy MEMBER hydration, deferred derived restore, R4 group sharing), project driver. Follow .claude/commands/dupaudit.md: findings -> DupFamily nodes in madc-knowledge; every consolidation leaves a fulltest gate. Fresh copies born this arc are the prime suspects (the find('##') violation was exactly this class).",
+   "3. AFTER both: the merge wave itself is an OWNER CALL (feature/track7-hub-projections-claude -> develop); queued small fix: --project --emit=c11 duplicate __madc_global_init.",
+   "4. Startup-arc levers after the wave: re-attribute the allocator family post-@ad9be08d; zstd raw-spine = owner size-trade; bar = tcc ~22ms, launch now ~870.5M Ir.",
+   "5. traps: Ir baselines are SESSION-LOCAL (interleave A/B); validate cross-agent work on the CANONICAL container; wall drifts (phase lines only); gate reproducers need the gate's OWN env (MADC_FOREST_ENV_CHECK=1)"
   ],
   "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude remains the explicitly transferred active branch. Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md. Re-profile the remaining allocation family before selecting another owner, or take the zstd raw-spine trade only with owner direction. Container does all builds/tests. Rule trailers remain gated. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
  },
