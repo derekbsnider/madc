@@ -32,11 +32,11 @@
   ]
  },
  "live_handoff": {
-  "session": 125,
+  "session": 126,
   "date": "2026-08-23",
   "branch": "feature/track7-hub-projections-claude -> develop (release v0.95.0)",
   "head": "merge-wave ceremonies complete (5 commits over 0de34770)",
-  "headline": "v0.95 LINE SHIPPING ON v0.95.2: v0.95.0 = features (ui:: + Adventure + startup arc); v0.95.1 = win64 --project lazy-gen fix; v0.95.2 = darwin clang conformance (437-member override sweep + 9 null-conversion sites, behavior-neutral) + darwin pack baseline 58->64 (six strict-refusal libc++ fs entries, verified vs pre-branch pack; burndown libcxx_fs_error_code_overload_shape) + promote.md lanes-BEFORE-tag. Three platform lanes + Mac battery gate the six assets on v0.95.2.",
+  "headline": "v0.95 LINE SHIPPED AND PROMOTED (2026-08-23): master = v0.95.2 @34187f9c, tags v0.95.0/.1/.2, GH release v0.95.2 --latest carries ALL SIX assets (deb/rpm/win-zip/mac-arm64/mac-x86_64/SHA256SUMS, checksums verified); v0.95.0 (features) + v0.95.1 (win64 fix) notes point at it for downloads. THREE-PLATFORM GATE MET at the tag content (lanes-before-tag, the corrected promote.md order): Linux packaged suites green, wine 1091/0/0/52 on the shipping exe, Mac hardware battery 8/3 = EXACT v0.92.1 parity (the 3 = standing darwin known-opens). release-bins archived both hosts.",
   "settled": [
    "@74f22ec0 decode_member_tmpl_param_table is the ONE MEMBER param-table decoder (thaw owner + flush eager arm both delegate); the eager arm's payload decode now runs inside a ForestWorkFrame \u2014 registration stays parse work outside it",
    "@5b5d0771 MadcSharedPreludeCache::restore records live_tokenize_record(entry.include_key) \u2014 cache-hit headers leave the same v40 prune evidence as the miss path",
@@ -51,11 +51,13 @@
    "session 125: ui::prompt targeted validation \u2014 subset 4/4 (testuiprompt/testuibags/testadventure), adventure_parity 3+94 byte-identical, roundtrip gate OK, interactive arm verified under script(1) pty on the container; release+packed lane current (1133/0)"
   ],
   "next": [
-   "1. /promote v0.95.0: master merge + tag + GH release from docs/release-notes/v0.95.0-master.md; THREE-PLATFORM lanes gate the six assets (promote.md step 5); archive bin/madc-release-v0.95.0 to tmp/release-bins on both hosts after the packaging rebake; refresh README wine/mac count lines with the fresh lane numbers; update the README Branch state line to promoted-master before the merge.",
-   "2. After promotion: startup-arc levers (re-attribute allocator family; zstd raw-spine owner trade; bar tcc ~22ms); queued consolidations (KG DupFamily: token_record_materialization, flat_type_spelling_peel, named_include_resolution_plan 5th site); queued fix --project --emit=c11 duplicate __madc_global_init; owner ruling: madc.ini under --project; @9d4bfb21 prelude-key cost = same-session A/B candidate.",
-   "3. traps: Ir session-local; validate on the canonical container; config.mk never crosses the tunnel now; Mac = ssh madc-mac."
+   "1. Post-release follow-ups (KG Gaps, in priority order): mir_win64_lazy_gen_wrapper (fix MIR's win64 lazy first-call redirect; reducer recorded; deleting the two _WIN32 guards in madc_cir.cpp is the done-signal \u2014 re-enables the startup lever on Windows); libcxx_fs_error_code_overload_shape (six darwin pack burndown entries); wine_suite_flake_class (0-3 nondeterministic singletons per full run; capture FAIL names across N runs).",
+   "2. Startup-arc levers (bar tcc ~22ms): re-attribute the allocator family; zstd raw-spine = owner size-trade; @9d4bfb21 prelude-key cost A/B candidate.",
+   "3. Queued consolidations (DupFamily): token_record_materialization; flat_type_spelling_peel; named_include_resolution_plan 5th site; ctor_membership_detection. Queued fix: --project --emit=c11 duplicate __madc_global_init. Owner ruling queued: madc.ini under --project.",
+   "4. Track 7 next: 7.2 curses/terminal backend (madcide first light); docs residue NONE for ui:: (ns-ui.md shipped).",
+   "5. traps: Ir session-local; config.mk NEVER crosses the tunnel (@077a480d \u2014 root path, not src/); post-checkout container work needs make clean before the next build; scp with TWO remote args copies remote-to-remote (clobbered SHA256SUMS once \u2014 always one remote source, local dest); Mac = ssh madc-mac (DHCP-drifting IP lives ONLY in ~/.ssh/config)."
   ],
-  "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude, all ceremonies done, battery green from clean \u2014 merge wave is the owner's move. Read AGENTS.md + docs/agent-handoff.md + this live_handoff. The ui::prompt proposal (next[2]) is DISCUSSION-FIRST (a question is never a directive). Container does all builds/tests. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
+  "handoff_to": "NEXT AGENT: develop = v0.95.2 (all pushed), master promoted, six assets live. Read AGENTS.md + this live_handoff. The three KG gaps in next[1] are the immediate work; the merge-wave/dupaudit/release ceremonies are ALL DONE for this line. Container does all builds/tests. Never touch owner strays; never git add -A."
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir \u2014 ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
  "build_status": "green",
