@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **`ui::prompt` — the interaction verb (owner-directed).** One
+  prompt/read on the process stdio streams: interactive stdin gets the
+  prompt written and **flushed** before the blocking read (an unflushed
+  `"> "` is invisible — stdio never flushes an unterminated line and
+  glibc never flushes stdout on stdin reads); scripted stdin keeps the
+  reference-transcript shape (read first, then `"<text><line>\n"` fused;
+  prompt once, alone, at EOF); `#`-led lines are script comments,
+  consumed silently. Reading delegates to `madc::getline` — no second
+  reader. Adventure's `get_input` collapses to the verb, so interactive
+  play finally shows its prompt while all 94 parity logs stay
+  byte-identical (re-verified, plus the roundtrip gate). The interactive
+  arm is verified under a real pty; `testuiprompt` pins the scripted
+  arm. Thread contract stated at the definition (process-global stdio
+  under stdio's own locking; one prompting thread at a time).
 - **Merge-wave ceremonies (Track 7 / startup arc): exe + obj lanes green;
   scoped `/dupaudit` (lexer/forest/project) found four defects, all fixed
   in-session.** Native-artifact lanes: EXE 1090/0 and OBJ 1090/0 of 1133

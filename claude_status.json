@@ -32,11 +32,11 @@
   ]
  },
  "live_handoff": {
-  "session": 124,
+  "session": 125,
   "date": "2026-08-23",
   "branch": "feature/track7-hub-projections-claude",
   "head": "merge-wave ceremonies complete (5 commits over 0de34770)",
-  "headline": "OWNER-DIRECTED CEREMONIES DONE: exe 1090/0 + obj 1090/0 lanes GREEN; /dupaudit scoped lexer/forest/project complete \u2014 4 defects found AND fixed same session, 1 new fulltest gate, 3 consolidations queued; final battery from clean at the fix content: fulltest 1133/0, adventure parity 3+94, trailers 535/0. The merge wave itself (feature/track7-hub-projections-claude -> develop) is now purely an OWNER CALL.",
+  "headline": "ui::prompt SHIPPED @8ad3ab62 (owner-directed): the interaction verb \u2014 interactive prompt flushed BEFORE the read / scripted reference-transcript shape / '#' script comments / madc::getline delegation / stated thread contract; adventure get_input collapsed to it; parity 3+94 re-verified + roundtrip OK + testuiprompt pins the scripted arm + interactive arm verified under a real pty. Earlier this session: ceremonies done (exe/obj 1090/0, dupaudit 4 fixes + policy-fanout gate), battery-from-clean 1133/0, release+packed lane rebuilt CURRENT (1133/0 vs fresh bin/madc-release). MERGE WAVE = OWNER CALL; note ui::prompt landed AFTER the clean battery \u2014 the wave gate reruns fulltest+exe/obj+release/packed ONCE at the final SHA when the owner calls it.",
   "settled": [
    "@74f22ec0 decode_member_tmpl_param_table is the ONE MEMBER param-table decoder (thaw owner + flush eager arm both delegate); the eager arm's payload decode now runs inside a ForestWorkFrame \u2014 registration stays parse work outside it",
    "@5b5d0771 MadcSharedPreludeCache::restore records live_tokenize_record(entry.include_key) \u2014 cache-hit headers leave the same v40 prune evidence as the miss path",
@@ -47,11 +47,12 @@
   ],
   "validation": [
    "merge-wave battery from CLEAN obj/ at the final content (rb-20260823-040157): fulltest rc=0 (1133/0, 9 skipped), exe 1090/0, obj 1090/0, adventure parity 3 fragments + 94 whole logs byte-identical, adventure roundtrip gate OK, forest_bind_gate all cells OK, policy-fanout gate GREEN, trailers 535/0",
-   "earlier same-day lanes at pre-fix 0de34770 were also green (exe 1090/0, obj 1090/0) \u2014 the fixes changed nothing observable in the suites, as expected (accounting/evidence/policy-reach fixes)"
+   "earlier same-day lanes at pre-fix 0de34770 were also green (exe 1090/0, obj 1090/0) \u2014 the fixes changed nothing observable in the suites, as expected (accounting/evidence/policy-reach fixes)",
+   "session 125: ui::prompt targeted validation \u2014 subset 4/4 (testuiprompt/testuibags/testadventure), adventure_parity 3+94 byte-identical, roundtrip gate OK, interactive arm verified under script(1) pty on the container; release+packed lane current (1133/0)"
   ],
   "next": [
    "1. MERGE WAVE = OWNER CALL: feature/track7-hub-projections-claude -> develop is fully validated (battery green from clean at final content).",
-   "2. OWNER QUESTION OPEN (2026-08-23): adventure's prompt. get_input (adv_io.mad:206) is transcript-shaped: it reads FIRST then prints '> {line}' as a fused prompt+echo (the piped parity-log shape; the C reference switches on isatty(0)). Interactively you type blind. And ui:: has NO prompt verb (inventoried: docs/language, ns_ui, ns_madc, tests \u2014 zero hits); input is only madc::getline. PROPOSAL awaiting owner: ui::prompt(text, out) = write prompt, flush, read line, echo policy keyed on isatty (TTY: no echo; piped: '> {line}' \u2014 keeps all 94 parity logs byte-identical); lean primary form (var&), stated thread-safety contract; adventure get_input adopts it. Do NOT implement before owner discussion.",
+   "2. DONE: ui::prompt designed+implemented+employed @8ad3ab62 (was the open owner question). Residue: no docs/language/ns-ui.md exists for the whole ui:: namespace (Track 7 docs gap); OWNER LESSON BANKED: bin/madc-release is the PROFILING VEHICLE \u2014 rebuild it whenever perf-relevant code lands, and release+packed is a standing merge-wave lane.",
    "3. Queued consolidations (KG DupFamily, open): token_record_materialization; flat_type_spelling_peel (delegate resolve_flat_return_name's peel core); named_include_resolution_plan 5th site (provider-verdict owner shared by executor + prelude candidate()); ctor_membership_detection helper; stamp clone-loop factoring; decode_destination_no_zero_fill regrowth gate. Queued defect for owner ruling: madc.ini defaults are never applied under --project (project_parse_all never reads config; may be intended \u2014 manifest as authority).",
    "4. Queued small fix: --project --emit=c11 duplicate __madc_global_init.",
    "5. Startup-arc levers after the wave: re-attribute the allocator family post-@ad9be08d; zstd raw-spine = owner size-trade; bar = tcc ~22ms, launch ~870.5M Ir.",
