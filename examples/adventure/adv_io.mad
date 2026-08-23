@@ -201,25 +201,15 @@ void sspeak_s(const char *name, var &s)
 	println("\n{}", out);
 }
 
-// One input line: leading blank, comments skipped, EOF -> false, echo.
+// One input line: leading blank, then the one prompt handler.
+// ui::prompt owns the whole interaction — the interactive
+// prompt-then-read (flushed, terminal echoes), the scripted
+// read-then-"> {line}" transcript shape, comment skipping, and the
+// prompt-once-at-EOF reference behavior.
 bool get_input(var &out)
 {
 	println("");
-	for (;;)
-	{
-		var line;
-		if ( !madc::getline(line) )
-		{
-			// The reference prints the prompt once at EOF.
-			print("> ");
-			return false;
-		}
-		if ( !line.empty() && line.at(0) == '#' )
-			continue;
-		println("> {}", line);
-		out = line;
-		return true;
-	}
+	return ui::prompt(out, "> ");
 }
 
 // First whitespace word of a line (the yes/no reader's sscanf %s).

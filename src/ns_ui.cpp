@@ -28,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "libmadc/value.h"
 #include "madcdis/hub.h"
@@ -96,7 +97,59 @@ madc::value &ui_text_out(madc::value &out, const std::string &text)
 
 } // namespace
 
+// The ONE line-input owner (src/ns_madc.cpp); no host header declares it —
+// ui::prompt delegates reading to it rather than growing a second reader.
+namespace madc { bool getline(value &out); }
+
 namespace ui {
+
+// ui::prompt — one prompt/read interaction on the process stdio streams.
+//
+// Interactive stdin (a terminal): `text` is written and FLUSHED before
+// the blocking read — stdio never flushes an unterminated line on its
+// own, so an unflushed prompt is invisible; the terminal's own echo
+// shows the typing, so the line is not re-emitted.
+//
+// Scripted stdin (a pipe or file): the reference-transcript shape — the
+// line is read FIRST, then `text` and the line are emitted together
+// ("<text><line>\n"), so a piped transcript reads exactly like an
+// interactive session; at EOF `text` is emitted once, alone.
+//
+// Lines beginning '#' are script comments in BOTH modes: consumed
+// silently, never echoed (interactively the prompt is shown again).
+// Returns false at EOF (the std::getline contract, via madc::getline).
+//
+// THREAD CONTRACT (.claude/rules/thread-safety.md): operates on the
+// process-global stdin/stdout under stdio's own locking; one prompting
+// thread at a time is the supported shape — concurrent prompts
+// interleave at line granularity.
+bool prompt(madc::value &out, const char *text)
+{
+    const char *t = text ? text : "";
+    const bool interactive = isatty(0) != 0;
+    for (;;)
+    {
+	if ( interactive )
+	{
+	    fputs(t, stdout);
+	    fflush(stdout);
+	}
+	madc::value line;
+	if ( !madc::getline(line) )
+	{
+	    if ( !interactive )
+		fputs(t, stdout);
+	    return false;
+	}
+	std::string s = line.as_string();
+	if ( !s.empty() && s[0] == '#' )
+	    continue;
+	if ( !interactive )
+	    fprintf(stdout, "%s%s\n", t, s.c_str());
+	out = line;
+	return true;
+    }
+}
 
 int64_t world_open(const char *path)
 {

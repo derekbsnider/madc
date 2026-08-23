@@ -16,6 +16,17 @@
 // pluggable catalogs and stored views arrive with later phases.
 
 namespace ui {
+    // ---- interaction (the prompt handler) ------------------------------
+    // One prompt/read on the process stdio streams. Interactive stdin
+    // (a terminal): `text` is written and FLUSHED before the blocking
+    // read; the terminal's own echo shows the typing. Scripted stdin
+    // (a pipe/file): the reference-transcript shape — the line is read
+    // first, then text and line are emitted together ("<text><line>\n"),
+    // so a piped transcript reads exactly like an interactive session;
+    // at EOF `text` is emitted once, alone. '#'-led lines are script
+    // comments: consumed silently in both modes. Returns false at EOF.
+    bool prompt(value &out, const char *text);
+
     // Open a world file (the %world tagged format). Returns a session
     // handle (> 0), or 0 with the reason on stderr. Sessions are
     // independent; close releases one.

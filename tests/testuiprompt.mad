@@ -1,0 +1,20 @@
+// ui::prompt scripted-mode contract (the runner pipes stdin): the line is
+// read FIRST, then the prompt and line are emitted fused ("<text><line>\n")
+// — the reference-transcript shape; '#'-led lines are script comments,
+// consumed silently ("read 2" pins that 3 input lines yield 2 returns);
+// at EOF the prompt is emitted once, alone. The interactive arm (prompt
+// written and FLUSHED before the blocking read, no echo) needs a tty and
+// is outside the piped runner's reach.
+int main()
+{
+	var line;
+	long n = 0;
+	while ( ui::prompt(line, "> ") )
+	{
+		n += 1;
+		println("[{}]", line);
+	}
+	println("");
+	println("read {}", n);
+	return 0;
+}
