@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-23, v0.95.0 — ui:: + Adventure + cold startup):**
+> **Current (2026-08-23, v0.95.1 — the v0.95 binary-shipping patch):**
+> the three-platform promotion gate's wine suite caught the v0.95.0
+> win64 `--project` regression (all six project tests:
+> EXCEPTION_ACCESS_VIOLATION at the first lazily generated call; MIR's
+> win64 lazy first-call redirect — one-flag proof: the identical run
+> under `-g` is byte-correct). Fixed @41c0a663 (win64 keeps the eager
+> gen interface; Linux/darwin keep the lazy startup lever; KG gap
+> `mir_win64_lazy_gen_wrapper` is the follow-up). Wine packed suite
+> after the fix: **1091 passed / 0 failed / 0 timed out / 52 skipped**
+> — two consecutive clean full runs (one earlier single-run flake of
+> `teststaticmemberaddr` did not reproduce in either). Linux compiles
+> are textually identical (`_WIN32` arm drops out), so the v0.95.0
+> battery below remains the Linux evidence.
+>
+> **Previous (2026-08-23, v0.95.0 — ui:: + Adventure + cold startup):**
 > the merge-wave battery for feature/track7-hub-projections-claude, run
 > ONCE from clean obj/ at the final content (rb-20260823-051447):
 > authoritative Linux fulltest **1134 passed / 0 failed / 0 timed out /

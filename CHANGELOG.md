@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [v0.95.1] — 2026-08-23
+
+The v0.95 binary-shipping patch: one win64 regression caught by the
+three-platform promotion gate, fixed before any asset shipped.
+
+- **win64: `--project` crashed at the first user-function call**
+  (EXCEPTION_ACCESS_VIOLATION) — the v0.95.0 startup lever moved the
+  project and MIR-cache lanes to MIR's lazy first-call gen interface,
+  whose win64 redirect is broken (the identical run under `-g`, the
+  eager interface, is byte-correct — the one-flag proof). Both lazy
+  selection sites are `#ifdef _WIN32`-gated back to the eager
+  interface: the pre-lever, v0.92.1-proven behavior, identical
+  correctness, link wall only. Linux/darwin keep the lazy lever; the
+  MIR win64 lazy wrapper is the recorded follow-up (KG
+  `mir_win64_lazy_gen_wrapper`; deleting the two guards is its
+  done-signal). Reducer: `wine madc-release-x86-64-windows.exe
+  --project tests/testproject.cc.json`.
+
+Validation: wine packed suite green at this content (counts in
+docs/test-status.md); the v0.95.0 Linux battery remains the Linux
+evidence — the `_WIN32` arm drops out of Linux preprocessing, so those
+compiles are textually identical.
+
 ## [v0.95.0] — 2026-08-23
 
 The `ui::` data-hub surface + Colossal Cave Adventure fully playable as
