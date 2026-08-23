@@ -25694,7 +25694,7 @@ static bool token_tree_has_pack_expansion(TokenBase *tb)
 {
     if ( !tb )
 	return false;
-    if ( (tb ? tb->as_pack_expansion_tok() : NULL) )
+    if ( tb && tb->as_pack_expansion_tok() )
 	return true;
     if ( TokenCallFunc *tc = (tb ? tb->as_callfunc_tok() : NULL) )
     {

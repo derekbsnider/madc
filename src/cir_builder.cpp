@@ -13371,9 +13371,9 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// manipulator `operator<<(ostream& (*)(ostream&))`, tying (rawtype 64==64)
 	// and — registered first — beating `operator<<(long)` (`cout << (long)`
 	// mangled the bogus _ZNSolsESo; int/float/double were unaffected).
-	if ((pdc ? pdc->as_fptr_dd() : NULL)) {
+	if ((pdc && pdc->as_fptr_dd())) {
 		const bool arg_is_fn = adc->is_function()
-		    || (adc ? adc->as_fptr_dd() : NULL);
+		    || (adc && adc->as_fptr_dd());
 		if (!arg_is_fn)
 			return arg_is_zero_literal ? 3 : -1; // null binds; else reject
 		const FuncDef *pf =
@@ -20160,8 +20160,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			bool obj_is_array = !tm->object.dims.empty()
 				|| (tm->object.type ? tm->object.type->as_carray_dd() : NULL) != NULL;
 			bool parent_is_subscript = tm->parent_expr
-				&& ((tm->parent_expr ? tm->parent_expr->as_subscript_tok() : NULL)
-				 || (tm->parent_expr ? tm->parent_expr->as_subscript_expr_tok() : NULL));
+				&& ((tm->parent_expr && tm->parent_expr->as_subscript_tok())
+				 || (tm->parent_expr && tm->parent_expr->as_subscript_expr_tok()));
 			bool ptr_like;
 			if (parent_is_subscript) {
 				// Subscripting dereferences: `p[i]`/`arr[i]` yields the
@@ -20680,7 +20680,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// gcc canon: "assignment of read-only member 'm'".
 				if (TokenMember *ltm = (top->left ? top->left->as_member_tok() : NULL)) {
 					if (ltm->var.is_constant()
-					    || (ltm->var.type ? ltm->var.type->as_const_dd() : NULL)) {
+					    || (ltm->var.type && ltm->var.type->as_const_dd())) {
 						std::string msg = "assignment of read-only member '"
 							+ ltm->var.name + "'";
 						return error_node(msg.c_str(), tb);
@@ -23821,7 +23821,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 			}
 	}
 	if (ctor_args.size() == 1
-	    && (ctor_args[0] ? ctor_args[0]->as_callfunc_tok() : NULL)
+	    && (ctor_args[0] && ctor_args[0]->as_callfunc_tok())
 	    && object_returning_call_class(ctor_args[0]) == cdcl
 	    // A format intrinsic has no symbol to elide into the declared
 	    // object — fall to the generic path, whose operand translation
@@ -24032,7 +24032,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		// local declaration for it (calls resolve to the hoisted symbol). Without
 		// this it rendered as `void Foo;`, which c2mir tolerates but gcc rejects,
 		// breaking the portable `--emit=c11` output.
-		if ((v->type ? v->type->as_funcdef_dd() : NULL)) continue;
+		if ((v->type && v->type->as_funcdef_dd())) continue;
 		append(items, var_decl(v));
 		if (is_array_object(v->type)) {
 			// `array a;` — default-construct the madc::value object. Scope-exit
@@ -27840,7 +27840,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				    && !(target->type && target->type->is_function()))
 					break;
 			}
-			if (td.var && !(td.var->type ? td.var->type->as_funcdef_dd() : NULL)) {
+			if (td.var && !(td.var->type && td.var->type->as_funcdef_dd())) {
 				// Pass the linked TokenDecl as origin so var_decl's
 				// existing initializer logic (scalar + brace) emits the
 				// global's init in its SPEC_DECL — the single source for
