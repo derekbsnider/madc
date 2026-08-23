@@ -22360,6 +22360,42 @@ static DataDef *resolve_flat_return_name(Program &pgm, const std::string &nm)
     return NULL;
 }
 
+// ONE decoder for a MEMBER record's parameter table — names, pack/type-ness,
+// the v36 [temp.deduct]/8 SFINAE default runs, and the v38 per-param
+// CONSTRAINT runs riding the record's spec slot (the FN lane's v33
+// convention). An older record has rt.spec empty — constraints clear so the
+// size mismatch downstream degrades to clearing every non-type default, the
+// pre-v38 behavior. Shared by the lazy thaw owner and the flush's
+// dropped-placeholder eager arm; payload decode, so every caller runs it
+// inside a ForestWorkFrame.
+static void decode_member_tmpl_param_table(Program &pgm,
+					   const CirRestoredTemplate &rt,
+					   const std::string &disp,
+					   std::vector<std::string> &typeparams,
+					   std::vector<bool> &is_pack,
+					   std::vector<bool> &is_type,
+					   std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+					   std::vector<std::vector<TokenBase *> > &typeparam_constraints)
+{
+    for ( size_t p = 0; p < rt.params.size(); ++p )
+    {
+	typeparams.push_back(rt.params[p].first);
+	is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
+	is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
+	typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( p < rt.defaults.size() )
+	    pgm.forest_restore_run(rt.defaults[p], typeparam_defaults.back());
+	typeparam_constraints.push_back(std::vector<TokenBase *>());
+	if ( p < rt.spec.size() )
+	    pgm.forest_restore_run(rt.spec[p], typeparam_constraints.back());
+	if ( vri_debug_enabled() )
+	    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
+		    disp.c_str(), p, typeparam_defaults.back().size());
+    }
+    if ( rt.spec.empty() )
+	typeparam_constraints.clear();
+}
+
 // Lazy MEMBER-template thaw owner (task #25 B2, MEMBER arm): hydrate the
 // deferred CIR_TMPLK_MEMBER record, restore its token runs, and run the ONE
 // stamp derivation onto the restored placeholder — exactly what the flush used
@@ -22391,29 +22427,8 @@ void madc_thaw_member_template(FuncDef *fd)
     std::vector<bool> is_pack, is_type;
     std::vector<std::vector<TokenBase *> > typeparam_defaults;
     std::vector<std::vector<TokenBase *> > typeparam_constraints;
-    for ( size_t p = 0; p < rt.params.size(); ++p )
-    {
-	typeparams.push_back(rt.params[p].first);
-	is_pack.push_back((rt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-	is_type.push_back((rt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-	// v36 semantics: the per-param default runs (always in the record
-	// layout) carry the member template's [temp.deduct]/8 SFINAE defaults.
-	typeparam_defaults.push_back(std::vector<TokenBase *>());
-	if ( p < rt.defaults.size() )
-	    pgm.forest_restore_run(rt.defaults[p], typeparam_defaults.back());
-	// v38: the per-param CONSTRAINT runs ride the record's spec slot (the
-	// FN lane's v33 convention). An older record has rt.spec empty —
-	// cleared below so the size mismatch downstream degrades to clearing
-	// every non-type default, the pre-v38 behavior.
-	typeparam_constraints.push_back(std::vector<TokenBase *>());
-	if ( p < rt.spec.size() )
-	    pgm.forest_restore_run(rt.spec[p], typeparam_constraints.back());
-	if ( vri_debug_enabled() )
-	    fprintf(stderr, "[vriprobe] THAW member %s p=%zu run=%zu\n",
-		    disp.c_str(), p, typeparam_defaults.back().size());
-    }
-    if ( rt.spec.empty() )
-	typeparam_constraints.clear();
+    decode_member_tmpl_param_table(pgm, rt, disp, typeparams, is_pack, is_type,
+				   typeparam_defaults, typeparam_constraints);
     if ( !tokens.empty() )
 	stamp_member_template_pattern(fz->owner, fd, tokens, typeparams,
 				      is_pack, is_type, disp,
@@ -22756,31 +22771,29 @@ void Program::flush_forest_pending_globals()
 	    continue;
 	CirRestoredTemplate &rrt = *pm.rt;
 	std::vector<TokenBase *> tokens;
-	forest_restore_run(rrt.body, tokens);
-	// A DECL-ONLY record (v34: no decl tokens, only the return-type range
-	// in the constraint slot) cannot fall back to the live registration —
-	// there are no declaration tokens to re-run it over; the placeholder
-	// either restored (deferred above) or the member stays a bare method.
-	if ( tokens.empty() )
-	    continue;
 	std::vector<std::string> typeparams;
 	std::vector<bool> is_pack, is_type;
 	std::vector<std::vector<TokenBase *> > typeparam_defaults;
 	std::vector<std::vector<TokenBase *> > typeparam_constraints;
-	for ( size_t p = 0; p < rrt.params.size(); ++p )
 	{
-	    typeparams.push_back(rrt.params[p].first);
-	    is_pack.push_back((rrt.params[p].second & CIR_TMPLP_IS_PACK) != 0);
-	    is_type.push_back((rrt.params[p].second & CIR_TMPLP_IS_TYPE) != 0);
-	    typeparam_defaults.push_back(std::vector<TokenBase *>());
-	    if ( p < rrt.defaults.size() )
-		forest_restore_run(rrt.defaults[p], typeparam_defaults.back());
-	    typeparam_constraints.push_back(std::vector<TokenBase *>());
-	    if ( p < rrt.spec.size() )
-		forest_restore_run(rrt.spec[p], typeparam_constraints.back());
+	    // Payload decode rides the forest clock like every other
+	    // forest_restore_run caller; the live registration below is
+	    // parse work, outside the frame.
+	    ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
+	    forest_restore_run(rrt.body, tokens);
+	    // A DECL-ONLY record (v34: no decl tokens, only the return-type
+	    // range in the constraint slot) cannot fall back to the live
+	    // registration — there are no declaration tokens to re-run it
+	    // over; the placeholder either restored (deferred above) or the
+	    // member stays a bare method.
+	    if ( tokens.empty() )
+		continue;
+	    decode_member_tmpl_param_table(*this, rrt,
+					   rrt.name ? rrt.name : "",
+					   typeparams, is_pack, is_type,
+					   typeparam_defaults,
+					   typeparam_constraints);
 	}
-	if ( rrt.spec.empty() )
-	    typeparam_constraints.clear();
 	std::vector<bool> saved_pack = last_skipped_template_typeparam_is_pack;
 	last_skipped_template_typeparam_is_pack = is_pack;
 	std::vector<bool> saved_is_type = last_skipped_template_typeparam_is_type;
