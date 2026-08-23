@@ -74,6 +74,11 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 
 using namespace std;
 
+// The ONE replacement-text interpreter (check-one-macro-expander.sh): every
+// scan over macro/fragment spelling delegates here — defined with the macro
+// expansion machinery below.
+static std::vector<Program::MacroDef::ReplacementToken> tokenize_macro_spelling(const std::string &text);
+
 // R4-full shared prelude cache. A cached image is immutable lexer output plus
 // the exact post-preprocessor state produced by ONE pure embedded fragment.
 // TokenBase itself is deliberately absent: parser-side fields on those shells
@@ -211,73 +216,28 @@ struct MadcSharedPreludeCache
 	return embedded_fragment_is_pure(*embedded);
     }
 
-    static void collect_identifiers(const std::string &text,
+    // Replacement/fragment spelling is interpreted by the ONE owner
+    // (tokenize_macro_spelling — the check-one-macro-expander gate): collect
+    // identifier spellings, and report whether the text carries a ## paste
+    // (paste can synthesize a macro name that is not lexically visible, so
+    // such state keys on the full preprocessor map). The tokenizer also gets
+    // raw strings and pp-numbers right, which the hand scan this replaces did
+    // not (an identifier-shaped tail of `123abc` is not a macro reference).
+    static bool collect_identifiers(const std::string &text,
 				    std::set<std::string> &names)
     {
-	bool line_comment = false;
-	bool block_comment = false;
-	char quote = 0;
-	for ( size_t i = 0; i < text.size(); )
+	typedef Program::MacroDef::ReplacementToken T;
+	const std::vector<T> tokens = tokenize_macro_spelling(text);
+	bool has_paste = false;
+	for ( size_t i = 0; i < tokens.size(); ++i )
 	{
-	    char ch = text[i];
-	    char next = i + 1 < text.size() ? text[i + 1] : 0;
-	    if ( line_comment )
-	    {
-		if ( ch == '\n' ) line_comment = false;
-		++i;
-		continue;
-	    }
-	    if ( block_comment )
-	    {
-		if ( ch == '*' && next == '/' )
-		{
-		    block_comment = false;
-		    i += 2;
-		}
-		else
-		    ++i;
-		continue;
-	    }
-	    if ( quote )
-	    {
-		if ( ch == '\\' && next )
-		    i += 2;
-		else
-		{
-		    if ( ch == quote ) quote = 0;
-		    ++i;
-		}
-		continue;
-	    }
-	    if ( ch == '/' && next == '/' )
-	    {
-		line_comment = true;
-		i += 2;
-		continue;
-	    }
-	    if ( ch == '/' && next == '*' )
-	    {
-		block_comment = true;
-		i += 2;
-		continue;
-	    }
-	    if ( ch == '\'' || ch == '"' )
-	    {
-		quote = ch;
-		++i;
-		continue;
-	    }
-	    if ( isalpha((unsigned char)ch) || ch == '_' )
-	    {
-		size_t begin = i++;
-		while ( i < text.size()
-		     && (isalnum((unsigned char)text[i]) || text[i] == '_') )
-		    ++i;
-		names.insert(text.substr(begin, i - begin));
-		continue;
-	    }
-	    ++i;
+	    if ( tokens[i].kind == T::rtIdentifier )
+		names.insert(text.substr(tokens[i].begin,
+					 tokens[i].end - tokens[i].begin));
+	    else if ( tokens[i].kind == T::rtPaste )
+		has_paste = true;
 	}
+	return has_paste;
     }
 
     static bool macro_equal(const Program::MacroDef &a,
@@ -360,7 +320,8 @@ struct MadcSharedPreludeCache
 		append_u64(key, 1);
 		append_blob(key, *object);
 		std::set<std::string> nested;
-		collect_identifiers(*object, nested);
+		if ( collect_identifiers(*object, nested) )
+		    needs_full_state = true;
 		for ( std::set<std::string>::const_iterator ni = nested.begin();
 		      ni != nested.end(); ++ni )
 		{
@@ -368,8 +329,6 @@ struct MadcSharedPreludeCache
 		    if ( dependencies.insert(nested_id).second )
 			work.push_back(nested_id);
 		}
-		if ( object->find("##") != std::string::npos )
-		    needs_full_state = true;
 	    }
 	    else if ( function )
 	    {
@@ -381,7 +340,8 @@ struct MadcSharedPreludeCache
 		append_blob(key, function->variadic_param);
 		append_blob(key, function->body);
 		std::set<std::string> nested;
-		collect_identifiers(function->body, nested);
+		if ( collect_identifiers(function->body, nested) )
+		    needs_full_state = true;
 		for ( std::set<std::string>::const_iterator ni = nested.begin();
 		      ni != nested.end(); ++ni )
 		{
@@ -389,8 +349,6 @@ struct MadcSharedPreludeCache
 		    if ( dependencies.insert(nested_id).second )
 			work.push_back(nested_id);
 		}
-		if ( function->body.find("##") != std::string::npos )
-		    needs_full_state = true;
 	    }
 	    else
 		append_u64(key, 0);
