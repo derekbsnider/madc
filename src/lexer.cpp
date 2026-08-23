@@ -592,6 +592,12 @@ struct MadcSharedPreludeCache
 		pgm.macro_map[delta.name] = delta.macro;
 	}
 	pgm.included_files[entry.include_key] = true;
+	// The restored tokens ENTERED this TU's live stream — record it
+	// through the one recording owner (live_tokenize_record), exactly
+	// like the miss path's should_tokenize_include named-key arm, or
+	// the v40 prune's forest_unit_file_live_tokenized evidence misses
+	// cache-hit headers.
+	pgm.live_tokenize_record(entry.include_key, true);
 	pgm.mark_embedded_include_flag(entry.header);
 	return true;
     }
