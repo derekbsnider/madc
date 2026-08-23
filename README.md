@@ -211,9 +211,11 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.95.0** — the `ui::` data-hub namespace
-with its proof: **Colossal Cave Adventure fully playable as a pure
-madc project** (11 translation units, one `class Game` extern,
+The current release is **v0.95.1** (the v0.95 line's binary-shipping
+patch: one win64 `--project` regression caught by the three-platform
+promotion gate and fixed before any asset shipped). The v0.95 line is
+the `ui::` data-hub namespace with its proof: **Colossal Cave
+Adventure fully playable as a pure madc project** (11 translation units, one `class Game` extern,
 byte-identical to the original C game across all 94 reference
 transcripts — a permanent test gate). `ui::` gives a madc program
 worlds, entity bags behind one hub write path, projections as the
@@ -228,7 +230,7 @@ packed 11-TU project launch fell from 829 ms to the ~150 ms class
 FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
 MIR codegen with three community-attributed fixes.
 
-Branch state: v0.95.0 is released on `develop` and promoted to
+Branch state: v0.95.1 is released on `develop` and promoted to
 `master`, with public binaries published for Linux (deb/rpm),
 Windows x86-64, and macOS (Apple Silicon + Intel).
 
@@ -251,14 +253,18 @@ Latest validated results:
   `os.str()` husk, the value intrinsic, the exec:// channel), not
   regressions; both arches packed at 835 units with the Mach-O release
   verifier green
-- packed Win64 under persistent Wine **1061/0/0/52** (the v0.92.1 gate
-  run — both v0.92.0-era regressions fixed); on genuine Windows 11 all
-  seven battery legs pass, including compiling a C translation unit on a
-  host with no toolchain installed
+- packed Win64 under persistent Wine **1091/0/0/52** (the v0.95.1 gate
+  run — the v0.95.0 win64 `--project` regression fixed before any asset
+  shipped); on genuine Windows 11 (v0.92.1 run) all seven battery legs
+  pass, including compiling a C translation unit on a host with no
+  toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.95.1](docs/release-notes/v0.95.1.md) — the v0.95 binary-shipping
+  patch: win64 `--project` first-call crash fixed (lazy-gen gated to
+  eager on win64); six assets.
 - [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
   Colossal Cave Adventure fully playable (94/94 logs byte-identical);
   cold startup 829 ms → ~150 ms class; the zero-include contract.
