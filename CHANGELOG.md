@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.95.0] — 2026-08-23
+
+The `ui::` data-hub surface + Colossal Cave Adventure fully playable as
+a pure madc project (94/94 reference logs byte-identical) + the
+cold-startup arc (packed 11-TU launch 829 ms → the ~150 ms class) + the
+zero-include dialect contract.
+
+- **`docs/language/ns-ui.md`** — the `ui::` namespace reference
+  (worlds, entity bags, projections/access model, verbs, prompt).
 - **`ui::prompt` — the interaction verb (owner-directed).** Write the
   prompt, **flush**, read a line, return it — in every mode. The flush
   is the point: an unflushed `"> "` is invisible (stdio never flushes an

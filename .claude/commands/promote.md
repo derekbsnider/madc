@@ -68,7 +68,8 @@ Merges develop into master, tags the release, and pushes.
      3. macOS: `scripts/remote_build.sh release-macos` (both arches +
         verify_macho_release), then
         `bash scripts/package_release_macos.sh` (appends to SHA256SUMS);
-        run the Mac battery (ssh derek@192.168.1.79, `LC_ALL=C`) when
+        run the Mac battery (`ssh madc-mac`, `LC_ALL=C` — the alias in
+        ~/.ssh/config owns the DHCP-drifting address) when
         the Mac is reachable — a darwin regression blocks too.
      Pull `dist/` back via scp (NEVER `remote_build.sh sync` before the
      pull — sync clobbers container `dist/`), then upload the SIX

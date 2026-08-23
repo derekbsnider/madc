@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current incremental (2026-08-23, c2mir registry page arena):**
+> **Current (2026-08-23, v0.95.0 — ui:: + Adventure + cold startup):**
+> the merge-wave battery for feature/track7-hub-projections-claude, run
+> ONCE from clean obj/ at the final content (rb-20260823-051447):
+> authoritative Linux fulltest **1134 passed / 0 failed / 0 timed out /
+> 9 skipped**; EXE **1091/0**, OBJ **1091/0** (of 1134 JIT-passing);
+> release rc=0 and packed suite **1134/0/0/9** against the packed
+> `bin/madc-release`; headerless **1107/0/0/36**; Colossal Cave
+> Adventure parity **3 fragments + 94 whole logs byte-identical** (+
+> negative controls) and the roundtrip gate green; forest_bind_gate all
+> cells; rule trailers **537/0**; packed forest gate at the 93-error
+> baseline with hard-zero load-side counters. Suite grew +1
+> (testuiprompt — the ui::prompt scripted-arm pin). Windows/macOS lanes
+> re-validate at the v0.95.0 master promotion per promote.md step 5.
+>
+> **Previous incremental (2026-08-23, c2mir registry page arena):**
 > `mir-tests/c2mir-custom-alloc.c` supplies a shifted-pointer `MIR_alloc`
 > (so any raw-libc deallocation aborts), compiles a C reducer through
 > c2mir, and requires balanced allocation/free counts. The gate passes at

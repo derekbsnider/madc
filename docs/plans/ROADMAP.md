@@ -35,20 +35,23 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **develop = v0.94.0** (2026-08-20): the MIR hardening wave — upstream issue
-  #467's ssa_combine loop-PHI wrong-code fixed by us, upstream PRs #468/#466
-  adopted with contributor attribution. v0.93.0 fixed the x86-64 scalar-convert
-  false output dependency that serialized call-heavy FP code (donut.c ran 2.6×
-  slower than gcc -O0 at identical instruction counts; it now runs slightly
-  faster than gcc -O0). Upstream wave 2 submitted: vnmakarov/mir issue #469 +
-  PRs #470/#471 — awaiting review.
+- **develop = v0.95.0** (2026-08-23): the `ui::` data-hub surface (Track 7
+  Phase 1) + Colossal Cave Adventure fully playable as a pure madc
+  `--project` program (94/94 reference logs byte-identical, a fulltest
+  gate) + the cold-startup arc (packed 11-TU launch 829 ms → ~150 ms
+  class) + the zero-include dialect contract + lean polyglot primaries.
+  v0.94.0 was the MIR hardening wave (upstream #467 fixed by us, PRs
+  #468/#466 adopted with contributor attribution); v0.93.0 fixed the
+  x86-64 scalar-convert false dependency (donut.c now beats gcc -O0).
+  Upstream wave 2 submitted: vnmakarov/mir issue #469 + PRs #470/#471 —
+  awaiting review.
 - **master = v0.92.1** (promoted 2026-08-20 with six assets: deb, rpm, macOS
   arm64 + x86_64, Windows zip, SHA256SUMS). Every master promotion is
   three-platform gated (`.claude/commands/promote.md` step 5).
-- **Baselines (v0.94.0):** fulltest 1104/0/0TO/9skip, EXE/OBJ 1063/0, MIR
-  c2mir-gen-test 1143/2286/0, Wine 1061/0/0TO/52skip, Mac battery 8/3 (the 3
-  are standing darwin known-opens). Detail:
-  [docs/test-status.md](../test-status.md).
+- **Baselines (v0.95.0):** counts in [docs/test-status.md](../test-status.md)
+  (JIT 1134/0/0TO/9skip; EXE/OBJ + packed + headerless per the v0.95.0
+  merge-wave battery), MIR c2mir-gen-test 1143/2286/0, Wine + Mac lanes
+  re-validated at promotion.
 - **Standing opens:** `value` std::string ingestion; std::vformat phase 2;
   the darwin known-opens (exec:// silent-empty output, the value intrinsic,
   groves os.str()); no macOS full-suite lane (the wine-lane equivalent on Mac
@@ -334,7 +337,7 @@ reference for levels/negotiation/WCAG detail.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 7.1 | Hub projections + value-typed semantic IR + Level 0 (text) + access model (keys/levels) + verb registry | 3-5 wk | **Planned — NEXT UP**; gate = the text-adventure pilot | [phase 1](2026-08-20-track7-phase1-text-adventure.md) |
+| 7.1 | Hub projections + value-typed semantic IR + Level 0 (text) + access model (keys/levels) + verb registry + `ui::prompt` | 3-5 wk | **DONE — v0.95.0**: the text-adventure pilot is fully playable (94/94 logs byte-identical, gated); surface documented in [docs/language/ns-ui.md](../language/ns-ui.md) | [phase 1](2026-08-20-track7-phase1-text-adventure.md) |
 | 7.2 | Level 1 — curses/terminal backend (pulls 8.1's piece table forward as a component type) | 3-4 wk | Planned; gate = madcide first light | [design](2026-08-20-data-hub-projection-rendering.md) |
 | 7.3 | Reactivity — compiler-tracked deps + per-connection projection instances + semantic-diff wire | 2-3 wk | Planned | [design](2026-08-20-data-hub-projection-rendering.md) |
 | 7.4 | Level 2 — 2D graphics (Skia/Cairo) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
@@ -426,9 +429,9 @@ run in parallel.
      ├── ★ PARITY-TO-MASTER GATE MET (2026-08-12); promotions resumed
      └── Remaining: class-(b) GNU extensions; eval/exec + REPL on MIR
 
- ║── Track 7.1  Hub projections + Level 0                [3-5 wk]
- ║   └── pilot: the text adventure (design APPROVED 2026-08-20;
- ║       library surface only — no new parser syntax)
+ ║── Track 7.1  Hub projections + Level 0                [DONE v0.95.0]
+ ║   └── pilot: the text adventure — FULLY PLAYABLE, 94/94 logs
+ ║       byte-identical (fulltest gate); ui:: documented
 
 12.  Track 1.4  Code cleanup Phase B                    [3 wk]
      └── Parser dereference & subscript unification
