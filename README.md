@@ -228,8 +228,8 @@ packed 11-TU project launch fell from 829 ms to the ~150 ms class
 FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
 MIR codegen with three community-attributed fixes.
 
-Branch state: v0.95.0 is released on `develop`. `master` carries the
-promoted v0.92.1, with public binaries published for Linux (deb/rpm),
+Branch state: v0.95.0 is released on `develop` and promoted to
+`master`, with public binaries published for Linux (deb/rpm),
 Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results:
