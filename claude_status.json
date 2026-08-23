@@ -35,7 +35,7 @@
   "session": 123,
   "date": "2026-08-23",
   "branch": "feature/track7-hub-projections-claude",
-  "head": "ad9be08d (c2mir registry page arena) + docs commit",
+  "head": "9d4bfb21 (macro-gate delegation fix on Codex's prelude cache) over ad9be08d",
   "headline": "C2MIR REGISTRY PAGE ARENA LANDED: packed Adventure 888,845,962/962 -> 870,517,475/579 Ir (-18.33M / -2.06%, interleaved same-session binary A/B), output byte-identical. The registry's measured 100,677 context-lifetime allocations (5,924,755 bytes, max 129) now ride per-context max-aligned 256 KiB pages released in bulk. Massif peak heap slightly fell 91,239,899 -> 91,028,427 bytes. MIR_alloc/free ownership mismatches in streams and pre/parse/check/gen/c2m contexts are fixed and permanently gated. Bar remains TINYCC PARITY (~22ms).",
   "settled": [
    "@ad9be08d lifetime contract: c2mir reg_malloc objects live from c2mir_init to c2mir_finish; the old mark/pop path had no caller and the entire pointer vector was always dropped together",
@@ -45,6 +45,7 @@
    "MEASUREMENT LAW HOLDS: Ir totals are session-local; compare interleaved same-session A/B pairs only"
   ],
   "validation": [
+   "CANONICAL-CONTAINER verification of sessions 121-123 (2026-08-23): Codex's slices were validated off-container; the container fulltest caught ONE ratchet violation (check-one-macro-expander: the prelude cache hand-scanned macro text - body.find('##') + a private identifier scanner). Fixed @9d4bfb21 by delegating collect_identifiers to tokenize_macro_spelling (also fixes a real raw-string mis-scan + pp-number fake dependencies). After the fix: fulltest 1133/0 on the container, gate 26/26, parity 3+94, trailers 530/0, targeted lexer/macro subset 23/0",
    "interleaved callgrind binary A/B: pointer registry 888,845,962/962; page arena 870,517,475/579; deterministic about -18.33M Ir (-2.06%)",
    "Massif peak heap 91,239,899 -> 91,028,427 bytes; Adventure transcript byte-identical; packed forest gate 93/93",
    "repository build GREEN; make -C src test GREEN; c2mir simple sieve GREEN; custom allocator gate GREEN and Valgrind 828 allocs / 828 frees / 0 errors / 0 bytes live",
@@ -55,7 +56,8 @@
    "1. Re-attribute the remaining allocator family after @ad9be08d; coherent c2mir registry ownership is gone, so look for a measured host STL/string/container owner before changing storage",
    "2. zstd spine/arena remainder: raw spine avoids decode but remains an explicit ~10MB release-binary size trade requiring owner direction",
    "3. merge wave (owner call): fulltest + EXE/OBJ + /dupaudit scoped lexer/forest/project; queued: --project --emit=c11 duplicate __madc_global_init",
-   "4. traps: Adventure calls exit() inside JIT code, so teardown probes require a measurement-only pre-entry gate; Ir baselines are SESSION-LOCAL; never broaden the c2mir arena to unrelated MIR lifetimes"
+   "4. traps: Adventure calls exit() inside JIT code, so teardown probes require a measurement-only pre-entry gate; Ir baselines are SESSION-LOCAL; never broaden the c2mir arena to unrelated MIR lifetimes",
+   "LESSON for cross-agent rounds: validate on the CANONICAL container (owner law) - off-container green missed a fulltest-only ratchet; also a root-owned stray examples/adventure/advent binary was left in the repo tree (scratch belongs in tmp/)"
   ],
   "handoff_to": "NEXT AGENT: branch feature/track7-hub-projections-claude remains the explicitly transferred active branch. Read AGENTS.md + docs/agent-handoff.md + this live_handoff + docs/plans/2026-08-22-cold-jit-startup.md. Re-profile the remaining allocation family before selecting another owner, or take the zstd raw-spine trade only with owner direction. Container does all builds/tests. Rule trailers remain gated. Never touch owner strays donut.c, test.mad, testsort.mad; never git add -A."
  },
