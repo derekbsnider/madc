@@ -202,10 +202,10 @@ void sspeak_s(const char *name, var &s)
 }
 
 // One input line: leading blank, then the one prompt handler.
-// ui::prompt owns the whole interaction — the interactive
-// prompt-then-read (flushed, terminal echoes), the scripted
-// read-then-"> {line}" transcript shape, comment skipping, and the
-// prompt-once-at-EOF reference behavior.
+// ui::prompt owns the whole interaction — prompt written and flushed
+// before the read in both modes, the scripted line echo that keeps a
+// piped transcript reading like an interactive session, comment
+// skipping, and the trailing-prompt-at-EOF reference behavior.
 bool get_input(var &out)
 {
 	println("");

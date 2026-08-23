@@ -2,15 +2,16 @@
 
 ## [Unreleased]
 
-- **`ui::prompt` — the interaction verb (owner-directed).** One
-  prompt/read on the process stdio streams: interactive stdin gets the
-  prompt written and **flushed** before the blocking read (an unflushed
-  `"> "` is invisible — stdio never flushes an unterminated line and
-  glibc never flushes stdout on stdin reads); scripted stdin keeps the
-  reference-transcript shape (read first, then `"<text><line>\n"` fused;
-  prompt once, alone, at EOF); `#`-led lines are script comments,
-  consumed silently. Reading delegates to `madc::getline` — no second
-  reader. Adventure's `get_input` collapses to the verb, so interactive
+- **`ui::prompt` — the interaction verb (owner-directed).** Write the
+  prompt, **flush**, read a line, return it — in every mode. The flush
+  is the point: an unflushed `"> "` is invisible (stdio never flushes an
+  unterminated line and glibc never flushes stdout on stdin reads).
+  When stdin is a pipe/file, the returned line is additionally echoed
+  after the read — no terminal exists to echo it — so a piped transcript
+  reads exactly like an interactive session (`> look` lines, and the
+  trailing `> ` at EOF, exactly as the reference logs). `#`-led lines
+  are script comments, consumed silently. Reading delegates to
+  `madc::getline` — no second reader. Adventure's `get_input` collapses to the verb, so interactive
   play finally shows its prompt while all 94 parity logs stay
   byte-identical (re-verified, plus the roundtrip gate). The interactive
   arm is verified under a real pty; `testuiprompt` pins the scripted

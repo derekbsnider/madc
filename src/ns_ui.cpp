@@ -103,21 +103,22 @@ namespace madc { bool getline(value &out); }
 
 namespace ui {
 
-// ui::prompt — one prompt/read interaction on the process stdio streams.
+// ui::prompt — one prompt/read interaction on the process stdio streams:
+// write `text`, FLUSH, read a line, return it. The flush is the point —
+// stdio never flushes an unterminated line on its own (and glibc never
+// flushes stdout on a stdin read), so an unflushed prompt is invisible.
 //
-// Interactive stdin (a terminal): `text` is written and FLUSHED before
-// the blocking read — stdio never flushes an unterminated line on its
-// own, so an unflushed prompt is invisible; the terminal's own echo
-// shows the typing, so the line is not re-emitted.
-//
-// Scripted stdin (a pipe or file): the reference-transcript shape — the
-// line is read FIRST, then `text` and the line are emitted together
-// ("<text><line>\n"), so a piped transcript reads exactly like an
-// interactive session; at EOF `text` is emitted once, alone.
+// Scripted stdin (a pipe or file) adds exactly one thing: the returned
+// line is echoed ("<line>\n") after the read, because no terminal exists
+// to echo it — that makes a piped transcript read exactly like an
+// interactive session, and at EOF the already-written prompt is the
+// reference's trailing prompt-once shape, no special case.
 //
 // Lines beginning '#' are script comments in BOTH modes: consumed
-// silently, never echoed (interactively the prompt is shown again).
-// Returns false at EOF (the std::getline contract, via madc::getline).
+// silently. Interactively the prompt is shown again for the next read;
+// in a script it is not re-shown, so comments stay invisible in the
+// transcript. Returns false at EOF (the std::getline contract, via
+// madc::getline).
 //
 // THREAD CONTRACT (.claude/rules/thread-safety.md): operates on the
 // process-global stdin/stdout under stdio's own locking; one prompting
@@ -127,25 +128,26 @@ bool prompt(madc::value &out, const char *text)
 {
     const char *t = text ? text : "";
     const bool interactive = isatty(0) != 0;
+    bool prompted = false;
     for (;;)
     {
-	if ( interactive )
+	if ( !prompted || interactive )
 	{
 	    fputs(t, stdout);
 	    fflush(stdout);
+	    prompted = true;
 	}
 	madc::value line;
 	if ( !madc::getline(line) )
-	{
-	    if ( !interactive )
-		fputs(t, stdout);
 	    return false;
-	}
 	std::string s = line.as_string();
 	if ( !s.empty() && s[0] == '#' )
 	    continue;
 	if ( !interactive )
-	    fprintf(stdout, "%s%s\n", t, s.c_str());
+	{
+	    fputs(s.c_str(), stdout);
+	    fputs("\n", stdout);
+	}
 	out = line;
 	return true;
     }

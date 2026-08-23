@@ -17,14 +17,13 @@
 
 namespace ui {
     // ---- interaction (the prompt handler) ------------------------------
-    // One prompt/read on the process stdio streams. Interactive stdin
-    // (a terminal): `text` is written and FLUSHED before the blocking
-    // read; the terminal's own echo shows the typing. Scripted stdin
-    // (a pipe/file): the reference-transcript shape — the line is read
-    // first, then text and line are emitted together ("<text><line>\n"),
-    // so a piped transcript reads exactly like an interactive session;
-    // at EOF `text` is emitted once, alone. '#'-led lines are script
-    // comments: consumed silently in both modes. Returns false at EOF.
+    // Write `text`, FLUSH, read a line, return it. Scripted stdin (a
+    // pipe/file) additionally echoes the returned line after the read —
+    // no terminal exists to echo it — so a piped transcript reads
+    // exactly like an interactive session (and EOF leaves the trailing
+    // prompt, the reference shape). '#'-led lines are script comments:
+    // consumed silently in both modes (a script does not re-show the
+    // prompt for them; a terminal does). Returns false at EOF.
     bool prompt(value &out, const char *text);
 
     // Open a world file (the %world tagged format). Returns a session
