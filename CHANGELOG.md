@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [v0.95.2] — 2026-08-23
+
+The v0.95 line's darwin-lane conformance patch — and the tag the six
+public binaries ship on.
+
+- **The darwin (clang, `-Werror`) cross build compiles clean again**:
+  the de-RTTI sweep predated two clang-only checks. Every overriding
+  member in the four core headers now carries `override`
+  (`-Winconsistent-missing-override` is per-class, so partial marking
+  just moves the inconsistency; the full set was enumerated with
+  `g++ -Wsuggest-override`, 437 members), and nine
+  `(p ? p->as_x() : NULL)` boolean sites are the natural
+  `(p && p->as_x())` (`-Wnull-conversion`). Behavior-neutral by
+  construction; g++ and clang lanes both compile clean.
+- **darwin pack baseline 58 → 64, reason inline**: the six new entries
+  are one class — no-viable-overload refusals in libc++
+  `<filesystem>` that previously bound the WRONG function silently
+  through the fallback v0.95.0 deleted (verified by rebuilding the
+  pre-branch pack: exactly 58, identical class table otherwise).
+  Consumers fall back to live parse; burndown recorded
+  (`libcxx_fs_error_code_overload_shape`).
+- **Process: the platform lanes run BEFORE the tag** (promote.md) —
+  the second occurrence of the tag-then-lane-failure cascade
+  (v0.92.0→v0.92.1, v0.95.0→v0.95.1) closes the loophole.
+
 ## [v0.95.1] — 2026-08-23
 
 The v0.95 binary-shipping patch: one win64 regression caught by the

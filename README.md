@@ -211,9 +211,9 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.95.1** (the v0.95 line's binary-shipping
-patch: one win64 `--project` regression caught by the three-platform
-promotion gate and fixed before any asset shipped). The v0.95 line is
+The current release is **v0.95.2** (the v0.95 line's download tag:
+the win64 `--project` fix and the darwin clang-lane conformance, both
+caught by the three-platform promotion gate before any asset shipped). The v0.95 line is
 the `ui::` data-hub namespace with its proof: **Colossal Cave
 Adventure fully playable as a pure madc project** (11 translation units, one `class Game` extern,
 byte-identical to the original C game across all 94 reference
@@ -230,7 +230,7 @@ packed 11-TU project launch fell from 829 ms to the ~150 ms class
 FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
 MIR codegen with three community-attributed fixes.
 
-Branch state: v0.95.1 is released on `develop` and promoted to
+Branch state: v0.95.2 is released on `develop` and promoted to
 `master`, with public binaries published for Linux (deb/rpm),
 Windows x86-64, and macOS (Apple Silicon + Intel).
 
@@ -262,9 +262,10 @@ Latest validated results:
 
 ### Recent Releases
 
-- [v0.95.1](docs/release-notes/v0.95.1.md) — the v0.95 binary-shipping
-  patch: win64 `--project` first-call crash fixed (lazy-gen gated to
-  eager on win64); six assets.
+- [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
+  darwin clang-lane conformance (override sweep) + the six assets.
+- [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
+  first-call crash fixed (lazy-gen gated to eager on win64).
 - [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
   Colossal Cave Adventure fully playable (94/94 logs byte-identical);
   cold startup 829 ms → ~150 ms class; the zero-include contract.

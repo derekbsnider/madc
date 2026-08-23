@@ -1,5 +1,5 @@
 {
- "version": "0.95.1",
+ "version": "0.95.2",
  "date": "2026-08-23",
  "snapshot_note": "session 123: c2mir registry page arena landed; packed Adventure -2.06% Ir with slightly lower peak heap",
  "head": "ad9be08d",
@@ -36,7 +36,7 @@
   "date": "2026-08-23",
   "branch": "feature/track7-hub-projections-claude -> develop (release v0.95.0)",
   "head": "merge-wave ceremonies complete (5 commits over 0de34770)",
-  "headline": "v0.95.0 RELEASED+PROMOTED (tag + GH release live); the promotion gate's wine suite caught a REAL win64 regression \u2014 --project crashed at the first lazily generated call (MIR win64 lazy redirect); fixed @41c0a663 (win64 = eager interface; lever stays on Linux/darwin; KG gap mir_win64_lazy_gen_wrapper = follow-up with reducer). v0.95.1 binary-shipping patch cut per the v0.92.1 precedent; wine 1091/0/0/52 after the fix. Assets ship on v0.95.1.",
+  "headline": "v0.95 LINE SHIPPING ON v0.95.2: v0.95.0 = features (ui:: + Adventure + startup arc); v0.95.1 = win64 --project lazy-gen fix; v0.95.2 = darwin clang conformance (437-member override sweep + 9 null-conversion sites, behavior-neutral) + darwin pack baseline 58->64 (six strict-refusal libc++ fs entries, verified vs pre-branch pack; burndown libcxx_fs_error_code_overload_shape) + promote.md lanes-BEFORE-tag. Three platform lanes + Mac battery gate the six assets on v0.95.2.",
   "settled": [
    "@74f22ec0 decode_member_tmpl_param_table is the ONE MEMBER param-table decoder (thaw owner + flush eager arm both delegate); the eager arm's payload decode now runs inside a ForestWorkFrame \u2014 registration stays parse work outside it",
    "@5b5d0771 MadcSharedPreludeCache::restore records live_tokenize_record(entry.include_key) \u2014 cache-hit headers leave the same v40 prune evidence as the miss path",
