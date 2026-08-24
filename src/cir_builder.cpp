@@ -5923,6 +5923,29 @@ bool CirBuilder::thrown_object_has_cstr(TokenBase *arg)
 	return !sym.empty() && sym != "c_str";
 }
 
+// The baked READ of a host-installed `const char *` scope binding (a
+// libmadc expression/eval ctx field: the bound C-string pointer was set()
+// into var->data and the variable marked constant). That pointer targets
+// HOST memory the compiled module cannot reference symbolically — a
+// variable read would emit an undefined extern import and fail at MIR
+// link. The binding is a read-only snapshot by contract, so every READ
+// shape bakes it to a string literal: the plain read (TokenVar arm), the
+// subscript base (`arg[0]`, TokenSubscript), and the deref operand
+// (`*arg`, TokenDeref) — the latter two embed the Variable in their own
+// tokens and never route through the TokenVar arm, which is how they
+// emitted an undeclared identifier. (`&arg` stays a loud undeclared-
+// identifier error: host memory has no module-referenceable address.)
+node_t CirBuilder::baked_cstr_constant(Variable &var, TokenBase *origin)
+{
+	if (!var.is_constant() || !var.data || (var.flags & vfCONSTDECL)
+	    || !var.type || !var.type->is_cstr())
+		return NULL;
+	const char *text = *(const char **)var.data;
+	if (!text)
+		return NULL;
+	return str(text, strlen(text) + 1, origin);
+}
+
 node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 {
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
@@ -19746,21 +19769,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				const std::string &content = tv->var.name.substr(11);
 				return str(content.c_str(), content.size() + 1, tb);
 			}
-			// The same fold for a set()-valued `const char *` constant: a
-			// host-installed expression/scope binding (libmadc) stores the
-			// bound C-string pointer into var->data and marks the variable
-			// constant. That pointer targets HOST memory the compiled
-			// module cannot reference symbolically — left as a variable
-			// read, the global emits as an undefined extern import and
-			// MIR_link fails. The binding is a read-only snapshot by
-			// contract, so bake it: fold the read to a string literal.
-			if (tv->var.is_constant() && tv->var.data
-			    && !(tv->var.flags & vfCONSTDECL) && tv->var.type
-			    && tv->var.type->is_cstr()) {
-				const char *text = *(const char **)tv->var.data;
-				if (text)
-					return str(text, strlen(text) + 1, tb);
-			}
+			// The same fold for a set()-valued `const char *` constant —
+			// a host-installed expression/scope binding. One owner:
+			// baked_cstr_constant (the subscript and deref arms bake
+			// through it too).
+			if (node_t baked = baked_cstr_constant(tv->var, tb))
+				return baked;
 			// Value-use of a GNU nested function's in-scope alias (taking its
 			// address / passing it as a callback) names the HOISTED symbol. Only
 			// for a capture-free nested fn: a capturing one cannot be a plain
@@ -19946,6 +19960,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (note_capture(&td->var))
 				return node1(N_DEREF,
 					node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb), tb);
+			// Host-installed const char* scope binding: this arm embeds
+			// the Variable and bypasses the TokenVar fold — bake the
+			// operand the same way (`*arg` -> *"text").
+			if (node_t baked = baked_cstr_constant(td->var, tb))
+				return node1(N_DEREF, baked, tb);
 			return node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb);
 		}
 	}
@@ -19986,9 +20005,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// synthetic `__literal__X` variable as its object. Emit the string
 			// literal itself, not a reference to an undefined symbol.
 			node_t base;
+			node_t baked_base = baked_cstr_constant(tsub->object, tb);
 			if (tsub->object.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tsub->object.name.substr(11);
 				base = str(content.c_str(), content.size() + 1, tb);
+			} else if (baked_base) {
+				// Host-installed const char* scope binding: this arm
+				// embeds the Variable and bypasses the TokenVar fold —
+				// bake the base the same way (`arg[0]` -> "text"[0]).
+				base = baked_base;
 			} else if (note_capture(&tsub->object)) {
 				// Captured container: subscript through the deref of the
 				// capture pointer param (`(*name)[i]`).

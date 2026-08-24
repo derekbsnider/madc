@@ -1,0 +1,21 @@
+// Ctx-installed const char* globals under [] and unary * (KG
+// eval_ctx_charptr_deref_undeclared): the host-baked binding folds to a
+// string literal in EVERY read shape. The subscript and deref tokens embed
+// the Variable and bypassed the TokenVar fold — they emitted an undeclared
+// identifier at c2mir check ("subscripted value is neither array nor
+// pointer" / "invalid type argument of unary *"). One fold owner now:
+// CirBuilder::baked_cstr_constant.
+int main()
+{
+    value ctx;
+    ctx["arg"] = "hello";
+    ctx["empty"] = "";
+    value out;
+    madc::eval_string_ctx(out, "if ( arg[0] == 'h' ) return \"sub ok\"; return \"sub wrong\";", ctx);
+    printf("subscript=[%s]\n", out);
+    madc::eval_string_ctx(out, "if ( *arg == 'h' ) return \"deref ok\"; return \"deref wrong\";", ctx);
+    printf("deref=[%s]\n", out);
+    madc::eval_string_ctx(out, "if ( !empty[0] ) return \"empty ok\"; return \"has text\";", ctx);
+    printf("empty=[%s]\n", out);
+    return 0;
+}

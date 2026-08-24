@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (the baked ctx bindings
+compile clean under subscript and deref).

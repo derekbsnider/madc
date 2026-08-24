@@ -647,6 +647,11 @@ class CirBuilder {
 	// Coerce an object with a c_str() method to const char* for a char*-expecting
 	// call.
 	node_t object_cstr_arg(TokenBase *arg);
+	// The baked READ of a host-installed `const char *` scope binding
+	// (eval/expression ctx): the bound text as a string literal, or NULL
+	// when the variable is not such a binding. One owner for the fold —
+	// the plain-read, subscript-base, and deref arms all use it.
+	node_t baked_cstr_constant(Variable &var, TokenBase *origin);
 	// True when object_cstr_arg would really produce a char* for this operand
 	// (the class has a resolvable c_str()) rather than falling back to the raw
 	// object — the one test, for callers that cannot use that fallback.
