@@ -1114,18 +1114,11 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// Ride the lazy interface (first-call generation) and eagerly gen only
 	// the CONSUMER's funcs, so the consumer keeps exactly the no-cache
 	// lane's gen-fatal surface and wall; cache bodies generate on demand.
-	// WIN64: the lazy first-call redirect is broken there (see the
-	// project-lane comment + wine reducer) — eager until the MIR win64
-	// lazy wrapper is fixed and proven.
-#ifdef _WIN32
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
-#else
 	MIR_link(ctx, MIR_set_lazy_gen_interface, cir_import_resolver);
 	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	     it = DLIST_NEXT(MIR_item_t, it))
 	    if (it->item_type == MIR_func_item)
 		MIR_gen(ctx, it);
-#endif
     } else
 	MIR_link(ctx, MIR_set_gen_interface,
 		 madc_object_mode ? cir_object_import_resolver
@@ -5991,22 +5984,10 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// checked every function; the entry and the TU inits below stay
 	// explicitly MIR_gen'd (their failure surface is unchanged). -g keeps
 	// the eager interface: source-debug registration reads machine code.
-	// WIN64: the lazy interface's first-call redirect is BROKEN on
-	// win64 — EXCEPTION_ACCESS_VIOLATION at the first lazily generated
-	// call (reducer: wine bin/madc-release-x86-64-windows.exe --project
-	// tests/testproject.cc.json crashes; the same run with -g, the eager
-	// interface, is byte-correct — caught by the v0.95.0 promotion
-	// gate's wine suite). Until the MIR win64 lazy wrapper is fixed and
-	// proven, win64 keeps the eager interface: pre-lever behavior,
-	// identical correctness, link wall only.
-#ifdef _WIN32
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
-#else
 	MIR_link(ctx,
 		 madc_debug_info ? MIR_set_gen_interface
 				 : MIR_set_lazy_gen_interface,
 		 cir_import_resolver);
-#endif
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
 	auto _lk1 = std::chrono::steady_clock::now();
