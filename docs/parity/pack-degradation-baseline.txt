@@ -65,15 +65,14 @@
 93 win64 pack-errors
 55 win64 dk-none
 0 win64 closure-drops
-# darwin raised 58 -> 64 (2026-08-23, v0.95.x): the six new entries are ONE
-# class — "no matching overload ... (std::__1::__fs::filesystem::path...,
-# error_code**)" in libc++ <filesystem> — surfaced by the strict
-# no-viable-overload refusal (this branch deleted the silent wrong-function
-# fallback those six constructs had been binding through; verified by
-# rebuilding the pre-branch pack: exactly 58 with these six absent and every
-# other class count identical). Consumers fall back to live parse; correctness
-# is strictly better (loud beats silently wrong). Burndown: teach the overload
-# ranker the error_code& binding shape these calls need (KG Gap
-# libcxx_fs_error_code_overload_shape).
-64 darwin pack-errors
+# darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
+# overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
+# strict no-viable-overload refusal replaced their silent wrong-function
+# fallback) are FIXED at the type's origin: '&x' over a reference-typed
+# operand now types as pointer-to-referent (Program::addressof_result_type,
+# [expr.unary.op]p3), so `__f(__p, &__ec)` from an `error_code& __ec`
+# parameter ranks as error_code* and binds the right overload. Reducer:
+# tests/testaddrofrefoverload.mad (g++/clang++ oracle). KG Gap
+# libcxx_fs_error_code_overload_shape CLOSED.
+58 darwin pack-errors
 1 darwin mir-blob-skips

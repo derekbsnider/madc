@@ -1,0 +1,24 @@
+// [expr.unary.op]p3 over a reference: `&e` where `e` is declared `E&` must
+// type as E* (pointer-to-referent), never E** (a pointer to the reference's
+// own T* lowering). This is the libc++ <filesystem> shape — every
+// `__f(__p, &__ec)` forwarder whose `__ec` is an `error_code&` parameter —
+// that refused all six overloaded fs calls in the darwin pack
+// (KG gap libcxx_fs_error_code_overload_shape).
+// Oracle: g++ and clang++ both print "2 1".
+#include <stdio.h>
+namespace fs {
+struct E { int v; };
+struct P { int x; };
+inline int __f(const P&) { return 1; }
+inline int __f(const P&, E*) { return 2; }
+inline int f(const P& p, E& e) { return __f(p, &e); }
+inline int g(const P& p) { return __f(p); }
+}
+int main()
+{
+	fs::P p;
+	fs::E e;
+	e.v = 0;
+	printf("%d %d\n", fs::f(p, e), fs::g(p));
+	return 0;
+}

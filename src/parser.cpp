@@ -27066,6 +27066,20 @@ static bool is_addressable_expression(TokenBase *expr)
 	|| dynamic_cast<TokenDerefExpr *>(expr);
 }
 
+// [expr.unary.op]p3: '&x' over a reference-typed operand yields the address
+// of the REFERENT — pointer-to-referent, never a pointer to the reference's
+// own T* lowering (that extra level made overload ranking see T** and refuse
+// every candidate taking T*). The CIR builder's TokenAddrOf arm already emits
+// the matching VALUE (the reference's stored pointer); this is its type-side
+// twin.
+DataDefPTR *Program::addressof_result_type(DataDef *operand_type)
+{
+    if ( operand_type && operand_type->is_reference() )
+	if ( DataDefPTR *rp = operand_type->as_pointer_dd() )
+	    return getPointerType(rp->base_type);
+    return getPointerType(operand_type);
+}
+
 TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 {
     bool paren = false;
@@ -27077,7 +27091,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	// The CIR backend emits the literal as an N_COMPOUND_LITERAL value (an
 	// addressable lvalue), so wrap it — like any other lvalue — in
 	// TokenAddrExpr to yield N_ADDR(compound), a pointer to the object.
-	DataDefPTR *aptr = getPointerType(compound->datadef());
+	DataDefPTR *aptr = addressof_result_type(compound->datadef());
 	return new TokenAddrExpr(compound, aptr);
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
@@ -27102,7 +27116,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
 		    fv->var.flags |= vfADDRTAKEN;
 	    }
-	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
@@ -27110,7 +27124,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    if ( tv->var.type && tv->var.type->is_function() )
 		return tv;
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = getPointerType(tv->var.type);
+	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&('" << flush;
@@ -27127,7 +27141,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
@@ -27140,13 +27154,13 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
 	{
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = getPointerType(tv->var.type);
+	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
@@ -27157,7 +27171,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
@@ -27165,7 +27179,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    if ( tv->var.type && tv->var.type->is_function() )
 		return tv;
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = getPointerType(tv->var.type);
+	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
@@ -27285,7 +27299,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( ns_var->type && ns_var->type->is_function() )
 	    return new TokenVar(*ns_var);
 	ns_var->flags |= vfADDRTAKEN;
-	DataDefPTR *aptr = getPointerType(ns_var->type);
+	DataDefPTR *aptr = addressof_result_type(ns_var->type);
 	return new TokenAddrOf(*ns_var, aptr);
     }
     Variable *avar = findVariable(aname);
@@ -27303,7 +27317,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    {
 		Variable *member = new Variable(aname, *mtype, 1, NULL, false);
 		TokenMember *tm = new TokenMember(*thisvar, *member, ofs);
-		DataDefPTR *aptr = getPointerType(mtype);
+		DataDefPTR *aptr = addressof_result_type(mtype);
 		return new TokenAddrExpr(tm, aptr);
 	    }
 	}
@@ -27322,7 +27336,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( avar->type && avar->type->is_function() )
 	return new TokenVar(*avar);
     avar->flags |= vfADDRTAKEN;
-    DataDefPTR *aptr = getPointerType(avar->type);
+    DataDefPTR *aptr = addressof_result_type(avar->type);
     return new TokenAddrOf(*avar, aptr);
 }
 

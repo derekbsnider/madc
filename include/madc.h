@@ -5427,6 +5427,9 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    // The type of '&x' from x's type: pointer-to-referent for a reference
+    // operand ([expr.unary.op]p3), else pointer-to-type.
+    DataDefPTR *addressof_result_type(DataDef *operand_type);
     DataDefREF *getReferenceType(DataDef *base);
     // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
     // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for
