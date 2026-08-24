@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Ctx `const char *` eval/expression bindings work under `[]` and
+  unary `*`** (the last eval feeder gap, KG
+  `eval_ctx_charptr_deref_undeclared`): a host-installed binding's plain
+  reads bake to a string literal, but the subscript and deref tokens
+  embed the variable and bypassed the fold — "undeclared identifier" at
+  c2mir check. One fold owner now (`CirBuilder::baked_cstr_constant`)
+  applied in all read shapes; `&binding` stays a loud error (host memory
+  has no module-referenceable address). Pinned by
+  `tests/testevalctxderef.mad`. With this and the return fix below, eval
+  bodies have NO idiom restrictions left.
 - **Computed carrier text now survives function returns** (the
   silent-empty eval-return gap, KG
   `eval_wrapper_value_return_silent_empty` — and it was never
@@ -46,8 +56,8 @@
   reference shape with empty stderr. Gated forever:
   `scripts/check-engine-app-purity.sh` (negative-controlled, fulltest).
   Known eval feeder gaps found by the tracer: var/c_str() returns from
-  eval bodies came back empty (silent) — FIXED above; ctx `const char*`
-  globals break under `[]`/`*` (still open, plan doc).
+  eval bodies came back empty (silent), and ctx `const char*` globals
+  broke under `[]`/`*` — both FIXED above.
 - **win64 rides MIR's lazy first-call gen interface again** (KG gap
   `mir_win64_lazy_gen_wrapper` CLOSED): TWO stock-upstream defects in
   the win64 lazy-wrapper machinery (`third_party/mir/mir-x86_64.c`),

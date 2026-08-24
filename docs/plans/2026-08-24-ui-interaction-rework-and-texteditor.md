@@ -219,11 +219,17 @@ The owner's Rule #7 ruling merged R1 and R3 into one wave:
    `.expect_quiet`) and `tests/testcstrreturn.mad` (the plain-function
    twin). Eval bodies may now return `a.c_str()`, a bare `var`, and use
    `+=` — the "literals or format() only" idiom restriction is lifted.
-2. **LOUD (still open):** a ctx-installed `const char *` global breaks
-   under `[]` or unary `*` — c2mir check "undeclared identifier" (the
-   subscript path emits the global without its declaration). Reducer:
-   body `if ( !arg[0] ) ...`. Workaround: coerce via
-   `var a = format("{}", arg)`. KG: eval_ctx_charptr_deref_undeclared.
+2. **FIXED (same session as gap 1).** A ctx binding's plain reads FOLD
+   to a string literal (host memory has no module-referenceable symbol;
+   the binding is a read-only snapshot), but `TokenSubscript` and
+   `TokenDeref` embed the Variable in their own tokens and bypassed the
+   fold — the first non-folding use was the first undeclared reference.
+   One fold owner now: `CirBuilder::baked_cstr_constant`, applied in the
+   plain-read, subscript-base (`arg[0]` → `"text"[0]`), and deref
+   (`*arg` → `*"text"`) arms. `&arg` stays a loud undeclared-identifier
+   error (host memory has no address the module can name). Pinned by
+   `tests/testevalctxderef.mad` (`.expect_quiet`). ALL eval feeder gaps
+   are now closed — eval bodies have no idiom restrictions left.
 3. **RESOLVED by gap 1's fix:** `+=` accumulation inside eval bodies
    works (it was masked by the return gap); pinned by the `pluseq`
    shape in `tests/testevalreturn.mad`.
