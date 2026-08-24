@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-08-24, the Rule #7 eviction — interaction core +
+> **Current (2026-08-24, the eval/carrier text-return fix):** computed
+> carrier text survives function returns — `madarray_cstr` string kind
+> rings a COPY (the pre-L3 c_str contract, uniformly) and
+> `translate_return` coerces a carrier operand for char*-returning
+> functions through `object_cstr_arg`. Authoritative Linux fulltest
+> **1138 passed / 0 failed / 0 timed out / 9 skipped** (suite grew +2:
+> testevalreturn — all six eval-body return shapes incl. `+=`,
+> `.expect_quiet`; testcstrreturn — the plain-function twin); Colossal
+> Cave Adventure parity re-verified **3 fragments + 94 whole logs
+> byte-identical** (the ring-copy change preserves every prose byte);
+> all gates + ratchets green.
+>
+> **Previous (2026-08-24, the Rule #7 eviction — interaction core +
 > script-entity verbs, @67a901c7 on
 > feature/ui-interaction-rework-claude):** the merge-wave battery:
 > authoritative Linux fulltest **1136 passed / 0 failed / 0 timed out /

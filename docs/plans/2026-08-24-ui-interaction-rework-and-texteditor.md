@@ -191,21 +191,42 @@ The owner's Rule #7 ruling merged R1 and R3 into one wave:
   the engine headers; `tests/testaffordances.mad` pins the affordance
   enumeration (player vs builder availability flip).
 
-**Eval feeder gaps discovered by the tracer (R3's probe purpose —
-banked, owed next):**
+**Eval feeder gaps discovered by the tracer (R3's probe purpose):**
 
-1. **SILENT:** an eval body returning a `var` or a `.c_str()` result
-   through the `char *` wrapper returns empty (a var return also warns
-   "incompatible pointer types"; a c_str() return is fully silent).
-   Reducer shape: `ui::bind_verb(w, "t", "var a = \"x\"; return
-   a.c_str();")` → act returns "". Workaround in the pilot bodies:
-   return only literals or `format(...)`.
-2. **LOUD:** a ctx-installed `const char *` global breaks under `[]` or
-   unary `*` — c2mir check "undeclared identifier" (the subscript path
-   emits the global without its declaration). Reducer: body `if (
-   !arg[0] ) ...`. Workaround: coerce via `var a = format("{}", arg)`.
-3. `+=` accumulation inside eval bodies is unproven (its probe was
-   masked by gap 1); the pilot bodies rebuild strings via `format`.
+1. **FIXED (2026-08-24, the session after the eviction).** The gap was
+   never eval-specific: ANY computed carrier text returned as `char *`
+   (a plain `const char *f() { var a = ...; return a.c_str(); }` too)
+   read freed memory — the value's cleanup dtor runs between the return
+   expression's evaluation and the caller/shim-side copy, so only
+   literal and ring text survived. Two language-wide fixes (an owning
+   `value` wrapper was probed and rejected: value-by-value returns are
+   L3, not yet implemented — `value f()` does not compile):
+   - `madarray_cstr` string kind now COPIES the payload into the
+     thread-local ring instead of lending the payload pointer — c_str()
+     on the carrier is uniformly the ring-lifetime text contract
+     (value-first.md's pre-L3 return convention; substr/format already
+     honored it). Deliberate, documented divergence from
+     std::string::c_str().
+   - `translate_return` lowers `return v;` (carrier operand,
+     char*-returning function) through `object_cstr_arg` — the one
+     class-to-cstr owner. Previously an incompatible struct return:
+     c2mir warning + garbage pointer. Scoped to the carrier; a
+     std::string operand keeps g++'s type error.
+   Also consolidated: `eval_body_wrapper_return_type` is the ONE owner
+   of the wrapper-type-per-form spelling (parser.cpp's typed
+   runtime-eval entries route through it, no more raw strings).
+   Pinned by `tests/testevalreturn.mad` (all six body-return shapes,
+   `.expect_quiet`) and `tests/testcstrreturn.mad` (the plain-function
+   twin). Eval bodies may now return `a.c_str()`, a bare `var`, and use
+   `+=` — the "literals or format() only" idiom restriction is lifted.
+2. **LOUD (still open):** a ctx-installed `const char *` global breaks
+   under `[]` or unary `*` — c2mir check "undeclared identifier" (the
+   subscript path emits the global without its declaration). Reducer:
+   body `if ( !arg[0] ) ...`. Workaround: coerce via
+   `var a = format("{}", arg)`. KG: eval_ctx_charptr_deref_undeclared.
+3. **RESOLVED by gap 1's fix:** `+=` accumulation inside eval bodies
+   works (it was masked by the return gap); pinned by the `pluseq`
+   shape in `tests/testevalreturn.mad`.
 
 ### Then: madcide (hub doc Phase 2, unchanged)
 

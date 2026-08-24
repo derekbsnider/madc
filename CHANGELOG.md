@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **Computed carrier text now survives function returns** (the
+  silent-empty eval-return gap, KG
+  `eval_wrapper_value_return_silent_empty` — and it was never
+  eval-specific: a plain `const char *f() { var a = ...; return
+  a.c_str(); }` read freed memory too, fully silently). Two
+  language-wide fixes: the value carrier's `c_str()`
+  (`madarray_cstr`) now COPIES string payloads into the thread-local
+  text ring instead of lending the payload pointer — c_str() is
+  uniformly the ring-lifetime text contract (value-first.md's pre-L3
+  return convention; deliberate divergence from `std::string::c_str()`)
+  — and `translate_return` lowers `return v;` (carrier operand,
+  char*-returning function) through `object_cstr_arg`, replacing an
+  incompatible-struct-return warning + garbage pointer. Eval bodies may
+  now return `a.c_str()`, a bare `var`, and accumulate with `+=` (the
+  "literals or format() only" restriction is lifted; `+=` was only
+  masked by the return gap). The eval wrapper-type spelling gained one
+  owner (`eval_body_wrapper_return_type`, external linkage — the typed
+  runtime-eval entries route through it). Pinned by
+  `tests/testevalreturn.mad` + `tests/testcstrreturn.mad` (both
+  `.expect_quiet`). Battery 1138/0/0/9; adventure parity 3 fragments +
+  94 whole logs byte-identical.
 - **The interaction engine is application-free (Rule #7 eviction) + the
   interaction core lands (Track 7.2 R1+R3)**: the Phase 1 compiled
   adventure catalog — game verbs, room projection, turn tick, and a
@@ -24,9 +45,9 @@
   a driver that composes its own look — transcripts reproduce the
   reference shape with empty stderr. Gated forever:
   `scripts/check-engine-app-purity.sh` (negative-controlled, fulltest).
-  Known eval feeder gaps found by the tracer (queued, plan doc):
-  var/c_str() returns from eval bodies come back empty (silent); ctx
-  `const char*` globals break under `[]`/`*`.
+  Known eval feeder gaps found by the tracer: var/c_str() returns from
+  eval bodies came back empty (silent) — FIXED above; ctx `const char*`
+  globals break under `[]`/`*` (still open, plan doc).
 - **win64 rides MIR's lazy first-call gen interface again** (KG gap
   `mir_win64_lazy_gen_wrapper` CLOSED): TWO stock-upstream defects in
   the win64 lazy-wrapper machinery (`third_party/mir/mir-x86_64.c`),
