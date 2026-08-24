@@ -12,6 +12,12 @@ and modern framework analysis.
 > library-surface only), per-BINARY capability resolution (now
 > per-connection), and hard C types in the semantic IR (now value-first:
 > content = `madc::value`, classification = registry-interned ids).
+>
+> **2026-08-24:** the interaction layer above the hub (Context, Affordance,
+> Invocation, Projection roles) is now defined by this doc's successor,
+> [universal-application-interaction-rendering-abstraction.md](universal-application-interaction-rendering-abstraction.md);
+> the execution plan is
+> [2026-08-24-ui-interaction-rework-and-texteditor.md](2026-08-24-ui-interaction-rework-and-texteditor.md).
 
 ## Vision
 

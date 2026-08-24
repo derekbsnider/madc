@@ -11,6 +11,14 @@ rendering to the whole lifetime of data. This doc merges the two tracks into
 one layered architecture and re-cuts the pilots.
 
 No implementation is planned from this doc until the owner approves it.
+(Approved; Track 7 Phase 1 — the adventure pilot — SHIPPED in v0.95.0.)
+
+> **2026-08-24:** the interaction layer above the hub is now defined by
+> [universal-application-interaction-rendering-abstraction.md](universal-application-interaction-rendering-abstraction.md)
+> (Context, Affordance, Invocation, Projection roles); this doc's Decided
+> items carry forward unchanged into it. Track 7.2 is re-cut by
+> [2026-08-24-ui-interaction-rework-and-texteditor.md](2026-08-24-ui-interaction-rework-and-texteditor.md):
+> interaction rework → `examples/texteditor` → madcide.
 
 ## The north star (the 1992 test)
 

@@ -1,0 +1,161 @@
+# UI Interaction Rework + examples/texteditor (Track 7.2 re-cut)
+
+**Status:** decided with owner 2026-08-24 — execution plan.
+**Design:** [universal-application-interaction-rendering-abstraction.md](universal-application-interaction-rendering-abstraction.md)
+(the owner's interaction-layer design, successor to
+[rendering-abstraction.md](rendering-abstraction.md)) over the APPROVED
+[2026-08-20-data-hub-projection-rendering.md](2026-08-20-data-hub-projection-rendering.md)
+(hub layers, demands, access model, pilots — all its Decided items carry
+forward unchanged).
+**Goal chain:** rework the shipped `ui::` surface to the interaction model
+(Context / Affordance / Invocation / Projection-as-data) → `examples/texteditor`
+→ **madcide** consumes the result (hub doc Phase 2).
+
+## The decided fork (owner review, 2026-08-24)
+
+**ONE action registry, TWO binding kinds — both first-class and permanent.**
+
+- **native** — compiled host functions (the shipped verb catalog's kind).
+- **script-entity** — a verb whose body is madc source stored as a code
+  entity, executed through the eval machinery.
+
+This is not an interim: every surveyed mature system converged on exactly
+this shape (Emacs C primitives + elisp through one `funcall` — "equal
+dignity"; Neovim's one `nvim_*` dispatch for C/Lua/RPC; VS Code's one
+command registry + when-clauses; Unreal's one reflection seam with hybrid
+authoring; even LPMud keeps driver primitives native). Hot,
+semantically-stable primitives stay native (`insert_text` at typing
+cadence); turn-cadence domain/mod logic is the script kind's home.
+
+**The anti-drift mechanism is a tracer, not a promise:** the texteditor
+phase gate REQUIRES at least one verb executing from madc source through
+the same registry and the same structured `Invocation` as the native kind.
+A seam with a single implementation is unproven by construction; the
+tracer proves it while adjustments are cheap.
+
+**The seam law (applies from R1):** every action binding — `execute` and
+availability `check` — takes a structured `Invocation` whose arguments are
+`madc::value`s and resource/entity handles, and returns a value-shaped
+result. No binding signature may accept or return anything a madc script
+could not. Violations are the shim this plan exists to prevent.
+
+## Standing constraints (inherited, not re-decided)
+
+- **Adventure oracle:** `examples/adventure` 94/94 whole logs + 3 fragments
+  byte-identical is the standing regression gate for EVERY phase. The
+  rework changes internals; observable behavior of the shipped surface
+  does not move without a decision.
+- **Hub write path:** all mutation through the hub's one write surface
+  (`scripts/check-hub-write-path.sh` gates it).
+- **Access:** keys + levels (hub doc Decided). `Availability`
+  (visible/enabled/reason) evaluates the SAME condition machinery that
+  gates projections; a frontend never grants permission (design doc
+  invariant 1/10).
+- **Renderer dependency model:** level 0 internal and dependency-free;
+  curses and richer renderers are optional dat-style providers.
+- **Value-first:** content = `madc::value`; classification = interned ids;
+  no std::string on the surface (dialect-lean).
+- **Thread contracts stated per addition** (thread-safety law). Phase 1
+  shape stays session-confined single-thread; contracts stay
+  concurrency-ready (hub doc demand 15).
+- **Testing:** targeted tests per change; battery once per merge wave;
+  texteditor tests ride the `.input`/`.argv`/`.expect` conventions.
+
+## Phases
+
+### R0 — doc merge (with this plan)
+
+Fold the hub doc's Decided items into the design doc; mark §15 Q2 settled
+(actions ARE first-class data; two binding kinds); record the fork
+resolution; chain the doc pointers. No code.
+
+### R1 — interaction core rework
+
+- `Context` (actor + focus + scope + mode + interaction state) as an
+  explicit object; the adventure driver's implicit context re-expressed
+  over it.
+- Structured `Invocation` {actor, action, target, arguments(values),
+  context}; `ui::act()` becomes interpret(text) → invoke(Invocation) —
+  same observable results.
+- `resolve_affordances(Context)` — application + actor + focus + related +
+  mode − prohibited; `Affordance` carries provider, bound args, label,
+  `Availability{visible, enabled, reason}`.
+- The seam law lands here: registry bindings take Invocation-of-values.
+- Gate: adventure oracle green; a probe test enumerates the affordances of
+  a known adventure context and matches a pinned list.
+
+### R2 — projection-as-data
+
+- `ProjectionNode` as a value tree: role (interned id), binding, content
+  (`value`), state, actions (AffordanceRefs), children, hints. Minimal
+  role vocabulary first: Group, Heading, Content, Value, Collection,
+  Choice, Status. (EditValue/EditText enter in R4.)
+- `render_look` / `render_inspect` re-cut as projections over the tree;
+  the level-0 renderer only typesets (headings, lists, wrap, numbered
+  Choice).
+- Gate: adventure oracle green; one Choice projection renders as a
+  numbered menu in line mode from the same tree a future TUI will read;
+  the projection tree itself is inspectable as hub data (demand 3).
+
+### R3 — script-entity binding kind (the tracer)
+
+- Code entity + the MINIMAL verb-execution context API (world/session/
+  actor handles + value args in, value result out).
+- ONE madc-source verb executes through the registry — same Invocation
+  path as native. Candidate: the texteditor's `filter_range` (or a
+  turn-cadence adventure verb if sequencing favors it).
+- This phase is also the probe of the eval substrate (B+A0+A + C.1
+  shipped): what remains of eval-track C / A0.2 that the tracer needs
+  surfaces HERE, while cheap.
+- Deliverable alongside: the script-verb sibling design section — code-
+  entity key-gating, re-entrancy policy (Phase-1: verbs do not re-enter
+  `ui::act`), thread contract, and the deferred full arc (script verbs in
+  stored worlds, moddable deployments).
+- Gate: the tracer verb runs; killing its code entity's key makes it
+  unavailable through the SAME availability machinery as native verbs.
+
+### R4 — examples/texteditor, line mode
+
+- Resources: `TextDocument` (path, buffer, modified, read_only) +
+  `EditorSession` (document, caret, selection, mode, search) — the
+  interaction-state category gets its home (caret/selection/mode are
+  session state, never domain, never presentation).
+- Buffer = piece-table component (Track 8.1 pulled forward, per the hub
+  doc's Phase-2 note).
+- Actions (native kind): insert_text, delete_range, replace_range,
+  move_caret, save, search, quit; `filter_range` as the script-shaped
+  verb (R3's tracer home if not already landed).
+- Frontend: the line-mode range editor (design doc §7.7) — level 0,
+  dependency-free, `.input`/`.expect` testable.
+- Gate: scripted line-editing transcripts against a pinned oracle; the
+  read-only / modified / selection affordance rules of design doc §7.3
+  exercised; adventure oracle green.
+
+### R5 — curses TUI provider
+
+- First level-1 renderer as an optional dat-style provider: layout,
+  focus, key input adapter, differential cell updates — all INSIDE the
+  provider; key-run coalescing into one semantic `insert_text` (§7.5).
+- Gate (= design doc success criteria 3 + 4 + the tracer clause): the TUI
+  editor and the line editor drive the SAME TextDocument actions with no
+  duplicated mutation logic; the same Choice projection renders numbered
+  in line mode and navigable in the TUI; ≥1 verb still executing from
+  madc source; adventure oracle green.
+
+### Then: madcide (hub doc Phase 2, unchanged)
+
+Buffers = texteditor machinery; diagnostics pane and outline = projections
+over live compiler data; keybinding/theme profiles as wants. Starts as a
+CONSUMER of R1–R5; its gate stays as written in the hub doc.
+
+## Deferred (seats held, per the hub doc)
+
+Levels 2–4 and web renderers; per-connection multi-client serving (7.3
+reactivity/diff wire); full script-verb arc (stored-world verbs, CRDT
+text); NLG prose; `render {}` syntax (design doc Phase 8 — only after the
+library surface stabilizes).
+
+## Open questions still open (design doc §15)
+
+Q1 (Actor trait vs wrapper — R1 decides by implementation), Q3–Q10 as
+written. Q2 is SETTLED (above). None block R1.
