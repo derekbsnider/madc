@@ -79,6 +79,21 @@ namespace ui {
     // projection selection IS the access decision.
     value &render_inspect(value &out, int64_t w, int64_t target);
 
+    // The SAME inspect projection as DATA: out = the value tree — sparse
+    // objects of { role, label, content, hints, states[], actions[],
+    // subject, children[] }, role/states/actions spelled by name. A gate
+    // refusal arrives as a status-role node, so tree consumers handle it
+    // with the same walk.
+    value &inspect_tree(value &out, int64_t w, int64_t target);
+
+    // Typeset a value-shaped projection tree (the inspect_tree schema;
+    // every field optional) through the level-0 renderer — applications
+    // compose projections as ordinary data and hand them here. A
+    // `choice` node's children render as a numbered menu in line mode;
+    // a selection-capable renderer reads the SAME tree. Typesetting
+    // only: the tree arrives already access-filtered.
+    value &render_tree(value &out, int64_t w, value &tree);
+
     // Verb dispatch: the driver sends the verb word and the rest of the
     // line; act interprets that into a structured invocation and
     // executes it through the registry (gating included). The result

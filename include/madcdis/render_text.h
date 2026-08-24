@@ -87,6 +87,26 @@ inline void render_text_node(const roles &r, const uinode &n,
     {
 	out += "\n";
     }
+    else if ( n.role == r.choice )
+    {
+	// A menu: the node's children ARE the options, numbered in line
+	// mode — the same tree a selection-capable renderer (TUI) presents
+	// as a movable choice. Each option's own children (detail under an
+	// option) still render generically.
+	if ( !label.empty() )
+	    out += label + "\n";
+	for ( size_t i = 0; i < n.children.size(); ++i )
+	{
+	    const uinode &opt = n.children[i];
+	    std::string text = prose::text_of(opt.content);
+	    if ( text.empty() )
+		text = prose::text_of(opt.label);
+	    out += "  " + std::to_string(i + 1) + ". " + text + "\n";
+	    for ( size_t k = 0; k < opt.children.size(); ++k )
+		render_text_node(r, opt.children[k], width, out);
+	}
+	return;	// options consumed — no generic child recursion
+    }
     else if ( n.role == r.list && !label.empty() )
     {
 	out += label + ":\n";

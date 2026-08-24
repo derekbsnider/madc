@@ -1,0 +1,51 @@
+// R2 gate probe: projection-as-data. (1) An application COMPOSES a choice
+// menu as an ordinary value tree and the level-0 renderer typesets it as a
+// numbered menu — the same tree a selection-capable renderer would read.
+// (2) The inspect projection is itself walkable hub data (inspect_tree), a
+// gate refusal included (it arrives as a status-role node), and rendering
+// that data (render_tree) reproduces render_inspect byte-for-byte.
+int main()
+{
+    long w = ui::world_open("tests/adventure.world");
+    if ( w == 0 )
+    {
+	printf("open failed\n");
+	return 1;
+    }
+
+    value menu;
+    menu["role"] = "choice";
+    menu["label"] = "Which way?";
+    value north;
+    north["role"] = "item";
+    north["content"] = "Go north";
+    value east;
+    east["role"] = "item";
+    east["content"] = "Go east";
+    var kids = {};
+    kids.push(north);
+    kids.push(east);
+    menu["children"] = kids;
+    value text;
+    ui::render_tree(text, w, menu);
+    printf("%s", text);
+
+    long hero = ui::entity_by_name(w, "hero");
+    value tree;
+    ui::inspect_tree(tree, w, hero);
+    printf("refused role=%s haskids=%s\n", tree["role"],
+	   tree["children"].is_null() ? "no" : "yes");
+
+    ui::session_grant(w, "builder");
+    ui::inspect_tree(tree, w, hero);
+    printf("granted role=%s haskids=%s\n", tree["role"],
+	   tree["children"].is_null() ? "no" : "yes");
+
+    value a;
+    ui::render_inspect(a, w, hero);
+    value b;
+    ui::render_tree(b, w, tree);
+    printf("roundtrip=%s\n", a == b ? "identical" : "DIVERGED");
+    ui::world_close(w);
+    return 0;
+}

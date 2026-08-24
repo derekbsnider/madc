@@ -376,11 +376,14 @@ bool has_key(int64_t w, int64_t actor, const char *key)
     return ui_creds(s, (entity_id)actor).has_key(s->w.intern(key));
 }
 
-madc::value &render_inspect(madc::value &out, int64_t w, int64_t target)
+// The ONE inspect projection both publics read: the generic entity
+// browser tree, or — when the world's `%require inspect` gate refuses
+// these credentials — a status-role node carrying the refusal prose.
+// Projection selection IS the access decision (projection is the
+// security boundary), so the refusal is itself a projection: text and
+// tree consumers handle it with the same machinery.
+static madc::hub::uinode ui_inspect_projection(ui_session *s, entity_id target)
 {
-    ui_session *s = ui_get(w);
-    if ( !s )
-	return ui_text_out(out, "");
     std::map<std::string, std::pair<requirement, std::string> >::iterator gate
 	= s->gates.find("inspect");
     if ( gate != s->gates.end() )
@@ -388,13 +391,56 @@ madc::value &render_inspect(madc::value &out, int64_t w, int64_t target)
 	credentials creds = s->session_creds;
 	s->w.close_over_implications(creds);
 	if ( !gate->second.first.satisfied_by(creds) )
-	    return ui_text_out(out, gate->second.second.empty()
-			       ? std::string("You may not inspect.\n")
-			       : gate->second.second + "\n");
+	{
+	    madc::hub::uinode refused(s->r.status);
+	    refused.content = madc::value(gate->second.second.empty()
+					  ? std::string("You may not inspect.")
+					  : gate->second.second);
+	    return refused;
+	}
     }
-    madc::hub::uinode tree = madc::hub::inspect(s->w, s->r,
-						(entity_id)target);
-    return ui_text_out(out, madc::hub::render_text(s->r, tree));
+    return madc::hub::inspect(s->w, s->r, target);
+}
+
+madc::value &render_inspect(madc::value &out, int64_t w, int64_t target)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return ui_text_out(out, "");
+    return ui_text_out(out, madc::hub::render_text(
+			s->r, ui_inspect_projection(s, (entity_id)target)));
+}
+
+// ui::inspect_tree — the SAME projection as hub DATA: the value tree
+// uinode_to_value spells (role/states/actions by NAME, subject as the
+// entity handle, children nested). Demand 3: the projection tree is
+// itself inspectable/walkable data, not a rendering side effect.
+madc::value &inspect_tree(madc::value &out, int64_t w, int64_t target)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+    {
+	out = madc::value::make_object();
+	return out;
+    }
+    out = madc::hub::uinode_to_value(
+		s->w, ui_inspect_projection(s, (entity_id)target));
+    return out;
+}
+
+// ui::render_tree — typeset ANY value-shaped projection tree (the
+// inspect_tree schema; every field optional) through the level-0
+// renderer: an application COMPOSES its projection as ordinary data and
+// hands it here (projection-as-data). Typesetting only — the tree
+// arrives already access-filtered, so this public makes no gate
+// decision; a `choice` node's children render as a numbered menu.
+madc::value &render_tree(madc::value &out, int64_t w, madc::value &tree)
+{
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return ui_text_out(out, "");
+    return ui_text_out(out, madc::hub::render_text(
+			s->r, madc::hub::value_to_uinode(s->w, tree)));
 }
 
 madc::value &act(madc::value &out, int64_t w, int64_t actor, const char *verb,
