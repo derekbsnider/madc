@@ -1,6 +1,24 @@
 # Test Status
 
-> **Current (2026-08-24, win64 lazy wrapper fixed + addressof-reference
+> **Current (2026-08-24, the Rule #7 eviction — interaction core +
+> script-entity verbs, @67a901c7 on
+> feature/ui-interaction-rework-claude):** the merge-wave battery:
+> authoritative Linux fulltest **1136 passed / 0 failed / 0 timed out /
+> 9 skipped** (suite grew +1: testaffordances, the pinned affordance
+> enumeration probe); ALL unit batteries green (test_verbs reworked to
+> the seam-law contract + the script binding kind, 37 asserts;
+> test_interaction NEW, 31 asserts); Colossal Cave Adventure parity
+> **3 fragments + 94 whole logs byte-identical**; NEW gate
+> `check-engine-app-purity.sh` OK (negative-controlled) beside
+> `check-hub-write-path.sh`; warning/tsubst/trailer ratchets green.
+> The pilot transcripts (testadventure, testadventurebuilder) run
+> entirely on madc-SOURCE verbs (`tests/adventure_verbs/*.madv`)
+> through the generic registry with EMPTY stderr, and an EXE-lane spot
+> check (`bin/madc -o` of testadventure) reproduces the full transcript
+> natively — runtime eval works under AOT. `include/madcdis/adventure.h`
+> is deleted; the engine ships zero verbs.
+>
+> **Previous (2026-08-24, win64 lazy wrapper fixed + addressof-reference
 > typing):** the merge-wave battery at @f626e7b3 content: authoritative
 > Linux fulltest **1135 passed / 0 failed / 0 timed out / 9 skipped**;
 > EXE **1092/0**, OBJ **1092/0** (of 1135 JIT-passing); release, packed

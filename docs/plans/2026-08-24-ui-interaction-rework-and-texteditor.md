@@ -1,6 +1,14 @@
 # UI Interaction Rework + examples/texteditor (Track 7.2 re-cut)
 
 **Status:** decided with owner 2026-08-24 — execution plan.
+**2026-08-24 (later, owner-directed): R1+R3 MERGED AND EXECUTED as THE
+EVICTION** — see "R1+R3 as executed" below. The owner found the Phase 1
+compiled adventure catalog living in `include/madcdis/adventure.h` and
+hard-bound by `src/ns_ui.cpp` — a Rule #7 violation shipped as "pilot
+reference code" with a migration IOU. Ruling: fix ASAP, eviction not
+relocation. The engine now ships ZERO verbs; the pilot game is madc
+source; `scripts/check-engine-app-purity.sh` (negative-controlled, in
+fulltest) keeps it that way.
 **Design:** [universal-application-interaction-rendering-abstraction.md](universal-application-interaction-rendering-abstraction.md)
 (the owner's interaction-layer design, successor to
 [rendering-abstraction.md](rendering-abstraction.md)) over the APPROVED
@@ -141,6 +149,63 @@ resolution; chain the doc pointers. No code.
   duplicated mutation logic; the same Choice projection renders numbered
   in line mode and navigable in the TUI; ≥1 verb still executing from
   madc source; adventure oracle green.
+
+### R1+R3 as executed (2026-08-24, the eviction)
+
+The owner's Rule #7 ruling merged R1 and R3 into one wave:
+
+- **Interaction core (R1 as planned):** `madcdis/interaction.h` —
+  `interaction_context` (actor/focus/scope/mode/interaction_state,
+  built by `containment_context`), structured `invocation`
+  (actor/action/target/value-arguments/context), `availability`,
+  `affordance`; `verb_table` gained `availability_of()` (the keys+levels
+  evaluator, surfaced) and invocation dispatch; `resolve_affordances` =
+  registry actions + application gatherers − (mode prohibitions, seat
+  held). `ui::act` = interpret → invoke. Seam law throughout:
+  `action_env` (mutation context + credentials + host session handle) +
+  invocation-of-values → value-shaped result.
+- **Script-entity binding kind (R3's core, pulled forward):** the
+  registry stores SOURCE next to native fn pointers; execution delegates
+  to an injected `script_executor` (ns_ui injects the eval seam:
+  `madc::eval_string_ctx`, ctx = the invocation as typed globals —
+  w/actor/target = int64, arg/verb = const char*). `ui::bind_verb`
+  attaches bodies; `%verb` lines stay the gating DATA. Gating, refusal,
+  and availability are identical across binding kinds (unit-pinned).
+- **The eviction:** `include/madcdis/adventure.h` DELETED (catalog,
+  room_view, tick, noun-resolver, the register_catalog name ladder).
+  `ui::render_look`/`ui::turn_count` removed (application projections/
+  vocabulary). Generic replacements, vocabulary-as-data: `ui::links`
+  (rel as argument), `ui::resolve` (alias property as argument),
+  `ui::has_key` (the credential evaluator, surfaced). The `in`/`grants`
+  spellings remain as DOCUMENTED session-layer substrate conventions.
+- **The pilot is now the application it always claimed to be:**
+  `tests/adventure_verbs/*.madv` (eight madc-source verb bodies) +
+  `tests/adventure_bind.inc` + the re-cut driver composing its own look
+  from generic reads. Transcripts (`testadventure`,
+  `testadventurebuilder`) reproduce the reference shape with EMPTY
+  stderr — the tracer requirement is exceeded: every pilot verb is
+  script.
+- **Gates:** `check-engine-app-purity.sh` (canary vocabulary + no
+  engine-side verb registration + the header must not return; negative-
+  controlled) joined fulltest; `check-hub-write-path.sh` re-pointed at
+  the engine headers; `tests/testaffordances.mad` pins the affordance
+  enumeration (player vs builder availability flip).
+
+**Eval feeder gaps discovered by the tracer (R3's probe purpose —
+banked, owed next):**
+
+1. **SILENT:** an eval body returning a `var` or a `.c_str()` result
+   through the `char *` wrapper returns empty (a var return also warns
+   "incompatible pointer types"; a c_str() return is fully silent).
+   Reducer shape: `ui::bind_verb(w, "t", "var a = \"x\"; return
+   a.c_str();")` → act returns "". Workaround in the pilot bodies:
+   return only literals or `format(...)`.
+2. **LOUD:** a ctx-installed `const char *` global breaks under `[]` or
+   unary `*` — c2mir check "undeclared identifier" (the subscript path
+   emits the global without its declaration). Reducer: body `if (
+   !arg[0] ) ...`. Workaround: coerce via `var a = format("{}", arg)`.
+3. `+=` accumulation inside eval bodies is unproven (its probe was
+   masked by gap 1); the pilot bodies rebuild strings via `format`.
 
 ### Then: madcide (hub doc Phase 2, unchanged)
 

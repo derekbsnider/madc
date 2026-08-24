@@ -136,7 +136,7 @@ struct requirement
 struct entity
 {
     entity_id   id;
-    name_id     name;	// canonical spelling ("brass-lantern")
+    name_id     name;	// canonical spelling ("oil-lamp")
     madc::value bag;
 
     entity() : id(0), name(0) {}

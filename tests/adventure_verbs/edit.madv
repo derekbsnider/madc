@@ -1,0 +1,57 @@
+// adventure pilot verb body: edit <target-word> <prop> <value...> — the
+// builder's verb (gated by the world's `%verb edit key=builder` line).
+// Kinds: true/false and canonical integers infer; everything else is a
+// string to end of line.
+// Eval-context bindings: w/actor/target = int64, arg/verb = const char*.
+var words;
+php::explode(words, " ", arg);
+if ( words.count() < 3 )
+    return "edit needs: <prop> <value>";
+long t = ui::resolve(w, actor, words[0].c_str(), "noun");
+if ( t == 0 )
+    return "Edit what?";
+var prop = words[1];
+var rest = "";
+long i = 0;
+for ( value wv : words )
+{
+    if ( i >= 2 )
+    {
+        if ( i > 2 )
+            rest = format("{} ", rest);
+        rest = format("{}{}", rest, wv);
+    }
+    i = i + 1;
+}
+if ( rest == "true" )
+    ui::set(w, t, prop.c_str(), true);
+else if ( rest == "false" )
+    ui::set(w, t, prop.c_str(), false);
+else if ( rest == format("{}", php::intval(rest)) )
+    ui::set(w, t, prop.c_str(), php::intval(rest));
+else
+    ui::set(w, t, prop.c_str(), rest.c_str());
+long ws = ui::entity_by_name(w, "world-state");
+if ( ws )
+{
+    var tt;
+    ui::get(tt, w, ws, "turn");
+    long tn = tt.is_null() ? 0 : tt.as_integer();
+    ui::set(w, ws, "turn", tn + 1);
+}
+long lamp = ui::entity_by_name(w, "brass-lantern");
+if ( lamp )
+{
+    var lit;
+    ui::get(lit, w, lamp, "lit");
+    if ( !lit.is_null() && lit.as_boolean() )
+    {
+        var f;
+        ui::get(f, w, lamp, "fuel");
+        long fn = f.is_null() ? 0 : f.as_integer();
+        ui::set(w, lamp, "fuel", fn - 1);
+        if ( fn - 1 <= 0 )
+            ui::set(w, lamp, "lit", false);
+    }
+}
+return format("Set {}.", prop.c_str());

@@ -44,7 +44,6 @@ while ( ui::prompt(line, "> ") )
 | `world_open(path)` | Open a `%world` tagged file; session handle (>0), 0 on error |
 | `world_save(w, path)` | Save the session's world (authored + runtime state) |
 | `world_close(w)` | Release one session |
-| `turn_count(w)` | The world clock (`world-state` turn counter) |
 
 Sessions are independent; handles are never reused within a run. The
 save is an **export**: runtime entities (actors, singletons) ride the
@@ -59,6 +58,13 @@ same file as the authored world, and saving again is a fixed point.
 | `location(w, e)` | Containment target (0 = nowhere) |
 | `name_of(out, w, e)` | Canonical name (string kind; empty when absent) |
 | `contents(out, w, container)` | Array of the NAMES held by `container`, link order |
+| `links(out, w, from, rel)` | Array of `{key, target}` objects for the `rel` links from `from` |
+| `resolve(w, actor, word, alias_prop)` | Word → entity over the actor's scope; matches canonical name or the `alias_prop` bag property (0 = no match) |
+
+Relation and property names are **arguments** — application vocabulary
+is data, never engine spellings (Rule #7). Two substrate conventions
+are fixed by the session layer: containment is the `in` relation, and a
+carried entity confers a key via its `grants` bag property.
 
 ## Entity bags (keyed state)
 
@@ -91,24 +97,41 @@ checks in driver code.
 |----------|-------------|
 | `session_grant(w, key)` | Grant a role key to the session |
 | `session_level(w, domain, level)` | Set a per-domain level |
-| `render_look(out, w, actor)` | Level-0 look projection, rendered to text |
-| `render_inspect(out, w, target)` | Inspect projection — gated by the world's `%require inspect` |
+| `has_key(w, actor, key)` | Does the actor's EFFECTIVE credential set hold this key? |
+| `render_inspect(out, w, target)` | Generic entity inspector — gated by the world's `%require inspect` |
 
 Data-derived credentials (grants carried by entities) are added per
-actor at each use.
+actor at each use; `has_key` is how application verbs check
+entity-attached conditions (a locked door's `requires` key) against
+that same evaluator.
 
-## Verbs
+## Verbs and affordances
 
 | Function | Description |
 |----------|-------------|
-| `act(out, w, actor, verb, rest)` | Dispatch a verb; result text is player-facing |
+| `bind_verb(w, name, source)` | Attach a madc-source BODY to a verb (the script-entity binding kind) |
+| `act(out, w, actor, verb, rest)` | Interpret + dispatch one invocation; result text is player-facing |
+| `affordances(out, w, actor)` | Array of `{action, target, provider, label, visible, enabled, reason}` |
 
-The driver sends the verb word and the rest of the line; target
-resolution, gating, execution, and the turn tick happen host-side. An
-empty result means the verb is unknown (the driver phrases that). The
-Phase 1 session layer binds the compiled catalog named by the world
-file's `%verb` lines; pluggable catalogs and stored views arrive with
-later phases.
+**The engine ships zero verbs** (Rule #7). A world's `%verb` lines
+DECLARE actions and their gating (keys/levels/refusal — data); the
+application attaches bodies as madc source via `bind_verb`. A body is
+compiled as an eval unit per invocation with the invocation's fields as
+top-level names — `w` (session handle), `actor`, `target` (entity
+ids), `arg` (the raw argument text, `const char *`), `verb` (the
+action's spelling) — and returns the player-facing text. Bodies run
+inside `ui::act`: they must not re-enter `act` and must not open or
+close worlds. An empty `act` result means the verb is unknown (the
+driver phrases that).
+
+`affordances` enumerates what the actor can presently do, each entry
+carrying its truthful visible/enabled/reason state from the SAME
+keys+levels evaluator that gates execution — a frontend may hide or
+disable from this, it never grants.
+
+The pilot application (`tests/adventure_driver.inc` +
+`tests/adventure_verbs/*.madv`) is the worked example: the whole game
+is madc source bound through this surface.
 
 ## Thread contract
 

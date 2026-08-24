@@ -52,7 +52,7 @@ inline std::string text_of(const madc::value &v)
     }
 }
 
-// "a lantern" / "an apple" — the indefinite-article heuristic (initial
+// "a table" / "an apple" — the indefinite-article heuristic (initial
 // vowel letter). Deliberately simple; a phrasing template on the entity
 // overrides it where English is weirder than a heuristic.
 inline std::string article(const std::string &noun)
@@ -72,7 +72,7 @@ inline const std::string &plural(long n, const std::string &one,
     return n == 1 ? one : many;
 }
 
-// "a lantern, a key and an apple" — enumeration with a chosen conjunction
+// "a lamp, a key and an apple" — enumeration with a chosen conjunction
 // (MUD style: no Oxford comma). Empty list -> empty string.
 inline std::string enumerate(const std::vector<std::string> &items,
 			     const std::string &conjunction = "and")

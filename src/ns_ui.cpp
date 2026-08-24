@@ -1,23 +1,38 @@
 ///////////////////////////////////////////////////////////////////////////
 //								       //
-// madc ui:: namespace — the data-hub projection surface	       //
-// (Track 7 Phase 1, S4b)					       //
+// madc ui:: namespace — the GENERIC interaction/session surface      //
+// (Track 7.2 R1)						       //
 //								       //
 // The namespace ui functions below are the single real	       //
 // implementations behind the embedded <ns_ui> declarations; scripts  //
-// resolve them mangled-direct (cpp-first-api.md). The Phase 1	       //
-// session layer is deliberately bound to the pilot's adventure       //
-// catalog (madcdis/adventure.h): it proves the seams — %verb data    //
-// binding compiled handlers, projections as the security boundary,   //
-// save-is-export — and generalizes into pluggable catalogs and       //
-// stored views in later phases.				       //
+// resolve them mangled-direct (cpp-first-api.md).		       //
+//								       //
+// RULE #7 GOVERNS THIS FILE: no application vocabulary, no compiled   //
+// application verbs, no application projections. Applications supply //
+// their verbs as DATA (%verb declarations gate; ui::bind_verb	       //
+// attaches madc-source bodies — the script-entity binding kind) and   //
+// their vocabulary as ARGUMENTS (relation and property names are      //
+// parameters of the generic reads below). The engine ships ZERO       //
+// verbs. The one-time eviction of the Phase 1 compiled pilot catalog  //
+// is gated by scripts/check-engine-app-purity.sh.		       //
+//								       //
+// Substrate conventions (documented data-model conventions of this    //
+// session layer, uniform across applications — the Rule #7 sense of   //
+// a filename convention, not per-application special-casing):	       //
+//   `in`     — the containment relation behind location/contents/     //
+//              move and the context/credential closures.	       //
+//   `grants` — the bag property through which a carried entity        //
+//              confers a key (the hub access model's data-derived     //
+//              credential contract).				       //
 //								       //
 // THREAD-SAFETY CONTRACT (.claude/rules/thread-safety.md): the       //
 // session registry and every world reached through it are confined   //
 // to one thread (the script's). The registry lives behind ONE	       //
 // accessor function — the seam that becomes per-engine-context       //
 // state in the F2 (programs-use-cores) arc without signature	       //
-// changes.							       //
+// changes. Script verb bodies run on that same thread, inside the    //
+// dispatching act(); they must not re-enter ui::act and must not     //
+// open or close worlds (the Phase 1 re-entrancy policy).	       //
 //								       //
 ///////////////////////////////////////////////////////////////////////////
 
@@ -32,11 +47,11 @@
 
 #include "libmadc/value.h"
 #include "madcdis/hub.h"
+#include "madcdis/interaction.h"
 #include "madcdis/verbs.h"
 #include "madcdis/projection.h"
 #include "madcdis/render_text.h"
 #include "madcdis/world_text.h"
-#include "madcdis/adventure.h"
 
 using madc::hub::world;
 using madc::hub::world_doc;
@@ -47,8 +62,26 @@ using madc::hub::requirement;
 using madc::hub::verb_table;
 using madc::hub::verb_outcome;
 using madc::hub::verb_status;
+using madc::hub::interaction_context;
+using madc::hub::invocation;
+using madc::hub::action_env;
+using madc::hub::affordance;
+using madc::hub::affordance_set;
+using madc::hub::affordance_gatherer;
+
+// Host-side prototypes for engine services implemented elsewhere in this
+// binary (no host header declares them; scripts see them via <ns_madc>):
+// the ONE line-input owner and the runtime-eval seam (src/ns_madc.cpp).
+namespace madc {
+    bool getline(value &out);
+    value &eval_string_ctx(value &out, const char *source, value &ctx);
+}
 
 namespace {
+
+struct ui_session;
+bool ui_script_executor(action_env &env, const invocation &inv,
+			const std::string &source, madc::value &out);
 
 struct ui_session
 {
@@ -58,11 +91,16 @@ struct ui_session
     // %require gates by name: (requirement, refusal prose from the data).
     std::map<std::string, std::pair<requirement, std::string> > gates;
     credentials session_creds;
-    // The declarations the session owns, merged back into every save.
+    // The declarations the session owns: gating data for bind_verb and
+    // the %verb/%require lines merged back into every save.
     std::vector<world_doc::verb_decl> verb_decls;
     std::vector<world_doc::verb_decl> require_decls;
 
-    ui_session() { r = madc::hub::roles::standard(w); }
+    ui_session()
+    {
+	r = madc::hub::roles::standard(w);
+	verbs.set_script_executor(ui_script_executor);
+    }
 };
 
 // The session registry: handle = slot index + 1; closed slots stay null so
@@ -82,11 +120,19 @@ ui_session *ui_get(int64_t handle)
     return s[(size_t)handle - 1];
 }
 
-// Per-use actor credentials: session grants + carried grants + closure.
+// Per-use actor credentials: session grants + carried grants + closure
+// (the `grants` bag-property convention, see the header comment).
 credentials ui_creds(ui_session *s, entity_id actor)
 {
     return s->w.credentials_for(actor, s->session_creds,
 				s->w.intern("in"), "grants");
+}
+
+// The actor's current interaction context: focus = the containing entity,
+// scope = carried + co-located + the focus (the resolution order).
+interaction_context ui_context(ui_session *s, entity_id actor)
+{
+    return madc::hub::containment_context(s->w, actor, s->w.intern("in"));
 }
 
 madc::value &ui_text_out(madc::value &out, const std::string &text)
@@ -95,11 +141,45 @@ madc::value &ui_text_out(madc::value &out, const std::string &text)
     return out;
 }
 
-} // namespace
+// interpret (design §5): raw driver text -> a structured invocation over
+// an explicit context. Interpretation here is generic — verb word plus
+// the raw argument line; semantic target binding is the application's
+// (its verb bodies resolve words with their own vocabulary, e.g. via
+// ui::resolve with their alias property).
+invocation ui_interpret(ui_session *s, entity_id actor, const char *verb,
+			const char *rest)
+{
+    invocation inv;
+    inv.context = ui_context(s, actor);
+    inv.actor = actor;
+    inv.action = s->w.intern(verb);
+    inv.arguments[madc::hub::arg_key(s->w)]
+	= madc::value(madc::hub::detail::wt_trim(rest ? rest : ""));
+    return inv;
+}
 
-// The ONE line-input owner (src/ns_madc.cpp); no host header declares it —
-// ui::prompt delegates reading to it rather than growing a second reader.
-namespace madc { bool getline(value &out); }
+// The script-entity executor (the eval seam injected into every session's
+// registry): the invocation arrives as the eval context — its fields are
+// top-level names in the body — and the body's returned text is the
+// value-shaped result. An eval failure prints its own diagnostic and
+// comes back empty; empty = failed (a verb that ran says something).
+bool ui_script_executor(action_env &env, const invocation &inv,
+			const std::string &source, madc::value &out)
+{
+    const world &w = env.mc.view();
+    const madc::value *arg = inv.argument(madc::hub::arg_key(w));
+    std::map<std::string, madc::value> c;
+    c["w"] = madc::value(env.session);
+    c["actor"] = madc::value((int64_t)inv.actor);
+    c["target"] = madc::value((int64_t)inv.target);
+    c["arg"] = arg ? *arg : madc::value(std::string());
+    c["verb"] = madc::value(std::string(w.spelling(inv.action)));
+    madc::value ctx = madc::value::make_object(c);
+    madc::eval_string_ctx(out, source.c_str(), ctx);
+    return out.is_string() && !out.as_string().empty();
+}
+
+} // namespace
 
 namespace ui {
 
@@ -180,15 +260,9 @@ int64_t world_open(const char *path)
 	delete s;
 	return 0;
     }
-    for ( size_t i = 0; i < doc.verbs.size(); ++i )
-	if ( !madc::hub::adventure::register_catalog(s->verbs, s->w,
-						     doc.verbs[i], err) )
-	{
-	    fprintf(stderr, "ui::world_open: %s: %%verb %s: %s\n", path,
-		    doc.verbs[i].name.c_str(), err.c_str());
-	    delete s;
-	    return 0;
-	}
+    // %verb lines are DECLARATIONS — name + gating data. Bodies arrive
+    // from the application via bind_verb; a declared verb with no bound
+    // body dispatches as unknown.
     for ( size_t i = 0; i < doc.requires_.size(); ++i )
     {
 	const world_doc::verb_decl &d = doc.requires_[i];
@@ -227,6 +301,27 @@ void world_close(int64_t w)
 	delete s[(size_t)w - 1];
 	s[(size_t)w - 1] = (ui_session *)0;
     }
+}
+
+// ui::bind_verb — attach a madc-source body (the script-entity binding
+// kind) to a verb name. Gating (keys/levels/refusal) comes from the
+// world's %verb declaration when one names this verb; an undeclared name
+// binds ungated. Binding order is enumeration order in ui::affordances.
+void bind_verb(int64_t w, const char *name, const char *source)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !name || !*name || !source )
+	return;
+    requirement req;
+    std::string refusal;
+    for ( size_t i = 0; i < s->verb_decls.size(); ++i )
+	if ( s->verb_decls[i].name == name )
+	{
+	    req = madc::hub::requirement_from_decl(s->verb_decls[i], s->w);
+	    refusal = s->verb_decls[i].refusal;
+	    break;
+	}
+    s->verbs.register_script_verb(s->w.intern(name), req, refusal, source);
 }
 
 int64_t entity_by_name(int64_t w, const char *name)
@@ -269,15 +364,16 @@ void session_level(int64_t w, const char *domain, int64_t level)
 	s->session_creds.set_level(s->w.intern(domain), (int32_t)level);
 }
 
-madc::value &render_look(madc::value &out, int64_t w, int64_t actor)
+// ui::has_key — the keys+levels evaluator, surfaced: does the actor's
+// effective credential set (session grants + carried grants + key
+// implications) hold this key? Entity-attached conditions in application
+// verbs check through here.
+bool has_key(int64_t w, int64_t actor, const char *key)
 {
     ui_session *s = ui_get(w);
-    if ( !s )
-	return ui_text_out(out, "");
-    credentials creds = ui_creds(s, (entity_id)actor);
-    madc::hub::uinode tree = madc::hub::adventure::room_view(
-	s->w, s->r, creds, (entity_id)actor);
-    return ui_text_out(out, madc::hub::render_text(s->r, tree));
+    if ( !s || !key || !*key )
+	return false;
+    return ui_creds(s, (entity_id)actor).has_key(s->w.intern(key));
 }
 
 madc::value &render_inspect(madc::value &out, int64_t w, int64_t target)
@@ -307,51 +403,128 @@ madc::value &act(madc::value &out, int64_t w, int64_t actor, const char *verb,
     ui_session *s = ui_get(w);
     if ( !s || !verb || !*verb )
 	return ui_text_out(out, "");
-    std::string rest_line = rest ? rest : "";
-    // First word of the rest may name the target; whatever remains is the
-    // handler's argument. An unresolved first word stays in the argument
-    // ("go north": north is a direction, not an entity).
-    std::string first = rest_line, remainder;
-    std::size_t sp = rest_line.find(' ');
-    if ( sp != std::string::npos )
-    {
-	first = rest_line.substr(0, sp);
-	remainder = madc::hub::detail::wt_trim(rest_line.substr(sp + 1));
-    }
+    // The universal cycle (design §5): interpret the physical text into a
+    // structured invocation, then validate + execute through the registry.
+    invocation inv = ui_interpret(s, (entity_id)actor, verb, rest);
     credentials creds = ui_creds(s, (entity_id)actor);
-    entity_id target = madc::hub::adventure::resolve(s->w, (entity_id)actor,
-						     first);
-    const std::string &arg = target != 0 ? remainder : rest_line;
-    verb_outcome r = s->verbs.invoke(s->w, creds, s->w.intern(verb),
-				     (entity_id)actor, target, arg);
+    verb_outcome r = s->verbs.invoke(s->w, creds, inv, w);
+    // Display coercion of the value-shaped content is projection-side
+    // (prose::text_of): strings verbatim, scalars natural, null empty.
+    std::string text = madc::hub::prose::text_of(r.content);
     switch ( r.status )
     {
 	case verb_status::unknown:
 	    return ui_text_out(out, "");
 	case verb_status::refused:
-	    return ui_text_out(out, r.message.empty()
+	    return ui_text_out(out, text.empty()
 			       ? std::string("You may not do that.")
-			       : r.message);
+			       : text);
 	case verb_status::ok:
-	    madc::hub::adventure::tick(s->w);
-	    return ui_text_out(out, r.message);
 	case verb_status::failed:
 	default:
-	    return ui_text_out(out, r.message);
+	    return ui_text_out(out, text);
     }
 }
 
-int64_t turn_count(int64_t w)
+// ui::affordances — enumerate what the actor can presently do: each
+// registered action with its truthful visible/enabled/reason state from
+// the same keys+levels evaluator that gates execution. Ids surface as
+// NAMES; an empty label defaults to the action's spelling.
+madc::value &affordances(madc::value &out, int64_t w, int64_t actor)
 {
+    out = madc::value::make_array();
     ui_session *s = ui_get(w);
     if ( !s )
-	return 0;
-    entity_id state = s->w.find("world-state");
-    return state ? madc::hub::adventure::bag_int(s->w.get(state), "turn", 0)
-		 : 0;
+	return out;
+    credentials creds = ui_creds(s, (entity_id)actor);
+    interaction_context ctx = ui_context(s, (entity_id)actor);
+    std::vector<affordance_gatherer> gatherers;	// application gatherers:
+						// a later, script-shaped seam
+    affordance_set set = madc::hub::resolve_affordances(s->w, s->verbs, creds,
+							ctx, gatherers);
+    for ( size_t i = 0; i < set.size(); ++i )
+    {
+	const affordance &a = set[i];
+	const madc::hub::entity *t = s->w.get(a.target);
+	const madc::hub::entity *p = s->w.get(a.provider);
+	std::map<std::string, madc::value> f;
+	std::string action = s->w.spelling(a.action);
+	f["action"] = madc::value(action);
+	f["target"] = madc::value(t ? std::string(s->w.spelling(t->name))
+				     : std::string());
+	f["provider"] = madc::value(p ? std::string(s->w.spelling(p->name))
+				      : std::string());
+	f["label"] = madc::value(a.label.empty() ? action : a.label);
+	f["visible"] = madc::value(a.avail.visible);
+	f["enabled"] = madc::value(a.avail.enabled);
+	f["reason"] = madc::value(a.avail.reason);
+	out.array().push_back(madc::value::make_object(f));
+    }
+    return out;
 }
 
-// ---- entity bag access (E2, the Adventure feeder wave) ---------------------
+// ---- generic graph/bag reads (relation and property names are DATA —
+// arguments, never engine spellings) ---------------------------------------
+
+// Keyed-link enumeration: out = array of {key, target} objects for the
+// `rel` links FROM `from`, in link order; key is "" for an unkeyed link,
+// target is the linked entity's canonical name.
+madc::value &links(madc::value &out, int64_t w, int64_t from, const char *rel)
+{
+    out = madc::value::make_array();
+    ui_session *s = ui_get(w);
+    if ( !s || !rel )
+	return out;
+    name_id r = s->w.intern(rel);
+    std::vector<madc::hub::link> ls = s->w.links_of((entity_id)from);
+    for ( size_t i = 0; i < ls.size(); ++i )
+    {
+	if ( ls[i].from != (entity_id)from || ls[i].rel != r )
+	    continue;
+	const madc::hub::entity *to = s->w.get(ls[i].to);
+	std::map<std::string, madc::value> f;
+	f["key"] = madc::value(ls[i].key != 0
+			       ? std::string(s->w.spelling(ls[i].key))
+			       : std::string());
+	f["target"] = madc::value(to ? std::string(s->w.spelling(to->name))
+				     : std::string());
+	out.array().push_back(madc::value::make_object(f));
+    }
+    return out;
+}
+
+// Word -> entity over the actor's current scope (carried, co-located,
+// focus — the interaction context's resolution order): a word matches an
+// entity's canonical name or its `alias_prop` bag property. The alias
+// property is the APPLICATION's vocabulary, passed as data. 0 = no match.
+int64_t resolve(int64_t w, int64_t actor, const char *word,
+		const char *alias_prop)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !word || !*word )
+	return 0;
+    interaction_context ctx = ui_context(s, (entity_id)actor);
+    for ( size_t i = 0; i < ctx.scope.size(); ++i )
+    {
+	const madc::hub::entity *e = s->w.get(ctx.scope[i]);
+	if ( !e )
+	    continue;
+	if ( std::string(word) == s->w.spelling(e->name) )
+	    return (int64_t)ctx.scope[i];
+	if ( alias_prop && *alias_prop && e->bag.is_object() )
+	{
+	    const std::map<std::string, madc::value> &m = e->bag.as_object();
+	    std::map<std::string, madc::value>::const_iterator it
+		= m.find(alias_prop);
+	    if ( it != m.end() && it->second.is_string()
+	      && it->second.as_string() == word )
+		return (int64_t)ctx.scope[i];
+	}
+    }
+    return 0;
+}
+
+// ---- entity bag access (E2) ------------------------------------------------
 // Reads copy OUT of the world and never vivify its bags; writes route
 // through the hub's mutation_context — the one write surface (G4).
 
