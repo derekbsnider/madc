@@ -779,7 +779,10 @@ void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_ad
     0x49, 0xba, 0,    0,    0,    0, 0, 0, 0, 0, /* movabs <hook_address>,%r10*/
     0xe9, 0,    0,    0,    0,                   /* 0x0: jmp rel32 */
   };
-  size_t call_func_offset = 2, ctx_offset = 12, hook_offset = 22, rel32_offset = 31;
+  /* Immediate offsets account for the two leading home-space spill
+     instructions (10 bytes) — patching at the spill-less offsets corrupts
+     the wrapper from byte 2 and leaves the hook/rel32 slots unpatched. */
+  size_t call_func_offset = 12, ctx_offset = 22, hook_offset = 32, rel32_offset = 41;
 #endif
   uint8_t *addr;
   VARR (uint8_t) * code;
