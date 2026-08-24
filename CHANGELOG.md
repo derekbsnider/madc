@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **win64 rides MIR's lazy first-call gen interface again** (KG gap
+  `mir_win64_lazy_gen_wrapper` CLOSED): the win64 arm of MIR's
+  `_MIR_get_wrapper_end` called the lazy-generation hook with RSP
+  always ≡ 8 (mod 16) — its alignment constant was `0x28`, not a
+  multiple of 16 — so the gcc-compiled generator faulted on its first
+  aligned SSE stack access (the v0.95.1 EXCEPTION_ACCESS_VIOLATION);
+  it also spilled xmm0-3 into the callee's 32-byte shadow space,
+  which the hook may legally clobber. Fixed in the thunk emitter
+  (`third_party/mir/mir-x86_64.c`): constant `0x40` (32B shadow + 32B
+  spill, call aligned for any entry alignment), spill moved to
+  `0x20..0x38(%rsp)`. Stock upstream code (upstream's "Align stack in
+  wrapper_end code." introduced both defects) — upstream-PR candidate,
+  owner review gates. The two v0.95.1 `#ifdef _WIN32` eager fallbacks
+  in `madc_cir.cpp` are deleted; linux/macos object code unchanged.
+
 ## [v0.95.2] — 2026-08-23
 
 The v0.95 line's darwin-lane conformance patch — and the tag the six
