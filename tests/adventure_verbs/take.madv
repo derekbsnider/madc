@@ -1,0 +1,36 @@
+// adventure pilot verb body: take <thing>.
+// Eval-context bindings: w/actor/target = int64, arg/verb = const char*.
+long t = ui::resolve(w, actor, arg, "noun");
+if ( t == 0 )
+    return "Take what?";
+if ( ui::location(w, t) == actor )
+    return "You already have it.";
+var p;
+ui::get(p, w, t, "portable");
+if ( p.is_null() || !p.as_boolean() )
+    return "You can't take that.";
+ui::move(w, t, actor);
+long ws = ui::entity_by_name(w, "world-state");
+if ( ws )
+{
+    var tt;
+    ui::get(tt, w, ws, "turn");
+    long tn = tt.is_null() ? 0 : tt.as_integer();
+    ui::set(w, ws, "turn", tn + 1);
+}
+long lamp = ui::entity_by_name(w, "brass-lantern");
+if ( lamp )
+{
+    var lit;
+    ui::get(lit, w, lamp, "lit");
+    if ( !lit.is_null() && lit.as_boolean() )
+    {
+        var f;
+        ui::get(f, w, lamp, "fuel");
+        long fn = f.is_null() ? 0 : f.as_integer();
+        ui::set(w, lamp, "fuel", fn - 1);
+        if ( fn - 1 <= 0 )
+            ui::set(w, lamp, "lit", false);
+    }
+}
+return "Taken.";

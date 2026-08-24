@@ -12,13 +12,13 @@
 // the renderer's problem, not the format's):
 //
 //   %world 1
-//   %entity twisty-passage
-//     title = Twisty Passage
-//     desc = You are in a maze of twisty little passages, all alike.
-//     fuel = 50            # integers and true/false infer their kind;
-//     lit = false          # anything else is a string to end of line
-//   %link brass-lantern in twisty-passage        # unkeyed (containment)
-//   %link twisty-passage exit dead-end north     # keyed (an exit)
+//   %entity storeroom
+//     title = Storeroom
+//     desc = Crates line the walls.
+//     count = 50           # integers and true/false infer their kind;
+//     sealed = false       # anything else is a string to end of line
+//   %link oil-lamp in storeroom                  # unkeyed (containment)
+//   %link storeroom exit loading-dock north      # keyed (an exit)
 //   %verb take
 //   %verb edit key=builder refusal=Only a builder may reshape the world.
 //   %require inspect key=builder refusal=Only a builder sees the bones.

@@ -1,0 +1,34 @@
+// R1 gate probe: enumerate the affordances of a known adventure context
+// and match a pinned list. Every registered action appears with its
+// truthful visible/enabled/reason state from the SAME keys+levels
+// evaluator that gates execution: as a plain player, `edit` is visible
+// but disabled with the registered refusal as the reason; after the
+// builder key is granted, the same enumeration shows it enabled.
+#include "adventure_bind.inc"
+
+void dump(long w, long hero, const char *tag)
+{
+    value affs;
+    ui::affordances(affs, w, hero);
+    for ( value a : affs )
+	printf("%s|%s|%s|%s|%s|%s|%s|%s\n", tag, a["action"], a["target"],
+	       a["provider"], a["label"], a["visible"], a["enabled"],
+	       a["reason"]);
+}
+
+int main()
+{
+    long w = ui::world_open("tests/adventure.world");
+    if ( w == 0 )
+    {
+	printf("open failed\n");
+	return 1;
+    }
+    bind_adventure_verbs(w);
+    long hero = ui::entity_by_name(w, "hero");
+    dump(w, hero, "p");
+    ui::session_grant(w, "builder");
+    dump(w, hero, "b");
+    ui::world_close(w);
+    return 0;
+}

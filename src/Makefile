@@ -931,6 +931,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/adventure_roundtrip_gate.sh
 	@cd .. && bash scripts/adventure_parity.sh
 	@cd .. && bash scripts/check-hub-write-path.sh
+	@cd .. && bash scripts/check-engine-app-purity.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh

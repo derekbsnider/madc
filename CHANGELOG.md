@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **The interaction engine is application-free (Rule #7 eviction) + the
+  interaction core lands (Track 7.2 R1+R3)**: the Phase 1 compiled
+  adventure catalog — game verbs, room projection, turn tick, and a
+  `decl.name == "go"` dispatch ladder living in
+  `include/madcdis/adventure.h` and hard-bound by `src/ns_ui.cpp` — is
+  DELETED, not relocated. The engine ships ZERO verbs. New interaction
+  core (`madcdis/interaction.h`): explicit `interaction_context`,
+  structured `invocation` (value arguments + entity handles — the seam
+  law), `availability`/`affordance`, `resolve_affordances`;
+  `ui::act` = interpret → invoke. ONE registry, TWO binding kinds:
+  native (compiled host fn) and **script-entity — a verb whose body is
+  madc SOURCE** (`ui::bind_verb`), executed through an injected eval
+  seam with identical gating/refusal/availability. New generic publics:
+  `ui::affordances` (truthful visible/enabled/reason from the same
+  keys+levels evaluator that gates execution), `ui::links`,
+  `ui::resolve`, `ui::has_key` — relation/property names are arguments,
+  never engine spellings. `ui::render_look`/`ui::turn_count` (application
+  vocabulary) removed. The pilot game is now genuinely an application:
+  eight madc-source verb bodies (`tests/adventure_verbs/*.madv`) +
+  a driver that composes its own look — transcripts reproduce the
+  reference shape with empty stderr. Gated forever:
+  `scripts/check-engine-app-purity.sh` (negative-controlled, fulltest).
+  Known eval feeder gaps found by the tracer (queued, plan doc):
+  var/c_str() returns from eval bodies come back empty (silent); ctx
+  `const char*` globals break under `[]`/`*`.
 - **win64 rides MIR's lazy first-call gen interface again** (KG gap
   `mir_win64_lazy_gen_wrapper` CLOSED): TWO stock-upstream defects in
   the win64 lazy-wrapper machinery (`third_party/mir/mir-x86_64.c`),

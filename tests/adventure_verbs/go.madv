@@ -1,0 +1,71 @@
+// adventure pilot verb body: go <direction> — a script-entity binding.
+// Eval-context bindings: w/actor/target = int64, arg/verb = const char*.
+// Body conventions (eval feeder gaps, banked 2026-08-24): coerce ctx text
+// through a var before tests (char* ctx globals break under [] and *);
+// return only literals or format(...) — never a var or c_str() result.
+var av = format("{}", arg);
+if ( av == "" )
+    return "Go where?";
+long room = ui::location(w, actor);
+var ls;
+ui::links(ls, w, room, "exit");
+long dest = 0;
+for ( value l : ls )
+{
+    if ( l["key"] == arg )
+        dest = ui::entity_by_name(w, l["target"].c_str());
+}
+if ( dest == 0 )
+    return "You can't go that way.";
+var here;
+ui::contents(here, w, room);
+for ( value hn : here )
+{
+    long h = ui::entity_by_name(w, hn.c_str());
+    var b;
+    ui::get(b, w, h, "blocks");
+    if ( b == arg )
+    {
+        var c;
+        ui::get(c, w, h, "closed");
+        if ( !c.is_null() && c.as_boolean() )
+        {
+            var m;
+            ui::get(m, w, h, "blocked_msg");
+            if ( m.is_null() )
+            {
+                var s;
+                ui::get(s, w, h, "short");
+                if ( s.is_null() )
+                    ui::name_of(s, w, h);
+                return format("{} bars the way.", php::ucfirst(s));
+            }
+            return format("{}", m);
+        }
+    }
+}
+ui::move(w, actor, dest);
+long ws = ui::entity_by_name(w, "world-state");
+if ( ws )
+{
+    var t;
+    ui::get(t, w, ws, "turn");
+    long tn = t.is_null() ? 0 : t.as_integer();
+    ui::set(w, ws, "turn", tn + 1);
+}
+long lamp = ui::entity_by_name(w, "brass-lantern");
+if ( lamp )
+{
+    var lit;
+    ui::get(lit, w, lamp, "lit");
+    if ( !lit.is_null() && lit.as_boolean() )
+    {
+        var f;
+        ui::get(f, w, lamp, "fuel");
+        long fn = f.is_null() ? 0 : f.as_integer();
+        ui::set(w, lamp, "fuel", fn - 1);
+        if ( fn - 1 <= 0 )
+            ui::set(w, lamp, "lit", false);
+    }
+}
+return format("You go {}.", arg);

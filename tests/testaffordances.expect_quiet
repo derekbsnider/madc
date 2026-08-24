@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (script verbs bind and
+enumerate diagnostics-clean).

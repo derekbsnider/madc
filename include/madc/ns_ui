@@ -1,7 +1,8 @@
-// madc embedded <ns_ui> — the data-hub projection surface (Track 7
-// Phase 1). Declaration-only: the ui:: publics below resolve
-// mangled-direct (Itanium symbols) to the real namespace ui
-// implementations in the host, src/ns_ui.cpp (cpp-first-api.md).
+// madc embedded <ns_ui> — the generic interaction/session surface
+// (Track 7 Phase 1; reworked in Track 7.2 R1). Declaration-only: the
+// ui:: publics below resolve mangled-direct (Itanium symbols) to the
+// real namespace ui implementations in the host, src/ns_ui.cpp
+// (cpp-first-api.md).
 //
 // VALUE-FIRST: typed in madc's `value` carrier, int64_t handles, and
 // const char* — this header deliberately includes nothing. Rendered
@@ -9,11 +10,16 @@
 // parameters (the <ns_madc> convention; value-by-value returns are a
 // standing carrier open).
 //
-// Phase 1 surface: handle-based world sessions over the tagged world
-// format, session credentials (keys + per-domain levels), level-0
-// projections, and verb dispatch. The Phase 1 session layer binds the
-// compiled adventure catalog named by the world file's %verb lines;
-// pluggable catalogs and stored views arrive with later phases.
+// GENERIC BY LAW (Rule #7): the engine ships no verbs and no
+// application vocabulary. A world's %verb lines DECLARE actions and
+// their gating (keys/levels/refusal — data); the application attaches
+// verb BODIES as madc source via bind_verb (the script-entity binding
+// kind — bodies execute through the same registry, gating, and
+// structured invocation as native host bindings). Relation and property
+// names in the graph reads below are arguments. Two substrate
+// conventions are fixed by this session layer and documented here:
+// containment is the `in` relation; a carried entity confers a key via
+// its `grants` bag property.
 
 namespace ui {
     // ---- interaction (the prompt handler) ------------------------------
@@ -33,6 +39,17 @@ namespace ui {
     bool    world_save(int64_t w, const char *path);
     void    world_close(int64_t w);
 
+    // Attach a madc-source BODY to a verb name (the script-entity
+    // binding kind). Gating comes from the world's %verb declaration of
+    // the same name when present; an undeclared name binds ungated. The
+    // body is compiled as an eval unit per invocation with the
+    // invocation's fields as top-level names — `w` (session handle),
+    // `actor`, `target` (entity ids), `arg` (the raw argument text),
+    // `verb` (the action's spelling) — and returns the player-facing
+    // text. Bodies run inside ui::act: they must not re-enter act and
+    // must not open or close worlds (Phase 1 re-entrancy policy).
+    void bind_verb(int64_t w, const char *name, const char *source);
+
     // Entity lookup by canonical name (0 = absent).
     int64_t entity_by_name(int64_t w, const char *name);
 
@@ -51,21 +68,45 @@ namespace ui {
     void session_grant(int64_t w, const char *key);
     void session_level(int64_t w, const char *domain, int64_t level);
 
-    // Level-0 projections, rendered to text in a string-kind value.
-    // render_inspect is gated by the world's `%require inspect` line —
+    // The keys+levels evaluator, surfaced: does the actor's EFFECTIVE
+    // credential set (session grants + carried grants + implications)
+    // hold this key? Entity-attached conditions in application verbs
+    // check through here.
+    bool has_key(int64_t w, int64_t actor, const char *key);
+
+    // The generic entity inspector projection, rendered to text in a
+    // string-kind value. Gated by the world's `%require inspect` line —
     // projection selection IS the access decision.
-    value &render_look(value &out, int64_t w, int64_t actor);
     value &render_inspect(value &out, int64_t w, int64_t target);
 
     // Verb dispatch: the driver sends the verb word and the rest of the
-    // line; target resolution, gating, execution, and the turn tick
-    // happen host-side. The result text is player-facing; an empty
-    // result means the verb is unknown (the driver phrases that).
+    // line; act interprets that into a structured invocation and
+    // executes it through the registry (gating included). The result
+    // text is player-facing; an empty result means the verb is unknown
+    // (the driver phrases that).
     value &act(value &out, int64_t w, int64_t actor, const char *verb,
 	       const char *rest);
 
-    // The world clock (the `world-state` turn counter; 0 when absent).
-    int64_t turn_count(int64_t w);
+    // Affordance enumeration for the actor's current context: out = an
+    // array of {action, target, provider, label, visible, enabled,
+    // reason} objects — every registered action with its truthful
+    // availability from the same keys+levels evaluator that gates
+    // execution. A frontend may hide or disable from this; it never
+    // grants.
+    value &affordances(value &out, int64_t w, int64_t actor);
+
+    // ---- generic graph reads (relation/property names are data) --------
+    // Keyed-link enumeration: out = array of {key, target} objects for
+    // the `rel` links FROM `from`, in link order (key "" when unkeyed;
+    // target = the linked entity's canonical name).
+    value &links(value &out, int64_t w, int64_t from, const char *rel);
+
+    // Word -> entity over the actor's current scope (carried,
+    // co-located, focus — the resolution order): matches the canonical
+    // name or the `alias_prop` bag property (the application's
+    // vocabulary, passed as data). 0 = no match.
+    int64_t resolve(int64_t w, int64_t actor, const char *word,
+		    const char *alias_prop);
 
     // ---- entity bag access (E2, the Adventure feeder wave) -------------
     // Reads copy OUT of the world and never vivify its bags; writes route

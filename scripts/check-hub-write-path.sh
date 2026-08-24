@@ -19,12 +19,13 @@ if [ -n "$hits" ]; then
     fail=1
 fi
 
-# Belt over the compiler's braces: the application catalog must never
-# mutate through its read view.
+# Belt over the compiler's braces: nothing in the engine headers may
+# mutate through the read view. (The compiled application catalog this
+# once watched was evicted in Track 7.2 R1 — see check-engine-app-purity.)
 hits=$(grep -nE 'view\(\)\.(link_add|link_remove|create)' \
-	    include/madcdis/adventure.h || true)
+	    include/madcdis/*.h || true)
 if [ -n "$hits" ]; then
-    echo "check-hub-write-path: mutation through view() in adventure.h:"
+    echo "check-hub-write-path: mutation through view() in an engine header:"
     echo "$hits"
     fail=1
 fi
