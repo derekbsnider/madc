@@ -21688,6 +21688,19 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			     : node1(N_ADDR, translate_expr(cm->right), tr);
 		expr = node2(N_COMMA, translate_expr(cm->left), rnode, tr);
 		expr_is_address = true;
+	} else if (m_cur_func_scalar_ret && m_cur_func_scalar_ret->is_cstr()
+		   && tr->returns && is_array_object(tr->returns->datadef())) {
+		// `return v;` from a char*-returning function where v is the
+		// VALUE CARRIER: lower through object_cstr_arg — the one
+		// class-to-cstr owner — the dialect's value->text coercion.
+		// Without this c2mir saw an incompatible struct return (a
+		// warning, then a garbage pointer — silent empty text). The
+		// borrow survives the frame: the carrier's c_str() is
+		// ring-lifetime text (value-first.md's pre-L3 text-return
+		// convention). Scoped to the carrier — a std::string operand
+		// stays the type error g++ gives; this is dialect coercion,
+		// not a class-wide one.
+		expr = object_cstr_arg(tr->returns);
 	} else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// Integer-_Complex return conversions (GNU ext, struct spine): a complex

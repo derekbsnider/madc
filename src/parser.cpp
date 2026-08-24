@@ -287,6 +287,10 @@ bool internal_program_runtime_eval_source(::Program &self,
 					  const std::string &display_name,
 					  const value *context = NULL,
 					  const char *wrapper_return_type = NULL);
+// ONE owner for the eval wrapper's return-type spelling per typed form
+// (madc_program.cpp, beside build_eval_body_wrapper_source). The typed
+// runtime-eval entries below must route through it — never a raw string.
+const char *eval_body_wrapper_return_type(program::native_type return_type);
 bool internal_program_runtime_eval_expression(::Program &self,
 					      const std::string &expression,
 					      value &result,
@@ -657,7 +661,8 @@ bool madc_runtime_eval_bool(void *source)
     madc::value resolved;
     bool out = false;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "bool") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL,
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::boolean)) )
 	return false;
     if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
 	return false;
@@ -675,7 +680,8 @@ int64_t madc_runtime_eval_int(void *source)
     madc::value resolved;
     int64_t out = 0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "int") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL,
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::integer)) )
 	return 0;
     if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
 	return 0;
@@ -693,7 +699,8 @@ double madc_runtime_eval_double(void *source)
     madc::value resolved;
     double out = 0.0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "double") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL,
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::real)) )
 	return 0.0;
     if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
 	return 0.0;
@@ -712,7 +719,8 @@ void *madc_runtime_eval_string(void *result, void *source)
 	return result;
 
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "char *") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL,
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::c_string)) )
 	return result;
     if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
 	return result;
@@ -752,7 +760,8 @@ bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
     madc::value resolved;
     bool out = false;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "bool") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx),
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::boolean)) )
     {
 	active->print_last_diagnostic(active->error());
 	return false;
@@ -773,7 +782,8 @@ int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
     madc::value resolved;
     int64_t out = 0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "int") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx),
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::integer)) )
     {
 	active->print_last_diagnostic(active->error());
 	return 0;
@@ -794,7 +804,8 @@ double madc_runtime_eval_double_ctx(void *source, void *ctx)
     madc::value resolved;
     double out = 0.0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "double") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx),
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::real)) )
     {
 	active->print_last_diagnostic(active->error());
 	return 0.0;
@@ -816,7 +827,8 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
 	return result;
 
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "char *") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx),
+				      madc::eval_body_wrapper_return_type(madc::program::native_type::c_string)) )
     {
 	active->print_last_diagnostic(active->error());
 	return result;

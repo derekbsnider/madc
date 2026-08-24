@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (the `return <value>;`
+coercion compiles clean — no incompatible-pointer warning).

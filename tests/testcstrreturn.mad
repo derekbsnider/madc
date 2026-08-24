@@ -1,0 +1,16 @@
+// The language-wide twin of the eval-return gap: a plain char*-returning
+// function whose text is computed in a local value carrier. `return
+// a.c_str();` borrows ring-lifetime text (madarray_cstr copies the payload
+// into the ring — a payload borrow died with the local's cleanup dtor and
+// read freed memory, silently). `return a;` lowers through the one
+// class-to-cstr owner (object_cstr_arg) in translate_return — previously an
+// incompatible struct return: a c2mir warning, then a garbage pointer.
+const char *by_cstr() { var a = "hello"; return a.c_str(); }
+const char *by_var()  { var a = "world"; return a; }
+
+int main()
+{
+    printf("by_cstr=[%s]\n", by_cstr());
+    printf("by_var=[%s]\n", by_var());
+    return 0;
+}

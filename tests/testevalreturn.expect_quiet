@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (no incompatible-return
+warnings, no eval diagnostics — the return shapes compile clean).

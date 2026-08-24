@@ -1066,24 +1066,6 @@ std::string build_eval_body_wrapper_source(const std::string &source,
     return wrapped.str();
 }
 
-const char *eval_body_wrapper_return_type(madc::program::native_type return_type)
-{
-    switch ( return_type )
-    {
-	case madc::program::native_type::boolean:
-	    return "bool";
-	case madc::program::native_type::integer:
-	    return "int";
-	case madc::program::native_type::real:
-	    return "double";
-	case madc::program::native_type::c_string:
-	    return "char *";
-	case madc::program::native_type::void_type:
-	    break;
-	    }
-    return NULL;
-}
-
 bool is_valid_expression_binding_name(const std::string &identifier)
 {
     if ( identifier.empty() )
@@ -2486,6 +2468,37 @@ bool install_runtime_eval_scope_globals(Program &pgm,
 
 
 } // namespace
+
+// ONE owner for the eval wrapper's return-type spelling per typed form
+// (build_eval_body_wrapper_source's partner). External linkage: the typed
+// runtime-eval entries in parser.cpp route through it too — never a raw
+// string at a call site.
+const char *eval_body_wrapper_return_type(madc::program::native_type return_type)
+{
+    switch ( return_type )
+    {
+	case madc::program::native_type::boolean:
+	    return "bool";
+	case madc::program::native_type::integer:
+	    return "int";
+	case madc::program::native_type::real:
+	    return "double";
+	case madc::program::native_type::c_string:
+	    // The body's text crosses the wrapper's frame boundary as a
+	    // BORROW: the carrier's c_str() (and the coercion the CIR builder
+	    // applies to `return <value>;` in a char*-returning function)
+	    // hand back RING-lifetime text — value-first.md's pre-L3 return
+	    // convention — which outlives the wrapper's locals. Their cleanup
+	    // dtors run before the marshalling shim copies the result, so a
+	    // payload borrow here read freed memory (the silent-empty
+	    // eval-return gap). An owning `value` wrapper awaits L3
+	    // (value-by-value returns are not implemented).
+	    return "char *";
+	case madc::program::native_type::void_type:
+	    break;
+	    }
+    return NULL;
+}
 
 // One host-callback registration as stored by program/engine impls. `entry`
 // is the address the trampoline's import resolves to (the deduced form's

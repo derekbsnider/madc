@@ -230,18 +230,28 @@ void *madarray_index_slot(void *ptr, int64_t idx)
 	return NULL;	// unreachable: __madc_throw_cstr does not return
     }
 
-// Text view of a value for C varargs (printf "%s") — the coercion the CIR
-// builder applies to a value argument in a variadic call. String kind
-// returns the value's own payload (stable, value-owned). Other kinds
-// render through the ONE value->text owner (ns_common::value_to_string)
-// into a thread-local ring, so several value args in one call keep
-// distinct buffers (the inet_ntoa model; a pointer stays valid until its
-// slot recycles). Container kinds render a diagnostic tag, never crash.
+// Text view of a value — the carrier's c_str() and the coercion the CIR
+// builder applies to a value in char*-consuming positions (varargs args,
+// char* returns). EVERY kind answers with RING-lifetime text (the
+// thread-local ring — the inet_ntoa model; a pointer stays valid until
+// its slot recycles): value-first.md's pre-L3 text-return convention.
+// String kind COPIES its payload into a slot — never the payload pointer
+// itself: a payload borrow dies with the value, so `return a.c_str();`
+// crossing a frame read freed memory (the silent-empty return gap; the
+// value's cleanup dtor runs before any caller-side copy). Deliberate,
+// documented divergence from std::string::c_str(). Other kinds render
+// through the ONE value->text owner (ns_common::value_to_string);
+// container kinds render a diagnostic tag, never crash. Several value
+// args in one call keep distinct slots.
 const char *madarray_cstr(void *ptr)
     {
 	const madc::value *v = (const madc::value *)ptr;
 	if (v->is_string())
-	    return (const char *)v->data();
+	{
+	    std::string &slot = ns_common::ring_slot();
+	    slot.assign((const char *)v->data(), v->size());
+	    return slot.c_str();
+	}
 	std::string &slot = ns_common::ring_slot();
 	if (v->is_null())
 	    slot.clear();
