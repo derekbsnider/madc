@@ -99,11 +99,42 @@ checks in driver code.
 | `session_level(w, domain, level)` | Set a per-domain level |
 | `has_key(w, actor, key)` | Does the actor's EFFECTIVE credential set hold this key? |
 | `render_inspect(out, w, target)` | Generic entity inspector — gated by the world's `%require inspect` |
+| `inspect_tree(out, w, target)` | The SAME inspect projection as walkable DATA (see below) |
+| `render_tree(out, w, tree)` | Typeset any value-shaped projection tree through the level-0 renderer |
 
 Data-derived credentials (grants carried by entities) are added per
 actor at each use; `has_key` is how application verbs check
 entity-attached conditions (a locked door's `requires` key) against
 that same evaluator.
+
+### Projection-as-data
+
+A projection is an ordinary value tree: sparse objects of
+`{ role, label, content, hints, states[], actions[], subject,
+children[] }`, with `role`/`states`/`actions` spelled by NAME and
+`subject` an entity handle. `inspect_tree` returns the inspector's tree
+in that shape (a gate refusal arrives as a `status`-role node — the same
+walk handles it), and `render_tree` typesets any such tree an
+application composes, so `render_tree(inspect_tree(...))` reproduces
+`render_inspect` byte-for-byte. Roles the level-0 renderer typesets:
+`heading`, `content`, `status`, `item`, `action`, `separator`, `list`
+(labeled), `choice` — a `choice` node's children are its OPTIONS,
+numbered in line mode; a selection-capable renderer reads the SAME tree.
+`group` and unknown roles are structure only.
+
+```c
+value menu;
+menu["role"] = "choice";
+menu["label"] = "Which way?";
+value north;
+north["role"] = "item";
+north["content"] = "Go north";
+var kids = {};
+kids.push(north);
+menu["children"] = kids;
+value text;
+ui::render_tree(text, w, menu);     // "Which way?\n  1. Go north\n"
+```
 
 ## Verbs and affordances
 

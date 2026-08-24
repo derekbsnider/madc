@@ -1,19 +1,24 @@
 # Test Status
 
-> **Current (2026-08-24, both eval feeder gaps closed):** computed
+> **Current (2026-08-24, eval gaps closed + Track 7.2 R2):** computed
 > carrier text survives function returns — `madarray_cstr` string kind
 > rings a COPY (the pre-L3 c_str contract, uniformly) and
 > `translate_return` coerces a carrier operand for char*-returning
-> functions through `object_cstr_arg` — and ctx `const char *` bindings
+> functions through `object_cstr_arg` — ctx `const char *` bindings
 > bake to literals in EVERY read shape (`baked_cstr_constant`, one fold
-> owner: plain read + subscript + deref). Authoritative Linux fulltest
-> **1139 passed / 0 failed / 0 timed out / 9 skipped** (suite grew +3:
+> owner: plain read + subscript + deref) — and R2 projection-as-data is
+> EXECUTED (`choice` role, uinode↔value bridges,
+> ui::inspect_tree/render_tree; test_projection at 67 asserts).
+> Authoritative Linux fulltest
+> **1140 passed / 0 failed / 0 timed out / 9 skipped** (suite grew +4:
 > testevalreturn — all six eval-body return shapes incl. `+=`;
 > testcstrreturn — the plain-function twin; testevalctxderef — ctx
-> bindings under `[]`/`*`; all `.expect_quiet`); Colossal Cave Adventure
-> parity re-verified **3 fragments + 94 whole logs byte-identical**
-> after the ring-copy change; all gates + ratchets green. Eval bodies
-> have NO idiom restrictions left.
+> bindings under `[]`/`*`; testuitree — the R2 gate: script-composed
+> choice tree → numbered menu, inspect_tree as walkable data,
+> render_tree∘inspect_tree ≡ render_inspect; all `.expect_quiet`);
+> Colossal Cave Adventure parity **3 fragments + 94 whole logs
+> byte-identical** in-battery; check-engine-app-purity OK; all gates +
+> ratchets green. Eval bodies have NO idiom restrictions left.
 >
 > **Previous (2026-08-24, the Rule #7 eviction — interaction core +
 > script-entity verbs, @67a901c7 on

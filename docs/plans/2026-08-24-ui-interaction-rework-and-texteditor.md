@@ -92,18 +92,35 @@ resolution; chain the doc pointers. No code.
 - Gate: adventure oracle green; a probe test enumerates the affordances of
   a known adventure context and matches a pinned list.
 
-### R2 — projection-as-data
+### R2 — projection-as-data — **EXECUTED (2026-08-24)**
 
-- `ProjectionNode` as a value tree: role (interned id), binding, content
-  (`value`), state, actions (AffordanceRefs), children, hints. Minimal
-  role vocabulary first: Group, Heading, Content, Value, Collection,
-  Choice, Status. (EditValue/EditText enter in R4.)
-- `render_look` / `render_inspect` re-cut as projections over the tree;
-  the level-0 renderer only typesets (headings, lists, wrap, numbered
-  Choice).
-- Gate: adventure oracle green; one Choice projection renders as a
-  numbered menu in line mode from the same tree a future TUI will read;
-  the projection tree itself is inspectable as hub data (demand 3).
+As-built (the eviction changed the ground: `render_look` is gone — the
+application composes its own look; `render_inspect` was ALREADY
+projection + typeset from Phase 1 S3, so R2's delta was the data form):
+
+- The value tree already existed as `uinode` (S3) — role/states as
+  interned ids, label/content/hints as `value`, actions, subject,
+  children. R2 adds the **`choice` role** (a menu: the node's children
+  are its OPTIONS) to the standard vocabulary and the numbered-menu arm
+  to the level-0 renderer (`render_text.h`) — options are consumed by
+  the menu; detail under an option still renders generically.
+- **The tree IS hub data now** (demand 3): `uinode_to_value` /
+  `value_to_uinode` (uinode.h) — sparse `{ role, label, content, hints,
+  states[], actions[], subject, children[] }` objects, names not ids;
+  the reader is tolerant (bare text = a content leaf; wrong-kind fields
+  skipped). Script surface: `ui::inspect_tree` (the inspect projection
+  as data; a gate refusal arrives as a status-role node) and
+  `ui::render_tree` (typeset ANY value-shaped tree an application
+  composes). One projection owner inside ns_ui
+  (`ui_inspect_projection`) feeds both render_inspect and inspect_tree.
+- Gate MET: `tests/testuitree.mad` — a script-composed choice tree
+  renders as a numbered menu; the refusal and granted inspect trees
+  walk as data; `render_tree(inspect_tree(...))` is byte-identical to
+  `render_inspect` (`roundtrip=identical`, `.expect_quiet`); unit
+  battery test_projection grew the choice + bridge/roundtrip cases
+  (67 asserts); adventure oracle green in the wave battery.
+- (Plan-name mapping: ProjectionNode = uinode; Collection ≈ list;
+  Value-role and EditValue/EditText enter in R4 as planned.)
 
 ### R3 — script-entity binding kind (the tracer)
 

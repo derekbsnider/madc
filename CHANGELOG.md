@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Projection-as-data (Track 7.2 R2)**: a projection tree is ordinary
+  hub data — sparse value objects of `{ role, label, content, hints,
+  states[], actions[], subject, children[] }` (names, not ids), bridged
+  both ways by `uinode_to_value` / `value_to_uinode`. New `choice` role:
+  a menu whose children are its OPTIONS — the level-0 renderer typesets
+  them as a numbered menu in line mode; a selection-capable renderer
+  reads the SAME tree. New publics `ui::inspect_tree` (the generic
+  inspector projection as walkable data; a gate refusal arrives as a
+  status-role node) and `ui::render_tree` (typeset any value-shaped
+  tree an application composes) — `render_tree(inspect_tree(...))`
+  reproduces `render_inspect` byte-for-byte. Pinned by
+  `tests/testuitree.mad` + test_projection's choice/bridge cases.
 - **Ctx `const char *` eval/expression bindings work under `[]` and
   unary `*`** (the last eval feeder gap, KG
   `eval_ctx_charptr_deref_undeclared`): a host-installed binding's plain
