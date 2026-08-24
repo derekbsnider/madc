@@ -1,6 +1,24 @@
 # Test Status
 
-> **Current (2026-08-23, v0.95.1 — the v0.95 binary-shipping patch):**
+> **Current (2026-08-24, win64 lazy wrapper fixed + addressof-reference
+> typing):** the merge-wave battery at @f626e7b3 content: authoritative
+> Linux fulltest **1135 passed / 0 failed / 0 timed out / 9 skipped**;
+> EXE **1092/0**, OBJ **1092/0** (of 1135 JIT-passing); release, packed
+> (**1135/0/0/9**) and headerless (**1108/0/0/36**) green; linux pack
+> gate at the **93/93** baseline with hard-zero load counters. Wine
+> packed suite on the LAZY-interface exe (both v0.95.1 eager guards
+> deleted): **1092 passed / 0 failed / 0 timed out / 52 skipped** —
+> green run 5; runs 1–4 each had 1–2 wine-console flake-class
+> singletons (seven distinct names, every one individually
+> rc=0-correct; distribution matches the eager era — evidence in KG gap
+> `wine_suite_flake_class`). MIR c2mir-gen-test AND c2mir-gen-test3
+> both **1143/2286/0 (exact baseline)** after the mir-x86_64.c edits.
+> Darwin packs: arm64 AND x86-64 both at **58** pack errors (six
+> `<filesystem>` overload refusals fixed at the `&reference` typing
+> origin; baseline lowered 64 → 58). Suite grew +1
+> (testaddrofrefoverload — the addressof-reference reducer).
+>
+> **Previous (2026-08-23, v0.95.1 — the v0.95 binary-shipping patch):**
 > the three-platform promotion gate's wine suite caught the v0.95.0
 > win64 `--project` regression (all six project tests:
 > EXCEPTION_ACCESS_VIOLATION at the first lazily generated call; MIR's

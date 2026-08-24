@@ -3,19 +3,35 @@
 ## [Unreleased]
 
 - **win64 rides MIR's lazy first-call gen interface again** (KG gap
-  `mir_win64_lazy_gen_wrapper` CLOSED): the win64 arm of MIR's
-  `_MIR_get_wrapper_end` called the lazy-generation hook with RSP
-  always ≡ 8 (mod 16) — its alignment constant was `0x28`, not a
-  multiple of 16 — so the gcc-compiled generator faulted on its first
-  aligned SSE stack access (the v0.95.1 EXCEPTION_ACCESS_VIOLATION);
-  it also spilled xmm0-3 into the callee's 32-byte shadow space,
-  which the hook may legally clobber. Fixed in the thunk emitter
-  (`third_party/mir/mir-x86_64.c`): constant `0x40` (32B shadow + 32B
-  spill, call aligned for any entry alignment), spill moved to
-  `0x20..0x38(%rsp)`. Stock upstream code (upstream's "Align stack in
-  wrapper_end code." introduced both defects) — upstream-PR candidate,
-  owner review gates. The two v0.95.1 `#ifdef _WIN32` eager fallbacks
-  in `madc_cir.cpp` are deleted; linux/macos object code unchanged.
+  `mir_win64_lazy_gen_wrapper` CLOSED): TWO stock-upstream defects in
+  the win64 lazy-wrapper machinery (`third_party/mir/mir-x86_64.c`),
+  both fixed at the thunk emitter. (1) **The actual v0.95.x crash**:
+  `_MIR_get_wrapper`'s win64 immediate offsets (2/12/22/31) describe
+  the pattern WITHOUT its two leading home-space spill instructions,
+  so `called_func`/`ctx`/`hook` were patched 10 bytes early — over the
+  spills and each other's slots — leaving every win64 wrapper corrupt
+  from byte 2; the first lazily generated call executed pointer bytes
+  as instructions (found by a scratch `MIR_DEBUG` thunk map + winedbg
+  byte dumps: every wrapper slot read `48 89 <heap ptr> 48 ba ...`).
+  Correct offsets: 12/22/32/41. (2) `_MIR_get_wrapper_end` called the
+  lazy-gen hook with RSP always ≡ 8 (mod 16) (`0x28` alignment
+  constant, not a multiple of 16) and spilled xmm0-3 into the callee's
+  32-byte shadow space — latent behind (1), fixed with `0x40` + spill
+  at `0x20..0x38(%rsp)`. Both upstream-PR candidates (owner review
+  gates). The two v0.95.1 `#ifdef _WIN32` eager fallbacks in
+  `madc_cir.cpp` are deleted; linux/macos object code unchanged.
+- **`&x` over a reference types as pointer-to-referent** (KG gap
+  `libcxx_fs_error_code_overload_shape` CLOSED): every
+  `parseAddressOfExpression` site computed `getPointerType(operand
+  type)`, one pointer level too deep for reference operands (`E& e` →
+  `&e` typed `E**`); codegen was already right, so single-candidate
+  calls worked while the six overloaded libc++ `<filesystem>` sets
+  (`__create_directory`/`__current_path`/`__last_write_time`, each
+  passing `&__ec` from an `error_code&` parameter) refused. ONE helper
+  (`Program::addressof_result_type`, [expr.unary.op]p3) now serves all
+  11 sites; reducer `tests/testaddrofrefoverload.mad` (g++/clang++
+  oracle); darwin pack baseline lowered 64 → 58 (both arches measured
+  at exactly 58).
 
 ## [v0.95.2] — 2026-08-23
 
