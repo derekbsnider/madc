@@ -1968,6 +1968,13 @@ TokenBase *madc_token_for_slot(uint32_t id);
 // the same value); pair with TokenBase::leading_trivia for layout.
 std::string madc_token_spelling(TokenBase *tb);
 
+// THE C-string-literal escape rule (defined in lexer.cpp): the cooked
+// bytes rendered as a double-quoted literal's BODY (no quotes) that
+// re-lexes/recompiles to the same bytes — canonical escapes, octal for
+// non-printables (octal caps at 3 digits; hex is maximal-munch). The
+// token-spelling owner and the C11/C++ renderers all read this one rule.
+std::string madc_c_escape_string(const char *s, size_t len);
+
 class TokenStream
 {
     // STEP 2: the flat arena + cursor. _buf is the contiguous token table;

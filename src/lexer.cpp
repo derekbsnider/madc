@@ -9130,35 +9130,10 @@ std::string madc_token_spelling(TokenBase *tb)
 	    {
 		// Re-escape the cooked value so the literal RE-LEXES to the
 		// same bytes (macro-arg re-lex, --dump-source round trips,
-		// the --emit=c++ render recompiles). Canonical escapes, like
-		// the char case below; octal for non-printables (octal
-		// escapes cap at 3 digits — hex is maximal-munch and would
-		// swallow following hex digits).
+		// the --emit=c++ render recompiles) — the ONE escape rule.
 		std::string sv = ti->spelling();
-		std::string out = "\"";
-		for ( size_t i = 0; i < sv.size(); ++i )
-		{
-		    unsigned char c = (unsigned char)sv[i];
-		    switch ( c )
-		    {
-			case '"':  out += "\\\""; break;
-			case '\\': out += "\\\\"; break;
-			case '\n': out += "\\n"; break;
-			case '\t': out += "\\t"; break;
-			case '\r': out += "\\r"; break;
-			default:
-			    if ( c >= 0x20 && c <= 0x7e )
-				out += (char)c;
-			    else
-			    {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\%03o", c);
-				out += buf;
-			    }
-		    }
-		}
-		out += "\"";
-		return out;
+		return "\"" + madc_c_escape_string(sv.data(), sv.size())
+		     + "\"";
 	    }
 	    return std::string();
 	case TokenType::ttVariable:
@@ -9198,6 +9173,38 @@ std::string madc_token_spelling(TokenBase *tb)
 	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
 	    return std::string();
     }
+}
+
+// THE C-string-literal escape rule (declared in madc.h; dupaudit family
+// c_string_literal_escape): the cooked bytes as a double-quoted literal's
+// BODY. Canonical escapes; octal for non-printables (octal caps at 3
+// digits — hex is maximal-munch and would swallow following hex digits).
+// The token-spelling owner above and cir_emit_c's N_STR case both read it.
+std::string madc_c_escape_string(const char *s, size_t len)
+{
+    std::string out;
+    for ( size_t i = 0; s && i < len; ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	switch ( c )
+	{
+	    case '"':  out += "\\\""; break;
+	    case '\\': out += "\\\\"; break;
+	    case '\n': out += "\\n"; break;
+	    case '\t': out += "\\t"; break;
+	    case '\r': out += "\\r"; break;
+	    default:
+		if ( c >= 0x20 && c <= 0x7e )
+		    out += (char)c;
+		else
+		{
+		    char buf[8];
+		    snprintf(buf, sizeof(buf), "\\%03o", c);
+		    out += buf;
+		}
+	}
+    }
+    return out;
 }
 
 // Reconstruct source text from the token stream (full-fidelity mode): each

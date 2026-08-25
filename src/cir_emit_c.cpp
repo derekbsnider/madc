@@ -563,25 +563,16 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		fputc(')', f);
 		break;
 	case N_STR: {
-		// String literal: emit a C double-quoted literal, escaping as needed.
-		// u.s.s holds the (interned) bytes; u.s.len includes the NUL terminator.
+		// String literal: a C double-quoted literal through THE one
+		// escape rule (madc_c_escape_string — dupaudit family
+		// c_string_literal_escape). u.s.s holds the (interned)
+		// bytes; u.s.len includes the NUL terminator.
 		const char *s = n->u.s.s;
 		size_t len = n->u.s.len;
 		if (len > 0 && s && s[len - 1] == '\0') len--;   // drop trailing NUL
 		fputc('"', f);
-		for (size_t i = 0; s && i < len; i++) {
-			unsigned char c = (unsigned char)s[i];
-			switch (c) {
-			case '"':  fputs("\\\"", f); break;
-			case '\\': fputs("\\\\", f); break;
-			case '\n': fputs("\\n", f); break;
-			case '\t': fputs("\\t", f); break;
-			case '\r': fputs("\\r", f); break;
-			default:
-				if (c < 0x20 || c >= 0x7f) fprintf(f, "\\%03o", c);
-				else fputc(c, f);
-			}
-		}
+		std::string esc = madc_c_escape_string(s, len);
+		fputs(esc.c_str(), f);
 		fputc('"', f);
 		break;
 	}
