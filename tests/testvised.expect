@@ -1,0 +1,24 @@
+editable=1
+after-insert=[Hello alpha
+] caret=6
+left->5
+backspace->4
+del->4
+down->14
+home->10
+end->14
+up->4
+home->0
+right->4
+cut-clip=[Hell] text=[alpha
+] caret=0
+end->5
+paste-caret=9 text=[alphaHell
+quit1-cont=1 msg=[Unsaved changes — w to save, q! to discard.]
+search-caret=10
+save-msg=[Wrote 15 bytes.]
+quit2-cont=0 msg=[Bye.]
+-- read-only --
+editable=0
+ro-msg=[Document is read-only.] size=15
+ro-save-msg=[Document is read-only.]

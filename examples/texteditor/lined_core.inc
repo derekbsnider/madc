@@ -40,21 +40,32 @@ void bind_lineed_verbs(long w)
 	ui::bind_check(w, LINEED_EDIT_VERBS[k], chk.c_str());
 }
 
-void run_session(const char *path, bool ro)
+// Create the document entity and load its file: the setup BOTH editors
+// share (lined's line mode and vised's TUI mode edit the same document
+// shape). 0 = the file could not be read.
+long setup_document(long w, const char *path, bool ro)
 {
-    long w = ui::world_new();
     long doc = ui::create(w, "document");
     value seed;
     if ( !php::file_get_contents(seed, path) )
-    {
-	printf("cannot read %s\n", path);
-	return;
-    }
+	return 0;
     ui::text_load(w, doc, seed.c_str());
     ui::set(w, doc, "path", path);
     ui::set(w, doc, "modified", false);
     if ( ro )
 	ui::set(w, doc, "read_only", true);
+    return doc;
+}
+
+void run_session(const char *path, bool ro)
+{
+    long w = ui::world_new();
+    long doc = setup_document(w, path, ro);
+    if ( doc == 0 )
+    {
+	printf("cannot read %s\n", path);
+	return;
+    }
     long es = ui::create(w, "editor-state");
     bind_lineed_verbs(w);
 
