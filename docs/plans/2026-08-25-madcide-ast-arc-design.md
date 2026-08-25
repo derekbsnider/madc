@@ -156,12 +156,51 @@ IDE session cache category (legitimate, kind-locked, run-path-refused).
   (check moves again). Buffer switch = handle switch; the world/bag
   model already carries per-entity text components.
 
-### View switching (the owner's "change the view of the current code")
+### View switching — an EDITOR-INHERENT capability (owner, second pass)
 
-- **First slice — read-only alternate views** of the buffer under the
-  handle's tree: ORIGINAL source (the buffer itself), MC11
-  (`--emit=mc11` exists), C11 (`--emit=c11` exists). A view is a
-  projection choice; edits happen in the original view only.
+**OWNER (2026-08-25, mid-brainstorm):** view switching is something the
+editor inherently handles — differentiating WHAT IS DISPLAYED from THE
+ACTUAL STORED FORMAT — because the same separation is what lets the
+editor edit non-plain-text documents (markdown, RTF, DOCX, PDF, …)
+while displaying mostly-standard text and HIDING formatting characters.
+
+The general mechanism is a **document LENS** between the stored text
+component and the edit node (the hub doc's lens get/put applied to
+documents):
+- display text = get(stored) — a projection, computed as DATA;
+- a coordinate MAP (display offset ↔ stored offset) rides with it;
+- an EDITABLE lens translates display-space edits back to stored-space
+  mutations (put); a read-only lens has no put.
+- The caret/selection TRUTH stays in STORED offsets on the bag,
+  projected through the map for display; the edit node grows optional
+  display-text + span-map hints; the renderer still never parses —
+  the lens computes, the renderer paints.
+
+Instances of the one seam:
+- **identity lens** — plain text; display == stored (today's editors;
+  the degenerate case, zero cost);
+- **code views** — original (identity, editable) / MC11 / C11 / C++
+  (rendered projections of the handle's tree; read-only first) — the
+  madcide case;
+- **formatted documents** — markdown displayed as mostly-plain text
+  with formatting characters CONCEALED and/or rendered as attributes
+  through the SAME span machinery as IDE-7; RTF/DOCX/PDF as future
+  CODECS behind the same seam (DOCX = zip+XML, RTF = text+control
+  words; PDF is the far end).
+
+Precedents: Bravo/Word's ORIGINAL piece table (formatting runs kept
+separate from text — our text component's own lineage); vim conceal /
+Emacs invisible-text properties; Typora/Obsidian live preview (display
+rendered, store markdown); ProseMirror replace-decorations; MPS
+projections. The recurring failure mode to design against: caret math
+across concealed ranges — which is exactly why the coordinate map is a
+first-class data structure, not per-view arithmetic.
+
+- **First slice — the view seam + read-only code views**: the
+  display/stored separation with the identity lens as the default, and
+  ORIGINAL / MC11 (`--emit=mc11` exists) / C11 (`--emit=c11` exists)
+  as the first non-identity consumers. Edits happen through editable
+  lenses only (the original view, in this slice).
 - **In this arc (OWNER 2026-08-25, mid-brainstorm): `--emit=c++`.**
   The C++ reverse-render target gets BUILT (the May 2026 Phase-5
   forward design: keyed on the `synth_from_origin` marker already on
@@ -189,8 +228,13 @@ IDE session cache category (legitimate, kind-locked, run-path-refused).
    tui_attr palette + SGR in the VT100 target + theme-as-data; madcide
    consumes spans as edit-node hints. Gates: span pins per language
    mode, pty colour smoke, testvised byte-identity (no colour bound).
-3. **AST-3**: read-only view switching (original / MC11 / C11) in
-   madcide. Gates: view-swap pins (tree comparison discipline).
+3. **AST-3**: THE VIEW SEAM — the editor-inherent display/stored
+   separation (document lens: get + coordinate map; put for editable
+   lenses; identity lens = today's behavior, byte-identical), with the
+   read-only code views (original / MC11 / C11) as its first
+   non-identity consumers in madcide. Gates: coordinate-map unit
+   battery (display↔stored round trips, concealed-range caret math),
+   view-swap pins, testvised/testlineed byte-identity (identity lens).
 4. **AST-4**: `--emit=c++` — the reverse-render C++ target (owner-
    required): synth_from_origin-aware emission from the retained
    high-level structure, wired into the `--emit=` enum and the madcide
@@ -204,8 +248,10 @@ IDE session cache category (legitimate, kind-locked, run-path-refused).
    save-state arc, whichever first).
 7. **Named seats, not this arc**: the save-state language feature
    (own design + thread-contract per owner law); `--emit=madc`
-   (follows `--emit=c++` on the same seam); incremental reparse; P3
-   polyglot input.
+   (follows `--emit=c++` on the same seam); the EDITABLE markdown
+   conceal-lens (the put direction's proof — first formatted-document
+   codec on the view seam); RTF/DOCX codecs (PDF = far end);
+   incremental reparse; P3 polyglot input.
 
 ## 4. Still open (owner's)
 
