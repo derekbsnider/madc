@@ -330,6 +330,7 @@ bool internal_program_parse_outline(int64_t handle, value &out);
 bool internal_program_parse_diagnostics(int64_t handle, value &out);
 bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
+bool internal_program_parse_spans(int64_t handle, value &out);
 int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path);
 bool internal_program_project_tus(int64_t handle, value &out);
@@ -995,6 +996,13 @@ void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
 {
     madc::value &out = *(madc::value *)result;
     madc::internal_program_parse_enclosing(handle, line, column, out);
+    return result;
+}
+
+void *madc_parse_spans(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_parse_spans(handle, out);
     return result;
 }
 
