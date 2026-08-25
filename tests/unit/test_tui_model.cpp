@@ -250,6 +250,56 @@ TEST_CASE("compose — long line shifts horizontally; selection highlights")
     CHECK(s.at(1, 9).attr == tui_attr::normal);
 }
 
+// One span row { s, e, c } for the hints["spans"] array.
+static madc::value span_row(long s, long e, const char *colour)
+{
+    std::map<std::string, madc::value> f;
+    f["s"] = madc::value((int64_t)s);
+    f["e"] = madc::value((int64_t)e);
+    f["c"] = madc::value(std::string(colour));
+    return madc::value::make_object(f);
+}
+
+TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip")
+{
+    // The name<->attr converter (both directions, one table).
+    tui_attr a;
+    CHECK(tui_attr_of("yellow", a));
+    CHECK(a == tui_attr::yellow);
+    CHECK(std::string(tui_attr_name(tui_attr::cyan)) == "cyan");
+    CHECK(!tui_attr_of("mauve", a));
+
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("int n = 42; // c"));
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)0);
+    h["sel_start"] = madc::value((int64_t)8);
+    h["sel_end"] = madc::value((int64_t)10);
+    std::vector<madc::value> rows;
+    rows.push_back(span_row(0, 3, "yellow"));	// "int"
+    rows.push_back(span_row(8, 10, "green"));	// "42" — under the selection
+    rows.push_back(span_row(12, 16, "cyan"));	// "// c"
+    rows.push_back(span_row(5, 2, "red"));	// end <= start: skipped
+    rows.push_back(span_row(4, 6, "mauve"));	// unknown colour: skipped
+    h["spans"] = madc::value::make_array(rows);
+    edit.hints = madc::value::make_object(h);
+    root.add(edit);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 4, 40);
+    CHECK(g.row_text(0) == "int n = 42; // c");
+    CHECK(g.at(0, 0).attr == tui_attr::yellow);
+    CHECK(g.at(0, 2).attr == tui_attr::yellow);
+    CHECK(g.at(0, 3).attr == tui_attr::normal);	// the space after "int"
+    CHECK(g.at(0, 4).attr == tui_attr::normal);	// both bad rows skipped
+    CHECK(g.at(0, 8).attr == tui_attr::reverse);	// selection WINS over green
+    CHECK(g.at(0, 9).attr == tui_attr::reverse);
+    CHECK(g.at(0, 12).attr == tui_attr::cyan);
+    CHECK(g.at(0, 15).attr == tui_attr::cyan);
+}
+
 TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
 {
     world w;

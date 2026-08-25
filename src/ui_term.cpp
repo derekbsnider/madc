@@ -221,6 +221,37 @@ public:
 	return true;
     }
 
+    // THE attr->SGR table (AST-2 palette). A colour SETS (\x1b[3Xm) and
+    // overrides a previous colour directly; reverse and colour do not
+    // clear each other, so crossing between them resets first. The
+    // normal<->reverse transitions keep their historical spellings
+    // (\x1b[7m / \x1b[0m) — the no-colour byte stream is unchanged.
+    static void emit_sgr(std::string &out, tui_attr from, tui_attr to)
+    {
+	if ( to == tui_attr::normal )
+	{
+	    out += "\x1b[0m";
+	    return;
+	}
+	bool from_colour = from != tui_attr::normal
+			&& from != tui_attr::reverse;
+	bool to_colour = to != tui_attr::reverse;
+	if ( (from == tui_attr::reverse && to_colour)
+	  || (from_colour && to == tui_attr::reverse) )
+	    out += "\x1b[0m";
+	switch ( to )
+	{
+	    case tui_attr::reverse: out += "\x1b[7m";  break;
+	    case tui_attr::red:	    out += "\x1b[31m"; break;
+	    case tui_attr::green:   out += "\x1b[32m"; break;
+	    case tui_attr::yellow:  out += "\x1b[33m"; break;
+	    case tui_attr::blue:    out += "\x1b[34m"; break;
+	    case tui_attr::magenta: out += "\x1b[35m"; break;
+	    case tui_attr::cyan:    out += "\x1b[36m"; break;
+	    case tui_attr::normal:  break;	// handled above
+	}
+    }
+
     virtual void paint(const tui_grid &prev, const tui_grid &next)
     {
 	if ( !_open || _suspended )
@@ -238,8 +269,7 @@ public:
 		const madc::hub::tui_cell &cell = next.at(r, c);
 		if ( cell.attr != cur )
 		{
-		    out += cell.attr == tui_attr::reverse ? "\x1b[7m"
-							  : "\x1b[0m";
+		    emit_sgr(out, cur, cell.attr);
 		    cur = cell.attr;
 		}
 		out += cell.ch;

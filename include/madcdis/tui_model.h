@@ -49,11 +49,53 @@ namespace madc {
 namespace hub {
 
 // ------------------------------------------------------------------ the grid
+// The render-style palette (AST-2): normal/reverse plus the six chromatic
+// VT100 base colours. Styles are the renderer's vocabulary — a THEME (app
+// data) maps classification names to colour names; tui_attr_of below is
+// the one name->attr converter at the value boundary; the VT100 target
+// owns attr->SGR.
 enum class tui_attr : unsigned char
 {
     normal = 0,
-    reverse = 1
+    reverse = 1,
+    red = 2,
+    green = 3,
+    yellow = 4,
+    blue = 5,
+    magenta = 6,
+    cyan = 7
 };
+
+// THE colour-name <-> attr converter (both directions, one table — the
+// tui_key_name discipline). False = unknown name.
+inline bool tui_attr_of(const std::string &name, tui_attr &out)
+{
+    if ( name == "normal" )	 { out = tui_attr::normal;  return true; }
+    if ( name == "reverse" )	 { out = tui_attr::reverse; return true; }
+    if ( name == "red" )	 { out = tui_attr::red;	    return true; }
+    if ( name == "green" )	 { out = tui_attr::green;   return true; }
+    if ( name == "yellow" )	 { out = tui_attr::yellow;  return true; }
+    if ( name == "blue" )	 { out = tui_attr::blue;    return true; }
+    if ( name == "magenta" )	 { out = tui_attr::magenta; return true; }
+    if ( name == "cyan" )	 { out = tui_attr::cyan;    return true; }
+    return false;
+}
+
+inline const char *tui_attr_name(tui_attr a)
+{
+    switch ( a )
+    {
+	case tui_attr::normal:	return "normal";
+	case tui_attr::reverse:	return "reverse";
+	case tui_attr::red:	return "red";
+	case tui_attr::green:	return "green";
+	case tui_attr::yellow:	return "yellow";
+	case tui_attr::blue:	return "blue";
+	case tui_attr::magenta:	return "magenta";
+	case tui_attr::cyan:	return "cyan";
+    }
+    return "normal";
+}
 
 struct tui_cell
 {
@@ -556,6 +598,16 @@ private:
 	explicit line_out(const std::string &t) : text(t) {}
     };
     // A flexible edit region parked between fixed lines.
+    // A document byte-range with a render style (AST-2 highlight spans):
+    // parsed from the edit node's hints["spans"] rows { s, e, c } —
+    // byte offsets + a colour NAME (tui_attr_of converts at the
+    // boundary; a malformed row is skipped — spans are presentation).
+    struct doc_span
+    {
+	long start, end;
+	tui_attr attr;
+	doc_span() : start(0), end(0), attr(tui_attr::normal) {}
+    };
     struct edit_slot
     {
 	size_t line_index;	// position in the fixed-line stream
@@ -563,6 +615,7 @@ private:
 	std::string text;	// the bound document text
 	long caret;		// byte offsets from the node's hints
 	long sel_start, sel_end;
+	std::vector<doc_span> spans;	// highlight spans (may be empty)
 	edit_slot() : line_index(0), slot(0), caret(0),
 		      sel_start(-1), sel_end(-1) {}
     };
@@ -673,6 +726,30 @@ private:
 	    e.caret = hint_of(n.hints, "caret", 0);
 	    e.sel_start = hint_of(n.hints, "sel_start", -1);
 	    e.sel_end = hint_of(n.hints, "sel_end", -1);
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator hi =
+		    ho.find("spans");
+		if ( hi != ho.end() && hi->second.is_array() )
+		    for ( const madc::value &row : hi->second.as_array() )
+		    {
+			if ( !row.is_object() )
+			    continue;
+			doc_span ds;
+			ds.start = hint_of(row, "s", -1);
+			ds.end = hint_of(row, "e", -1);
+			const std::map<std::string, madc::value> &ro =
+			    row.as_object();
+			std::map<std::string, madc::value>::const_iterator ci =
+			    ro.find("c");
+			if ( ds.start < 0 || ds.end <= ds.start
+			  || ci == ro.end() || !ci->second.is_string()
+			  || !tui_attr_of(ci->second.as_string(), ds.attr) )
+			    continue;
+			e.spans.push_back(ds);
+		    }
+	    }
 	    edits.push_back(e);
 	    focusable f;
 	    f.k = focusable::kind::edit;
@@ -694,6 +771,26 @@ private:
 	for ( size_t i = 0; i < l.spans.size(); ++i )
 	    _grid.fill_attr(row, l.spans[i].col, l.spans[i].len,
 			    l.spans[i].attr);
+    }
+
+    // THE byte-range-to-visible-row overlap rule (selection and highlight
+    // spans both paint through it): the [s0, e0) document range's overlap
+    // with the line [begin..end] shown at `row`, honoring the horizontal
+    // shift and the column clip.
+    void fill_range_overlap(size_t row, size_t begin, size_t end,
+			    size_t shift, size_t cols,
+			    long s0, long e0, tui_attr attr)
+    {
+	if ( s0 < 0 || e0 <= s0 )
+	    return;
+	size_t s = (size_t)s0 < begin ? begin : (size_t)s0;
+	size_t t = (size_t)e0 > end ? end : (size_t)e0;
+	if ( s < t && s - begin < shift + cols && t - begin > shift )
+	{
+	    size_t c0 = s - begin < shift ? 0 : s - begin - shift;
+	    size_t c1 = t - begin - shift;
+	    _grid.fill_attr(row, c0, c1 - c0, attr);
+	}
     }
 
     // Emit one edit region: a window of the document, scrolled to keep
@@ -738,20 +835,16 @@ private:
 	    std::string line = e.text.substr(begin, end - begin);
 	    if ( shift < line.size() )
 		_grid.put(top_row + k, 0, line.substr(shift, cols));
-	    // Selection highlight: this line's overlap with the range.
+	    // Highlight spans first, the selection LAST (it wins where
+	    // they overlap) — both are the one range-overlap rule below.
+	    for ( size_t si = 0; si < e.spans.size(); ++si )
+		fill_range_overlap(top_row + k, begin, end, shift, cols,
+				   e.spans[si].start, e.spans[si].end,
+				   e.spans[si].attr);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
-	    {
-		size_t s = (size_t)e.sel_start < begin ? begin
-						       : (size_t)e.sel_start;
-		size_t t = (size_t)e.sel_end > end ? end : (size_t)e.sel_end;
-		if ( s < t && s - begin < shift + cols && t - begin > shift )
-		{
-		    size_t c0 = s - begin < shift ? 0 : s - begin - shift;
-		    size_t c1 = t - begin - shift;
-		    _grid.fill_attr(top_row + k, c0, c1 - c0,
-				    tui_attr::reverse);
-		}
-	    }
+		fill_range_overlap(top_row + k, begin, end, shift, cols,
+				   e.sel_start, e.sel_end,
+				   tui_attr::reverse);
 	    if ( li == caret_line && e.slot == _focus )
 	    {
 		_grid.cursor_row = top_row + k;
