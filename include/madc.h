@@ -5316,13 +5316,25 @@ public:
     bool parse(TokenProgram *);
     // --- error-tolerant parse (slice A: panic recovery at the top-level
     //     statement loop; design doc §3.5). ---
-    // THE parse-error recording rule: append the diagnostic (set_error) and
-    // render it (print_last_diagnostic — mute-aware). Three consumers: the
-    // recovery arms (which then CONTINUE the loop), the terminal catch
-    // cluster, and parse_expression_unit's cluster (which return failure).
-    // Returns the diagnostic's index — the TokenError link target.
+    // THE record-and-render rule for front-end catch arms (lexer + parser):
+    // set_error + mute-aware render. Returns the diagnostic's index.
+    size_t record_frontend_error(DiagnosticPhase phase,
+				 const std::string &message,
+				 const char *file, int line, int column);
+    // The parser-phase convenience (token position, diagnostic_file_for).
+    // Consumers: the recovery arms (which then CONTINUE the loop), the
+    // terminal catch cluster, parse_expression_unit's cluster.
     size_t record_parse_error(const std::string &message,
 			      TokenBase *where, TokenProgram *tp);
+    // THE Throw-origin recording rule: message from Throw's buffer (e.what()
+    // fallback). Recording only — the render already happened
+    // (throwbuf::sync) or was captured (the mute). Guards stay at the call
+    // sites. Returns the diagnostic's index.
+    size_t record_throw_diagnostic(const std::exception &e,
+				   DiagnosticPhase phase,
+				   const char *file, int line, int column);
+    // The parser-phase convenience: position from Throw.token().
+    size_t record_throw_diagnostic(const std::exception &e, TokenProgram *tp);
     // Skip to the next statement sync point after a contained error: consume
     // tokens stepping DelimDepth (the one tracker) until a ';' outside every
     // (/[/{, or a '}' that closes the region. The angle axis is deliberately
@@ -5334,8 +5346,14 @@ public:
     // by construction. Position stamps from `first` when given.
     TokenError *make_error_node(ErrorNodeKind kind, size_t diag_index,
 				TokenBase *first, TokenBase *last);
+    // THE scope-depth restore recipe after a mid-parse throw (compounds +
+    // block-typedef shadows + class scopes to their entry depths). Three
+    // consumers: the derive-body/-lazy catches and the top-level containment.
+    void restore_parse_scope_depths(size_t saved_compounds,
+				    size_t saved_class_scopes,
+				    const char *site);
     // Contain one top-level parse error: restore the statement-entry depths
-    // (the derive-body-catch recipe), skip to sync, plant the SkippedTokens
+    // (restore_parse_scope_depths), skip to sync, plant the SkippedTokens
     // node linking diagnostics[diag_index]. The parse loop then continues.
     void contain_toplevel_parse_error(TokenProgram *tp, TokenBase *loop_head,
 				      size_t diag_index,
