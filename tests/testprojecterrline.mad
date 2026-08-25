@@ -1,0 +1,4 @@
+// --project error-position reducer: the real build is driven by
+// testprojecterrline.cc.json (see .flags); this file is an ignored
+// positional. Pins that a LATER TU's diagnostic carries ITS OWN
+// file:line, not the previous unit's stale ambient position.
