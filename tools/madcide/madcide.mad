@@ -11,7 +11,9 @@
 // ^_ undo / ^^ redo · ^Y/^W delete line/word · ^K R insert file ·
 // ^K L go to line · ^K U/^K V file top/end · ^K H help (the loaded
 // profile, projected) · ^K Z shell · ^K E check · ^K O outline ·
-// ^K P swap profile), Pico-style single chords in the pico profile.
+// ^K P swap profile · ^K N cycle the code view original/MC11/C11 —
+// the view seam: read-only lenses over the one document),
+// Pico-style single chords in the pico profile.
 // Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
 // moves the caret to its line.
 #include "../../examples/texteditor/lined_core.inc"

@@ -416,6 +416,97 @@ void delete_word(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
+// ---- the view seam (AST-3): read-only code views -----------------------
+// A VIEW is a document lens applied at composition: the stored text stays
+// the document truth; what is DISPLAYED is the lens's rendered text
+// (madc::emit over the live buffer), held in a view-buffer entity so the
+// ONE shared navigation implementation (edit_key, find, goto-line) works
+// over the display space unchanged. The lens's coordinate map rides as
+// data on the bag ("vmap" — EMPTY for a wholly rendered view: nothing
+// corresponds; see ui::lens_to_display) and onto the edit node's hints;
+// the stored caret parks on "ocaret" and returns on exit; mutations and
+// stored-space history are refused through the one editable gate. The
+// identity lens (no view) adds NOTHING — the composed tree stays
+// byte-identical to today's.
+
+// The navigation target: the view buffer while a view is up, else the
+// document — the ONE place display-vs-stored routing happens.
+long nav_doc(long w, long es, long doc)
+{
+    var vw;
+    ui::get(vw, w, es, "view");
+    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+	return doc;
+    long vd = es_int(w, es, "vdoc", 0);
+    return vd != 0 ? vd : doc;
+}
+
+bool enter_view(long w, long es, long doc, const char *name)
+{
+    value t;
+    ui::text(t, w, doc);
+    var p;
+    ui::get(p, w, doc, "path");
+    value emitted;
+    if ( !madc::emit(emitted, t.c_str(), p.c_str(), name) )
+    {
+	// The buffer does not translate: surface the compiler's own rows
+	// instead of a bare refusal.
+	run_check(w, es, doc);
+	return false;
+    }
+    long vd = es_int(w, es, "vdoc", 0);
+    if ( vd == 0 )
+    {
+	vd = ui::create(w, "view-buffer");
+	ui::set(w, es, "vdoc", vd);
+    }
+    ui::text_load(w, vd, emitted.c_str());
+    var cur;
+    ui::get(cur, w, es, "view");
+    if ( cur.is_null() || strlen(cur.c_str()) == 0 )
+	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
+    ui::set(w, es, "view", name);
+    var vm = {};
+    ui::set(w, es, "vmap", vm);
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "bend", -1);
+    ui::set(w, es, "editable", false);
+    ui::set(w, es, "ro_msg", "Read-only view (^K N returns).");
+    ui::set(w, es, "msg", format("View: {}", name));
+    return true;
+}
+
+void exit_view(long w, long es, long doc)
+{
+    ui::set(w, es, "view", "");
+    ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "bend", -1);
+    derive_access(w, es);	// the file's own verdict returns
+}
+
+// ^K N: original -> mc11 -> c11 -> original. A failed enter falls back to
+// the original — the session is never trapped inside a stale view.
+void cycle_view(long w, long es, long doc)
+{
+    var vw;
+    ui::get(vw, w, es, "view");
+    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+    {
+	enter_view(w, es, doc, "mc11");
+	return;
+    }
+    if ( vw == "mc11" )
+    {
+	if ( !enter_view(w, es, doc, "c11") )
+	    exit_view(w, es, doc);
+	return;
+    }
+    exit_view(w, es, doc);
+}
+
 // ---- ^K Z: hand the terminal to a shell -------------------------------
 // Suspend the grid, run the user's shell on the real tty, resume with a
 // full repaint. $SHELL falls back to /bin/sh INSIDE the command — libc
@@ -474,11 +565,17 @@ void toggle_pane(long w, long es, const char *name)
 bool apply_ide_event(long w, long es, long doc, value &ev)
 {
     var kind = format("{}", ev["event"]);
-    long caret = clamped_caret(w, es, doc);
+    // Display-vs-stored routing (the view seam): navigation, find, and the
+    // caret run over the NAV target — the view buffer while a view is up.
+    // Document semantics (save, check, outline, the mutation gates) stay
+    // on the stored document.
+    long nav = nav_doc(w, es, doc);
+    bool viewing = nav != doc;
+    long caret = clamped_caret(w, es, nav);
     ui::set(w, es, "msg", "");
 
     if ( prompt_active(w, es) )
-	return prompt_event(w, es, doc, caret, ev);
+	return prompt_event(w, es, nav, caret, ev);
 
     if ( kind == "action" )
     {
@@ -487,6 +584,22 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	{
 	    ui::set(w, es, "msg", format("Unbound: {}", ev["seq"]));
 	    return true;
+	}
+	if ( a == "view" )
+	{
+	    cycle_view(w, es, doc);
+	    return true;
+	}
+	// Stored-space interaction state (block markers) and history are
+	// meaningless against a displayed view: the one refusal, up front
+	// (mutating actions below refuse through the editable gate).
+	if ( viewing )
+	{
+	    if ( a == "mark" || a == "bend" || a == "undo" || a == "redo" )
+	    {
+		refuse_edit(w, es);
+		return true;
+	    }
 	}
 	if ( a == "save" )
 	    return save_and_check(w, es, doc);
@@ -503,7 +616,7 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "findnext" )
 	{
-	    do_find(w, es, doc, caret);
+	    do_find(w, es, nav, caret);
 	    return true;
 	}
 	if ( a == "gotoline" )
@@ -563,12 +676,12 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "wordleft" )
 	{
-	    ui::set(w, es, "caret", ui::text_word_left(w, doc, caret));
+	    ui::set(w, es, "caret", ui::text_word_left(w, nav, caret));
 	    return true;
 	}
 	if ( a == "wordright" )
 	{
-	    ui::set(w, es, "caret", ui::text_word_right(w, doc, caret));
+	    ui::set(w, es, "caret", ui::text_word_right(w, nav, caret));
 	    return true;
 	}
 	if ( a == "top" )
@@ -578,7 +691,7 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "bottom" )
 	{
-	    ui::set(w, es, "caret", ui::text_size(w, doc));
+	    ui::set(w, es, "caret", ui::text_size(w, nav));
 	    return true;
 	}
 	if ( a == "check" )
@@ -627,14 +740,14 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	value ke;
 	ke["event"] = "key";
 	ke["key"] = a;
-	if ( edit_key(w, es, doc, caret, ke) )
+	if ( edit_key(w, es, nav, caret, ke) )
 	    return true;
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	return true;
     }
     if ( kind == "text" )
     {
-	edit_text_run(w, es, doc, caret, ev);
+	edit_text_run(w, es, nav, caret, ev);
 	return true;
     }
     if ( kind == "choose" )
@@ -642,7 +755,12 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	var a = format("{}", ev["action"]);
 	if ( a == "goto" )
 	{
-	    goto_pane_row(w, es, doc, ev["option"].as_integer());
+	    // Pane rows carry STORED line numbers — meaningless against a
+	    // displayed view.
+	    if ( viewing )
+		refuse_edit(w, es);
+	    else
+		goto_pane_row(w, es, doc, ev["option"].as_integer());
 	    return true;
 	}
 	if ( a == "w" )
@@ -659,7 +777,7 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
     if ( kind != "key" )
 	return true;	// focus / resize: the loop recomposes anyway
 
-    edit_key(w, es, doc, caret, ev);
+    edit_key(w, es, nav, caret, ev);
     return true;	// unbound keys are inert (chords arrive as actions)
 }
 
@@ -672,13 +790,39 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 void compose_ide_tree(value &root, long w, long es, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
+    // The view seam at composition: the edit node presents the NAV
+    // target's text (the lens's get) and, while a view is up, carries the
+    // lens data — the view name and its coordinate map — as hints. The
+    // identity lens (no view) takes neither branch: byte-identical.
+    long nav = nav_doc(w, es, doc);
+    bool viewing = nav != doc;
 
     value head;
     var p;
     ui::get(p, w, doc, "path");
-    compose_heading(head, w, es, doc, format("madcide: {}", p));
+    if ( viewing )
+    {
+	var vw;
+	ui::get(vw, w, es, "view");
+	compose_heading(head, w, es, doc,
+			format("madcide: {} [{}]", p, vw));
+    }
+    else
+	compose_heading(head, w, es, doc, format("madcide: {}", p));
     value ed;
-    compose_edit_node(ed, w, es, doc, caret);
+    compose_edit_node(ed, w, es, nav, caret);
+    if ( viewing )
+    {
+	value h;
+	h = ed["hints"];
+	var vw2;
+	ui::get(vw2, w, es, "view");
+	h["view"] = vw2;
+	value vm;
+	ui::get(vm, w, es, "vmap");
+	h["map"] = vm;
+	ed["hints"] = h;
+    }
 
     value r;
     r["role"] = "group";
@@ -764,7 +908,7 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     }
 
     value status;
-    compose_status(status, w, es, doc, caret, "");
+    compose_status(status, w, es, nav, caret, "");
     value menu;
     compose_menu(menu);
 

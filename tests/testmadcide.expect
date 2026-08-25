@@ -48,6 +48,14 @@ insertfile: Inserted 8 bytes. size=92
 help: pane=help label=Help — pico profile rows=20
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
+view1: name=mc11 editable=0 caret=0 stored-size=84
+view1-node: view=mc11 maprows=0 shows-lowering=1
+view-typing: Read-only view (^K N returns).
+view-undo: Read-only view (^K N returns).
+view-find: hit=1
+view2: name=c11
+view-exit: name='' caret=84 identical=1 modified=false
+lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
 quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
 save: Wrote 92 bytes.
 savequit: cont=0 msg=Bye.

@@ -297,6 +297,87 @@ int main()
     println("v2-restored: size={} modified={}", ui::text_size(w, doc),
 	    m.as_boolean());
 
+    // -- madcide AST-3: the view seam — read-only code views over the ONE
+    //    document. The stored text never moves; the display is the lens's
+    //    rendered text; navigation runs in display space; exit restores
+    //    the stored caret; the tail's save byte-count then re-proves the
+    //    round trip left the document byte-identical. --
+    ev_action(e, "bottom", "^k v");	// a nonzero caret to restore
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "view", "^k n");	// original -> mc11
+    apply_ide_event(w, es, doc, e);
+    var vname;
+    ui::get(vname, w, es, "view");
+    println("view1: name={} editable={} caret={} stored-size={}",
+	    vname, es_flag(w, es, "editable") ? 1 : 0,
+	    es_int(w, es, "caret", -1), ui::text_size(w, doc));
+    // The composed tree presents the RENDERED text and carries the lens
+    // data (view name + coordinate map) as edit-node hints.
+    compose_ide_tree(tree, w, es, doc);
+    value ved;
+    ved = tree["children"][1];
+    value vh;
+    vh = ved["hints"];
+    value vmap;
+    vmap = vh["map"];
+    var vtext = format("{}", ved["content"]);
+    println("view1-node: view={} maprows={} shows-lowering={}",
+	    vh["view"], php::count(vmap),
+	    strstr(vtext.c_str(), "long long add") != 0 ? 1 : 0);
+    // Typing and stored-space history refuse with the view's own reason.
+    ev_text(e, "junk");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("view-typing: {}", msg);
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("view-undo: {}", msg);
+    // Navigation works over the DISPLAY space: find in the rendered text.
+    ev_action(e, "find", "^k f");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "long long");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    println("view-find: hit={}", es_int(w, es, "caret", -1) > 0 ? 1 : 0);
+    ev_action(e, "view", "^k n");	// mc11 -> c11
+    apply_ide_event(w, es, doc, e);
+    ui::get(vname, w, es, "view");
+    println("view2: name={}", vname);
+    ev_action(e, "view", "^k n");	// c11 -> original
+    apply_ide_event(w, es, doc, e);
+    ui::get(vname, w, es, "view");
+    ui::get(m, w, doc, "modified");
+    compose_ide_tree(tree, w, es, doc);
+    value bed;
+    bed = tree["children"][1];
+    var btext = format("{}", bed["content"]);
+    value dtext;
+    ui::text(dtext, w, doc);
+    println("view-exit: name='{}' caret={} identical={} modified={}",
+	    vname, es_int(w, es, "caret", -1),
+	    btext == dtext ? 1 : 0, m.as_boolean());
+    // The coordinate map's dialect face (the markdown-conceal shape):
+    // 1:1 in copies, forward collapse inside gaps, boundary-earlier on
+    // the inverse, 0 for the empty (wholly rendered) map.
+    value g0;
+    g0["disp"] = 0;
+    g0["stored"] = 0;
+    g0["len"] = 2;
+    value g1;
+    g1["disp"] = 2;
+    g1["stored"] = 4;
+    g1["len"] = 2;
+    var cmap = {};
+    cmap.push(g0);
+    cmap.push(g1);
+    var emap = {};
+    println("lens: d3={} d5={} s3={} s2={} empty-d={}",
+	    ui::lens_to_display(cmap, 3), ui::lens_to_display(cmap, 5),
+	    ui::lens_to_stored(cmap, 3), ui::lens_to_stored(cmap, 2),
+	    ui::lens_to_display(emap, 9));
+
     // -- the verbs: save (with the silent diagnostics refresh), quit --
     ev_text(e, "// tail\n");
     apply_ide_event(w, es, doc, e);
