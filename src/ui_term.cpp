@@ -65,6 +65,7 @@ class term_target : public madc::hub::tui_target
     struct termios   _saved;
     struct sigaction _saved_winch;
     bool	     _open;
+    bool	     _suspended;
     size_t	     _rows, _cols;
     tui_keyparse     _parse;
 
@@ -110,27 +111,13 @@ class term_target : public madc::hub::tui_target
     }
 
 public:
-    term_target() : _open(false), _rows(24), _cols(80) {}
+    term_target() : _open(false), _suspended(false), _rows(24), _cols(80) {}
     ~term_target() { close(); }
 
-    virtual bool open(size_t &rows, size_t &cols)
+    // Grid-mode entry/exit, shared by open/close and suspend/resume
+    // (one implementation — the two pairs differ only in bookkeeping).
+    bool enter_grid_mode()
     {
-	if ( g_live )
-	{
-	    fprintf(stderr, "ui: a TUI target is already open\n");
-	    return false;
-	}
-	if ( !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) )
-	{
-	    fprintf(stderr,
-		    "ui: the terminal target needs a tty on stdin/stdout\n");
-	    return false;
-	}
-	if ( tcgetattr(STDIN_FILENO, &_saved) != 0 )
-	{
-	    fprintf(stderr, "ui: tcgetattr failed\n");
-	    return false;
-	}
 	struct termios raw = _saved;
 	// Raw mode by explicit flags (termios(3)); IXON off is the point
 	// — ^S/^Q are editor keys, not flow control. ISIG off delivers
@@ -156,6 +143,36 @@ public:
 	// Alternate screen, clear, home, cursor hidden until a paint
 	// places it.
 	emit("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
+	return true;
+    }
+
+    void leave_grid_mode()
+    {
+	emit("\x1b[0m\x1b[?25h\x1b[?1049l");
+	tcsetattr(STDIN_FILENO, TCSAFLUSH, &_saved);
+	sigaction(SIGWINCH, &_saved_winch, (struct sigaction *)0);
+    }
+
+    virtual bool open(size_t &rows, size_t &cols)
+    {
+	if ( g_live )
+	{
+	    fprintf(stderr, "ui: a TUI target is already open\n");
+	    return false;
+	}
+	if ( !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) )
+	{
+	    fprintf(stderr,
+		    "ui: the terminal target needs a tty on stdin/stdout\n");
+	    return false;
+	}
+	if ( tcgetattr(STDIN_FILENO, &_saved) != 0 )
+	{
+	    fprintf(stderr, "ui: tcgetattr failed\n");
+	    return false;
+	}
+	if ( !enter_grid_mode() )
+	    return false;
 	_open = true;
 	g_live = this;
 	static bool exit_hooked = false;
@@ -173,16 +190,40 @@ public:
     {
 	if ( !_open )
 	    return;
-	emit("\x1b[0m\x1b[?25h\x1b[?1049l");
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &_saved);
-	sigaction(SIGWINCH, &_saved_winch, (struct sigaction *)0);
+	if ( !_suspended )		// suspended: already restored
+	    leave_grid_mode();
+	_suspended = false;
 	_open = false;
 	g_live = 0;
     }
 
+    // Suspend/resume (madcide v2, JOE ^K Z): the terminal goes back to
+    // the owner-found state while a child process runs; resume re-raws
+    // and re-enters the alternate screen. `_saved` stays the ORIGINAL
+    // pre-open state — that is what "restored exactly as found" means,
+    // whatever the child did in between.
+    virtual bool suspend()
+    {
+	if ( !_open || _suspended )
+	    return false;
+	leave_grid_mode();
+	_suspended = true;
+	return true;
+    }
+
+    virtual bool resume()
+    {
+	if ( !_open || !_suspended )
+	    return false;
+	if ( !enter_grid_mode() )
+	    return false;		// still suspended; caller told
+	_suspended = false;
+	return true;
+    }
+
     virtual void paint(const tui_grid &prev, const tui_grid &next)
     {
-	if ( !_open )
+	if ( !_open || _suspended )
 	    return;
 	std::string out;
 	out += "\x1b[?25l";	// hidden while rows repaint
@@ -216,7 +257,7 @@ public:
 
     virtual bool read_keys(std::vector<tui_keyev> &out)
     {
-	if ( !_open )
+	if ( !_open || _suspended )
 	    return false;
 	for (;;)
 	{

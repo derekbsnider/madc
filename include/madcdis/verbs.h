@@ -101,6 +101,16 @@ public:
     {
 	return _w.text_undo(id, meta_out);
     }
+    bool text_undo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	return _w.text_undo(id, meta_out, now_meta);
+    }
+    bool text_redo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	return _w.text_redo(id, meta_out, now_meta);
+    }
 };
 
 // ------------------------------------------------------------------ action_env

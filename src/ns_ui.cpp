@@ -834,6 +834,33 @@ bool text_undo(madc::value &meta_out, int64_t w, int64_t entity)
     return mc.text_undo((entity_id)entity, meta_out);
 }
 
+// The redo-preserving pair (madcide v2): now_meta = the payload live on
+// the document being LEFT — it lands on the opposite stack, so walking
+// back restores document + interaction state together. A checkpoint (a
+// new edit) clears redo; the one-argument text_undo above is the legacy
+// destructive form and clears redo too.
+bool text_undo(madc::value &meta_out, int64_t w, int64_t entity,
+	       madc::value &now_meta)
+{
+    meta_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.text_undo((entity_id)entity, meta_out, now_meta);
+}
+
+bool text_redo(madc::value &meta_out, int64_t w, int64_t entity,
+	       madc::value &now_meta)
+{
+    meta_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.text_redo((entity_id)entity, meta_out, now_meta);
+}
+
 madc::value &text(madc::value &out, int64_t w, int64_t entity)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);
@@ -888,6 +915,25 @@ int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
 	return -1;
     size_t hit = b->find((size_t)from, needle);
     return hit == madc::hub::text_buffer::npos ? -1 : (int64_t)hit;
+}
+
+// Word motion (madcide v2 — JOE ^Z/^X): reads, like text_find. -1 when
+// the entity has no text component or `from` is negative; otherwise the
+// clamped destination offset (see text_buffer::word_left/word_right).
+int64_t text_word_left(int64_t w, int64_t entity, int64_t from)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || from < 0 )
+	return -1;
+    return (int64_t)b->word_left((size_t)from);
+}
+
+int64_t text_word_right(int64_t w, int64_t entity, int64_t from)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || from < 0 )
+	return -1;
+    return (int64_t)b->word_right((size_t)from);
 }
 
 // ---- level-1 TUI (R5): the grid frontend behind the provider seam.
@@ -960,6 +1006,41 @@ void tui_render(int64_t t, int64_t w, madc::value &tree)
 			 u->rows, u->cols);
     u->target->paint(u->painted, g);
     u->painted = g;
+}
+
+// Hand the terminal back to run a child process (madcide v2, JOE ^K Z):
+// tui_suspend leaves grid mode restoring the screen and modes as found;
+// tui_resume re-enters and forces the NEXT render to repaint every row
+// (the previous contents are gone — the diff basis resets). The size is
+// re-read on resume (it may have changed while away); the application
+// re-composes and renders as it would after a resize. False + stderr on
+// a bad handle, a target that cannot suspend, or mismatched pairing.
+bool tui_suspend(int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return false;
+    if ( !u->target->suspend() )
+    {
+	fprintf(stderr, "ui::tui_suspend: the target cannot suspend here\n");
+	return false;
+    }
+    return true;
+}
+
+bool tui_resume(int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return false;
+    if ( !u->target->resume() )
+    {
+	fprintf(stderr, "ui::tui_resume: not suspended (or cannot re-enter)\n");
+	return false;
+    }
+    u->target->size(u->rows, u->cols);
+    u->painted = madc::hub::tui_grid();
+    return true;
 }
 
 // Install a keybinding PROFILE: a value object mapping key sequences

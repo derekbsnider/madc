@@ -63,6 +63,15 @@ TEST_CASE("keyparse — printables, controls, enter/tab/backspace")
     CHECK(k[1].kind == tui_key::tab);
     CHECK(k[2].kind == tui_key::backspace);
     CHECK(k[3].kind == tui_key::backspace);
+
+    // The punctuation controls 0x1c..0x1f (JOE's ^_ undo / ^^ redo).
+    k = parse("\x1c\x1d\x1e\x1f");
+    REQUIRE(k.size() == 4u);
+    CHECK(k[0].kind == tui_key::ctrl);
+    CHECK(k[0].ch == '\\');
+    CHECK(k[1].ch == ']');
+    CHECK(k[2].ch == '^');
+    CHECK(k[3].ch == '_');
 }
 
 TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
@@ -358,6 +367,19 @@ TEST_CASE("key spelling — one owner, both directions")
     CHECK(!tui_key_from_name("", k));
     CHECK(!tui_key_from_name("^!", k));
     CHECK(!tui_key_from_name("nosuch", k));
+
+    // Punctuation controls round-trip like letters do.
+    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '_')) == "^_");
+    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '^')) == "^^");
+    REQUIRE(tui_key_from_name("^_", k));
+    CHECK(k.kind == tui_key::ctrl);
+    CHECK(k.ch == '_');
+    REQUIRE(tui_key_from_name("^^", k));
+    CHECK(k.ch == '^');
+    REQUIRE(tui_key_from_name("^\\", k));
+    CHECK(k.ch == '\\');
+    REQUIRE(tui_key_from_name("^]", k));
+    CHECK(k.ch == ']');
 }
 
 TEST_CASE("bindings — build validation is loud and whole-table")
