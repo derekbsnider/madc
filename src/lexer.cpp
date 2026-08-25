@@ -7669,12 +7669,20 @@ TokenBase *Program::_getToken()
 			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
 		    };
 		    int counter = compound_type_specifier_flag(word);
-		    // Accumulate subsequent type-specifier keywords
-		    auto read_word = [&]() -> std::string {
+		    // Accumulate subsequent type-specifier keywords.
+		    // ws_count reports the whitespace consumed BEFORE the
+		    // word: a rejected lookahead must give it back (as one
+		    // normalized space), or the column count AND the next
+		    // token's leading trivia lose it (`char *s` -> `char*s`).
+		    auto read_word = [&](int &ws_count) -> std::string {
+			ws_count = 0;
 			while ( source.good()
 			     && (source.peek() == ' ' || source.peek() == '\t'
 			      || source.peek() == '\n' || source.peek() == '\r') )
+			{
 			    source.get();
+			    ++ws_count;
+			}
 			std::string w;
 			while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 			    w += source.get();
@@ -7684,14 +7692,16 @@ TokenBase *Program::_getToken()
 		    std::vector<std::string> consumed;
 		    while ( true )
 		    {
-			std::string w = read_word();
+			int ws_count = 0;
+			std::string w = read_word(ws_count);
 			int flag = compound_type_specifier_flag(w);
 			if ( flag )
 			{
 			    counter += flag;
 			    consumed.push_back(w);
 			}
-			else if ( define_map.find(w) != define_map.end() )
+			else if ( !w.empty()
+			       && define_map.find(w) != define_map.end() )
 			{
 			    int expanded_flags = 0;
 			    if ( expansion_is_compound_type_specifiers(define_map[w], expanded_flags) )
@@ -7707,9 +7717,13 @@ TokenBase *Program::_getToken()
 			}
 			else
 			{
-			    // Not a type specifier — push it back
+			    // Not a type specifier — push it back, and give
+			    // back consumed whitespace even when NO word
+			    // followed it.
 			    if ( !w.empty() )
 				source.pushback_reread(std::string(" ") + w);
+			    else if ( ws_count > 0 )
+				source.pushback_reread(std::string(" "));
 			    break;
 			}
 		    }
@@ -9173,6 +9187,29 @@ std::string madc_token_spelling(TokenBase *tb)
 	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
 	    return std::string();
     }
+}
+
+// THE token highlight classifier (declared in madc.h beside the spelling
+// owner — madcide AST-2): presentation KIND by the token's lexed type.
+// Keywords and datatypes are their own TokenType subtrees, so plain
+// identifiers are what remains under tkIdent. Comments never reach the
+// token stream (they are leading trivia) — the span query derives them.
+HighlightClass madc_token_highlight_class(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttKeyword:  return HighlightClass::hcKeyword;
+	case TokenType::ttDataType: return HighlightClass::hcType;
+	case TokenType::ttInteger:
+	case TokenType::ttReal:	    return HighlightClass::hcNumber;
+	case TokenType::ttString:
+	case TokenType::ttChar:	    return HighlightClass::hcString;
+	default:
+	    break;
+    }
+    if ( tb->id() == TokenID::tkIdent )
+	return HighlightClass::hcIdent;
+    return HighlightClass::hcNone;
 }
 
 // THE C-string-literal escape rule (declared in madc.h; dupaudit family

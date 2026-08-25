@@ -1657,10 +1657,29 @@ public:
     const std::string &text() const { return _buf; }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
-    // source characters were already counted on the first read, so re-reading
-    // them must not re-advance the column counter (contrast pushback(), used
-    // for synthesized text like macro expansions, which does count).
-    void pushback_reread(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, "", false); }
+    // source characters were counted on the first read, so the drain must not
+    // leave the column double-advanced (contrast pushback(), used for
+    // synthesized text like macro expansions, which does count). For a
+    // same-line re-read the cursor REWINDS and the drain RECOUNTS: the end
+    // state is identical, but a token minted BETWEEN the pushback and the
+    // drain (the compound type-specifier head — `long` in `long add(`) now
+    // stamps ITS OWN end column instead of the lookahead word's. Re-read
+    // text that crossed a newline cannot rewind a line counter — that shape
+    // keeps the frozen-cursor drain (the stamp stays bounded to one token).
+    void pushback_reread(const std::string &s)
+    {
+	if ( s.find('\n') == std::string::npos
+	  && s.find('\r') == std::string::npos
+	  && (int)s.size() <= _column )
+	{
+	    _column -= (int)s.size();
+	    _pushback = s + _pushback;
+	    add_pushback_frame(s, "", true);
+	    return;
+	}
+	_pushback = s + _pushback;
+	add_pushback_frame(s, "", false);
+    }
     void pushback_macro(const std::string &s, const std::string &disabled_macro)
     {
 	_pushback = s + _pushback;
@@ -1974,6 +1993,12 @@ std::string madc_token_spelling(TokenBase *tb);
 // non-printables (octal caps at 3 digits; hex is maximal-munch). The
 // token-spelling owner and the C11/C++ renderers all read this one rule.
 std::string madc_c_escape_string(const char *s, size_t len);
+
+// THE token highlight classifier (defined in lexer.cpp beside the
+// spelling owner — token vocabulary): what KIND of thing a lexed token
+// is, for presentation (madcide AST-2). Comments are trivia, not tokens
+// — the span query derives them separately.
+HighlightClass madc_token_highlight_class(TokenBase *tb);
 
 class TokenStream
 {
