@@ -555,6 +555,67 @@ int64_t php_file_exists_value(const madc::value *v)
 	return php_file_exists(p.c_str());
 }
 
+// php::file_get_contents — PHP parity: the whole file as a string
+// (binary-faithful — PHP reads bytes, never lines). PHP's string|false
+// union takes the pre-L3 carrier mapping documented in <ns_php>: the
+// contents arrive in an OUT value, the return is the false channel
+// (false = failure, out untouched). Warning-free like a @-call; madc
+// answers the live filesystem.
+int64_t php_file_get_contents(madc::value *out, const char *path)
+{
+	if ( !out || !path || !*path )
+		return 0;
+	std::ifstream in(path, std::ios::binary);
+	if ( !in )
+		return 0;
+	std::ostringstream ss;
+	ss << in.rdbuf();
+	if ( in.bad() )
+		return 0;
+	*out = madc::value(ss.str());
+	return 1;
+}
+int64_t php_file_get_contents_vpath(madc::value *out, const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	std::string p((const char *)v->data(), v->size());
+	return php_file_get_contents(out, p.c_str());
+}
+
+// php::file_put_contents — PHP parity: create/truncate + write the whole
+// payload; answers BYTES WRITTEN. PHP's int|false maps to -1 for the
+// false channel (pre-L3). Scalar data coerces to its text like every
+// PHP write; a container has no PHP-legal text and answers -1.
+int64_t php_file_put_contents(const char *path, const char *data,
+			      size_t len)
+{
+	if ( !path || !*path )
+		return -1;
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if ( !out )
+		return -1;
+	if ( len )
+		out.write(data, (std::streamsize)len);
+	out.flush();
+	return out ? (int64_t)len : -1;
+}
+int64_t php_file_put_contents_cstr(const char *path, const char *data)
+{
+	return php_file_put_contents(path, data ? data : "",
+				     data ? strlen(data) : 0);
+}
+int64_t php_file_put_contents_value(const char *path, const madc::value *v)
+{
+	if ( v && v->is_string() )
+		return php_file_put_contents(path, (const char *)v->data(),
+					     v->size());
+	if ( !v || v->is_object() || v->is_array() || v->is_instance() )
+		return -1;
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_file_put_contents(path, slot.c_str(), slot.size());
+}
+
 // php::intval — PHP parity (base 10): leading whitespace, optional sign,
 // then the longest digit prefix converts ("12abc" -> 12, "abc" -> 0).
 // Integer kind passes through; real truncates toward zero; bool 1/0;
@@ -957,6 +1018,10 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }
+int64_t __php_file_get_contents_vpath(madc::value *a, madc::value *b) { return php_file_get_contents_vpath(a, b); }
+int64_t __php_file_put_contents_cstr(const char *a, const char *b) { return php_file_put_contents_cstr(a, b); }
+int64_t __php_file_put_contents_value(const char *a, madc::value *b) { return php_file_put_contents_value(a, b); }
 int64_t __php_intval(madc::value *a) { return php_intval_value(a); }
 int64_t __php_intval_cstr(const char *a) { return php_intval_cstr(a); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }
