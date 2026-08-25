@@ -1,6 +1,22 @@
 # Test Status
 
-> **Current (2026-08-24, eval gaps closed + Track 7.2 R2):** computed
+> **Current (2026-08-25, Track 7.2 R4 line-mode scope —
+> feature/texteditor-claude merge wave):** the piece-table text
+> component (`madcdis/text_buffer.h`, the hub's second component kind)
+> + `ui::world_new` + the `ui::text_*` family +
+> `php::file_get_contents`/`file_put_contents` + the line-mode editor
+> (`examples/texteditor/`, nine script verbs through the one registry).
+> Merge-wave battery: authoritative Linux fulltest
+> **1142 passed / 0 failed / 0 timed out / 9 skipped** (suite +2:
+> testuitext — the component surface, line-composed range edits;
+> testlineed — the §7.7 two-phase transcript gate, writable then
+> read-only, `.expect_quiet`), EXE lane **1099/0** (of 1142
+> JIT-passing); unit batteries incl. test_text_buffer (mirrored
+> std::string oracle, 128 asserts) and test_verbs (42 asserts, the
+> mutation-context text case); adventure parity + purity +
+> write-path + dialect-lean gates green in-battery.
+>
+> **Previous (2026-08-24, eval gaps closed + Track 7.2 R2):** computed
 > carrier text survives function returns — `madarray_cstr` string kind
 > rings a COPY (the pre-L3 c_str contract, uniformly) and
 > `translate_return` coerces a carrier operand for char*-returning

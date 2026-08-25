@@ -275,6 +275,17 @@ int64_t world_open(const char *path)
     return (int64_t)ui_sessions().size();
 }
 
+// ui::world_new — an EMPTY session: no world file, no declarations. The
+// home of applications whose data is not authored world content (the
+// texteditor: documents are files it opens itself). Same handle space,
+// same lifecycle, same registry — a %world file is authoring convenience,
+// never a session requirement.
+int64_t world_new()
+{
+    ui_sessions().push_back(new ui_session());
+    return (int64_t)ui_sessions().size();
+}
+
 bool world_save(int64_t w, const char *path)
 {
     ui_session *s = ui_get(w);
@@ -649,6 +660,116 @@ void move(int64_t w, int64_t entity, int64_t dest)
 	mc.link_remove((entity_id)entity, rel_in, h);
     if ( dest )
 	mc.link_add((entity_id)entity, rel_in, (entity_id)dest);
+}
+
+// ---- text component (R4): the piece-table buffer attached to an entity.
+// Writes mirror through the mutation context (the one write surface);
+// reads are const world reads. Offsets/lengths are BYTES; lines are
+// 1-based, length excluding the '\n' (the buffer's documented model).
+// Document PROPERTIES (path, modified, read_only) are application bag
+// keys — these publics never touch a bag.
+
+// The one session+component lookup every text READ public performs.
+static const madc::hub::text_buffer *ui_text_component(int64_t w,
+						       int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s ? s->w.text_of((entity_id)entity)
+	     : (const madc::hub::text_buffer *)0;
+}
+
+void text_load(int64_t w, int64_t entity, const char *text)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_load((entity_id)entity, text ? text : "");
+}
+
+void text_insert(int64_t w, int64_t entity, int64_t off, const char *text)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity || off < 0 )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_insert((entity_id)entity, (size_t)off, text ? text : "");
+}
+
+void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity || off < 0 || len <= 0 )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_erase((entity_id)entity, (size_t)off, (size_t)len);
+}
+
+void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+		  const char *text)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity || off < 0 || len < 0 )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_replace((entity_id)entity, (size_t)off, (size_t)len,
+		    text ? text : "");
+}
+
+madc::value &text(madc::value &out, int64_t w, int64_t entity)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    return ui_text_out(out, b ? b->text() : std::string());
+}
+
+int64_t text_size(int64_t w, int64_t entity)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    return b ? (int64_t)b->size() : -1;	// -1 = no component
+}
+
+int64_t text_line_count(int64_t w, int64_t entity)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    return b ? (int64_t)b->line_count() : -1;
+}
+
+madc::value &text_line(madc::value &out, int64_t w, int64_t entity, int64_t n)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    size_t off = 0, len = 0;
+    if ( b && n > 0 && b->line_span((size_t)n, off, len) )
+	return ui_text_out(out, b->slice(off, len));
+    return ui_text_out(out, std::string());
+}
+
+// The line's byte span, for composing range edits from line commands:
+// start offset (or -1 when absent) and length EXCLUDING the newline.
+int64_t text_line_start(int64_t w, int64_t entity, int64_t n)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    size_t off = 0, len = 0;
+    if ( b && n > 0 && b->line_span((size_t)n, off, len) )
+	return (int64_t)off;
+    return -1;
+}
+
+int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    size_t off = 0, len = 0;
+    if ( b && n > 0 && b->line_span((size_t)n, off, len) )
+	return (int64_t)len;
+    return -1;
+}
+
+int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || !needle || !*needle || from < 0 )
+	return -1;
+    size_t hit = b->find((size_t)from, needle);
+    return hit == madc::hub::text_buffer::npos ? -1 : (int64_t)hit;
 }
 
 } // namespace ui

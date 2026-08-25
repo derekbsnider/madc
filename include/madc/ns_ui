@@ -39,6 +39,12 @@ namespace ui {
     bool    world_save(int64_t w, const char *path);
     void    world_close(int64_t w);
 
+    // An EMPTY session — no world file, no declarations. For
+    // applications whose data is not authored world content (an editor's
+    // documents are files it opens itself). Same handle space, registry,
+    // and lifecycle as world_open.
+    int64_t world_new();
+
     // Attach a madc-source BODY to a verb name (the script-entity
     // binding kind). Gating comes from the world's %verb declaration of
     // the same name when present; an undeclared name binds ungated. The
@@ -145,4 +151,26 @@ namespace ui {
     void set(int64_t w, int64_t entity, const char *key, double v);
     // Move `entity` into `dest`'s containment (dest 0 = out of the world).
     void move(int64_t w, int64_t entity, int64_t dest);
+
+    // ---- text component (R4): a piece-table buffer attached to an
+    // entity — the hub's second component kind. Offsets and lengths are
+    // BYTES; lines are 1-based, length excluding the '\n'; an empty
+    // buffer has zero lines and a trailing unterminated span is a line.
+    // Writes route through the hub's mutation context. Document
+    // properties (path, modified, read_only) are application bag keys —
+    // never touched here. Size/line/find reads answer -1 when the entity
+    // has no text component (or the query is out of range).
+    void text_load(int64_t w, int64_t entity, const char *text);
+    void text_insert(int64_t w, int64_t entity, int64_t off, const char *text);
+    void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len);
+    void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+		      const char *text);
+    value  &text(value &out, int64_t w, int64_t entity);
+    int64_t text_size(int64_t w, int64_t entity);
+    int64_t text_line_count(int64_t w, int64_t entity);
+    value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
+    int64_t text_find(int64_t w, int64_t entity, int64_t from,
+		      const char *needle);
 }

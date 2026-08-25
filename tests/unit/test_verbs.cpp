@@ -275,3 +275,24 @@ TEST_CASE("verb_table — script kind dispatches through the injected executor")
     CHECK(refused.status == verb_status::refused);
     CHECK(refused.content.as_string() == "No.");
 }
+
+TEST_CASE("mutation_context — text-component writes mirror through the one surface")
+{
+    world w;
+    entity_id doc = w.create("doc");
+    mutation_context mc(w);
+    CHECK_FALSE(mc.view().has_text(doc));
+
+    mc.text_load(doc, "one\ntwo\n");
+    REQUIRE(mc.view().has_text(doc));
+    CHECK(mc.view().text_of(doc)->line_count() == 2u);
+
+    mc.text_insert(doc, 0, "zero\n");
+    mc.text_erase(doc, 5, 4);		// "one\n" goes
+    mc.text_replace(doc, 5, 3, "TWO");
+    CHECK(mc.view().text_of(doc)->text() == "zero\nTWO\n");
+
+    // A bare entity has no component; reads answer absence, not a crash.
+    entity_id bare = w.create("bare");
+    CHECK(mc.view().text_of(bare) == (const madc::hub::text_buffer *)0);
+}

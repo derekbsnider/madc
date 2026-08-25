@@ -1,0 +1,21 @@
+// lineed verb: i N TEXT — insert a new line before line N.
+long doc = ui::entity_by_name(w, "document");
+var ro;
+ui::get(ro, w, doc, "read_only");
+if ( !ro.is_null() && ro.as_boolean() )
+    return "Document is read-only.";
+long n = php::intval(arg);
+if ( n < 1 )
+    return "i needs a line number.";
+long off = ui::text_line_start(w, doc, n);
+if ( off < 0 )
+    return "No such line.";
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+if ( arg[i] == ' ' )
+    i = i + 1;
+var t = format("{}\n", arg + i);
+ui::text_insert(w, doc, off, t.c_str());
+ui::set(w, doc, "modified", true);
+return "Inserted.";

@@ -1,0 +1,22 @@
+// lineed verb: c N TEXT — replace line N (a range edit composed from the
+// line's span; §7.3's read-only rule refuses before any mutation).
+long doc = ui::entity_by_name(w, "document");
+var ro;
+ui::get(ro, w, doc, "read_only");
+if ( !ro.is_null() && ro.as_boolean() )
+    return "Document is read-only.";
+long n = php::intval(arg);
+if ( n < 1 )
+    return "c needs a line number.";
+long off = ui::text_line_start(w, doc, n);
+if ( off < 0 )
+    return "No such line.";
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+if ( arg[i] == ' ' )
+    i = i + 1;
+long len = ui::text_line_len(w, doc, n);
+ui::text_replace(w, doc, off, len, arg + i);
+ui::set(w, doc, "modified", true);
+return format("{}: {}", n, arg + i);

@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (verb bodies load, bind,
+and execute diagnostics-clean).
