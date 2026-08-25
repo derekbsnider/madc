@@ -395,6 +395,14 @@ compiler's own forest):
   per-TU buffers/parse handles, save project writes the same json;
   this is where `^K E` becomes JOE's edit-file and check moves again.
 
+THE BRAINSTORM HAPPENED (2026-08-25, session 131) — its writeup is
+[2026-08-25-madcide-ast-arc-design.md](2026-08-25-madcide-ast-arc-design.md):
+the frozen-artifact taxonomy (OWNER RULING refining 2026-08-22 — ROM /
+execution artifact / program save-state / IDE cache, rules R1-R3), the
+AST-arc design (IDE-6/7/8 + view switching + --emit=c++ REQUIRED by the
+owner), and the slice cut AST-1..AST-5. That doc supersedes this
+section's sketch as the execution input.
+
 Recon for the item-3 brainstorm (both passes — the repo record and
 the Turbo-C→JetBrains IDE-architecture survey) is banked in
 [2026-08-25-madcide-ast-brainstorm-recon.md](2026-08-25-madcide-ast-brainstorm-recon.md);
