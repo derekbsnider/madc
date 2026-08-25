@@ -1,0 +1,9 @@
+// Project-handle fixture TU 1 (owned by testparsehandle.mad): pulls a
+// relative #include — the included definition carries the .inc's own
+// file name and stays OUT of this TU's outline (1 row: tu_one).
+#include "testparsehandle_tu.inc"
+
+long tu_one(long x)
+{
+    return tu_inc_helper(x);
+}

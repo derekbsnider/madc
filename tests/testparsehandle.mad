@@ -1,0 +1,87 @@
+// madc:: persistent parse handles (madcide AST-1): the compiler-data
+// surfaces given a LIFETIME — open/refresh/close, outline / check /
+// enclosing served from the RETAINED state, plus the cc.json project
+// handle. Compile-NEVER-execute (.expect_quiet is the capture proof;
+// an executed buffer would print EXECUTED and break the .expect).
+int main()
+{
+    var src = "long add(long a, long b) { return a + b; }\nlong twice(long x)\n{\n    return add(x, x);\n}\n";
+    long h = madc::parse_open(src.c_str(), "hand.mad");
+    println("opened ok: {}", h > 0 ? 1 : 0);
+
+    value o;
+    madc::parse_outline(o, h);
+    println("outline: {}", php::count(o));
+    for ( value fn : o )
+	println("  {} {} @ {}:{}..{}", fn["kind"], fn["name"], fn["line"],
+		fn["column"], fn["end_line"]);
+
+    value d;
+    madc::parse_check(d, h);
+    println("check rows: {}", php::count(d));
+
+    // The status line's query: innermost enclosing definition by
+    // (line, column); the closing brace's line counts as inside.
+    value e;
+    madc::parse_enclosing(e, h, 1, 20);
+    println("encl@1: {}", e["name"]);
+    madc::parse_enclosing(e, h, 4, 1);
+    println("encl@4: {}", e["name"]);
+    madc::parse_enclosing(e, h, 5, 1);
+    println("encl@5: {}", e["name"]);
+    madc::parse_enclosing(e, h, 99, 1);
+    println("encl@99: {}", e.is_null() ? "none" : "some");
+
+    // Refresh = whole-TU re-parse; the handle's identity survives.
+    var src2 = "long only() { return 1; }\n";
+    println("refresh: {}", madc::parse_refresh(h, src2.c_str()) ? 1 : 0);
+    madc::parse_outline(o, h);
+    println("outline2: {}", php::count(o));
+    for ( value fn : o )
+	println("  {} {}", fn["kind"], fn["name"]);
+
+    // A broken buffer still opens — its state IS the diagnostics.
+    var bad = "long f() {\n    return undeclared_name;\n}\n";
+    long hb = madc::parse_open(bad.c_str(), "bad.mad");
+    value bd;
+    madc::parse_check(bd, hb);
+    println("bad handle: {} bad rows: {}", hb > 0 ? 1 : 0,
+	    php::count(bd) > 0 ? 1 : 0);
+
+    // Close: queries refuse (empty rows), a second close refuses,
+    // and a fresh open never reuses the slot's handle.
+    println("first close: {}", madc::parse_close(h) ? 1 : 0);
+    println("second close: {}", madc::parse_close(h) ? 1 : 0);
+    madc::parse_outline(o, h);
+    println("closed-outline: {}", php::count(o));
+    long h2 = madc::parse_open(src2.c_str(), "hand2.mad");
+    println("fresh-handle-differs: {}", h2 != h ? 1 : 0);
+
+    // A buffer WITH a main must never run through these surfaces.
+    var trap = "int main() { println(\"EXECUTED\"); return 0; }\n";
+    long ht = madc::parse_open(trap.c_str(), "trap.mad");
+    println("trap opened: {}", ht > 0 ? 1 : 0);
+
+    // The project handle: manifest -> per-TU handles (parse-on-load),
+    // closed together. tu1 pulls a relative #include — the lexer's own
+    // file ingestion resolves it exactly as the CLI does.
+    long p = madc::project_open("tests/testparsehandle.cc.json");
+    println("project: {}", p > 0 ? 1 : 0);
+    value tus;
+    madc::project_tus(tus, p);
+    println("tus: {}", php::count(tus));
+    for ( value tu : tus )
+    {
+	long th = tu["handle"].as_integer();
+	value to;
+	madc::parse_outline(to, th);
+	value td;
+	madc::parse_check(td, th);
+	println("  {} handle={} outline={} check={}", tu["file"],
+		th > 0 ? 1 : 0, php::count(to), php::count(td));
+    }
+    println("project-close: {}", madc::project_close(p) ? 1 : 0);
+    println("project-missing: {}",
+	    madc::project_open("tests/no_such.cc.json") == 0 ? 1 : 0);
+    return 0;
+}

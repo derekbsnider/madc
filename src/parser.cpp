@@ -313,6 +313,27 @@ bool internal_program_source_emit(::Program &self,
 				  const std::string &target,
 				  value &out,
 				  const std::string &display_name);
+// Persistent parse handles (madcide AST-1; madc_program.cpp beside the
+// child pipeline): the same compile-never-execute children given a
+// LIFETIME — open/refresh/close, with outline / diagnostics /
+// enclosing-at-position served from the retained state; a project
+// handle groups a cc.json manifest's TUs.
+int64_t internal_program_parse_open(::Program &self,
+				    const std::string &source_text,
+				    const std::string &display_name);
+int64_t internal_program_parse_open_file(::Program &self,
+					 const std::string &path);
+bool internal_program_parse_refresh(::Program &self, int64_t handle,
+				    const std::string &source_text);
+bool internal_program_parse_close(int64_t handle);
+bool internal_program_parse_outline(int64_t handle, value &out);
+bool internal_program_parse_diagnostics(int64_t handle, value &out);
+bool internal_program_parse_enclosing(int64_t handle, int64_t line,
+				      int64_t column, value &out);
+int64_t internal_program_project_open(::Program &self,
+				      const std::string &manifest_path);
+bool internal_program_project_tus(int64_t handle, value &out);
+bool internal_program_project_close(int64_t handle);
 }
 
 namespace {
@@ -911,6 +932,92 @@ bool madc_source_emit(void *result, void *source, void *filename,
     return madc::internal_program_source_emit(*active, src, tgt, out,
 					      disp.empty() ? "<source>"
 							   : disp);
+}
+
+// ---- madc:: persistent parse handles (madcide AST-1) ---------------------
+// source/filename/path = std::string*, result = madc::value*. The handle
+// registries live beside the child pipeline in madc_program.cpp.
+
+int64_t madc_parse_open(void *source, void *filename)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_parse_open(*active, src,
+					     disp.empty() ? "<source>"
+							  : disp);
+}
+
+int64_t madc_parse_open_file(void *path)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+    return madc::internal_program_parse_open_file(*active,
+						  *(const std::string *)path);
+}
+
+bool madc_parse_refresh(int64_t handle, void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    return madc::internal_program_parse_refresh(*active, handle,
+						 *(const std::string *)source);
+}
+
+bool madc_parse_close(int64_t handle)
+{
+    return madc::internal_program_parse_close(handle);
+}
+
+void *madc_parse_outline(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_parse_outline(handle, out);
+    return result;
+}
+
+void *madc_parse_diagnostics(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_parse_diagnostics(handle, out);
+    return result;
+}
+
+void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_parse_enclosing(handle, line, column, out);
+    return result;
+}
+
+int64_t madc_project_open(void *manifest_path)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+    return madc::internal_program_project_open(*active,
+					       *(const std::string *)manifest_path);
+}
+
+void *madc_project_tus(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_project_tus(handle, out);
+    return result;
+}
+
+bool madc_project_close(int64_t handle)
+{
+    return madc::internal_program_project_close(handle);
 }
 
 bool madc_runtime_eval_expression_bool(void *expr)

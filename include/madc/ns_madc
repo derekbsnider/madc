@@ -71,9 +71,10 @@ namespace madc {
     // the display name diagnostics carry (default "<source>").
     //   diagnostics rows: { severity, phase, message, file, line, column }
     //       (severity "error"/"warning"; empty array = a clean buffer)
-    //   outline rows:     { kind, name, line, column } for the buffer's
-    //       OWN definitions, source order (kind: "function" today;
-    //       classes/globals are a named extension seat)
+    //   outline rows:     { kind, name, line, column, end_line } for the
+    //       buffer's OWN definitions, source order (kind: "function"
+    //       today; classes/globals are a named extension seat; end_line
+    //       = the closing brace's line)
     // Nothing in the buffer runs; diagnostics are captured, not printed.
     // Thread contract: each call owns its child program — the runtime-eval
     // machinery's confinement.
@@ -91,6 +92,39 @@ namespace madc {
     // child program — the runtime-eval machinery's confinement.
     bool emit(value &out, const char *source, const char *filename,
 	      const char *target);
+
+    // Persistent parse handles: the compiler-data surfaces above given a
+    // LIFETIME. parse_open compiles (NEVER executes) `source` in a child
+    // that stays live behind an int64 handle (>= 1; parse errors do not
+    // fail the open — they are the handle's state); parse_open_file opens
+    // a TU from disk through the lexer's own file ingestion (0 = the path
+    // is unreadable); parse_refresh whole-TU re-parses the handle with
+    // new text; parse_close frees it (handles are never reused within a
+    // run). Queries read the RETAINED state — no re-parse per query:
+    //   parse_outline / parse_check: the outline / diagnostics row shapes
+    //       above, from the last (re)parse.
+    //   parse_enclosing: the INNERMOST of the TU's own function
+    //       definitions containing (line, column) — a { kind, name, line,
+    //       column, end_line } object, or an empty value when none (the
+    //       status line's query).
+    // A project handle groups a compile_commands.json manifest's TUs:
+    // project_open parses every TU on open (0 = unreadable manifest;
+    // a TU whose file cannot be read carries handle 0 in the rows);
+    // project_tus returns { file, handle } rows; project_close closes the
+    // project's TU handles with it.
+    // Thread contract: a handle is confined to the thread/program that
+    // opened it — the runtime-eval machinery's confinement.
+    int64_t parse_open(const char *source, const char *filename);
+    int64_t parse_open_file(const char *path);
+    bool parse_refresh(int64_t handle, const char *source);
+    bool parse_close(int64_t handle);
+    value &parse_outline(value &out, int64_t handle);
+    value &parse_check(value &out, int64_t handle);
+    value &parse_enclosing(value &out, int64_t handle, int64_t line,
+			   int64_t column);
+    int64_t project_open(const char *manifest);
+    value &project_tus(value &out, int64_t handle);
+    bool project_close(int64_t handle);
 
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns

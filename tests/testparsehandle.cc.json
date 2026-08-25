@@ -1,0 +1,4 @@
+[
+  {"file":"testparsehandle_tu1.mad","command":"madc -c testparsehandle_tu1.mad"},
+  {"file":"testparsehandle_tu2.mad","command":"madc -c testparsehandle_tu2.mad"}
+]

@@ -208,6 +208,33 @@ bool emit(value &out, const char *source, const char *filename,
 	  const char *target)
 	{ std::string s = source ? source : "", f = filename ? filename : "", t = target ? target : ""; return madc_source_emit(&out, &s, &f, &t); }
 
+// Persistent parse handles (madcide AST-1): the compiler-data surfaces
+// above given a LIFETIME — open a live parse per TU, refresh it whole
+// on save/check, query outline / check / enclosing from the RETAINED
+// state without re-running the front end. The <ns_madc> declarations
+// carry the row shapes and the thread contract.
+int64_t parse_open(const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_parse_open(&s, &f); }
+int64_t parse_open_file(const char *path)
+	{ std::string p = path ? path : ""; return madc_parse_open_file(&p); }
+bool parse_refresh(int64_t handle, const char *source)
+	{ std::string s = source ? source : ""; return madc_parse_refresh(handle, &s); }
+bool parse_close(int64_t handle)
+	{ return madc_parse_close(handle); }
+value &parse_outline(value &out, int64_t handle)
+	{ madc_parse_outline(&out, handle); return out; }
+value &parse_check(value &out, int64_t handle)
+	{ madc_parse_diagnostics(&out, handle); return out; }
+value &parse_enclosing(value &out, int64_t handle, int64_t line,
+		       int64_t column)
+	{ madc_parse_enclosing(&out, handle, line, column); return out; }
+int64_t project_open(const char *manifest)
+	{ std::string m = manifest ? manifest : ""; return madc_project_open(&m); }
+value &project_tus(value &out, int64_t handle)
+	{ madc_project_tus(&out, handle); return out; }
+bool project_close(int64_t handle)
+	{ return madc_project_close(handle); }
+
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a
 // diagnosed no-op instead of throwing across the JIT boundary.

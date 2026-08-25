@@ -43,6 +43,7 @@ extern thread_local bool madc_verbose;
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
+#include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
 namespace madc {
@@ -4563,15 +4564,12 @@ static void compile_source_child_frontend(::Program &self, ::Program &child,
     child.compile();
 }
 
-bool internal_program_source_diagnostics(::Program &self,
-					 const std::string &source_text,
-					 madc::value &out,
-					 const std::string &display_name)
+// The row builders, shared by the per-query surfaces below and the
+// persistent parse handles (AST-1): one rendering of the compiler's
+// structured data, whether the child lives for one call or for a
+// handle's lifetime.
+static void diagnostic_rows_from_child(::Program &child, madc::value &out)
 {
-    self.clear_diagnostics();
-    self.clear_error();
-    ::Program child(self.engine);
-    compile_source_child_frontend(self, child, source_text, display_name);
     std::vector<madc::value> rows;
     for ( size_t i = 0; i < child.diagnostics.size(); ++i )
     {
@@ -4586,18 +4584,12 @@ bool internal_program_source_diagnostics(::Program &self,
 	rows.push_back(value::make_object(f));
     }
     out = value::make_array(rows);
-    return true;
 }
 
-bool internal_program_source_outline(::Program &self,
-				     const std::string &source_text,
-				     madc::value &out,
-				     const std::string &display_name)
+static void outline_rows_from_child(::Program &child,
+				    const std::string &display_name,
+				    madc::value &out)
 {
-    self.clear_diagnostics();
-    self.clear_error();
-    ::Program child(self.engine);
-    compile_source_child_frontend(self, child, source_text, display_name);
     std::vector<madc::value> rows;
     for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
     {
@@ -4614,9 +4606,35 @@ bool internal_program_source_outline(::Program &self,
 	f["name"] = value(tf->var.name);
 	f["line"] = value((int64_t)tf->line);
 	f["column"] = value((int64_t)tf->column);
+	f["end_line"] = value((int64_t)tf->end_line);
 	rows.push_back(value::make_object(f));
     }
     out = value::make_array(rows);
+}
+
+bool internal_program_source_diagnostics(::Program &self,
+					 const std::string &source_text,
+					 madc::value &out,
+					 const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    diagnostic_rows_from_child(child, out);
+    return true;
+}
+
+bool internal_program_source_outline(::Program &self,
+				     const std::string &source_text,
+				     madc::value &out,
+				     const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    outline_rows_from_child(child, display_name, out);
     return true;
 }
 
@@ -4653,6 +4671,249 @@ bool internal_program_source_emit(::Program &self,
     if ( rc != 0 )
 	return false;
     out = value(text);
+    return true;
+}
+
+// ---- persistent parse handles (madcide AST-1 / IDE-6) --------------------
+// The compile-never-execute child machinery above, given a LIFETIME: a
+// handle owns a live child Program whose parsed state serves outline /
+// diagnostics / enclosing-at-position queries WITHOUT re-running the
+// front end per query; refresh is a whole-TU re-parse (the design's
+// first cadence — incremental reparse is a named later lever). Handle
+// discipline = the ui_sessions registry: handle = slot index + 1,
+// closed slots stay null so handles are never reused within a run.
+// Thread contract: the runtime-eval confinement — a handle is used
+// only from the thread/program that opened it; these accessors are the
+// future per-context seam.
+
+struct parse_tu_state
+{
+    ::Program *child;
+    std::string display_name;
+    parse_tu_state() : child((::Program *)0) {}
+};
+
+static std::vector<parse_tu_state *> &parse_tu_handles()
+{
+    static std::vector<parse_tu_state *> handles;
+    return handles;
+}
+
+static parse_tu_state *parse_tu_get(int64_t handle)
+{
+    std::vector<parse_tu_state *> &h = parse_tu_handles();
+    if ( handle < 1 || (size_t)handle > h.size() )
+	return (parse_tu_state *)0;
+    return h[(size_t)handle - 1];
+}
+
+int64_t internal_program_parse_open(::Program &self,
+				    const std::string &source_text,
+				    const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    parse_tu_state *st = new parse_tu_state();
+    st->display_name = display_name;
+    st->child = new ::Program(self.engine);
+    compile_source_child_frontend(self, *st->child, source_text,
+				  display_name);
+    parse_tu_handles().push_back(st);
+    return (int64_t)parse_tu_handles().size();
+}
+
+// File-open variant: the lexer owns SOURCE ingestion (tokenize(path)
+// reads the file with its own error paths, and resolves the TU's
+// relative #includes exactly as the CLI does). 0 = unreadable path; a
+// file that reads but does not parse still opens — its state is the
+// diagnostics.
+int64_t internal_program_parse_open_file(::Program &self,
+					 const std::string &path)
+{
+    struct stat sb;
+    if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
+	return 0;
+    self.clear_diagnostics();
+    self.clear_error();
+    parse_tu_state *st = new parse_tu_state();
+    st->display_name = path;
+    st->child = new ::Program(self.engine);
+    st->child->registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    {
+	DiagnosticRenderMute mute;
+	TokenProgram *tp = st->child->tokenize(path.c_str());
+	if ( tp && st->child->parse(tp) )
+	    st->child->compile();
+    }
+    parse_tu_handles().push_back(st);
+    return (int64_t)parse_tu_handles().size();
+}
+
+bool internal_program_parse_refresh(::Program &self, int64_t handle,
+				    const std::string &source_text)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    self.clear_diagnostics();
+    self.clear_error();
+    // Whole-TU re-parse: a Program is not resettable, so refresh is a
+    // fresh child in the same slot — the handle's identity survives.
+    delete st->child;
+    st->child = new ::Program(self.engine);
+    compile_source_child_frontend(self, *st->child, source_text,
+				  st->display_name);
+    return true;
+}
+
+bool internal_program_parse_close(int64_t handle)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    delete st->child;
+    delete st;
+    parse_tu_handles()[(size_t)handle - 1] = (parse_tu_state *)0;
+    return true;
+}
+
+bool internal_program_parse_outline(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    outline_rows_from_child(*st->child, st->display_name, out);
+    return true;
+}
+
+bool internal_program_parse_diagnostics(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    diagnostic_rows_from_child(*st->child, out);
+    return true;
+}
+
+// Outline-at-position (the status line's query): the INNERMOST of the
+// TU's own function definitions whose [line .. end_line] range contains
+// the position — start bound (line, column) inclusive, end bound the
+// closing brace's line (a caret on that line counts as inside; no end
+// column is recorded). Innermost = the latest-starting match, so a
+// definition nested inside another wins. True with an EMPTY out = a
+// valid handle with no enclosing definition; false = a bad handle.
+bool internal_program_parse_enclosing(int64_t handle, int64_t line,
+				      int64_t column, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    TokenFunc *best = (TokenFunc *)0;
+    ::Program &child = *st->child;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenBase *tb = child.pending_funcs[i];
+	TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+	if ( !tf )
+	    continue;
+	if ( !tf->file || st->display_name != tf->file )
+	    continue;
+	if ( (int64_t)tf->line > line
+	  || ((int64_t)tf->line == line && (int64_t)tf->column > column) )
+	    continue;
+	if ( (int64_t)tf->end_line < line )
+	    continue;
+	if ( !best || tf->line > best->line
+	  || (tf->line == best->line && tf->column > best->column) )
+	    best = tf;
+    }
+    if ( !best )
+	return true;
+    std::map<std::string, madc::value> f;
+    f["kind"] = value(std::string("function"));
+    f["name"] = value(best->var.name);
+    f["line"] = value((int64_t)best->line);
+    f["column"] = value((int64_t)best->column);
+    f["end_line"] = value((int64_t)best->end_line);
+    out = value::make_object(f);
+    return true;
+}
+
+// ---- project handles (the cc.json manifest grouped as TU handles) -------
+// Same registry discipline, separate id space. Opening a project parses
+// every TU (parse-on-load — the AST-1 measurement's subject); a TU whose
+// file cannot be read carries handle 0 in the rows (visible, not fatal).
+
+struct parse_project_state
+{
+    std::vector<std::string> files;
+    std::vector<int64_t> tus;
+};
+
+static std::vector<parse_project_state *> &parse_project_handles()
+{
+    static std::vector<parse_project_state *> handles;
+    return handles;
+}
+
+static parse_project_state *parse_project_get(int64_t handle)
+{
+    std::vector<parse_project_state *> &h = parse_project_handles();
+    if ( handle < 1 || (size_t)handle > h.size() )
+	return (parse_project_state *)0;
+    return h[(size_t)handle - 1];
+}
+
+int64_t internal_program_project_open(::Program &self,
+				      const std::string &manifest_path)
+{
+    ProjectManifest manifest;
+    std::string err;
+    if ( !read_compile_commands(manifest_path, manifest, err) )
+	return 0;
+    parse_project_state *ps = new parse_project_state();
+    for ( size_t i = 0; i < manifest.tus.size(); ++i )
+    {
+	const ProjectTU &tu = manifest.tus[i];
+	ps->files.push_back(tu.file);
+	ps->tus.push_back(internal_program_parse_open_file(self, tu.file));
+    }
+    parse_project_handles().push_back(ps);
+    return (int64_t)parse_project_handles().size();
+}
+
+bool internal_program_project_tus(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_project_state *ps = parse_project_get(handle);
+    if ( !ps )
+	return false;
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < ps->files.size(); ++i )
+    {
+	std::map<std::string, madc::value> f;
+	f["file"] = value(ps->files[i]);
+	f["handle"] = value(ps->tus[i]);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return true;
+}
+
+bool internal_program_project_close(int64_t handle)
+{
+    parse_project_state *ps = parse_project_get(handle);
+    if ( !ps )
+	return false;
+    for ( size_t i = 0; i < ps->tus.size(); ++i )
+	if ( ps->tus[i] > 0 )
+	    internal_program_parse_close(ps->tus[i]);
+    delete ps;
+    parse_project_handles()[(size_t)handle - 1] = (parse_project_state *)0;
     return true;
 }
 
