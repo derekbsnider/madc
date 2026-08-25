@@ -360,7 +360,7 @@ no new parser syntax; `render { }` blocks are a later ergonomic layer
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 8.0 | madcide v1 — the hub-doc Phase-2 gate: buffer + undo through the entry lens, diagnostics/outline panes as projections of live compiler data (`madc::diagnostics`/`outline`), keybinding profiles as data (JOE/WordStar `^K` chords default, owner-directed; configurable via `ui::tui_bind_keys`) | — | **DONE — 2026-08-25** (`examples/madcide`; wave 1149/0/0/9 + EXE 1105/0) | [plan](2026-08-25-madcide-phase2.md) |
+| 8.0 | madcide v1 — the hub-doc Phase-2 gate: buffer + undo through the entry lens, diagnostics/outline panes as projections of live compiler data (`madc::diagnostics`/`outline`), keybinding profiles as data (JOE/WordStar `^K` chords default, owner-directed; configurable via `ui::tui_bind_keys`) | — | **DONE — 2026-08-25** (`tools/madcide` — relocated from examples/ per the owner's tool-not-example ruling; wave 1149/0/0/9 + EXE 1105/0) | [plan](2026-08-25-madcide-phase2.md) |
 | 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Largely subsumed: piece table + undo shipped as the hub text component (7.2/8.0); remaining = the reusable-library packaging question | [madc-ide.md](madc-ide.md) |
 | 8.2 | libmadcedit curses rendering | 2-3 wk | Subsumed by the 7.2 TUI provider (hand-rolled VT100 target behind the seam) | [madc-ide.md](madc-ide.md) |
 | 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Profiles-as-data SHIPPED (8.0: joe/pico; more profiles = data files); highlighting = a projection-hints design, Future | [madc-ide.md](madc-ide.md) |
@@ -441,7 +441,7 @@ run in parallel.
  ║── Track 7.2  Rendering: Level 1 terminal backend      [DONE 2026-08-25]
  ║   └── R1–R5 shipped (VT100 provider, checks, lined+vised editors)
  ║── Track 8.0  madcide v1 (hub Phase 2 gate)            [DONE 2026-08-25]
- ║   └── examples/madcide: undo through the entry lens, diagnostics/
+ ║   └── tools/madcide: undo through the entry lens, diagnostics/
  ║       outline panes over madc::diagnostics/outline, keybinding
  ║       profiles as data (JOE ^K chords default); 8.1/8.2 subsumed
 

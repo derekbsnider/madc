@@ -12,7 +12,8 @@
 > capture replaces rendering via `DiagnosticRenderMute`); the R3
 > sibling enforced (re-entrancy latch, `ui::bind_require_key`
 > code-entity gating; compile-once re-scoped on the baked-ctx blocker);
-> `examples/madcide` over the shared `editor_events.inc` split
+> `tools/madcide` (relocated from examples/ 2026-08-25 — a tool, not an
+> example) over the shared `editor_events.inc` split
 > (testvised/testlineed byte-identical). FIXED en route (own commit):
 > stale ambient token position — eval-child and `--project` TU2+
 > diagnostics now carry their OWN file:line (byte-matching the

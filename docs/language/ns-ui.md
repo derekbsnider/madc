@@ -279,8 +279,9 @@ differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
 target. `examples/texteditor/vised.mad` is the worked example of the
-editor pair (Pico-style fixed chords); `examples/madcide/madcide.mad`
-is the worked example of profiles-as-data (JOE/WordStar `^K` chords
+editor pair (Pico-style fixed chords); `tools/madcide/madcide.mad`
+(a tool, not an example) is the worked case of profiles-as-data
+(JOE/WordStar `^K` chords
 default, the pico profile respelling the same actions) and of the
 compiler-data panes (`madc::diagnostics` / `madc::outline` rows
 composed as a navigable `choice` whose chosen row moves the caret).

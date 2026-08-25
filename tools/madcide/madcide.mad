@@ -1,5 +1,5 @@
 // madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
-// Usage: madc examples/madcide/madcide.mad <file> [ro]
+// Usage: madc tools/madcide/madcide.mad <file> [ro]
 // Run it from the repository root (verb bodies and keybinding profiles
 // load by relative path). The buffer is the texteditor machinery; the
 // diagnostics pane and outline are projections of live compiler data;
@@ -9,8 +9,8 @@
 // ^K O outline · ^K P swap profile), Pico-style single chords in the
 // pico profile. Tab cycles focus (buffer / pane / menu); a pane row
 // chosen with enter moves the caret to its line.
-#include "../texteditor/lined_core.inc"
-#include "../texteditor/editor_events.inc"
+#include "../../examples/texteditor/lined_core.inc"
+#include "../../examples/texteditor/editor_events.inc"
 #include "madcide_core.inc"
 
 int main(int argc, char **argv)

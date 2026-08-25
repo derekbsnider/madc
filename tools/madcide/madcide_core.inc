@@ -369,7 +369,7 @@ void run_ide(const char *path, bool ro)
 	return;
     }
     long es = ui::entity_by_name(w, "editor-state");
-    ui::set(w, es, "profile_dir", "examples/madcide/profiles");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     long t = ui::tui_open();
     if ( t == 0 )
 	return;

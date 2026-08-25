@@ -155,7 +155,7 @@ The compiler's own structured data, as values — compile (NEVER execute)
 a source buffer with the same front end `madc` runs, in a
 policy-clamped child, and read what it found. Diagnostics are CAPTURED,
 not printed (nothing reaches stderr); nothing in the buffer runs. This
-is the meta-level surface an IDE projects (`examples/madcide`'s
+is the meta-level surface an IDE projects (`tools/madcide`'s
 diagnostics pane and outline), and it serves any tool that wants
 compile results as data — a linter, a doc generator, a test harness.
 

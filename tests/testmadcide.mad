@@ -1,5 +1,5 @@
 // madcide Phase-2 gate, headless (hub doc Phase 2; plan IDE-4). The
-// application under test is THE example (examples/madcide — one copy):
+// application under test is THE tool (tools/madcide — one copy):
 // events arrive as the exact value shapes ui::tui_event produces, chord
 // ACTION events included (the byte->chord adapter itself is pinned by
 // test_tui_model and the pty smoke gate). Pins the gate's three clauses:
@@ -12,7 +12,7 @@
 //      IDENTICAL (bindings are data; the composition path is untouched).
 #include "../examples/texteditor/lined_core.inc"
 #include "../examples/texteditor/editor_events.inc"
-#include "../examples/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_core.inc"
 
 void ev_text(value &e, const char *t)
 {
@@ -57,17 +57,17 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
-    ui::set(w, es, "profile_dir", "examples/madcide/profiles");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
 
     // -- profiles are data: the same actions, respelled per profile --
     value txt;
-    php::file_get_contents(txt, "examples/madcide/profiles/joe.keys");
+    php::file_get_contents(txt, "tools/madcide/profiles/joe.keys");
     value joe;
     parse_keys(joe, txt.c_str());
     println("joe: [^k s]={} [^k x]={} [^c]={}",
 	    joe["^k s"], joe["^k x"], joe["^c"]);
-    php::file_get_contents(txt, "examples/madcide/profiles/pico.keys");
+    php::file_get_contents(txt, "tools/madcide/profiles/pico.keys");
     value pico;
     parse_keys(pico, txt.c_str());
     println("pico: [^s]={} [^k]={}", pico["^s"], pico["^k"]);
