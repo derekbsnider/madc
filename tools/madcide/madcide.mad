@@ -15,6 +15,10 @@
 // plus C++ (the reverse render) on a C/C++ buffer — the view seam:
 // read-only lenses over the one document),
 // Pico-style single chords in the pico profile.
+// The buffer holds a persistent parse handle (madc::parse_open at load,
+// whole-TU refresh on check/save/outline); the status line shows the
+// enclosing function from its RETAINED state — composition never runs
+// the compiler.
 // Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
 // moves the caret to its line.
 #include "../../examples/texteditor/lined_core.inc"

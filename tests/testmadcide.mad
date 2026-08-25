@@ -131,6 +131,12 @@ int main()
     apply_ide_event(w, es, doc, e);
     println("goto-outline: caret={}", es_int(w, es, "caret", -1));
 
+    // -- AST-1: the status line's enclosing-function suffix — a RETAINED
+    //    read of the buffer's parse handle (caret 43 = line 2's head,
+    //    inside twice). children: heading, edit, pane, status, menu.
+    compose_ide_tree(tree, w, es, doc);
+    println("status-fn: {}", tree["children"][3]["content"]);
+
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;
     compose_ide_tree(before, w, es, doc);
