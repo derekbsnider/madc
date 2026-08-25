@@ -1,0 +1,8 @@
+// The tui_smoke_gate's NEGATIVE CONTROL: a program that never enters the
+// TUI and draws nothing. The pty harness must FAIL on this — proving it
+// detects a broken terminal path rather than passing vacuously.
+int main()
+{
+    printf("EVENTS=\n");
+    return 0;
+}

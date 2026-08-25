@@ -183,4 +183,31 @@ namespace ui {
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
+
+    // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
+    // provider seam (the built-in target is the dependency-free
+    // VT100/xterm one; richer providers register beside it). The loop:
+    // compose the projection as data -> tui_render -> tui_event ->
+    // apply. The SAME value-shaped tree render_tree typesets
+    // sequentially presents on the grid — a `choice` menu becomes
+    // NAVIGABLE (arrows move the selection, enter chooses), an `edit`
+    // node becomes a scrolled document window whose caret/selection ride
+    // its hints ({caret, sel_start, sel_end} — byte offsets).
+    //
+    // tui_open: 0 with the reason on stderr when no target can serve
+    // (no tty, none registered, one already open). tui_event blocks for
+    // the next semantic event object:
+    //   {event:"text", text}          a coalesced printable run
+    //   {event:"key", key}            "up","enter","^s",... for the app
+    //   {event:"choose", option, action}  option is 1-based — the same
+    //       number the level-0 menu prints
+    //   {event:"focus"} {event:"resize"}  recompose and re-render
+    // and returns false at end of input. Render before the first event;
+    // tab cycles focus between the tree's choice/edit nodes.
+    int64_t tui_open();
+    void    tui_close(int64_t t);
+    int64_t tui_rows(int64_t t);
+    int64_t tui_cols(int64_t t);
+    void    tui_render(int64_t t, int64_t w, value &tree);
+    bool    tui_event(value &out, int64_t t, int64_t w);
 }

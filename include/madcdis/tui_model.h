@@ -277,6 +277,9 @@ public:
 	for ( size_t i = 0; i < n; ++i )
 	    feed_byte((unsigned char)bytes[i], out);
     }
+    // Mid-sequence? The target polls briefly only then — an unambiguous
+    // batch pays zero added latency.
+    bool pending() const { return _st != state::normal; }
     // The input paused: a pending bare ESC is the esc key; a partial
     // CSI/SS3 is line noise and drops.
     void flush(std::vector<tui_keyev> &out)
