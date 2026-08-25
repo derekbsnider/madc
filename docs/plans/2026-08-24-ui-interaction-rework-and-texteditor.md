@@ -187,16 +187,75 @@ remain the libmadc-host form, exercised at the unit level):
   bodies, or the gatherer form moving the rule to one availability
   seat).
 
-### R5 — curses TUI provider
+### R5 — level-1 TUI provider — **EXECUTED (2026-08-25)**
 
-- First level-1 renderer as an optional dat-style provider: layout,
-  focus, key input adapter, differential cell updates — all INSIDE the
-  provider; key-run coalescing into one semantic `insert_text` (§7.5).
-- Gate (= design doc success criteria 3 + 4 + the tracer clause): the TUI
-  editor and the line editor drive the SAME TextDocument actions with no
-  duplicated mutation logic; the same Choice projection renders numbered
-  in line mode and navigable in the TUI; ≥1 verb still executing from
-  madc source; adventure oracle green.
+Planned as "curses TUI provider"; the library choice was never actually
+decided, and the owner ruled 2026-08-25: **roll our own VT100/xterm
+target** (recon ideas from ncurses/termbox2/notcurses as needed) rather
+than vendor a dependency — deps come later, behind the same seam.
+
+As built:
+
+- **The model/target split** is what made a hand-rolled target cheap and
+  the whole level honest to test: `madcdis/tui_model.h` holds everything
+  that is not terminal I/O — tree→grid layout (heading/status bars,
+  wrapped content, the flexible `edit` window with caret/scroll/h-shift/
+  selection, the `choice` menu bar), focus + selection (the SAME tree
+  line mode numbers is navigable here — criterion 4), byte→key escape
+  parsing (CSI/SS3, bare-ESC flush), key→semantic-event adaptation with
+  printable-run coalescing (§7.5), and dirty-row differencing — all
+  dependency-free, unit-pinned (test_tui_model, 100 asserts).
+  Presentation state (scroll/shift/focus/selection) lives in the model
+  per §7.2; interaction state arrives as `edit`-node hints
+  ({caret, sel_start, sel_end} byte offsets). Roles gained `edit`;
+  `node_text()` became the one content-else-label spelling rule.
+- **The target seam** (`madcdis/tui_provider.h`, the dat-style registry —
+  register/create, madcdat's driver shape): `src/ui_term.cpp` is the
+  built-in target — raw termios (IXON off: ^S/^Q are keys), alternate
+  screen, CUP/SGR dirty-row repaint, poll-batched reads (the batch is
+  what coalescing rides) with a 25ms grace poll only when a sequence is
+  split (`tui_keyparse::pending`; the termbox2/ESCDELAY idea), SIGWINCH →
+  resize event, atexit terminal recovery. POSIX-gated; on _WIN32 nothing
+  registers and `ui::tui_open` refuses loudly (a Console target is a
+  later provider). Script surface: `ui::tui_open/close/rows/cols/render/
+  event` — compose-as-data in, semantic event objects out (`text`/`key`/
+  `choose` with the 1-BASED option number line mode prints/`focus`/
+  `resize`).
+- **The availability check binding landed first** (the R4-named §7.3
+  residue): verbs carry an optional state-conditional check, BOTH kinds
+  (native fn / madc source via `ui::bind_check`), evaluated by the ONE
+  `availability_of` that answers `ui::affordances` (probe invocations)
+  and gates `invoke` — enumeration and dispatch can never disagree
+  (invariant 5). Script protocol: "ok" = available, text = the disabled
+  reason, empty (an eval failure included) = loudly disabled. DupFamily
+  lineed_readonly_gate CONSOLIDATED: `checks/editable.madv` is the one
+  read-only rule, bound to c/i/a/d/w; the five body copies are gone and
+  the testlineed transcript stayed byte-identical.
+- **The editor pair** (criterion 3): `examples/texteditor/vised.mad` +
+  `vised_core.inc` — the semantic core (`apply_event`) is terminal-free
+  and drives the SAME document actions as lined: engine range primitives
+  at the caret for typing cadence; the SAME w/q/q! script verbs through
+  `ui::act` for turn cadence (^S/^Q/^X and the menu's choose land on
+  them). Typing consults the affordance-DERIVED editable verdict — one
+  rule, one seat. Caret/mark/clipboard/search live on the editor-state
+  bag; `setup_document()` is the shared open path.
+- **Gates MET:** `tests/testvised` (headless: the exact event objects
+  `ui::tui_event` produces, pinning inserts/movement/mark-cut-paste/
+  modified-quit refusal/search/"Wrote 15 bytes." through the w verb/
+  read-only refusals); `tests/testeditcheck` (one world-state rule flips
+  enumeration and dispatch together); `scripts/tui_smoke_gate.sh` in
+  fulltest (bin/madc on a REAL pty: alt-screen discipline, drawing,
+  attributes, cursor, the exact semantic event stream incl. resize —
+  plus a NEGATIVE-CONTROL program that must fail the harness); a real
+  pty run of vised (type, ^S, ^Q → the file gains the text); adventure
+  oracle green in the wave battery; every editor verb still madc source
+  (the tracer clause, exceeded as before).
+- **Named residues:** byte-oriented cells (UTF-8 glyph width);
+  focusable identity is discovery order (stable-shape contract);
+  Windows Console target; per-edit-node scroll keyed by slot; tab is
+  focus-cycling only (no literal tab insertion); the editable verdict is
+  derived at open (a mid-session read_only flip needs re-derivation);
+  page size fixed at 10 lines (the app does not know the region height).
 
 ### R1+R3 as executed (2026-08-24, the eviction)
 

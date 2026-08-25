@@ -151,8 +151,11 @@ application composes, so `render_tree(inspect_tree(...))` reproduces
 `render_inspect` byte-for-byte. Roles the level-0 renderer typesets:
 `heading`, `content`, `status`, `item`, `action`, `separator`, `list`
 (labeled), `choice` — a `choice` node's children are its OPTIONS,
-numbered in line mode; a selection-capable renderer reads the SAME tree.
-`group` and unknown roles are structure only.
+numbered in line mode; a selection-capable renderer reads the SAME tree
+— and `edit` (an editable text region bound to a document: content =
+the text, hints carry `{caret, sel_start, sel_end}` byte offsets),
+which level 0 linearizes as its text and the TUI presents as a scrolled
+window. `group` and unknown roles are structure only.
 
 ```c
 value menu;
@@ -173,6 +176,7 @@ ui::render_tree(text, w, menu);     // "Which way?\n  1. Go north\n"
 | Function | Description |
 |----------|-------------|
 | `bind_verb(w, name, source)` | Attach a madc-source BODY to a verb (the script-entity binding kind) |
+| `bind_check(w, name, source)` | Attach a madc-source availability CHECK to a bound verb (see below) |
 | `act(out, w, actor, verb, rest)` | Interpret + dispatch one invocation; result text is player-facing |
 | `affordances(out, w, actor)` | Array of `{action, target, provider, label, visible, enabled, reason}` |
 
@@ -189,12 +193,59 @@ driver phrases that).
 
 `affordances` enumerates what the actor can presently do, each entry
 carrying its truthful visible/enabled/reason state from the SAME
-keys+levels evaluator that gates execution — a frontend may hide or
-disable from this, it never grants.
+evaluator that gates execution — a frontend may hide or disable from
+this, it never grants.
+
+**Availability checks** are the state-conditional half of that
+evaluator ("a read-only document disables the edit verbs"). A check
+bound via `bind_check` runs with the same context fields as a verb body
+and answers `"ok"` for available or the refusal reason otherwise; any
+other outcome — an eval failure included — disables the verb with a
+loud generic reason, never a silent pass. The SAME evaluation answers
+`affordances` (each verb probed with an argument-less invocation over
+the actor's context) and gates `act`, so enumeration and dispatch can
+never disagree; an unmet keys/levels requirement answers first. Check
+bodies are READ-ONLY by contract: no mutation, no `ui::act`, no session
+lifecycle. One body can serve many verbs (it receives `verb`) — the
+texteditor binds `checks/editable.madv` to all five document-mutating
+commands.
 
 The pilot application (`tests/adventure_driver.inc` +
 `tests/adventure_verbs/*.madv`) is the worked example: the whole game
 is madc source bound through this surface.
+
+## Level-1 TUI (the grid frontend)
+
+| Function | Description |
+|----------|-------------|
+| `tui_open()` | Enter grid mode; TUI handle (>0), 0 with the reason on stderr |
+| `tui_close(t)` | Restore the terminal and release the handle |
+| `tui_rows(t)` / `tui_cols(t)` | Current surface size (−1 = bad handle) |
+| `tui_render(t, w, tree)` | Compose a value-shaped projection tree onto the grid; only changed rows repaint |
+| `tui_event(out, t, w)` | Block for the next SEMANTIC event object; `false` at end of input |
+
+The loop is compose-as-data → `tui_render` → `tui_event` → apply. The
+SAME tree `render_tree` typesets sequentially presents on the grid: a
+`choice` menu becomes NAVIGABLE (arrows move the selection, enter
+chooses, tab cycles focus between the tree's choice/edit nodes), and an
+`edit` node becomes a scrolled document window whose caret and
+selection ride its hints (`{caret, sel_start, sel_end}` — byte
+offsets). Events arrive as value objects, names at the boundary:
+
+| Event | Payload | Meaning |
+|-------|---------|---------|
+| `{event:"text", text}` | the run | Coalesced printable keys — ONE semantic insertion |
+| `{event:"key", key}` | `"up"`, `"enter"`, `"^s"`, ... | A non-printable key for the application |
+| `{event:"choose", option, action}` | 1-based index + action name | Enter on the selected option — the same number the line-mode menu prints |
+| `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
+
+The renderer behind this surface is a provider: the built-in target is
+the dependency-free VT100/xterm one (raw mode, alternate screen,
+differential row repaint; POSIX only — on Windows `tui_open` refuses
+until a Console target registers). The model half — layout, focus, key
+semantics, coalescing, diffing — is engine code shared by every target.
+`examples/texteditor/vised.mad` is the worked example: the visual and
+line editors drive the SAME document actions and the SAME script verbs.
 
 ## Thread contract
 
