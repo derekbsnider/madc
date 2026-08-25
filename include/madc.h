@@ -1961,6 +1961,13 @@ struct ParsedParamSig
 uint32_t   madc_slot_id_for(TokenBase *t);
 TokenBase *madc_token_for_slot(uint32_t id);
 
+// Best-effort source spelling of a lex-time token — the ONE token-spelling
+// owner (defined in lexer.cpp): reconstruct_source (--dump-source) and the
+// reverse-render (--emit=c++) both read it. Numeric/char literals are
+// canonicalized where the original text was not retained (they re-lex to
+// the same value); pair with TokenBase::leading_trivia for layout.
+std::string madc_token_spelling(TokenBase *tb);
+
 class TokenStream
 {
     // STEP 2: the flat arena + cursor. _buf is the contiguous token table;
@@ -4375,6 +4382,11 @@ public:
 					// off by default → zero cost for batch
     std::string _trailing_trivia;	// whitespace/comments after the last token
 					// (full-fidelity; reconstruct_source appends it)
+    // Fidelity mode (keep_trivia) only: every #include directive AS WRITTEN,
+    // paired with the file that wrote it — the reverse-render (--emit=c++)
+    // re-emits a TU's own directives in place of the expanded header
+    // machinery. Empty in lean/batch mode (zero cost there).
+    std::vector<std::pair<std::string, std::string>> fidelity_include_directives;
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
