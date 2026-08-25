@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **The line-mode text editor + the piece-table text component (Track
+  7.2 R4, line-mode scope)**: `madcdis/text_buffer.h` — the hub's SECOND
+  component kind (Track 8.1 pulled forward): an immutable loaded
+  snapshot + append-only adds + piece splits, the ed line model,
+  a mirrored-oracle unit battery (lockstep with std::string). Sparse
+  component column on `world`, writes through `mutation_context`.
+  Session surface: `ui::world_new` (empty session) + the `ui::text_*`
+  family (load/insert/erase/replace, text/size/line_count/line/
+  line_start/line_len/find). `php::file_get_contents` /
+  `php::file_put_contents` land as the whole-file pair (PHP parity;
+  pre-L3 union mapping documented in `<ns_php>`). The editor itself
+  (`examples/texteditor/`) is pure application: nine madc-source verbs
+  (p/c/i/a/d/f/w/q/q!) through the one registry, every edit a range op
+  composed from line spans (design doc §7.7); read-only and
+  modified-quit rules refuse in the bodies (§7.3, refusal form). Gate:
+  `tests/testlineed.mad` drives THE example through a pinned two-phase
+  transcript (writable + read-only) with empty stderr.
 - **Projection-as-data (Track 7.2 R2)**: a projection tree is ordinary
   hub data — sparse value objects of `{ role, label, content, hints,
   states[], actions[], subject, children[] }` (names, not ids), bridged

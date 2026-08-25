@@ -139,22 +139,53 @@ projection + typeset from Phase 1 S3, so R2's delta was the data form):
 - Gate: the tracer verb runs; killing its code entity's key makes it
   unavailable through the SAME availability machinery as native verbs.
 
-### R4 — examples/texteditor, line mode
+### R4 — examples/texteditor, line mode — **EXECUTED (2026-08-25, line-mode scope)**
 
-- Resources: `TextDocument` (path, buffer, modified, read_only) +
-  `EditorSession` (document, caret, selection, mode, search) — the
-  interaction-state category gets its home (caret/selection/mode are
-  session state, never domain, never presentation).
-- Buffer = piece-table component (Track 8.1 pulled forward, per the hub
-  doc's Phase-2 note).
-- Actions (native kind): insert_text, delete_range, replace_range,
-  move_caret, save, search, quit; `filter_range` as the script-shaped
-  verb (R3's tracer home if not already landed).
-- Frontend: the line-mode range editor (design doc §7.7) — level 0,
-  dependency-free, `.input`/`.expect` testable.
-- Gate: scripted line-editing transcripts against a pinned oracle; the
-  read-only / modified / selection affordance rules of design doc §7.3
-  exercised; adventure oracle green.
+As-built (the eviction re-based this too — a pure-script example cannot
+register native-kind verbs, so the "native kind" action list became the
+GENERIC ENGINE PRIMITIVES those verbs call; native-kind editor bindings
+remain the libmadc-host form, exercised at the unit level):
+
+- **Buffer = piece-table component, LANDED** (`madcdis/text_buffer.h`;
+  Track 8.1 pulled forward): immutable snapshot + append-only adds +
+  piece splits; the ed line model (1-based, '\n' excluded, trailing
+  span counts, empty = zero lines); mirrored-oracle unit battery
+  (every mutation in lockstep with std::string, 128 asserts). The hub's
+  SECOND component kind: a sparse column on `world`, writes mirrored
+  through `mutation_context` (one write surface), const reads. RUNTIME-
+  ONLY: world_save does not carry it — the w verb persists the document
+  to its own file.
+- **Session surface:** `ui::world_new` (empty session — no world file)
+  and the `ui::text_*` family (load/insert/erase/replace + text/size/
+  line_count/line/line_start/line_len/find). Document properties
+  (path/modified/read_only) are APPLICATION bag keys.
+- **Resources as entities:** the document and editor-state are ordinary
+  entities; interaction state (quit today; caret/selection/mode join
+  with R5's TUI) lives on the editor-state bag — the interaction-state
+  category has its home.
+- **The application** (`examples/texteditor/`): lined.mad +
+  lined_core.inc + verbs/*.madv — p/c/i/a/d/f/w/q/q! are NINE
+  madc-source verb bodies through the one registry; every edit is a
+  range op composed from line spans (§7.7's "this still produces
+  replace_range"). `php::file_get_contents`/`file_put_contents` landed
+  as the whole-file pair (PHP parity, pre-L3 union mapping).
+- **Gate MET (line-mode form):** `tests/testlineed.mad` drives THE
+  example (one copy) through a pinned two-phase transcript
+  (`.input`/`.expect`/`.expect_quiet`): writable phase (edit cycle,
+  find, unknown-verb status, modified-quit refusal, w writes 23 bytes,
+  clean quit) then a read-only phase (c/d/w refusals). Adventure oracle
+  green in the wave battery.
+- **Named residues (R5 / the sibling design):** §7.3's rules surface
+  today at the REFUSAL level inside bodies; their affordance-ENUMERATION
+  form (read-only removes edit affordances from `ui::affordances`)
+  needs state-conditional gatherers scripts can feed — design that with
+  the script-verb sibling section. `filter_range` as a named tracer is
+  SUPERSEDED (every editor verb is script). caret/selection/search
+  state + insert_text-at-caret are R5's TUI arrival. The pasted
+  read-only check across five bodies and the range parse across two are
+  recorded DupFamilies (consolidation point = compile-once script
+  bodies, or the gatherer form moving the rule to one availability
+  seat).
 
 ### R5 — curses TUI provider
 

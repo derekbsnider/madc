@@ -42,6 +42,7 @@ while ( ui::prompt(line, "> ") )
 | Function | Description |
 |----------|-------------|
 | `world_open(path)` | Open a `%world` tagged file; session handle (>0), 0 on error |
+| `world_new()` | An EMPTY session — no world file, no declarations |
 | `world_save(w, path)` | Save the session's world (authored + runtime state) |
 | `world_close(w)` | Release one session |
 
@@ -86,6 +87,37 @@ ui::get(state, w, lamp, "prop");        // keyed read
 ui::set(w, lamp, "prop", 1);            // keyed write (hub-routed)
 ui::move(w, lamp, ui::location(w, ui::entity_by_name(w, "player")));
 ```
+
+## Text component (piece-table buffers)
+
+An entity may carry a text component — a piece-table buffer, the hub's
+second component kind ("an editor buffer = entity with a piece-table
+component"). Offsets and lengths are BYTES; lines are 1-based with
+length excluding the `'\n'`; a trailing unterminated span is a line and
+an empty buffer has zero lines. Writes route through the hub's mutation
+context; size/line/find reads answer −1 when the entity has no
+component (or the query is out of range). The component is RUNTIME-ONLY:
+`world_save` does not carry it — a document persists to its own file
+(the editor's `w` verb via `php::file_put_contents`). Document
+properties (`path`, `modified`, `read_only`) are application bag keys.
+
+| Function | Description |
+|----------|-------------|
+| `text_load(w, e, text)` | Reset the component to `text` (creates it) |
+| `text_insert(w, e, off, text)` | Insert before byte `off` (clamped) |
+| `text_erase(w, e, off, len)` | Erase the byte range (clamped) |
+| `text_replace(w, e, off, len, text)` | Erase + insert |
+| `text(out, w, e)` | The whole document (string kind) |
+| `text_size(w, e)` | Byte size (−1 = no component) |
+| `text_line_count(w, e)` | Lines (−1 = no component) |
+| `text_line(out, w, e, n)` | Line `n`'s text (empty when absent) |
+| `text_line_start(w, e, n)` | Line `n`'s byte offset (−1 when absent) |
+| `text_line_len(w, e, n)` | Line `n`'s length sans `'\n'` (−1 when absent) |
+| `text_find(w, e, from, needle)` | First occurrence at/after `from` (−1 = none) |
+
+The line-mode editor (`examples/texteditor/` — nine script verbs through
+the one registry, design doc §7.7) is the worked example: a line command
+composes a range edit from `text_line_start`/`text_line_len`.
 
 ## Access model and projections
 
