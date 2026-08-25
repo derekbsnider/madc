@@ -794,6 +794,20 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    bool project_tu = false)
 {
     out_builder = NULL;
+    // Error-tolerant parse (§3.5): a tree with CONTAINED parse errors never
+    // translates — TokenError nodes are parse-tree citizens that do not
+    // lower ("prevent compilation", the owner ruling). The gate lives HERE,
+    // on the one translate entry every lane (run, object, project, freeze,
+    // emit) flows through. The per-error diagnostics were already rendered
+    // (CLI) or captured as data (IDE children under DiagnosticRenderMute);
+    // this is the one summary line, mute-aware like the renders it follows.
+    if (prog && prog->error_nodes > 0) {
+	if (!DiagnosticRenderMute::active)
+	    fprintf(stderr, "%s: %zu parse error(s) — compilation refused\n",
+		    source_name ? source_name : "<source>",
+		    prog->error_nodes);
+	return NULL;
+    }
     // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
     // the builder's mangled-direct link tests (extern_symbol_can_link, the
     // facet-id extern recording) probe dlsym at CIR time, and under
@@ -6301,11 +6315,38 @@ int madc_project_emit_native(MadcEngine &engine,
 	return ok ? 0 : -1;
 }
 
+// The C++ reverse-render's source pack: the retained token stream + the
+// recorded include directives, passed as data (mc11-ir.md). tu_file through
+// intern_file so the compare matches the spelling the TU's tokens carry.
+// Two consumers: the normal --emit=c++ lane below (post validity gate) and
+// the contained-error lane (no tree exists to gate — the echo IS the view).
+static void cir_emit_cxx_source(FILE *out, Program *prog,
+				const char *source_name)
+{
+    CirEmitSource si;
+    si.tokens = &prog->tokens;
+    si.tu_file = prog->intern_file(std::string(source_name ? source_name
+							   : ""));
+    si.includes = &prog->fidelity_include_directives;
+    si.trailing = &prog->_trailing_trivia;
+    cir_emit_cxx(out, si);
+}
+
 // Build the cir_node tree and render it as C source (no compile/run).
 // Used by `--emit=c11|mc11`.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang)
 {
+    // Error-tolerant parse (§3.5): --emit=c++ is a SOURCE view, not a
+    // compilation — the retained tokens render exactly even when the parse
+    // contained errors (the debris keeps them), so this one lane stays
+    // available where every translating lane refuses at the gate. Exit
+    // nonzero all the same: the TU has errors (gcc-canon status).
+    if (lang == celCxx && prog && prog->error_nodes > 0) {
+	cir_emit_cxx_source(out, prog, source_name);
+	return 1;
+    }
+
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
 
@@ -6353,18 +6394,10 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	builder->emitc_lower_indirect_returns(tree);
 
     if (lang == celCxx) {
-	// The reverse-render reads the retained source (mc11-ir.md): the
-	// TU's token stream + its recorded include directives, passed as
-	// data. tu_file through intern_file so the compare matches the
-	// spelling the TU's tokens carry. The tree's role was the validity
-	// gate above — never render an erroneous tree.
-	CirEmitSource si;
-	si.tokens = &prog->tokens;
-	si.tu_file = prog->intern_file(std::string(source_name ? source_name
-							       : ""));
-	si.includes = &prog->fidelity_include_directives;
-	si.trailing = &prog->_trailing_trivia;
-	cir_emit_cxx(out, si);
+	// The reverse-render reads the retained source via the shared pack
+	// above. The tree's role was the validity gate — never present an
+	// erroneous tree's echo as clean output.
+	cir_emit_cxx_source(out, prog, source_name);
     }
     else
 	cir_emit_c(out, tree, lang);
