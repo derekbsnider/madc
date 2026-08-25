@@ -1,0 +1,38 @@
+joe: [^k s]=save [^k x]=savequit [^c]=discard
+pico: [^s]=save [^k]=cut
+check1: Check: clean.
+edited: caret=5 modified=true size=89
+undo: caret=0 modified=false size=84
+undo-empty: Nothing to undo.
+check2: Check: 1 problem(s).
+--- diagnostics view ---
+=== madcide: madc_ide_test.mad ===
+junk long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+
+Diagnostics
+  1. 1:4 error use of undeclared identifier 'junk'
+Check: 1 problem(s).
+  1. Save
+  2. Find
+  3. Quit
+--- end ---
+goto-diag: caret=0
+--- outline view ---
+=== madcide: madc_ide_test.mad ===
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+
+Outline
+  1. function add :1
+  2. function twice :2
+Ln 1, Col 1
+  1. Save
+  2. Find
+  3. Quit
+--- end ---
+goto-outline: caret=43
+swap: profile=pico tree=identical
+quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
+save: Wrote 92 bytes.
+savequit: cont=0 msg=Bye.

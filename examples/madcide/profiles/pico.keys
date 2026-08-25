@@ -1,0 +1,15 @@
+# madcide keybinding profile: Pico/vised-style single chords — the SAME
+# action vocabulary as joe.keys, respelled. Note ^k here is CUT: a chord
+# PREFIX in joe.keys, a complete binding in this profile. The adapter is
+# data all the way down; a swap is one ui::tui_bind_keys call.
+^s save
+^q quit
+^x discard
+^b mark
+^k cut
+^u paste
+^f find
+^z undo
+^r check
+^o outline
+^p profile
