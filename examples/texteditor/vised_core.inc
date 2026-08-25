@@ -96,83 +96,18 @@ bool apply_event(long w, long es, long doc, value &ev)
 void compose_tree(value &root, long w, long es, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
-    bool editable = es_flag(w, es, "editable");
 
     value head;
-    head["role"] = "heading";
     var p;
     ui::get(p, w, doc, "path");
-    head["label"] = p;
-    var m;
-    ui::get(m, w, doc, "modified");
-    if ( !editable )
-	head["content"] = "[read-only]";
-    else if ( !m.is_null() && m.as_boolean() )
-	head["content"] = "[modified]";
-
+    compose_heading(head, w, es, doc, p.c_str());
     value ed;
-    ed["role"] = "edit";
-    value t;
-    ui::text(t, w, doc);
-    ed["content"] = t;
-    value hints;
-    hints["caret"] = caret;
-    long mark = es_int(w, es, "mark", -1);
-    if ( mark >= 0 && mark != caret )
-    {
-	hints["sel_start"] = mark < caret ? mark : caret;
-	hints["sel_end"] = mark < caret ? caret : mark;
-    }
-    ed["hints"] = hints;
-
+    compose_edit_node(ed, w, es, doc, caret);
     value status;
-    status["role"] = "status";
-    var msg;
-    ui::get(msg, w, es, "msg");
-    if ( es_flag(w, es, "searching") )
-    {
-	var s;
-	ui::get(s, w, es, "search");
-	status["content"] = format("Find: {}", s);
-    }
-    else if ( !msg.is_null() && strlen(msg.c_str()) > 0 )
-	status["content"] = msg;
-    else
-    {
-	long line = line_of(w, doc, caret);
-	long start = ui::text_line_start(w, doc, line);
-	if ( start < 0 )
-	    start = 0;
-	status["content"] = format(
-	    "Ln {}, Col {}  ^S save ^F find ^B mark ^K cut ^U paste ^Q quit ^X discard",
-	    line, caret - start + 1);
-    }
-
-    value save;
-    save["role"] = "item";
-    save["content"] = "Save";
-    var sa = {};
-    sa.push("w");
-    save["actions"] = sa;
-    value find;
-    find["role"] = "item";
-    find["content"] = "Find";
-    var fa = {};
-    fa.push("f");
-    find["actions"] = fa;
-    value quit;
-    quit["role"] = "item";
-    quit["content"] = "Quit";
-    var qa = {};
-    qa.push("q");
-    quit["actions"] = qa;
+    compose_status(status, w, es, doc, caret,
+	"  ^S save ^F find ^B mark ^K cut ^U paste ^Q quit ^X discard");
     value menu;
-    menu["role"] = "choice";
-    var opts = {};
-    opts.push(save);
-    opts.push(find);
-    opts.push(quit);
-    menu["children"] = opts;
+    compose_menu(menu);
 
     value r;
     r["role"] = "group";

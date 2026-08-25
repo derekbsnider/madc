@@ -284,6 +284,109 @@ bool search_key(long w, long es, long doc, long caret, value &ev)
     return true;	// other keys are inert while searching
 }
 
+// ---- shared projection pieces (one rule, one seat; scoped-dupaudit
+// consolidation — vised and madcide compose the same document nodes) ----
+
+// The heading bar: the caller's label + the badge rule (read-only wins
+// over modified).
+void compose_heading(value &head, long w, long es, long doc,
+		     const char *label)
+{
+    value h;
+    h["role"] = "heading";
+    h["label"] = label;
+    var m;
+    ui::get(m, w, doc, "modified");
+    if ( !es_flag(w, es, "editable") )
+	h["content"] = "[read-only]";
+    else if ( !m.is_null() && m.as_boolean() )
+	h["content"] = "[modified]";
+    head = h;
+}
+
+// The edit window bound to the document: caret + mark..caret selection
+// as hints ({caret, sel_start, sel_end} byte offsets).
+void compose_edit_node(value &ed, long w, long es, long doc, long caret)
+{
+    value e;
+    e["role"] = "edit";
+    value t;
+    ui::text(t, w, doc);
+    e["content"] = t;
+    value hints;
+    hints["caret"] = caret;
+    long mark = es_int(w, es, "mark", -1);
+    if ( mark >= 0 && mark != caret )
+    {
+	hints["sel_start"] = mark < caret ? mark : caret;
+	hints["sel_end"] = mark < caret ? caret : mark;
+    }
+    e["hints"] = hints;
+    ed = e;
+}
+
+// The status line's priority rule: search prompt > transient message >
+// "Ln N, Col M" + the caller's idle suffix (vised's key legend; empty
+// for madcide).
+void compose_status(value &status, long w, long es, long doc, long caret,
+		    const char *idle_suffix)
+{
+    value st;
+    st["role"] = "status";
+    var msg;
+    ui::get(msg, w, es, "msg");
+    if ( es_flag(w, es, "searching") )
+    {
+	var s;
+	ui::get(s, w, es, "search");
+	st["content"] = format("Find: {}", s);
+    }
+    else if ( !msg.is_null() && strlen(msg.c_str()) > 0 )
+	st["content"] = msg;
+    else
+    {
+	long line = line_of(w, doc, caret);
+	long start = ui::text_line_start(w, doc, line);
+	if ( start < 0 )
+	    start = 0;
+	st["content"] = format("Ln {}, Col {}{}", line, caret - start + 1,
+			       idle_suffix);
+    }
+    status = st;
+}
+
+// The Save/Find/Quit menu — the SAME w/f/q actions both editors
+// dispatch to the same script verbs (criterion 4's choice tree).
+void compose_menu(value &menu)
+{
+    value save;
+    save["role"] = "item";
+    save["content"] = "Save";
+    var sa = {};
+    sa.push("w");
+    save["actions"] = sa;
+    value find;
+    find["role"] = "item";
+    find["content"] = "Find";
+    var fa = {};
+    fa.push("f");
+    find["actions"] = fa;
+    value quit;
+    quit["role"] = "item";
+    quit["content"] = "Quit";
+    var qa = {};
+    qa.push("q");
+    quit["actions"] = qa;
+    value mn;
+    mn["role"] = "choice";
+    var opts = {};
+    opts.push(save);
+    opts.push(find);
+    opts.push(quit);
+    mn["children"] = opts;
+    menu = mn;
+}
+
 // Caret movement and the direct edit keys (backspace/del/enter). True =
 // the key was one of ours; false = the dispatcher's key, not handled.
 bool edit_key(long w, long es, long doc, long caret, value &ev)
