@@ -507,6 +507,59 @@ applies), diagnostics linkage (node → Diagnostic index), the translate
 gate's spelling (loud pre-c2mir refusal, the madc_cir_emit validity-gate
 precedent), and slice A's reducer battery.
 
+## 3.6 AST-2 — as executed (2026-08-25, session 132)
+
+Shipped on `feature/madcide-ast2-claude`:
+
+- **Renderer half**: `tui_attr` grew the six chromatic VT100 base
+  colours (`tui_attr_of`/`tui_attr_name` = the one name↔attr converter,
+  the tui_key_name discipline); the edit node's hints carry `spans`
+  rows `{s, e, c}` (byte offsets + colour name; malformed rows skip);
+  `paint_edit` paints spans then the selection LAST through
+  `fill_range_overlap` — the selection's inline overlap math extracted
+  as THE one range-overlap rule before a second copy existed. The VT100
+  target's `emit_sgr` is the one attr→SGR table; normal↔reverse keep
+  their historical spellings, so the no-colour byte stream is unchanged
+  (testvised/testlineed byte-identity held structurally).
+- **Engine half**: `madc_token_highlight_class` (lexer.cpp beside the
+  spelling owner; enum + name table in tokens.h) classifies by lexed
+  TokenType — keyword/type/number/string, ident by tkIdent;
+  `madc::parse_spans` walks the handle's RETAINED TokenStream: rows
+  `{line, column, length, class}` with column = the span's START
+  (token stamps are END-anchored — the diagnostics convention — and
+  the query converts). Parse handles now arm `keep_trivia`
+  (re-measured: refresh 52–55 / 100–104 ms on the largest TUs — within
+  the unarmed range, so ONE mode, no flag); comment rows derive from
+  leading trivia anchored by each token's recorded position, plus the
+  trailing trivia. Function names classify by head-line name match
+  from `pending_funcs` (the from-the-tree differentiator; a call on
+  another line stays ident — pinned).
+- **Two lexer defects the span pins exposed (fixed at their owners,
+  own commit)**: (1) `pushback_reread` froze the cursor, so compound
+  type-specifier heads (`long` in `long add(`) stamped the LOOKAHEAD
+  word's end — same-line re-reads now rewind and recount; (2) the
+  lookahead ate the space before a non-word (`char *s` → `char*s` in
+  the c++ echo and a lost column) — consumed whitespace is given back.
+  `emitcxx_rt3.cpp` (char* heads, unsigned long long, long double)
+  joined the round-trip gate.
+- **App half**: `profiles/default.theme` (class → colour, parsed by
+  parse_keys — the ONE profile-line rule, adopted not copied);
+  `refresh_spans` converts query rows through the theme into hint rows
+  at (re)parse (ensure_phandle/reparse_buffer end with it); composition
+  attaches the stored rows, stored-space only. Staleness = the status
+  line's: colours refresh on check/save/outline; per-keystroke
+  freshness is a named later lever (a lex-only refresh or idle timer).
+- **Named refinements**: a lex-recorded token extent (spelling-length
+  drifts cosmetically on non-canonically-written literals); the exact
+  function-name token feeder; span-carrying views (display-space
+  spans through the doc_map).
+- Gates: `tests/testparsespans` (16 hand-computed rows incl. lead/
+  mid-block/trailing comments), testmadcide themed-span pins (9 rows,
+  exact offsets, head-line rule pinned), test_tui_model unit battery
+  (converter round trip + refusal, span painting, selection-wins,
+  bad-row skip), pty colour smoke (SGR 33/32 + historical 7m/0m on a
+  real terminal), emitcxx gate now 3 reducers × g++/clang++.
+
 ## 4. Still open (owner's)
 
 - Naming/spelling of artifact kinds and file extensions (e.g. the IDE

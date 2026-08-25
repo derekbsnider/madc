@@ -219,6 +219,14 @@ madc::parse_enclosing(e, h, line, column);
 // the INNERMOST of the TU's own function definitions containing
 // (line, column) — { kind, name, line, column, end_line }, or an empty
 // value when none (madcide's status line)
+value hl;
+madc::parse_spans(hl, h);
+// highlight classification rows for the TU's OWN tokens:
+// { line, column, length, class } — 1-based line, column = the span's
+// START (0-based); classes: keyword, ident, number, string, comment
+// (handles retain trivia — the IDE's fidelity mode), type, function
+// (an identifier the tree defines as a function, on its head line).
+// Data, not styling: a theme (app data) maps class names to colours.
 madc::parse_close(h);                             // handles never reuse
 
 long hf = madc::parse_open_file("src/tu.c");      // the lexer's own file

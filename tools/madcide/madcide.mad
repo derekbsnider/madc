@@ -18,7 +18,9 @@
 // The buffer holds a persistent parse handle (madc::parse_open at load,
 // whole-TU refresh on check/save/outline); the status line shows the
 // enclosing function from its RETAINED state — composition never runs
-// the compiler.
+// the compiler. Syntax colour rides the same handle: madc::parse_spans
+// classification through profiles/default.theme (class -> colour, data
+// like the keybindings), refreshed with the parse.
 // Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
 // moves the caret to its line.
 #include "../../examples/texteditor/lined_core.inc"

@@ -320,6 +320,21 @@ loud and whole-table: unknown spellings, printable-HEADED sequences
 are refused, leaving the installed table unchanged. An empty object
 clears; a profile swap is one call and never touches projections.
 
+**Highlight spans and the colour palette (AST-2).** An `edit` node's
+hints may also carry `spans`: an array of `{s, e, c}` rows — document
+byte offsets plus a colour NAME from the render palette (`normal`,
+`reverse`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`; a
+malformed row is skipped — spans are presentation). The model paints
+them through the same range-overlap rule as the selection, and the
+selection paints LAST (it wins where they overlap). The VT100 target
+emits the colour as SGR; a grid with only normal/reverse produces the
+byte-identical stream it always did. The renderer never classifies:
+`madc::parse_spans` (see `eval.md`) provides classification rows from a
+parse handle's retained state, and a THEME — app data, one
+`class colour` pair per line, the same profile-line rule as the
+keybindings (madcide's `profiles/default.theme`) — maps class names to
+palette colours.
+
 The renderer behind this surface is a provider: the built-in target is
 the dependency-free VT100/xterm one (raw mode, alternate screen,
 differential row repaint; POSIX only — on Windows `tui_open` refuses
