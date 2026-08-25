@@ -642,6 +642,30 @@ public:
     TokenStmt() : TokenBase() {}
 };
 
+// A CONTAINED parse error (error-tolerant parse, slice A — design doc
+// 2026-08-25-madcide-ast-arc-design.md §3.5). A statement-position citizen
+// (TokenStmt) so it slots into any statements list; the parse tree stays
+// structurally complete and queryable past the error, and ANY error node
+// present gates translate (the node never lowers to CIR — Program::
+// error_nodes counts them, cir_translate_guarded refuses on the count).
+// One class for the whole vocabulary: the kind is data (ErrorNodeKind,
+// tokens.h), not a subclass. Debris kinds retain the set-aside region as
+// [first, last] source-token pointers (the TokenStream buffer outlives the
+// parse); hole kinds are zero-width (first == last == NULL). The message
+// lives in Program::diagnostics[diag_index] — the diagnostic stays the one
+// message owner; the node links, never copies.
+class TokenError: public TokenStmt
+{
+public:
+    ErrorNodeKind kind;
+    size_t diag_index;		// -> Program::diagnostics (the message owner)
+    TokenBase *first;		// debris: first retained token of the region
+    TokenBase *last;		// debris: last retained token (NULL for holes)
+    TokenError(ErrorNodeKind k, size_t diag)
+	: TokenStmt(), kind(k), diag_index(diag), first(NULL), last(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttError; }
+};
+
 
 // Token for containing a "Compound Statement" built up of multiple "Statement" tokens
 // Used to to extend the "Function" token and the "Program" token, described below
@@ -2482,6 +2506,14 @@ public:
     NamespaceRegistry namespace_registry;
     ErrorInfo last_error;
     std::vector<Diagnostic> diagnostics;
+    // Contained parse errors (error-tolerant parse, §3.5): the count of
+    // TokenError nodes synthesized into this Program's tree. > 0 gates
+    // translate (cir_translate_guarded refuses — "prevent compilation").
+    // Incremented ONLY by make_error_node (the one construction point) and
+    // reset by clear_diagnostics, so the gate's count is exact by
+    // construction. The NODE count, not the diagnostic count — warnings
+    // and non-contained diagnostics never gate.
+    size_t error_nodes = 0;
     keyword_map_t  keyword_map;		// reserved keywords
     // C++ alternative-token operators (and/or/not/bitand/...): word spellings
     // that are exact synonyms for symbolic operators ([lex.digraph]). Held
@@ -5282,6 +5314,34 @@ public:
     bool load_buffer(const std::string &source_text,
 		     const std::string &display_name);
     bool parse(TokenProgram *);
+    // --- error-tolerant parse (slice A: panic recovery at the top-level
+    //     statement loop; design doc §3.5). ---
+    // THE parse-error recording rule: append the diagnostic (set_error) and
+    // render it (print_last_diagnostic — mute-aware). Three consumers: the
+    // recovery arms (which then CONTINUE the loop), the terminal catch
+    // cluster, and parse_expression_unit's cluster (which return failure).
+    // Returns the diagnostic's index — the TokenError link target.
+    size_t record_parse_error(const std::string &message,
+			      TokenBase *where, TokenProgram *tp);
+    // Skip to the next statement sync point after a contained error: consume
+    // tokens stepping DelimDepth (the one tracker) until a ';' outside every
+    // (/[/{, or a '}' that closes the region. The angle axis is deliberately
+    // NOT consulted for sync — broken code can open a '<' that never closes.
+    // Returns the last consumed token (NULL if the stream was already empty).
+    TokenBase *skip_to_statement_sync();
+    // THE TokenError construction point: every synthesized error node
+    // increments error_nodes here, so the translate gate's count is exact
+    // by construction. Position stamps from `first` when given.
+    TokenError *make_error_node(ErrorNodeKind kind, size_t diag_index,
+				TokenBase *first, TokenBase *last);
+    // Contain one top-level parse error: restore the statement-entry depths
+    // (the derive-body-catch recipe), skip to sync, plant the SkippedTokens
+    // node linking diagnostics[diag_index]. The parse loop then continues.
+    void contain_toplevel_parse_error(TokenProgram *tp, TokenBase *loop_head,
+				      size_t diag_index,
+				      size_t saved_compounds,
+				      size_t saved_class_scopes,
+				      const std::string &saved_func);
     TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,

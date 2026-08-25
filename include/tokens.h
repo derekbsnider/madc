@@ -73,7 +73,8 @@ enum class TokenType {
 	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript,
 	ttStructLit,
 	ttTypedefDecl,	// typedef declaration (preserves source order in AST)
-	ttStructDef	// standalone struct/union definition (preserves source order in AST)
+	ttStructDef,	// standalone struct/union definition (preserves source order in AST)
+	ttError		// contained parse error (TokenError) — never translates
 };
 
 enum class TokenID {
@@ -147,6 +148,46 @@ inline const char *highlight_class_name(HighlightClass c)
 	case HighlightClass::hcFunction: return "function";
     }
     return "none";
+}
+
+// Error-node vocabulary (error-tolerant parse, 2026-08-25 owner ruling —
+// design doc 2026-08-25-madcide-ast-arc-design.md §3.5). One TokenError
+// class carries the whole vocabulary; the KIND is data (enum-over-strings).
+// Two families:
+//   Holes  (Missing*): zero-width, SYNTHESIZED where the grammar required
+//          something — the tree stays structurally complete and queryable.
+//   Debris (UnexpectedToken, SkippedTokens): REAL source tokens set aside,
+//          spellings/positions/trivia retained — the source view stays exact.
+// ANY error node present gates translate (Program::error_nodes > 0 refuses
+// at cir_translate_guarded — "prevent compilation" is the owner ruling).
+// The full vocabulary is declared up front to prevent drift; synthesis
+// sites grow into it incrementally (slice A emits only the debris kinds).
+enum class ErrorNodeKind : unsigned char
+{
+    MissingExpression = 0,
+    MissingStatement,
+    MissingDeclaration,
+    MissingIdentifier,
+    MissingType,
+    MissingToken,
+    UnexpectedToken,
+    SkippedTokens
+};
+
+inline const char *error_node_kind_name(ErrorNodeKind k)
+{
+    switch ( k )
+    {
+	case ErrorNodeKind::MissingExpression:  return "MissingExpression";
+	case ErrorNodeKind::MissingStatement:   return "MissingStatement";
+	case ErrorNodeKind::MissingDeclaration: return "MissingDeclaration";
+	case ErrorNodeKind::MissingIdentifier:  return "MissingIdentifier";
+	case ErrorNodeKind::MissingType:        return "MissingType";
+	case ErrorNodeKind::MissingToken:       return "MissingToken";
+	case ErrorNodeKind::UnexpectedToken:    return "UnexpectedToken";
+	case ErrorNodeKind::SkippedTokens:      return "SkippedTokens";
+    }
+    return "ErrorNode";
 }
 
 
