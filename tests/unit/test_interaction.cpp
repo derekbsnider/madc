@@ -89,7 +89,7 @@ TEST_CASE("invocation — named value arguments and the text view")
 // An application gatherer: contribute one bound affordance per `exit`
 // link of the focus (application vocabulary lives HERE, never in the
 // resolver).
-static void exit_gatherer(const world &w, const verb_table &verbs,
+static void exit_gatherer(world &w, const verb_table &verbs,
 			  const credentials &creds,
 			  const interaction_context &ctx, affordance_set &out)
 {
@@ -106,7 +106,12 @@ static void exit_gatherer(const world &w, const verb_table &verbs,
 	a.bound_arguments[madc::hub::arg_key(w)]
 	    = madc::value(std::string(w.spelling(dirs[i])));
 	a.label = std::string("go ") + w.spelling(dirs[i]);
-	a.avail = verbs.availability_of(v_go, creds);
+	invocation probe;
+	probe.actor = ctx.actor;
+	probe.action = v_go;
+	probe.target = a.target;
+	probe.context = ctx;
+	a.avail = verbs.availability_of(w, creds, probe);
 	out.push_back(a);
     }
 }

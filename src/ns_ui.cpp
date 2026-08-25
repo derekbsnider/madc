@@ -335,6 +335,24 @@ void bind_verb(int64_t w, const char *name, const char *source)
     s->verbs.register_script_verb(s->w.intern(name), req, refusal, source);
 }
 
+// ui::bind_check — attach a madc-source availability CHECK to a bound
+// verb (the script kind of the state-conditional half of availability;
+// design §2.9 — "read-only document: remove insert, delete, replace,
+// save"). The body runs with the same context fields as a verb body and
+// answers "ok" for available or the refusal reason otherwise; it is
+// evaluated by the SAME machinery at enumeration (ui::affordances) and at
+// dispatch (ui::act), so the two can never disagree. CONTRACT: check
+// bodies are read-only — they must not mutate the world, act, or touch
+// session lifecycle (the verb-body re-entrancy policy, plus no writes).
+void bind_check(int64_t w, const char *name, const char *source)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !name || !*name || !source )
+	return;
+    if ( !s->verbs.set_script_check(s->w.intern(name), source) )
+	fprintf(stderr, "ui::bind_check: no verb `%s` bound\n", name);
+}
+
 int64_t entity_by_name(int64_t w, const char *name)
 {
     ui_session *s = ui_get(w);
@@ -498,7 +516,7 @@ madc::value &affordances(madc::value &out, int64_t w, int64_t actor)
     std::vector<affordance_gatherer> gatherers;	// application gatherers:
 						// a later, script-shaped seam
     affordance_set set = madc::hub::resolve_affordances(s->w, s->verbs, creds,
-							ctx, gatherers);
+							ctx, gatherers, w);
     for ( size_t i = 0; i < set.size(); ++i )
     {
 	const affordance &a = set[i];

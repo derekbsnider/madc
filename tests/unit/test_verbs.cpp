@@ -150,19 +150,22 @@ TEST_CASE("verb_table — availability is the refusal evaluator, surfaced")
 			take_binding);
 
     credentials player;
-    availability a = verbs.availability_of(v_edit, player);
+    availability a = verbs.availability_of(w, player,
+					   make_inv(w, "edit", 0, 0, ""));
     CHECK(a.visible);
     CHECK(!a.enabled);
     CHECK(a.reason == "Only a builder may reshape the world.");
 
     credentials builder;
     builder.grant_key(k_builder);
-    availability b = verbs.availability_of(v_edit, builder);
+    availability b = verbs.availability_of(w, builder,
+					   make_inv(w, "edit", 0, 0, ""));
     CHECK(b.visible);
     CHECK(b.enabled);
     CHECK(b.reason.empty());
 
-    availability none = verbs.availability_of(w.intern("xyzzy"), player);
+    availability none = verbs.availability_of(w, player,
+					      make_inv(w, "xyzzy", 0, 0, ""));
     CHECK(!none.visible);
     CHECK(!none.enabled);
 }
@@ -274,6 +277,105 @@ TEST_CASE("verb_table — script kind dispatches through the injected executor")
 					make_inv(w, "shape", hero, 0, ""));
     CHECK(refused.status == verb_status::refused);
     CHECK(refused.content.as_string() == "No.");
+}
+
+// State-conditional availability (the check binding, both kinds): the
+// SAME evaluator answers enumeration and dispatch, so they can never
+// disagree (design invariant 5).
+static bool locked_when_flagged(action_env &env, const invocation &inv,
+				std::string &reason)
+{
+    const madc::hub::entity *e = env.mc.view().get(inv.actor);
+    if ( e && e->bag.is_object() && e->bag.as_object().count("frozen") )
+    {
+	reason = "You are frozen solid.";
+	return false;
+    }
+    return true;
+}
+
+TEST_CASE("verb_table — native check gates enumeration and dispatch identically")
+{
+    world w;
+    entity_id hero = w.create("hero");
+    entity_id lamp = w.create("lamp");
+    verb_table verbs;
+    name_id v_take = w.intern("take");
+    verbs.register_verb(v_take, requirement(), std::string(), take_binding);
+    CHECK(verbs.set_check(v_take, locked_when_flagged));
+    CHECK_FALSE(verbs.set_check(w.intern("xyzzy"), locked_when_flagged));
+
+    credentials none;
+    invocation inv = make_inv(w, "take", hero, lamp, "");
+    availability a = verbs.availability_of(w, none, inv);
+    CHECK(a.enabled);
+    CHECK(verbs.invoke(w, none, inv).status == verb_status::ok);
+
+    w.get(hero)->bag.object()["frozen"] = madc::value(true);
+    availability frozen = verbs.availability_of(w, none, inv);
+    CHECK(frozen.visible);
+    CHECK(!frozen.enabled);
+    CHECK(frozen.reason == "You are frozen solid.");
+    verb_outcome r = verbs.invoke(w, none, inv);
+    CHECK(r.status == verb_status::refused);
+    CHECK(r.content.as_string() == "You are frozen solid.");
+
+    w.get(hero)->bag.object().erase("frozen");
+    CHECK(verbs.availability_of(w, none, inv).enabled);
+}
+
+TEST_CASE("verb_table — requirement refusal outranks the check; script checks answer ok/reason")
+{
+    world w;
+    entity_id hero = w.create("hero");
+    verb_table verbs;
+    name_id v_shape = w.intern("shape");
+    requirement builder_only;
+    builder_only.keys.push_back(w.intern("builder"));
+    verbs.register_verb(v_shape, builder_only, "Builders only.", take_binding);
+    CHECK(verbs.set_script_check(v_shape, "CHECK_NO"));
+    CHECK_FALSE(verbs.set_script_check(w.intern("xyzzy"), "CHECK_NO"));
+
+    // No executor injected: the check cannot silently pass.
+    credentials builder;
+    builder.grant_key(w.intern("builder"));
+    invocation inv = make_inv(w, "shape", hero, 0, "");
+    availability dark = verbs.availability_of(w, builder, inv);
+    CHECK(!dark.enabled);
+    CHECK(dark.reason == "script check has no executor");
+
+    // The executor answers by protocol: "ok" = available, text = the
+    // disabled reason, empty (an eval failure's shape) = loud generic.
+    verbs.set_script_executor(
+	[](action_env &, const invocation &, const std::string &source,
+	   madc::value &out) -> bool
+	{
+	    if ( source == "CHECK_OK" )
+		out = madc::value(std::string("ok"));
+	    else if ( source == "CHECK_NO" )
+		out = madc::value(std::string("The clay is fired."));
+	    return true;	// CHECK_EMPTY: out stays null
+	});
+
+    // The unmet requirement answers FIRST — its refusal, not the check's.
+    credentials player;
+    availability req = verbs.availability_of(w, player, inv);
+    CHECK(!req.enabled);
+    CHECK(req.reason == "Builders only.");
+
+    availability no = verbs.availability_of(w, builder, inv);
+    CHECK(!no.enabled);
+    CHECK(no.reason == "The clay is fired.");
+    CHECK(verbs.invoke(w, builder, inv).status == verb_status::refused);
+
+    verbs.set_script_check(v_shape, "CHECK_OK");
+    CHECK(verbs.availability_of(w, builder, inv).enabled);
+    CHECK(verbs.invoke(w, builder, inv).status != verb_status::refused);
+
+    verbs.set_script_check(v_shape, "CHECK_EMPTY");
+    availability broken = verbs.availability_of(w, builder, inv);
+    CHECK(!broken.enabled);
+    CHECK(broken.reason == "availability check failed");
 }
 
 TEST_CASE("mutation_context — text-component writes mirror through the one surface")

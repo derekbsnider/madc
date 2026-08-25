@@ -56,6 +56,16 @@ namespace ui {
     // must not open or close worlds (Phase 1 re-entrancy policy).
     void bind_verb(int64_t w, const char *name, const char *source);
 
+    // Attach a madc-source availability CHECK to a bound verb — the
+    // state-conditional half of availability ("read-only document
+    // disables the edit verbs"). The body runs with the same context
+    // fields as a verb body and answers "ok" for available or the
+    // refusal reason otherwise; the SAME evaluation gates ui::act and
+    // answers ui::affordances, so enumeration and dispatch can never
+    // disagree. Check bodies are READ-ONLY by contract: no mutation, no
+    // ui::act, no session lifecycle.
+    void bind_check(int64_t w, const char *name, const char *source);
+
     // Entity lookup by canonical name (0 = absent).
     int64_t entity_by_name(int64_t w, const char *name);
 
