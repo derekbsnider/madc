@@ -462,6 +462,51 @@ invalidated, run-path refused.
   taken, no new instrumentation is needed; undo itself needs nothing
   special (an undo is just another delta — parsing keys on content).
 
+## 3.5 Error-tolerant parse — the discussion seat (owner, 2026-08-25; DISCUSSION PENDING)
+
+**Owner (mid-AST-1, reacting to the stops-at-first-error probe):** add
+node types to CONTAIN pieces of broken code until they resolve — and
+they prevent compilation. Proposed vocabulary (owner's list):
+`MissingExpression`, `MissingStatement`, `MissingDeclaration`,
+`MissingIdentifier`, `MissingType`, `MissingToken`, `UnexpectedToken`,
+`SkippedTokens`.
+
+The list splits into the two families the industry converged on
+(Roslyn's IsMissing + skipped-token trivia; IntelliJ's PsiErrorElement):
+- **Holes** (`Missing*`): zero-width, SYNTHESIZED where the grammar
+  required something — the tree stays structurally complete and
+  queryable (outline/spans/enclosing keep working past the error).
+- **Debris** (`UnexpectedToken`, `SkippedTokens`): REAL source tokens
+  set aside, retaining spellings/positions/trivia — the original view
+  and the `--emit=c++` echo stay exact mid-error.
+Both carry/imply a diagnostic; ANY of them present gates translate —
+"prevent compilation" is the owner's ruling and matches MC11's
+constraint (cir_node derives from c2mir node_t; error nodes must be
+parse-tree citizens — TokenBase kinds — that never lower).
+
+Recon (2026-08-25): every interior parse error throws (Throw/throwit —
+thousands of sites) and lands in ONE catch cluster wrapping
+`Program::parse`'s top-level statement loop (parser.cpp ~66226), which
+records ONE diagnostic and abandons the rest of the stream. That
+structure hands us the recovery seam:
+- **Slice A — panic recovery at the loop** (small, high yield): catch
+  PER top-level statement; record the diagnostic (captured, not
+  terminal), wrap the failed region as `SkippedTokens`/`ErrorStmt`,
+  skip to a sync point (next `;`/`}` outside every delimiter —
+  `DelimDepth`, per the one-tracker law), continue. Interior throw
+  sites stay untouched. Yields multi-error diagnostics + post-error
+  definitions (outline/enclosing survive mid-edit states).
+- **Slice B+ — interior `Missing*` synthesis**: highest-yield interior
+  sites stop throwing and synthesize holes instead (statement/decl
+  heads first). Per-site migration; taken incrementally, gated by the
+  same "error nodes gate translate" rule.
+
+To settle at the discussion: the TokenType/TokenBase placement (new
+token classes vs one error class + a kind enum — enum-over-strings
+applies), diagnostics linkage (node → Diagnostic index), the translate
+gate's spelling (loud pre-c2mir refusal, the madc_cir_emit validity-gate
+precedent), and slice A's reducer battery.
+
 ## 4. Still open (owner's)
 
 - Naming/spelling of artifact kinds and file extensions (e.g. the IDE
