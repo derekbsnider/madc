@@ -189,5 +189,11 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
 // definitions. result = madc::value*, source/filename = std::string*.
 void *madc_source_diagnostics(void *result, void *source, void *filename);
 void *madc_source_outline(void *result, void *source, void *filename);
+// madc::emit — parse a buffer in the same child and render its cir_node
+// tree as `target` (the --emit= vocabulary: "c11"|"mc11"). result =
+// madc::value* (string kind), source/filename/target = std::string*.
+// False = unknown target or a buffer that does not parse/translate.
+bool madc_source_emit(void *result, void *source, void *filename,
+		      void *target);
 
 #endif // __NS_COMMON_H

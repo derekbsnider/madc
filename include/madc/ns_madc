@@ -82,6 +82,16 @@ namespace madc {
     value &outline(value &out, const char *source);
     value &outline(value &out, const char *source, const char *filename);
 
+    // The render query (the view seam's code views): parse `source` in the
+    // same policy-clamped child and render its cir_node tree (MC11-IR) as
+    // `target` — the --emit= vocabulary ("c11" | "mc11"). `out` becomes
+    // the rendered text (string kind). False = unknown target, or a buffer
+    // that does not parse/translate (diagnostics captured, not printed).
+    // Nothing in the buffer runs. Thread contract: each call owns its
+    // child program — the runtime-eval machinery's confinement.
+    bool emit(value &out, const char *source, const char *filename,
+	      const char *target);
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated

@@ -890,11 +890,9 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;
-            if (strcmp(lang, "c11") == 0)       emit_lang = celC11;
-            else if (strcmp(lang, "mc11") == 0) emit_lang = celMC11;
-            else {
+            if (!cir_emit_lang_of(lang, emit_lang)) {
                 std::cerr << "Unknown --emit target: " << lang
-                          << " (c11|mc11)" << std::endl;
+                          << " (" << CIR_EMIT_TARGETS << ")" << std::endl;
                 return 1;
             }
             do_emit = true;
