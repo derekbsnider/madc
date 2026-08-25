@@ -12,6 +12,13 @@ int main()
 	printf("no tui\n");
 	return 1;
     }
+    value binds;
+    binds["^k s"] = "save-chord";
+    if ( !ui::tui_bind_keys(t, binds) )
+    {
+	printf("bind failed\n");
+	return 1;
+    }
     var doc = "alpha\nbeta\n";
     var events = "";
     bool run = true;
@@ -69,6 +76,9 @@ int main()
 	else if ( kind == "choose" )
 	    events = format("{}choose:{}:{};", events, ev["option"],
 			    ev["action"]);
+	else if ( kind == "action" )
+	    events = format("{}action:{}:{};", events, ev["action"],
+			    ev["seq"]);
 	else
 	    events = format("{}{};", events, kind);
     }

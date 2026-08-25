@@ -201,13 +201,26 @@ namespace ui {
     //   {event:"key", key}            "up","enter","^s",... for the app
     //   {event:"choose", option, action}  option is 1-based — the same
     //       number the level-0 menu prints
+    //   {event:"action", action, seq}  a bound key sequence completed
+    //       (empty action = unbound miss; seq says which)
     //   {event:"focus"} {event:"resize"}  recompose and re-render
     // and returns false at end of input. Render before the first event;
     // tab cycles focus between the tree's choice/edit nodes.
+    //
+    // tui_bind_keys installs a keybinding PROFILE: a value object mapping
+    // key sequences to action names ({"^k s": "save", ...} — sequences
+    // are space-separated key spellings, the same names key events carry;
+    // chords any length; letters in sequences are case-insensitive, the
+    // JOE ^K S == ^K s convention). Bound sequences resolve ahead of the built-in
+    // key handling; a profile swap is one call (the table replaces the
+    // previous one; an empty object clears). False + stderr on an invalid
+    // table: unknown spelling, a printable-HEADED sequence (it would
+    // swallow typing), or a sequence shadowing a shorter binding.
     int64_t tui_open();
     void    tui_close(int64_t t);
     int64_t tui_rows(int64_t t);
     int64_t tui_cols(int64_t t);
     void    tui_render(int64_t t, int64_t w, value &tree);
+    bool    tui_bind_keys(int64_t t, value &table);
     bool    tui_event(value &out, int64_t t, int64_t w);
 }

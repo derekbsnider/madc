@@ -30,6 +30,9 @@ using madc::hub::tui_event;
 using madc::hub::tui_event_kind;
 using madc::hub::tui_model;
 using madc::hub::tui_dirty_rows;
+using madc::hub::tui_bindings;
+using madc::hub::tui_key_name;
+using madc::hub::tui_key_from_name;
 
 static std::vector<tui_keyev> parse(const char *bytes, bool flush = true)
 {
@@ -325,4 +328,184 @@ TEST_CASE("dirty rows — only changed rows repaint; a resize dirties all")
     tui_grid small;
     small.resize(3, 20);
     CHECK(tui_dirty_rows(small, next).size() == next.rows);
+}
+
+// ---- the bindings-as-data chord adapter (madcide IDE-1; owner-directed
+// JOE/WordStar ^K chords, configurable — a table of key sequences to
+// action names, never a second hardcoded map).
+
+TEST_CASE("key spelling — one owner, both directions")
+{
+    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, 'k')) == "^k");
+    CHECK(tui_key_name(tui_keyev(tui_key::ch, 's')) == "s");
+    CHECK(tui_key_name(tui_keyev(tui_key::ch, ' ')) == "space");
+    CHECK(tui_key_name(tui_keyev(tui_key::pgup)) == "pgup");
+
+    tui_keyev k;
+    REQUIRE(tui_key_from_name("^s", k));
+    CHECK(k.kind == tui_key::ctrl);
+    CHECK(k.ch == 's');
+    REQUIRE(tui_key_from_name("^S", k));	// generous in, canonical out
+    CHECK(k.ch == 's');
+    REQUIRE(tui_key_from_name("q", k));
+    CHECK(k.kind == tui_key::ch);
+    CHECK(k.ch == 'q');
+    REQUIRE(tui_key_from_name("space", k));
+    CHECK(k.kind == tui_key::ch);
+    CHECK(k.ch == ' ');
+    REQUIRE(tui_key_from_name("home", k));
+    CHECK(k.kind == tui_key::home);
+    CHECK(!tui_key_from_name("", k));
+    CHECK(!tui_key_from_name("^!", k));
+    CHECK(!tui_key_from_name("nosuch", k));
+}
+
+TEST_CASE("bindings — build validation is loud and whole-table")
+{
+    tui_bindings b;
+    CHECK(!b.bind("^k nosuchkey", "x"));	// unknown spelling
+    CHECK(!b.bind("", "x"));
+    CHECK(b.bind("^K S", "save"));		// normalizes to "^k s"
+    CHECK(b.bind("^k q", "quit"));
+    std::string err;
+    CHECK(b.finalize(err));
+    CHECK(b.bound("^k s"));
+    CHECK(b.action_of("^k s") == "save");
+    CHECK(b.prefix("^k"));
+    CHECK(!b.bound("^k"));
+
+    tui_bindings head;				// printable-headed: refused
+    CHECK(head.bind("g g", "goto"));
+    CHECK(!head.finalize(err));
+    CHECK(err.find("printable-headed") != std::string::npos);
+
+    tui_bindings shadow;			// prefix conflict: refused
+    CHECK(shadow.bind("^k", "block"));
+    CHECK(shadow.bind("^k s", "save"));
+    CHECK(!shadow.finalize(err));
+    CHECK(err.find("shadows") != std::string::npos);
+}
+
+static tui_bindings joe_table()
+{
+    tui_bindings b;
+    b.bind("^k s", "save");
+    b.bind("^k q", "quit");
+    b.bind("^s", "search");	// a single-key binding rides the same table
+    std::string err;
+    REQUIRE(b.finalize(err));
+    return b;
+}
+
+TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
+{
+    tui_model m;
+    m.set_bindings(joe_table());
+
+    // A printable run flushes BEFORE the chord fires; the chord's own
+    // printable continuation never joins a text run.
+    std::vector<tui_keyev> keys;
+    keys.push_back(tui_keyev(tui_key::ch, 'a'));
+    keys.push_back(tui_keyev(tui_key::ch, 'b'));
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::ch, 's'));
+    keys.push_back(tui_keyev(tui_key::ch, 'c'));
+    std::vector<tui_event> ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "ab");
+    CHECK(ev[1].kind == tui_event_kind::action);
+    CHECK(ev[1].action_name == "save");
+    CHECK(ev[1].seq == "^k s");
+    CHECK(ev[2].kind == tui_event_kind::text);
+    CHECK(ev[2].text == "c");
+
+    // Chord continuations are letter-case-insensitive (JOE's ^K S == ^K s):
+    // a shifted continuation matches the same binding.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::ch, 'S'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "save");
+    CHECK(ev[0].seq == "^k s");
+
+    // Single-key binding fires directly.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 's'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "search");
+    CHECK(ev[0].seq == "^s");
+
+    // An unbound completion reports the miss: empty action, the seq.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::ch, 'z'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "");
+    CHECK(ev[0].seq == "^k z");
+
+    // esc cancels a pending chord silently; the next key is ordinary.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::esc));
+    keys.push_back(tui_keyev(tui_key::ch, 'x'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "x");
+
+    // A resize passes through mid-chord and the chord still completes —
+    // across apply_keys BATCHES (pending is adapter state).
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::resize));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::resize);
+    CHECK(m.pending_chord() == "^k");
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ch, 'q'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "quit");
+}
+
+TEST_CASE("chords — bindings win over navigation; a swap restores it")
+{
+    world w;
+    roles r = roles::standard(w);
+    tui_model m;
+    m.compose(r, editor_tree(w, "text", 0), 8, 40);
+    // Focus the menu, then bind `up` — the profile owns the key now.
+    std::vector<tui_keyev> keys;
+    keys.push_back(tui_keyev(tui_key::tab));
+    std::vector<tui_event> ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+
+    tui_bindings b;
+    b.bind("up", "previous");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::up));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "previous");
+
+    // Swapping to an EMPTY table restores the built-in interpretation
+    // (choice navigation) — and abandons any pending chord.
+    m.set_bindings(tui_bindings());
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
 }

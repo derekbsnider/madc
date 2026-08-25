@@ -144,30 +144,12 @@ ui_tui *ui_tui_get(int64_t handle)
     return t[(size_t)handle - 1];
 }
 
-// Key spelling at the value boundary (ids/enums inside, names outside):
-// what a tui_event's `key` field carries to the script.
+// Key spelling at the value boundary: the model's tui_key_name is the one
+// spelling owner (both directions — the bindings tables parse with its
+// inverse), adopted here.
 std::string ui_key_name(madc::hub::tui_key k, char ch)
 {
-    switch ( k )
-    {
-	case madc::hub::tui_key::ctrl:
-	    return std::string("^") + ch;
-	case madc::hub::tui_key::enter:	    return "enter";
-	case madc::hub::tui_key::tab:	    return "tab";
-	case madc::hub::tui_key::backspace: return "backspace";
-	case madc::hub::tui_key::esc:	    return "esc";
-	case madc::hub::tui_key::up:	    return "up";
-	case madc::hub::tui_key::down:	    return "down";
-	case madc::hub::tui_key::left:	    return "left";
-	case madc::hub::tui_key::right:	    return "right";
-	case madc::hub::tui_key::home:	    return "home";
-	case madc::hub::tui_key::end:	    return "end";
-	case madc::hub::tui_key::pgup:	    return "pgup";
-	case madc::hub::tui_key::pgdn:	    return "pgdn";
-	case madc::hub::tui_key::del:	    return "del";
-	case madc::hub::tui_key::ins:	    return "ins";
-	default:			    return "";
-    }
+    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch));
 }
 
 ui_session *ui_get(int64_t handle)
@@ -920,9 +902,51 @@ void tui_render(int64_t t, int64_t w, madc::value &tree)
     u->painted = g;
 }
 
+// Install a keybinding PROFILE: a value object mapping key sequences
+// ("^k s" — space-separated spellings, the same names key events carry)
+// to action names. Bound sequences resolve ahead of every built-in key
+// interpretation and arrive as { event:"action", action:"name",
+// seq:"^k s" } (an unbound completion has an empty action and the seq —
+// the app may report it). The whole table replaces the previous one — a
+// profile swap is one call; an empty object clears. False + stderr on an
+// invalid table (unknown spelling, printable-headed sequence, a sequence
+// shadowing a shorter binding), leaving the installed table unchanged.
+bool tui_bind_keys(int64_t t, madc::value &table)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return false;
+    madc::hub::tui_bindings b;
+    if ( table.is_object() )
+    {
+	const std::map<std::string, madc::value> &o = table.as_object();
+	for ( std::map<std::string, madc::value>::const_iterator it
+		= o.begin(); it != o.end(); ++it )
+	{
+	    std::string action = it->second.is_null()
+		? std::string() : it->second.as_string();
+	    if ( !b.bind(it->first, action) )
+	    {
+		fprintf(stderr, "ui::tui_bind_keys: bad key sequence `%s`\n",
+			it->first.c_str());
+		return false;
+	    }
+	}
+    }
+    std::string err;
+    if ( !b.finalize(err) )
+    {
+	fprintf(stderr, "ui::tui_bind_keys: %s\n", err.c_str());
+	return false;
+    }
+    u->model.set_bindings(b);
+    return true;
+}
+
 // The next SEMANTIC event as a value object (names at the boundary):
 //   { event:"text",   text:"..." }       a coalesced printable run
 //   { event:"key",    key:"up"|"^s"|.. } a non-printable key
+//   { event:"action", action:"name", seq:"^k s" }  a bound sequence
 //   { event:"choose", option:N, action:"name" }  N is 1-based — the
 //       same number the level-0 menu prints for that option
 //   { event:"focus" } / { event:"resize" }  recompose and re-render
@@ -962,6 +986,11 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	    f["action"] = madc::value(e.action
 				      ? std::string(s->w.spelling(e.action))
 				      : std::string());
+	    break;
+	case madc::hub::tui_event_kind::action:
+	    f["event"] = madc::value(std::string("action"));
+	    f["action"] = madc::value(e.action_name);
+	    f["seq"] = madc::value(e.seq);
 	    break;
 	case madc::hub::tui_event_kind::resize:
 	    // The surface changed: refresh the stored dimensions so the
