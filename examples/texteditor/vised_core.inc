@@ -66,21 +66,52 @@ long caret_to_line(long w, long doc, long line, long col)
     return start + col;
 }
 
-// The typing gate, derived ONCE from the enumerated affordances: the
-// read-only rule lives in the shared availability check; the editor
-// reads its verdict (verb `c` disabled = the document is not editable)
-// instead of re-implementing it.
-bool derive_editable(long w, long es)
+// The typing gate AND its refusal prose, derived ONCE from the
+// enumerated affordances: the read-only rule lives in the shared
+// availability check; the editor stores its verdict and its reason
+// (verb `c`'s enumerated state) on the editor-state bag instead of
+// re-implementing or re-spelling either.
+void derive_access(long w, long es)
 {
+    bool editable = true;
     value affs;
     ui::affordances(affs, w, es);
     for ( value a : affs )
     {
 	var act = format("{}", a["action"]);
 	if ( act == "c" )
-	    return a["enabled"].as_boolean();
+	{
+	    editable = a["enabled"].as_boolean();
+	    var reason = format("{}", a["reason"]);
+	    ui::set(w, es, "ro_msg", reason.c_str());
+	}
     }
-    return true;
+    ui::set(w, es, "editable", editable);
+}
+
+// A typing-cadence edit was refused: the message is the CHECK's own
+// reason, read back off the bag — one rule, one spelling.
+void refuse_edit(long w, long es)
+{
+    var ro;
+    ui::get(ro, w, es, "ro_msg");
+    ui::set(w, es, "msg", ro.c_str());
+}
+
+// The editor session both entries (run_visual, the headless gate) open
+// the same way: document + editor-state + the shared verbs/check + the
+// derived access verdict.
+long setup_editor(long w, const char *path, bool ro)
+{
+    long doc = setup_document(w, path, ro);
+    if ( doc == 0 )
+	return 0;
+    long es = ui::create(w, "editor-state");
+    bind_lineed_verbs(w);
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    derive_access(w, es);
+    return doc;
 }
 
 // Dispatch a turn-cadence command through the SAME script verb the line
@@ -129,7 +160,12 @@ void cut_selection(long w, long es, long doc, long caret, bool editable)
 	ui::set(w, doc, "modified", true);
     }
     else
-	ui::set(w, es, "msg", "Document is read-only. (Copied.)");
+    {
+	var ro;
+	ui::get(ro, w, es, "ro_msg");
+	var m = format("{} (Copied.)", ro);
+	ui::set(w, es, "msg", m.c_str());
+    }
 }
 
 // Apply ONE semantic event (the value shape ui::tui_event produces).
@@ -158,7 +194,7 @@ bool apply_event(long w, long es, long doc, value &ev)
 	    ui::set(w, es, "search", pat.c_str());
 	}
 	else if ( !editable )
-	    ui::set(w, es, "msg", "Document is read-only.");
+	    refuse_edit(w, es);
 	else
 	{
 	    ui::text_insert(w, doc, caret, t.c_str());
@@ -252,7 +288,7 @@ bool apply_event(long w, long es, long doc, value &ev)
 	if ( !c.is_null() && strlen(c.c_str()) > 0 )
 	{
 	    if ( !editable )
-		ui::set(w, es, "msg", "Document is read-only.");
+		refuse_edit(w, es);
 	    else
 	    {
 		ui::text_insert(w, doc, caret, c.c_str());
@@ -315,7 +351,7 @@ bool apply_event(long w, long es, long doc, value &ev)
     if ( k == "backspace" )
     {
 	if ( !editable )
-	    ui::set(w, es, "msg", "Document is read-only.");
+	    refuse_edit(w, es);
 	else if ( caret > 0 )
 	{
 	    ui::text_erase(w, doc, caret - 1, 1);
@@ -327,7 +363,7 @@ bool apply_event(long w, long es, long doc, value &ev)
     if ( k == "del" )
     {
 	if ( !editable )
-	    ui::set(w, es, "msg", "Document is read-only.");
+	    refuse_edit(w, es);
 	else if ( caret < size )
 	{
 	    ui::text_erase(w, doc, caret, 1);
@@ -338,7 +374,7 @@ bool apply_event(long w, long es, long doc, value &ev)
     if ( k == "enter" )
     {
 	if ( !editable )
-	    ui::set(w, es, "msg", "Document is read-only.");
+	    refuse_edit(w, es);
 	else
 	{
 	    ui::text_insert(w, doc, caret, "\n");
@@ -451,17 +487,13 @@ void compose_tree(value &root, long w, long es, long doc)
 void run_visual(const char *path, bool ro)
 {
     long w = ui::world_new();
-    long doc = setup_document(w, path, ro);
+    long doc = setup_editor(w, path, ro);
     if ( doc == 0 )
     {
 	printf("cannot read %s\n", path);
 	return;
     }
-    long es = ui::create(w, "editor-state");
-    bind_lineed_verbs(w);
-    ui::set(w, es, "caret", 0);
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "editable", derive_editable(w, es));
+    long es = ui::entity_by_name(w, "editor-state");
     long t = ui::tui_open();
     if ( t == 0 )
 	return;

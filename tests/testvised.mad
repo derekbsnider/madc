@@ -36,24 +36,13 @@ void key_report(long w, long es, long doc, const char *k)
     printf("%s->%ld\n", k, es_int(w, es, "caret", -1));
 }
 
-long open_editor(long w, const char *path, bool ro)
-{
-    long doc = setup_document(w, path, ro);
-    long es = ui::create(w, "editor-state");
-    bind_lineed_verbs(w);
-    ui::set(w, es, "caret", 0);
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "editable", derive_editable(w, es));
-    return doc;
-}
-
 int main()
 {
     const char *path = "madc_vised_test.txt";
     php::file_put_contents(path, "alpha\nbeta\n");
 
     long w = ui::world_new();
-    long doc = open_editor(w, path, false);
+    long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
     printf("editable=%ld\n", es_flag(w, es, "editable") ? 1 : 0);
 
@@ -124,7 +113,7 @@ int main()
 
     printf("-- read-only --\n");
     long w2 = ui::world_new();
-    long d2 = open_editor(w2, path, true);
+    long d2 = setup_editor(w2, path, true);
     long es2 = ui::entity_by_name(w2, "editor-state");
     printf("editable=%ld\n", es_flag(w2, es2, "editable") ? 1 : 0);
     ev_text(e, "X");
