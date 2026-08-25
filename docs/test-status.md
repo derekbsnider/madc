@@ -1,6 +1,31 @@
 # Test Status
 
-> **Current (2026-08-25, Track 7.2 R4 line-mode scope —
+> **Current (2026-08-25, Track 7.2 R5 — feature/tui-provider-claude
+> merge wave):** the level-1 TUI: `madcdis/tui_model.h` (the
+> dependency-free grid/focus/key model) + `madcdis/tui_provider.h` (the
+> target seam) + `src/ui_term.cpp` (the hand-rolled VT100/xterm target —
+> owner-decided over vendoring ncurses/termbox2/notcurses) +
+> `ui::tui_open/close/rows/cols/render/event`; availability CHECK
+> bindings (`ui::bind_check`, both kinds, ONE evaluator behind
+> affordances and dispatch — design invariant 5; DupFamily
+> lineed_readonly_gate consolidated into `checks/editable.madv`); and
+> `examples/texteditor/vised.mad`, the visual editor over the SAME
+> document actions and w/q/q! script verbs as the line editor (design
+> success criteria 3 + 4). Merge-wave battery: authoritative Linux
+> fulltest **1144 passed / 0 failed / 0 timed out / 9 skipped** (suite
+> +2: testeditcheck — one state rule flips enumeration and dispatch
+> together; testvised — the headless semantic core over the exact
+> tui_event value objects; both `.expect_quiet`), EXE lane **1101/0**
+> (of 1144 JIT-passing); NEW fulltest gate `tui_smoke_gate.sh` — the
+> VT100 target on a REAL pty (alt-screen discipline, drawing,
+> attributes, cursor, the exact semantic event stream incl. coalescing
+> and resize) plus a negative-control program that must fail the
+> harness; unit batteries incl. test_tui_model (NEW, 100 asserts),
+> test_verbs (65 — the check cases), test_interaction (31); adventure
+> parity + purity + write-path + dialect-lean gates green in-battery;
+> testlineed byte-identical across the check consolidation.
+>
+> **Previous (2026-08-25, Track 7.2 R4 line-mode scope —
 > feature/texteditor-claude merge wave):** the piece-table text
 > component (`madcdis/text_buffer.h`, the hub's second component kind)
 > + `ui::world_new` + the `ui::text_*` family +
