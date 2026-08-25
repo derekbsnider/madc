@@ -51,6 +51,8 @@
 #include "madcdis/verbs.h"
 #include "madcdis/projection.h"
 #include "madcdis/render_text.h"
+#include "madcdis/tui_model.h"
+#include "madcdis/tui_provider.h"
 #include "madcdis/world_text.h"
 
 using madc::hub::world;
@@ -110,6 +112,62 @@ std::vector<ui_session *> &ui_sessions()
 {
     static std::vector<ui_session *> sessions;
     return sessions;
+}
+
+// A TUI session (R5): the model (layout/focus/key semantics) plus the
+// registered byte-moving target, and the event queue one read batch
+// fills. Independent of world sessions — an application holds both
+// handles. Same handle discipline as ui_sessions.
+struct ui_tui
+{
+    madc::hub::tui_target *target;
+    madc::hub::tui_model   model;
+    madc::hub::tui_grid	   painted;	// the diff basis
+    std::vector<madc::hub::tui_event> queue;
+    size_t next_event;
+    size_t rows, cols;
+    ui_tui() : target((madc::hub::tui_target *)0), next_event(0),
+	       rows(0), cols(0) {}
+};
+
+std::vector<ui_tui *> &ui_tuis()
+{
+    static std::vector<ui_tui *> tuis;
+    return tuis;
+}
+
+ui_tui *ui_tui_get(int64_t handle)
+{
+    std::vector<ui_tui *> &t = ui_tuis();
+    if ( handle < 1 || (size_t)handle > t.size() )
+	return (ui_tui *)0;
+    return t[(size_t)handle - 1];
+}
+
+// Key spelling at the value boundary (ids/enums inside, names outside):
+// what a tui_event's `key` field carries to the script.
+std::string ui_key_name(madc::hub::tui_key k, char ch)
+{
+    switch ( k )
+    {
+	case madc::hub::tui_key::ctrl:
+	    return std::string("^") + ch;
+	case madc::hub::tui_key::enter:	    return "enter";
+	case madc::hub::tui_key::tab:	    return "tab";
+	case madc::hub::tui_key::backspace: return "backspace";
+	case madc::hub::tui_key::esc:	    return "esc";
+	case madc::hub::tui_key::up:	    return "up";
+	case madc::hub::tui_key::down:	    return "down";
+	case madc::hub::tui_key::left:	    return "left";
+	case madc::hub::tui_key::right:	    return "right";
+	case madc::hub::tui_key::home:	    return "home";
+	case madc::hub::tui_key::end:	    return "end";
+	case madc::hub::tui_key::pgup:	    return "pgup";
+	case madc::hub::tui_key::pgdn:	    return "pgdn";
+	case madc::hub::tui_key::del:	    return "del";
+	case madc::hub::tui_key::ins:	    return "ins";
+	default:			    return "";
+    }
 }
 
 ui_session *ui_get(int64_t handle)
@@ -335,6 +393,24 @@ void bind_verb(int64_t w, const char *name, const char *source)
     s->verbs.register_script_verb(s->w.intern(name), req, refusal, source);
 }
 
+// ui::bind_check — attach a madc-source availability CHECK to a bound
+// verb (the script kind of the state-conditional half of availability;
+// design §2.9 — "read-only document: remove insert, delete, replace,
+// save"). The body runs with the same context fields as a verb body and
+// answers "ok" for available or the refusal reason otherwise; it is
+// evaluated by the SAME machinery at enumeration (ui::affordances) and at
+// dispatch (ui::act), so the two can never disagree. CONTRACT: check
+// bodies are read-only — they must not mutate the world, act, or touch
+// session lifecycle (the verb-body re-entrancy policy, plus no writes).
+void bind_check(int64_t w, const char *name, const char *source)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !name || !*name || !source )
+	return;
+    if ( !s->verbs.set_script_check(s->w.intern(name), source) )
+	fprintf(stderr, "ui::bind_check: no verb `%s` bound\n", name);
+}
+
 int64_t entity_by_name(int64_t w, const char *name)
 {
     ui_session *s = ui_get(w);
@@ -498,7 +574,7 @@ madc::value &affordances(madc::value &out, int64_t w, int64_t actor)
     std::vector<affordance_gatherer> gatherers;	// application gatherers:
 						// a later, script-shaped seam
     affordance_set set = madc::hub::resolve_affordances(s->w, s->verbs, creds,
-							ctx, gatherers);
+							ctx, gatherers, w);
     for ( size_t i = 0; i < set.size(); ++i )
     {
 	const affordance &a = set[i];
@@ -770,6 +846,136 @@ int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
 	return -1;
     size_t hit = b->find((size_t)from, needle);
     return hit == madc::hub::text_buffer::npos ? -1 : (int64_t)hit;
+}
+
+// ---- level-1 TUI (R5): the grid frontend behind the provider seam.
+// The MODEL (madcdis/tui_model.h) owns layout, focus, key semantics, and
+// diffing; the registered TARGET moves the bytes (the built-in one is the
+// hand-rolled VT100/xterm target — src/ui_term.cpp). The application
+// loop is compose-as-data -> tui_render -> tui_event -> apply: the same
+// value-shaped projection tree render_tree typesets sequentially is
+// presented on an addressable grid, choice menus becoming NAVIGABLE.
+
+// Open the grid frontend. Returns a TUI handle (> 0), or 0 with the
+// reason on stderr (no target registered, no tty, one already open).
+int64_t tui_open()
+{
+    madc::hub::register_builtin_tui_targets();
+    madc::hub::tui_target *t = madc::hub::create_tui_target((const char *)0);
+    if ( !t )
+    {
+	fprintf(stderr, "ui::tui_open: no TUI target available\n");
+	return 0;
+    }
+    ui_tui *u = new ui_tui();
+    u->target = t;
+    if ( !t->open(u->rows, u->cols) )
+    {
+	delete t;
+	delete u;
+	return 0;
+    }
+    ui_tuis().push_back(u);
+    return (int64_t)ui_tuis().size();
+}
+
+void tui_close(int64_t t)
+{
+    std::vector<ui_tui *> &tuis = ui_tuis();
+    if ( t < 1 || (size_t)t > tuis.size() || !tuis[(size_t)t - 1] )
+	return;
+    ui_tui *u = tuis[(size_t)t - 1];
+    u->target->close();
+    delete u->target;
+    delete u;
+    tuis[(size_t)t - 1] = (ui_tui *)0;
+}
+
+int64_t tui_rows(int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    return u ? (int64_t)u->rows : -1;
+}
+
+int64_t tui_cols(int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    return u ? (int64_t)u->cols : -1;
+}
+
+// Compose a value-shaped projection tree (the render_tree schema) onto
+// the grid and present it — only rows that changed since the last render
+// repaint. The tree arrives already access-filtered (typesetting only,
+// the render_tree contract).
+void tui_render(int64_t t, int64_t w, madc::value &tree)
+{
+    ui_tui *u = ui_tui_get(t);
+    ui_session *s = ui_get(w);
+    if ( !u || !s )
+	return;
+    const madc::hub::tui_grid &g =
+	u->model.compose(s->r, madc::hub::value_to_uinode(s->w, tree),
+			 u->rows, u->cols);
+    u->target->paint(u->painted, g);
+    u->painted = g;
+}
+
+// The next SEMANTIC event as a value object (names at the boundary):
+//   { event:"text",   text:"..." }       a coalesced printable run
+//   { event:"key",    key:"up"|"^s"|.. } a non-printable key
+//   { event:"choose", option:N, action:"name" }  N is 1-based — the
+//       same number the level-0 menu prints for that option
+//   { event:"focus" } / { event:"resize" }  recompose and re-render
+// Blocks until input arrives; false = the input source ended (out is a
+// null value). Events are interpreted against the LAST tui_render's
+// tree (the model's focusables), so render before the first event.
+bool tui_event(madc::value &out, int64_t t, int64_t w)
+{
+    out = madc::value();
+    ui_tui *u = ui_tui_get(t);
+    ui_session *s = ui_get(w);
+    if ( !u || !s )
+	return false;
+    while ( u->next_event >= u->queue.size() )
+    {
+	std::vector<madc::hub::tui_keyev> keys;
+	if ( !u->target->read_keys(keys) )
+	    return false;
+	u->queue = u->model.apply_keys(keys);
+	u->next_event = 0;
+    }
+    const madc::hub::tui_event &e = u->queue[u->next_event++];
+    std::map<std::string, madc::value> f;
+    switch ( e.kind )
+    {
+	case madc::hub::tui_event_kind::text:
+	    f["event"] = madc::value(std::string("text"));
+	    f["text"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::key:
+	    f["event"] = madc::value(std::string("key"));
+	    f["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    break;
+	case madc::hub::tui_event_kind::choose:
+	    f["event"] = madc::value(std::string("choose"));
+	    f["option"] = madc::value((int64_t)(e.option + 1));
+	    f["action"] = madc::value(e.action
+				      ? std::string(s->w.spelling(e.action))
+				      : std::string());
+	    break;
+	case madc::hub::tui_event_kind::resize:
+	    // The surface changed: refresh the stored dimensions so the
+	    // next render composes to the new size.
+	    u->target->size(u->rows, u->cols);
+	    f["event"] = madc::value(std::string("resize"));
+	    break;
+	case madc::hub::tui_event_kind::focus:
+	default:
+	    f["event"] = madc::value(std::string("focus"));
+	    break;
+    }
+    out = madc::value::make_object(f);
+    return true;
 }
 
 } // namespace ui

@@ -132,6 +132,21 @@ typedef bool (*action_binding)(action_env &env, const invocation &inv,
 typedef bool (*script_executor)(action_env &env, const invocation &inv,
 				const std::string &source, madc::value &out);
 
+// Availability CHECK binding, native kind (design §2.9: the state-
+// conditional half of availability — "read-only document: remove insert,
+// delete, replace, save" — evaluated by the SAME availability_of that
+// gates dispatch, so enumeration and execution can never disagree,
+// design invariant 5). True = available; false = disabled with `reason`.
+// CONTRACT: a check MUST NOT MUTATE — it runs during enumeration as well
+// as dispatch; the env is write-shaped only because it is the one binding
+// environment (thread-safety-law style stated contract, not a lock).
+// The script kind's check is a source body through the same executor,
+// answering "ok" for available and the refusal reason otherwise (empty —
+// including an eval failure — is disabled with a loud generic reason,
+// never a silent pass).
+typedef bool (*action_check)(action_env &env, const invocation &inv,
+			     std::string &reason);
+
 // ------------------------------------------------------------------ verb_table
 // Dispatch outcome: a status the driver can phrase, plus value-shaped
 // content that is either registered refusal DATA or binding-produced.
@@ -161,9 +176,12 @@ class verb_table
 	std::string    refusal;	// registered data; empty = driver phrases it
 	action_binding fn;	// native kind; null for the script kind
 	std::string    source;	// script kind; empty for the native kind
+	action_check   check;	// state-conditional availability; may be null
+	std::string    check_source;	// script-kind check; empty = none
 	verb_def(name_id n, const requirement &r, const std::string &msg,
 		 action_binding f, const std::string &src)
-	    : name(n), req(r), refusal(msg), fn(f), source(src) {}
+	    : name(n), req(r), refusal(msg), fn(f), source(src),
+	      check((action_check)0) {}
     };
     std::vector<verb_def> _verbs;	// linear; pilot scale
     script_executor _exec;		// the injected eval seam; may be null
@@ -174,6 +192,13 @@ class verb_table
 	    if ( _verbs[i].name == name )
 		return &_verbs[i];
 	return (const verb_def *)0;
+    }
+    verb_def *find(name_id name)
+    {
+	for ( size_t i = 0; i < _verbs.size(); ++i )
+	    if ( _verbs[i].name == name )
+		return &_verbs[i];
+	return (verb_def *)0;
     }
 public:
     verb_table() : _exec((script_executor)0) {}
@@ -191,6 +216,25 @@ public:
     {
 	_verbs.push_back(verb_def(name, req, refusal, (action_binding)0,
 				  source));
+    }
+    // Attach a state-conditional availability check to an already-
+    // registered verb (either binding kind may carry either check kind).
+    // False = no such verb (the caller's to phrase loudly).
+    bool set_check(name_id name, action_check check)
+    {
+	verb_def *v = find(name);
+	if ( !v )
+	    return false;
+	v->check = check;
+	return true;
+    }
+    bool set_script_check(name_id name, const std::string &source)
+    {
+	verb_def *v = find(name);
+	if ( !v )
+	    return false;
+	v->check_source = source;
+	return true;
     }
     bool knows(name_id name) const { return find(name) != (const verb_def *)0; }
     size_t verb_count() const { return _verbs.size(); }
@@ -211,16 +255,24 @@ public:
 	return v ? &v->req : (const requirement *)0;
     }
 
-    // The truthful availability of one action for one credential set —
-    // the SAME keys+levels evaluation that gates execution below. Phase 1
-    // policy: an unmet requirement is visible-but-disabled with the
-    // refusal data as the reason (the shipped refusal behavior already
-    // names the verb; hiding is a frontend choice made ON this state).
-    // An unregistered name is simply not there.
-    availability availability_of(name_id name, const credentials &creds) const
+    // The truthful availability of one action for one credential set in
+    // one context — the SAME evaluation that gates execution below, in
+    // order: keys+levels requirement (reason = the registered refusal
+    // data), then the attached state-conditional check (reason = the
+    // check's answer). `inv` names the action and carries the context the
+    // check reads (enumeration probes it with empty arguments; dispatch
+    // passes the real invocation). Phase 1 policy: an unmet condition is
+    // visible-but-disabled (hiding is a frontend choice made ON this
+    // state); an unregistered name is simply not there. A script check
+    // answers "ok" for available; any other text is the disabled reason;
+    // empty — an eval failure included — is disabled with a loud generic
+    // reason, never a silent pass.
+    availability availability_of(world &w, const credentials &creds,
+				 const invocation &inv,
+				 int64_t session = 0) const
     {
 	availability a;
-	const verb_def *v = find(name);
+	const verb_def *v = find(inv.action);
 	if ( !v )
 	{
 	    a.visible = false;
@@ -231,6 +283,40 @@ public:
 	{
 	    a.enabled = false;
 	    a.reason = v->refusal;
+	    return a;
+	}
+	if ( v->check || !v->check_source.empty() )
+	{
+	    mutation_context mc(w);	// checks MUST NOT mutate (contract)
+	    action_env env(mc, creds, session);
+	    if ( v->check )
+	    {
+		std::string reason;
+		if ( !v->check(env, inv, reason) )
+		{
+		    a.enabled = false;
+		    a.reason = reason;
+		}
+	    }
+	    else if ( _exec )
+	    {
+		madc::value out;
+		_exec(env, inv, v->check_source, out);
+		std::string text = out.is_string() ? out.as_string()
+						   : std::string();
+		if ( text != "ok" )
+		{
+		    a.enabled = false;
+		    a.reason = text.empty()
+			       ? std::string("availability check failed")
+			       : text;
+		}
+	    }
+	    else
+	    {
+		a.enabled = false;
+		a.reason = "script check has no executor";
+	    }
 	}
 	return a;
     }
@@ -246,7 +332,7 @@ public:
 	const verb_def *v = find(inv.action);
 	if ( !v )
 	    return verb_outcome(verb_status::unknown, madc::value());
-	availability a = availability_of(inv.action, creds);
+	availability a = availability_of(w, creds, inv, session);
 	if ( !a.enabled )
 	    return verb_outcome(verb_status::refused, madc::value(a.reason));
 	mutation_context mc(w);
@@ -270,28 +356,39 @@ public:
 // A gatherer contributes context-bound affordances (an exit's "go north",
 // a portable item's "take key"): application code that knows its own
 // vocabulary, run by the generic resolver. Availability on every emitted
-// affordance is the emitter's duty — the resolver only assembles.
-typedef void (*affordance_gatherer)(const world &w, const verb_table &verbs,
+// affordance is the emitter's duty — the resolver only assembles. `w` is
+// non-const so a gatherer can consult the one availability evaluator
+// (whose script checks run through the binding environment); gatherers
+// are read-only by the same contract as checks.
+typedef void (*affordance_gatherer)(world &w, const verb_table &verbs,
 				    const credentials &creds,
 				    const interaction_context &ctx,
 				    affordance_set &out);
 
 // resolve_affordances (design §2.8): application actions + context-bound
 // contributions − prohibitions. Every entry carries truthful availability
-// from the same evaluator that gates execution.
+// from the same evaluator that gates execution: each action is probed
+// with an argument-less invocation over the actor's context, so a
+// state-conditional check answers here exactly as it would at dispatch
+// (design invariant 5). `w` is non-const only because a script check runs
+// through the one binding environment; checks are read-only by contract.
 inline affordance_set resolve_affordances(
-    const world &w, const verb_table &verbs, const credentials &creds,
+    world &w, const verb_table &verbs, const credentials &creds,
     const interaction_context &ctx,
-    const std::vector<affordance_gatherer> &gatherers)
+    const std::vector<affordance_gatherer> &gatherers, int64_t session = 0)
 {
     affordance_set out;
     // Application actions: every registered verb, in registration order.
     std::vector<name_id> names = verbs.verb_names();
     for ( size_t i = 0; i < names.size(); ++i )
     {
+	invocation probe;
+	probe.actor = ctx.actor;
+	probe.action = names[i];
+	probe.context = ctx;
 	affordance a;
 	a.action = names[i];
-	a.avail = verbs.availability_of(names[i], creds);
+	a.avail = verbs.availability_of(w, creds, probe, session);
 	out.push_back(a);
     }
     // Context-bound enrichment: actor / focus / related-resource actions,

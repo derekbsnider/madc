@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (the visual editor's
+semantic core — verbs, checks, primitives — runs diagnostics-clean).

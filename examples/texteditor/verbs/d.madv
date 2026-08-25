@@ -1,10 +1,7 @@
 // lineed verb: d N [M] — delete lines N..M (bottom-up so the spans the
-// loop reads stay valid while earlier lines keep their numbers).
+// loop reads stay valid while earlier lines keep their numbers). The
+// read-only rule is the shared availability check (checks/editable.madv).
 long doc = ui::entity_by_name(w, "document");
-var ro;
-ui::get(ro, w, doc, "read_only");
-if ( !ro.is_null() && ro.as_boolean() )
-    return "Document is read-only.";
 long n = php::intval(arg);
 if ( n < 1 )
     return "d needs a line number.";

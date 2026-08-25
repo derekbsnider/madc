@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+- **The level-1 TUI provider + the visual editor (Track 7.2 R5)**: the
+  addressable-grid frontend, split model/target. `madcdis/tui_model.h`
+  (dependency-free, 100-assert unit battery) owns tree→grid layout —
+  heading/status bars, wrapped content, a flexible `edit` window with
+  caret/scroll/selection, a NAVIGABLE `choice` menu (the same tree line
+  mode numbers) — plus byte→key escape parsing, key→semantic-event
+  adaptation with printable-run coalescing (§7.5), and dirty-row
+  diffing. `madcdis/tui_provider.h` is the dat-style target registry;
+  `src/ui_term.cpp` is the built-in target — hand-rolled VT100/xterm by
+  owner decision (no ncurses/termbox2/notcurses dependency): raw
+  termios (IXON off), alternate screen, differential row repaint,
+  batched reads with a split-sequence grace poll, SIGWINCH → resize,
+  atexit terminal recovery; POSIX-gated (a Windows Console target is a
+  later provider). Script surface: `ui::tui_open/close/rows/cols/
+  render/event` — compose-as-data in, semantic event objects out. New
+  `edit` role; `node_text()` is the one content-else-label rule.
+  `examples/texteditor/vised.mad`: the visual editor — the SAME
+  document actions and the SAME w/q/q! script verbs as the line editor
+  (design success criterion 3), caret/mark/clipboard/search on the
+  editor-state bag. Gates: `tests/testvised` (headless semantic core),
+  `scripts/tui_smoke_gate.sh` in fulltest (a REAL pty drive of the
+  VT100 target with a negative control), test_tui_model.
+- **Availability CHECK bindings (Track 7.2 R5; design §2.9 /
+  invariant 5)**: a verb may carry a state-conditional availability
+  check — native fn or madc source (`ui::bind_check`) — evaluated by
+  the ONE `availability_of` behind BOTH `ui::affordances` (probe
+  invocations over the actor's context) and dispatch, so what
+  enumerates as disabled is exactly what `ui::act` refuses, with the
+  same reason. Script protocol: `"ok"` / reason text; an eval failure
+  disables loudly, never passes. Checks are read-only by stated
+  contract. DupFamily `lineed_readonly_gate` consolidated: the
+  read-only rule now lives ONCE in `checks/editable.madv`, bound to
+  c/i/a/d/w — the five pasted body checks are gone, the testlineed
+  transcript byte-identical. Pinned by `tests/testeditcheck` +
+  test_verbs' check cases.
 - **The line-mode text editor + the piece-table text component (Track
   7.2 R4, line-mode scope)**: `madcdis/text_buffer.h` — the hub's SECOND
   component kind (Track 8.1 pulled forward): an immutable loaded

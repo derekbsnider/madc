@@ -1,0 +1,12 @@
+// lineed availability CHECK: the §7.3 read-only rule, in its ONE seat —
+// bound (via ui::bind_check) to every verb that would mutate the document
+// (c/i/a/d/w). Evaluated by the same machinery at enumeration
+// (ui::affordances shows those verbs disabled with this reason) and at
+// dispatch (ui::act refuses with it), so the two can never disagree.
+// Checks are READ-ONLY by contract: this body only reads.
+long doc = ui::entity_by_name(w, "document");
+var ro;
+ui::get(ro, w, doc, "read_only");
+if ( !ro.is_null() && ro.as_boolean() )
+    return "Document is read-only.";
+return "ok";

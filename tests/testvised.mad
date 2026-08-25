@@ -1,0 +1,130 @@
+// R5 gate: the visual editor's SEMANTIC core, headless (design success
+// criterion 3). The TUI and line editors drive the SAME document actions
+// with no duplicated mutation logic: typing-cadence edits go through the
+// engine's range primitives at the caret; turn-cadence commands (^S/^Q/
+// ^X) run the SAME script verbs (w/q/q!) through ui::act, gated by the
+// SAME availability check (read-only refuses typing via the derived
+// affordance verdict and refuses w at dispatch — one rule, one seat).
+// Events arrive as the exact value objects ui::tui_event produces; no
+// terminal is involved (the real terminal path is pinned by
+// scripts/tui_smoke_gate.sh on a pty). The application under test is THE
+// example itself (examples/texteditor — one copy, no test fork).
+#include "../examples/texteditor/lined_core.inc"
+#include "../examples/texteditor/vised_core.inc"
+
+void ev_text(value &e, const char *t)
+{
+    value f;
+    f["event"] = "text";
+    f["text"] = t;
+    e = f;
+}
+
+void ev_key(value &e, const char *k)
+{
+    value f;
+    f["event"] = "key";
+    f["key"] = k;
+    e = f;
+}
+
+void key_report(long w, long es, long doc, const char *k)
+{
+    value e;
+    ev_key(e, k);
+    apply_event(w, es, doc, e);
+    printf("%s->%ld\n", k, es_int(w, es, "caret", -1));
+}
+
+int main()
+{
+    const char *path = "madc_vised_test.txt";
+    php::file_put_contents(path, "alpha\nbeta\n");
+
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    printf("editable=%ld\n", es_flag(w, es, "editable") ? 1 : 0);
+
+    value e;
+    ev_text(e, "Hello ");
+    apply_event(w, es, doc, e);
+    value t;
+    ui::text(t, w, doc);
+    printf("after-insert=[%s] caret=%ld\n", t, es_int(w, es, "caret", -1));
+
+    key_report(w, es, doc, "left");
+    key_report(w, es, doc, "backspace");
+    key_report(w, es, doc, "del");
+    key_report(w, es, doc, "down");
+    key_report(w, es, doc, "home");
+    key_report(w, es, doc, "end");
+    key_report(w, es, doc, "up");
+    key_report(w, es, doc, "home");
+
+    // Mark, extend, cut: the region becomes the clipboard; paste re-inserts.
+    ev_key(e, "^b");
+    apply_event(w, es, doc, e);
+    key_report(w, es, doc, "right");
+    key_report(w, es, doc, "right");
+    key_report(w, es, doc, "right");
+    key_report(w, es, doc, "right");
+    ev_key(e, "^k");
+    apply_event(w, es, doc, e);
+    var clip;
+    ui::get(clip, w, es, "clip");
+    ui::text(t, w, doc);
+    printf("cut-clip=[%s] text=[%s] caret=%ld\n", clip, t,
+	   es_int(w, es, "caret", -1));
+    key_report(w, es, doc, "end");
+    ev_key(e, "^u");
+    apply_event(w, es, doc, e);
+    ui::text(t, w, doc);
+    printf("paste-caret=%ld text=[%s]\n", es_int(w, es, "caret", -1), t);
+
+    // ^Q while modified: the SAME q verb refuses through ui::act.
+    ev_key(e, "^q");
+    bool cont = apply_event(w, es, doc, e);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    printf("quit1-cont=%ld msg=[%s]\n", cont ? 1 : 0, msg);
+
+    // ^F search: typing edits the pattern; enter jumps the caret.
+    ev_key(e, "^f");
+    apply_event(w, es, doc, e);
+    ev_text(e, "beta");
+    apply_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_event(w, es, doc, e);
+    printf("search-caret=%ld\n", es_int(w, es, "caret", -1));
+
+    // ^S runs the SAME w script verb; then ^Q succeeds (criterion 3's
+    // no-duplicated-mutation-logic evidence: the persistence path IS the
+    // line editor's verb body).
+    ev_key(e, "^s");
+    apply_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    printf("save-msg=[%s]\n", msg);
+    ev_key(e, "^q");
+    cont = apply_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    printf("quit2-cont=%ld msg=[%s]\n", cont ? 1 : 0, msg);
+    ui::world_close(w);
+
+    printf("-- read-only --\n");
+    long w2 = ui::world_new();
+    long d2 = setup_editor(w2, path, true);
+    long es2 = ui::entity_by_name(w2, "editor-state");
+    printf("editable=%ld\n", es_flag(w2, es2, "editable") ? 1 : 0);
+    ev_text(e, "X");
+    apply_event(w2, es2, d2, e);
+    var m2;
+    ui::get(m2, w2, es2, "msg");
+    printf("ro-msg=[%s] size=%ld\n", m2, ui::text_size(w2, d2));
+    ev_key(e, "^s");
+    apply_event(w2, es2, d2, e);
+    ui::get(m2, w2, es2, "msg");
+    printf("ro-save-msg=[%s]\n", m2);
+    ui::world_close(w2);
+    return 0;
+}

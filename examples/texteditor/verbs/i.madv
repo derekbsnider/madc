@@ -1,9 +1,6 @@
-// lineed verb: i N TEXT — insert a new line before line N.
+// lineed verb: i N TEXT — insert a new line before line N. The read-only
+// rule is the shared availability check (checks/editable.madv).
 long doc = ui::entity_by_name(w, "document");
-var ro;
-ui::get(ro, w, doc, "read_only");
-if ( !ro.is_null() && ro.as_boolean() )
-    return "Document is read-only.";
 long n = php::intval(arg);
 if ( n < 1 )
     return "i needs a line number.";

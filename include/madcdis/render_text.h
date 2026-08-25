@@ -62,22 +62,23 @@ inline void render_text_node(const roles &r, const uinode &n,
 			     size_t width, std::string &out)
 {
     std::string label = prose::text_of(n.label);
-    std::string content = prose::text_of(n.content);
 
     if ( n.role == r.heading )
     {
 	out += "=== " + label + " ===\n";
     }
-    else if ( n.role == r.content || n.role == r.status )
+    else if ( n.role == r.content || n.role == r.status || n.role == r.edit )
     {
-	const std::string &text = content.empty() ? label : content;
+	// An edit region linearizes as its text — level 0 has no cursor;
+	// the document simply prints (the same tree a grid renderer
+	// presents as an editable window).
+	std::string text = node_text(n);
 	if ( !text.empty() )
 	    out += wrap_text(text, width) + "\n";
     }
     else if ( n.role == r.item )
     {
-	const std::string &text = content.empty() ? label : content;
-	out += "  " + text + "\n";
+	out += "  " + node_text(n) + "\n";
     }
     else if ( n.role == r.action )
     {
@@ -98,10 +99,7 @@ inline void render_text_node(const roles &r, const uinode &n,
 	for ( size_t i = 0; i < n.children.size(); ++i )
 	{
 	    const uinode &opt = n.children[i];
-	    std::string text = prose::text_of(opt.content);
-	    if ( text.empty() )
-		text = prose::text_of(opt.label);
-	    out += "  " + std::to_string(i + 1) + ". " + text + "\n";
+	    out += "  " + std::to_string(i + 1) + ". " + node_text(opt) + "\n";
 	    for ( size_t k = 0; k < opt.children.size(); ++k )
 		render_text_node(r, opt.children[k], width, out);
 	}

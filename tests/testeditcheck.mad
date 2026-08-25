@@ -1,0 +1,45 @@
+// R5 gate probe: the script-kind availability CHECK (ui::bind_check) —
+// ONE state-conditional rule, evaluated by the SAME machinery at
+// enumeration (ui::affordances) and at dispatch (ui::act), so the two can
+// never disagree (design invariant 5). The rule reads world state through
+// the ordinary session surface; flipping the state flips both the
+// enumerated availability and the dispatch outcome, with the same reason.
+void dump(long w, long hero, const char *tag)
+{
+    value affs;
+    ui::affordances(affs, w, hero);
+    for ( value a : affs )
+	printf("%s|%s|%s|%s\n", tag, a["action"], a["enabled"], a["reason"]);
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long door = ui::create(w, "door");
+    long hero = ui::create(w, "hero");
+    ui::bind_verb(w, "open", "return \"The door swings wide.\";");
+    ui::bind_check(w, "open",
+	"long door = ui::entity_by_name(w, \"door\");"
+	"var b;"
+	"ui::get(b, w, door, \"barred\");"
+	"if ( !b.is_null() && b.as_boolean() )"
+	"    return \"The door is barred.\";"
+	"return \"ok\";");
+
+    dump(w, hero, "free");
+    value out;
+    ui::act(out, w, hero, "open", "");
+    printf("act1=[%s]\n", out.c_str());
+
+    ui::set(w, door, "barred", true);
+    dump(w, hero, "barred");
+    ui::act(out, w, hero, "open", "");
+    printf("act2=[%s]\n", out.c_str());
+
+    ui::set(w, door, "barred", false);
+    dump(w, hero, "again");
+    ui::act(out, w, hero, "open", "");
+    printf("act3=[%s]\n", out.c_str());
+    ui::world_close(w);
+    return 0;
+}

@@ -1,0 +1,79 @@
+// The TUI pty smoke (R5; driven by scripts/tui_pty.py, wired into
+// fulltest via scripts/tui_smoke_gate.sh): render a composed tree on the
+// REAL VT100 target, log every semantic event, quit on ^q. Not a
+// tests/*.mad runner test — it needs a pty (the runner has none; under
+// the runner tui_open would refuse and this would just exit 1).
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::tui_open();
+    if ( t == 0 )
+    {
+	printf("no tui\n");
+	return 1;
+    }
+    var doc = "alpha\nbeta\n";
+    var events = "";
+    bool run = true;
+    while ( run )
+    {
+	value head;
+	head["role"] = "heading";
+	head["label"] = "smoke.txt";
+	value ed;
+	ed["role"] = "edit";
+	ed["content"] = doc;
+	value hints;
+	hints["caret"] = 0;
+	ed["hints"] = hints;
+	value save;
+	save["role"] = "item";
+	save["content"] = "Save";
+	var acts = {};
+	acts.push("w");
+	save["actions"] = acts;
+	value quit;
+	quit["role"] = "item";
+	quit["content"] = "Quit";
+	var qacts = {};
+	qacts.push("q");
+	quit["actions"] = qacts;
+	value menu;
+	menu["role"] = "choice";
+	var opts = {};
+	opts.push(save);
+	opts.push(quit);
+	menu["children"] = opts;
+	value root;
+	root["role"] = "group";
+	var kids = {};
+	kids.push(head);
+	kids.push(ed);
+	kids.push(menu);
+	root["children"] = kids;
+	ui::tui_render(t, w, root);
+
+	value ev;
+	if ( !ui::tui_event(ev, t, w) )
+	    break;
+	var kind = format("{}", ev["event"]);
+	if ( kind == "text" )
+	    events = format("{}text:{};", events, ev["text"]);
+	else if ( kind == "key" )
+	{
+	    var k = format("{}", ev["key"]);
+	    events = format("{}key:{};", events, k);
+	    if ( k == "^q" )
+		run = false;
+	}
+	else if ( kind == "choose" )
+	    events = format("{}choose:{}:{};", events, ev["option"],
+			    ev["action"]);
+	else
+	    events = format("{}{};", events, kind);
+    }
+    ui::tui_close(t);
+    ui::world_close(w);
+    printf("EVENTS=%s\n", events.c_str());
+    return 0;
+}
