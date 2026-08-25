@@ -669,6 +669,15 @@ void move(int64_t w, int64_t entity, int64_t dest)
 // Document PROPERTIES (path, modified, read_only) are application bag
 // keys — these publics never touch a bag.
 
+// The one session+component lookup every text READ public performs.
+static const madc::hub::text_buffer *ui_text_component(int64_t w,
+						       int64_t entity)
+{
+    ui_session *s = ui_get(w);
+    return s ? s->w.text_of((entity_id)entity)
+	     : (const madc::hub::text_buffer *)0;
+}
+
 void text_load(int64_t w, int64_t entity, const char *text)
 {
     ui_session *s = ui_get(w);
@@ -709,33 +718,25 @@ void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
 
 madc::value &text(madc::value &out, int64_t w, int64_t entity)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     return ui_text_out(out, b ? b->text() : std::string());
 }
 
 int64_t text_size(int64_t w, int64_t entity)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     return b ? (int64_t)b->size() : -1;	// -1 = no component
 }
 
 int64_t text_line_count(int64_t w, int64_t entity)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     return b ? (int64_t)b->line_count() : -1;
 }
 
 madc::value &text_line(madc::value &out, int64_t w, int64_t entity, int64_t n)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     size_t off = 0, len = 0;
     if ( b && n > 0 && b->line_span((size_t)n, off, len) )
 	return ui_text_out(out, b->slice(off, len));
@@ -746,9 +747,7 @@ madc::value &text_line(madc::value &out, int64_t w, int64_t entity, int64_t n)
 // start offset (or -1 when absent) and length EXCLUDING the newline.
 int64_t text_line_start(int64_t w, int64_t entity, int64_t n)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     size_t off = 0, len = 0;
     if ( b && n > 0 && b->line_span((size_t)n, off, len) )
 	return (int64_t)off;
@@ -757,9 +756,7 @@ int64_t text_line_start(int64_t w, int64_t entity, int64_t n)
 
 int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     size_t off = 0, len = 0;
     if ( b && n > 0 && b->line_span((size_t)n, off, len) )
 	return (int64_t)len;
@@ -768,9 +765,7 @@ int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
 
 int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
 {
-    ui_session *s = ui_get(w);
-    const madc::hub::text_buffer *b =
-	s ? s->w.text_of((entity_id)entity) : (const madc::hub::text_buffer *)0;
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
     if ( !b || !needle || !*needle || from < 0 )
 	return -1;
     size_t hit = b->find((size_t)from, needle);
