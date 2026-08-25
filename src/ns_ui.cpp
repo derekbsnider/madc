@@ -45,6 +45,7 @@
 #include <vector>
 #include <unistd.h>
 
+#include "handle_table.h"
 #include "libmadc/value.h"
 #include "madcdis/doc_lens.h"
 #include "madcdis/hub.h"
@@ -110,19 +111,20 @@ struct ui_session
     }
 };
 
-// The session registry: handle = slot index + 1; closed slots stay null so
-// handles are never reused within a run. Confined to one thread per the
-// contract above; this accessor is the future per-context seam.
-std::vector<ui_session *> &ui_sessions()
+// The session registry: handle_table (slot+1, closed slots stay null, no
+// reuse within a run — include/handle_table.h owns the rule). Confined to
+// one thread per the contract above; this accessor is the future
+// per-context seam.
+handle_table<ui_session> &ui_sessions()
 {
-    static std::vector<ui_session *> sessions;
+    static handle_table<ui_session> sessions;
     return sessions;
 }
 
 // A TUI session (R5): the model (layout/focus/key semantics) plus the
 // registered byte-moving target, and the event queue one read batch
 // fills. Independent of world sessions — an application holds both
-// handles. Same handle discipline as ui_sessions.
+// handles. Same handle discipline as ui_sessions (handle_table).
 struct ui_tui
 {
     madc::hub::tui_target *target;
@@ -135,18 +137,15 @@ struct ui_tui
 	       rows(0), cols(0) {}
 };
 
-std::vector<ui_tui *> &ui_tuis()
+handle_table<ui_tui> &ui_tuis()
 {
-    static std::vector<ui_tui *> tuis;
+    static handle_table<ui_tui> tuis;
     return tuis;
 }
 
 ui_tui *ui_tui_get(int64_t handle)
 {
-    std::vector<ui_tui *> &t = ui_tuis();
-    if ( handle < 1 || (size_t)handle > t.size() )
-	return (ui_tui *)0;
-    return t[(size_t)handle - 1];
+    return ui_tuis().get(handle);
 }
 
 // Key spelling at the value boundary: the model's tui_key_name is the one
@@ -159,10 +158,7 @@ std::string ui_key_name(madc::hub::tui_key k, char ch)
 
 ui_session *ui_get(int64_t handle)
 {
-    std::vector<ui_session *> &s = ui_sessions();
-    if ( handle < 1 || (size_t)handle > s.size() )
-	return (ui_session *)0;
-    return s[(size_t)handle - 1];
+    return ui_sessions().get(handle);
 }
 
 // Per-use actor credentials: session grants + carried grants + closure
@@ -316,8 +312,7 @@ int64_t world_open(const char *path)
     }
     s->verb_decls = doc.verbs;
     s->require_decls = doc.requires_;
-    ui_sessions().push_back(s);
-    return (int64_t)ui_sessions().size();
+    return ui_sessions().open(s);
 }
 
 // ui::world_new — an EMPTY session: no world file, no declarations. The
@@ -327,8 +322,7 @@ int64_t world_open(const char *path)
 // never a session requirement.
 int64_t world_new()
 {
-    ui_sessions().push_back(new ui_session());
-    return (int64_t)ui_sessions().size();
+    return ui_sessions().open(new ui_session());
 }
 
 bool world_save(int64_t w, const char *path)
@@ -351,12 +345,7 @@ bool world_save(int64_t w, const char *path)
 
 void world_close(int64_t w)
 {
-    std::vector<ui_session *> &s = ui_sessions();
-    if ( w >= 1 && (size_t)w <= s.size() && s[(size_t)w - 1] )
-    {
-	delete s[(size_t)w - 1];
-	s[(size_t)w - 1] = (ui_session *)0;
-    }
+    ui_sessions().close(w);
 }
 
 // Is this session allowed to DEFINE code entities? The hub's Decided
@@ -987,20 +976,19 @@ int64_t tui_open()
 	delete u;
 	return 0;
     }
-    ui_tuis().push_back(u);
-    return (int64_t)ui_tuis().size();
+    return ui_tuis().open(u);
 }
 
 void tui_close(int64_t t)
 {
-    std::vector<ui_tui *> &tuis = ui_tuis();
-    if ( t < 1 || (size_t)t > tuis.size() || !tuis[(size_t)t - 1] )
+    // Target teardown is this consumer's own step (see handle_table.h);
+    // the slot rule (delete + null, no reuse) is the table's.
+    ui_tui *u = ui_tuis().get(t);
+    if ( !u )
 	return;
-    ui_tui *u = tuis[(size_t)t - 1];
     u->target->close();
     delete u->target;
-    delete u;
-    tuis[(size_t)t - 1] = (ui_tui *)0;
+    ui_tuis().close(t);
 }
 
 int64_t tui_rows(int64_t t)

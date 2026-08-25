@@ -44,6 +44,7 @@ extern thread_local bool madc_verbose;
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
 #include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
+#include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
 namespace madc {
@@ -4586,6 +4587,18 @@ static void diagnostic_rows_from_child(::Program &child, madc::value &out)
     out = value::make_array(rows);
 }
 
+// The TU-own-definitions filter, shared by every per-TU query (outline,
+// enclosing): prelude fragments and header tokens carry their own file
+// names and stay out. Null = not a function definition of THIS TU.
+static TokenFunc *tu_own_function(TokenBase *tb,
+				  const std::string &display_name)
+{
+    TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+    if ( !tf || !tf->file || display_name != tf->file )
+	return (TokenFunc *)0;
+    return tf;
+}
+
 static void outline_rows_from_child(::Program &child,
 				    const std::string &display_name,
 				    madc::value &out)
@@ -4593,13 +4606,8 @@ static void outline_rows_from_child(::Program &child,
     std::vector<madc::value> rows;
     for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
     {
-	TokenBase *tb = child.pending_funcs[i];
-	TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i], display_name);
 	if ( !tf )
-	    continue;
-	// Only the buffer's own definitions: prelude fragments and header
-	// tokens carry their own file names and stay out of the outline.
-	if ( !tf->file || display_name != tf->file )
 	    continue;
 	std::map<std::string, madc::value> f;
 	f["kind"] = value(std::string("function"));
@@ -4680,31 +4688,28 @@ bool internal_program_source_emit(::Program &self,
 // diagnostics / enclosing-at-position queries WITHOUT re-running the
 // front end per query; refresh is a whole-TU re-parse (the design's
 // first cadence — incremental reparse is a named later lever). Handle
-// discipline = the ui_sessions registry: handle = slot index + 1,
-// closed slots stay null so handles are never reused within a run.
-// Thread contract: the runtime-eval confinement — a handle is used
-// only from the thread/program that opened it; these accessors are the
-// future per-context seam.
+// discipline = handle_table (slot+1, no reuse). Thread contract: the
+// runtime-eval confinement — a handle is used only from the
+// thread/program that opened it; these accessors are the future
+// per-context seam.
 
 struct parse_tu_state
 {
     ::Program *child;
     std::string display_name;
     parse_tu_state() : child((::Program *)0) {}
+    ~parse_tu_state() { delete child; }
 };
 
-static std::vector<parse_tu_state *> &parse_tu_handles()
+static handle_table<parse_tu_state> &parse_tu_handles()
 {
-    static std::vector<parse_tu_state *> handles;
+    static handle_table<parse_tu_state> handles;
     return handles;
 }
 
 static parse_tu_state *parse_tu_get(int64_t handle)
 {
-    std::vector<parse_tu_state *> &h = parse_tu_handles();
-    if ( handle < 1 || (size_t)handle > h.size() )
-	return (parse_tu_state *)0;
-    return h[(size_t)handle - 1];
+    return parse_tu_handles().get(handle);
 }
 
 int64_t internal_program_parse_open(::Program &self,
@@ -4718,8 +4723,7 @@ int64_t internal_program_parse_open(::Program &self,
     st->child = new ::Program(self.engine);
     compile_source_child_frontend(self, *st->child, source_text,
 				  display_name);
-    parse_tu_handles().push_back(st);
-    return (int64_t)parse_tu_handles().size();
+    return parse_tu_handles().open(st);
 }
 
 // File-open core: the lexer owns SOURCE ingestion (tokenize(path) reads
@@ -4747,7 +4751,6 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
 	std::string opt_err;
 	if ( !apply_project_tu_options(*st->child, *tu, opt_err) )
 	{
-	    delete st->child;
 	    delete st;
 	    return 0;
 	}
@@ -4758,8 +4761,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
 	if ( tp && st->child->parse(tp) )
 	    st->child->compile();
     }
-    parse_tu_handles().push_back(st);
-    return (int64_t)parse_tu_handles().size();
+    return parse_tu_handles().open(st);
 }
 
 int64_t internal_program_parse_open_file(::Program &self,
@@ -4787,13 +4789,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
 
 bool internal_program_parse_close(int64_t handle)
 {
-    parse_tu_state *st = parse_tu_get(handle);
-    if ( !st )
-	return false;
-    delete st->child;
-    delete st;
-    parse_tu_handles()[(size_t)handle - 1] = (parse_tu_state *)0;
-    return true;
+    return parse_tu_handles().close(handle);
 }
 
 bool internal_program_parse_outline(int64_t handle, madc::value &out)
@@ -4834,11 +4830,9 @@ bool internal_program_parse_enclosing(int64_t handle, int64_t line,
     ::Program &child = *st->child;
     for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
     {
-	TokenBase *tb = child.pending_funcs[i];
-	TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					st->display_name);
 	if ( !tf )
-	    continue;
-	if ( !tf->file || st->display_name != tf->file )
 	    continue;
 	if ( (int64_t)tf->line > line
 	  || ((int64_t)tf->line == line && (int64_t)tf->column > column) )
@@ -4862,9 +4856,10 @@ bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 }
 
 // ---- project handles (the cc.json manifest grouped as TU handles) -------
-// Same registry discipline, separate id space. Opening a project parses
-// every TU (parse-on-load — the AST-1 measurement's subject); a TU whose
-// file cannot be read carries handle 0 in the rows (visible, not fatal).
+// Same registry discipline (handle_table), separate id space. Opening a
+// project parses every TU (parse-on-load — the AST-1 measurement's
+// subject); a TU whose file cannot be read, or whose manifest options
+// are refused, carries handle 0 in the rows (visible, not fatal).
 
 struct parse_project_state
 {
@@ -4872,18 +4867,15 @@ struct parse_project_state
     std::vector<int64_t> tus;
 };
 
-static std::vector<parse_project_state *> &parse_project_handles()
+static handle_table<parse_project_state> &parse_project_handles()
 {
-    static std::vector<parse_project_state *> handles;
+    static handle_table<parse_project_state> handles;
     return handles;
 }
 
 static parse_project_state *parse_project_get(int64_t handle)
 {
-    std::vector<parse_project_state *> &h = parse_project_handles();
-    if ( handle < 1 || (size_t)handle > h.size() )
-	return (parse_project_state *)0;
-    return h[(size_t)handle - 1];
+    return parse_project_handles().get(handle);
 }
 
 int64_t internal_program_project_open(::Program &self,
@@ -4902,8 +4894,7 @@ int64_t internal_program_project_open(::Program &self,
 	// project-handle diagnostics match the --project build.
 	ps->tus.push_back(parse_open_file_with(self, tu.file, &tu));
     }
-    parse_project_handles().push_back(ps);
-    return (int64_t)parse_project_handles().size();
+    return parse_project_handles().open(ps);
 }
 
 bool internal_program_project_tus(int64_t handle, madc::value &out)
@@ -4926,15 +4917,15 @@ bool internal_program_project_tus(int64_t handle, madc::value &out)
 
 bool internal_program_project_close(int64_t handle)
 {
+    // Closing the member TU handles is this consumer's own step (see
+    // handle_table.h); the slot rule is the table's.
     parse_project_state *ps = parse_project_get(handle);
     if ( !ps )
 	return false;
     for ( size_t i = 0; i < ps->tus.size(); ++i )
 	if ( ps->tus[i] > 0 )
 	    internal_program_parse_close(ps->tus[i]);
-    delete ps;
-    parse_project_handles()[(size_t)handle - 1] = (parse_project_state *)0;
-    return true;
+    return parse_project_handles().close(handle);
 }
 
 bool internal_program_runtime_eval_expression(::Program &self,
