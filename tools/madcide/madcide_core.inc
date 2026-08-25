@@ -429,13 +429,25 @@ void delete_word(long w, long es, long doc, long caret)
 // identity lens (no view) adds NOTHING — the composed tree stays
 // byte-identical to today's.
 
-// The navigation target: the view buffer while a view is up, else the
-// document — the ONE place display-vs-stored routing happens.
-long nav_doc(long w, long es, long doc)
+// THE view-active rule, one seat (dupaudit family view_active_predicate):
+// a view is active iff the editor-state bag carries a non-empty "view"
+// name. Out = the name; false = the original (identity lens).
+bool view_name(value &out, long w, long es)
 {
     var vw;
     ui::get(vw, w, es, "view");
     if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+	return false;
+    out = vw;
+    return true;
+}
+
+// The navigation target: the view buffer while a view is up, else the
+// document — the ONE place display-vs-stored routing happens.
+long nav_doc(long w, long es, long doc)
+{
+    value vw;
+    if ( !view_name(vw, w, es) )
 	return doc;
     long vd = es_int(w, es, "vdoc", 0);
     return vd != 0 ? vd : doc;
@@ -462,9 +474,8 @@ bool enter_view(long w, long es, long doc, const char *name)
 	ui::set(w, es, "vdoc", vd);
     }
     ui::text_load(w, vd, emitted.c_str());
-    var cur;
-    ui::get(cur, w, es, "view");
-    if ( cur.is_null() || strlen(cur.c_str()) == 0 )
+    value cur;
+    if ( !view_name(cur, w, es) )
 	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
     ui::set(w, es, "view", name);
     var vm = {};
@@ -491,9 +502,8 @@ void exit_view(long w, long es, long doc)
 // the original — the session is never trapped inside a stale view.
 void cycle_view(long w, long es, long doc)
 {
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+    value vw;
+    if ( !view_name(vw, w, es) )
     {
 	enter_view(w, es, doc, "mc11");
 	return;
@@ -798,30 +808,30 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     bool viewing = nav != doc;
 
     value head;
+    value ed;
     var p;
     ui::get(p, w, doc, "path");
     if ( viewing )
     {
-	var vw;
-	ui::get(vw, w, es, "view");
+	value vw;
+	view_name(vw, w, es);
 	compose_heading(head, w, es, doc,
 			format("madcide: {} [{}]", p, vw));
-    }
-    else
-	compose_heading(head, w, es, doc, format("madcide: {}", p));
-    value ed;
-    compose_edit_node(ed, w, es, nav, caret);
-    if ( viewing )
-    {
+	value ed2;
+	compose_edit_node(ed2, w, es, nav, caret);
 	value h;
-	h = ed["hints"];
-	var vw2;
-	ui::get(vw2, w, es, "view");
-	h["view"] = vw2;
+	h = ed2["hints"];
+	h["view"] = vw;
 	value vm;
 	ui::get(vm, w, es, "vmap");
 	h["map"] = vm;
-	ed["hints"] = h;
+	ed2["hints"] = h;
+	ed = ed2;
+    }
+    else
+    {
+	compose_heading(head, w, es, doc, format("madcide: {}", p));
+	compose_edit_node(ed, w, es, nav, caret);
     }
 
     value r;
