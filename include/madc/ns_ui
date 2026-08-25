@@ -53,8 +53,20 @@ namespace ui {
     // `actor`, `target` (entity ids), `arg` (the raw argument text),
     // `verb` (the action's spelling) — and returns the player-facing
     // text. Bodies run inside ui::act: they must not re-enter act and
-    // must not open or close worlds (Phase 1 re-entrancy policy).
+    // must not open or close worlds — ENFORCED: a nested act on the same
+    // world is refused with "action re-entered the registry (verbs do
+    // not re-enter act)", which the outer body receives as that call's
+    // result text (queued follow-up invocations are a held seat).
     void bind_verb(int64_t w, const char *name, const char *source);
+
+    // Code-entity key-gating (the hub's Decided rule: defining or
+    // editing code entities is itself key-gated). Arms the gate:
+    // every LATER bind_verb/bind_check on this session requires `key`
+    // (cumulative; satisfied through the same keys+levels credentials
+    // as every condition — ui::session_grant and key implications
+    // apply). Unset = open. A refused bind is loud on stderr and binds
+    // nothing.
+    void bind_require_key(int64_t w, const char *key);
 
     // Attach a madc-source availability CHECK to a bound verb — the
     // state-conditional half of availability ("read-only document

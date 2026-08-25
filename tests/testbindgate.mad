@@ -1,0 +1,30 @@
+// R3 sibling design: code-entity key-gating (the hub's Decided rule —
+// "defining or editing code entities is itself key-gated"). Once armed
+// via ui::bind_require_key, a keyless bind_verb/bind_check is refused
+// (loud on stderr, nothing bound — the verb stays unknown to act);
+// granting the key through the ordinary credential machinery re-opens
+// binding. No expect_quiet fixture: the refusal notice IS stderr.
+int main()
+{
+    long w = ui::world_new();
+    long es = ui::create(w, "session");
+    ui::bind_require_key(w, "modkey");
+
+    ui::bind_verb(w, "hello", "return \"hi\";");
+    value out;
+    ui::act(out, w, es, "hello", "");
+    println("gated: bound={}", strlen(out.c_str()) != 0 ? 1 : 0);
+
+    ui::session_grant(w, "modkey");
+    ui::bind_verb(w, "hello", "return \"hi\";");
+    ui::act(out, w, es, "hello", "");
+    println("granted: {}", out);
+
+    // bind_check rides the same gate: with the key it attaches; the
+    // check then governs availability as usual.
+    ui::bind_check(w, "hello", "return \"nope\";");
+    ui::act(out, w, es, "hello", "");
+    println("checked: {}", out);
+    ui::world_close(w);
+    return 0;
+}

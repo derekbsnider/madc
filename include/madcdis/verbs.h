@@ -193,6 +193,10 @@ class verb_table
     };
     std::vector<verb_def> _verbs;	// linear; pilot scale
     script_executor _exec;		// the injected eval seam; may be null
+    // Re-entrancy latch (the R3 sibling design, ENFORCED): true while an
+    // invocation's binding executes. mutable: invoke() is logically const
+    // over the registry; the latch is execution state, not verb data.
+    mutable bool _invoking;
 
     const verb_def *find(name_id name) const
     {
@@ -209,7 +213,7 @@ class verb_table
 	return (verb_def *)0;
     }
 public:
-    verb_table() : _exec((script_executor)0) {}
+    verb_table() : _exec((script_executor)0), _invoking(false) {}
 
     void set_script_executor(script_executor exec) { _exec = exec; }
 
@@ -337,12 +341,29 @@ public:
     verb_outcome invoke(world &w, const credentials &creds,
 			const invocation &inv, int64_t session = 0) const
     {
+	// Re-entrancy, ENFORCED (the Phase-1 contract was stated at R1;
+	// the R3 sibling design makes it loud): a binding must not
+	// re-enter the registry — a verb body calling act would nest
+	// mutation contexts and dispatch state. The deferred full arc
+	// (queued follow-up invocations) keeps its seat; today the nested
+	// attempt is a refusal the outer binding sees as its result.
+	if ( _invoking )
+	    return verb_outcome(verb_status::refused,
+		madc::value(std::string("action re-entered the registry "
+					"(verbs do not re-enter act)")));
 	const verb_def *v = find(inv.action);
 	if ( !v )
 	    return verb_outcome(verb_status::unknown, madc::value());
 	availability a = availability_of(w, creds, inv, session);
 	if ( !a.enabled )
 	    return verb_outcome(verb_status::refused, madc::value(a.reason));
+	struct invoking_latch
+	{
+	    const verb_table *t;
+	    explicit invoking_latch(const verb_table *tt) : t(tt)
+		{ t->_invoking = true; }
+	    ~invoking_latch() { t->_invoking = false; }
+	} latch(this);
 	mutation_context mc(w);
 	action_env env(mc, creds, session);
 	madc::value out;

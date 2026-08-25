@@ -93,6 +93,10 @@ struct ui_session
     // %require gates by name: (requirement, refusal prose from the data).
     std::map<std::string, std::pair<requirement, std::string> > gates;
     credentials session_creds;
+    // Code-entity key-gating (hub doc Decided; the R3 sibling design):
+    // when non-empty, DEFINING code entities — bind_verb / bind_check —
+    // requires these credentials. Unset = open (every existing caller).
+    requirement bind_req;
     // The declarations the session owns: gating data for bind_verb and
     // the %verb/%require lines merged back into every save.
     std::vector<world_doc::verb_decl> verb_decls;
@@ -354,6 +358,35 @@ void world_close(int64_t w)
     }
 }
 
+// Is this session allowed to DEFINE code entities? The hub's Decided
+// text: "defining or editing code entities is itself key-gated" — the
+// same keys+levels machinery as every other condition, evaluated over
+// the session's effective credentials. An empty requirement (the
+// default) is open. Refusals are loud and bind nothing.
+static bool ui_bind_permitted(ui_session *s, const char *who,
+			      const char *name)
+{
+    if ( s->bind_req.empty() )
+	return true;
+    credentials creds = s->session_creds;
+    s->w.close_over_implications(creds);
+    if ( s->bind_req.satisfied_by(creds) )
+	return true;
+    fprintf(stderr, "%s: binding `%s` refused — this session lacks the "
+		    "required code-entity key\n", who, name);
+    return false;
+}
+
+// ui::bind_require_key — arm the code-entity gate: every LATER bind_verb
+// / bind_check on this session requires `key` (cumulative; keys layer
+// through the world's implications like every credential check).
+void bind_require_key(int64_t w, const char *key)
+{
+    ui_session *s = ui_get(w);
+    if ( s && key && *key )
+	s->bind_req.keys.push_back(s->w.intern(key));
+}
+
 // ui::bind_verb — attach a madc-source body (the script-entity binding
 // kind) to a verb name. Gating (keys/levels/refusal) comes from the
 // world's %verb declaration when one names this verb; an undeclared name
@@ -362,6 +395,8 @@ void bind_verb(int64_t w, const char *name, const char *source)
 {
     ui_session *s = ui_get(w);
     if ( !s || !name || !*name || !source )
+	return;
+    if ( !ui_bind_permitted(s, "ui::bind_verb", name) )
 	return;
     requirement req;
     std::string refusal;
@@ -388,6 +423,8 @@ void bind_check(int64_t w, const char *name, const char *source)
 {
     ui_session *s = ui_get(w);
     if ( !s || !name || !*name || !source )
+	return;
+    if ( !ui_bind_permitted(s, "ui::bind_check", name) )
 	return;
     if ( !s->verbs.set_script_check(s->w.intern(name), source) )
 	fprintf(stderr, "ui::bind_check: no verb `%s` bound\n", name);

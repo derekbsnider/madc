@@ -190,17 +190,24 @@ Three parts, implemented inside this arc's verb work:
 1. **Compile-once bodies.** Today every `invoke` of a script-kind verb
    (and every script check) hands `verb_def::source` to the injected
    executor, which re-lexes/re-parses/re-compiles it as a fresh eval unit.
-   The fix lives at the DEEPEST seam that owns compilation — the
-   runtime-eval machinery behind `Program::runtime_eval_source` — as a
-   compiled-unit cache keyed by (source text, wrapper form, policy):
-   the verb registry stays compilation-ignorant (verbs.h carries source
-   text as identity — rebinding with new text is a new key), ns_ui stays
-   a thin injector, and every `madc::eval_*` user benefits, not just ui.
-   Eviction: cache entries are per-Program and die with it; a rebound
-   verb's old entry ages out by keying on the text itself.
-   Thread contract: the cache shares the eval machinery's confinement.
-   Gate: a counter (`runtime_eval_compiles` in the stats surface) pinned
-   by a test that invokes one verb twice and sees ONE compile.
+   **MEASURED BLOCKER (found during this arc, 2026-08-25): a compiled
+   unit cannot simply be cached, because the eval ctx is BAKED AT
+   COMPILE** — the s128 ctx design folds every binding read to a
+   literal (`CirBuilder::baked_cstr_constant`; "the binding is a
+   read-only snapshot"), so a cached body would freeze its FIRST
+   invocation's `arg`/`actor`/`target` forever. Compile-once therefore
+   NEEDS runtime-bound ctx first: a stable per-Program ctx parameter
+   block the module imports by symbol (the MIR import table binds host
+   addresses; per-invoke the host re-fills the block), replacing the
+   baked-constant fold for cached units. THEN the cache lives at the
+   deepest seam that owns compilation — the machinery behind
+   `Program::runtime_eval_source` — keyed by (source text, wrapper
+   form, policy): the verb registry stays compilation-ignorant, ns_ui
+   stays a thin injector, every `madc::eval_*` user benefits.
+   Eviction: entries are per-Program and die with it; a rebound verb's
+   old entry ages out by keying on the text itself. Thread contract:
+   the eval machinery's confinement. Gate: a compile counter pinned by
+   an invoke-twice test. Its own slice — it gates nothing in this arc.
    - This is also the recorded consolidation point for the app-level
      DupFamilies (adventure_pilot_tick ×8, prose_enumerate_rule ×3,
      lineed_arg_parse ×3): cheap bodies make a shared SCRIPT PRELUDE
