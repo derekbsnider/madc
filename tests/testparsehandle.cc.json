@@ -1,0 +1,5 @@
+[
+  {"file":"testparsehandle_tu1.mad","command":"madc -c testparsehandle_tu1.mad"},
+  {"file":"testparsehandle_tu2.mad","command":"madc -c testparsehandle_tu2.mad"},
+  {"file":"testparsehandle_tu3.mad","arguments":["madc","-c","-DTPH_TOKEN=7","testparsehandle_tu3.mad"]}
+]

@@ -167,9 +167,9 @@ madc::diagnostics(d, source, "buffer.mad");
 
 value o;
 madc::outline(o, source, "buffer.mad");
-// rows: { kind, name, line, column } for the buffer's OWN definitions,
-// source order (kind: "function" today; classes/globals are a named
-// extension seat)
+// rows: { kind, name, line, column, end_line } for the buffer's OWN
+// definitions, source order (kind: "function" today; classes/globals
+// are a named extension seat; end_line = the closing brace's line)
 ```
 
 `filename` is the display name diagnostics carry (default `<source>`).
@@ -198,6 +198,53 @@ identically (`scripts/emitcxx_roundtrip_gate.sh` pins it in fulltest).
 madc-dialect constructs pass through unrespelled — cross-language
 respelling is a named future seat. Macro uses echo expanded; numeric
 literals canonicalize where the original text was not retained.
+
+### Persistent parse handles
+
+The same compiler-data machinery given a LIFETIME (madcide AST-1): a
+handle owns a live parse per TU, so outline / diagnostics / the
+enclosing-definition query answer from RETAINED state — no re-parse per
+query. Refresh is a whole-TU re-parse (an IDE refreshes on check/save;
+composition reads what the last refresh retained).
+
+```c
+long h = madc::parse_open(source, "buffer.mad");  // >= 1; a buffer with
+                                                  // errors still opens —
+                                                  // its state IS the rows
+madc::parse_refresh(h, new_source);               // whole-TU re-parse
+value o, d, e;
+madc::parse_outline(o, h);                        // the outline rows above
+madc::parse_check(d, h);                          // the diagnostics rows
+madc::parse_enclosing(e, h, line, column);
+// the INNERMOST of the TU's own function definitions containing
+// (line, column) — { kind, name, line, column, end_line }, or an empty
+// value when none (madcide's status line)
+madc::parse_close(h);                             // handles never reuse
+
+long hf = madc::parse_open_file("src/tu.c");      // the lexer's own file
+                                                  // ingestion; relative
+                                                  // #includes resolve as
+                                                  // the CLI's do; 0 =
+                                                  // unreadable path
+```
+
+A project handle groups a `compile_commands.json` manifest's TUs and
+parses every one on open, each with its OWN manifest options
+(-I/-D/--std, the `.c` → gnu17 default) — project diagnostics match the
+`--project` build:
+
+```c
+long p = madc::project_open("proj.cc.json");      // 0 = unreadable manifest
+value tus;
+madc::project_tus(tus, p);                        // rows: { file, handle }
+                                                  // (handle 0 = that file
+                                                  // unreadable / options
+                                                  // refused)
+madc::project_close(p);                           // closes its TU handles
+```
+
+Thread contract: a handle is confined to the thread/program that opened
+it — the runtime-eval machinery's confinement.
 
 ## Security
 

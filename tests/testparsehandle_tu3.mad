@@ -1,0 +1,7 @@
+// Project-handle fixture TU 3 (owned by testparsehandle.mad): compiles
+// ONLY with the manifest's -DTPH_TOKEN=7 — its check=0 row pins that a
+// manifest entry's options ride into the handle's child.
+long tu_defined()
+{
+    return TPH_TOKEN;
+}

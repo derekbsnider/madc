@@ -1,0 +1,25 @@
+opened ok: 1
+outline: 2
+  function add @ 1:0..1
+  function twice @ 2:0..5
+check rows: 0
+encl@1: add
+encl@4: twice
+encl@5: twice
+encl@99: none
+refresh: 1
+outline2: 1
+  function only
+bad handle: 1 bad rows: 1
+first close: 1
+second close: 0
+closed-outline: 0
+fresh-handle-differs: 1
+trap opened: 1
+project: 1
+tus: 3
+  tests/testparsehandle_tu1.mad handle=1 outline=1 check=0
+  tests/testparsehandle_tu2.mad handle=1 outline=2 check=0
+  tests/testparsehandle_tu3.mad handle=1 outline=1 check=0
+project-close: 1
+project-missing: 1

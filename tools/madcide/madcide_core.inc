@@ -89,17 +89,43 @@ bool load_profile(long w, long es, const char *name)
 }
 
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
+// The buffer's PARSE HANDLE (AST-1): one live parse per buffer, opened on
+// first need (run_ide opens it at load), refreshed WHOLE on check / save /
+// outline. Composition reads its RETAINED state — the status line's
+// enclosing-function query never runs the compiler.
+long ensure_phandle(long w, long doc)
+{
+    long h = es_int(w, doc, "phandle", 0);
+    if ( h != 0 )
+	return h;
+    value t;
+    ui::text(t, w, doc);
+    var p;
+    ui::get(p, w, doc, "path");
+    h = madc::parse_open(t.c_str(), p.c_str());
+    ui::set(w, doc, "phandle", h);
+    return h;
+}
+
+// Whole-TU re-parse of the buffer's handle from the live text — the ONE
+// compiler entry (check, save, outline all route here).
+long reparse_buffer(long w, long doc)
+{
+    long h = ensure_phandle(w, doc);
+    value t;
+    ui::text(t, w, doc);
+    madc::parse_refresh(h, t.c_str());
+    return h;
+}
+
 // Refresh the stored diagnostics rows from the LIVE buffer — data only;
 // composition reads the bag, and only this (check, save) runs the
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
-    value t;
-    ui::text(t, w, doc);
-    var p;
-    ui::get(p, w, doc, "path");
+    long h = reparse_buffer(w, doc);
     value diags;
-    madc::diagnostics(diags, t.c_str(), p.c_str());
+    madc::parse_check(diags, h);
     ui::set(w, es, "diags", diags);
     return php::count(diags);
 }
@@ -117,12 +143,9 @@ void run_check(long w, long es, long doc)
 
 void refresh_outline(long w, long es, long doc)
 {
-    value t;
-    ui::text(t, w, doc);
-    var p;
-    ui::get(p, w, doc, "path");
+    long h = reparse_buffer(w, doc);
     value o;
-    madc::outline(o, t.c_str(), p.c_str());
+    madc::parse_outline(o, h);
     ui::set(w, es, "outline", o);
 }
 
@@ -942,7 +965,28 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     }
 
     value status;
-    compose_status(status, w, es, nav, caret, "");
+    // The status line's enclosing-function suffix (AST-1): a RETAINED-state
+    // read of the buffer's parse handle — stored-space only (a view's caret
+    // is display-space), and only once something opened the handle;
+    // composition never runs the compiler.
+    var fnsuffix = "";
+    value vw_st;
+    if ( !view_name(vw_st, w, es) )
+    {
+	long ph = es_int(w, doc, "phandle", 0);
+	if ( ph != 0 )
+	{
+	    long cl = line_of(w, doc, caret);
+	    long cs = ui::text_line_start(w, doc, cl);
+	    if ( cs < 0 )
+		cs = 0;
+	    value encl;
+	    madc::parse_enclosing(encl, ph, cl, caret - cs);
+	    if ( !encl.is_null() )
+		fnsuffix = format("  fn {}", encl["name"]);
+	}
+    }
+    compose_status(status, w, es, nav, caret, fnsuffix.c_str());
     value menu;
     compose_menu(menu);
 
@@ -970,6 +1014,8 @@ void run_ide(const char *path, bool ro)
 	return;
     ui::set(w, es, "tui", t);
     load_profile(w, es, "joe");
+    ensure_phandle(w, doc);	// parse-on-load: the status line has state
+				// before the first check
     bool run = true;
     while ( run )
     {
@@ -981,6 +1027,9 @@ void run_ide(const char *path, bool ro)
 	    break;
 	run = apply_ide_event(w, es, doc, ev);
     }
+    long ph = es_int(w, doc, "phandle", 0);
+    if ( ph != 0 )
+	madc::parse_close(ph);
     ui::tui_close(t);
     ui::world_close(w);
 }

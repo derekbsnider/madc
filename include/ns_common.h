@@ -185,8 +185,8 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
 // Compile-never-execute a source buffer in a child Program; the compiler's
 // own structured data comes back as a value ARRAY (madcide IDE-3):
 // diagnostics = {severity, phase, message, file, line, column} rows,
-// outline = {kind, name, line, column} rows for the buffer's own
-// definitions. result = madc::value*, source/filename = std::string*.
+// outline = {kind, name, line, column, end_line} rows for the buffer's
+// own definitions. result = madc::value*, source/filename = std::string*.
 void *madc_source_diagnostics(void *result, void *source, void *filename);
 void *madc_source_outline(void *result, void *source, void *filename);
 // madc::emit — parse a buffer in the same child and render its cir_node
@@ -195,5 +195,23 @@ void *madc_source_outline(void *result, void *source, void *filename);
 // False = unknown target or a buffer that does not parse/translate.
 bool madc_source_emit(void *result, void *source, void *filename,
 		      void *target);
+
+// ---- madc:: persistent parse handles (madcide AST-1) --------------------
+// The same child machinery given a LIFETIME: open/refresh/close, with
+// outline / diagnostics / enclosing-at-position served from the retained
+// parsed state; a project handle groups a cc.json manifest's TUs. Handles
+// are int64 (>= 1; 0 = failure); result = madc::value*, strings =
+// std::string*.
+int64_t madc_parse_open(void *source, void *filename);
+int64_t madc_parse_open_file(void *path);
+bool madc_parse_refresh(int64_t handle, void *source);
+bool madc_parse_close(int64_t handle);
+void *madc_parse_outline(void *result, int64_t handle);
+void *madc_parse_diagnostics(void *result, int64_t handle);
+void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column);
+int64_t madc_project_open(void *manifest_path);
+void *madc_project_tus(void *result, int64_t handle);
+bool madc_project_close(int64_t handle);
 
 #endif // __NS_COMMON_H

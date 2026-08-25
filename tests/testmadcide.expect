@@ -27,12 +27,13 @@ long twice(long x) { return add(x, x); }
 Outline
   1. function add :1
   2. function twice :2
-Ln 1, Col 1
+Ln 1, Col 1 fn add
   1. Save
   2. Find
   3. Quit
 --- end ---
 goto-outline: caret=43
+status-fn: Ln 2, Col 1  fn twice
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

@@ -28,6 +28,14 @@ bool read_compile_commands(const std::string &path,
 
 // Forward decls to avoid pulling madc.h into the header.
 class MadcEngine;
+class Program;
+
+// Apply one TU's language options (-I / -D / -stdlib / the std selection,
+// with the .c -> gnu17 default) to its Program — THE one rule; the
+// --project build lane and the project parse handles both apply it.
+// False + err = unknown -stdlib flavor. Defined in madc_cir.cpp.
+bool apply_project_tu_options(Program &prog, const ProjectTU &tu,
+			      std::string &err);
 
 // Engine: build+link+JIT-run the manifest. Returns the program's exit code,
 // or -1 on a build/link error. Defined in madc_cir.cpp.
