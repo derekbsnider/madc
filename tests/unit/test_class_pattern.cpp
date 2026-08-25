@@ -295,7 +295,14 @@ TEST_CASE("B2 admitted ClassPattern failures roll back without parser retry")
 		"PatternFailure<int64_t> failed;\n",
 		"<class-pattern-failure-use>");
 	REQUIRE(use_tokens != NULL);
-	CHECK_FALSE(program.parse(use_tokens));
+	// Error-tolerant parse (arc doc 3.5): the admitted failure is
+	// CONTAINED — parse survives (true), the diagnostic is recorded, an
+	// error node is planted (error_nodes > 0 = not a clean parse, the
+	// translate gate's predicate). The rollback assertions below hold
+	// exactly as before: containment happens at the top-level loop,
+	// AFTER the ClassPattern rollback ran at the throw site.
+	CHECK(program.parse(use_tokens));
+	CHECK(program.error_nodes > 0);
 	CHECK(program._class_inst_pattern == 2);
 	CHECK(program._class_inst_parse == 0);
 	REQUIRE(program.funcdef_map.count(collision_name) == 1);

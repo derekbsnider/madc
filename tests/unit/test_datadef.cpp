@@ -308,7 +308,11 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *bad_tp = bad_prog->tokenize(bad_path.c_str());
 	CHECK(bad_tp != nullptr);
 	REQUIRE(bad_tp != nullptr);
-	CHECK_FALSE(bad_prog->parse(bad_tp));
+	// Error-tolerant parse (arc doc 3.5): rejection means NOT a clean
+	// parse — the error may be CONTAINED (parse true, error_nodes > 0).
+	bool bad_clean = bad_prog->parse(bad_tp)
+			 && bad_prog->error_nodes == 0;
+	CHECK_FALSE(bad_clean);
 
 	unlink(good_path.c_str());
 	unlink(bad_path.c_str());
@@ -333,7 +337,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	unlink(path.c_str());
     }
@@ -419,7 +426,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(restricted_path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	engine.registration_policy.enable_core_functions = true;
 	std::unique_ptr<Program> host_prog = engine.create_program();
