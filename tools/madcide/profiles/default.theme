@@ -1,10 +1,12 @@
-# madcide default theme (AST-2): classification -> colour, one pair per
-# line — the same line rule as the keybinding profiles. Colours are the
-# renderer palette's names (normal, reverse, red, green, yellow, blue,
-# magenta, cyan). An unlisted class renders normal.
+# madcide default theme (AST-2): classification -> style spec, one pair
+# per line (class first, then the spec — JOE's vocabulary: bold dim
+# italic underline blink inverse, a colour black..white, bg_<colour>;
+# bold-as-bright gives the 16-colour foreground model). An unlisted
+# class renders normal. Schemes are sibling *.theme files, swapped with
+# ^K T by name.
 keyword yellow
 type green
 string red
 number magenta
 comment cyan
-function blue
+function bold blue

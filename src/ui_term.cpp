@@ -221,35 +221,53 @@ public:
 	return true;
     }
 
-    // THE attr->SGR table (AST-2 palette). A colour SETS (\x1b[3Xm) and
-    // overrides a previous colour directly; reverse and colour do not
-    // clear each other, so crossing between them resets first. The
-    // normal<->reverse transitions keep their historical spellings
-    // (\x1b[7m / \x1b[0m) — the no-colour byte stream is unchanged.
+    // THE style->SGR table (AST-2; owner: VT-102 ANSI / JOE parity). A
+    // non-normal transition RESETS and then sets the target style's full
+    // parameter list — attributes 1/2/3/4/5/7, fg 30+c, bg 40+c;
+    // bold-as-bright supplies the 16-colour foreground model (VT-102 /
+    // 8-colour terminals brighten on bold, exactly JOE's behavior; no
+    // aixterm 90–97). The historical spellings survive: pure inverse
+    // entered from normal emits \x1b[7m and any->normal emits \x1b[0m,
+    // so a grid using only normal/reverse produces the byte stream it
+    // always did.
     static void emit_sgr(std::string &out, tui_attr from, tui_attr to)
     {
-	if ( to == tui_attr::normal )
+	if ( to.is_normal() )
 	{
 	    out += "\x1b[0m";
 	    return;
 	}
-	bool from_colour = from != tui_attr::normal
-			&& from != tui_attr::reverse;
-	bool to_colour = to != tui_attr::reverse;
-	if ( (from == tui_attr::reverse && to_colour)
-	  || (from_colour && to == tui_attr::reverse) )
+	if ( !from.is_normal() )
 	    out += "\x1b[0m";
-	switch ( to )
+	if ( to.is_reverse() )
 	{
-	    case tui_attr::reverse: out += "\x1b[7m";  break;
-	    case tui_attr::red:	    out += "\x1b[31m"; break;
-	    case tui_attr::green:   out += "\x1b[32m"; break;
-	    case tui_attr::yellow:  out += "\x1b[33m"; break;
-	    case tui_attr::blue:    out += "\x1b[34m"; break;
-	    case tui_attr::magenta: out += "\x1b[35m"; break;
-	    case tui_attr::cyan:    out += "\x1b[36m"; break;
-	    case tui_attr::normal:  break;	// handled above
+	    out += "\x1b[7m";
+	    return;
 	}
+	std::string params;
+	char buf[8];
+	if ( to.flags & tui_attr::BOLD )	params += "1;";
+	if ( to.flags & tui_attr::DIM )		params += "2;";
+	if ( to.flags & tui_attr::ITALIC )	params += "3;";
+	if ( to.flags & tui_attr::UNDERLINE )	params += "4;";
+	if ( to.flags & tui_attr::BLINK )	params += "5;";
+	if ( to.flags & tui_attr::INVERSE )	params += "7;";
+	if ( to.fg )
+	{
+	    snprintf(buf, sizeof(buf), "%d;", 29 + (int)to.fg);
+	    params += buf;
+	}
+	if ( to.bg )
+	{
+	    snprintf(buf, sizeof(buf), "%d;", 39 + (int)to.bg);
+	    params += buf;
+	}
+	if ( params.empty() )
+	    return;			// unreachable: normal handled above
+	params.erase(params.size() - 1);	// the trailing ';'
+	out += "\x1b[";
+	out += params;
+	out += 'm';
     }
 
     virtual void paint(const tui_grid &prev, const tui_grid &next)
@@ -263,7 +281,7 @@ public:
 	{
 	    size_t r = dirty[i];
 	    cup(out, r, 0);
-	    tui_attr cur = tui_attr::normal;
+	    tui_attr cur = tui_attr::normal();
 	    for ( size_t c = 0; c < next.cols; ++c )
 	    {
 		const madc::hub::tui_cell &cell = next.at(r, c);
@@ -274,7 +292,7 @@ public:
 		}
 		out += cell.ch;
 	    }
-	    if ( cur != tui_attr::normal )
+	    if ( cur != tui_attr::normal() )
 		out += "\x1b[0m";
 	}
 	if ( next.cursor_visible )

@@ -49,59 +49,103 @@ namespace madc {
 namespace hub {
 
 // ------------------------------------------------------------------ the grid
-// The render-style palette (AST-2): normal/reverse plus the six chromatic
-// VT100 base colours. Styles are the renderer's vocabulary — a THEME (app
-// data) maps classification names to colour names; tui_attr_of below is
-// the one name->attr converter at the value boundary; the VT100 target
-// owns attr->SGR.
-enum class tui_attr : unsigned char
+// The render STYLE (AST-2; owner: VT-102's ANSI colours, JOE parity).
+// What JOE's syntax vocabulary can say: the classic attributes plus an
+// 8-colour foreground/background — 16 effective foreground colours via
+// bold-as-bright, the VT-102/16-colour model (no aixterm 90–97).
+// A THEME (app data) maps classification names to style SPECS;
+// tui_attr_of below is the one spec parser at the value boundary; the
+// VT100 target owns style->SGR. 256/true-colour is a named later seat.
+struct tui_attr
 {
-    normal = 0,
-    reverse = 1,
-    red = 2,
-    green = 3,
-    yellow = 4,
-    blue = 5,
-    magenta = 6,
-    cyan = 7
+    enum : unsigned char
+    {
+	BOLD	  = 1,
+	DIM	  = 2,
+	ITALIC	  = 4,
+	UNDERLINE = 8,
+	BLINK	  = 16,
+	INVERSE	  = 32
+    };
+    unsigned char fg;		// 0 = default, 1..8 = black..white (ANSI+1)
+    unsigned char bg;		// same domain
+    unsigned char flags;	// the attribute bits above
+    tui_attr() : fg(0), bg(0), flags(0) {}
+    bool operator==(const tui_attr &o) const
+	{ return fg == o.fg && bg == o.bg && flags == o.flags; }
+    bool operator!=(const tui_attr &o) const { return !(*this == o); }
+    bool is_normal() const { return fg == 0 && bg == 0 && flags == 0; }
+    // Pure inverse — the pre-colour renderer's one non-normal style; the
+    // VT100 target keeps its historical \x1b[7m spelling for it.
+    bool is_reverse() const { return fg == 0 && bg == 0 && flags == INVERSE; }
+    static tui_attr normal() { return tui_attr(); }
+    static tui_attr reverse()
+	{ tui_attr a; a.flags = INVERSE; return a; }
 };
 
-// THE colour-name <-> attr converter (both directions, one table — the
-// tui_key_name discipline). False = unknown name.
-inline bool tui_attr_of(const std::string &name, tui_attr &out)
+// THE style-spec parser (JOE's vocabulary, one table): space-separated
+// words — attributes `bold dim italic underline blink inverse` (JOE's
+// `reverse` accepted as a synonym), a foreground colour word
+// `black red green yellow blue magenta cyan white`, a background
+// `bg_<colour>`, and `normal` (alone) for the default style. False =
+// any unknown word (the WHOLE spec is refused — themes fail loud).
+inline bool tui_attr_of(const std::string &spec, tui_attr &out)
 {
-    if ( name == "normal" )	 { out = tui_attr::normal;  return true; }
-    if ( name == "reverse" )	 { out = tui_attr::reverse; return true; }
-    if ( name == "red" )	 { out = tui_attr::red;	    return true; }
-    if ( name == "green" )	 { out = tui_attr::green;   return true; }
-    if ( name == "yellow" )	 { out = tui_attr::yellow;  return true; }
-    if ( name == "blue" )	 { out = tui_attr::blue;    return true; }
-    if ( name == "magenta" )	 { out = tui_attr::magenta; return true; }
-    if ( name == "cyan" )	 { out = tui_attr::cyan;    return true; }
-    return false;
-}
-
-inline const char *tui_attr_name(tui_attr a)
-{
-    switch ( a )
+    static const char *const colours[8] = {
+	"black", "red", "green", "yellow",
+	"blue", "magenta", "cyan", "white"
+    };
+    tui_attr a;
+    bool any = false;
+    size_t i = 0;
+    while ( i < spec.size() )
     {
-	case tui_attr::normal:	return "normal";
-	case tui_attr::reverse:	return "reverse";
-	case tui_attr::red:	return "red";
-	case tui_attr::green:	return "green";
-	case tui_attr::yellow:	return "yellow";
-	case tui_attr::blue:	return "blue";
-	case tui_attr::magenta:	return "magenta";
-	case tui_attr::cyan:	return "cyan";
+	while ( i < spec.size() && (spec[i] == ' ' || spec[i] == '\t') )
+	    ++i;
+	size_t start = i;
+	while ( i < spec.size() && spec[i] != ' ' && spec[i] != '\t' )
+	    ++i;
+	if ( i == start )
+	    break;
+	std::string w = spec.substr(start, i - start);
+	if ( w == "normal" )	    { any = true; continue; }
+	if ( w == "bold" )	    { a.flags |= tui_attr::BOLD; any = true; continue; }
+	if ( w == "dim" )	    { a.flags |= tui_attr::DIM; any = true; continue; }
+	if ( w == "italic" )	    { a.flags |= tui_attr::ITALIC; any = true; continue; }
+	if ( w == "underline" )	    { a.flags |= tui_attr::UNDERLINE; any = true; continue; }
+	if ( w == "blink" )	    { a.flags |= tui_attr::BLINK; any = true; continue; }
+	if ( w == "inverse" || w == "reverse" )
+				    { a.flags |= tui_attr::INVERSE; any = true; continue; }
+	bool matched = false;
+	for ( int c = 0; c < 8 && !matched; ++c )
+	{
+	    if ( w == colours[c] )
+	    {
+		a.fg = (unsigned char)(c + 1);
+		matched = true;
+	    }
+	    else if ( w.compare(0, 3, "bg_") == 0
+		   && w.compare(3, std::string::npos, colours[c]) == 0 )
+	    {
+		a.bg = (unsigned char)(c + 1);
+		matched = true;
+	    }
+	}
+	if ( !matched )
+	    return false;
+	any = true;
     }
-    return "normal";
+    if ( !any )
+	return false;
+    out = a;
+    return true;
 }
 
 struct tui_cell
 {
     char     ch;
     tui_attr attr;
-    tui_cell() : ch(' '), attr(tui_attr::normal) {}
+    tui_cell() : ch(' '), attr(tui_attr::normal()) {}
     bool operator==(const tui_cell &o) const
 	{ return ch == o.ch && attr == o.attr; }
     bool operator!=(const tui_cell &o) const { return !(*this == o); }
@@ -130,7 +174,7 @@ struct tui_grid
 
     // Clipped text write; never wraps.
     void put(size_t r, size_t c, const std::string &text,
-	     tui_attr attr = tui_attr::normal)
+	     tui_attr attr = tui_attr::normal())
     {
 	if ( r >= rows )
 	    return;
@@ -606,7 +650,7 @@ private:
     {
 	long start, end;
 	tui_attr attr;
-	doc_span() : start(0), end(0), attr(tui_attr::normal) {}
+	doc_span() : start(0), end(0), attr(tui_attr::normal()) {}
     };
     struct edit_slot
     {
@@ -643,14 +687,14 @@ private:
 	    if ( !right.empty() && left.size() + right.size() + 2 <= cols )
 		l.text += std::string(cols - left.size() - right.size() - 1,
 				      ' ') + right;
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse;
+	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
 	else if ( n.role == r.status )
 	{
 	    line_out l(" " + node_text(n));
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse;
+	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
@@ -707,7 +751,7 @@ private:
 		    span s;
 		    s.col = l.text.size();
 		    s.len = opt.size();
-		    s.attr = tui_attr::reverse;
+		    s.attr = tui_attr::reverse();
 		    l.spans.push_back(s);
 		}
 		l.text += opt;
@@ -844,7 +888,7 @@ private:
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
 		fill_range_overlap(top_row + k, begin, end, shift, cols,
 				   e.sel_start, e.sel_end,
-				   tui_attr::reverse);
+				   tui_attr::reverse());
 	    if ( li == caret_line && e.slot == _focus )
 	    {
 		_grid.cursor_row = top_row + k;

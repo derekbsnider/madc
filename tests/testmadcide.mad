@@ -146,6 +146,35 @@ int main()
 	    php::count(shl), shl[0]["s"], shl[0]["e"], shl[0]["c"],
 	    shl[1]["s"], shl[1]["e"], shl[1]["c"]);
 
+    // -- AST-2 (owner): colour SCHEMES — a theme swap through the one
+    //    prompt mode; specs speak JOE's vocabulary (bold-as-bright).
+    ev_action(e, "theme", "^k t");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "classic");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    compose_ide_tree(tree, w, es, doc);
+    value shc = tree["children"][1]["hints"]["spans"];
+    println("theme-swap: {} first-c={}", msg, shc[0]["c"]);
+    ev_action(e, "theme", "^k t");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "nosuch");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("theme-missing: {}", msg);
+    ev_action(e, "theme", "^k t");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "default");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "right");		// consume the one-shot theme message so
+    apply_ide_event(w, es, doc, e);	// gate 3's two composes match
+
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;
     compose_ide_tree(before, w, es, doc);

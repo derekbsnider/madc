@@ -185,8 +185,8 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     // Row 0: the heading bar, reverse, content right-aligned (one blank
     // column of right margin).
     CHECK(g.row_text(0) == " notes.txt" + std::string(26, ' ') + "[+]");
-    CHECK(g.at(0, 0).attr == tui_attr::reverse);
-    CHECK(g.at(0, 39).attr == tui_attr::reverse);
+    CHECK(g.at(0, 0).attr == tui_attr::reverse());
+    CHECK(g.at(0, 39).attr == tui_attr::reverse());
     // Rows 1..5: the flexible edit window (8 - 3 fixed rows = 5).
     CHECK(g.row_text(1) == "one");
     CHECK(g.row_text(2) == "two");
@@ -194,7 +194,7 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     CHECK(g.row_text(4) == "");
     // Row 6: the status bar; row 7: the menu with Save selected.
     CHECK(g.row_text(6) == " Ln 1");
-    CHECK(g.at(6, 0).attr == tui_attr::reverse);
+    CHECK(g.at(6, 0).attr == tui_attr::reverse());
     CHECK(g.row_text(7) == " Save   Find   Quit");
     // Caret at byte 4 = line 2 col 0; the edit region starts at row 1.
     CHECK(g.cursor_visible);
@@ -203,8 +203,8 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     // Focus starts on the first focusable (the edit region), so the menu
     // selection is not highlighted as the cursor's home — but the
     // selected option still renders reverse.
-    CHECK(g.at(7, 1).attr == tui_attr::reverse);	// " Save "
-    CHECK(g.at(7, 9).attr == tui_attr::normal);		// " Find "
+    CHECK(g.at(7, 1).attr == tui_attr::reverse());	// " Save "
+    CHECK(g.at(7, 9).attr == tui_attr::normal());		// " Find "
     REQUIRE(m.focusables().size() == 2u);
     CHECK(m.focusables()[0].k == tui_model::focusable::kind::edit);
     CHECK(m.focusables()[1].k == tui_model::focusable::kind::choice);
@@ -244,10 +244,10 @@ TEST_CASE("compose — long line shifts horizontally; selection highlights")
     tui_model m2;
     const tui_grid &s = m2.compose(r, editor_tree(w, "one two three", 4,
 						  4, 9), 6, 20);
-    CHECK(s.at(1, 3).attr == tui_attr::normal);
-    CHECK(s.at(1, 4).attr == tui_attr::reverse);
-    CHECK(s.at(1, 8).attr == tui_attr::reverse);
-    CHECK(s.at(1, 9).attr == tui_attr::normal);
+    CHECK(s.at(1, 3).attr == tui_attr::normal());
+    CHECK(s.at(1, 4).attr == tui_attr::reverse());
+    CHECK(s.at(1, 8).attr == tui_attr::reverse());
+    CHECK(s.at(1, 9).attr == tui_attr::normal());
 }
 
 // One span row { s, e, c } for the hints["spans"] array.
@@ -260,14 +260,36 @@ static madc::value span_row(long s, long e, const char *colour)
     return madc::value::make_object(f);
 }
 
+TEST_CASE("styles — the JOE-vocabulary spec parser (one table)")
+{
+    tui_attr a;
+    REQUIRE(tui_attr_of("yellow", a));
+    CHECK(a.fg == 4);				// black..white = 1..8
+    CHECK(a.bg == 0);
+    CHECK(a.flags == 0);
+    REQUIRE(tui_attr_of("bold yellow", a));	// bold-as-bright: the 16
+    CHECK(a.fg == 4);
+    CHECK((a.flags & tui_attr::BOLD) != 0);
+    REQUIRE(tui_attr_of("underline bg_blue cyan", a));
+    CHECK(a.fg == 7);
+    CHECK(a.bg == 5);
+    CHECK((a.flags & tui_attr::UNDERLINE) != 0);
+    REQUIRE(tui_attr_of("inverse", a));
+    CHECK(a.is_reverse());
+    REQUIRE(tui_attr_of("reverse", a));		// JOE synonym
+    CHECK(a.is_reverse());
+    REQUIRE(tui_attr_of("normal", a));
+    CHECK(a.is_normal());
+    CHECK(!tui_attr_of("mauve", a));		// unknown word refuses
+    CHECK(!tui_attr_of("bold mauve", a));	// ... the WHOLE spec
+    CHECK(!tui_attr_of("", a));			// empty refuses
+}
+
 TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip")
 {
-    // The name<->attr converter (both directions, one table).
-    tui_attr a;
-    CHECK(tui_attr_of("yellow", a));
-    CHECK(a == tui_attr::yellow);
-    CHECK(std::string(tui_attr_name(tui_attr::cyan)) == "cyan");
-    CHECK(!tui_attr_of("mauve", a));
+    tui_attr yellow, cyan;
+    REQUIRE(tui_attr_of("yellow", yellow));
+    REQUIRE(tui_attr_of("bold cyan", cyan));
 
     world w;
     roles r = roles::standard(w);
@@ -281,7 +303,7 @@ TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip"
     std::vector<madc::value> rows;
     rows.push_back(span_row(0, 3, "yellow"));	// "int"
     rows.push_back(span_row(8, 10, "green"));	// "42" — under the selection
-    rows.push_back(span_row(12, 16, "cyan"));	// "// c"
+    rows.push_back(span_row(12, 16, "bold cyan"));	// "// c"
     rows.push_back(span_row(5, 2, "red"));	// end <= start: skipped
     rows.push_back(span_row(4, 6, "mauve"));	// unknown colour: skipped
     h["spans"] = madc::value::make_array(rows);
@@ -290,14 +312,14 @@ TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip"
     tui_model m;
     const tui_grid &g = m.compose(r, root, 4, 40);
     CHECK(g.row_text(0) == "int n = 42; // c");
-    CHECK(g.at(0, 0).attr == tui_attr::yellow);
-    CHECK(g.at(0, 2).attr == tui_attr::yellow);
-    CHECK(g.at(0, 3).attr == tui_attr::normal);	// the space after "int"
-    CHECK(g.at(0, 4).attr == tui_attr::normal);	// both bad rows skipped
-    CHECK(g.at(0, 8).attr == tui_attr::reverse);	// selection WINS over green
-    CHECK(g.at(0, 9).attr == tui_attr::reverse);
-    CHECK(g.at(0, 12).attr == tui_attr::cyan);
-    CHECK(g.at(0, 15).attr == tui_attr::cyan);
+    CHECK(g.at(0, 0).attr == yellow);
+    CHECK(g.at(0, 2).attr == yellow);
+    CHECK(g.at(0, 3).attr == tui_attr::normal());	// the space after "int"
+    CHECK(g.at(0, 4).attr == tui_attr::normal());	// both bad rows skipped
+    CHECK(g.at(0, 8).attr == tui_attr::reverse());	// selection WINS over green
+    CHECK(g.at(0, 9).attr == tui_attr::reverse());
+    CHECK(g.at(0, 12).attr == cyan);
+    CHECK(g.at(0, 15).attr == cyan);
 }
 
 TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
@@ -354,8 +376,8 @@ TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
 
     // The selected option's highlight follows on the next compose.
     const tui_grid &g = m.compose(r, editor_tree(w, "abc", 0), 8, 40);
-    CHECK(g.at(7, 1).attr == tui_attr::normal);		// " Save "
-    CHECK(g.at(7, 15).attr == tui_attr::reverse);	// " Quit "
+    CHECK(g.at(7, 1).attr == tui_attr::normal());		// " Save "
+    CHECK(g.at(7, 15).attr == tui_attr::reverse());	// " Quit "
     // The menu holds focus, so no edit caret cursor shows.
     CHECK(!g.cursor_visible);
 

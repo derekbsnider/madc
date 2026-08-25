@@ -88,19 +88,44 @@ bool load_profile(long w, long es, const char *name)
     return true;
 }
 
-// ---- theme as data (AST-2): classification -> colour, a PROFILE --------
-// The theme file's lines are `class colour` pairs — the SAME line rule
-// and parse as the keybinding profiles (parse_keys is the one owner).
-// Missing file = an empty theme (no colouring; spans stay off).
-void load_theme(long w, long es, const char *name)
+// ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
+// One `class SPEC` pair per line: the class is the FIRST word, the spec
+// the rest — JOE's style vocabulary (attribute words + a colour +
+// bg_colour, e.g. "keyword bold yellow"); the renderer's tui_attr_of
+// parses specs at paint. Line rule (comments/blanks) = profile_line,
+// shared with the keybindings; the SPLIT differs by design — a binding
+// ENDS in one action word, a theme line ENDS in a multi-word spec.
+// Schemes are just theme files: profiles/<name>.theme, swapped by name
+// (the profile-swap precedent). False = no such theme (the previous one
+// stays); an es "scheme" records the loaded name.
+bool load_theme(long w, long es, const char *name)
 {
     var dir;
     ui::get(dir, w, es, "profile_dir");
-    value th;
     value txt;
-    if ( php::file_get_contents(txt, format("{}/{}.theme", dir, name)) )
-	parse_keys(th, txt.c_str());
+    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, name)) )
+	return false;
+    value th;
+    array lines;
+    php::explode(lines, "\n", txt.c_str());
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	value line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	const char *ls = line.c_str();
+	const char *sp = strchr(ls, ' ');
+	if ( sp == 0 )
+	    continue;
+	long cut = sp - ls;
+	var cls = php::trim(perl::substr(line, 0, cut));
+	var spec = php::trim(sp + 1);
+	th[cls.c_str()] = spec;
+    }
     ui::set(w, es, "theme", th);
+    ui::set(w, es, "scheme", name);
+    return true;
 }
 
 // Highlight spans onto the bag (AST-2): the engine's classification rows
@@ -225,7 +250,22 @@ void goto_pane_row(long w, long es, long doc, long option)
     }
 }
 
-// ---- one prompt mode (find / goto-line / insert-file) -----------------
+// THE view-active rule, one seat (dupaudit family view_active_predicate):
+// a view is active iff the editor-state bag carries a non-empty "view"
+// name. Out = the name; false = the original (identity lens). Defined
+// here, ahead of the prompt machinery (the theme completion consults it)
+// and of the view seam below.
+bool view_name(value &out, long w, long es)
+{
+    var vw;
+    ui::get(vw, w, es, "view");
+    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+	return false;
+    out = vw;
+    return true;
+}
+
+// ---- one prompt mode (find / goto-line / insert-file / theme) ---------
 // Label + input + completion mode on the bag; the shared status line
 // projects "label: input". While a prompt is up it consumes every event:
 // text appends, backspace trims, enter completes, esc cancels.
@@ -297,7 +337,27 @@ void finish_prompt(long w, long es, long doc, long caret)
 	return;
     }
     if ( mode == "insertfile" )
+    {
 	insert_file(w, es, doc, caret, in.c_str());
+	return;
+    }
+    if ( mode == "theme" )
+    {
+	// A colour SCHEME swap (owner: like the keybinding profiles):
+	// load the named theme and recolour from the handle's retained
+	// state. `doc` here is the NAV target — while a view is up the
+	// stored buffer recolours on exit/reparse instead (spans are
+	// stored-space only), so the immediate refresh is skipped.
+	if ( !load_theme(w, es, in.c_str()) )
+	{
+	    ui::set(w, es, "msg", format("No theme '{}'.", in));
+	    return;
+	}
+	value vw;
+	if ( !view_name(vw, w, es) )
+	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
+	ui::set(w, es, "msg", format("Theme: {}.", in));
+    }
 }
 
 // Every event while the prompt is up.
@@ -503,19 +563,6 @@ void delete_word(long w, long es, long doc, long caret)
 // stored-space history are refused through the one editable gate. The
 // identity lens (no view) adds NOTHING — the composed tree stays
 // byte-identical to today's.
-
-// THE view-active rule, one seat (dupaudit family view_active_predicate):
-// a view is active iff the editor-state bag carries a non-empty "view"
-// name. Out = the name; false = the original (identity lens).
-bool view_name(value &out, long w, long es)
-{
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
-	return false;
-    out = vw;
-    return true;
-}
 
 // The navigation target: the view buffer while a view is up, else the
 // document — the ONE place display-vs-stored routing happens.
@@ -736,6 +783,11 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	if ( a == "insertfile" )
 	{
 	    start_prompt(w, es, "Insert file", "insertfile");
+	    return true;
+	}
+	if ( a == "theme" )
+	{
+	    start_prompt(w, es, "Theme", "theme");
 	    return true;
 	}
 	if ( a == "mark" )
