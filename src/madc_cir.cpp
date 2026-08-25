@@ -5801,6 +5801,35 @@ static bool is_c_source_file(const std::string &path)
 	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
 }
 
+// Apply one manifest TU's language options to its Program — THE one rule,
+// shared by the --project build lane (project_parse_all) and the AST-1
+// project parse handles (internal_program_project_open): -I include dirs,
+// -D defines, the -stdlib flavor, and the std selection. An explicit
+// --std wins; a plain .c file defaults to gnu17 — gcc's actual default C
+// dialect (C17 base + GNU, no __STRICT_ANSI__) — so C++ keywords stay
+// usable as C identifiers AND glibc's feature gates (timercmp, strdup,
+// …) match plain gcc. False + err = unknown -stdlib flavor.
+bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
+			      std::string &err)
+{
+	for (const std::string &inc : tu.include_dirs)
+		prog.add_include_dir(inc);
+	for (const std::string &d : tu.defines)
+		prog.add_cli_define(d);
+	if (!tu.stdlib_option.empty()
+	 && !prog.set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+		err = "unknown -stdlib flavor '" + tu.stdlib_option
+		    + "' (this madc was built with: "
+		    + prog.stdlib_flavor_names() + ")";
+		return false;
+	}
+	if (!tu.std_option.empty())
+		prog.set_language_standard_option("--std=" + tu.std_option);
+	else if (is_c_source_file(tu.file))
+		prog.set_language_standard_option("--std=gnu17");
+	return true;
+}
+
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
 	std::string name;
@@ -5843,25 +5872,12 @@ static bool project_parse_all(MadcEngine &engine,
 		prog->registration_policy.enable_forest_bind = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
 		prog->class_pattern_live_capture = class_pattern_live_capture;
-		for (const std::string &inc : tu.include_dirs)
-			prog->add_include_dir(inc);
-		for (const std::string &d : tu.defines)
-			prog->add_cli_define(d);
-		if (!tu.stdlib_option.empty()
-		 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
-			fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
-				tu.file.c_str(), tu.stdlib_option.c_str(),
-				prog->stdlib_flavor_names().c_str());
+		std::string opt_err;
+		if (!apply_project_tu_options(*prog, tu, opt_err)) {
+			fprintf(stderr, "%s: %s\n", tu.file.c_str(),
+				opt_err.c_str());
 			return false;
 		}
-		if (!tu.std_option.empty())
-			prog->set_language_standard_option("--std=" + tu.std_option);
-		else if (is_c_source_file(tu.file))
-			// No explicit -std and a .c file → gcc's actual default C
-			// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
-			// C++ keywords stay usable as C identifiers AND glibc's
-			// feature gates (timercmp, strdup, …) match plain gcc.
-			prog->set_language_standard_option("--std=gnu17");
 
 		auto _tk0 = std::chrono::steady_clock::now();
 		double _fw0 = prog->_forest_work_seconds;

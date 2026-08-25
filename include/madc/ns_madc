@@ -108,8 +108,10 @@ namespace madc {
     //       column, end_line } object, or an empty value when none (the
     //       status line's query).
     // A project handle groups a compile_commands.json manifest's TUs:
-    // project_open parses every TU on open (0 = unreadable manifest;
-    // a TU whose file cannot be read carries handle 0 in the rows);
+    // project_open parses every TU on open with the manifest entry's own
+    // -I/-D/--std options — project diagnostics match the --project
+    // build (0 = unreadable manifest; a TU whose file cannot be read, or
+    // whose options are refused, carries handle 0 in the rows);
     // project_tus returns { file, handle } rows; project_close closes the
     // project's TU handles with it.
     // Thread contract: a handle is confined to the thread/program that

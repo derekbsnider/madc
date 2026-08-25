@@ -17,8 +17,9 @@ closed-outline: 0
 fresh-handle-differs: 1
 trap opened: 1
 project: 1
-tus: 2
+tus: 3
   tests/testparsehandle_tu1.mad handle=1 outline=1 check=0
   tests/testparsehandle_tu2.mad handle=1 outline=2 check=0
+  tests/testparsehandle_tu3.mad handle=1 outline=1 check=0
 project-close: 1
 project-missing: 1

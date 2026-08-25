@@ -4722,13 +4722,15 @@ int64_t internal_program_parse_open(::Program &self,
     return (int64_t)parse_tu_handles().size();
 }
 
-// File-open variant: the lexer owns SOURCE ingestion (tokenize(path)
-// reads the file with its own error paths, and resolves the TU's
-// relative #includes exactly as the CLI does). 0 = unreadable path; a
-// file that reads but does not parse still opens — its state is the
-// diagnostics.
-int64_t internal_program_parse_open_file(::Program &self,
-					 const std::string &path)
+// File-open core: the lexer owns SOURCE ingestion (tokenize(path) reads
+// the file with its own error paths, and resolves the TU's relative
+// #includes exactly as the CLI does). When `tu` is given (the project
+// handle), the manifest TU's language options apply to the child the
+// same way the --project build lane applies them — IDE diagnostics must
+// match the build. 0 = unreadable path or refused options; a file that
+// reads but does not parse still opens — its state is the diagnostics.
+static int64_t parse_open_file_with(::Program &self, const std::string &path,
+				    const ProjectTU *tu)
 {
     struct stat sb;
     if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
@@ -4740,6 +4742,16 @@ int64_t internal_program_parse_open_file(::Program &self,
     st->child = new ::Program(self.engine);
     st->child->registration_policy =
 	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    if ( tu )
+    {
+	std::string opt_err;
+	if ( !apply_project_tu_options(*st->child, *tu, opt_err) )
+	{
+	    delete st->child;
+	    delete st;
+	    return 0;
+	}
+    }
     {
 	DiagnosticRenderMute mute;
 	TokenProgram *tp = st->child->tokenize(path.c_str());
@@ -4748,6 +4760,12 @@ int64_t internal_program_parse_open_file(::Program &self,
     }
     parse_tu_handles().push_back(st);
     return (int64_t)parse_tu_handles().size();
+}
+
+int64_t internal_program_parse_open_file(::Program &self,
+					 const std::string &path)
+{
+    return parse_open_file_with(self, path, (const ProjectTU *)0);
 }
 
 bool internal_program_parse_refresh(::Program &self, int64_t handle,
@@ -4880,7 +4898,9 @@ int64_t internal_program_project_open(::Program &self,
     {
 	const ProjectTU &tu = manifest.tus[i];
 	ps->files.push_back(tu.file);
-	ps->tus.push_back(internal_program_parse_open_file(self, tu.file));
+	// The manifest TU's -I/-D/--std options ride into the child —
+	// project-handle diagnostics match the --project build.
+	ps->tus.push_back(parse_open_file_with(self, tu.file, &tu));
     }
     parse_project_handles().push_back(ps);
     return (int64_t)parse_project_handles().size();
