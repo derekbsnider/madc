@@ -144,31 +144,65 @@ long clamped_caret(long w, long es, long doc)
     return caret;
 }
 
+// The {caret, modified} payload rule — ONE spelling; checkpoint, undo,
+// and redo all ride it, so every history entry restores document and
+// interaction state together.
+void edit_meta(value &m, long w, long es, long doc, long caret)
+{
+    value p;
+    p["caret"] = caret;
+    var mod;
+    ui::get(mod, w, doc, "modified");
+    // Through a bool VARIABLE: a bare `a && b` is int-typed (C), and the
+    // keyed slot would store integer kind — restore_meta reads boolean.
+    bool dirty = !mod.is_null() && mod.as_boolean();
+    p["modified"] = dirty;
+    m = p;
+}
+
+void restore_meta(long w, long es, long doc, value &m)
+{
+    ui::set(w, es, "caret", m["caret"].as_integer());
+    ui::set(w, doc, "modified", m["modified"].as_boolean());
+}
+
 // One undo step (IDE-2): checkpoint BEFORE a mutation with the
 // interaction state that belongs to that moment.
 void edit_checkpoint(long w, long es, long doc, long caret)
 {
     value m;
-    m["caret"] = caret;
-    var mod;
-    ui::get(mod, w, doc, "modified");
-    // Through a bool VARIABLE: a bare `a && b` is int-typed (C), and the
-    // keyed slot would store integer kind — undo_edit reads boolean.
-    bool dirty = !mod.is_null() && mod.as_boolean();
-    m["modified"] = dirty;
+    edit_meta(m, w, es, doc, caret);
     ui::text_checkpoint(w, doc, m);
 }
 
+// Undo/redo (madcide v2 grew redo): the CURRENT payload rides to the
+// opposite stack, so walking either direction restores the caret that
+// belonged to the document being restored.
 bool undo_edit(long w, long es, long doc)
 {
+    value now;
+    edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
     value m;
-    if ( !ui::text_undo(m, w, doc) )
+    if ( !ui::text_undo(m, w, doc, now) )
     {
 	ui::set(w, es, "msg", "Nothing to undo.");
 	return false;
     }
-    ui::set(w, es, "caret", m["caret"].as_integer());
-    ui::set(w, doc, "modified", m["modified"].as_boolean());
+    restore_meta(w, es, doc, m);
+    return true;
+}
+
+bool redo_edit(long w, long es, long doc)
+{
+    value now;
+    edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
+    value m;
+    if ( !ui::text_redo(m, w, doc, now) )
+    {
+	ui::set(w, es, "msg", "Nothing to redo.");
+	return false;
+    }
+    restore_meta(w, es, doc, m);
     return true;
 }
 
@@ -304,8 +338,11 @@ void compose_heading(value &head, long w, long es, long doc,
     head = h;
 }
 
-// The edit window bound to the document: caret + mark..caret selection
-// as hints ({caret, sel_start, sel_end} byte offsets).
+// The edit window bound to the document: caret + selection as hints
+// ({caret, sel_start, sel_end} byte offsets). The selection runs
+// [mark, bend-else-caret]: an editor that sets a block END (madcide's
+// JOE ^K K) highlights mark..bend; one that never sets `bend` (vised)
+// keeps the original mark..caret rule unchanged.
 void compose_edit_node(value &ed, long w, long es, long doc, long caret)
 {
     value e;
@@ -316,18 +353,21 @@ void compose_edit_node(value &ed, long w, long es, long doc, long caret)
     value hints;
     hints["caret"] = caret;
     long mark = es_int(w, es, "mark", -1);
-    if ( mark >= 0 && mark != caret )
+    long bend = es_int(w, es, "bend", -1);
+    long send = bend >= 0 ? bend : caret;
+    if ( mark >= 0 && mark != send )
     {
-	hints["sel_start"] = mark < caret ? mark : caret;
-	hints["sel_end"] = mark < caret ? caret : mark;
+	hints["sel_start"] = mark < send ? mark : send;
+	hints["sel_end"] = mark < send ? send : mark;
     }
     e["hints"] = hints;
     ed = e;
 }
 
-// The status line's priority rule: search prompt > transient message >
-// "Ln N, Col M" + the caller's idle suffix (vised's key legend; empty
-// for madcide).
+// The status line's priority rule: prompt (madcide's one prompt mode —
+// vised never sets it) > search prompt > transient message > "Ln N,
+// Col M" + the caller's idle suffix (vised's key legend; empty for
+// madcide).
 void compose_status(value &status, long w, long es, long doc, long caret,
 		    const char *idle_suffix)
 {
@@ -335,7 +375,15 @@ void compose_status(value &status, long w, long es, long doc, long caret,
     st["role"] = "status";
     var msg;
     ui::get(msg, w, es, "msg");
-    if ( es_flag(w, es, "searching") )
+    var pr;
+    ui::get(pr, w, es, "prompt");
+    if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
+    {
+	var pi;
+	ui::get(pi, w, es, "pinput");
+	st["content"] = format("{}: {}", pr, pi);
+    }
+    else if ( es_flag(w, es, "searching") )
     {
 	var s;
 	ui::get(s, w, es, "search");

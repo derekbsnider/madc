@@ -71,10 +71,12 @@ int main()
     value pico;
     parse_keys(pico, txt.c_str());
     println("pico: [^s]={} [^k]={}", pico["^s"], pico["^k"]);
+    println("joe-motion: [^b]={} [^k u]={} [^_]={} [^^]={}",
+	    joe["^b"], joe["^k u"], joe["^_"], joe["^^"]);
 
     // -- gate 2 (clean half): check-on-demand over the live buffer --
     value e;
-    ev_action(e, "check", "^k r");
+    ev_action(e, "check", "^k e");
     apply_ide_event(w, es, doc, e);
     var msg;
     ui::get(msg, w, es, "msg");
@@ -87,12 +89,12 @@ int main()
     ui::get(m, w, doc, "modified");
     println("edited: caret={} modified={} size={}",
 	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
-    ev_action(e, "undo", "^k z");
+    ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
     ui::get(m, w, doc, "modified");
     println("undo: caret={} modified={} size={}",
 	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
-    ev_action(e, "undo", "^k z");
+    ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     println("undo-empty: {}", msg);
@@ -100,7 +102,7 @@ int main()
     // -- gate 2 (dirty half): break the buffer, check, choose -> goto --
     ev_text(e, "junk ");
     apply_ide_event(w, es, doc, e);
-    ev_action(e, "check", "^k r");
+    ev_action(e, "check", "^k e");
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     println("check2: {}", msg);
@@ -118,7 +120,7 @@ int main()
     println("goto-diag: caret={}", es_int(w, es, "caret", -1));
 
     // Repair by undo, then the outline pane over the healthy buffer.
-    ev_action(e, "undo", "^k z");
+    ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
     ev_action(e, "outline", "^k o");
     apply_ide_event(w, es, doc, e);
@@ -140,6 +142,160 @@ int main()
     compose_ide_tree(after, w, es, doc);
     println("swap: profile={} tree={}", prof,
 	    before == after ? "identical" : "DIFFER");
+
+    // -- madcide v2: motion delegation, word motion, deletes with
+    //    undo/redo, blocks, the one prompt mode, help, the shell guard.
+    //    Every edit here is undone, so the tail's save byte-count pins
+    //    that the round trips were exact. --
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "end", "^e");		// delegates to the shared edit_key
+    apply_ide_event(w, es, doc, e);
+    println("motion: caret={}", es_int(w, es, "caret", -1));
+
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "wordright", "^x");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "wordright", "^x");
+    apply_ide_event(w, es, doc, e);
+    long wr = es_int(w, es, "caret", -1);
+    ev_action(e, "wordleft", "^z");
+    apply_ide_event(w, es, doc, e);
+    println("words: right2={} left1={}", wr, es_int(w, es, "caret", -1));
+
+    long size0 = ui::text_size(w, doc);
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "delword", "^w");
+    apply_ide_event(w, es, doc, e);
+    long size1 = ui::text_size(w, doc);
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+    long size2 = ui::text_size(w, doc);
+    ev_action(e, "redo", "^^");
+    apply_ide_event(w, es, doc, e);
+    long size3 = ui::text_size(w, doc);
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+    println("delword: {} {} {} {} {}", size0, size1, size2, size3,
+	    ui::text_size(w, doc));
+
+    ev_action(e, "bottom", "^k v");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "delline", "^y");
+    apply_ide_event(w, es, doc, e);
+    println("delline: lines={} caret={}", ui::text_line_count(w, doc),
+	    es_int(w, es, "caret", -1));
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+
+    // blocks: [^K B .. ^K K] around the first word, copy to the end,
+    // delete the original, then undo both.
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "mark", "^k b");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "wordright", "^x");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "bend", "^k k");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "bottom", "^k v");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "blockcopy", "^k c");
+    apply_ide_event(w, es, doc, e);
+    println("blockcopy: size={} tail-has-long={}", ui::text_size(w, doc),
+	    ui::text_find(w, doc, size0, "long") >= 0 ? 1 : 0);
+    ev_action(e, "blockdel", "^k y");
+    apply_ide_event(w, es, doc, e);
+    var clip;
+    ui::get(clip, w, es, "clip");
+    println("blockdel: clip={} size={}", clip, ui::text_size(w, doc));
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+    println("blocks-undone: size={}", ui::text_size(w, doc));
+
+    // block move: the first word to the end (one undo step).
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "mark", "^k b");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "wordright", "^x");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "bend", "^k k");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "bottom", "^k v");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "blockmove", "^k m");
+    apply_ide_event(w, es, doc, e);
+    value bt;
+    ui::text(bt, w, doc);
+    println("blockmove: head={} caret={}", perl::substr(bt, 0, 4),
+	    es_int(w, es, "caret", -1));
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+
+    // the one prompt mode: go to line, find + find-next, insert file
+    ev_action(e, "gotoline", "^k l");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "2");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    println("gotoline: caret={} prompt-off={}", es_int(w, es, "caret", -1),
+	    prompt_active(w, es) ? 0 : 1);
+
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "find", "^k f");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "add");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    long hit1 = es_int(w, es, "caret", -1);
+    ev_action(e, "findnext", "^l");
+    apply_ide_event(w, es, doc, e);
+    println("find: first={} next={}", hit1, es_int(w, es, "caret", -1));
+
+    php::file_put_contents("madc_ide_frag.txt", "// frag\n");
+    ev_action(e, "insertfile", "^k r");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "madc_ide_frag.txt");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("insertfile: {} size={}", msg, ui::text_size(w, doc));
+    ev_action(e, "undo", "^_");
+    apply_ide_event(w, es, doc, e);
+
+    // help: a projection of the LOADED profile's own lines (pico now).
+    ev_action(e, "help", "^k h");
+    apply_ide_event(w, es, doc, e);
+    var pane2;
+    ui::get(pane2, w, es, "pane");
+    compose_ide_tree(tree, w, es, doc);
+    value paneb;
+    paneb = tree["children"][2];
+    value hrows;
+    hrows = paneb["children"];
+    println("help: pane={} label={} rows={}", pane2, paneb["label"],
+	    php::count(hrows));
+    ev_action(e, "help", "^k h");
+    apply_ide_event(w, es, doc, e);
+
+    // headless: no terminal to hand to a shell — the guard answers.
+    ev_action(e, "shell", "^k z");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("shell-headless: {}", msg);
+
+    ui::get(m, w, doc, "modified");
+    println("v2-restored: size={} modified={}", ui::text_size(w, doc),
+	    m.as_boolean());
 
     // -- the verbs: save (with the silent diagnostics refresh), quit --
     ev_text(e, "// tail\n");
