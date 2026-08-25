@@ -395,6 +395,11 @@ compiler's own forest):
   per-TU buffers/parse handles, save project writes the same json;
   this is where `^K E` becomes JOE's edit-file and check moves again.
 
+Recon for the item-3 brainstorm (both passes — the repo record and
+the Turbo-C→JetBrains IDE-architecture survey) is banked in
+[2026-08-25-madcide-ast-brainstorm-recon.md](2026-08-25-madcide-ast-brainstorm-recon.md);
+its Part C is the brainstorm agenda.
+
 Open question noted for IDE-6: whether the handle API lives in madc::
 (beside diagnostics/outline — likely) and how it composes with the
 runtime-eval child policy; the `^K Z` shell needs `system`/`getenv`
