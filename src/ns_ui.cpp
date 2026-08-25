@@ -46,6 +46,7 @@
 #include <unistd.h>
 
 #include "libmadc/value.h"
+#include "madcdis/doc_lens.h"
 #include "madcdis/hub.h"
 #include "madcdis/interaction.h"
 #include "madcdis/verbs.h"
@@ -934,6 +935,29 @@ int64_t text_word_right(int64_t w, int64_t entity, int64_t from)
     if ( !b || from < 0 )
 	return -1;
     return (int64_t)b->word_right((size_t)from);
+}
+
+// ---- the view seam's coordinate map (madcide AST-3) --------------------
+// A document lens's display<->stored map rides as DATA ({disp, stored,
+// len} rows — madcdis/doc_lens.h's codec); these publics are the dialect
+// face of the ONE projection owner, so caret math across concealed or
+// synthetic ranges never becomes per-view arithmetic. -1 = a malformed
+// map or a negative offset; a valid EMPTY map answers 0 (a wholly
+// rendered view: nothing corresponds).
+int64_t lens_to_display(madc::value &map, int64_t stored)
+{
+    madc::hub::doc_map m;
+    if ( stored < 0 || !madc::hub::doc_map::from_value(map, m) )
+	return -1;
+    return (int64_t)m.to_display((size_t)stored);
+}
+
+int64_t lens_to_stored(madc::value &map, int64_t display)
+{
+    madc::hub::doc_map m;
+    if ( display < 0 || !madc::hub::doc_map::from_value(map, m) )
+	return -1;
+    return (int64_t)m.to_stored((size_t)display);
 }
 
 // ---- level-1 TUI (R5): the grid frontend behind the provider seam.

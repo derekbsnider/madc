@@ -1,6 +1,33 @@
 # Test Status
 
-> **Current (2026-08-25, madcide v2 — feature/madcide-v2-claude merge
+> **Current (2026-08-25, the view seam / AST-3 —
+> feature/madcide-ast3-claude merge wave):** the madcide AST arc's
+> first slice, owner-pulled ("build the view seam"). Engine:
+> `madcdis/doc_lens.h` `doc_map` — the ONE display↔stored coordinate
+> owner (copy segments as data, strict codec; gap-adjacent boundaries
+> belong to the copy that ENDS there; empty map = 0) with
+> `ui::lens_to_display/lens_to_stored` as its dialect face;
+> `madc::emit(out, source, filename, target)` — the render query
+> (diagnostics/outline child + `madc_cir_emit` through the existing
+> StringCapture owner; byte-identical to CLI `--emit=`), target names
+> through the ONE converter `cir_emit_lang_of()` the CLI now shares.
+> App: madcide `^K N` cycles read-only code views original→MC11→C11
+> over the one document (lens applied at composition; view-buffer
+> entity so the one navigation implementation works in display space;
+> `nav_doc()` routing; renderer untouched — identity-lens
+> byte-identity structural). Scoped dupaudit: view_active_predicate
+> (5 sites born on-branch) consolidated into `view_name()`;
+> emit_target_name_conversion recorded. Merge-wave battery:
+> authoritative Linux fulltest **1149 passed / 0 failed / 0 timed out
+> / 9 skipped** (suite unchanged — testmadcide extended in place with
+> the view battery: enter/exit pins, lens hints, display-space find,
+> refusals, byte-identical exit; the tail byte-count re-proves the
+> stored document never moved), EXE lane **1105/0**; NEW unit battery
+> test_doc_lens **6 cases / 106 asserts** (identity, concealed,
+> synthetic, codec + add negative controls); real-pty view smoke 5/5;
+> testvised/testlineed byte-identity green.
+>
+> **Previous (2026-08-25, madcide v2 — feature/madcide-v2-claude merge
 > wave):** the owner's FULL JOE binding set on the relocated tool
 > (`tools/madcide`; work order = the plan doc's "Owner review" section,
 > items 1+2 — item 3, the AST arc, awaits the owner brainstorm).

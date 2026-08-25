@@ -220,6 +220,21 @@ namespace ui {
     bool text_redo(value &meta_out, int64_t w, int64_t entity,
 		   value &now_meta);
 
+    // The view seam's coordinate map (the document lens): a display
+    // ("what is painted") <-> stored ("the document truth") byte map
+    // riding as DATA — an array of {disp, stored, len} copy-segment
+    // rows. Stored bytes outside every segment are CONCEALED (markdown
+    // formatting chars, folds); display bytes outside every segment are
+    // SYNTHETIC (rendered views, decoration). These are the ONE
+    // projection owner's dialect face — never re-derive caret math per
+    // view. Contract: 1:1 inside a copy segment (caret ends included);
+    // strictly inside a gap collapses FORWARD to the next segment;
+    // past the end lands just after the last image; an EMPTY map (a
+    // wholly rendered view) answers 0. -1 = malformed map / negative
+    // offset.
+    int64_t lens_to_display(value &map, int64_t stored);
+    int64_t lens_to_stored(value &map, int64_t display);
+
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free
     // VT100/xterm one; richer providers register beside it). The loop:

@@ -175,6 +175,21 @@ madc::outline(o, source, "buffer.mad");
 `filename` is the display name diagnostics carry (default `<source>`).
 Positions match what a file-based compile of the same text reports.
 
+### The render query (`madc::emit`)
+
+The same child, one step further: parse the buffer and render its
+`cir_node` tree (MC11-IR) as a target language — the `--emit=`
+vocabulary, byte-identical to what `madc --emit=<target> file` prints.
+This is what feeds an editor's code views (`tools/madcide`'s `^K N`).
+
+```c
+value text;
+if ( madc::emit(text, source, "buffer.mad", "c11") )   // or "mc11"
+    print("{}", text);
+// false = unknown target, or a buffer that does not parse/translate
+// (diagnostics captured, never printed); nothing in the buffer runs
+```
+
 ## Security
 
 Embedding hosts control the whole surface: full-unit eval is gated by

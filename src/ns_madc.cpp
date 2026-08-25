@@ -201,6 +201,12 @@ value &outline(value &out, const char *source)
 	{ std::string s = source ? source : "", f; madc_source_outline(&out, &s, &f); return out; }
 value &outline(value &out, const char *source, const char *filename)
 	{ std::string s = source ? source : "", f = filename ? filename : ""; madc_source_outline(&out, &s, &f); return out; }
+// The render query (the view seam's code views): parse the buffer in the
+// same child and render its cir_node tree as `target` (the --emit=
+// vocabulary). The <ns_madc> declaration carries the contract.
+bool emit(value &out, const char *source, const char *filename,
+	  const char *target)
+	{ std::string s = source ? source : "", f = filename ? filename : "", t = target ? target : ""; return madc_source_emit(&out, &s, &f, &t); }
 
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a

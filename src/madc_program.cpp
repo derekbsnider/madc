@@ -4532,6 +4532,23 @@ bool internal_program_runtime_eval_source(::Program &self,
 // capture replaces printing. Thread contract: the runtime-eval machinery's
 // confinement — each call owns its child, no shared mutable state.
 
+// The parse-only half of the child front end (the caller owns the render
+// mute): madc::emit renders from the parsed tree — the emitter runs its
+// own translate — while diagnostics/outline add the compile gate below.
+// True = tokenize + parse completed.
+static bool parse_source_child_frontend(::Program &self, ::Program &child,
+					const std::string &source_text,
+					const std::string &display_name)
+{
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    std::string normalized_source = ensure_trailing_newline(source_text);
+    TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
+    if ( !tp )
+	return false;
+    return child.parse(tp);
+}
+
 static void compile_source_child_frontend(::Program &self, ::Program &child,
 					  const std::string &source_text,
 					  const std::string &display_name)
@@ -4541,13 +4558,7 @@ static void compile_source_child_frontend(::Program &self, ::Program &child,
     // the mute is up. (A per-Program error_stream would not do — with an
     // engine attached, Program::error() is the ENGINE's stream by design.)
     DiagnosticRenderMute mute;
-    child.registration_policy =
-	runtime_eval_registration_policy_for_source_child(self.registration_policy);
-    std::string normalized_source = ensure_trailing_newline(source_text);
-    TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
-    if ( !tp )
-	return;
-    if ( !child.parse(tp) )
+    if ( !parse_source_child_frontend(self, child, source_text, display_name) )
 	return;
     child.compile();
 }
@@ -4606,6 +4617,38 @@ bool internal_program_source_outline(::Program &self,
 	rows.push_back(value::make_object(f));
     }
     out = value::make_array(rows);
+    return true;
+}
+
+// The render query (madcide AST-3 code views): parse the buffer in a
+// child and render its cir_node tree as `target` — the cir_emit_lang_of
+// vocabulary, the SAME one --emit= speaks — into a string value. False =
+// unknown target, or a buffer that does not parse/translate; diagnostics
+// stay captured under the mute, never printed. Nothing runs.
+bool internal_program_source_emit(::Program &self,
+				  const std::string &source_text,
+				  const std::string &target,
+				  madc::value &out,
+				  const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    CirEmitLang lang;
+    if ( !cir_emit_lang_of(target.c_str(), lang) )
+	return false;
+    ::Program child(self.engine);
+    DiagnosticRenderMute mute;
+    if ( !parse_source_child_frontend(self, child, source_text, display_name) )
+	return false;
+    detail::StringCapture cap;
+    if ( !detail::open_string_capture(cap) )
+	return false;
+    int rc = madc_cir_emit(&child, display_name.c_str(), cap.f, lang);
+    std::string text = detail::finish_string_capture(cap);
+    if ( rc != 0 )
+	return false;
+    out = value(text);
     return true;
 }
 

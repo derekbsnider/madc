@@ -308,6 +308,11 @@ bool internal_program_source_outline(::Program &self,
 				     const std::string &source_text,
 				     value &out,
 				     const std::string &display_name);
+bool internal_program_source_emit(::Program &self,
+				  const std::string &source_text,
+				  const std::string &target,
+				  value &out,
+				  const std::string &display_name);
 }
 
 namespace {
@@ -887,6 +892,25 @@ void *madc_source_outline(void *result, void *source, void *filename)
     madc::internal_program_source_outline(*active, src, out,
 					  disp.empty() ? "<source>" : disp);
     return result;
+}
+
+bool madc_source_emit(void *result, void *source, void *filename,
+		      void *target)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    const std::string &tgt = *(const std::string *)target;
+    return madc::internal_program_source_emit(*active, src, tgt, out,
+					      disp.empty() ? "<source>"
+							   : disp);
 }
 
 bool madc_runtime_eval_expression_bool(void *expr)
