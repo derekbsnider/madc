@@ -338,7 +338,7 @@ reference for levels/negotiation/WCAG detail.*
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 7.1 | Hub projections + value-typed semantic IR + Level 0 (text) + access model (keys/levels) + verb registry + `ui::prompt` | 3-5 wk | **DONE — v0.95.0**: the text-adventure pilot is fully playable (94/94 logs byte-identical, gated); surface documented in [docs/language/ns-ui.md](../language/ns-ui.md) | [phase 1](2026-08-20-track7-phase1-text-adventure.md) |
-| 7.2 | Level 1 — curses/terminal backend (pulls 8.1's piece table forward as a component type) | 3-4 wk | Planned; gate = madcide first light | [design](2026-08-20-data-hub-projection-rendering.md) |
+| 7.2 | Level 1 terminal backend + interaction rework (pulled 8.1's piece table forward as a component type) | 3-4 wk | **DONE — 2026-08-25** (R1–R5: interaction core, projection-as-data, script-entity verbs + availability checks, the line + visual editors over one action set; the target is the HAND-ROLLED VT100/xterm provider — owner-decided over vendoring curses — behind the `tui_provider` seam); madcide (8.x) now unblocked | [plan](2026-08-24-ui-interaction-rework-and-texteditor.md) |
 | 7.3 | Reactivity — compiler-tracked deps + per-connection projection instances + semantic-diff wire | 2-3 wk | Planned | [design](2026-08-20-data-hub-projection-rendering.md) |
 | 7.4 | Level 2 — 2D graphics (Skia/Cairo) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 | 7.5 | Level 3 — Web backend (semantic diffs over WebSocket + thin JS) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
@@ -437,8 +437,9 @@ run in parallel.
      └── Parser dereference & subscript unification
          Unblocks: PCH transition, parser resilience
 
- ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
- ║   └── pilot: madcide (pulls 8.1's piece table forward)
+ ║── Track 7.2  Rendering: Level 1 terminal backend      [DONE 2026-08-25]
+ ║   └── R1–R5 shipped (VT100 provider, checks, lined+vised editors);
+ ║       madcide consumes it next
 
 13.  Track 8.1  libmadcedit core                         [3-4 wk]
      ├── Piece table, cursor, undo/redo, CUA keybindings
