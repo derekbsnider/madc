@@ -380,9 +380,92 @@ Shipped on `feature/madcide-ast4-claude`:
 - `--emit=madc` remains the next target on the same seam (the converter
   + CirEmitSource are where it lands).
 
+## 3.4 AST-1 — as executed (2026-08-25, session 132)
+
+Shipped on `feature/madcide-ast1-claude`:
+
+- **The handle surface** (`madc::parse_open` / `parse_open_file` /
+  `parse_refresh` / `parse_close`; queries `parse_outline` /
+  `parse_check` / `parse_enclosing`; `project_open` / `project_tus` /
+  `project_close`): the compile-never-execute child pipeline given a
+  LIFETIME. Registry = the ui_sessions discipline (slot+1, closed slots
+  stay null, no reuse within a run); thread contract = the runtime-eval
+  confinement. The two existing row loops were extracted into shared
+  builders (diagnostic_rows_from_child / outline_rows_from_child) —
+  outline rows gained `end_line` (additive; consumers are field-keyed).
+- **Outline-at-offset** (`parse_enclosing`) is served from
+  `pending_funcs`: TokenFunc's head line/column + the inherited
+  `TokenCpnd::end_line` (parseCompound already records the closing
+  brace) — no new parser state. Innermost = latest-starting match;
+  the closing-brace line counts as inside (no end column exists).
+- **Project handles apply the manifest TU's options.** The measurement
+  itself surfaced the divergence (open-adventure `misc.c` diagnosed a
+  phantom `VERSION` error that `--project` doesn't): the per-TU
+  -I/-D/-stdlib/--std application (with the `.c` → gnu17 default) was
+  extracted from project_parse_all into `apply_project_tu_options`
+  (madc_project.h) and both lanes adopt it. Standalone
+  `parse_open_file` stays optionless by design (no manifest).
+- **madcide adoption**: one handle per buffer (opened at load, closed
+  at exit); check/save/outline all whole-TU refresh through ONE entry
+  (`reparse_buffer`); the status line shows the enclosing function from
+  RETAINED state via `compose_status`'s existing idle_suffix parameter
+  (stored-space only — a view's caret is display-space). Composition
+  still never runs the compiler.
+- Gates: `tests/testparsehandle` (lifecycle, retained queries, extent +
+  innermost pins, broken-buffer state, close refusal + non-reuse,
+  never-execute trap, a 3-TU manifest incl. a `-D`-dependent TU and a
+  relative-include TU, unreadable-manifest refusal); testmadcide status
+  pins (`fn add` in the rendered view; a raw status-node pin).
+
+### The parse-at-scale measurement (the disk-cache decision input)
+
+Dev `bin/madc` (-O0), container, wall clock (order-of-magnitude decision
+input, not a trend baseline):
+
+| Corpus | parse-on-load (project_open) | largest TU refresh |
+|--------|------------------------------|--------------------|
+| madc adventure — 11 madc TUs (`advent.cc.json`) | ~210–290 ms | adv_actions.mad (38.6 KB): ~55–66 ms |
+| open-adventure — 8 C TUs, 18.1k LOC (dungeon.c 13.4k) | ~430–620 ms | main.c: ~94–119 ms |
+
+Per-TU floor on `.c` TUs is ~47–60 ms — embedded-header cost dominates
+small TUs (each child re-parses the libc headers; `.c`/gnu17 TUs do not
+ride the forest).
+
+**Disk-cache verdict: NO-GO at current scale.** Parse-on-load for every
+real project we have is sub-second; a per-TU stub cache would save at
+most ~0.5 s per project open — it cannot pay for its own invalidation
+machinery. The trigger to revisit: a working set where parse-on-load
+exceeds ~2 s (extrapolating ~25–35 ms/kLOC measured on real C, that is
+roughly a 60–150k-LOC project — SMAUG-scale). If built then, it is the
+IDE-CACHE kind under §1 R1/R2: per-TU stub files, content-hash
+invalidated, run-path refused.
+
+### Re-parse cadence, error recovery, and the undo connection (owner Q, 2026-08-25)
+
+- **Whole-TU refresh at save/check cadence stands.** 55–120 ms for the
+  largest real TUs is imperceptible at that cadence; it would be
+  sluggish per-keystroke, but nothing parses per keystroke.
+- **Probed: the parser stops at the first error** (syntax OR sema — a
+  mid-file error retains only the definitions BEFORE it; probe:
+  before/broken/after → outline holds only `before`). Consequence: the
+  save/check cadence is BETTER than a per-keystroke refresh here — the
+  retained state stays the last complete parse while the user types
+  through broken intermediate states. **Error-tolerant parsing is
+  therefore the PREREQUISITE for any tighter-than-save cadence** (idle
+  or keystroke), and sits UPSTREAM of incremental reparse on the
+  dependency chain. Both remain named seats, taken only if numbers +
+  UX demand them.
+- **The undo history is the change feed.** The piece-table buffer
+  already records edit deltas (insert/erase at offset) for undo/redo —
+  exactly the input an incremental reparser consumes (tree-sitter's
+  `edit()`, Roslyn's changed-span Blender). If incrementality is ever
+  taken, no new instrumentation is needed; undo itself needs nothing
+  special (an undo is just another delta — parsing keys on content).
+
 ## 4. Still open (owner's)
 
 - Naming/spelling of artifact kinds and file extensions (e.g. the IDE
   cache's name; the save-state extension) — at implementation time.
 - The save-state feature's surface and scope — its own arc.
-- Disk-cache go/no-go — awaits the AST-1 measurement.
+- ~~Disk-cache go/no-go — awaits the AST-1 measurement.~~ **Measured
+  (§3.4): NO-GO at current scale; revisit at >~2 s parse-on-load.**
