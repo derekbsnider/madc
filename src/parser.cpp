@@ -19855,6 +19855,9 @@ std::ostream &Program::error()
 void Program::clear_diagnostics()
 {
     diagnostics.clear();
+    // Contained-error nodes link into `diagnostics` by index — the counter's
+    // lifetime is the diagnostic list's (both reset at parse entry).
+    error_nodes = 0;
 }
 
 const Program::Diagnostic *Program::last_diagnostic() const
@@ -42369,13 +42372,10 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	// class-scope stacks pushed (this fn's own pushCompound + anything a
 	// nested parse pushed) — a LATER derive would then parse "inside" the
 	// dead function and register a function-LOCAL franken-name instead of
-	// the requested symbol. Restore to the entry depths, then the scopes
-	// THIS frame pushed before the try.
-	while ( compounds.size() > saved_compounds )
-	    compounds.pop();
-	unwind_block_typedef_shadows(compounds.size(), "derive-body-catch");
-	while ( class_scope_stack.size() > saved_class_scopes )
-	    class_scope_stack.pop_back();
+	// the requested symbol. Restore to the entry depths (the shared
+	// recipe), then the scopes THIS frame pushed before the try.
+	restore_parse_scope_depths(saved_compounds, saved_class_scopes,
+				   "derive-body-catch");
 	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
 	    class_scope_stack.pop_back();
 	cur_func_name = saved_func;
@@ -42489,11 +42489,8 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    // then parse "inside" the dead function and register its def
 	    // under a function-LOCAL franken-name (outer__sym__N) instead of
 	    // the requested symbol (the body silently lost to consumers).
-	    while ( compounds.size() > saved_compounds )
-		compounds.pop();
-	    unwind_block_typedef_shadows(compounds.size(), "derive-lazy-catch");
-	    while ( class_scope_stack.size() > saved_class_scopes )
-		class_scope_stack.pop_back();
+	    restore_parse_scope_depths(saved_compounds, saved_class_scopes,
+				       "derive-lazy-catch");
 	    {
 		static const char *mtp = ::getenv("MADC_MTI_PROBE");
 		if ( mtp && *mtp
@@ -66199,6 +66196,186 @@ void Program::finalize_script_main()
     pending_funcs.push_back(script_main_tf);
 }
 
+// --- error-tolerant parse (§3.5 slice A: panic recovery at the top-level
+//     statement loop; docs/plans/2026-08-25-madcide-ast-arc-design.md) ---
+
+// THE record-and-render rule for front-end catch arms: set_error appends
+// the diagnostic, print_last_diagnostic renders it (mute-aware). Consumers:
+// the parser's recovery arms + terminal cluster + parse_expression_unit
+// (via record_parse_error below) and the lexer's tokenize /
+// tokenize_buffer clusters (lexer phase, source position).
+// Returns the diagnostic's index.
+size_t Program::record_frontend_error(DiagnosticPhase phase,
+				      const std::string &message,
+				      const char *file, int line, int column)
+{
+    set_error(phase, message, file, line, column);
+    print_last_diagnostic(error());
+    return diagnostics.size() - 1;
+}
+
+// The parser-phase convenience: position from the token (the diagnostics
+// convention), file through diagnostic_file_for. Returns the diagnostic's
+// index — the TokenError's link target.
+size_t Program::record_parse_error(const std::string &message,
+				   TokenBase *where, TokenProgram *tp)
+{
+    return record_frontend_error(DiagnosticPhase::parser, message,
+				 diagnostic_file_for(where, tp),
+				 where ? where->line : 0,
+				 where ? where->column : 0);
+}
+
+// THE Throw-origin recording rule: a std::exception from throwbuf::sync
+// carries its message in Throw's buffer (e.what() is the fallback for a
+// non-Throw std::exception). Recording only — throwbuf::sync already
+// rendered (or the mute captured). Guards stay at the call sites: the
+// terminal clusters skip when last_error already holds an error; the
+// recovery arm uses a per-statement diagnostics watermark.
+// Returns the diagnostic's index.
+size_t Program::record_throw_diagnostic(const std::exception &e,
+					DiagnosticPhase phase,
+					const char *file, int line, int column)
+{
+    set_error(phase, Throw.str().empty() ? e.what() : Throw.str(),
+	      file, line, column);
+    return diagnostics.size() - 1;
+}
+
+// The parser-phase convenience: position from Throw.token() — the throw's
+// own recorded token.
+size_t Program::record_throw_diagnostic(const std::exception &e,
+					TokenProgram *tp)
+{
+    TokenBase *err_tb = Throw.token();
+    return record_throw_diagnostic(e, DiagnosticPhase::parser,
+				   diagnostic_file_for(err_tb, tp),
+				   err_tb ? err_tb->line : 0,
+				   err_tb ? err_tb->column : 0);
+}
+
+// Skip to the next statement sync point after a contained error: consume
+// tokens stepping DelimDepth (the one tracker — never a hand-rolled counter)
+// until a ';' outside every (/[/{, or a '}' at level ground. The '}' case
+// covers BOTH shapes at once because DelimDepth clamps closes at zero: a '}'
+// closing a brace the walk itself opened balances back to zero (a complete
+// { ... } region — a definition boundary), and a '}' the failed statement
+// never opened stays at zero (the enclosing region's own close). The angle
+// axis is deliberately NOT consulted for sync — broken code can open a '<'
+// that never closes, and a wedged angle must not push the sync to EOF.
+// `brace_debt` seeds the brace axis: the compound scopes the DEAD statement
+// left open at throw time (each pushCompound consumed a '{' the walk never
+// saw). A failure inside `int main() { ...` then syncs at main's CLOSING
+// brace instead of the first interior ';' — without the seed, the leftover
+// body statements would re-enter the loop as top-level debris and cascade.
+// Returns the last consumed token (NULL if the stream was already empty).
+TokenBase *Program::skip_to_statement_sync(size_t brace_debt)
+{
+    DelimDepth d;
+    d.brace = (int)brace_debt;
+    TokenBase *last = NULL;
+    while ( !tokens.empty() )
+    {
+	TokenBase *t = nextToken();
+	if ( !t )
+	    break;
+	last = t;
+	delimStepStream(t, d);
+	if ( d.paren || d.square || d.brace )
+	    continue;
+	if ( t->id() == TokenID::tkSemi )
+	    break;
+	if ( t->id() == TokenID::tkClBrc )
+	{
+	    // A class/struct definition's trailing ';' rides along.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		last = nextToken();
+	    break;
+	}
+    }
+    return last;
+}
+
+// THE TokenError construction point: every synthesized error node increments
+// error_nodes here, so the translate gate's count (cir_translate_guarded
+// refuses on error_nodes > 0) is exact by construction.
+TokenError *Program::make_error_node(ErrorNodeKind kind, size_t diag_index,
+				     TokenBase *first, TokenBase *last)
+{
+    TokenError *en = new TokenError(kind, diag_index);
+    en->first = first;
+    en->last = last;
+    if ( first )
+    {
+	en->file = first->file;
+	en->line = first->line;
+	en->column = first->column;
+    }
+    ++error_nodes;
+    DBG(cout << "make_error_node(" << error_node_kind_name(kind)
+	     << ") diag=" << diag_index << " at "
+	     << (en->file ? en->file : "?") << ':' << en->line << endl);
+    return en;
+}
+
+// Contain one top-level parse error: restore the parser to the statement's
+// entry depths (the derive-body-catch recipe — a Throw mid-body leaves the
+// compound / class-scope stacks pushed, and a later statement would parse
+// "inside" the dead region), skip to the next sync point, and plant a
+// SkippedTokens debris node linking the recorded diagnostic. The loop then
+// continues — gcc canon: report every top-level error, then refuse.
+// THE scope-depth restore recipe after a mid-parse throw: pop the compound
+// stack to the entry depth, unwind the block-typedef shadows to match, pop
+// the class-scope stack to its entry depth. Three consumers: the derive-body
+// and derive-lazy catches (which rethrow, restoring their extra frame state
+// around this) and the top-level containment below (which continues the
+// loop). A new parser scope stack joins HERE, not at each site.
+void Program::restore_parse_scope_depths(size_t saved_compounds,
+					 size_t saved_class_scopes,
+					 const char *site)
+{
+    while ( compounds.size() > saved_compounds )
+	compounds.pop();
+    unwind_block_typedef_shadows(compounds.size(), site);
+    while ( class_scope_stack.size() > saved_class_scopes )
+	class_scope_stack.pop_back();
+}
+
+void Program::contain_toplevel_parse_error(TokenProgram *tp,
+					   TokenBase *loop_head,
+					   size_t diag_index,
+					   size_t saved_compounds,
+					   size_t saved_class_scopes,
+					   const std::string &saved_func,
+					   size_t cursor_watermark)
+{
+    parsing_script_statement = false;
+    // The brace debt = the unmatched '{'s the DEAD statement consumed, which
+    // the sync walk will never see. Measured from the STREAM, not parser
+    // state: consumed buffer tokens stay in _buf, so [cursor_watermark,
+    // cursor()) IS the region the failed statement consumed — and interior
+    // catches (the deferred-body restore) unwind `compounds` before
+    // rethrowing, so the stack cannot carry this. DelimDepth::update's
+    // clamp-at-zero close makes d.brace after the scan exactly the
+    // unmatched-open count. (Injected pushback tokens are not buffer
+    // positions — a real brace re-consumed through the LIFO is not counted;
+    // acceptable for a resync heuristic.)
+    DelimDepth consumed;
+    size_t cursor_now = tokens.cursor();
+    for ( size_t i = cursor_watermark; i < cursor_now; ++i )
+	consumed.update(tokens.buf_at(i));
+    size_t brace_debt = consumed.brace > 0 ? (size_t)consumed.brace : 0;
+    restore_parse_scope_depths(saved_compounds, saved_class_scopes,
+			       "toplevel-recovery");
+    cur_func_name = saved_func;
+    TokenBase *sync_last = skip_to_statement_sync(brace_debt);
+    TokenError *en = make_error_node(ErrorNodeKind::SkippedTokens, diag_index,
+				     loop_head,
+				     sync_last ? sync_last : loop_head);
+    tp->statements.push_back(en);
+    pack_close_toplevel_decl();
+}
+
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
@@ -66245,6 +66422,19 @@ bool Program::parse(TokenProgram *tp)
 	    // "expected identifier" here.
 	    TokenBase *loop_head = tokens.front();
 	    size_t loop_size = tokens.size();
+	    // Recovery snapshot (§3.5 slice A): the entry depths a contained
+	    // error restores, and the diagnostics watermark that decides
+	    // whether a caught std::exception still needs recording (the
+	    // terminal cluster's last_error.has_error guard cannot serve
+	    // here — a PREVIOUS contained error keeps it set for the whole
+	    // rest of the parse; throwbuf::sync renders but never records).
+	    size_t saved_compounds = compounds.size();
+	    size_t saved_class_scopes = class_scope_stack.size();
+	    std::string saved_func = cur_func_name;
+	    size_t diag_watermark = diagnostics.size();
+	    size_t cursor_watermark = tokens.cursor();
+	    try
+	    {
 	    tb = nextToken();
 //	    printt(tb);
 	    // Skip C23 [[...]] attributes at top level.
@@ -66293,26 +66483,73 @@ bool Program::parse(TokenProgram *tp)
 		}
 	    }
 #endif
+	    }
+	    // Contained-error arms (§3.5 slice A): the same four exception
+	    // shapes as the terminal cluster below, but each records, plants
+	    // a SkippedTokens node, resyncs, and lets the loop CONTINUE —
+	    // gcc canon: report every top-level error, then refuse (the
+	    // translate gate). The terminal cluster still catches anything
+	    // thrown OUTSIDE a statement parse (finalize_script_main, the
+	    // recovery machinery itself).
+	    catch(const char *err_msg)
+	    {
+		contain_toplevel_parse_error(tp, loop_head,
+		    record_parse_error(
+			err_msg ? err_msg : "(null error message)", tb, tp),
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
+	    }
+	    catch(TokenIdent *ti)
+	    {
+		contain_toplevel_parse_error(tp, loop_head,
+		    record_parse_error(
+			std::string("use of undeclared identifier '")
+			    + ti->spelling() + '\'', ti, tp),
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
+	    }
+	    catch(TokenBase *err_tb)
+	    {
+		contain_toplevel_parse_error(tp, loop_head,
+		    record_parse_error(
+			std::string("unexpected token type ")
+			    + std::to_string((int)err_tb->type()), err_tb, tp),
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
+	    }
+	    catch(std::exception &e)
+	    {
+		// A Throw-origin exception rendered its own diagnostic
+		// (throwbuf::sync) but recorded nothing. Record it unless
+		// something already appended one this statement (the
+		// watermark — set_error-then-throw paths).
+		if ( diagnostics.size() == diag_watermark )
+		    record_throw_diagnostic(e, tp);
+		print_unrendered_diagnostic();
+		contain_toplevel_parse_error(tp, loop_head,
+		    diagnostics.empty() ? 0 : diagnostics.size() - 1,
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
+	    }
         }
 	// Script mode: seal the synthesized main once the whole TU parsed.
 	finalize_script_main();
     }
     catch(const char *err_msg)
     {
-	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", diagnostic_file_for(tb, tp), tb ? tb->line : 0, tb ? tb->column : 0);
-	print_last_diagnostic(error());
+	record_parse_error(err_msg ? err_msg : "(null error message)", tb, tp);
 	return false;
     }
     catch(TokenIdent *ti)
     {
-	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->spelling() + '\'', diagnostic_file_for(ti, tp), ti->line, ti->column);
-	print_last_diagnostic(error());
+	record_parse_error(std::string("use of undeclared identifier '")
+			       + ti->spelling() + '\'', ti, tp);
 	return false;
     }
     catch(TokenBase *tb)
     {
-	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), diagnostic_file_for(tb, tp), tb->line, tb->column);
-	print_last_diagnostic(error());
+	record_parse_error(std::string("unexpected token type ")
+			       + std::to_string((int)tb->type()), tb, tp);
 	if ( tb->type() == TokenType::ttReal )
 	{
 	    error() << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
@@ -66323,13 +66560,7 @@ bool Program::parse(TokenProgram *tp)
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	{
-	    TokenBase *err_tb = Throw.token();
-	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
-		diagnostic_file_for(err_tb, tp),
-		err_tb ? err_tb->line : 0,
-		err_tb ? err_tb->column : 0);
-	}
+	    record_throw_diagnostic(e, tp);
 	print_unrendered_diagnostic();
 	return false;
     }
@@ -66394,38 +66625,25 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)",
-		  diagnostic_file_for(tb, tp),
-		  tb ? tb->line : 0, tb ? tb->column : 0);
-	print_last_diagnostic(error());
+	record_parse_error(err_msg ? err_msg : "(null error message)", tb, tp);
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	set_error(DiagnosticPhase::parser,
-		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
-		  diagnostic_file_for(ti, tp), ti->line, ti->column);
-	print_last_diagnostic(error());
+	record_parse_error(std::string("use of undeclared identifier '")
+			       + ti->spelling() + '\'', ti, tp);
 	return NULL;
     }
     catch(TokenBase *err_tb)
     {
-	set_error(DiagnosticPhase::parser,
-		  std::string("unexpected token type ") + std::to_string((int)err_tb->type()),
-		  diagnostic_file_for(err_tb, tp), err_tb->line, err_tb->column);
-	print_last_diagnostic(error());
+	record_parse_error(std::string("unexpected token type ")
+			       + std::to_string((int)err_tb->type()), err_tb, tp);
 	return NULL;
     }
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	{
-	    TokenBase *err_tb = Throw.token();
-	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
-		      diagnostic_file_for(err_tb, tp),
-		      err_tb ? err_tb->line : 0,
-		      err_tb ? err_tb->column : 0);
-	}
+	    record_throw_diagnostic(e, tp);
 	print_unrendered_diagnostic();
 	return NULL;
     }

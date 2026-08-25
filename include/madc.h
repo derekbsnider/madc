@@ -642,6 +642,30 @@ public:
     TokenStmt() : TokenBase() {}
 };
 
+// A CONTAINED parse error (error-tolerant parse, slice A — design doc
+// 2026-08-25-madcide-ast-arc-design.md §3.5). A statement-position citizen
+// (TokenStmt) so it slots into any statements list; the parse tree stays
+// structurally complete and queryable past the error, and ANY error node
+// present gates translate (the node never lowers to CIR — Program::
+// error_nodes counts them, cir_translate_guarded refuses on the count).
+// One class for the whole vocabulary: the kind is data (ErrorNodeKind,
+// tokens.h), not a subclass. Debris kinds retain the set-aside region as
+// [first, last] source-token pointers (the TokenStream buffer outlives the
+// parse); hole kinds are zero-width (first == last == NULL). The message
+// lives in Program::diagnostics[diag_index] — the diagnostic stays the one
+// message owner; the node links, never copies.
+class TokenError: public TokenStmt
+{
+public:
+    ErrorNodeKind kind;
+    size_t diag_index;		// -> Program::diagnostics (the message owner)
+    TokenBase *first;		// debris: first retained token of the region
+    TokenBase *last;		// debris: last retained token (NULL for holes)
+    TokenError(ErrorNodeKind k, size_t diag)
+	: TokenStmt(), kind(k), diag_index(diag), first(NULL), last(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttError; }
+};
+
 
 // Token for containing a "Compound Statement" built up of multiple "Statement" tokens
 // Used to to extend the "Function" token and the "Program" token, described below
@@ -2482,6 +2506,14 @@ public:
     NamespaceRegistry namespace_registry;
     ErrorInfo last_error;
     std::vector<Diagnostic> diagnostics;
+    // Contained parse errors (error-tolerant parse, §3.5): the count of
+    // TokenError nodes synthesized into this Program's tree. > 0 gates
+    // translate (cir_translate_guarded refuses — "prevent compilation").
+    // Incremented ONLY by make_error_node (the one construction point) and
+    // reset by clear_diagnostics, so the gate's count is exact by
+    // construction. The NODE count, not the diagnostic count — warnings
+    // and non-contained diagnostics never gate.
+    size_t error_nodes = 0;
     keyword_map_t  keyword_map;		// reserved keywords
     // C++ alternative-token operators (and/or/not/bitand/...): word spellings
     // that are exact synonyms for symbolic operators ([lex.digraph]). Held
@@ -5282,6 +5314,59 @@ public:
     bool load_buffer(const std::string &source_text,
 		     const std::string &display_name);
     bool parse(TokenProgram *);
+    // --- error-tolerant parse (slice A: panic recovery at the top-level
+    //     statement loop; design doc §3.5). ---
+    // THE record-and-render rule for front-end catch arms (lexer + parser):
+    // set_error + mute-aware render. Returns the diagnostic's index.
+    size_t record_frontend_error(DiagnosticPhase phase,
+				 const std::string &message,
+				 const char *file, int line, int column);
+    // The parser-phase convenience (token position, diagnostic_file_for).
+    // Consumers: the recovery arms (which then CONTINUE the loop), the
+    // terminal catch cluster, parse_expression_unit's cluster.
+    size_t record_parse_error(const std::string &message,
+			      TokenBase *where, TokenProgram *tp);
+    // THE Throw-origin recording rule: message from Throw's buffer (e.what()
+    // fallback). Recording only — the render already happened
+    // (throwbuf::sync) or was captured (the mute). Guards stay at the call
+    // sites. Returns the diagnostic's index.
+    size_t record_throw_diagnostic(const std::exception &e,
+				   DiagnosticPhase phase,
+				   const char *file, int line, int column);
+    // The parser-phase convenience: position from Throw.token().
+    size_t record_throw_diagnostic(const std::exception &e, TokenProgram *tp);
+    // Skip to the next statement sync point after a contained error: consume
+    // tokens stepping DelimDepth (the one tracker) until a ';' outside every
+    // (/[/{, or a '}' that closes the region. The angle axis is deliberately
+    // NOT consulted for sync — broken code can open a '<' that never closes.
+    // brace_debt = compound scopes the dead statement left open (their '{'s
+    // were consumed before the throw; the walk owes their closes).
+    // Returns the last consumed token (NULL if the stream was already empty).
+    TokenBase *skip_to_statement_sync(size_t brace_debt);
+    // THE TokenError construction point: every synthesized error node
+    // increments error_nodes here, so the translate gate's count is exact
+    // by construction. Position stamps from `first` when given.
+    TokenError *make_error_node(ErrorNodeKind kind, size_t diag_index,
+				TokenBase *first, TokenBase *last);
+    // THE scope-depth restore recipe after a mid-parse throw (compounds +
+    // block-typedef shadows + class scopes to their entry depths). Three
+    // consumers: the derive-body/-lazy catches and the top-level containment.
+    void restore_parse_scope_depths(size_t saved_compounds,
+				    size_t saved_class_scopes,
+				    const char *site);
+    // Contain one top-level parse error: restore the statement-entry depths
+    // (restore_parse_scope_depths), skip to sync, plant the SkippedTokens
+    // node linking diagnostics[diag_index]. The parse loop then continues.
+    // cursor_watermark = tokens.cursor() at statement entry: the consumed
+    // buffer range [watermark, cursor()) measures the dead statement's
+    // unmatched '{'s (the sync walk's brace debt) from STREAM truth —
+    // interior catches unwind `compounds` before rethrowing.
+    void contain_toplevel_parse_error(TokenProgram *tp, TokenBase *loop_head,
+				      size_t diag_index,
+				      size_t saved_compounds,
+				      size_t saved_class_scopes,
+				      const std::string &saved_func,
+				      size_t cursor_watermark);
     TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,

@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **Error-tolerant parse, slice A (AST arc §3.5; owner rulings
+  2026-08-25)**: the parser CONTAINS each top-level error instead of
+  stopping at the first — record the diagnostic, restore the
+  statement-entry depths, resync via DelimDepth (`;` outside every
+  delimiter, or `}` at level ground), plant a `SkippedTokens` node, and
+  continue. gcc canon: report every top-level error, then refuse. The
+  vocabulary is one `TokenError` parse-tree class + the full eight-kind
+  `ErrorNodeKind` enum (`Missing{Expression,Statement,Declaration,
+  Identifier,Type,Token}` holes + `UnexpectedToken`/`SkippedTokens`
+  debris — all declared now per the owner ruling; slice A synthesizes
+  the debris kinds, interior hole synthesis is slice B+). ANY error
+  node gates translate: `cir_translate_guarded` (the one translate
+  entry) refuses on `Program::error_nodes > 0`, so run / eval /
+  `--emit=c11` / freeze / native all refuse uniformly, while the tree,
+  the parse-handle queries (`parse_check` now reports EVERY top-level
+  error; outline/enclosing/spans answer before AND after a broken
+  region — the mid-edit IDE state), and `--emit=c++` (a source view;
+  exit stays nonzero) remain alive. `record_parse_error` became THE
+  parse-error recording rule (recovery arms + the terminal cluster +
+  `parse_expression_unit` — three consumers, one owner). New reducers
+  `tests/testparserecover` (multi-error CLI, `.expect_err`) and
+  `tests/testparserecoverh` (handle queries over a broken buffer,
+  `.expect_quiet` gating the capture mute); testmadcide check pins
+  updated to the recovered-parse truth (2 rows — the slice-A cascade
+  granularity; statement-head hole synthesis is the named refinement).
+  This unlocks the tighter-than-save reparse cadence seats (§3.4:
+  error tolerance was the prerequisite; incremental reparse stays a
+  named seat behind it).
+
 - **Highlight spans, JOE-parity styles, and colour schemes (madcide
   AST-2 / IDE-7)**: `tui_attr` became the style struct {fg, bg, flags}
   speaking JOE's syntax vocabulary — `bold dim italic underline blink

@@ -462,7 +462,58 @@ invalidated, run-path refused.
   taken, no new instrumentation is needed; undo itself needs nothing
   special (an undo is just another delta — parsing keys on content).
 
-## 3.5 Error-tolerant parse — the discussion seat (owner, 2026-08-25; DISCUSSION PENDING)
+## 3.5 Error-tolerant parse — SETTLED (owner rulings 2026-08-25) + slice A as executed
+
+**Owner rulings (2026-08-25, closing the discussion):**
+- **One class** (`TokenError`) + a kind enum — approved.
+- **All eight kinds declared NOW** ("to avoid drift"), synthesis sites grow
+  into them incrementally — conditioned on Rule #4 discipline (search
+  before naming; every new helper's search stated).
+- **Scope of "prevent compilation" = the lean read**: translate/run/
+  `--emit=c11`/freeze/native refuse; the tree, the parse-handle queries,
+  and `--emit=c++` (a SOURCE view, not a compilation) stay alive; the CLI
+  reports ALL top-level errors then exits nonzero (gcc canon: gcc and
+  clang both recover, multi-report, refuse).
+
+**Slice A as executed (feature/error-tolerant-parse-claude):**
+- Vocabulary: `ErrorNodeKind` (all eight, tokens.h) + `TokenError` (a
+  TokenStmt citizen, madc.h) with `kind`, `diag_index` (→
+  `Program::diagnostics` — the message owner; the node links, never
+  copies), and debris extent `[first, last]` token pointers.
+  `Program::error_nodes` counts synthesized nodes; `make_error_node` is
+  THE construction point (count exact by construction); reset rides
+  `clear_diagnostics`.
+- Recovery: per-statement catch arms in `Program::parse`'s top-level loop
+  mirror the terminal cluster's four exception shapes but CONTAIN —
+  record (`record_parse_error` = THE recording rule; the terminal cluster
+  and `parse_expression_unit` adopted it too), restore entry depths (the
+  derive-body-catch recipe: compounds, block-typedef shadows, class
+  scopes, cur_func_name), resync (`skip_to_statement_sync`: DelimDepth,
+  ';' outside every `(`/`[`/`{` or '}' at level ground; the angle axis
+  deliberately not consulted — broken code can wedge a '<' open), plant a
+  `SkippedTokens` node, continue. The std::exception arm guards recording
+  with a per-statement diagnostics WATERMARK, not `last_error.has_error`
+  (a previous contained error keeps that set; throwbuf::sync renders but
+  never records — found during implementation).
+- Gate: `cir_translate_guarded` (the one translate entry every lane flows
+  through) refuses on `error_nodes > 0`, mute-aware summary line;
+  `Program::compile()` already returns `!last_error.has_error` (the eval
+  children's belt). `--emit=c++` renders the retained echo without
+  translating when errors are contained (exit nonzero — status truthful,
+  output exact); `cir_emit_cxx_source` factored for its two consumers.
+- Handles: a broken buffer opens; `parse_check` reports every contained
+  error as data; the outline holds definitions BEFORE and AFTER the broken
+  region; `parse_enclosing` answers past it (the motivating UX, pinned in
+  testparserecoverh with .expect_quiet gating the mute).
+- **Accepted slice-A granularity**: statement-level skip can cascade —
+  `junk long add(...) {...}` skips the whole definition, so a later use of
+  `add` reports a follow-on (gcc recovers that DECLARATION itself via
+  implicit-int, 1 error). The named slice-B+ refinement: statement-head
+  hole synthesis (`MissingType`/`UnexpectedToken` retry) at the highest-
+  yield interior sites, per-site, owner-gated. Until then the cascade rows
+  are contained and truthful (testmadcide pins the 2-row shape).
+
+## 3.5.1 The original discussion seat (recon record; superseded by the rulings above)
 
 **Owner (mid-AST-1, reacting to the stops-at-first-error probe):** add
 node types to CONTAIN pieces of broken code until they resolve — and

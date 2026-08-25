@@ -308,7 +308,11 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *bad_tp = bad_prog->tokenize(bad_path.c_str());
 	CHECK(bad_tp != nullptr);
 	REQUIRE(bad_tp != nullptr);
-	CHECK_FALSE(bad_prog->parse(bad_tp));
+	// Error-tolerant parse (arc doc 3.5): rejection means NOT a clean
+	// parse — the error may be CONTAINED (parse true, error_nodes > 0).
+	bool bad_clean = bad_prog->parse(bad_tp)
+			 && bad_prog->error_nodes == 0;
+	CHECK_FALSE(bad_clean);
 
 	unlink(good_path.c_str());
 	unlink(bad_path.c_str());
@@ -333,7 +337,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	unlink(path.c_str());
     }
@@ -419,7 +426,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(restricted_path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	engine.registration_policy.enable_core_functions = true;
 	std::unique_ptr<Program> host_prog = engine.create_program();
@@ -477,14 +487,19 @@ TEST_SUITE("Program isolation") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK_FALSE(prog->load_file(path.c_str()));
 	CHECK(prog->last_error.has_error);
-	REQUIRE(prog->diagnostics.size() == 1);
+	// Error-tolerant parse (arc doc 3.5): recovery reports EVERY
+	// top-level error, so the list can hold follow-ons after the real
+	// one. diagnostics[0] carries the structured info for the FIRST
+	// error; last_error reflects the LAST recorded one.
+	REQUIRE(prog->diagnostics.size() >= 1);
+	CHECK(prog->error_nodes > 0);
 	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
 	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::parser);
 	CHECK(prog->last_error.file == path);
-	CHECK(prog->last_error.message.find("undeclared identifier") != std::string::npos);
 	CHECK(prog->diagnostics[0].message.find("undeclared identifier") != std::string::npos);
-	CHECK(prog->last_error.line > 0);
-	CHECK(prog->last_error.column > 0);
+	CHECK(prog->diagnostics[0].file == path);
+	CHECK(prog->diagnostics[0].line > 0);
+	CHECK(prog->diagnostics[0].column > 0);
 
 	unlink(path.c_str());
     }

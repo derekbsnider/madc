@@ -9571,8 +9571,8 @@ TokenProgram *Program::tokenize(const char *fname)
 
     if ( !file )
     {
-	set_error(Program::DiagnosticPhase::lexer, "Failed to open file", fname, 0, 0);
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      "Failed to open file", fname, 0, 0);
 	return NULL;
     }
 
@@ -9614,26 +9614,32 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(const char *err_msg)
     {
-	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)", fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->spelling() + '\'', fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("unexpected token type ") + std::to_string((int)tb->type()), fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
 	print_unrendered_diagnostic();
 	return NULL;
     }
@@ -9694,33 +9700,32 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     }
     catch(const char *err_msg)
     {
-	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)",
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("unexpected token type ") + std::to_string((int)tb->type()),
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	    set_error(Program::DiagnosticPhase::lexer,
-		      Throw.str().empty() ? e.what() : Throw.str(),
-		      fname, source.line(), source.column());
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
 	print_unrendered_diagnostic();
 	return NULL;
     }

@@ -5,7 +5,7 @@ check1: Check: clean.
 edited: caret=5 modified=true size=89
 undo: caret=0 modified=false size=84
 undo-empty: Nothing to undo.
-check2: Check: 1 problem(s).
+check2: Check: 2 problem(s).
 --- diagnostics view ---
 === madcide: madc_ide_test.mad ===
 junk long add(long a, long b) { return a + b; }
@@ -13,7 +13,8 @@ long twice(long x) { return add(x, x); }
 
 Diagnostics
   1. 1:4 error use of undeclared identifier 'junk'
-Check: 1 problem(s).
+  2. 2:31 error use of undeclared identifier 'add'
+Check: 2 problem(s).
   1. Save
   2. Find
   3. Quit
