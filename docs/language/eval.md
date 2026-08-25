@@ -184,11 +184,20 @@ This is what feeds an editor's code views (`tools/madcide`'s `^K N`).
 
 ```c
 value text;
-if ( madc::emit(text, source, "buffer.mad", "c11") )   // or "mc11"
+if ( madc::emit(text, source, "buffer.mad", "c11") )   // or "mc11", "c++"
     print("{}", text);
 // false = unknown target, or a buffer that does not parse/translate
 // (diagnostics captured, never printed); nothing in the buffer runs
 ```
+
+The `"c++"` target is the REVERSE render: the TU's retained source — its
+own `#include` directives as written, then the token echo (trivia
+preserved; string escapes re-escaped so the render re-lexes). For a
+C/C++ buffer the render recompiles under g++/clang++ and behaves
+identically (`scripts/emitcxx_roundtrip_gate.sh` pins it in fulltest).
+madc-dialect constructs pass through unrespelled — cross-language
+respelling is a named future seat. Macro uses echo expanded; numeric
+literals canonicalize where the original text was not retained.
 
 ## Security
 

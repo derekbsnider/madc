@@ -164,10 +164,13 @@ image; a valid EMPTY map (a wholly rendered view) answers 0; −1 =
 malformed map (the strict codec refuses whole) or a negative offset.
 
 The first consumers are madcide's read-only code views (`^K N` cycles
-original → MC11 → C11 over the one document): the rendered text comes
-from `madc::emit` over the live buffer, the lens data (view name + map)
-rides the edit node's hints, and the identity lens — no view — adds
-nothing (the composed tree is byte-identical to a plain editor's).
+original → MC11 → C11 — and, on a C/C++ buffer, → C++ — over the one
+document): the rendered text comes from `madc::emit` over the live
+buffer, the lens data (view name + map) rides the edit node's hints, and
+the identity lens — no view — adds nothing (the composed tree is
+byte-identical to a plain editor's). The C++ view's render is the
+retained source (the reverse render), so it applies only where the
+buffer's own language is C/C++ — the app's document-kind rule.
 
 ## Access model and projections
 

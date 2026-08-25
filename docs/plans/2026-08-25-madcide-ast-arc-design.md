@@ -341,6 +341,45 @@ Slice-1 mechanics (the seam every later target reuses):
   behavioral compare); testmadcide grows the c++ view arm (positive
   pin on a .cpp buffer, refusal pin on the .mad buffer).
 
+## 3.3 AST-4 — as executed (2026-08-25, session 132; two deviations from §3.2)
+
+Shipped on `feature/madcide-ast4-claude`:
+- `celCxx` through the ONE converter; `--emit=c++` and `madc::emit`'s
+  `"c++"` both arm `keep_trivia` fidelity lexing.
+- Feeders at the owners: `fidelity_include_directives` (the directive AS
+  WRITTEN + the writing file, recorded pre-resolution at the one parse
+  site); `madc_token_spelling` = the exposed one spelling owner, whose
+  ttString arm now RE-ESCAPES the cooked value (also fixed a latent
+  macro-arg re-lex bug: a cooked newline in a string macro-arg re-lexed
+  unterminated).
+- The renderer (`cir_emit_cxx`): the TU's own directives + the whole-TU
+  token echo (trivia + spelling) + trailing trivia, source info passed
+  as data (CirEmitSource — no Program dependency).
+- **Deviation 1 — whole-TU echo, not per-item line-ranges.** The §3.2
+  line-range plan was refuted by the rich probe: closing braces and
+  class heads/members carry NO cir nodes (the render came out gutted),
+  and the token stream already excludes everything the tree selection
+  was meant to exclude (#if'd-out regions never lex; lowered machinery
+  never enters the stream — Phase-5's suppressions are INHERENT to the
+  echo). The tree keeps the validity gate; tree-SCOPED rendering (a
+  single function's view) stays the named later lever.
+- **Deviation 2 — no compiler-side cslMadc refusal.** Recon found
+  `src_lang` is never stamped past its `cslC` default and `STD_MADC` is
+  the superset default every plain `.cpp` compiles under — every
+  available refusal signal is wrong-grained or absent. Instead: the
+  documented contract ("madc-only constructs pass through unrespelled")
+  plus madcide's APP-level document-kind rule (`cxx_view_applies` by
+  extension) keep the c++ view off madc-dialect buffers. Truthful
+  src_lang stamping joins the respelling seat.
+- Gates: `scripts/emitcxx_roundtrip_gate.sh` in fulltest (2 reducers —
+  strings/escapes/class/macro/global; template/overloads/enum/refs —
+  × g++ AND clang++, behavioral byte-compare, two negative controls);
+  testmadcide's second editor world over a `.cpp` buffer (cycle to
+  [c++], directive + echo pins, stored size untouched, exit home) with
+  the `.mad` cycle pins unchanged.
+- `--emit=madc` remains the next target on the same seam (the converter
+  + CirEmitSource are where it lands).
+
 ## 4. Still open (owner's)
 
 - Naming/spelling of artifact kinds and file extensions (e.g. the IDE
