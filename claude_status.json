@@ -19,7 +19,8 @@
    "Availability checks and verb bodies are the same two-binding-kind architecture; the check protocol is 'ok'/reason-text/empty=loud-disable; checks are read-only by contract (like verb re-entrancy, stated not locked)",
    "The projection edit role carries interaction state as hints ({caret, sel_start, sel_end} byte offsets); presentation state (scroll/shift/focus/selection) lives in the model per design 7.2",
    "tui_event's choose.option is 1-BASED \u2014 the same number the level-0 numbered menu prints for that option",
-   "The pty smoke is a fulltest gate (tui_smoke_gate.sh) with a negative control; the harness delivers SIGWINCH itself (the spawned child is not the pty session leader \u2014 TIOCSWINSZ alone notifies nobody)"
+   "The pty smoke is a fulltest gate (tui_smoke_gate.sh) with a negative control; the harness delivers SIGWINCH itself (the spawned child is not the pty session leader \u2014 TIOCSWINSZ alone notifies nobody)",
+   "OWNER 2026-08-25 (post-R5 review): the IDE (madcide) gets JOE/WordStar key bindings (^K-prefix chords: ^K S save, ^K Q/^K X quit-forms, ^K B mark, ...) and bindings must be CONFIGURABLE (the hub doc's keybinding-profiles-as-wants seat); vised's Pico-style single chords stay as-is \u2014 fine for an example editor. Implication for the model: the key adapter needs prefix/chord sequences (a ^K pending state) driven by a bindings TABLE (data, per-profile), not hardcoded chords."
   ],
   "validation": [
    "R5 merge-gate battery on FINAL branch content: fulltest 1144/0/0/9 + EXE 1101/0, both rc=0 (fresh battery after the last content commit); adventure parity + purity + write-path + dialect-lean + the NEW tui_smoke_gate green in-battery",
@@ -28,7 +29,7 @@
    "scoped /dupaudit pre-merge: 2 consolidations landed (refusal prose derived, one editor setup); DupFamily tui_line_scan recorded (text_buffer vs tui_model paint_edit \u2014 deliberate divergence, consolidation = edit nodes binding the component by subject)"
   ],
   "next": [
-   "1. madcide (hub doc Phase 2) \u2014 consumer of R1-R5: buffers = texteditor machinery, diagnostics pane + outline = projections over live compiler data, keybinding/theme profiles as wants; its gate as written in the hub doc.",
+   "1. madcide (hub doc Phase 2) \u2014 consumer of R1-R5: buffers = texteditor machinery, diagnostics pane + outline = projections over live compiler data, keybinding/theme profiles as wants; its gate as written in the hub doc. OWNER-DIRECTED: JOE/WordStar ^K-chord bindings, CONFIGURABLE (bindings as data/profile; the TUI key adapter grows chord-prefix support \u2014 design it generic: a bindings table mapping key sequences to action names, not a second hardcoded map).",
    "2. R3 residue: the script-verb sibling design section (re-entrancy formalized, code-entity key-gating, compile-ONCE bodies \u2014 the consolidation point for DupFamilies adventure_pilot_tick, prose_enumerate_rule, lineed_arg_parse; L3 value returns would let eval wrappers return an owning value).",
    "3. R5 residues (named in the plan doc): UTF-8 cell width; Windows Console target; edit nodes binding the component by SUBJECT instead of carrying text (kills DupFamily tui_line_scan); editable verdict re-derivation on mid-session state flips; page size from region height; literal tab insertion.",
    "4. Standing queue: wine_suite_flake_class; MIR win64 wrapper-pair upstream PRs (owner review gates); startup levers (bar tcc ~22ms); --project --emit=c11 dup __madc_global_init; madc.ini ruling; DupFamily consolidations.",
