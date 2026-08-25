@@ -56,6 +56,9 @@ view-find: hit=1
 view2: name=c11
 view-exit: name='' caret=84 identical=1 modified=false
 lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
+cxxview: name=c++ include=1 echo=1 stored-size=109
+cxxview-head: tagged=1
+cxxview-exit: name='' caret=0
 quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
 save: Wrote 92 bytes.
 savequit: cont=0 msg=Bye.
