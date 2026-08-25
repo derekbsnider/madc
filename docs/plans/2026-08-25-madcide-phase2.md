@@ -1,6 +1,14 @@
 # madcide — hub Phase 2 (Track 7.2 consumer)
 
-**Status:** execution plan, cut 2026-08-25 (session 130). Consumes Track 7.2
+**Status: EXECUTED 2026-08-25 (session 130, same session as the cut).**
+IDE-1 through IDE-4 landed in full; IDE-5 landed parts 2+3 (re-entrancy
+enforced, code-entity key-gating), with part 1 (compile-once bodies)
+re-scoped on a measured blocker — see its section. The hub-doc Phase-2
+gate is MET, pinned headlessly by `tests/testmadcide` and re-verified on
+a real pty (madcide AND vised). As-executed notes live inline in each
+slice below; residues at the end.
+
+**Was:** execution plan, cut 2026-08-25 (session 130). Consumes Track 7.2
 R1–R5 as shipped (see
 [2026-08-24-ui-interaction-rework-and-texteditor.md](2026-08-24-ui-interaction-rework-and-texteditor.md));
 the phase gate is the hub doc's, unchanged:
@@ -239,6 +247,67 @@ IDE-1 → IDE-3 → IDE-2 → IDE-4 → IDE-5 (parts 2–3 may land beside IDE-4
 verb work; part 1 whenever ready — it gates nothing in IDE-4 but makes it
 better). Battery ONCE at the merge wave; dupaudit scoped to
 tui/texteditor/madcide/eval before the merge.
+
+## As executed (2026-08-25, session 130)
+
+Landed in plan order, targeted-green per slice, one battery at the wave:
+
+- **IDE-1** as designed, plus one design correction the unit battery
+  forced: chord sequences are LETTER-CASE-INSENSITIVE (JOE's `^K S` ==
+  `^K s`), owned by `tui_bindings::seq_spelling` — key EVENTS keep
+  `tui_key_name`'s exact spelling. The pty smoke gate now binds
+  `"^k s"` and pins the action event with the two chord bytes arriving
+  in separate read batches. test_tui_model 174 asserts (was 100).
+- **IDE-3** surfaced two pre-existing defects, both fixed at their
+  layers: (a) a later tokenize session's tokens inherited the PREVIOUS
+  unit's ambient file:line (TokenBase ctor statics; getRealToken's ==0
+  backstop can't fire on a stale nonzero stamp) — `_tokenizer_init`
+  now resets the ambient position; user-visible in `--project` TU2+
+  error lines, reducer `tests/testprojecterrline`, own commit;
+  (b) diagnostics RENDERED through the engine stream even with a
+  per-Program sink (Program::error() prefers the engine by design —
+  engine-owned IO) — capture is a thread-local `DiagnosticRenderMute`
+  on the two render owners (print_diagnostic, throwbuf::sync);
+  recording is never muted. Positions byte-match the file-based
+  oracle. Reducer `tests/testcompilerdata` (`.expect_quiet` = the
+  capture proof).
+- **IDE-2** as designed (`text_buffer` history exactly as its header
+  anticipated); the checkpoint payload is `{caret, modified}` so undo
+  restores document + interaction state together. One dialect lesson:
+  a bare `a && b` is int-typed (C), so the payload's flag is stored
+  through a `bool` variable — strict `as_boolean()` reads it back.
+  test_text_buffer 145 asserts (was 128).
+- **IDE-4** as designed. The vised split (`editor_events.inc`) kept
+  testvised/testlineed byte-identical; madcide's `x`-verb became
+  `save_quit` in the DISPATCHER (two verbs from the app — zero
+  duplicated verb logic, no re-entrancy). Headless gate
+  `tests/testmadcide` pins all three gate clauses (the profile-swap
+  tree comparison is a straight `value == value`); madcide AND vised
+  re-verified on real ptys. Scoped dupaudit found ONE family born this
+  session — vised/madcide composing the same four projection rules —
+  consolidated same-session into shared compose helpers
+  (`compose_heading/edit_node/status/menu` in editor_events.inc).
+- **IDE-5** parts 2+3 as designed (`_invoking` latch in
+  verb_table::invoke — checks at dispatch run BEFORE the latch;
+  `ui::bind_require_key` arming the bind gate over the session's
+  effective credentials). Reducers `tests/testreenter` (the refusal is
+  the nested RESULT) and `tests/testbindgate`. test_verbs 69 asserts.
+  Part 1 re-scoped: see the MEASURED BLOCKER note in its section (the
+  baked eval ctx) — runtime-bound ctx is the prerequisite slice.
+
+**Residues (named):** compile-once bodies behind the runtime-bound ctx
+block (IDE-5 §1 — the DupFamilies adventure_pilot_tick /
+prose_enumerate_rule / lineed_arg_parse still consolidate there via the
+script prelude); the two editor LOOPS (run_visual / run_ide) stay
+parallel structure — consolidation point = a loop driver taking
+compose/apply callbacks once dialect fn-pointer ergonomics are proven
+here; the ev_* event builders duplicated across testvised/testmadcide
+(test-local, pinned by the events contract); outline kinds beyond
+`function` (classes/globals — extend the same pending_funcs-style walk);
+a deep-check tier for madc::diagnostics (CIR build errors surface only
+at execution today); madcide editable re-derivation on mid-session
+flips (inherited from R5); profile files carry no savequit binding in
+pico (actions need not all be bound — by design).
 
 ## Deferred (seats held)
 
