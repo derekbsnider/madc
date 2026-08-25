@@ -4638,6 +4638,10 @@ bool internal_program_source_emit(::Program &self,
     if ( !cir_emit_lang_of(target.c_str(), lang) )
 	return false;
     ::Program child(self.engine);
+    // The C++ reverse-render echoes the retained tokens: full-fidelity
+    // lexing (trivia + the include-directive record) for that target only.
+    if ( lang == celCxx )
+	child.keep_trivia = true;
     DiagnosticRenderMute mute;
     if ( !parse_source_child_frontend(self, child, source_text, display_name) )
 	return false;

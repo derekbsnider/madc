@@ -37,11 +37,20 @@
 #include "cir_emit_c.h"
 #include "cir_node.h"
 #include "madc_posix_io.h"	// string-capture stream (the one FILE*-over-memory owner)
+#include <set>
 #include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <climits>
+
+// The C++ reverse-render (cir_emit_cxx, end of file) reads the retained
+// tokens — the front-end types come in for that consumer only (the same
+// order every front-end TU uses: datadef, tokens, datatokens, madc).
+#include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
+#include "madc.h"
 
 extern "C" {
 #include "c2mir/c2mir_api.h"   // c2mir_node_op, c2mir_node_code_name
@@ -778,4 +787,47 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 void cir_emit_c(FILE *f, node_t tree, CirEmitLang lang)
 {
 	emit(f, tree, lang);
+}
+
+// ---- the C++ reverse-render (--emit=c++; madcide AST-4 slice 1) -----------
+// Renders the TU's RETAINED SOURCE (mc11-ir.md: the attached tokens + trivia
+// are the path back to the original source): the TU's own recorded #include
+// directives, then every TU-file token echoed in stream order (leading
+// trivia + the one spelling owner, madc_token_spelling), then the trailing
+// trivia. The suppressions the Phase-5 design asked for are INHERENT to
+// this shape: lowered machinery (a string decl's storage/ctor/dtor synth
+// group, mangled call forms, __madc_global_init scaffolding) exists only as
+// TREE nodes and never enters the TU token stream, and #if'd-out regions
+// never lexed — so the echo is the high-level statement stream by
+// construction. The tree's role here is the validity gate the caller
+// already ran (never render an erroneous tree); tree-scoped rendering (a
+// single function's view) is the named later lever. Known slice-1
+// normalizations: macro uses echo EXPANDED (the name token is consumed at
+// lex; the definition line echoes nothing — semantics preserved), and
+// numeric literals canonicalize where the original text was not retained.
+// madc-dialect constructs pass through UNRESPELLED — cross-language
+// respelling is the named next seat
+// (docs/plans/2026-08-25-madcide-ast-arc-design.md §3.2).
+
+void cir_emit_cxx(FILE *f, const CirEmitSource &si)
+{
+	// 1. The TU's own include directives, as written, in order.
+	if (si.includes && si.tu_file)
+		for (size_t i = 0; i < si.includes->size(); i++)
+			if ((*si.includes)[i].first == si.tu_file)
+				fprintf(f, "%s\n", (*si.includes)[i].second.c_str());
+
+	// 2. Echo the TU's tokens, stream order (TokenStream iteration walks
+	// the WHOLE lexed buffer, cursor-independent).
+	if (si.tokens && si.tu_file)
+		for (TokenBase *tb : *si.tokens) {
+			if (!tb || !tb->file || strcmp(tb->file, si.tu_file))
+				continue;
+			fputs(tb->leading_trivia.c_str(), f);
+			fputs(madc_token_spelling(tb).c_str(), f);
+		}
+
+	// 3. Whitespace/comments after the last token — faithful to the byte.
+	if (si.trailing)
+		fputs(si.trailing->c_str(), f);
 }

@@ -6336,7 +6336,22 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
     if (lang == celC11 && getenv("MADC_XTEST_NO_SRET_LOWER") == NULL)
 	builder->emitc_lower_indirect_returns(tree);
 
-    cir_emit_c(out, tree, lang);
+    if (lang == celCxx) {
+	// The reverse-render reads the retained source (mc11-ir.md): the
+	// TU's token stream + its recorded include directives, passed as
+	// data. tu_file through intern_file so the compare matches the
+	// spelling the TU's tokens carry. The tree's role was the validity
+	// gate above — never render an erroneous tree.
+	CirEmitSource si;
+	si.tokens = &prog->tokens;
+	si.tu_file = prog->intern_file(std::string(source_name ? source_name
+							       : ""));
+	si.includes = &prog->fidelity_include_directives;
+	si.trailing = &prog->_trailing_trivia;
+	cir_emit_cxx(out, si);
+    }
+    else
+	cir_emit_c(out, tree, lang);
 
     cir_finish(c2m);
     c2mir_finish(ctx);

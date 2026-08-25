@@ -1360,6 +1360,9 @@ int main(int argc, char **argv)
     {
 	if ( dump_source )
 	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
+	if ( do_emit && emit_lang == celCxx )
+	    prog->keep_trivia = true;   // the C++ reverse-render echoes TU
+					// statements from the retained tokens
 	if ( freeze_path )
 	    prog->pack_recording = true;   // B4a: record grove payload v2 during lex+parse
 	if ( freeze_path || freeze_run )
