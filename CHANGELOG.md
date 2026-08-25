@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **The view seam (madcide AST-3, owner-pulled first)**: an editor
+  inherently separates what is DISPLAYED from what is STORED — the
+  document lens. `madcdis/doc_lens.h`'s `doc_map` is THE display↔stored
+  coordinate owner (copy segments `{disp, stored, len}` as data; strict
+  value codec; contract: 1:1 in copies, forward collapse in gaps,
+  gap-adjacent boundaries belong to the copy that ENDS there — the safe
+  put side; empty map = a wholly rendered view, answers 0), with
+  `ui::lens_to_display/lens_to_stored` as its dialect face and a
+  doctest battery (6 cases / 106 asserts) pinning the caret math.
+  `madc::emit(out, source, filename, target)` renders a buffer's
+  cir_node tree as a target language through the diagnostics/outline
+  child — byte-identical to CLI `--emit=`, whose target-name parse now
+  rides the ONE converter `cir_emit_lang_of()` (AST-4's `c++` grows in
+  exactly one place). madcide's `^K N` cycles read-only code views
+  original → MC11 → C11 over the one document: the rendered text is the
+  display (unsaved edits render), navigation runs in display space
+  through the one shared implementation (`nav_doc()` routing; the
+  renderer untouched — identity-lens byte-identity is structural, and
+  testvised/testlineed pin it), the stored caret parks and returns on
+  exit, and mutations/stored-space history refuse through the one
+  editable gate. Real-pty smoke covers the cycle (heading tags, the
+  lowering on screen, `^K ^N` ctrl-held continuation, original
+  restored). Scoped dupaudit: `view_active_predicate` (5 sites born on
+  the branch) consolidated into `view_name()`;
+  `emit_target_name_conversion` recorded consolidated.
 - **madcide v2 — a TOOL with the full JOE binding set (owner-directed)**:
   relocated `examples/madcide` → `tools/madcide`; `profiles/joe.keys`
   now carries the owner's complete basic-editing list (WordStar diamond
