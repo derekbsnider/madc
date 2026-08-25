@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (the text-component
+surface is diagnostics-clean).

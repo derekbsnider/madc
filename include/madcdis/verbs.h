@@ -75,6 +75,24 @@ public:
     {
 	return _w.link_remove(from, rel, to);
     }
+    // Text-component writes (R4): the same one-write-surface mirror.
+    void text_load(entity_id id, const std::string &s)
+    {
+	_w.text_load(id, s);
+    }
+    void text_insert(entity_id id, size_t off, const std::string &s)
+    {
+	_w.text_insert(id, off, s);
+    }
+    void text_erase(entity_id id, size_t off, size_t len)
+    {
+	_w.text_erase(id, off, len);
+    }
+    void text_replace(entity_id id, size_t off, size_t len,
+		      const std::string &s)
+    {
+	_w.text_replace(id, off, len, s);
+    }
 };
 
 // ------------------------------------------------------------------ action_env

@@ -1,0 +1,158 @@
+// Unit battery for madcdis/text_buffer.h — the piece-table text component
+// (Track 7.2 R4; Track 8.1 pulled forward). ORACLE: a plain std::string
+// mirror — every mutation is applied to both and the materialized text
+// must match byte-for-byte after each step; line/find queries are checked
+// against the same mirror.
+// Plan: docs/plans/2026-08-24-ui-interaction-rework-and-texteditor.md.
+
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+thread_local bool madc_verbose = false;
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include <string>
+
+#include "madcdis/text_buffer.h"
+
+using madc::hub::text_buffer;
+
+// The mirrored mutation pair: piece table and oracle move in lockstep.
+struct mirrored
+{
+    text_buffer b;
+    std::string s;
+
+    void load(const std::string &t) { b.load(t); s = t; }
+    void insert(size_t off, const std::string &t)
+    {
+	b.insert(off, t);
+	if ( off > s.size() ) off = s.size();
+	s.insert(off, t);
+    }
+    void erase(size_t off, size_t len)
+    {
+	b.erase(off, len);
+	if ( off < s.size() )
+	    s.erase(off, len > s.size() - off ? s.size() - off : len);
+    }
+    void replace(size_t off, size_t len, const std::string &t)
+    {
+	erase(off, len);
+	insert(off, t);
+    }
+    bool matches() const { return b.text() == s && b.size() == s.size(); }
+};
+
+TEST_CASE("piece table — load, insert, erase, replace mirror std::string")
+{
+    mirrored m;
+    m.load("");
+    CHECK(m.matches());
+    CHECK(m.b.piece_count() == 0u);
+
+    m.insert(0, "hello world");	// insert into empty
+    CHECK(m.matches());
+    m.insert(5, ",");		// interior split
+    CHECK(m.matches());
+    CHECK(m.b.text() == "hello, world");
+    m.insert(0, ">> ");		// at front (piece boundary)
+    CHECK(m.matches());
+    m.insert(m.b.size(), "!");	// at end
+    CHECK(m.matches());
+    m.insert(999, "?");		// past end clamps to append
+    CHECK(m.matches());
+    CHECK(m.b.text() == ">> hello, world!?");
+
+    m.erase(0, 3);		// whole leading piece
+    CHECK(m.matches());
+    m.erase(5, 2);		// across a piece boundary
+    CHECK(m.matches());
+    m.erase(m.b.size() - 1, 5);	// over-long tail erase clamps
+    CHECK(m.matches());
+    m.erase(2, 0);		// zero-length no-op
+    CHECK(m.matches());
+    m.erase(999, 4);		// past end no-op
+    CHECK(m.matches());
+
+    m.replace(0, 5, "HELLO");
+    CHECK(m.matches());
+
+    // The loaded snapshot is never moved: a fresh load resets everything.
+    m.load("abc\ndef\n");
+    CHECK(m.matches());
+    CHECK(m.b.piece_count() == 1u);
+}
+
+TEST_CASE("piece table — slice and interior erase splits")
+{
+    mirrored m;
+    m.load("0123456789");
+    m.erase(3, 4);		// interior split of the single load piece
+    CHECK(m.matches());
+    CHECK(m.b.text() == "012789");
+    CHECK(m.b.piece_count() == 2u);
+
+    CHECK(m.b.slice(0, 3) == "012");
+    CHECK(m.b.slice(2, 3) == "278");	// spans the split
+    CHECK(m.b.slice(4, 99) == "89");	// clamps
+    CHECK(m.b.slice(99, 1) == "");
+
+    // A long alternating edit sequence stays in lockstep.
+    for ( int i = 0; i < 40; ++i )
+    {
+	m.insert((size_t)(i * 7) % (m.b.size() + 1), "ab");
+	CHECK(m.matches());
+	m.erase((size_t)(i * 3) % (m.b.size() + 1), (size_t)i % 3);
+	CHECK(m.matches());
+    }
+}
+
+TEST_CASE("piece table — line model: terminated, trailing, empty")
+{
+    text_buffer b;
+    b.load("");
+    CHECK(b.line_count() == 0u);
+
+    b.load("one\ntwo\nthree\n");	// fully terminated
+    CHECK(b.line_count() == 3u);
+    size_t off = 0, len = 0;
+    REQUIRE(b.line_span(1, off, len));
+    CHECK(b.slice(off, len) == "one");
+    REQUIRE(b.line_span(3, off, len));
+    CHECK(b.slice(off, len) == "three");
+    CHECK_FALSE(b.line_span(4, off, len));
+    CHECK_FALSE(b.line_span(0, off, len));
+
+    b.load("one\ntwo");			// trailing unterminated span
+    CHECK(b.line_count() == 2u);
+    REQUIRE(b.line_span(2, off, len));
+    CHECK(b.slice(off, len) == "two");
+
+    b.load("\n\n");			// empty lines are lines
+    CHECK(b.line_count() == 2u);
+    REQUIRE(b.line_span(1, off, len));
+    CHECK(len == 0u);
+
+    // Lines survive edits that cross the piece structure.
+    b.load("aa\nbb\ncc\n");
+    b.replace(3, 2, "BXB");		// "bb" -> "BXB" splits pieces
+    CHECK(b.text() == "aa\nBXB\ncc\n");
+    CHECK(b.line_count() == 3u);
+    REQUIRE(b.line_span(2, off, len));
+    CHECK(b.slice(off, len) == "BXB");
+}
+
+TEST_CASE("piece table — find at and after an offset")
+{
+    text_buffer b;
+    b.load("the cat sat on the mat");
+    CHECK(b.find(0, "the") == 0u);
+    CHECK(b.find(1, "the") == 15u);
+    CHECK(b.find(16, "the") == text_buffer::npos);
+    CHECK(b.find(0, "dog") == text_buffer::npos);
+    CHECK(b.find(0, "") == text_buffer::npos);
+    // Across edited piece boundaries.
+    b.replace(4, 3, "CAT");
+    CHECK(b.find(0, "CAT sat") == 4u);
+}

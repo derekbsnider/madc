@@ -46,6 +46,7 @@
 
 #include "madcdis/id_table.h"
 #include "madcdis/intern_table.h"
+#include "madcdis/text_buffer.h"
 #include "libmadc/value.h"
 
 namespace madc {
@@ -164,6 +165,7 @@ class world
     std::vector<entity *>	    _owned;
     std::vector<link>		    _links;
     std::map<name_id, std::vector<name_id> > _implies;	// key -> keys it provides
+    std::map<entity_id, text_buffer> _texts;	// sparse text components
 
     world(const world &);		// identities are not copyable
     world &operator=(const world &);
@@ -271,6 +273,40 @@ public:
 	return out;
     }
     std::vector<link> all_links() const { return _links; }
+
+    // --- text component (Track 7.2 R4; Track 8.1 pulled forward): the
+    // hub's SECOND component kind — a piece-table buffer attached
+    // SPARSELY by entity id ("an editor buffer = entity with a
+    // piece-table component, natively" — design demand 7). Mutators
+    // mirror through mutation_context like every write; reads are const.
+    // RUNTIME-ONLY today: world_save does not carry it — a document's
+    // text persists in the document's own file, written by the
+    // application's save verb.
+    void text_load(entity_id id, const std::string &s)
+    {
+	_texts[id].load(s);
+    }
+    void text_insert(entity_id id, size_t off, const std::string &s)
+    {
+	_texts[id].insert(off, s);
+    }
+    void text_erase(entity_id id, size_t off, size_t len)
+    {
+	_texts[id].erase(off, len);
+    }
+    void text_replace(entity_id id, size_t off, size_t len,
+		      const std::string &s)
+    {
+	_texts[id].replace(off, len, s);
+    }
+    // The component, or NULL when the entity has none. (Reads only —
+    // mutation goes through the verbs above.)
+    const text_buffer *text_of(entity_id id) const
+    {
+	std::map<entity_id, text_buffer>::const_iterator it = _texts.find(id);
+	return it == _texts.end() ? (const text_buffer *)0 : &it->second;
+    }
+    bool has_text(entity_id id) const { return _texts.count(id) != 0; }
 
     // --- key layering: `master` provides `granted` (and, transitively,
     // whatever `granted` provides). Folded at credential build; cycle-safe.
