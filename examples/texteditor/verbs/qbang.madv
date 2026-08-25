@@ -1,0 +1,3 @@
+// lineed verb: q! — quit discarding unsaved changes.
+ui::set(w, actor, "quit", true);
+return "Bye.";

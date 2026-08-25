@@ -1,0 +1,9 @@
+// lineed verb: q — quit, refusing while the document has unsaved changes
+// (§7.3's modified rule; q! is the discard path).
+long doc = ui::entity_by_name(w, "document");
+var m;
+ui::get(m, w, doc, "modified");
+if ( !m.is_null() && m.as_boolean() )
+    return "Unsaved changes — w to save, q! to discard.";
+ui::set(w, actor, "quit", true);
+return "Bye.";

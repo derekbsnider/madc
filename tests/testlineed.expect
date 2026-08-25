@@ -1,0 +1,28 @@
+> p
+1: alpha
+2: beta
+3: gamma
+> c 2 BETA
+2: BETA
+> i 1 zero
+Inserted.
+> a omega
+Appended.
+> d 3 3
+Deleted.
+> p 1 4
+1: zero
+2: alpha
+4: omega
+> f gamma
+> x 1
+? x
+Unsaved changes — w to save, q! to discard.
+> w
+Wrote 23 bytes.
+Bye.
+-- read-only session --
+> p 2 2
+> c 1 nope
+Document is read-only.
+> d 1

@@ -1,0 +1,19 @@
+// lineed verb: f TEXT — find the first occurrence, answering "line: text".
+long doc = ui::entity_by_name(w, "document");
+if ( arg[0] == 0 )
+    return "f needs text.";
+long off = ui::text_find(w, doc, 0, arg);
+if ( off < 0 )
+    return "Not found.";
+long total = ui::text_line_count(w, doc);
+long line = 1;
+long k = 1;
+while ( k <= total )
+{
+    if ( ui::text_line_start(w, doc, k) <= off )
+        line = k;
+    k = k + 1;
+}
+value l;
+ui::text_line(l, w, doc, line);
+return format("{}: {}", line, l);

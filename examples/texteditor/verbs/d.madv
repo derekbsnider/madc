@@ -1,0 +1,36 @@
+// lineed verb: d N [M] — delete lines N..M (bottom-up so the spans the
+// loop reads stay valid while earlier lines keep their numbers).
+long doc = ui::entity_by_name(w, "document");
+var ro;
+ui::get(ro, w, doc, "read_only");
+if ( !ro.is_null() && ro.as_boolean() )
+    return "Document is read-only.";
+long n = php::intval(arg);
+if ( n < 1 )
+    return "d needs a line number.";
+long m = n;
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+while ( arg[i] == ' ' )
+    i = i + 1;
+if ( arg[i] != 0 )
+    m = php::intval(arg + i);
+long total = ui::text_line_count(w, doc);
+if ( m > total )
+    m = total;
+if ( m < n )
+    m = n;
+long k = m;
+while ( k >= n )
+{
+    long off = ui::text_line_start(w, doc, k);
+    if ( off >= 0 )
+    {
+        long len = ui::text_line_len(w, doc, k);
+        ui::text_erase(w, doc, off, len + 1);
+    }
+    k = k - 1;
+}
+ui::set(w, doc, "modified", true);
+return "Deleted.";

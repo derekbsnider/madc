@@ -1,0 +1,36 @@
+// lineed verb: p [N [M]] — print the whole document, one line, or a range.
+// Ctx: w/actor/target int64, arg/verb const char*; document by name.
+long doc = ui::entity_by_name(w, "document");
+long total = ui::text_line_count(w, doc);
+if ( total < 1 )
+    return "(empty)";
+long n = php::intval(arg);
+long m = n;
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+while ( arg[i] == ' ' )
+    i = i + 1;
+if ( arg[i] != 0 )
+    m = php::intval(arg + i);
+if ( n < 1 )
+{
+    n = 1;
+    m = total;
+}
+if ( m > total )
+    m = total;
+if ( m < n )
+    m = n;
+var acc = "";
+long k = n;
+while ( k <= m )
+{
+    value l;
+    ui::text_line(l, w, doc, k);
+    acc += format("{}: {}", k, l);
+    if ( k < m )
+        acc += "\n";
+    k = k + 1;
+}
+return acc;
