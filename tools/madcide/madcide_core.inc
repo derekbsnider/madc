@@ -177,26 +177,6 @@ bool prompt_active(long w, long es)
     return strlen(pr.c_str()) > 0;
 }
 
-// Find the stored pattern from caret+1 with wrap: ^K F's completion and
-// ^L (find next) both repeat es "search".
-void do_find(long w, long es, long doc, long caret)
-{
-    var pat;
-    ui::get(pat, w, es, "search");
-    if ( pat.is_null() || strlen(pat.c_str()) == 0 )
-    {
-	ui::set(w, es, "msg", "No search pattern.");
-	return;
-    }
-    long hit = ui::text_find(w, doc, caret + 1, pat.c_str());
-    if ( hit < 0 )
-	hit = ui::text_find(w, doc, 0, pat.c_str());
-    if ( hit < 0 )
-	ui::set(w, es, "msg", "Not found.");
-    else
-	ui::set(w, es, "caret", hit);
-}
-
 // ^K R: insert a file's bytes at the caret (one undo step).
 void insert_file(long w, long es, long doc, long caret, const char *path)
 {
@@ -278,12 +258,11 @@ bool prompt_event(long w, long es, long doc, long caret, value &ev)
 // ---- the block model (JOE ^K B / ^K K / ^K C / ^K M / ^K Y) -----------
 // begin = es "mark", end = es "bend"; when the end is unset the block
 // runs mark..caret — the SAME rule the shared selection highlight
-// projects. `r` answers {lo, hi}; false = no block.
+// projects. `r` answers {lo, hi}; false = no block, and this owner
+// spells the ONE refusal message.
 bool block_range(value &r, long w, long es, long caret)
 {
     long mark = es_int(w, es, "mark", -1);
-    if ( mark < 0 )
-	return false;
     long bend = es_int(w, es, "bend", -1);
     long e = bend >= 0 ? bend : caret;
     value b;
@@ -292,7 +271,12 @@ bool block_range(value &r, long w, long es, long caret)
     r = b;
     long lo = b["lo"].as_integer();
     long hi = b["hi"].as_integer();
-    return lo < hi;
+    if ( mark < 0 || lo >= hi )
+    {
+	ui::set(w, es, "msg", "No block (^K B, ^K K).");
+	return false;
+    }
+    return true;
 }
 
 // ^K C: copy the block's text to the caret (the cursor stays on the
@@ -302,10 +286,7 @@ void block_copy(long w, long es, long doc, long caret)
 {
     value r;
     if ( !block_range(r, w, es, caret) )
-    {
-	ui::set(w, es, "msg", "No block (^K B, ^K K).");
 	return;
-    }
     if ( !es_flag(w, es, "editable") )
     {
 	refuse_edit(w, es);
@@ -334,10 +315,7 @@ void block_move(long w, long es, long doc, long caret)
 {
     value r;
     if ( !block_range(r, w, es, caret) )
-    {
-	ui::set(w, es, "msg", "No block (^K B, ^K K).");
 	return;
-    }
     long lo = r["lo"].as_integer();
     long hi = r["hi"].as_integer();
     if ( caret > lo && caret < hi )
@@ -372,10 +350,7 @@ void block_del(long w, long es, long doc, long caret)
 {
     value r;
     if ( !block_range(r, w, es, caret) )
-    {
-	ui::set(w, es, "msg", "No block (^K B, ^K K).");
 	return;
-    }
     long lo = r["lo"].as_integer();
     long hi = r["hi"].as_integer();
     value t;

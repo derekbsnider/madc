@@ -281,6 +281,27 @@ void edit_text_run(long w, long es, long doc, long caret, value &ev)
     }
 }
 
+// THE find rule, one seat: the stored es "search" pattern from caret+1
+// with wrap to the top; "Not found." or the caret moves. vised's search
+// enter and madcide's find prompt / ^L find-next all repeat it.
+void do_find(long w, long es, long doc, long caret)
+{
+    var pat;
+    ui::get(pat, w, es, "search");
+    if ( pat.is_null() || strlen(pat.c_str()) == 0 )
+    {
+	ui::set(w, es, "msg", "No search pattern.");
+	return;
+    }
+    long hit = ui::text_find(w, doc, caret + 1, pat.c_str());
+    if ( hit < 0 )
+	hit = ui::text_find(w, doc, 0, pat.c_str());
+    if ( hit < 0 )
+	ui::set(w, es, "msg", "Not found.");
+    else
+	ui::set(w, es, "caret", hit);
+}
+
 // Search-mode key handling; every key is consumed while searching.
 bool search_key(long w, long es, long doc, long caret, value &ev)
 {
@@ -291,14 +312,8 @@ bool search_key(long w, long es, long doc, long caret, value &ev)
 	ui::get(pat, w, es, "search");
 	ui::set(w, es, "searching", false);
 	if ( strlen(pat.c_str()) == 0 )
-	    return true;
-	long hit = ui::text_find(w, doc, caret + 1, pat.c_str());
-	if ( hit < 0 )
-	    hit = ui::text_find(w, doc, 0, pat.c_str());
-	if ( hit < 0 )
-	    ui::set(w, es, "msg", "Not found.");
-	else
-	    ui::set(w, es, "caret", hit);
+	    return true;	// silent on empty (the pinned transcript)
+	do_find(w, es, doc, caret);
 	return true;
     }
     if ( k == "esc" )
