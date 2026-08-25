@@ -59,6 +59,7 @@ int main()
     long es = ui::entity_by_name(w, "editor-state");
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
+    load_theme(w, es, "default");	// spans need the theme (run_ide's step)
 
     // -- profiles are data: the same actions, respelled per profile --
     value txt;
@@ -136,6 +137,14 @@ int main()
     //    inside twice). children: heading, edit, pane, status, menu.
     compose_ide_tree(tree, w, es, doc);
     println("status-fn: {}", tree["children"][3]["content"]);
+
+    // -- AST-2: themed highlight spans ride the edit node's hints —
+    //    computed at reparse from the handle's retained state; `add` on
+    //    line 2 is a CALL (not the head line) and stays unthemed ident.
+    value shl = tree["children"][1]["hints"]["spans"];
+    println("spans: n={} first={}..{} {} fn={}..{} {}",
+	    php::count(shl), shl[0]["s"], shl[0]["e"], shl[0]["c"],
+	    shl[1]["s"], shl[1]["e"], shl[1]["c"]);
 
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;

@@ -88,12 +88,61 @@ bool load_profile(long w, long es, const char *name)
     return true;
 }
 
+// ---- theme as data (AST-2): classification -> colour, a PROFILE --------
+// The theme file's lines are `class colour` pairs — the SAME line rule
+// and parse as the keybinding profiles (parse_keys is the one owner).
+// Missing file = an empty theme (no colouring; spans stay off).
+void load_theme(long w, long es, const char *name)
+{
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    value th;
+    value txt;
+    if ( php::file_get_contents(txt, format("{}/{}.theme", dir, name)) )
+	parse_keys(th, txt.c_str());
+    ui::set(w, es, "theme", th);
+}
+
+// Highlight spans onto the bag (AST-2): the engine's classification rows
+// (madc::parse_spans, source coordinates) through the THEME (class ->
+// colour name), converted to the byte-offset { s, e, c } rows the edit
+// node's hints speak. Computed at (re)parse — composition just attaches
+// them; like the status line, they go stale with edits until the next
+// check/save. An unthemed class (or a stale line past the buffer) skips.
+void refresh_spans(long w, long es, long doc, long h)
+{
+    var hs = {};
+    value th;
+    ui::get(th, w, es, "theme");
+    if ( !th.is_null() )
+    {
+	value rows;
+	madc::parse_spans(rows, h);
+	for ( value r : rows )
+	{
+	    value c = th[r["class"].c_str()];
+	    if ( c.is_null() )
+		continue;
+	    long ls = ui::text_line_start(w, doc, r["line"].as_integer());
+	    if ( ls < 0 )
+		continue;
+	    long s = ls + r["column"].as_integer();
+	    value hr;
+	    hr["s"] = s;
+	    hr["e"] = s + r["length"].as_integer();
+	    hr["c"] = c;
+	    hs.push(hr);
+	}
+    }
+    ui::set(w, es, "hspans", hs);
+}
+
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
 // The buffer's PARSE HANDLE (AST-1): one live parse per buffer, opened on
 // first need (run_ide opens it at load), refreshed WHOLE on check / save /
 // outline. Composition reads its RETAINED state — the status line's
 // enclosing-function query never runs the compiler.
-long ensure_phandle(long w, long doc)
+long ensure_phandle(long w, long es, long doc)
 {
     long h = es_int(w, doc, "phandle", 0);
     if ( h != 0 )
@@ -104,17 +153,20 @@ long ensure_phandle(long w, long doc)
     ui::get(p, w, doc, "path");
     h = madc::parse_open(t.c_str(), p.c_str());
     ui::set(w, doc, "phandle", h);
+    refresh_spans(w, es, doc, h);
     return h;
 }
 
 // Whole-TU re-parse of the buffer's handle from the live text — the ONE
-// compiler entry (check, save, outline all route here).
-long reparse_buffer(long w, long doc)
+// compiler entry (check, save, outline all route here); the themed
+// highlight spans refresh with it.
+long reparse_buffer(long w, long es, long doc)
 {
-    long h = ensure_phandle(w, doc);
+    long h = ensure_phandle(w, es, doc);
     value t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
+    refresh_spans(w, es, doc, h);
     return h;
 }
 
@@ -123,7 +175,7 @@ long reparse_buffer(long w, long doc)
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
-    long h = reparse_buffer(w, doc);
+    long h = reparse_buffer(w, es, doc);
     value diags;
     madc::parse_check(diags, h);
     ui::set(w, es, "diags", diags);
@@ -143,7 +195,7 @@ void run_check(long w, long es, long doc)
 
 void refresh_outline(long w, long es, long doc)
 {
-    long h = reparse_buffer(w, doc);
+    long h = reparse_buffer(w, es, doc);
     value o;
     madc::parse_outline(o, h);
     ui::set(w, es, "outline", o);
@@ -879,6 +931,18 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     {
 	compose_heading(head, w, es, doc, format("madcide: {}", p));
 	compose_edit_node(ed, w, es, nav, caret);
+	// Highlight spans (AST-2): the bag's themed byte-range rows ride
+	// the hints — stored-space only (a view shows a render), computed
+	// at (re)parse, just attached here. Same RMW as the view hints.
+	value hs;
+	ui::get(hs, w, es, "hspans");
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	{
+	    value h2;
+	    h2 = ed["hints"];
+	    h2["spans"] = hs;
+	    ed["hints"] = h2;
+	}
     }
 
     value r;
@@ -1014,8 +1078,10 @@ void run_ide(const char *path, bool ro)
 	return;
     ui::set(w, es, "tui", t);
     load_profile(w, es, "joe");
-    ensure_phandle(w, doc);	// parse-on-load: the status line has state
-				// before the first check
+    load_theme(w, es, "default");
+    ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
+				// highlight spans have state before the
+				// first check
     bool run = true;
     while ( run )
     {

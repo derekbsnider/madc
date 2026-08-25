@@ -1,0 +1,10 @@
+# madcide default theme (AST-2): classification -> colour, one pair per
+# line — the same line rule as the keybinding profiles. Colours are the
+# renderer palette's names (normal, reverse, red, green, yellow, blue,
+# magenta, cyan). An unlisted class renders normal.
+keyword yellow
+type green
+string red
+number magenta
+comment cyan
+function blue
