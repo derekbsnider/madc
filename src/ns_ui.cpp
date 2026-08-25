@@ -774,6 +774,29 @@ void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
 		    text ? text : "");
 }
 
+// History (madcide IDE-2): checkpoint BEFORE mutating — one semantic
+// edit, one step. `meta` is the application's opaque payload (the caret
+// rides with the state it belongs to); undo restores the buffer and
+// hands it back. False: no such component, or empty history.
+void text_checkpoint(int64_t w, int64_t entity, madc::value &meta)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_checkpoint((entity_id)entity, meta);
+}
+
+bool text_undo(madc::value &meta_out, int64_t w, int64_t entity)
+{
+    meta_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.text_undo((entity_id)entity, meta_out);
+}
+
 madc::value &text(madc::value &out, int64_t w, int64_t entity)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);

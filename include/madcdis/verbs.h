@@ -93,6 +93,14 @@ public:
     {
 	_w.text_replace(id, off, len, s);
     }
+    void text_checkpoint(entity_id id, const madc::value &meta)
+    {
+	_w.text_checkpoint(id, meta);
+    }
+    bool text_undo(entity_id id, madc::value &meta_out)
+    {
+	return _w.text_undo(id, meta_out);
+    }
 };
 
 // ------------------------------------------------------------------ action_env

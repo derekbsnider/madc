@@ -183,6 +183,15 @@ namespace ui {
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
+    // History (undo): text_checkpoint snapshots the buffer BEFORE a
+    // mutation, carrying an OPAQUE application payload (store the caret
+    // there — it rides with the state it belongs to); one semantic edit,
+    // one checkpoint. text_undo restores the newest snapshot and hands
+    // the payload back (false: no component or nothing to undo). History
+    // is runtime-only like the component; text_load clears it. Redo is a
+    // named seat, not yet a surface.
+    void text_checkpoint(int64_t w, int64_t entity, value &meta);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity);
 
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free
