@@ -29,7 +29,14 @@
   granularity; statement-head hole synthesis is the named refinement).
   This unlocks the tighter-than-save reparse cadence seats (§3.4:
   error tolerance was the prerequisite; incremental reparse stays a
-  named seat behind it).
+  named seat behind it). The resync seeds a STREAM-TRUTH brace debt
+  (the consumed buffer range's unmatched `{`s), so a mid-body failure
+  syncs at the region's close and reports ONE error, like gcc. Also
+  banked: the madcide JOE look/feel recon (owner: REPLACE joe —
+  `docs/plans/2026-08-25-madcide-joe-lookfeel-recon.md`) with the
+  scroll-artifact defect report and the IDE-9a..9e seats.
+  Merge wave: fulltest green (units + gates) + JIT 1153/0/0/9 +
+  EXE 1108/0 (suite = 1177).
 
 - **Highlight spans, JOE-parity styles, and colour schemes (madcide
   AST-2 / IDE-7)**: `tui_attr` became the style struct {fg, bg, flags}

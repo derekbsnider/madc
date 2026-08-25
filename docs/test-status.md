@@ -1,6 +1,33 @@
 # Test Status
 
-> **Current (2026-08-25, spans/styles/schemes / AST-2 —
+> **Current (2026-08-25, error-tolerant parse slice A / arc doc §3.5 —
+> feature/error-tolerant-parse-claude merge wave):** the parser CONTAINS
+> each top-level error (record → restore entry depths → DelimDepth
+> resync seeded with STREAM-TRUTH brace debt, so a mid-body failure
+> syncs at the region's close → `SkippedTokens` node → continue) and
+> reports EVERY top-level error before refusing — gcc canon. One
+> `TokenError` class + all eight `ErrorNodeKind` kinds (owner ruling);
+> `Program::error_nodes` gates translate at `cir_translate_guarded`
+> (run/eval/emit-c11/freeze/native all refuse); `--emit=c++` stays a
+> source view (renders the retained echo, exit nonzero). Parse handles
+> serve broken trees: `parse_check` reports every contained error;
+> outline/enclosing/spans answer before AND after a broken region
+> (testparserecoverh, `.expect_quiet` gating the capture mute;
+> testparserecover pins the 3-error CLI cascade via `.expect_err`).
+> Three dupaudit families consolidated + gated
+> (`check-one-parse-error-recorder.sh`, 3 markers + negative controls):
+> `record_frontend_error` (10 inlined copies, incl. the lexer's
+> tokenize/tokenize_buffer clusters), `record_throw_diagnostic` (5 —
+> throwbuf::sync renders but never records), and
+> `restore_parse_scope_depths` (3, incl. derive-lazy-catch which the
+> gate itself caught). Unit predicates updated: "accepted"/"rejected"
+> now means a CLEAN parse (`error_nodes == 0` — the gate's predicate).
+> Merge-wave battery: authoritative Linux fulltest green (units +
+> gates) + JIT **1153 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1108/0** (suite = 1177; testparserecover +
+> testparserecoverh joined).
+>
+> **Previous (2026-08-25, spans/styles/schemes / AST-2 —
 > feature/madcide-ast2-claude merge wave):** highlight spans as
 > edit-node hints painted through the ONE range-overlap rule (selection
 > wins); `tui_attr` = the style struct speaking JOE's vocabulary with
