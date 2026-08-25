@@ -498,8 +498,26 @@ void exit_view(long w, long es, long doc)
     derive_access(w, es);	// the file's own verdict returns
 }
 
-// ^K N: original -> mc11 -> c11 -> original. A failed enter falls back to
-// the original — the session is never trapped inside a stale view.
+// The c++ view applies when the BUFFER'S OWN language is C/C++ (by
+// extension — the app's document-kind rule): its render is source-shaped
+// (madc::emit "c++" echoes the retained source), and a madc-dialect
+// buffer has no C++ respelling yet (the named seat, design doc §3.2).
+bool cxx_view_applies(long w, long es, long doc)
+{
+    var p;
+    ui::get(p, w, doc, "path");
+    const char *pc = p.c_str();
+    const char *dot = strrchr(pc, '.');
+    if ( dot == 0 )
+	return false;
+    var ext = format("{}", dot);
+    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx"
+	|| ext == ".h" || ext == ".hpp";
+}
+
+// ^K N: original -> mc11 -> c11 [-> c++ on a C/C++ buffer] -> original.
+// A failed enter falls back to the original — the session is never
+// trapped inside a stale view.
 void cycle_view(long w, long es, long doc)
 {
     value vw;
@@ -511,6 +529,12 @@ void cycle_view(long w, long es, long doc)
     if ( vw == "mc11" )
     {
 	if ( !enter_view(w, es, doc, "c11") )
+	    exit_view(w, es, doc);
+	return;
+    }
+    if ( vw == "c11" && cxx_view_applies(w, es, doc) )
+    {
+	if ( !enter_view(w, es, doc, "c++") )
 	    exit_view(w, es, doc);
 	return;
     }

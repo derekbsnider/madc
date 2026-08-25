@@ -378,6 +378,42 @@ int main()
 	    ui::lens_to_stored(cmap, 3), ui::lens_to_stored(cmap, 2),
 	    ui::lens_to_display(emap, 9));
 
+    // -- AST-4: the c++ view on a C/C++ buffer (a second editor world).
+    //    The render is the RETAINED source: the TU's own include
+    //    directives + the token echo. The .mad buffer above never offered
+    //    c++ (cxx_view_applies is the app's document-kind rule — its c11
+    //    view exited straight home, the pins above unchanged). --
+    const char *cpath = "madc_ide_view.cpp";
+    php::file_put_contents(cpath,
+	"#include <cstdio>\nint twice2(int n) { return n + n; }\nint main() { printf(\"t=%d\\n\", twice2(21)); return 0; }\n");
+    long w2 = ui::world_new();
+    long doc2 = setup_editor(w2, cpath, false);
+    long es2 = ui::entity_by_name(w2, "editor-state");
+    ev_action(e, "view", "^k n");	// -> mc11
+    apply_ide_event(w2, es2, doc2, e);
+    ev_action(e, "view", "^k n");	// -> c11
+    apply_ide_event(w2, es2, doc2, e);
+    ev_action(e, "view", "^k n");	// -> c++ (a C/C++ buffer)
+    apply_ide_event(w2, es2, doc2, e);
+    var vn2;
+    ui::get(vn2, w2, es2, "view");
+    compose_ide_tree(tree, w2, es2, doc2);
+    value ced;
+    ced = tree["children"][1];
+    var ctext = format("{}", ced["content"]);
+    const char *cc = ctext.c_str();
+    println("cxxview: name={} include={} echo={} stored-size={}",
+	    vn2, strstr(cc, "#include <cstdio>") != 0 ? 1 : 0,
+	    strstr(cc, "int twice2(int n)") != 0 ? 1 : 0,
+	    ui::text_size(w2, doc2));
+    var hl = format("{}", tree["children"][0]["label"]);
+    println("cxxview-head: tagged={}", strstr(hl.c_str(), "[c++]") != 0 ? 1 : 0);
+    ev_action(e, "view", "^k n");	// c++ -> original
+    apply_ide_event(w2, es2, doc2, e);
+    ui::get(vn2, w2, es2, "view");
+    println("cxxview-exit: name='{}' caret={}", vn2, es_int(w2, es2, "caret", -1));
+    ui::world_close(w2);
+
     // -- the verbs: save (with the silent diagnostics refresh), quit --
     ev_text(e, "// tail\n");
     apply_ide_event(w, es, doc, e);

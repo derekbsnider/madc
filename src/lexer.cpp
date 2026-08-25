@@ -2095,7 +2095,7 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
-static std::string token_spelling(TokenBase *tb);
+std::string madc_token_spelling(TokenBase *tb);  // fwd (the one spelling owner, defined below)
 
 static std::string stringify_macro_arg(const std::string &raw)
 {
@@ -5925,6 +5925,17 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // Fidelity mode: record the directive AS WRITTEN, paired
+		    // with the writing file — the reverse-render (--emit=c++)
+		    // re-emits a TU's own directives in place of the expanded
+		    // header machinery. Recorded pre-resolution: a once-only
+		    // skip still wrote the line.
+		    if ( keep_trivia )
+			fidelity_include_directives.push_back(std::make_pair(
+			    std::string(source.fname()),
+			    std::string("#") + directive + " "
+			    + (delim == '<' ? "<" : "\"") + incfile
+			    + (delim == '<' ? ">" : "\"")));
 		    // posix/<name> is a compiler-internal storage namespace. A
 		    // user include must name the public native header; otherwise a
 		    // supplement could be served without its required real provider.
@@ -7496,7 +7507,7 @@ TokenBase *Program::_getToken()
 				case TokenType::ttTab:   expanded_arg += '\t'; break;
 				case TokenType::ttEOL:   expanded_arg += '\n'; break;
 				default:
-				    expanded_arg += token_spelling(at);
+				    expanded_arg += madc_token_spelling(at);
 				    break;
 			    }
 			}
@@ -9103,18 +9114,27 @@ TokenBase *Program::getRealToken()
     return NULL;
 }
 
-// Best-effort source spelling of a lex-time token. NOTE: numeric literals store
-// the parsed value, not the original text (0x1F -> "31"), and string escapes are
-// not preserved — true byte-faithful reconstruction needs tokens to retain raw
-// source text (a follow-on). Sufficient to demonstrate trivia retention on plain
-// source. Keywords/identifiers/types/comments are all TokenIdent-derived.
-static std::string token_spelling(TokenBase *tb)
+// Best-effort source spelling of a lex-time token — the ONE token-spelling
+// owner (declared in madc.h; reconstruct_source and the --emit=c++
+// reverse-render both read it). NOTE: numeric literals store the parsed
+// value, not the original text (0x1F -> "31"), and string escapes are not
+// preserved — true byte-faithful reconstruction needs tokens to retain raw
+// source text (a follow-on). Sufficient to demonstrate trivia retention on
+// plain source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+std::string madc_token_spelling(TokenBase *tb)
 {
     switch ( tb->type() )
     {
 	case TokenType::ttString:
 	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
-		return std::string("\"") + ti->spelling() + "\"";
+	    {
+		// Re-escape the cooked value so the literal RE-LEXES to the
+		// same bytes (macro-arg re-lex, --dump-source round trips,
+		// the --emit=c++ render recompiles) — the ONE escape rule.
+		std::string sv = ti->spelling();
+		return "\"" + madc_c_escape_string(sv.data(), sv.size())
+		     + "\"";
+	    }
 	    return std::string();
 	case TokenType::ttVariable:
 	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
@@ -9155,6 +9175,38 @@ static std::string token_spelling(TokenBase *tb)
     }
 }
 
+// THE C-string-literal escape rule (declared in madc.h; dupaudit family
+// c_string_literal_escape): the cooked bytes as a double-quoted literal's
+// BODY. Canonical escapes; octal for non-printables (octal caps at 3
+// digits — hex is maximal-munch and would swallow following hex digits).
+// The token-spelling owner above and cir_emit_c's N_STR case both read it.
+std::string madc_c_escape_string(const char *s, size_t len)
+{
+    std::string out;
+    for ( size_t i = 0; s && i < len; ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	switch ( c )
+	{
+	    case '"':  out += "\\\""; break;
+	    case '\\': out += "\\\\"; break;
+	    case '\n': out += "\\n"; break;
+	    case '\t': out += "\\t"; break;
+	    case '\r': out += "\\r"; break;
+	    default:
+		if ( c >= 0x20 && c <= 0x7e )
+		    out += (char)c;
+		else
+		{
+		    char buf[8];
+		    snprintf(buf, sizeof(buf), "\\%03o", c);
+		    out += buf;
+		}
+	}
+    }
+    return out;
+}
+
 // Reconstruct source text from the token stream (full-fidelity mode): each
 // token's leading trivia followed by its spelling. Requires keep_trivia to have
 // been set before tokenizing.
@@ -9164,7 +9216,7 @@ std::string Program::reconstruct_source()
     for ( TokenBase *tb : tokens )
     {
 	out += tb->leading_trivia;
-	out += token_spelling(tb);
+	out += madc_token_spelling(tb);
     }
     out += _trailing_trivia;   // whitespace/comments after the last token
     return out;

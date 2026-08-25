@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **`--emit=c++` — the C++ reverse-render (madcide AST-4, owner-required)**:
+  `celCxx` joins the emit vocabulary through the one converter
+  (`c11|mc11|c++`). The render is the TU's RETAINED SOURCE (the MC11
+  rule's "path back to the original source"): the TU's own `#include`
+  directives as written (a new fidelity-mode lexer record — directives
+  are consumed at lex), then every TU token echoed in stream order
+  (trivia + the one spelling owner `madc_token_spelling`, now exposed
+  from the lexer), then the trailing trivia. The Phase-5 suppressions
+  are inherent to the shape: lowered machinery (synth ctor/dtor groups,
+  mangled call forms, `__madc_global_init`) exists only as tree nodes
+  and never enters the TU token stream. String literals now RE-ESCAPE
+  through the one new escape owner `madc_c_escape_string` (also fixing a
+  latent macro-arg re-lex bug: a cooked newline inside a string
+  macro-argument re-lexed unterminated; `cir_emit_c`'s N_STR adopted the
+  same owner — dupaudit family consolidated). `madc::emit` accepts
+  `"c++"`; madcide's `^K N` cycle adds the C++ view on C/C++-extension
+  buffers (the app's document-kind rule — a madc-dialect buffer has no
+  C++ respelling yet, the named cross-language seat). New fulltest gate
+  `scripts/emitcxx_roundtrip_gate.sh`: two reducers (strings/escapes/
+  class/macro/global; template/overloads/enum/refs) × g++ AND clang++ —
+  the render recompiles and runs byte-identically to the original; two
+  negative controls.
 - **The view seam (madcide AST-3, owner-pulled first)**: an editor
   inherently separates what is DISPLAYED from what is STORED — the
   document lens. `madcdis/doc_lens.h`'s `doc_map` is THE display↔stored
