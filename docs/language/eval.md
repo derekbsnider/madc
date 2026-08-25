@@ -207,6 +207,14 @@ enclosing-definition query answer from RETAINED state — no re-parse per
 query. Refresh is a whole-TU re-parse (an IDE refreshes on check/save;
 composition reads what the last refresh retained).
 
+The parse is error-tolerant (AST arc §3.5 slice A): each top-level error
+is contained (diagnostic recorded, region set aside, resync, continue),
+so `parse_check` reports EVERY top-level error and the outline /
+enclosing / spans queries keep answering for the definitions before AND
+after a broken region — the mid-edit IDE state. A tree with contained
+errors never compiles: every translating surface (run, eval, `--emit=c11`,
+freeze, native) refuses; `--emit=c++` — a source view — still renders.
+
 ```c
 long h = madc::parse_open(source, "buffer.mad");  // >= 1; a buffer with
                                                   // errors still opens —
