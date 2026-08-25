@@ -300,6 +300,47 @@ Shipped on `feature/madcide-ast3-claude`:
   rendered views (AST-4's `synth_from_origin` line anchoring can feed
   one), spans/colour (AST-2), `--emit=c++` (AST-4).
 
+## 3.2 AST-4 — slice-1 mechanics (banked pre-build, session 132)
+
+Recon findings that shape the slice:
+- `cir_emit_c.cpp` is small (~780 lines) and `celMC11` gates nothing yet
+  (mc11 == c11 output today); `CirEmitLang` is threaded everywhere.
+- A C++ `std::string` TU lowers to ~215 lines of header-derived prelude
+  (struct layouts + mangled externs) + synth ctor/dtor/temp groups +
+  user expressions as mangled calls. MIXING a re-raised high-level decl
+  with lowered machinery does NOT recompile — so Phase-5's
+  "suppress synth, emit the origin once" only closes the round-trip
+  gate when the WHOLE user statement stream re-renders high-level.
+- The path back to source: `Program::keep_trivia` (full-fidelity
+  tokens, built for "IDE/.mc11") + `Program::tokens` (lex order; slot
+  ids are lazy — NOT ordered) + `token_spelling` (best-effort; the
+  `--dump-source` owner). `--dump-source` reproduces the EXPANDED
+  stream, so the user's `#include` directives are consumed — a small
+  lexer feeder must record the TU's own directives as written.
+
+Slice-1 mechanics (the seam every later target reuses):
+- `celCxx` joins `CirEmitLang` through the ONE converter
+  (`cir_emit_lang_of`); `--emit=c++` sets `keep_trivia`.
+- The C++ render walks the tree and re-renders TU-origin statements
+  from the RETAINED tokens at LINE granularity: each item's subtree
+  yields its TU line-range (origins' src_file/src_line — the mc11-ir
+  rule's "path back to the original source"); lines echo once (a
+  rendered-lines set — synth groups share their origin's lines, so
+  Phase-5 suppression falls out of the dedup); header-origin machinery
+  is replaced by the recorded include directives; no-origin synthetic
+  scaffolding (e.g. `__madc_global_init`) is suppressed — the echoed
+  source carries its own initializer semantics.
+- Cross-language rendering (a madc-dialect TU viewed as C++ — var/
+  UFCS/php:: respelled) is the NEXT seat on this seam: the traversal/
+  dedup/include skeleton stays, the per-line echo swaps for
+  per-construct rendering. Slice 1 REFUSES a cslMadc TU under
+  `--emit=c++` (loud, not wrong output); madcide's cycle already falls
+  back gracefully on a refused enter.
+- Gates: round-trip reducers (C++ input: emitted C++ recompiles under
+  g++/clang++ and behaves identically — the `cir_fidelity.sh` shape,
+  behavioral compare); testmadcide grows the c++ view arm (positive
+  pin on a .cpp buffer, refusal pin on the .mad buffer).
+
 ## 4. Still open (owner's)
 
 - Naming/spelling of artifact kinds and file extensions (e.g. the IDE
