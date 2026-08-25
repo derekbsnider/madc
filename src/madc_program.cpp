@@ -4523,6 +4523,92 @@ bool internal_program_runtime_eval_source(::Program &self,
     return true;
 }
 
+// ---- compiler-data internals (madcide IDE-3) -----------------------------
+// Compile (NEVER execute) source in a runtime-eval child Program and hand
+// back the compiler's OWN structured data as values — the meta-level: the
+// IDE's diagnostics pane and outline are projections of this. One shared
+// child pipeline: tokenize + parse + the compile gate, the same front end
+// bin/madc runs, with the child's error stream pointed at a sink so
+// capture replaces printing. Thread contract: the runtime-eval machinery's
+// confinement — each call owns its child, no shared mutable state.
+
+static void compile_source_child_frontend(::Program &self, ::Program &child,
+					  const std::string &source_text,
+					  const std::string &display_name)
+{
+    // Capture replaces rendering: recording into child.diagnostics is
+    // untouched; print_diagnostic and throwbuf::sync render nothing while
+    // the mute is up. (A per-Program error_stream would not do — with an
+    // engine attached, Program::error() is the ENGINE's stream by design.)
+    DiagnosticRenderMute mute;
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    std::string normalized_source = ensure_trailing_newline(source_text);
+    TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
+    if ( !tp )
+	return;
+    if ( !child.parse(tp) )
+	return;
+    child.compile();
+}
+
+bool internal_program_source_diagnostics(::Program &self,
+					 const std::string &source_text,
+					 madc::value &out,
+					 const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
+    {
+	const ::Program::Diagnostic &d = child.diagnostics[i];
+	std::map<std::string, madc::value> f;
+	f["severity"] = value(std::string(child.diagnostic_severity_name(d.severity)));
+	f["phase"] = value(std::string(child.diagnostic_phase_name(d.phase)));
+	f["message"] = value(d.message);
+	f["file"] = value(d.file);
+	f["line"] = value((int64_t)d.line);
+	f["column"] = value((int64_t)d.column);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return true;
+}
+
+bool internal_program_source_outline(::Program &self,
+				     const std::string &source_text,
+				     madc::value &out,
+				     const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenBase *tb = child.pending_funcs[i];
+	TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+	if ( !tf )
+	    continue;
+	// Only the buffer's own definitions: prelude fragments and header
+	// tokens carry their own file names and stay out of the outline.
+	if ( !tf->file || display_name != tf->file )
+	    continue;
+	std::map<std::string, madc::value> f;
+	f["kind"] = value(std::string("function"));
+	f["name"] = value(tf->var.name);
+	f["line"] = value((int64_t)tf->line);
+	f["column"] = value((int64_t)tf->column);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return true;
+}
+
 bool internal_program_runtime_eval_expression(::Program &self,
 					      const std::string &expression,
 					      madc::value &result,

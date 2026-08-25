@@ -1,0 +1,161 @@
+// madcide Phase-2 gate, headless (hub doc Phase 2; plan IDE-4). The
+// application under test is THE example (examples/madcide — one copy):
+// events arrive as the exact value shapes ui::tui_event produces, chord
+// ACTION events included (the byte->chord adapter itself is pinned by
+// test_tui_model and the pty smoke gate). Pins the gate's three clauses:
+//   1. a buffer edited through the entry lens WITH UNDO (text restored,
+//      caret and modified riding the checkpoint payload);
+//   2. diagnostics pane + outline are projections of live compiler data
+//      (madc::diagnostics/outline rows stored on the bag; composing
+//      reads the bag; a chosen row moves the caret to its line);
+//   3. a keybinding profile swap leaves the composed projection
+//      IDENTICAL (bindings are data; the composition path is untouched).
+#include "../examples/texteditor/lined_core.inc"
+#include "../examples/texteditor/editor_events.inc"
+#include "../examples/madcide/madcide_core.inc"
+
+void ev_text(value &e, const char *t)
+{
+    value f;
+    f["event"] = "text";
+    f["text"] = t;
+    e = f;
+}
+
+void ev_key(value &e, const char *k)
+{
+    value f;
+    f["event"] = "key";
+    f["key"] = k;
+    e = f;
+}
+
+void ev_action(value &e, const char *a, const char *seq)
+{
+    value f;
+    f["event"] = "action";
+    f["action"] = a;
+    f["seq"] = seq;
+    e = f;
+}
+
+void ev_choose(value &e, long option, const char *a)
+{
+    value f;
+    f["event"] = "choose";
+    f["option"] = option;
+    f["action"] = a;
+    e = f;
+}
+
+int main()
+{
+    const char *path = "madc_ide_test.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b) { return a + b; }\nlong twice(long x) { return add(x, x); }\n");
+
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "examples/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+
+    // -- profiles are data: the same actions, respelled per profile --
+    value txt;
+    php::file_get_contents(txt, "examples/madcide/profiles/joe.keys");
+    value joe;
+    parse_keys(joe, txt.c_str());
+    println("joe: [^k s]={} [^k x]={} [^c]={}",
+	    joe["^k s"], joe["^k x"], joe["^c"]);
+    php::file_get_contents(txt, "examples/madcide/profiles/pico.keys");
+    value pico;
+    parse_keys(pico, txt.c_str());
+    println("pico: [^s]={} [^k]={}", pico["^s"], pico["^k"]);
+
+    // -- gate 2 (clean half): check-on-demand over the live buffer --
+    value e;
+    ev_action(e, "check", "^k r");
+    apply_ide_event(w, es, doc, e);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    println("check1: {}", msg);
+
+    // -- gate 1: an entry-lens edit, then undo restores text+caret+flag --
+    ev_text(e, "junk ");
+    apply_ide_event(w, es, doc, e);
+    var m;
+    ui::get(m, w, doc, "modified");
+    println("edited: caret={} modified={} size={}",
+	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
+    ev_action(e, "undo", "^k z");
+    apply_ide_event(w, es, doc, e);
+    ui::get(m, w, doc, "modified");
+    println("undo: caret={} modified={} size={}",
+	    es_int(w, es, "caret", -1), m.as_boolean(), ui::text_size(w, doc));
+    ev_action(e, "undo", "^k z");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("undo-empty: {}", msg);
+
+    // -- gate 2 (dirty half): break the buffer, check, choose -> goto --
+    ev_text(e, "junk ");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "check", "^k r");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("check2: {}", msg);
+    value tree;
+    compose_ide_tree(tree, w, es, doc);
+    value rendered;
+    ui::render_tree(rendered, w, tree);
+    print("--- diagnostics view ---\n{}--- end ---\n", rendered);
+    // Move the caret away, then choose the first diagnostics row: the
+    // caret lands on the row's line (projection -> interaction).
+    ev_key(e, "pgdn");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 1, "goto");
+    apply_ide_event(w, es, doc, e);
+    println("goto-diag: caret={}", es_int(w, es, "caret", -1));
+
+    // Repair by undo, then the outline pane over the healthy buffer.
+    ev_action(e, "undo", "^k z");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "outline", "^k o");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    ui::render_tree(rendered, w, tree);
+    print("--- outline view ---\n{}--- end ---\n", rendered);
+    ev_choose(e, 2, "goto");
+    apply_ide_event(w, es, doc, e);
+    println("goto-outline: caret={}", es_int(w, es, "caret", -1));
+
+    // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
+    value before;
+    compose_ide_tree(before, w, es, doc);
+    ev_action(e, "profile", "^k p");
+    apply_ide_event(w, es, doc, e);
+    var prof;
+    ui::get(prof, w, es, "profile");
+    value after;
+    compose_ide_tree(after, w, es, doc);
+    println("swap: profile={} tree={}", prof,
+	    before == after ? "identical" : "DIFFER");
+
+    // -- the verbs: save (with the silent diagnostics refresh), quit --
+    ev_text(e, "// tail\n");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "quit", "^k q");
+    bool cont = apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("quit-refused: cont={} msg={}", cont ? 1 : 0, msg);
+    ev_action(e, "save", "^k s");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("save: {}", msg);
+    ev_action(e, "savequit", "^k x");
+    cont = apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("savequit: cont={} msg={}", cont ? 1 : 0, msg);
+    ui::world_close(w);
+    return 0;
+}

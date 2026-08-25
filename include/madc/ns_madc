@@ -65,6 +65,23 @@ namespace madc {
     void context_set_string(value &ctx, const char *key, const char *v);
     void context_set_array(value &ctx, const char *key, value &v);
 
+    // Compiler data as data: compile (NEVER execute) `source` with the
+    // same front end bin/madc runs, in a policy-clamped child, and return
+    // the compiler's own structured data as a value array. `filename` is
+    // the display name diagnostics carry (default "<source>").
+    //   diagnostics rows: { severity, phase, message, file, line, column }
+    //       (severity "error"/"warning"; empty array = a clean buffer)
+    //   outline rows:     { kind, name, line, column } for the buffer's
+    //       OWN definitions, source order (kind: "function" today;
+    //       classes/globals are a named extension seat)
+    // Nothing in the buffer runs; diagnostics are captured, not printed.
+    // Thread contract: each call owns its child program — the runtime-eval
+    // machinery's confinement.
+    value &diagnostics(value &out, const char *source);
+    value &diagnostics(value &out, const char *source, const char *filename);
+    value &outline(value &out, const char *source);
+    value &outline(value &out, const char *source, const char *filename);
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated

@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "libmadc/value.h"
+
 namespace madc {
 namespace hub {
 
@@ -39,9 +41,12 @@ public:
 
     text_buffer() : _size(0) {}
 
-    // Reset to a single piece over a fresh immutable snapshot.
+    // Reset to a single piece over a fresh immutable snapshot. History
+    // dies with the old snapshot — its entries reference the replaced
+    // sources.
     void load(const std::string &s)
     {
+	_history.clear();
 	_original = s;
 	_add.clear();
 	_pieces.clear();
@@ -277,6 +282,36 @@ public:
 
     size_t piece_count() const { return _pieces.size(); }	// unit-test view
 
+    // ---- history (madcide IDE-2): undo is a pieces-vector snapshot -----
+    // The add buffer is append-only and the loaded snapshot immutable, so
+    // an old pieces vector stays valid forever (until load() replaces the
+    // sources — which clears history). A checkpoint carries an OPAQUE
+    // application payload: the caret (or anything else) rides with the
+    // state it belongs to; the component never learns what it means.
+    // The application checkpoints BEFORE mutating (one semantic edit =
+    // one step — the event-coalescing cadence); undo restores the top
+    // snapshot and hands the payload back. Unbounded by default (liberal
+    // resource-guard rule); redo is a named seat, not yet a member.
+    void checkpoint(const madc::value &meta)
+    {
+	history_entry h;
+	h.pieces = _pieces;
+	h.size = _size;
+	h.meta = meta;
+	_history.push_back(h);
+    }
+    bool undo(madc::value &meta_out)
+    {
+	if ( _history.empty() )
+	    return false;
+	_pieces = _history.back().pieces;
+	_size = _history.back().size;
+	meta_out = _history.back().meta;
+	_history.pop_back();
+	return true;
+    }
+    size_t history_depth() const { return _history.size(); }
+
 private:
     struct piece
     {
@@ -290,10 +325,19 @@ private:
 	return p.add ? _add : _original;
     }
 
+    struct history_entry
+    {
+	std::vector<piece> pieces;
+	size_t size;
+	madc::value meta;
+	history_entry() : size(0) {}
+    };
+
     std::string _original;	// the loaded snapshot — never mutated
     std::string _add;		// append-only insert storage
     std::vector<piece> _pieces;
     size_t _size;
+    std::vector<history_entry> _history;
 };
 
 } // namespace hub

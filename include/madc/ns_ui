@@ -53,8 +53,20 @@ namespace ui {
     // `actor`, `target` (entity ids), `arg` (the raw argument text),
     // `verb` (the action's spelling) — and returns the player-facing
     // text. Bodies run inside ui::act: they must not re-enter act and
-    // must not open or close worlds (Phase 1 re-entrancy policy).
+    // must not open or close worlds — ENFORCED: a nested act on the same
+    // world is refused with "action re-entered the registry (verbs do
+    // not re-enter act)", which the outer body receives as that call's
+    // result text (queued follow-up invocations are a held seat).
     void bind_verb(int64_t w, const char *name, const char *source);
+
+    // Code-entity key-gating (the hub's Decided rule: defining or
+    // editing code entities is itself key-gated). Arms the gate:
+    // every LATER bind_verb/bind_check on this session requires `key`
+    // (cumulative; satisfied through the same keys+levels credentials
+    // as every condition — ui::session_grant and key implications
+    // apply). Unset = open. A refused bind is loud on stderr and binds
+    // nothing.
+    void bind_require_key(int64_t w, const char *key);
 
     // Attach a madc-source availability CHECK to a bound verb — the
     // state-conditional half of availability ("read-only document
@@ -183,6 +195,15 @@ namespace ui {
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
+    // History (undo): text_checkpoint snapshots the buffer BEFORE a
+    // mutation, carrying an OPAQUE application payload (store the caret
+    // there — it rides with the state it belongs to); one semantic edit,
+    // one checkpoint. text_undo restores the newest snapshot and hands
+    // the payload back (false: no component or nothing to undo). History
+    // is runtime-only like the component; text_load clears it. Redo is a
+    // named seat, not yet a surface.
+    void text_checkpoint(int64_t w, int64_t entity, value &meta);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity);
 
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free
@@ -201,13 +222,26 @@ namespace ui {
     //   {event:"key", key}            "up","enter","^s",... for the app
     //   {event:"choose", option, action}  option is 1-based — the same
     //       number the level-0 menu prints
+    //   {event:"action", action, seq}  a bound key sequence completed
+    //       (empty action = unbound miss; seq says which)
     //   {event:"focus"} {event:"resize"}  recompose and re-render
     // and returns false at end of input. Render before the first event;
     // tab cycles focus between the tree's choice/edit nodes.
+    //
+    // tui_bind_keys installs a keybinding PROFILE: a value object mapping
+    // key sequences to action names ({"^k s": "save", ...} — sequences
+    // are space-separated key spellings, the same names key events carry;
+    // chords any length; letters in sequences are case-insensitive, the
+    // JOE ^K S == ^K s convention). Bound sequences resolve ahead of the built-in
+    // key handling; a profile swap is one call (the table replaces the
+    // previous one; an empty object clears). False + stderr on an invalid
+    // table: unknown spelling, a printable-HEADED sequence (it would
+    // swallow typing), or a sequence shadowing a shorter binding.
     int64_t tui_open();
     void    tui_close(int64_t t);
     int64_t tui_rows(int64_t t);
     int64_t tui_cols(int64_t t);
     void    tui_render(int64_t t, int64_t w, value &tree);
+    bool    tui_bind_keys(int64_t t, value &table);
     bool    tui_event(value &out, int64_t t, int64_t w);
 }

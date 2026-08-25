@@ -341,11 +341,18 @@ The owner's Rule #7 ruling merged R1 and R3 into one wave:
    works (it was masked by the return gap); pinned by the `pluseq`
    shape in `tests/testevalreturn.mad`.
 
-### Then: madcide (hub doc Phase 2, unchanged)
+### Then: madcide (hub doc Phase 2) — **EXECUTED (2026-08-25)**
 
 Buffers = texteditor machinery; diagnostics pane and outline = projections
-over live compiler data; keybinding/theme profiles as wants. Starts as a
-CONSUMER of R1–R5; its gate stays as written in the hub doc.
+over live compiler data; keybinding/theme profiles as wants. Started as a
+CONSUMER of R1–R5; its gate (the hub doc's) is MET. Execution plan and
+as-built record:
+[2026-08-25-madcide-phase2.md](2026-08-25-madcide-phase2.md) —
+bindings-as-data chords (owner-directed JOE/WordStar, configurable),
+undo on the text component, `madc::diagnostics`/`madc::outline`,
+`examples/madcide`, and the R3 sibling enforced (re-entrancy latch +
+code-entity key-gating; compile-once re-scoped on the baked-ctx
+blocker).
 
 ## Deferred (seats held, per the hub doc)
 

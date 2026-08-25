@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+- **madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer)**:
+  `examples/madcide/` — the buffer is the texteditor machinery (the
+  shared editor event core split into
+  `examples/texteditor/editor_events.inc`, included never forked); the
+  diagnostics pane and outline are PROJECTIONS of stored compiler data;
+  keybindings are PROFILES as data — JOE/WordStar `^K` chords by
+  default (owner-directed), the pico profile respelling the same
+  actions (`^k` is a chord prefix in one profile and CUT in the other).
+  The Phase-2 gate is pinned headlessly by `tests/testmadcide`: an
+  entry-lens edit undone restores text+caret+modified; a chosen
+  diagnostics/outline row moves the caret to its line; a profile swap
+  leaves the composed tree IDENTICAL.
+- **Bindings-as-data chord adapter (madcide IDE-1)**: the TUI key
+  adapter takes a per-profile table of key SEQUENCES → action names
+  (`ui::tui_bind_keys`; sequences any length, letter-case insensitive —
+  JOE's `^K S` == `^K s`; loud whole-table validation refuses
+  printable-headed and prefix-shadowing sequences). Bound sequences
+  resolve ahead of the built-in interpretation and arrive as
+  `{event:"action", action, seq}`; a no-table session is byte-identical
+  to before. One key-spelling owner, both directions, now in the model
+  (`tui_key_name`/`tui_key_from_name`); the pty smoke gate pins a chord
+  across read batches on a real terminal.
+- **Buffer history / undo on the text component (madcide IDE-2)**:
+  `ui::text_checkpoint(w, doc, meta)` / `ui::text_undo(meta_out, w,
+  doc)` — a checkpoint is a pieces-vector snapshot (the add buffer is
+  append-only, so snapshots stay valid) carrying an OPAQUE application
+  payload; the editors store `{caret, modified}` there, so undo
+  restores document and interaction state together. One coalesced edit
+  = one undo step. Runtime-only; `text_load` clears; redo is a seat.
+- **Compiler data as data (madcide IDE-3)**: `madc::diagnostics(out,
+  source[, filename])` and `madc::outline(out, source[, filename])` —
+  compile (NEVER execute) a buffer with the same front end `madc` runs,
+  in a policy-clamped child, returning structured rows
+  (`{severity, phase, message, file, line, column}` /
+  `{kind, name, line, column}`). Capture replaces rendering (a
+  thread-local render mute on the two diagnostic renderers; recording
+  is never muted). Pinned by `tests/testcompilerdata` (`.expect_quiet`
+  is the capture proof; the trap buffer's `main` pins that nothing
+  executes). FIXED en route (own commit): a later tokenize session's
+  tokens carried the PREVIOUS unit's stale ambient file:line — every
+  runtime-compile child diagnostic (and later `--project` TUs) now
+  reports its own positions, byte-matching the file-based oracle
+  (`tests/testprojecterrline`).
+- **The script-verb sibling, enforced (madcide IDE-5, the R3
+  residue)**: verb re-entrancy is a LATCH now — a body re-entering the
+  registry gets `action re-entered the registry (verbs do not re-enter
+  act)` as its nested result (`tests/testreenter`); code-entity
+  key-gating per the hub's Decided rule — `ui::bind_require_key` arms
+  the gate and keyless `bind_verb`/`bind_check` refuse loudly
+  (`tests/testbindgate`). Compile-once bodies re-scoped on a measured
+  blocker (the eval ctx bakes at compile); the runtime-bound-ctx design
+  is recorded in the plan doc as its own slice.
 - **The level-1 TUI provider + the visual editor (Track 7.2 R5)**: the
   addressable-grid frontend, split model/target. `madcdis/tui_model.h`
   (dependency-free, 100-assert unit battery) owns tree→grid layout —

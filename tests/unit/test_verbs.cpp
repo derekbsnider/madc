@@ -398,3 +398,49 @@ TEST_CASE("mutation_context — text-component writes mirror through the one sur
     entity_id bare = w.create("bare");
     CHECK(mc.view().text_of(bare) == (const madc::hub::text_buffer *)0);
 }
+
+// Re-entrancy is ENFORCED (the R3 sibling design): a binding that
+// re-enters the registry receives a refusal as ITS nested result; the
+// outer invocation completes normally, and the latch clears after it.
+static verb_table *g_reenter_table = (verb_table *)0;
+static world *g_reenter_world = (world *)0;
+static bool reenter_binding(action_env &env, const invocation &inv,
+			    madc::value &out)
+{
+    invocation nested;
+    nested.actor = inv.actor;
+    nested.action = env.mc.intern("inner");
+    verb_outcome n = g_reenter_table->invoke(*g_reenter_world, env.creds,
+					     nested, env.session);
+    out = n.content;
+    return n.status == verb_status::refused;
+}
+static bool inner_binding(action_env &, const invocation &, madc::value &out)
+{
+    out = madc::value(std::string("inner ran"));
+    return true;
+}
+
+TEST_CASE("verb_table — re-entering the registry is refused; the latch clears")
+{
+    world w;
+    entity_id hero = w.create("hero");
+    verb_table verbs;
+    g_reenter_table = &verbs;
+    g_reenter_world = &w;
+    verbs.register_verb(w.intern("outer"), requirement(), std::string(),
+			reenter_binding);
+    verbs.register_verb(w.intern("inner"), requirement(), std::string(),
+			inner_binding);
+    credentials none;
+    verb_outcome r = verbs.invoke(w, none, make_inv(w, "outer", hero, 0, ""));
+    CHECK(r.ok());	// the outer binding SAW the refusal and reported it
+    CHECK(r.content.as_string()
+	  == "action re-entered the registry (verbs do not re-enter act)");
+    // The latch cleared: the next top-level invoke is ordinary.
+    r = verbs.invoke(w, none, make_inv(w, "inner", hero, 0, ""));
+    CHECK(r.ok());
+    CHECK(r.content.as_string() == "inner ran");
+    g_reenter_table = (verb_table *)0;
+    g_reenter_world = (world *)0;
+}

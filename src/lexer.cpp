@@ -2545,6 +2545,16 @@ void Program::_tokenizer_init()
     try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
+    // A fresh tokenize session: newly created tokens must not inherit the
+    // ambient parse position of whatever unit ran before. getRealToken's
+    // backstop stamps a token from THIS Program's source only when the
+    // ctor stamp is 0 — a runtime-compile child (or a later --project TU)
+    // otherwise keeps the previous unit's stale nonzero position on every
+    // token (madcide IDE-3 found it: every child diagnostic carried the
+    // HOST program's last line).
+    TokenBase::_parse_file = NULL;
+    TokenBase::_parse_line = 0;
+    TokenBase::_parse_column = 0;
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
@@ -9376,6 +9386,8 @@ bool madc_show_file_error(const char *fname, int row, int col)
 
 int throwbuf::sync()
 {
+    if ( DiagnosticRenderMute::active )
+	throw std::exception();	// captured as data — render nothing
     cerr << endl;
     if ( _tb )
     {

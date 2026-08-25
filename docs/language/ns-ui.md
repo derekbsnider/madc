@@ -114,6 +114,16 @@ properties (`path`, `modified`, `read_only`) are application bag keys.
 | `text_line_start(w, e, n)` | Line `n`'s byte offset (−1 when absent) |
 | `text_line_len(w, e, n)` | Line `n`'s length sans `'\n'` (−1 when absent) |
 | `text_find(w, e, from, needle)` | First occurrence at/after `from` (−1 = none) |
+| `text_checkpoint(w, e, meta)` | Snapshot the buffer BEFORE a mutation, with an opaque payload |
+| `text_undo(meta_out, w, e)` | Restore the newest snapshot, handing the payload back (`false` = nothing to undo) |
+
+**Undo** is buffer history on the component: a checkpoint is a
+pieces-vector snapshot plus an OPAQUE application payload — store the
+caret (and the modified flag) there, so undo restores document and
+interaction state together. Checkpoint cadence is the application's:
+one semantic edit (a coalesced text event, a cut, a paste) = one
+checkpoint = one undo step. History is runtime-only like the component;
+`text_load` clears it; redo is a named seat.
 
 The line-mode editor (`examples/texteditor/` — nine script verbs through
 the one registry, design doc §7.7) is the worked example: a line command
@@ -177,6 +187,7 @@ ui::render_tree(text, w, menu);     // "Which way?\n  1. Go north\n"
 |----------|-------------|
 | `bind_verb(w, name, source)` | Attach a madc-source BODY to a verb (the script-entity binding kind) |
 | `bind_check(w, name, source)` | Attach a madc-source availability CHECK to a bound verb (see below) |
+| `bind_require_key(w, key)` | Arm code-entity key-gating: later binds require the session's credentials to hold `key` |
 | `act(out, w, actor, verb, rest)` | Interpret + dispatch one invocation; result text is player-facing |
 | `affordances(out, w, actor)` | Array of `{action, target, provider, label, visible, enabled, reason}` |
 
@@ -188,8 +199,17 @@ top-level names — `w` (session handle), `actor`, `target` (entity
 ids), `arg` (the raw argument text, `const char *`), `verb` (the
 action's spelling) — and returns the player-facing text. Bodies run
 inside `ui::act`: they must not re-enter `act` and must not open or
-close worlds. An empty `act` result means the verb is unknown (the
-driver phrases that).
+close worlds — ENFORCED: a nested `act` on the same world is refused
+with `action re-entered the registry (verbs do not re-enter act)`,
+which the outer body receives as that call's result. An empty `act`
+result means the verb is unknown (the driver phrases that).
+
+**Code-entity key-gating** (the hub's Decided rule: defining or editing
+code entities is itself key-gated): after `bind_require_key`, every
+`bind_verb`/`bind_check` on the session requires the armed key(s) in
+the session's effective credentials — `session_grant` and the world's
+key implications apply as everywhere else. A refused bind is loud on
+stderr and binds nothing. Unset (the default) is open.
 
 `affordances` enumerates what the actor can presently do, each entry
 carrying its truthful visible/enabled/reason state from the SAME
@@ -222,6 +242,7 @@ is madc source bound through this surface.
 | `tui_close(t)` | Restore the terminal and release the handle |
 | `tui_rows(t)` / `tui_cols(t)` | Current surface size (−1 = bad handle) |
 | `tui_render(t, w, tree)` | Compose a value-shaped projection tree onto the grid; only changed rows repaint |
+| `tui_bind_keys(t, table)` | Install a keybinding PROFILE (key sequences → action names); a swap is one call |
 | `tui_event(out, t, w)` | Block for the next SEMANTIC event object; `false` at end of input |
 
 The loop is compose-as-data → `tui_render` → `tui_event` → apply. The
@@ -237,15 +258,32 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"text", text}` | the run | Coalesced printable keys — ONE semantic insertion |
 | `{event:"key", key}` | `"up"`, `"enter"`, `"^s"`, ... | A non-printable key for the application |
 | `{event:"choose", option, action}` | 1-based index + action name | Enter on the selected option — the same number the line-mode menu prints |
+| `{event:"action", action, seq}` | bound name + the sequence | A bound key sequence completed (empty action = unbound miss) |
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
+
+**Keybindings are data.** `tui_bind_keys` installs a whole profile: a
+value object mapping key SEQUENCES to action names
+(`{"^k s": "save", ...}`) — sequences are space-separated key
+spellings (the same names key events carry), any length, letter-case
+insensitive (JOE's `^K S` == `^K s`). Bound sequences resolve ahead of
+the built-in key handling and arrive as `action` events; a chord's
+prefix (`^k`) waits for its continuation (esc cancels). Validation is
+loud and whole-table: unknown spellings, printable-HEADED sequences
+(they would swallow typing), and a sequence shadowing a shorter binding
+are refused, leaving the installed table unchanged. An empty object
+clears; a profile swap is one call and never touches projections.
 
 The renderer behind this surface is a provider: the built-in target is
 the dependency-free VT100/xterm one (raw mode, alternate screen,
 differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
-semantics, coalescing, diffing — is engine code shared by every target.
-`examples/texteditor/vised.mad` is the worked example: the visual and
-line editors drive the SAME document actions and the SAME script verbs.
+semantics, chords, coalescing, diffing — is engine code shared by every
+target. `examples/texteditor/vised.mad` is the worked example of the
+editor pair (Pico-style fixed chords); `examples/madcide/madcide.mad`
+is the worked example of profiles-as-data (JOE/WordStar `^K` chords
+default, the pico profile respelling the same actions) and of the
+compiler-data panes (`madc::diagnostics` / `madc::outline` rows
+composed as a navigable `choice` whose chosen row moves the caret).
 
 ## Thread contract
 

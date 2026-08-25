@@ -45,6 +45,8 @@ while time.time() < deadline and b"smoke.txt" not in out:
     time.sleep(0.05)
 
 feed(b"hi")              # one coalesced text run
+feed(b"\x0b")            # ^k — a bound chord's prefix, held pending...
+feed(b"s")               # ...across READ BATCHES -> action "save-chord"
 feed(b"\x1b[D")          # left arrow -> key event (edit focused)
 feed(b"\t")              # tab -> focus the menu
 feed(b"\x1b[C")          # right -> selection Save -> Quit
@@ -83,7 +85,8 @@ checks = {
     "reverse attr used":   "\x1b[7m" in txt,
     "cursor shown":        "\x1b[?25h" in txt,
 }
-expected = "EVENTS=text:hi;key:left;focus;focus;choose:2:q;resize;key:^q;"
+expected = ("EVENTS=text:hi;action:save-chord:^k s;"
+            "key:left;focus;focus;choose:2:q;resize;key:^q;")
 checks["event log"] = ev == expected
 ok = True
 for k, v in checks.items():

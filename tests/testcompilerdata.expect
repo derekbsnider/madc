@@ -1,0 +1,7 @@
+good diags: 0
+outline: 2
+  function add @ 1:0
+  function twice @ 2:0
+bad diags: 1
+  error parser bad.mad:2:26 use of undeclared identifier 'undeclared_name'
+trap diags: 0 outline: 1

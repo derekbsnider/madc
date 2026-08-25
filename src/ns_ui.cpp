@@ -93,6 +93,10 @@ struct ui_session
     // %require gates by name: (requirement, refusal prose from the data).
     std::map<std::string, std::pair<requirement, std::string> > gates;
     credentials session_creds;
+    // Code-entity key-gating (hub doc Decided; the R3 sibling design):
+    // when non-empty, DEFINING code entities — bind_verb / bind_check —
+    // requires these credentials. Unset = open (every existing caller).
+    requirement bind_req;
     // The declarations the session owns: gating data for bind_verb and
     // the %verb/%require lines merged back into every save.
     std::vector<world_doc::verb_decl> verb_decls;
@@ -144,30 +148,12 @@ ui_tui *ui_tui_get(int64_t handle)
     return t[(size_t)handle - 1];
 }
 
-// Key spelling at the value boundary (ids/enums inside, names outside):
-// what a tui_event's `key` field carries to the script.
+// Key spelling at the value boundary: the model's tui_key_name is the one
+// spelling owner (both directions — the bindings tables parse with its
+// inverse), adopted here.
 std::string ui_key_name(madc::hub::tui_key k, char ch)
 {
-    switch ( k )
-    {
-	case madc::hub::tui_key::ctrl:
-	    return std::string("^") + ch;
-	case madc::hub::tui_key::enter:	    return "enter";
-	case madc::hub::tui_key::tab:	    return "tab";
-	case madc::hub::tui_key::backspace: return "backspace";
-	case madc::hub::tui_key::esc:	    return "esc";
-	case madc::hub::tui_key::up:	    return "up";
-	case madc::hub::tui_key::down:	    return "down";
-	case madc::hub::tui_key::left:	    return "left";
-	case madc::hub::tui_key::right:	    return "right";
-	case madc::hub::tui_key::home:	    return "home";
-	case madc::hub::tui_key::end:	    return "end";
-	case madc::hub::tui_key::pgup:	    return "pgup";
-	case madc::hub::tui_key::pgdn:	    return "pgdn";
-	case madc::hub::tui_key::del:	    return "del";
-	case madc::hub::tui_key::ins:	    return "ins";
-	default:			    return "";
-    }
+    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch));
 }
 
 ui_session *ui_get(int64_t handle)
@@ -372,6 +358,35 @@ void world_close(int64_t w)
     }
 }
 
+// Is this session allowed to DEFINE code entities? The hub's Decided
+// text: "defining or editing code entities is itself key-gated" — the
+// same keys+levels machinery as every other condition, evaluated over
+// the session's effective credentials. An empty requirement (the
+// default) is open. Refusals are loud and bind nothing.
+static bool ui_bind_permitted(ui_session *s, const char *who,
+			      const char *name)
+{
+    if ( s->bind_req.empty() )
+	return true;
+    credentials creds = s->session_creds;
+    s->w.close_over_implications(creds);
+    if ( s->bind_req.satisfied_by(creds) )
+	return true;
+    fprintf(stderr, "%s: binding `%s` refused — this session lacks the "
+		    "required code-entity key\n", who, name);
+    return false;
+}
+
+// ui::bind_require_key — arm the code-entity gate: every LATER bind_verb
+// / bind_check on this session requires `key` (cumulative; keys layer
+// through the world's implications like every credential check).
+void bind_require_key(int64_t w, const char *key)
+{
+    ui_session *s = ui_get(w);
+    if ( s && key && *key )
+	s->bind_req.keys.push_back(s->w.intern(key));
+}
+
 // ui::bind_verb — attach a madc-source body (the script-entity binding
 // kind) to a verb name. Gating (keys/levels/refusal) comes from the
 // world's %verb declaration when one names this verb; an undeclared name
@@ -380,6 +395,8 @@ void bind_verb(int64_t w, const char *name, const char *source)
 {
     ui_session *s = ui_get(w);
     if ( !s || !name || !*name || !source )
+	return;
+    if ( !ui_bind_permitted(s, "ui::bind_verb", name) )
 	return;
     requirement req;
     std::string refusal;
@@ -406,6 +423,8 @@ void bind_check(int64_t w, const char *name, const char *source)
 {
     ui_session *s = ui_get(w);
     if ( !s || !name || !*name || !source )
+	return;
+    if ( !ui_bind_permitted(s, "ui::bind_check", name) )
 	return;
     if ( !s->verbs.set_script_check(s->w.intern(name), source) )
 	fprintf(stderr, "ui::bind_check: no verb `%s` bound\n", name);
@@ -792,6 +811,29 @@ void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
 		    text ? text : "");
 }
 
+// History (madcide IDE-2): checkpoint BEFORE mutating — one semantic
+// edit, one step. `meta` is the application's opaque payload (the caret
+// rides with the state it belongs to); undo restores the buffer and
+// hands it back. False: no such component, or empty history.
+void text_checkpoint(int64_t w, int64_t entity, madc::value &meta)
+{
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return;
+    madc::hub::mutation_context mc(s->w);
+    mc.text_checkpoint((entity_id)entity, meta);
+}
+
+bool text_undo(madc::value &meta_out, int64_t w, int64_t entity)
+{
+    meta_out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s || !entity )
+	return false;
+    madc::hub::mutation_context mc(s->w);
+    return mc.text_undo((entity_id)entity, meta_out);
+}
+
 madc::value &text(madc::value &out, int64_t w, int64_t entity)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);
@@ -920,9 +962,51 @@ void tui_render(int64_t t, int64_t w, madc::value &tree)
     u->painted = g;
 }
 
+// Install a keybinding PROFILE: a value object mapping key sequences
+// ("^k s" — space-separated spellings, the same names key events carry)
+// to action names. Bound sequences resolve ahead of every built-in key
+// interpretation and arrive as { event:"action", action:"name",
+// seq:"^k s" } (an unbound completion has an empty action and the seq —
+// the app may report it). The whole table replaces the previous one — a
+// profile swap is one call; an empty object clears. False + stderr on an
+// invalid table (unknown spelling, printable-headed sequence, a sequence
+// shadowing a shorter binding), leaving the installed table unchanged.
+bool tui_bind_keys(int64_t t, madc::value &table)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return false;
+    madc::hub::tui_bindings b;
+    if ( table.is_object() )
+    {
+	const std::map<std::string, madc::value> &o = table.as_object();
+	for ( std::map<std::string, madc::value>::const_iterator it
+		= o.begin(); it != o.end(); ++it )
+	{
+	    std::string action = it->second.is_null()
+		? std::string() : it->second.as_string();
+	    if ( !b.bind(it->first, action) )
+	    {
+		fprintf(stderr, "ui::tui_bind_keys: bad key sequence `%s`\n",
+			it->first.c_str());
+		return false;
+	    }
+	}
+    }
+    std::string err;
+    if ( !b.finalize(err) )
+    {
+	fprintf(stderr, "ui::tui_bind_keys: %s\n", err.c_str());
+	return false;
+    }
+    u->model.set_bindings(b);
+    return true;
+}
+
 // The next SEMANTIC event as a value object (names at the boundary):
 //   { event:"text",   text:"..." }       a coalesced printable run
 //   { event:"key",    key:"up"|"^s"|.. } a non-printable key
+//   { event:"action", action:"name", seq:"^k s" }  a bound sequence
 //   { event:"choose", option:N, action:"name" }  N is 1-based — the
 //       same number the level-0 menu prints for that option
 //   { event:"focus" } / { event:"resize" }  recompose and re-render
@@ -962,6 +1046,11 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	    f["action"] = madc::value(e.action
 				      ? std::string(s->w.spelling(e.action))
 				      : std::string());
+	    break;
+	case madc::hub::tui_event_kind::action:
+	    f["event"] = madc::value(std::string("action"));
+	    f["action"] = madc::value(e.action_name);
+	    f["seq"] = madc::value(e.seq);
 	    break;
 	case madc::hub::tui_event_kind::resize:
 	    // The surface changed: refresh the stored dimensions so the

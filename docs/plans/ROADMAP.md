@@ -360,11 +360,12 @@ no new parser syntax; `render { }` blocks are a later ergonomic layer
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Planned — pulled forward with 7.2 as a hub component type (madcide = 7.2's gate) | [madc-ide.md](madc-ide.md) |
-| 8.2 | libmadcedit curses rendering | 2-3 wk | Blocked on 7.2 | [madc-ide.md](madc-ide.md) |
-| 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Future | [madc-ide.md](madc-ide.md) |
-| 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Blocked on 8.2 | [madc-ide.md](madc-ide.md) |
-| 8.5 | Advanced — find/replace, split views, go-to-def | Ongoing | Future | [madc-ide.md](madc-ide.md) |
+| 8.0 | madcide v1 — the hub-doc Phase-2 gate: buffer + undo through the entry lens, diagnostics/outline panes as projections of live compiler data (`madc::diagnostics`/`outline`), keybinding profiles as data (JOE/WordStar `^K` chords default, owner-directed; configurable via `ui::tui_bind_keys`) | — | **DONE — 2026-08-25** (`examples/madcide`; wave 1149/0/0/9 + EXE 1105/0) | [plan](2026-08-25-madcide-phase2.md) |
+| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Largely subsumed: piece table + undo shipped as the hub text component (7.2/8.0); remaining = the reusable-library packaging question | [madc-ide.md](madc-ide.md) |
+| 8.2 | libmadcedit curses rendering | 2-3 wk | Subsumed by the 7.2 TUI provider (hand-rolled VT100 target behind the seam) | [madc-ide.md](madc-ide.md) |
+| 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Profiles-as-data SHIPPED (8.0: joe/pico; more profiles = data files); highlighting = a projection-hints design, Future | [madc-ide.md](madc-ide.md) |
+| 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Unblocked by 8.0 (diagnostics pane shipped; file tree/tabs/build integration next) | [madc-ide.md](madc-ide.md) |
+| 8.5 | Advanced — find/replace, split views, go-to-def | Ongoing | Future (find shipped in 8.0; go-to-def wants the outline's deeper walk) | [madc-ide.md](madc-ide.md) |
 
 **Dependencies:** 7.1-7.2 (rendering Level 0-1). Config via TOML + madc scripts.
 
@@ -438,17 +439,14 @@ run in parallel.
          Unblocks: PCH transition, parser resilience
 
  ║── Track 7.2  Rendering: Level 1 terminal backend      [DONE 2026-08-25]
- ║   └── R1–R5 shipped (VT100 provider, checks, lined+vised editors);
- ║       madcide consumes it next
-
-13.  Track 8.1  libmadcedit core                         [3-4 wk]
-     ├── Piece table, cursor, undo/redo, CUA keybindings
-     └── Requires: Level 0 rendering (step 11b)
-
-14.  Track 8.2  libmadcedit curses + syntax highlight    [4-6 wk]
-     └── Requires: Level 1 rendering (step 12b)
+ ║   └── R1–R5 shipped (VT100 provider, checks, lined+vised editors)
+ ║── Track 8.0  madcide v1 (hub Phase 2 gate)            [DONE 2026-08-25]
+ ║   └── examples/madcide: undo through the entry lens, diagnostics/
+ ║       outline panes over madc::diagnostics/outline, keybinding
+ ║       profiles as data (JOE ^K chords default); 8.1/8.2 subsumed
 
 15.  Track 8.4  madcide shell                            [3-4 wk]
+     ├── File tree, tabs, build integration (8.0 = the editor + panes)
      └── Self-hosting milestone: edit madc in madcide
 
 16.  Track 3.2  PCH transition                           [2-3 wk]

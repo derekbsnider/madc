@@ -299,6 +299,21 @@ public:
     {
 	_texts[id].replace(off, len, s);
     }
+    // History (madcide IDE-2): a checkpoint snapshots the buffer state
+    // with an OPAQUE application payload; undo restores the top snapshot
+    // and hands the payload back (false: no component or empty history).
+    // Both are writes — they mutate the component's state.
+    void text_checkpoint(entity_id id, const madc::value &meta)
+    {
+	_texts[id].checkpoint(meta);
+    }
+    bool text_undo(entity_id id, madc::value &meta_out)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.undo(meta_out);
+    }
     // The component, or NULL when the entity has none. (Reads only —
     // mutation goes through the verbs above.)
     const text_buffer *text_of(entity_id id) const

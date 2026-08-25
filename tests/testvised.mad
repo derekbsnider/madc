@@ -10,6 +10,7 @@
 // scripts/tui_smoke_gate.sh on a pty). The application under test is THE
 // example itself (examples/texteditor — one copy, no test fork).
 #include "../examples/texteditor/lined_core.inc"
+#include "../examples/texteditor/editor_events.inc"
 #include "../examples/texteditor/vised_core.inc"
 
 void ev_text(value &e, const char *t)

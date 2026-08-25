@@ -156,3 +156,47 @@ TEST_CASE("piece table — find at and after an offset")
     b.replace(4, 3, "CAT");
     CHECK(b.find(0, "CAT sat") == 4u);
 }
+
+TEST_CASE("piece table — checkpoint/undo: pieces-vector snapshots + payload")
+{
+    text_buffer b;
+    std::string oracle = "one\ntwo\n";
+    b.load(oracle);
+    CHECK(b.history_depth() == 0u);
+
+    // Checkpoint BEFORE each mutation (the editor cadence); the payload
+    // is opaque — a caret here.
+    b.checkpoint(madc::value((int64_t)0));
+    b.insert(4, "TWO-");			// "one\nTWO-two\n"
+    b.checkpoint(madc::value((int64_t)4));
+    b.erase(0, 4);				// "TWO-two\n"
+    CHECK(b.text() == "TWO-two\n");
+    CHECK(b.history_depth() == 2u);
+
+    madc::value meta;
+    REQUIRE(b.undo(meta));			// back to post-insert
+    CHECK(b.text() == "one\nTWO-two\n");
+    CHECK(meta.as_integer() == 4);
+    CHECK(b.line_count() == 2u);		// derived queries see the restore
+
+    REQUIRE(b.undo(meta));			// back to the load state
+    CHECK(b.text() == oracle);
+    CHECK(meta.as_integer() == 0);
+    CHECK(!b.undo(meta));			// history empty: refused
+
+    // Undone state is fully live: edits after an undo work and can be
+    // checkpointed again (the add buffer is append-only — old snapshots
+    // never dangled while newer edits appended).
+    b.checkpoint(madc::value((int64_t)7));
+    b.insert(b.size(), "three\n");
+    CHECK(b.text() == "one\ntwo\nthree\n");
+    REQUIRE(b.undo(meta));
+    CHECK(b.text() == oracle);
+    CHECK(meta.as_integer() == 7);
+
+    // load() replaces the sources: history dies with them.
+    b.checkpoint(madc::value((int64_t)1));
+    b.load("fresh");
+    CHECK(b.history_depth() == 0u);
+    CHECK(!b.undo(meta));
+}

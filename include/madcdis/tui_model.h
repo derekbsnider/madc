@@ -38,6 +38,7 @@
 
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -158,6 +159,179 @@ struct tui_keyev
     char    ch;
     tui_keyev() : kind(tui_key::none), ch(0) {}
     explicit tui_keyev(tui_key k, char c = 0) : kind(k), ch(c) {}
+};
+
+// The ONE key-spelling owner, both directions (ids/enums inside, names at
+// the value boundary): what a tui_event's `key` field carries to the
+// script, and what a bindings table's sequences are written in. Control
+// chords spell "^"+letter; a printable spells as itself ("space" for the
+// blank, which cannot stand alone in a space-separated sequence).
+inline std::string tui_key_name(const tui_keyev &k)
+{
+    switch ( k.kind )
+    {
+	case tui_key::ch:
+	    return k.ch == ' ' ? std::string("space") : std::string(1, k.ch);
+	case tui_key::ctrl:	 return std::string("^") + k.ch;
+	case tui_key::enter:	 return "enter";
+	case tui_key::tab:	 return "tab";
+	case tui_key::backspace: return "backspace";
+	case tui_key::esc:	 return "esc";
+	case tui_key::up:	 return "up";
+	case tui_key::down:	 return "down";
+	case tui_key::left:	 return "left";
+	case tui_key::right:	 return "right";
+	case tui_key::home:	 return "home";
+	case tui_key::end:	 return "end";
+	case tui_key::pgup:	 return "pgup";
+	case tui_key::pgdn:	 return "pgdn";
+	case tui_key::del:	 return "del";
+	case tui_key::ins:	 return "ins";
+	default:		 return "";
+    }
+}
+
+// Spelling -> key. Generous on input (an upper-case letter after "^"
+// lowers), canonical on output via tui_key_name. False = not a spelling.
+inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
+{
+    if ( name.empty() )
+	return false;
+    if ( name.size() == 2 && name[0] == '^' )
+    {
+	char c = name[1];
+	if ( c >= 'A' && c <= 'Z' )
+	    c = (char)(c - 'A' + 'a');
+	if ( c < 'a' || c > 'z' )
+	    return false;
+	out = tui_keyev(tui_key::ctrl, c);
+	return true;
+    }
+    if ( name.size() == 1 && name[0] >= 0x20 && name[0] <= 0x7e )
+    {
+	out = tui_keyev(tui_key::ch, name[0]);
+	return true;
+    }
+    static const struct { const char *n; tui_key k; } named[] = {
+	{ "space", tui_key::ch }, { "enter", tui_key::enter },
+	{ "tab", tui_key::tab }, { "backspace", tui_key::backspace },
+	{ "esc", tui_key::esc }, { "up", tui_key::up },
+	{ "down", tui_key::down }, { "left", tui_key::left },
+	{ "right", tui_key::right }, { "home", tui_key::home },
+	{ "end", tui_key::end }, { "pgup", tui_key::pgup },
+	{ "pgdn", tui_key::pgdn }, { "del", tui_key::del },
+	{ "ins", tui_key::ins },
+    };
+    for ( size_t i = 0; i < sizeof(named) / sizeof(named[0]); ++i )
+	if ( name == named[i].n )
+	{
+	    out = tui_keyev(named[i].k, named[i].k == tui_key::ch ? ' ' : 0);
+	    return true;
+	}
+    return false;
+}
+
+// ------------------------------------------------------------- the bindings
+// Key sequences -> action names: DATA, installed per profile (owner
+// 2026-08-25 — the JOE/WordStar ^K-chord ruling; a profile swap is a new
+// table, never a second hardcoded map). A sequence is space-separated key
+// spellings ("^k s"), any length. Validation is loud and whole-table at
+// finalize(): a sequence must START with a non-printable key (a printable
+// head would swallow typing), and no bound sequence may be a proper
+// prefix of another (deterministic resolution — JOE's ^K is only ever a
+// prefix). Canonical spellings are the map keys, so lookups and the seq
+// reported on events agree byte-for-byte.
+class tui_bindings
+{
+    std::map<std::string, std::string> _actions;
+    std::set<std::string> _prefixes;
+
+public:
+    // SEQUENCE spelling: tui_key_name with printable LETTERS lowered —
+    // chords are letter-case-insensitive (JOE's ^K S == ^K s convention;
+    // the shift state of a chord continuation never distinguishes
+    // bindings). Key EVENTS keep tui_key_name's exact spelling.
+    static std::string seq_spelling(const tui_keyev &k)
+    {
+	if ( k.kind == tui_key::ch && k.ch >= 'A' && k.ch <= 'Z' )
+	    return std::string(1, (char)(k.ch - 'A' + 'a'));
+	return tui_key_name(k);
+    }
+
+    bool empty() const { return _actions.empty(); }
+    void clear() { _actions.clear(); _prefixes.clear(); }
+
+    // Parse + canonicalize one sequence; false (table untouched) on a
+    // spelling that is not a key.
+    bool bind(const std::string &seq, const std::string &action)
+    {
+	std::string canon;
+	size_t i = 0;
+	while ( i < seq.size() )
+	{
+	    while ( i < seq.size() && seq[i] == ' ' )
+		++i;
+	    size_t j = i;
+	    while ( j < seq.size() && seq[j] != ' ' )
+		++j;
+	    if ( j == i )
+		break;
+	    tui_keyev k;
+	    if ( !tui_key_from_name(seq.substr(i, j - i), k) )
+		return false;
+	    if ( !canon.empty() )
+		canon += ' ';
+	    canon += seq_spelling(k);
+	    i = j;
+	}
+	if ( canon.empty() )
+	    return false;
+	_actions[canon] = action;
+	return true;
+    }
+
+    // Whole-table validation + the prefix set. False leaves the table
+    // unusable by contract; `err` names the offending sequence.
+    bool finalize(std::string &err)
+    {
+	_prefixes.clear();
+	for ( std::map<std::string, std::string>::const_iterator it
+		= _actions.begin(); it != _actions.end(); ++it )
+	{
+	    const std::string &seq = it->first;
+	    tui_keyev head;
+	    tui_key_from_name(seq.substr(0, seq.find(' ')), head);
+	    if ( head.kind == tui_key::ch )
+	    {
+		err = "printable-headed sequence: " + seq;
+		return false;
+	    }
+	    for ( size_t sp = seq.find(' '); sp != std::string::npos;
+		  sp = seq.find(' ', sp + 1) )
+	    {
+		std::string prefix = seq.substr(0, sp);
+		if ( _actions.count(prefix) )
+		{
+		    err = "sequence shadows a shorter binding: " + seq;
+		    return false;
+		}
+		_prefixes.insert(prefix);
+	    }
+	}
+	return true;
+    }
+
+    bool bound(const std::string &canon_seq) const
+	{ return _actions.count(canon_seq) != 0; }
+    bool prefix(const std::string &canon_seq) const
+	{ return _prefixes.count(canon_seq) != 0; }
+    const std::string &action_of(const std::string &canon_seq) const
+    {
+	static const std::string none;
+	std::map<std::string, std::string>::const_iterator it
+	    = _actions.find(canon_seq);
+	return it == _actions.end() ? none : it->second;
+    }
 };
 
 // Raw terminal bytes -> keys: the escape-sequence state machine (CSI and
@@ -302,7 +476,8 @@ enum class tui_event_kind : unsigned char
     key,	// a non-printable key for the application to interpret
     choose,	// enter on the focused choice's selected option
     focus,	// focus or menu selection moved: recompose and repaint
-    resize	// the surface changed size: recompose and repaint
+    resize,	// the surface changed size: recompose and repaint
+    action	// a bound key sequence completed (empty name = unbound miss)
 };
 
 struct tui_event
@@ -313,6 +488,8 @@ struct tui_event
     char	   ch;
     size_t	   option;	// choose: 0-based option index
     name_id	   action;	// choose: the option's first action; 0 = none
+    std::string	   action_name;	// action: the bound name ("" = unbound)
+    std::string	   seq;		// action: the canonical sequence spelling
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
 		  option(0), action(0) {}
@@ -343,6 +520,8 @@ private:
     std::map<size_t, size_t> _selection;	// per choice slot
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
+    tui_bindings _bindings;			// the installed profile
+    std::string _pending;			// chord so far (canonical)
 
     // One composed output line: text plus attribute spans.
     struct span { size_t col, len; tui_attr attr; };
@@ -622,11 +801,24 @@ public:
 	return _grid;
     }
 
+    // Install a finalized bindings table (a profile swap is a new table);
+    // any chord in flight is abandoned with its profile.
+    void set_bindings(const tui_bindings &b)
+    {
+	_bindings = b;
+	_pending.clear();
+    }
+    const std::string &pending_chord() const { return _pending; }
+
     // Keys -> semantic events against the last compose's focusables:
-    // printable runs coalesce into ONE text event (§7.5); tab cycles
-    // focus; arrows navigate a focused choice (selection is presentation
-    // state — a focus event says "repaint"); enter on a focused choice
-    // chooses; everything else reaches the application as a key event.
+    // bound sequences resolve FIRST (a pending chord consumes every key
+    // until it completes, misses, or esc cancels it — resize alone passes
+    // through); then printable runs coalesce into ONE text event (§7.5);
+    // tab cycles focus; arrows navigate a focused choice (selection is
+    // presentation state — a focus event says "repaint"); enter on a
+    // focused choice chooses; everything else reaches the application as
+    // a key event. With no table installed, behavior is byte-identical
+    // to the pre-bindings adapter.
     std::vector<tui_event> apply_keys(const std::vector<tui_keyev> &keys)
     {
 	std::vector<tui_event> out;
@@ -634,6 +826,35 @@ public:
 	for ( size_t i = 0; i < keys.size(); ++i )
 	{
 	    const tui_keyev &k = keys[i];
+	    if ( !_pending.empty() )
+	    {
+		if ( k.kind == tui_key::resize )
+		{
+		    tui_event e;
+		    e.kind = tui_event_kind::resize;
+		    out.push_back(e);
+		    continue;
+		}
+		if ( k.kind == tui_key::esc )
+		{
+		    _pending.clear();
+		    continue;
+		}
+		std::string candidate = _pending + " "
+				      + tui_bindings::seq_spelling(k);
+		if ( _bindings.prefix(candidate) )
+		{
+		    _pending = candidate;
+		    continue;
+		}
+		tui_event e;
+		e.kind = tui_event_kind::action;
+		e.action_name = _bindings.action_of(candidate);
+		e.seq = candidate;
+		out.push_back(e);
+		_pending.clear();
+		continue;
+	    }
 	    if ( k.kind == tui_key::ch )
 	    {
 		run += k.ch;
@@ -646,6 +867,24 @@ public:
 		e.text = run;
 		out.push_back(e);
 		run.clear();
+	    }
+	    if ( !_bindings.empty() && k.kind != tui_key::resize )
+	    {
+		std::string head = tui_bindings::seq_spelling(k);
+		if ( _bindings.bound(head) )
+		{
+		    tui_event e;
+		    e.kind = tui_event_kind::action;
+		    e.action_name = _bindings.action_of(head);
+		    e.seq = head;
+		    out.push_back(e);
+		    continue;
+		}
+		if ( _bindings.prefix(head) )
+		{
+		    _pending = head;
+		    continue;
+		}
 	    }
 	    const bool on_choice = _focus < _focusables.size()
 		&& _focusables[_focus].k == focusable::kind::choice
