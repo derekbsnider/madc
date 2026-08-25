@@ -1,6 +1,30 @@
 # Test Status
 
-> **Current (2026-08-25, madcide / hub Phase 2 — feature/madcide-claude
+> **Current (2026-08-25, madcide v2 — feature/madcide-v2-claude merge
+> wave):** the owner's FULL JOE binding set on the relocated tool
+> (`tools/madcide`; work order = the plan doc's "Owner review" section,
+> items 1+2 — item 3, the AST arc, awaits the owner brainstorm).
+> Engine feeders: tui_keyparse 0x1c–0x1f (`^\ ^] ^^ ^_`); text_buffer
+> REDO (two stacks, `now_meta`-carrying pair, checkpoint clears redo) +
+> word motion; `tui_target::suspend/resume` + `ui::tui_suspend/resume`
+> (one enter/leave_grid_mode implementation for all four callers); the
+> ctrl-insensitive CONTINUATION convention (`^K ^Z` == `^K Z`,
+> `tui_bindings::cont_spelling` — forced live by the pty probe). App:
+> motion delegation by key-name to the one shared edit_key; block model
+> mark+bend; one prompt mode (find/goto-line/insert-file) + `^L`
+> find-next; help pane = the loaded profile projected; `^K Z` shell
+> verified on a real pty (suspend → shell on the tty → resume, full
+> repaint). Scoped dupaudit: find_wrap_rule + block_refusal_message
+> consolidated same-session. Merge-wave battery: authoritative Linux
+> fulltest **1149 passed / 0 failed / 0 timed out / 9 skipped** (suite
+> unchanged — testmadcide extended in place with the v2 pins, every
+> edit undone so the tail byte-count proves the round trips), EXE lane
+> **1105/0**; unit batteries test_tui_model 206 asserts (punctuation
+> controls, ctrl continuations), test_text_buffer 192 (redo, word
+> motion); trailers 558/0; purity/dialect-lean/write-path/adventure
+> parity green in-battery.
+>
+> **Previous (2026-08-25, madcide / hub Phase 2 — feature/madcide-claude
 > merge wave):** the madc IDE and its feeders
 > (docs/plans/2026-08-25-madcide-phase2.md). Bindings-as-data chords
 > (`ui::tui_bind_keys` — key sequences → action names, per-profile,
