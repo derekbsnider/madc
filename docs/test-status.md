@@ -1,6 +1,25 @@
 # Test Status
 
-> **Current (2026-08-25, --emit=c++ / AST-4 slice 1 —
+> **Current (2026-08-25, persistent parse handles / AST-1 —
+> feature/madcide-ast1-claude merge wave):** the compiler-data child
+> machinery given a LIFETIME. `madc::parse_open/open_file/refresh/close`
+> + `parse_outline/parse_check/parse_enclosing` (outline-at-offset from
+> TokenFunc + `end_line`; outline rows gained `end_line`) answer from
+> RETAINED state; `project_open/tus/close` parse a cc.json manifest's
+> TUs each with its own options (`apply_project_tu_options` = THE one
+> -I/-D/--std rule, extracted; its absence in the handle path was a
+> phantom-diagnostic divergence the measurement itself caught). madcide:
+> one handle per buffer, one refresh entry, enclosing-function status
+> line. MEASURED: parse-on-load ~0.25 s (adventure) / ~0.5 s
+> (open-adventure C 18k LOC); largest-TU refresh 55–120 ms → disk-cache
+> NO-GO at current scale (§3.4); error-tolerant parse banked as §3.5
+> (discussion pending). Dupaudit: `handle_table<T>` (4 copies → 1,
+> GATED by `check-one-handle-table.sh`, in-battery OK); tu_own_function.
+> Merge-wave battery: authoritative Linux fulltest **1150 passed / 0
+> failed / 0 timed out / 9 skipped** (testparsehandle joined) + EXE lane
+> **1106/0**.
+>
+> **Previous (2026-08-25, --emit=c++ / AST-4 slice 1 —
 > feature/madcide-ast4-claude merge wave):** the C++ reverse-render
 > (owner-required). `celCxx` through the one converter; the render =
 > the TU's RETAINED SOURCE (recorded `#include` directives + whole-TU

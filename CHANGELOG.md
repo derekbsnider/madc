@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **Persistent parse handles (madcide AST-1 / IDE-6)**: the
+  compile-never-execute compiler-data machinery given a lifetime.
+  `madc::parse_open` / `parse_open_file` / `parse_refresh` (whole-TU) /
+  `parse_close`, with `parse_outline` / `parse_check` /
+  `parse_enclosing` (outline-at-offset: the innermost TU-own function
+  definition containing a position — TokenFunc head + the recorded
+  closing-brace `end_line`; outline rows gained `end_line`) served from
+  the RETAINED state — no re-parse per query. `madc::project_open` /
+  `project_tus` / `project_close` group a `compile_commands.json`
+  manifest's TUs, each parsed with its own manifest options —
+  `apply_project_tu_options` extracted as THE one -I/-D/-stdlib/--std
+  application rule (the parse-at-scale measurement itself surfaced the
+  phantom-diagnostic divergence its absence caused). madcide holds one
+  handle per buffer (opened at load); check/save/outline refresh
+  through one entry; the status line shows the enclosing function.
+  MEASURED (design doc §3.4): parse-on-load ~0.25 s (adventure, 11 madc
+  TUs) / ~0.5 s (open-adventure, 18k LOC C); largest-TU whole refresh
+  55–120 ms → **disk-cache NO-GO at current scale** (revisit above ~2 s
+  parse-on-load). Probed: the parser stops at the first error — the
+  error-tolerant-parse seat (owner's Missing*/UnexpectedToken/
+  SkippedTokens vocabulary) is banked as design doc §3.5, discussion
+  pending. Dupaudit: `handle_table<T>` = THE slot+1 handle-registry
+  rule (four hand-rolled copies consolidated: ui_sessions, ui_tuis, the
+  two parse registries), gated by `scripts/check-one-handle-table.sh`.
+  New reducer `tests/testparsehandle` + testmadcide status pins.
+  Merge wave: fulltest 1150/0/0/9 + EXE 1106/0.
+
 - **`--emit=c++` — the C++ reverse-render (madcide AST-4, owner-required)**:
   `celCxx` joins the emit vocabulary through the one converter
   (`c11|mc11|c++`). The render is the TU's RETAINED SOURCE (the MC11
