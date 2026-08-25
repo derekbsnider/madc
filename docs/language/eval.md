@@ -149,13 +149,40 @@ int main()
 `context_set_real` adds doubles; every expression and unit form has a
 `_ctx` twin (`eval_int_ctx`, `eval_expression_double_ctx`, …).
 
+## Compiler Data (diagnostics and outline)
+
+The compiler's own structured data, as values — compile (NEVER execute)
+a source buffer with the same front end `madc` runs, in a
+policy-clamped child, and read what it found. Diagnostics are CAPTURED,
+not printed (nothing reaches stderr); nothing in the buffer runs. This
+is the meta-level surface an IDE projects (`examples/madcide`'s
+diagnostics pane and outline), and it serves any tool that wants
+compile results as data — a linter, a doc generator, a test harness.
+
+```c
+value d;
+madc::diagnostics(d, source, "buffer.mad");
+// rows: { severity, phase, message, file, line, column }
+// severity "error"/"warning"; an empty array = a clean buffer
+
+value o;
+madc::outline(o, source, "buffer.mad");
+// rows: { kind, name, line, column } for the buffer's OWN definitions,
+// source order (kind: "function" today; classes/globals are a named
+// extension seat)
+```
+
+`filename` is the display name diagnostics carry (default `<source>`).
+Positions match what a file-based compile of the same text reports.
+
 ## Security
 
 Embedding hosts control the whole surface: full-unit eval is gated by
 the engine's runtime-eval policy, function calls inside expressions by
 the expression policy, and call-site scope capture by the scope-access
 hooks. A host that grants none of them still gets pure-arithmetic
-expression eval. The `madc` CLI enables everything.
+expression eval. The `madc` CLI enables everything. The compiler-data
+publics run under the same runtime-eval child policy.
 
 ## Files
 
