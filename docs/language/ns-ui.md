@@ -320,20 +320,27 @@ loud and whole-table: unknown spellings, printable-HEADED sequences
 are refused, leaving the installed table unchanged. An empty object
 clears; a profile swap is one call and never touches projections.
 
-**Highlight spans and the colour palette (AST-2).** An `edit` node's
-hints may also carry `spans`: an array of `{s, e, c}` rows — document
-byte offsets plus a colour NAME from the render palette (`normal`,
-`reverse`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`; a
-malformed row is skipped — spans are presentation). The model paints
-them through the same range-overlap rule as the selection, and the
-selection paints LAST (it wins where they overlap). The VT100 target
-emits the colour as SGR; a grid with only normal/reverse produces the
-byte-identical stream it always did. The renderer never classifies:
-`madc::parse_spans` (see `eval.md`) provides classification rows from a
-parse handle's retained state, and a THEME — app data, one
-`class colour` pair per line, the same profile-line rule as the
-keybindings (madcide's `profiles/default.theme`) — maps class names to
-palette colours.
+**Highlight spans, styles, and colour schemes (AST-2; owner: VT-102
+ANSI / JOE parity).** An `edit` node's hints may also carry `spans`: an
+array of `{s, e, c}` rows — document byte offsets plus a style SPEC in
+JOE's vocabulary: the attribute words `bold dim italic underline blink
+inverse` (JOE's `reverse` accepted), a foreground colour
+`black red green yellow blue magenta cyan white`, and a `bg_<colour>`
+background — e.g. `"bold yellow"`. Bold-as-bright gives the 16
+effective foreground colours (the VT-102 / 8-colour-terminal model;
+256/true-colour is a named later seat). A row whose spec contains any
+unknown word is skipped whole — spans are presentation. The model
+paints them through the same range-overlap rule as the selection, and
+the selection paints LAST (it wins where they overlap). The VT100
+target emits reset-then-SGR per style change; a grid with only
+normal/reverse produces the byte-identical stream it always did. The
+renderer never classifies: `madc::parse_spans` (see `eval.md`) provides
+classification rows from a parse handle's retained state, and a colour
+SCHEME — app data, `profiles/*.theme`, one `class SPEC` pair per line
+(class first; the same comment/blank line rule as the keybindings) —
+maps class names to style specs. madcide swaps schemes by name at
+runtime (`^K T`, the profile-swap precedent; `default.theme` and
+`classic.theme` ship).
 
 The renderer behind this surface is a provider: the built-in target is
 the dependency-free VT100/xterm one (raw mode, alternate screen,

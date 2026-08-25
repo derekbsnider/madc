@@ -549,10 +549,24 @@ Shipped on `feature/madcide-ast2-claude`:
   attaches the stored rows, stored-space only. Staleness = the status
   line's: colours refresh on check/save/outline; per-keystroke
   freshness is a named later lever (a lex-only refresh or idle timer).
+- **Owner extension (mid-AST-2): VT-102 ANSI / JOE parity + colour
+  schemes.** The 8-colour enum became the style STRUCT {fg, bg, flags}
+  speaking JOE's whole vocabulary (bold/dim/italic/underline/blink/
+  inverse + 8 fg colours + bg_*), bold-as-bright = the 16-colour model
+  (no aixterm 90–97); tui_attr_of = the one SPEC parser (whole-spec
+  refusal). emit_sgr = reset-then-set with the full parameter list;
+  the historical \x1b[7m/\x1b[0m spellings survive, keeping the
+  no-colour stream byte-identical. SCHEMES are theme files
+  (profiles/*.theme, class-first multi-word-spec lines — the split
+  deliberately differs from the keybinding parse; profile_line stays
+  the shared line rule), swapped at runtime by name through the one
+  prompt mode (^K T; default + classic ship; a missing theme refuses
+  and keeps the previous one). view_name relocated above the prompt
+  machinery — still the one view-active seat.
 - **Named refinements**: a lex-recorded token extent (spelling-length
   drifts cosmetically on non-canonically-written literals); the exact
   function-name token feeder; span-carrying views (display-space
-  spans through the doc_map).
+  spans through the doc_map); 256/true-colour styles.
 - Gates: `tests/testparsespans` (16 hand-computed rows incl. lead/
   mid-block/trailing comments), testmadcide themed-span pins (9 rows,
   exact offsets, head-line rule pinned), test_tui_model unit battery
