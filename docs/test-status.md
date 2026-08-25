@@ -1,6 +1,24 @@
 # Test Status
 
-> **Current (2026-08-25, the view seam / AST-3 —
+> **Current (2026-08-25, --emit=c++ / AST-4 slice 1 —
+> feature/madcide-ast4-claude merge wave):** the C++ reverse-render
+> (owner-required). `celCxx` through the one converter; the render =
+> the TU's RETAINED SOURCE (recorded `#include` directives + whole-TU
+> token echo via the exposed one spelling owner + trailing trivia;
+> `CirEmitSource` passes it as data). String literals re-escape through
+> the NEW one owner `madc_c_escape_string` (`cir_emit_c` N_STR adopted
+> it — dupaudit family consolidated same-session; also fixed a latent
+> macro-arg re-lex bug). `madc::emit` accepts `"c++"`; madcide's `^K N`
+> adds the C++ view on C/C++-extension buffers (the app's document-kind
+> rule). Two probe-driven deviations recorded in the design doc §3.3
+> (whole-TU echo, no compiler-side dialect refusal). Merge-wave battery:
+> authoritative Linux fulltest **1149 passed / 0 failed / 0 timed out /
+> 9 skipped** + EXE lane **1105/0**; NEW fulltest gate
+> `emitcxx_roundtrip_gate` (2 reducers × g++ AND clang++, behavioral
+> byte-compare, two negative controls — in-battery OK); testmadcide
+> extended with the .cpp-buffer view world (all pins matched first run).
+>
+> **Previous (2026-08-25, the view seam / AST-3 —
 > feature/madcide-ast3-claude merge wave):** the madcide AST arc's
 > first slice, owner-pulled ("build the view seam"). Engine:
 > `madcdis/doc_lens.h` `doc_map` — the ONE display↔stored coordinate
