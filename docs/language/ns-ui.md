@@ -137,6 +137,38 @@ The line-mode editor (`examples/texteditor/` — nine script verbs through
 the one registry, design doc §7.7) is the worked example: a line command
 composes a range edit from `text_line_start`/`text_line_len`.
 
+## The view seam — the document lens's coordinate map
+
+An editor differentiates what is DISPLAYED from what is STORED (the
+document lens: display = get(stored); an editable lens has a put). The
+display↔stored byte correspondence rides as DATA — an array of
+`{disp, stored, len}` copy-segment rows (`madcdis/doc_lens.h`'s codec).
+Stored bytes outside every segment are CONCEALED (markdown formatting
+characters, folds); display bytes outside every segment are SYNTHETIC
+(rendered code views, decoration). Caret/selection TRUTH stays in stored
+offsets; these publics are the ONE projection owner's dialect face —
+never re-derive caret math per view.
+
+| Function | Description |
+|----------|-------------|
+| `lens_to_display(map, stored)` | Project a stored caret offset into display space |
+| `lens_to_stored(map, display)` | Project a display caret offset into stored space (the put direction's coordinate half) |
+
+Contract (pinned by `tests/unit/test_doc_lens.cpp`): 1:1 inside a copy
+segment, caret ends included; strictly inside a gap collapses FORWARD to
+the next segment's start in the other space; a boundary shared by a copy
+end and a gap belongs to the copy that ends there (the inverse of a
+gap-adjacent caret lands at the EARLIER position — outside a concealed
+run, the safe side for a put); past the last segment lands just after its
+image; a valid EMPTY map (a wholly rendered view) answers 0; −1 =
+malformed map (the strict codec refuses whole) or a negative offset.
+
+The first consumers are madcide's read-only code views (`^K N` cycles
+original → MC11 → C11 over the one document): the rendered text comes
+from `madc::emit` over the live buffer, the lens data (view name + map)
+rides the edit node's hints, and the identity lens — no view — adds
+nothing (the composed tree is byte-identical to a plain editor's).
+
 ## Access model and projections
 
 Projection selection IS the access decision: what a session may see is
