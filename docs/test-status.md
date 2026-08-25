@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-25, persistent parse handles / AST-1 —
+> **Current (2026-08-25, spans/styles/schemes / AST-2 —
+> feature/madcide-ast2-claude merge wave):** highlight spans as
+> edit-node hints painted through the ONE range-overlap rule (selection
+> wins); `tui_attr` = the style struct speaking JOE's vocabulary with
+> bold-as-bright (owner: VT-102 ANSI); `emit_sgr` = the one
+> reset-then-set SGR table with the historical 7m/0m spellings — the
+> no-colour stream is byte-identical (testvised/testlineed pinned).
+> `madc::parse_spans` classifies the handle's retained tokens (one
+> classifier; comments from trivia — handles arm keep_trivia, cost in
+> the noise); colour SCHEMES = profiles/*.theme swapped via ^K T.
+> Two lexer defects the pins exposed were fixed at their owners
+> (pushback_reread column rewind; the `char *s` lookahead space —
+> a live --emit=c++ fidelity leak; emitcxx_rt3 joined the gate).
+> Merge-wave battery: authoritative Linux fulltest **1151 passed / 0
+> failed / 0 timed out / 9 skipped** (testparsespans joined) + EXE lane
+> **1107/0**; pty colour smoke green (33/32/1;34/7m/0m).
+>
+> **Previous (2026-08-25, persistent parse handles / AST-1 —
 > feature/madcide-ast1-claude merge wave):** the compiler-data child
 > machinery given a LIFETIME. `madc::parse_open/open_file/refresh/close`
 > + `parse_outline/parse_check/parse_enclosing` (outline-at-offset from

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **Highlight spans, JOE-parity styles, and colour schemes (madcide
+  AST-2 / IDE-7)**: `tui_attr` became the style struct {fg, bg, flags}
+  speaking JOE's syntax vocabulary — `bold dim italic underline blink
+  inverse`, the 8 ANSI colours, `bg_*` — with bold-as-bright for the 16
+  effective foreground colours (owner directive: the VT-102 model; no
+  aixterm 90–97; 256/true-colour a named seat). Edit nodes carry
+  `spans` hints (`{s,e,c}` byte ranges + spec); spans and the selection
+  paint through the one extracted range-overlap rule (selection wins);
+  `emit_sgr` is the one reset-then-set SGR table with the historical
+  `\x1b[7m`/`\x1b[0m` spellings preserved — normal/reverse-only grids
+  stay byte-identical. `madc::parse_spans` classifies the handle's
+  RETAINED tokens (`madc_token_highlight_class` = the one classifier;
+  comments from trivia — handles arm `keep_trivia`, cost measured in
+  the noise; function names from the tree by head-line match). Colour
+  SCHEMES are theme files (`profiles/*.theme`, class-first multi-word
+  specs), swapped at runtime via `^K T` through the one prompt mode;
+  `default` + `classic` ship. Two lexer defects the span pins exposed
+  were fixed at their owners: compound-type-specifier heads stamped the
+  lookahead word's column (`pushback_reread` now rewinds + recounts
+  same-line re-reads), and the rejected lookahead ate the space in
+  `char *s` — which was silently corrupting the `--emit=c++` echo to
+  `char*s` (new `emitcxx_rt3.cpp` in the round-trip gate). New reducer
+  `tests/testparsespans`; testmadcide span + theme-swap pins; pty
+  colour smoke. Merge wave: fulltest 1151/0/0/9 + EXE 1107/0.
+
 - **Persistent parse handles (madcide AST-1 / IDE-6)**: the
   compile-never-execute compiler-data machinery given a lifetime.
   `madc::parse_open` / `parse_open_file` / `parse_refresh` (whole-TU) /
