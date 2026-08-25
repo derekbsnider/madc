@@ -12,6 +12,10 @@
 
 const char *LINEED_VERBS[9] = { "p", "c", "i", "a", "d", "f", "w", "q", "q!" };
 const char *LINEED_FILES[9] = { "p", "c", "i", "a", "d", "f", "w", "q", "qbang" };
+// The verbs that would mutate the document: gated by the ONE read-only
+// availability check (checks/editable.madv) — enumeration and dispatch
+// read the same rule (§7.3's affordance form).
+const char *LINEED_EDIT_VERBS[5] = { "c", "i", "a", "d", "w" };
 
 void bind_lineed_verbs(long w)
 {
@@ -26,6 +30,14 @@ void bind_lineed_verbs(long w)
 	}
 	ui::bind_verb(w, LINEED_VERBS[k], src.c_str());
     }
+    value chk;
+    if ( !php::file_get_contents(chk, "examples/texteditor/checks/editable.madv") )
+    {
+	println(stderr, "cannot load the editable check body");
+	return;
+    }
+    for ( int k = 0; k < 5; k = k + 1 )
+	ui::bind_check(w, LINEED_EDIT_VERBS[k], chk.c_str());
 }
 
 void run_session(const char *path, bool ro)
