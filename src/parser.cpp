@@ -66263,10 +66263,16 @@ size_t Program::record_throw_diagnostic(const std::exception &e,
 // never opened stays at zero (the enclosing region's own close). The angle
 // axis is deliberately NOT consulted for sync — broken code can open a '<'
 // that never closes, and a wedged angle must not push the sync to EOF.
+// `brace_debt` seeds the brace axis: the compound scopes the DEAD statement
+// left open at throw time (each pushCompound consumed a '{' the walk never
+// saw). A failure inside `int main() { ...` then syncs at main's CLOSING
+// brace instead of the first interior ';' — without the seed, the leftover
+// body statements would re-enter the loop as top-level debris and cascade.
 // Returns the last consumed token (NULL if the stream was already empty).
-TokenBase *Program::skip_to_statement_sync()
+TokenBase *Program::skip_to_statement_sync(size_t brace_debt)
 {
     DelimDepth d;
+    d.brace = (int)brace_debt;
     TokenBase *last = NULL;
     while ( !tokens.empty() )
     {
@@ -66340,13 +66346,29 @@ void Program::contain_toplevel_parse_error(TokenProgram *tp,
 					   size_t diag_index,
 					   size_t saved_compounds,
 					   size_t saved_class_scopes,
-					   const std::string &saved_func)
+					   const std::string &saved_func,
+					   size_t cursor_watermark)
 {
     parsing_script_statement = false;
+    // The brace debt = the unmatched '{'s the DEAD statement consumed, which
+    // the sync walk will never see. Measured from the STREAM, not parser
+    // state: consumed buffer tokens stay in _buf, so [cursor_watermark,
+    // cursor()) IS the region the failed statement consumed — and interior
+    // catches (the deferred-body restore) unwind `compounds` before
+    // rethrowing, so the stack cannot carry this. DelimDepth::update's
+    // clamp-at-zero close makes d.brace after the scan exactly the
+    // unmatched-open count. (Injected pushback tokens are not buffer
+    // positions — a real brace re-consumed through the LIFO is not counted;
+    // acceptable for a resync heuristic.)
+    DelimDepth consumed;
+    size_t cursor_now = tokens.cursor();
+    for ( size_t i = cursor_watermark; i < cursor_now; ++i )
+	consumed.update(tokens.buf_at(i));
+    size_t brace_debt = consumed.brace > 0 ? (size_t)consumed.brace : 0;
     restore_parse_scope_depths(saved_compounds, saved_class_scopes,
 			       "toplevel-recovery");
     cur_func_name = saved_func;
-    TokenBase *sync_last = skip_to_statement_sync();
+    TokenBase *sync_last = skip_to_statement_sync(brace_debt);
     TokenError *en = make_error_node(ErrorNodeKind::SkippedTokens, diag_index,
 				     loop_head,
 				     sync_last ? sync_last : loop_head);
@@ -66410,6 +66432,7 @@ bool Program::parse(TokenProgram *tp)
 	    size_t saved_class_scopes = class_scope_stack.size();
 	    std::string saved_func = cur_func_name;
 	    size_t diag_watermark = diagnostics.size();
+	    size_t cursor_watermark = tokens.cursor();
 	    try
 	    {
 	    tb = nextToken();
@@ -66473,7 +66496,8 @@ bool Program::parse(TokenProgram *tp)
 		contain_toplevel_parse_error(tp, loop_head,
 		    record_parse_error(
 			err_msg ? err_msg : "(null error message)", tb, tp),
-		    saved_compounds, saved_class_scopes, saved_func);
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
 	    }
 	    catch(TokenIdent *ti)
 	    {
@@ -66481,7 +66505,8 @@ bool Program::parse(TokenProgram *tp)
 		    record_parse_error(
 			std::string("use of undeclared identifier '")
 			    + ti->spelling() + '\'', ti, tp),
-		    saved_compounds, saved_class_scopes, saved_func);
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
 	    }
 	    catch(TokenBase *err_tb)
 	    {
@@ -66489,7 +66514,8 @@ bool Program::parse(TokenProgram *tp)
 		    record_parse_error(
 			std::string("unexpected token type ")
 			    + std::to_string((int)err_tb->type()), err_tb, tp),
-		    saved_compounds, saved_class_scopes, saved_func);
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
 	    }
 	    catch(std::exception &e)
 	    {
@@ -66502,7 +66528,8 @@ bool Program::parse(TokenProgram *tp)
 		print_unrendered_diagnostic();
 		contain_toplevel_parse_error(tp, loop_head,
 		    diagnostics.empty() ? 0 : diagnostics.size() - 1,
-		    saved_compounds, saved_class_scopes, saved_func);
+		    saved_compounds, saved_class_scopes, saved_func,
+		    cursor_watermark);
 	    }
         }
 	// Script mode: seal the synthesized main once the whole TU parsed.

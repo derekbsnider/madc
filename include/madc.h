@@ -5339,8 +5339,10 @@ public:
     // tokens stepping DelimDepth (the one tracker) until a ';' outside every
     // (/[/{, or a '}' that closes the region. The angle axis is deliberately
     // NOT consulted for sync — broken code can open a '<' that never closes.
+    // brace_debt = compound scopes the dead statement left open (their '{'s
+    // were consumed before the throw; the walk owes their closes).
     // Returns the last consumed token (NULL if the stream was already empty).
-    TokenBase *skip_to_statement_sync();
+    TokenBase *skip_to_statement_sync(size_t brace_debt);
     // THE TokenError construction point: every synthesized error node
     // increments error_nodes here, so the translate gate's count is exact
     // by construction. Position stamps from `first` when given.
@@ -5355,11 +5357,16 @@ public:
     // Contain one top-level parse error: restore the statement-entry depths
     // (restore_parse_scope_depths), skip to sync, plant the SkippedTokens
     // node linking diagnostics[diag_index]. The parse loop then continues.
+    // cursor_watermark = tokens.cursor() at statement entry: the consumed
+    // buffer range [watermark, cursor()) measures the dead statement's
+    // unmatched '{'s (the sync walk's brace debt) from STREAM truth —
+    // interior catches unwind `compounds` before rethrowing.
     void contain_toplevel_parse_error(TokenProgram *tp, TokenBase *loop_head,
 				      size_t diag_index,
 				      size_t saved_compounds,
 				      size_t saved_class_scopes,
-				      const std::string &saved_func);
+				      const std::string &saved_func,
+				      size_t cursor_watermark);
     TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
