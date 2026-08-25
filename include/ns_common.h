@@ -181,4 +181,13 @@ int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx);
 double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx);
 void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ctx);
 
+// ---- madc:: compiler-data internals (defined in src/parser.cpp) --------
+// Compile-never-execute a source buffer in a child Program; the compiler's
+// own structured data comes back as a value ARRAY (madcide IDE-3):
+// diagnostics = {severity, phase, message, file, line, column} rows,
+// outline = {kind, name, line, column} rows for the buffer's own
+// definitions. result = madc::value*, source/filename = std::string*.
+void *madc_source_diagnostics(void *result, void *source, void *filename);
+void *madc_source_outline(void *result, void *source, void *filename);
+
 #endif // __NS_COMMON_H

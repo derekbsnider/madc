@@ -188,6 +188,20 @@ double eval_double_ctx(const char *source, value &ctx)
 value &eval_string_ctx(value &out, const char *source, value &ctx)
 	{ std::string s = source ? source : "", r; madc_runtime_eval_string_ctx(&r, &s, &ctx); out = value(r); return out; }
 
+// Compiler data as data (madcide IDE-3): compile-NEVER-execute a source
+// buffer in a child Program and return the compiler's own structured
+// data as a value array — the meta-level surface an IDE's diagnostics
+// pane and outline project. The <ns_madc> declarations carry the row
+// shapes and the thread contract.
+value &diagnostics(value &out, const char *source)
+	{ std::string s = source ? source : "", f; madc_source_diagnostics(&out, &s, &f); return out; }
+value &diagnostics(value &out, const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; madc_source_diagnostics(&out, &s, &f); return out; }
+value &outline(value &out, const char *source)
+	{ std::string s = source ? source : "", f; madc_source_outline(&out, &s, &f); return out; }
+value &outline(value &out, const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; madc_source_outline(&out, &s, &f); return out; }
+
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a
 // diagnosed no-op instead of throwing across the JIT boundary.

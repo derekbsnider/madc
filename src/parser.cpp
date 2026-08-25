@@ -223,6 +223,7 @@ void *__madc_regex_replace(void *, void *, void *, void *);
 // Static parse position — inherited by all new tokens automatically
 const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
+thread_local bool DiagnosticRenderMute::active = false;
 int TokenBase::_parse_column = 0;
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 madc::dis::value_pool *TokenBase::_active_valpool = NULL;
@@ -296,6 +297,17 @@ bool internal_program_runtime_eval_expression(::Program &self,
 					      value &result,
 					      const std::string &display_name,
 					      const value *context);
+// Compiler-data internals (madcide IDE-3; madc_program.cpp beside the
+// eval-source pipeline): compile-never-execute a buffer in a child
+// Program, diagnostics/outline captured as value arrays.
+bool internal_program_source_diagnostics(::Program &self,
+					 const std::string &source_text,
+					 value &out,
+					 const std::string &display_name);
+bool internal_program_source_outline(::Program &self,
+				     const std::string &source_text,
+				     value &out,
+				     const std::string &display_name);
 }
 
 namespace {
@@ -835,6 +847,45 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
     }
     if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
 	return result;
+    return result;
+}
+
+// ---- madc:: compiler-data internals (madcide IDE-3) ---------------------
+// result = madc::value* (an array of row objects), source/filename =
+// std::string*. Compile-never-execute; the child pipeline lives beside
+// internal_program_runtime_eval_source in madc_program.cpp.
+
+void *madc_source_diagnostics(void *result, void *source, void *filename)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    madc::internal_program_source_diagnostics(*active, src, out,
+					      disp.empty() ? "<source>" : disp);
+    return result;
+}
+
+void *madc_source_outline(void *result, void *source, void *filename)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    madc::internal_program_source_outline(*active, src, out,
+					  disp.empty() ? "<source>" : disp);
     return result;
 }
 
@@ -19745,6 +19796,8 @@ bool Program::can_show_diagnostic_source(const Diagnostic &diag) const
 
 void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix)
 {
+    if ( DiagnosticRenderMute::active )
+	return;		// captured as data; the record already exists
     if ( !diag.file.empty() )
 	os << ANSI_WHITE << diag.file << ':' << diag.line << ':' << diag.column;
     else

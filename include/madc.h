@@ -1832,6 +1832,21 @@ public:
 void show_error_source_line(const std::string &ln, int col);
 bool madc_show_file_error(const char *fname, int row, int col);
 
+// Mute diagnostic RENDERING (Program::print_diagnostic's header + source
+// echo AND throwbuf::sync's stderr render) while a compile-only child
+// captures diagnostics AS DATA (madc::diagnostics / madc::outline —
+// madcide IDE-3). Recording into Program::diagnostics is never muted —
+// only the rendering; errors still throw and still land structured.
+// Thread-local: the capture child is confined to its calling thread.
+class DiagnosticRenderMute
+{
+    bool _prev;
+public:
+    static thread_local bool active;
+    DiagnosticRenderMute() : _prev(active) { active = true; }
+    ~DiagnosticRenderMute() { active = _prev; }
+};
+
 // Does a loaded native library export this symbol? ONE owner (defined in
 // cir_builder.cpp, beside the mangled-direct bind sites that ask it most) —
 // the same dlsym the MIR import resolver uses, so a yes here always links.

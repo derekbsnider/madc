@@ -9386,6 +9386,8 @@ bool madc_show_file_error(const char *fname, int row, int col)
 
 int throwbuf::sync()
 {
+    if ( DiagnosticRenderMute::active )
+	throw std::exception();	// captured as data — render nothing
     cerr << endl;
     if ( _tb )
     {
