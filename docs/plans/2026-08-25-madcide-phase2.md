@@ -309,6 +309,98 @@ at execution today); madcide editable re-derivation on mid-session
 flips (inherited from R5); profile files carry no savequit binding in
 pico (actions need not all be bound — by design).
 
+## Owner review (2026-08-25, post-ship) — THE NEXT ARC (madcide v2)
+
+The owner reviewed the shipped madcide and gave three directives. This
+section is the execution input for the next session; nothing here is
+implemented yet.
+
+**1. madcide is a TOOL, not an example.** Relocate `examples/madcide/`
+→ `tools/madcide/` (git mv; fix the include paths, the default
+`profile_dir`, tests/testmadcide's includes, and the doc references —
+grep `examples/madcide` across scripts/tests/docs). The texteditor
+stays an example; madcide keeps including its shared
+`editor_events.inc` (the libmadcedit packaging question, ROADMAP 8.1,
+stands).
+
+**2. Bind the FULL basic editing set.** The shipped joe profile only
+bound `^K` chords — the plain-editor coverage regressed (arrows worked;
+the WordStar diamond and the direct editing keys did not). The owner's
+list (bindings stay data in `profiles/joe.keys`; actions the engine or
+app must GROW are marked):
+
+- File/exit: `^K X` save+exit ✓ · `^K D` and `^K S` save ✓ · `^K R`
+  insert/include file (NEW action + a filename prompt; the shipped
+  `check` moves off `^K R` — take `^K E`, a data choice) · `^C` abort
+  without saving ✓ · `^K H` help window (NEW — compose the pane FROM
+  the loaded bindings table: help is a projection of the profile) ·
+  `^K Z` open shell (NEW — needs `ui::tui_suspend/tui_resume` publics
+  + target support: leave alt screen/restore termios, run $SHELL,
+  re-enter + full repaint).
+- Movement: `^B`/`^F` left/right · `^P`/`^N` up/down · `^A`/`^E` line
+  start/end · `^Z`/`^X` prev/next WORD (NEW: word motion — put
+  `word_left/word_right` on text_buffer beside find, + `ui::text_word_*`)
+  · `^U`/`^V` PgUp/PgDn · `^K U`/`^K V` top/end of file (NEW actions) ·
+  `^K L` go to line (NEW — a numeric prompt). Motion actions should
+  DELEGATE to the existing edit_key vocabulary (bind "^b" → action
+  "left" etc.; the dispatcher synthesizes the key event) — no second
+  movement implementation.
+- Editing: `^D` delete char (= del) · `^Y` delete line (NEW) · `^W`
+  delete word right (NEW) · `^_` undo / `^^` REDO — the key parser
+  currently DROPS 0x1c–0x1f: extend tui_keyparse (0x1c..0x1f → ctrl
+  '\\' ']' '^' '_'; tui_key_name already spells "^"+ch;
+  tui_key_from_name must accept the non-letter ctrl spellings), and
+  REDO must land in text_buffer history (undo stack + redo stack; a
+  checkpoint clears redo; undo/redo need the CURRENT meta passed in so
+  the opposite stack restores caret — extend
+  `ui::text_undo(meta_out, w, e, now_meta)` + new `ui::text_redo`;
+  keep the simple undo overload for the existing pins).
+- Blocks: `^K B` begin · `^K K` end (NEW: es carries mark=begin +
+  bend=end; the shared compose_edit_node's selection becomes
+  [mark, bend-else-caret] — vised never sets bend, unchanged) · `^K C`
+  copy block to caret · `^K M` move block to caret · `^K Y` delete
+  block (clip = its text). These REPLACE the shipped mark/cut/paste
+  actions in madcide (vised's Pico set untouched).
+- Search: `^K F` find ✓ · `^L` find NEXT (NEW — repeat es "search"
+  from caret+1 with wrap). Generalize madcide's prompt into one prompt
+  mode (find / goto-line / insert-file); vised keeps the shared simple
+  search.
+
+testmadcide updates with the new vocabulary (its mark/cut/paste pins
+change with the block model — it is this arc's own test). pico.keys
+respells the subset that fits single chords (data).
+
+**3. The AST-in-memory design (the owner: "the more important part").**
+madcide, editing C/C++/madc sources (.c .cpp .cc .h .hh .mad .madc
+.inc .madh .mc11, …), should PARSE the file into memory ON LOAD; open/
+save PROJECT uses the same cc.json `--project` consumes; and the
+PROJECT'S PROGRAM AST is MAINTAINED IN MEMORY — this is how colour
+syntax highlighting works, and the status line's code info. Mapping to
+machinery (the meta-level dogfood, hub demand 3 — madcide browsing the
+compiler's own forest):
+
+- **IDE-6 — persistent parse handles**: today madc::diagnostics/outline
+  throw their child Program away. Grow a HANDLE surface (open/refresh/
+  close a live child Program per TU; a MadcCompileGroup for a project)
+  so the AST persists between queries; parse-on-load by extension;
+  re-parse cadence = on save/idle first (true incrementality later).
+  Status-line info = enclosing function/class at the caret (an
+  outline-at-offset query over the retained tree — MC11-IR tokens carry
+  file/line/col, the source of truth).
+- **IDE-7 — colour**: tui_attr (normal/reverse today) grows a small
+  colour palette; the VT100 target emits SGR; highlight SPANS arrive as
+  edit-node PROJECTION HINTS (spans as data — classification from the
+  retained tokens/AST; the renderer never parses).
+- **IDE-8 — project + multi-buffer**: open cc.json → TU list pane,
+  per-TU buffers/parse handles, save project writes the same json;
+  this is where `^K E` becomes JOE's edit-file and check moves again.
+
+Open question noted for IDE-6: whether the handle API lives in madc::
+(beside diagnostics/outline — likely) and how it composes with the
+runtime-eval child policy; the `^K Z` shell needs `system`/`getenv`
+resolution checked (no include/madc/stdlib.h exists — dlsym fallback
+declares int returns per the embedded-headers rule).
+
 ## Deferred (seats held)
 
 Redo; syntax highlighting (a projection-hints question — spans as data,
