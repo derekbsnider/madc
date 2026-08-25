@@ -45,6 +45,15 @@ public:
     // size change arrives as a tui_key::resize in the batch. False = the
     // input source ended.
     virtual bool read_keys(std::vector<tui_keyev> &out) = 0;
+    // Temporarily hand the terminal back (leave grid mode, restoring the
+    // screen and modes exactly as found) so the application can run a
+    // child process — JOE's ^K Z shell; resume() re-enters grid mode.
+    // After a resume the previous physical contents are GONE: the
+    // consumer must treat every row as dirty and repaint fully. A target
+    // that cannot suspend refuses both (false — the default). paint and
+    // read_keys are not called while suspended (consumer contract).
+    virtual bool suspend() { return false; }
+    virtual bool resume() { return false; }
     // The current surface size.
     virtual void size(size_t &rows, size_t &cols) = 0;
 };

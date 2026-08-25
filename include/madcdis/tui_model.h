@@ -147,6 +147,8 @@ enum class tui_key : unsigned char
     none = 0,
     ch,		// printable byte in `ch`
     ctrl,	// control chord; `ch` = the lowercase letter (^S -> 's')
+		// or one of the four punctuation controls 0x1c..0x1f
+		// ('\\' ']' '^' '_' — JOE's ^_ undo / ^^ redo live here)
     enter, tab, backspace, esc,
     up, down, left, right,
     home, end, pgup, pgdn, del, ins,
@@ -202,7 +204,8 @@ inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
 	char c = name[1];
 	if ( c >= 'A' && c <= 'Z' )
 	    c = (char)(c - 'A' + 'a');
-	if ( c < 'a' || c > 'z' )
+	if ( (c < 'a' || c > 'z') && c != '\\' && c != ']' && c != '^'
+		&& c != '_' )
 	    return false;
 	out = tui_keyev(tui_key::ctrl, c);
 	return true;
@@ -258,6 +261,20 @@ public:
 	return tui_key_name(k);
     }
 
+    // CONTINUATION spelling (every key after the head): JOE's other
+    // chord convention — the ctrl state of a continuation never
+    // distinguishes bindings either (^K ^Z == ^K Z; users keep ctrl
+    // held), so a ctrl+letter continuation spells as the bare letter.
+    // Ctrl+punctuation (^_ ^^ ^] ^\) has no letter form and stays
+    // itself. bind() canonicalization and the model's pending-chord
+    // extension both ride this — one owner, both directions.
+    static std::string cont_spelling(const tui_keyev &k)
+    {
+	if ( k.kind == tui_key::ctrl && k.ch >= 'a' && k.ch <= 'z' )
+	    return std::string(1, k.ch);
+	return seq_spelling(k);
+    }
+
     bool empty() const { return _actions.empty(); }
     void clear() { _actions.clear(); _prefixes.clear(); }
 
@@ -279,9 +296,13 @@ public:
 	    tui_keyev k;
 	    if ( !tui_key_from_name(seq.substr(i, j - i), k) )
 		return false;
-	    if ( !canon.empty() )
+	    if ( canon.empty() )
+		canon += seq_spelling(k);
+	    else
+	    {
 		canon += ' ';
-	    canon += seq_spelling(k);
+		canon += cont_spelling(k);
+	    }
 	    i = j;
 	}
 	if ( canon.empty() )
@@ -437,10 +458,12 @@ class tui_keyparse
 	    emit(out, tui_key::backspace);
 	else if ( b >= 0x01 && b <= 0x1a )
 	    emit(out, tui_key::ctrl, (char)('a' + b - 1));
+	else if ( b >= 0x1c && b <= 0x1f )
+	    emit(out, tui_key::ctrl, (char)(b + 0x40));	// ^\ ^] ^^ ^_
 	else if ( b >= 0x20 && b <= 0x7e )
 	    emit(out, tui_key::ch, (char)b);
-	// 0x00, 0x1c..0x1f, >=0x80: dropped (byte-oriented pilot; UTF-8
-	// glyph handling is the named residue).
+	// 0x00, >=0x80: dropped (byte-oriented pilot; UTF-8 glyph
+	// handling is the named residue).
     }
 
 public:
@@ -841,7 +864,7 @@ public:
 		    continue;
 		}
 		std::string candidate = _pending + " "
-				      + tui_bindings::seq_spelling(k);
+				      + tui_bindings::cont_spelling(k);
 		if ( _bindings.prefix(candidate) )
 		{
 		    _pending = candidate;

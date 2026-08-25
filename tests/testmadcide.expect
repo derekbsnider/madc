@@ -1,5 +1,6 @@
 joe: [^k s]=save [^k x]=savequit [^c]=discard
-pico: [^s]=save [^k]=cut
+pico: [^s]=save [^k]=blockdel
+joe-motion: [^b]=left [^k u]=top [^_]=undo [^^]=redo
 check1: Check: clean.
 edited: caret=5 modified=true size=89
 undo: caret=0 modified=false size=84
@@ -33,6 +34,20 @@ Ln 1, Col 1
 --- end ---
 goto-outline: caret=43
 swap: profile=pico tree=identical
+motion: caret=42
+words: right2=8 left1=5
+delword: 84 80 84 80 84
+delline: lines=1 caret=43
+blockcopy: size=88 tail-has-long=1
+blockdel: clip=long size=84
+blocks-undone: size=84
+blockmove: head= add caret=80
+gotoline: caret=43 prompt-off=1
+find: first=5 next=71
+insertfile: Inserted 8 bytes. size=92
+help: pane=help label=Help — pico profile rows=20
+shell-headless: No terminal to suspend.
+v2-restored: size=84 modified=false
 quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
 save: Wrote 92 bytes.
 savequit: cont=0 msg=Bye.

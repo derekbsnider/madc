@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **madcide v2 — a TOOL with the full JOE binding set (owner-directed)**:
+  relocated `examples/madcide` → `tools/madcide`; `profiles/joe.keys`
+  now carries the owner's complete basic-editing list (WordStar diamond
+  `^B^F^P^N` + `^A/^E` + `^Z/^X` words + `^U/^V` screens — motion
+  actions DELEGATE to the one shared movement implementation by
+  key-name; `^K U/^K V` file ends; `^K L` go to line; `^D/^Y/^W`
+  deletes; `^_` undo / `^^` REDO; blocks `^K B/K/C/M/Y` (begin/end
+  markers, copy/move/delete — replacing madcide's mark/cut/paste;
+  vised's Pico set untouched); `^K F` find + `^L` find next; `^K R`
+  insert file; `^K H` help = a projection of the loaded profile's own
+  lines; `^K Z` shell; `^K E` check). One prompt mode serves
+  find/goto-line/insert-file. Engine feeders: the key parser accepts
+  the punctuation controls 0x1c–0x1f (`^\ ^] ^^ ^_` were dropped
+  bytes); `text_buffer` grew REDO (two stacks; a checkpoint clears
+  redo; undo/redo carry the CURRENT payload so both directions restore
+  caret+modified with the document — `ui::text_redo`, four-argument
+  `ui::text_undo`) and word motion (`ui::text_word_left/right`);
+  `ui::tui_suspend/tui_resume` hand the terminal to a child process
+  and re-enter with a full repaint. A second chord convention, forced
+  by the pty probe: continuations are CTRL-insensitive (JOE's `^K ^Z`
+  == `^K Z`; `tui_bindings::cont_spelling`, the case-rule's sibling).
+  Real-pty smoke covers the whole loop including the shell round trip.
 - **madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer)**:
   `examples/madcide/` — the buffer is the texteditor machinery (the
   shared editor event core split into

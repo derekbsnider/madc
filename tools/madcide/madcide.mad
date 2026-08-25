@@ -1,0 +1,30 @@
+// madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
+// Usage: madc tools/madcide/madcide.mad <file> [ro]
+// Run it from the repository root (verb bodies and keybinding profiles
+// load by relative path). The buffer is the texteditor machinery; the
+// diagnostics pane and outline are projections of live compiler data;
+// keybindings are configurable profiles — the full JOE/WordStar set by
+// default (see profiles/joe.keys, the readable truth: WordStar diamond
+// ^B^F^P^N + ^A/^E + ^Z/^X words + ^U/^V screens; ^K S/^K D save ·
+// ^K X save+exit · ^K Q quit · ^C discard · ^K B/^K K block begin/end ·
+// ^K C/^K M/^K Y block copy/move/delete · ^K F find + ^L find next ·
+// ^_ undo / ^^ redo · ^Y/^W delete line/word · ^K R insert file ·
+// ^K L go to line · ^K U/^K V file top/end · ^K H help (the loaded
+// profile, projected) · ^K Z shell · ^K E check · ^K O outline ·
+// ^K P swap profile), Pico-style single chords in the pico profile.
+// Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
+// moves the caret to its line.
+#include "../../examples/texteditor/lined_core.inc"
+#include "../../examples/texteditor/editor_events.inc"
+#include "madcide_core.inc"
+
+int main(int argc, char **argv)
+{
+    if ( argc < 2 )
+    {
+	printf("usage: madcide <file> [ro]\n");
+	return 1;
+    }
+    run_ide(argv[1], argc > 2);
+    return 0;
+}

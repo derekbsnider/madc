@@ -1,0 +1,49 @@
+# madcide keybinding profile: JOE/WordStar-style — the default, the
+# owner's full basic editing set. One binding per line: key sequence,
+# spaces, action name (the LAST word). Sequences are space-separated key
+# spellings, any length; letters are case-insensitive (^K S == ^K s).
+# Lines starting with # and blank lines are ignored.
+#
+# File and exit
+^k x savequit
+^k d save
+^k s save
+^k r insertfile
+^c discard
+^k h help
+^k z shell
+# Movement (the WordStar diamond; these delegate to the one shared
+# movement implementation — the action name is the key vocabulary)
+^b left
+^f right
+^p up
+^n down
+^a home
+^e end
+^z wordleft
+^x wordright
+^u pgup
+^v pgdn
+^k u top
+^k v bottom
+^k l gotoline
+# Editing
+^d del
+^y delline
+^w delword
+^_ undo
+^^ redo
+# Blocks
+^k b mark
+^k k bend
+^k c blockcopy
+^k m blockmove
+^k y blockdel
+# Search
+^k f find
+^l findnext
+# madcide
+^k q quit
+^k e check
+^k o outline
+^k p profile

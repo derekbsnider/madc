@@ -195,15 +195,30 @@ namespace ui {
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
-    // History (undo): text_checkpoint snapshots the buffer BEFORE a
+    // Word motion (JOE ^Z/^X): a word byte is [A-Za-z0-9_].
+    // text_word_right = the offset just past the end of the next word;
+    // text_word_left = the offset of the first byte of the previous
+    // word; both clamp, -1 = no text component.
+    int64_t text_word_left(int64_t w, int64_t entity, int64_t from);
+    int64_t text_word_right(int64_t w, int64_t entity, int64_t from);
+    // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
     // mutation, carrying an OPAQUE application payload (store the caret
     // there — it rides with the state it belongs to); one semantic edit,
     // one checkpoint. text_undo restores the newest snapshot and hands
     // the payload back (false: no component or nothing to undo). History
-    // is runtime-only like the component; text_load clears it. Redo is a
-    // named seat, not yet a surface.
+    // is runtime-only like the component; text_load clears it.
+    // The four-argument undo and text_redo are the redo-preserving pair:
+    // now_meta = the payload live on the document being LEFT (its caret),
+    // captured onto the opposite stack so undo/redo restore document +
+    // interaction state together. A checkpoint (a new edit) clears redo;
+    // the three-argument undo is the legacy destructive form (clears
+    // redo too).
     void text_checkpoint(int64_t w, int64_t entity, value &meta);
     bool text_undo(value &meta_out, int64_t w, int64_t entity);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
+    bool text_redo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
 
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free
@@ -244,4 +259,11 @@ namespace ui {
     void    tui_render(int64_t t, int64_t w, value &tree);
     bool    tui_bind_keys(int64_t t, value &table);
     bool    tui_event(value &out, int64_t t, int64_t w);
+    // Hand the terminal back to run a child process (JOE ^K Z shell):
+    // tui_suspend restores the screen and modes as found; tui_resume
+    // re-enters grid mode, re-reads the size, and forces the next
+    // tui_render to repaint every row. Pair them around the child; do
+    // not render or read events while suspended.
+    bool    tui_suspend(int64_t t);
+    bool    tui_resume(int64_t t);
 }

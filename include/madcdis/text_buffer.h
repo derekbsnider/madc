@@ -47,6 +47,7 @@ public:
     void load(const std::string &s)
     {
 	_history.clear();
+	_redo.clear();
 	_original = s;
 	_add.clear();
 	_pieces.clear();
@@ -280,37 +281,78 @@ public:
 	return hit == std::string::npos ? npos : hit;
     }
 
+    // Word motion (JOE ^Z/^X semantics; a word byte is [A-Za-z0-9_] —
+    // identifier-shaped, madcide edits source). word_right: from `from`,
+    // skip non-word bytes then word bytes — the offset just PAST the end
+    // of the next word (clamped to the document end). word_left: the
+    // mirror — the offset of the FIRST byte of the previous word
+    // (clamped to 0). Materializes, like find — the linear-scan contract.
+    size_t word_right(size_t from) const
+    {
+	std::string t = text();
+	size_t i = from > t.size() ? t.size() : from;
+	while ( i < t.size() && !word_byte(t[i]) )
+	    ++i;
+	while ( i < t.size() && word_byte(t[i]) )
+	    ++i;
+	return i;
+    }
+    size_t word_left(size_t from) const
+    {
+	std::string t = text();
+	size_t i = from > t.size() ? t.size() : from;
+	while ( i > 0 && !word_byte(t[i - 1]) )
+	    --i;
+	while ( i > 0 && word_byte(t[i - 1]) )
+	    --i;
+	return i;
+    }
+
     size_t piece_count() const { return _pieces.size(); }	// unit-test view
 
-    // ---- history (madcide IDE-2): undo is a pieces-vector snapshot -----
+    // ---- history (madcide IDE-2): undo/redo are pieces-vector snapshots
     // The add buffer is append-only and the loaded snapshot immutable, so
     // an old pieces vector stays valid forever (until load() replaces the
     // sources — which clears history). A checkpoint carries an OPAQUE
     // application payload: the caret (or anything else) rides with the
     // state it belongs to; the component never learns what it means.
     // The application checkpoints BEFORE mutating (one semantic edit =
-    // one step — the event-coalescing cadence); undo restores the top
-    // snapshot and hands the payload back. Unbounded by default (liberal
-    // resource-guard rule); redo is a named seat, not yet a member.
+    // one step — the event-coalescing cadence). Unbounded by default
+    // (liberal resource-guard rule).
+    //
+    // REDO (madcide v2): two stacks. A checkpoint is a new edit branch —
+    // it clears redo. The meta-carrying undo/redo forms take the CURRENT
+    // payload (now_meta) so the opposite stack pairs the document being
+    // left with the interaction state that was live on it: every stack
+    // entry restores a document AND the caret that belonged to it.
+    // The one-argument undo is the legacy destructive form (no capture,
+    // so any redo entries are stale — it clears them).
     void checkpoint(const madc::value &meta)
     {
-	history_entry h;
-	h.pieces = _pieces;
-	h.size = _size;
-	h.meta = meta;
-	_history.push_back(h);
+	_redo.clear();
+	push_entry(_history, meta);
     }
     bool undo(madc::value &meta_out)
     {
+	_redo.clear();
+	return restore_from(_history, meta_out);
+    }
+    bool undo(madc::value &meta_out, const madc::value &now_meta)
+    {
 	if ( _history.empty() )
 	    return false;
-	_pieces = _history.back().pieces;
-	_size = _history.back().size;
-	meta_out = _history.back().meta;
-	_history.pop_back();
-	return true;
+	push_entry(_redo, now_meta);
+	return restore_from(_history, meta_out);
+    }
+    bool redo(madc::value &meta_out, const madc::value &now_meta)
+    {
+	if ( _redo.empty() )
+	    return false;
+	push_entry(_history, now_meta);
+	return restore_from(_redo, meta_out);
     }
     size_t history_depth() const { return _history.size(); }
+    size_t redo_depth() const { return _redo.size(); }
 
 private:
     struct piece
@@ -333,11 +375,37 @@ private:
 	history_entry() : size(0) {}
     };
 
+    void push_entry(std::vector<history_entry> &st, const madc::value &meta)
+    {
+	history_entry h;
+	h.pieces = _pieces;
+	h.size = _size;
+	h.meta = meta;
+	st.push_back(h);
+    }
+    bool restore_from(std::vector<history_entry> &st, madc::value &meta_out)
+    {
+	if ( st.empty() )
+	    return false;
+	_pieces = st.back().pieces;
+	_size = st.back().size;
+	meta_out = st.back().meta;
+	st.pop_back();
+	return true;
+    }
+
+    static bool word_byte(char c)
+    {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	    || (c >= '0' && c <= '9') || c == '_';
+    }
+
     std::string _original;	// the loaded snapshot — never mutated
     std::string _add;		// append-only insert storage
     std::vector<piece> _pieces;
     size_t _size;
     std::vector<history_entry> _history;
+    std::vector<history_entry> _redo;
 };
 
 } // namespace hub

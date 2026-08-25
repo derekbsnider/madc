@@ -114,16 +114,24 @@ properties (`path`, `modified`, `read_only`) are application bag keys.
 | `text_line_start(w, e, n)` | Line `n`'s byte offset (−1 when absent) |
 | `text_line_len(w, e, n)` | Line `n`'s length sans `'\n'` (−1 when absent) |
 | `text_find(w, e, from, needle)` | First occurrence at/after `from` (−1 = none) |
+| `text_word_left(w, e, from)` / `text_word_right(w, e, from)` | Word motion (JOE `^Z`/`^X` duals over `[A-Za-z0-9_]`): the previous word's first byte / just past the next word's end (−1 = no component) |
 | `text_checkpoint(w, e, meta)` | Snapshot the buffer BEFORE a mutation, with an opaque payload |
-| `text_undo(meta_out, w, e)` | Restore the newest snapshot, handing the payload back (`false` = nothing to undo) |
+| `text_undo(meta_out, w, e)` | Legacy destructive undo: restore the newest snapshot, handing the payload back (`false` = nothing to undo); clears redo |
+| `text_undo(meta_out, w, e, now_meta)` / `text_redo(meta_out, w, e, now_meta)` | The redo-preserving pair — see below |
 
-**Undo** is buffer history on the component: a checkpoint is a
+**Undo/redo** is buffer history on the component: a checkpoint is a
 pieces-vector snapshot plus an OPAQUE application payload — store the
 caret (and the modified flag) there, so undo restores document and
 interaction state together. Checkpoint cadence is the application's:
-one semantic edit (a coalesced text event, a cut, a paste) = one
+one semantic edit (a coalesced text event, a block op) = one
 checkpoint = one undo step. History is runtime-only like the component;
-`text_load` clears it; redo is a named seat.
+`text_load` clears it. Redo is two stacks: the four-argument
+`text_undo` and `text_redo` take `now_meta` — the payload live on the
+document being LEFT — and capture it onto the opposite stack, so
+walking either direction restores document + interaction state
+together. A checkpoint is a new edit branch and clears redo; the
+three-argument `text_undo` is the legacy destructive form (no capture,
+so it clears redo too).
 
 The line-mode editor (`examples/texteditor/` — nine script verbs through
 the one registry, design doc §7.7) is the worked example: a line command
@@ -244,6 +252,7 @@ is madc source bound through this surface.
 | `tui_render(t, w, tree)` | Compose a value-shaped projection tree onto the grid; only changed rows repaint |
 | `tui_bind_keys(t, table)` | Install a keybinding PROFILE (key sequences → action names); a swap is one call |
 | `tui_event(out, t, w)` | Block for the next SEMANTIC event object; `false` at end of input |
+| `tui_suspend(t)` / `tui_resume(t)` | Hand the terminal to a child process (JOE `^K Z` shell) and re-enter: suspend restores the screen/modes as found; resume re-reads the size and forces the next render to repaint every row |
 
 The loop is compose-as-data → `tui_render` → `tui_event` → apply. The
 SAME tree `render_tree` typesets sequentially presents on the grid: a
@@ -265,7 +274,10 @@ offsets). Events arrive as value objects, names at the boundary:
 value object mapping key SEQUENCES to action names
 (`{"^k s": "save", ...}`) — sequences are space-separated key
 spellings (the same names key events carry), any length, letter-case
-insensitive (JOE's `^K S` == `^K s`). Bound sequences resolve ahead of
+insensitive (JOE's `^K S` == `^K s`), and ctrl-insensitive in the
+CONTINUATION position (JOE's `^K ^Z` == `^K Z` — users keep ctrl held;
+ctrl+punctuation like `^_` has no letter form and stays itself). Bound
+sequences resolve ahead of
 the built-in key handling and arrive as `action` events; a chord's
 prefix (`^k`) waits for its continuation (esc cancels). Validation is
 loud and whole-table: unknown spellings, printable-HEADED sequences
@@ -279,11 +291,14 @@ differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
 target. `examples/texteditor/vised.mad` is the worked example of the
-editor pair (Pico-style fixed chords); `examples/madcide/madcide.mad`
-is the worked example of profiles-as-data (JOE/WordStar `^K` chords
-default, the pico profile respelling the same actions) and of the
-compiler-data panes (`madc::diagnostics` / `madc::outline` rows
-composed as a navigable `choice` whose chosen row moves the caret).
+editor pair (Pico-style fixed chords); `tools/madcide/madcide.mad`
+(a tool, not an example) is the worked case of profiles-as-data
+(the full JOE/WordStar set by default — `profiles/joe.keys` is the
+readable truth; the pico profile respells the single-chord subset) and
+of the compiler-data panes (`madc::diagnostics` / `madc::outline` rows
+composed as a navigable `choice` whose chosen row moves the caret; its
+`^K H` help pane projects the loaded profile's own lines — help is data
+like the bindings).
 
 ## Thread contract
 

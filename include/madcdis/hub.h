@@ -314,6 +314,25 @@ public:
 	    return false;
 	return it->second.undo(meta_out);
     }
+    // The redo-preserving forms (madcide v2): now_meta = the payload live
+    // on the document being LEFT, captured onto the opposite stack so
+    // redo/undo restore document + interaction state together.
+    bool text_undo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.undo(meta_out, now_meta);
+    }
+    bool text_redo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.redo(meta_out, now_meta);
+    }
     // The component, or NULL when the entity has none. (Reads only —
     // mutation goes through the verbs above.)
     const text_buffer *text_of(entity_id id) const

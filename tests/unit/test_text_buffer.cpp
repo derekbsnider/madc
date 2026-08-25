@@ -200,3 +200,95 @@ TEST_CASE("piece table — checkpoint/undo: pieces-vector snapshots + payload")
     CHECK(b.history_depth() == 0u);
     CHECK(!b.undo(meta));
 }
+
+TEST_CASE("piece table — redo: two stacks, checkpoint clears redo")
+{
+    text_buffer b;
+    b.load("one\n");
+    b.checkpoint(madc::value((int64_t)0));
+    b.insert(4, "two\n");			// "one\ntwo\n"
+    b.checkpoint(madc::value((int64_t)4));
+    b.insert(8, "three\n");			// "one\ntwo\nthree\n"
+    CHECK(b.redo_depth() == 0u);
+
+    // Each undo pairs the document being LEFT with the caret live on it
+    // (now_meta), so redo restores both together.
+    madc::value meta;
+    REQUIRE(b.undo(meta, madc::value((int64_t)8)));
+    CHECK(b.text() == "one\ntwo\n");
+    CHECK(meta.as_integer() == 4);
+    CHECK(b.redo_depth() == 1u);
+
+    REQUIRE(b.undo(meta, madc::value((int64_t)4)));
+    CHECK(b.text() == "one\n");
+    CHECK(meta.as_integer() == 0);
+    CHECK(b.redo_depth() == 2u);
+    CHECK(!b.undo(meta, madc::value((int64_t)0)));	// refused undo
+    CHECK(b.redo_depth() == 2u);			// disturbs nothing
+
+    REQUIRE(b.redo(meta, madc::value((int64_t)0)));
+    CHECK(b.text() == "one\ntwo\n");
+    CHECK(meta.as_integer() == 4);
+    CHECK(b.history_depth() == 1u);
+
+    REQUIRE(b.redo(meta, madc::value((int64_t)4)));
+    CHECK(b.text() == "one\ntwo\nthree\n");
+    CHECK(meta.as_integer() == 8);
+    CHECK(!b.redo(meta, madc::value((int64_t)8)));	// redo empty: refused
+
+    // Redo pushed onto undo: the round trip walks back again.
+    REQUIRE(b.undo(meta, madc::value((int64_t)8)));
+    CHECK(b.text() == "one\ntwo\n");
+    CHECK(b.redo_depth() == 1u);
+
+    // A checkpoint is a new edit branch: redo dies.
+    b.checkpoint(madc::value((int64_t)4));
+    CHECK(b.redo_depth() == 0u);
+    b.insert(4, "TWO-");			// "one\nTWO-two\n"
+    REQUIRE(b.undo(meta, madc::value((int64_t)9)));
+    CHECK(b.redo_depth() == 1u);
+
+    // The legacy one-argument undo is destructive: no capture, so any
+    // redo entries are stale and die with it.
+    madc::value m2;
+    REQUIRE(b.undo(m2));
+    CHECK(b.text() == "one\n");
+    CHECK(b.redo_depth() == 0u);
+
+    // load() clears BOTH stacks.
+    b.checkpoint(madc::value((int64_t)0));
+    b.insert(0, "x");
+    b.undo(meta, madc::value((int64_t)1));
+    CHECK(b.redo_depth() == 1u);
+    b.load("fresh");
+    CHECK(b.history_depth() == 0u);
+    CHECK(b.redo_depth() == 0u);
+}
+
+TEST_CASE("piece table — word motion: JOE ^Z/^X duals over [A-Za-z0-9_]")
+{
+    text_buffer b;
+    b.load("int foo_1 = bar(2);\n");
+    // words: "int" [0,3)  "foo_1" [4,9)  "bar" [12,15)  "2" [16,17)
+
+    CHECK(b.word_right(0) == 3u);	// from a word: its end
+    CHECK(b.word_right(3) == 9u);	// from a gap: end of the NEXT word
+    CHECK(b.word_right(5) == 9u);	// mid-word: end of the current word
+    CHECK(b.word_right(9) == 15u);
+    CHECK(b.word_right(15) == 17u);
+    CHECK(b.word_right(17) == 20u);	// no word left: clamps to the end
+    CHECK(b.word_right(20) == 20u);
+    CHECK(b.word_right(99) == 20u);	// past end clamps
+
+    CHECK(b.word_left(20) == 16u);	// start of the previous word
+    CHECK(b.word_left(16) == 12u);
+    CHECK(b.word_left(12) == 4u);
+    CHECK(b.word_left(6) == 4u);	// mid-word: start of the current word
+    CHECK(b.word_left(4) == 0u);
+    CHECK(b.word_left(0) == 0u);
+
+    // Across edited piece boundaries, same answers as the flat string.
+    b.replace(4, 5, "qux");		// "int qux = bar(2);\n"
+    CHECK(b.word_right(3) == 7u);
+    CHECK(b.word_left(10) == 4u);
+}

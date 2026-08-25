@@ -63,6 +63,15 @@ TEST_CASE("keyparse — printables, controls, enter/tab/backspace")
     CHECK(k[1].kind == tui_key::tab);
     CHECK(k[2].kind == tui_key::backspace);
     CHECK(k[3].kind == tui_key::backspace);
+
+    // The punctuation controls 0x1c..0x1f (JOE's ^_ undo / ^^ redo).
+    k = parse("\x1c\x1d\x1e\x1f");
+    REQUIRE(k.size() == 4u);
+    CHECK(k[0].kind == tui_key::ctrl);
+    CHECK(k[0].ch == '\\');
+    CHECK(k[1].ch == ']');
+    CHECK(k[2].ch == '^');
+    CHECK(k[3].ch == '_');
 }
 
 TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
@@ -358,6 +367,19 @@ TEST_CASE("key spelling — one owner, both directions")
     CHECK(!tui_key_from_name("", k));
     CHECK(!tui_key_from_name("^!", k));
     CHECK(!tui_key_from_name("nosuch", k));
+
+    // Punctuation controls round-trip like letters do.
+    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '_')) == "^_");
+    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '^')) == "^^");
+    REQUIRE(tui_key_from_name("^_", k));
+    CHECK(k.kind == tui_key::ctrl);
+    CHECK(k.ch == '_');
+    REQUIRE(tui_key_from_name("^^", k));
+    CHECK(k.ch == '^');
+    REQUIRE(tui_key_from_name("^\\", k));
+    CHECK(k.ch == '\\');
+    REQUIRE(tui_key_from_name("^]", k));
+    CHECK(k.ch == ']');
 }
 
 TEST_CASE("bindings — build validation is loud and whole-table")
@@ -384,6 +406,40 @@ TEST_CASE("bindings — build validation is loud and whole-table")
     CHECK(shadow.bind("^k s", "save"));
     CHECK(!shadow.finalize(err));
     CHECK(err.find("shadows") != std::string::npos);
+
+    // JOE's OTHER chord convention: a ctrl+letter CONTINUATION is the
+    // letter (^K ^Z == ^K Z — users keep ctrl held). Both spellings
+    // canonicalize to one slot; ctrl+punctuation continuations keep
+    // their ctrl form (^K ^_ is not ^K _).
+    tui_bindings ctrlcont;
+    CHECK(ctrlcont.bind("^k ^z", "shell"));
+    CHECK(ctrlcont.bind("^k ^_", "special"));
+    CHECK(ctrlcont.finalize(err));
+    CHECK(ctrlcont.bound("^k z"));
+    CHECK(ctrlcont.action_of("^k z") == "shell");
+    CHECK(ctrlcont.bound("^k ^_"));
+    CHECK(!ctrlcont.bound("^k _"));
+    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ctrl, 'z')) == "z");
+    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ctrl, '_')) == "^_");
+    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ch, 'Z')) == "z");
+}
+
+TEST_CASE("chords — a ctrl-held continuation completes the chord (JOE)")
+{
+    tui_bindings b;
+    b.bind("^k z", "shell");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    tui_model m;
+    m.set_bindings(b);
+    std::vector<tui_keyev> keys;
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::ctrl, 'z'));	// ctrl still held
+    std::vector<tui_event> ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "shell");
+    CHECK(ev[0].seq == "^k z");
 }
 
 static tui_bindings joe_table()
