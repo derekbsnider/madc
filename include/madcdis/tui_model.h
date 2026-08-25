@@ -261,6 +261,20 @@ public:
 	return tui_key_name(k);
     }
 
+    // CONTINUATION spelling (every key after the head): JOE's other
+    // chord convention — the ctrl state of a continuation never
+    // distinguishes bindings either (^K ^Z == ^K Z; users keep ctrl
+    // held), so a ctrl+letter continuation spells as the bare letter.
+    // Ctrl+punctuation (^_ ^^ ^] ^\) has no letter form and stays
+    // itself. bind() canonicalization and the model's pending-chord
+    // extension both ride this — one owner, both directions.
+    static std::string cont_spelling(const tui_keyev &k)
+    {
+	if ( k.kind == tui_key::ctrl && k.ch >= 'a' && k.ch <= 'z' )
+	    return std::string(1, k.ch);
+	return seq_spelling(k);
+    }
+
     bool empty() const { return _actions.empty(); }
     void clear() { _actions.clear(); _prefixes.clear(); }
 
@@ -282,9 +296,13 @@ public:
 	    tui_keyev k;
 	    if ( !tui_key_from_name(seq.substr(i, j - i), k) )
 		return false;
-	    if ( !canon.empty() )
+	    if ( canon.empty() )
+		canon += seq_spelling(k);
+	    else
+	    {
 		canon += ' ';
-	    canon += seq_spelling(k);
+		canon += cont_spelling(k);
+	    }
 	    i = j;
 	}
 	if ( canon.empty() )
@@ -846,7 +864,7 @@ public:
 		    continue;
 		}
 		std::string candidate = _pending + " "
-				      + tui_bindings::seq_spelling(k);
+				      + tui_bindings::cont_spelling(k);
 		if ( _bindings.prefix(candidate) )
 		{
 		    _pending = candidate;
