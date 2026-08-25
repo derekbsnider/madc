@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "madcdis/hub.h"
+#include "madcdis/prose.h"
 
 namespace madc {
 namespace hub {
@@ -51,6 +52,14 @@ struct uinode
     void add(const uinode &child) { children.push_back(child); }
 };
 
+// The node's display text: content when present, else the label — the ONE
+// spelling rule every renderer applies to a node that offers both.
+inline std::string node_text(const uinode &n)
+{
+    std::string text = prose::text_of(n.content);
+    return text.empty() ? prose::text_of(n.label) : text;
+}
+
 // The standard role vocabulary, interned once per world namespace. The
 // spellings are the registry; applications may intern further roles — the
 // vocabulary is extensible by construction (design demand: never a closed
@@ -66,6 +75,9 @@ struct roles
     name_id group;
     name_id separator;
     name_id choice;	// a menu: the node's children are its OPTIONS
+    name_id edit;	// an editable text region bound to a document
+			// (content = the text; hints carry caret/selection
+			// byte offsets; subject = the document entity)
 
     static roles standard(world &w)
     {
@@ -79,6 +91,7 @@ struct roles
 	r.group = w.intern("group");
 	r.separator = w.intern("separator");
 	r.choice = w.intern("choice");
+	r.edit = w.intern("edit");
 	return r;
     }
 };
