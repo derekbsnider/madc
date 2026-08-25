@@ -34,6 +34,9 @@ Ln 1, Col 1 fn add
 --- end ---
 goto-outline: caret=43
 status-fn: Ln 2, Col 1  fn twice
+spans: n=9 first=0..4 green fn=5..8 bold blue
+theme-swap: Theme: classic. first-c=bold cyan
+theme-missing: No theme 'nosuch'.
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

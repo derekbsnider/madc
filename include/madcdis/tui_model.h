@@ -49,17 +49,103 @@ namespace madc {
 namespace hub {
 
 // ------------------------------------------------------------------ the grid
-enum class tui_attr : unsigned char
+// The render STYLE (AST-2; owner: VT-102's ANSI colours, JOE parity).
+// What JOE's syntax vocabulary can say: the classic attributes plus an
+// 8-colour foreground/background — 16 effective foreground colours via
+// bold-as-bright, the VT-102/16-colour model (no aixterm 90–97).
+// A THEME (app data) maps classification names to style SPECS;
+// tui_attr_of below is the one spec parser at the value boundary; the
+// VT100 target owns style->SGR. 256/true-colour is a named later seat.
+struct tui_attr
 {
-    normal = 0,
-    reverse = 1
+    enum : unsigned char
+    {
+	BOLD	  = 1,
+	DIM	  = 2,
+	ITALIC	  = 4,
+	UNDERLINE = 8,
+	BLINK	  = 16,
+	INVERSE	  = 32
+    };
+    unsigned char fg;		// 0 = default, 1..8 = black..white (ANSI+1)
+    unsigned char bg;		// same domain
+    unsigned char flags;	// the attribute bits above
+    tui_attr() : fg(0), bg(0), flags(0) {}
+    bool operator==(const tui_attr &o) const
+	{ return fg == o.fg && bg == o.bg && flags == o.flags; }
+    bool operator!=(const tui_attr &o) const { return !(*this == o); }
+    bool is_normal() const { return fg == 0 && bg == 0 && flags == 0; }
+    // Pure inverse — the pre-colour renderer's one non-normal style; the
+    // VT100 target keeps its historical \x1b[7m spelling for it.
+    bool is_reverse() const { return fg == 0 && bg == 0 && flags == INVERSE; }
+    static tui_attr normal() { return tui_attr(); }
+    static tui_attr reverse()
+	{ tui_attr a; a.flags = INVERSE; return a; }
 };
+
+// THE style-spec parser (JOE's vocabulary, one table): space-separated
+// words — attributes `bold dim italic underline blink inverse` (JOE's
+// `reverse` accepted as a synonym), a foreground colour word
+// `black red green yellow blue magenta cyan white`, a background
+// `bg_<colour>`, and `normal` (alone) for the default style. False =
+// any unknown word (the WHOLE spec is refused — themes fail loud).
+inline bool tui_attr_of(const std::string &spec, tui_attr &out)
+{
+    static const char *const colours[8] = {
+	"black", "red", "green", "yellow",
+	"blue", "magenta", "cyan", "white"
+    };
+    tui_attr a;
+    bool any = false;
+    size_t i = 0;
+    while ( i < spec.size() )
+    {
+	while ( i < spec.size() && (spec[i] == ' ' || spec[i] == '\t') )
+	    ++i;
+	size_t start = i;
+	while ( i < spec.size() && spec[i] != ' ' && spec[i] != '\t' )
+	    ++i;
+	if ( i == start )
+	    break;
+	std::string w = spec.substr(start, i - start);
+	if ( w == "normal" )	    { any = true; continue; }
+	if ( w == "bold" )	    { a.flags |= tui_attr::BOLD; any = true; continue; }
+	if ( w == "dim" )	    { a.flags |= tui_attr::DIM; any = true; continue; }
+	if ( w == "italic" )	    { a.flags |= tui_attr::ITALIC; any = true; continue; }
+	if ( w == "underline" )	    { a.flags |= tui_attr::UNDERLINE; any = true; continue; }
+	if ( w == "blink" )	    { a.flags |= tui_attr::BLINK; any = true; continue; }
+	if ( w == "inverse" || w == "reverse" )
+				    { a.flags |= tui_attr::INVERSE; any = true; continue; }
+	bool matched = false;
+	for ( int c = 0; c < 8 && !matched; ++c )
+	{
+	    if ( w == colours[c] )
+	    {
+		a.fg = (unsigned char)(c + 1);
+		matched = true;
+	    }
+	    else if ( w.compare(0, 3, "bg_") == 0
+		   && w.compare(3, std::string::npos, colours[c]) == 0 )
+	    {
+		a.bg = (unsigned char)(c + 1);
+		matched = true;
+	    }
+	}
+	if ( !matched )
+	    return false;
+	any = true;
+    }
+    if ( !any )
+	return false;
+    out = a;
+    return true;
+}
 
 struct tui_cell
 {
     char     ch;
     tui_attr attr;
-    tui_cell() : ch(' '), attr(tui_attr::normal) {}
+    tui_cell() : ch(' '), attr(tui_attr::normal()) {}
     bool operator==(const tui_cell &o) const
 	{ return ch == o.ch && attr == o.attr; }
     bool operator!=(const tui_cell &o) const { return !(*this == o); }
@@ -88,7 +174,7 @@ struct tui_grid
 
     // Clipped text write; never wraps.
     void put(size_t r, size_t c, const std::string &text,
-	     tui_attr attr = tui_attr::normal)
+	     tui_attr attr = tui_attr::normal())
     {
 	if ( r >= rows )
 	    return;
@@ -556,6 +642,16 @@ private:
 	explicit line_out(const std::string &t) : text(t) {}
     };
     // A flexible edit region parked between fixed lines.
+    // A document byte-range with a render style (AST-2 highlight spans):
+    // parsed from the edit node's hints["spans"] rows { s, e, c } —
+    // byte offsets + a colour NAME (tui_attr_of converts at the
+    // boundary; a malformed row is skipped — spans are presentation).
+    struct doc_span
+    {
+	long start, end;
+	tui_attr attr;
+	doc_span() : start(0), end(0), attr(tui_attr::normal()) {}
+    };
     struct edit_slot
     {
 	size_t line_index;	// position in the fixed-line stream
@@ -563,6 +659,7 @@ private:
 	std::string text;	// the bound document text
 	long caret;		// byte offsets from the node's hints
 	long sel_start, sel_end;
+	std::vector<doc_span> spans;	// highlight spans (may be empty)
 	edit_slot() : line_index(0), slot(0), caret(0),
 		      sel_start(-1), sel_end(-1) {}
     };
@@ -590,14 +687,14 @@ private:
 	    if ( !right.empty() && left.size() + right.size() + 2 <= cols )
 		l.text += std::string(cols - left.size() - right.size() - 1,
 				      ' ') + right;
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse;
+	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
 	else if ( n.role == r.status )
 	{
 	    line_out l(" " + node_text(n));
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse;
+	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
@@ -654,7 +751,7 @@ private:
 		    span s;
 		    s.col = l.text.size();
 		    s.len = opt.size();
-		    s.attr = tui_attr::reverse;
+		    s.attr = tui_attr::reverse();
 		    l.spans.push_back(s);
 		}
 		l.text += opt;
@@ -673,6 +770,30 @@ private:
 	    e.caret = hint_of(n.hints, "caret", 0);
 	    e.sel_start = hint_of(n.hints, "sel_start", -1);
 	    e.sel_end = hint_of(n.hints, "sel_end", -1);
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator hi =
+		    ho.find("spans");
+		if ( hi != ho.end() && hi->second.is_array() )
+		    for ( const madc::value &row : hi->second.as_array() )
+		    {
+			if ( !row.is_object() )
+			    continue;
+			doc_span ds;
+			ds.start = hint_of(row, "s", -1);
+			ds.end = hint_of(row, "e", -1);
+			const std::map<std::string, madc::value> &ro =
+			    row.as_object();
+			std::map<std::string, madc::value>::const_iterator ci =
+			    ro.find("c");
+			if ( ds.start < 0 || ds.end <= ds.start
+			  || ci == ro.end() || !ci->second.is_string()
+			  || !tui_attr_of(ci->second.as_string(), ds.attr) )
+			    continue;
+			e.spans.push_back(ds);
+		    }
+	    }
 	    edits.push_back(e);
 	    focusable f;
 	    f.k = focusable::kind::edit;
@@ -694,6 +815,26 @@ private:
 	for ( size_t i = 0; i < l.spans.size(); ++i )
 	    _grid.fill_attr(row, l.spans[i].col, l.spans[i].len,
 			    l.spans[i].attr);
+    }
+
+    // THE byte-range-to-visible-row overlap rule (selection and highlight
+    // spans both paint through it): the [s0, e0) document range's overlap
+    // with the line [begin..end] shown at `row`, honoring the horizontal
+    // shift and the column clip.
+    void fill_range_overlap(size_t row, size_t begin, size_t end,
+			    size_t shift, size_t cols,
+			    long s0, long e0, tui_attr attr)
+    {
+	if ( s0 < 0 || e0 <= s0 )
+	    return;
+	size_t s = (size_t)s0 < begin ? begin : (size_t)s0;
+	size_t t = (size_t)e0 > end ? end : (size_t)e0;
+	if ( s < t && s - begin < shift + cols && t - begin > shift )
+	{
+	    size_t c0 = s - begin < shift ? 0 : s - begin - shift;
+	    size_t c1 = t - begin - shift;
+	    _grid.fill_attr(row, c0, c1 - c0, attr);
+	}
     }
 
     // Emit one edit region: a window of the document, scrolled to keep
@@ -738,20 +879,16 @@ private:
 	    std::string line = e.text.substr(begin, end - begin);
 	    if ( shift < line.size() )
 		_grid.put(top_row + k, 0, line.substr(shift, cols));
-	    // Selection highlight: this line's overlap with the range.
+	    // Highlight spans first, the selection LAST (it wins where
+	    // they overlap) — both are the one range-overlap rule below.
+	    for ( size_t si = 0; si < e.spans.size(); ++si )
+		fill_range_overlap(top_row + k, begin, end, shift, cols,
+				   e.spans[si].start, e.spans[si].end,
+				   e.spans[si].attr);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
-	    {
-		size_t s = (size_t)e.sel_start < begin ? begin
-						       : (size_t)e.sel_start;
-		size_t t = (size_t)e.sel_end > end ? end : (size_t)e.sel_end;
-		if ( s < t && s - begin < shift + cols && t - begin > shift )
-		{
-		    size_t c0 = s - begin < shift ? 0 : s - begin - shift;
-		    size_t c1 = t - begin - shift;
-		    _grid.fill_attr(top_row + k, c0, c1 - c0,
-				    tui_attr::reverse);
-		}
-	    }
+		fill_range_overlap(top_row + k, begin, end, shift, cols,
+				   e.sel_start, e.sel_end,
+				   tui_attr::reverse());
 	    if ( li == caret_line && e.slot == _focus )
 	    {
 		_grid.cursor_row = top_row + k;

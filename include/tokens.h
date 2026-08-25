@@ -116,6 +116,39 @@ enum class TokenAssoc {
     taNone, taLeftToRight, taRightToLeft
 };
 
+// Highlight classification (madcide AST-2 / IDE-7): what KIND of thing a
+// lexed token is, for presentation. The one classifier is
+// madc_token_highlight_class (lexer.cpp — the token-vocabulary owner);
+// names cross the value boundary via highlight_class_name. A theme (app
+// data) maps these names to colours — the compiler never styles.
+enum class HighlightClass : unsigned char
+{
+    hcNone = 0,		// operators / punctuation — unstyled
+    hcKeyword,
+    hcIdent,
+    hcNumber,
+    hcString,		// string AND char literals
+    hcComment,		// from leading trivia (keep_trivia mode)
+    hcType,		// datatype spellings (tkDeclare)
+    hcFunction		// an identifier the tree knows as a function name
+};
+
+inline const char *highlight_class_name(HighlightClass c)
+{
+    switch ( c )
+    {
+	case HighlightClass::hcNone:	 return "none";
+	case HighlightClass::hcKeyword:	 return "keyword";
+	case HighlightClass::hcIdent:	 return "ident";
+	case HighlightClass::hcNumber:	 return "number";
+	case HighlightClass::hcString:	 return "string";
+	case HighlightClass::hcComment:	 return "comment";
+	case HighlightClass::hcType:	 return "type";
+	case HighlightClass::hcFunction: return "function";
+    }
+    return "none";
+}
+
 
 // Token flags
 typedef enum : uint16_t { tfBRACKETED	=    1,

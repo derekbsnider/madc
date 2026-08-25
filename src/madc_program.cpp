@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <sstream>
 #include <stack>
@@ -4721,6 +4722,9 @@ int64_t internal_program_parse_open(::Program &self,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = display_name;
     st->child = new ::Program(self.engine);
+    // Handles are the IDE's fidelity mode: comments live in leading
+    // trivia, which the highlight-span query derives from.
+    st->child->keep_trivia = true;
     compile_source_child_frontend(self, *st->child, source_text,
 				  display_name);
     return parse_tu_handles().open(st);
@@ -4744,6 +4748,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
     st->child = new ::Program(self.engine);
+    st->child->keep_trivia = true;	// IDE fidelity (comment spans)
     st->child->registration_policy =
 	runtime_eval_registration_policy_for_source_child(self.registration_policy);
     if ( tu )
@@ -4782,6 +4787,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     // fresh child in the same slot — the handle's identity survives.
     delete st->child;
     st->child = new ::Program(self.engine);
+    st->child->keep_trivia = true;	// IDE fidelity (comment spans)
     compile_source_child_frontend(self, *st->child, source_text,
 				  st->display_name);
     return true;
@@ -4852,6 +4858,157 @@ bool internal_program_parse_enclosing(int64_t handle, int64_t line,
     f["column"] = value((int64_t)best->column);
     f["end_line"] = value((int64_t)best->end_line);
     out = value::make_object(f);
+    return true;
+}
+
+// One highlight row: source coordinates + the classification NAME (the
+// value boundary; a theme maps names to colours downstream).
+static madc::value highlight_row(long line, long col, long len,
+				 const char *cls)
+{
+    std::map<std::string, madc::value> f;
+    f["line"] = value((int64_t)line);
+    f["column"] = value((int64_t)col);
+    f["length"] = value((int64_t)len);
+    f["class"] = value(std::string(cls));
+    return value::make_object(f);
+}
+
+// Comment rows from ONE token's leading trivia (the handles' fidelity
+// mode). The trivia's END is anchored by the token's recorded position:
+// its first line = token.line - (newlines in the trivia); every line
+// after a newline starts at column 0 exactly. Only the FIRST segment's
+// column base comes from the previous token's end — exact unless
+// consumed-at-lex text (an #include directive line) sat between them;
+// that drift is bounded to the one segment and resyncs at this token.
+// A block comment emits one row per line it covers.
+static void trivia_comment_rows(const std::string &tr, long line, long col,
+				std::vector<madc::value> &rows)
+{
+    size_t i = 0;
+    while ( i < tr.size() )
+    {
+	char ch = tr[i];
+	if ( ch == '\n' )
+	{
+	    ++line;
+	    col = 0;
+	    ++i;
+	    continue;
+	}
+	bool line_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '/';
+	bool block_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '*';
+	if ( !line_c && !block_c )
+	{
+	    ++col;
+	    ++i;
+	    continue;
+	}
+	long seg_col = col;
+	long seg_len = 0;
+	bool done = false;
+	while ( i < tr.size() && !done )
+	{
+	    if ( tr[i] == '\n' )
+	    {
+		if ( seg_len > 0 )
+		    rows.push_back(highlight_row(line, seg_col, seg_len,
+						 "comment"));
+		seg_len = 0;
+		if ( line_c )
+		    done = true;	// the newline stays for the outer loop
+		else
+		{
+		    ++line;
+		    col = 0;
+		    seg_col = 0;
+		    ++i;
+		}
+		continue;
+	    }
+	    ++seg_len;
+	    ++col;
+	    ++i;
+	    if ( block_c && seg_len >= 2 && tr[i - 1] == '/'
+	      && tr[i - 2] == '*' )
+		done = true;		// consumed the closing */
+	}
+	if ( seg_len > 0 )
+	    rows.push_back(highlight_row(line, seg_col, seg_len, "comment"));
+    }
+}
+
+// The highlight-span query (madcide AST-2 / IDE-7): classification rows
+// for the TU's OWN tokens, from the handle's RETAINED stream — data, not
+// styling (a theme maps class names to colours; the compiler never
+// styles). Rows: { line, column, length, class } in source coordinates —
+// the app owns the buffer text and converts to byte offsets. Length is
+// the render spelling's length (exact for identifiers/keywords/types;
+// a literal written non-canonically can drift cosmetically — a
+// lex-recorded token extent is the named refinement). An identifier the
+// tree defines as a function, on that definition's head line, classifies
+// as "function" (head-line name match; the exact name-token feeder is
+// the named refinement).
+bool internal_program_parse_spans(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::map<long, std::set<std::string> > fn_heads;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					     st->display_name) )
+	    fn_heads[(long)tf->line].insert(tf->var.name);
+    std::vector<madc::value> rows;
+    long prev_line = 1;
+    long prev_end_col = 0;
+    for ( TokenBase *t : child.tokens )
+    {
+	if ( !t || !t->file || st->display_name != t->file )
+	    continue;
+	if ( !t->leading_trivia.empty() )
+	{
+	    const std::string &tr = t->leading_trivia;
+	    long nl = 0;
+	    for ( size_t k = 0; k < tr.size(); ++k )
+		if ( tr[k] == '\n' )
+		    ++nl;
+	    long first_line = (long)t->line - nl;
+	    trivia_comment_rows(tr, first_line,
+				first_line == prev_line ? prev_end_col : 0,
+				rows);
+	}
+	HighlightClass hc = madc_token_highlight_class(t);
+	std::string sp = madc_token_spelling(t);
+	if ( hc == HighlightClass::hcIdent )
+	{
+	    std::map<long, std::set<std::string> >::const_iterator fh =
+		fn_heads.find((long)t->line);
+	    if ( fh != fn_heads.end() && fh->second.count(sp) )
+		hc = HighlightClass::hcFunction;
+	}
+	if ( hc != HighlightClass::hcNone && !sp.empty() )
+	{
+	    // Token stamps are END-anchored (the repo's diagnostic
+	    // convention); a span's contract is START + length.
+	    long start = (long)t->column - (long)sp.size();
+	    if ( start < 0 )
+		start = 0;
+	    rows.push_back(highlight_row((long)t->line, start,
+					 (long)sp.size(),
+					 highlight_class_name(hc)));
+	}
+	prev_line = (long)t->line;	// lexed spellings are single-line
+	prev_end_col = (long)t->column;	// the stamp IS the end
+    }
+    // A comment after the LAST token lives in the trailing trivia, not on
+    // any token; the cursor the loop left is its exact anchor.
+    if ( !child._trailing_trivia.empty() )
+	trivia_comment_rows(child._trailing_trivia, prev_line, prev_end_col,
+			    rows);
+    out = value::make_array(rows);
     return true;
 }
 

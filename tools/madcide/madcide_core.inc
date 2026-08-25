@@ -88,12 +88,86 @@ bool load_profile(long w, long es, const char *name)
     return true;
 }
 
+// ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
+// One `class SPEC` pair per line: the class is the FIRST word, the spec
+// the rest — JOE's style vocabulary (attribute words + a colour +
+// bg_colour, e.g. "keyword bold yellow"); the renderer's tui_attr_of
+// parses specs at paint. Line rule (comments/blanks) = profile_line,
+// shared with the keybindings; the SPLIT differs by design — a binding
+// ENDS in one action word, a theme line ENDS in a multi-word spec.
+// Schemes are just theme files: profiles/<name>.theme, swapped by name
+// (the profile-swap precedent). False = no such theme (the previous one
+// stays); an es "scheme" records the loaded name.
+bool load_theme(long w, long es, const char *name)
+{
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    value txt;
+    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, name)) )
+	return false;
+    value th;
+    array lines;
+    php::explode(lines, "\n", txt.c_str());
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	value line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	const char *ls = line.c_str();
+	const char *sp = strchr(ls, ' ');
+	if ( sp == 0 )
+	    continue;
+	long cut = sp - ls;
+	var cls = php::trim(perl::substr(line, 0, cut));
+	var spec = php::trim(sp + 1);
+	th[cls.c_str()] = spec;
+    }
+    ui::set(w, es, "theme", th);
+    ui::set(w, es, "scheme", name);
+    return true;
+}
+
+// Highlight spans onto the bag (AST-2): the engine's classification rows
+// (madc::parse_spans, source coordinates) through the THEME (class ->
+// colour name), converted to the byte-offset { s, e, c } rows the edit
+// node's hints speak. Computed at (re)parse — composition just attaches
+// them; like the status line, they go stale with edits until the next
+// check/save. An unthemed class (or a stale line past the buffer) skips.
+void refresh_spans(long w, long es, long doc, long h)
+{
+    var hs = {};
+    value th;
+    ui::get(th, w, es, "theme");
+    if ( !th.is_null() )
+    {
+	value rows;
+	madc::parse_spans(rows, h);
+	for ( value r : rows )
+	{
+	    value c = th[r["class"].c_str()];
+	    if ( c.is_null() )
+		continue;
+	    long ls = ui::text_line_start(w, doc, r["line"].as_integer());
+	    if ( ls < 0 )
+		continue;
+	    long s = ls + r["column"].as_integer();
+	    value hr;
+	    hr["s"] = s;
+	    hr["e"] = s + r["length"].as_integer();
+	    hr["c"] = c;
+	    hs.push(hr);
+	}
+    }
+    ui::set(w, es, "hspans", hs);
+}
+
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
 // The buffer's PARSE HANDLE (AST-1): one live parse per buffer, opened on
 // first need (run_ide opens it at load), refreshed WHOLE on check / save /
 // outline. Composition reads its RETAINED state — the status line's
 // enclosing-function query never runs the compiler.
-long ensure_phandle(long w, long doc)
+long ensure_phandle(long w, long es, long doc)
 {
     long h = es_int(w, doc, "phandle", 0);
     if ( h != 0 )
@@ -104,17 +178,20 @@ long ensure_phandle(long w, long doc)
     ui::get(p, w, doc, "path");
     h = madc::parse_open(t.c_str(), p.c_str());
     ui::set(w, doc, "phandle", h);
+    refresh_spans(w, es, doc, h);
     return h;
 }
 
 // Whole-TU re-parse of the buffer's handle from the live text — the ONE
-// compiler entry (check, save, outline all route here).
-long reparse_buffer(long w, long doc)
+// compiler entry (check, save, outline all route here); the themed
+// highlight spans refresh with it.
+long reparse_buffer(long w, long es, long doc)
 {
-    long h = ensure_phandle(w, doc);
+    long h = ensure_phandle(w, es, doc);
     value t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
+    refresh_spans(w, es, doc, h);
     return h;
 }
 
@@ -123,7 +200,7 @@ long reparse_buffer(long w, long doc)
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
-    long h = reparse_buffer(w, doc);
+    long h = reparse_buffer(w, es, doc);
     value diags;
     madc::parse_check(diags, h);
     ui::set(w, es, "diags", diags);
@@ -143,7 +220,7 @@ void run_check(long w, long es, long doc)
 
 void refresh_outline(long w, long es, long doc)
 {
-    long h = reparse_buffer(w, doc);
+    long h = reparse_buffer(w, es, doc);
     value o;
     madc::parse_outline(o, h);
     ui::set(w, es, "outline", o);
@@ -173,7 +250,22 @@ void goto_pane_row(long w, long es, long doc, long option)
     }
 }
 
-// ---- one prompt mode (find / goto-line / insert-file) -----------------
+// THE view-active rule, one seat (dupaudit family view_active_predicate):
+// a view is active iff the editor-state bag carries a non-empty "view"
+// name. Out = the name; false = the original (identity lens). Defined
+// here, ahead of the prompt machinery (the theme completion consults it)
+// and of the view seam below.
+bool view_name(value &out, long w, long es)
+{
+    var vw;
+    ui::get(vw, w, es, "view");
+    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+	return false;
+    out = vw;
+    return true;
+}
+
+// ---- one prompt mode (find / goto-line / insert-file / theme) ---------
 // Label + input + completion mode on the bag; the shared status line
 // projects "label: input". While a prompt is up it consumes every event:
 // text appends, backspace trims, enter completes, esc cancels.
@@ -245,7 +337,27 @@ void finish_prompt(long w, long es, long doc, long caret)
 	return;
     }
     if ( mode == "insertfile" )
+    {
 	insert_file(w, es, doc, caret, in.c_str());
+	return;
+    }
+    if ( mode == "theme" )
+    {
+	// A colour SCHEME swap (owner: like the keybinding profiles):
+	// load the named theme and recolour from the handle's retained
+	// state. `doc` here is the NAV target — while a view is up the
+	// stored buffer recolours on exit/reparse instead (spans are
+	// stored-space only), so the immediate refresh is skipped.
+	if ( !load_theme(w, es, in.c_str()) )
+	{
+	    ui::set(w, es, "msg", format("No theme '{}'.", in));
+	    return;
+	}
+	value vw;
+	if ( !view_name(vw, w, es) )
+	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
+	ui::set(w, es, "msg", format("Theme: {}.", in));
+    }
 }
 
 // Every event while the prompt is up.
@@ -451,19 +563,6 @@ void delete_word(long w, long es, long doc, long caret)
 // stored-space history are refused through the one editable gate. The
 // identity lens (no view) adds NOTHING — the composed tree stays
 // byte-identical to today's.
-
-// THE view-active rule, one seat (dupaudit family view_active_predicate):
-// a view is active iff the editor-state bag carries a non-empty "view"
-// name. Out = the name; false = the original (identity lens).
-bool view_name(value &out, long w, long es)
-{
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
-	return false;
-    out = vw;
-    return true;
-}
 
 // The navigation target: the view buffer while a view is up, else the
 // document — the ONE place display-vs-stored routing happens.
@@ -686,6 +785,11 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	    start_prompt(w, es, "Insert file", "insertfile");
 	    return true;
 	}
+	if ( a == "theme" )
+	{
+	    start_prompt(w, es, "Theme", "theme");
+	    return true;
+	}
 	if ( a == "mark" )
 	{
 	    ui::set(w, es, "mark", caret);
@@ -879,6 +983,18 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     {
 	compose_heading(head, w, es, doc, format("madcide: {}", p));
 	compose_edit_node(ed, w, es, nav, caret);
+	// Highlight spans (AST-2): the bag's themed byte-range rows ride
+	// the hints — stored-space only (a view shows a render), computed
+	// at (re)parse, just attached here. Same RMW as the view hints.
+	value hs;
+	ui::get(hs, w, es, "hspans");
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	{
+	    value h2;
+	    h2 = ed["hints"];
+	    h2["spans"] = hs;
+	    ed["hints"] = h2;
+	}
     }
 
     value r;
@@ -1014,8 +1130,10 @@ void run_ide(const char *path, bool ro)
 	return;
     ui::set(w, es, "tui", t);
     load_profile(w, es, "joe");
-    ensure_phandle(w, doc);	// parse-on-load: the status line has state
-				// before the first check
+    load_theme(w, es, "default");
+    ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
+				// highlight spans have state before the
+				// first check
     bool run = true;
     while ( run )
     {
