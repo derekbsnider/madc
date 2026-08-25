@@ -1,6 +1,35 @@
 # Test Status
 
-> **Current (2026-08-25, Track 7.2 R5 — feature/tui-provider-claude
+> **Current (2026-08-25, madcide / hub Phase 2 — feature/madcide-claude
+> merge wave):** the madc IDE and its feeders
+> (docs/plans/2026-08-25-madcide-phase2.md). Bindings-as-data chords
+> (`ui::tui_bind_keys` — key sequences → action names, per-profile,
+> JOE/WordStar default per the owner; the `action` event; one
+> key-spelling owner both directions in the model); buffer history/undo
+> on the text component (`ui::text_checkpoint`/`text_undo`, pieces
+> snapshots + opaque payload); compiler data as data
+> (`madc::diagnostics`/`madc::outline` — compile-never-execute child,
+> capture replaces rendering via `DiagnosticRenderMute`); the R3
+> sibling enforced (re-entrancy latch, `ui::bind_require_key`
+> code-entity gating; compile-once re-scoped on the baked-ctx blocker);
+> `examples/madcide` over the shared `editor_events.inc` split
+> (testvised/testlineed byte-identical). FIXED en route (own commit):
+> stale ambient token position — eval-child and `--project` TU2+
+> diagnostics now carry their OWN file:line (byte-matching the
+> file-based oracle). Merge-wave battery: authoritative Linux fulltest
+> **1149 passed / 0 failed / 0 timed out / 9 skipped** (suite +5:
+> testmadcide — the Phase-2 gate headless, all three clauses;
+> testcompilerdata — structured diagnostics/outline, `.expect_quiet` =
+> the capture proof; testprojecterrline — the position-fix reducer,
+> `.expect_err`; testreenter; testbindgate), EXE lane **1105/0** (of
+> 1149 JIT-passing); tui_smoke_gate green in-battery, now pinning a
+> bound chord across read batches on the real pty; unit batteries:
+> test_tui_model 174 asserts (chords), test_text_buffer 145 (history),
+> test_verbs 69 (re-entrancy latch); adventure parity + purity +
+> write-path + dialect-lean gates green in-battery; madcide AND vised
+> verified end-to-end on real ptys.
+>
+> **Previous (2026-08-25, Track 7.2 R5 — feature/tui-provider-claude
 > merge wave):** the level-1 TUI: `madcdis/tui_model.h` (the
 > dependency-free grid/focus/key model) + `madcdis/tui_provider.h` (the
 > target seam) + `src/ui_term.cpp` (the hand-rolled VT100/xterm target —
