@@ -401,6 +401,60 @@ runtime-eval child policy; the `^K Z` shell needs `system`/`getenv`
 resolution checked (no include/madc/stdlib.h exists — dlsym fallback
 declares int returns per the embedded-headers rule).
 
+### As executed — items 1 + 2 (2026-08-25, session 131)
+
+Both directives landed on `feature/madcide-v2-claude`; item 3 (the AST
+arc, IDE-6/7/8) is deliberately NOT started — the owner asked to
+brainstorm it first.
+
+- **Relocation** as specified (git mv + the reference sweep; testmadcide
+  1/1 + a parse-and-usage smoke from the new path).
+- **Engine feeders** (one commit, trailers): tui_keyparse accepts
+  0x1c..0x1f as ctrl `\` `]` `^` `_` (tui_key_from_name takes the
+  non-letter spellings); text_buffer REDO (two stacks; checkpoint
+  clears redo; the meta-carrying undo/redo pair `now_meta` so the
+  opposite stack restores caret+modified with the document — the
+  one-argument undo stays for the old pins, destructive); word motion
+  `word_left/word_right` beside find (`[A-Za-z0-9_]`, JOE ^Z/^X duals);
+  `tui_target::suspend/resume` (default refuse) + the term_target
+  implementation (open/close's mode switching factored into ONE
+  enter/leave_grid_mode pair all four callers share; `_saved` stays the
+  pre-open state; close-while-suspended skips the double restore).
+  Publics: `ui::text_word_left/right`, `ui::text_undo(out,w,e,now)` +
+  `ui::text_redo`, `ui::tui_suspend/tui_resume` (resume re-reads the
+  size and resets the diff basis — the next render repaints fully).
+- **A second chord convention, forced by the pty probe** (own commit,
+  the v1 case-rule's sibling): ctrl-held CONTINUATIONS — JOE's `^K ^Z`
+  == `^K Z`. New `tui_bindings::cont_spelling` (ctrl+letter → the bare
+  letter; ctrl+punctuation stays itself); bind() canonicalization and
+  the model's pending extension both ride it. Found live: the probe
+  typed ^K ctrl-Z, got "Unbound: ^k ^z", and the typed `echo SHELLMARK`
+  landed in the DOCUMENT — the smoke's marker check was fooled until
+  the alt-screen counts (h=2/l=2) carried the verdict.
+- **The app**: joe.keys = the owner's list verbatim (motion actions
+  delegate to the shared edit_key BY KEY-NAME — the dispatcher
+  synthesizes the key event; one movement implementation); block model
+  mark+bend (shared selection = [mark, bend-else-caret]; vised never
+  sets bend — byte-identical); blockcopy shift-adjusts the markers,
+  blockmove = one undo step + refuses moving into itself, blockdel
+  takes the clip (read-only copies); ONE prompt mode
+  (find/goto-line/insert-file) projected by the shared status rule
+  (a new arm ahead of vised's search prompt); find stores the pattern,
+  `^L` repeats from caret+1 with wrap; undo/redo ride the ONE
+  {caret,modified} payload seat (edit_meta/restore_meta); help (`^K H`)
+  projects the loaded profile's own lines (profile_line = the one
+  line-filter rule parse_keys shares); `^K Z` = tui_suspend +
+  `system("exec \"${SHELL:-/bin/sh}\"")` + tui_resume (no getenv — the
+  dlsym fallback would hand the pointer back as a long; the shell
+  resolves its own fallback); check moved to `^K E`; pico.keys respells
+  the single-chord subset (⚠️ ^h/^i/^j/^m can never arrive as ctrl
+  chords — those bytes ARE backspace/tab/enter).
+- **Gates**: testmadcide v2 pins (every edit undone — the tail's save
+  byte-count proves the round trips; all values verified against
+  hand-computed offsets before pinning); editor-family subset 6/6;
+  test_tui_model/test_text_buffer grown; real-pty smoke of the full
+  loop including the shell round trip.
+
 ## Deferred (seats held)
 
 Redo; syntax highlighting (a projection-hints question — spans as data,
