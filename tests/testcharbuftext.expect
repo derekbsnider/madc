@@ -1,0 +1,6 @@
+direct=[hello]
+member=[world]
+elem=h
+bk=[hello]
+eq: yes
+fnassign=[world]

@@ -143,6 +143,19 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 			u = base->unqualified();
 	}
 
+	// Array-to-pointer decay ([conv.array]): an array argument used as a
+	// VALUE decays before classification, so `char buf[N]` formats as a
+	// C string (std::format's own char-array behavior) instead of
+	// falling to the element arm — which passed the decayed POINTER to
+	// __madc_fmt_char and printed one garbage byte. A non-char array
+	// decays to its element pointer and takes the pointer arm's loud
+	// refusal, matching std::format's ill-formed treatment.
+	// array_decay_pointer is THE decay owner (overload ranking, operator
+	// typing, and ctor-arg typing already consume it).
+	if ( m_prog )
+		if ( DataDef *adp = m_prog->array_decay_pointer(arg) )
+			u = adp->unqualified();
+
 	// The spec's SHAPE — parsed by the one engine parser, so the message a
 	// user sees at compile time names the same rule the runtime enforces.
 	madc_fmt_spec sp;
