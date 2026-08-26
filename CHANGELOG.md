@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+- **madcide: loud startup failures + cwd-independent profiles
+  (2026-08-26)**: the keybinding-profile / theme directory now derives
+  from `__FILE__` (the profiles live beside `madcide_core.inc`), so
+  madcide works from any cwd — it previously found them only when
+  launched from the repository root, and the theme failure was SILENT
+  (a colourless editor with no explanation). A startup `load_theme`
+  failure and a zero parse handle now post status-line messages.
+
+- **madcide scroll corruption fixed (IDE-9c) — tab-aware display
+  projection in the TUI model (2026-08-26)**: scrolling a tab-indented
+  file left stale fragments of previous lines and DOUBLED brace-only
+  lines (the owner report). Root cause: a raw `\t` byte flowed document
+  → `tui_grid` cell → terminal, and a terminal expands a tab by MOVING
+  the cursor without erasing the skipped columns — grid columns and
+  screen columns desynchronized (the skips preserved old glyphs; the
+  row overflow wrapped trailing spaces onto the next row). Not an
+  erase-discipline defect: the painter already overwrites full rows.
+  Fix at the projection that owns byte↔column math: `paint_edit`
+  expands tabs to 8-column stops through `expand_line` — THE
+  byte→display-column map — and the caret, horizontal shift, selection,
+  and highlight spans all convert through it; `tui_grid::put` belts THE
+  CELL INVARIANT (a cell holds one printable byte occupying exactly one
+  terminal column; control bytes render as a visible `?`). The renderer
+  (`ui_term`) is untouched — it was faithful, the cells were wrong.
+  Gate: `scripts/tui_scroll_gate.sh` in fulltest — madcide on a real
+  pty scrolling a tab-indented document 70 steps, the screen
+  reconstructed by a VT100 interpreter with real tab-stop semantics,
+  every non-chrome row required to equal a tab-expanded document line,
+  plus a negative control. Pre-fix: 828 corrupted row observations;
+  post-fix: 0; joe 4.6 on the same input through the same interpreter:
+  0 (the JOE parity baseline).
+
 - **Braced-init-list call arguments ([over.ics.list] slice 1) — the
   madcide in-process SIGSEGV fixed (2026-08-26)**: a braced list as a
   call argument (`p.call("add", {V(10), V(32)}, &sum)`) had no parse at
