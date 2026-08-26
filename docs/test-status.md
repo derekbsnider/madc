@@ -1,6 +1,34 @@
 # Test Status
 
-> **Current (2026-08-25, error-tolerant parse slice A / arc doc §3.5 —
+> **Current (2026-08-26, braced-init-list call arguments /
+> [over.ics.list] slice 1 — feature/braced-list-call-args-claude merge
+> wave):** the braced-list call-argument SIGSEGV
+> (`parser_segv_braced_list_call_arg`, the madcide in-process crash) is
+> FIXED: a `{`-headed argument re-spells against the callee's parameter
+> type through THE re-spell owner (`respell_braced_list_for_target`,
+> extracted from `TokenRETURN::parse`; both call readers adopt it,
+> hidden-`__this` aware); `TokenObjTemp` carries braced-ness so the
+> existing [dcl.init.list]/4+/5 CIR arms serve functional-form
+> temporaries; `initializer_list_literal` emits SIZED backing arrays
+> (also fixes the latent decl-path garbage-elements silent-wrong);
+> `parseExpression` refuses a `{` HEAD loudly (the belt). TWO deeper
+> finds fixed in their own commits: the c2mir check guard treated
+> `N_ASSIGN`'s NULL context barrier like an owning declaration (nested
+> unsized array literal = garbage past `[0]` from plain C, uncast form
+> crashed gen — stock-upstream, PR candidate; c2mir interp + bootstrap
+> suites green) and `install-libmadc` never shipped `madc_typeid.h`
+> (installed `madc_api.h` includes it). New reducers
+> `tests/testinitlistarg.mad` (six shapes, g++/clang++ oracle) and
+> `tests/testnestedcomplit.mad` (`--std=c17`, gcc/clang oracle).
+> `examples/embed_hello.cpp` parses CLEAN through a parse handle (0
+> problems, 123 spans). Loud residues banked (KG):
+> `braced_list_decl_ctor_argument`, `embed_hello_full_compile_residues`.
+> Merge-wave battery: authoritative Linux fulltest green (units +
+> gates) + JIT **1156 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1111/0** (suite = 1180; testinitlistarg +
+> testnestedcomplit joined; testquotedincfallback's first wave).
+>
+> **Previous (2026-08-25, error-tolerant parse slice A / arc doc §3.5 —
 > feature/error-tolerant-parse-claude merge wave):** the parser CONTAINS
 > each top-level error (record → restore entry depths → DelimDepth
 > resync seeded with STREAM-TRUTH brace debt, so a mid-body failure

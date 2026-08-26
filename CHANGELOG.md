@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+- **Braced-init-list call arguments ([over.ics.list] slice 1) — the
+  madcide in-process SIGSEGV fixed (2026-08-26)**: a braced list as a
+  call argument (`p.call("add", {V(10), V(32)}, &sum)`) had no parse at
+  all — the argument readers handed the bare `{` to `parseExpression`,
+  flattening the elements into separate arguments ("Too many
+  parameters" on a valid call) or returning a NULL the identifier arm
+  dereferenced (the KG-critical `parser_segv_braced_list_call_arg`;
+  madcide crashed in-process opening `examples/embed_hello.cpp`). The
+  fix re-spells a braced argument against the callee's parameter type
+  through ONE owner (`respell_braced_list_for_target`, extracted from
+  `TokenRETURN::parse` and adopted by it — class targets take the
+  functional form `T{...}`, non-class aggregates the compound literal
+  `(T){...}`); `TokenObjTemp` now records braced-ness so the existing
+  [dcl.init.list]/4 (initializer-list ctor) and /5 (the type IS
+  `std::initializer_list` — built from the backing array directly)
+  arms serve functional-form temporaries; `initializer_list_literal`
+  emits the backing array SIZED, which also fixes the latent decl-path
+  silent-wrong (`std::initializer_list<E> l = {...}` read garbage
+  elements in a later statement). `parseExpression` now refuses a `{`
+  head LOUDLY — the belt for every remaining unguarded context. Two
+  deeper defects found under it, fixed in their own commits: the c2mir
+  check guard treated the `N_ASSIGN` NULL context barrier like an
+  owning declaration, so nested compound literals in assignment
+  context skipped `check_initializer` — an UNSIZED nested array
+  literal's type was never completed (garbage past element `[0]`
+  through the whole madc pipeline from plain C; the uncast form
+  crashed gen) — stock-upstream, an upstream-PR candidate; and
+  `install-libmadc` never shipped `madc_typeid.h` though the installed
+  `madc_api.h` includes it (every fresh-install downstream parse
+  failed). Reducers: `tests/testinitlistarg.mad` (six-shape matrix,
+  g++ + clang++ oracle) and `tests/testnestedcomplit.mad`
+  (`--std=c17`, gcc + clang oracle). `examples/embed_hello.cpp` now
+  parses CLEAN through a parse handle (0 problems, 123 spans — full
+  madcide highlighting). Loud residues banked: a braced DECL-ctor
+  argument gets the belt error (needs a parse-time candidate-ctor
+  rule), and the embed_hello full-compile lane has two named tsubst /
+  member-type gaps.
+
 - **Error-tolerant parse, slice A (AST arc §3.5; owner rulings
   2026-08-25)**: the parser CONTAINS each top-level error instead of
   stopping at the first — record the diagnostic, restore the
