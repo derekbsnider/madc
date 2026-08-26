@@ -211,6 +211,7 @@ void *madc_parse_diagnostics(void *result, int64_t handle);
 void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
 			   int64_t column);
 void *madc_parse_spans(void *result, int64_t handle);
+void *madc_lex_spans(void *result, void *source, void *filename);
 int64_t madc_project_open(void *manifest_path);
 void *madc_project_tus(void *result, int64_t handle);
 bool madc_project_close(int64_t handle);

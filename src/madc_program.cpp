@@ -4949,24 +4949,22 @@ static void trivia_comment_rows(const std::string &tr, long line, long col,
 // tree defines as a function, on that definition's head line, classifies
 // as "function" (head-line name match; the exact name-token feeder is
 // the named refinement).
-bool internal_program_parse_spans(int64_t handle, madc::value &out)
+// THE span classifier (one implementation, two feeders): walk a child's
+// retained token stream and emit {line, column, length, class} rows for
+// the TU's own tokens. parse_spans feeds it a PARSED child (fn_heads
+// carries the tree's function-head knowledge); lex_spans feeds it a
+// lex-only child (empty fn_heads — no tree, no type/function classes
+// beyond what lexing knows).
+static void highlight_token_rows(::Program &child,
+				 const std::string &display_name,
+				 const std::map<long, std::set<std::string> > &fn_heads,
+				 std::vector<madc::value> &rows)
 {
-    out = value();
-    parse_tu_state *st = parse_tu_get(handle);
-    if ( !st )
-	return false;
-    ::Program &child = *st->child;
-    std::map<long, std::set<std::string> > fn_heads;
-    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
-	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
-					     st->display_name) )
-	    fn_heads[(long)tf->line].insert(tf->var.name);
-    std::vector<madc::value> rows;
     long prev_line = 1;
     long prev_end_col = 0;
     for ( TokenBase *t : child.tokens )
     {
-	if ( !t || !t->file || st->display_name != t->file )
+	if ( !t || !t->file || display_name != t->file )
 	    continue;
 	if ( !t->leading_trivia.empty() )
 	{
@@ -5014,6 +5012,54 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
     if ( !child._trailing_trivia.empty() )
 	trivia_comment_rows(child._trailing_trivia, prev_line, prev_end_col,
 			    rows);
+}
+
+bool internal_program_parse_spans(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::map<long, std::set<std::string> > fn_heads;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					     st->display_name) )
+	    fn_heads[(long)tf->line].insert(tf->var.name);
+    std::vector<madc::value> rows;
+    highlight_token_rows(child, st->display_name, fn_heads, rows);
+    out = value::make_array(rows);
+    return true;
+}
+
+// Lexical spans (staged parsing, stage 1): the classes lexing alone can
+// answer — keyword / number / string / comment (JOE's whole vocabulary)
+// — from the buffer text ONLY. skip_includes lexes the TU without
+// ingesting headers (their macros stay unexpanded identifiers — the
+// lexical truth), so this is milliseconds where a C++ parse is seconds;
+// the full parse's spans REPLACE these when it lands (type / function
+// join then). No handle, no retained state — lex, classify, discard.
+bool internal_program_lex_spans(::Program &self,
+				const std::string &source_text,
+				const std::string &display_name,
+				madc::value &out)
+{
+    out = value();
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    child.keep_trivia = true;		// comment spans ride leading trivia
+    child.skip_includes = true;		// lex ONLY the buffer text
+    // tokenize_buffer's empty-name rule, mirrored so the token-file
+    // filter below matches what the tokens were stamped with.
+    std::string disp = display_name.empty() ? "<memory>" : display_name;
+    {
+	DiagnosticRenderMute mute;
+	child.tokenize_buffer(source_text, disp);
+    }
+    std::map<long, std::set<std::string> > no_heads;
+    std::vector<madc::value> rows;
+    highlight_token_rows(child, disp, no_heads, rows);
     out = value::make_array(rows);
     return true;
 }

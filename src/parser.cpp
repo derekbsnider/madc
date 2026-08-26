@@ -331,6 +331,8 @@ bool internal_program_parse_diagnostics(int64_t handle, value &out);
 bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
 bool internal_program_parse_spans(int64_t handle, value &out);
+bool internal_program_lex_spans(::Program &self, const std::string &source_text,
+				const std::string &display_name, value &out);
 int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path);
 bool internal_program_project_tus(int64_t handle, value &out);
@@ -1003,6 +1005,20 @@ void *madc_parse_spans(void *result, int64_t handle)
 {
     madc::value &out = *(madc::value *)result;
     madc::internal_program_parse_spans(handle, out);
+    return result;
+}
+
+void *madc_lex_spans(void *result, void *source, void *filename)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    madc::internal_program_lex_spans(*active, src, disp, out);
     return result;
 }
 

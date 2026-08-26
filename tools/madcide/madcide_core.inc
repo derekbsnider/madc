@@ -170,20 +170,19 @@ void load_status(long w, long es, const char *name)
 }
 
 // Highlight spans onto the bag (AST-2): the engine's classification rows
-// (madc::parse_spans, source coordinates) through the THEME (class ->
-// colour name), converted to the byte-offset { s, e, c } rows the edit
-// node's hints speak. Computed at (re)parse — composition just attaches
-// them; like the status line, they go stale with edits until the next
-// check/save. An unthemed class (or a stale line past the buffer) skips.
-void refresh_spans(long w, long es, long doc, long h)
+// (source coordinates) through the THEME (class -> colour name),
+// converted to the byte-offset { s, e, c } rows the edit node's hints
+// speak. ONE converter, two feeders: parse_spans (refresh_spans, the
+// full-parse state) and lex_spans (colour at load before the parse
+// lands). Like the status line, spans go stale with edits until the
+// next check/save. An unthemed class (or a stale line) skips.
+void spans_to_hspans(long w, long es, long doc, value &rows)
 {
     var hs = {};
     value th;
     ui::get(th, w, es, "theme");
     if ( !th.is_null() )
     {
-	value rows;
-	madc::parse_spans(rows, h);
 	for ( value r : rows )
 	{
 	    value c = th[r["class"].c_str()];
@@ -201,6 +200,28 @@ void refresh_spans(long w, long es, long doc, long h)
 	}
     }
     ui::set(w, es, "hspans", hs);
+}
+
+void refresh_spans(long w, long es, long doc, long h)
+{
+    value rows;
+    madc::parse_spans(rows, h);
+    spans_to_hspans(w, es, doc, rows);
+}
+
+// Lexical colour at load (staged parsing stage 1): keyword / number /
+// string / comment from LEXING the buffer alone — milliseconds where a
+// C++ parse is seconds — so the FIRST paint is already in colour. The
+// full parse's spans replace these when the handle lands.
+void lex_first_spans(long w, long es, long doc)
+{
+    value t;
+    ui::text(t, w, doc);
+    var p;
+    ui::get(p, w, doc, "path");
+    value rows;
+    madc::lex_spans(rows, t.c_str(), p.c_str());
+    spans_to_hspans(w, es, doc, rows);
 }
 
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
@@ -1399,6 +1420,7 @@ void run_ide(const char *path, bool ro)
     // whole parse (owner report, 2026-08-26). Render the document
     // immediately; the loop's own first compose then repaints with the
     // spans and the enclosing-function seat once the handle exists.
+    lex_first_spans(w, es, doc);	// colour rides the FIRST paint
     {
 	value tree0;
 	compose_ide_tree(tree0, w, es, doc);

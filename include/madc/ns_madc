@@ -133,6 +133,15 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+    //   lex_spans: the classes LEXING alone answers (keyword, number,
+    //       string, comment — plus what the lexer's own maps know),
+    //       from the buffer text only: no includes ingested, header
+    //       macros stay unexpanded identifiers, no handle, no retained
+    //       state. Milliseconds where a full C++ parse is seconds —
+    //       the first-paint colour source; the parse handle's spans
+    //       replace these when the parse lands (staged parsing stage 1,
+    //       docs/plans/2026-08-26-madcide-staged-parse-and-state.md).
+    value &lex_spans(value &out, const char *text, const char *filename);
     int64_t project_open(const char *manifest);
     value &project_tus(value &out, int64_t handle);
     bool project_close(int64_t handle);
