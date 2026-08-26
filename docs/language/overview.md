@@ -58,6 +58,7 @@ and the streams are the real library objects.
 | Built-in regex via `madc::` | [regex.md](regex.md) |
 | `sys` object — argv, environment, process info | [sys-object.md](sys-object.md) |
 | `madc::channel` — URI byte channels (`exec://`, `tcp://`, `file://`) | [channel.md](channel.md) |
+| Cooperative tasks — `go f(args);` spawn, `yield()`, root-scope join | [tasks.md](tasks.md) |
 
 ## Namespaces
 

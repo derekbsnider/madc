@@ -1,0 +1,12 @@
+/* MT-1 strict-mode gate (the test3eqgate shape): under an explicit C
+ * standard, `go` and `yield` are ordinary identifiers — the madc-dialect
+ * contextual statement heads (go_statement_enabled == STD_MADC only) must
+ * never fire; strict modes stay byte-identical. */
+extern int printf(const char *, ...);
+int main(void)
+{
+	int go = 1;
+	int yield = 2;
+	printf("%d\n", go + yield);
+	return 0;
+}

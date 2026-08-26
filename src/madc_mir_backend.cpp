@@ -29,6 +29,7 @@
 #include "madc_dl.h"
 #include "ns_common.h"
 #include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
+#include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "libmadc/sysinfo.h"
 
 extern "C" {
@@ -606,6 +607,13 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
     }
 
     int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+
+    // Root-scope join (the ruled Kotlin-scope semantic): main's return waits
+    // for every live task. MUST run before MIR_gen_finish — task bodies are
+    // jitted MIR code. Idempotent no-op when the program never spawned; the
+    // atexit copy registered by the runtime then no-ops too (that copy is
+    // for native artifacts, whose process ends with the program).
+    __madc_task_join_all();
 
     MIR_gen_finish(ctx);
     c2mir_finish(ctx);

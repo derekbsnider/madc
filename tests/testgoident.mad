@@ -1,0 +1,18 @@
+// MT-1 negative control (the error-shape rule): DECLARED `go` and `yield`
+// names always win over the contextual statement heads, even under
+// --std=madc. `go = go + 1;` assigns the variable; `yield(6);` at statement
+// head calls the declared function; neither reaches the task machinery.
+long go = 4;
+
+long yield(long x)
+{
+    return x + 1;
+}
+
+int main()
+{
+    go = go + 1;
+    yield(6);
+    println("go={} yield={}", go, yield(6));
+    return 0;
+}
