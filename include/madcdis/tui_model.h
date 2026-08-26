@@ -865,9 +865,11 @@ private:
 	std::string text;	// the bound document text
 	long caret;		// byte offsets from the node's hints
 	long sel_start, sel_end;
+	long tabw;		// display tab width (hints["tabwidth"], the
+				// ^T option); clamped 1..16 at parse
 	std::vector<doc_span> spans;	// highlight spans (may be empty)
 	edit_slot() : line_index(0), slot(0), caret(0),
-		      sel_start(-1), sel_end(-1) {}
+		      sel_start(-1), sel_end(-1), tabw(tab_stop) {}
     };
 
     static long hint_of(const madc::value &hints, const char *key, long dflt)
@@ -976,6 +978,11 @@ private:
 	    e.caret = hint_of(n.hints, "caret", 0);
 	    e.sel_start = hint_of(n.hints, "sel_start", -1);
 	    e.sel_end = hint_of(n.hints, "sel_end", -1);
+	    e.tabw = hint_of(n.hints, "tabwidth", tab_stop);
+	    if ( e.tabw < 1 )
+		e.tabw = 1;
+	    if ( e.tabw > 16 )
+		e.tabw = 16;
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -1032,9 +1039,12 @@ private:
     // wide (the grid's put() renders it '?').
     enum { tab_stop = 8 };
     static std::string expand_line(const std::string &line,
-				   std::vector<size_t> &dcol)
+				   std::vector<size_t> &dcol,
+				   size_t tabw = tab_stop)
     {
 	std::string disp;
+	if ( tabw < 1 )
+	    tabw = tab_stop;
 	dcol.assign(line.size() + 1, 0);
 	for ( size_t i = 0; i < line.size(); ++i )
 	{
@@ -1042,7 +1052,7 @@ private:
 	    if ( line[i] == '\t' )
 	    {
 		disp += ' ';
-		while ( disp.size() % tab_stop )
+		while ( disp.size() % tabw )
 		    disp += ' ';
 	    }
 	    else
@@ -1106,7 +1116,7 @@ private:
 			 ? starts[caret_line + 1] - 1 : e.text.size();
 	std::vector<size_t> caret_dcol;
 	expand_line(e.text.substr(caret_begin, caret_end - caret_begin),
-		    caret_dcol);
+		    caret_dcol, (size_t)e.tabw);
 	size_t caret_col = caret_dcol[caret - caret_begin];
 
 	size_t &top = _scroll[e.slot];
@@ -1129,7 +1139,7 @@ private:
 						: e.text.size();
 	    std::vector<size_t> dcol;
 	    std::string disp = expand_line(e.text.substr(begin, end - begin),
-					   dcol);
+					   dcol, (size_t)e.tabw);
 	    if ( shift < disp.size() )
 		_grid.put(top_row + k, 0, disp.substr(shift, cols));
 	    // Highlight spans first, the selection LAST (it wins where

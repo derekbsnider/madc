@@ -11,6 +11,7 @@
 ^k r insertfile
 ^c discard
 ^k h help
+^t options
 ^k z shell
 # Movement (the WordStar diamond; these delegate to the one shared
 # movement implementation — the action name is the key vocabulary)

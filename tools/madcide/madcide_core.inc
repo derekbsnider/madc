@@ -295,6 +295,24 @@ void refresh_outline(long w, long es, long doc)
     ui::set(w, es, "outline", o);
 }
 
+// The keybinding-profile toggle (joe <-> pico): ONE implementation for
+// the ^K P action and the options pane's Keymap row.
+void toggle_profile(long w, long es)
+{
+    var cur;
+    ui::get(cur, w, es, "profile");
+    if ( cur == "joe" )
+    {
+	load_profile(w, es, "pico");
+	load_status(w, es, "pico");	// the format rides the profile
+    }
+    else
+    {
+	load_profile(w, es, "joe");
+	load_status(w, es, "joe");
+    }
+}
+
 // A choose on the pane: move the caret to the chosen row's line. The
 // rows live on the bag in pane order — the 1-based option is the index.
 void goto_pane_row(long w, long es, long doc, long option)
@@ -597,6 +615,18 @@ void finish_prompt(long w, long es, long doc, long caret)
     if ( mode == "insertfile" )
     {
 	insert_file(w, es, doc, caret, in.c_str());
+	return;
+    }
+    if ( mode == "tabwidth" )
+    {
+	long tw = php::intval(in);
+	if ( tw < 1 || tw > 16 )
+	{
+	    ui::set(w, es, "msg", format("Tab width '{}' — need 1..16.", in));
+	    return;
+	}
+	ui::set(w, es, "tabwidth", tw);
+	ui::set(w, es, "msg", format("Tab width {}.", tw));
 	return;
     }
     if ( mode == "theme" )
@@ -1138,6 +1168,11 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	    toggle_pane(w, es, "help");
 	    return true;
 	}
+	if ( a == "options" )
+	{
+	    toggle_pane(w, es, "options");
+	    return true;
+	}
 	if ( a == "shell" )
 	{
 	    open_shell(w, es);
@@ -1145,18 +1180,7 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "profile" )
 	{
-	    var cur;
-	    ui::get(cur, w, es, "profile");
-	    if ( cur == "joe" )
-	    {
-		load_profile(w, es, "pico");
-		load_status(w, es, "pico");	// the format rides the profile
-	    }
-	    else
-	    {
-		load_profile(w, es, "joe");
-		load_status(w, es, "joe");
-	    }
+	    toggle_profile(w, es);
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -1199,6 +1223,21 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "q" )
 	    return do_verb(w, es, "q");
+	if ( a == "opt-tabwidth" )
+	{
+	    start_prompt(w, es, "Tab width (1-16)", "tabwidth");
+	    return true;
+	}
+	if ( a == "opt-scheme" )
+	{
+	    start_prompt(w, es, "Theme", "theme");
+	    return true;
+	}
+	if ( a == "opt-keymap" )
+	{
+	    toggle_profile(w, es);
+	    return true;
+	}
 	return true;
     }
     if ( kind != "key" )
@@ -1260,6 +1299,17 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	}
     }
 
+    // The display tab width (IDE-9d ^T option) rides the edit node's
+    // hints like the caret — the model owns the expansion math.
+    long tabw = es_int(w, es, "tabwidth", 0);
+    if ( tabw > 0 )
+    {
+	value ht;
+	ht = ed["hints"];
+	ht["tabwidth"] = tabw;
+	ed["hints"] = ht;
+    }
+
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
     // state read of the buffer's parse handle — stored-space only (a
     // view's caret is display-space), and only once something opened the
@@ -1317,6 +1367,42 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 		value it;
 		it["role"] = "item";
 		it["content"] = line;
+		items.push(it);
+		nrows = nrows + 1;
+	    }
+	}
+	else if ( pane == "options" )
+	{
+	    // ^T options (IDE-9d): letter row = live value + the action
+	    // its ENTER fires — the theme prompt and profile toggle are
+	    // the EXISTING actions; only tabwidth's prompt mode is new.
+	    box["label"] = "Options";
+	    long tw = es_int(w, es, "tabwidth", 8);
+	    var scheme;
+	    ui::get(scheme, w, es, "scheme");
+	    var prof;
+	    ui::get(prof, w, es, "profile");
+	    var rows = {};
+	    value o1;
+	    o1["content"] = format("D Tab width   {}", tw);
+	    o1["act"] = "opt-tabwidth";
+	    rows.push(o1);
+	    value o2;
+	    o2["content"] = format("S Scheme      {}", scheme);
+	    o2["act"] = "opt-scheme";
+	    rows.push(o2);
+	    value o3;
+	    o3["content"] = format("K Keymap      {}", prof);
+	    o3["act"] = "opt-keymap";
+	    rows.push(o3);
+	    for ( value row : rows )
+	    {
+		value it;
+		it["role"] = "item";
+		it["content"] = row["content"];
+		var ga = {};
+		ga.push(row["act"]);
+		it["actions"] = ga;
 		items.push(it);
 		nrows = nrows + 1;
 	    }
