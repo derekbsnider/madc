@@ -66,6 +66,33 @@ stated contract (thread-safety law):
 - This slice carries the TSan-lane note: it is the first engine-side
   worker the madcide path exercises.
 
+**THE WALL (recon 2026-08-26, before any stage-2 code):** the front end
+relies on STATIC active-owner state — `TokenBase::_active_strpool` /
+`_active_valpool` ("bound to the currently-processing Program … compile
+is sequential per-Program", tokens.h) and the static
+`_parse_file/_parse_line/_parse_column` parse cursor. A second compile
+thread rebinding those while the main thread lexes/evals is a data
+race by construction. Two candidate shapes, owner's call:
+
+1. **thread_local actives (the F2-arc route):** flip the static
+   active-owner fields to `thread_local`, audit the rest of the
+   front-end globals (the F2 audit debt), then the worker thread is
+   real. Durable — also what language threads need eventually — but it
+   is an engine-wide audit, not a madcide slice.
+2. **fork + products (implementable now):** parse in a forked child;
+   ship PRODUCTS (span rows, outline rows WITH extents, diagnostic
+   rows) back over a pipe as value data; the wake fd is the pipe
+   itself. No shared state races. parse_enclosing becomes an outline-
+   extent lookup over the shipped rows; features needing the live tree
+   (views, emit) keep the synchronous handle. Cost: a re-parse per
+   refresh is a fork, and the products contract must be enumerated.
+
+Stage 1 (shipped) removes the visible symptom at load: colour is
+immediate, and the parse blocks only the FIRST keystrokes (0.7s
+release-tier on the NAS). Stage 2's urgency is now the EDIT cadence
+(check/save reparse pauses), which is also where incremental reparse
+(the banked lever) competes for the same budget.
+
 ## Stage 3 — editor state and the IDE-cache kind (measure first)
 
 Two different things hide in "saving editor state":

@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-08-26, span-coordinate truth —
+> **Current (2026-08-26, lex_spans — feature/lex-spans merge wave):**
+> `madc::lex_spans` classifies from lexing the buffer alone
+> (skip_includes; the classifier factored out of `parse_spans`), and
+> madcide's first paint now carries colour (pty probe: colour SGR in
+> the first drain window on a header-heavy C++ file). Reducer
+> `testlexspans.mad` joined (suite = 1183). Battery: fulltest rc=0
+> (all gates) + JIT **1159 passed / 0 failed / 0 timed out / 9
+> skipped**.
+>
+> **Previous (2026-08-26, span-coordinate truth —
 > feature/span-coordinate-truth merge wave):** macro-expansion tokens
 > no longer emit highlight spans (`tfSYNTHPOS`), and synthesized
 > pushback text advances no source column — the SMAUG fight.c

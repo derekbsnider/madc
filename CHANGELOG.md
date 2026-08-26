@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **madc::lex_spans — colour right after lexing (staged parsing stage 1,
+  2026-08-26)**: madcide now shows syntax colour in its FIRST paint.
+  The new engine public classifies from lexing the buffer text alone
+  (keyword / number / string / comment — JOE's whole lexical
+  vocabulary): `skip_includes` lexes without ingesting headers, so it
+  costs milliseconds where a C++ parse costs seconds; the full parse's
+  spans (types, functions) replace the lexical rows when the handle
+  lands. One classifier serves both (`highlight_token_rows`, factored
+  out of `parse_spans`); one theme converter serves both madcide paths
+  (`spans_to_hspans`). Stage 2 (parse off the event loop — blocked
+  today by the front end's static active-owner state, two candidate
+  shapes banked) and stage 3 (editor state vs the IDE-cache artifact
+  kind) are designed in
+  `docs/plans/2026-08-26-madcide-staged-parse-and-state.md`.
+
 - **parse_spans: source-true coordinates under macro expansion
   (2026-08-26)**: highlighting from SMAUG's `strip_grapple` onward
   rendered string-cyan (owner report) — macro-expansion tokens carried
