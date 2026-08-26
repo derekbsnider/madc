@@ -82,6 +82,124 @@ active-owner state).
   the node/nginx discipline; the runtime's io verbs are where that
   lives, not user code.
 
+## OWNER RULINGS (2026-08-26, post-recon)
+
+- **"This is what we're doing with madc — bringing in features from
+  other languages and letting them coexist with C/C++."** The arc's
+  north star, verbatim.
+- **Start cooperative, with `go`/`yield`; `await` is in.** The
+  cooperative-first sequencing and the Go-shaped + Lua-shaped + C#-
+  shaped surfaces are approved. (Futures-as-values carry `await` —
+  recon Part B amendment 3 — so it costs no coloring.)
+- **C++26 std::execution: semantics through madc conveniences, never
+  its header machinery** (the dialect-lean law restated for
+  concurrency).
+- **Build ON the existing channel foundation** — the sub-process
+  channel work is the seed, not a parallel design (see next section).
+
+## The combination (owner proposal 2026-08-26, endorsed)
+
+Owner: "combine Go's tiny syntax with Kotlin-style structured
+concurrency and Java-style cheap blocking tasks." That IS the recon
+synthesis — three views of one design, not a compromise:
+
+- **Go = the spelling.** `go f(x)`, argless `yield()`, colorless calls.
+- **Kotlin = the ownership.** Every spawn lands in a scope owning
+  join/error/cancel; cancellation rides the scope implicitly (never
+  Go's viral context parameter). Where the parents disagree (Go
+  detaches by default, Kotlin attaches), the combination picks Kotlin:
+  `go` inside a scope attaches to it; top-level `go` attaches to the
+  root scope `main` owns.
+- **Java/Loom = the cost model.** Blocking IS the programming model:
+  a parked context is free, so the ENTIRE existing madc surface
+  (php::, perl::, madc::channel reads) works unchanged inside a
+  goroutine — nothing ever needs an async variant.
+
+## The C++11 thread family (owner: "contemplate std::thread/async/future/mutex/condition_variable")
+
+Two clean piles — semantics to absorb now, interop names to serve later:
+
+- **std::async / std::future — absorbed.** `go` as an expression IS
+  std::async (sane launch policy); the future value's `get()`/`await`
+  IS std::future::get() at goroutine cost; one-shot value-or-error is
+  the contract of the one-shot channel (MT-2).
+- **std::mutex / std::condition_variable — context-aware twins.** The
+  Loom PINNING lesson (an OS-level lock blocks the carrier thread,
+  freezing every context on it; Java needed JEP 491 for
+  `synchronized`): the dialect gets primitives that park the CONTEXT
+  (Go sync.Mutex shape); condvar-style waiting is park/notify on the
+  loop, and the thread-safety law already routes shared mutation
+  through hub verbs — hub wait/notify is the blessed condvar. Real
+  pthread-backed std::mutex remains correct for genuine C++ interop
+  under real threads; holding one across a yield is a documented
+  pinning hazard.
+- **std::thread — F2-gated compat seat.** Real OS parallelism rides
+  the F2 static-actives audit (same gate as M:N). It is an interop
+  surface for transpiling real C++ code, never the foundation of the
+  madc surface (dialect-lean).
+
+## The existing foundation (inventory, don't rebuild)
+
+Shipped in v0.72.0 (Track 5C slice 1,
+`2026-08-08-track5c-script-channels-plan.md`) and since:
+
+- **`madc::channel`** (`include/madcdis/channel.h`,
+  `src/madc_channel_object.cpp`; `<ns_madc>` twin, mangled-direct):
+  URI-addressed BYTE channels — `exec://` sub-processes, `tcp://`,
+  `file://` — read/readline/readall/write (+ value-carrier twins),
+  modes, half-close (`close_write`).
+- **`DataChannel` registry** (`include/madcdis/datachannel.h`):
+  capabilities (read/write/half_close/seek), scheme factories,
+  `ExecDataChannel` (+ `Process::start`, `pump_process`), and a STATED
+  thread-safety contract: single-threaded EXCEPT close_read/
+  close_write as a cross-thread WAKE for a blocked peer — already a
+  park/wake seam.
+- **`DatagramDataChannel`**: the message-oriented extension (one
+  complete datagram per call) — the natural kin of a value-message
+  queue.
+- **Hub verbs** (`2026-08-20-data-hub-projection-rendering.md`,
+  demand 15): shared mutation behind verbs; F3 gives the language arc
+  a data-race-free default.
+
+Unification claims (no-parallel-implementations):
+
+- The Go-style channel between CONTEXTS is a VALUE queue — a new
+  in-memory channel kind in the SAME family, not a second queue
+  concept; its blocking send/recv are where the scheduler parks and
+  wakes contexts.
+- `madc::channel` byte endpoints (exec://, tcp://) become WAITABLE on
+  the same event loop (nonblocking + park), so `select` can span both:
+  "recv from a goroutine channel OR readline from exec://sort" is one
+  wait. The fd is the wake mechanism the staged-parse plan already
+  designed for stage 2.
+- A future is a one-shot value channel; `await` is its receive.
+
+## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
+
+- **MT-1 substrate**: stackful contexts (small in-tree switcher; SysV
+  x86-64 + Win64 + arm64 as lanes demand — MIR-jitted code runs on
+  ordinary stacks, so switching just works) + run queue; MAIN RUNS AS
+  A CONTEXT (any blocking verb enters the scheduler — no explicit
+  run() call); `go f(args)` spawn + argless `yield()`; program exit
+  joins the root scope. Thread-safety contract: one OS thread,
+  cooperative — stated per the law.
+- **MT-2 channels + futures**: value channels (buffered/unbuffered),
+  blocking send/recv with park/unpark, close semantics, `select`;
+  `go` as an EXPRESSION returns a future (one-shot channel); `await` /
+  `.get()`.
+- **MT-3 scopes + cancellation**: structured spawn (scope owns
+  join/error/cancel), stop flag checked at every blocking verb.
+- **MT-4 io + time**: `madc::channel` endpoints on the event loop,
+  `sleep` via a timer heap, VIRTUAL-TIME test verbs — deterministic
+  fulltest gates from the first slice (recon amendment 4).
+- **MT-5 keywords**: `go` / `yield` / `await` into the LanguageStd
+  keyword/feature registry under `--std=madc` (publics land first;
+  keywords are sugar over the same runtime entries; strict C/C++
+  modes stay pristine).
+- Later, other arcs: M:N workers (rides F2), supervision/actor library
+  pattern (SMAUG consumer), python:: generators on the Lua surface,
+  C++26 std::execution interop seat (transpiler arc).
+
 ## Open owner forks (brainstorm agenda)
 
 1. Surface spellings: publics-first vs keywords-first; `go` as keyword
