@@ -1,6 +1,6 @@
 // lineed verb: p [N [M]] — print the whole document, one line, or a range.
 // Ctx: w/actor/target int64, arg/verb const char*; document by name.
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 long total = ui::text_line_count(w, doc);
 if ( total < 1 )
     return "(empty)";

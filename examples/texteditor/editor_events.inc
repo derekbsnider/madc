@@ -106,6 +106,7 @@ long setup_editor(long w, const char *path, bool ro)
     bind_lineed_verbs(w);
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);	// the subject-document rule's key
     derive_access(w, es);
     return doc;
 }

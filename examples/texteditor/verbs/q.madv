@@ -1,6 +1,6 @@
 // lineed verb: q — quit, refusing while the document has unsaved changes
 // (§7.3's modified rule; q! is the discard path).
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 var m;
 ui::get(m, w, doc, "modified");
 if ( !m.is_null() && m.as_boolean() )

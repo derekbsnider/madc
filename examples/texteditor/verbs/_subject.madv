@@ -1,0 +1,15 @@
+// THE subject-document rule — ONE owner (bind_lineed_verbs prepends this
+// to every document verb and check body; scripts/check-one-subject-doc.sh
+// gates against a body looking the document up itself): the actor's
+// ACTIVE document — "adoc" on the actor's bag, which multi-buffer
+// sessions (madcide AST-5) point at the current buffer — else the
+// world's one "document" (single-doc sessions, headless harnesses).
+long doc = 0;
+{
+    value __ad;
+    ui::get(__ad, w, actor, "adoc");
+    if ( !__ad.is_null() )
+	doc = __ad.as_integer();
+}
+if ( doc == 0 )
+    doc = ui::entity_by_name(w, "document");

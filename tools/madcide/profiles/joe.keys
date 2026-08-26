@@ -45,7 +45,8 @@
 ^l findnext
 # madcide
 ^k q quit
-^k e check
+^k e editfile
+^k ; check
 ^k o outline
 ^k p profile
 ^k n view

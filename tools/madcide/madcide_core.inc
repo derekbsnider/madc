@@ -591,6 +591,9 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
 }
 
+// AST-5 buffers (defined after the view machinery): ^K E open-or-switch.
+void edit_file(long w, long es, long olddoc, const char *path);
+
 // Prompt completion (enter): dispatch on the stored mode.
 void finish_prompt(long w, long es, long doc, long caret)
 {
@@ -615,6 +618,11 @@ void finish_prompt(long w, long es, long doc, long caret)
     if ( mode == "insertfile" )
     {
 	insert_file(w, es, doc, caret, in.c_str());
+	return;
+    }
+    if ( mode == "editfile" )
+    {
+	edit_file(w, es, doc, in.c_str());
 	return;
     }
     if ( mode == "tabwidth" )
@@ -910,6 +918,131 @@ void exit_view(long w, long es, long doc)
     derive_access(w, es);	// the file's own verdict returns
 }
 
+// ---- AST-5: buffers (IDE-8) ------------------------------------------
+// JOE's model: ^K E prompts for a file; an open path SWITCHES to that
+// buffer (caret where it was), a new path opens a new buffer, a missing
+// file opens EMPTY ("New File"). The table lives on the bag: `buffers`
+// rows { doc, path, caret, mark, bend } + `bufidx`; doc-scoped facts
+// (path, modified, read_only, phandle, undo history) already live on
+// each document. The verbs follow the switch through the bag's `adoc`
+// (the subject-document rule, verbs/_subject.madv).
+
+// The ACTIVE buffer's document; `fallback` serves table-less sessions
+// (the headless harness drives apply_ide_event without run_ide's seed).
+long active_doc(long w, long es, long fallback)
+{
+    long ad = es_int(w, es, "adoc", 0);
+    return ad != 0 ? ad : fallback;
+}
+
+// Open a document for the buffer table: an unreadable path is a NEW
+// EMPTY file (JOE's "New File"), not a refusal — setup_document's
+// 0-on-missing contract stays what vised/lined need.
+long open_buffer_doc(long w, long es, const char *path)
+{
+    long nd = setup_document(w, path, false);
+    if ( nd != 0 )
+	return nd;
+    nd = ui::create(w, "document");
+    ui::text_load(w, nd, "");
+    ui::set(w, nd, "path", path);
+    ui::set(w, nd, "modified", false);
+    return nd;
+}
+
+// Switch the active buffer: leave any view (it lenses the OLD buffer),
+// save the old row's interaction state, restore the target's, colour
+// immediately from the lexical spans and leave the FULL parse to the
+// loop's paint-before-parse step (`pending_parse` — the black-startup
+// rule, one mechanism for startup and switches).
+void switch_buffer(long w, long es, long olddoc, long idx)
+{
+    value vw;
+    if ( view_name(vw, w, es) )
+	exit_view(w, es, olddoc);
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    long cur = es_int(w, es, "bufidx", 0);
+    value row = bufs[cur];
+    row["caret"] = es_int(w, es, "caret", 0);
+    row["mark"] = es_int(w, es, "mark", -1);
+    row["bend"] = es_int(w, es, "bend", -1);
+    bufs[cur] = row;
+    ui::set(w, es, "buffers", bufs);
+    value t = bufs[idx];
+    long nd = t["doc"].as_integer();
+    ui::set(w, es, "bufidx", idx);
+    ui::set(w, es, "adoc", nd);
+    ui::set(w, es, "caret", t["caret"].as_integer());
+    ui::set(w, es, "mark", t["mark"].as_integer());
+    ui::set(w, es, "bend", t["bend"].as_integer());
+    derive_access(w, es);
+    lex_first_spans(w, es, nd);
+    ui::set(w, es, "pending_parse", 1);
+}
+
+// ^K E's commit: an open path switches; anything else opens (missing =
+// New File). A session without the table (headless) seeds it from the
+// buffer it was driving.
+void edit_file(long w, long es, long olddoc, const char *path0)
+{
+    // Value-first: the caller hands a prompt value's ring-lifetime
+    // c_str(); ONE immediate copy into a value carrier owns the text
+    // for the whole call (char[] buffers are off the table here — the
+    // {}-format/value-assign char-array mistype is a banked engine
+    // defect, KG madc_char_array_text_boundary).
+    var p = path0;
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) == 0 )
+    {
+	var seed = {};
+	value b0;
+	b0["doc"] = olddoc;
+	var op;
+	ui::get(op, w, olddoc, "path");
+	b0["path"] = op;
+	b0["caret"] = es_int(w, es, "caret", 0);
+	b0["mark"] = -1;
+	b0["bend"] = -1;
+	seed.push(b0);
+	ui::set(w, es, "buffers", seed);
+	ui::set(w, es, "bufidx", 0);
+	ui::set(w, es, "adoc", olddoc);
+	ui::get(bufs, w, es, "buffers");
+    }
+    long n = php::count(bufs);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	value r = bufs[i];
+	if ( r["path"] == p )
+	{
+	    if ( i == es_int(w, es, "bufidx", 0) )
+	    {
+		ui::set(w, es, "msg", format("Already editing {}.", p));
+		return;
+	    }
+	    switch_buffer(w, es, olddoc, i);
+	    ui::set(w, es, "msg", format("Editing {}.", p));
+	    return;
+	}
+    }
+    bool fresh = !php::file_exists(p);
+    long nd = open_buffer_doc(w, es, p.c_str());
+    value b;
+    b["doc"] = nd;
+    b["path"] = p;
+    b["caret"] = 0;
+    b["mark"] = -1;
+    b["bend"] = -1;
+    bufs.push(b);
+    ui::set(w, es, "buffers", bufs);
+    switch_buffer(w, es, olddoc, n);
+    ui::set(w, es, "msg",
+	    fresh ? format("New file {}.", p)
+		  : format("Editing {}.", p));
+}
+
 // The c++ view applies when the BUFFER'S OWN language is C/C++ (by
 // extension — the app's document-kind rule): its render is source-shaped
 // (madc::emit "c++" echoes the retained source), and a madc-dialect
@@ -1171,6 +1304,11 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	if ( a == "options" )
 	{
 	    toggle_pane(w, es, "options");
+	    return true;
+	}
+	if ( a == "editfile" )
+	{
+	    start_prompt(w, es, "Name of file to edit", "editfile");
 	    return true;
 	}
 	if ( a == "shell" )
@@ -1500,36 +1638,57 @@ void run_ide(const char *path, bool ro)
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
-    // FIRST PAINT BEFORE THE PARSE: parse-on-load can take seconds on a
-    // real C++ file (headers), and the alternate screen is already up —
-    // blocking here left the user staring at a BLACK screen for the
-    // whole parse (owner report, 2026-08-26). Render the document
-    // immediately; the loop's own first compose then repaints with the
-    // spans and the enclosing-function seat once the handle exists.
-    lex_first_spans(w, es, doc);	// colour rides the FIRST paint
+    // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     {
-	value tree0;
-	compose_ide_tree(tree0, w, es, doc);
-	ui::tui_render(t, w, tree0);
+	var bufs = {};
+	value b0;
+	b0["doc"] = doc;
+	b0["path"] = path;
+	b0["caret"] = 0;
+	b0["mark"] = -1;
+	b0["bend"] = -1;
+	bufs.push(b0);
+	ui::set(w, es, "buffers", bufs);
+	ui::set(w, es, "bufidx", 0);
     }
-    ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
-				// highlight spans have state before the
-				// first check; a failed open msgs there
+    // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
+    // blocked the first render for seconds on a real C++ file): colour
+    // rides the first paint from the LEXICAL spans; the full parse runs
+    // as the loop's pending step AFTER a render — the ONE mechanism
+    // startup and buffer switches share.
+    lex_first_spans(w, es, doc);
+    ui::set(w, es, "pending_parse", 1);
     bool run = true;
     while ( run )
     {
+	long adoc = active_doc(w, es, doc);
 	value tree;
-	compose_ide_tree(tree, w, es, doc);
+	compose_ide_tree(tree, w, es, adoc);
 	ui::tui_render(t, w, tree);
+	if ( es_int(w, es, "pending_parse", 0) != 0 )
+	{
+	    ui::set(w, es, "pending_parse", 0);
+	    long h = ensure_phandle(w, es, adoc);
+	    if ( h != 0 )
+		refresh_spans(w, es, adoc, h);
+	    continue;		// recompose with the parse's spans
+	}
 	value ev;
 	if ( !ui::tui_event(ev, t, w) )
 	    break;
-	run = apply_ide_event(w, es, doc, ev);
+	run = apply_ide_event(w, es, adoc, ev);
 	ui::set(w, es, "hint", 0);	// first event returns the row
     }
-    long ph = es_int(w, doc, "phandle", 0);
-    if ( ph != 0 )
-	madc::parse_close(ph);
+    // Every buffer's parse handle closes with the session.
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    for ( value b : bufs )
+    {
+	long bd = b["doc"].as_integer();
+	long ph = es_int(w, bd, "phandle", 0);
+	if ( ph != 0 )
+	    madc::parse_close(ph);
+    }
     ui::tui_close(t);
     ui::world_close(w);
 }
