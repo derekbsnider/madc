@@ -23631,9 +23631,13 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 		shape = "v";
 	std::string thunk_name = "__madc_go_" + target_sym + "_" + shape;
 
-	// An 8-byte slot's lvalue type: long / double / void*.
+	// The cast type for an 8-byte slot's ADDRESS — pointer to the slot's
+	// stored type (long / double / void*), so the SK_PTR arm needs TWO
+	// pointer levels (void **): one for the slot's void* payload, one for
+	// the address being cast.
 	auto slot_ptr_type = [&](SlotKind k) -> node_t {
 		node_t spec = list();
+		node_t dl = list();
 		if (k == SK_I64) {
 			append(spec, simple(N_LONG));
 			append(spec, simple(N_LONG));
@@ -23641,8 +23645,8 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 			append(spec, simple(N_DOUBLE));
 		} else {
 			append(spec, simple(N_VOID));
+			append(dl, pointer());
 		}
-		node_t dl = list();
 		append(dl, pointer());
 		return node2(N_TYPE, spec, node2(N_DECL, ignore(), dl));
 	};
@@ -23653,6 +23657,12 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 	if (!slots.empty())
 		need_output_extern("malloc", true,
 				   { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+	// Forward prototype for the thunk: its linkonce DEFINITION flushes
+	// after the function bodies (Pass 0.745), so a site inside main would
+	// otherwise reference an undeclared identifier (C declaration-before-
+	// use) — the same prototype-then-definition shape Pass 0.75 emits for
+	// in-module referenced functions.
+	need_output_extern(thunk_name.c_str(), false, { { {N_CHAR}, true } });
 
 	// The thunk — once per (callee, shape); linkonce so identical copies
 	// from other TUs merge.

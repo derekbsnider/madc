@@ -1,0 +1,43 @@
+// MT-1 cooperative tasks: `go f(args);` + `yield;`/`yield();` under
+// --std=madc. Scheduling is strict FIFO run-to-yield — DETERMINISTIC by
+// contract — so the accumulated trace pins the complete schedule, including
+// the post-main root-scope join (main returns while w1/w2 still live; the
+// host join drains them). Argument slots: long (id, hops), double (score),
+// const char* (who) — the three MT-1 slot kinds.
+value tr;
+
+void worker(long id, long hops)
+{
+    long i = 0;
+    while ( i < hops )
+    {
+	tr = format("{}w{}.{};", tr, id, i);
+	yield();
+	i = i + 1;
+    }
+    tr = format("{}w{}done;", tr, id);
+    println("end w{} tr={}", id, tr);
+}
+
+void greet(const char *who, double score)
+{
+    tr = format("{}greet({},{});", tr, who, score);
+}
+
+void noargs()
+{
+    tr = format("{}noargs;", tr);
+}
+
+int main()
+{
+    go worker(1, 2);
+    go worker(2, 1);
+    go greet("mad", 9.5);
+    go noargs();
+    tr = format("{}main1;", tr);
+    yield();
+    tr = format("{}main2;", tr);
+    println("mid tr={}", tr);
+    return 0;
+}

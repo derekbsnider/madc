@@ -36,6 +36,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "madc_cir.h"
+#include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
@@ -1468,6 +1469,13 @@ int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
     g_jit_module = mod;
     auto _ex_t0 = std::chrono::steady_clock::now();	// --show-stats: execution
     int result = ((int (*)(int, char **))code)(argc, argv);
+    // Root-scope join (MT-1, the ruled Kotlin-scope semantic): main's return
+    // waits for every live task. MUST run HERE — before the session's
+    // teardown (MIR_finish unmaps the JIT code the task bodies ARE; the
+    // go_join reducer caught exactly that as a wild jump into an unmapped
+    // page) and inside the g_jit_module window so a task crash still
+    // symbolizes. Idempotent no-op when the program never spawned.
+    __madc_task_join_all();
     if (out_secs)
 	*out_secs = std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _ex_t0).count();
@@ -2177,7 +2185,13 @@ static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
     for (size_t i = 0; i < n_init; i++)
 	((cir_init_fn)inits[i])(argc, argv, environ);
     fflush(stdout);
-    return entry(argc, argv, environ);
+    int rc = entry(argc, argv, environ);
+    // Root-scope join (MT-1): same rule as CirJitSession::run_main. The
+    // loaded image is never unloaded, so the atexit copy WOULD be safe here
+    // — the explicit call keeps task output ordered before madc's own
+    // teardown. Idempotent no-op when nothing spawned.
+    __madc_task_join_all();
+    return rc;
 }
 
 int madc_cir_run_object(const char *path, int argc, char **argv)

@@ -68,6 +68,18 @@ static int g_main_waiting;         // main is parked in __madc_task_join_all
 static madc_task *g_starting;
 #endif
 
+// Unbuffered scheduler trace, MADC_TASK_TRACE=1 (diagnostics only; stdout
+// buffering makes crash-adjacent println output vanish, stderr does not).
+static int task_trace_on(void)
+{
+	static int on = -1;
+	if (on < 0)
+		on = getenv("MADC_TASK_TRACE") ? 1 : 0;
+	return on;
+}
+#define TASK_TRACE(...) \
+	do { if (task_trace_on()) fprintf(stderr, __VA_ARGS__); } while (0)
+
 static void task_enqueue(madc_task *t)
 {
 	t->qnext = NULL;
@@ -126,6 +138,8 @@ static size_t task_stack_bytes(void)
 // time). When control eventually returns here, free any corpse left behind.
 static void task_switch(madc_task *from, madc_task *to)
 {
+	TASK_TRACE("[task] switch %p -> %p (main=%p)\n", (void *)from,
+		   (void *)to, (void *)&g_main_task);
 	g_current = to;
 #if defined(_WIN32)
 	(void)from;
@@ -143,6 +157,8 @@ static void task_exit_switch(void)
 {
 	madc_task *self = g_current;
 	madc_task *next = task_dequeue();
+	TASK_TRACE("[task] exit %p -> %p live=%ld waiting=%d\n", (void *)self,
+		   (void *)next, g_live, g_main_waiting);
 	if (!next) {
 		if (!g_main_waiting) {
 			fprintf(stderr, "madc tasks: internal scheduler state"
@@ -177,6 +193,8 @@ static void task_trampoline(void)
 {
 	madc_task *t = g_starting;
 	task_reap();
+	TASK_TRACE("[task] trampoline enter t=%p fn=%p\n", (void *)t,
+		   (void *)(size_t)t->fn);
 	t->fn(t->arg);
 	--g_live;
 	task_exit_switch();
@@ -242,6 +260,8 @@ void __madc_go(void (*fn)(void *), void *arg)
 		abort();
 	}
 	++g_live;
+	TASK_TRACE("[task] go t=%p fn=%p arg=%p live=%ld\n", (void *)t,
+		   (void *)(size_t)fn, arg, g_live);
 	task_enqueue(t);
 }
 
@@ -263,6 +283,8 @@ void __madc_task_join_all(void)
 		return;                        // never used, or not main
 	while (g_live > 0) {
 		madc_task *next = task_dequeue();
+		TASK_TRACE("[task] join live=%ld next=%p\n", g_live,
+			   (void *)next);
 		if (!next) {
 			fprintf(stderr, "madc tasks: deadlock — %ld task(s)"
 				" still live with nothing runnable\n", g_live);
