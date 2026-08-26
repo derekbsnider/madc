@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **madcide: the JOE screen model (IDE-9a/9b) — status-as-data at the
+  TOP (2026-08-26)**: ONE inverse status row at the top of the screen,
+  rendered from the profile's format strings (`profiles/joe.status`,
+  JOE's own joerc `lmsg`/`rmsg` vocabulary shipped verbatim — rmsg's
+  first character is the fill between the halves). Supported seats:
+  `%n` name, `%m`/`%R` modified/read-only, `%r`/`%c` row/col with
+  width padding, `%o` offset, `%k` the pending chord echoed LIVE (a
+  new `ui::tui_pending` public + the model now emits repaint events
+  when a chord opens, extends, or cancels), `%x` the enclosing
+  context — madcide's AST-backed enclosing function, exact where JOE's
+  is a textual heuristic — and `%y` the active view name in JOE's
+  "(syntax)" seat. Unsupported joerc escapes render empty and light up
+  as their features land. The heading banner and the persistent menu
+  are gone (their facts moved into the status seats); prompts, the
+  search prompt, and messages overlay the status row; a transient
+  bottom startup hint (JOE's `-xmsg`) shows until the first keystroke.
+  Rows 1–22 are pure document, row 23 returns to content on the first
+  key. Under this work, fixed in its own commit: `perl::substr` with
+  an offset past the end of the text ABORTED the whole process
+  (`std::out_of_range`) where Perl yields undef — clamped, with a
+  real-perl-oracle reducer (`tests/testperlsubstrrange.mad`).
+
 - **madcide: loud startup failures + cwd-independent profiles
   (2026-08-26)**: the keybinding-profile / theme directory now derives
   from `__FILE__` (the profiles live beside `madcide_core.inc`), so

@@ -1,6 +1,28 @@
 # Test Status
 
-> **Current (2026-08-26, braced-init-list call arguments /
+> **Current (2026-08-26, Track 7.2 IDE-9 session — three merges):**
+> (1) the IDE-9c scroll corruption is FIXED (raw `\t` bytes in grid
+> cells desynchronized grid/screen columns — tabs now expand at the
+> document→grid projection through THE byte→display-column map; the
+> `put()` cell-invariant belt renders control bytes `?`); the NEW
+> `scripts/tui_scroll_gate.sh` joined fulltest (madcide on a real pty,
+> VT100 screen reconstruction with true tab-stop semantics + negative
+> control; pre-fix 828 corrupted rows / post-fix 0 / joe 4.6 same-input
+> oracle 0). (2) madcide loud startup failures: `profile_dir` derives
+> from `__FILE__` (any cwd), theme/parse-handle failures post status
+> messages. (3) IDE-9a/9b JOE screen model: ONE top status row from
+> profile-owned joerc `lmsg`/`rmsg` formats (`profiles/joe.status`),
+> `%k` chord echo LIVE (`ui::tui_pending` + chord repaint events),
+> banner+menu dropped, prompts overlay, transient bottom hint. Under
+> it: `perl::substr` past-end offset ABORTED the process — clamped to
+> Perl's undef→empty (real-perl oracle,
+> `tests/testperlsubstrrange.mad`). Wave-2 battery: fulltest green
+> (units + all gates) + JIT **1157 passed / 0 failed / 0 timed out / 9
+> skipped** + EXE lane **1112/0** (suite = 1181; testperlsubstrrange
+> joined). test_tui_model: 16 cases / 280+ asserts (tab expansion +
+> chord repaint cases joined).
+>
+> **Previous (2026-08-26, braced-init-list call arguments /
 > [over.ics.list] slice 1 — feature/braced-list-call-args-claude merge
 > wave):** the braced-list call-argument SIGSEGV
 > (`parser_segv_braced_list_call_arg`, the madcide in-process crash) is
