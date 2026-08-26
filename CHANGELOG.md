@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **tui: terminal scroll ops + cell-span repaints — JOE's scroll feel
+  (IDE-9c perf half, 2026-08-26)**: the renderer's frame diff is now
+  cell-granular (`tui_diff_spans`: per changed row, the first..last
+  differing cell) and shift-aware (`tui_diff_plan`: FNV-row-hash offset
+  scan finds the moved band, the shift is verified by SIMULATION and
+  taken only when its estimated emission cost wins; emitted as DECSTBM
+  + DL/IL — JOE's own dl/al — plus entering-row repaints), and a
+  normal-space span tail is finished by one EL (`row_paint_end`; the
+  inverse status fill is excluded — erase carries default attributes).
+  Intelligence lives in the model; `ui_term` still only moves bytes,
+  and `tui_dirty_rows` now delegates to the span diff (one comparison
+  loop). Measured on the scroll-gate document (24x80, 70 steps, new
+  meter `scripts/tui_scroll_bytes.py`): a scroll step 2,194 bytes/24
+  rows -> 126 bytes/3 rows, a caret move 113 -> 35 bytes, the session
+  total 61,869 -> 3,793 (16x; JOE 4.6 oracle: 2,252). The VT100
+  reconstruction gate + smoke gate pass on the new emission; six new
+  planner/EL unit cases.
+
 - **madcide: first paint before parse-on-load (2026-08-26)**: startup
   showed a black screen for the whole document parse (~5s on the NAS
   for a real C++ file — previously masked by parses that failed fast).

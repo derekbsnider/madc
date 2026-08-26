@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-26, Track 7.2 IDE-9 session — three merges):**
+> **Current (2026-08-26, IDE-9c perf half — feature/ide9c-scroll-perf
+> merge wave):** the renderer's frame diff is cell-granular
+> (`tui_diff_spans`; `tui_dirty_rows` delegates) and shift-aware
+> (`tui_diff_plan`: shift verified by SIMULATION, cost-gated, emitted
+> as DECSTBM + DL/IL) with EL finishing normal-space span tails.
+> Measured (new meter `scripts/tui_scroll_bytes.py`, 24x80, 70 steps):
+> scroll step 2,194 B/24 rows → 126 B/3 rows; caret step 113 → 35 B;
+> session total 61,869 → 3,793 B (JOE 4.6 oracle 2,252). The win64
+> archive gate caught an LLP64 truncation in the new FNV hash
+> (`unsigned long` is 32-bit on Win64 — `uint64_t` fix). Wave battery
+> on final content: fulltest rc=0 (all gates) + JIT **1157 passed / 0
+> failed / 0 timed out / 9 skipped** + 48/48 unit binaries
+> (test_tui_model 21 cases / 303 asserts; suite = 1181, unchanged).
+>
+> **Previous (2026-08-26, Track 7.2 IDE-9 session — three merges):**
 > (1) the IDE-9c scroll corruption is FIXED (raw `\t` bytes in grid
 > cells desynchronized grid/screen columns — tabs now expand at the
 > document→grid projection through THE byte→display-column map; the
