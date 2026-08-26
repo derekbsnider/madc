@@ -281,6 +281,13 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 		if (wi != m_wide_literal_syms.end())
 			return wi->second;
 	}
+	// MT-2b: a --std=madc main emits as __madc_main; the synthesized
+	// wrapper (main_task_join_wrapper) is the ONLY `main` the module
+	// exports. Definition, call sites and protos all flow through here,
+	// so this one arm renames them all consistently — semantic checks
+	// keep comparing var.name ("main").
+	if (v.type && v.type->is_function() && main_wraps_task_join(v))
+		return "__madc_main";
 	if (v.storage_alias_name.empty() || !m_prog)
 		return v.name;
 	// storage_alias_name is overloaded: an __attribute__((alias("data")))
@@ -25885,6 +25892,103 @@ static std::string tsubst_profile_concrete_sample(TokenFunc *tf, FuncDef *fd)
 	return "<unknown-instantiation>";
 }
 
+// MT-2b: does this variable name the --std=madc main that emits renamed
+// (__madc_main) behind a synthesized joining wrapper? ONE predicate for both
+// the var_emit_name rename and the wrapper emission — they can never
+// disagree (a rename without the wrapper would leave the module with no
+// `main` at all). Refusals keep today's shape (the atexit belt still
+// covers them): an asm-labeled main honors its label contract, and the
+// exotic main shapes (varargs / multi-return / class-object return) never
+// had a working host entry to begin with.
+bool CirBuilder::main_wraps_task_join(const Variable &v) const
+{
+	if (v.name != "main" || !m_prog || !m_prog->go_statement_enabled())
+		return false;
+	if (!v.storage_alias_name.empty())
+		return false;
+	FuncDef *fd = dynamic_cast<FuncDef *>(v.type);
+	if (!fd)
+		return false;
+	if (fd->is_multi_return() || fd->is_varargs)
+		return false;
+	if (!fd->emit_symbol.empty() || !fd->local_emit_name.empty())
+		return false;
+	DataDef *rd = fd->return_value_type().unqualified();
+	if (rd && (rd->is_object() || rd->is_reference()))
+		return false;
+	return true;
+}
+
+// MT-2b: the synthesized `int main(...)` — the ONLY main a --std=madc
+// module exports. It mirrors the user main's declared parameter list (the
+// JIT host's (int, char **) call contract is unchanged), forwards into the
+// renamed __madc_main, then joins the task root scope BEFORE returning:
+// main's end is the ruled join point (the Kotlin block semantic). The
+// atexit belt runs after glibc's TLS destructors — that ordering is what
+// double-freed the then-mortal format ring in testgochan's exe lane.
+// __madc_task_join_point is the ledger-safe dispatcher (rt_task_join.c):
+// a program that never spawned leaves its hook NULL and the call no-ops,
+// so -static-libmadc artifacts link without the hosted context backend.
+node_t CirBuilder::main_task_join_wrapper(TokenFunc *tf, FuncDef *fd)
+{
+	need_output_extern("__madc_task_join_point", false, {});
+
+	// Parameter mirror + forwarded call args — the same name/typedef
+	// fallbacks as func_def's parameter loop, kept in lock-step.
+	node_t wparams = list();
+	node_t cargs = list();
+	size_t nparam = fd->parameters.size();
+	if (nparam == 0 && fd->is_void_params) {
+		node_t void_spec = node1(N_LIST, simple(N_VOID));
+		node_t void_decl = node2(N_DECL, ignore(), list());
+		append(wparams, node2(N_TYPE, void_spec, void_decl));
+	}
+	for (size_t i = 0; i < nparam; i++) {
+		const char *pname = "p";
+		std::string ptypedef;
+		if (tf->method && i < tf->method->parameters.size()) {
+			pname = tf->method->parameters[i]->name.c_str();
+			ptypedef = tf->method->parameters[i]->typedef_name;
+		}
+		if (ptypedef.empty() && i < fd->param_typedef_names.size())
+			ptypedef = fd->param_typedef_names[i];
+		append(wparams, param_decl(fd->parameters[i], pname, ptypedef));
+		append(cargs, id(pname, tf));
+	}
+
+	node_t items = list();
+	// int __madc_main_ret; __madc_main_ret = __madc_main(<params>);
+	// (__madc_main always emits an int C return — main_ret_normalized —
+	// and c2mir zero-fills a fall-off-the-end return, so the forward is
+	// total.)
+	node_t rdecl = simple(N_SPEC_DECL);
+	append(rdecl, node1(N_SHARE, node1(N_LIST, simple(N_INT))));
+	append(rdecl, node2(N_DECL, id("__madc_main_ret", tf), list()));
+	append(rdecl, ignore());
+	append(rdecl, ignore());
+	append(rdecl, ignore());
+	append(items, rdecl);
+	append(items, node2(N_EXPR, list(),
+		node2(N_ASSIGN, id("__madc_main_ret", tf),
+		      node2(N_CALL, id("__madc_main", tf), cargs, tf), tf),
+		tf));
+	// __madc_task_join_point();
+	append(items, node2(N_EXPR, list(),
+		node2(N_CALL, id("__madc_task_join_point", tf), list(), tf),
+		tf));
+	// return __madc_main_ret;
+	append(items, node2(N_RETURN, list(), id("__madc_main_ret", tf), tf));
+
+	node_t wspec = list();
+	append(wspec, simple(N_INT));
+	node_t wdecl = node2(N_DECL, id("main", tf),
+			     node1(N_LIST, node1(N_FUNC, wparams)));
+	node_t wdef = node4(N_FUNC_DEF, wspec, wdecl, list(),
+			    node2(N_BLOCK, list(), items, tf), tf);
+	CIR_NODE(wdef)->synth_from_origin = true;
+	return wdef;
+}
+
 node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
@@ -26507,6 +26611,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// wrap — the per-TU init synthesized in translate_module carries both
 	// calls and rides the image's .init_array (ld.so/glibc run it before
 	// main), so two ctor TUs no longer collide on __madc_global_init.
+	// MT-2b: the definition just built is __madc_main (var_emit_name's
+	// rename); synthesize the joining `main` wrapper alongside it. The
+	// translate_module roots loop splices it right after this def, so
+	// C definition-before-use holds without a forward prototype.
+	if (main_wraps_task_join(tf->var) && !m_main_wrapper_def)
+		m_main_wrapper_def = main_task_join_wrapper(tf, fd);
+
 	bool want_sys_init = tf->var.name == "main"
 			     && m_prog && m_prog->_include_ns_madc;
 	// Project JIT TUs skip the wrap the same way object mode does: their
@@ -28374,6 +28485,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : roots) {
 		node_t fd = func_def(tf);
 		if (fd) func_def_nodes.push_back(fd);
+		// MT-2b: main's joining wrapper follows __madc_main's own
+		// definition immediately (definition-before-use, no proto).
+		if (m_main_wrapper_def) {
+			func_def_nodes.push_back(m_main_wrapper_def);
+			m_main_wrapper_def = NULL;
+		}
 	}
 	std::set<std::string> lib_emitted;
 	// TokenFuncs parsed by the fixpoint below (parse_deferred_lazy_body). They

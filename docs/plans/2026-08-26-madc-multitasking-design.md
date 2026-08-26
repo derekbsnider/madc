@@ -240,16 +240,25 @@ Unification claims (no-parallel-implementations):
   task whose format() assigned into a DESTROYED ring slot (double
   free, exe lane only — the JIT joins in-session).
 
-- **MT-2b (NEXT, named)**: the PRINCIPLED native join point — emit,
-  under STD_MADC only, main as `__madc_main` plus a wrapper
-  `int main(argc,argv){ r = __madc_main(...); __madc_task_join_all();
-  return r; }` so a native artifact joins at MAIN'S END (the Kotlin
-  block semantic) before ANY teardown, instead of riding atexit past
-  the TLS destructors. Blast radius: every madc-mode main's emitted
-  shape (fidelity/roundtrip gates) — its own wave. The atexit twin
-  stays as the last-resort belt. Also: project-mode mixed-TU spawn
-  (strict-mode main + madc TU using go) inherits the atexit path until
-  then.
+- **MT-2b (SHIPPED, session 137)**: the PRINCIPLED native join point —
+  under STD_MADC the user's main emits as `__madc_main` behind a
+  synthesized `int main(...)` wrapper (parameter list mirrored, args
+  forwarded) that calls `__madc_task_join_point()` BEFORE returning:
+  the join runs at MAIN'S END (the Kotlin block semantic), before ANY
+  teardown, identically in the JIT / `-o` / `-r` / `-static-libmadc`
+  lanes. ONE predicate (`main_wraps_task_join`, gated on
+  `go_statement_enabled()`) drives both the `var_emit_name` rename and
+  the wrapper emission so they can never disagree. The join callee is
+  the LEDGER-SAFE dispatcher `__madc_task_join_point`
+  (src/rt/rt_task_join.c, strict C11, on scripts/ledger_sources.txt):
+  the hosted task runtime installs its hook at first spawn, so a
+  program that never spawned no-ops and a `-static-libmadc` artifact
+  links without the ucontext backend. Belts kept, both idempotent:
+  run_main's post-main join (JIT) and the atexit twin (covers
+  strict-mode mains in mixed-TU projects spawning through a madc TU —
+  the one lane still riding atexit). `tests/testgojoin.mad` pins the
+  drain schedule + argv forwarding; `--std=gnu17` emits byte-identical
+  unwrapped mains (testgogate; zero `__madc_main`).
 
 ## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
 

@@ -60,6 +60,15 @@ void *__madc_task_current(void);
 void __madc_task_park(void);
 void __madc_task_unpark(void *task);
 
+// The ledger-safe join point (MT-2b, src/rt/rt_task_join.c): every
+// --std=madc main's emitted wrapper calls this at MAIN'S END. It dispatches
+// through the hook, which THIS runtime installs at init (first spawn) —
+// a program that never spawned leaves it NULL and the call is a no-op, so
+// a -static-libmadc artifact links the tiny ledger dispatcher without
+// pulling the hosted context backend.
+void __madc_task_join_point(void);
+extern void (*__madc_task_join_hook)(void);
+
 #ifdef __cplusplus
 }
 #endif
