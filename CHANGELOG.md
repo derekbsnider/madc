@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **char[] decays to TEXT at the format boundary (2026-08-26)**:
+  `println("{}", buf)` on a local `char buf[N]` printed one garbage
+  byte, silently — the format classifier saw the array's ELEMENT type
+  (a local's array-ness is a Variable flag) and passed the decayed
+  pointer to the char formatter. The classifier now applies C's own
+  array-to-pointer decay through the one decay owner
+  (`array_decay_pointer`): char arrays format as C strings exactly as
+  g++'s `std::format` does (oracle-matched), and a non-char array is
+  refused loud, matching `std::format`'s ill-formed treatment (it
+  previously printed the pointer as an integer). Reducers
+  `testcharbuftext` + `testcharbuftextintarr` joined the suite.
+
 - **madcide: multi-buffer + JOE's ^K E (AST-5 / IDE-8, 2026-08-26)**:
   `^K E` prompts for a file and opens it as a new buffer (the previous
   buffer stays open, invisible — JOE's model); the same path returns

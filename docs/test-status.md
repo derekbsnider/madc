@@ -1,6 +1,19 @@
 # Test Status
 
-> **Current (2026-08-26, AST-5 multi-buffer —
+> **Current (2026-08-26, char[]-text boundary —
+> feature/charbuf-text-boundary merge wave):** a fixed char array at
+> the `{}` format boundary now DECAYS ([conv.array]) and formats as a
+> C string (g++ std::format oracle matched: variable, struct member,
+> and full-subscript element shapes); a non-char array is refused loud
+> exactly as std::format's ill-formed treatment (previously the
+> pointer printed as an integer, silently). The one decay owner
+> (`array_decay_pointer`) now feeds the classifier. Reducers
+> `testcharbuftext` (+ EXE lane green) and `testcharbuftextintarr`
+> (expect_err) joined (suite = 1185). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1161 passed / 0 failed / 0 timed
+> out / 9 skipped**. KG Gap `madc_char_array_text_boundary` CLOSED.
+>
+> **Previous (2026-08-26, AST-5 multi-buffer —
 > feature/ast5-multibuffer merge wave):** madcide gains JOE's `^K E`
 > multi-buffer (buffer table on the editor-state bag; per-doc facts
 > stay doc-scoped; switch restores caret/block and recolours from
