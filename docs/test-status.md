@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-08-26, IDE-9c perf half — feature/ide9c-scroll-perf
+> **Current (2026-08-26, span-coordinate truth —
+> feature/span-coordinate-truth merge wave):** macro-expansion tokens
+> no longer emit highlight spans (`tfSYNTHPOS`), and synthesized
+> pushback text advances no source column — the SMAUG fight.c
+> "everything turns blue at strip_grapple" smear (spans overrunning
+> their physical lines by hundreds of columns) is fixed at the Source/
+> lexer layer. Reducer `testspansmacro.mad` joined (suite = 1182).
+> Battery on final content (lexer blast radius): fulltest rc=0 (all
+> gates) + JIT **1158 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1113/0**.
+>
+> **Previous (2026-08-26, IDE-9c perf half — feature/ide9c-scroll-perf
 > merge wave):** the renderer's frame diff is cell-granular
 > (`tui_diff_spans`; `tui_dirty_rows` delegates) and shift-aware
 > (`tui_diff_plan`: shift verified by SIMULATION, cost-gated, emitted

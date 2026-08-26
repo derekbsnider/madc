@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **parse_spans: source-true coordinates under macro expansion
+  (2026-08-26)**: highlighting from SMAUG's `strip_grapple` onward
+  rendered string-cyan (owner report) — macro-expansion tokens carried
+  the invocation line with columns counted *through* the expansion
+  text, so `STRFREE`/`DISPOSE`'s message-string spans painted the
+  lines below, and real tokens after an invocation on the same line
+  inherited the inflated column. Synthesized pushback text (macro
+  expansions, `__FILE__`/`__LINE__`) now advances no column (it
+  freezes at the invocation end) and taints its tokens with the new
+  `tfSYNTHPOS` flag — auto-include define replacements (`NULL` →
+  `((void *)0)`, which painted a phantom `void` type + `0` number even
+  in plain source) are flagged at their own mint site — and
+  `parse_spans` emits no span for a flagged token (its leading-trivia
+  comments still fold). fight.c whole-file: 800+ line-overrunning
+  spans → 0. Reducer `tests/testspansmacro.mad` — the source text is
+  the oracle: every span must fit its physical line.
+
 - **tui: terminal scroll ops + cell-span repaints — JOE's scroll feel
   (IDE-9c perf half, 2026-08-26)**: the renderer's frame diff is now
   cell-granular (`tui_diff_spans`: per changed row, the first..last
