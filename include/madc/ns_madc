@@ -146,6 +146,19 @@ namespace madc {
     value &project_tus(value &out, int64_t handle);
     bool project_close(int64_t handle);
 
+    // Value channels between cooperative tasks (MT-2; the Go contract —
+    // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
+    // rendezvous; send/recv PARK the running task and are the blocking
+    // verbs `go` composes with. recv returns false only when the channel
+    // is closed AND drained (out becomes null); send on a closed channel
+    // and close of a closed channel throw (catch (const char *)). Values
+    // are COPIED through the channel — share by communicating.
+    int64_t chan_make(int64_t capacity);
+    bool chan_send(int64_t chan, value &v);
+    bool chan_recv(value &out, int64_t chan);
+    void chan_close(int64_t chan);
+    int64_t chan_len(int64_t chan);
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated

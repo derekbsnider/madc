@@ -169,9 +169,12 @@ static void task_exit_switch(void)
 		   (void *)next, g_live, g_main_waiting);
 	if (!next) {
 		if (!g_main_waiting) {
-			fprintf(stderr, "madc tasks: internal scheduler state"
-				" broken (a task finished with no runnable"
-				" successor and main not joining)\n");
+			// Reachable since parking exists: the exiting task was
+			// the last runnable flow while main and others sit
+			// parked on channels nobody can now signal.
+			fprintf(stderr, "madc tasks: deadlock — %ld task(s)"
+				" live, all blocked, and the last runnable"
+				" task exited\n", g_live);
 			abort();
 		}
 		next = &g_main_task;
@@ -322,4 +325,37 @@ void __madc_task_join_all(void)
 long __madc_task_live(void)
 {
 	return g_live;
+}
+
+void *__madc_task_current(void)
+{
+	task_runtime_init();
+	return (void *)g_current;
+}
+
+void __madc_task_park(void)
+{
+	task_runtime_init();
+	madc_task *self = g_current;
+	madc_task *next = task_dequeue();
+	TASK_TRACE("[task] park %p -> %p\n", (void *)self, (void *)next);
+	if (!next) {
+		// Single OS thread: with the parker off the CPU and nothing
+		// runnable, no flow exists that could ever unpark anyone —
+		// including main, whether it is joining or parked itself.
+		fprintf(stderr, "madc tasks: deadlock — a blocking operation"
+			" parked the last runnable flow (%ld task(s) live)\n",
+			g_live);
+		abort();
+	}
+	// NOT re-enqueued: the waker holds the handle and unparks it.
+	task_switch(self, next);
+}
+
+void __madc_task_unpark(void *task)
+{
+	if (!task)
+		return;
+	TASK_TRACE("[task] unpark %p\n", task);
+	task_enqueue((madc_task *)task);
 }

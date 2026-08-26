@@ -1,0 +1,69 @@
+// MT-2 value channels: Go's contract on the deterministic FIFO substrate.
+// One accumulated trace pins the COMPLETE schedule: closed-channel recv
+// (drain -> ok=false/null) and both throws (send-on-closed, re-close),
+// buffered send, a blocked sender refilled by a recv, rendezvous (cap 0)
+// with MAIN parked as the receiver, and the post-main join draining the
+// consumer.
+value tr;
+
+void producer(long c, long n)
+{
+    long i = 0;
+    while ( i < n )
+    {
+	value v;
+	v = i * 100;
+	madc::chan_send(c, v);
+	tr = format("{}p{};", tr, i);
+	if ( i == 0 )
+	    tr = format("{}L{};", tr, madc::chan_len(c));
+	i = i + 1;
+    }
+    madc::chan_close(c);
+    tr = format("{}pclose;", tr);
+}
+
+void consumer(long c)
+{
+    value v;
+    while ( madc::chan_recv(v, c) )
+	tr = format("{}c{};", tr, v);
+    tr = format("{}cdone;", tr);
+    println("consumer tr={}", tr);
+}
+
+void rzsender(long c)
+{
+    value v;
+    v = 7;
+    madc::chan_send(c, v);
+    tr = format("{}rz;", tr);
+}
+
+int main()
+{
+    // Synchronous close semantics first (no tasks involved yet).
+    long dead = madc::chan_make(0);
+    madc::chan_close(dead);
+    value dv;
+    bool ok = madc::chan_recv(dv, dead);
+    if ( !ok && dv.is_null() )
+	tr = format("{}closedrecv;", tr);
+    try { value x; x = 1; madc::chan_send(dead, x); }
+    catch (const char *e) { tr = format("{}sendclosed({});", tr, e); }
+    try { madc::chan_close(dead); }
+    catch (const char *e) { tr = format("{}reclose({});", tr, e); }
+
+    long ch = madc::chan_make(1);
+    go producer(ch, 3);
+    go consumer(ch);
+    long rz = madc::chan_make(0);
+    go rzsender(rz);
+    tr = format("{}m;", tr);
+
+    value got;
+    madc::chan_recv(got, rz);      // main PARKS; the world runs
+    tr = format("{}mgot{};", tr, got);
+    println("main tr={}", tr);
+    return 0;                      // root join drains the consumer
+}
