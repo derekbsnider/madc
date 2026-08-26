@@ -1,7 +1,7 @@
 // lineed verb: c N TEXT — replace line N (a range edit composed from the
 // line's span). §7.3's read-only rule is the shared availability check
 // (checks/editable.madv) — dispatch refuses before this body runs.
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 long n = php::intval(arg);
 if ( n < 1 )
     return "c needs a line number.";

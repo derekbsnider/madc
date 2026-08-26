@@ -19,6 +19,16 @@ const char *LINEED_EDIT_VERBS[5] = { "c", "i", "a", "d", "w" };
 
 void bind_lineed_verbs(long w)
 {
+    // THE subject-document rule (verbs/_subject.madv) is prepended to
+    // every body at bind: `doc` = the actor's active document, else the
+    // world's one "document". One owner; bodies never look it up.
+    value pro;
+    if ( !php::file_get_contents(pro,
+	    "examples/texteditor/verbs/_subject.madv") )
+    {
+	println(stderr, "cannot load the subject-document prologue");
+	return;
+    }
     for ( int k = 0; k < 9; k = k + 1 )
     {
 	value src;
@@ -28,7 +38,8 @@ void bind_lineed_verbs(long w)
 	    println(stderr, "cannot load verb body {}", LINEED_FILES[k]);
 	    continue;
 	}
-	ui::bind_verb(w, LINEED_VERBS[k], src.c_str());
+	var full = format("{}\n{}", pro, src);
+	ui::bind_verb(w, LINEED_VERBS[k], full.c_str());
     }
     value chk;
     if ( !php::file_get_contents(chk, "examples/texteditor/checks/editable.madv") )
@@ -36,8 +47,9 @@ void bind_lineed_verbs(long w)
 	println(stderr, "cannot load the editable check body");
 	return;
     }
+    var fullchk = format("{}\n{}", pro, chk);
     for ( int k = 0; k < 5; k = k + 1 )
-	ui::bind_check(w, LINEED_EDIT_VERBS[k], chk.c_str());
+	ui::bind_check(w, LINEED_EDIT_VERBS[k], fullchk.c_str());
 }
 
 // Create the document entity and load its file: the setup BOTH editors

@@ -1,6 +1,6 @@
 // lineed verb: a TEXT — append a line at the end of the document. The
 // read-only rule is the shared availability check (checks/editable.madv).
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 var t = format("{}\n", arg);
 ui::text_insert(w, doc, ui::text_size(w, doc), t.c_str());
 ui::set(w, doc, "modified", true);

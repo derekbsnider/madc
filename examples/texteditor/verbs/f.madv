@@ -1,5 +1,5 @@
 // lineed verb: f TEXT — find the first occurrence, answering "line: text".
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 if ( arg[0] == 0 )
     return "f needs text.";
 long off = ui::text_find(w, doc, 0, arg);

@@ -215,6 +215,56 @@ int main()
     ev_key(e, "right");		// consume the message before gate 3
     apply_ide_event(w, es, doc, e);
 
+    // -- AST-5: ^K E buffers — open-or-switch, New File, per-buffer
+    //    interaction state and per-doc content/undo truth.
+    long c_before = es_int(w, es, "caret", 0);
+    ev_action(e, "editfile", "^k e");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "madc_ide_ast5.txt");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    long adoc = active_doc(w, es, doc);
+    compose_ide_tree(tree, w, es, adoc);
+    var stnew = php::trim(tree["children"][0]["content"]);
+    println("editfile-new: {} switched={} named={}", msg,
+	    adoc != doc ? 1 : 0, stnew.index("ast5") >= 0 ? 1 : 0);
+    ev_text(e, "fresh buffer");			// content lands in the
+    apply_ide_event(w, es, adoc, e);		// NEW document only
+    ev_action(e, "editfile", "^k e");		// back by the open path
+    apply_ide_event(w, es, adoc, e);
+    ev_text(e, "madc_ide_test.mad");
+    apply_ide_event(w, es, adoc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, adoc, e);
+    long back = active_doc(w, es, doc);
+    println("editfile-back: home={} caret-restored={}",
+	    back == doc ? 1 : 0,
+	    es_int(w, es, "caret", 0) == c_before ? 1 : 0);
+    ev_action(e, "editfile", "^k e");		// forward again: a SWITCH,
+    apply_ide_event(w, es, doc, e);		// not a second new row
+    ev_text(e, "madc_ide_ast5.txt");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    long fwd = active_doc(w, es, doc);
+    value kept;
+    ui::text(kept, w, fwd);
+    var mflag;
+    ui::get(mflag, w, fwd, "modified");
+    println("editfile-again: {} kept={} modified={}", msg,
+	    kept == "fresh buffer" ? 1 : 0, mflag.as_boolean() ? 1 : 0);
+    ev_action(e, "editfile", "^k e");		// home for gate 3
+    apply_ide_event(w, es, fwd, e);
+    ev_text(e, "madc_ide_test.mad");
+    apply_ide_event(w, es, fwd, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, fwd, e);
+    ev_key(e, "right");			// consume the switch message
+    apply_ide_event(w, es, doc, e);
+
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;
     compose_ide_tree(before, w, es, doc);

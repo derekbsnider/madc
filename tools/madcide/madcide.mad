@@ -10,7 +10,9 @@
 // ^K C/^K M/^K Y block copy/move/delete · ^K F find + ^L find next ·
 // ^_ undo / ^^ redo · ^Y/^W delete line/word · ^K R insert file ·
 // ^K L go to line · ^K U/^K V file top/end · ^K H help (the loaded
-// profile, projected) · ^K Z shell · ^K E check · ^K O outline ·
+// profile, projected) · ^K Z shell · ^K E edit file (buffers, JOE's
+// own key; open path switches, missing path = New File) · ^K ; check ·
+// ^T options (live values) · ^K O outline ·
 // ^K P swap profile · ^K N cycle the code view original/MC11/C11 —
 // plus C++ (the reverse render) on a C/C++ buffer — the view seam:
 // read-only lenses over the one document),

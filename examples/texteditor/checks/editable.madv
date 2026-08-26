@@ -4,7 +4,7 @@
 // (ui::affordances shows those verbs disabled with this reason) and at
 // dispatch (ui::act refuses with it), so the two can never disagree.
 // Checks are READ-ONLY by contract: this body only reads.
-long doc = ui::entity_by_name(w, "document");
+// `doc` = the subject document, resolved by the prepended _subject.madv
 var ro;
 ui::get(ro, w, doc, "read_only");
 if ( !ro.is_null() && ro.as_boolean() )
