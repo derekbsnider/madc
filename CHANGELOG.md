@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **Stage-2 cooperative parse — edit while it compiles (2026-08-26)**:
+  the compiler's front end now cooperates with the task scheduler:
+  `Program::parse_yield_point()` yields at every top-level declaration
+  and every ~1k lexed tokens when other tasks are runnable, re-binding
+  the parse-session ambients on resume (token pools, parse cursor,
+  render mute — the F2 static-actives audit's down payment); batch
+  compiles pay one ready-queue check per yield point. The tui input
+  wait hands runnable tasks the CPU between zero-timeout polls and
+  delivers `{event:"wake"}` when they drain. madcide spawns its parse
+  with the language's own `go` (the ruling's dogfood): typing stays
+  live while a C++ TU compiles, spans land on the wake; quit drains via
+  the new interim verbs `madc::task_drain()` / `task_live()` before
+  world teardown, and `ensure_phandle` carries a one-owner
+  store-or-close discipline for overlapping opens. Deterministic
+  interleave gate: `tests/unit/test_coop_parse.cpp` — two parses
+  interleaved at every yield point are byte-identical to serial, and
+  the yields are proven real. See the RULED/SHIPPED section in
+  `docs/plans/2026-08-26-madcide-staged-parse-and-state.md`.
+
 - **The joining main wrapper (MT-2b, 2026-08-26)**: in a `--std=madc`
   TU that spawns, the user's `main` emits as `__madc_main` behind a
   synthesized `int main(...)` wrapper (parameters mirrored, arguments

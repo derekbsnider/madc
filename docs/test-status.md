@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-26, MT-2b joining main wrapper + static-fn internal
+> **Current (2026-08-26, stage-2 cooperative parse —
+> feature/stage2-coop-parse merge wave):** the front end cooperates
+> with the task scheduler: `parse_yield_point()` at every top-level
+> decl + every ~1k lexed tokens (ambients re-bound on resume; batch
+> compiles pay one queue check), the tui input wait yields to runnable
+> tasks and delivers `{event:"wake"}` on drain, and madcide spawns its
+> parse with the language's own `go` — typing stays live while a C++
+> TU compiles. NEW gates: `tests/unit/test_coop_parse.cpp` (the
+> deterministic interleave gate — two parses interleaved at every
+> yield are byte-identical to serial, yields proven real) + wake
+> transparency cases in test_tui_model (319/319). tui_scroll_gate
+> (madcide's real pty loop with the spawned parse) PASS; testmadcide
+> byte-stable; quit-mid-parse drain probe rc 0. Battery on final
+> content: fulltest rc=0 (all gates) + JIT **1168 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1192) + EXE **1122 passed / 0
+> failed**.
+>
+> **Previous (2026-08-26, MT-2b joining main wrapper + static-fn internal
 > linkage — feature/mt2b-main-join merge wave):** a spawning
 > `--std=madc` TU's main now emits as `__madc_main` behind a
 > synthesized joining wrapper — the task root scope drains at MAIN'S
