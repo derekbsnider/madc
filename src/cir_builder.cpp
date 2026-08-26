@@ -13802,7 +13802,13 @@ bool CirBuilder::ctor_args_are_braced(TokenBase *origin)
 	// form `T v{...}` arrives as braced ctor args, the COPY form
 	// `T v = {...}` as a brace init. Only the direct form kept a flag before,
 	// so the copy form silently took a different route.
-	return td && (td->ctor_args_braced || td->has_brace_init);
+	if (td)
+		return td->ctor_args_braced || td->has_brace_init;
+	// The functional list form `T{...}` in EXPRESSION position (a temporary,
+	// incl. one re-spelled from a braced-init-list call argument) arrives as
+	// a TokenObjTemp — the third spelling of the same list-initialization.
+	TokenObjTemp *ot = origin ? origin->as_objtemp_tok() : NULL;
+	return ot && ot->braced;
 }
 
 // The element type E of std::initializer_list<E>, read off the LAYOUT: the
@@ -13940,13 +13946,18 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 					    TokenBase *origin)
 {
 	if (!ilc || !elem) return NULL;
-	// (E[]){e0, e1, ...} — an UNSIZED array declarator, so c2mir sizes it
-	// from the initializer count (the same shape translate_struct_lit emits
-	// for a C99 array compound literal).
+	// (E[N]){e0, e1, ...} — the array declarator is SIZED explicitly. The
+	// count is known here, and c2mir mis-sizes an UNSIZED array compound
+	// literal nested in a struct compound literal in assignment context
+	// (elements past [0] read garbage; the uncast form SIGSEGVs c2m —
+	// tmp reducer cl_min2.c/cl_c.c, 2026-08-26). The nested-literal c2mir
+	// defect is tracked separately; spelling the size we already know is
+	// correct either way.
 	node_t aspec = list();
 	append_lit_type_spec(aspec, elem, std::string());
 	node_t adecl = list();
-	append(adecl, node3(N_ARR, ignore(), list(), ignore()));
+	append(adecl, node3(N_ARR, ignore(), list(),
+			    integer((int64_t)elems.size(), origin)));
 	node_t atype = node2(N_TYPE, aspec, node2(N_DECL, ignore(), adecl));
 	node_t ainits = list();
 	for (size_t i = 0; i < elems.size(); i++)

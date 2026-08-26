@@ -6217,6 +6217,21 @@ public:
 					size_t after_ix);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
+    // THE re-spell owner for a braced-init-list against a KNOWN target type
+    // ([dcl.init.list]): a bare '{' must never reach parseExpression (no
+    // brace-head reading exists there). `open_brc` is the ALREADY-CONSUMED
+    // '{'. Returns the new stream head to hand to parseExpression, or NULL
+    // when the target cannot take a braced list here (caller errors loudly
+    // or keeps its legacy route). Consumers: TokenRETURN::parse (return
+    // {...}), parseCallFunc / parseCallMethod (braced call arguments).
+    TokenBase *respell_braced_list_for_target(DataDef *target_dd,
+					      TokenBase *open_brc);
+    // A braced-init-list call ARGUMENT ([over.ics.list]): target = the
+    // callee's parameter at the current position (hidden-this aware).
+    // Re-spells through the owner above; errors LOUDLY on any shape it
+    // cannot serve — never lets the bare '{' into parseExpression.
+    TokenBase *respell_braced_list_call_argument(class TokenCallFunc *tc,
+						 TokenBase *open_brc);
     // The ONE brace-list reader for compound-literal-shaped initializers in
     // EXPRESSION position: `(T){...}` (C99 cast arm) and `T{...}` on a plain
     // struct ([expr.type.conv] list-init of an aggregate prvalue — same C11
