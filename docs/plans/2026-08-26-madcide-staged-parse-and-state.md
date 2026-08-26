@@ -44,6 +44,38 @@ lexer). Only `type` and `function` need the tree.
 
 ## Stage 2 — the parse leaves the event loop (edit while it compiles)
 
+**SHIPPED (session 137) — as RULED below: cooperative chunks, not the
+engine worker this section originally sketched.** The shape that landed:
+
+- `Program::parse_yield_point()` — the yield point the pumps call: a
+  ready-queue check (no-op for batch compiles), then yield + re-bind the
+  parse-session ambients (token pools via `activate_token_pools`, the
+  TokenBase parse cursor, the diagnostic render mute). The switch-set
+  enumeration is banked in the function comment — the F2 audit's down
+  payment. Wired: per top-level declaration in `Program::parse`, every
+  `LEX_YIELD_GRAIN` (1024) tokens in both tokenize pumps.
+- The deterministic interleave gate: `tests/unit/test_coop_parse.cpp` —
+  two parses interleaved at every yield point produce serial-identical
+  products, `_coop_yields > 0` proves the interleaving was real, and the
+  serial baseline pays zero yields.
+- The tui input wait cooperates (`ui_term.cpp read_keys`): while tasks
+  are RUNNABLE (not merely live — parked tasks are woken by unpark,
+  never by a poll) it hands them the CPU between zero-timeout input
+  polls; when the queue drains after yielding it synthesizes a `wake`
+  key that flows through the model as `tui_event_kind::wake` and reaches
+  the app as `{event:"wake"}` — the cooperative version of this
+  section's wake-fd idea, same seam for future build/notify producers.
+- madcide: the loop's pending step spawns `go background_parse(...)`
+  (the language's own `go` — the dogfood the ruling named);
+  `ensure_phandle` carries the one-owner store-or-close discipline (a
+  spawned open and a synchronous check can overlap on one doc); the
+  `wake` arm recomposes without clearing the msg seat; quit drains via
+  the new interim verb `madc::task_drain()` before world teardown
+  (structured scopes arrive with MT-3).
+
+The original engine-worker sketch below is kept for the record; the
+thread upgrade rides F2/M:N exactly as the ruling deferred it.
+
 The .mad app stays single-threaded; concurrency is ENGINE-owned with a
 stated contract (thread-safety law):
 

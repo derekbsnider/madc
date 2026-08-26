@@ -113,6 +113,18 @@ int main()
 - **The future idiom** is a capacity-1 channel: spawn the worker, have
   it send its result, `chan_recv` where you need it. The `await`
   spelling arrives with MT-5's keywords.
+- **`madc::task_drain()`** runs ready tasks until none remain live —
+  the interim structured-join verb (MT-3 scopes will own this) for
+  teardown code that closes resources a still-running task writes to
+  (main's end joins anyway, but only AFTER your teardown ran; madcide
+  drains before closing its world). Idempotent. **`madc::task_live()`**
+  is the live spawned-but-unfinished count.
+- **The compiler itself cooperates (stage 2)**: `madc::parse_open` &
+  co. yield every ~1k lexed tokens and at every top-level declaration
+  when other tasks are runnable — `go` a parse and keep serving your
+  event loop; the tui input wait hands the CPU to runnable tasks
+  between polls and delivers `{event:"wake"}` when they drain. Batch
+  compiles pay one queue check per yield point and nothing else.
 
 ## Contracts and knobs
 

@@ -861,6 +861,30 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     REQUIRE(ev.size() == 1u);
     CHECK(ev[0].kind == tui_event_kind::action);
     CHECK(ev[0].action_name == "quit");
+
+    // A wake (stage-2: cooperative tasks drained) has resize's exact
+    // transparency: it passes through mid-chord without disturbing the
+    // pending prefix, and the chord still completes.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::wake));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 2u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::wake);
+    CHECK(m.pending_chord() == "^k");
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ch, 'q'));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "quit");
+    // Outside a chord: one wake in, one wake event out.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::wake));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::wake);
 }
 
 TEST_CASE("chords — bindings win over navigation; a swap restores it")

@@ -1151,6 +1151,12 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	    u->target->size(u->rows, u->cols);
 	    f["event"] = madc::value(std::string("resize"));
 	    break;
+	case madc::hub::tui_event_kind::wake:
+	    // Cooperative background tasks drained while the loop waited
+	    // for input (stage-2): the application re-checks its pending
+	    // state (a spawned parse's completion) and recomposes.
+	    f["event"] = madc::value(std::string("wake"));
+	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:
 	    f["event"] = madc::value(std::string("focus"));

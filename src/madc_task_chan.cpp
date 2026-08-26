@@ -191,4 +191,17 @@ int64_t chan_len(int64_t h)
 	return (int64_t)chan_of(h, "len")->q.size();
 }
 
+// The interim structured-join verb (until MT-3 scopes): drain the task
+// root scope NOW — for teardown code that closes resources a still-running
+// task writes to. Idempotent; main's-end join (MT-2b) remains the belt.
+void task_drain()
+{
+	__madc_task_join_all();
+}
+
+int64_t task_live()
+{
+	return (int64_t)__madc_task_live();
+}
+
 } // namespace madc
