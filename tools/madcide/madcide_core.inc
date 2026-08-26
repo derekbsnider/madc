@@ -178,6 +178,13 @@ long ensure_phandle(long w, long es, long doc)
     ui::get(p, w, doc, "path");
     h = madc::parse_open(t.c_str(), p.c_str());
     ui::set(w, doc, "phandle", h);
+    if ( h == 0 )
+    {
+	// LOUD, never silent: no handle means no status-line function,
+	// no diagnostics, no highlighting — say so where it happened.
+	ui::set(w, es, "msg", format("Parse open failed for {}.", p));
+	return 0;
+    }
     refresh_spans(w, es, doc, h);
     return h;
 }
@@ -1124,16 +1131,27 @@ void run_ide(const char *path, bool ro)
 	return;
     }
     long es = ui::entity_by_name(w, "editor-state");
-    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    // The profiles live beside THIS file: derive the directory from
+    // __FILE__ (the include-resolved path), so madcide works from any
+    // cwd — the old cwd-relative "tools/madcide/profiles" only worked
+    // from the repository root.
+    const char *self = __FILE__;
+    const char *sl = strrchr(self, '/');
+    if ( sl != 0 )
+	ui::set(w, es, "profile_dir",
+		format("{}/profiles", perl::substr(self, 0, sl - self)));
+    else
+	ui::set(w, es, "profile_dir", "profiles");
     long t = ui::tui_open();
     if ( t == 0 )
 	return;
     ui::set(w, es, "tui", t);
-    load_profile(w, es, "joe");
-    load_theme(w, es, "default");
+    load_profile(w, es, "joe");	// msgs its own failures
+    if ( !load_theme(w, es, "default") )
+	ui::set(w, es, "msg", "No theme 'default' — colours off.");
     ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
 				// highlight spans have state before the
-				// first check
+				// first check; a failed open msgs there
     bool run = true;
     while ( run )
     {
