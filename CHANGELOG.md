@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **madcide: multi-buffer + JOE's ^K E (AST-5 / IDE-8, 2026-08-26)**:
+  `^K E` prompts for a file and opens it as a new buffer (the previous
+  buffer stays open, invisible — JOE's model); the same path returns
+  to its buffer with caret/block restored; a missing path opens an
+  empty New File buffer. Buffer identity, caret, and block live in a
+  buffer table on the editor-state bag; per-document facts (path,
+  modified, read-only, parse handle, undo) stay on each document.
+  Switching recolours immediately from the lexical spans and defers
+  the full parse behind the next paint (`pending_parse` — now the ONE
+  paint-before-parse mechanism, startup included). THE CONSOLIDATION:
+  ten texteditor verb/check bodies each resolved "the document"
+  themselves (wrong buffer under multi-buffer); the subject-document
+  rule now has ONE owner (`verbs/_subject.madv`, prepended at bind),
+  gated by `scripts/check-one-subject-doc.sh` in fulltest.
+  **Owner review flagged:** `^K E` now means edit-file (JOE's own
+  binding); the parse/diagnostics refresh moved to `^K ;`.
+
 - **madcide: ^T options overlay (IDE-9d, 2026-08-26)**: JOE's ^T — a
   pane of letter rows showing LIVE option values, each row firing its
   action on enter: `D Tab width` (new — a real display option: the

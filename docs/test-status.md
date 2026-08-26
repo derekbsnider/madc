@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-26, lex_spans — feature/lex-spans merge wave):**
+> **Current (2026-08-26, AST-5 multi-buffer —
+> feature/ast5-multibuffer merge wave):** madcide gains JOE's `^K E`
+> multi-buffer (buffer table on the editor-state bag; per-doc facts
+> stay doc-scoped; switch restores caret/block and recolours from
+> lexical spans with the parse deferred behind the paint), and the
+> subject-document rule collapses from ten .madv copies to ONE owner
+> (`verbs/_subject.madv`) gated by NEW
+> `scripts/check-one-subject-doc.sh` in fulltest (negative control
+> verified). `testmadcide` grew the editfile flow (new / back with
+> caret restore / same-path switch); no new test files (suite = 1183,
+> unchanged). Battery on final content: fulltest rc=0 (all gates, the
+> new gate GREEN) + JIT **1159 passed / 0 failed / 0 timed out / 9
+> skipped**; release rebuilt + NAS binaries pulled.
+>
+> **Previous (2026-08-26, lex_spans — feature/lex-spans merge wave):**
 > `madc::lex_spans` classifies from lexing the buffer alone
 > (skip_includes; the classifier factored out of `parse_spans`), and
 > madcide's first paint now carries colour (pty probe: colour SGR in
