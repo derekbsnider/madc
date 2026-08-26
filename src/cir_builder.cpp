@@ -23639,8 +23639,7 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 		node_t spec = list();
 		node_t dl = list();
 		if (k == SK_I64) {
-			append(spec, simple(N_LONG));
-			append(spec, simple(N_LONG));
+			append_i64(spec);	// long long (i64 spelling law)
 		} else if (k == SK_F64) {
 			append(spec, simple(N_DOUBLE));
 		} else {
