@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **Cooperative tasks — `go` and `yield` (MT-1, 2026-08-26)**: the
+  multitasking arc's first slice. `go f(args);` spawns the call as a
+  cooperative task on a stackful context; `yield()` reschedules;
+  scheduling is strict FIFO run-to-yield on one OS thread —
+  deterministic by construction, and the stated thread-safety
+  contract. `main`'s return joins the root scope (live tasks drain
+  before the program ends — the ruled Kotlin-scope semantic). Both
+  spellings are madc-dialect contextual statement heads claimed by the
+  UFCS error-shape rule: declared `go`/`yield` names always win, and
+  strict `--std=` modes are byte-identical. Arguments ride 8-byte
+  long/double/pointer slots, evaluated at spawn (Go semantics),
+  value-identical to a direct call; unsupported shapes are refused
+  with a message naming the later slice. Knobs: `MADC_TASK_STACK_KB`
+  (512 KiB default), `MADC_TASK_TRACE=1` (stderr scheduler trace).
+  See `docs/language/tasks.md`; design + 2026 industry recon in
+  `docs/plans/2026-08-26-madc-multitasking-{design,recon}.md`.
+  Channels, `select`, futures/`await`, and cancellation scopes are
+  MT-2/MT-3.
+
 - **char[] decays to TEXT at the format boundary (2026-08-26)**:
   `println("{}", buf)` on a local `char buf[N]` printed one garbage
   byte, silently — the format classifier saw the array's ELEMENT type

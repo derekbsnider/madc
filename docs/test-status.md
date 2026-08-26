@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-26, char[]-text boundary —
+> **Current (2026-08-26, cooperative tasks MT-1 —
+> feature/mt1-substrate merge wave):** `go f(args);` + `yield()` land
+> on the stackful cooperative substrate (`src/rt/rt_task.c`; FIFO
+> run-to-yield, deterministic; root-scope join in
+> `CirJitSession::run_main` + atexit for native artifacts). NEW tests:
+> `testgo` (the complete deterministic schedule pinned byte-for-byte,
+> spawn through post-main join), `testgoident` (declared names win —
+> the error-shape negative control), `testgogate` (strict gnu17 mode
+> byte-identical), `tests/unit/test_rt_task.cpp` (4 cases, exact FIFO
+> interleavings). Suite = 1188. TWO GATES CAUGHT REAL DEFECTS in the
+> new code before merge: i64-spec-spelling (slot spec bypassed
+> `append_i64`) and the win64 archive gate (mingw `GetCurrentFiber`
+> TIB intrinsic vs `-Werror=array-bounds`; fallback removed,
+> Wine-verified). Battery on final content: fulltest rc=0 (all gates)
+> + JIT **1164 passed / 0 failed / 0 timed out / 9 skipped**; EXE lane
+> spot-green on all three go tests (the atexit join path).
+>
+> **Previous (2026-08-26, char[]-text boundary —
 > feature/charbuf-text-boundary merge wave):** a fixed char array at
 > the `{}` format boundary now DECAYS ([conv.array]) and formats as a
 > C string (g++ std::format oracle matched: variable, struct member,
