@@ -115,6 +115,32 @@ synthesis — three views of one design, not a compromise:
   (php::, perl::, madc::channel reads) works unchanged inside a
   goroutine — nothing ever needs an async variant.
 
+## Task → scheduler → execution resource (external counsel 2026-08-26, adopted runtime-internal)
+
+Relayed by the owner from an outside analysis: steal C++26's
+separation of task → scheduler → execution resource, Kotlin's
+structured lifetimes, Go's source-level simplicity. The latter two are
+the ruled combination above (independent convergence = good signal).
+The first is ADOPTED — with a placement rule:
+
+- The runtime keeps the three concepts as DISTINCT layers with stated
+  narrow contracts — `madc_ctx_*` (a task: stack + state),
+  `madc_sched_*` (who runs next: queue + park/wake + time source),
+  `madc_loop_*` (what it runs on: the event loop / a future pool /
+  a fork+pipe venue) — even while cooperative-first means exactly one
+  scheduler on one resource.
+- It pays three times on our own roadmap: MT-4's virtual-time gates =
+  a swapped scheduler/time source (pluggable, not hacked); M:N (F2) =
+  an ADDED resource with user programs unchanged (the Go contract);
+  the stage-2 fork venue and the hub loop are both "resources" behind
+  one seam.
+- **The guard: the separation NEVER reaches user code.** One ambient
+  default resource; user code is venue-blind; `go f(x)` stays two
+  words. Rust's executor fragmentation (libraries demanding "which
+  runtime?") and C++26's threaded-scheduler-parameter surface are the
+  named anti-patterns. An explicit affinity spelling is a much-later
+  owner fork, post-F2.
+
 ## The C++11 thread family (owner: "contemplate std::thread/async/future/mutex/condition_variable")
 
 Two clean piles — semantics to absorb now, interop names to serve later:
@@ -181,8 +207,11 @@ Unification claims (no-parallel-implementations):
   ordinary stacks, so switching just works) + run queue; MAIN RUNS AS
   A CONTEXT (any blocking verb enters the scheduler — no explicit
   run() call); `go f(args)` spawn + argless `yield()`; program exit
-  joins the root scope. Thread-safety contract: one OS thread,
-  cooperative — stated per the law.
+  joins the root scope. INTERNAL LAYERING from day one: ctx / sched /
+  loop as distinct structs with stated contracts (the adopted
+  task→scheduler→resource separation — runtime-internal only).
+  Thread-safety contract: one OS thread, cooperative — stated per the
+  law.
 - **MT-2 channels + futures**: value channels (buffered/unbuffered),
   blocking send/recv with park/unpark, close semantics, `select`;
   `go` as an EXPRESSION returns a future (one-shot channel); `await` /
