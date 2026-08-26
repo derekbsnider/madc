@@ -64,6 +64,48 @@ Refused with a compile-time message naming the later slice: class-typed
 / reference / SIMD / `_Complex` / `long double` arguments; variadic,
 multi-return, class-returning, method, and function-pointer callees.
 
+## Channels (MT-2)
+
+Value channels are the synchronization primitive — Go's contract,
+value-first (`madc::` publics; keyword/operator sugar arrives with
+MT-5):
+
+```cpp
+void producer(long c)
+{
+    value v;
+    v = 42;
+    madc::chan_send(c, v);      // parks when the buffer is full
+    madc::chan_close(c);
+}
+
+int main()
+{
+    long c = madc::chan_make(1);    // capacity 0 = rendezvous
+    go producer(c);
+    value v;
+    while ( madc::chan_recv(v, c) ) // parks until a value or close
+        println("got {}", v);       // false = closed AND drained
+    return 0;
+}
+```
+
+- **`chan_make(cap)`** → a channel handle; capacity 0 is a rendezvous
+  (send and recv meet), capacity N buffers N values.
+- **`chan_send(c, v)`** copies `v` in; parks while full. Sending on a
+  closed channel throws (`catch (const char *)`).
+- **`chan_recv(out, c)`** copies out; parks while empty. On a closed
+  channel it drains the buffer first, then returns `false` with a null
+  value.
+- **`chan_close(c)`** wakes every parked sender (they throw) and
+  receiver (they return false). Closing twice throws.
+- **`chan_len(c)`** — buffered value count.
+- **Deadlock is loud**: a blocking operation that parks the last
+  runnable flow aborts with a message, never hangs.
+- **The future idiom** is a capacity-1 channel: spawn the worker, have
+  it send its result, `chan_recv` where you need it. The `await`
+  spelling arrives with MT-5's keywords.
+
 ## Contracts and knobs
 
 - **Thread-safety contract**: one OS thread, cooperative. Tasks
@@ -77,10 +119,11 @@ multi-return, class-returning, method, and function-pointer callees.
 
 ## Known MT-1 limits (named residues)
 
-- `try`/`catch` held **across** a `yield()` is not yet task-local: the
-  SJLJ context chain is shared, so interleaved tasks corrupt each
-  other's handlers. Catch-and-return within one run-slice is fine.
-  Per-task save/restore at switch is the next-slice fix.
+- ~~`try`/`catch` across a `yield()`~~ **FIXED (MT-2 opener)**:
+  exception state (the try/cleanup chains and the in-flight exception)
+  is per-task, saved and restored at every switch like registers —
+  each task catches its own throws whatever the interleaving
+  (`tests/testgotry.mad` pins it; the pre-fix state segfaulted).
 - Ring-lifetime `const char *` text (e.g. a held `format(...)` result)
   rots across a yield exactly as it rots across any ring call — copy
   into a `value` first (the standing ring discipline).

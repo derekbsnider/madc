@@ -209,13 +209,43 @@ Unification claims (no-parallel-implementations):
   ABI), root join in CirJitSession::run_main + loaded-object entry +
   atexit (one owner, idempotent). Docs: docs/language/tasks.md. Tests:
   testgo (complete schedule pinned), testgoident, testgogate,
-  test_rt_task. NAMED RESIDUES: try/catch held ACROSS a yield shares
-  the global SJLJ chain (per-task save/restore at switch = next
-  slice); ring-lifetime text across a yield rots (standing ring
+  test_rt_task. NAMED RESIDUES: ~~try/catch across a yield~~ FIXED by
+  the MT-2 opener (per-task exception-state save/restore at every
+  switch — __madc_except_state_* in rt_except, wired in task_switch/
+  task_exit_switch; testgotry pins it, pre-fix state segfaulted);
+  ring-lifetime text across a yield rots (standing ring
   discipline); -static-libmadc spawn links loud (hosted runtime, no
   AOT-ledger context backend yet); go-in-late-template-bodies thunk
   flush (Pass 1.9) untested; darwin ucontext deprecation at the mac
   lane; method/class-arg/fn-ptr spawns refused loud pending MT-2+.
+
+- **MT-2 SHIPPED** (same session): (a) per-task EXCEPTION STATE — the
+  SJLJ try/cleanup chains + in-flight exception switch with the task
+  (__madc_except_state_* seam owned by rt_except; testgotry pins it,
+  pre-fix segfaulted — negative-controlled). (b) VALUE CHANNELS — Go's
+  contract (madc_task_chan.cpp: rendezvous at cap 0, buffered at N,
+  waiter records on the parked task's stack, close wakes receivers
+  false/senders throw, values copied); scheduler grew park/unpark/
+  current (wait-queue bookkeeping stays with the caller; parking the
+  last runnable flow aborts loud). Surface: madc::chan_make/send/recv/
+  close/len publics (owner fork 3 defaulted to Go semantics,
+  documented). testgochan pins a complete schedule including MAIN
+  parked as a rendezvous receiver and the post-main drain. (c) the RING
+  is now deliberately IMMORTAL (leaky singleton): glibc runs TLS dtors
+  BEFORE the atexit list, so the native lane's atexit join resumed a
+  task whose format() assigned into a DESTROYED ring slot (double
+  free, exe lane only — the JIT joins in-session).
+
+- **MT-2b (NEXT, named)**: the PRINCIPLED native join point — emit,
+  under STD_MADC only, main as `__madc_main` plus a wrapper
+  `int main(argc,argv){ r = __madc_main(...); __madc_task_join_all();
+  return r; }` so a native artifact joins at MAIN'S END (the Kotlin
+  block semantic) before ANY teardown, instead of riding atexit past
+  the TLS destructors. Blast radius: every madc-mode main's emitted
+  shape (fidelity/roundtrip gates) — its own wave. The atexit twin
+  stays as the last-resort belt. Also: project-mode mixed-TU spawn
+  (strict-mode main + madc TU using go) inherits the atexit path until
+  then.
 
 ## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
 

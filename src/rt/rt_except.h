@@ -39,6 +39,19 @@ void __madc_throw_double(double val);
 void __madc_throw_cstr(const char *val);
 void __madc_throw_object(const void *obj);
 
+/* Per-execution-context state switch (the MT arc's task runtime,
+ * src/rt/rt_task.c — the second legitimate host consumer, and the widening
+ * decision the note above demands made consciously): the try chain, the
+ * cleanup chain, and the in-flight exception are PER-CONTEXT state, saved
+ * and restored at every task switch exactly like CPU registers. Without
+ * this, a `try` held across a `yield()` lands its throw in ANOTHER task's
+ * jmp_buf. The buffer is opaque; its required size is
+ * __madc_except_state_size() (checked loud by the task runtime). A
+ * zero-filled buffer restores as the EMPTY state — a fresh task's start. */
+unsigned long __madc_except_state_size(void);
+void __madc_except_state_save(void *buf);
+void __madc_except_state_restore(const void *buf);
+
 #ifdef __cplusplus
 }
 #endif

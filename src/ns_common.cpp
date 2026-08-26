@@ -289,7 +289,16 @@ void join_with_sep(std::string &out, const madc::value &arr,
 
 std::string &ring_slot()
 {
-	thread_local std::string ring[8];
+	// Deliberately IMMORTAL (leaky singleton): ring text is handed out as
+	// raw c_str() pointers (the pre-L3 return convention), and consumers
+	// legitimately run as late as the atexit list — the MT root-scope
+	// join drains live tasks there in native artifacts, and glibc runs
+	// TLS destructors BEFORE atexit handlers, so a destructible ring is
+	// freed under a still-running program. testgochan's exe lane caught
+	// exactly that: a task's format() after main assigned into a
+	// destroyed slot — double free. Eight small strings per thread,
+	// reclaimed by process exit; the pointer itself is POD TLS (no dtor).
+	thread_local std::string *ring = new std::string[8];
 	thread_local unsigned ring_i = 0;
 	return ring[ring_i++ & 7u];
 }

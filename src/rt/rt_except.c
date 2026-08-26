@@ -74,6 +74,39 @@ static MADC_RT_TLS struct MadcTryContext *madc_try_stack = NULL;
 static MADC_RT_TLS struct MadcException madc_current_exception = {0};
 static MADC_RT_TLS struct MadcCleanupEntry *madc_cleanup_stack = NULL;
 
+// --- Per-execution-context state switch (rt_except.h documents the design
+// decision). The three statics above are per-CONTEXT, not merely per-thread:
+// the cooperative task runtime saves/restores them at every switch so a try
+// held across a yield() keeps its own chain. A zero-filled buffer restores
+// as the empty state (fresh task). Plain memcpy — ledger-safe C11.
+
+struct MadcExceptState {
+    struct MadcTryContext *try_stack;
+    struct MadcException exception;
+    struct MadcCleanupEntry *cleanup_stack;
+};
+
+unsigned long __madc_except_state_size(void)
+{
+    return (unsigned long)sizeof(struct MadcExceptState);
+}
+
+void __madc_except_state_save(void *buf)
+{
+    struct MadcExceptState *s = (struct MadcExceptState *)buf;
+    s->try_stack = madc_try_stack;
+    s->exception = madc_current_exception;
+    s->cleanup_stack = madc_cleanup_stack;
+}
+
+void __madc_except_state_restore(const void *buf)
+{
+    const struct MadcExceptState *s = (const struct MadcExceptState *)buf;
+    madc_try_stack = s->try_stack;
+    madc_current_exception = s->exception;
+    madc_cleanup_stack = s->cleanup_stack;
+}
+
 // --- Runtime functions called from JIT code ---
 
 // Byte size of MadcTryContext, so the CIR lowering can allocate an opaque,

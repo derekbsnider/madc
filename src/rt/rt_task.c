@@ -17,6 +17,7 @@
 #endif
 
 #include "rt_task.h"
+#include "rt_except.h"	/* per-context exception-state switch */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,10 +36,17 @@
 // The task (a stack + state)
 // ---------------------------------------------------------------------------
 
+// Opaque per-task exception-state buffer (rt_except's try/cleanup chains +
+// the in-flight exception — per-CONTEXT state switched like registers).
+// Zero-filled = the empty state a fresh task starts with; capacity checked
+// loud at init against __madc_except_state_size().
+#define MADC_TASK_EXC_BYTES 64
+
 typedef struct madc_task {
 	struct madc_task *qnext;   // ready-queue link
 	void (*fn)(void *);
 	void *arg;
+	unsigned char exc[MADC_TASK_EXC_BYTES];
 #if defined(_WIN32)
 	void *fiber;               // CreateFiberEx handle (main: converted)
 #else
@@ -139,9 +147,10 @@ static void task_switch(madc_task *from, madc_task *to)
 {
 	TASK_TRACE("[task] switch %p -> %p (main=%p)\n", (void *)from,
 		   (void *)to, (void *)&g_main_task);
+	__madc_except_state_save(from->exc);
+	__madc_except_state_restore(to->exc);
 	g_current = to;
 #if defined(_WIN32)
-	(void)from;
 	SwitchToFiber(to->fiber);
 #else
 	g_starting = to;
@@ -160,15 +169,20 @@ static void task_exit_switch(void)
 		   (void *)next, g_live, g_main_waiting);
 	if (!next) {
 		if (!g_main_waiting) {
-			fprintf(stderr, "madc tasks: internal scheduler state"
-				" broken (a task finished with no runnable"
-				" successor and main not joining)\n");
+			// Reachable since parking exists: the exiting task was
+			// the last runnable flow while main and others sit
+			// parked on channels nobody can now signal.
+			fprintf(stderr, "madc tasks: deadlock — %ld task(s)"
+				" live, all blocked, and the last runnable"
+				" task exited\n", g_live);
 			abort();
 		}
 		next = &g_main_task;
 	}
 	g_reap = self;
 	g_current = next;
+	// The dying task's exception state is dropped with it.
+	__madc_except_state_restore(next->exc);
 #if defined(_WIN32)
 	SwitchToFiber(next->fiber);
 #else
@@ -228,6 +242,12 @@ static void task_runtime_init(void)
 {
 	if (g_current)
 		return;
+	if (__madc_except_state_size() > (unsigned long)MADC_TASK_EXC_BYTES) {
+		fprintf(stderr, "madc tasks: exception-state buffer too small"
+			" (%lu > %d; grow MADC_TASK_EXC_BYTES)\n",
+			__madc_except_state_size(), MADC_TASK_EXC_BYTES);
+		abort();
+	}
 	memset(&g_main_task, 0, sizeof g_main_task);
 #if defined(_WIN32)
 	// No GetCurrentFiber() fallback for an already-converted thread: the
@@ -305,4 +325,37 @@ void __madc_task_join_all(void)
 long __madc_task_live(void)
 {
 	return g_live;
+}
+
+void *__madc_task_current(void)
+{
+	task_runtime_init();
+	return (void *)g_current;
+}
+
+void __madc_task_park(void)
+{
+	task_runtime_init();
+	madc_task *self = g_current;
+	madc_task *next = task_dequeue();
+	TASK_TRACE("[task] park %p -> %p\n", (void *)self, (void *)next);
+	if (!next) {
+		// Single OS thread: with the parker off the CPU and nothing
+		// runnable, no flow exists that could ever unpark anyone —
+		// including main, whether it is joining or parked itself.
+		fprintf(stderr, "madc tasks: deadlock — a blocking operation"
+			" parked the last runnable flow (%ld task(s) live)\n",
+			g_live);
+		abort();
+	}
+	// NOT re-enqueued: the waker holds the handle and unparks it.
+	task_switch(self, next);
+}
+
+void __madc_task_unpark(void *task)
+{
+	if (!task)
+		return;
+	TASK_TRACE("[task] unpark %p\n", task);
+	task_enqueue((madc_task *)task);
 }

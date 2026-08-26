@@ -47,6 +47,19 @@ void __madc_task_join_all(void);
 // Live spawned-but-unfinished task count (diagnostics and tests).
 long __madc_task_live(void);
 
+// Park/unpark — the blocking primitive channels (and every later blocking
+// verb) are built on. `current` returns the running task's opaque handle
+// (adopting the calling flow as the main task on first use). `park` takes
+// the CURRENT task off the CPU without re-enqueueing it — the waker must
+// hold the handle and `unpark` it back onto the ready queue; parking with
+// nothing else runnable is a DEADLOCK and aborts loud (single OS thread:
+// nobody is left to wake anyone). Wait-queue bookkeeping (who holds the
+// handle, why it parked) belongs to the CALLER — e.g. the channel runtime
+// (src/madc_task_chan.cpp) — never to this scheduler.
+void *__madc_task_current(void);
+void __madc_task_park(void);
+void __madc_task_unpark(void *task);
+
 #ifdef __cplusplus
 }
 #endif
