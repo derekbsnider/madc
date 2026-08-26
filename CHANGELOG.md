@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **madcide: first paint before parse-on-load (2026-08-26)**: startup
+  showed a black screen for the whole document parse (~5s on the NAS
+  for a real C++ file — previously masked by parses that failed fast).
+  `run_ide` now renders the document immediately and the highlight
+  spans + enclosing-function seat repaint when the parse lands
+  (delta rows only). NAS: first paint 0.38s, was 3.5s blank.
+
 - **madcide: the JOE screen model (IDE-9a/9b) — status-as-data at the
   TOP (2026-08-26)**: ONE inverse status row at the top of the screen,
   rendered from the profile's format strings (`profiles/joe.status`,
