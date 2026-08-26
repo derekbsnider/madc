@@ -230,9 +230,17 @@ static void task_runtime_init(void)
 		return;
 	memset(&g_main_task, 0, sizeof g_main_task);
 #if defined(_WIN32)
+	// No GetCurrentFiber() fallback for an already-converted thread: the
+	// mingw intrinsic (__readgsqword) trips gcc's array-bounds -Werror,
+	// and an embedding host that fiber-converts its thread before letting
+	// madc spawn is a contract we refuse LOUD until it exists.
 	g_main_task.fiber = ConvertThreadToFiber(NULL);
-	if (!g_main_task.fiber)        // already a fiber (embedding host)
-		g_main_task.fiber = GetCurrentFiber();
+	if (!g_main_task.fiber) {
+		fprintf(stderr, "madc tasks: ConvertThreadToFiber failed"
+			" (already a fiber? fiber-converted embedding hosts"
+			" are not supported yet)\n");
+		abort();
+	}
 #endif
 	g_current = &g_main_task;
 	// Native artifacts join the root scope at process exit; the JIT host
