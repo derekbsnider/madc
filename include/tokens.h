@@ -194,6 +194,10 @@ inline const char *error_node_kind_name(ErrorNodeKind k)
 // Token flags
 typedef enum : uint16_t { tfBRACKETED	=    1,
 			  tfOVERLOADED  =    2,
+			  tfSYNTHPOS	=    4,	// minted from synthesized pushback text
+						// (macro expansion, __FILE__/__LINE__):
+						// line/column name the invocation site,
+						// not source bytes of this spelling
 			} tokflag_t;
 
 // TokenRec — the flat, POD, serializable per-token DATA record (Phase 2 of
@@ -279,6 +283,7 @@ public:
     virtual void setFlag(tokflag_t f) { _flags |= f; }
     virtual bool is_bracketed() const { return (_flags & tfBRACKETED) ? true : false;  }
     virtual bool is_overloaded() const { return (_flags & tfOVERLOADED) ? true : false; }
+    bool is_synthetic_position() const { return (_flags & tfSYNTHPOS) ? true : false; }
     virtual bool is_operator() const { return false; }
     virtual bool is_constant() const { return false; }
     virtual bool is_real()     const { return false; }

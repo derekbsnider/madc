@@ -1520,6 +1520,10 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
 		rt->file = origin->file;
 		rt->line = origin->line;
 		rt->column = origin->column;
+		// The replacement spelling is not the source's bytes at the
+		// origin position (`NULL` -> `((void *)0)`): coordinate
+		// consumers (parse_spans) must skip these (tfSYNTHPOS).
+		rt->setFlag(tfSYNTHPOS);
 	    }
 	    replacement.push_back(rt);
 	}
@@ -7548,12 +7552,12 @@ TokenBase *Program::_getToken()
 		    const char *fn = source.fname();
 		    quoted += (fn ? fn : "<unknown>");
 		    quoted += "\"";
-		    source.pushback(quoted);
+		    source.pushback_macro(quoted, "");
 		    return getToken();
 		}
 		if ( word == "__LINE__" )
 		{
-		    source.pushback(std::to_string(source.line()));
+		    source.pushback_macro(std::to_string(source.line()), "");
 		    return getToken();
 		}
 		// _Pragma("...") — the token form of #pragma (C99, C++11), routed
@@ -9097,9 +9101,19 @@ TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
     std::string pending_trivia;   // full-fidelity: leading whitespace/comments
+    size_t synth_mark = source.synth_reads();
 
 	while ( (tb=getToken()) )
 	{
+	    if ( source.synth_reads() != synth_mark )
+	    {
+		// Some byte of this read came from SYNTHESIZED pushback text
+		// (macro expansion, __FILE__/__LINE__): the token's line and
+		// column name the invocation site, not source bytes of its
+		// own spelling. Coordinate consumers (parse_spans) skip it.
+		tb->setFlag(tfSYNTHPOS);
+		synth_mark = source.synth_reads();
+	    }
 	    if ( tb->line == 0 )
 		tb->line = source.line(); //_line;
 	    if ( tb->column == 0 )
