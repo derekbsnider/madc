@@ -72,11 +72,15 @@ active-owner state).
 
 ## Honest limits
 
-- A coroutine cannot yield inside a long C++ ENGINE call: madcide's
-  background parse stays the fork-vs-threads owner fork
-  (2026-08-26-madcide-staged-parse-and-state.md). But the event-loop
-  wake-fd seam designed there is the same event loop a cooperative
-  scheduler needs — one design serves both.
+- A coroutine cannot yield inside an ARBITRARY long C++ engine call —
+  but an engine call WE instrument can: the owner ruled (2026-08-26
+  evening) that madcide's stage-2 background parse runs as COOPERATIVE
+  CHUNKS on this substrate (yield points in the parser's token pump;
+  the active-owner statics switched per task via the MT-2
+  state-switch seam; fork DROPPED — no win64 fork, serialization cost;
+  the THREAD deferred to F2/M:N). See the RULED section in
+  2026-08-26-madcide-staged-parse-and-state.md. The event-loop wake-fd
+  seam remains one design serving both arcs.
 - Blocking libc calls (read/accept/sleep) block the whole cooperative
   world unless routed through the event loop (nonblocking + park) —
   the node/nginx discipline; the runtime's io verbs are where that

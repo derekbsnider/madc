@@ -72,20 +72,38 @@ relies on STATIC active-owner state — `TokenBase::_active_strpool` /
 is sequential per-Program", tokens.h) and the static
 `_parse_file/_parse_line/_parse_column` parse cursor. A second compile
 thread rebinding those while the main thread lexes/evals is a data
-race by construction. Two candidate shapes, owner's call:
+race by construction.
 
-1. **thread_local actives (the F2-arc route):** flip the static
-   active-owner fields to `thread_local`, audit the rest of the
-   front-end globals (the F2 audit debt), then the worker thread is
-   real. Durable — also what language threads need eventually — but it
-   is an engine-wide audit, not a madcide slice.
-2. **fork + products (implementable now):** parse in a forked child;
-   ship PRODUCTS (span rows, outline rows WITH extents, diagnostic
-   rows) back over a pipe as value data; the wake fd is the pipe
-   itself. No shared state races. parse_enclosing becomes an outline-
-   extent lookup over the shipped rows; features needing the live tree
-   (views, emit) keep the synchronous handle. Cost: a re-parse per
-   refresh is a fork, and the products contract must be enumerated.
+**RULED (owner, 2026-08-26 evening — after the MT arc landed):** the
+decision is between a THREAD and COOPERATIVE CHUNKED parsing; fork is
+DROPPED (its one unique virtue, crash isolation, is the error-tolerant
+parse arc's job; against it: every product serialized over a pipe,
+parse-handle queries crossing a process boundary, and win64 has no
+fork — the three-platform law). **Stage 2 = cooperative chunks on the
+MT-1 substrate; the thread is not rejected but DEFERRED to F2/M:N,
+where it was already scheduled.**
+
+Why cooperative won, precisely: a STACKFUL task makes the parser
+resumable FOR FREE — a recursive-descent parser's state is its C++
+call stack, which is exactly what an MT-1 context preserves across
+yield(). Chunking needs only YIELD POINTS (a check in the token pump
+every N tokens, or at top-level-declaration boundaries), not a
+re-entrant rewrite. A 0.7s release-tier parse sliced at ~10ms is
+imperceptible at the keyboard. The one real work item: the
+ACTIVE-OWNER STATICS MUST SWITCH PER TASK — a parse task yielding
+mid-parse while the editor runs a keystroke lex_spans (its own child
+parse) would clobber the actives — and that is the SAME per-context
+state-switch seam MT-2 shipped for exception state
+(`__madc_except_state_save/restore` at every switch): enumerate the
+parse-session actives, save/restore them in the same place. Single OS
+thread = no races, no TSan; the swap set is bounded and DETERMINISTIC
+to gate (interleave two parses at every yield point — results must be
+byte-identical to serial). The enumeration is a DOWN PAYMENT on the F2
+audit (the same inventory thread_local needs), so the thread upgrade
+later changes no user-visible behavior — the Go contract again.
+Dogfood bonus: madcide is a madc program, so stage 2 becomes the first
+real consumer of the language's own `go`/channels (the IDE spawns the
+parse task and recvs progress).
 
 Stage 1 (shipped) removes the visible symptom at load: colour is
 immediate, and the parse blocks only the FIRST keystrokes (0.7s
