@@ -239,6 +239,17 @@ long ensure_phandle(long w, long es, long doc)
     var p;
     ui::get(p, w, doc, "path");
     h = madc::parse_open(t.c_str(), p.c_str());
+    // Stage-2: parse_open YIELDS between slices, so two flows can overlap
+    // on one doc (the spawned background parse and a synchronous check).
+    // ONE handle owner: whoever finds the bag already filled closes its
+    // own duplicate and adopts the stored handle.
+    long prior = es_int(w, doc, "phandle", 0);
+    if ( prior != 0 )
+    {
+	if ( h != 0 )
+	    madc::parse_close(h);
+	return prior;
+    }
     ui::set(w, doc, "phandle", h);
     if ( h == 0 )
     {
@@ -249,6 +260,16 @@ long ensure_phandle(long w, long es, long doc)
     }
     refresh_spans(w, es, doc, h);
     return h;
+}
+
+// Stage-2: the parse leaves the event loop. The pending step spawns this
+// task; the compiler's pumps yield back to the input wait every slice, so
+// typing stays live while it runs. ensure_phandle parks the handle and the
+// spans on the bag (race-safe, one owner above); the loop's `wake` event
+// recomposes with them when the task drains.
+void background_parse(long w, long es, long doc)
+{
+    ensure_phandle(w, es, doc);
 }
 
 // Whole-TU re-parse of the buffer's handle from the live text — the ONE
@@ -1144,6 +1165,12 @@ void toggle_pane(long w, long es, const char *name)
 bool apply_ide_event(long w, long es, long doc, value &ev)
 {
     var kind = format("{}", ev["event"]);
+    // Stage-2: cooperative background tasks drained — the spawned parse
+    // already parked its handle/spans on the bag; recompose only. Before
+    // anything else: a wake is not a user gesture (it must not clear the
+    // message seat or disturb a pending prompt).
+    if ( kind == "wake" )
+	return true;
     // Display-vs-stored routing (the view seam): navigation, find, and the
     // caret run over the NAV target — the view buffer while a view is up.
     // Document semantics (save, check, outline, the mutation gates) stay
@@ -1668,10 +1695,12 @@ void run_ide(const char *path, bool ro)
 	if ( es_int(w, es, "pending_parse", 0) != 0 )
 	{
 	    ui::set(w, es, "pending_parse", 0);
-	    long h = ensure_phandle(w, es, adoc);
-	    if ( h != 0 )
-		refresh_spans(w, es, adoc, h);
-	    continue;		// recompose with the parse's spans
+	    // Stage-2: spawn the parse as a cooperative task instead of
+	    // blocking the loop on it. The input wait hands it the CPU in
+	    // slices between polls; its completion surfaces as a `wake`
+	    // event (or rides the next keystroke's recompose).
+	    go background_parse(w, es, adoc);
+	    continue;		// keep serving keystrokes while it runs
 	}
 	value ev;
 	if ( !ui::tui_event(ev, t, w) )
@@ -1679,6 +1708,10 @@ void run_ide(const char *path, bool ro)
 	run = apply_ide_event(w, es, adoc, ev);
 	ui::set(w, es, "hint", 0);	// first event returns the row
     }
+    // Stage-2: a spawned parse may still be mid-flight at quit — drain the
+    // task scope BEFORE closing the handles and the world it writes to
+    // (main's-end join would run only after this teardown).
+    madc::task_drain();
     // Every buffer's parse handle closes with the session.
     value bufs;
     ui::get(bufs, w, es, "buffers");

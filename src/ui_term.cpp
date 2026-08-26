@@ -42,6 +42,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "rt/rt_task.h"	// stage-2: cooperative wait (runnable probe + yield)
+
 namespace {
 
 using madc::hub::tui_grid;
@@ -344,7 +346,40 @@ public:
 		    return true;
 		}
 	    }
-	    if ( !input_ready(-1) )
+	    // Stage-2 cooperative parse: while spawned tasks are RUNNABLE,
+	    // never park the OS thread in poll — hand them the CPU between
+	    // zero-timeout input polls (each __madc_yield runs the queue
+	    // head to its next yield point, so keystroke latency stays one
+	    // slice). Runnable, not live: a parked task is woken by an
+	    // unpark, never by a poll — blocking on live-but-parked would
+	    // busy-spin. When the queue DRAINS after we yielded at least
+	    // once, synthesize a `wake` event so the application re-checks
+	    // what the tasks completed (a finished parse) instead of
+	    // sleeping on it until the next keystroke. With no tasks this
+	    // is the old blocking wait, zero new cost.
+	    if ( __madc_task_runnable() > 0 )
+	    {
+		bool yielded = false;
+		while ( !g_winch && !input_ready(0) )
+		{
+		    if ( __madc_task_runnable() == 0 )
+		    {
+			if ( yielded )
+			{
+			    out.push_back(tui_keyev(tui_key::wake));
+			    return true;
+			}
+			break;
+		    }
+		    __madc_yield();
+		    yielded = true;
+		}
+		if ( g_winch )
+		    continue;	// a resize landed mid-drain: handle it first
+		if ( !input_ready(0) )
+		    continue;	// queue drained, no input: block normally
+	    }
+	    else if ( !input_ready(-1) )
 		continue;	// EINTR: re-check the resize flag
 	    char buf[64];
 	    ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));

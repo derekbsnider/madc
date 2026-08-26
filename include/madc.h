@@ -5222,6 +5222,18 @@ public:
     // (--project builds every TU's tree after all TUs are parsed) must
     // re-activate the owning Program first.
     void activate_token_pools();
+    // Stage-2 cooperative parse: a yield point inside the lex/parse pumps.
+    // No-op (one queue check) when nothing else is runnable; otherwise
+    // snapshots the parse-session ambients this flow owns (the cursor trio,
+    // the render mute), yields the CPU to the ready queue, and on resume
+    // re-binds them plus the token pools (activate_token_pools) — the flow
+    // that ran meanwhile bound its own. The switch set is the F2
+    // static-actives audit's enumeration (the __madc_except_state_* seam
+    // pattern; exception state itself already switches inside rt_task).
+    void parse_yield_point();
+    // Yields actually taken by parse_yield_point on this Program (tasks
+    // were runnable). The interleave gate asserts it moved.
+    uint32_t _coop_yields = 0;
     // Full-fidelity source reconstruction from the token stream (requires
     // keep_trivia set before tokenizing). See TokenBase::leading_trivia.
     std::string reconstruct_source();

@@ -47,6 +47,12 @@ void madcdis_mapwrite_trap_hit(const char *key)
 } }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 
+// Stage-2 cooperative parse: yield-point cadence for the token pumps (a
+// power of two — the pump check is one mask-and-compare). ~1k tokens is
+// well under a millisecond, far finer than the ~10ms slice budget the
+// stage-2 ruling set; parse_yield_point itself no-ops without live tasks.
+enum { LEX_YIELD_GRAIN = 1024 };
+
 // --show-stats: RAII accumulator for time spent loading source into the lex
 // stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
 // the referenced accumulator on scope exit.
@@ -9617,12 +9623,18 @@ TokenProgram *Program::tokenize(const char *fname)
 
     try
     {
+	// Stage-2: yield every LEX_YIELD_GRAIN tokens (the token pump's
+	// chunk grain — sub-millisecond slices; the check is one counter
+	// compare, and parse_yield_point itself no-ops without tasks).
+	uint32_t pump = 0;
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
 	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+		parse_yield_point();
         }
     }
     catch(const char *err_msg)
@@ -9705,10 +9717,15 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     try
     {
+	// Stage-2: the same yield grain as tokenize() — this is the pump
+	// the IDE's parse handles ride (parse_open -> tokenize_buffer).
+	uint32_t pump = 0;
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
 	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+		parse_yield_point();
 	}
     }
     catch(const char *err_msg)

@@ -334,6 +334,15 @@ long __madc_task_live(void)
 	return g_live;
 }
 
+long __madc_task_runnable(void)
+{
+	long n = 0;
+	madc_task *t;
+	for (t = g_ready_head; t; t = t->qnext)
+		n++;
+	return n;
+}
+
 void *__madc_task_current(void)
 {
 	task_runtime_init();

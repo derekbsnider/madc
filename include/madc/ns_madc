@@ -159,6 +159,15 @@ namespace madc {
     void chan_close(int64_t chan);
     int64_t chan_len(int64_t chan);
 
+    // Drain the task root scope NOW: run ready tasks until none remain
+    // live (idempotent; a no-op when nothing was spawned). The interim
+    // structured-join verb until MT-3 scopes land — for tearing down
+    // resources a still-running task writes to (main's end joins anyway,
+    // but only AFTER your teardown code ran). task_live = the live
+    // spawned-but-unfinished count (diagnostics; a poll loop's guard).
+    void task_drain();
+    int64_t task_live();
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated

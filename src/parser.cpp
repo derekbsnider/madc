@@ -56,6 +56,7 @@
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
 #include "cir_builder.h"	// the shared iteration recognizers (range-for auto deduction)
 #include "madc_pch.h"	// v20: restored template token runs deserialize from the .madh record form
+#include "rt/rt_task.h"	// stage-2 cooperative parse: parse_yield_point's yield + runnable probe
 
 using namespace std;
 
@@ -23919,6 +23920,40 @@ void Program::activate_token_pools()
     TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
     TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
     madc_active_project_types = &project_types;	// B1: cir_node datadef_id resolves via typeids
+}
+
+// Stage-2 cooperative parse (the RULED slice, staged-parse plan doc): release
+// the CPU mid-pump. A stackful task makes the recursive-descent parser
+// resumable for free — its state IS this C++ call stack — so a yield point
+// only switches the parse-session AMBIENTS (process statics bound to "the
+// currently-parsing Program"): the token pools + project types
+// (activate_token_pools), the TokenBase parse cursor (continuously written
+// by nextToken), and the diagnostic render mute (a parse handle's child
+// parse runs muted; a flow resuming mid-parse must render its own).
+// Deliberately NOT switched: the generated-name counters (lambda_counter
+// etc. — process-wide by documented design), the TokenArena (process-
+// lifetime bump allocator; interleaved allocations are safe by
+// construction), and the forest-bind statics (binding flows never coexist
+// with live tasks: the main compile precedes any spawn, and parse-handle
+// children never forest-bind). Exception state switches inside rt_task
+// itself (__madc_except_state_*, MT-2). No-op — one ready-queue check —
+// when nothing else is runnable, so batch compiles pay nothing.
+void Program::parse_yield_point()
+{
+    if ( __madc_task_runnable() == 0 )
+	return;
+    const char *pf = TokenBase::_parse_file;
+    int pl = TokenBase::_parse_line;
+    int pc = TokenBase::_parse_column;
+    bool mute = DiagnosticRenderMute::active;
+    DiagnosticRenderMute::active = false;
+    __madc_yield();
+    activate_token_pools();
+    TokenBase::_parse_file = pf;
+    TokenBase::_parse_line = pl;
+    TokenBase::_parse_column = pc;
+    DiagnosticRenderMute::active = mute;
+    ++_coop_yields;
 }
 
 // The ambient pools activate_token_pools() binds must NOT outlive their
@@ -66611,6 +66646,9 @@ bool Program::parse(TokenProgram *tp)
     {
 	while ( !tokens.empty() )
 	{
+	    // Stage-2: a top-level declaration boundary is a yield point
+	    // (the RULED chunk grain for the parse phase).
+	    parse_yield_point();
 	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
 	    // Progress guard: a parseStatement that restores the stream to
 	    // exactly this state (its dispatchee consumed nothing and pushed

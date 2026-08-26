@@ -444,7 +444,10 @@ enum class tui_key : unsigned char
     enter, tab, backspace, esc,
     up, down, left, right,
     home, end, pgup, pgdn, del, ins,
-    resize	// synthesized by the target on a size change
+    resize,	// synthesized by the target on a size change
+    wake	// synthesized by the target when cooperative background
+		// tasks drained (stage-2: a spawned parse finished while
+		// the loop was waiting for input — recompose)
 };
 
 struct tui_keyev
@@ -792,7 +795,10 @@ enum class tui_event_kind : unsigned char
     choose,	// enter on the focused choice's selected option
     focus,	// focus or menu selection moved: recompose and repaint
     resize,	// the surface changed size: recompose and repaint
-    action	// a bound key sequence completed (empty name = unbound miss)
+    action,	// a bound key sequence completed (empty name = unbound miss)
+    wake	// cooperative background tasks drained: recompose (the
+		// application re-checks its pending state, e.g. a spawned
+		// parse's completion)
 };
 
 struct tui_event
@@ -1258,6 +1264,15 @@ public:
 		    out.push_back(e);
 		    continue;
 		}
+		// A wake mid-chord passes through without disturbing the
+		// pending prefix (same transparency as resize).
+		if ( k.kind == tui_key::wake )
+		{
+		    tui_event e;
+		    e.kind = tui_event_kind::wake;
+		    out.push_back(e);
+		    continue;
+		}
 		if ( k.kind == tui_key::esc )
 		{
 		    // Cancelling a chord is a visible state change — a status
@@ -1299,7 +1314,8 @@ public:
 		out.push_back(e);
 		run.clear();
 	    }
-	    if ( !_bindings.empty() && k.kind != tui_key::resize )
+	    if ( !_bindings.empty() && k.kind != tui_key::resize
+		 && k.kind != tui_key::wake )
 	    {
 		std::string head = tui_bindings::seq_spelling(k);
 		if ( _bindings.bound(head) )
@@ -1330,6 +1346,12 @@ public:
 	    {
 		tui_event e;
 		e.kind = tui_event_kind::resize;
+		out.push_back(e);
+	    }
+	    else if ( k.kind == tui_key::wake )
+	    {
+		tui_event e;
+		e.kind = tui_event_kind::wake;
 		out.push_back(e);
 	    }
 	    else if ( k.kind == tui_key::tab && _focusables.size() > 1 )
