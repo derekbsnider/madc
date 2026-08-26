@@ -1,0 +1,15 @@
+// Quoted-include fallback (C11 6.10.2p3, gcc canon): a "file.h" include
+// whose quoted-specific search (includer dir, -I) misses is reprocessed
+// as <file.h>. Here <dir/a.h> resolves via -I (the .flags fixture), and
+// a.h's OWN `#include "dir/b.h"` misses includer-relative (dir/dir/b.h)
+// — the fallback resolves it at the -I root, exactly as gcc does. The
+// live case this pins: an installed libmadc engine.h's quoted
+// "libmadc/options.h" from /usr/local/include (examples/embed_hello.cpp
+// through a parse handle died at tokenize, killing ALL highlighting).
+#include <dir/a.h>
+
+int main()
+{
+    println("qf: {}", QF_A + QF_B);
+    return 0;
+}

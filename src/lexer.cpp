@@ -4536,7 +4536,14 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	return incfile; // not found — will fail at open
     }
 
-    // "file.h": current source directory, then -I paths
+    // "file.h": current source directory, then -I paths — then the WHOLE
+    // <...> chain. C11 6.10.2p3: a quoted include whose quoted-specific
+    // search fails "is reprocessed as if it read #include <...>", and gcc
+    // does exactly that (an installed header's #include "libmadc/options.h"
+    // resolves via the /usr/local/include root after the includer-relative
+    // candidate misses). Delegating keeps the system chain ONE owner; it
+    // also makes the not-found error name the UNDOUBLED spelling instead
+    // of includer_dir + incfile.
     std::string cur_dir = current_source_directory();
     if ( !cur_dir.empty() )
     {
@@ -4545,15 +4552,7 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	if ( probe.good() )
 	    return local;
     }
-    for ( size_t i = 0; i < include_paths.size(); ++i )
-    {
-	std::string &dir = include_paths[i];
-	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
-	std::ifstream probe(candidate.c_str());
-	if ( probe.good() )
-	    return candidate;
-    }
-    return cur_dir.empty() ? incfile : cur_dir + incfile;
+    return resolve_include_path(incfile, /*is_system=*/true);
 }
 
 // Is this source file one that came from a system/toolchain include directory
