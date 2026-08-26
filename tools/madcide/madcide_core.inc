@@ -1392,10 +1392,21 @@ void run_ide(const char *path, bool ro)
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
+    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
+    // FIRST PAINT BEFORE THE PARSE: parse-on-load can take seconds on a
+    // real C++ file (headers), and the alternate screen is already up —
+    // blocking here left the user staring at a BLACK screen for the
+    // whole parse (owner report, 2026-08-26). Render the document
+    // immediately; the loop's own first compose then repaints with the
+    // spans and the enclosing-function seat once the handle exists.
+    {
+	value tree0;
+	compose_ide_tree(tree0, w, es, doc);
+	ui::tui_render(t, w, tree0);
+    }
     ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
 				// highlight spans have state before the
 				// first check; a failed open msgs there
-    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     bool run = true;
     while ( run )
     {
