@@ -250,6 +250,55 @@ TEST_CASE("compose — long line shifts horizontally; selection highlights")
     CHECK(s.at(1, 9).attr == tui_attr::normal());
 }
 
+TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
+	  "selection convert through the display map (IDE-9c)")
+{
+    world w;
+    roles r = roles::standard(w);
+
+    // A tab is ONE byte but a run of display columns: "\tx" shows x at
+    // column 8; "ab\tc" shows c at the next stop. Cells hold the expanded
+    // spaces — a raw '\t' in a cell would move the terminal cursor WITHOUT
+    // erasing the skipped columns (the scroll-corruption defect).
+    tui_model m;
+    const tui_grid &g = m.compose(r, editor_tree(w, "\tx\nab\tc", 1), 6, 40);
+    CHECK(g.row_text(1) == std::string(8, ' ') + "x");
+    CHECK(g.at(1, 0).ch == ' ');
+    CHECK(g.at(1, 8).ch == 'x');
+    CHECK(g.row_text(2) == "ab" + std::string(6, ' ') + "c");
+    CHECK(g.at(2, 8).ch == 'c');
+    // Caret at byte 1 of "\tx" (on the x) = display column 8.
+    CHECK(g.cursor_row == 1u);
+    CHECK(g.cursor_col == 8u);
+
+    // Selection covering the tab byte highlights the WHOLE expanded run:
+    // bytes 0..2 of "\tabc" = display columns 0..8 (tab) + 8 (the 'a').
+    tui_model m2;
+    const tui_grid &s = m2.compose(r, editor_tree(w, "\tabc", 0, 0, 2),
+				   6, 40);
+    CHECK(s.at(1, 0).attr == tui_attr::reverse());
+    CHECK(s.at(1, 7).attr == tui_attr::reverse());
+    CHECK(s.at(1, 8).attr == tui_attr::reverse());
+    CHECK(s.at(1, 9).attr == tui_attr::normal());
+
+    // The horizontal shift is display-column based: a caret at byte 21 of
+    // a tab-headed 20-x line sits at display column 28 — on a 20-col grid
+    // the window shifts by 9 and the caret lands on the last column.
+    tui_model m3;
+    const tui_grid &h = m3.compose(r, editor_tree(w, "\t" + std::string(20,
+						  'x'), 21), 6, 20);
+    CHECK(h.cursor_row == 1u);
+    CHECK(h.cursor_col == 19u);
+    CHECK(h.row_text(1) == std::string(19, 'x'));
+
+    // THE CELL INVARIANT belt: a control byte reaching put() renders as a
+    // visible '?', never as a raw byte the terminal would interpret.
+    tui_grid raw;
+    raw.resize(2, 10);
+    raw.put(0, 0, std::string("a\x01") + "b\x7f" + "c");
+    CHECK(raw.row_text(0) == "a?b?c");
+}
+
 // One span row { s, e, c } for the hints["spans"] array.
 static madc::value span_row(long s, long e, const char *colour)
 {
