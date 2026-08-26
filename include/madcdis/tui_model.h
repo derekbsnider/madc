@@ -36,6 +36,7 @@
 // a plain object confined to the thread that composes and applies keys;
 // two models never share state.
 
+#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -294,9 +295,9 @@ inline std::vector<size_t> tui_dirty_rows(const tui_grid &prev,
 // FNV-1a over a row's cells (glyph + attribute bytes) — the O(rows*cols)
 // prefilter that keeps tui_diff_plan's offset scan at O(rows^2) hash
 // compares; equality is always confirmed by tui_rows_equal on a hit.
-inline unsigned long tui_row_hash(const tui_grid &g, size_t r)
+inline uint64_t tui_row_hash(const tui_grid &g, size_t r)
 {
-    unsigned long h = 1469598103934665603UL;
+    uint64_t h = 1469598103934665603ULL;	// 64-bit even on LLP64
     for ( size_t c = 0; c < g.cols; ++c )
     {
 	const tui_cell &cell = g.at(r, c);
@@ -305,7 +306,7 @@ inline unsigned long tui_row_hash(const tui_grid &g, size_t r)
 	for ( int i = 0; i < 4; ++i )
 	{
 	    h ^= bytes[i];
-	    h *= 1099511628211UL;
+	    h *= 1099511628211ULL;
 	}
     }
     return h;
@@ -354,7 +355,7 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
     std::vector<bool> is_dirty(next.rows, false);
     for ( size_t i = 0; i < plan.spans.size(); ++i )
 	is_dirty[plan.spans[i].row] = true;
-    std::vector<unsigned long> ph(next.rows), nh(next.rows);
+    std::vector<uint64_t> ph(next.rows), nh(next.rows);
     for ( size_t r = 0; r < next.rows; ++r )
     {
 	ph[r] = tui_row_hash(prev, r);
