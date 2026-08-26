@@ -49,6 +49,12 @@ void __madc_task_join_all(void);
 // Live spawned-but-unfinished task count (diagnostics and tests).
 long __madc_task_live(void);
 
+// Ready-queue length: tasks runnable RIGHT NOW (live minus parked minus
+// running). The cooperative event loop's poll-or-block decision — a parked
+// task must not busy-spin the loop (it is woken by an unpark, never by a
+// poll). O(queue length); the queue is short by construction.
+long __madc_task_runnable(void);
+
 // Park/unpark — the blocking primitive channels (and every later blocking
 // verb) are built on. `current` returns the running task's opaque handle
 // (adopting the calling flow as the main task on first use). `park` takes
