@@ -129,6 +129,27 @@ int main()
   the earliest deadline whenever only sleepers remain — timed tests run
   instantly and deterministically (`tests/testgosleep.mad` pins the
   order; `tests/unit/test_rt_vtime.cpp` pins the jump).
+- **`chan_readable(channel)` (MT-4b)** — register a BYTE endpoint
+  (`madc::channel` — `exec://`, process pipes) as a select case: the
+  returned handle fires in `chan_select` when a `read`/`readline` on
+  that channel would make progress NOW (data, or the one EOF/error
+  observation the read surfaces). A fired byte case carries `out =
+  null` — the script reads from the channel object it holds. A DEAD
+  endpoint (EOF fully drained, or failed) disables exactly like a
+  closed-and-drained value channel, so `-1` still terminates mixed
+  fan-ins. Register once and reuse the handle; the channel object must
+  outlive it. Channels with no waitable read side (memory, file — their
+  reads never block) are refused loud. "Recv from a task channel OR
+  readline from `exec://sort`" is ONE wait
+  (`tests/testgoselectio.mad` pins a phased deterministic schedule).
+- **Byte reads park, not block (MT-4b)**: when tasks are live, a
+  `madc::channel` read/readline that would block parks on the fd
+  through the scheduler's io-wait seat instead of stalling every task
+  under it; solo programs keep the plain blocking read (zero
+  overhead). The direct probes on the object: `poll_state()` (`1` =
+  progress now, `0` = would wait, `-1` = dead), `wait_readable()`
+  (park until progress or dead), `read_wait_handle()` (the raw fd for
+  event-loop plumbing).
 - **The future idiom** is a capacity-1 channel: spawn the worker, have
   it send its result, `chan_recv` where you need it. The `await`
   spelling arrives with MT-5's keywords.

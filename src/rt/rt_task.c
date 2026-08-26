@@ -47,6 +47,9 @@ typedef struct madc_task {
 	struct madc_task *qnext;   // ready-queue link
 	struct madc_task *tnext;   // timer-list link (deadline ascending)
 	long long deadline;        // ms on the time source; timer list only
+	int queued;                // on the ready queue (enqueue is idempotent:
+				   // a task queued twice RUNS twice — and the
+				   // blind relink would truncate the queue)
 	void (*fn)(void *);
 	void *arg;
 	unsigned char exc[MADC_TASK_EXC_BYTES];
@@ -92,6 +95,10 @@ static int task_trace_on(void)
 
 static void task_enqueue(madc_task *t)
 {
+	if (t->queued)
+		return;	// idempotent: two io events (or an io event racing a
+			// close wake) may both try to wake one task per round
+	t->queued = 1;
 	t->qnext = NULL;
 	if (g_ready_tail)
 		g_ready_tail->qnext = t;
@@ -108,6 +115,7 @@ static madc_task *task_dequeue(void)
 		if (!g_ready_head)
 			g_ready_tail = NULL;
 		t->qnext = NULL;
+		t->queued = 0;
 	}
 	return t;
 }
@@ -207,12 +215,19 @@ static void task_reap(void)
 	g_reap = NULL;
 }
 
+// The io-wait seat (MT-4b): NULL until an io layer installs its hook — the
+// scheduler stays fd-blind (the __madc_task_join_hook precedent). Contract
+// in rt_task.h.
+int (*__madc_task_io_wait_hook)(long long timeout_ms);
+
 // THE scheduling decision (MT-4): fire due timers, take the ready head, and
-// when ONLY timer-parked tasks exist, wait on the time source — the virtual
-// clock JUMPS to the earliest deadline, the real one sleeps to it. NULL
-// means genuine deadlock territory: nothing runnable AND no timer pending
-// (the caller owns its own message/fallback). Every "pick next" site routes
-// here so a sleeper can never be starved or misread as a deadlock.
+// when ONLY parked tasks exist, wait on whatever can wake one — the io hook
+// (fd readiness) bounded by the earliest timer deadline, else the time
+// source alone (the virtual clock JUMPS to the deadline, the real one
+// sleeps to it). NULL means genuine deadlock territory: nothing runnable,
+// no timer pending, no io waiter registered (the caller owns its own
+// message/fallback). Every "pick next" site routes here so a sleeper or an
+// io waiter can never be starved or misread as a deadlock.
 static madc_task *task_next_or_wait(void)
 {
 	for (;;) {
@@ -220,15 +235,35 @@ static madc_task *task_next_or_wait(void)
 		madc_task *next = task_dequeue();
 		if (next)
 			return next;
+		// Timeout for the io wait: block forever with no timers;
+		// probe only under virtual time (the jump owns the advance).
+		long long tmo = -1;
+		if (g_timer_head) {
+			if (vtime_on()) {
+				tmo = 0;
+			} else {
+				tmo = g_timer_head->deadline - time_now_ms();
+				if (tmo < 0)
+					tmo = 0;
+			}
+		}
+		int (*io)(long long) = __madc_task_io_wait_hook;
+		int fired = io ? io(tmo) : -1;
+		if (fired > 0)
+			continue;	// the io layer enqueued a waiter
+		if (fired == 0 && !g_timer_head)
+			continue;	// blocking wait woke empty (EINTR)
 		if (!g_timer_head)
-			return NULL;
+			return NULL;	// no io waiters, no timers: deadlock
 		if (vtime_on()) {
 			g_vclock_ms = g_timer_head->deadline;
 			TASK_TRACE("[task] vclock -> %lld\n", g_vclock_ms);
-		} else {
-			time_real_sleep_ms(g_timer_head->deadline
-					   - time_now_ms());
+		} else if (fired < 0) {
+			// No io waiters took the wait — sleep it ourselves.
+			time_real_sleep_ms(tmo);
 		}
+		// fired == 0 with a timer pending: the io wait consumed the
+		// timeout; the loop head fires the now-due deadline.
 	}
 }
 

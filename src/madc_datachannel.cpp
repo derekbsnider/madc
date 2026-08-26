@@ -267,6 +267,17 @@ SeekableDataChannel *seekable_surface(DataChannel *channel)
 	return dynamic_cast<SeekableDataChannel *>(channel);
 }
 
+PollableDataChannel *pollable_surface(DataChannel *channel)
+{
+	if ( !channel )
+		return nullptr;
+	PollableDataChannel *pollable =
+		dynamic_cast<PollableDataChannel *>(channel);
+	if ( !pollable || pollable->read_poll_handle() < 0 )
+		return nullptr;
+	return pollable;
+}
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err)
 {

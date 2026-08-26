@@ -77,6 +77,19 @@ void __madc_task_unpark(void *task);
 // scheduling decision (a fair yield to equal-deadline sleepers).
 void __madc_task_sleep_ms(long long ms);
 
+// The io-wait seat (MT-4b): the scheduler stays fd-BLIND — an io layer
+// (src/madc_task_chan.cpp's taskio) installs this hook, and
+// task_next_or_wait calls it whenever nothing is runnable. Contract:
+//   return -1  = no io waiters registered (the hook did NOT wait);
+//   return  0  = waited up to timeout_ms (-1 = block until an event;
+//                0 = probe) and enqueued nothing (timeout or EINTR);
+//   return >0  = enqueued that many tasks (via __madc_task_unpark).
+// A hook that returns 0 without having waited ~timeout_ms busy-spins the
+// scheduler — it must actually wait. Under MADC_TASK_VTIME=1 with virtual
+// timers pending the hook only gets zero-timeout probes (the clock jumps
+// deadlines; io readiness is checked opportunistically at each decision).
+extern int (*__madc_task_io_wait_hook)(long long timeout_ms);
+
 // The ledger-safe join point (MT-2b, src/rt/rt_task_join.c): every
 // --std=madc main's emitted wrapper calls this at MAIN'S END. It dispatches
 // through the hook, which THIS runtime installs at init (first spawn) —

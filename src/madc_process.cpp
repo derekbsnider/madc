@@ -91,7 +91,7 @@ bool make_cloexec_pipe(int fds[2], error *err)
 }
 #endif // !_WIN32
 
-class ProcessPipeChannel : public DataChannel
+class ProcessPipeChannel : public DataChannel, public PollableDataChannel
 {
 public:
 	ProcessPipeChannel(const std::string &channel_name, bool readable, bool writable)
@@ -167,6 +167,11 @@ public:
 	}
 
 	void close() override { close_fd(fd_); }
+
+	intptr_t read_poll_handle() const override
+	{
+		return (readable_ && fd_ >= 0) ? (intptr_t)fd_ : (intptr_t)-1;
+	}
 
 private:
 	std::string name_;
@@ -958,7 +963,7 @@ namespace {
 // exec:// as a registry channel: write -> child stdin, read -> child stdout.
 // The child's stderr stays on the parent's (inherit_stderr) so an undrained
 // stderr pipe can never block a chatty child. Never seekable.
-class ExecDataChannel : public DataChannel
+class ExecDataChannel : public DataChannel, public PollableDataChannel
 {
 public:
 	explicit ExecDataChannel(std::unique_ptr<Process> process)
@@ -1026,6 +1031,16 @@ public:
 		process_->stdout_channel().close_read();
 		process_->wait();
 		process_.reset();
+	}
+
+	// The waitable READ side is the child's stdout pipe.
+	intptr_t read_poll_handle() const override
+	{
+		if ( !process_ )
+			return (intptr_t)-1;
+		PollableDataChannel *pollable =
+			pollable_surface(&process_->stdout_channel());
+		return pollable ? pollable->read_poll_handle() : (intptr_t)-1;
 	}
 
 private:

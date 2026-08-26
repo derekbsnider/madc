@@ -1,4 +1,11 @@
-/* madc_task_chan.cpp — value channels between cooperative tasks (MT-2).
+/* madc_task_chan.cpp — the cooperative waitables: value channels (MT-2),
+ * select + byte-endpoint readiness (MT-4/4b), and the time/drain verbs.
+ *
+ * ONE file on purpose: the select discipline (SelectGroup / first-fire
+ * claim / husk skip / wake-once / eager removal) spans value-channel
+ * waiters AND io waiters — splitting them would put one discipline in two
+ * files. The scheduler (src/rt/rt_task.c) stays both channel- and fd-blind:
+ * it sees park/unpark and the __madc_task_io_wait_hook this file installs.
  *
  * The Go-shaped synchronization primitive over the MT-1 substrate: a queue
  * of madc::value with blocking send/recv that PARK the running task
@@ -36,12 +43,25 @@
  */
 
 #include <deque>
+#include <limits.h>
 #include <map>
 #include <stdint.h>
 #include <string.h>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <windows.h>
+#include <io.h>
+#else
+#include <poll.h>
+#endif
+
 #include "libmadc/value.h"
+#include "madcdis/channel.h"
+#include "madc_task_io.h"
 #include "rt/rt_task.h"
 #include "rt/rt_except.h"
 
@@ -75,8 +95,9 @@ struct SelectGroup {
 	bool woken = false;
 };
 
-// Wake a recv waiter exactly once (see SelectGroup::woken). Plain waiters
-// (group NULL) park once and are popped once — always unpark.
+// Wake a recv waiter exactly once (see SelectGroup::woken) WITHOUT firing —
+// close's verb: the woken selector rescans instead of returning this case.
+// Plain waiters (group NULL) park once and are popped once — always unpark.
 void wake_recv_waiter(ChanWaiter *w)
 {
 	if (w->group) {
@@ -87,6 +108,148 @@ void wake_recv_waiter(ChanWaiter *w)
 	__madc_task_unpark(w->task);
 }
 
+// FIRE one case: claim the group and wake its task exactly once — THE one
+// claim+wake owner for BOTH waiter kinds (value-channel delivery and io
+// readiness). The caller has already husk-filtered (group->fired_index < 0
+// on entry); a group woken earlier by a close still gets the claim but not
+// a second enqueue. Plain waiters (group NULL) just unpark. Returns whether
+// a task was enqueued.
+bool select_fire(SelectGroup *group, int64_t index, void *task)
+{
+	if (group) {
+		group->fired_index = index;
+		if (group->woken)
+			return false;
+		group->woken = true;
+	}
+	__madc_task_unpark(task);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// taskio (MT-4b) — the io-wait seat's registry + hook. Waiter records live
+// on the parked task's stack exactly like ChanWaiter, share the SelectGroup
+// discipline (first fire claims fired_index; the group's wake-once guard
+// spans BOTH waiter kinds), and are eagerly unregistered by their owner on
+// resume. Handles are CRT fds on every platform (ProcessPipeChannel).
+// ---------------------------------------------------------------------------
+
+struct IoWaiter {
+	intptr_t handle = -1;     // -1 = never registered (select's dead cases)
+	void *task = 0;
+	SelectGroup *group = 0;   // NULL = plain wait_readable
+	int64_t index = 0;
+	bool fired = false;
+	IoWaiter *next = 0;
+};
+
+IoWaiter *g_io_head;
+
+// Zero-timeout "read would make progress" probe: data, EOF, or a surfaced
+// error all count (POLLHUP/POLLERR — the read reports them; the waiter must
+// wake, not hang).
+bool io_probe_readable(intptr_t handle)
+{
+#if defined(_WIN32)
+	// CRT fd -> pipe HANDLE; PeekNamedPipe failing means the pipe ended
+	// (EOF/broken) — that IS readable progress (the read surfaces it).
+	HANDLE h = (HANDLE)_get_osfhandle((int)handle);
+	if (h == INVALID_HANDLE_VALUE)
+		return true;
+	DWORD avail = 0;
+	if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL))
+		return true;
+	return avail > 0;
+#else
+	struct pollfd p;
+	p.fd = (int)handle;
+	p.events = POLLIN;
+	p.revents = 0;
+	if (poll(&p, 1, 0) <= 0)
+		return false;
+	return (p.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+#endif
+}
+
+// Fire one io waiter: husk-filter, then the shared claim+wake discipline
+// (select_fire — one owner for both waiter kinds).
+bool io_fire_waiter(IoWaiter *w)
+{
+	if (w->fired)
+		return false;
+	if (w->group && w->group->fired_index >= 0)
+		return false;	// husk: its select already fired
+	w->fired = true;
+	return select_fire(w->group, w->index, w->task);
+}
+
+// The scheduler's io wait (rt_task.h contract): -1 = no waiters (did not
+// wait); 0 = waited up to timeout_ms, nothing fired; >0 = tasks enqueued.
+int io_wait_hook(long long timeout_ms)
+{
+	if (!g_io_head)
+		return -1;
+	int woke = 0;
+#if defined(_WIN32)
+	// Cheap-blocking arm: anonymous pipes are not waitable objects, so
+	// probe PeekNamedPipe on a 1ms cadence bounded by real elapsed time.
+	long long start = (long long)GetTickCount64();
+	for (;;) {
+		for (IoWaiter *w = g_io_head; w; w = w->next)
+			if (!w->fired && io_probe_readable(w->handle))
+				woke += io_fire_waiter(w) ? 1 : 0;
+		if (woke || timeout_ms == 0)
+			return woke;
+		if (timeout_ms > 0
+		    && (long long)GetTickCount64() - start >= timeout_ms)
+			return 0;
+		Sleep(1);
+	}
+#else
+	int n = 0;
+	for (IoWaiter *w = g_io_head; w; w = w->next)
+		n++;
+	std::vector<struct pollfd> fds((size_t)n);
+	std::vector<IoWaiter *> ws((size_t)n);
+	int i = 0;
+	for (IoWaiter *w = g_io_head; w; w = w->next, i++) {
+		fds[(size_t)i].fd = (int)w->handle;
+		fds[(size_t)i].events = POLLIN;
+		fds[(size_t)i].revents = 0;
+		ws[(size_t)i] = w;
+	}
+	int tmo = timeout_ms < 0 ? -1
+		: timeout_ms > (long long)INT_MAX ? INT_MAX : (int)timeout_ms;
+	int r = poll(fds.data(), (nfds_t)n, tmo);
+	if (r <= 0)
+		return 0;	// timeout, or EINTR (spurious; caller loops)
+	for (i = 0; i < n; i++) {
+		if (!(fds[(size_t)i].revents & (POLLIN | POLLHUP | POLLERR)))
+			continue;
+		woke += io_fire_waiter(ws[(size_t)i]) ? 1 : 0;
+	}
+	return woke;
+#endif
+}
+
+void io_register(IoWaiter *w)
+{
+	__madc_task_io_wait_hook = io_wait_hook;	// installed once, stays
+	w->next = g_io_head;
+	g_io_head = w;
+}
+
+void io_unregister(IoWaiter *w)
+{
+	for (IoWaiter **pp = &g_io_head; *pp; pp = &(*pp)->next) {
+		if (*pp == w) {
+			*pp = w->next;
+			w->next = 0;
+			return;
+		}
+	}
+}
+
 struct MadcChan {
 	std::deque<madc::value> q;
 	long long cap = 0;
@@ -95,7 +258,15 @@ struct MadcChan {
 	std::deque<ChanWaiter *> send_waiters;
 };
 
-std::map<int64_t, MadcChan *> g_chans;
+// One handle space, two case kinds (MT-4b): a value channel, or a byte
+// endpoint (madc::channel) registered by chan_readable whose READ readiness
+// selects beside the value cases. Exactly one pointer is set per entry.
+struct ChanEntry {
+	MadcChan *chan = 0;
+	madc::channel *bytes = 0;
+};
+
+std::map<int64_t, ChanEntry> g_chans;
 int64_t g_next_chan = 1;
 
 // Pop the next DELIVERABLE recv waiter. A select waiter whose group already
@@ -147,31 +318,66 @@ int chan_poll_recv(MadcChan *c, madc::value *out)
 	return c->closed ? -1 : 0;
 }
 
+// Immortal literals per rt_except.h's cstr contract — one message per
+// public, not a formatted (ring-lifetime) string. A byte-endpoint handle
+// passed to a value-channel verb throws the same message: it IS a bad
+// value-channel handle there.
+void throw_bad_handle(const char *who)
+{
+	if (who && strcmp(who, "send") == 0)
+		__madc_throw_cstr("chan_send: bad channel handle");
+	else if (who && strcmp(who, "recv") == 0)
+		__madc_throw_cstr("chan_recv: bad channel handle");
+	else if (who && strcmp(who, "close") == 0)
+		__madc_throw_cstr("chan_close: bad channel handle");
+	else if (who && strcmp(who, "select") == 0)
+		__madc_throw_cstr("chan_select: bad channel handle");
+	else if (who && strcmp(who, "try_recv") == 0)
+		__madc_throw_cstr("chan_try_recv: bad channel handle");
+	else
+		__madc_throw_cstr("chan_len: bad channel handle");
+}
+
+ChanEntry &entry_of(int64_t h, const char *who)
+{
+	std::map<int64_t, ChanEntry>::iterator it = g_chans.find(h);
+	if (it == g_chans.end())
+		throw_bad_handle(who);
+	return it->second;
+}
+
 MadcChan *chan_of(int64_t h, const char *who)
 {
-	std::map<int64_t, MadcChan *>::iterator it = g_chans.find(h);
-	if (it == g_chans.end()) {
-		// Immortal literals per rt_except.h's cstr contract — one
-		// message per public, not a formatted (ring-lifetime) string.
-		if (who && strcmp(who, "send") == 0)
-			__madc_throw_cstr("chan_send: bad channel handle");
-		else if (who && strcmp(who, "recv") == 0)
-			__madc_throw_cstr("chan_recv: bad channel handle");
-		else if (who && strcmp(who, "close") == 0)
-			__madc_throw_cstr("chan_close: bad channel handle");
-		else if (who && strcmp(who, "select") == 0)
-			__madc_throw_cstr("chan_select: bad channel handle");
-		else if (who && strcmp(who, "try_recv") == 0)
-			__madc_throw_cstr("chan_try_recv: bad channel handle");
-		else
-			__madc_throw_cstr("chan_len: bad channel handle");
-	}
-	return it->second;
+	ChanEntry &e = entry_of(h, who);
+	if (!e.chan)
+		throw_bad_handle(who);
+	return e.chan;
 }
 
 } // namespace
 
 namespace madc {
+namespace taskio {
+
+bool poll_readable(intptr_t handle)
+{
+	return io_probe_readable(handle);
+}
+
+void wait_readable(intptr_t handle)
+{
+	if (io_probe_readable(handle))
+		return;
+	IoWaiter me;
+	me.handle = handle;
+	me.task = __madc_task_current();
+	io_register(&me);
+	__madc_task_park();
+	// Eager removal — no registered pointer outlives this frame.
+	io_unregister(&me);
+}
+
+} // namespace taskio
 
 int64_t chan_make(int64_t capacity)
 {
@@ -179,8 +385,10 @@ int64_t chan_make(int64_t capacity)
 		__madc_throw_cstr("chan_make: negative capacity");
 	MadcChan *c = new MadcChan();
 	c->cap = capacity;
+	ChanEntry e;
+	e.chan = c;
 	int64_t h = g_next_chan++;
-	g_chans[h] = c;
+	g_chans[h] = e;
 	return h;
 }
 
@@ -192,9 +400,7 @@ bool chan_send(int64_t h, value &v)
 	if (ChanWaiter *w = pop_recv_waiter(c)) {
 		*w->slot = v;
 		w->ok = true;
-		if (w->group)
-			w->group->fired_index = w->index;	// select won
-		wake_recv_waiter(w);
+		select_fire(w->group, w->index, w->task);	// select won
 		return true;
 	}
 	if ((long long)c->q.size() < c->cap) {
@@ -297,52 +503,118 @@ int64_t chan_select(value &out, value &chans)
 	size_t n = hs.size();
 	if (n == 0)
 		__madc_throw_cstr("chan_select: empty case list");
-	std::vector<MadcChan *> cs(n);
+	std::vector<ChanEntry> es(n);
 	for (size_t i = 0; i < n; i++)
-		cs[i] = chan_of(hs[i].as_integer(), "select");
+		es[i] = entry_of(hs[i].as_integer(), "select");
 	for (;;) {
 		// Ready scan, lowest index first — buffered values on a
 		// closed channel still drain here (only closed-AND-drained
-		// disables a case).
+		// disables a case). A byte case fires with out = null when
+		// its read would make progress NOW (data, or an EOF/error
+		// the read surfaces once); DEAD (drained EOF or failed)
+		// disables it like a closed-and-drained value channel.
 		bool any_open = false;
 		for (size_t i = 0; i < n; i++) {
-			int r = chan_poll_recv(cs[i], &out);
-			if (r == 1)
-				return (int64_t)i;
-			if (r == 0)
-				any_open = true;
+			if (es[i].chan) {
+				int r = chan_poll_recv(es[i].chan, &out);
+				if (r == 1)
+					return (int64_t)i;
+				if (r == 0)
+					any_open = true;
+			} else {
+				int64_t r = es[i].bytes->poll_state();
+				if (r == 1) {
+					out = value();
+					return (int64_t)i;
+				}
+				if (r == 0)
+					any_open = true;
+			}
 		}
 		if (!any_open) {
 			out = value();
 			return -1;
 		}
-		// Park on every still-open case; the first delivery claims
-		// the group and fills `out` directly.
+		// Park on every still-open case; the first delivery (a value
+		// arriving, or an fd turning readable) claims the group.
 		SelectGroup grp;
 		std::vector<ChanWaiter> ws(n);
+		std::vector<IoWaiter> ios(n);
 		for (size_t i = 0; i < n; i++) {
-			if (cs[i]->closed)
-				continue;	// dead case: never registered
-			ws[i].task = __madc_task_current();
-			ws[i].slot = &out;
-			ws[i].group = &grp;
-			ws[i].index = (int64_t)i;
-			cs[i]->recv_waiters.push_back(&ws[i]);
+			if (es[i].chan) {
+				if (es[i].chan->closed)
+					continue;   // dead: never registered
+				ws[i].task = __madc_task_current();
+				ws[i].slot = &out;
+				ws[i].group = &grp;
+				ws[i].index = (int64_t)i;
+				es[i].chan->recv_waiters.push_back(&ws[i]);
+			} else {
+				// A DEAD endpoint's fd is still readable
+				// (drained EOF = POLLHUP) — registering it
+				// would fire a dead case. poll_state() is
+				// the dead test, NOT the raw handle. A case
+				// that turned ready since the scan registers
+				// too: the hook fires it immediately.
+				if (es[i].bytes->poll_state() < 0)
+					continue;
+				intptr_t h = (intptr_t)
+					es[i].bytes->read_wait_handle();
+				if (h < 0)
+					continue;   // closed under us: dead
+				ios[i].handle = h;
+				ios[i].task = __madc_task_current();
+				ios[i].group = &grp;
+				ios[i].index = (int64_t)i;
+				io_register(&ios[i]);
+			}
 		}
 		__madc_task_park();
-		// Eager removal FIRST: no case channel may keep a pointer
-		// into this (about-to-unwind) frame past this line.
+		// Eager removal FIRST: no case channel and no io registry may
+		// keep a pointer into this (about-to-unwind) frame past here.
 		for (size_t i = 0; i < n; i++) {
-			std::deque<ChanWaiter *> &rq = cs[i]->recv_waiters;
-			for (std::deque<ChanWaiter *>::iterator it = rq.begin();
-			     it != rq.end(); )
-				it = (*it == &ws[i]) ? rq.erase(it) : it + 1;
+			if (es[i].chan) {
+				std::deque<ChanWaiter *> &rq =
+					es[i].chan->recv_waiters;
+				for (std::deque<ChanWaiter *>::iterator it =
+					     rq.begin(); it != rq.end(); )
+					it = (*it == &ws[i])
+						? rq.erase(it) : it + 1;
+			} else if (ios[i].handle >= 0) {
+				io_unregister(&ios[i]);
+			}
 		}
-		if (grp.fired_index >= 0)
+		if (grp.fired_index >= 0) {
+			// A fired byte case reports readiness, never a value
+			// (the caller holds the channel object and reads it).
+			if (es[(size_t)grp.fired_index].bytes)
+				out = value();
 			return grp.fired_index;
+		}
 		// Woken by a close: rescan (a buffer may have filled
 		// meanwhile; all-dead returns -1 above).
 	}
+}
+
+// Register a byte endpoint (madc::channel) as a select case (MT-4b): the
+// returned handle FIRES in chan_select when the endpoint's read would make
+// progress — the caller then reads from the channel object it holds (a
+// fired byte case carries out = null). Dead endpoints (EOF drained, or
+// failed) disable exactly like closed-and-drained value channels. Register
+// once and reuse the handle; the channel object must outlive it (entries
+// are never freed — the MT-2 ownership note applies). Throws when the
+// channel has no waitable read side (memory/file channels never block, so
+// they have nothing to select on).
+int64_t chan_readable(channel &c)
+{
+	if (c.read_wait_handle() < 0)
+		__madc_throw_cstr("chan_readable: channel is not waitable"
+				  " (no readable poll handle)");
+	ChanEntry e;
+	e.bytes = &c;
+	int64_t h = g_next_chan++;
+	g_chans[h] = e;
+	return h;
 }
 
 // The interim structured-join verb (until MT-3 scopes): drain the task
