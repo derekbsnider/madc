@@ -39596,6 +39596,14 @@ static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
     TokenBase *saved_prv = pgm.prevToken();
     pgm.setTokenContext(NULL, NULL);
     TokenBase *parsed = NULL;
+    // Failure here is BY DESIGN benign (unstored member -> value-init), so
+    // the attempt must not RENDER: throwbuf::sync prints before the catch
+    // sees the throw, and the forest pack gate counts rendered errors — the
+    // parseExpression '{'-head belt pushed the pack count over baseline on
+    // concurrence.h's `= PTHREAD_MUTEX_INITIALIZER` NSDMIs (a brace-macro
+    // `=` form this scalar applier never stores anyway; re-spelling it
+    // against the MEMBER's type is the named future seat).
+    DiagnosticRenderMute mute;
     try { parsed = pgm.parseExpression(pgm.nextToken(), true); }
     catch ( ... ) { parsed = NULL; }
     pgm.setTokenContext(saved_cur, saved_prv);
