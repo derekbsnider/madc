@@ -18719,6 +18719,11 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	} else {
 		ret_type = type_list(ret_dd);
 	}
+	// C internal linkage: the prototype must agree with the N_STATIC
+	// definition ("static declaration follows non-static" otherwise).
+	// Kept in lock-step with func_def.
+	if (fd->internal_linkage)
+		append(ret_type, simple(N_STATIC));
 	node_t share = node1(N_SHARE, ret_type);
 
 	// Parameters. A variadic function carries a trailing synthetic param
@@ -26126,6 +26131,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (fd->is_linkonce() && tf->var.name != "main")
 		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
 
+	// C internal linkage (`static` file-scope function): N_STATIC makes
+	// c2mir bind the MIR item non-exported (STB_LOCAL in the object
+	// capture — the tu_init_symbol precedent), so same-named statics in
+	// two TUs or two AOT-ledger modules never collide at link.
+	if (fd->internal_linkage)
+		append(ret_type, simple(N_STATIC));
+
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
 	// vars/params its body uses (its potential_captures). We translate the body
@@ -27008,6 +27020,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	if (!prog || !fvar || !fd) return NULL;
 	if (fvar->name.empty() || fvar->name == "main") return NULL;
 	if (fd->is_multi_return() || fd->is_varargs) return NULL;
+	// A C internal-linkage (`static`) function is TU-local — not a
+	// host-callable public. Two TUs' same-named statics would otherwise
+	// merge on one weak __madc_shim_<name>, silently calling the wrong TU's
+	// copy.
+	if (fd->internal_linkage) return NULL;
 	// Function-LOCAL entities (GNU nested fns, lambdas) hoist under a
 	// local_emit_name and may take hidden capture parameters — they are
 	// not host-callable by name.
