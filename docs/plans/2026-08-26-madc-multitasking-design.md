@@ -6,7 +6,14 @@ useful for multitasking support to be an inherent part of the madc
 language, and maybe it should support both lua-style coroutines and
 golang style goroutines."
 
-Seed doc for the owner brainstorm. Constraints it must honour: the
+Seed doc for the owner brainstorm. **2026 industry recon + synthesis:
+`2026-08-26-madc-multitasking-recon.md`** — it confirms this doc's
+substrate and amends the surface (structured scopes primary,
+scope-carried cancellation, futures-as-values, deterministic test
+gates; C++26 std::execution = semantics through madc conveniences,
+never its header machinery — owner directive 2026-08-26).
+
+Constraints it must honour: the
 thread-safety law (stated contracts; shared mutation through hub/verbs),
 the vision invariants (LanguageStd-gated keywords, one IR, C11 lowering,
 no bespoke non-C paths), value-first surfaces, and the F2
