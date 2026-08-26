@@ -2,7 +2,7 @@
  "version": "0.95.2",
  "date": "2026-08-26",
  "snapshot_note": "session 123: c2mir registry page arena landed; packed Adventure -2.06% Ir with slightly lower peak heap",
- "head": "develop @ merge of feature/mt1-substrate-claude",
+ "head": "develop @ merge of feature/mt2-task-except-claude",
  "branch": "develop",
  "live_handoff_previous": {
   "session": 135,
@@ -11,8 +11,8 @@
  "live_handoff": {
   "session": 136,
   "date": "2026-08-26",
-  "branch": "develop (merges: ast5-multibuffer, charbuf-text-boundary, mt1-substrate)",
-  "head": "MT-1 cooperative tasks MERGED — go/yield on the stackful substrate (suite 1188, JIT 1164/0/0/9)",
+  "branch": "develop (merges: ast5-multibuffer, charbuf, mt1-substrate, mt2-task-except)",
+  "head": "MT-2 MERGED — value channels (madc::chan_*) + per-task try/catch + immortal ring (suite 1190, JIT 1166/0/0/9)",
   "headline": "SESSION 136 WAVE 5 — AST-5 MULTI-BUFFER DONE (design executed as banked in docs/plans/2026-08-26-madcide-ast5-multibuffer.md). ^K E = JOE edit-file: open-or-switch by path string; missing path = New File EMPTY buffer; same path returns with caret/block restored; check moved to ^K ; (OWNER REVIEW FLAGGED in CHANGELOG). Buffer table rows {doc,path,caret,mark,bend} + bufidx on the es bag; doc-scoped facts (path/modified/read_only/phandle/undo) stay on each document. switch_buffer exits views, saves/restores interaction state, recolours at once (lex_first_spans), defers the parse behind the next paint — pending_parse is now the ONE paint-before-parse mechanism (startup converted to it; run_ide's inline ensure deleted). THE CONSOLIDATION: ten .madv verb/check bodies each did entity_by_name(w,\"document\") (WRONG buffer under multi-buffer; w.madv = data loss); now ONE owner examples/texteditor/verbs/_subject.madv prepended at bind (actor adoc bag key else the singleton); GATE scripts/check-one-subject-doc.sh in fulltest (negative control verified). testmadcide grew the editfile flow (new/back-with-caret-restore/same-path). VALUE-FIRST TRAP hit and banked: a local char[] used as TEXT misclassifies at the value/format boundary (KG Gap madc_char_array_text_boundary, reducers tmp/charbuf_probe3/4.mad) — NEXT SESSION FIRST. Post-wave, owner directed the multitasking brainstorm: seed doc docs/plans/2026-08-26-madc-multitasking-design.md committed (one substrate, two surfaces, cooperative-first, channels=hub verbs); 2026 recon of goroutines/actors/async-await/Kotlin/C++26 std::execution IN PROGRESS this session.",
   "settled": [
    "the frame diff is CELL-granular (tui_diff_spans); tui_dirty_rows is its row view — never a second comparison loop",
@@ -21,8 +21,8 @@
    "EL applies only to normal-attr space tails (row_paint_end); attributed fills always repaint",
    "scripts/tui_scroll_bytes.py is the scroll-cost meter (baseline/after/joe-oracle) — rerun it whenever the paint path changes"
   ],
-  "validation": "MT-1 wave battery on final content: fulltest rc=0 (ALL gates; two caught real defects pre-merge: i64-spec-spelling on the slot spec, win64 archive gate on mingw GetCurrentFiber) + JIT 1164/0/0/9 (suite 1188 — testgo/testgoident/testgogate joined) + test_rt_task 4/4 + EXE lane spot-green on the go tests. Prior waves as recorded below.",
-  "next": "MT-2 channels + futures: value channels join the DataChannel family (blocking send/recv = park/unpark; select spans value channels AND madc::channel byte endpoints), future = one-shot channel, await/.get(); then MT-3 scopes+cancellation, MT-4 io/timers/virtual-time gates, MT-5 go/yield/await keywords via LanguageStd. MT-1 NAMED RESIDUES (docs/plans/2026-08-26-madc-multitasking-design.md slice status): SJLJ try/catch across a yield (per-task chain save/restore at switch — DO EARLY IN MT-2), ring text across a yield, -static-libmadc spawn links loud, go in late template bodies (Pass 1.9 flush), darwin ucontext at the mac lane, method/class-arg/fn-ptr spawns refused loud. Owner forks pending: stage-2 bg-parse, ^K E/^K ; rebind review. Then IDE-9e windows, --emit=madc."
+  "validation": "MT-2 wave battery on final content: fulltest rc=0 (all gates) + JIT 1166/0/0/9 (suite 1190 — testgotry + testgochan joined; both pin complete hand-computed schedules) + EXE lane spot-green on the task family + all 19 exception-family neighbors. One red was the mtime-poison trap (stale win64 rt_task.o from QNAP clock skew — purge obj/hosted-x86-64-windows, banked in memory). Prior waves as recorded below.",
+  "next": "MT-2b (named, designed in the multitasking design doc): the PRINCIPLED native join — emit main as __madc_main + a wrapper joining at MAIN'S END under STD_MADC (atexit runs after glibc TLS dtors; the immortal ring is the belt, the wrapper is the fix; blast radius = every madc-mode main's emitted shape, own wave). Then MT-3 scopes+cancellation, MT-4 select + io/timers/virtual-time gates (unify with madc::channel byte endpoints on the one loop), MT-5 go/yield/await keywords via LanguageStd. Owner forks pending: stage-2 bg-parse, ^K E/^K ; rebind review. Then IDE-9e windows, --emit=madc. MT residues: -static-libmadc spawn links loud; go in late template bodies; darwin ucontext at the mac lane; method/class-arg spawns refused; mixed-TU project spawn rides atexit until MT-2b."
  },
  "mir_fork": "RETIRED AS A DEPENDENCY (2026-08-11, ADR 0002): MIR lives IN-TREE at third_party/mir — ordinary madc source, no pin, no lockstep, no fork release. It carries native _Complex, cleanup attribute, scope-depth layout fix, <=16-byte SIMD, the Mach-O executable writer, and the ABI fixes the CIR backend depends on. Build products in obj/mir/<variant>. github.com/derekbsnider/mir = frozen historical downstream + upstream-PR transport (vnmakarov/mir is upstream; remotes: mir-upstream, mir-pr). Last standalone state = tag madc-pre-subtree-migration = v1.0-madc.0.76.0.",
  "build_status": "green",

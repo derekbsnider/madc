@@ -1,6 +1,22 @@
 # Test Status
 
-> **Current (2026-08-26, cooperative tasks MT-1 —
+> **Current (2026-08-26, MT-2 channels + task-local exceptions —
+> feature/mt2-task-except merge wave):** value channels land
+> (`madc::chan_*`, Go's contract; scheduler park/unpark; loud deadlock
+> aborts) and the SJLJ exception state switches per-task (a `try`
+> across a `yield` catches its own throw — the pre-fix build SEGFAULTS
+> on the reducer, negative-controlled). The text ring is now immortal:
+> glibc runs TLS dtors before atexit, where the native lane drains its
+> root scope — testgochan's EXE lane caught the double free
+> (gdb-backtraced to `__madc_fmt_take_cstr`). NEW tests `testgotry` +
+> `testgochan` (both pin complete hand-computed schedules, byte-exact
+> on first success; suite = 1190); all 19 exception-family neighbors
+> green. One battery red was the mtime-poison trap (stale win64
+> `rt_task.o` — clock skew; purged, banked). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1166 passed / 0 failed / 0 timed
+> out / 9 skipped**; EXE lane spot-green on the task family.
+>
+> **Previous (2026-08-26, cooperative tasks MT-1 —
 > feature/mt1-substrate merge wave):** `go f(args);` + `yield()` land
 > on the stackful cooperative substrate (`src/rt/rt_task.c`; FIFO
 > run-to-yield, deterministic; root-scope join in

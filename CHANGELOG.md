@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **Value channels + task-local try/catch (MT-2, 2026-08-26)**: the
+  synchronization primitive `go` composes with —
+  `madc::chan_make(cap)` / `chan_send` / `chan_recv` / `chan_close` /
+  `chan_len`, following Go's contract: rendezvous at capacity 0,
+  buffered at N, a blocked sender refills the slot a recv frees,
+  close drains receivers to `false`+null and makes senders throw,
+  values copied through (share by communicating). Blocking operations
+  park the task; parking the last runnable flow aborts with a message
+  — deadlocks never hang. The future idiom is a capacity-1 channel
+  (`await` spelling arrives with MT-5). Also: exception state is now
+  PER-TASK — a `try` held across a `yield()` catches its own throw
+  whatever the interleaving (previously the shared SJLJ chain routed
+  one task's throw into another's `jmp_buf` — segfault), and the text
+  ring is deliberately immortal (glibc runs TLS destructors before
+  atexit handlers, where native artifacts drain their root scope).
+  See `docs/language/tasks.md`.
+
 - **Cooperative tasks — `go` and `yield` (MT-1, 2026-08-26)**: the
   multitasking arc's first slice. `go f(args);` spawns the call as a
   cooperative task on a stackful context; `yield()` reschedules;
