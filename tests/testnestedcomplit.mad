@@ -1,0 +1,39 @@
+/* A compound literal NESTED in another compound literal's initializer, in
+ * ASSIGNMENT context (C11 6.5.2.5) — the shape madc's initializer_list
+ * lowering builds: (struct IL){ (long long *)(long long [2]){...}, N }.
+ *
+ * c2mir's check phase skipped check_initializer for BOTH literals here: the
+ * N_ASSIGN operand context is a NULL barrier on the context stack, and the
+ * owning-declaration walk treated stopping at that barrier like finding an
+ * owning N_SPEC_DECL.  An UNSIZED inner array literal's type was then never
+ * completed — it reached gen with element-sized storage at frame offset 0,
+ * so elements past [0] read garbage (a SILENT wrong answer), and the uncast
+ * form crashed gen outright.  Fixed in c2mir (the barrier now means "no
+ * owning declaration — check here"); madc's own emission also spells the
+ * array size it already knows (initializer_list_literal, cir_builder.cpp).
+ *
+ * Oracle (gcc -O0 and clang -O0): 10 32 2 / 12 34 / 11 33
+ */
+extern int printf(const char *, ...);
+
+struct IL { long long *a; unsigned long long n; };
+
+int main()
+{
+	/* assignment, cast decay spelled — the initializer_list shape */
+	struct IL il;
+	il = (struct IL){ ((long long *)(long long []){ 10LL, 32LL }), 2 };
+	printf("%lld %lld %llu\n", il.a[0], il.a[1], il.n);
+
+	/* assignment, decay unspelled (madc's front end wraps the cast) */
+	struct IL i3;
+	i3 = (struct IL){ (long long []){ 12LL, 34LL }, 2 };
+	printf("%lld %lld\n", i3.a[0], i3.a[1]);
+
+	/* declaration init — the shape that always worked, pinned against
+	 * regression from the guard change */
+	struct IL i2 = { ((long long *)(long long []){ 11LL, 33LL }), 2 };
+	printf("%lld %lld\n", i2.a[0], i2.a[1]);
+
+	return 0;
+}

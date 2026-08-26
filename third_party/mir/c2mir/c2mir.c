@@ -11153,10 +11153,21 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
          n_spec_index >= 0 && (n = VARR_GET (node_t, context_stack, n_spec_index)) != NULL
          && n->code != N_SPEC_DECL;
          n_spec_index--);
-    if (n_spec_index < (int) VARR_LENGTH (node_t, context_stack) - 1
-        && (n_spec_index < 0
-            || !get_compound_literal (VARR_GET (node_t, context_stack, n_spec_index + 1), &addr_p)
-            || addr_p))
+    /* Skip check_initializer only when an owning declaration processes this
+       literal's initializer itself (see check_decl): a found N_SPEC_DECL whose
+       initializer IS this literal (directly, n_spec_index == LENGTH-1, or
+       through a cast/addr chain that get_compound_literal recognizes, unless
+       address-taken).  A walk that stopped at a NULL context barrier (an
+       assignment operand -- see case N_ASSIGN passing a NULL context) or ran
+       off the stack found NO owning declaration, so the initializer must be
+       checked HERE: treating the barrier like a found N_SPEC_DECL left a
+       nested unsized array literal's type incomplete -- (struct IL){(long
+       long *)(long long []){10, 32}, 2} in assignment context read garbage
+       past element 0, and the uncast form crashed in gen.  */
+    if (n_spec_index < 0 || VARR_GET (node_t, context_stack, n_spec_index) == NULL
+        || (n_spec_index < (int) VARR_LENGTH (node_t, context_stack) - 1
+            && (!get_compound_literal (VARR_GET (node_t, context_stack, n_spec_index + 1), &addr_p)
+                || addr_p)))
       check_initializer (c2m_ctx, NULL, &t1, list,
                          curr_scope == top_scope || decl->decl_spec.static_p
                            || decl->decl_spec.thread_local_p,
