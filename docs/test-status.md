@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-08-26, stage-2 cooperative parse —
+> **Current (2026-08-26, MT-4a select + time —
+> feature/mt4-select-time merge wave):** `madc::chan_select`
+> (deterministic lowest-index fan-in; husk/wake-once discipline),
+> `madc::chan_try_recv` (1/0/-1), and `madc::sleep_ms` on the
+> pluggable time source (virtual under `MADC_TASK_VTIME=1` — the
+> clock jumps deadlines; `tests/unit/test_rt_vtime.cpp` pins 10
+> madc-seconds in <1s wall, deadline order). One scheduling decision
+> (task_next_or_wait) owns timers at every pick-next site. NEW tests
+> `testgosleep` + `testgoselect` — both pin complete hand-computed
+> schedules that matched byte-for-byte on first run, JIT and native
+> lanes. Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1170 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1194)
+> + EXE **1124 passed / 0 failed**.
+>
+> **Previous (2026-08-26, stage-2 cooperative parse —
 > feature/stage2-coop-parse merge wave):** the front end cooperates
 > with the task scheduler: `parse_yield_point()` at every top-level
 > decl + every ~1k lexed tokens (ambients re-bound on resume; batch

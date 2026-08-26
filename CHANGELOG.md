@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **Select + sleep on a pluggable time source (MT-4a, 2026-08-26)**:
+  `madc::chan_select(out, chans[])` — deterministic fan-in over value
+  channels (lowest-index-ready wins, documented deviation from Go's
+  randomization; closed-and-drained cases disable; `-1` + null when
+  every case is dead — the fan-in terminator), with the sudog-shaped
+  waiter discipline (first-fire group claim, husk skip, wake-once
+  guard, eager record removal). `madc::chan_try_recv` (1/0/-1) is the
+  nonblocking default-arm equivalent until MT-5's keywords.
+  `madc::sleep_ms(ms)` parks on the scheduler's TIME SOURCE — real
+  monotonic by default, VIRTUAL under `MADC_TASK_VTIME=1` (the clock
+  jumps to the earliest deadline when only sleepers remain: seconds of
+  madc-visible sleeping run in wall milliseconds, deterministically —
+  the recon's virtual-time test gate). One scheduling decision now
+  owns timers everywhere: a sleeper can neither starve behind busy
+  yielders nor read as a deadlock. Reducers `testgosleep` +
+  `testgoselect` pin complete hand-computed schedules byte-for-byte.
+
 - **Stage-2 cooperative parse — edit while it compiles (2026-08-26)**:
   the compiler's front end now cooperates with the task scheduler:
   `Program::parse_yield_point()` yields at every top-level declaration
