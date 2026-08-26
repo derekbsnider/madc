@@ -39,7 +39,6 @@ typedef struct madc_task {
 	struct madc_task *qnext;   // ready-queue link
 	void (*fn)(void *);
 	void *arg;
-	int is_main;
 #if defined(_WIN32)
 	void *fiber;               // CreateFiberEx handle (main: converted)
 #else
@@ -230,7 +229,6 @@ static void task_runtime_init(void)
 	if (g_current)
 		return;
 	memset(&g_main_task, 0, sizeof g_main_task);
-	g_main_task.is_main = 1;
 #if defined(_WIN32)
 	g_main_task.fiber = ConvertThreadToFiber(NULL);
 	if (!g_main_task.fiber)        // already a fiber (embedding host)
