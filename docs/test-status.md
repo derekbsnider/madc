@@ -1,6 +1,27 @@
 # Test Status
 
-> **Current (2026-08-26, MT-2 channels + task-local exceptions —
+> **Current (2026-08-26, MT-2b joining main wrapper + static-fn internal
+> linkage — feature/mt2b-main-join merge wave):** a spawning
+> `--std=madc` TU's main now emits as `__madc_main` behind a
+> synthesized joining wrapper — the task root scope drains at MAIN'S
+> END (before atexit/TLS teardown) identically in the JIT / `-o` /
+> `-r` / `-static-libmadc` lanes; the join callee is the NEW
+> ledger-safe dispatcher `rt_task_join.c`. Pure programs keep their
+> unwrapped runtime-free main (the battery's `test_native_shared`
+> purity probe caught the first cut and forced the parse-time
+> `_uses_go_spawn` gate). FOUND + FIXED in its own commit: madc dropped
+> C internal linkage from every file-scope `static` function (ld
+> "multiple definition" on two-object links; the ledger's
+> rt_format+rt_dump static-inline pair fataled any `println` program
+> under `-static-libmadc` — pre-existing, baseline reproduces). NEW
+> tests `testgojoin` (argv forwarding + the drain schedule, all lanes)
+> + `testprojectstaticfn` (gcc oracle a=2 b=300; nm STB_LOCAL); NEW
+> gate: `forest_ledger_gate.sh` leg 5b names the exact pre-fix fatal.
+> Battery on final content: fulltest rc=0 (all gates) + JIT **1168
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1192) + EXE
+> **1122 passed / 0 failed**.
+>
+> **Previous (2026-08-26, MT-2 channels + task-local exceptions —
 > feature/mt2-task-except merge wave):** value channels land
 > (`madc::chan_*`, Go's contract; scheduler park/unpark; loud deadlock
 > aborts) and the SJLJ exception state switches per-task (a `try`
