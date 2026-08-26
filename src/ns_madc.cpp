@@ -230,6 +230,13 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 	{ madc_parse_enclosing(&out, handle, line, column); return out; }
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
+value &lex_spans(value &out, const char *text, const char *filename)
+	{
+	    std::string src = text ? text : "";
+	    std::string disp = filename ? filename : "";
+	    madc_lex_spans(&out, &src, &disp);
+	    return out;
+	}
 int64_t project_open(const char *manifest)
 	{ std::string m = manifest ? manifest : ""; return madc_project_open(&m); }
 value &project_tus(value &out, int64_t handle)

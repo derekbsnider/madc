@@ -1,0 +1,44 @@
+// madc::lex_spans (staged parsing stage 1): lexical classification from
+// the buffer text ONLY — no includes ingested (the #include line is
+// consumed inertly), no parse, no handle. An unknown macro invocation
+// stays a plain identifier (no expansion, no fantasy coordinates); every
+// span fits its physical line (the source text is the oracle).
+int main()
+{
+    var src = "#include <stdio.h>\n// lead comment\nlong f(void)\n{\n    return UNDEFINED_MACRO( 42 ); /* tail */\n}\nconst char *s = \"hi\";\n";
+    value rows;
+    madc::lex_spans(rows, src.c_str(), "lex.c");
+    println("rows: {}", php::count(rows));
+
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    long overruns = 0;
+    long maxline = 0;
+    long keywords = 0;
+    long numbers = 0;
+    long strings = 0;
+    long comments = 0;
+    for ( value r : rows )
+    {
+	long ln = r["line"].as_integer();
+	if ( ln > maxline )
+	    maxline = ln;
+	value lv = lines[ln - 1];
+	if ( r["column"].as_integer() + r["length"].as_integer()
+	     > lv.length() )
+	    overruns = overruns + 1;
+	if ( r["class"] == "keyword" )
+	    keywords = keywords + 1;
+	if ( r["class"] == "number" )
+	    numbers = numbers + 1;
+	if ( r["class"] == "string" )
+	    strings = strings + 1;
+	if ( r["class"] == "comment" )
+	    comments = comments + 1;
+    }
+    println("overruns: {}", overruns);
+    println("all lines in buffer: {}", maxline <= 7 ? 1 : 0);
+    println("keywords>0: {} numbers: {} strings: {} comments: {}",
+	    keywords > 0 ? 1 : 0, numbers, strings, comments);
+    return 0;
+}
