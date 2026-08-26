@@ -263,9 +263,16 @@ static void task_runtime_init(void)
 	}
 #endif
 	g_current = &g_main_task;
-	// Native artifacts join the root scope at process exit; the JIT host
-	// calls __madc_task_join_all right after main instead (join is
-	// idempotent, so the atexit copy then no-ops).
+	// The PRINCIPLED join point (MT-2b): every --std=madc main's emitted
+	// wrapper calls __madc_task_join_point() at MAIN'S END — before any
+	// teardown (glibc runs TLS destructors before the atexit list). The
+	// dispatcher lives on the AOT ledger (rt_task_join.c); installing the
+	// hook here arms it only in programs that actually spawned.
+	__madc_task_join_hook = __madc_task_join_all;
+	// Belts, both idempotent no-ops after the wrapper's join: the JIT
+	// host joins right after main returns, and this atexit copy covers
+	// artifacts whose main predates the wrapper (strict-mode mains in
+	// mixed-TU projects spawning through a madc TU).
 	atexit(__madc_task_join_all);
 }
 

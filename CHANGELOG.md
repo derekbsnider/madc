@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **The joining main wrapper (MT-2b, 2026-08-26)**: in a `--std=madc`
+  TU that spawns, the user's `main` emits as `__madc_main` behind a
+  synthesized `int main(...)` wrapper (parameters mirrored, arguments
+  forwarded)
+  that drains the task root scope BEFORE returning — the join now runs
+  at MAIN'S END, before any teardown (atexit handlers, TLS/static
+  destructors), identically in the JIT, `-o` native, `-r` object, and
+  `-static-libmadc` lanes. The join callee is a ledger-safe dispatcher
+  (`src/rt/rt_task_join.c`): a program that never spawned no-ops
+  through a NULL hook, so static images link without the context
+  backend. Strict-mode mains are untouched (byte-identical emission).
+  `tests/testgojoin.mad` pins the drain schedule + argv forwarding.
+
+- **C internal linkage for `static` functions (2026-08-26)**: madc
+  dropped `static` from every file-scope function — all of them
+  emitted with external linkage. Two TUs with same-named statics
+  failed the native `.o` link ("multiple definition"), and the AOT
+  ledger's rt_format+rt_dump pair (both carrying `rt_dump.h`'s
+  static-inline helpers) made any `println` program under
+  `-static-libmadc` die at MIR load ("prohibited for redefinition").
+  Found validating MT-2b; pre-existing (baseline reproduces). Now the
+  parser records `FuncDef::internal_linkage` (the `vague_linkage`
+  sibling) and the CIR emits `N_STATIC`: the MIR item is never
+  exported, native objects bind it STB_LOCAL (matching gcc's `nm`
+  shape), and TU-local functions no longer get host-call shims.
+  Reducer `tests/testprojectstaticfn` (gcc oracle a=2 b=300, all
+  lanes); gate: `forest_ledger_gate.sh` leg 5b names the exact
+  pre-fix fatal.
+
 - **Value channels + task-local try/catch (MT-2, 2026-08-26)**: the
   synchronization primitive `go` composes with —
   `madc::chan_make(cap)` / `chan_send` / `chan_recv` / `chan_close` /

@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testprojectstaticfn_a.c","command":"gcc -c testprojectstaticfn_a.c"},
+  {"directory":"tests","file":"testprojectstaticfn_b.c","command":"gcc -c testprojectstaticfn_b.c"}
+]

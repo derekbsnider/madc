@@ -39,9 +39,11 @@ void __madc_go(void (*fn)(void *), void *arg);
 void __madc_yield(void);
 
 // Root-scope join: run ready tasks until none remain live. Idempotent and a
-// no-op when the runtime was never used. The JIT host calls it right after
-// the program's main returns; native artifacts reach it through the
-// atexit() registration made on first spawn (same function, one owner).
+// no-op when the runtime was never used. The PRIMARY caller is the emitted
+// main wrapper (MT-2b) via __madc_task_join_point below — the join runs at
+// MAIN'S END in every lane. Belts: the JIT host calls this right after main
+// returns, and the atexit() registration made on first spawn covers
+// strict-mode mains in mixed-TU projects (same function, one owner).
 void __madc_task_join_all(void);
 
 // Live spawned-but-unfinished task count (diagnostics and tests).
@@ -59,6 +61,15 @@ long __madc_task_live(void);
 void *__madc_task_current(void);
 void __madc_task_park(void);
 void __madc_task_unpark(void *task);
+
+// The ledger-safe join point (MT-2b, src/rt/rt_task_join.c): every
+// --std=madc main's emitted wrapper calls this at MAIN'S END. It dispatches
+// through the hook, which THIS runtime installs at init (first spawn) —
+// a program that never spawned leaves it NULL and the call is a no-op, so
+// a -static-libmadc artifact links the tiny ledger dispatcher without
+// pulling the hosted context backend.
+void __madc_task_join_point(void);
+extern void (*__madc_task_join_hook)(void);
 
 #ifdef __cplusplus
 }

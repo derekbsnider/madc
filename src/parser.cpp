@@ -60069,6 +60069,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     f->vague_linkage = src->vague_linkage;
+    f->internal_linkage = src->internal_linkage;
     return f;
 }
 
@@ -60224,7 +60225,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
 			    std::string return_typedef_alias,
 			    bool static_class_method,
-			    bool inline_specified)
+			    bool inline_specified,
+			    bool static_specified)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -60361,6 +60363,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
+	    fresh->internal_linkage = func->internal_linkage;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -60389,6 +60392,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
+	    fresh->internal_linkage = func->internal_linkage;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -60436,6 +60440,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // `static inline` (internal linkage is never vague).
     else if ( inline_specified )
 	func->vague_linkage = true;
+    // The declaration carried `static` at FILE scope (incl. `static inline`):
+    // C internal linkage — the definition is TU-local. The CIR builder emits
+    // N_STATIC from this so the MIR item is never exported (STB_LOCAL in the
+    // object capture) and same-named statics in two TUs (or two AOT-ledger
+    // modules — the rt_dump.h static-inline pair) link cleanly. Linkage
+    // inherits from the first declaration: once set it stays set on this
+    // FuncDef through a later definition spelled without `static`. Class
+    // statics are a different concept (static_class_method) and never land
+    // here.
+    if ( static_specified && !owner_class )
+	func->internal_linkage = true;
 
     // Declared-form multi-return `(T0, T1) f(...)`: record the per-slot types
     // and synthesize the transport struct. NO hidden parameter is injected
@@ -62170,6 +62185,7 @@ TokenBase *Program::parseLambda()
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment	 = func->explicit_alignment;
 	    fresh->vague_linkage	 = func->vague_linkage;
+	    fresh->internal_linkage	 = func->internal_linkage;
 	    funcdef_map[lambda_name] = fresh;
 	    var->type = fresh;
 	    func = fresh;
@@ -64743,7 +64759,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	pending_function_display_name = source_id;
     parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
 		  decl_typedef_alias, qualified_static_member,
-		  gotinline && !gotstatic);
+		  gotinline && !gotstatic, gotstatic);
     pending_function_display_name.clear();
 
     if ( qualified_owner_class && !qualified_member_name.empty() )
@@ -64991,6 +65007,11 @@ TokenBase *Program::parse_go_statement(TokenBase *tb)
     g->file = tb->file;
     g->line = tb->line;
     g->column = tb->column;
+    // The TU spawns: the CIR builder gates the MT-2b joining main wrapper
+    // on this (a never-spawning program keeps its unwrapped, runtime-free
+    // main). Set at PARSE time so the decision is order-independent —
+    // main may translate before the function carrying this spawn.
+    _uses_go_spawn = true;
     return g;
 }
 

@@ -2079,6 +2079,14 @@ public:
 	// flushed into the module after the host-call shims (Pass 0.745).
 	std::set<std::string> m_go_thunk_names;
 	std::vector<node_t> m_go_thunk_defs;
+	// MT-2b: under --std=madc the user's main emits as __madc_main and a
+	// synthesized `int main(...)` wrapper joins the task root scope at
+	// MAIN'S END (before ANY teardown — glibc runs TLS destructors before
+	// the atexit list). ONE predicate drives BOTH the var_emit_name rename
+	// and the wrapper emission, so they can never disagree.
+	bool main_wraps_task_join(const Variable &v) const;
+	node_t main_task_join_wrapper(class TokenFunc *tf, class FuncDef *fd);
+	node_t m_main_wrapper_def = NULL;
 	node_t translate_throw_call(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
