@@ -181,6 +181,40 @@ int main()
     ev_key(e, "right");		// consume the one-shot theme message so
     apply_ide_event(w, es, doc, e);	// gate 3's two composes match
 
+    // -- IDE-9d: ^T options pane — letter rows with LIVE values; the
+    //    tab width flows through the one prompt mode into the edit
+    //    node's display hint (the model owns the expansion math).
+    ev_action(e, "options", "^t");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    value pbox = tree["children"][2];
+    println("options: label={} rows={}", pbox["label"],
+	    php::count(pbox["children"]));
+    println("options-row0: {}", php::trim(pbox["children"][0]["content"]));
+    ev_choose(e, 0, "opt-tabwidth");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "4");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    compose_ide_tree(tree, w, es, doc);
+    println("tabwidth: {} hint={} row0={}", msg,
+	    tree["children"][1]["hints"]["tabwidth"],
+	    php::trim(tree["children"][2]["children"][0]["content"]));
+    ev_choose(e, 0, "opt-tabwidth");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "40");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("tabwidth-bad: {}", msg);
+    ev_action(e, "options", "^t");	// close the pane
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "right");		// consume the message before gate 3
+    apply_ide_event(w, es, doc, e);
+
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;
     compose_ide_tree(before, w, es, doc);

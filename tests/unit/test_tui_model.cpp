@@ -146,7 +146,8 @@ static uinode option(world &w, const char *text, const char *action)
 }
 
 static uinode editor_tree(world &w, const std::string &doc, long caret,
-			  long sel_start = -1, long sel_end = -1)
+			  long sel_start = -1, long sel_end = -1,
+			  long tabw = 0)
 {
     roles r = roles::standard(w);
     uinode root(r.group);
@@ -163,6 +164,8 @@ static uinode editor_tree(world &w, const std::string &doc, long caret,
 	h["sel_start"] = madc::value((int64_t)sel_start);
 	h["sel_end"] = madc::value((int64_t)sel_end);
     }
+    if ( tabw > 0 )
+	h["tabwidth"] = madc::value((int64_t)tabw);
     edit.hints = madc::value::make_object(h);
     root.add(edit);
     uinode status(r.status);
@@ -299,6 +302,32 @@ TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
     raw.resize(2, 10);
     raw.put(0, 0, std::string("a\x01") + "b\x7f" + "c");
     CHECK(raw.row_text(0) == "a?b?c");
+}
+
+TEST_CASE("compose — the tabwidth hint changes the stops (IDE-9d ^T option)")
+{
+    world w;
+    roles r = roles::standard(w);
+
+    // hints["tabwidth"] = 4: "\tx" shows x at column 4; "ab\tc" at the
+    // next 4-stop; the caret converts through the same map.
+    tui_model m;
+    const tui_grid &g = m.compose(r, editor_tree(w, "\tx\nab\tc", 1,
+						 -1, -1, 4), 6, 40);
+    CHECK(g.row_text(1) == std::string(4, ' ') + "x");
+    CHECK(g.at(1, 4).ch == 'x');
+    CHECK(g.row_text(2) == "ab" + std::string(2, ' ') + "c");
+    CHECK(g.at(2, 4).ch == 'c');
+    CHECK(g.cursor_col == 4u);
+
+    // Absent hint keeps the historical 8-stop; out-of-range clamps.
+    tui_model m2;
+    const tui_grid &d = m2.compose(r, editor_tree(w, "\tx", 1), 6, 40);
+    CHECK(d.at(1, 8).ch == 'x');
+    tui_model m3;
+    const tui_grid &c = m3.compose(r, editor_tree(w, "\tx", 1, -1, -1, 99),
+				   6, 40);
+    CHECK(c.at(1, 16).ch == 'x');	// clamped to 16
 }
 
 // One span row { s, e, c } for the hints["spans"] array.
