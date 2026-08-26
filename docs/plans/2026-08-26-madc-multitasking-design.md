@@ -200,6 +200,23 @@ Unification claims (no-parallel-implementations):
   designed for stage 2.
 - A future is a one-shot value channel; `await` is its receive.
 
+## Slice status
+
+- **MT-1 SHIPPED** (feature/mt1-substrate-claude, session 136):
+  src/rt/rt_task.c substrate (ucontext POSIX / fibers Win64, FIFO
+  run-to-yield, ctx/sched/loop seams), contextual `go`/`yield` under
+  STD_MADC (error-shape rule), translate_go linkonce thunks (3-slot
+  ABI), root join in CirJitSession::run_main + loaded-object entry +
+  atexit (one owner, idempotent). Docs: docs/language/tasks.md. Tests:
+  testgo (complete schedule pinned), testgoident, testgogate,
+  test_rt_task. NAMED RESIDUES: try/catch held ACROSS a yield shares
+  the global SJLJ chain (per-task save/restore at switch = next
+  slice); ring-lifetime text across a yield rots (standing ring
+  discipline); -static-libmadc spawn links loud (hosted runtime, no
+  AOT-ledger context backend yet); go-in-late-template-bodies thunk
+  flush (Pass 1.9) untested; darwin ucontext deprecation at the mac
+  lane; method/class-arg/fn-ptr spawns refused loud pending MT-2+.
+
 ## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
 
 - **MT-1 substrate**: stackful contexts (small in-tree switcher; SysV
