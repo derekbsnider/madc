@@ -172,7 +172,15 @@ struct tui_grid
     tui_cell &at(size_t r, size_t c) { return cells[r * cols + c]; }
     const tui_cell &at(size_t r, size_t c) const { return cells[r * cols + c]; }
 
-    // Clipped text write; never wraps.
+    // Clipped text write; never wraps. THE CELL INVARIANT: a cell holds one
+    // printable byte occupying exactly one terminal column — a control byte
+    // in a cell desynchronizes grid columns from screen columns (a raw tab
+    // MOVES the terminal cursor without erasing the skipped columns: stale
+    // fragments + doubled glyphs while scrolling, the IDE-9c defect). Tab
+    // expansion is the document projection's job (paint_edit's display map);
+    // here every control byte renders as a visible '?'. Bytes >= 0x80 pass
+    // through (UTF-8 renders byte-per-cell today; the multi-column glyph
+    // model is the doc-lens display-map seat).
     void put(size_t r, size_t c, const std::string &text,
 	     tui_attr attr = tui_attr::normal())
     {
@@ -181,7 +189,8 @@ struct tui_grid
 	for ( size_t i = 0; i < text.size() && c + i < cols; ++i )
 	{
 	    tui_cell &cell = at(r, c + i);
-	    cell.ch = text[i];
+	    char b = text[i];
+	    cell.ch = (unsigned char)b < 0x20 || b == 0x7f ? '?' : b;
 	    cell.attr = attr;
 	}
     }
@@ -817,11 +826,42 @@ private:
 			    l.spans[i].attr);
     }
 
+    // THE byte->display-column expansion for one document line (tabs move
+    // to the next 8-column stop, JOE's default). Returns the display form
+    // (what the grid shows); dcol[i] = the display column of byte i, with
+    // the end sentinel dcol[size()] = the display width — the ONE map the
+    // caret, the horizontal shift, the selection, and the highlight spans
+    // all convert through. A control byte other than tab stays one column
+    // wide (the grid's put() renders it '?').
+    enum { tab_stop = 8 };
+    static std::string expand_line(const std::string &line,
+				   std::vector<size_t> &dcol)
+    {
+	std::string disp;
+	dcol.assign(line.size() + 1, 0);
+	for ( size_t i = 0; i < line.size(); ++i )
+	{
+	    dcol[i] = disp.size();
+	    if ( line[i] == '\t' )
+	    {
+		disp += ' ';
+		while ( disp.size() % tab_stop )
+		    disp += ' ';
+	    }
+	    else
+		disp += line[i];
+	}
+	dcol[line.size()] = disp.size();
+	return disp;
+    }
+
     // THE byte-range-to-visible-row overlap rule (selection and highlight
     // spans both paint through it): the [s0, e0) document range's overlap
-    // with the line [begin..end] shown at `row`, honoring the horizontal
+    // with the line [begin..end] shown at `row`, converted to display
+    // columns through the line's expansion map, honoring the horizontal
     // shift and the column clip.
     void fill_range_overlap(size_t row, size_t begin, size_t end,
+			    const std::vector<size_t> &dcol,
 			    size_t shift, size_t cols,
 			    long s0, long e0, tui_attr attr)
     {
@@ -829,10 +869,14 @@ private:
 	    return;
 	size_t s = (size_t)s0 < begin ? begin : (size_t)s0;
 	size_t t = (size_t)e0 > end ? end : (size_t)e0;
-	if ( s < t && s - begin < shift + cols && t - begin > shift )
+	if ( s >= t )
+	    return;
+	size_t ds = dcol[s - begin];
+	size_t dt = dcol[t - begin];
+	if ( ds < dt && ds < shift + cols && dt > shift )
 	{
-	    size_t c0 = s - begin < shift ? 0 : s - begin - shift;
-	    size_t c1 = t - begin - shift;
+	    size_t c0 = ds < shift ? 0 : ds - shift;
+	    size_t c1 = dt - shift;
 	    _grid.fill_attr(row, c0, c1 - c0, attr);
 	}
     }
@@ -856,7 +900,17 @@ private:
 	size_t caret_line = 0;
 	while ( caret_line + 1 < starts.size() && starts[caret_line + 1] <= caret )
 	    ++caret_line;
-	size_t caret_col = caret - starts[caret_line];
+
+	// The caret's DISPLAY column (tab-aware) — the shift and the grid
+	// cursor live in display columns; byte offsets convert through the
+	// caret line's expansion map.
+	size_t caret_begin = starts[caret_line];
+	size_t caret_end = caret_line + 1 < starts.size()
+			 ? starts[caret_line + 1] - 1 : e.text.size();
+	std::vector<size_t> caret_dcol;
+	expand_line(e.text.substr(caret_begin, caret_end - caret_begin),
+		    caret_dcol);
+	size_t caret_col = caret_dcol[caret - caret_begin];
 
 	size_t &top = _scroll[e.slot];
 	if ( caret_line < top )
@@ -876,17 +930,19 @@ private:
 	    size_t begin = starts[li];
 	    size_t end = li + 1 < starts.size() ? starts[li + 1] - 1
 						: e.text.size();
-	    std::string line = e.text.substr(begin, end - begin);
-	    if ( shift < line.size() )
-		_grid.put(top_row + k, 0, line.substr(shift, cols));
+	    std::vector<size_t> dcol;
+	    std::string disp = expand_line(e.text.substr(begin, end - begin),
+					   dcol);
+	    if ( shift < disp.size() )
+		_grid.put(top_row + k, 0, disp.substr(shift, cols));
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )
-		fill_range_overlap(top_row + k, begin, end, shift, cols,
+		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
 				   e.spans[si].start, e.spans[si].end,
 				   e.spans[si].attr);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
-		fill_range_overlap(top_row + k, begin, end, shift, cols,
+		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
 				   e.sel_start, e.sel_end,
 				   tui_attr::reverse());
 	    if ( li == caret_line && e.slot == _focus )
