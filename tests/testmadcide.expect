@@ -7,34 +7,27 @@ undo: caret=0 modified=false size=84
 undo-empty: Nothing to undo.
 check2: Check: 2 problem(s).
 --- diagnostics view ---
-=== madcide: madc_ide_test.mad ===
+Check: 2 problem(s).
 junk long add(long a, long b) { return a + b; }
 long twice(long x) { return add(x, x); }
 
 Diagnostics
   1. 1:4 error use of undeclared identifier 'junk'
   2. 2:31 error use of undeclared identifier 'add'
-Check: 2 problem(s).
-  1. Save
-  2. Find
-  3. Quit
 --- end ---
 goto-diag: caret=0
 --- outline view ---
-=== madcide: madc_ide_test.mad ===
+madc_ide_test.mad fn add Row 1 Col 1
 long add(long a, long b) { return a + b; }
 long twice(long x) { return add(x, x); }
 
 Outline
   1. function add :1
   2. function twice :2
-Ln 1, Col 1 fn add
-  1. Save
-  2. Find
-  3. Quit
 --- end ---
 goto-outline: caret=43
-status-fn: Ln 2, Col 1  fn twice
+status-fn: madc_ide_test.mad   fn twice
+Row    2 Col   1
 spans: n=7 first=0..4 bold second=9..13 bold
 theme-swap: Theme: classic. first-c=bold cyan
 theme-missing: No theme 'nosuch'.
@@ -62,7 +55,7 @@ view2: name=c11
 view-exit: name='' caret=84 identical=1 modified=false
 lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
 cxxview: name=c++ include=1 echo=1 stored-size=109
-cxxview-head: tagged=1
+cxxview-head: tagged=1 ro=1
 cxxview-exit: name='' caret=0
 quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
 save: Wrote 92 bytes.

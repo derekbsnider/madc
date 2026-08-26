@@ -85,7 +85,10 @@ checks = {
     "reverse attr used":   "\x1b[7m" in txt,
     "cursor shown":        "\x1b[?25h" in txt,
 }
-expected = ("EVENTS=text:hi;action:save-chord:^k s;"
+# The ^k that OPENS the chord emits a focus (repaint) event so a status
+# line echoing the pending prefix (%k) shows it live — hence the focus
+# between text:hi and the resolved chord action.
+expected = ("EVENTS=text:hi;focus;action:save-chord:^k s;"
             "key:left;focus;focus;choose:2:q;resize;key:^q;")
 checks["event log"] = ev == expected
 ok = True

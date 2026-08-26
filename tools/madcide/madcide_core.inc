@@ -128,6 +128,47 @@ bool load_theme(long w, long es, const char *name)
     return true;
 }
 
+// ---- status line as data (IDE-9a): JOE's joerc format vocabulary ------
+// profiles/<name>.status: "lmsg FMT" / "rmsg FMT" lines (the profile_line
+// comment/blank rule; the value is everything after the FIRST space,
+// kept VERBATIM — rmsg's first character is the FILL between the two
+// halves, exactly joerc's convention). A missing file means the JOE
+// joerc defaults — the status format is optional data, so no message
+// (unlike a NAMED theme swap).
+void load_status(long w, long es, const char *name)
+{
+    var lmsg = "\\i%k%T%W%I%X %n %m%y%R %M %x";	// joerc's defaults
+    var rmsg = " %S Row %4r Col %3c";		// first char = fill
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    value txt;
+    if ( php::file_get_contents(txt, format("{}/{}.status", dir, name)) )
+    {
+	array lines;
+	php::explode(lines, "\n", txt.c_str());
+	long n = php::count(lines);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    value line;
+	    if ( !profile_line(line, lines, i) )
+		continue;
+	    const char *ls = line.c_str();
+	    const char *sp = strchr(ls, ' ');
+	    if ( sp == 0 )
+		continue;
+	    long cut = sp - ls;
+	    var key = perl::substr(line, 0, cut);
+	    var fmt = sp + 1;			// verbatim: fill survives
+	    if ( key == "lmsg" )
+		lmsg = fmt;
+	    if ( key == "rmsg" )
+		rmsg = fmt;
+	}
+    }
+    ui::set(w, es, "lmsg", lmsg);
+    ui::set(w, es, "rmsg", rmsg);
+}
+
 // Highlight spans onto the bag (AST-2): the engine's classification rows
 // (madc::parse_spans, source coordinates) through the THEME (class ->
 // colour name), converted to the byte-offset { s, e, c } rows the edit
@@ -270,6 +311,195 @@ bool view_name(value &out, long w, long es)
 	return false;
     out = vw;
     return true;
+}
+
+// Render one joerc-style format string. Supported seats: %n name,
+// %m "(Modified) ", %R "(Read only) ", %r row / %c col (an optional
+// width digit-run left-pads: %4r), %o byte offset, %k the pending chord
+// (JOE's chord echo, via ui::tui_pending), %x the enclosing context —
+// madcide renders its AST-backed enclosing function here, superior to
+// JOE's textual backward heuristic — %y the active VIEW name in JOE's
+// "(syntax)" seat, and %% a literal percent. UNSUPPORTED joerc escapes
+// render EMPTY and light up as their features land (%T %W %I %X %M %S
+// ...). \X attribute escapes are consumed — the status row renders
+// inverse whole-line; intra-line styling is a named seat.
+// The format and the context arrive as VALUES: .c_str() text is
+// ring-lifetime (the pre-L3 contract) and this loop makes many
+// ring-returning calls — the format is copied into a frame-owned buffer
+// at entry, never held as a borrowed pointer.
+void status_expand(value &out, long w, long es, long doc, long caret,
+		   value &fmtv, value &fnctxv)
+{
+    char fmt[240];
+    strncpy(fmt, fmtv.c_str(), 239);
+    fmt[239] = 0;
+    var s = "";
+    long line = line_of(w, doc, caret);
+    long start = ui::text_line_start(w, doc, line);
+    if ( start < 0 )
+	start = 0;
+    long col = caret - start + 1;
+    long fl = strlen(fmt);
+    long i = 0;
+    long run = 0;
+    while ( i < fl )
+    {
+	char c = fmt[i];
+	if ( c != '%' && c != '\\' )
+	{
+	    i = i + 1;
+	    continue;
+	}
+	if ( i > run )
+	    s = format("{}{}", s, perl::substr(fmt, run, i - run));
+	if ( c == '\\' )
+	{
+	    i = i + 2;				// attribute escape: consumed
+	    run = i;
+	    continue;
+	}
+	long j = i + 1;
+	long width = 0;
+	while ( j < fl && fmt[j] >= '0' && fmt[j] <= '9' )
+	{
+	    width = width * 10 + (fmt[j] - '0');
+	    j = j + 1;
+	}
+	if ( j >= fl )
+	    break;				// a trailing bare %: dropped
+	char e = fmt[j];
+	var seat = "";
+	if ( e == '%' )
+	    seat = "%";
+	if ( e == 'n' )
+	{
+	    var p;
+	    ui::get(p, w, doc, "path");
+	    seat = p;
+	}
+	if ( e == 'm' )
+	{
+	    var m;
+	    ui::get(m, w, doc, "modified");
+	    if ( !m.is_null() && m.as_boolean() )
+		seat = "(Modified) ";
+	}
+	if ( e == 'R' )
+	{
+	    if ( !es_flag(w, es, "editable") )
+		seat = "(Read only) ";
+	}
+	if ( e == 'r' )
+	    seat = format("{}", line);
+	if ( e == 'c' )
+	    seat = format("{}", col);
+	if ( e == 'o' )
+	    seat = format("{}", caret);
+	if ( e == 'k' )
+	{
+	    long t = es_int(w, es, "tui", 0);
+	    if ( t != 0 )
+	    {
+		value pc;
+		ui::tui_pending(pc, t);
+		if ( !pc.is_null() && strlen(pc.c_str()) > 0 )
+		    seat = format("{} ", pc);
+	    }
+	}
+	if ( e == 'x' )
+	    seat = fnctxv;
+	if ( e == 'y' )
+	{
+	    value vw;
+	    if ( view_name(vw, w, es) )
+		seat = format("({}) ", vw);
+	}
+	long pad = width - strlen(seat.c_str());
+	if ( pad > 0 )
+	    s = format("{}{}", s, php::str_repeat(" ", pad));
+	s = format("{}{}", s, seat);
+	i = j + 1;
+	run = i;
+    }
+    if ( i > run )
+	s = format("{}{}", s, perl::substr(fmt, run, i - run));
+    out = s;
+}
+
+// The JOE screen model's status line (IDE-9a/9b): ONE inverse row at the
+// TOP, lmsg left / rmsg right with rmsg's fill character between; the
+// one prompt mode, the search prompt, and transient messages OVERLAY it
+// (the same priority rule as the shared compose_status — restated here
+// because the SCREEN MODELS diverge by design: madcide is JOE-shaped,
+// vised keeps the demo's bottom bar).
+void compose_joe_status(value &status, long w, long es, long doc,
+			long caret, value &fnctx)
+{
+    value st;
+    st["role"] = "status";
+    var pr;
+    ui::get(pr, w, es, "prompt");
+    if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
+    {
+	var pi;
+	ui::get(pi, w, es, "pinput");
+	st["content"] = format("{} (^C aborts): {}", pr, pi);
+	status = st;
+	return;
+    }
+    if ( es_flag(w, es, "searching") )
+    {
+	var sch;
+	ui::get(sch, w, es, "search");
+	st["content"] = format("Find (^C aborts): {}", sch);
+	status = st;
+	return;
+    }
+    var msg;
+    ui::get(msg, w, es, "msg");
+    if ( !msg.is_null() && strlen(msg.c_str()) > 0 )
+    {
+	st["content"] = msg;
+	status = st;
+	return;
+    }
+    var lm;
+    ui::get(lm, w, es, "lmsg");
+    if ( lm.is_null() || strlen(lm.c_str()) == 0 )
+    {
+	// Lazy first-compose load (an embedder that never ran run_ide
+	// still gets a real status line); load_status never leaves the
+	// formats empty, so this runs once.
+	var prof;
+	ui::get(prof, w, es, "profile");
+	load_status(w, es, prof.is_null() ? "joe" : prof.c_str());
+	ui::get(lm, w, es, "lmsg");
+    }
+    var rm;
+    ui::get(rm, w, es, "rmsg");
+    value lout;
+    status_expand(lout, w, es, doc, caret, lm, fnctx);
+    var fill = " ";
+    var rfmt = "";
+    if ( strlen(rm.c_str()) > 0 )
+    {
+	fill = perl::substr(rm, 0, 1);
+	rfmt = perl::substr(rm, 1, strlen(rm.c_str()) - 1);
+    }
+    value rout;
+    status_expand(rout, w, es, doc, caret, rfmt, fnctx);
+    long t = es_int(w, es, "tui", 0);
+    long cols = t != 0 ? ui::tui_cols(t) : 80;
+    if ( cols < 1 )
+	cols = 80;
+    // The renderer's status arm prepends one space — the usable width is
+    // cols - 1. A gap that would go negative just joins with one fill.
+    long gap = cols - 1 - strlen(lout.c_str()) - strlen(rout.c_str());
+    if ( gap < 1 )
+	gap = 1;
+    st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),
+			   rout);
+    status = st;
 }
 
 // ---- one prompt mode (find / goto-line / insert-file / theme) ---------
@@ -603,6 +833,8 @@ bool enter_view(long w, long es, long doc, const char *name)
 	ui::set(w, es, "vdoc", vd);
     }
     ui::text_load(w, vd, emitted.c_str());
+    ui::set(w, vd, "path", p);	// the status %n seat: a view is a lens
+				// over the file — its name IS the file's
     value cur;
     if ( !view_name(cur, w, es) )
 	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
@@ -895,9 +1127,15 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	    var cur;
 	    ui::get(cur, w, es, "profile");
 	    if ( cur == "joe" )
+	    {
 		load_profile(w, es, "pico");
+		load_status(w, es, "pico");	// the format rides the profile
+	    }
 	    else
+	    {
 		load_profile(w, es, "joe");
+		load_status(w, es, "joe");
+	    }
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -965,16 +1203,14 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     long nav = nav_doc(w, es, doc);
     bool viewing = nav != doc;
 
-    value head;
+    // The JOE screen model (IDE-9b): no heading banner — the path, the
+    // modified/read-only badges, and the view name all render in the
+    // status line's %n / %m / %R / %y seats.
     value ed;
-    var p;
-    ui::get(p, w, doc, "path");
     if ( viewing )
     {
 	value vw;
 	view_name(vw, w, es);
-	compose_heading(head, w, es, doc,
-			format("madcide: {} [{}]", p, vw));
 	value ed2;
 	compose_edit_node(ed2, w, es, nav, caret);
 	value h;
@@ -988,7 +1224,6 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     }
     else
     {
-	compose_heading(head, w, es, doc, format("madcide: {}", p));
 	compose_edit_node(ed, w, es, nav, caret);
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
 	// the hints — stored-space only (a view shows a render), computed
@@ -1004,10 +1239,34 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	}
     }
 
+    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
+    // state read of the buffer's parse handle — stored-space only (a
+    // view's caret is display-space), and only once something opened the
+    // handle; composition never runs the compiler.
+    var fnctx = "";
+    value vw_st;
+    if ( !view_name(vw_st, w, es) )
+    {
+	long ph = es_int(w, doc, "phandle", 0);
+	if ( ph != 0 )
+	{
+	    long cl = line_of(w, doc, caret);
+	    long cs = ui::text_line_start(w, doc, cl);
+	    if ( cs < 0 )
+		cs = 0;
+	    value encl;
+	    madc::parse_enclosing(encl, ph, cl, caret - cs);
+	    if ( !encl.is_null() )
+		fnctx = format("fn {}", encl["name"]);
+	}
+    }
+    value status;
+    compose_joe_status(status, w, es, nav, caret, fnctx);
+
     value r;
     r["role"] = "group";
     var kids = {};
-    kids.push(head);
+    kids.push(status);		// JOE: ONE status line at the TOP
     kids.push(ed);
 
     var pane;
@@ -1087,34 +1346,17 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	kids.push(box);
     }
 
-    value status;
-    // The status line's enclosing-function suffix (AST-1): a RETAINED-state
-    // read of the buffer's parse handle — stored-space only (a view's caret
-    // is display-space), and only once something opened the handle;
-    // composition never runs the compiler.
-    var fnsuffix = "";
-    value vw_st;
-    if ( !view_name(vw_st, w, es) )
+    // The transient startup hint on the bottom row (IDE-9b, JOE's -xmsg):
+    // plain content, shown until the first applied event returns the row
+    // to the document.
+    if ( es_int(w, es, "hint", 0) != 0 )
     {
-	long ph = es_int(w, doc, "phandle", 0);
-	if ( ph != 0 )
-	{
-	    long cl = line_of(w, doc, caret);
-	    long cs = ui::text_line_start(w, doc, cl);
-	    if ( cs < 0 )
-		cs = 0;
-	    value encl;
-	    madc::parse_enclosing(encl, ph, cl, caret - cs);
-	    if ( !encl.is_null() )
-		fnsuffix = format("  fn {}", encl["name"]);
-	}
+	value hn;
+	hn["role"] = "content";
+	hn["content"] =
+	    " madcide ** ^K Q exits / ^K H shows the loaded profile's help **";
+	kids.push(hn);
     }
-    compose_status(status, w, es, nav, caret, fnsuffix.c_str());
-    value menu;
-    compose_menu(menu);
-
-    kids.push(status);
-    kids.push(menu);
     r["children"] = kids;
     root = r;
 }
@@ -1147,11 +1389,13 @@ void run_ide(const char *path, bool ro)
 	return;
     ui::set(w, es, "tui", t);
     load_profile(w, es, "joe");	// msgs its own failures
+    load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
     ensure_phandle(w, es, doc);	// parse-on-load: the status line and the
 				// highlight spans have state before the
 				// first check; a failed open msgs there
+    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     bool run = true;
     while ( run )
     {
@@ -1162,6 +1406,7 @@ void run_ide(const char *path, bool ro)
 	if ( !ui::tui_event(ev, t, w) )
 	    break;
 	run = apply_ide_event(w, es, doc, ev);
+	ui::set(w, es, "hint", 0);	// first event returns the row
     }
     long ph = es_int(w, doc, "phandle", 0);
     if ( ph != 0 )
