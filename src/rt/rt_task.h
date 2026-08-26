@@ -68,6 +68,15 @@ void *__madc_task_current(void);
 void __madc_task_park(void);
 void __madc_task_unpark(void *task);
 
+// Sleep on the scheduler's TIME SOURCE (MT-4): park the current task for
+// `ms` milliseconds of scheduler time. The source is pluggable per the
+// ctx/sched/loop layering — real monotonic time by default; under
+// MADC_TASK_VTIME=1 a VIRTUAL clock that jumps to the earliest deadline
+// whenever only timer-parked tasks exist, so sleep-based tests run
+// instantly and deterministically. ms <= 0 still parks through one
+// scheduling decision (a fair yield to equal-deadline sleepers).
+void __madc_task_sleep_ms(long long ms);
+
 // The ledger-safe join point (MT-2b, src/rt/rt_task_join.c): every
 // --std=madc main's emitted wrapper calls this at MAIN'S END. It dispatches
 // through the hook, which THIS runtime installs at init (first spawn) —

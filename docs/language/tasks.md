@@ -110,6 +110,25 @@ int main()
 - **`chan_len(c)`** — buffered value count.
 - **Deadlock is loud**: a blocking operation that parks the last
   runnable flow aborts with a message, never hangs.
+- **`chan_select(out, chans)` (MT-4)** — fan-in over an ARRAY of channel
+  handles: parks until some case can receive, returns the fired index
+  with the value in `out`. DETERMINISTIC: the lowest-index ready case
+  wins (Go randomizes here; madc's scheduling contract is determinism,
+  so a starvation-shaped program pins its own order instead of dodging
+  it). A closed-and-drained case is disabled; when every case is dead
+  it returns `-1` with a null value — the natural fan-in terminator
+  (each producer closes its channel when done). Buffered values still
+  drain from a closed channel first.
+- **`chan_try_recv(out, c)` (MT-4)** — the nonblocking default-arm
+  equivalent: `1` = got a value, `0` = open but empty (would block),
+  `-1` = closed and drained.
+- **`madc::sleep_ms(ms)` (MT-4)** — parks this task for `ms`
+  milliseconds of SCHEDULER time; wake order is deadline order, FIFO
+  among equals. The time source is pluggable: real monotonic time by
+  default, and under `MADC_TASK_VTIME=1` a VIRTUAL clock that jumps to
+  the earliest deadline whenever only sleepers remain — timed tests run
+  instantly and deterministically (`tests/testgosleep.mad` pins the
+  order; `tests/unit/test_rt_vtime.cpp` pins the jump).
 - **The future idiom** is a capacity-1 channel: spawn the worker, have
   it send its result, `chan_recv` where you need it. The `await`
   spelling arrives with MT-5's keywords.

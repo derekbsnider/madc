@@ -1,0 +1,45 @@
+// MT-4 select: fan-in over value channels. Pins the whole contract on one
+// hand-computed schedule: lowest-index-ready determinism, a select parked
+// across two channels woken by the first delivery (the sibling waiter
+// becomes a husk another send must skip), buffered values draining from a
+// CLOSED channel (only closed-and-drained disables a case), the blocked-
+// sender refill riding a select receive, the close wake rescanning instead
+// of firing, -1 + null when every case is dead (the fan-in terminator),
+// and chan_try_recv's 0 (open+empty) / -1 (closed+drained) edges.
+value tr;
+
+void producer(long c, long id, long count)
+{
+    long i = 0;
+    while ( i < count )
+    {
+	value v = id * 100 + i;
+	madc::chan_send(c, v);
+	i = i + 1;
+    }
+    madc::chan_close(c);
+}
+
+int main()
+{
+    long a = madc::chan_make(2);
+    long b = madc::chan_make(2);
+    value probe;
+    tr = format("{}try{};", tr, madc::chan_try_recv(probe, a));
+    go producer(a, 1, 2);
+    go producer(b, 2, 3);
+    value chans;
+    chans[0] = a;
+    chans[1] = b;
+    value got;
+    long idx = madc::chan_select(got, chans);
+    while ( idx >= 0 )
+    {
+	tr = format("{}s{}={};", tr, idx, got);
+	idx = madc::chan_select(got, chans);
+    }
+    tr = format("{}done;", tr);
+    tr = format("{}try{};", tr, madc::chan_try_recv(probe, a));
+    println("end tr={}", tr);
+    return 0;
+}

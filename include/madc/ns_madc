@@ -159,6 +159,21 @@ namespace madc {
     void chan_close(int64_t chan);
     int64_t chan_len(int64_t chan);
 
+    // Fan-in select (MT-4; recv side — send cases and the keyword arrive
+    // with MT-5): `chans` = array of handles; parks until a case can
+    // receive; returns the fired index with the value in `out`.
+    // DETERMINISTIC: the lowest-index ready case wins. Closed-and-drained
+    // cases are disabled; -1 + null when every case is dead (the fan-in
+    // terminator). try_recv is the default-arm equivalent: 1 = got a
+    // value, 0 = would block, -1 = closed and drained.
+    int64_t chan_select(value &out, value &chans);
+    int64_t chan_try_recv(value &out, int64_t chan);
+
+    // Park this task for `ms` milliseconds of SCHEDULER time (real
+    // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
+    // jumps when only sleepers remain, so timed tests run instantly).
+    void sleep_ms(int64_t ms);
+
     // Drain the task root scope NOW: run ready tasks until none remain
     // live (idempotent; a no-op when nothing was spawned). The interim
     // structured-join verb until MT-3 scopes land — for tearing down

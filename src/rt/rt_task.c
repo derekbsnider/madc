@@ -30,6 +30,7 @@
 #include <windows.h>
 #else
 #include <ucontext.h>
+#include <time.h>	/* the real time source: clock_gettime + nanosleep */
 #endif
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,8 @@
 
 typedef struct madc_task {
 	struct madc_task *qnext;   // ready-queue link
+	struct madc_task *tnext;   // timer-list link (deadline ascending)
+	long long deadline;        // ms on the time source; timer list only
 	void (*fn)(void *);
 	void *arg;
 	unsigned char exc[MADC_TASK_EXC_BYTES];
@@ -109,6 +112,87 @@ static madc_task *task_dequeue(void)
 	return t;
 }
 
+// ---------------------------------------------------------------------------
+// The time source (sched layer, MT-4) — pluggable per the ctx/sched/loop
+// separation: real (monotonic) by default, VIRTUAL under MADC_TASK_VTIME=1.
+// Virtual time never sleeps: when only timer-parked tasks exist the clock
+// JUMPS to the earliest deadline — sleep-based tests run instantly and
+// deterministically (recon amendment 4's virtual-time gate).
+// ---------------------------------------------------------------------------
+
+static long long g_vclock_ms;      // virtual now; only advances at idle
+
+static int vtime_on(void)
+{
+	static int on = -1;
+	if (on < 0)
+		on = getenv("MADC_TASK_VTIME") ? 1 : 0;
+	return on;
+}
+
+static long long time_now_ms(void)
+{
+	if (vtime_on())
+		return g_vclock_ms;
+#if defined(_WIN32)
+	return (long long)GetTickCount64();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
+
+static void time_real_sleep_ms(long long ms)
+{
+	if (ms <= 0)
+		return;
+#if defined(_WIN32)
+	Sleep((DWORD)ms);
+#else
+	struct timespec ts;
+	ts.tv_sec = (time_t)(ms / 1000);
+	ts.tv_nsec = (long)(ms % 1000) * 1000000;
+	nanosleep(&ts, NULL);
+#endif
+}
+
+// Timer-parked tasks, deadline ascending (FIFO among equal deadlines — the
+// insert walks past equals, so wake order stays deterministic). A sorted
+// list, not a binary heap: cooperative scale is a handful of sleepers, and
+// the list keeps the discipline readable.
+static madc_task *g_timer_head;
+static long g_timer_count;
+
+static void timer_insert(madc_task *t)
+{
+	madc_task **pp = &g_timer_head;
+	while (*pp && (*pp)->deadline <= t->deadline)
+		pp = &(*pp)->tnext;
+	t->tnext = *pp;
+	*pp = t;
+	++g_timer_count;
+	TASK_TRACE("[task] timer+ %p deadline=%lld (%ld pending)\n",
+		   (void *)t, t->deadline, g_timer_count);
+}
+
+// Enqueue every due sleeper. Called at each scheduling decision so a due
+// timer never starves behind busy yielders.
+static void timer_fire_due(void)
+{
+	if (!g_timer_head)
+		return;
+	long long now = time_now_ms();
+	while (g_timer_head && g_timer_head->deadline <= now) {
+		madc_task *t = g_timer_head;
+		g_timer_head = t->tnext;
+		t->tnext = NULL;
+		--g_timer_count;
+		TASK_TRACE("[task] timer! %p now=%lld\n", (void *)t, now);
+		task_enqueue(t);
+	}
+}
+
 static void task_reap(void)
 {
 	if (!g_reap)
@@ -121,6 +205,31 @@ static void task_reap(void)
 #endif
 	free(g_reap);
 	g_reap = NULL;
+}
+
+// THE scheduling decision (MT-4): fire due timers, take the ready head, and
+// when ONLY timer-parked tasks exist, wait on the time source — the virtual
+// clock JUMPS to the earliest deadline, the real one sleeps to it. NULL
+// means genuine deadlock territory: nothing runnable AND no timer pending
+// (the caller owns its own message/fallback). Every "pick next" site routes
+// here so a sleeper can never be starved or misread as a deadlock.
+static madc_task *task_next_or_wait(void)
+{
+	for (;;) {
+		timer_fire_due();
+		madc_task *next = task_dequeue();
+		if (next)
+			return next;
+		if (!g_timer_head)
+			return NULL;
+		if (vtime_on()) {
+			g_vclock_ms = g_timer_head->deadline;
+			TASK_TRACE("[task] vclock -> %lld\n", g_vclock_ms);
+		} else {
+			time_real_sleep_ms(g_timer_head->deadline
+					   - time_now_ms());
+		}
+	}
 }
 
 // Liberal default (stacks page in lazily); the knob is the
@@ -164,7 +273,7 @@ static void task_switch(madc_task *from, madc_task *to)
 static void task_exit_switch(void)
 {
 	madc_task *self = g_current;
-	madc_task *next = task_dequeue();
+	madc_task *next = task_next_or_wait();
 	TASK_TRACE("[task] exit %p -> %p live=%ld waiting=%d\n", (void *)self,
 		   (void *)next, g_live, g_main_waiting);
 	if (!next) {
@@ -302,6 +411,8 @@ void __madc_yield(void)
 {
 	if (!g_current)
 		return;                        // runtime never used
+	timer_fire_due();	// a due sleeper joins the queue NOW — a busy
+				// yielder must never starve it (MT-4)
 	madc_task *next = task_dequeue();
 	if (!next)
 		return;                        // only runner — keep going
@@ -315,7 +426,7 @@ void __madc_task_join_all(void)
 	if (!g_current || g_current != &g_main_task)
 		return;                        // never used, or not main
 	while (g_live > 0) {
-		madc_task *next = task_dequeue();
+		madc_task *next = task_next_or_wait();
 		TASK_TRACE("[task] join live=%ld next=%p\n", g_live,
 			   (void *)next);
 		if (!next) {
@@ -353,8 +464,10 @@ void __madc_task_park(void)
 {
 	task_runtime_init();
 	madc_task *self = g_current;
-	madc_task *next = task_dequeue();
+	madc_task *next = task_next_or_wait();
 	TASK_TRACE("[task] park %p -> %p\n", (void *)self, (void *)next);
+	if (next == self)
+		return;	// a sleeper whose own deadline was the wake (MT-4)
 	if (!next) {
 		// Single OS thread: with the parker off the CPU and nothing
 		// runnable, no flow exists that could ever unpark anyone —
@@ -374,4 +487,19 @@ void __madc_task_unpark(void *task)
 		return;
 	TASK_TRACE("[task] unpark %p\n", task);
 	task_enqueue((madc_task *)task);
+}
+
+void __madc_task_sleep_ms(long long ms)
+{
+	task_runtime_init();
+	if (ms < 0)
+		ms = 0;
+	madc_task *self = g_current;
+	self->deadline = time_now_ms() + ms;
+	timer_insert(self);
+	// Parked on the TIMER list, not the ready queue: task_next_or_wait
+	// (inside park) fires due deadlines and advances the time source
+	// when nothing else is runnable — park returns immediately when our
+	// own deadline was the wake (next == self).
+	__madc_task_park();
 }
