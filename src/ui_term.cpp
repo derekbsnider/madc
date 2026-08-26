@@ -49,7 +49,8 @@ using madc::hub::tui_attr;
 using madc::hub::tui_keyev;
 using madc::hub::tui_key;
 using madc::hub::tui_keyparse;
-using madc::hub::tui_dirty_rows;
+using madc::hub::tui_paint_plan;
+using madc::hub::tui_diff_plan;
 
 // SIGWINCH sets a flag; read_keys turns it into a resize key. sa_flags
 // carries no SA_RESTART so the blocking poll wakes with EINTR.
@@ -276,15 +277,35 @@ public:
 	    return;
 	std::string out;
 	out += "\x1b[?25l";	// hidden while rows repaint
-	std::vector<size_t> dirty = tui_dirty_rows(prev, next);
-	for ( size_t i = 0; i < dirty.size(); ++i )
+	tui_paint_plan plan = tui_diff_plan(prev, next);
+	if ( plan.shifted )
 	{
-	    size_t r = dirty[i];
-	    cup(out, r, 0);
+	    // The model found a vertical shift: scroll the band with
+	    // DECSTBM + DL/IL (VT100-core, JOE's dl/al) and repaint only
+	    // the rows the plan lists. SGR reset first — the blank lines
+	    // DL/IL insert take the CURRENT attributes.
+	    char buf[32];
+	    snprintf(buf, sizeof(buf), "\x1b[0m\x1b[%zu;%zur",
+		     plan.top + 1, plan.bot + 1);
+	    out += buf;
+	    cup(out, plan.top, 0);
+	    snprintf(buf, sizeof(buf), "\x1b[%zu%c\x1b[r",
+		     plan.delta, plan.up ? 'M' : 'L');
+	    out += buf;
+	}
+	for ( size_t i = 0; i < plan.spans.size(); ++i )
+	{
+	    const madc::hub::tui_row_span &s = plan.spans[i];
+	    cup(out, s.row, s.c0);
+	    // A span whose tail reaches into the row's normal-space run is
+	    // finished by one EL; cells right of the span already match.
+	    size_t pe = next.row_paint_end(s.row);
+	    bool   el = pe <= s.c1;
+	    size_t end = el ? (pe > s.c0 ? pe : s.c0) : s.c1 + 1;
 	    tui_attr cur = tui_attr::normal();
-	    for ( size_t c = 0; c < next.cols; ++c )
+	    for ( size_t c = s.c0; c < end; ++c )
 	    {
-		const madc::hub::tui_cell &cell = next.at(r, c);
+		const madc::hub::tui_cell &cell = next.at(s.row, c);
 		if ( cell.attr != cur )
 		{
 		    emit_sgr(out, cur, cell.attr);
@@ -294,6 +315,8 @@ public:
 	    }
 	    if ( cur != tui_attr::normal() )
 		out += "\x1b[0m";
+	    if ( el )
+		out += "\x1b[K";	// the normal-space tail, one erase
 	}
 	if ( next.cursor_visible )
 	{

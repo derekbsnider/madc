@@ -30,6 +30,8 @@ using madc::hub::tui_event;
 using madc::hub::tui_event_kind;
 using madc::hub::tui_model;
 using madc::hub::tui_dirty_rows;
+using madc::hub::tui_paint_plan;
+using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
 using madc::hub::tui_key_name;
 using madc::hub::tui_key_from_name;
@@ -458,6 +460,153 @@ TEST_CASE("dirty rows — only changed rows repaint; a resize dirties all")
     tui_grid small;
     small.resize(3, 20);
     CHECK(tui_dirty_rows(small, next).size() == next.rows);
+}
+
+// ---- the diff PLAN (IDE-9c scroll feel): a pure vertical shift becomes a
+// terminal scroll op + entering-row repaints instead of a full repaint.
+
+static tui_grid plan_grid(const std::vector<std::string> &rows, size_t cols)
+{
+    tui_grid g;
+    g.resize(rows.size(), cols);
+    for ( size_t r = 0; r < rows.size(); ++r )
+	g.put(r, 0, rows[r]);
+    return g;
+}
+
+TEST_CASE("diff plan — a one-line scroll shifts; chrome + entering rows repaint")
+{
+    std::vector<std::string> a, b;
+    a.push_back("status ONE");
+    for ( int i = 1; i <= 9; ++i )
+	a.push_back("line " + std::to_string(i)
+		    + " with enough text to matter");
+    b.push_back("status TWO");			// chrome changes every step
+    for ( int i = 2; i <= 9; ++i )
+	b.push_back("line " + std::to_string(i)
+		    + " with enough text to matter");
+    b.push_back("line 10 entering");
+    tui_grid prev = plan_grid(a, 40), next = plan_grid(b, 40);
+    // the status row is INVERSE-filled chrome — outside any shift band
+    prev.fill_attr(0, 0, 40, tui_attr::reverse());
+    next.fill_attr(0, 0, 40, tui_attr::reverse());
+
+    tui_paint_plan p = tui_diff_plan(prev, next);
+    REQUIRE(p.shifted);
+    CHECK(p.up);
+    CHECK(p.delta == 1u);
+    CHECK(p.top == 1u);
+    CHECK(p.bot == 9u);
+    REQUIRE(p.spans.size() == 2u);	// vs 10 dirty rows unplanned
+    CHECK(p.spans[0].row == 0u);	// the status row: only "ONE"->"TWO"
+    CHECK(p.spans[0].c0 == 7u);
+    CHECK(p.spans[0].c1 == 9u);
+    CHECK(p.spans[1].row == 9u);	// the entering row, its content
+    CHECK(p.spans[1].c0 == 0u);
+    CHECK(p.spans[1].c1 == 15u);
+}
+
+TEST_CASE("diff plan — scroll down (RI shape) inserts at the top")
+{
+    std::vector<std::string> a, b;
+    a.push_back("status");
+    for ( int i = 5; i <= 13; ++i )
+	a.push_back("line " + std::to_string(i)
+		    + " with enough text to matter");
+    b.push_back("status");			// chrome unchanged this time
+    b.push_back("line 4 entering");
+    for ( int i = 5; i <= 12; ++i )
+	b.push_back("line " + std::to_string(i)
+		    + " with enough text to matter");
+    tui_grid prev = plan_grid(a, 40), next = plan_grid(b, 40);
+
+    tui_paint_plan p = tui_diff_plan(prev, next);
+    REQUIRE(p.shifted);
+    CHECK(!p.up);
+    CHECK(p.delta == 1u);
+    CHECK(p.top == 1u);
+    CHECK(p.bot == 9u);
+    REQUIRE(p.spans.size() == 1u);
+    CHECK(p.spans[0].row == 1u);	// only the entering row repaints
+}
+
+TEST_CASE("diff plan — a page jump shifts by the page delta")
+{
+    // Genuinely distinct line bodies — lines differing only in a digit
+    // make the plain span diff (one-cell spans) cheaper than scrolling,
+    // and the cost model rightly refuses the shift for those.
+    std::vector<std::string> a, b;
+    a.push_back("status");
+    for ( int i = 1; i <= 9; ++i )
+	a.push_back("line " + std::to_string(i) + " "
+		    + std::string((size_t)i, '#'));
+    b.push_back("status");
+    for ( int i = 6; i <= 14; ++i )
+	b.push_back("line " + std::to_string(i) + " "
+		    + std::string((size_t)i, '#'));
+    tui_grid prev = plan_grid(a, 40), next = plan_grid(b, 40);
+
+    tui_paint_plan p = tui_diff_plan(prev, next);
+    REQUIRE(p.shifted);
+    CHECK(p.up);
+    CHECK(p.delta == 5u);
+    CHECK(p.top == 1u);
+    CHECK(p.bot == 9u);
+    CHECK(p.spans.size() == 5u);	// rows 5..9 enter; vs 9 dirty
+}
+
+TEST_CASE("diff plan — scattered edits and small diffs stay plain")
+{
+    std::vector<std::string> a;
+    a.push_back("status");
+    for ( int i = 1; i <= 9; ++i )
+	a.push_back("line " + std::to_string(i)
+		    + " with enough text to matter");
+    tui_grid prev = plan_grid(a, 40);
+
+    std::vector<std::string> b = a;	// scattered content edits, no shift
+    b[2] = "edited AA";
+    b[4] = "edited BB";
+    b[6] = "edited CC";
+    b[8] = "edited DD";
+    tui_grid next = plan_grid(b, 40);
+    tui_paint_plan p = tui_diff_plan(prev, next);
+    CHECK(!p.shifted);
+    CHECK(p.spans.size() == 4u);
+
+    // a 2-row diff sits below the detection threshold: stays plain
+    tui_grid small_next = plan_grid(a, 40);
+    small_next.put(3, 0, "edited                                  ");
+    small_next.put(7, 0, "edited                                  ");
+    tui_paint_plan q = tui_diff_plan(prev, small_next);
+    CHECK(!q.shifted);
+    CHECK(q.spans.size() == 2u);
+}
+
+TEST_CASE("diff plan — a dimension change is a plain full repaint")
+{
+    std::vector<std::string> a(10, std::string("row"));
+    tui_grid prev = plan_grid(a, 40);
+    std::vector<std::string> b(12, std::string("row"));
+    tui_grid next = plan_grid(b, 40);
+    tui_paint_plan p = tui_diff_plan(prev, next);
+    CHECK(!p.shifted);
+    CHECK(p.spans.size() == next.rows);
+}
+
+TEST_CASE("row_paint_end — the EL boundary: normal-space tails only")
+{
+    tui_grid g;
+    g.resize(3, 20);
+    g.put(0, 0, "abc");			// normal-space tail
+    CHECK(g.row_paint_end(0) == 3u);
+    CHECK(g.row_paint_end(1) == 0u);	// blank row: EL does it all
+    g.put(2, 0, "st");			// an inverse status fill is NOT
+    g.fill_attr(2, 0, 20, tui_attr::reverse());	// erasable by EL
+    CHECK(g.row_paint_end(2) == 20u);
+    g.put(1, 19, "x");			// content in the last column
+    CHECK(g.row_paint_end(1) == 20u);
+    CHECK(g.row_paint_end(99) == 0u);	// out of range clips
 }
 
 // ---- the bindings-as-data chord adapter (madcide IDE-1; owner-directed

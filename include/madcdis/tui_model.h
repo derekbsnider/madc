@@ -212,28 +212,224 @@ struct tui_grid
 	size_t end = out.find_last_not_of(' ');
 	return end == std::string::npos ? std::string() : out.substr(0, end + 1);
     }
+    // One past the rightmost cell EL cannot erase — erase fills with the
+    // DEFAULT attributes, so only a normal-attr-space tail qualifies (an
+    // inverse status fill does not). A target paints [0..end) and clears
+    // the tail with one EL instead of emitting the spaces.
+    size_t row_paint_end(size_t r) const
+    {
+	if ( r >= rows )
+	    return 0;
+	size_t end = cols;
+	while ( end > 0 )
+	{
+	    const tui_cell &cell = at(r, end - 1);
+	    if ( cell.ch != ' ' || !cell.attr.is_normal() )
+		break;
+	    --end;
+	}
+	return end;
+    }
 };
 
-// Rows differing between two grids — what a target repaints. A dimension
-// change dirties everything.
-inline std::vector<size_t> tui_dirty_rows(const tui_grid &prev,
-					  const tui_grid &next)
+// Whole-row equality between two same-width grids.
+inline bool tui_rows_equal(const tui_grid &a, size_t ra,
+			   const tui_grid &b, size_t rb)
 {
-    std::vector<size_t> out;
+    for ( size_t c = 0; c < a.cols; ++c )
+	if ( a.at(ra, c) != b.at(rb, c) )
+	    return false;
+    return true;
+}
+
+// A repaint span: cells [c0..c1] of one row. Row-level diffing repaints
+// 80 columns when two digits change; the span is the cell-level truth
+// (JOE's update granularity) and the unit every target emits.
+struct tui_row_span
+{
+    size_t row, c0, c1;
+    tui_row_span(size_t r, size_t a, size_t b) : row(r), c0(a), c1(b) {}
+};
+
+// The differing spans between two grids: per changed row, the first and
+// last differing cell. A dimension change is a full repaint of every row.
+inline std::vector<tui_row_span> tui_diff_spans(const tui_grid &prev,
+						const tui_grid &next)
+{
+    std::vector<tui_row_span> out;
     if ( prev.rows != next.rows || prev.cols != next.cols )
     {
 	for ( size_t r = 0; r < next.rows; ++r )
-	    out.push_back(r);
+	    out.push_back(tui_row_span(r, 0, next.cols ? next.cols - 1 : 0));
 	return out;
     }
     for ( size_t r = 0; r < next.rows; ++r )
+    {
+	size_t c0 = next.cols, c1 = 0;
 	for ( size_t c = 0; c < next.cols; ++c )
 	    if ( prev.at(r, c) != next.at(r, c) )
 	    {
-		out.push_back(r);
-		break;
+		if ( c0 == next.cols )
+		    c0 = c;
+		c1 = c;
 	    }
+	if ( c0 != next.cols )
+	    out.push_back(tui_row_span(r, c0, c1));
+    }
     return out;
+}
+
+// Rows differing between two grids — the span diff's row view (ONE cell
+// comparison loop owns both granularities).
+inline std::vector<size_t> tui_dirty_rows(const tui_grid &prev,
+					  const tui_grid &next)
+{
+    std::vector<tui_row_span> spans = tui_diff_spans(prev, next);
+    std::vector<size_t> out;
+    for ( size_t i = 0; i < spans.size(); ++i )
+	out.push_back(spans[i].row);
+    return out;
+}
+
+// FNV-1a over a row's cells (glyph + attribute bytes) — the O(rows*cols)
+// prefilter that keeps tui_diff_plan's offset scan at O(rows^2) hash
+// compares; equality is always confirmed by tui_rows_equal on a hit.
+inline unsigned long tui_row_hash(const tui_grid &g, size_t r)
+{
+    unsigned long h = 1469598103934665603UL;
+    for ( size_t c = 0; c < g.cols; ++c )
+    {
+	const tui_cell &cell = g.at(r, c);
+	unsigned char bytes[4] = { (unsigned char)cell.ch, cell.attr.fg,
+				   cell.attr.bg, cell.attr.flags };
+	for ( int i = 0; i < 4; ++i )
+	{
+	    h ^= bytes[i];
+	    h *= 1099511628211UL;
+	}
+    }
+    return h;
+}
+
+// A repaint PLAN between two grids — differential support, level 2 (the
+// scroll-feel half of IDE-9c). Either the plain diff spans (shifted ==
+// false) or a vertical scroll: the terminal moves rows `delta` lines
+// (up == toward row 0) inside the region [top..bot], then `spans`
+// repaint. A VT100-family target emits the shift as DECSTBM + DL/IL
+// (JOE's own dl/al); the blanks the terminal inserts at the region's far
+// edge carry the default attributes.
+//
+// The repaint set is computed by SIMULATION: apply the shift to `prev`,
+// re-diff against `next`. Whatever the offset scan guessed, painting
+// plan.spans after the shift reproduces `next` exactly — detection
+// quality only affects how MUCH repaints, never what the screen shows.
+// The shift is taken only when its estimated emission cost (span widths
+// + per-span addressing + the ~30-byte scroll op) beats the plain diff's.
+struct tui_paint_plan
+{
+    bool		shifted;
+    bool		up;	// content moves toward row 0 (DL); else IL
+    size_t		top, bot;	// scroll region, inclusive
+    size_t		delta;		// lines moved
+    std::vector<tui_row_span> spans;	// repaint AFTER the shift
+    tui_paint_plan() : shifted(false), up(false), top(0), bot(0), delta(0) {}
+};
+
+// Estimated bytes to emit a span set: cells + ~10 addressing/SGR bytes each.
+inline size_t tui_span_cost(const std::vector<tui_row_span> &spans)
+{
+    size_t cost = 0;
+    for ( size_t i = 0; i < spans.size(); ++i )
+	cost += spans[i].c1 - spans[i].c0 + 1 + 10;
+    return cost;
+}
+
+inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
+{
+    tui_paint_plan plan;
+    plan.spans = tui_diff_spans(prev, next);
+    if ( prev.rows != next.rows || prev.cols != next.cols
+      || plan.spans.size() < 4 )
+	return plan;
+    std::vector<bool> is_dirty(next.rows, false);
+    for ( size_t i = 0; i < plan.spans.size(); ++i )
+	is_dirty[plan.spans[i].row] = true;
+    std::vector<unsigned long> ph(next.rows), nh(next.rows);
+    for ( size_t r = 0; r < next.rows; ++r )
+    {
+	ph[r] = tui_row_hash(prev, r);
+	nh[r] = tui_row_hash(next, r);
+    }
+    // The moved band: the run of rows matching prev at one vertical
+    // offset covering the most DIRTY rows (unchanged rows also match at
+    // offset 0 and prove nothing — only dirty rows are evidence).
+    size_t best_score = 0, best_a = 0, best_b = 0, best_delta = 0;
+    bool   best_up = false;
+    for ( size_t delta = 1; delta < next.rows; ++delta )
+    {
+	for ( int dir = 0; dir < 2; ++dir )
+	{
+	    bool up = dir == 0;
+	    size_t r = 0;
+	    while ( r < next.rows )
+	    {
+		size_t from = up ? r + delta : r - delta;
+		bool ok = (up ? r + delta < next.rows : r >= delta)
+		       && nh[r] == ph[from]
+		       && tui_rows_equal(next, r, prev, from);
+		if ( !ok )
+		{
+		    ++r;
+		    continue;
+		}
+		size_t a = r, score = 0;
+		while ( ok )
+		{
+		    score += is_dirty[r] ? 1 : 0;
+		    ++r;
+		    from = up ? r + delta : r - delta;
+		    ok = r < next.rows
+		      && (up ? r + delta < next.rows : r >= delta)
+		      && nh[r] == ph[from]
+		      && tui_rows_equal(next, r, prev, from);
+		}
+		if ( score > best_score )
+		{
+		    best_score = score;
+		    best_a = a;
+		    best_b = r - 1;
+		    best_delta = delta;
+		    best_up = up;
+		}
+	    }
+	}
+    }
+    if ( best_score == 0 )
+	return plan;
+    // The region spans the band plus the rows the shift consumes: up (DL
+    // at top) region = [a .. b+delta]; down (IL at top) = [a-delta .. b].
+    size_t T = best_up ? best_a : best_a - best_delta;
+    size_t B = best_up ? best_b + best_delta : best_b;
+    // Simulate the shift on prev, re-diff: the exact repaint set.
+    tui_grid shifted = prev;
+    for ( size_t r = T; r <= B; ++r )
+    {
+	bool   from_ok = best_up ? r + best_delta <= B : r >= T + best_delta;
+	size_t from = best_up ? r + best_delta
+			      : (from_ok ? r - best_delta : 0);
+	for ( size_t c = 0; c < next.cols; ++c )
+	    shifted.at(r, c) = from_ok ? prev.at(from, c) : tui_cell();
+    }
+    std::vector<tui_row_span> after = tui_diff_spans(shifted, next);
+    if ( tui_span_cost(after) + 30 >= tui_span_cost(plan.spans) )
+	return plan;		// the shift would not pay for itself
+    plan.shifted = true;
+    plan.up = best_up;
+    plan.top = T;
+    plan.bot = B;
+    plan.delta = best_delta;
+    plan.spans = after;
+    return plan;
 }
 
 // ------------------------------------------------------------------- the keys
