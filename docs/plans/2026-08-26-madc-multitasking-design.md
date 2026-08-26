@@ -241,9 +241,13 @@ Unification claims (no-parallel-implementations):
   free, exe lane only — the JIT joins in-session).
 
 - **MT-2b (SHIPPED, session 137)**: the PRINCIPLED native join point —
-  under STD_MADC the user's main emits as `__madc_main` behind a
-  synthesized `int main(...)` wrapper (parameter list mirrored, args
-  forwarded) that calls `__madc_task_join_point()` BEFORE returning:
+  in a STD_MADC TU that SPAWNS (`Program::_uses_go_spawn`, set by
+  parse_go_statement — a pure program keeps its unwrapped,
+  runtime-free main, preserving the conditional-DT_NEEDED purity cover
+  pinned by test_native_shared), the user's main emits as
+  `__madc_main` behind a synthesized `int main(...)` wrapper
+  (parameter list mirrored, args forwarded) that calls
+  `__madc_task_join_point()` BEFORE returning:
   the join runs at MAIN'S END (the Kotlin block semantic), before ANY
   teardown, identically in the JIT / `-o` / `-r` / `-static-libmadc`
   lanes. ONE predicate (`main_wraps_task_join`, gated on

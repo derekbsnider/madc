@@ -4693,6 +4693,13 @@ public:
     // ill-formed — a declared `go`/`yield` variable, function, or type in
     // scope always wins). Strict --std=c*/c++* modes stay byte-identical.
     bool go_statement_enabled() const { return language_std == STD_MADC; }
+    // This TU parsed at least one `go` spawn (parse_go_statement sets it —
+    // template patterns included). The CIR builder emits the MT-2b joining
+    // main wrapper only then: a program that never spawns keeps today's
+    // unwrapped main and stays RUNTIME-FREE (no __madc_task_join_point
+    // import, so the conditional-DT_NEEDED purity cover still fires).
+    // Spawns reached only through a sibling TU ride the atexit belt.
+    bool _uses_go_spawn = false;
     // A C++ reserved keyword introduced in `min_std` is active iff we are in the
     // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
     // at/after that standard. The C++ enumerators are contiguous and ordered

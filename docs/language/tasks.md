@@ -49,15 +49,17 @@ int main()
   construction.** The same program produces the same interleaving every
   run (`tests/testgo.mad` pins a complete schedule byte-for-byte).
 - **The root scope joins AT MAIN'S END (MT-2b).** `main` returning does
-  not kill live tasks (the ruled Kotlin-scope semantic): under
-  `--std=madc` the user's `main` is emitted as `__madc_main` behind a
-  synthesized `int main(...)` wrapper that forwards the real arguments,
-  then drains every live task BEFORE returning — before any teardown
-  (atexit handlers, TLS/static destructors), identically in the JIT,
-  `-o` native, and `-r` object lanes (`tests/testgojoin.mad` pins it).
-  Strict-mode (`--std=gnu17` etc.) mains are untouched; a mixed-TU
-  project whose main TU is strict still drains via the runtime's
-  atexit belt. A drained-to-deadlock state aborts loudly.
+  not kill live tasks (the ruled Kotlin-scope semantic): in a
+  `--std=madc` TU that spawns (`go` appears), the user's `main` is
+  emitted as `__madc_main` behind a synthesized `int main(...)` wrapper
+  that forwards the real arguments, then drains every live task BEFORE
+  returning — before any teardown (atexit handlers, TLS/static
+  destructors), identically in the JIT, `-o` native, and `-r` object
+  lanes (`tests/testgojoin.mad` pins it). A program that never spawns
+  keeps its unwrapped, runtime-free main. Strict-mode (`--std=gnu17`
+  etc.) mains are untouched; a mixed-TU project whose main TU does not
+  spawn still drains via the runtime's atexit belt. A
+  drained-to-deadlock state aborts loudly.
 
 ## Accepted shapes (MT-1) — refusals are loud
 

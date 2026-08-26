@@ -65007,6 +65007,11 @@ TokenBase *Program::parse_go_statement(TokenBase *tb)
     g->file = tb->file;
     g->line = tb->line;
     g->column = tb->column;
+    // The TU spawns: the CIR builder gates the MT-2b joining main wrapper
+    // on this (a never-spawning program keeps its unwrapped, runtime-free
+    // main). Set at PARSE time so the decision is order-independent —
+    // main may translate before the function carrying this spawn.
+    _uses_go_spawn = true;
     return g;
 }
 

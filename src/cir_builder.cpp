@@ -25909,6 +25909,13 @@ bool CirBuilder::main_wraps_task_join(const Variable &v) const
 {
 	if (v.name != "main" || !m_prog || !m_prog->go_statement_enabled())
 		return false;
+	// Only a TU that actually spawns needs the join at main's end: a pure
+	// program keeps today's unwrapped main and stays RUNTIME-FREE (no
+	// __madc_task_join_point import — the conditional-DT_NEEDED purity
+	// cover, pinned by test_native_shared, still fires). Parse-time fact,
+	// so the decision is order-independent of where the spawn sits.
+	if (!m_prog->_uses_go_spawn)
+		return false;
 	if (!v.storage_alias_name.empty())
 		return false;
 	FuncDef *fd = dynamic_cast<FuncDef *>(v.type);
