@@ -105,12 +105,19 @@ enum class TokenID {
   tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
   tkFRIEND,                   // C++ `friend` declaration specifier
   tkExplicitDtor,             // explicit/pseudo destructor call: obj.~T() / ptr->~T()
-  tkCPPKEYWORD                // generic reserved C++ keyword (version-gated); the
+  tkCPPKEYWORD,               // generic reserved C++ keyword (version-gated); the
 			      // spelling distinguishes it. Used for reserved words
 			      // that the parser still recognizes by spelling (via
 			      // contextual_identifier_name) rather than a dedicated
 			      // dispatch token — so they are reserved (not bare
 			      // identifiers) without proliferating one class each.
+  tkGO, tkYIELD               // madc-dialect cooperative tasks (MT-1): `go
+			      // <call-expr>;` spawn and `yield;`/`yield();`.
+			      // CONTEXTUAL statement heads under STD_MADC only
+			      // (never keyword_map-reserved — real libstdc++
+			      // headers use `yield` as an identifier), claimed
+			      // by the UFCS error-shape rule: they fire only
+			      // where the statement was otherwise ill-formed.
 };
 
 enum class TokenAssoc {
@@ -1403,6 +1410,39 @@ public:
 	return t;
     }
     virtual TokenLabel *as_label_tok() override { return this; }
+};
+
+// madc-dialect `go <call-expr>;` (MT-1): spawn the call as a cooperative
+// task. CONTEXTUAL statement head under STD_MADC (never keyword_map-reserved
+// — see tkGO in the TokenID enum), built by Program::parse_go_statement via
+// the UFCS error-shape rule. Carries the parsed, resolved call; the CIR
+// builder lowers it to a per-site thunk + __madc_go (src/rt/rt_task.c).
+class TokenGO: public TokenBase
+{
+public:
+    TokenBase *call;
+    TokenGO() : call(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkGO; }
+    virtual TokenBase *clone()
+ override    {
+	TokenGO *t = new TokenGO();
+	if ( call )
+	    t->call = call->clone();
+	return t;
+    }
+};
+
+// madc-dialect `yield;` / `yield();` (MT-1): reschedule the current
+// cooperative task. Contextual twin of TokenGO (same gating and error-shape
+// rule); lowers to a __madc_yield() call.
+class TokenYIELD: public TokenBase
+{
+public:
+    TokenYIELD() {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkYIELD; }
+    virtual TokenBase *clone() override { return new TokenYIELD(); }
 };
 class TokenCASE: public TokenKeyword
 {

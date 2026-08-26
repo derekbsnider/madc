@@ -2073,6 +2073,12 @@ public:
 	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
+	// MT-1 `go f(args);` — spawn thunk + site block (src/rt/rt_task.c).
+	node_t translate_go(TokenBase *tb);
+	// One linkonce thunk per (callee symbol, slot shape), deduped here and
+	// flushed into the module after the host-call shims (Pass 0.745).
+	std::set<std::string> m_go_thunk_names;
+	std::vector<node_t> m_go_thunk_defs;
 	node_t translate_throw_call(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in

@@ -23554,6 +23554,199 @@ node_t CirBuilder::translate_match(TokenMatch *tm)
 	return node3(N_SWITCH, list(), expr, body, tm);
 }
 
+// -----------------------------------------------------------------------
+// MT-1 `go f(args);` — spawn a cooperative task (src/rt/rt_task.c).
+// -----------------------------------------------------------------------
+// Tier-1 C11 lowering: per (callee symbol, slot shape) ONE linkonce thunk
+//   void __madc_go_<sym>_<shape>(char *__blk)
+//   { f(*(long *)(__blk + 0), *(double *)(__blk + 8), ...); free(__blk); }
+// and per site one block
+//   { char *__madc_go_blk = malloc(N); *(long *)(__madc_go_blk + 0) = a0;
+//     ...; __madc_go((void *)__madc_go_<sym>_<shape>, __madc_go_blk); }
+// Arguments are evaluated AT SPAWN, in order (Go semantics), into 8-byte
+// slots of exactly three C types — long, double, void* — and the callee's
+// PROTOTYPED call converts each slot to the declared parameter type (C's
+// assignment conversions), so the accepted set (integers, floats/doubles,
+// pointers) is value-identical to a direct call. Class-typed, reference,
+// SIMD, complex and long-double arguments — and variadic, multi-return,
+// class-returning, method and function-pointer callees — are refused LOUD;
+// they land with later slices.
+node_t CirBuilder::translate_go(TokenBase *tb)
+{
+	TokenGO *tg = (TokenGO *)tb;
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tg->call);
+	if (!tcf)
+		return error_node("go: expected a resolved function call", tb);
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	if (!fd)
+		return error_node("go: the callee is not a directly named "
+			"function (function-pointer spawns land with a later "
+			"slice)", tb);
+	if (fd->is_varargs || fd->is_multi_return()
+	    || function_retbuf_class(fd) || !fd->method_display_name.empty())
+		return error_node("go: variadic, multi-return, "
+			"class-returning and method callees land with a later "
+			"slice", tb);
+
+	enum SlotKind { SK_I64, SK_F64, SK_PTR };
+	std::vector<TokenBase *> &args = tcf->parameters;
+	std::vector<SlotKind> slots;
+	for (size_t i = 0; i < args.size(); i++) {
+		DataDef *ad = m_prog ? m_prog->array_decay_pointer(args[i])
+				     : NULL;
+		if (!ad && m_prog)
+			ad = m_prog->operand_value_datadef(args[i]);
+		if (!ad && args[i])
+			ad = args[i]->datadef();
+		if (!ad)
+			return error_node("go: argument has no resolved type",
+					  tb);
+		DataDef *u = ad->unqualified();
+		if (u->is_reference() || u->is_object() || u->is_simd()
+		    || u->is_complex() || u->is_member_pointer())
+			return error_node("go: only integer, floating and "
+				"pointer arguments spawn in this slice", tb);
+		if (u->is_pointer() || u->is_cstr()
+		    || dynamic_cast<DataDefFPTR *>(u))
+			slots.push_back(SK_PTR);
+		else if (u->is_real()) {
+			if (u->size > 8)
+				return error_node("go: long double arguments "
+					"land with a later slice", tb);
+			slots.push_back(SK_F64);
+		} else if (u->is_integer()) {
+			slots.push_back(SK_I64);
+		} else {
+			return error_node("go: unsupported argument type", tb);
+		}
+	}
+
+	std::string target_sym = call_emit_symbol(tcf->var, fd);
+	referenced_funcs.insert(target_sym);
+	std::string shape;
+	for (size_t i = 0; i < slots.size(); i++)
+		shape += (slots[i] == SK_I64 ? 'l'
+			  : slots[i] == SK_F64 ? 'd' : 'p');
+	if (shape.empty())
+		shape = "v";
+	std::string thunk_name = "__madc_go_" + target_sym + "_" + shape;
+
+	// An 8-byte slot's lvalue type: long / double / void*.
+	auto slot_ptr_type = [&](SlotKind k) -> node_t {
+		node_t spec = list();
+		if (k == SK_I64) {
+			append(spec, simple(N_LONG));
+			append(spec, simple(N_LONG));
+		} else if (k == SK_F64) {
+			append(spec, simple(N_DOUBLE));
+		} else {
+			append(spec, simple(N_VOID));
+		}
+		node_t dl = list();
+		append(dl, pointer());
+		return node2(N_TYPE, spec, node2(N_DECL, ignore(), dl));
+	};
+
+	need_output_extern("__madc_go", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	need_output_extern("free", false, { { {N_VOID}, true } });
+	if (!slots.empty())
+		need_output_extern("malloc", true,
+				   { { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+
+	// The thunk — once per (callee, shape); linkonce so identical copies
+	// from other TUs merge.
+	if (m_go_thunk_names.insert(thunk_name).second) {
+		node_t cargs = list();
+		for (size_t i = 0; i < slots.size(); i++) {
+			node_t addr = i
+				? node2(N_ADD, id("__blk"),
+					integer((int64_t)(i * 8)))
+				: id("__blk");
+			append(cargs, node1(N_DEREF,
+				node2(N_CAST, slot_ptr_type(slots[i]), addr)));
+		}
+		node_t items = list();
+		append(items, node2(N_EXPR, list(),
+			node2(N_CALL, id(target_sym.c_str()), cargs)));
+		node_t fargs = list();
+		append(fargs, id("__blk"));
+		append(items, node2(N_EXPR, list(),
+			node2(N_CALL, id("free"), fargs)));
+		node_t pl = list();
+		node_t pp = simple(N_SPEC_DECL);
+		append(pp, node1(N_LIST, simple(N_CHAR)));
+		append(pp, node2(N_DECL, id("__blk"),
+				 node1(N_LIST, pointer())));
+		append(pp, ignore());
+		append(pp, ignore());
+		append(pp, ignore());
+		append(pl, pp);
+		node_t fdecl = node2(N_DECL, id(thunk_name.c_str()),
+				     node1(N_LIST, node1(N_FUNC, pl)));
+		node_t spec = list();
+		append(spec, simple(N_VOID));
+		append(spec, node2(N_ATTR, id("linkonce"), list()));
+		node_t def = node4(N_FUNC_DEF, spec, fdecl, list(),
+				   node2(N_BLOCK, list(), items));
+		CIR_NODE(def)->synth_from_origin = true;
+		m_go_thunk_defs.push_back(def);
+	}
+
+	// The site block.
+	node_t site_items = list();
+	const char *blkv = "__madc_go_blk";
+	if (!slots.empty()) {
+		node_t bdecl = simple(N_SPEC_DECL);
+		append(bdecl, node1(N_SHARE, node1(N_LIST, simple(N_CHAR))));
+		append(bdecl, node2(N_DECL, id(blkv, tb),
+				    node1(N_LIST, pointer())));
+		append(bdecl, ignore());
+		append(bdecl, ignore());
+		append(bdecl, ignore());
+		append(site_items, bdecl);
+		node_t margs = list();
+		append(margs, integer((int64_t)(slots.size() * 8), tb));
+		append(site_items, node2(N_EXPR, list(),
+			node2(N_ASSIGN, id(blkv, tb),
+			      node2(N_CALL, id("malloc", tb), margs, tb), tb),
+			tb));
+		for (size_t i = 0; i < slots.size(); i++) {
+			node_t val = translate_expr(args[i]);
+			if (!val)
+				return error_node("go: argument failed to "
+						  "translate", tb);
+			// Temporaries an argument materialized run before the
+			// slot store (the shim's drain discipline).
+			for (node_t pstmt : m_pending_stmts)
+				append(site_items, pstmt);
+			m_pending_stmts.clear();
+			if (slots[i] == SK_PTR)
+				val = node2(N_CAST, void_ptr_type(), val, tb);
+			node_t addr = i
+				? node2(N_ADD, id(blkv, tb),
+					integer((int64_t)(i * 8), tb), tb)
+				: id(blkv, tb);
+			node_t lv = node1(N_DEREF,
+				node2(N_CAST, slot_ptr_type(slots[i]), addr,
+				      tb), tb);
+			append(site_items, node2(N_EXPR, list(),
+				node2(N_ASSIGN, lv, val, tb), tb));
+		}
+	}
+	node_t gargs = list();
+	append(gargs, node2(N_CAST, void_ptr_type(),
+			    id(thunk_name.c_str(), tb), tb));
+	if (slots.empty())
+		append(gargs, node2(N_CAST, void_ptr_type(), integer(0, tb),
+				    tb));
+	else
+		append(gargs, id(blkv, tb));
+	append(site_items, node2(N_EXPR, list(),
+		node2(N_CALL, id("__madc_go", tb), gargs, tb), tb));
+	return node2(N_BLOCK, list(), site_items, tb);
+}
+
 node_t CirBuilder::translate_stmt(TokenBase *tb)
 {
 	if (!tb) return NULL;
@@ -23620,6 +23813,17 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		}
 		return node2(N_BLOCK, list(), items, tb);
 	  } }
+
+	// madc-dialect cooperative tasks (MT-1): `yield;` -> __madc_yield();
+	// `go f(args);` -> per-site thunk + __madc_go (translate_go).
+	if (tb->id() == TokenID::tkYIELD) {
+		need_output_extern("__madc_yield", false, {});
+		return node2(N_EXPR, list(),
+			     node2(N_CALL, id("__madc_yield", tb), list(), tb),
+			     tb);
+	}
+	if (tb->id() == TokenID::tkGO)
+		return translate_go(tb);
 
 	// Declaration
 	{ TokenDecl *td = tb->as_decl_tok();
@@ -28663,6 +28867,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	// runtime-free, so the libmadc.so.0 DT_NEEDED cover logic can fire.
 	if (!prog->aot_skip_eval_shims)
 		synth_call_shims(prog, roots, func_def_nodes);
+
+	// Pass 0.745: `go` spawn thunks (translate_go) — synthesized during
+	// body translation, flushed after the shims so their referenced
+	// target symbols and externs flow into Pass 0.75+.
+	for (node_t t : m_go_thunk_defs)
+		func_def_nodes.push_back(t);
+	m_go_thunk_defs.clear();
 
 	// (typed_proto_syms is declared above materialize_and_lower — see there.)
 

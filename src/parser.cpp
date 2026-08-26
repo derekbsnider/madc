@@ -64969,6 +64969,52 @@ bool Program::datatype_statement_starts_qualified_expr()
 	|| id == TokenID::tkDec;
 }
 
+// MT-1 `go <call-expr>;` — tb is the consumed contextual `go` head (see the
+// error-shape claim in parseStatement's identifier arm). The call parses
+// through the ordinary expression machinery — overload resolution and
+// namespace lookup stay on the ONE resolver — and the statement then
+// requires a plain function-call result; everything else is refused loud.
+TokenBase *Program::parse_go_statement(TokenBase *tb)
+{
+    TokenBase *head = nextToken();
+    if ( !head )
+	Throw(tb) << "Unexpected end of input after 'go'" << flush;
+    TokenBase *expr = parseExpression(head, false, false, false, 0, false);
+    if ( !expr )
+	Throw(tb) << "'go' expects a function call to spawn" << flush;
+    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr);
+    if ( !tcf )
+	Throw(tb) << "'go' spawns a plain function call; method calls and "
+		     "other expressions land with a later slice" << flush;
+    TokenGO *g = new TokenGO();
+    g->call = tcf;
+    g->file = tb->file;
+    g->line = tb->line;
+    g->column = tb->column;
+    return g;
+}
+
+// MT-1 `yield;` / `yield();` — the contextual twin. An undeclared
+// `yield(args...)` is refused loud (the generator form is the coroutine
+// surface's seat, a later slice); a DECLARED `yield` never reaches here.
+TokenBase *Program::parse_yield_statement(TokenBase *tb)
+{
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	nextToken();
+	TokenBase *cl = nextToken();
+	if ( !cl || cl->id() != TokenID::tkClBrk )
+	    Throw(tb) << "'yield' takes no arguments (the value-carrying "
+			 "generator form lands with the coroutine surface)"
+		      << flush;
+    }
+    TokenYIELD *y = new TokenYIELD();
+    y->file = tb->file;
+    y->line = tb->line;
+    y->column = tb->column;
+    return y;
+}
+
 TokenBase *Program::parseStatement(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
@@ -65113,6 +65159,29 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( pk && pk->id() != TokenID::tkClBrc )
 		    lbl->labeled = parseStatement(nextToken());
 		return lbl;
+	    }
+	    // madc-dialect cooperative tasks (MT-1): `go <call-expr>;` and
+	    // `yield;` / `yield();` — CONTEXTUAL statement heads, claimed only
+	    // where the statement was otherwise ill-formed (the UFCS
+	    // error-shape rule): a declared `go`/`yield` name in scope, or a
+	    // shape these rules don't match, parses exactly as before. Real
+	    // headers use `yield` as an identifier (this_thread::yield), which
+	    // is why these are never keyword_map-reserved.
+	    if ( go_statement_enabled() )
+	    {
+		std::string ctx_sp = ((TokenIdent *)tb)->spelling();
+		if ( (ctx_sp == "go" || ctx_sp == "yield")
+		  && !findVariable(ctx_sp)
+		  && datatype_map.find(ctx_sp) == datatype_map.end() )
+		{
+		    if ( ctx_sp == "go" && peekToken()
+		      && peekToken()->type() == TokenType::ttIdentifier )
+			return parse_go_statement(tb);
+		    if ( ctx_sp == "yield" && peekToken()
+		      && (peekToken()->id() == TokenID::tkSemi
+		       || peekToken()->id() == TokenID::tkOpBrk) )
+			return parse_yield_statement(tb);
+		}
 	    }
 	    if ( is_static_assert_identifier(((TokenIdent *)tb)->spelling()) )
 		return parse_static_assert_statement(tb);

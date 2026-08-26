@@ -4680,6 +4680,12 @@ public:
     // strict --std=c*/c++* mode stays byte-identical. Same gating shape as
     // madc_dialect_type_spelling() (parser.cpp), the other STD_MADC feature.
     bool ufcs_enabled() const { return language_std == STD_MADC; }
+    // Cooperative tasks (MT-1): `go <call-expr>;` and `yield;`/`yield();`
+    // are madc-DIALECT statement heads, claimed CONTEXTUALLY under the UFCS
+    // error-shape rule (they fire only where the statement was otherwise
+    // ill-formed — a declared `go`/`yield` variable, function, or type in
+    // scope always wins). Strict --std=c*/c++* modes stay byte-identical.
+    bool go_statement_enabled() const { return language_std == STD_MADC; }
     // A C++ reserved keyword introduced in `min_std` is active iff we are in the
     // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
     // at/after that standard. The C++ enumerators are contiguous and ordered
@@ -6301,6 +6307,10 @@ public:
     // side effects. parseExprStmt collects them into a TokenComma chain
     // whose compile() evaluates left for effects and returns right.
     TokenBase *parseExprStmt(TokenBase *);
+    // MT-1 contextual statement heads (see go_statement_enabled): tb is the
+    // already-consumed `go` / `yield` identifier token.
+    TokenBase *parse_go_statement(TokenBase *tb);
+    TokenBase *parse_yield_statement(TokenBase *tb);
     // Parse an identifier followed by any chain of postfix operators
     // (->ident / .ident / [expr] / ++ / --) and return the resulting
     // expression node. Stops at the first non-postfix token (binary
