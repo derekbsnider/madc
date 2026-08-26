@@ -1,0 +1,25 @@
+// MT-4 timers: madc::sleep_ms parks on the scheduler's time source; wake
+// order is DEADLINE order (FIFO among equals) regardless of spawn order,
+// and the schedule is deterministic — the accumulated trace pins it whole.
+// Real small sleeps here (suite cost ~40ms); the virtual-time jump is
+// pinned by the unit gate (tests/unit/test_rt_vtime.cpp).
+value tr;
+
+void napper(long id, long ms)
+{
+    madc::sleep_ms(ms);
+    tr = format("{}n{};", tr, id);
+    println("wake n{} tr={}", id, tr);
+}
+
+int main()
+{
+    go napper(1, 30);
+    go napper(2, 10);
+    go napper(3, 20);
+    tr = format("{}m1;", tr);
+    madc::sleep_ms(40);
+    tr = format("{}mend;", tr);
+    println("end tr={}", tr);
+    return 0;
+}
