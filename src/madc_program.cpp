@@ -4980,6 +4980,12 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
 				first_line == prev_line ? prev_end_col : 0,
 				rows);
 	}
+	// A macro-expansion token's spelling occupies no source bytes — its
+	// line/column name the invocation site (tfSYNTHPOS). Its leading
+	// trivia (real source, folded above) still anchors; the token itself
+	// emits no span, and the cursor must not advance to its position.
+	if ( t->is_synthetic_position() )
+	    continue;
 	HighlightClass hc = madc_token_highlight_class(t);
 	std::string sp = madc_token_spelling(t);
 	if ( hc == HighlightClass::hcIdent )

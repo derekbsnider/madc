@@ -1647,6 +1647,10 @@ protected:
 	std::string disabled_macro;
 	bool recount = true;   // false: text was already read once; re-reading
 			       // it must not re-advance the column counter
+	bool synthesized = false; // true: text never existed in the source
+				  // (macro expansion, __FILE__/__LINE__) — its
+				  // chars advance NO column and taint tokens
+				  // with tfSYNTHPOS (fantasy-coordinate guard)
     };
     // Flat in-memory source buffer + read cursor. The entire input (file or
     // string) is slurped ONCE into _buf; get()/peek()/good()/eof() are then
@@ -1658,10 +1662,11 @@ protected:
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
     std::set<std::string> _inherited_disabled_macros;
+    size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
-			    bool recount = true)
+			    bool recount = true, bool synthesized = false)
     {
 	if ( s.empty() )
 	    return;
@@ -1669,6 +1674,7 @@ protected:
 	frame.remaining = s.size();
 	frame.disabled_macro = disabled_macro;
 	frame.recount = recount;
+	frame.synthesized = synthesized;
 	_pushback_frames.push_front(frame);
     }
 public:
@@ -1707,8 +1713,11 @@ public:
     void pushback_macro(const std::string &s, const std::string &disabled_macro)
     {
 	_pushback = s + _pushback;
-	add_pushback_frame(s, disabled_macro);
+	add_pushback_frame(s, disabled_macro, true, true);
     }
+    // Chars served from synthesized frames since open — the lexer compares
+    // across one token read to stamp tfSYNTHPOS.
+    size_t synth_reads() const { return _synth_gets; }
     bool macro_disabled(const std::string &name) const
     {
 	if ( _inherited_disabled_macros.count(name) )
@@ -1750,13 +1759,22 @@ public:
 	    int ch = (unsigned char)_pushback[0];
 	    _pushback.erase(0, 1);
 	    bool recount = true;
+	    bool synthesized = false;
 	    if ( !_pushback_frames.empty() )
 	    {
 		recount = _pushback_frames.front().recount;
+		synthesized = _pushback_frames.front().synthesized;
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
 	    }
-	    if ( recount )
+	    // Synthesized text has no source columns: advancing the counter
+	    // through an expansion stamps fantasy columns on its tokens AND
+	    // on every real token after it on the physical line (the
+	    // strip_grapple blue smear). The column FREEZES at the invocation
+	    // end; tfSYNTHPOS (via _synth_gets) marks the tokens themselves.
+	    if ( synthesized )
+		++_synth_gets;
+	    else if ( recount )
 		++_column;
 	    return ch;
 	}
