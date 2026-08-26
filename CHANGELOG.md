@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **madcide: ^T options overlay (IDE-9d, 2026-08-26)**: JOE's ^T — a
+  pane of letter rows showing LIVE option values, each row firing its
+  action on enter: `D Tab width` (new — a real display option: the
+  value rides the edit node's hints into the model's byte→display-
+  column map, clamped 1..16), `S Scheme` (the theme prompt), `K
+  Keymap` (the joe/pico toggle, factored to one implementation). Bad
+  widths are refused with the reason. Bound to `^T` in the joe
+  profile.
+
 - **madc::lex_spans — colour right after lexing (staged parsing stage 1,
   2026-08-26)**: madcide now shows syntax colour in its FIRST paint.
   The new engine public classifies from lexing the buffer text alone
