@@ -366,6 +366,23 @@ for stage in $stages; do
 			note_stage "pull madc-release" "$rc"
 			chmod +x "$LOCAL_MADC/bin/madc-release" 2>/dev/null
 		fi
+		# The RUNTIME LIBRARIES ride the pull too: a `madc -o` native
+		# executable links/loads against lib/libmadc.so (and the AOT
+		# link consumes the archives), so a stale NAS lib turns a
+		# freshly-pulled compiler into runtime symbol-lookup errors
+		# in the exes it produces (2026-08-26: bin/madcide undefined
+		# __php_file_get_contents — the lib was 3 days behind bin/madc).
+		rsync -az --no-perms --no-owner --no-group --links \
+			-e "ssh -p $PORT" \
+			"$REMOTE:/workspace/madc/lib/libmadc.so" \
+			"$REMOTE:/workspace/madc/lib/libmadc.so.0" \
+			"$REMOTE:/workspace/madc/lib/libmadc.a" \
+			"$REMOTE:/workspace/madc/lib/libmadc_rt.a" \
+			"$LOCAL_MADC/lib/"
+		rc=$?
+		echo "pull libs rc=$rc"
+		note_stage "pull libs" "$rc"
+		chmod +x "$LOCAL_MADC/lib/libmadc.so" 2>/dev/null
 		;;
 	*)
 		echo "unknown stage: $stage" >&2
