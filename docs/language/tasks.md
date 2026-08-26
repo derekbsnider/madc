@@ -77,10 +77,11 @@ multi-return, class-returning, method, and function-pointer callees.
 
 ## Known MT-1 limits (named residues)
 
-- `try`/`catch` held **across** a `yield()` is not yet task-local: the
-  SJLJ context chain is shared, so interleaved tasks corrupt each
-  other's handlers. Catch-and-return within one run-slice is fine.
-  Per-task save/restore at switch is the next-slice fix.
+- ~~`try`/`catch` across a `yield()`~~ **FIXED (MT-2 opener)**:
+  exception state (the try/cleanup chains and the in-flight exception)
+  is per-task, saved and restored at every switch like registers —
+  each task catches its own throws whatever the interleaving
+  (`tests/testgotry.mad` pins it; the pre-fix state segfaulted).
 - Ring-lifetime `const char *` text (e.g. a held `format(...)` result)
   rots across a yield exactly as it rots across any ring call — copy
   into a `value` first (the standing ring discipline).

@@ -209,9 +209,11 @@ Unification claims (no-parallel-implementations):
   ABI), root join in CirJitSession::run_main + loaded-object entry +
   atexit (one owner, idempotent). Docs: docs/language/tasks.md. Tests:
   testgo (complete schedule pinned), testgoident, testgogate,
-  test_rt_task. NAMED RESIDUES: try/catch held ACROSS a yield shares
-  the global SJLJ chain (per-task save/restore at switch = next
-  slice); ring-lifetime text across a yield rots (standing ring
+  test_rt_task. NAMED RESIDUES: ~~try/catch across a yield~~ FIXED by
+  the MT-2 opener (per-task exception-state save/restore at every
+  switch — __madc_except_state_* in rt_except, wired in task_switch/
+  task_exit_switch; testgotry pins it, pre-fix state segfaulted);
+  ring-lifetime text across a yield rots (standing ring
   discipline); -static-libmadc spawn links loud (hosted runtime, no
   AOT-ledger context backend yet); go-in-late-template-bodies thunk
   flush (Pass 1.9) untested; darwin ucontext deprecation at the mac
