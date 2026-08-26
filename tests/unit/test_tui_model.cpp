@@ -557,10 +557,30 @@ TEST_CASE("chords — a ctrl-held continuation completes the chord (JOE)")
     keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
     keys.push_back(tui_keyev(tui_key::ctrl, 'z'));	// ctrl still held
     std::vector<tui_event> ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "shell");
-    CHECK(ev[0].seq == "^k z");
+    REQUIRE(ev.size() == 2u);
+    CHECK(ev[0].kind == tui_event_kind::focus);	// chord opened: repaint (%k)
+    CHECK(ev[1].kind == tui_event_kind::action);
+    CHECK(ev[1].action_name == "shell");
+    CHECK(ev[1].seq == "^k z");
+
+    // A three-key chord repaints on the open AND on each extension —
+    // the %k echo grows live ("^k", then "^k e") before the action.
+    tui_bindings b3;
+    b3.bind("^k e c", "deep");
+    REQUIRE(b3.finalize(err));
+    tui_model m3;
+    m3.set_bindings(b3);
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
+    keys.push_back(tui_keyev(tui_key::ch, 'e'));
+    keys.push_back(tui_keyev(tui_key::ch, 'c'));
+    ev = m3.apply_keys(keys);
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::focus);
+    CHECK(ev[2].kind == tui_event_kind::action);
+    CHECK(ev[2].action_name == "deep");
+    CHECK(ev[2].seq == "^k e c");
 }
 
 static tui_bindings joe_table()
@@ -579,8 +599,10 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     tui_model m;
     m.set_bindings(joe_table());
 
-    // A printable run flushes BEFORE the chord fires; the chord's own
-    // printable continuation never joins a text run.
+    // A printable run flushes BEFORE the chord fires; the chord OPENING
+    // emits a focus (repaint) event — the pending prefix is visible
+    // state (JOE's %k echo); the chord's own printable continuation
+    // never joins a text run.
     std::vector<tui_keyev> keys;
     keys.push_back(tui_keyev(tui_key::ch, 'a'));
     keys.push_back(tui_keyev(tui_key::ch, 'b'));
@@ -588,14 +610,15 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     keys.push_back(tui_keyev(tui_key::ch, 's'));
     keys.push_back(tui_keyev(tui_key::ch, 'c'));
     std::vector<tui_event> ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 3u);
+    REQUIRE(ev.size() == 4u);
     CHECK(ev[0].kind == tui_event_kind::text);
     CHECK(ev[0].text == "ab");
-    CHECK(ev[1].kind == tui_event_kind::action);
-    CHECK(ev[1].action_name == "save");
-    CHECK(ev[1].seq == "^k s");
-    CHECK(ev[2].kind == tui_event_kind::text);
-    CHECK(ev[2].text == "c");
+    CHECK(ev[1].kind == tui_event_kind::focus);
+    CHECK(ev[2].kind == tui_event_kind::action);
+    CHECK(ev[2].action_name == "save");
+    CHECK(ev[2].seq == "^k s");
+    CHECK(ev[3].kind == tui_event_kind::text);
+    CHECK(ev[3].text == "c");
 
     // Chord continuations are letter-case-insensitive (JOE's ^K S == ^K s):
     // a shifted continuation matches the same binding.
@@ -603,10 +626,11 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
     keys.push_back(tui_keyev(tui_key::ch, 'S'));
     ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "save");
-    CHECK(ev[0].seq == "^k s");
+    REQUIRE(ev.size() == 2u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::action);
+    CHECK(ev[1].action_name == "save");
+    CHECK(ev[1].seq == "^k s");
 
     // Single-key binding fires directly.
     keys.clear();
@@ -622,29 +646,36 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
     keys.push_back(tui_keyev(tui_key::ch, 'z'));
     ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "");
-    CHECK(ev[0].seq == "^k z");
+    REQUIRE(ev.size() == 2u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::action);
+    CHECK(ev[1].action_name == "");
+    CHECK(ev[1].seq == "^k z");
 
-    // esc cancels a pending chord silently; the next key is ordinary.
+    // esc cancels a pending chord — the cancel repaints too (the %k
+    // echo must clear); the next key is ordinary.
     keys.clear();
     keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
     keys.push_back(tui_keyev(tui_key::esc));
     keys.push_back(tui_keyev(tui_key::ch, 'x'));
     ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::text);
-    CHECK(ev[0].text == "x");
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::focus);
+    CHECK(m.pending_chord() == "");
+    CHECK(ev[2].kind == tui_event_kind::text);
+    CHECK(ev[2].text == "x");
 
     // A resize passes through mid-chord and the chord still completes —
-    // across apply_keys BATCHES (pending is adapter state).
+    // across apply_keys BATCHES (pending is adapter state, and the
+    // start-focus event leaves it readable for the %k seat).
     keys.clear();
     keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
     keys.push_back(tui_keyev(tui_key::resize));
     ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::resize);
+    REQUIRE(ev.size() == 2u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(ev[1].kind == tui_event_kind::resize);
     CHECK(m.pending_chord() == "^k");
     keys.clear();
     keys.push_back(tui_keyev(tui_key::ch, 'q'));

@@ -1053,7 +1053,12 @@ public:
 		}
 		if ( k.kind == tui_key::esc )
 		{
+		    // Cancelling a chord is a visible state change — a status
+		    // line echoing the prefix (%k) must repaint.
 		    _pending.clear();
+		    tui_event ec;
+		    ec.kind = tui_event_kind::focus;
+		    out.push_back(ec);
 		    continue;
 		}
 		std::string candidate = _pending + " "
@@ -1061,6 +1066,9 @@ public:
 		if ( _bindings.prefix(candidate) )
 		{
 		    _pending = candidate;
+		    tui_event ep;
+		    ep.kind = tui_event_kind::focus;
+		    out.push_back(ep);
 		    continue;
 		}
 		tui_event e;
@@ -1098,7 +1106,13 @@ public:
 		}
 		if ( _bindings.prefix(head) )
 		{
+		    // A chord STARTED (and below, extended or cancelled): the
+		    // pending prefix is visible state — a status line echoing
+		    // it (JOE's %k) needs a repaint event to show it live.
 		    _pending = head;
+		    tui_event eh;
+		    eh.kind = tui_event_kind::focus;
+		    out.push_back(eh);
 		    continue;
 		}
 	    }

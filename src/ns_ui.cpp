@@ -1160,4 +1160,15 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
     return true;
 }
 
+// The chord entered so far (canonical spelling, e.g. "^k") — empty when
+// no chord is pending or the handle is bad. A status line's chord-echo
+// seat (JOE's %k) reads it at compose time; presentation state stays in
+// the model, this is a read-only view of it.
+void tui_pending(madc::value &out, int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    out = madc::value(std::string(u ? u->model.pending_chord()
+				    : std::string()));
+}
+
 } // namespace ui

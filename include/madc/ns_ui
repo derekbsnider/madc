@@ -281,4 +281,8 @@ namespace ui {
     // not render or read events while suspended.
     bool    tui_suspend(int64_t t);
     bool    tui_resume(int64_t t);
+    // The chord entered so far (canonical spelling, "^k") — empty when
+    // none is pending. A status line's chord-echo seat (JOE's %k) reads
+    // it at compose time.
+    void    tui_pending(value &out, int64_t t);
 }

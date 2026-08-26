@@ -132,11 +132,14 @@ int main()
     apply_ide_event(w, es, doc, e);
     println("goto-outline: caret={}", es_int(w, es, "caret", -1));
 
-    // -- AST-1: the status line's enclosing-function suffix — a RETAINED
-    //    read of the buffer's parse handle (caret 43 = line 2's head,
-    //    inside twice). children: heading, edit, pane, status, menu.
+    // -- AST-1: the status line's enclosing-function seat (%x) — a
+    //    RETAINED read of the buffer's parse handle (caret 43 = line 2's
+    //    head, inside twice). The JOE screen model (IDE-9a/9b): children
+    //    = status (TOP), edit, pane (no banner, no menu); the idle line
+    //    renders the profile's lmsg/rmsg formats.
     compose_ide_tree(tree, w, es, doc);
-    println("status-fn: {}", tree["children"][3]["content"]);
+    var stline = php::trim(tree["children"][0]["content"]);
+    println("status-fn: {}", stline);
 
     // -- AST-2: themed highlight spans ride the edit node's hints —
     //    computed at reparse from the handle's retained state. The
@@ -453,8 +456,16 @@ int main()
 	    vn2, strstr(cc, "#include <cstdio>") != 0 ? 1 : 0,
 	    strstr(cc, "int twice2(int n)") != 0 ? 1 : 0,
 	    ui::text_size(w2, doc2));
-    var hl = format("{}", tree["children"][0]["label"]);
-    println("cxxview-head: tagged={}", strstr(hl.c_str(), "[c++]") != 0 ? 1 : 0);
+    // The banner is gone (IDE-9b): the view name renders in the status
+    // line's %y seat "(c++) ", the read-only state in %R — visible once
+    // the one-shot "View: c++" message is consumed (a key event).
+    ev_key(e, "right");
+    apply_ide_event(w2, es2, doc2, e);
+    compose_ide_tree(tree, w2, es2, doc2);
+    var hl = format("{}", tree["children"][0]["content"]);
+    println("cxxview-head: tagged={} ro={}",
+	    strstr(hl.c_str(), "(c++)") != 0 ? 1 : 0,
+	    strstr(hl.c_str(), "(Read only)") != 0 ? 1 : 0);
     ev_action(e, "view", "^k n");	// c++ -> original
     apply_ide_event(w2, es2, doc2, e);
     ui::get(vn2, w2, es2, "view");

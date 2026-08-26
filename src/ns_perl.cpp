@@ -261,6 +261,10 @@ std::string *perl_substr(std::string *result, const char *str, int64_t offset, i
 	std::string &res = *result;
 	if ( offset < 0 ) offset = (int64_t)s.length() + offset;
 	if ( offset < 0 ) offset = 0;
+	// Perl: an offset past the end yields undef (empty here), never a
+	// die — std::string::substr would THROW out_of_range and abort the
+	// whole process on the same input.
+	if ( offset > (int64_t)s.length() ) offset = (int64_t)s.length();
 	if ( length < 0 ) length = (int64_t)s.length() + length - offset;
 	if ( length < 0 ) length = 0;
 	res = s.substr((size_t)offset, (size_t)length);
