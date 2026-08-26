@@ -1595,6 +1595,13 @@ class TokenObjTemp: public TokenBase
 public:
     DataDefCLASS *obj_class;
     std::vector<TokenBase *> ctor_args;
+    // Which spelling opened the argument list survives to construction
+    // ([dcl.init.list]/3-4): the braced form `T{...}` list-initializes (an
+    // initializer-list ctor takes the WHOLE list as one argument; a class
+    // that IS std::initializer_list builds from the backing array directly),
+    // the paren form `T(...)` never does. TokenDecl::ctor_args_braced is the
+    // declaration path's twin of this flag.
+    bool braced = false;
     TokenObjTemp(DataDefCLASS *c) : TokenBase() { obj_class = c; _datatype = (DataDef *)c; }
     virtual TokenID id() const override { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const override { return (DataDef *)obj_class; }

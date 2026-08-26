@@ -11676,6 +11676,15 @@ static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 {
     while ( pgm.peekToken() && pgm.peekToken()->id() != close_id )
     {
+	// A '{'-headed ELEMENT (a nested braced-init-list) must not reach
+	// parseExpression — no brace-head reading exists there, and the NULL
+	// it returns would ride ctor_args into the CIR builder. Its target
+	// type is only known after ctor selection, so re-spelling is a
+	// future lowering; error loudly, never silently (the carrier list
+	// literal's convention).
+	if ( pgm.peekToken()->id() == TokenID::tkOpBrc )
+	    pgm.Throw(pgm.peekToken()) << "Nested braced-init-list in a"
+		" constructor argument list is not supported (yet)" << flush;
 	ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
 	    pgm.nextToken();
@@ -11873,6 +11882,7 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 	const char *close_spelling = open_id == TokenID::tkOpBrc ? "}" : ")";
 	nextToken(); // consume '(' or '{'
 	TokenObjTemp *ot = new TokenObjTemp(cdd);
+	ot->braced = open_id == TokenID::tkOpBrc;
 	ot->file = name_tb->file; ot->line = name_tb->line; ot->column = name_tb->column;
 	parse_objtemp_ctor_arguments(*this, ot, name_tb, close_id, close_spelling);
 	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args);
@@ -11919,6 +11929,7 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(type_dd) )
     {
 	TokenObjTemp *ot = new TokenObjTemp(cdd);
+	ot->braced = open_id == TokenID::tkOpBrc;
 	ot->file = type_tb->file;
 	ot->line = type_tb->line;
 	ot->column = type_tb->column;
@@ -25961,6 +25972,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
+	// A braced-init-list argument re-spells against the callee's
+	// parameter type ([over.ics.list]) — the one brace-list owner.
+	if ( tb->id() == TokenID::tkOpBrc )
+	    tb = respell_braced_list_call_argument(tc, tb);
 	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
 	// Arguments resolve in the CALL SITE's lexical namespace
 	// ([basic.lookup]): the head is resolved by now, so the statement-level
@@ -25969,7 +25984,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	// inside std::vector::_M_move_assign = std::true_type).
 	stmt_callee_namespace.clear();
 	tb = parseExpression(tb, true);
-	if ( !tb ) { break; }
+	if ( !tb )
+	    Throw(tc) << "unparsable argument " << (tc->argc() + 1)
+		      << " in call to '" << tc->var.name << "'" << flush;
 	if ( token_tree_has_pack_expansion(tb) )
 	    saw_pack_expansion_arg = true;
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
@@ -26359,6 +26376,10 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
+	// A braced-init-list argument re-spells against the callee's
+	// parameter type ([over.ics.list]) — the one brace-list owner.
+	if ( tb->id() == TokenID::tkOpBrc )
+	    tb = respell_braced_list_call_argument(tc, tb);
 	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
 	// Arguments resolve in the CALL SITE's lexical namespace
 	// ([basic.lookup]): the head is resolved by now, so the statement-level
@@ -26367,7 +26388,9 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	// inside std::vector::_M_move_assign = std::true_type).
 	stmt_callee_namespace.clear();
 	tb = parseExpression(tb, true);
-	if ( !tb ) { break; }
+	if ( !tb )
+	    Throw(tc) << "unparsable argument " << (tc->argc() + 1)
+		      << " in call to method '" << tc->var.name << "'" << flush;
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
@@ -38273,6 +38296,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     bool done = false;
     int brackets = initial_brackets;
 
+    // A bare '{' must never HEAD an expression parse: there is no brace-head
+    // reading, so the list's elements used to flatten into the surrounding
+    // context (comma-separated "arguments") or the parse returned NULL into a
+    // caller that dereferenced it (the braced-list call-argument SIGSEGV).
+    // Every context that can see a braced-init-list re-spells it against its
+    // known target type FIRST (respell_braced_list_for_target — the one
+    // owner); a context without a target type errors before calling here.
+    // This is the backstop for the next unguarded context: LOUD, never a
+    // flatten, never a NULL.
+    if ( tb && tb->id() == TokenID::tkOpBrc )
+	Throw(tb) << "braced-init-list is not supported in this context"
+		     " (no target type to list-initialize)" << flush;
+
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
     while ( !done && tb )
@@ -45642,6 +45678,88 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
     return s;
 }
 
+// THE re-spell owner for a braced-init-list whose TARGET TYPE is known
+// ([dcl.init.list]). A bare `{` must never reach parseExpression: it has no
+// brace-head reading, and the stray braces unbalance the scope stack (the
+// statement after `return {};` lost the FUNCTION PARAMETERS — libc++
+// proximate(), operations.h:240 "use of undeclared identifier '__base'").
+//
+// Reuse, do not re-implement: the brace reader that builds a TokenStructLit
+// against a target type already exists on the compound-literal path
+// (`(T){...}` in parseExpression). A non-class aggregate re-spells the stream
+// as that form — `( T ) { ... }` — so the ONE reader runs. pushToken is
+// push_front, so the pieces go on in reverse. For a CLASS type the list
+// selects a CONSTRUCTOR ([dcl.init.list]/3, or builds std::initializer_list
+// from the backing array directly, /5) — which the compound-literal reader
+// does not model — so that shape re-spells to the functional form `T { ... }`
+// instead, and the ONE expression owner (parse_functional_type_expression's
+// TokenObjTemp arm, braced) runs.
+//
+// `open_brc` is the ALREADY-CONSUMED '{'. Returns the new stream head for
+// parseExpression, or NULL when the target cannot take a braced list here
+// (unknown, scalar, pointer, _Complex) — the caller errors loudly or keeps
+// its legacy route.
+TokenBase *Program::respell_braced_list_for_target(DataDef *target_dd,
+						   TokenBase *open_brc)
+{
+    if ( !target_dd )
+	return NULL;
+    DataDefSTRUCT *agg = dynamic_cast<DataDefSTRUCT *>(target_dd);
+    // An EMPTY list (value-initialization) is spelled with an explicit zero:
+    // C11 has no `(T){}`, and `(T){0}` is the C idiom that zero-initializes
+    // the whole object, which is what value-init means here.
+    bool empty_list = peekToken() && peekToken()->id() == TokenID::tkClBrc;
+    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(target_dd) )
+    {
+	pushToken(open_brc);			// '{' back on the stream
+	pushToken(new TokenDataType(cls->name.c_str(), *cls));
+	return nextToken();			// now the synthetic type head
+    }
+    if ( agg && !target_dd->is_complex() )
+    {
+	// push_front, so these go on in REVERSE reading order: the
+	// synthesized `0` must precede the `{` push to land after it.
+	if ( empty_list )
+	    pushToken(new TokenInt(0));
+	pushToken(open_brc);			// '{' back on the stream
+	pushToken(new TokenClBrk());
+	pushToken(new TokenDataType(agg->name.c_str(), *agg));
+	pushToken(new TokenOpBrk());
+	return nextToken();			// now the synthetic '('
+    }
+    return NULL;
+}
+
+// A braced-init-list ARGUMENT ([over.ics.list]): the target type is the
+// CALLEE's parameter at this position, so the one re-spell owner can run.
+// The parameter index follows the default-args fill's convention: source
+// arguments parsed so far, plus the hidden `__this` slot for a non-static
+// method (FuncDef::parameters carries the hidden parameters).
+// A shape the re-spell cannot serve is a LOUD error: the bare '{' must
+// never fall into parseExpression — it flattened the list's elements into
+// separate arguments, and the NULL parse return crashed the identifier arm
+// (the braced-list call-argument SIGSEGV, 2026-08-26).
+TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
+						      TokenBase *open_brc)
+{
+    FuncDef *fd = call_signature_funcdef(tc->var);
+    size_t idx = tc->argc()
+	       + (function_uses_hidden_this(tc->var) ? 1 : 0);
+    DataDef *pt = (fd && !fd->is_varargs && idx < fd->parameters.size())
+		? fd->parameters[idx] : NULL;
+    TokenBase *nh = pt
+	? respell_braced_list_for_target(referent_if_reference(pt), open_brc)
+	: NULL;
+    if ( !nh )
+	Throw(open_brc) << "cannot list-initialize argument "
+	    << (tc->argc() + 1) << " of '" << tc->var.name
+	    << "' from a braced-init-list ("
+	    << (pt ? "the parameter is not a class or aggregate type"
+		   : "no matching parameter with a known type")
+	    << ')' << flush;
+    return nh;
+}
+
 TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -45656,53 +45774,20 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // A BRACED-INIT-LIST return ([stmt.return]/2: the return object is
     // copy-list-initialized from the list) — `return {a, b};`, libc++'s
     // __allocate_at_least returning `{__alloc.allocate(__n), __n}`. Without
-    // this the `{` fell straight into parseExpression, which read `a`, and the
-    // [expr.comma] loop below then chained `a , b` — a COMMA expression whose
-    // value is `b`, silently discarding the aggregate (c2mir: "incompatible
-    // return-expr type in function returning a struct/union").
-    //
-    // Reuse, do not re-implement: the brace reader that builds a TokenStructLit
-    // against a target type already exists on the compound-literal path
-    // (`(T){...}` in parseExpression). Re-spell the stream as that form —
-    // `( T ) { ... }` — so the ONE reader runs. pushToken is push_front, so the
-    // pieces go on in reverse. For a CLASS type the list selects a CONSTRUCTOR
-    // ([dcl.init.list]/3), which the compound-literal reader does not model —
-    // that shape re-spells to the functional form `T { ... }` instead, so the
-    // ONE expression owner (parse_functional_type_expression's TokenObjTemp
-    // arm) runs. A bare `{` must never reach parseExpression: it has no
-    // brace-head reading, and the stray braces unbalance the scope stack (the
-    // statement after `return {};` lost the FUNCTION PARAMETERS — libc++
-    // proximate(), operations.h:240 "use of undeclared identifier '__base'").
+    // the re-spell the `{` fell straight into parseExpression, which read `a`,
+    // and the [expr.comma] loop below then chained `a , b` — a COMMA
+    // expression whose value is `b`, silently discarding the aggregate
+    // (c2mir: "incompatible return-expr type in function returning a
+    // struct/union"). The target type is the enclosing function's return
+    // type; respell_braced_list_for_target is the one re-spell owner.
     if ( tn->id() == TokenID::tkOpBrc )
     {
 	TokenCpnd *rcode = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 	FuncDef *rfd = rcode && rcode->method
 		     ? dynamic_cast<FuncDef *>(rcode->method->returns.type) : NULL;
 	DataDef *rdd = rfd ? &rfd->return_value_type() : NULL;
-	DataDefSTRUCT *ragg = dynamic_cast<DataDefSTRUCT *>(rdd);
-	// `return {};` (an EMPTY list — value-initialization) is spelled with an
-	// explicit zero: C11 has no `(T){}`, and `(T){0}` is the C idiom that
-	// zero-initializes the whole object, which is what value-init means here.
-	bool empty_list = pgm.peekToken()
-		       && pgm.peekToken()->id() == TokenID::tkClBrc;
-	if ( ragg && !dynamic_cast<DataDefCLASS *>(rdd) && !rdd->is_complex() )
-	{
-	    // push_front, so these go on in REVERSE reading order: the
-	    // synthesized `0` must precede the `{` push to land after it.
-	    if ( empty_list )
-		pgm.pushToken(new TokenInt(0));
-	    pgm.pushToken(tn);				// '{' back on the stream
-	    pgm.pushToken(new TokenClBrk());
-	    pgm.pushToken(new TokenDataType(ragg->name.c_str(), *ragg));
-	    pgm.pushToken(new TokenOpBrk());
-	    tn = pgm.nextToken();			// now the synthetic '('
-	}
-	else if ( DataDefCLASS *rcls = dynamic_cast<DataDefCLASS *>(rdd) )
-	{
-	    pgm.pushToken(tn);				// '{' back on the stream
-	    pgm.pushToken(new TokenDataType(rcls->name.c_str(), *rcls));
-	    tn = pgm.nextToken();			// now the synthetic type head
-	}
+	if ( TokenBase *nh = pgm.respell_braced_list_for_target(rdd, tn) )
+	    tn = nh;
     }
 
     // parse first return expression

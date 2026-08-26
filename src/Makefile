@@ -636,6 +636,10 @@ install-libmadc: libmadc
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_VERSION) libmadc.so.$(MADC_SOVERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_SOVERSION) libmadc.so
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
+	# madc_api.h includes "madc_typeid.h" (the one typeid vocabulary), so the
+	# installed header did not compile downstream without it — the same hole
+	# madc_pch.h closes below. It is self-contained (no includes).
+	$(INSTALL_DATA) ../include/madc_typeid.h $(DESTDIR)$(includedir)/madc_typeid.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
 	@for h in $(MADCDISHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdis/; done
 	# madcdis/snapshot.h names PchCompression in its PUBLIC signatures, so the
