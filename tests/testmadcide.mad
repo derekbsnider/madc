@@ -139,10 +139,13 @@ int main()
     println("status-fn: {}", tree["children"][3]["content"]);
 
     // -- AST-2: themed highlight spans ride the edit node's hints —
-    //    computed at reparse from the handle's retained state; `add` on
-    //    line 2 is a CALL (not the head line) and stays unthemed ident.
+    //    computed at reparse from the handle's retained state. The
+    //    JOE-parity default theme (2026-08-26) leaves `function` (and
+    //    idents) unthemed like joe's default.jcf, so the fn heads and
+    //    the line-2 `add` CALL all skip; the themed rows are the 5
+    //    `long` types + 2 `return` keywords, bold.
     value shl = tree["children"][1]["hints"]["spans"];
-    println("spans: n={} first={}..{} {} fn={}..{} {}",
+    println("spans: n={} first={}..{} {} second={}..{} {}",
 	    php::count(shl), shl[0]["s"], shl[0]["e"], shl[0]["c"],
 	    shl[1]["s"], shl[1]["e"], shl[1]["c"]);
 

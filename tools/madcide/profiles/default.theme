@@ -1,12 +1,15 @@
-# madcide default theme (AST-2): classification -> style spec, one pair
-# per line (class first, then the spec — JOE's vocabulary: bold dim
-# italic underline blink inverse, a colour black..white, bg_<colour>;
-# bold-as-bright gives the 16-colour foreground model). An unlisted
-# class renders normal. Schemes are sibling *.theme files, swapped with
-# ^K T by name.
-keyword yellow
-type green
-string red
-number magenta
-comment cyan
-function bold blue
+# madcide default theme = JOE parity (owner directive 2026-08-26: match
+# what joe shows). Mapping observed from joe 4.6's own default scheme
+# (/usr/share/joe/colors/default.jcf + syntax/c.jsf class inheritance):
+# Comment=green; Constant=cyan (c.jsf: Number and String both inherit
+# +Constant); Keyword=bold; Type=bold; idents plain — so `function`
+# stays unthemed here (JOE has no function class; our AST-backed one is
+# an ADDITION, styled in the vivid/classic schemes). JOE classes we do
+# not classify yet (Preproc blue, Brace magenta, Escape bold cyan, Bad
+# bold red) are named classifier seats in the JOE look/feel recon doc.
+# One class + spec per line (JOE's spec vocabulary; ^K T swaps schemes).
+keyword bold
+type bold
+string cyan
+number cyan
+comment green

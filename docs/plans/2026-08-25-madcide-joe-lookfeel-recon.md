@@ -59,6 +59,25 @@ as the parity target (joe.keys, the tui_attr vocabulary).
    window carries its OWN status line), `^K H` help ribbon paging, the
    `^K ;`/tags flow, prompt history (up-arrow), rectangular blocks
    visuals, shell-window (`F1`-era `joe -shell`) rendering.
+9. **Syntax colours (owner report 2026-08-26: madcide's colours didn't
+   match joe's).** joe 4.6 splits syntax CLASSES
+   (`/usr/share/joe/syntax/c.jsf`) from colour SCHEMES
+   (`/usr/share/joe/colors/*.jcf`; `default.jcf` unless configured).
+   The default scheme for C is bold-accents, not rainbow: Comment
+   green; Constant cyan (c.jsf: Number and String both inherit
+   +Constant); Keyword BOLD (no colour); Type BOLD (no colour); idents
+   plain; Preproc blue; Define bold blue; IncLocal cyan / IncSystem
+   bold cyan; Escape bold cyan; Brace magenta; Bad bold red.
+   **Applied**: `profiles/default.theme` is now this mapping for the
+   classes we classify (keyword/type bold, string/number cyan, comment
+   green; `function` unthemed — joe has no function class); the old
+   colourful look ships as `vivid.theme`. **Named classifier seats**
+   (HighlightClass extensions) to reach full parity: hcPreproc (blue;
+   directives are consumed at lex — needs directive extents recorded),
+   hcBrace (magenta; braces are hcNone operators today), string-escape
+   sub-spans (bold cyan), hcBad. joe also ships 8 more schemes
+   (gruvbox, solarized, zenburn, molokai, ...) — portable later as
+   pure theme data.
 
 ## B. madcide today (compose_ide_tree) — the delta
 
