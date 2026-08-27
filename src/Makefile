@@ -926,6 +926,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-select-fire-owner.sh
+	@cd .. && bash scripts/check-madcide-single-owners.sh
 	@cd .. && bash scripts/check-one-error-composer.sh
 	@cd .. && bash scripts/check-libc-alias-signatures.sh
 	@cd .. && bash scripts/check-storage-seam-adoption.sh

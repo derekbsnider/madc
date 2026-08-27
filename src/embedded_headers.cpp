@@ -507,6 +507,11 @@ namespace madc {
 	bool wait_readable();
 	int64_t read_wait_handle();
 
+	// Abandon the transfer NOW (stop-this-build): tear down the
+	// endpoint without waiting for graceful completion — an exec://
+	// child is SIGTERMed — so a following close() returns promptly.
+	void cancel();
+
     private:
 	channel(const channel &);
 	channel &operator=(const channel &);
@@ -1736,6 +1741,10 @@ namespace ui {
     // not render or read events while suspended.
     bool    tui_suspend(int64_t t);
     bool    tui_resume(int64_t t);
+    // JOE's ^R retype: the terminal's contents can no longer be trusted
+    // (external writes on the tty) — reset the delta-paint basis so the
+    // NEXT tui_render repaints every row from scratch.
+    void    tui_refresh(int64_t t);
     // The chord entered so far (canonical spelling, "^k") — empty when
     // none is pending. A status line's chord-echo seat (JOE's %k) reads
     // it at compose time.

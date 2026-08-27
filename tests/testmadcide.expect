@@ -1,6 +1,6 @@
 joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
-joe-motion: [^b]=left [^k u]=top [^_]=undo [^^]=redo
+joe-ide: [^p]=palette [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
 check1: Check: clean.
 edited: caret=5 modified=true size=89
 undo: caret=0 modified=false size=84
@@ -38,6 +38,15 @@ tabwidth-bad: Tab width '40' — need 1..16.
 editfile-new: New file madc_ide_ast5.txt. switched=1 named=1
 editfile-back: home=1 caret-restored=1
 editfile-again: Editing madc_ide_ast5.txt. kept=1 modified=1
+palette: list=1 focus=1 rows>=2 1
+palette-filter: rows=1 row0=* madc_ide_ast5.txt
+palette-open: switched=1 path=madc_ide_ast5.txt closed=1
+palette-toggle: opened=1 closed=1
+build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
+build-start: live=1
+build-out: has-hello=1 has-done=1 live=0
+build-stop: has-stopped=1 live=0
+build-terminal-headless: No terminal to suspend.
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

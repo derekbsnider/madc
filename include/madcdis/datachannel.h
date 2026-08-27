@@ -50,6 +50,13 @@ public:
 	// No other member may be called concurrently.
 	virtual void close_read() {}
 	virtual void close_write() {}
+	// Abandon the transfer NOW (IDE-10b stop): tear down the underlying
+	// endpoint without waiting for graceful completion, so a following
+	// close() returns promptly. exec:// SIGTERMs its child (close()
+	// otherwise waits for the child to run out — correct for drained
+	// channels, wrong for "stop this build"). Default: nothing to
+	// abandon.
+	virtual void cancel() {}
 	virtual void close() = 0;
 };
 

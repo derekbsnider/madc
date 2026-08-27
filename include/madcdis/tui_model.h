@@ -944,6 +944,13 @@ private:
 	{
 	    // The menu bar: the SAME options line mode numbers, navigable
 	    // here — the selected option renders reverse (criterion 4).
+	    // Two PRESENTATIONS of one focusable (hints, data-driven):
+	    //   list:1  — the popup-list shape (IDE-10a palettes): label
+	    //             row, then ONE OPTION PER ROW, selected reversed.
+	    //             Same navigation/choose semantics as the bar.
+	    //   focus:1 — autofocus: arrows/enter land on this choice
+	    //             without a tab cycle (a palette is modal while
+	    //             up; when its node vanishes, focus resets).
 	    size_t slot = _focusables.size();
 	    focusable f;
 	    f.k = focusable::kind::choice;
@@ -953,7 +960,29 @@ private:
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
 	    _focusables.push_back(f);
+	    if ( hint_of(n.hints, "focus", 0) )
+		_focus = slot;
 	    size_t sel = selection_of(slot);
+	    if ( hint_of(n.hints, "list", 0) )
+	    {
+		if ( !n.label.is_null() )
+		    lines.push_back(line_out(prose::text_of(n.label)));
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		{
+		    line_out l;
+		    l.text = "  " + node_text(n.children[i]);
+		    if ( i == sel )
+		    {
+			span s;
+			s.col = 0;
+			s.len = l.text.size();
+			s.attr = tui_attr::reverse();
+			l.spans.push_back(s);
+		    }
+		    lines.push_back(l);
+		}
+		return;	// options consumed — no generic child recursion
+	    }
 	    line_out l;
 	    if ( !n.label.is_null() )
 		l.text = prose::text_of(n.label) + " ";

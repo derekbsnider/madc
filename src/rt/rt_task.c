@@ -442,12 +442,24 @@ void __madc_go(void (*fn)(void *), void *arg)
 	task_enqueue(t);
 }
 
+// Fire everything due without running anyone (rt_task.h contract). The io
+// hook's zero-timeout probe is cheap when idle: no registered waiter means
+// no syscall (the hook returns -1 before polling).
+void __madc_task_fire_due(void)
+{
+	timer_fire_due();
+	int (*io)(long long) = __madc_task_io_wait_hook;
+	if (io)
+		io(0);
+}
+
 void __madc_yield(void)
 {
 	if (!g_current)
 		return;                        // runtime never used
-	timer_fire_due();	// a due sleeper joins the queue NOW — a busy
-				// yielder must never starve it (MT-4)
+	__madc_task_fire_due();	// due sleepers AND fd-parked tasks join the
+				// queue NOW — a busy yielder must never
+				// starve either (MT-4 timers, MT-4b io)
 	madc_task *next = task_dequeue();
 	if (!next)
 		return;                        // only runner — keep going

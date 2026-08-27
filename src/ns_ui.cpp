@@ -1055,6 +1055,20 @@ bool tui_resume(int64_t t)
     return true;
 }
 
+// JOE's ^R retype (IDE-10a): the terminal's contents can no longer be
+// trusted (external writes on the tty, transmission junk) — a delta paint
+// against the model's idea of the screen repairs nothing, because that
+// idea IS what's wrong. Reset the diff basis so the NEXT render repaints
+// every row from scratch (full-row spans + EL tails rewrite the whole
+// viewport — the same guarantee tui_resume relies on).
+void tui_refresh(int64_t t)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return;
+    u->painted = madc::hub::tui_grid();
+}
+
 // Install a keybinding PROFILE: a value object mapping key sequences
 // ("^k s" — space-separated spellings, the same names key events carry)
 // to action names. Bound sequences resolve ahead of every built-in key

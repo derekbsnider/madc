@@ -473,6 +473,84 @@ TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
     CHECK(ev[1].kind == tui_event_kind::resize);
 }
 
+// ---- the LIST presentation + autofocus (IDE-10a palettes): one choice
+// focusable, two renderings — hints {list:1} = label row + ONE OPTION PER
+// ROW (selected row reversed), {focus:1} = the slot takes focus at compose
+// so arrows/enter navigate it with NO tab cycle (modal while up).
+
+static uinode palette_tree(world &w)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("body"));
+    root.add(edit);
+    uinode pal(r.choice);
+    pal.label = madc::value(std::string("File: a_"));
+    pal.add(option(w, "* a.mad", "pal-open"));
+    pal.add(option(w, "  b.c", "pal-open"));
+    pal.add(option(w, "  c.h", "pal-open"));
+    std::map<std::string, madc::value> h;
+    h["list"] = madc::value((int64_t)1);
+    h["focus"] = madc::value((int64_t)1);
+    pal.hints = madc::value::make_object(h);
+    root.add(pal);
+    return root;
+}
+
+TEST_CASE("compose — list choice: label row, one option per row, autofocus")
+{
+    world w;
+    roles r = roles::standard(w);
+    tui_model m;
+    const tui_grid &g = m.compose(r, palette_tree(w), 8, 40);
+    // 4 fixed rows (label + 3 options) follow the flexible edit window.
+    CHECK(g.row_text(4) == "File: a_");
+    CHECK(g.row_text(5) == "  * a.mad");
+    CHECK(g.row_text(6) == "    b.c");
+    CHECK(g.row_text(7) == "    c.h");
+    // The selected row (0) renders reverse across its text; the others
+    // stay normal.
+    CHECK(g.at(5, 0).attr == tui_attr::reverse());
+    CHECK(g.at(5, 8).attr == tui_attr::reverse());
+    CHECK(g.at(6, 0).attr == tui_attr::normal());
+    // Autofocus: the choice slot holds focus straight from compose.
+    REQUIRE(m.focusables().size() == 2u);
+    CHECK(m.focus_slot() == 1u);
+}
+
+TEST_CASE("events — autofocused list choice: arrows/enter with no tab; filter text still coalesces")
+{
+    world w;
+    roles r = roles::standard(w);
+    tui_model m;
+    m.compose(r, palette_tree(w), 8, 40);
+    // Down moves the selection immediately — no tab cycle first.
+    std::vector<tui_keyev> keys;
+    keys.push_back(tui_keyev(tui_key::down));
+    std::vector<tui_event> ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(m.selection_of(1) == 1u);
+    // Printables never navigate: the filter run reaches the app as ONE
+    // text event even while the choice holds focus.
+    keys.clear();
+    tui_keyparse p;
+    p.feed("ab", 2, keys);
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "ab");
+    // Enter chooses the selected row, carrying its action.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::enter));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    CHECK(ev[0].action == w.intern("pal-open"));
+}
+
 TEST_CASE("dirty rows — only changed rows repaint; a resize dirties all")
 {
     world w;

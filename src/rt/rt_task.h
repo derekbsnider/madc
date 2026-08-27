@@ -77,6 +77,14 @@ void __madc_task_unpark(void *task);
 // scheduling decision (a fair yield to equal-deadline sleepers).
 void __madc_task_sleep_ms(long long ms);
 
+// Fire everything due — expired timers and the io hook's zero-timeout
+// probe — WITHOUT running anyone (IDE-10b): woken tasks land on the ready
+// queue and the caller reads __madc_task_runnable() to see what changed.
+// The cooperative event loop's probe between input polls; __madc_yield
+// fires the same set at its head so a busy yielder can starve neither a
+// sleeper nor an fd-parked task.
+void __madc_task_fire_due(void);
+
 // The io-wait seat (MT-4b): the scheduler stays fd-BLIND — an io layer
 // (src/madc_task_chan.cpp's taskio) installs this hook, and
 // task_next_or_wait calls it whenever nothing is runnable. Contract:
