@@ -30,6 +30,16 @@ bool poll_readable(intptr_t handle);
 // io wait blocks in poll() for us.
 void wait_readable(intptr_t handle);
 
+// The HOST wait (MT-4c — the tui's stdin unification; ONE at a time,
+// throws on a second): wait_readable PLUS a synthetic wake — the waiter
+// also unparks, UNFIRED, when other tasks got the CPU since it parked and
+// the scheduler reached its quiescent point (the read_keys ran->wake seam
+// moved into the one poll), or on EINTR (a resize signal must reach the
+// caller's loop head). Returns true = the fd fired (read now); false = a
+// synthetic wake (recompose; the fd MAY also be readable — the caller's
+// read path re-probes anyway).
+bool host_wait_readable(intptr_t handle);
+
 } // namespace taskio
 } // namespace madc
 

@@ -145,6 +145,23 @@ struct IoWaiter {
 
 IoWaiter *g_io_head;
 
+// The HOST waiter (MT-4c, one at a time — the tui's stdin): beside its fd,
+// it wakes SYNTHETICALLY (unfired) when other tasks got the CPU since it
+// parked — the scheduler-side spelling of read_keys' old ran->wake seam.
+// g_host_mark = the switch count at its park; the io hook compares at the
+// quiescent point and consumes the wake by advancing the mark.
+IoWaiter *g_host;
+long long g_host_mark;
+
+// Fire the host UNFIRED (synthetic wake: activity or EINTR — not the fd).
+// task_enqueue is idempotent, so a duplicate is harmless.
+static int io_wake_host_synthetic()
+{
+	g_host_mark = __madc_task_switch_count();	// consume
+	__madc_task_unpark(g_host->task);
+	return 1;
+}
+
 // Zero-timeout "read would make progress" probe: data, EOF, or a surfaced
 // error all count (POLLHUP/POLLERR — the read reports them; the waiter must
 // wake, not hang).
@@ -189,6 +206,15 @@ int io_wait_hook(long long timeout_ms)
 {
 	if (!g_io_head)
 		return -1;
+	// A host with pending activity beats BLOCKING — but real fd
+	// readiness beats the synthetic wake, so the order is: zero-timeout
+	// probe pass, then the host check, then the blocking wait (MT-4c).
+	// PROBE calls (timeout 0 — __madc_task_fire_due / a yield's head)
+	// never fire it: the synthetic wake belongs to the BLOCKING
+	// quiescent point only, or it steals the CPU from the still-running
+	// tasks whose drain it is supposed to announce.
+	bool host_pending = timeout_ms != 0 && g_host && !g_host->fired
+		&& __madc_task_switch_count() != g_host_mark;
 	int woke = 0;
 #if defined(_WIN32)
 	// Cheap-blocking arm: anonymous pipes are not waitable objects, so
@@ -200,6 +226,8 @@ int io_wait_hook(long long timeout_ms)
 				woke += io_fire_waiter(w) ? 1 : 0;
 		if (woke || timeout_ms == 0)
 			return woke;
+		if (host_pending)
+			return io_wake_host_synthetic();
 		if (timeout_ms > 0
 		    && (long long)GetTickCount64() - start >= timeout_ms)
 			return 0;
@@ -220,15 +248,26 @@ int io_wait_hook(long long timeout_ms)
 	}
 	int tmo = timeout_ms < 0 ? -1
 		: timeout_ms > (long long)INT_MAX ? INT_MAX : (int)timeout_ms;
+	if (host_pending)
+		tmo = 0;	// probe pass only — the host wake follows
 	int r = poll(fds.data(), (nfds_t)n, tmo);
-	if (r <= 0)
-		return 0;	// timeout, or EINTR (spurious; caller loops)
-	for (i = 0; i < n; i++) {
-		if (!(fds[(size_t)i].revents & (POLLIN | POLLHUP | POLLERR)))
-			continue;
-		woke += io_fire_waiter(ws[(size_t)i]) ? 1 : 0;
+	if (r > 0) {
+		for (i = 0; i < n; i++) {
+			if (!(fds[(size_t)i].revents
+			      & (POLLIN | POLLHUP | POLLERR)))
+				continue;
+			woke += io_fire_waiter(ws[(size_t)i]) ? 1 : 0;
+		}
+		if (woke)
+			return woke;
 	}
-	return woke;
+	if (host_pending)
+		return io_wake_host_synthetic();
+	if (r < 0 && timeout_ms != 0 && g_host && !g_host->fired)
+		return io_wake_host_synthetic();	// EINTR on a WAIT:
+							// SIGWINCH must
+							// reach the host
+	return 0;	// timeout, or EINTR with no host (spurious)
 #endif
 }
 
@@ -392,6 +431,28 @@ void wait_readable(intptr_t handle)
 	io_unregister(&me);
 	if (!me.fired)
 		__madc_task_throw_if_cancelled();	// cancel-woken, not readable
+}
+
+bool host_wait_readable(intptr_t handle)
+{
+	__madc_task_throw_if_cancelled();
+	if (io_probe_readable(handle))
+		return true;
+	if (g_host)
+		__madc_throw_cstr("host_wait_readable: a host wait is"
+				  " already registered");
+	IoWaiter me;
+	me.handle = handle;
+	me.task = __madc_task_current();
+	io_register(&me);
+	g_host = &me;
+	g_host_mark = __madc_task_switch_count();
+	__madc_task_park();
+	g_host = 0;
+	io_unregister(&me);
+	if (!me.fired)
+		__madc_task_throw_if_cancelled();	// cancel vs synthetic
+	return me.fired;
 }
 
 } // namespace taskio

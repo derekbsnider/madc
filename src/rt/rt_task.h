@@ -146,6 +146,12 @@ const char *__madc_task_cancelled_text(void);
 // sleeper nor an fd-parked task.
 void __madc_task_fire_due(void);
 
+// Monotonic count of cooperative task switches (MT-4c): the host wait's
+// activity question — taskio records it when the host parks and the io
+// hook compares at its quiescent point ("did anyone else get the CPU
+// since?"). Diagnostics-grade for everything else.
+long long __madc_task_switch_count(void);
+
 // The io-wait seat (MT-4b): the scheduler stays fd-BLIND — an io layer
 // (src/madc_task_chan.cpp's taskio) installs this hook, and
 // task_next_or_wait calls it whenever nothing is runnable. Contract:
