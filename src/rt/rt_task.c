@@ -332,9 +332,12 @@ static void scope_cancel_walk(madc_scope *s)
 // scope_end was never written). The members are cancelled and joined HERE,
 // before the opener dies: the alternative is a member's last exit enqueuing
 // a dead task. A captured error has nowhere to land, so it prints.
-static void scope_abandon(madc_task *t, madc_scope *s)
+// Join a scope's members (park the caller until the last one detaches),
+// then unlink it from its parent's child list — the shared core of
+// scope_end and scope_abandon (their difference is the OUTCOME: rethrow
+// vs print-and-discard).
+static void scope_join_and_unlink(madc_scope *s)
 {
-	scope_cancel_walk(s);
 	s->joining = 1;
 	while (s->live > 0)
 		__madc_task_park();
@@ -347,6 +350,12 @@ static void scope_abandon(madc_task *t, madc_scope *s)
 		if (s->csnext)
 			s->csnext->csprev = s->csprev;
 	}
+}
+
+static void scope_abandon(madc_task *t, madc_scope *s)
+{
+	scope_cancel_walk(s);
+	scope_join_and_unlink(s);
 	if (s->err_set)
 		fprintf(stderr, "madc tasks: abandoned scope error: %s\n",
 			s->err);
@@ -749,11 +758,9 @@ void __madc_task_sleep_ms(long long ms)
 {
 	task_runtime_init();
 	madc_task *self = g_current;
-	if (__madc_task_cancelled())	// blocking verbs throw before
-					// parking and on resume (MT-3); the
-					// chain predicate — an opener inside
-					// a cancelled scope throws too
-		__madc_throw_cstr(__madc_task_cancelled_text());
+	__madc_task_throw_if_cancelled();	// blocking verbs throw
+						// before parking and on
+						// resume (MT-3)
 	if (ms < 0)
 		ms = 0;
 	self->deadline = time_now_ms() + ms;
@@ -769,7 +776,7 @@ void __madc_task_sleep_ms(long long ms)
 		// arrives with the timer link still live, so unlink again
 		// (idempotent) before the unwind.
 		timer_unlink(self);
-		__madc_throw_cstr(__madc_task_cancelled_text());
+		__madc_task_throw_if_cancelled();
 	}
 }
 
@@ -804,6 +811,18 @@ void __madc_task_cancel_request(void *task)
 		timer_unlink(t);
 		task_enqueue(t);
 	}
+}
+
+void __madc_task_throw_if_cancelled(void)
+{
+	// THE check-and-throw of the current task's cancellation (dupaudit
+	// family current_task_cancel_throw; gate:
+	// check-cancel-throw-owner.sh) — every blocking verb's entry and
+	// resume gates route here. scope_end's OUTCOME throw is a different
+	// rule (rethrowing a scope's state, not checking the current task)
+	// and stays a direct throw.
+	if (__madc_task_cancelled())
+		__madc_throw_cstr(__madc_task_cancelled_text());
 }
 
 int __madc_task_cancelled(void)
@@ -881,20 +900,8 @@ void __madc_scope_end(void *scope)
 	// below always runs and nothing leaks. Cancelled members that never
 	// reach a cancellation point keep the join waiting (documented —
 	// the Kotlin behavior).
-	s->joining = 1;
-	while (s->live > 0)
-		__madc_task_park();
-	s->joining = 0;
-	// Pop + unlink, then outcome.
+	scope_join_and_unlink(s);
 	g_current->cur = s->parent;
-	if (s->parent) {
-		if (s->csprev)
-			s->csprev->csnext = s->csnext;
-		else
-			s->parent->children = s->csnext;
-		if (s->csnext)
-			s->csnext->csprev = s->csprev;
-	}
 	int err_set = s->err_set;
 	int cancelled = s->cancel_req;
 	if (err_set) {

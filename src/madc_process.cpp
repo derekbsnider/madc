@@ -741,6 +741,21 @@ bool Process::close_stdin(error *err)
 	return true;
 }
 
+#ifndef _WIN32
+// Map a reaped waitpid status to the process-facing exit shape — 128+signal
+// for a killed child — ONE owner (dupaudit family child_status_exit_mapping;
+// gate: check-child-status-map-owner.sh). run_and_wait deliberately stays
+// apart: its contract turns abnormal termination into -1 + err, not a code.
+static int map_child_status(int child_status)
+{
+	if ( WIFEXITED(child_status) )
+		return WEXITSTATUS(child_status);
+	if ( WIFSIGNALED(child_status) )
+		return 128 + WTERMSIG(child_status);
+	return -1;
+}
+#endif
+
 bool Process::wait(error *err)
 {
 	if ( !_->has_started )
@@ -774,12 +789,7 @@ bool Process::wait(error *err)
 		return false;
 	}
 	_->has_exited = true;
-	if ( WIFEXITED(child_status) )
-		_->status = WEXITSTATUS(child_status);
-	else if ( WIFSIGNALED(child_status) )
-		_->status = 128 + WTERMSIG(child_status);
-	else
-		_->status = -1;
+	_->status = map_child_status(child_status);
 #endif
 	return true;
 }
@@ -819,12 +829,7 @@ bool Process::wait_or_kill(int grace_ms, error *err)
 		if ( result > 0 )
 		{
 			_->has_exited = true;
-			if ( WIFEXITED(child_status) )
-				_->status = WEXITSTATUS(child_status);
-			else if ( WIFSIGNALED(child_status) )
-				_->status = 128 + WTERMSIG(child_status);
-			else
-				_->status = -1;
+			_->status = map_child_status(child_status);
 			return true;
 		}
 		if ( waited_ms >= grace_ms )

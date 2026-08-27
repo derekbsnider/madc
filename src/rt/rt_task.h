@@ -117,6 +117,11 @@ void __madc_task_cancel_request(void *task);
 // compute-loop poll; yield() is NOT a cancellation point.
 int __madc_task_cancelled(void);
 
+// THE check-and-throw: throws the cancelled literal when the current task
+// is cancel-requested (the chain predicate above). Every blocking verb's
+// entry and resume gates call this one owner.
+void __madc_task_throw_if_cancelled(void);
+
 // THE cancellation literal: every cancellation throw uses exactly this
 // pointer, so pointer identity distinguishes a completing cancellation
 // from user text at the trampoline's capture.

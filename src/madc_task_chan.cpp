@@ -269,16 +269,6 @@ struct ChanEntry {
 std::map<int64_t, ChanEntry> g_chans;
 int64_t g_next_chan = 1;
 
-// The cancellation gate (MT-3): every BLOCKING verb throws THE cancelled
-// literal before parking and on resume — the chain predicate, so a
-// cancelled scope's opener throws too. Non-blocking verbs (try_recv, len,
-// close, yield) are not cancellation points.
-void throw_if_task_cancelled(void)
-{
-	if (__madc_task_cancelled())
-		__madc_throw_cstr(__madc_task_cancelled_text());
-}
-
 // Remove a waiter record from its queue if still present (MT-3): a
 // cancel-woken task was never popped by a deliverer, and its record — on
 // the frame the cancel throw is about to unwind — must not outlive it.
@@ -390,7 +380,7 @@ bool poll_readable(intptr_t handle)
 
 void wait_readable(intptr_t handle)
 {
-	throw_if_task_cancelled();
+	__madc_task_throw_if_cancelled();
 	if (io_probe_readable(handle))
 		return;
 	IoWaiter me;
@@ -401,7 +391,7 @@ void wait_readable(intptr_t handle)
 	// Eager removal — no registered pointer outlives this frame.
 	io_unregister(&me);
 	if (!me.fired)
-		throw_if_task_cancelled();	// cancel-woken, not readable
+		__madc_task_throw_if_cancelled();	// cancel-woken, not readable
 }
 
 } // namespace taskio
@@ -421,7 +411,7 @@ int64_t chan_make(int64_t capacity)
 
 bool chan_send(int64_t h, value &v)
 {
-	throw_if_task_cancelled();
+	__madc_task_throw_if_cancelled();
 	MadcChan *c = chan_of(h, "send");
 	if (c->closed)
 		__madc_throw_cstr("send on closed channel");
@@ -446,7 +436,7 @@ bool chan_send(int64_t h, value &v)
 				// pending cancel throws at the NEXT verb
 	if (__madc_task_cancelled()) {
 		remove_waiter(c->send_waiters, &me);
-		__madc_throw_cstr(__madc_task_cancelled_text());
+		__madc_task_throw_if_cancelled();
 	}
 	if (me.woken_closed)
 		__madc_throw_cstr("send on closed channel");
@@ -455,7 +445,7 @@ bool chan_send(int64_t h, value &v)
 
 bool chan_recv(value &out, int64_t h)
 {
-	throw_if_task_cancelled();
+	__madc_task_throw_if_cancelled();
 	MadcChan *c = chan_of(h, "recv");
 	int r = chan_poll_recv(c, &out);
 	if (r == 1)
@@ -473,7 +463,7 @@ bool chan_recv(value &out, int64_t h)
 		return true;	// delivered — completion wins
 	if (__madc_task_cancelled()) {
 		remove_waiter(c->recv_waiters, &me);
-		__madc_throw_cstr(__madc_task_cancelled_text());
+		__madc_task_throw_if_cancelled();
 	}
 	if (me.woken_closed) {
 		out = value();
@@ -635,7 +625,7 @@ int64_t chan_select(value &out, value &chans)
 		}
 		// Cancel-woken (nothing fired): every record is already off
 		// the queues/registry (the eager removal above).
-		throw_if_task_cancelled();
+		__madc_task_throw_if_cancelled();
 		// Woken by a close: rescan (a buffer may have filled
 		// meanwhile; all-dead returns -1 above).
 	}
