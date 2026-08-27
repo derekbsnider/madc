@@ -405,7 +405,9 @@ void __madc_task_atfork_child(void)
 	g_live = 0;
 	g_reap = NULL;
 	g_main_waiting = 0;
-	g_starting = NULL;
+#if !defined(_WIN32)
+	g_starting = NULL;	/* the makecontext first-entry slot */
+#endif
 	g_timer_head = NULL;
 	g_timer_count = 0;
 	if (__madc_task_io_atfork_hook)
