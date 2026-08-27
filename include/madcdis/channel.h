@@ -59,6 +59,12 @@ public:
 	bool wait_readable();
 	int64_t read_wait_handle();
 
+	// Abandon the transfer NOW (IDE-10b stop): tear down the endpoint
+	// without waiting for graceful completion — an exec:// child is
+	// SIGTERMed — so a following close() returns promptly. No-op on
+	// channels with nothing to abandon.
+	void cancel();
+
 private:
 	channel(const channel &);
 	channel &operator=(const channel &);

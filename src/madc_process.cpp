@@ -1043,6 +1043,16 @@ public:
 		return pollable ? pollable->read_poll_handle() : (intptr_t)-1;
 	}
 
+	// Stop-this-build (IDE-10b): SIGTERM the child so the following
+	// close() reaps promptly instead of waiting for it to run out. A
+	// child ignoring SIGTERM still hangs close()'s wait — the MT-3
+	// cancellation arc owns the kill escalation (named residue).
+	void cancel() override
+	{
+		if ( process_ )
+			process_->terminate();
+	}
+
 private:
 	std::unique_ptr<Process> process_;
 };

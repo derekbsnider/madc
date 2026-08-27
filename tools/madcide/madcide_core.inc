@@ -1206,6 +1206,245 @@ bool palette_event(long w, long es, long doc, value &ev)
     return true;
 }
 
+// ---- IDE-10b: the ^B build palette --------------------------------------
+// The SAME popup-list widget as ^P with ACTION rows AS DATA (bag
+// "buildcmds": {name, act, cmd, mode} rows — built-in defaults seeded on
+// first open; a project manifest's commands section replaces them in a
+// later slice). Two modes:
+//   capture  — spawn the command through an exec:// channel and PUMP its
+//              output into the [build] buffer as a cooperative task: the
+//              MT-4b select spans {stop channel, byte readiness}, so the
+//              editor stays live while the build streams and Stop fires
+//              even against a silent child (cancel() SIGTERMs it).
+//   terminal — suspend the tui and hand the command the REAL terminal
+//              (an interactive Run needs its own stdin/stdout; the JOE
+//              ^K Z shape), with a return-key pause before resume.
+// Check stays in-process (run_check — the retained-parse diagnostics).
+
+// {path} / {base} substitution: path = the active buffer's file, base =
+// path minus its extension. Commands are DATA — no quoting layer (the
+// exec:// factory splits on single spaces; see madc_process.cpp).
+void build_subst(var &out, const char *cmd, long w, long doc)
+{
+    var p;
+    ui::get(p, w, doc, "path");
+    var base = p;
+    const char *pc = p.c_str();
+    const char *dot = strrchr(pc, '.');
+    if ( dot != 0 )
+	base = perl::substr(p, 0, dot - pc);
+    var s1 = php::str_replace("{path}", p.c_str(), cmd);
+    out = php::str_replace("{base}", base.c_str(), s1.c_str());
+}
+
+// The [build] buffer: found-or-created in the buffer table WITHOUT
+// switching to it (the pump appends in the background; ^P reaches it).
+long build_doc(long w, long es)
+{
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    long n = php::count(bufs);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	value r = bufs[i];
+	if ( r["path"] == "[build]" )
+	    return r["doc"].as_integer();
+    }
+    long nd = open_buffer_doc(w, es, "[build]");
+    value b;
+    b["doc"] = nd;
+    b["path"] = "[build]";
+    b["caret"] = 0;
+    b["mark"] = -1;
+    b["bend"] = -1;
+    bufs.push(b);
+    ui::set(w, es, "buffers", bufs);
+    return nd;
+}
+
+// Append one line; the [build] buffer never reads as user-modified.
+void append_build_line(long w, long es, long bdoc, const char *text)
+{
+    var line = format("{}\n", text);
+    ui::text_insert(w, bdoc, ui::text_size(w, bdoc), line.c_str());
+    ui::set(w, bdoc, "modified", false);
+}
+
+// The capture pump — a cooperative task (stage-2's background_parse
+// pattern: long args only, the command rides the bag). The MT-4b mixed
+// select is the loop: case 0 = the stop channel (a SENT value stops;
+// cancel() SIGTERMs the child so close() reaps promptly), case 1 = the
+// child's readable byte endpoint (readline after a fire; EOF ends the
+// build). Known window (named residue for MT-3 cancellation): a child
+// that emits a PARTIAL line then hangs parks the pump mid-readline where
+// only fd activity wakes it — real build tools emit whole lines.
+void build_pump(long w, long es, long bdoc, long stopc)
+{
+    var cmd;
+    ui::get(cmd, w, es, "buildcmd");
+    var uri = format("exec://{}", cmd);
+    madc::channel bc(uri.c_str());
+    if ( !bc.ok() )
+    {
+	var em = format("[build] cannot start: {}", bc.last_error());
+	append_build_line(w, es, bdoc, em.c_str());
+	ui::set(w, es, "buildlive", 0);
+	return;
+    }
+    bc.close_write();		// builds read no stdin
+    value cases;
+    cases[0] = stopc;
+    cases[1] = madc::chan_readable(bc);
+    value got;
+    value line;
+    bool stopped = false;
+    for ( ;; )
+    {
+	long idx = madc::chan_select(got, cases);
+	if ( idx == 0 )
+	{
+	    stopped = true;
+	    bc.cancel();	// SIGTERM: close() below reaps promptly
+	    break;
+	}
+	if ( idx != 1 )
+	    break;		// every case dead
+	if ( !bc.readline(line) )
+	    break;		// drained EOF: the build finished
+	append_build_line(w, es, bdoc, line.c_str());
+    }
+    bc.close();
+    append_build_line(w, es, bdoc, stopped ? "[stopped]" : "[done]");
+    ui::set(w, es, "buildlive", 0);
+}
+
+void start_build(long w, long es, const char *cmd)
+{
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	ui::set(w, es, "msg", "A build is already running (Stop first).");
+	return;
+    }
+    long bdoc = build_doc(w, es);
+    var hdr = format("=== {} ===", cmd);
+    append_build_line(w, es, bdoc, hdr.c_str());
+    long stopc = madc::chan_make(1);
+    ui::set(w, es, "buildstop", stopc);
+    ui::set(w, es, "buildcmd", cmd);
+    ui::set(w, es, "buildlive", 1);
+    go build_pump(w, es, bdoc, stopc);
+    ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+}
+
+void stop_build(long w, long es)
+{
+    if ( es_int(w, es, "buildlive", 0) == 0 )
+    {
+	ui::set(w, es, "msg", "No build running.");
+	return;
+    }
+    long stopc = es_int(w, es, "buildstop", 0);
+    value v;
+    v = 1;
+    madc::chan_send(stopc, v);
+    ui::set(w, es, "msg", "Stopping the build.");
+}
+
+// terminal-mode rows (Run / Run native): the JOE ^K Z shape — the program
+// gets the REAL terminal; a return-key pause holds its output on screen
+// before the full-repaint resume.
+void run_in_terminal(long w, long es, const char *cmd)
+{
+    long t = es_int(w, es, "tui", 0);
+    if ( t == 0 )
+    {
+	ui::set(w, es, "msg", "No terminal to suspend.");
+	return;
+    }
+    if ( !ui::tui_suspend(t) )
+	return;
+    var line = format("{} ; printf '\\n[madcide] press enter to return '; read _",
+		      cmd);
+    system(line.c_str());
+    ui::tui_resume(t);
+}
+
+// Seed the default command rows once (data; a later slice reads a project
+// manifest's commands section instead).
+void ensure_build_cmds(long w, long es)
+{
+    value have;
+    ui::get(have, w, es, "buildcmds");
+    if ( !have.is_null() && php::count(have) > 0 )
+	return;
+    var rows = {};
+    value r1;
+    r1["name"] = "Check (in-process)";
+    r1["act"] = "bld-check";
+    rows.push(r1);
+    value r2;
+    r2["name"] = "Build";
+    r2["cmd"] = "madc -o {base} {path}";
+    r2["mode"] = "capture";
+    r2["act"] = "bld-run-cmd";
+    rows.push(r2);
+    value r3;
+    r3["name"] = "Build object";
+    r3["cmd"] = "madc -r -o {base}.o {path}";
+    r3["mode"] = "capture";
+    r3["act"] = "bld-run-cmd";
+    rows.push(r3);
+    value r4;
+    r4["name"] = "Run";
+    r4["cmd"] = "madc {path}";
+    r4["mode"] = "terminal";
+    r4["act"] = "bld-run-cmd";
+    rows.push(r4);
+    value r5;
+    r5["name"] = "Run native";
+    r5["cmd"] = "./{base}";
+    r5["mode"] = "terminal";
+    r5["act"] = "bld-run-cmd";
+    rows.push(r5);
+    value r6;
+    r6["name"] = "Stop";
+    r6["act"] = "bld-stop";
+    rows.push(r6);
+    ui::set(w, es, "buildcmds", rows);
+}
+
+// One choose dispatcher for the build pane: the row (by 1-based option)
+// carries everything — act, command template, mode. Data all the way.
+void build_choose(long w, long es, long doc, long option)
+{
+    value rows;
+    ui::get(rows, w, es, "buildcmds");
+    long idx = option - 1;
+    if ( idx < 0 || idx >= php::count(rows) )
+	return;
+    value r = rows[idx];
+    var a = format("{}", r["act"]);
+    ui::set(w, es, "pane", "");		// the palette closes on choose
+    if ( a == "bld-check" )
+    {
+	run_check(w, es, doc);
+	return;
+    }
+    if ( a == "bld-stop" )
+    {
+	stop_build(w, es);
+	return;
+    }
+    var cmd0 = format("{}", r["cmd"]);
+    var cmd;
+    build_subst(cmd, cmd0.c_str(), w, doc);
+    var mode = format("{}", r["mode"]);
+    if ( mode == "terminal" )
+	run_in_terminal(w, es, cmd.c_str());
+    else
+	start_build(w, es, cmd.c_str());
+}
+
 // The c++ view applies when the BUFFER'S OWN language is C/C++ (by
 // extension — the app's document-kind rule): its render is source-shaped
 // (madc::emit "c++" echoes the retained source), and a madc-dialect
@@ -1495,8 +1734,8 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	if ( a == "build" )
 	{
-	    ui::set(w, es, "msg",
-		    "The build palette (^B) arrives with IDE-10b.");
+	    ensure_build_cmds(w, es);
+	    toggle_pane(w, es, "build");
 	    return true;
 	}
 	if ( a == "editfile" )
@@ -1536,6 +1775,13 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
     if ( kind == "choose" )
     {
 	var a = format("{}", ev["action"]);
+	// Build-pane rows dispatch by ROW (act + command + mode are the
+	// row's data); the act prefix routes, build_choose owns the rest.
+	if ( a == "bld-check" || a == "bld-stop" || a == "bld-run-cmd" )
+	{
+	    build_choose(w, es, doc, ev["option"].as_integer());
+	    return true;
+	}
 	if ( a == "goto" )
 	{
 	    // Pane rows carry STORED line numbers — meaningless against a
@@ -1739,6 +1985,34 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 		nrows = nrows + 1;
 	    }
 	}
+	else if ( pane == "build" )
+	{
+	    // IDE-10b ^B: the same popup-list widget with the command
+	    // rows as data; a running build shows in the label.
+	    value brows;
+	    ui::get(brows, w, es, "buildcmds");
+	    box["label"] = es_int(w, es, "buildlive", 0) != 0
+		? "Build — running (Stop to end)" : "Build";
+	    value bh;
+	    bh["list"] = 1;
+	    bh["focus"] = 1;
+	    box["hints"] = bh;
+	    for ( value row : brows )
+	    {
+		value it;
+		it["role"] = "item";
+		value c = row["cmd"];
+		if ( c.is_null() )
+		    it["content"] = format("{}", row["name"]);
+		else
+		    it["content"] = format("{}  [{}]", row["name"], c);
+		var ga = {};
+		ga.push(row["act"]);
+		it["actions"] = ga;
+		items.push(it);
+		nrows = nrows + 1;
+	    }
+	}
 	else if ( pane == "palette" )
 	{
 	    // IDE-10a ^P: the LIST-presentation choice — model hints
@@ -1913,7 +2187,19 @@ void run_ide(const char *path, bool ro)
     }
     // Stage-2: a spawned parse may still be mid-flight at quit — drain the
     // task scope BEFORE closing the handles and the world it writes to
-    // (main's-end join would run only after this teardown).
+    // (main's-end join would run only after this teardown). A live build
+    // pump gets its stop FIRST (IDE-10b): the send fires its select case,
+    // it SIGTERMs the child and exits — the drain never hangs on it.
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	long stopc = es_int(w, es, "buildstop", 0);
+	if ( stopc != 0 )
+	{
+	    value sv;
+	    sv = 1;
+	    madc::chan_send(stopc, sv);
+	}
+    }
     madc::task_drain();
     // Every buffer's parse handle closes with the session.
     value bufs;

@@ -42,7 +42,11 @@ palette: list=1 focus=1 rows>=2 1
 palette-filter: rows=1 row0=* madc_ide_ast5.txt
 palette-open: switched=1 path=madc_ide_ast5.txt closed=1
 palette-toggle: opened=1 closed=1
-build-stub: The build palette (^B) arrives with IDE-10b.
+build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
+build-start: live=1
+build-out: has-hello=1 has-done=1 live=0
+build-stop: has-stopped=1 live=0
+build-terminal-headless: No terminal to suspend.
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

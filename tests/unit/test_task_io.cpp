@@ -75,6 +75,26 @@ TEST_CASE("io wait: EOF is readable progress (the read surfaces it)") {
     ::close(fds[0]);
 }
 
+TEST_CASE("fire_due: an fd wake surfaces as runnable without running anyone") {
+    int fds[2];
+    REQUIRE(::pipe(fds) == 0);
+    Rd r{fds[0], 'f'};
+    g_order.clear();
+    __madc_go(reader, &r);
+    __madc_yield();			// reader parks on the empty pipe
+    CHECK(__madc_task_runnable() == 0);
+    __madc_task_fire_due();		// nothing due: still parked
+    CHECK(__madc_task_runnable() == 0);
+    CHECK(::write(fds[1], "x", 1) == 1);
+    __madc_task_fire_due();		// fires the waiter, runs NOBODY —
+    CHECK(__madc_task_runnable() == 1);	// the caller sees it as runnable
+    CHECK(g_order == "");
+    __madc_task_join_all();
+    CHECK(g_order == "f+");
+    ::close(fds[0]);
+    ::close(fds[1]);
+}
+
 TEST_CASE("idempotent enqueue: two unparks run the task once") {
     g_order.clear();
     g_parked = 0;

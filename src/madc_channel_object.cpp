@@ -341,4 +341,11 @@ bool channel::wait_readable()
 	}
 }
 
+void channel::cancel()
+{
+	ChannelState *s = state(impl_);
+	if ( s->channel )
+		s->channel->cancel();
+}
+
 } // namespace madc

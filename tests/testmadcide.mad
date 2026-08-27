@@ -311,11 +311,79 @@ int main()
     apply_ide_event(w, es, doc, e);
     ev_action(e, "refresh", "^r");	// headless: no tui on the bag —
     apply_ide_event(w, es, doc, e);	// pinned inert (a safe no-op)
-    ev_action(e, "build", "^b");	// reserved until IDE-10b
+
+    // -- IDE-10b: the ^B build palette — command rows AS DATA (overridden
+    //    here for determinism), the capture pump through exec:// + the
+    //    MT-4b mixed select, Stop against a SILENT child, the [build]
+    //    buffer, and the headless refusal of a terminal-mode row.
+    {
+	var brws = {};
+	value c1;
+	c1["name"] = "Echo";
+	c1["cmd"] = "echo hello-{base}";
+	c1["mode"] = "capture";
+	c1["act"] = "bld-run-cmd";
+	brws.push(c1);
+	value c2;
+	c2["name"] = "Sleepy";
+	c2["cmd"] = "sleep 5";
+	c2["mode"] = "capture";
+	c2["act"] = "bld-run-cmd";
+	brws.push(c2);
+	value c3;
+	c3["name"] = "Run";
+	c3["cmd"] = "echo never";
+	c3["mode"] = "terminal";
+	c3["act"] = "bld-run-cmd";
+	brws.push(c3);
+	value c4;
+	c4["name"] = "Stop";
+	c4["act"] = "bld-stop";
+	brws.push(c4);
+	ui::set(w, es, "buildcmds", brws);
+    }
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    value bbox = tree["children"][2];
+    println("build-pane: label={} rows={} row0={}",
+	    bbox["label"], php::count(bbox["children"]),
+	    php::trim(bbox["children"][0]["content"]));
+    ev_choose(e, 1, "bld-run-cmd");	// Echo: the capture pump
+    apply_ide_event(w, es, doc, e);
+    println("build-start: live={}", es_int(w, es, "buildlive", 0));
+    madc::task_drain();			// run the pump to completion
+    long bdoc = build_doc(w, es);
+    value btxt;
+    ui::text(btxt, w, bdoc);
+    println("build-out: has-hello={} has-done={} live={}",
+	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
+	    rust::contains(btxt.c_str(), "[done]") ? 1 : 0,
+	    es_int(w, es, "buildlive", 0));
+    // Stop against a silent child: sleep 5 emits nothing — the stop send
+    // fires the pump's select case 0 (buffered: the pump has not even run
+    // yet — spawn never switches), cancel() SIGTERMs, and the drain
+    // returns promptly instead of five seconds later.
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 2, "bld-run-cmd");	// Sleepy
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 4, "bld-stop");	// Stop
+    apply_ide_event(w, es, doc, e);
+    madc::task_drain();
+    ui::text(btxt, w, bdoc);
+    println("build-stop: has-stopped={} live={}",
+	    rust::contains(btxt.c_str(), "[stopped]") ? 1 : 0,
+	    es_int(w, es, "buildlive", 0));
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 3, "bld-run-cmd");	// terminal row, headless: refused
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
-    println("build-stub: {}", msg);
-    ev_key(e, "right");			// consume the stub message
+    println("build-terminal-headless: {}", msg);
+    ev_key(e, "right");			// consume the message
     apply_ide_event(w, es, doc, e);
 
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
