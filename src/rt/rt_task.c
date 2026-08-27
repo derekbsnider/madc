@@ -460,10 +460,22 @@ static size_t task_stack_bytes(void)
 
 // Switch from the running task to `to` (which may be entering for the first
 // time). When control eventually returns here, free any corpse left behind.
+// Monotonic switch counter (MT-4c): the host wait's "did other tasks get
+// the CPU since I parked" question — read at park, compared at the io
+// hook's quiescent point. Never wraps in practice (one increment per
+// cooperative switch).
+static long long g_switch_count;
+
+long long __madc_task_switch_count(void)
+{
+	return g_switch_count;
+}
+
 static void task_switch(madc_task *from, madc_task *to)
 {
 	TASK_TRACE("[task] switch %p -> %p (main=%p)\n", (void *)from,
 		   (void *)to, (void *)&g_main_task);
+	++g_switch_count;
 	__madc_except_state_save(from->exc);
 	__madc_except_state_restore(to->exc);
 	g_current = to;

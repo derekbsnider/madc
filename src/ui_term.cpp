@@ -43,6 +43,7 @@
 #include <unistd.h>
 
 #include "rt/rt_task.h"	// stage-2: cooperative wait (runnable probe + yield)
+#include "madc_task_io.h"	// MT-4c: the host wait (stdin joins the one poll)
 
 namespace {
 
@@ -355,19 +356,17 @@ public:
 	    // tasks are RUNNABLE, never park the OS thread in poll — hand
 	    // them the CPU between zero-timeout input polls (each
 	    // __madc_yield runs the queue head to its next yield point, so
-	    // keystroke latency stays one slice). Tasks that are LIVE but
-	    // PARKED wait on wakes that fire only inside scheduling
-	    // decisions (a build pump parked on its child's fd, a
-	    // sleeper) — a blocking stdin wait would starve them, so nap
-	    // on a 50ms cadence and fire the due set each round
-	    // (__madc_task_fire_due: expired timers + the io hook's
-	    // zero-timeout probe). Every actual run flows through the
-	    // runnable branch, so when the queue DRAINS after tasks ran,
-	    // synthesize a `wake` event — the application recomposes
-	    // (build output repaints without a keystroke). Zero live
-	    // tasks = the old blocking wait, zero new cost. The MT-4c
-	    // unification (parking THIS flow on stdin through taskio, one
-	    // poll for everything) retires the cadence.
+	    // keystroke latency stays one slice). Every actual run flows
+	    // through this branch, so when the queue DRAINS after tasks
+	    // ran, synthesize a `wake` event — the application recomposes
+	    // (build output repaints without a keystroke). Tasks that are
+	    // LIVE but PARKED: this flow parks ON STDIN through taskio
+	    // (MT-4c — the host wait), so the scheduler makes ONE blocking
+	    // decision over {stdin, io waiters, timers}; a SYNTHETIC wake
+	    // (other tasks got the CPU and drained, or EINTR — the resize
+	    // check at this loop's head wants the CPU) surfaces as the
+	    // same wake event. Zero live tasks = the old blocking wait,
+	    // zero new cost.
 	    {
 		bool ran = false;
 		for ( ;; )
@@ -387,8 +386,10 @@ public:
 		    }
 		    if ( __madc_task_live() == 0 )
 			break;
-		    input_ready(50);		// the cadence nap; stdin cuts it
-		    __madc_task_fire_due();	// fd/timer wakes -> runnable
+		    if ( madc::taskio::host_wait_readable(0) )
+			break;			// stdin fired: read below
+		    out.push_back(tui_keyev(tui_key::wake));
+		    return true;
 		}
 		if ( g_winch )
 		    continue;	// a resize landed mid-drain: handle it first

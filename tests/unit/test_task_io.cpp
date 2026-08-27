@@ -107,3 +107,72 @@ TEST_CASE("idempotent enqueue: two unparks run the task once") {
     CHECK(g_order == "P");
     CHECK(__madc_task_live() == 0);
 }
+
+// ---- MT-4c: the host wait (the tui's stdin unification) -----------------
+
+namespace {
+
+struct Wr { int fd; };
+
+void writer_then_exit(void *arg)
+{
+    Wr *w = (Wr *)arg;
+    g_order += 'w';
+    CHECK(::write(w->fd, "k", 1) == 1);
+}
+
+void worker_no_io(void *arg)
+{
+    (void)arg;
+    __madc_yield();
+    g_order += 't';
+}
+
+} // namespace
+
+TEST_CASE("host wait: readable-now returns true without parking") {
+    int fds[2];
+    REQUIRE(::pipe(fds) == 0);
+    CHECK(::write(fds[1], "x", 1) == 1);
+    CHECK(madc::taskio::host_wait_readable(fds[0]));
+    char b[4];
+    CHECK(::read(fds[0], b, sizeof b) == 1);
+    ::close(fds[0]);
+    ::close(fds[1]);
+}
+
+TEST_CASE("host wait: the fd firing beats the synthetic wake (probe pass "
+	  "first)") {
+    int fds[2];
+    REQUIRE(::pipe(fds) == 0);
+    Wr wr{fds[1]};
+    g_order.clear();
+    __madc_go(writer_then_exit, &wr);
+    // The writer runs while the host is parked: its write makes the fd
+    // readable AND its exit is activity — the zero-timeout probe pass
+    // runs first, so the HOST comes back FIRED (true), not synthetic.
+    CHECK(madc::taskio::host_wait_readable(fds[0]));
+    CHECK(g_order == "w");
+    char b[4];
+    CHECK(::read(fds[0], b, sizeof b) == 1);
+    __madc_task_join_all();
+    ::close(fds[0]);
+    ::close(fds[1]);
+}
+
+TEST_CASE("host wait: activity with no fd = the synthetic wake (unfired, "
+	  "returns false)") {
+    int fds[2];
+    REQUIRE(::pipe(fds) == 0);
+    g_order.clear();
+    __madc_go(worker_no_io, 0);
+    // The worker yields once and finishes — switches happened since the
+    // host parked, the pipe stays empty: the quiescent point wakes the
+    // host SYNTHETICALLY (the read_keys ran->wake seam, scheduler-side).
+    CHECK(!madc::taskio::host_wait_readable(fds[0]));
+    CHECK(g_order == "t");
+    CHECK(!madc::taskio::poll_readable(fds[0]));
+    __madc_task_join_all();
+    ::close(fds[0]);
+    ::close(fds[1]);
+}
