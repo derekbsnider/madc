@@ -214,6 +214,51 @@ madc::scope_end(s);                 // JOINS: returns only after both
   escalates on `close()`: SIGTERM at cancel, SIGKILL after a 2s grace
   — a SIGTERM-ignoring child cannot hang the close.
 
+## Keywords: `scope { ... }` and `await` (MT-5)
+
+Both are CONTEXTUAL under `--std=madc` only — never reserved: a declared
+`scope` / `await` name always wins, and strict C/C++ modes never see
+them (the `go`/`yield` error-shape rule).
+
+- **`scope { ... }`** — the structured-concurrency block:
+
+  ```c
+  scope {
+      go worker(1);
+      go worker(2);
+      // ... the block's end JOINS both, then rethrows the first
+      // member error (else throws "madc: task cancelled" when the
+      // scope was cancelled, else falls through)
+  }
+  ```
+
+  `go` inside attaches to the block (the Kotlin attachment); blocks
+  nest (each joins only its own members). A throw ESCAPING the block
+  quietly abandons the scope mid-unwind — members are cancelled and
+  joined, the in-flight error wins, and the catch lands outside with
+  the task chain clean; a throw CAUGHT INSIDE the block leaves the
+  scope untouched. `return` / `goto` inside the block, and a
+  `break` / `continue` that would cross it (no loop/switch opened
+  inside encloses them), are refused at parse time — end the scope
+  block first. The handle is deliberately not spelled: a cancellable
+  job holds `madc::scope_begin()`/`scope_cancel()` (the publics);
+  `madc::cancelled()` serves polling inside the block.
+
+- **`await <chan-expr>`** — receive from a value channel, Go's `<-ch`:
+  blocks until a value arrives; a closed drained channel yields the
+  ZERO value (empty). Two statement shapes:
+
+  ```c
+  v = await ch;     // assigns into a var/value (the carrier)
+  await done;       // receive and discard — the done-channel wait
+  ```
+
+  The ok-form (did the channel close?) stays with the public
+  `madc::chan_recv(out, ch)` — `await` is sugar over that one
+  implementation. Deeper expression positions (a call argument, a
+  declaration initializer) are refused loud; they unlock with L3
+  value-by-value returns.
+
 ## Contracts and knobs
 
 - **Thread-safety contract**: one OS thread, cooperative. Tasks
@@ -237,6 +282,8 @@ madc::scope_end(s);                 // JOINS: returns only after both
   into a `value` first (the standing ring discipline).
 - A `-static-libmadc` artifact that spawns fails its link loudly (the
   task runtime is a hosted object, not yet on the AOT ledger).
-- Channels, `select`, futures/`await`, scopes with cancellation, and
-  actor/supervision patterns arrive with MT-2/MT-3 (see the design
-  doc's slice cut).
+- Channels (MT-2), `select`/io/timers (MT-4), scopes with cancellation
+  (MT-3), and the `scope`/`await` keywords (MT-5) have all landed;
+  actor/supervision patterns and a `select` STATEMENT spelling remain
+  future arcs (see the design doc's slice cut and its deferred-select
+  ruling).

@@ -19131,6 +19131,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
 
+	// madc-dialect `await` (MT-5) reaching general EXPRESSION position:
+	// slice 1 consumes it at statement level only (parseExprStmt folds
+	// the assignment form; translate_stmt owns both shapes). Anything
+	// deeper — a call argument, an operand — is refused loud until L3
+	// value-by-value returns unlock expression position.
+	if (tb->id() == TokenID::tkAWAIT)
+		return error_node("await is statement-level in this slice — "
+			"use `v = await ch;` or `await ch;`", tb);
+
 	// Multi-return receive statement `a, b, ... := f(args)` — a TokenAssign
 	// carrying the receiver list. All the work (transport temp, call,
 	// per-receiver fills) is emitted via m_pending_stmts by the unpack.
@@ -23845,6 +23854,89 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	}
 	if (tb->id() == TokenID::tkGO)
 		return translate_go(tb);
+
+	// madc-dialect structured concurrency (MT-5): `scope { ... }` ->
+	//   { void *__madc_scope_blk = __madc_scope_block_enter();
+	//     <body>  __madc_scope_block_exit(__madc_scope_blk); }
+	// The rt pair owns the semantics (src/rt/rt_task.c): enter registers
+	// the unwind abandon on the exception runtime's cleanup stack; exit
+	// removes it, joins every member, and rethrows the first member
+	// error. Nested blocks shadow the local — exactly the C scoping the
+	// lowering wants.
+	if (tb->id() == TokenID::tkSCOPE) {
+		TokenSCOPE *sc = (TokenSCOPE *)tb;
+		need_output_extern("__madc_scope_block_enter", true, {});
+		need_output_extern("__madc_scope_block_exit", false,
+				   { { {N_VOID}, true } });
+		node_t items = list();
+		const char *sv = "__madc_scope_blk";
+		node_t sdecl = simple(N_SPEC_DECL);
+		append(sdecl, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+		append(sdecl, node2(N_DECL, id(sv, tb),
+				    node1(N_LIST, pointer())));
+		append(sdecl, ignore());
+		append(sdecl, ignore());
+		append(sdecl, ignore());
+		append(items, sdecl);
+		append(items, node2(N_EXPR, list(),
+			node2(N_ASSIGN, id(sv, tb),
+			      node2(N_CALL,
+				    id("__madc_scope_block_enter", tb),
+				    list(), tb), tb), tb));
+		if (sc->body) {
+			node_t body = translate_stmt(sc->body);
+			if (body)
+				append(items, body);
+		}
+		node_t xargs = list();
+		append(xargs, id(sv, tb));
+		append(items, node2(N_EXPR, list(),
+			node2(N_CALL, id("__madc_scope_block_exit", tb),
+			      xargs, tb), tb));
+		return node2(N_BLOCK, list(), items, tb);
+	}
+
+	// madc-dialect `await` statement shapes (MT-5): `v = await ch;`
+	// (parseExprStmt folded the assignment — target set) and `await ch;`
+	// (target NULL — receive and discard). One extern-C machinery seat,
+	// __madc_chan_await (src/madc_task_chan.cpp), over THE one recv
+	// implementation; Go semantics ride along (blocks; closed-and-
+	// drained fills the zero value).
+	if (tb->id() == TokenID::tkAWAIT) {
+		TokenAWAIT *aw = (TokenAWAIT *)tb;
+		need_output_extern("__madc_chan_await", false,
+				   { { {N_VOID}, true },
+				     { {N_LONG, N_LONG}, false } });
+		node_t items = list();
+		node_t out;
+		if (aw->target) {
+			node_t tv = translate_expr(aw->target);
+			if (!tv)
+				return error_node("await: target failed to"
+						  " translate", tb);
+			out = node2(N_CAST, void_ptr_type(),
+				    node1(N_ADDR, tv, tb), tb);
+		} else {
+			out = node2(N_CAST, void_ptr_type(), integer(0, tb),
+				    tb);
+		}
+		node_t h = translate_expr(aw->chan);
+		if (!h)
+			return error_node("await: channel expression failed"
+					  " to translate", tb);
+		// Temporaries the operands materialized run before the call
+		// (the shim's drain discipline — translate_go's shape).
+		for (node_t pstmt : m_pending_stmts)
+			append(items, pstmt);
+		m_pending_stmts.clear();
+		node_t cargs = list();
+		append(cargs, out);
+		append(cargs, h);
+		append(items, node2(N_EXPR, list(),
+			node2(N_CALL, id("__madc_chan_await", tb), cargs, tb),
+			tb));
+		return node2(N_BLOCK, list(), items, tb);
+	}
 
 	// Declaration
 	{ TokenDecl *td = tb->as_decl_tok();

@@ -1,0 +1,10 @@
+// MT-5 refusal reducer: `return` inside a `scope { }` block would exit the
+// function past the block's join — refused at parse time (early-exit
+// support is a named residue). break/continue/goto crossings share the
+// mechanism (Program::in_scope_block / scope_block_bars_break).
+int main()
+{
+    scope {
+	return 0;
+    }
+}

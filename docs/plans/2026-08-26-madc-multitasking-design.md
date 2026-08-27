@@ -386,6 +386,70 @@ Unification claims (no-parallel-implementations):
   keyword/feature registry under `--std=madc` (publics land first;
   keywords are sugar over the same runtime entries; strict C/C++
   modes stay pristine).
+  DESIGN (decided 2026-08-27, session 139 — go/yield shipped with MT-1;
+  this slice adds the STRUCTURE spellings; all contextual per the MT-1
+  error-shape rule — never keyword_map-reserved, a declared name always
+  wins, strict modes stay byte-identical):
+  - **`scope { ... }`** — a structured-concurrency block: opens a task
+    scope for the block's extent; `go` inside attaches (the MT-3
+    Kotlin attachment); the block's end JOINS every member and
+    rethrows the first member error (exactly `madc::scope_end`).
+    Claimed at statement head only when `scope` is undeclared and the
+    next token is `{` (otherwise ill-formed today — the error-shape
+    rule). Lowering rides the __madc_scope_* seams DIRECTLY (the
+    validate-then-consume split exists for this): NEW rt pair
+    `__madc_scope_block_enter()` / `__madc_scope_block_exit(s)` in
+    rt_task.c. enter = scope_begin + push an EMBEDDED cleanup entry
+    (rt_except's caller-owned `__madc_cleanup_push`) whose handler
+    quietly abandons the scope (cancel members + join + free + pop
+    task->cur — the failing-opener semantics: the in-flight error
+    wins, children cancelled; NO stderr warn — an unwind exit is
+    legitimate). exit = remove the entry (NEW
+    `__madc_cleanup_remove(entry)` in rt_except.c — a mid-stack
+    unlink, the FOURTH conscious host-consumer widening; top-pop is
+    wrong because an enclosing try's body locals registered above the
+    scope's entry outlive the block), then end_check (a nonzero here
+    is an engine bug — still checked loud), then `__madc_scope_end`
+    (join + rethrow). The cleanup-stack MARK discipline gives the
+    right nesting for free: a throw CAUGHT INSIDE the block unwinds
+    only to the inner try's mark and never touches the scope's entry
+    (the block continues); a throw ESCAPING the block runs the
+    abandon handler mid-unwind — and the join it performs may PARK,
+    which is safe because the in-flight exception is per-context
+    state (the MT-2 except-state switch composes). return / break /
+    continue / goto that would EXIT the block are refused LOUD at
+    parse time ("… crosses a task scope — end the scope first");
+    early-exit support = named residue. The handle is deliberately
+    not spelled: cancellable-job patterns (madcide Stop) keep the
+    publics; `madc::cancelled()` serves polling inside the block.
+  - **`await <chan-expr>`** — receive from a value channel; Go's
+    `<-ch` semantics (blocks; a closed drained channel yields the
+    ZERO value = empty madc::value — the ok-form stays the public's
+    job). Sugar over the ONE recv implementation
+    `madc::chan_recv(out, ch)` through a thin extern-C machinery seat
+    (`__madc_chan_await`, the translate_go category — no parallel
+    recv). TWO positions shipped in slice 1 — assignment RHS
+    (`v = await ch;`, claimed at STATEMENT level: the value carrier's
+    operator= machinery resolves the assignment shape inside the
+    ladder before any statement-root fold could see it) and bare
+    statement (`await ch;` — the done-channel wait, claimed at
+    statement head: the identifier dispatch would otherwise swallow
+    the two-identifier shape silently). The declaration-initializer
+    form (`var v = await ch;`) and every deeper operand position are
+    refused LOUD naming the supported forms — both unlock with L3
+    value-by-value returns (named residue). A scalar target
+    (`long p; p = await ch;`) is refused at parse time. Claimed only
+    when `await` is undeclared (error-shape rule).
+  - **`select` keyword: DEFERRED** (decided default). Go's
+    `case v := <-ch:` grammar does not transplant into a C statement
+    grammar without inventing a non-Go spelling — which would violate
+    the Go-spelling ruling harder than omitting the statement. The
+    `madc::chan_select` public + `await` cover fan-in; revisit beside
+    the coroutine/generator surface.
+  - Gating: all three ride `go_statement_enabled()` (== STD_MADC).
+    testgoident / testgogate grow `scope` / `await` arms.
+  - Thread-safety contract: unchanged — single OS thread, cooperative;
+    the new rt entries touch only per-task/per-context state.
 - Later, other arcs: M:N workers (rides F2), supervision/actor library
   pattern (SMAUG consumer), python:: generators on the Lua surface,
   C++26 std::execution interop seat (transpiler arc).

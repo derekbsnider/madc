@@ -4700,6 +4700,29 @@ public:
     // import, so the conditional-DT_NEEDED purity cover still fires).
     // Spawns reached only through a sibling TU ride the atexit belt.
     bool _uses_go_spawn = false;
+    // MT-5 `scope { ... }` blocks: parse-time refusal state for statements
+    // that would EXIT an open block (return/goto always; break/continue when
+    // no loop/switch opened INSIDE the block encloses them — C binds them to
+    // the innermost loop, so only that shape can cross). Records carry
+    // cur_func_name so a lambda / local-method body parsed inside a block is
+    // never misjudged (its own returns are its own). parse_loop_depth counts
+    // loop/switch parse nesting (RAII guards in the loop parsers).
+    struct ScopeBlockCtx { int loop_floor; std::string func; };
+    std::vector<ScopeBlockCtx> scope_block_stack;
+    int parse_loop_depth = 0;
+    // Inside a `scope { }` block of the function being parsed right now.
+    bool in_scope_block() const
+    {
+	return !scope_block_stack.empty()
+	    && scope_block_stack.back().func == cur_func_name;
+    }
+    // break/continue would cross the innermost scope block (no loop/switch
+    // opened inside it encloses them).
+    bool scope_block_bars_break() const
+    {
+	return in_scope_block()
+	    && parse_loop_depth <= scope_block_stack.back().loop_floor;
+    }
     // A C++ reserved keyword introduced in `min_std` is active iff we are in the
     // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
     // at/after that standard. The C++ enumerators are contiguous and ordered
@@ -6338,6 +6361,18 @@ public:
     // already-consumed `go` / `yield` identifier token.
     TokenBase *parse_go_statement(TokenBase *tb);
     TokenBase *parse_yield_statement(TokenBase *tb);
+    // MT-5 contextual `scope { ... }` block (same gating and error-shape
+    // rule): tb is the already-consumed `scope` identifier token.
+    TokenBase *parse_scope_statement(TokenBase *tb);
+    // The contextual-claim eligibility test the MT keywords share: the
+    // name resolves to NOTHING (no variable/function, no type) — a
+    // declared name always wins (the error-shape rule).
+    bool contextual_name_unclaimed(const std::string &name);
+    // THE TokenAWAIT builder (one construction rule, three grammar
+    // positions): parses the channel-handle expression from the stream at
+    // the already-consumed `await`, hands the enclosing expression's
+    // terminator back, and returns the node (target may be NULL).
+    TokenAWAIT *make_await_token(TokenBase *at_tb, TokenBase *target);
     // Parse an identifier followed by any chain of postfix operators
     // (->ident / .ident / [expr] / ++ / --) and return the resulting
     // expression node. Stops at the first non-postfix token (binary

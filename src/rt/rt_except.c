@@ -224,6 +224,30 @@ void __madc_cleanup_pop(void)
     }
 }
 
+// Remove ONE entry wherever it sits in the stack, no destructor call
+// (rt_except.h documents the widening). Top-pop is not enough for a host
+// frame whose registration outlives entries pushed BELOW it and is exited
+// while entries pushed ABOVE it are still live — the MT-5 scope block's
+// normal exit is exactly that shape (an enclosing lexical try's body
+// locals register above the scope's entry and stay until the try ends).
+// O(depth) walk; the stack is short-lived and shallow by construction.
+void __madc_cleanup_remove(void *entry)
+{
+    struct MadcCleanupEntry *e = (struct MadcCleanupEntry *)entry;
+    struct MadcCleanupEntry **link = &madc_cleanup_stack;
+    while ( *link )
+    {
+	if ( *link == e )
+	{
+	    *link = e->prev;
+	    if ( e->heap_alloc )
+		free(e);
+	    return;
+	}
+	link = &(*link)->prev;
+    }
+}
+
 // Print the unhandled-exception line. The ONE formatting owner is
 // __madc_exception_text (below) — the same renderer MT-3's scope error
 // capture reads, so an aborted print and a captured scope error always

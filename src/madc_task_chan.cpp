@@ -727,3 +727,19 @@ bool cancelled()
 }
 
 } // namespace madc
+
+// MT-5 `await <chan>` — the CIR-emitted machinery symbol (extern-C by the
+// cpp-first-api exception: compiler-emitted, never user-resolved). ONE thin
+// seat over THE recv implementation, so the keyword and the public cannot
+// drift (Go semantics ride along: blocks, closed-and-drained fills the ZERO
+// value). out == NULL is the bare-statement form — receive and discard, the
+// done-channel wait.
+extern "C" void __madc_chan_await(madc::value *out, int64_t h)
+{
+	if (out) {
+		madc::chan_recv(*out, h);
+		return;
+	}
+	madc::value discard;
+	madc::chan_recv(discard, h);
+}

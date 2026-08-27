@@ -1,0 +1,38 @@
+// MT-5 `await <chan>` — Go recv semantics as a keyword: `v = await ch;`
+// assigns through THE one recv implementation (madc::chan_recv via the
+// __madc_chan_await machinery seat); bare `await ch;` receives and
+// discards (the done-channel wait); a closed drained channel yields the
+// ZERO value. The keyword is contextual under --std=madc only: declared
+// names always win (testgoident) and strict modes never see it
+// (testgogate). Refusals: testawaitexpr (expression position),
+// testawaittarget (non-value target), testscopereturn (block crossing).
+void sender(long c)
+{
+    var m = "ping";
+    madc::chan_send(c, m);
+}
+
+int main()
+{
+    long c = madc::chan_make(2);
+    var v = 41;
+    madc::chan_send(c, v);
+    v = 42;
+    madc::chan_send(c, v);
+    var r;
+    r = await c;
+    println("r={}", r);
+    await c;
+    madc::chan_close(c);
+    r = await c;
+    println("closed-zero=[{}] len={}", r, madc::chan_len(c));
+
+    // The parked path: an unbuffered channel — await parks as the recv
+    // waiter, the spawned sender delivers, completion wins.
+    long c2 = madc::chan_make(0);
+    go sender(c2);
+    var p;
+    p = await c2;
+    println("p={} live={}", p, madc::task_live());
+    return 0;
+}
