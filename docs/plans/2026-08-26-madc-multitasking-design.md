@@ -425,14 +425,21 @@ Unification claims (no-parallel-implementations):
   - **`await <chan-expr>`** — receive from a value channel; Go's
     `<-ch` semantics (blocks; a closed drained channel yields the
     ZERO value = empty madc::value — the ok-form stays the public's
-    job). Pure parse-time sugar onto the ONE recv implementation
-    `madc::chan_recv(out, ch)` (no parallel machinery, no new runtime
-    entry). Three positions in slice 1 — declaration initializer
-    (`var v = await ch;`), assignment RHS (`v = await ch;`), bare
-    statement (`await ch;` — the done-channel wait); any other operand
-    position is refused LOUD naming the supported forms (general
-    expression position unlocks with L3 value-by-value returns).
-    Claimed only when `await` is undeclared (error-shape rule).
+    job). Sugar over the ONE recv implementation
+    `madc::chan_recv(out, ch)` through a thin extern-C machinery seat
+    (`__madc_chan_await`, the translate_go category — no parallel
+    recv). TWO positions shipped in slice 1 — assignment RHS
+    (`v = await ch;`, claimed at STATEMENT level: the value carrier's
+    operator= machinery resolves the assignment shape inside the
+    ladder before any statement-root fold could see it) and bare
+    statement (`await ch;` — the done-channel wait, claimed at
+    statement head: the identifier dispatch would otherwise swallow
+    the two-identifier shape silently). The declaration-initializer
+    form (`var v = await ch;`) and every deeper operand position are
+    refused LOUD naming the supported forms — both unlock with L3
+    value-by-value returns (named residue). A scalar target
+    (`long p; p = await ch;`) is refused at parse time. Claimed only
+    when `await` is undeclared (error-shape rule).
   - **`select` keyword: DEFERRED** (decided default). Go's
     `case v := <-ch:` grammar does not transplant into a C statement
     grammar without inventing a non-Go spelling — which would violate
