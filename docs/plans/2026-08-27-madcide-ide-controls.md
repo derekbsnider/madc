@@ -32,6 +32,34 @@ None of the four collide with terminal flow control (^S/^Q untouched).
 The ^N ruling settles half of the pending ^K E review: ^K E stays,
 ^N is its front door.
 
+## Lineage & north star (OWNER, 2026-08-27)
+
+madcide's spiritual lineage: **Borland/Turbo C++ → Joe's Own Editor →
+VS Code**. The IDE-integration FEEL of Turbo/Borland C++ (compile/run/
+debug lives inside the editor — IDE-10c's internal builds are exactly
+this), the PORTABILITY and KEYBINDINGS of JOE (the default profile;
+runs on any terminal), and the MODERN FEATURES of VS Code (palettes,
+live diagnostics, and — named want — **plugins written in madc code**).
+
+Two standing consequences:
+
+- **madcide is exercise #2 for the `madc::ui` abstraction layer**
+  (exercise #1: examples/texteditor). A **GUI madcide** — looking and
+  feeling more like VS Code — is the SAME CODEBASE rendering
+  differently by environment: madcide composes a model tree
+  (`compose_ide_tree`) and never paints; the terminal renderer is one
+  consumer of that tree, a GUI renderer is another. This is why
+  rows-as-data, data-driven hints ({list, focus}, tabwidth, spans), and
+  the no-direct-painting discipline are load-bearing: every madcide
+  feature must stay expressible as model data + semantic events, or the
+  GUI twin forks.
+- **Plugins in madc code**: madcide is itself madc source; the natural
+  plugin seat is the machinery it already dogfoods — loaded madc
+  modules contributing DATA (palette rows, build rows, key actions,
+  panes) through the same registries the built-ins use. Design rule
+  when the slice lands: a plugin registers rows/verbs, never paints,
+  never binds keys imperatively — the same discipline as above.
+
 ## Where madcide diverges from JOE
 
 JOE's model is buffers + windows + keys. madcide adds a second axis:
