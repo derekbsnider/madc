@@ -4683,6 +4683,84 @@ bool internal_program_source_emit(::Program &self,
     return true;
 }
 
+// Does the child carry at least one ERROR-severity diagnostic? The
+// build lane's silent-failure belt: a failed build must return rows
+// that SAY why (see internal_program_build_native).
+static bool child_has_error_row(::Program &child)
+{
+    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
+	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
+	    return true;
+    return false;
+}
+
+// The build surface (madcide IDE-10c): the CLI's AOT lane — tokenize +
+// parse a FILE in a child Program (the lexer owns file ingestion and the
+// TU's relative #includes, exactly as parse_open_file), then
+// madc_cir_emit_native — run IN-PROCESS. kind: "exe" = PIE executable
+// (the CLI -o default), "obj" = relocatable .o (-r -o). Diagnostics come
+// back as rows either way; a failure with nothing recorded (a backend
+// refusal prints to stderr, not into Program::diagnostics — the named
+// backend-diagnostics-as-data residue) gets one synthesized error row so
+// the caller never sees a silent false. True = the artifact was written.
+// Thread contract: the runtime-eval confinement — the call owns its
+// child; the emit phase has no yield points (it blocks a cooperative
+// scheduler for its duration — the named backend-yield residue).
+bool internal_program_build_native(::Program &self, const std::string &path,
+				   const std::string &kind_name,
+				   madc::value &out,
+				   const std::string &outpath)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    ::Program child(self.engine);
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    bool ok = false;
+    {
+	// Capture replaces rendering (the compile_source_child_frontend
+	// contract); recording into child.diagnostics is untouched.
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = true;
+	if ( kind_name == "exe" )
+	    kind = mnkPieExecutable;
+	else if ( kind_name == "obj" )
+	    kind = mnkObject;
+	else
+	{
+	    kind_ok = false;
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	}
+	struct stat sb;
+	if ( kind_ok
+	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
+	{
+	    kind_ok = false;
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "cannot read source file", path.c_str());
+	}
+	if ( kind_ok )
+	{
+	    TokenProgram *tp = child.tokenize(path.c_str());
+	    if ( tp && child.parse(tp) )
+		ok = madc_cir_emit_native(&child, path.c_str(), kind,
+					  outpath.c_str(),
+					  std::vector<std::string>()) == 0;
+	}
+	if ( !ok && !child_has_error_row(child) )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "build failed with no recorded diagnostic"
+			    " (backend output goes to stderr)",
+			    path.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    return ok;
+}
+
 // ---- persistent parse handles (madcide AST-1 / IDE-6) --------------------
 // The compile-never-execute child machinery above, given a LIFETIME: a
 // handle owns a live child Program whose parsed state serves outline /

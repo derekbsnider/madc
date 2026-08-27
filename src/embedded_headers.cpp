@@ -361,6 +361,25 @@ namespace madc {
     value &project_tus(value &out, int64_t handle);
     bool project_close(int64_t handle);
 
+    // The build surface (madcide IDE-10c): the CLI's AOT lane run
+    // IN-PROCESS — parse `path` in a child Program (relative #includes
+    // resolve as the CLI's do), emit a native artifact at `outpath`.
+    // kind: "exe" = PIE executable (the CLI -o default), "obj" =
+    // relocatable object (-r -o). out_diags gets diagnostics rows (the
+    // diagnostics() shape) either way; a failure ALWAYS carries at least
+    // one error row. True = the artifact was written. The parse phase
+    // cooperates with `go` tasks; the emit phase runs without yield
+    // points (it briefly blocks a cooperative scheduler).
+    // Thread contract: the runtime-eval confinement — each call owns
+    // its child Program.
+    bool build_native(value &out_diags, const char *path, const char *kind,
+		      const char *outpath);
+    // The running compiler's own resolved executable path — "run this
+    // program" spawns a child OF SELF, never a PATH madc. Stable for the
+    // process lifetime; "" = the platform probe failed. Concurrent reads
+    // are safe.
+    const char *compiler_path();
+
     // Value channels between cooperative tasks (MT-2; the Go contract —
     // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
     // rendezvous; send/recv PARK the running task and are the blocking

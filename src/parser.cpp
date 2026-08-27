@@ -314,6 +314,13 @@ bool internal_program_source_emit(::Program &self,
 				  const std::string &target,
 				  value &out,
 				  const std::string &display_name);
+// The build surface (madcide IDE-10c; madc_program.cpp beside the child
+// pipeline): the CLI's AOT lane in-process — parse a FILE in a child,
+// emit a native artifact ("exe" | "obj"); diagnostics rows either way.
+bool internal_program_build_native(::Program &self, const std::string &path,
+				   const std::string &kind_name,
+				   value &out,
+				   const std::string &outpath);
 // Persistent parse handles (madcide AST-1; madc_program.cpp beside the
 // child pipeline): the same compile-never-execute children given a
 // LIFETIME — open/refresh/close, with outline / diagnostics /
@@ -936,6 +943,25 @@ bool madc_source_emit(void *result, void *source, void *filename,
     return madc::internal_program_source_emit(*active, src, tgt, out,
 					      disp.empty() ? "<source>"
 							   : disp);
+}
+
+// The build bridge (madcide IDE-10c): path/kind/outpath = std::string*,
+// result = madc::value* (diagnostics rows). True = artifact written.
+bool madc_build_native(void *result, void *path, void *kind, void *outpath)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    return madc::internal_program_build_native(*active,
+					       *(const std::string *)path,
+					       *(const std::string *)kind,
+					       out,
+					       *(const std::string *)outpath);
 }
 
 // ---- madc:: persistent parse handles (madcide AST-1) ---------------------

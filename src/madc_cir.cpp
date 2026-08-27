@@ -2085,11 +2085,26 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 	runpath = "/usr/local/lib";
 }
 
+// THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
+// every native-emit lane enters madc_object_mode through this guard —
+// scoped, never one-shot. In-process callers exist (madc::build_native,
+// the IDE's build lane); a leaked flag would bring the caller's later
+// lazily-built JIT sessions up in object-capture mode. The CLI lanes are
+// unaffected (the process exits right after). Same save/restore shape as
+// DiagnosticRenderMute. Gate: scripts/check-object-mode-scope.sh — the
+// ctor below is the only place in src/ that sets the flag.
+struct ObjectModeScope
+{
+    bool prev;
+    ObjectModeScope() : prev(madc_object_mode) { madc_object_mode = true; }
+    ~ObjectModeScope() { madc_object_mode = prev; }
+};
+
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs)
 {
-    madc_object_mode = true;	// one-shot CLI path; process exits after this
+    ObjectModeScope object_mode_scope;
 
     // Standalone executables skip the __madc_shim_* eval adapters (Pass
     // 0.74): nothing can host-call them, and dropping their madc_value_*
@@ -6187,7 +6202,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		fprintf(stderr, "madc_project_emit_native: empty manifest\n");
 		return -1;
 	}
-	madc_object_mode = true;   // one-shot CLI path; process exits after
+	ObjectModeScope object_mode_scope;   // scoped like every emit lane
 
 	// Group before `parsed`: it must outlive the TU Programs (see
 	// madc_project_execute).

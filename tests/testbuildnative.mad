@@ -1,0 +1,49 @@
+// madc::build_native — the CLI's AOT lane run IN-PROCESS (madcide
+// IDE-10c: the IDE lives inside the compiler; ^B never shells out to a
+// PATH madc). Gates: exe + obj artifacts build clean from a helper TU;
+// the exe artifact RUNS; a broken TU returns false with positioned
+// error rows; an unknown kind and an unreadable path each return false
+// with one explaining row; the builder's own JIT is unpoisoned by the
+// emit (a post-emit eval still runs — the object-mode restore).
+int main()
+{
+	var cp = madc::compiler_path();
+	println("{}", format("cp-nonempty={}", strlen(cp.c_str()) > 0 ? 1 : 0));
+
+	value diags;
+	bool ok = madc::build_native(diags, "tests/testbuildnative_prog.mad",
+				     "exe", "tmp/testbuildnative_prog");
+	println("{}", format("exe ok={} ndiags={}", ok ? 1 : 0, php::count(diags)));
+
+	bool ok2 = madc::build_native(diags, "tests/testbuildnative_prog.mad",
+				      "obj", "tmp/testbuildnative_prog.o");
+	println("{}", format("obj ok={} ndiags={}", ok2 ? 1 : 0, php::count(diags)));
+
+	bool bad = madc::build_native(diags, "tests/testbuildnative_bad.mad",
+				      "exe", "tmp/testbuildnative_bad");
+	long n = php::count(diags);
+	long line0 = 0;
+	if ( n > 0 )
+	{
+		value r = diags[0];
+		line0 = r["line"].as_integer();
+	}
+	println("{}", format("bad ok={} rows-pos={} line-pos={}",
+			     bad ? 1 : 0, n > 0 ? 1 : 0, line0 > 0 ? 1 : 0));
+
+	bool bk = madc::build_native(diags, "tests/testbuildnative_prog.mad",
+				     "dso", "tmp/testbuildnative_x");
+	println("{}", format("badkind ok={} ndiags={}", bk ? 1 : 0, php::count(diags)));
+
+	bool nf = madc::build_native(diags, "tmp/testbuildnative_missing.mad",
+				     "exe", "tmp/testbuildnative_y");
+	println("{}", format("nofile ok={} ndiags={}", nf ? 1 : 0, php::count(diags)));
+
+	long rc = system("tmp/testbuildnative_prog");
+	println("{}", format("run rc={}", rc));
+
+	value ev;
+	madc::eval_string(ev, "return \"post-emit-eval-ok\";");
+	println("{}", format("eval={}", ev));
+	return 0;
+}

@@ -1238,9 +1238,13 @@ bool palette_event(long w, long es, long doc, value &ev)
 //              ^K Z shape), with a return-key pause before resume.
 // Check stays in-process (run_check — the retained-parse diagnostics).
 
-// {path} / {base} substitution: path = the active buffer's file, base =
-// path minus its extension. Commands are DATA — no quoting layer (the
-// exec:// factory splits on single spaces; see madc_process.cpp).
+// {path} / {base} / {madc} substitution: path = the active buffer's
+// file, base = path minus its extension, madc = THE RUNNING COMPILER'S
+// own executable (madc::compiler_path — owner ruling IDE-10c: a Run row
+// spawns a child OF SELF, resolved in the engine, never a PATH madc and
+// never sh resolving /proc/self/exe for its own shell). Commands are
+// DATA — no quoting layer (the exec:// factory splits on single spaces;
+// see madc_process.cpp).
 void build_subst(var &out, const char *cmd, long w, long doc)
 {
     var p;
@@ -1251,7 +1255,9 @@ void build_subst(var &out, const char *cmd, long w, long doc)
     if ( dot != 0 )
 	base = perl::substr(p, 0, dot - pc);
     var s1 = php::str_replace("{path}", p.c_str(), cmd);
-    out = php::str_replace("{base}", base.c_str(), s1.c_str());
+    var s2 = php::str_replace("{base}", base.c_str(), s1.c_str());
+    var self = madc::compiler_path();
+    out = php::str_replace("{madc}", self.c_str(), s2.c_str());
 }
 
 // The [build] buffer: found-or-created in the buffer table WITHOUT
@@ -1354,10 +1360,77 @@ void stop_build(long w, long es)
 	return;
     }
     long stopc = es_int(w, es, "buildstop", 0);
+    if ( stopc == 0 )
+    {
+	// An in-process build has no stop endpoint until MT-3
+	// cancellation lands — it finishes on its own.
+	ui::set(w, es, "msg", "An in-process build finishes on its own (not stoppable yet).");
+	return;
+    }
     value v;
     v = 1;
     madc::chan_send(stopc, v);
     ui::set(w, es, "msg", "Stopping the build.");
+}
+
+// The INTERNAL build task (IDE-10c — owner ruling: the IDE lives inside
+// the compiler; ^B never shells out to a PATH madc). One
+// madc::build_native call: the parse phase cooperates (the editor stays
+// live), the emit phase runs without yield points (a brief block — the
+// named backend-yield residue). Diagnostics land in the diags pane
+// (click-to-error), never as [build] text. Long args only (the go-spawn
+// contract); the path/kind/outpath ride the bag like buildcmd.
+void native_build_task(long w, long es)
+{
+    var p, k, o;
+    ui::get(p, w, es, "nbpath");
+    ui::get(k, w, es, "nbkind");
+    ui::get(o, w, es, "nbout");
+    value diags;
+    bool ok = madc::build_native(diags, p.c_str(), k.c_str(), o.c_str());
+    ui::set(w, es, "diags", diags);
+    ui::set(w, es, "buildlive", 0);
+    if ( ok )
+    {
+	ui::set(w, es, "msg", format("Built {} -> {}", p, o));
+	return;
+    }
+    // Failure: surface the rows. Take the lower pane only when the user
+    // has nothing else up (never stomp an open palette/help/options).
+    var pane;
+    ui::get(pane, w, es, "pane");
+    if ( strlen(pane.c_str()) == 0 )
+	ui::set(w, es, "pane", "diags");
+    ui::set(w, es, "msg",
+	    format("Build failed: {} problem(s).", php::count(diags)));
+}
+
+// var& params, not held const char* — a c_str() kept across build_subst's
+// ring calls rots (the ring-lifetime contract).
+void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
+{
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	ui::set(w, es, "msg", "A build is already running.");
+	return;
+    }
+    var p;
+    ui::get(p, w, doc, "path");
+    var o;
+    build_subst(o, outtmpl.c_str(), w, doc);
+    ui::set(w, es, "nbpath", p);
+    ui::set(w, es, "nbkind", kind);
+    ui::set(w, es, "nbout", o);
+    ui::set(w, es, "buildstop", 0);	// in-process: no stop endpoint (MT-3)
+    ui::set(w, es, "buildlive", 1);
+    go native_build_task(w, es);
+    var md;
+    ui::get(md, w, doc, "modified");
+    if ( md.as_boolean() )
+	ui::set(w, es, "msg",
+		format("Building {} -> {} (unsaved changes: the on-disk file builds).", p, o));
+    else
+	ui::set(w, es, "msg", format("Building {} -> {} (in-process).", p, o));
 }
 
 // terminal-mode rows (Run / Run native): the JOE ^K Z shape — the program
@@ -1387,26 +1460,33 @@ void ensure_build_cmds(long w, long es)
     ui::get(have, w, es, "buildcmds");
     if ( !have.is_null() && php::count(have) > 0 )
 	return;
+    // OWNER RULING (IDE-10c): every default row is INTERNAL — builds run
+    // madc::build_native in-process, Run spawns a child OF SELF ({madc} =
+    // madc::compiler_path). The exec:// capture pump stays for manifest-
+    // declared external commands (mode "capture"); no default rides it.
+    // No default Stop row: internal builds finish on their own (MT-3
+    // owns cancellation) and terminal runs are ^C-able in their own
+    // terminal.
     var rows = {};
     value r1;
     r1["name"] = "Check (in-process)";
     r1["act"] = "bld-check";
     rows.push(r1);
     value r2;
-    r2["name"] = "Build";
-    r2["cmd"] = "madc -o {base} {path}";
-    r2["mode"] = "capture";
-    r2["act"] = "bld-run-cmd";
+    r2["name"] = "Build (in-process)";
+    r2["kind"] = "exe";
+    r2["out"] = "{base}";
+    r2["act"] = "bld-native";
     rows.push(r2);
     value r3;
-    r3["name"] = "Build object";
-    r3["cmd"] = "madc -r -o {base}.o {path}";
-    r3["mode"] = "capture";
-    r3["act"] = "bld-run-cmd";
+    r3["name"] = "Build object (in-process)";
+    r3["kind"] = "obj";
+    r3["out"] = "{base}.o";
+    r3["act"] = "bld-native";
     rows.push(r3);
     value r4;
     r4["name"] = "Run";
-    r4["cmd"] = "madc {path}";
+    r4["cmd"] = "{madc} {path}";
     r4["mode"] = "terminal";
     r4["act"] = "bld-run-cmd";
     rows.push(r4);
@@ -1416,10 +1496,6 @@ void ensure_build_cmds(long w, long es)
     r5["mode"] = "terminal";
     r5["act"] = "bld-run-cmd";
     rows.push(r5);
-    value r6;
-    r6["name"] = "Stop";
-    r6["act"] = "bld-stop";
-    rows.push(r6);
     ui::set(w, es, "buildcmds", rows);
 }
 
@@ -1443,6 +1519,13 @@ void build_choose(long w, long es, long doc, long option)
     if ( a == "bld-stop" )
     {
 	stop_build(w, es);
+	return;
+    }
+    if ( a == "bld-native" )
+    {
+	var k = format("{}", r["kind"]);
+	var ot = format("{}", r["out"]);
+	start_native_build(w, es, doc, k, ot);
 	return;
     }
     var cmd0 = format("{}", r["cmd"]);
@@ -1787,7 +1870,8 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	var a = format("{}", ev["action"]);
 	// Build-pane rows dispatch by ROW (act + command + mode are the
 	// row's data); the act prefix routes, build_choose owns the rest.
-	if ( a == "bld-check" || a == "bld-stop" || a == "bld-run-cmd" )
+	if ( a == "bld-check" || a == "bld-stop" || a == "bld-run-cmd"
+	  || a == "bld-native" )
 	{
 	    build_choose(w, es, doc, ev["option"].as_integer());
 	    return true;
@@ -1831,6 +1915,20 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
     if ( kind != "key" )
 	return true;	// focus / resize: the loop recomposes anyway
 
+    // OWNER RULING (IDE-10c): Esc backs out of ANY pane — help, options,
+    // outline, diags, build alike. The palette and prompts esc-cancel in
+    // their own arms above (they route before this one).
+    var k = format("{}", ev["key"]);
+    if ( k == "esc" )
+    {
+	var pane;
+	ui::get(pane, w, es, "pane");
+	if ( strlen(pane.c_str()) > 0 )
+	{
+	    ui::set(w, es, "pane", "");
+	    return true;
+	}
+    }
     edit_key(w, es, nav, caret, ev);
     return true;	// unbound keys are inert (chords arrive as actions)
 }
@@ -2002,7 +2100,7 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	    value brows;
 	    ui::get(brows, w, es, "buildcmds");
 	    box["label"] = es_int(w, es, "buildlive", 0) != 0
-		? "Build — running (Stop to end)" : "Build";
+		? "Build — running" : "Build";
 	    value bh;
 	    bh["list"] = 1;
 	    bh["focus"] = 1;

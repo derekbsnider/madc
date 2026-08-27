@@ -262,6 +262,36 @@ madc::project_close(p);                           // closes its TU handles
 Thread contract: a handle is confined to the thread/program that opened
 it — the runtime-eval machinery's confinement.
 
+### The build surface (`madc::build_native`)
+
+The CLI's AOT lane run in-process (madcide IDE-10c: the IDE lives inside
+the compiler and never shells out to a PATH `madc`): parse a FILE in a
+child Program — the same lexer-owned file ingestion as
+`parse_open_file` — then emit a native artifact through the CLI's own
+emit seat.
+
+```c
+value diags;
+bool ok = madc::build_native(diags, "prog.mad", "exe", "prog");
+                                                  // "exe" = PIE executable
+                                                  // (the CLI -o default);
+                                                  // "obj" = relocatable .o
+                                                  // (-r -o). diags gets
+                                                  // diagnostics rows either
+                                                  // way; a failure ALWAYS
+                                                  // carries >=1 error row.
+var self = madc::compiler_path();                 // the running compiler's
+                                                  // own executable — spawn
+                                                  // children OF SELF, never
+                                                  // a PATH madc
+```
+
+The parse phase cooperates with `go` tasks (an IDE stays live while it
+builds); the emit phase has no yield points yet (a brief block — the
+named backend-yield residue). Backend refusals after a clean front end
+still print to stderr (backend-diagnostics-as-data is the other named
+residue); the synthesized error row keeps the failure loud either way.
+
 ## Security
 
 Embedding hosts control the whole surface: full-unit eval is gated by
