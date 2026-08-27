@@ -11954,7 +11954,8 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 	ot->braced = open_id == TokenID::tkOpBrc;
 	ot->file = name_tb->file; ot->line = name_tb->line; ot->column = name_tb->column;
 	parse_objtemp_ctor_arguments(*this, ot, name_tb, close_id, close_spelling);
-	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args);
+	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args,
+							  ot->braced);
 	return ot;
 }
 
@@ -12003,7 +12004,8 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 	ot->line = type_tb->line;
 	ot->column = type_tb->column;
 	parse_objtemp_ctor_arguments(*this, ot, type_tb, close_id, close_spelling);
-	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args);
+	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args,
+							  ot->braced);
 	return ot;
     }
 
@@ -48626,7 +48628,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	    fprintf(stderr, "[ctortmpl] TokenNEW alloc_class=%s nargs=%zu\n",
 		alloc_class->name.c_str(), ctor_args.size());
 #endif
-	pgm.instantiate_member_ctor_template_for_construction(alloc_class, ctor_args);
+	pgm.instantiate_member_ctor_template_for_construction(alloc_class, ctor_args, false);
     }
 
     return this;
@@ -50050,6 +50052,112 @@ static bool skipped_template_outofline_member(
 	return false;
     class_name_out = cls;
     member_name_out = member;
+    return true;
+}
+
+// An out-of-class MEMBER-TEMPLATE definition on a PLAIN (non-template)
+// class (`template<...> RET Cls::member(...) { body }` —
+// libmadc/engine.h's engine::register_function): the in-class declaration
+// registered the decl-only member-template placeholder; this definition IS
+// its pattern. Attach the body through THE one stamp owner
+// (stamp_member_template_pattern), with the `Ns:: ... Cls::` qualifier
+// stripped so the retained span matches the in-class shape the
+// instantiation machinery expects. Without this the definition
+// mis-registered as a namespace free template, the member's pattern stayed
+// empty, and every call SILENTLY froze on the placeholder symbol — an
+// undefined import at MIR link time. False = not this shape (the caller's
+// other arms proceed).
+static void stamp_member_template_pattern(
+	DataDefCLASS *owner, FuncDef *fd, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<bool> &typeparam_is_type, const std::string &name,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints);
+
+static bool attach_outofclass_member_template_def(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *> > &typeparam_defaults,
+	const std::vector<bool> &typeparam_is_type,
+	const std::vector<bool> &typeparam_is_pack,
+	const std::vector<std::vector<TokenBase *> > &typeparam_constraints)
+{
+    std::string member;
+    size_t ni = skipped_template_function_declarator_name_index(tokens, &member);
+    if ( ni == tokens.size() || ni < 2 || member.empty() )
+	return false;
+    if ( !tokens[ni - 1] || tokens[ni - 1]->id() != TokenID::tkNS
+      || !is_contextual_identifier_token(tokens[ni - 2]) )
+	return false;
+    std::string cls = contextual_identifier_name(tokens[ni - 2]);
+    // The whole qualifier span (`madc :: engine ::` — namespaces included)
+    // strips below; the CLASS is the last component.
+    size_t qual_start = ni - 2;
+    while ( qual_start >= 2 && tokens[qual_start - 1]
+	 && tokens[qual_start - 1]->id() == TokenID::tkNS
+	 && is_contextual_identifier_token(tokens[qual_start - 2]) )
+	qual_start -= 2;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(
+	pgm.resolve_named_datadef(cls));
+    if ( !owner && !pgm.current_namespace().empty() )
+	owner = dynamic_cast<DataDefCLASS *>(pgm.resolve_named_datadef(
+	    pgm.current_namespace() + "::" + cls));
+    // Env-gated probe (MADC_OOL_PROBE=<member substring>): a declined attach
+    // is silent by design (other arms follow) — name what this one saw.
+    static const char *_oolp = ::getenv("MADC_OOL_PROBE");
+    const bool _oolp_on = _oolp && *_oolp
+	&& member.find(_oolp) != std::string::npos;
+    if ( _oolp_on )
+	fprintf(stderr, "OOLPROBE attach member=%s cls=%s owner=%p\n",
+		member.c_str(), cls.c_str(), (void *)owner);
+    if ( !owner )
+	return false;
+    // A definition needs a body; a bodyless qualified redeclaration stays on
+    // its existing paths.
+    bool has_body = false;
+    for ( size_t i = ni; i < tokens.size(); ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	{ has_body = true; break; }
+    if ( _oolp_on )
+	fprintf(stderr, "OOLPROBE attach has_body=%d nmethods=%zu\n",
+		(int)has_body, owner->methods.size());
+    if ( !has_body )
+	return false;
+    // The declared member-template placeholder this definition belongs to:
+    // same display name, same template-parameter arity, no pattern yet (an
+    // in-class body keeps its own — first definition wins, as in C++).
+    FuncDef *mfd = NULL;
+    for ( Variable *mv : owner->methods )
+    {
+	FuncDef *cfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( _oolp_on && cfd )
+	    fprintf(stderr, "OOLPROBE cand mt=%d disp='%s' tp=%zu/%zu decl=%zu\n",
+		    (int)cfd->is_member_template,
+		    cfd->method_display_name.c_str(),
+		    cfd->template_param_names.size(), typeparams.size(),
+		    cfd->member_template_decl.size());
+	if ( !cfd || !cfd->is_member_template
+	  || cfd->method_display_name != member
+	  || cfd->template_param_names.size() != typeparams.size()
+	  || !cfd->member_template_decl.empty() )
+	    continue;
+	mfd = cfd;
+	break;
+    }
+    if ( !mfd )
+	return false;
+    // Keep [0, qual_start) + [ni, end): the qualifier pairs (each `X ::`)
+    // drop, the member name at ni stays.
+    std::vector<TokenBase *> stripped;
+    stripped.reserve(tokens.size());
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( i < qual_start || i >= ni )
+	    stripped.push_back(tokens[i]);
+    stamp_member_template_pattern(owner, mfd, stripped, typeparams,
+				  typeparam_is_pack, typeparam_is_type,
+				  member, typeparam_defaults,
+				  typeparam_constraints);
     return true;
 }
 
@@ -52323,16 +52431,28 @@ static int fn_template_deduce_param(const std::string &spelling,
 // (`_TRet ( * __convf ) ( const _CharT * , _CharT * * , _Base . . . )`)
 // against a function-typed argument, binding template parameters from the
 // return and parameter positions via fn_template_deduce_param. The last
-// sub-parameter may be the parameter pack: one-element (binds) or EMPTY
-// (`strtod(const char*, char**)` against the `_Base...` tail — sets
-// pack_empty, binds nothing). Returns false when the spelling and the
-// argument's function type don't match.
+// sub-parameter may be a parameter pack, on one of two channels:
+// - the LEGACY trailing-direct channel (`pack_param` — the template also
+//   spells `_Base... __base` as its last parameter): one-element (binds via
+//   `binding`) or EMPTY (`strtod(const char*, char**)` against the
+//   `_Base...` tail — sets pack_empty, binds nothing), exactly as before.
+// - a TID-classified pack (`Ret (*cb)(Args...)` with NO trailing direct
+//   pack — engine::register_function's host-callback shape): the pack name
+//   sits in `tid_pack_names`, and the remaining function parameters (ANY
+//   count, zero included) become its elements in `tid_packs` — the same
+//   sink unify_nested_spec_pattern_arg fills, consumed by the same
+//   monomorphization. A repeated deduction must agree or the candidate
+//   fails ([temp.deduct.type] consistency).
+// Returns false when the spelling and the argument's function type don't
+// match.
 static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 	const std::vector<std::string> &typeparams,
 	const std::string &pack_param,
 	DataDef *arg_dd,
 	std::map<std::string, DataDef *> &binding,
-	bool &pack_empty)
+	bool &pack_empty,
+	const std::vector<std::string> *tid_pack_names = NULL,
+	std::map<std::string, std::vector<DataDef *> > *tid_packs = NULL)
 {
     size_t p1 = spelling.find('(');
     if ( p1 == std::string::npos )
@@ -52400,6 +52520,29 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 	    if ( binding.find(pack_param) == binding.end() )
 		binding[pack_param] = fd->parameters[j];
 	    return true;
+	}
+	// A TID-classified pack in trailing sub-parameter position: the
+	// remaining function parameters ARE its elements (any count).
+	if ( tid_pack_names && tid_packs && j + 1 == subs.size() )
+	{
+	    const std::string *pn = NULL;
+	    for ( size_t p = 0; p < tid_pack_names->size() && !pn; ++p )
+		if ( fn_template_param_is_pack(subs[j], (*tid_pack_names)[p]) )
+		    pn = &(*tid_pack_names)[p];
+	    if ( pn )
+	    {
+		if ( fd->parameters.size() < j )
+		    return false;
+		std::vector<DataDef *> elems(fd->parameters.begin() + j,
+					     fd->parameters.end());
+		std::map<std::string, std::vector<DataDef *> >::iterator
+		    have = tid_packs->find(*pn);
+		if ( have != tid_packs->end() && !have->second.empty()
+		  && have->second != elems )
+		    return false;	// two deductions disagree
+		(*tid_packs)[*pn] = elems;
+		return true;
+	    }
 	}
 	if ( j >= fd->parameters.size() )
 	    return false;
@@ -52659,13 +52802,15 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 }
 
 static bool free_operator_concrete_param_matches(Program &pgm,
-		const std::string &sp, DataDef *arg_core);
+		const std::string &sp, DataDef *arg_core,
+		bool relaxed_class_viability = false);
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL,
-	Variable **var_out = NULL)
+	Variable **var_out = NULL,
+	bool relaxed_concrete_class_params = false)
 {
     InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
@@ -52742,6 +52887,14 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    }
 	}
     }
+    // Env-gated exit probe (MADC_FNTPL_PROBE, same key filter as the entry
+    // probe above): every fail-cleanly bail in the deduction walk below is
+    // otherwise invisible — name the exit a failing candidate takes.
+    static const char *_ftp_env = ::getenv("MADC_FNTPL_PROBE");
+    const bool _ftp_on = _ftp_env && *_ftp_env
+        && key.find(_ftp_env) != std::string::npos;
+#define FTPROBE(what) do { if ( _ftp_on ) \
+        fprintf(stderr, "FNTPLPROBE %s EXIT: %s\n", key.c_str(), what); } while (0)
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
@@ -52769,7 +52922,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     }
     std::string name = skipped_template_function_declarator_name(ft.decl);
     if ( name.empty() )
-	return false;
+	{ FTPROBE("exit-52816"); return false; }
     size_t name_idx = ft.decl.size(), lparen = ft.decl.size();
     for ( size_t i = 0; i < ft.decl.size(); ++i )
 	if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
@@ -52778,13 +52931,13 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	  && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
 	{ name_idx = i; lparen = i + 1; break; }
     if ( lparen >= ft.decl.size() )
-	return false;
+	{ FTPROBE("exit-52825"); return false; }
     Program::FreeOperatorOverload ov;
     if ( !extract_free_signature(pgm, ft.decl, ft.typeparams, name, name_idx,
 				 lparen, ov) )
     {
 	DBG_PACK("try_inst %s: extract_free_signature failed\n", key.c_str());
-	return false;
+	{ FTPROBE("exit-52831"); return false; }
     }
     // Classify each pack typeparam now that the parameter spellings are known.
     // A TRAILING DIRECT param pack (`_Args&&... __args` — the last param spelling
@@ -52812,7 +52965,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	if ( !ov.param_spellings.empty()
 	  && fn_template_param_is_pack(ov.param_spellings.back(), nontype_pack_tps[p]) )
-	    return false;	// trailing-direct non-type pack: unsupported
+	    { FTPROBE("exit-52859// trailing-direct non-type pack: unsupported"); return false; }
 	tid_packs_nontype[nontype_pack_tps[p]];	// template-id non-type pack; seed empty
     }
     // Without a trailing pack, arity must not exceed the parameter count. WITH a
@@ -52823,10 +52976,10 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     if ( pack_param.empty() )
     {
 	if ( tc->parameters.size() > ov.param_spellings.size() )
-	    return false;
+	    { FTPROBE("exit-52870"); return false; }
     }
     else if ( tc->parameters.size() + 1 < ov.param_spellings.size() )
-	return false;	// fewer args than the fixed (non-pack) parameters
+	{ FTPROBE("exit-52873// fewer args than the fixed (non-pack) parameters"); return false; }
     // Element types absorbed by the trailing pack (size 0 = empty pack, 1 = the
     // legacy single-element path, >=2 = multi-element monomorphization).
     std::vector<DataDef *> pack_elems;
@@ -52847,7 +53000,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	size_t nonpack = ft.typeparams.size() - (pack_param.empty() ? 0 : 1);
 	if ( tc->explicit_template_args.size() > nonpack )
-	    return false;
+	    { FTPROBE("exit-52894"); return false; }
 	for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
 	    binding[ft.typeparams[i]] = tc->explicit_template_args[i];
     }
@@ -52866,7 +53019,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    // spelling); fn_template_deduce_param rejects defaulted slots that
 	    // involve a template parameter, so no binding is lost here.
 	    if ( ov.param_spellings[i].find('=') == std::string::npos )
-		return false;
+		{ FTPROBE("exit-52913"); return false; }
 	    continue;
 	}
 	const std::string &sp = ov.param_spellings[i];
@@ -52909,7 +53062,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		if ( fn_template_deduce_param(sp, ft.typeparams, adp,
 			elem_tp, elem_dd, &pgm, tc->parameters[a]) != 1
 		  || elem_tp != pack_param || !elem_dd )
-		    return false;
+		    { FTPROBE("exit-52956"); return false; }
 		pack_elems.push_back(elem_dd);
 	    }
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
@@ -52950,15 +53103,27 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		continue;
 	}
 	// Function-pointer parameter shape: structural match against the
-	// argument's function type.
+	// argument's function type. TID-classified packs (`Ret (*)(Args...)`
+	// with no trailing direct pack) deduce their elements into tid_packs.
 	if ( sp.find('(') != std::string::npos )
 	{
+	    {
+		static const char *fp = ::getenv("MADC_FNPTR_PROBE");
+		if ( fp && *fp )
+		    fprintf(stderr, "FNPTRPROBE sp='%s' arg_dd=%s(%s)"
+			    " pack_param='%s' npacks=%zu\n",
+			    sp.c_str(),
+			    arg_dd ? arg_dd->name.c_str() : "(null)",
+			    arg_dd ? typeid(*arg_dd).name() : "-",
+			    pack_param.c_str(), pack_tps.size());
+	    }
 	    if ( !fn_template_deduce_fnptr_param(sp, ft.typeparams, pack_param,
-						 arg_dd, binding, pack_empty) )
+						 arg_dd, binding, pack_empty,
+						 &pack_tps, &tid_packs) )
 	    {
 		DBG_PACK("  fnptr deduce FAILED on '%s' (arg_dd=%s)\n",
 			 sp.c_str(), arg_dd ? arg_dd->name.c_str() : "NULL");
-		return false;
+		{ FTPROBE("exit-53017"); return false; }
 	    }
 	    continue;
 	}
@@ -53075,7 +53240,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 				vals.push_back((int64_t)v);
 			    }
 			    if ( !resolved )
-				return false;
+				{ FTPROBE("exit-53134"); return false; }
 			    tid_packs_nontype[pk->first] = vals;
 			    continue;
 			}
@@ -53105,7 +53270,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			    elem_spellings.push_back(es);
 			}
 			if ( !resolved )
-			    return false;
+			    { FTPROBE("exit-53164"); return false; }
 			tid_packs[pk->first] = elems;
 			tid_pack_spellings[pk->first] = elem_spellings;
 		    }
@@ -53129,7 +53294,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		if ( pgm.find_template_alias(pouter, ft.ns,
 			dynamic_cast<DataDefCLASS *>(ft.owner_class)) )
 		    continue;
-		return false;	// template-id param the argument can't match
+		{ FTPROBE("exit-53188// template-id param the argument can't match"); return false; }
 	    }
 	}
 	// [temp.deduct.call]: deducing a BY-VALUE (non-reference) type parameter
@@ -53154,7 +53319,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd,
 					 &pgm, tc->parameters[i]);
 	if ( r < 0 )
-	    return false;
+	    { FTPROBE("exit-53213"); return false; }
 	if ( r == 0 )
 	{
 	    // Concrete parameter (names no template param): the candidate is
@@ -53164,8 +53329,9 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    // operator<<(basic_ostream<char,_Traits>&, char) — registered
 	    // before the const char* sibling — claimed `cout << "hello "`
 	    // through this lane and truncated the pointer to one char.
-	    if ( !free_operator_concrete_param_matches(pgm, sp, deduce_dd) )
-		return false;
+	    if ( !free_operator_concrete_param_matches(
+			pgm, sp, deduce_dd, relaxed_concrete_class_params) )
+		{ FTPROBE("concrete-param-mismatch"); return false; }
 	    continue;
 	}
 	if ( binding.find(tp) == binding.end() )
@@ -53174,7 +53340,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // An empty pack must not ALSO have bound an element (a fn-ptr deduction
     // saying empty while a trailing argument filled the pack is a mismatch).
     if ( pack_empty && binding.count(pack_param) )
-	return false;
+	{ FTPROBE("exit-53233"); return false; }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
     {
@@ -53531,7 +53697,7 @@ static std::vector<TokenBase *> clone_run_with_template_names(
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft_in, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
-	const std::string &pack_param, bool pack_empty, Variable **var_out,
+	const std::string &pack_param_in, bool pack_empty, Variable **var_out,
 	std::vector<DataDef *> pack_elems,
 	std::map<std::string, std::vector<DataDef *> > tid_packs,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings,
@@ -53539,6 +53705,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    std::string pack_param = pack_param_in;
+    // Env-gated exit probe (MADC_FNTPL_PROBE): the binding stage's own
+    // fail-cleanly bails, named (the MTB probe's sibling).
+    static const char *_ifb_env = ::getenv("MADC_FNTPL_PROBE");
+    const bool _ifb_on = _ifb_env && *_ifb_env
+        && key.find(_ifb_env) != std::string::npos;
+#define IFBPROBE(what) do { if ( _ifb_on ) \
+        fprintf(stderr, "IFBPROBE %s EXIT: %s\n", key.c_str(), what); } while (0)
     // [temp.type] identity canonicalization at THE choke point every binding
     // route passes through (deduced, explicit, unified, text): the values in
     // these containers become the instantiation's identity (inst_key, the
@@ -53554,6 +53728,32 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    ct = tid_packs.begin(); ct != tid_packs.end(); ++ct )
 	for ( size_t ce = 0; ce < ct->second.size(); ++ce )
 	    ct->second[ce] = canonical_template_binding_dd(ct->second[ce]);
+    // A MULTI-element TID pack with NO trailing direct pack rides THE ONE
+    // N-copy expansion machinery below: every expansion arm (pack decl,
+    // `pattern...`, sizeof... fold) keys on the pack NAME, and a tid pack's
+    // occurrences (`Ret (*cb)(Args...)`, `adapter<Ret, Args...>`) are the
+    // same shapes — alias it into the pack_param/pack_elems channel
+    // (engine::register_function's host-callback deduction). Only the
+    // single-multi shape; two multi tid packs still fail cleanly below.
+    if ( pack_param.empty() )
+    {
+	std::map<std::string, std::vector<DataDef *> >::iterator mt =
+	    tid_packs.end();
+	size_t multi = 0;
+	for ( std::map<std::string, std::vector<DataDef *> >::iterator
+		it2 = tid_packs.begin(); it2 != tid_packs.end(); ++it2 )
+	    if ( it2->second.size() > 1 )
+	    {
+		mt = it2;
+		++multi;
+	    }
+	if ( multi == 1 )
+	{
+	    pack_param = mt->first;
+	    pack_elems = mt->second;
+	    tid_packs.erase(mt);
+	}
+    }
     // [temp.variadic] empty-pack elision on the RAW decl (dots intact) —
     // see tsubst_elide_empty_pack_expansions. A LOCAL copy: the shared
     // fn_template_map pattern must keep its dots for later non-empty
@@ -53592,7 +53792,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = tid_packs.begin(); t != tid_packs.end(); ++t )
     {
 	if ( t->second.size() > 1 )
-	    return false;	// multi-element template-id pack: future N-copy expansion
+	    { IFBPROBE("exit-53660"); return false; }
 	if ( t->second.empty() )
 	    tidpack_empty_names.insert(t->first);
 	else if ( t->second[0] )
@@ -53604,7 +53804,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		tidpack_one_spelling[t->first] = si->second[0];
 	}
 	else
-	    return false;
+	    { IFBPROBE("exit-53672"); return false; }
     }
     // Same 0/1-element handling for NON-TYPE template-id packs (`_Indexes...`):
     // a 1-element pack substitutes its sole integer value (as a TokenInt) and
@@ -53615,7 +53815,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    t = tid_packs_nontype.begin(); t != tid_packs_nontype.end(); ++t )
     {
 	if ( t->second.size() > 1 )
-	    return false;	// multi-element non-type pack: future N-copy expansion
+	    { IFBPROBE("exit-53683"); return false; }
 	if ( t->second.empty() )
 	    nontype_tidpack_empty.insert(t->first);
 	else
@@ -53798,7 +53998,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    fprintf(stderr, "MTBPROBE FAIL %s nontype %s: default"
 			    " does not fold\n",
 			    key.c_str(), ft.typeparams[i].c_str());
-		return false;
+		{ IFBPROBE("exit-53866"); return false; }
 	    }
 	    const std::vector<TokenBase *> &dtoks = ft.typeparam_defaults[i];
 	    DataDef *base = NULL;
@@ -53872,7 +54072,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    (i < ft.typeparam_defaults.size()
 		     && !ft.typeparam_defaults[i].empty())
 			? "default did not resolve" : "no default");
-	return false;
+	{ IFBPROBE("exit-53940"); return false; }
     }
 
     // SFINAE overload selection: a parameter whose TYPE was captured as a
@@ -53914,7 +54114,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			    " did not resolve\n", key.c_str(), i,
 			    i < ft.typeparams.size()
 				? ft.typeparams[i].c_str() : "?");
-		return false;
+		{ IFBPROBE("exit-53982"); return false; }
 	    }
 	}
     }
@@ -54552,6 +54752,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	DBG_PACK("\n");
     }
 #endif
+    // Env-gated dump (MADC_MTB_PROBE): the fully substituted token run —
+    // the instantiation's ground truth before the sandboxed parse.
+    if ( mtb_on )
+    {
+	fprintf(stderr, "MTBPROBE inj %s:", inst_key.c_str());
+	for ( size_t i = 0; i < inj.size(); ++i )
+	    fprintf(stderr, " %s",
+		    inj[i] ? overload_token_spelling(inj[i]).c_str() : "?");
+	fprintf(stderr, "\n");
+    }
     // SFINAE pre-check ([temp.deduct]): substitution failure in the
     // SIGNATURE silently discards the candidate — it must never reach the
     // body parse below (whose failure path can consume past the injected
@@ -54666,7 +54876,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    // memo check at the top short-circuits to "already done" and
 		    // the SFINAE-removed overload silently wins.
 		    pgm.fn_template_instantiated.erase(inst_key);
-		    return false;
+		    { IFBPROBE("exit-54734"); return false; }
 		}
 	    }
 	}
@@ -55115,7 +55325,8 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 // Only a NAMED user type (class/enum) constrains here; scalars/pointers stay
 // permissive (implicit conversions, char*, etc.).
 static bool free_operator_concrete_param_matches(Program &pgm,
-		const std::string &sp, DataDef *arg_core)
+		const std::string &sp, DataDef *arg_core,
+		bool relaxed_class_viability)
 {
     std::string core = sp;
     while ( !core.empty() && (core.back() == '&' || core.back() == ' ') )
@@ -55188,6 +55399,18 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 	if ( DataDefCLASS *ac = dynamic_cast<DataDefCLASS *>(arg_core) )
 	    if ( ac->is_or_derives_from(pcls) )
 		return true;
+    // RELAXED pass (second-chance viability, [over.ics.user]): a NAMED
+    // CLASS/STRUCT parameter is reachable through a user-defined conversion
+    // (a converting ctor — `const std::string&` from a string literal in
+    // engine::register_function's shape), which this first-deduced-wins
+    // walker cannot rank. The caller runs a STRICT pass over every candidate
+    // first; only when none matched does it retry relaxed, so an
+    // exact-matching sibling can never be stolen — and a truly impossible
+    // claim still fails loudly at instantiation. The arithmetic and pointer
+    // arms above stay strict in both passes: no user conversion exists there
+    // ([conv]), and those were the wrong-claim incidents.
+    if ( relaxed_class_viability && pstr )
+	return true;
     return false;	// a concrete named type the argument is not -> reject
 }
 
@@ -56742,6 +56965,14 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     std::string inst_name;
     std::vector<DataDef *> concrete_type_args;
     std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
+    // Two viability passes ([over.ics.user] without a ranker): STRICT first —
+    // every candidate gets its exact/derived chance — then, only when NO
+    // candidate matched, RELAXED (a concrete named-CLASS parameter stops
+    // vetoing: a converting ctor can serve it — `const std::string&` from a
+    // string literal in engine::register_function). An exact sibling can
+    // never be stolen; an impossible relaxed claim still fails loudly at
+    // instantiation.
+    for ( int relax_pass = 0; relax_pass < 2 && !ok; ++relax_pass )
     for ( size_t mci = 0; mci < mti_cands.size() && !ok; ++mci )
     {
     fd = mti_cands[mci];
@@ -56842,7 +57073,8 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 					       &concrete_type_args,
 					       &concrete_type_arg_packs,
-					       &inst_var);
+					       &inst_var,
+					       relax_pass != 0);
     tsubst_skip_body_name = saved_skip_body;
     if ( ok && inst_var && inst_var->name != inst_name )
 	inst_name = inst_var->name;	// binding-memo dedupe: reuse the instance
@@ -56902,9 +57134,20 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 }
 
 void Program::instantiate_member_ctor_template_for_construction(
-	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
+	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+	bool list_initialization)
 {
     if ( !cdd )
+	return;
+    // [dcl.init.list]/3-4 — ONE owner for the rule (madc.h contract): a
+    // braced list on a class WITH an initializer-list ctor is ONE
+    // std::initializer_list argument; the elements are never an argument
+    // list, so deducing a ctor template from them picks a ctor the program
+    // never calls (`vector<double> d{1.5, 2.5}` deduced
+    // vector(_InputIterator, _InputIterator) from the two doubles and died
+    // in its tsubst; the TokenObjTemp sites minted the same husk for
+    // `vector<value>{value(10), value(32)}` — embed_hello's pgm.call args).
+    if ( list_initialization && cdd->has_initializer_list_ctor() )
 	return;
     const size_t candidate_limit = cdd->ctors.size();
     for ( size_t skip = 0; skip < candidate_limit; ++skip )
@@ -59285,6 +59528,18 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    }
 	    return NULL;
 	}
+	// An out-of-class member-template definition on a PLAIN class
+	// (`template<...> RET Cls::member(...) { body }`) attaches its body
+	// to the declared member's pattern — never a namespace free
+	// function (see attach_outofclass_member_template_def).
+	if ( !pgm.deferred_function_body_sink
+	  && attach_outofclass_member_template_def(pgm, skipped_decl,
+						   typeparams,
+						   typeparam_defaults,
+						   typeparam_is_type,
+						   typeparam_is_pack,
+						   typeparam_constraints) )
+	    return NULL;
 	if ( !pgm.deferred_function_body_sink )
 	    register_skipped_namespace_template_function(pgm, skipped_decl,
 							typeparams,
@@ -63732,14 +63987,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
-	    // NOT for a braced list the class consumes AS a list: those tokens are
-	    // the list's ELEMENTS, never an argument list, so deducing from them
-	    // picks a ctor the program never calls. `vector<double> d{1.5, 2.5}`
-	    // deduced vector(_InputIterator, _InputIterator) from the two doubles
-	    // and died in its tsubst — while the initializer-list ctor sat right
-	    // there ([dcl.init.list]/4 makes it the ONLY candidate).
-	    if ( !(td->ctor_args_braced && ddc->has_initializer_list_ctor()) )
-		instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
+	    // The [dcl.init.list]/3-4 filter lives in the callee (ONE owner —
+	    // madc.h contract): it declines deduction from a braced list the
+	    // class consumes AS a list.
+	    instantiate_member_ctor_template_for_construction(ddc, td->ctor_args,
+							      td->ctor_args_braced);
 	    // STATEMENT contexts keep consuming the trailing ';' here
 	    // (long-standing behavior, unmeasured reliance surface); a
 	    // FOR-INIT declaration must leave it — TokenFOR::parse's tail

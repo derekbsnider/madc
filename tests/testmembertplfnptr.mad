@@ -1,0 +1,46 @@
+// Member-template deduction from a FUNCTION-POINTER argument
+// (`Ret (*cb)(Args...)` — libmadc engine::register_function's host-callback
+// shape; g++/clang++ are the oracle):
+// - the TID-classified pack (no trailing direct pack) deduces its elements
+//   from the argument's function type, ANY count (the multi-element case
+//   rides the one N-copy expansion);
+// - the concrete `const std::string&` parameter accepts a string literal
+//   through the second (relaxed) viability pass — an exact-matching sibling
+//   can never be stolen, since the strict pass runs first;
+// - EngB's pattern comes from an OUT-OF-CLASS member-template definition on
+//   a plain class (attach_outofclass_member_template_def) — before it, the
+//   definition mis-registered as a namespace free template and the call
+//   SILENTLY froze on the placeholder (undefined import at MIR link).
+
+#include <string>
+#include <cstdio>
+
+struct EngA {
+	template <typename Ret, typename... Args>
+	long reg(const std::string &name, Ret (*cb)(Args...))
+	{
+		return (long)sizeof...(Args) * 10 + (long)name.size();
+	}
+};
+
+struct EngB {
+	template <typename Ret, typename... Args>
+	long reg(const std::string &name, Ret (*cb)(Args...));
+};
+
+template <typename Ret, typename... Args>
+long EngB::reg(const std::string &name, Ret (*cb)(Args...))
+{
+	return (long)sizeof...(Args) * 100 + cb(3, 4);
+}
+
+static long mul(long a, long b) { return a * b; }
+
+int main()
+{
+	EngA a;
+	EngB b;
+	printf("A=%ld\n", a.reg("nm", mul));
+	printf("B=%ld\n", b.reg("m", mul));
+	return 0;
+}

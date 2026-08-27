@@ -1386,6 +1386,24 @@ static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
 		return NULL;
 	const Program::DependentDerivedOrigin &org = oit->second;
 	DataDef *src = subst_datadef(prog, org.source, subst, packs, pack_params);
+	{
+		static const char *sp = ::getenv("MADC_SUBST_PROBE");
+		if (sp && *sp && shell->name.find(sp) != std::string::npos) {
+			DataDefCLASS *scls = dynamic_cast<DataDefCLASS *>(
+				org.source);
+			DataDef *now = scls
+				? Program::class_member_type(scls, org.member)
+				: NULL;
+			fprintf(stderr, "DERIVPROBE shell=%s kind=%d member=%s"
+				" source=%s src=%s same=%d src_now=%s\n",
+				shell->name.c_str(), (int)org.kind,
+				org.member.c_str(),
+				org.source ? org.source->name.c_str() : "-",
+				src ? src->name.c_str() : "-",
+				(int)(src == org.source),
+				now ? now->name.c_str() : "(none)");
+		}
+	}
 	if (!src || src == org.source)
 		return NULL;	// nothing substituted — still the pattern context
 	if (template_param_under_type_layers(src)
@@ -1463,8 +1481,26 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			if (!conc)
 				conc = rebuild_dependent_derived(
 					prog, shell, subst, packs, pack_params);
+			{
+				static const char *sp = ::getenv("MADC_SUBST_PROBE");
+				if (sp && *sp
+				    && shell->name.find(sp) != std::string::npos)
+					fprintf(stderr, "SUBSTPROBE shell=%s dep=%d"
+						" shell_org=%d derived_org=%d -> %s\n",
+						shell->name.c_str(),
+						(int)shell->is_dependent_placeholder,
+						(int)(prog->dependent_shell_origin.count(shell) != 0),
+						(int)(prog->dependent_derived_origin.count(shell) != 0),
+						conc ? conc->name.c_str() : "(kept)");
+			}
 			if (conc)
 				return conc;
+		} else if (shell) {
+			static const char *sp = ::getenv("MADC_SUBST_PROBE");
+			if (sp && *sp
+			    && shell->name.find(sp) != std::string::npos)
+				fprintf(stderr, "SUBSTPROBE shell=%s dep=0 (not a"
+					" placeholder; kept)\n", shell->name.c_str());
 		}
 	}
 	return dd;
@@ -2538,12 +2574,18 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			static const char *mtp = ::getenv("MADC_MTI_PROBE");
 			if (mtp && *mtp
 			    && (recv_class->name + "__" + mname).find(mtp)
-			       != std::string::npos)
-				fprintf(stderr, "MTIPROBE recv=%s cls=%p winner=%p"
-					" wfd=%p\n",
-					recv_class->name.c_str(), (void *)recv_class,
+			       != std::string::npos) {
+				fprintf(stderr, "MTIPROBE recv=%s mname=%s"
+					" cls=%p winner=%p wfd=%p args=",
+					recv_class->name.c_str(), mname.c_str(),
+					(void *)recv_class,
 					(void *)winner,
 					winner ? (void *)winner->type : NULL);
+				for (const DataDef *at : mat)
+					fprintf(stderr, "%s,",
+						at ? at->name.c_str() : "?");
+				fprintf(stderr, "\n");
+			}
 		}
 		if (!winner) {
 			for (Variable *mv : recv_class->methods) {
@@ -13856,15 +13898,30 @@ FuncDef *CirBuilder::find_initializer_list_ctor(DataDefCLASS *cdd,
 		DataDefCLASS *ilc = as_class_instance(fd->parameters[1]);
 		if (!ilc) ilc = param_object_class(fd->parameters[1], refp);
 		DataDef *elem = ilc ? initializer_list_element_type(ilc) : NULL;
-		// A CLASS element type needs its backing array CONSTRUCTED
-		// element by element (and destroyed at scope exit); an aggregate
-		// initializer of `std::string[2]` from two `const char *` is not
-		// that: the emitted code faulted inside
-		// basic_string::_M_construct for `vector<string> v{"a","b"}`.
-		// Declining here leaves such a list on the pre-existing path —
-		// a loud diagnostic, never a crash — until the constructed-array
-		// slice lands (recorded on task #56).
-		if (elem && as_class_instance(elem)) elem = NULL;
+		// A CLASS element type whose list needs CONVERSION construction
+		// into the slots (an aggregate initializer of `std::string[2]`
+		// from two `const char *` faulted inside
+		// basic_string::_M_construct for `vector<string> v{"a","b"}`)
+		// still declines — the constructed-array slice, task #56.
+		// Elements ALREADY of the element class need no slot
+		// construction: the lowered element value initializes the slot
+		// as a struct value (the same by-value copy every class
+		// temporary makes under the current temp model), so
+		// [dcl.init.list]/4 holds — `vector<value>{value(10),
+		// value(32)}` takes the initializer-list ctor exactly like g++
+		// (embed_hello's pgm.call args; without this the list fell to
+		// plain overloading, deduced the range ctor with
+		// _InputIterator = the ELEMENT class — a candidate g++'s
+		// _RequireInputIter SFINAEs away — and died in tsubst on
+		// iterator_traits<V>::iterator_category).
+		if (elem && as_class_instance(elem)) {
+			DataDefCLASS *ec = as_class_instance(elem);
+			for (TokenBase *e : elems)
+				if (class_behind(ctor_arg_datadef(e)) != ec) {
+					elem = NULL;
+					break;
+				}
+		}
 		{
 			// Same env knob as the ctor-overload trace: when a braced
 			// list picks the wrong ctor the question is always "was
@@ -14030,8 +14087,13 @@ FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
 	// copy time.
 	if ((!ctor || (ctor->is_member_template && ctor->declaration_only))
 	    && m_prog) {
+		// list_initialization = false here: the [dcl.init.list]/3-4
+		// filter fired at the PARSE construction sites; this
+		// re-selection serves paren shapes and lists whose
+		// initializer-list ctor DECLINED (the task-#56 conversion
+		// residue), which keep their pre-existing loud path.
 		m_prog->instantiate_member_ctor_template_for_construction(
-			cdd, ctor_args);
+			cdd, ctor_args, false);
 		if (FuncDef *inst = select_ctor_overload(cdd, ctor_args))
 			ctor = inst;
 	}
