@@ -6471,6 +6471,15 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	if (t == TokenType::ttInteger || t == TokenType::ttReal
 	    || t == TokenType::ttChar || t == TokenType::ttString)
 		return true;
+	// An ENUMERATOR is a prvalue too ([expr.prim.id.unqual] — an enumerator
+	// is never an lvalue). It arrives as a TokenVar over a parse-time
+	// constant Variable (vfCONSTANT without vfCONSTDECL — no storage
+	// exists), so `&enumerator` emitted for a reference binding was invalid
+	// ("lvalue required as unary & operand", vector<enum>::push_back).
+	// Bind through a materialized temporary exactly like the literals.
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+		if ((tv->var.flags & vfCONSTANT) && !(tv->var.flags & vfCONSTDECL))
+			return true;
 	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg)) {
 		// A scalar or pointer cast produces a prvalue. When it binds to a
 		// reference parameter, mirror C++'s temporary materialization instead
@@ -20833,10 +20842,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// have already returned.
 			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
 				if (operand_object_class(top->left)
-				    || operand_object_class(top->right))
+				    || operand_object_class(top->right)) {
+					// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH
+					// operator and operand classes declined — the
+					// [why: unresolved class operator] diagnostic.
+					if (::getenv("MADC_TSUBST_OP_PROBE")) {
+						DataDefCLASS *lc = operand_object_class(top->left);
+						DataDefCLASS *rc = operand_object_class(top->right);
+						fprintf(stderr, "[tsubst-op] op=%d lhs=%s rhs=%s\n",
+							(int)tb->id(),
+							lc ? lc->name.c_str() : "-",
+							rc ? rc->name.c_str() : "-");
+					}
 					return error_node(
 						"tsubst: unresolved class operator in pattern",
 						tb);
+				}
 			}
 
 			// Implicit memberwise copy-ASSIGNMENT for a NON-TRIVIAL class

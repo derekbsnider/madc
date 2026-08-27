@@ -3488,6 +3488,15 @@ public:
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
+    // Bare display names of every registered fn template (both maps above,
+    // pack-thawed keys included): the [temp.names] "name refers to a template"
+    // test for FUNCTION templates, used where only the unqualified tail is in
+    // hand (count_queued_call_arguments' template-argument-comma gate). Built
+    // lazily from the map keys on first query; the two registration sites add
+    // names incrementally, a transaction rollback invalidates.
+    std::set<std::string> fn_template_bare_names;
+    bool fn_template_bare_names_valid = false;
+    bool fn_template_name_declared(const std::string &name);
     // task #25 B2 thaw owners, fn lanes: find + thaw every def of the key.
     void thaw_fn_def(FnTemplateDef &fd);
     std::vector<FnTemplateDef> *thawed_fn_templates(const std::string &key);
