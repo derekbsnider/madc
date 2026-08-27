@@ -940,7 +940,7 @@ bool enter_view(long w, long es, long doc, const char *name)
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     ui::set(w, es, "editable", false);
-    ui::set(w, es, "ro_msg", "Read-only view (^K N returns).");
+    ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
     ui::set(w, es, "msg", format("View: {}", name));
     return true;
 }
@@ -1820,7 +1820,8 @@ bool cxx_view_applies(long w, long es, long doc)
 	|| ext == ".h" || ext == ".hpp";
 }
 
-// ^K N: original -> mc11 -> c11 [-> c++ on a C/C++ buffer] -> original.
+// ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
+// [-> c++ on a C/C++ buffer] -> original.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
 void cycle_view(long w, long es, long doc)

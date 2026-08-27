@@ -77,8 +77,8 @@ shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84
 view1-node: view=mc11 maprows=0 shows-lowering=1
-view-typing: Read-only view (^K N returns).
-view-undo: Read-only view (^K N returns).
+view-typing: Read-only view (^K A returns).
+view-undo: Read-only view (^K A returns).
 view-find: hit=1
 view2: name=c11
 view-exit: name='' caret=84 identical=1 modified=false
