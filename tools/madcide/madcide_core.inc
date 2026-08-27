@@ -1064,6 +1064,148 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 		  : format("Editing {}.", p));
 }
 
+// ---- IDE-10a: the ^P file palette --------------------------------------
+// The ONE popup-list mechanism (owner ruling 2026-08-27; plan doc
+// 2026-08-27-madcide-ide-controls.md): a `choice` pane in the model's
+// LIST presentation (hint list:1 — one row per option) that is
+// AUTOFOCUSED (hint focus:1 — arrows/enter navigate it immediately;
+// selection stays the model's presentation state, exactly like the menu
+// bar). Text/backspace edit the FILTER here; enter CHOOSES through the
+// model's choose event; esc — or ^P again — closes. Rows = open buffers
+// first (tag "buf"), then cwd source files not already open; choosing
+// routes through edit_file — THE one open-or-switch owner. The ^B build
+// palette (IDE-10b) reuses this widget with action rows.
+
+// Recompute the filtered rows onto the bag ("palrows": {path, tag} rows).
+// Case-insensitive substring filter; ring-lifetime strtolower returns are
+// copied into var carriers immediately (the standing ring discipline).
+void palette_rows(long w, long es)
+{
+    var filt;
+    ui::get(filt, w, es, "palfilter");
+    var lf = php::strtolower(filt.c_str());
+    long fn = strlen(lf.c_str());
+    var rows = {};
+    value seen;			// path -> 1: open buffers dedupe the glob
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    for ( value b : bufs )
+    {
+	var p = format("{}", b["path"]);
+	seen[p.c_str()] = 1;
+	var lp = php::strtolower(p.c_str());
+	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
+	    continue;
+	value r;
+	r["path"] = p;
+	r["tag"] = "buf";
+	rows.push(r);
+    }
+    // Source-extension globs, one pattern each (glob(3) has no brace
+    // expansion here) — directories excluded by construction. The
+    // recursive/project-manifest walk is the named later slice.
+    var pats = {"*.mad", "*.c", "*.cc", "*.cpp", "*.cxx", "*.h", "*.hpp",
+		"*.inc", "*.json", "*.md", "*.txt"};
+    for ( value pat : pats )
+    {
+	array g;
+	perl::glob(g, pat.c_str());
+	for ( value f : g )
+	{
+	    var p = format("{}", f);
+	    if ( !seen[p.c_str()].is_null() )
+		continue;
+	    var lp = php::strtolower(p.c_str());
+	    if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
+		continue;
+	    value r;
+	    r["path"] = p;
+	    r["tag"] = "cwd";
+	    rows.push(r);
+	}
+    }
+    ui::set(w, es, "palrows", rows);
+}
+
+void start_palette(long w, long es)
+{
+    ui::set(w, es, "pane", "palette");
+    ui::set(w, es, "palfilter", "");
+    palette_rows(w, es);
+}
+
+void end_palette(long w, long es)
+{
+    ui::set(w, es, "pane", "");
+    ui::set(w, es, "palfilter", "");
+}
+
+bool palette_active(long w, long es)
+{
+    var pane;
+    ui::get(pane, w, es, "pane");
+    if ( pane.is_null() )
+	return false;
+    return pane == "palette";
+}
+
+// Every event while the palette is up (modal, like the prompt): text and
+// backspace edit the filter; the MODEL owns arrows/enter (its choose
+// arrives here as pal-open, option 1-based); esc or ^P closes. Other
+// bound actions are swallowed — a modal palette half-running ^K chords
+// would be worse than inert keys.
+bool palette_event(long w, long es, long doc, value &ev)
+{
+    var kind = format("{}", ev["event"]);
+    if ( kind == "text" )
+    {
+	var in;
+	ui::get(in, w, es, "palfilter");
+	var nx = format("{}{}", in, ev["text"]);
+	ui::set(w, es, "palfilter", nx.c_str());
+	palette_rows(w, es);
+	return true;
+    }
+    if ( kind == "choose" )
+    {
+	value rows;
+	ui::get(rows, w, es, "palrows");
+	long opt = ev["option"].as_integer() - 1;	// 1-based on the wire
+	if ( opt >= 0 && opt < php::count(rows) )
+	{
+	    value r = rows[opt];
+	    var p = format("{}", r["path"]);
+	    end_palette(w, es);
+	    edit_file(w, es, doc, p.c_str());
+	}
+	return true;
+    }
+    if ( kind == "action" )
+    {
+	var a = format("{}", ev["action"]);
+	if ( a == "palette" || a == "quit" )
+	    end_palette(w, es);
+	return true;
+    }
+    if ( kind != "key" )
+	return true;
+    var k = format("{}", ev["key"]);
+    if ( k == "esc" )
+	end_palette(w, es);
+    else if ( k == "backspace" )
+    {
+	var in;
+	ui::get(in, w, es, "palfilter");
+	long n = strlen(in.c_str());
+	if ( n > 0 )
+	{
+	    ui::set(w, es, "palfilter", perl::substr(in, 0, n - 1));
+	    palette_rows(w, es);
+	}
+    }
+    return true;
+}
+
 // The c++ view applies when the BUFFER'S OWN language is C/C++ (by
 // extension — the app's document-kind rule): its render is source-shaped
 // (madc::emit "c++" echoes the retained source), and a madc-dialect
@@ -1182,6 +1324,9 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 
     if ( prompt_active(w, es) )
 	return prompt_event(w, es, nav, caret, ev);
+
+    if ( palette_active(w, es) )
+	return palette_event(w, es, doc, ev);
 
     if ( kind == "action" )
     {
@@ -1333,6 +1478,27 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	    toggle_pane(w, es, "options");
 	    return true;
 	}
+	if ( a == "palette" )
+	{
+	    start_palette(w, es);
+	    return true;
+	}
+	if ( a == "refresh" )
+	{
+	    // JOE's ^R retype: the terminal is lying — drop the delta
+	    // basis and hard-repaint (ui::tui_refresh). Headless sessions
+	    // have no tui on the bag; the action is safely inert there.
+	    long tt = es_int(w, es, "tui", 0);
+	    if ( tt != 0 )
+		ui::tui_refresh(tt);
+	    return true;
+	}
+	if ( a == "build" )
+	{
+	    ui::set(w, es, "msg",
+		    "The build palette (^B) arrives with IDE-10b.");
+	    return true;
+	}
 	if ( a == "editfile" )
 	{
 	    start_prompt(w, es, "Name of file to edit", "editfile");
@@ -1350,9 +1516,10 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
 	// edit_key vocabulary: the action name IS the key spelling
-	// ("left", "pgdn", "del", ...) — the profile binds "^b left",
+	// ("left", "pgdn", "del", ...) — a profile binds e.g. "^a home",
 	// the dispatcher synthesizes the key event. One movement
-	// implementation.
+	// implementation. (IDE-10a reclaimed ^B/^F/^P/^N from the
+	// WordStar diamond — real arrow keys serve motion.)
 	value ke;
 	ke["event"] = "key";
 	ke["key"] = a;
@@ -1570,6 +1737,42 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 		it["actions"] = ga;
 		items.push(it);
 		nrows = nrows + 1;
+	    }
+	}
+	else if ( pane == "palette" )
+	{
+	    // IDE-10a ^P: the LIST-presentation choice — model hints
+	    // list (one row per option) + focus (arrows/enter land here
+	    // without a tab). The label carries the live filter; rows
+	    // come from palette_rows; enter fires pal-open.
+	    var filt;
+	    ui::get(filt, w, es, "palfilter");
+	    value prows;
+	    ui::get(prows, w, es, "palrows");
+	    box["label"] = format("File: {}_", filt);
+	    value ph;
+	    ph["list"] = 1;
+	    ph["focus"] = 1;
+	    box["hints"] = ph;
+	    for ( value row : prows )
+	    {
+		value it;
+		it["role"] = "item";
+		var tag = format("{}", row["tag"]);
+		it["content"] = format("{} {}", tag == "buf" ? "*" : " ",
+				       row["path"]);
+		var ga = {};
+		ga.push("pal-open");
+		it["actions"] = ga;
+		items.push(it);
+		nrows = nrows + 1;
+	    }
+	    if ( nrows == 0 )
+	    {
+		value it;
+		it["role"] = "item";
+		it["content"] = "(no matches)";
+		items.push(it);
 	    }
 	}
 	else
