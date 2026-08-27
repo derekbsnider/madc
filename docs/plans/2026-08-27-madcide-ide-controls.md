@@ -1,15 +1,18 @@
 # madcide IDE controls — palettes, reclaimed keys, build/run (IDE-10)
 
-**STATUS: IDE-10a + IDE-10b SHIPPED (2026-08-27, session 138)** — the
-palette core (model list+autofocus hints), ^P file palette, the four key
-reclaims + ^R (ui::tui_refresh), and the ^B build palette (capture pump
-on the MT-4b mixed select; channel::cancel() SIGTERM stop; terminal-mode
-runs via suspend/resume; command rows as data). Engine seams that landed
-with it: __madc_task_fire_due (yield fires due io beside timers) and
-read_keys' unified cooperative wait (50ms cadence while live-but-parked
-tasks exist — the MT-4c stdin-unification retires it). Remaining from
-this doc: manifest-declared build commands, ^P fuzzy fs walk, the debug
-row (ADR-0001 REPL/debug tier), pico.keys palette bindings (owner call).
+**STATUS: IDE-10a + IDE-10b SHIPPED (2026-08-27, session 138); IDE-10c
+SHIPPED (2026-08-27, session 139)** — the palette core (model
+list+autofocus hints), ^P file palette, the four key reclaims + ^R
+(ui::tui_refresh), and the ^B build palette (capture pump on the MT-4b
+mixed select; channel::cancel() SIGTERM stop; terminal-mode runs via
+suspend/resume; command rows as data). Engine seams that landed with it:
+__madc_task_fire_due (yield fires due io beside timers) and read_keys'
+unified cooperative wait (50ms cadence while live-but-parked tasks
+exist — the MT-4c stdin-unification retires it). IDE-10c made the
+default ^B rows INTERNAL (madc::build_native + madc::compiler_path; see
+§IDE-10c below) and gave Esc back-out of any pane. Remaining from this
+doc: manifest-declared build commands, ^P fuzzy fs walk, the debug row
+(ADR-0001 REPL/debug tier), pico.keys palette bindings (owner call).
 
 Owner direction (2026-08-27, verbatim rulings): madcide is an IDE, not
 JOE — it needs controls for compiling, starting, stopping, debugging
@@ -87,6 +90,25 @@ nothing (the s135 model-vs-terminal-truth lesson). External junk on
 the tty (wall, a chatty background child) is exactly when it's used.
 
 ## IDE-10c — INTERNAL builds (owner rulings 2026-08-27, post-10b)
+
+**SHIPPED (session 139).** `madc::build_native(out_diags, path,
+"exe"|"obj", outpath)` = the CLI's AOT lane in-process (child-Program
+parse + `madc_cir_emit_native`; diagnostics rows either way, a silent
+failure synthesizes one error row); `madc::compiler_path()` = the
+running compiler's own executable ({madc} in build_subst — Run rows
+spawn a child OF SELF through the terminal suspend path). Default ^B
+rows: Check / Build / Build object internal, Run rows `{madc} {path}` /
+`./{base}`; no default Stop row (MT-3 owns in-process cancellation; the
+exec:// pump machinery stays for manifest-declared external commands).
+`madc_object_mode` is now entered ONLY through the scoped
+`ObjectModeScope` guard in both emit lanes (dupaudit family
+object_mode_emit_scoping, gated: check-object-mode-scope.sh — a leaked
+flag would poison an in-process caller's later JIT sessions). Esc backs
+out of any pane (one arm in apply_ide_event's key path; palette and
+prompts already esc-cancel earlier). Residues: backend diagnostics
+still print to stderr (backend-diagnostics-as-data), backend has no
+yield points (the emit briefly blocks the loop), failure rows are
+pane-shown but not yet auto-jumped-to.
 
 **OWNER RULING**: all ^B items are INTERNAL — madcide runs inside the
 compiler; never shell out to a PATH `madc` to do madc things. **OWNER
