@@ -1981,6 +1981,41 @@ private:
     std::string path;
 };
 
+// Scoped iostream capture for one libmadc API entry: bind the process-global
+// std::cout/std::cerr into the engine's owned capture buffers only while
+// engine work (compile / guest run) is in flight, and restore the HOST's
+// stream buffers on exit. The engine construction used to perform this bind
+// once for the life of the process, which silently swallowed the host's own
+// iostream output from the moment a madc::engine existed (std::cout.rdbuf()
+// changed identity across `madc::engine eng;` — the libmadc_cpp_smoke
+// assertion). Non-resetting and nest-safe: buffers are created if absent,
+// content accumulates across nested entries (invoke_with_limits clears them
+// per invocation for the output-limit accounting), and an inner scope saves
+// the outer scope's binding.
+class iostream_capture_scope
+{
+public:
+    explicit iostream_capture_scope(MadcEngine &eng)
+	: saved_out(std::cout.rdbuf()), saved_err(std::cerr.rdbuf())
+    {
+	eng.ensure_capture_buffers();
+	if ( std::streambuf *ob = eng.capture_output_rdbuf() )
+	    std::cout.rdbuf(ob);
+	if ( std::streambuf *eb = eng.capture_error_rdbuf() )
+	    std::cerr.rdbuf(eb);
+    }
+
+    ~iostream_capture_scope()
+    {
+	std::cout.rdbuf(saved_out);
+	std::cerr.rdbuf(saved_err);
+    }
+
+private:
+    std::streambuf *saved_out;
+    std::streambuf *saved_err;
+};
+
 // In-process CPU/resident metrics live in madc_posix_io
 // (process_cpu_microseconds / process_resident_bytes — the detail owners);
 // what remains here is the CHILD-rusage metering of the POSIX-only
@@ -2611,8 +2646,9 @@ struct program::impl
     impl()
 	: eng(&owned_engine)
     {
-	eng->capture_output_to_buffer();
-	eng->capture_error_to_buffer();
+	// Guest output capture is INVOCATION-scoped (iostream_capture_scope
+	// at each API entry) — never bound here for the process lifetime,
+	// which hijacked the HOST's std::cout/std::cerr.
 	reset_program();
     }
 
@@ -2753,6 +2789,7 @@ struct program::impl
     bool compile_loaded_file(const std::string &path)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	TokenProgram *tp = pgm->tokenize(path.c_str());
 	if ( !tp )
 	{
@@ -2779,6 +2816,7 @@ struct program::impl
 			       const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !pgm->load_buffer(ensure_trailing_newline(source), display_file) )
 	{
 	    sync_public_errors();
@@ -2894,6 +2932,7 @@ struct program::impl
     bool exec_file_with_display(const std::string &path, const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	reset_program();
 	if ( !compile_loaded_file(path) )
 	{
@@ -3150,6 +3189,7 @@ struct program::impl
 				  value *result)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return call(eval_entry_name(), std::vector<value>(), result);
@@ -3174,6 +3214,7 @@ struct program::impl
 				  const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return exec_compiled_with_display(display_file, display_file);
@@ -3484,6 +3525,7 @@ struct program::impl
 			 const std::string &virtual_filename)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	std::string validation_error;
 	std::string effective_expression = expression;
 	std::map<std::string, value> effective_bindings;
@@ -3678,6 +3720,9 @@ struct program::impl
     bool invoke_with_limits(const std::string &op_name,
 			    const std::function<bool()> &fn)
     {
+	// Belt for entries that reach a guest run without an outer API-entry
+	// scope (get_global/set_global): nest-safe, same buffers.
+	iostream_capture_scope io_capture(*eng);
 	engine().clear_output_buffer();
 	engine().clear_error_buffer();
 	invoke_snapshot before = capture_invoke_snapshot();
@@ -3763,6 +3808,7 @@ struct program::impl
     bool load_object(const std::string &path)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !pgm )
 	    return fail_runtime("program::load_object has no program");
 	if ( !pgm->load_object(path) )
@@ -4039,6 +4085,7 @@ struct program::impl
     bool call(const std::string &name, const std::vector<value> &args, value *result)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( should_fork_invocation() )
 	    return call_in_child(name, args, result);
 	return invoke_with_limits("call", [this, &name, &args, result]() -> bool {
@@ -5673,8 +5720,8 @@ struct engine::impl
 
     impl()
     {
-	eng.capture_output_to_buffer();
-	eng.capture_error_to_buffer();
+	// Guest output capture is INVOCATION-scoped (iostream_capture_scope
+	// at each program API entry) — see program::impl's ctor note.
     }
 
     ~impl()

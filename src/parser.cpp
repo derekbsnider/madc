@@ -20267,6 +20267,24 @@ void MadcEngine::capture_error_to_buffer()
     bind_error_stream(*owned_error_buffer);
 }
 
+void MadcEngine::ensure_capture_buffers()
+{
+    if ( !owned_output_buffer )
+	owned_output_buffer.reset(new std::ostringstream());
+    if ( !owned_error_buffer )
+	owned_error_buffer.reset(new std::ostringstream());
+}
+
+std::streambuf *MadcEngine::capture_output_rdbuf()
+{
+    return owned_output_buffer ? owned_output_buffer->rdbuf() : NULL;
+}
+
+std::streambuf *MadcEngine::capture_error_rdbuf()
+{
+    return owned_error_buffer ? owned_error_buffer->rdbuf() : NULL;
+}
+
 void MadcEngine::tee_output_stream(std::ostream &os)
 {
     output_tee_buf.reset(new MadcTeeBuf(std::cout.rdbuf(), os.rdbuf()));

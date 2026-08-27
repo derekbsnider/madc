@@ -6529,6 +6529,13 @@ public:
     void bind_input_string(const std::string &text);
     void capture_output_to_buffer();
     void capture_error_to_buffer();
+    // Scoped-capture support (libmadc invocation scopes): create the owned
+    // capture buffers if absent WITHOUT resetting content or rebinding the
+    // process-global streams; the caller binds/restores std::cout/std::cerr
+    // rdbufs itself for the duration of one guest invocation.
+    void ensure_capture_buffers();
+    std::streambuf *capture_output_rdbuf();
+    std::streambuf *capture_error_rdbuf();
     void tee_output_stream(std::ostream &os);
     void tee_error_stream(std::ostream &os);
     void tee_output_to_buffer();
