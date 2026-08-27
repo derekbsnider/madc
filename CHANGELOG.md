@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **madcide windows (IDE-9e, 2026-08-27)**: JOE's second axis — N
+  stacked windows over the buffer ring, each with its own status line
+  and caret. `^K O` splits (the new window duplicates the active one,
+  below it, focus staying — JOE), `^K N`/`^K P` cycle, `^K 0`/`^K 1`
+  kill-this/keep-only (JOE spells tw0/tw1 on Esc digits, but madcide's
+  Esc is chord-cancel + close-pane by construction, so the digits ride
+  ^K), `^K G`/`^K T` grow/shrink (sum-zero deltas from the even split,
+  min 3 rows). Two windows on one buffer keep separate carets; a stale
+  caret clamps through the one extracted owner (`clamp_caret_to` in the
+  shared editor core). Engine: edit nodes gain the `rows` height hint
+  and honor the `focus:1` autofocus hint — layout stays composer-owned
+  DATA (the model tree is the renderer contract; the GUI twin renders
+  the same rows), and the unhinted prompt shape is byte-identical.
+  Per-window status lines ride `compose_joe_statusline` (the formatted
+  half of the JOE status, split out; prompt/search/msg overlays stay on
+  the active window's line). Displaced keys: profile and theme leave
+  the key table for the ^T Options rows that already carried them
+  (Keymap/Scheme); outline → `^K I`, the AST views → `^K A` — owner
+  review requested in the plan doc beside the pending `^K ;` item.
+  Esc does not close windows (a window is layout, not a pane). New
+  test_tui_model partition case + six testmadcide gates; pty gates
+  re-run green. Residues: inactive windows compose plain snapshots (no
+  colour spans, no views, no selection); explode; horizontal splits.
+
 - **`scope { ... }` blocks + `await` keywords (MT-5, 2026-08-27)**: the
   structure spellings, contextual under `--std=madc` only (the MT-1
   error-shape rule — never reserved: a declared `scope`/`await` name

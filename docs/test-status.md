@@ -1,6 +1,44 @@
 # Test Status
 
-> **Current (2026-08-27, MT-5 scope/await keywords —
+> **Current (2026-08-27, IDE-9e windows —
+> feature/ide9e-windows merge wave):** madcide grows JOE's second axis:
+> N STACKED windows over the AST-5 buffer ring, each with its OWN
+> status line and caret (^K O split). The engine was ALREADY per-slot
+> everywhere that mattered (paint_edit keeps scroll/hshift per edit
+> slot; the cursor paints only on the focused slot; multiple edit
+> nodes compose) — the ONE gap was height partitioning, closed as DATA
+> per the lineage north star: an edit node's `hints["rows"]` fixes its
+> height, edit nodes honor the `focus:1` autofocus hint (the choice
+> arm's seat), and the unhinted prompt shape stays byte-identical
+> (unit negative control). madcide: `windows` bag rows
+> {bufidx, caret, grow} + winat (fewer than two rows = the single
+> compose, byte-identical); the ACTIVE window's live state IS the es
+> state, rows hold snapshots (the buffer-row save/restore shape one
+> level up); window rows own the caret while split — two windows on
+> ONE buffer keep separate carets, stale ones clamp through THE one
+> extracted owner `clamp_caret_to` (dupaudit family caret_clamp_rule:
+> 3 sites folded); per-window status = compose_joe_statusline (the
+> formatted half split out; prompt/search/msg overlays stay on the
+> active line). Verbs: splitw/nextw/prevw/killwin/onlywin/groww/
+> shrinkw; sum-zero grow deltas, min 3 rows; the active window
+> composes UNHINTED (flexible) so panes keep taking rows from the
+> bottom. KEYS — JOE-exact seats reclaimed: ^K O/N/P/G/T + ^K 0/^K 1
+> (Esc-prefixed bindings CANNOT exist — the chord machinery hard-codes
+> Esc as cancel); displaced: profile/theme leave the key table (the ^T
+> Options pane already carries Keymap/Scheme rows), outline → ^K I,
+> AST views → ^K A (⚠️ owner review requested beside the pending ^K ;
+> item). Esc does NOT close windows (layout, not a pane). NEW tests:
+> test_tui_model rows-hint partition case (+negative control);
+> testmadcide +6 gates (rebind probe, split tree shape, per-window
+> caret round-trip, stale-caret clamp both consumers, grow, onlywin),
+> byte-exact first run; pty smoke/scroll gates green (joe.keys blast
+> radius). Residues: inactive windows uncoloured/no views/no
+> selection; explode; horizontal splits (the GUI twin's seat). Battery
+> on final content: fulltest rc=0 (all gates) + JIT **1180 passed /
+> 0 failed / 0 timed out / 9 skipped** (suite = 1206) + EXE **1131
+> passed / 0 failed** + OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-5 scope/await keywords —
 > feature/mt5-keywords merge wave):** the structure spellings land as
 > CONTEXTUAL keywords under `--std=madc` (the MT-1 error-shape rule —
 > never reserved; declared names win, strict modes byte-identical).
