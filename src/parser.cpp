@@ -44781,6 +44781,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool is_virtual = false;
 	bool is_static_member = false;
 	bool member_is_friend = false;
+	bool is_explicit_member = false;
 	for (;;)
 	{
 	    // [dcl.spec] leaves specifier order free: `inline friend bool
@@ -44820,6 +44821,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.nextToken();
 		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 		{
+		    // C++20 conditional explicit(expr): the condition is not
+		    // evaluated here, so only an UNCONDITIONAL `explicit` is
+		    // recorded (treating explicit(false) as explicit would
+		    // wrongly reject valid implicit conversions).
 		    int depth = 0;
 		    do {
 			TokenBase *pt = pgm.nextToken();
@@ -44829,6 +44834,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    --depth;
 		    } while ( depth > 0 && pgm.peekToken() );
 		}
+		else
+		    is_explicit_member = true;
 	    }
 	    else if ( spec == "constexpr" || spec == "consteval"
 		   || spec == "constinit" || spec == "inline" )
@@ -44935,7 +44942,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		{
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		    if ( cfd )
+		    {
 			record_dropped_special_ctor(ddc, cfd);
+			cfd->is_explicit = is_explicit_member;
+		    }
 		    if ( !cfd || !cfd->defaulted_or_deleted )
 		    {
 			Program::ClassMethodRegistration spec;
@@ -60820,6 +60830,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->no_strict_aliasing = src->no_strict_aliasing;
     f->has_large_struct_retbuf = src->has_large_struct_retbuf;
     f->declaration_only = src->declaration_only;
+    f->is_explicit = src->is_explicit;
     f->decl_file = src->decl_file;
     f->defaulted_or_deleted = src->defaulted_or_deleted;
     f->is_deleted = src->is_deleted;

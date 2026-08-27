@@ -13412,6 +13412,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (!fd || fd->parameters.size() < 2
 			    || fd->required_param_count() > 2)
 				continue;
+			// An EXPLICIT constructor serves direct-initialization
+			// only — it is NOT an implicit conversion
+			// ([over.ics.user]). Counting it let a wrong-shape
+			// concrete fn-template instance (param
+			// __normal_iterator<T*> BY VALUE, explicit ctor from
+			// T*) outrank instantiating the right specialization
+			// for a plain-pointer argument (tests/testexplctorovl).
+			if (fd->is_explicit)
+				continue;
 			bool cref = fd->is_ref_param(1);
 			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,
 						   arg_is_zero_literal,

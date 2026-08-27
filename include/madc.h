@@ -491,6 +491,12 @@ public:
     // can bind emit_symbol to the mangled external symbol. Stays false for any
     // madc-compiled (bodied) function.
     bool declaration_only;
+    // True for a constructor declared `explicit` ([class.conv.ctor]): it
+    // serves DIRECT-initialization only, so the overload ranker's
+    // converting-constructor probe must not count it as an implicit
+    // user-defined conversion ([over.ics.user]). Unconditional `explicit`
+    // only — C++20 explicit(expr) is not evaluated and stays false.
+    bool is_explicit = false;
     // The source file of a declaration_only prototype (token ->file pointer;
     // NULL when not recorded). Lets the compile-stage registration-policy
     // gate distinguish a USER-SOURCE extern prototype from curated header
