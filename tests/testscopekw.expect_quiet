@@ -1,0 +1,2 @@
+The JIT run must produce EMPTY stderr: no abandoned-scope prints, no
+cancellation leaks — the unwind paths are quiet by design.

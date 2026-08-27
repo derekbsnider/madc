@@ -35604,6 +35604,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
+		    // madc-dialect `await <chan-expr>` (MT-5): claimed ONLY
+		    // where the identifier is UNDECLARED (the go/yield
+		    // error-shape rule — this line otherwise throws, so no
+		    // valid program changes meaning). Consumes the REST of
+		    // the expression as the channel handle; the statement
+		    // layer extracts the receive target (parseExprStmt) and
+		    // the CIR builder refuses any other position loud.
+		    if ( go_statement_enabled()
+		      && ident_tb->spelling_is("await") )
+		    {
+			exStack.push(make_await_token(ident_tb, NULL));
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->spelling() << endl);
 		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
 		    Throw(tb) << "use of undeclared identifier '" << ident_tb->spelling() << '\'' << flush;
@@ -45683,9 +45696,35 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     return NULL;
 }
 
+// break/continue bind to the innermost enclosing loop/switch, so they cross
+// a `scope { }` block exactly when no loop/switch opened INSIDE the block
+// encloses them (MT-5; scope_block_bars_break owns the test).
+TokenBase *TokenBREAK::parse(Program &pgm)
+{
+    if ( pgm.scope_block_bars_break() )
+	pgm.Throw((TokenBase *)this) << "'break' crosses a task scope — end"
+					" the scope block first" << flush;
+    return this;
+}
+
+TokenBase *TokenCONT::parse(Program &pgm)
+{
+    if ( pgm.scope_block_bars_break() )
+	pgm.Throw((TokenBase *)this) << "'continue' crosses a task scope —"
+					" end the scope block first" << flush;
+    return this;
+}
+
 TokenBase *TokenGOTO::parse(Program &pgm)
 {
     DBG(std::cout << std::endl << "TokenGOTO::parse()" << std::endl);
+    // MT-5: a goto inside a `scope { }` block could jump past the block's
+    // join (label reachability is not known at parse time) — refused loud,
+    // in-block labels included (conservative; named residue).
+    if ( pgm.in_scope_block() )
+	pgm.Throw((TokenBase *)this) << "'goto' crosses a task scope — not"
+					" supported inside a scope block"
+				     << flush;
     TokenBase *tn = pgm.nextToken();
     if ( !tn )
 	pgm.Throw((TokenBase *)this) << "expected label name or '*expr' after 'goto'" << flush;
@@ -45850,6 +45889,11 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     TokenBase *tn;
 
     DBG(std::cout << std::endl << "TokenRETURN::parse()" << std::endl);
+    // MT-5: a return inside a `scope { }` block would exit the function past
+    // the block's join — refused loud (early-exit support = named residue).
+    if ( pgm.in_scope_block() )
+	pgm.Throw(this) << "'return' crosses a task scope — end the scope"
+			   " block first" << flush;
     tn = pgm.nextToken();
 
     // return with no value
@@ -46235,8 +46279,20 @@ TokenBase *TokenIF::parse(Program &pgm)
     return this;
 }
 
+// MT-5 scope blocks: RAII loop/switch parse-nesting counter — the basis of
+// scope_block_bars_break (a break/continue is legal inside a scope block
+// iff a loop/switch OPENED INSIDE it encloses them). Exception-safe: a
+// contained parse error must not leave the depth inflated.
+struct ParseLoopDepthGuard
+{
+    Program &pgm;
+    ParseLoopDepthGuard(Program &p) : pgm(p) { ++pgm.parse_loop_depth; }
+    ~ParseLoopDepthGuard() { --pgm.parse_loop_depth; }
+};
+
 TokenBase *TokenFOR::parse(Program &pgm)
 {
+    ParseLoopDepthGuard loop_depth_guard(pgm);
     TokenBase *tn;
 
     DBG(std::cout << std::endl << "TokenFOR::parse() START" << std::endl);
@@ -46504,6 +46560,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 TokenBase *TokenWHILE::parse(Program &pgm)
 {
     TokenBase *tn;
+    ParseLoopDepthGuard loop_depth_guard(pgm);
 
     DBG(std::cout << std::endl << "TokenWHILE::parse()" << std::endl);
     DBG(cout << "TokenWHILE::parse() calling parse_parenthesized_expression()" << endl);
@@ -46519,6 +46576,7 @@ TokenBase *TokenWHILE::parse(Program &pgm)
 TokenBase *TokenDO::parse(Program &pgm)
 {
     TokenBase *tn;
+    ParseLoopDepthGuard loop_depth_guard(pgm);
 
     DBG(std::cout << std::endl << "TokenDO::parse()" << std::endl);
     tn = pgm.nextToken();
@@ -48690,6 +48748,7 @@ bool is_decl_specifier_keyword(TokenID id)
 
 TokenBase *TokenSWITCH::parse(Program &pgm)
 {
+    ParseLoopDepthGuard loop_depth_guard(pgm);
     DBG(std::cout << "TokenSWITCH::parse()" << std::endl);
 
     // expect (
@@ -64953,6 +65012,27 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	seq->column = expr->column;
 	expr = seq;
     }
+    // MT-5 `await` statement shapes (slice 1): `v = await ch;` folds the
+    // assignment into the TokenAWAIT (the receive writes the target
+    // in-place through THE one recv implementation — no value copy), and a
+    // bare `await ch;` stands as-is (receive and discard). The target must
+    // be the value carrier (chan_recv's out is `value &`). Any DEEPER
+    // await position is refused by the CIR builder.
+    if ( expr && expr->id() == TokenID::tkAssign )
+    {
+	TokenAssign *as = (TokenAssign *)expr;
+	if ( as->right && as->right->id() == TokenID::tkAWAIT )
+	{
+	    TokenAWAIT *aw = (TokenAWAIT *)as->right;
+	    DataDef *tdd = as->left ? as->left->datadef() : NULL;
+	    if ( !tdd || tdd->rawtype() != DataType::dtARRAY )
+		Throw(as->left ? as->left : expr)
+		    << "'await' assigns into a var/value (a channel carries"
+		       " values)" << flush;
+	    aw->target = as->left;
+	    expr = aw;	// the assignment shell is consumed
+	}
+    }
     update_pointer_object_size_hints(expr);
     return expr;
 }
@@ -65074,6 +65154,81 @@ TokenBase *Program::parse_go_statement(TokenBase *tb)
     // main may translate before the function carrying this spawn.
     _uses_go_spawn = true;
     return g;
+}
+
+// MT-5 `scope { ... }` — the structured-concurrency block (contextual, the
+// go/yield gating and error-shape rule; TokenTRY's body-parse shape). The
+// body parses with the exit-refusal record armed: return/goto always cross
+// the block; break/continue cross it unless a loop/switch opened INSIDE
+// encloses them (see scope_block_bars_break). RAII keeps the record
+// exception-safe — a contained parse error must not leave it armed.
+TokenBase *Program::parse_scope_statement(TokenBase *tb)
+{
+    TokenBase *tn = peekToken();
+    if ( !tn || tn->id() != TokenID::tkOpBrc )
+	Throw(tb) << "Expected '{' after 'scope'" << flush;
+    nextToken(); // consume '{'
+    struct ScopeBlockGuard {
+	Program &p;
+	ScopeBlockGuard(Program &pg, TokenBase *at) : p(pg)
+	{
+	    ScopeBlockCtx ctx;
+	    ctx.loop_floor = pg.parse_loop_depth;
+	    ctx.func = pg.cur_func_name;
+	    pg.scope_block_stack.push_back(ctx);
+	    (void)at;
+	}
+	~ScopeBlockGuard() { p.scope_block_stack.pop_back(); }
+    } scope_guard(*this, tb);
+    pushCompound();
+    TokenBase *body = parseCompound();
+    TokenSCOPE *s = new TokenSCOPE();
+    s->body = body;
+    s->file = tb->file;
+    s->line = tb->line;
+    s->column = tb->column;
+    return s;
+}
+
+// The contextual-claim eligibility test the MT keywords share (error-shape
+// rule): a name that resolves to ANYTHING — variable, function, type —
+// always wins over the contextual spelling.
+bool Program::contextual_name_unclaimed(const std::string &name)
+{
+    return !findVariable(name)
+	&& datatype_map.find(name) == datatype_map.end();
+}
+
+// THE TokenAWAIT builder (MT-5) — one construction rule for all three
+// grammar positions (bare statement, statement-level assignment RHS, the
+// expression ladder's diagnostic claim). Parses the channel-handle
+// expression from the stream (the `await` token itself already consumed),
+// hands the enclosing context's terminator back so the caller ends exactly
+// where it would have, and returns the node.
+TokenAWAIT *Program::make_await_token(TokenBase *at_tb, TokenBase *target)
+{
+    TokenBase *ch_head = nextToken();
+    if ( !ch_head )
+	Throw(at_tb) << "'await' expects a channel expression" << flush;
+    TokenBase *ch = parseExpression(ch_head);
+    if ( !ch )
+	Throw(at_tb) << "'await' expects a channel expression" << flush;
+    // The nested parse consumed the enclosing context's terminator
+    // (`;` `,` `)` `]`); hand it back.
+    TokenBase *term = curToken();
+    if ( term && (term->id() == TokenID::tkSemi
+	       || term->id() == TokenID::tkComma
+	       || term->id() == TokenID::tkClBrk
+	       || term->id() == TokenID::tkClSqr) )
+	pushToken(term);
+    TokenAWAIT *aw = new TokenAWAIT();
+    aw->setDataType(&ddARRAY);	// yields a value (the carrier)
+    aw->chan = ch;
+    aw->target = target;
+    aw->file = at_tb->file;
+    aw->line = at_tb->line;
+    aw->column = at_tb->column;
+    return aw;
 }
 
 // MT-1 `yield;` / `yield();` — the contextual twin. An undeclared
@@ -65252,10 +65407,16 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    if ( go_statement_enabled() )
 	    {
 		std::string ctx_sp = ((TokenIdent *)tb)->spelling();
-		if ( (ctx_sp == "go" || ctx_sp == "yield")
-		  && !findVariable(ctx_sp)
-		  && datatype_map.find(ctx_sp) == datatype_map.end() )
+		if ( (ctx_sp == "go" || ctx_sp == "yield" || ctx_sp == "scope"
+		   || ctx_sp == "await")
+		  && contextual_name_unclaimed(ctx_sp) )
 		{
+		    // MT-5 bare `await ch;` — receive and discard (the
+		    // done-channel wait). The identifier dispatch below
+		    // would otherwise swallow the two-identifier shape.
+		    if ( ctx_sp == "await" && peekToken()
+		      && peekToken()->id() != TokenID::tkSemi )
+			return make_await_token(tb, NULL);
 		    if ( ctx_sp == "go" && peekToken()
 		      && peekToken()->type() == TokenType::ttIdentifier )
 			return parse_go_statement(tb);
@@ -65263,6 +65424,41 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		      && (peekToken()->id() == TokenID::tkSemi
 		       || peekToken()->id() == TokenID::tkOpBrk) )
 			return parse_yield_statement(tb);
+		    // MT-5 `scope { ... }`: only the block shape — a
+		    // declared `scope` name, or `scope` followed by
+		    // anything else, parses exactly as before.
+		    if ( ctx_sp == "scope" && peekToken()
+		      && peekToken()->id() == TokenID::tkOpBrc )
+			return parse_scope_statement(tb);
+		}
+	    }
+	    // MT-5 `v = await ch;` — claimed at STATEMENT level: the value
+	    // carrier's operator= machinery resolves the assignment shape
+	    // in the expression ladder before parseExprStmt could fold it,
+	    // so the fold happens here, ahead of the ladder. Fires only for
+	    // a DECLARED value-typed variable, `=`, then an UNDECLARED
+	    // `await` (the error-shape rule); any other RHS pushes the `=`
+	    // back untouched and parses exactly as before.
+	    if ( go_statement_enabled() && peekToken()
+	      && peekToken()->id() == TokenID::tkAssign )
+	    {
+		Variable *avar = findVariable(((TokenIdent *)tb)->spelling());
+		if ( avar && avar->type
+		  && avar->type->rawtype() == DataType::dtARRAY )
+		{
+		    TokenBase *eq = nextToken(); // consume '=' to peek deeper
+		    TokenBase *nx = peekToken();
+		    bool is_await = nx
+			&& nx->type() == TokenType::ttIdentifier
+			&& ((TokenIdent *)nx)->spelling_is("await")
+			&& contextual_name_unclaimed("await");
+		    if ( !is_await )
+			pushToken(eq);
+		    else
+		    {
+			nextToken(); // consume 'await'
+			return make_await_token(tb, new TokenVar(*avar));
+		    }
 		}
 	    }
 	    if ( is_static_assert_identifier(((TokenIdent *)tb)->spelling()) )

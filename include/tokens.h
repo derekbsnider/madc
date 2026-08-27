@@ -111,13 +111,17 @@ enum class TokenID {
 			      // contextual_identifier_name) rather than a dedicated
 			      // dispatch token — so they are reserved (not bare
 			      // identifiers) without proliferating one class each.
-  tkGO, tkYIELD               // madc-dialect cooperative tasks (MT-1): `go
+  tkGO, tkYIELD,              // madc-dialect cooperative tasks (MT-1): `go
 			      // <call-expr>;` spawn and `yield;`/`yield();`.
 			      // CONTEXTUAL statement heads under STD_MADC only
 			      // (never keyword_map-reserved — real libstdc++
 			      // headers use `yield` as an identifier), claimed
 			      // by the UFCS error-shape rule: they fire only
 			      // where the statement was otherwise ill-formed.
+  tkSCOPE, tkAWAIT            // madc-dialect structure spellings (MT-5), the
+			      // same contextual discipline as tkGO/tkYIELD:
+			      // `scope { ... }` structured-concurrency block
+			      // and `await <chan-expr>` channel receive.
 };
 
 enum class TokenAssoc {
@@ -1444,6 +1448,57 @@ public:
     virtual TokenID id() const override { return TokenID::tkYIELD; }
     virtual TokenBase *clone() override { return new TokenYIELD(); }
 };
+
+// madc-dialect `scope { ... }` (MT-5): a structured-concurrency block —
+// `go` inside attaches to it; the block's end joins every member and
+// rethrows the first member error (madc::scope_end's contract). Contextual
+// statement head under STD_MADC (same gating and error-shape rule as
+// TokenGO); the CIR builder lowers it to the __madc_scope_block_enter /
+// __madc_scope_block_exit pair (src/rt/rt_task.c). return / break /
+// continue / goto that would exit the block are refused at parse time.
+class TokenSCOPE: public TokenBase
+{
+public:
+    TokenBase *body;                       // the compound block
+    TokenSCOPE() : body(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkSCOPE; }
+    virtual TokenBase *clone() override
+    {
+	TokenSCOPE *t = new TokenSCOPE();
+	if ( body )
+	    t->body = body->clone();
+	return t;
+    }
+};
+
+// madc-dialect `await <chan-expr>` (MT-5): receive from a value channel —
+// Go's `<-ch` (blocks; closed-and-drained yields the zero value). Claimed
+// in the expression ladder's undeclared-identifier position (error-shape
+// rule) and consumed at STATEMENT level in slice 1: bare `await ch;`
+// (target NULL — receive and discard) and `v = await ch;` (parseExprStmt
+// extracts the value-typed target). The CIR builder lowers it to
+// __madc_chan_await(&target|NULL, handle) — the extern-C machinery seat
+// over THE ONE recv implementation — and refuses any other position loud.
+class TokenAWAIT: public TokenBase
+{
+public:
+    TokenBase *chan;                       // the channel-handle expression
+    TokenBase *target;                     // resolved value-typed lvalue
+					   // (NULL = receive and discard)
+    TokenAWAIT() : chan(NULL), target(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkAWAIT; }
+    virtual TokenBase *clone() override
+    {
+	TokenAWAIT *t = new TokenAWAIT();
+	if ( chan )
+	    t->chan = chan->clone();
+	if ( target )
+	    t->target = target->clone();
+	return t;
+    }
+};
 class TokenCASE: public TokenKeyword
 {
 public:
@@ -1775,7 +1830,8 @@ public:
     TokenBREAK() : TokenKeyword("break") {}
     virtual TokenID id() const override { return TokenID::tkBREAK; }
     virtual TokenBase *clone() override { return new TokenBREAK(); }
-    virtual TokenBase *parse(Program &pgm) override { return this; }
+    // Out-of-line (parser.cpp): the MT-5 scope-block crossing check.
+    virtual TokenBase *parse(Program &pgm) override;
 };
 
 class TokenCONT: public TokenKeyword
@@ -1784,7 +1840,8 @@ public:
     TokenCONT() : TokenKeyword("continue") {}
     virtual TokenID id() const override { return TokenID::tkCONT;  }
     virtual TokenBase *clone() override { return new TokenCONT();  }
-    virtual TokenBase *parse(Program &pgm) override { return this; }
+    // Out-of-line (parser.cpp): the MT-5 scope-block crossing check.
+    virtual TokenBase *parse(Program &pgm) override;
 };
 
 
