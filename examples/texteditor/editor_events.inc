@@ -132,17 +132,24 @@ void enter_search(long w, long es)
     ui::set(w, es, "search", "");
 }
 
-// The caret clamped to the live document — every event application
-// starts here.
-long clamped_caret(long w, long es, long doc)
+// THE clamp-a-caret-to-a-document rule — one owner (IDE-9e windows
+// carry per-window carets that go stale when the other window edits;
+// their restore and snapshot both ride this).
+long clamp_caret_to(long w, long doc, long caret)
 {
-    long caret = es_int(w, es, "caret", 0);
     long size = ui::text_size(w, doc);
     if ( caret > size )
 	caret = size;
     if ( caret < 0 )
 	caret = 0;
     return caret;
+}
+
+// The ES caret clamped to the live document — every event application
+// starts here.
+long clamped_caret(long w, long es, long doc)
+{
+    return clamp_caret_to(w, doc, es_int(w, es, "caret", 0));
 }
 
 // The {caret, modified} payload rule — ONE spelling; checkpoint, undo,

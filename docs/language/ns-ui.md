@@ -163,7 +163,7 @@ run, the safe side for a put); past the last segment lands just after its
 image; a valid EMPTY map (a wholly rendered view) answers 0; −1 =
 malformed map (the strict codec refuses whole) or a negative offset.
 
-The first consumers are madcide's read-only code views (`^K N` cycles
+The first consumers are madcide's read-only code views (`^K A` cycles
 original → MC11 → C11 — and, on a C/C++ buffer, → C++ — over the one
 document): the rendered text comes from `madc::emit` over the live
 buffer, the lens data (view name + map) rides the edit node's hints, and
@@ -339,7 +339,7 @@ classification rows from a parse handle's retained state, and a colour
 SCHEME — app data, `profiles/*.theme`, one `class SPEC` pair per line
 (class first; the same comment/blank line rule as the keybindings) —
 maps class names to style specs. madcide swaps schemes by name at
-runtime (`^K T`, the profile-swap precedent; `default.theme` and
+runtime (the ^T Options pane's Scheme row; `default.theme` and
 `classic.theme` ship).
 
 The renderer behind this surface is a provider: the built-in target is

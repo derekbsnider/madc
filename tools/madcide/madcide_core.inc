@@ -492,6 +492,9 @@ void status_expand(value &out, long w, long es, long doc, long caret,
 // (the same priority rule as the shared compose_status — restated here
 // because the SCREEN MODELS diverge by design: madcide is JOE-shaped,
 // vised keeps the demo's bottom bar).
+void compose_joe_statusline(value &status, long w, long es, long doc,
+			    long caret, value &fnctx);
+
 void compose_joe_status(value &status, long w, long es, long doc,
 			long caret, value &fnctx)
 {
@@ -523,6 +526,18 @@ void compose_joe_status(value &status, long w, long es, long doc,
 	status = st;
 	return;
     }
+    compose_joe_statusline(status, w, es, doc, caret, fnctx);
+}
+
+// The FORMATTED half of the JOE status line (lmsg/rmsg seat expansion,
+// no prompt/search/msg overlays) — split out for IDE-9e windows: every
+// window carries its own formatted line; the overlays belong to the
+// ACTIVE window's line only (compose_joe_status above keeps them).
+void compose_joe_statusline(value &status, long w, long es, long doc,
+			    long caret, value &fnctx)
+{
+    value st;
+    st["role"] = "status";
     var lm;
     ui::get(lm, w, es, "lmsg");
     if ( lm.is_null() || strlen(lm.c_str()) == 0 )
@@ -1079,6 +1094,218 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     ui::set(w, es, "msg",
 	    fresh ? format("New file {}.", p)
 		  : format("Editing {}.", p));
+}
+
+// ---- IDE-9e: windows (^K O split) --------------------------------------
+// JOE's second axis onto the AST-5 ring: N STACKED windows, each with its
+// own status line and caret. Bag state: `windows` rows
+// { bufidx, caret, grow } + `winat`. Fewer than two rows = the
+// single-window compose, byte-identical (the belt: no split, no delta).
+// The ACTIVE window's live state IS the es state (bufidx/adoc/caret); its
+// row holds a snapshot taken at switch time — the buffer-row shape one
+// level up. While split, the WINDOW rows own the caret (two windows on
+// one buffer keep separate carets); buffer rows keep serving buffer
+// switches. mark/bend stay buffer-scoped (selection is active-window
+// presentation). grow is a DELTA from the even split with sum-zero
+// invariant (groww takes a row from a neighbor, JOE's feel); the active
+// window composes UNHINTED (flexible) so panes/prompt keep taking their
+// rows from the bottom exactly as today.
+
+long window_count(long w, long es)
+{
+    value ws;
+    ui::get(ws, w, es, "windows");
+    return ws.is_null() ? 0 : php::count(ws);
+}
+
+// Each window needs its status row + this many content rows.
+long window_min_rows()
+{
+    return 3;
+}
+
+// Save the ACTIVE window's live state into its row.
+void window_save_active(long w, long es)
+{
+    value ws;
+    ui::get(ws, w, es, "windows");
+    if ( ws.is_null() || php::count(ws) < 2 )
+	return;
+    long at = es_int(w, es, "winat", 0);
+    value r = ws[at];
+    r["bufidx"] = es_int(w, es, "bufidx", 0);
+    r["caret"] = es_int(w, es, "caret", 0);
+    ws[at] = r;
+    ui::set(w, es, "windows", ws);
+}
+
+// Make window idx active: buffer switch when it shows another buffer
+// (the AST-5 machinery — spans/parse/access ride it), then the WINDOW's
+// caret wins, clamped to the document (edits in the other window may
+// have shortened it).
+void window_activate(long w, long es, long olddoc, long idx)
+{
+    window_save_active(w, es);
+    value ws;
+    ui::get(ws, w, es, "windows");
+    value t = ws[idx];
+    long tb = t["bufidx"].as_integer();
+    if ( tb != es_int(w, es, "bufidx", 0) )
+	switch_buffer(w, es, olddoc, tb);
+    long nd = active_doc(w, es, olddoc);
+    ui::set(w, es, "caret",
+	    clamp_caret_to(w, nd, t["caret"].as_integer()));
+    ui::set(w, es, "winat", idx);
+}
+
+// ^K O: split — the new window duplicates the ACTIVE one (JOE: same
+// buffer, same caret), inserted BELOW it; focus stays where it is.
+void split_window(long w, long es, long doc)
+{
+    long t = es_int(w, es, "tui", 0);
+    long trows = t != 0 ? ui::tui_rows(t) : 24;
+    long n = window_count(w, es);
+    long want = n < 2 ? 2 : n + 1;
+    if ( want * (window_min_rows() + 1) > trows )
+    {
+	ui::set(w, es, "msg", "No room for another window.");
+	return;
+    }
+    value ws;
+    ui::get(ws, w, es, "windows");
+    long at = 0;
+    if ( ws.is_null() || php::count(ws) < 2 )
+    {
+	// Seed: window 0 adopts the live state.
+	var seed = {};
+	value w0;
+	w0["bufidx"] = es_int(w, es, "bufidx", 0);
+	w0["caret"] = es_int(w, es, "caret", 0);
+	w0["grow"] = 0;
+	seed.push(w0);
+	ws = seed;
+	ui::set(w, es, "winat", 0);
+    }
+    else
+	at = es_int(w, es, "winat", 0);
+    value dup;
+    dup["bufidx"] = es_int(w, es, "bufidx", 0);
+    dup["caret"] = es_int(w, es, "caret", 0);
+    dup["grow"] = 0;
+    var rebuilt = {};
+    long i = 0;
+    for ( value r : ws )
+    {
+	rebuilt.push(r);
+	if ( i == at )
+	    rebuilt.push(dup);
+	i = i + 1;
+    }
+    ui::set(w, es, "windows", rebuilt);
+    ui::set(w, es, "msg", format("{} windows.", php::count(rebuilt)));
+}
+
+// ^K N / ^K P: next / previous window (wrap).
+void cycle_window(long w, long es, long doc, long dir)
+{
+    long n = window_count(w, es);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one window.");
+	return;
+    }
+    long at = es_int(w, es, "winat", 0);
+    long nx = (at + dir + n) % n;
+    window_activate(w, es, doc, nx);
+}
+
+// Esc 0 / Esc 1 (JOE tw0/tw1): kill this window / keep only this one.
+// Down to one window the table clears — caret ownership returns to the
+// es/buffer machinery, the compose returns to the single shape.
+void kill_window(long w, long es, long doc, bool others)
+{
+    long n = window_count(w, es);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one window.");
+	return;
+    }
+    long at = es_int(w, es, "winat", 0);
+    if ( others )
+    {
+	var none = {};
+	ui::set(w, es, "windows", none);
+	ui::set(w, es, "winat", 0);
+	ui::set(w, es, "msg", "One window.");
+	return;
+    }
+    // Kill the active one: the next window (wrapping) takes over FIRST
+    // (its buffer/caret restore), then its row leaves the table.
+    long nx = (at + 1) % n;
+    window_activate(w, es, doc, nx);
+    value ws;
+    ui::get(ws, w, es, "windows");
+    var rebuilt = {};
+    long i = 0;
+    long newat = 0;
+    for ( value r : ws )
+    {
+	if ( i != at )
+	{
+	    if ( i == nx )
+		newat = php::count(rebuilt);
+	    rebuilt.push(r);
+	}
+	i = i + 1;
+    }
+    if ( php::count(rebuilt) < 2 )
+    {
+	var none = {};
+	ui::set(w, es, "windows", none);
+	ui::set(w, es, "winat", 0);
+    }
+    else
+    {
+	ui::set(w, es, "windows", rebuilt);
+	ui::set(w, es, "winat", newat);
+    }
+    ui::set(w, es, "msg", format("{} window(s).",
+				 php::count(rebuilt) < 2
+				     ? 1 : php::count(rebuilt)));
+}
+
+// ^K G / ^K T: grow / shrink the active window by one row, taken from /
+// returned to the NEXT window (wrap) — sum-zero deltas from the even
+// split; the victim never drops under the minimum.
+void grow_window(long w, long es, long dir)
+{
+    long n = window_count(w, es);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one window.");
+	return;
+    }
+    long t = es_int(w, es, "tui", 0);
+    long trows = t != 0 ? ui::tui_rows(t) : 24;
+    long base = (trows - n) / n;	// even content share
+    long at = es_int(w, es, "winat", 0);
+    long nx = (at + 1) % n;
+    value ws;
+    ui::get(ws, w, es, "windows");
+    value ra = ws[at];
+    value rn = ws[nx];
+    long ga = ra["grow"].as_integer() + dir;
+    long gn = rn["grow"].as_integer() - dir;
+    if ( base + ga < window_min_rows() || base + gn < window_min_rows() )
+    {
+	ui::set(w, es, "msg", "Window too small.");
+	return;
+    }
+    ra["grow"] = ga;
+    rn["grow"] = gn;
+    ws[at] = ra;
+    ws[nx] = rn;
+    ui::set(w, es, "windows", ws);
 }
 
 // ---- IDE-10a: the ^P file palette --------------------------------------
@@ -1884,6 +2111,42 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	    toggle_profile(w, es);
 	    return true;
 	}
+	// IDE-9e windows — JOE's verbs on their JOE seats.
+	if ( a == "splitw" )
+	{
+	    split_window(w, es, doc);
+	    return true;
+	}
+	if ( a == "nextw" )
+	{
+	    cycle_window(w, es, doc, 1);
+	    return true;
+	}
+	if ( a == "prevw" )
+	{
+	    cycle_window(w, es, doc, -1);
+	    return true;
+	}
+	if ( a == "killwin" )
+	{
+	    kill_window(w, es, doc, false);
+	    return true;
+	}
+	if ( a == "onlywin" )
+	{
+	    kill_window(w, es, doc, true);
+	    return true;
+	}
+	if ( a == "groww" )
+	{
+	    grow_window(w, es, 1);
+	    return true;
+	}
+	if ( a == "shrinkw" )
+	{
+	    grow_window(w, es, -1);
+	    return true;
+	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
 	// edit_key vocabulary: the action name IS the key spelling
 	// ("left", "pgdn", "del", ...) — a profile binds e.g. "^a home",
@@ -2061,8 +2324,73 @@ void compose_ide_tree(value &root, long w, long es, long doc)
     value r;
     r["role"] = "group";
     var kids = {};
-    kids.push(status);		// JOE: ONE status line at the TOP
-    kids.push(ed);
+    // IDE-9e: with two-plus windows, each window is its own status line +
+    // edit node, stacked. The ACTIVE window is the live one — the status
+    // with overlays and the full edit node composed above (views, spans,
+    // tabwidth), plus the focus hint so the cursor paints in it; it stays
+    // UNHINTED (flexible) so panes/prompt keep taking their rows from the
+    // bottom exactly as in the single shape. INACTIVE windows compose
+    // snapshots: their buffer's plain text, their own caret (clamped —
+    // edits in the active window may have shortened the doc), a fixed
+    // rows hint from the even split ± grow. No selection, no spans, no
+    // views on inactive windows (named residues).
+    long wc = window_count(w, es);
+    if ( wc >= 2 )
+    {
+	long t9 = es_int(w, es, "tui", 0);
+	long trows = t9 != 0 ? ui::tui_rows(t9) : 24;
+	long base = (trows - wc) / wc;
+	if ( base < window_min_rows() )
+	    base = window_min_rows();
+	long at = es_int(w, es, "winat", 0);
+	value ws;
+	ui::get(ws, w, es, "windows");
+	value bufs;
+	ui::get(bufs, w, es, "buffers");
+	value hf;
+	hf = ed["hints"];
+	hf["focus"] = 1;
+	ed["hints"] = hf;
+	long i = 0;
+	for ( value wr : ws )
+	{
+	    if ( i == at )
+	    {
+		kids.push(status);
+		kids.push(ed);
+	    }
+	    else
+	    {
+		value brow = bufs[wr["bufidx"].as_integer()];
+		long wdoc = brow["doc"].as_integer();
+		long wcaret = clamp_caret_to(w, wdoc,
+					     wr["caret"].as_integer());
+		var wfn = "";
+		value wst;
+		compose_joe_statusline(wst, w, es, wdoc, wcaret, wfn);
+		kids.push(wst);
+		value wed;
+		wed["role"] = "edit";
+		value wt;
+		ui::text(wt, w, wdoc);
+		wed["content"] = wt;
+		value wh;
+		wh["caret"] = wcaret;
+		long wrows = base + wr["grow"].as_integer();
+		if ( wrows < window_min_rows() )
+		    wrows = window_min_rows();
+		wh["rows"] = wrows;
+		wed["hints"] = wh;
+		kids.push(wed);
+	    }
+	    i = i + 1;
+	}
+    }
+    else
+    {
+	kids.push(status);	// JOE: ONE status line at the TOP
+	kids.push(ed);
+    }
 
     var pane;
     ui::get(pane, w, es, "pane");

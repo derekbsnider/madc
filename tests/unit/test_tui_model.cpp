@@ -330,6 +330,88 @@ TEST_CASE("compose — the tabwidth hint changes the stops (IDE-9d ^T option)")
     CHECK(c.at(1, 16).ch == 'x');	// clamped to 16
 }
 
+// A bare edit node with a caret and optional rows/focus hints (IDE-9e
+// windows: heights and focus are DATA the composer carries).
+static uinode edit_node(world &w, const std::string &doc, long caret,
+			long rows = 0, bool focus = false)
+{
+    roles r = roles::standard(w);
+    uinode edit(r.edit);
+    edit.content = madc::value(doc);
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)caret);
+    if ( rows > 0 )
+	h["rows"] = madc::value((int64_t)rows);
+    if ( focus )
+	h["focus"] = madc::value((int64_t)1);
+    edit.hints = madc::value::make_object(h);
+    return edit;
+}
+
+static uinode status_node(world &w, const char *text)
+{
+    roles r = roles::standard(w);
+    uinode status(r.status);
+    status.content = madc::value(std::string(text));
+    return status;
+}
+
+TEST_CASE("compose — the rows hint partitions edit windows (IDE-9e); the "
+	  "focus hint picks the cursor's edit; unhinted prompts unchanged")
+{
+    world w;
+    roles r = roles::standard(w);
+
+    // Two windows, JOE shape: status + edit per window. 10 rows total:
+    // status(1) + top edit rows:4 + status(1) + bottom edit rows:4.
+    // The bottom window carries the focus hint — the grid cursor lands
+    // in ITS region even though the top edit is the earlier focusable.
+    uinode root(r.group);
+    root.add(status_node(w, "top.mad"));
+    root.add(edit_node(w, "a1\na2\na3", 0, 4));
+    root.add(status_node(w, "bot.mad"));
+    root.add(edit_node(w, "b1\nb2\nb3", 3, 4, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 10, 20);
+    CHECK(g.row_text(0) == " top.mad");		// window 1 status
+    CHECK(g.row_text(1) == "a1");			// window 1 edit rows 1..4
+    CHECK(g.row_text(3) == "a3");
+    CHECK(g.row_text(4) == "");
+    CHECK(g.row_text(5) == " bot.mad");		// window 2 status
+    CHECK(g.row_text(6) == "b1");			// window 2 edit rows 6..9
+    CHECK(g.row_text(7) == "b2");
+    // Focus hint: the cursor paints in the SECOND window (caret 3 = b2
+    // col 0 = grid row 7), and its slot is the model focus.
+    CHECK(g.cursor_visible);
+    CHECK(g.cursor_row == 7u);
+    CHECK(g.cursor_col == 0u);
+    CHECK(m.focus_slot() == 1u);
+    // Per-slot scroll: each window keeps its own caret visible without
+    // disturbing the other (move window 2's caret far down a longer doc).
+    uinode root2(r.group);
+    root2.add(status_node(w, "top.mad"));
+    root2.add(edit_node(w, "a1\na2\na3", 0, 4));
+    root2.add(status_node(w, "bot.mad"));
+    root2.add(edit_node(w, "b1\nb2\nb3\nb4\nb5\nb6\nb7", 18, 4, true));
+    const tui_grid &g2 = m.compose(r, root2, 10, 20);
+    CHECK(g2.row_text(1) == "a1");			// window 1 unmoved
+    CHECK(g2.row_text(9) == "b7");			// window 2 scrolled
+    CHECK(g2.cursor_row == 9u);
+
+    // Negative control: the unhinted prompt shape is byte-identical to
+    // the legacy rule — first unhinted flexible, later unhinted 1 row.
+    uinode p(r.group);
+    p.add(edit_node(w, "body\ntext", 0));
+    p.add(status_node(w, "St"));
+    p.add(edit_node(w, "prompt-line", 0));
+    tui_model mp;
+    const tui_grid &gp = mp.compose(r, p, 6, 20);
+    CHECK(gp.row_text(0) == "body");		// flexible: rows 0..3
+    CHECK(gp.row_text(1) == "text");
+    CHECK(gp.row_text(4) == " St");
+    CHECK(gp.row_text(5) == "prompt-line");	// one row
+}
+
 // One span row { s, e, c } for the hints["spans"] array.
 static madc::value span_row(long s, long e, const char *colour)
 {

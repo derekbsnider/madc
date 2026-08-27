@@ -194,3 +194,75 @@ Recon DONE (bank — do not re-derive):
   seat it dogfoods is on develop.
 - Later: manifest-declared build commands; fuzzy fs walk in ^P;
   debug entries with the REPL/debug tier arc.
+
+## IDE-9e — windows (^K O split) — DESIGN (decided 2026-08-27, s139)
+
+JOE's third axis lands: **buffers + windows + keys** (AST-5 gave the
+ring; this gives two-files-visible). The engine recon settled the
+shape: `tui_model` is ALREADY per-slot for everything that matters —
+`paint_edit` keeps scroll (`_scroll[slot]`) and hshift per edit slot,
+the caret rides each node's hints, and the cursor paints only on the
+focused slot. Multiple edit nodes already compose (the prompt shape:
+first = flexible, later = one row each). The ONLY engine gap is
+height partitioning — and per the lineage north star (the model tree
+IS the renderer contract; the GUI twin renders the same data), that
+gap closes as DATA, not as engine layout policy:
+
+- **Engine (one hint)**: an edit node's `hints["rows"]` fixes its
+  height; unhinted keeps today's rule (first unhinted = flexible,
+  other unhinted = 1 row — prompts unchanged). `edit_slot` grows a
+  `rows` field read beside caret/tabwidth in walk(). Unit-gated in
+  test_tui_model (two hinted edits partition; the negative control
+  is the unhinted prompt shape staying byte-identical).
+- **madcide (windows as data)**: bag state `windows` = a list of
+  `{buf, caret, grow}` rows + `winat` (active index). ABSENT list =
+  today's single-window compose, byte-identical (the belt: no split,
+  no delta). compose_ide_tree with N>1 windows emits, per window, its
+  OWN JOE status line (per-window %n/%m/%R — the recon's "each window
+  carries its own status line") + its edit node, heights computed by
+  the composer (even split of the content rows ± each window's `grow`,
+  min 3; the ACTIVE window absorbs the remainder) and carried as the
+  rows hint; the active window's edit node carries the focus hint (the
+  palette's AUTOFOCUS seat). Panes/prompt keep taking their rows from
+  the bottom, shrinking the split — same rule as today.
+- **Focus routing = the AST-5 machinery**: the active window's buffer
+  IS the active buffer (edit_file's save/restore seam); nextw/prevw
+  saves the leaving window's caret into its row, switches winat, and
+  restores — exactly the buffer-switch shape. Two windows on ONE
+  buffer (JOE's ^K O default) share the doc; carets live per window;
+  the INACTIVE window's caret clamps at compose (min(caret, doc size))
+  so edits in one window never strand the other.
+- **Views/lenses stay active-window-only** (slice 1): inactive windows
+  compose their plain buffer; the view seam (nav_doc) applies to the
+  focused window. Named residue: per-window views.
+- **Keys — JOE-exact, collisions relocated** (the JOE-parity ruling:
+  window verbs take their real seats):
+  `^k o` splitw · `^k n` nextw · `^k p` prevw · `^k g` groww ·
+  `^k t` shrinkw · `^k 0` killwin · `^k 1` onlywin (JOE spells tw0/tw1
+  on Esc digits, but madcide's Esc is chord-cancel + close-pane by
+  construction and ruling — an Esc-prefixed binding can never complete,
+  the chord machinery hard-codes Esc as cancel — so the digits move
+  under ^K; JOE's ^K digits are bookmarks, which madcide lacks: debt
+  documented).
+  Displaced madcide actions: `profile` and `theme` leave the key
+  namespace and become ^T OPTIONS rows (IDE-9d's rows-as-data overlay
+  — they are config toggles; that is where config lives); `outline` →
+  `^k i` (mnemonic: Index; documented debt — JOE binds ^K I to
+  explode, whose show-only-one intent `esc 1` covers, so explode is
+  deferred permanently to a slice that finds it a new seat); `view` →
+  `^k a` (mnemonic: AST views; debt — JOE's center-line, which madcide
+  lacks). ⚠️ OWNER REVIEW requested alongside the pending "^K ;
+  rebind review": the outline/view seats + the profile/theme demotion
+  to Options rows. pico.keys untouched (no collisions; its palette
+  bindings are already a pending owner call).
+- **Esc does NOT close windows** (esc backs out of PANES; a window is
+  layout, not a pane) — killwin is explicit.
+- **Tests**: testmadcide gates — split tree shape (2 status + 2 edit
+  nodes, rows hints partition), nextw round-trip (per-window carets
+  survive), same-buffer split + edit-clamp, killwin/onlywin, grow
+  bounds, single-window compose byte-identical when no split ever
+  happened; test_tui_model unit legs for the rows hint.
+
+Slice 2 (later): explode proper, per-window views, horizontal splits
+(the GUI twin wants them; the terminal model stays vertical stacks),
+bottom output window pinned to [build].

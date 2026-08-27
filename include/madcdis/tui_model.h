@@ -873,9 +873,15 @@ private:
 	long sel_start, sel_end;
 	long tabw;		// display tab width (hints["tabwidth"], the
 				// ^T option); clamped 1..16 at parse
+	long rows;		// fixed height (hints["rows"], IDE-9e
+				// windows — the composer owns the split
+				// math and carries it as DATA); 0 = the
+				// legacy rule (first unhinted flexible,
+				// other unhinted one row — prompts)
 	std::vector<doc_span> spans;	// highlight spans (may be empty)
 	edit_slot() : line_index(0), slot(0), caret(0),
-		      sel_start(-1), sel_end(-1), tabw(tab_stop) {}
+		      sel_start(-1), sel_end(-1), tabw(tab_stop),
+		      rows(0) {}
     };
 
     static long hint_of(const madc::value &hints, const char *key, long dflt)
@@ -1018,6 +1024,13 @@ private:
 		e.tabw = 1;
 	    if ( e.tabw > 16 )
 		e.tabw = 16;
+	    e.rows = hint_of(n.hints, "rows", 0);
+	    if ( e.rows < 0 )
+		e.rows = 0;
+	    // The same autofocus hint the choice arm honors (IDE-9e: the
+	    // active window's edit node carries it).
+	    if ( hint_of(n.hints, "focus", 0) )
+		_focus = e.slot;
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -1214,10 +1227,13 @@ public:
 	return sel;
     }
 
-    // Compose the tree onto a rows×cols grid. The FIRST edit node is the
-    // flexible region (it absorbs the rows fixed content leaves free);
-    // later edit nodes get one row each. The tree arrives already
-    // access-filtered — composition makes no gate decision.
+    // Compose the tree onto a rows×cols grid. Edit heights are DATA
+    // (IDE-9e): a node hinted rows:N is FIXED at N; among the unhinted,
+    // the FIRST is the flexible region (it absorbs the rows fixed content
+    // and hinted edits leave free) and the rest get one row each — the
+    // prompt shape, byte-identical when nothing is hinted. The tree
+    // arrives already access-filtered — composition makes no gate
+    // decision.
     const tui_grid &compose(const roles &r, const uinode &tree,
 			    size_t rows, size_t cols)
     {
@@ -1230,18 +1246,37 @@ public:
 	    _focus = 0;
 
 	size_t fixed = lines.size();
-	size_t flexible = 0;
-	if ( !edits.empty() )
+	size_t hinted_sum = 0, unhinted = 0;
+	for ( size_t i = 0; i < edits.size(); ++i )
 	{
-	    size_t others = edits.size() - 1;	// one row each
-	    flexible = rows > fixed + others ? rows - fixed - others : 1;
+	    if ( edits[i].rows > 0 )
+		hinted_sum += (size_t)edits[i].rows;
+	    else
+		++unhinted;
+	}
+	size_t flexible = 0;
+	if ( unhinted )
+	{
+	    size_t others = unhinted - 1;	// one row each
+	    size_t taken = fixed + hinted_sum + others;
+	    flexible = rows > taken ? rows - taken : 1;
 	}
 	size_t row = 0, li = 0, ei = 0;
+	bool flex_spent = false;
 	while ( row < rows && (li < lines.size() || ei < edits.size()) )
 	{
 	    if ( ei < edits.size() && edits[ei].line_index == li )
 	    {
-		size_t h = ei == 0 ? flexible : 1;
+		size_t h;
+		if ( edits[ei].rows > 0 )
+		    h = (size_t)edits[ei].rows;
+		else if ( !flex_spent )
+		{
+		    h = flexible;
+		    flex_spent = true;
+		}
+		else
+		    h = 1;
 		if ( h > rows - row )
 		    h = rows - row;
 		paint_edit(edits[ei], row, h, cols);
