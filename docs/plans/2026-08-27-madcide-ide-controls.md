@@ -86,6 +86,47 @@ terminal is wrong, and a diff against a wrong baseline repairs
 nothing (the s135 model-vs-terminal-truth lesson). External junk on
 the tty (wall, a chatty background child) is exactly when it's used.
 
+## IDE-10c — INTERNAL builds (owner rulings 2026-08-27, post-10b)
+
+**OWNER RULING**: all ^B items are INTERNAL — madcide runs inside the
+compiler; never shell out to a PATH `madc` to do madc things. **OWNER
+RULING**: Esc backs out of ANY menu/pane (today only the ^P palette is
+esc-closable; ^T options/help/outline/diags/build are not).
+
+Recon DONE (bank — do not re-derive):
+- "child" in the parse-handle docs means a child PROGRAM (the
+  runtime-eval confinement) — fully in-process. The scaffold:
+  `madc_source_diagnostics` / `madc_parse_open_file` in src/ns_madc.cpp.
+- THE artifact seat exists: `madc_cir_emit_native(Program *, const char
+  *source_name, MadcNativeKind, outpath, cc_link_args)` —
+  src/madc_cir.cpp:2088, decl src/madc_cir.h:209; the CLI -o/-r flow
+  calls it (src/madc.cpp ~1805; `madc_cir_link_objects` ~1148 for .o
+  inputs; MadcNativeKind: mnkRelocatable/mnkShared/mnkExecutable/
+  mnkPieExecutable).
+- Plan: NEW engine public `madc::build_native(value &out_diags, const
+  char *path, const char *kind /*"exe"|"obj"*/, const char *outpath)` —
+  child-Program parse (cooperates via parse_yield_point) + emit_native
+  when clean; diagnostics rows either way (they land in the diags pane:
+  click-to-error, structurally better than [build] text). Run inside a
+  `go` task from madcide. RESIDUE: the backend (c2mir/MIR gen/link) has
+  no yield points yet — that phase blocks the loop briefly (parse
+  cooperates; backend yields = a stage-2 extension).
+- Run rows: a child OF SELF for isolation (the user program's exit()/
+  crash/stdin must not be the IDE's) — never a PATH `madc`. The
+  self-binary-path helper EXISTS: src/madc_globals.cpp ~37-51
+  (GetModuleFileNameA / _NSGetExecutablePath / readlink /proc/self/exe)
+  — expose (e.g. `madc::compiler_path`) and template Run as
+  "{madc} {path}" through the terminal-mode suspend path. NOTE for the
+  terminal wrapper: /proc/self/exe must be resolved IN the engine, not
+  in the sh -c line (sh would resolve its own exe).
+- Stop: an in-process build is not cancellable until MT-3; terminal
+  runs are ^C-able in their own terminal. Drop Stop from the DEFAULT
+  rows; the exec:// capture pump machinery STAYS (external tools /
+  manifest commands later — it is tested and gated) but leaves the
+  defaults.
+- Esc-any-pane: in apply_ide_event's key arm before edit_key (the
+  palette routes earlier; prompts already esc-cancel).
+
 ## Slice cut
 
 - **IDE-10a**: palette core (one popup-list widget: filter + select)
