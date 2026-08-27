@@ -16,7 +16,6 @@
 #include "madc_posix_io.h"	// local_time; Win: debug_log_line syslog transport
 #ifndef _WIN32
 #include <syslog.h>
-#include <execinfo.h>	// TEMP-PROBE (variadic-class arc) — remove before merge
 #endif
 #include <time.h>
 #include <unistd.h>
@@ -2497,7 +2496,45 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 		      ? base->name : base->canonical_cpp_spelling();
 	return s + "&";
     }
+    // A FUNCTION-POINTER parameter spells STRUCTURALLY (`Ret (*)(P1,P2)`) —
+    // every DataDefFPTR is named "funcptr", and the name fallback below made
+    // the mangler encode a class `7funcptr` where the ABI wants `PF…E`, so
+    // a declaration-only member taking a fn-ptr typedef param
+    // (engine::register_cpp_callback's native_function) never bound its real
+    // library symbol. structural_spelling() is THE owner.
+    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+	if ( fp->target )
+	    return fp->structural_spelling();
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
+}
+
+// THE owner of a DataDefFPTR's structural C++ spelling (declared in
+// datadef.h): `Ret (*)(P1,P2)` from the target FuncDef — the form the
+// Itanium mangler's function-pointer arm parses into PF…E.
+std::string DataDefFPTR::structural_spelling() const
+{
+    if ( !target )
+	return name;
+    DataDef &rd = target->return_value_type();
+    std::string s = rd.canonical_cpp_spelling().empty()
+		  ? rd.name : rd.canonical_cpp_spelling();
+    s += " (*)(";
+    for ( size_t i = 0; i < target->parameters.size(); ++i )
+    {
+	if ( i )
+	    s += ",";
+	std::string ps = target->mangle_param_spelling(i);
+	if ( ps.empty() && target->parameters[i] )
+	    ps = target->parameters[i]->canonical_cpp_spelling().empty()
+	       ? target->parameters[i]->name
+	       : target->parameters[i]->canonical_cpp_spelling();
+	s += ps;
+	if ( target->is_ref_param(i)
+	  && (ps.empty() || ps.back() != '&') )
+	    s += "&";
+    }
+    s += ")";
+    return s;
 }
 
 // `carrier_param_mask` (task #69): positions whose spelling must be
@@ -8189,23 +8226,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 			   && partial_entry && partial_entry->find(td.owner_class);
     if ( vri_debug_enabled() )
-    {
 	fprintf(stderr, "[vriprobe] inst %s vri=%d sticky=%d dep=%d cap=%d\n",
 		tname.c_str(), (int)allow_variadic_real_inst,
 		(int)variadic_real_inst_sticky,
 		(int)dependent_parse_in_progress,
 		(int)class_pattern_capture_in_progress);
-	// TEMP-PROBE (variadic-class arc): caller chain for the unarmored
-	// instantiation — remove before merge.
-#ifndef _WIN32
-	if ( ::getenv("MADC_XTEST_VRI_BT") )
-	{
-	    void *frames[24];
-	    int nf = backtrace(frames, 24);
-	    backtrace_symbols_fd(frames, nf, 2);
-	}
-#endif
-    }
     allow_variadic_real_inst = false;
     allow_valuepack_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base

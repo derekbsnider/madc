@@ -6431,8 +6431,16 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 	// arg cannot be materialized into a concrete `target` temp in the recipe —
 	// reject the pattern so the body falls back to its parsed concrete form.
 	if (m_tsubst_pattern_mode && arg
-	    && template_param_under_type_layers(arg->datadef()))
+	    && template_param_under_type_layers(arg->datadef())) {
+		// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH arg datadef
+		// stayed dependent — the [why: dependent-arg object value]
+		// diagnostic.
+		if (::getenv("MADC_TSUBST_OP_PROBE"))
+			fprintf(stderr, "[tsubst-objval] arg-dd=%s target=%s\n",
+				arg->datadef() ? arg->datadef()->name.c_str() : "-",
+				target->name.c_str());
 		return error_node("tsubst: dependent-arg object value", arg);
+	}
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);

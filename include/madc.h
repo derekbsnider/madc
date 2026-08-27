@@ -468,6 +468,13 @@ public:
 	if ( sp.find('<') != std::string::npos
 	  || sp.back() == '*' || sp.back() == '&' )
 	    return sp;
+	// A FUNCTION-POINTER typedef param (`program::native_function`)
+	// desugars to its STRUCTURAL spelling (`void (*)()`): Itanium encodes
+	// canonical types (PF…E); the captured typedef name — or the dd's
+	// generic "funcptr" — encodes as a class name nothing exports.
+	if ( DataDefFPTR *fpp = parameters[i]->as_fptr_dd() )
+	    if ( fpp->target )
+		return fpp->structural_spelling();
 	std::string scalar = parameters[i]->mangle_scalar_spelling();
 	if ( scalar.empty() || scalar == sp )
 	    return sp;
