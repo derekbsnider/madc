@@ -102,15 +102,20 @@ class term_target : public madc::hub::tui_target
 	snprintf(buf, sizeof(buf), "\x1b[%zu;%zuH", row + 1, col + 1);
 	out += buf;
     }
-    // Poll stdin; <0 timeout blocks. True = readable. EINTR returns
-    // false so the caller re-checks the resize flag.
+    // Poll stdin; <0 timeout blocks. True = a read would make progress
+    // NOW — data, EOF, or an error the read surfaces (POLLHUP/POLLERR;
+    // the fd_readable_progress rule taskio's io_probe_readable owns —
+    // a dead terminal must reach the read that returns 0, never hang
+    // the wait). EINTR returns false so the caller re-checks the
+    // resize flag.
     static bool input_ready(int timeout_ms)
     {
 	struct pollfd pfd;
 	pfd.fd = STDIN_FILENO;
 	pfd.events = POLLIN;
 	int r = poll(&pfd, 1, timeout_ms);
-	return r > 0 && (pfd.revents & POLLIN) != 0;
+	return r > 0
+	    && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
     }
 
 public:

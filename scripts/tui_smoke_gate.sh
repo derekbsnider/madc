@@ -26,4 +26,13 @@ if [ $? -eq 0 ]; then
     exit 1
 fi
 
-echo "tui_smoke_gate: PASS (pty smoke + negative control)"
+# Terminal death is readable PROGRESS (fd_readable_progress_probe): the
+# app must EXIT when its pty master closes, never spin in the input wait.
+eofout=$( ( ulimit -t 60; timeout 30 python3 scripts/tui_eof_pty.py ) 2>&1 )
+if [ $? -ne 0 ]; then
+    echo "$eofout"
+    echo "tui_smoke_gate: FAIL — terminal death did not end the input wait"
+    exit 1
+fi
+
+echo "tui_smoke_gate: PASS (pty smoke + negative control + terminal-death exit)"
