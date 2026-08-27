@@ -43,8 +43,9 @@ live diagnostics, and — named want — **plugins written in madc code**).
 
 Two standing consequences:
 
-- **madcide is exercise #2 for the `madc::ui` abstraction layer**
-  (exercise #1: examples/texteditor). A **GUI madcide** — looking and
+- **madcide is exercise #3 for the `madc::ui` abstraction layer**
+  (#1: colossal cave adventure, #2: examples/texteditor). A **GUI
+  madcide** — looking and
   feeling more like VS Code — is the SAME CODEBASE rendering
   differently by environment: madcide composes a model tree
   (`compose_ide_tree`) and never paints; the terminal renderer is one
