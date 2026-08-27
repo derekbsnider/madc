@@ -3630,8 +3630,13 @@ public:
     // it is recognized as a ctor), and register that instantiation as a real ctor of
     // `cdd` so select_ctor_overload binds it. Idempotent / memoized per (class, arg
     // types). No-op when `cdd` has no member-template ctor.
+    // `list_initialization` = the args came from a BRACED list; the callee owns
+    // the [dcl.init.list]/3-4 rule (a class with an initializer-list ctor
+    // consumes the list as ONE argument — its elements are never an argument
+    // list to deduce from), so every construction site states its list-ness.
     void instantiate_member_ctor_template_for_construction(
-		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args);
+		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
+		bool list_initialization);
     bool instantiate_member_ctor_template_candidate(
 		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args,
 		size_t candidate_skip);
