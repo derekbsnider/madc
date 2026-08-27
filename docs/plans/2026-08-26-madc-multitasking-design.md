@@ -296,7 +296,11 @@ Unification claims (no-parallel-implementations):
   DupFamily fd_readable_progress_probe, open — the MT-4c unification
   migrates the tui stdin wait onto taskio); tcp:// rides the same
   pollable surface when a tcp factory lands.
-- **MT-4c — stdin unification** (DESIGN decided 2026-08-27, s139): the
+- **MT-4c — stdin unification** (SHIPPED, session 139 — design decided
+  and landed the same day; one trap found by the unit legs: the FIRST
+  spelling fired synthetic wakes on zero-timeout PROBE calls too — a
+  yield-head fire_due stole the queue head mid-yield — so the wake is
+  gated to BLOCKING quiescent points, timeout_ms != 0): the
   tui's input wait joins the ONE scheduler poll; read_keys' 50ms
   live-but-parked cadence retires. The model:
   - **The host wait**: `taskio::host_wait_readable(fd)` — the tui flow
