@@ -292,6 +292,46 @@ named backend-yield residue). Backend refusals after a clean front end
 still print to stderr (backend-diagnostics-as-data is the other named
 residue); the synthesized error row keeps the failure loud either way.
 
+### Build/run the LIVE parse (`madc::parse_build`, `madc::parse_run`)
+
+The owner ruling (2026-08-27): the running madc IS the compiler — a
+program the process has already parsed is never re-parsed and never
+handed to any madc binary. The parse-handle family carries the pair:
+
+```c
+long h = madc::parse_open(text, "buffer.mad");    // the live tree —
+                                                  // (re)parsed from the
+                                                  // BUFFER, unsaved edits
+                                                  // included
+value diags;
+bool ok = madc::parse_build(diags, h, "exe", "prog");
+                                                  // emit from h's EXISTING
+                                                  // tree ("exe" | "obj");
+                                                  // a red parse never
+                                                  // reaches the emitter;
+                                                  // build rows ride diags
+                                                  // only — parse_check
+                                                  // stays parse-pure
+long rc = madc::parse_run(h);                     // fork(): the child
+                                                  // inherits the parsed
+                                                  // tree, hands it to the
+                                                  // backend, runs main;
+                                                  // returns the guest's
+                                                  // exit status (128+sig
+                                                  // on a signal death).
+                                                  // negative = never ran:
+                                                  // -1 bad handle, -2 red
+                                                  // parse, -3 no fork
+                                                  // (win64)
+```
+
+`parse_run` inherits stdio — a tui suspends first (madcide's Run row
+does exactly that). While the guest runs, `^C` reaches it alone (the
+`system(3)` signal discipline); the child starts on a fresh cooperative
+scheduler and its own atexit semantics. `madc::build_native` (the
+path form above) remains the from-a-FILE lane for scripts with no open
+handle; madcide's ^B rows ride the handle pair exclusively.
+
 ## Security
 
 Embedding hosts control the whole surface: full-unit eval is gated by
