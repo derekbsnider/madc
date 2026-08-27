@@ -1,6 +1,50 @@
 # Test Status
 
-> **Current (2026-08-27, IDE-10c internal builds + esc-any-pane —
+> **Current (2026-08-27, MT-3 structured scopes + cancellation —
+> feature/mt3-scopes-cancel merge wave):** tasks get Kotlin-shaped
+> structure over Go's spelling. NEW publics: `madc::scope_begin()` /
+> `scope_end(h)` / `scope_cancel(h)` / `cancelled()`. `go` attaches the
+> child to the spawner's innermost OPEN scope (flat attachment; born
+> cancelled into a cancelled scope); `scope_end` is owner-only +
+> innermost-first (validated via `__madc_scope_end_check` BEFORE the
+> handle is consumed), JOINS all members unconditionally, then rethrows
+> the first member error (else the cancelled literal, else returns).
+> `scope_cancel` = transitive flag+wake (members + child scopes; the
+> opener woken FLAGLESSLY — its cancellation lives in the chain and
+> dies at scope_end). Cancellation is cooperative and lands at the
+> blocking verbs (chan send/recv/select, sleep_ms, taskio readable)
+> through THE one owner `__madc_task_throw_if_cancelled` with eager
+> waiter removal; a delivered value always wins over a pending cancel;
+> `yield()` is NOT a cancellation point. Scoped tasks run under an SJLJ
+> catch-all trampoline: an uncaught error cancels the scope and
+> rethrows at scope_end; root tasks keep Go's abort-on-uncaught.
+> Consumers (MT-3b): tokenize/parse abort cancelled work (lexer pump
+> C++ throw → recorded diagnostic; parse loop set_error after
+> parse_yield_point), madcide's internal builds get Stop back (the
+> build task's own scope = the job handle; "buildstopreq" covers the
+> spawn window; a stopped build reports "Build stopped", diags
+> withheld), `Process::wait_or_kill(grace_ms)` = grace-then-SIGKILL
+> (the win arm reports terminate()'s 128+SIGTERM shape — Windows has
+> no SIGKILL; the battery's win gate caught the first spelling),
+> ExecDataChannel close() escalates when cancelled. rt_except: tags
+> moved to rt_except.h, `__madc_exception_text` = THE renderer (four
+> Unhandled printers folded), try-frame API exposed as the third
+> conscious host-consumer widening. Pre-merge dupaudit: families
+> current_task_cancel_throw + child_status_exit_mapping +
+> scope_join_unlink consolidated; NEW gates check-cancel-throw-owner.sh
+> + check-child-status-map-owner.sh (negative-controlled). NEW tests:
+> testgoscope (deterministic 30-token schedule), testbuildcancel
+> (mid-parse cancel), testchancancel (SIGTERM-ignoring child, SIGKILL
+> escalation by wall clock); testmadcide native-build-stop gate.
+> Battery on final content: fulltest green (the win gate re-validated
+> after the one-line win-arm fix) + JIT **1175 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1201) + EXE **1129 passed /
+> 0 failed** + OBJ **1129 passed / 0 failed**. Named residues: the
+> emit phase has no yield points (cancel lands at parse);
+> declaration/1024-token grain; member-error rethrow is text-only; no
+> NonCancellable regions; main's own unended scopes leak at exit.
+>
+> **Previous (2026-08-27, IDE-10c internal builds + esc-any-pane —
 > feature/ide10c-internal-builds merge wave):** the ^B rows go INTERNAL
 > (owner ruling: the IDE lives inside the compiler — never shell out to
 > a PATH madc). NEW engine publics: `madc::build_native(diags, path,

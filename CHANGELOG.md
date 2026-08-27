@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+- **Structured task scopes + cancellation (MT-3, 2026-08-27)**: the
+  task surface gets Kotlin-shaped structure over Go's spelling. New
+  publics: `madc::scope_begin()` / `scope_end(h)` / `scope_cancel(h)` /
+  `madc::cancelled()`. `go` attaches the child to the spawner's
+  innermost OPEN scope (flat attachment; a member's initial context is
+  its scope; born cancelled into a cancelled scope; no open scope =
+  the pre-scope root semantics). `scope_end` is owner-only and
+  innermost-first (validated via `__madc_scope_end_check` before the
+  handle layer consumes the handle — the split exists for MT-5's
+  direct keyword lowering), JOINS all members unconditionally (a
+  cancel wake re-parks; nothing leaks), then rethrows the first member
+  error, else the cancelled literal, else returns. `scope_cancel` is a
+  transitive flag+wake walk (members + child scopes; the opener is
+  woken FLAGLESSLY — its cancellation lives in the chain and dies at
+  scope_end, a sticky opener flag would leak into the parent context).
+  Cancellation is cooperative and lands at the blocking verbs (chan
+  send/recv/select, `sleep_ms`, taskio readable) through THE one owner
+  `__madc_task_throw_if_cancelled` with eager waiter removal; a
+  delivered value always wins over a pending cancel; `yield()` is NOT
+  a cancellation point. Scoped tasks run under an SJLJ catch-all
+  trampoline: an uncaught error is captured into the scope, cancels
+  it, and rethrows at scope_end; root tasks keep Go's
+  abort-on-uncaught; a task dying with open scopes abandons them
+  (cancel+join+free) with a stderr warning. Cancellation is classified
+  by POINTER identity of `__madc_task_cancelled_text()` (a task
+  cancelled through a child scope's chain has no own flag and must not
+  read as scope failure). Consumers (MT-3b): tokenize/parse abort
+  cancelled work (the lexer pumps' C++ throw lands as a recorded
+  diagnostic — never the SJLJ throw, which would longjmp past lexer
+  frames; `Program::parse` sets a parser diagnostic and returns false
+  so §3.5 recovery never "recovers" a cancel), madcide's internal
+  builds get their Stop row back (the build task opens its own scope
+  published as the job handle; a pre-start flag covers the
+  spawn-to-first-run window; a stopped build reports "Build stopped"
+  with diags withheld), `Process::wait_or_kill(grace_ms)` waits
+  through a grace window then hard-kills (POSIX WNOHANG 20ms slices +
+  SIGKILL; the win arm reports terminate()'s 128+SIGTERM shape —
+  Windows has no SIGKILL, which the battery's win gate caught), and
+  ExecDataChannel::close() escalates through it once cancelled.
+  rt_except: the exception tag defines moved to rt_except.h (one
+  authoritative home), `__madc_exception_text` is THE renderer (four
+  Unhandled printers folded into `madc_print_unhandled`), and the
+  try-frame API is exposed as the third conscious host-consumer
+  widening. Pre-merge dupaudit: families `current_task_cancel_throw`,
+  `child_status_exit_mapping`, `scope_join_unlink` consolidated; new
+  fulltest gates `check-cancel-throw-owner.sh` +
+  `check-child-status-map-owner.sh` (negative-controlled). New tests:
+  `testgoscope` (deterministic 30-token schedule), `testbuildcancel`
+  (mid-parse cancel through the yield handshake), `testchancancel`
+  (SIGTERM-ignoring child, SIGKILL escalation gated by wall clock);
+  testmadcide native-build-stop gate. Docs: `docs/language/tasks.md`
+  scopes + cancellation; design doc §MT-3. Named residues: the emit
+  phase has no yield points (cancel lands at parse), cancellation
+  grain is declaration/1024 tokens, member-error rethrow is text-only,
+  no NonCancellable cleanup regions yet, main's own unended scopes
+  leak at exit.
+
 - **madcide internal builds + esc-any-pane (IDE-10c, 2026-08-27)**:
   the ^B rows go INTERNAL (owner ruling: the IDE lives inside the
   compiler — never shell out to a PATH `madc`). New engine publics:
