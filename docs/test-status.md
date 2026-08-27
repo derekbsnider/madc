@@ -1,6 +1,41 @@
 # Test Status
 
-> **Current (2026-08-27, IDE-9e windows —
+> **Current (2026-08-27, MT-4c stdin unification —
+> feature/mt4c-stdin-unification merge wave):** the tui's input wait
+> joins the ONE scheduler poll; read_keys' 50ms live-but-parked cadence
+> RETIRES. NEW `taskio::host_wait_readable(fd)`: the tui flow (the main
+> task) parks on stdin as an io waiter, so task_next_or_wait's hook
+> makes one blocking decision over {stdin, io waiters} bounded by the
+> earliest timer. true = the fd fired (read keys); false = a SYNTHETIC
+> wake — rt counts task switches (`__madc_task_switch_count`), the host
+> records the count at park, and the hook's BLOCKING quiescent point
+> (never a zero-timeout probe: a yield-head fire_due probing the hook
+> must not steal the CPU from still-running tasks — the unit leg's
+> failing trace caught exactly that; gate = timeout_ms != 0) wakes the
+> host UNFIRED when switches advanced: the read_keys ran→wake seam
+> moved into the one poll. Order: zero-timeout probe pass (real
+> readiness wins) → synthetic wake (a pending repaint beats blocking) →
+> the blocking poll; EINTR on a WAIT wakes the host (SIGWINCH reaches
+> the resize check). The runnable-yield and zero-live-blocking arms are
+> untouched. Own prior commit: `input_ready` adopts the
+> POLLIN|POLLHUP|POLLERR readable-progress triple — DupFamily
+> fd_readable_progress_probe goes open→GATED (NEW
+> check-fd-readable-progress.sh in fulltest, negative-controlled; the
+> smoke gate grows a terminal-death leg, tui_eof_pty.py — SIGHUP
+> ignored in the child so the WAIT is what gets tested; NOTE: a dead
+> Linux pty polls POLLIN|POLLHUP so the behavioral leg cannot
+> discriminate the POLLIN-only bug here — macOS ptys are the plausible
+> HUP-only live shape; the mechanism gate is the enforcement). NEW unit
+> legs: test_task_io +3 (readable-now; the fd firing beats the
+> synthetic wake — probe-pass-first; activity with no fd = synthetic,
+> unfired). Validation: test_task_io 7/7, test_coop_parse 50/50
+> interleave, pty smoke(+EOF leg)/scroll gates, testmadcide, MT io
+> tests — green. Battery on final content: fulltest rc=0 (all gates,
+> the two new ones included) + JIT **1180 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1206) + EXE **1131 passed / 0 failed** +
+> OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, IDE-9e windows —
 > feature/ide9e-windows merge wave):** madcide grows JOE's second axis:
 > N STACKED windows over the AST-5 buffer ring, each with its OWN
 > status line and caret (^K O split). The engine was ALREADY per-slot

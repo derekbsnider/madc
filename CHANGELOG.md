@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **Stdin joins the one scheduler poll (MT-4c, 2026-08-27)**: the tui's
+  input wait unifies with the cooperative scheduler — read_keys' 50ms
+  live-but-parked cadence retires. New `taskio::host_wait_readable(fd)`
+  parks the tui flow on stdin as an io waiter, so the scheduler makes
+  ONE blocking decision over {stdin, io waiters, timers}; a SYNTHETIC
+  wake (unfired, returns false) fires at the hook's blocking quiescent
+  point when other tasks got the CPU since the host parked — the old
+  ran→wake repaint seam moved into the one poll (and gated to WAITS:
+  the first spelling fired on zero-timeout probe calls and stole the
+  queue head mid-yield; the new unit leg caught it). EINTR on a wait
+  wakes the host so SIGWINCH reaches the resize check. Alongside (own
+  commit): `input_ready` adopts the POLLIN|POLLHUP|POLLERR
+  readable-progress triple, closing the fd_readable_progress_probe
+  duplication family with a negative-controlled fulltest gate
+  (check-fd-readable-progress.sh) and a terminal-death pty leg in the
+  smoke gate (a dead Linux pty polls POLLIN|POLLHUP, so the behavioral
+  leg pins termination rather than discriminating the POLLIN-only bug —
+  macOS ptys are the plausible HUP-only live shape). Three new
+  test_task_io host-wait legs; pty smoke/scroll, coop-parse interleave,
+  and madcide gates all green.
+
 - **madcide windows (IDE-9e, 2026-08-27)**: JOE's second axis — N
   stacked windows over the buffer ring, each with its own status line
   and caret. `^K O` splits (the new window duplicates the active one,
