@@ -4706,6 +4706,32 @@ static bool child_has_error_row(::Program &child)
     return false;
 }
 
+// ONE owner for the build-surface kind vocabulary ("exe" | "obj") — the
+// path lane and the live-handle lane must never drift (a new kind lands
+// here once). False = unknown name; the caller owns the diagnostic.
+static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
+{
+    if ( kind_name == "exe" )
+    {
+	kind = mnkPieExecutable;	// the CLI -o default
+	return true;
+    }
+    if ( kind_name == "obj" )
+    {
+	kind = mnkObject;		// relocatable .o (-r -o)
+	return true;
+    }
+    return false;
+}
+
+// ONE owner for "may this retained tree reach the backend": a tokenize
+// that never produced a TU, or a parse that recorded error rows, is an
+// incomplete tree — parse_build and parse_run both refuse on it.
+static bool parse_tree_backend_ready(::Program &child)
+{
+    return child.tkProgram && !child_has_error_row(child);
+}
+
 // The build surface (madcide IDE-10c): the CLI's AOT lane — tokenize +
 // parse a FILE in a child Program (the lexer owns file ingestion and the
 // TU's relative #includes, exactly as parse_open_file), then
@@ -4735,18 +4761,11 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 	// contract); recording into child.diagnostics is untouched.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = true;
-	if ( kind_name == "exe" )
-	    kind = mnkPieExecutable;
-	else if ( kind_name == "obj" )
-	    kind = mnkObject;
-	else
-	{
-	    kind_ok = false;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "unknown build kind '" + kind_name
 			    + "' (expected \"exe\" or \"obj\")");
-	}
 	struct stat sb;
 	if ( kind_ok
 	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
@@ -5144,7 +5163,7 @@ bool internal_program_parse_build(int64_t handle,
     if ( !st )
 	return false;
     ::Program &child = *st->child;
-    if ( !child.tkProgram || child_has_error_row(child) )
+    if ( !parse_tree_backend_ready(child) )
     {
 	diagnostic_rows_from_child(child, out);
 	return false;
@@ -5156,18 +5175,11 @@ bool internal_program_parse_build(int64_t handle,
 	// contract); ObjectModeScope lives inside the emit lane itself.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = true;
-	if ( kind_name == "exe" )
-	    kind = mnkPieExecutable;
-	else if ( kind_name == "obj" )
-	    kind = mnkObject;
-	else
-	{
-	    kind_ok = false;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "unknown build kind '" + kind_name
 			    + "' (expected \"exe\" or \"obj\")");
-	}
 	if ( kind_ok )
 	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
 				      kind, outpath.c_str(),
@@ -5207,7 +5219,7 @@ int64_t internal_program_parse_run(int64_t handle)
     if ( !st )
 	return -1;
     ::Program &child = *st->child;
-    if ( !child.tkProgram || child_has_error_row(child) )
+    if ( !parse_tree_backend_ready(child) )
 	return -2;
 #ifdef _WIN32
     return -3;

@@ -1718,6 +1718,17 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
 	ui::set(w, es, "msg", format("Building {} -> {} (live parse).", p, o));
 }
 
+// THE return-key pause (one owner, dupaudit family terminal_return_pause):
+// every suspended-terminal run holds the guest's output on screen until
+// enter, then the caller resumes into the full repaint.
+void terminal_return_pause()
+{
+    println("");
+    println("[madcide] press enter to return");
+    var pause;
+    madc::getline(pause);
+}
+
 // The Run row (owner ruling 2026-08-27: the running madc IS the
 // compiler): fork-run the buffer's LIVE parse — refresh the handle from
 // the screen text, refuse a red parse LOUD (the rows land in the diags
@@ -1752,10 +1763,7 @@ void run_buffer(long w, long es, long doc)
     if ( !ui::tui_suspend(t) )
 	return;
     long rc = madc::parse_run(h);
-    println("");
-    println("[madcide] exit {} - press enter to return", rc);
-    var pause;
-    madc::getline(pause);
+    terminal_return_pause();
     ui::tui_resume(t);
     if ( rc < 0 )
 	ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
@@ -1776,9 +1784,8 @@ void run_in_terminal(long w, long es, const char *cmd)
     }
     if ( !ui::tui_suspend(t) )
 	return;
-    var line = format("{} ; printf '\\n[madcide] press enter to return '; read _",
-		      cmd);
-    system(line.c_str());
+    system(cmd);
+    terminal_return_pause();
     ui::tui_resume(t);
 }
 
