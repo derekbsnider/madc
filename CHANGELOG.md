@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **Template core: the embed_hello chain (2026-08-27)**: five coupled
+  fixes, each reduced and g++-oracled. Braced-init-lists of CLASS
+  elements now take the initializer-list ctor when every element is
+  already the element class (`vector<value>{value(10), value(32)}` —
+  the libmadc `pgm.call` argument shape; previously the list fell to
+  plain overloading, deduced the range ctor with `_InputIterator` = the
+  element class, and died in tsubst). The [dcl.init.list]/3-4
+  elements-are-not-arguments filter now has one owner inside
+  `instantiate_member_ctor_template_for_construction` — the functional
+  `T{...}` sites were unguarded and minted the bogus deduction at parse
+  time. Member templates deduce from function-pointer arguments
+  (`Ret (*cb)(Args...)`, the `engine::register_function` host-callback
+  shape) with any pack arity, riding the one N-copy expansion; concrete
+  parameter viability gained a strict-then-relaxed second pass so a
+  string literal reaches `const std::string&` by user conversion
+  without ever stealing from an exact sibling; and an out-of-class
+  member-template definition on a plain class now attaches its body to
+  the declared member's pattern instead of silently freezing every call
+  on an undefined placeholder import. New tests: testinitlistclass,
+  testmembertplfnptr. `examples/embed_hello.cpp` is not fully served
+  yet: variadic class-template instantiation with a mixed fixed+pack
+  head (`detail::callback_adapter`) remains a mapped, reducer-backed
+  frontier.
+
 - **The running madc IS the compiler (owner ruling, 2026-08-27)**:
   madcide's ^B never re-parses and never execs a madc binary — the
   buffer's live parse handle is the compilation. New engine pair on

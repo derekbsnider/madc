@@ -1,6 +1,48 @@
 # Test Status
 
-> **Current (2026-08-27, the running madc IS the compiler —
+> **Current (2026-08-27, the embed_hello template chain —
+> feature/embed-hello-tsubst2 merge wave):** five coupled template-core
+> fixes on the `bin/madc examples/embed_hello.cpp` diagnosis chain, each
+> reduced + g++-oracled: (1) `find_initializer_list_ctor` accepts a
+> CLASS element type when every element is ALREADY that class —
+> `vector<W>{W(1), W(2)}` (the pgm.call({value,value}) shape) takes the
+> initializer-list ctor like g++ instead of falling to plain overloading
+> (which deduced the range ctor with _InputIterator = W, a candidate
+> g++'s _RequireInputIter SFINAEs away, and died in tsubst on
+> iterator_traits<W>::iterator_category — the banked bail); the
+> conversion-into-slot half (vector<string>{"a","b"}) stays the task-#56
+> residue. (2) [dcl.init.list]/3-4 has ONE owner: the filter moved into
+> instantiate_member_ctor_template_for_construction (new
+> list_initialization param) — the two TokenObjTemp sites were UNGUARDED
+> and minted the bogus range-ctor husk at parse time. (3)
+> fn_template_deduce_fnptr_param deduces a TID-classified pack inside a
+> fn-ptr parameter (`Ret (*cb)(Args...)`, engine::register_function's
+> shape), any element count; a multi-element tid pack aliases into the
+> pack_param/pack_elems channel and rides THE one N-copy expansion. (4)
+> concrete-param viability is two-pass: strict over every candidate,
+> then relaxed (named CLASS params stop vetoing — [over.ics.user]) only
+> when none matched; arithmetic/pointer arms stay strict in both passes.
+> (5) attach_outofclass_member_template_def: an out-of-class
+> member-template definition on a PLAIN class attaches its body to the
+> declared member's pattern (libmadc/engine.h) — before it, the call
+> SILENTLY froze on the placeholder (undefined MIR import). NEW
+> env-gated probes per the repo idiom (MADC_SUBST_PROBE deriv/rebuild,
+> MADC_FNPTR_PROBE, FNTPL exit tags, the MTB inj dump, MADC_OOL_PROBE).
+> NEW tests: testinitlistclass, testmembertplfnptr (both --std=c++17,
+> g++-pinned). STILL OPEN toward embed_hello (reducers in container
+> tmp/eh_red*.cpp): detail::callback_adapter's variadic CLASS-template
+> instantiation (mixed fixed+pack head) is a SILENT-WRONG frontier —
+> sizeof... in a class-pack member folds 0 (eh_red6), a qualified static
+> call through Adapter<R,A...> evaluates 0 (eh_red7) — the class-side
+> twin of the fn-side N-copy machinery; plus the implicit-copy
+> deferred-construction pack arm (eh_red1: vector<V> with NO user copy
+> ctor bails LOUD at elem-formal-mismatch) and const-ref operator[]
+> member typing (eh_red8's first form). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1183 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1209) + EXE **1134 passed / 0 failed** +
+> OBJ **1134 passed / 0 failed**.
+>
+> **Previous (2026-08-27, the running madc IS the compiler —
 > feature/parse-build-run merge wave):** the OWNER RULING lands: ^B
 > never re-parses and never execs a madc binary — the buffer's LIVE
 > parse handle IS the compilation. NEW engine pair on the parse-handle
