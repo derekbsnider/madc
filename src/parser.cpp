@@ -66675,6 +66675,18 @@ bool Program::parse(TokenProgram *tp)
 	    // Stage-2: a top-level declaration boundary is a yield point
 	    // (the RULED chunk grain for the parse phase).
 	    parse_yield_point();
+	    // MT-3b: a cancelled task's parse aborts CLEANLY at the
+	    // declaration boundary — the parser's own failure shape (a
+	    // recorded diagnostic + false), never a throw that the §3.5
+	    // error-recovery arms below would "recover" into continuing.
+	    // (Finer-than-boundary abort = a named residue: one giant
+	    // function body delays cancellation by its own parse time.)
+	    if ( __madc_task_cancelled() )
+	    {
+		set_error(DiagnosticPhase::parser,
+			  "parse cancelled (task cancellation)");
+		return false;
+	    }
 	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
 	    // Progress guard: a parseStatement that restores the stream to
 	    // exactly this state (its dispatchee consumed nothing and pushed

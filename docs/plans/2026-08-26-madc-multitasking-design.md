@@ -313,8 +313,72 @@ Unification claims (no-parallel-implementations):
   blocking send/recv with park/unpark, close semantics, `select`;
   `go` as an EXPRESSION returns a future (one-shot channel); `await` /
   `.get()`.
-- **MT-3 scopes + cancellation**: structured spawn (scope owns
-  join/error/cancel), stop flag checked at every blocking verb.
+- **MT-3 scopes + cancellation — SHIPPED (session 139, both halves)**:
+  3a = the design below, verbatim (testgoscope pins the complete
+  schedule; test_rt_task/test_task_io green). 3b consumers: the token
+  pumps + the top-level parse loop honor task cancellation with a clean
+  recorded diagnostic (testbuildcancel pins a mid-parse build cancel);
+  madcide's Stop returns for internal builds (the build task's own
+  scope IS the job handle — scope_cancel reaches the child parse
+  through the chain; a pre-start flag covers the spawn-to-first-run
+  window); channel::cancel() grew the SIGKILL escalation
+  (Process::wait_or_kill — 2s grace, then hard-kill; testchancancel's
+  SIGTERM-ignoring child gates it by wall clock). Residues: emit phase
+  has no yield points; cancellation lands at declaration/1024-token
+  grain; faithful non-text error rethrow; NonCancellable cleanup
+  regions.
+  DESIGN (decided 2026-08-27, session 139 — the Kotlin-ownership ruling
+  made concrete; publics-first, keywords are MT-5):
+  - Surface: `madc::scope_begin()` -> int64 handle (opens a scope,
+    becomes the CURRENT task's innermost); `madc::scope_end(s)` (joins
+    every task spawned in the scope — and its child scopes' tasks —
+    then rethrows the FIRST child error, else throws the cancelled
+    text if the scope was cancelled, else returns; owner-only, must be
+    the innermost); `madc::scope_cancel(s)` (request, returns
+    immediately, any task may call — madcide's Stop is the consumer);
+    `madc::cancelled()` (current task's flag OR any open scope on its
+    current-scope chain — the compute-loop poll).
+  - Attachment (the Kotlin pick): `go` attaches the new task to the
+    SPAWNER's innermost open scope; no open scope = the root scope
+    (task->scope NULL — exactly today's semantics, drained at main's
+    end). A task spawned into a cancel-requested scope is BORN
+    cancelled.
+  - Cancellation = a flag + a wake: `__madc_task_cancel_request(t)`
+    sets `cancel_req`, unlinks a timer-parked task from the timer
+    list, and unparks (idempotent enqueue). EVERY blocking verb
+    (chan_send/recv/select, sleep_ms, taskio wait_readable, the
+    channel object's park) checks the flag on resume — and BEFORE
+    parking — eagerly removes its own waiter record (stack-resident;
+    a husk pointing into an unwound frame is a use-after-free), and
+    throws THE one cancelled literal
+    (`__madc_task_cancelled_text()` — pointer identity distinguishes
+    it from user text). Sticky (Kotlin): cleanup after cancellation
+    must not use blocking verbs. yield() is NOT a cancellation point
+    (a throw through the engine's parse seam would corrupt it; the
+    parse-seam abort is MT-3b's clean-diagnostic path).
+  - Error ownership: the trampoline arms a C-side SJLJ catch-all
+    (setjmp on `__madc_try_push`) for SCOPED tasks only: an uncaught
+    child error is rendered to text (`__madc_exception_text`, the one
+    renderer the four Unhandled printers share), recorded as the
+    scope's FIRST error, and CANCELS the scope (Kotlin: a failed
+    child cancels its siblings); the cancellation literal itself is
+    swallowed silently (cancellation is not a failure). Root tasks
+    keep today's abort-on-uncaught (Go semantics). scope_end always
+    finishes joining before it throws (no leaked bookkeeping; a
+    cancelled opener re-parks until its children complete
+    cancellation). Faithful rethrow of non-text exceptions = named
+    residue (text rethrow first).
+  - Layering: scope struct + membership lists live in rt_task.c (task
+    lifecycle: birth attachment, death detachment, last-exit joiner
+    wake); the int64 handle registry + throws live in the C++ surface
+    (madc_task_chan.cpp, the chan registry idiom). task_drain /
+    task_live stay (root-scope verbs; retirement is an owner call).
+  - MT-3b (consumers, after 3a): parse_yield_point honors task
+    cancellation via the parser's own clean abort (diagnostics row,
+    never a throw through parse state) so an in-process build cancels
+    during its parse phase; madcide Stop returns for internal builds
+    (build task in a scope, stop = scope_cancel); channel::cancel()
+    grows SIGKILL escalation for a SIGTERM-ignoring child.
 - **MT-4 io + time**: `madc::channel` endpoints on the event loop,
   `sleep` via a timer heap, VIRTUAL-TIME test verbs — deterministic
   fulltest gates from the first slice (recon amendment 4).

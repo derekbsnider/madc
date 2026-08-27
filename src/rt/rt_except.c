@@ -28,19 +28,14 @@
 #define MADC_RT_TLS _Thread_local
 #endif
 
-// Exception type tags (matches madc DataType values where possible)
-#define MADC_EXCEPT_NONE    0
-#define MADC_EXCEPT_INT     1
-#define MADC_EXCEPT_DOUBLE  2
-#define MADC_EXCEPT_CSTR    3
-// A thrown CLASS OBJECT with no string form. The payload is the object's
-// address; no catch clause matches it by tag (the parser assigns class clauses
-// this same value precisely so they stay unmatchable — real per-type class
-// dispatch needs RTTI, a separate track), so it reaches catch(...) or the
-// unhandled path. Deliberately NOT matchable by catch(SomeClass&): one tag
-// cannot tell two class types apart, and a wrong match is worse than none.
-#define MADC_EXCEPT_CLASS   4
-#define MADC_EXCEPT_ANY     99  // catch(...)
+// Exception type tags live in rt_except.h (the one authoritative home).
+// MADC_EXCEPT_CLASS: a thrown CLASS OBJECT with no string form. The payload
+// is the object's address; no catch clause matches it by tag (the parser
+// assigns class clauses this same value precisely so they stay unmatchable —
+// real per-type class dispatch needs RTTI, a separate track), so it reaches
+// catch(...) or the unhandled path. Deliberately NOT matchable by
+// catch(SomeClass&): one tag cannot tell two class types apart, and a wrong
+// match is worse than none.
 
 // Per-object cleanup entry — linked list, pushed at construction time
 struct MadcCleanupEntry {
@@ -229,6 +224,17 @@ void __madc_cleanup_pop(void)
     }
 }
 
+// Print the unhandled-exception line. The ONE formatting owner is
+// __madc_exception_text (below) — the same renderer MT-3's scope error
+// capture reads, so an aborted print and a captured scope error always
+// agree on the text.
+static void madc_print_unhandled(void)
+{
+    char buf[256];
+    __madc_exception_text(buf, sizeof(buf));
+    fprintf(stderr, "Unhandled exception: %s\n", buf);
+}
+
 // Throw an integer exception
 void __madc_throw_int(int64_t val)
 {
@@ -238,7 +244,7 @@ void __madc_throw_int(int64_t val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %ld\n", (long)val);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -256,7 +262,7 @@ void __madc_throw_double(double val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %f\n", val);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -274,7 +280,7 @@ void __madc_throw_cstr(const char *val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %s\n", val ? val : "(null)");
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -293,13 +299,50 @@ void __madc_throw_object(const void *obj)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: class object at %p\n", obj);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
     __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
+}
+
+// Render the in-flight exception as one line of text (MT-3: the scope
+// error capture; also THE renderer behind every "Unhandled exception"
+// print — one formatting owner). Returns the byte length written
+// (truncated to cap-1), 0 when no exception is in flight.
+unsigned long __madc_exception_text(char *buf, unsigned long cap)
+{
+    int n = 0;
+    if ( !buf || cap == 0 )
+	return 0;
+    switch ( madc_current_exception.type )
+    {
+    case MADC_EXCEPT_INT:
+	n = snprintf(buf, cap, "%ld", (long)madc_current_exception.int_val);
+	break;
+    case MADC_EXCEPT_DOUBLE:
+	n = snprintf(buf, cap, "%f", madc_current_exception.double_val);
+	break;
+    case MADC_EXCEPT_CSTR:
+	n = snprintf(buf, cap, "%s", madc_current_exception.str_val
+					 ? madc_current_exception.str_val
+					 : "(null)");
+	break;
+    case MADC_EXCEPT_CLASS:
+	n = snprintf(buf, cap, "class object at %p",
+		     madc_current_exception.obj_val);
+	break;
+    default:
+	buf[0] = '\0';
+	return 0;
+    }
+    if ( n < 0 )
+	n = 0;
+    if ( (unsigned long)n >= cap )
+	n = (int)(cap - 1);
+    return (unsigned long)n;
 }
 
 // Get exception type tag

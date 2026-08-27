@@ -1,0 +1,3 @@
+stderr must be empty: scope captures are silent (a swallowed cancellation
+and a captured member error print nothing), and no abandoned-scope warning
+fires on the balanced paths.

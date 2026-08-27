@@ -40,6 +40,13 @@ public:
 	bool close_stdin(error *err = nullptr);
 	bool wait(error *err = nullptr);
 
+	// Reap with an escalation deadline (MT-3b): poll for exit up to
+	// grace_ms, then hard-kill (SIGKILL / TerminateProcess) and reap.
+	// The cancelled-channel close path — a child that ignored
+	// terminate()'s SIGTERM must not hang the caller forever. Prefer
+	// wait() everywhere a child is EXPECTED to exit on its own.
+	bool wait_or_kill(int grace_ms, error *err = nullptr);
+
 	bool started() const;
 	bool exited() const;
 	int exit_status() const;

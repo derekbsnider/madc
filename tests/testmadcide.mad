@@ -448,6 +448,22 @@ int main()
     ui::get(pn, w, es, "pane");
     println("native-build-fail: rows-pos={} pane={}",
 	    php::count(bdg) > 0 ? 1 : 0, pn);
+    // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
+    // window is DETERMINISTIC (spawn never switches): the task sees the
+    // pre-start flag and reports stopped without building anything.
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 6, "bld-stop");
+    apply_ide_event(w, es, bldoc, e);
+    madc::task_drain();
+    ui::get(msg, w, es, "msg");
+    println("native-build-stop: live={} stopped-msg={}",
+	    es_int(w, es, "buildlive", 0),
+	    msg.index("Build stopped") >= 0 ? 1 : 0);
     ev_key(e, "esc");			// close the diags pane
     apply_ide_event(w, es, bldoc, e);
     ev_action(e, "editfile", "^k e");	// home for gate 3

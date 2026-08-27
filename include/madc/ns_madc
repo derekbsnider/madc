@@ -202,6 +202,32 @@ namespace madc {
     void task_drain();
     int64_t task_live();
 
+    // Structured scopes + cancellation (MT-3; Kotlin's ownership over
+    // Go's spelling). scope_begin opens a scope and makes it this task's
+    // innermost: every `go` between begin and end attaches to it (no open
+    // scope = the root scope main's end drains — the pre-scope
+    // semantics). scope_end JOINS: it blocks until every attached task —
+    // and, transitively, every task of scopes opened inside — has
+    // finished, then throws the FIRST uncaught member error (as text,
+    // catch (const char *)), else throws "madc: task cancelled" when the
+    // scope was cancelled, else returns. Only the opening task may end a
+    // scope, innermost-first. A member's uncaught error CANCELS its
+    // siblings (the failed-child rule); the error rethrows at the join.
+    // scope_cancel requests cancellation of the scope's whole subtree
+    // (any task may call it; returns immediately): every member's NEXT
+    // blocking verb — chan send/recv/select, sleep_ms, channel reads —
+    // throws "madc: task cancelled" (sticky; a task spawned into a
+    // cancelled scope is born cancelled; cleanup after cancellation must
+    // not use blocking verbs). yield() is NOT a cancellation point;
+    // compute loops poll cancelled() — true when this task, or any scope
+    // it currently has open, is cancel-requested.
+    // Thread contract: single scheduler thread, cooperative (the task
+    // runtime's contract); handles are task-runtime-global.
+    int64_t scope_begin();
+    void scope_end(int64_t scope);
+    void scope_cancel(int64_t scope);
+    bool cancelled();
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated

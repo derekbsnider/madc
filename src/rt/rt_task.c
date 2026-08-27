@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>	/* the trampoline's scope catch-all frame (MT-3) */
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -43,6 +44,17 @@
 // loud at init against __madc_except_state_size().
 #define MADC_TASK_EXC_BYTES 64
 
+// The trampoline's scope catch-all frame (MT-3) — an opaque MadcTryContext
+// on the task body's stack. Capacity checked loud at init against
+// __madc_try_context_size() (jmp_buf is 200B on SysV glibc, 256B on Win64).
+#define MADC_TASK_TRYCTX_BYTES 320
+
+// A captured scope error / a scope_end rethrow, as one line of text
+// (faithful non-text rethrow is a named MT-3 residue).
+#define MADC_SCOPE_ERR_BYTES 192
+
+struct madc_scope;
+
 typedef struct madc_task {
 	struct madc_task *qnext;   // ready-queue link
 	struct madc_task *tnext;   // timer-list link (deadline ascending)
@@ -50,6 +62,14 @@ typedef struct madc_task {
 	int queued;                // on the ready queue (enqueue is idempotent:
 				   // a task queued twice RUNS twice — and the
 				   // blind relink would truncate the queue)
+	int cancel_req;            // cancellation requested (MT-3): sticky;
+				   // every blocking verb throws THE cancelled
+				   // literal on entry and on resume
+	struct madc_scope *scope;  // owning scope (NULL = the root scope)
+	struct madc_scope *cur;    // innermost scope THIS task has open —
+				   // what its spawns attach to
+	struct madc_task *snext, *sprev; // scope member-list links
+	char scope_err[MADC_SCOPE_ERR_BYTES]; // scope_end rethrow storage
 	void (*fn)(void *);
 	void *arg;
 	unsigned char exc[MADC_TASK_EXC_BYTES];
@@ -201,6 +221,148 @@ static void timer_fire_due(void)
 	}
 }
 
+// Unlink a task from the timer list if present (MT-3: cancelling a sleeper
+// wakes it NOW; a fired-or-woken task must never be reachable from the list
+// after it unwinds).
+static void timer_unlink(madc_task *t)
+{
+	madc_task **pp = &g_timer_head;
+	while (*pp && *pp != t)
+		pp = &(*pp)->tnext;
+	if (*pp) {
+		*pp = t->tnext;
+		t->tnext = NULL;
+		--g_timer_count;
+		TASK_TRACE("[task] timer- %p (%ld pending)\n", (void *)t,
+			   g_timer_count);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Structured scopes (MT-3) — the Kotlin ownership over Go's spelling: every
+// spawn attaches to the spawner's innermost open scope (none = the root
+// scope, task->scope NULL — exactly the pre-scope semantics, drained at
+// main's end). A scope owns join (scope_end parks its OPENER until every
+// member — and every member of its child scopes — finished), error (the
+// FIRST uncaught member error is captured as text and rethrown at the join;
+// a failed member cancels its siblings), and cancel (a flag + a wake at
+// every member, transitively). Bookkeeping lives HERE because attachment
+// and detachment are task lifecycle events (spawn / exit); the int64 handle
+// registry and its throws live with the C++ surface (madc_task_chan.cpp).
+// ---------------------------------------------------------------------------
+
+typedef struct madc_scope {
+	struct madc_scope *parent;    // enclosing open scope at begin (NULL = root)
+	struct madc_task *opener;     // the task that began it — the only joiner
+	struct madc_task *members;    // live attached tasks (doubly linked)
+	struct madc_scope *children;  // open scopes begun inside this one
+	struct madc_scope *csnext, *csprev; // sibling links in parent's children
+	long live;                    // member count
+	int cancel_req;
+	int joining;                  // opener parked in scope_end
+	int err_set;
+	char err[MADC_SCOPE_ERR_BYTES];
+} madc_scope;
+
+static void scope_attach(madc_scope *s, madc_task *t)
+{
+	t->scope = s;
+	t->cur = s;	// a member's own spawns attach to the same scope
+			// (flat by default; scope_begin nests explicitly)
+	t->sprev = NULL;
+	t->snext = s->members;
+	if (s->members)
+		s->members->sprev = t;
+	s->members = t;
+	++s->live;
+	if (s->cancel_req)
+		t->cancel_req = 1;     // born cancelled (spawn into a
+				       // cancel-requested scope)
+}
+
+// Task exit: leave the member list; the LAST member out wakes the joiner.
+static void scope_detach(madc_task *t)
+{
+	madc_scope *s = t->scope;
+	if (!s)
+		return;
+	if (t->sprev)
+		t->sprev->snext = t->snext;
+	else
+		s->members = t->snext;
+	if (t->snext)
+		t->snext->sprev = t->sprev;
+	t->snext = t->sprev = NULL;
+	t->scope = NULL;
+	--s->live;
+	TASK_TRACE("[task] scope- %p task=%p live=%ld\n", (void *)s,
+		   (void *)t, s->live);
+	if (s->live == 0 && s->joining)
+		task_enqueue(s->opener);
+}
+
+// The cancel walk: flag + wake every member, recurse into child scopes.
+// Waking a timer-parked member unlinks it (its sleep throws on resume); a
+// channel/io-parked member is enqueued and its blocking verb removes its
+// own waiter record before throwing (the record is stack-resident — the
+// verb owns its bookkeeping). The CURRENT task only gets the flag.
+static void scope_cancel_walk(madc_scope *s)
+{
+	s->cancel_req = 1;
+	madc_task *t;
+	for (t = s->members; t; t = t->snext)
+		__madc_task_cancel_request(t);
+	// Wake the OPENER too, flaglessly — its cancellation lives in the
+	// scope (the chain predicate) and dies at scope_end, never in a
+	// sticky per-task flag that would outlive the scope into the
+	// opener's parent context. A parked opener must notice NOW: its
+	// blocking verb rechecks the chain on resume; a sleeper leaves the
+	// timer list.
+	if (s->opener && s->opener != g_current) {
+		timer_unlink(s->opener);
+		task_enqueue(s->opener);
+	}
+	madc_scope *c;
+	for (c = s->children; c; c = c->csnext)
+		scope_cancel_walk(c);
+}
+
+// Resolve a scope whose end can no longer rethrow — its opener is EXITING
+// with the scope still open (an exception unwound past scope_end, or a
+// scope_end was never written). The members are cancelled and joined HERE,
+// before the opener dies: the alternative is a member's last exit enqueuing
+// a dead task. A captured error has nowhere to land, so it prints.
+// Join a scope's members (park the caller until the last one detaches),
+// then unlink it from its parent's child list — the shared core of
+// scope_end and scope_abandon (their difference is the OUTCOME: rethrow
+// vs print-and-discard).
+static void scope_join_and_unlink(madc_scope *s)
+{
+	s->joining = 1;
+	while (s->live > 0)
+		__madc_task_park();
+	s->joining = 0;
+	if (s->parent) {
+		if (s->csprev)
+			s->csprev->csnext = s->csnext;
+		else
+			s->parent->children = s->csnext;
+		if (s->csnext)
+			s->csnext->csprev = s->csprev;
+	}
+}
+
+static void scope_abandon(madc_task *t, madc_scope *s)
+{
+	scope_cancel_walk(s);
+	scope_join_and_unlink(s);
+	if (s->err_set)
+		fprintf(stderr, "madc tasks: abandoned scope error: %s\n",
+			s->err);
+	t->cur = s->parent;
+	free(s);
+}
+
 static void task_reap(void)
 {
 	if (!g_reap)
@@ -336,12 +498,63 @@ static void task_exit_switch(void)
 	abort();               // unreachable
 }
 
+// The task body, shared by both platform trampolines (MT-3). A SCOPED task
+// runs under a C-side catch-all frame: an uncaught error is captured as the
+// scope's FIRST error and cancels the scope (Kotlin: a failed child cancels
+// its siblings) — the cancellation literal itself is swallowed, cancellation
+// completing is not a failure. Root tasks keep the abort-on-uncaught
+// default (Go semantics; the throw never reaches this frame — it has none).
+static void task_run_body(madc_task *t)
+{
+	int caught = 0;
+	if (t->scope) {
+		unsigned char tryctx[MADC_TASK_TRYCTX_BYTES];
+		void *jb = __madc_try_push((struct MadcTryContext *)tryctx);
+		if (setjmp(*(jmp_buf *)jb) == 0) {
+			t->fn(t->arg);
+			__madc_try_pop();
+		} else {
+			madc_scope *s = t->scope;
+			// Cancellation is classified by POINTER identity
+			// alone — a task cancelled through a CHILD scope's
+			// chain carries no own flag, and that unwind must
+			// not read as a failure of the owning scope.
+			int cancelled =
+			    __madc_exception_type() == MADC_EXCEPT_CSTR
+			    && __madc_exception_cstr()
+				   == __madc_task_cancelled_text();
+			caught = 1;
+			TASK_TRACE("[task] scope catch t=%p cancelled=%d\n",
+				   (void *)t, cancelled);
+			if (!cancelled && !s->err_set) {
+				s->err_set = 1;
+				__madc_exception_text(s->err, sizeof s->err);
+			}
+			__madc_exception_clear();
+			if (!cancelled)
+				scope_cancel_walk(s);
+		}
+	} else {
+		t->fn(t->arg);
+	}
+	// Scopes the body left open — an exception unwound past their
+	// scope_end (expected), or a scope_end is missing (a user bug,
+	// warned) — are cancelled, joined, and freed before the task dies.
+	while (t->cur != t->scope) {
+		if (!caught)
+			fprintf(stderr, "madc tasks: task exited with an"
+				" open scope (missing scope_end)\n");
+		scope_abandon(t, t->cur);
+	}
+	scope_detach(t);
+}
+
 #if defined(_WIN32)
 static void CALLBACK task_trampoline(void *param)
 {
 	madc_task *t = (madc_task *)param;
 	task_reap();
-	t->fn(t->arg);
+	task_run_body(t);
 	--g_live;
 	task_exit_switch();
 }
@@ -352,7 +565,7 @@ static void task_trampoline(void)
 	task_reap();
 	TASK_TRACE("[task] trampoline enter t=%p fn=%p\n", (void *)t,
 		   (void *)(size_t)t->fn);
-	t->fn(t->arg);
+	task_run_body(t);
 	--g_live;
 	task_exit_switch();
 }
@@ -437,8 +650,13 @@ void __madc_go(void (*fn)(void *), void *arg)
 		abort();
 	}
 	++g_live;
-	TASK_TRACE("[task] go t=%p fn=%p arg=%p live=%ld\n", (void *)t,
-		   (void *)(size_t)fn, arg, g_live);
+	// Structured attachment (MT-3, the Kotlin pick): the spawner's
+	// innermost open scope owns the new task; none = the root scope.
+	if (g_current && g_current->cur)
+		scope_attach(g_current->cur, t);
+	TASK_TRACE("[task] go t=%p fn=%p arg=%p live=%ld scope=%p\n",
+		   (void *)t, (void *)(size_t)fn, arg, g_live,
+		   (void *)t->scope);
 	task_enqueue(t);
 }
 
@@ -539,9 +757,12 @@ void __madc_task_unpark(void *task)
 void __madc_task_sleep_ms(long long ms)
 {
 	task_runtime_init();
+	madc_task *self = g_current;
+	__madc_task_throw_if_cancelled();	// blocking verbs throw
+						// before parking and on
+						// resume (MT-3)
 	if (ms < 0)
 		ms = 0;
-	madc_task *self = g_current;
 	self->deadline = time_now_ms() + ms;
 	timer_insert(self);
 	// Parked on the TIMER list, not the ready queue: task_next_or_wait
@@ -549,4 +770,152 @@ void __madc_task_sleep_ms(long long ms)
 	// when nothing else is runnable — park returns immediately when our
 	// own deadline was the wake (next == self).
 	__madc_task_park();
+	if (__madc_task_cancelled()) {
+		// Woken by a cancel — or cancelled while due-fired. A direct
+		// cancel already unlinked us; a chain-only cancellation
+		// arrives with the timer link still live, so unlink again
+		// (idempotent) before the unwind.
+		timer_unlink(self);
+		__madc_task_throw_if_cancelled();
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation + scope API (MT-3) — contracts in rt_task.h.
+// ---------------------------------------------------------------------------
+
+const char *__madc_task_cancelled_text(void)
+{
+	// THE cancellation literal: every blocking verb throws exactly this
+	// pointer, and the trampoline's capture distinguishes a completing
+	// cancellation from a user error by pointer identity (user code can
+	// spell the same text; it cannot forge this address).
+	static const char text[] = "madc: task cancelled";
+	return text;
+}
+
+void __madc_task_cancel_request(void *task)
+{
+	madc_task *t = (madc_task *)task;
+	if (!t)
+		return;
+	t->cancel_req = 1;
+	TASK_TRACE("[task] cancel %p (current=%d)\n", (void *)t,
+		   t == g_current);
+	if (t != g_current) {
+		// A timer-parked sleeper wakes NOW (and must leave the list —
+		// a woken task reachable from the timer list would be
+		// re-enqueued, or worse, fired after it exited). A ready task
+		// no-ops (idempotent enqueue); a channel/io-parked task is
+		// enqueued and its verb removes its own waiter on resume.
+		timer_unlink(t);
+		task_enqueue(t);
+	}
+}
+
+void __madc_task_throw_if_cancelled(void)
+{
+	// THE check-and-throw of the current task's cancellation (dupaudit
+	// family current_task_cancel_throw; gate:
+	// check-cancel-throw-owner.sh) — every blocking verb's entry and
+	// resume gates route here. scope_end's OUTCOME throw is a different
+	// rule (rethrowing a scope's state, not checking the current task)
+	// and stays a direct throw.
+	if (__madc_task_cancelled())
+		__madc_throw_cstr(__madc_task_cancelled_text());
+}
+
+int __madc_task_cancelled(void)
+{
+	if (!g_current)
+		return 0;
+	if (g_current->cancel_req)
+		return 1;
+	// The OPENER of a cancelled scope polls true too (its own flag is
+	// untouched by cancelling the scope's subtree): walk the open-scope
+	// chain (Kotlin's isActive).
+	madc_scope *s;
+	for (s = g_current->cur; s; s = s->parent)
+		if (s->cancel_req)
+			return 1;
+	return 0;
+}
+
+void *__madc_scope_begin(void)
+{
+	task_runtime_init();
+	madc_scope *s = (madc_scope *)calloc(1, sizeof *s);
+	if (!s) {
+		fprintf(stderr, "madc tasks: scope allocation failed\n");
+		abort();
+	}
+	s->opener = g_current;
+	s->parent = g_current->cur;
+	if (s->parent) {
+		s->csnext = s->parent->children;
+		if (s->csnext)
+			s->csnext->csprev = s;
+		s->parent->children = s;
+	}
+	g_current->cur = s;
+	TASK_TRACE("[task] scope+ %p parent=%p opener=%p\n", (void *)s,
+		   (void *)s->parent, (void *)s->opener);
+	return s;
+}
+
+void __madc_scope_cancel(void *scope)
+{
+	if (!scope)
+		return;
+	scope_cancel_walk((madc_scope *)scope);
+}
+
+int __madc_scope_end_check(void *scope)
+{
+	madc_scope *s = (madc_scope *)scope;
+	if (!s || !g_current || s->opener != g_current)
+		return 1;
+	if (g_current->cur != s)
+		return 2;
+	return 0;
+}
+
+void __madc_scope_end(void *scope)
+{
+	madc_scope *s = (madc_scope *)scope;
+	if (!s)
+		return;
+	// Ordering violations refuse BEFORE any mutation (the handle layer
+	// pre-validates with __madc_scope_end_check so its registry stays
+	// consistent; these throws are the belt for direct C consumers —
+	// the MT-5 keyword lowering calls this seam without handles).
+	if (!g_current || s->opener != g_current)
+		__madc_throw_cstr("scope_end: only the opening task may"
+				  " end a scope");
+	if (g_current->cur != s)
+		__madc_throw_cstr("scope_end: not the innermost open scope");
+	// Join FIRST, unconditionally: scope_end never throws until every
+	// member (including members of child scopes, who detach themselves)
+	// has finished — a cancel wake merely re-parks, so the bookkeeping
+	// below always runs and nothing leaks. Cancelled members that never
+	// reach a cancellation point keep the join waiting (documented —
+	// the Kotlin behavior).
+	scope_join_and_unlink(s);
+	g_current->cur = s->parent;
+	int err_set = s->err_set;
+	int cancelled = s->cancel_req;
+	if (err_set) {
+		// The rethrow text must outlive the freed scope: the
+		// opener's per-task buffer carries it to the catch.
+		strncpy(g_current->scope_err, s->err,
+			sizeof g_current->scope_err - 1);
+		g_current->scope_err[sizeof g_current->scope_err - 1] = '\0';
+	}
+	TASK_TRACE("[task] scope~ %p err=%d cancelled=%d\n", (void *)s,
+		   err_set, cancelled);
+	free(s);
+	if (err_set)
+		__madc_throw_cstr(g_current->scope_err);
+	if (cancelled)
+		__madc_throw_cstr(__madc_task_cancelled_text());
 }

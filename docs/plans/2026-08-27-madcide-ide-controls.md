@@ -127,8 +127,12 @@ failure synthesizes one error row); `madc::compiler_path()` = the
 running compiler's own executable ({madc} in build_subst — Run rows
 spawn a child OF SELF through the terminal suspend path). Default ^B
 rows: Check / Build / Build object internal, Run rows `{madc} {path}` /
-`./{base}`; no default Stop row (MT-3 owns in-process cancellation; the
-exec:// pump machinery stays for manifest-declared external commands).
+`./{base}`; the exec:// pump machinery stays for manifest-declared
+external commands. MT-3b (same day) brought Stop back for internal
+builds: the build task opens its own scope and publishes the handle —
+Stop = `scope_cancel`, which reaches the child parse through the
+cancellation chain (a pre-start flag covers the spawn-to-first-run
+window); a stopped build reports "Build stopped", no diags-pane noise.
 `madc_object_mode` is now entered ONLY through the scoped
 `ObjectModeScope` guard in both emit lanes (dupaudit family
 object_mode_emit_scoping, gated: check-object-mode-scope.sh — a leaked

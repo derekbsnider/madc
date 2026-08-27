@@ -77,6 +77,56 @@ void __madc_task_unpark(void *task);
 // scheduling decision (a fair yield to equal-deadline sleepers).
 void __madc_task_sleep_ms(long long ms);
 
+// ---- Structured scopes + cancellation (MT-3) ------------------------------
+// The Kotlin ownership over Go's spelling: `go` attaches the new task to
+// the spawner's innermost open scope (none = the root scope — exactly the
+// pre-scope semantics, drained at main's end). A scope owns join, error,
+// and cancel. The int64 handle registry and its dialect throws live with
+// the C++ surface (madc_task_chan.cpp); these are the raw seams.
+
+// Open a scope: becomes the calling task's innermost (its spawns attach
+// here). Returns the opaque scope.
+void *__madc_scope_begin(void);
+
+// Join, then outcome. Blocks (parks the caller) until every member — and,
+// transitively, every member of scopes opened inside it — has finished;
+// the join ALWAYS completes before any throw, so bookkeeping never leaks.
+// Then: throws the FIRST captured member error (as text), else throws the
+// cancelled literal when the scope was cancel-requested, else returns.
+// Caller must be the opener and the scope its innermost (throws otherwise).
+void __madc_scope_end(void *scope);
+
+// Pre-validate an end WITHOUT consuming anything: 0 = would proceed,
+// 1 = caller is not the opener, 2 = not the caller's innermost open scope.
+// The handle layer checks this first so a refused end leaves its registry
+// consistent (scope_end's own throws bypass C++ frames via longjmp).
+int __madc_scope_end_check(void *scope);
+
+// Request cancellation of the scope's whole subtree: flag + wake every
+// member (transitively). Returns immediately; any task may call it.
+void __madc_scope_cancel(void *scope);
+
+// Request cancellation of ONE task: sticky flag + a wake (a timer-parked
+// sleeper leaves the timer list now; a channel/io-parked task is enqueued
+// and its blocking verb removes its own waiter record on resume). Every
+// blocking verb throws THE cancelled literal before parking and on resume.
+void __madc_task_cancel_request(void *task);
+
+// Is the CURRENT task cancel-requested — its own flag, or any scope on its
+// open-scope chain (the opener of a cancelled scope polls true). The
+// compute-loop poll; yield() is NOT a cancellation point.
+int __madc_task_cancelled(void);
+
+// THE check-and-throw: throws the cancelled literal when the current task
+// is cancel-requested (the chain predicate above). Every blocking verb's
+// entry and resume gates call this one owner.
+void __madc_task_throw_if_cancelled(void);
+
+// THE cancellation literal: every cancellation throw uses exactly this
+// pointer, so pointer identity distinguishes a completing cancellation
+// from user text at the trampoline's capture.
+const char *__madc_task_cancelled_text(void);
+
 // Fire everything due — expired timers and the io hook's zero-timeout
 // probe — WITHOUT running anyone (IDE-10b): woken tasks land on the ready
 // queue and the caller reads __madc_task_runnable() to see what changed.

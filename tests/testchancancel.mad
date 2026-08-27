@@ -1,0 +1,21 @@
+// MT-3b: channel::cancel()'s SIGKILL escalation. The child IGNORES
+// SIGTERM and sleeps 30s; cancel() SIGTERMs (ignored), and close() on the
+// cancelled channel escalates — a 2s grace, then SIGKILL + reap. The gate
+// is the suite's own 5s wall clock: the pre-fix close() waited the full
+// 30s (the dtor's SIGKILL never ran) and would TIME OUT here; the
+// escalation returns in ~2s. The -e payload is deliberately space-free
+// (the exec:// factory splits on single spaces — it is not a shell).
+int main()
+{
+	madc::channel c("exec://perl -e $SIG{TERM}=q(IGNORE);sleep(30)");
+	if ( !c.ok() )
+	{
+		println("open failed: {}", c.last_error());
+		return 1;
+	}
+	c.close_write();
+	c.cancel();
+	c.close();
+	println("closed");
+	return 0;
+}

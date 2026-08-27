@@ -34,10 +34,42 @@
 extern "C" {
 #endif
 
+/* Exception type tags — THE authoritative home (MT-3 moved them here from
+ * rt_except.c; parser.cpp's catch-clause lowering emits these values as
+ * numeric literals with name-comments). */
+#define MADC_EXCEPT_NONE    0
+#define MADC_EXCEPT_INT     1
+#define MADC_EXCEPT_DOUBLE  2
+#define MADC_EXCEPT_CSTR    3
+#define MADC_EXCEPT_CLASS   4
+#define MADC_EXCEPT_ANY     99
+
 void __madc_throw_int(int64_t val);
 void __madc_throw_double(double val);
 void __madc_throw_cstr(const char *val);
 void __madc_throw_object(const void *obj);
+
+/* Render the in-flight exception as one line of text (MT-3 scope error
+ * capture; also the formatting owner behind every "Unhandled exception"
+ * print). Returns bytes written (truncated to cap-1); 0 = none in flight. */
+unsigned long __madc_exception_text(char *buf, unsigned long cap);
+
+/* The C-side try frame (MT-3's task trampoline — the third legitimate host
+ * consumer, widened consciously like the state switch below): a scoped
+ * task's uncaught error must be CAPTURED by its scope, not abort the
+ * process, so the trampoline arms one catch-all frame around the task body:
+ * allocate __madc_try_context_size() bytes, setjmp on the jmp_buf
+ * __madc_try_push returns (setjmp must run in the frame that stays live),
+ * __madc_try_pop on the normal path, and read the exception through the
+ * accessors on the longjmp path. Everything else about try frames remains
+ * the generated code's own API. */
+struct MadcTryContext;
+unsigned long __madc_try_context_size(void);
+void *__madc_try_push(struct MadcTryContext *ctx);
+void __madc_try_pop(void);
+int __madc_exception_type(void);
+const char *__madc_exception_cstr(void);
+void __madc_exception_clear(void);
 
 /* Per-execution-context state switch (the MT arc's task runtime,
  * src/rt/rt_task.c — the second legitimate host consumer, and the widening
