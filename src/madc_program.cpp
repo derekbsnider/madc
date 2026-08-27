@@ -3556,6 +3556,13 @@ struct program::impl
 	expr_program.set_invoke_limits(current_invoke_limits);
 	expr_program._impl->current_expression_context = current_expression_context;
 	expr_program._impl->active_expression_bindings = effective_bindings;
+	// Host callbacks flow into the expression child exactly as they flow
+	// into any program created from the engine — the registration
+	// contract ("every program created from this engine can call it").
+	// The CALL itself is still gated by expression_policy
+	// (allow_function_calls + allowed_functions), enforced above; the
+	// child's next reset_program installs these into host_callback_regs.
+	expr_program._impl->host_callbacks = host_callbacks;
 	bool ok = expr_program._impl->with_temp_source(build_expression_input(effective_expression),
 						       virtual_filename,
 						       &impl::compile_expression_with_display,
