@@ -297,6 +297,21 @@ long refresh_diags(long w, long es, long doc)
     return php::count(diags);
 }
 
+// ERROR rows in a diagnostics array (severity vocabulary: error /
+// warning) — warnings never bar a build or a run.
+long diag_error_count(value &diags)
+{
+    long n = php::count(diags);
+    long errs = 0;
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	value r = diags[i];
+	if ( r["severity"] == "error" )
+	    errs = errs + 1;
+    }
+    return errs;
+}
+
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
@@ -1467,11 +1482,11 @@ bool palette_event(long w, long es, long doc, value &ev)
 
 // {path} / {base} / {madc} substitution: path = the active buffer's
 // file, base = path minus its extension, madc = THE RUNNING COMPILER'S
-// own executable (madc::compiler_path — owner ruling IDE-10c: a Run row
-// spawns a child OF SELF, resolved in the engine, never a PATH madc and
-// never sh resolving /proc/self/exe for its own shell). Commands are
-// DATA — no quoting layer (the exec:// factory splits on single spaces;
-// see madc_process.cpp).
+// own executable (madc::compiler_path). {madc} serves MANIFEST-DECLARED
+// commands only — no default row spawns any madc binary (owner ruling
+// 2026-08-27: the running madc IS the compiler; Run forks the live
+// parse, madc::parse_run). Commands are DATA — no quoting layer (the
+// exec:// factory splits on single spaces; see madc_process.cpp).
 void build_subst(var &out, const char *cmd, long w, long doc)
 {
     var p;
@@ -1609,23 +1624,26 @@ void stop_build(long w, long es)
     ui::set(w, es, "msg", "Stopping the build.");
 }
 
-// The INTERNAL build task (IDE-10c — owner ruling: the IDE lives inside
-// the compiler; ^B never shells out to a PATH madc). One
-// madc::build_native call: the parse phase cooperates (the editor stays
-// live), the emit phase runs without yield points (a brief block — the
-// named backend-yield residue). Diagnostics land in the diags pane
+// The INTERNAL build task (owner ruling 2026-08-27: the running madc IS
+// the compiler — the buffer's LIVE parse handle is the compilation).
+// Refresh the handle from the screen text (cooperative — the editor
+// stays live; unsaved edits compile), then madc::parse_build emits from
+// THAT tree: no re-parse of the path, no child Program, no madc binary.
+// The emit phase runs without yield points (a brief block — the named
+// backend-yield residue). Diagnostics land in the diags pane
 // (click-to-error), never as [build] text. Long args only (the go-spawn
-// contract); the path/kind/outpath ride the bag like buildcmd.
+// contract); the doc/path/kind/outpath ride the bag like buildcmd.
 void native_build_task(long w, long es)
 {
+    long doc = es_int(w, es, "nbdoc", 0);
     var p, k, o;
     ui::get(p, w, es, "nbpath");
     ui::get(k, w, es, "nbkind");
     ui::get(o, w, es, "nbout");
     // The task's own scope is the STOP surface (MT-3b): Stop calls
-    // scope_cancel on it, and the cancellation chain reaches the child
-    // parse inside build_native (tokenize/parse abort cleanly at their
-    // next yield point). buildscope is published only while the handle
+    // scope_cancel on it, and the cancellation chain reaches the
+    // buffer's re-parse (tokenize/parse abort cleanly at their next
+    // yield point). buildscope is published only while the handle
     // is live — cleared BEFORE scope_end consumes it (no yield between:
     // a Stop can never see a stale handle).
     long bs = madc::scope_begin();
@@ -1634,7 +1652,11 @@ void native_build_task(long w, long es)
     value diags;
     bool ok = false;
     if ( !pre )
-	ok = madc::build_native(diags, p.c_str(), k.c_str(), o.c_str());
+    {
+	long h = reparse_buffer(w, es, doc);
+	if ( h != 0 && !madc::cancelled() )
+	    ok = madc::parse_build(diags, h, k.c_str(), o.c_str());
+    }
     bool stopped = pre || madc::cancelled();
     ui::set(w, es, "buildscope", 0);
     try {
@@ -1678,6 +1700,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::get(p, w, doc, "path");
     var o;
     build_subst(o, outtmpl.c_str(), w, doc);
+    ui::set(w, es, "nbdoc", doc);
     ui::set(w, es, "nbpath", p);
     ui::set(w, es, "nbkind", kind);
     ui::set(w, es, "nbout", o);
@@ -1690,12 +1713,57 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::get(md, w, doc, "modified");
     if ( md.as_boolean() )
 	ui::set(w, es, "msg",
-		format("Building {} -> {} (unsaved changes: the on-disk file builds).", p, o));
+		format("Building {} -> {} (live buffer: unsaved edits compile).", p, o));
     else
-	ui::set(w, es, "msg", format("Building {} -> {} (in-process).", p, o));
+	ui::set(w, es, "msg", format("Building {} -> {} (live parse).", p, o));
 }
 
-// terminal-mode rows (Run / Run native): the JOE ^K Z shape — the program
+// The Run row (owner ruling 2026-08-27: the running madc IS the
+// compiler): fork-run the buffer's LIVE parse — refresh the handle from
+// the screen text, refuse a red parse LOUD (the rows land in the diags
+// pane), then hand the guest the REAL terminal (suspend, the JOE ^K Z
+// shape) around madc::parse_run. The child inherits the parsed tree;
+// nothing execs, nothing re-parses. A return-key pause holds the
+// guest's output on screen before the full-repaint resume.
+void run_buffer(long w, long es, long doc)
+{
+    // The parse verdict FIRST (it needs no terminal and is the more
+    // informative refusal), the terminal check second, the fork last.
+    refresh_diags(w, es, doc);
+    value diags;
+    ui::get(diags, w, es, "diags");
+    long errs = diag_error_count(diags);
+    if ( errs > 0 )
+    {
+	ui::set(w, es, "pane", "diags");
+	ui::set(w, es, "msg",
+		format("Run refused: {} error(s) — fix them first.", errs));
+	return;
+    }
+    long h = es_int(w, doc, "phandle", 0);
+    if ( h == 0 )
+	return;			// ensure_phandle already said why
+    long t = es_int(w, es, "tui", 0);
+    if ( t == 0 )
+    {
+	ui::set(w, es, "msg", "No terminal to suspend.");
+	return;
+    }
+    if ( !ui::tui_suspend(t) )
+	return;
+    long rc = madc::parse_run(h);
+    println("");
+    println("[madcide] exit {} - press enter to return", rc);
+    var pause;
+    madc::getline(pause);
+    ui::tui_resume(t);
+    if ( rc < 0 )
+	ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
+    else
+	ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
+}
+
+// terminal-mode rows (Run native): the JOE ^K Z shape — the program
 // gets the REAL terminal; a return-key pause holds its output on screen
 // before the full-repaint resume.
 void run_in_terminal(long w, long es, const char *cmd)
@@ -1722,9 +1790,11 @@ void ensure_build_cmds(long w, long es)
     ui::get(have, w, es, "buildcmds");
     if ( !have.is_null() && php::count(have) > 0 )
 	return;
-    // OWNER RULING (IDE-10c): every default row is INTERNAL — builds run
-    // madc::build_native in-process, Run spawns a child OF SELF ({madc} =
-    // madc::compiler_path). The exec:// capture pump stays for manifest-
+    // OWNER RULING (2026-08-27, the running madc IS the compiler): every
+    // default row rides the buffer's LIVE parse handle — Build emits from
+    // its tree (madc::parse_build), Run forks it (madc::parse_run); no
+    // row execs any madc binary. Run native runs the BUILT artifact (the
+    // user's own program). The exec:// capture pump stays for manifest-
     // declared external commands (mode "capture"); no default rides it.
     // Stop is back (MT-3b): an in-process build cancels through its
     // task's scope; terminal runs stay ^C-able in their own terminal.
@@ -1747,9 +1817,7 @@ void ensure_build_cmds(long w, long es)
     rows.push(r3);
     value r4;
     r4["name"] = "Run";
-    r4["cmd"] = "{madc} {path}";
-    r4["mode"] = "terminal";
-    r4["act"] = "bld-run-cmd";
+    r4["act"] = "bld-run";	// fork the LIVE parse (madc::parse_run)
     rows.push(r4);
     value r5;
     r5["name"] = "Run native";
@@ -1791,6 +1859,11 @@ void build_choose(long w, long es, long doc, long option)
 	var k = format("{}", r["kind"]);
 	var ot = format("{}", r["out"]);
 	start_native_build(w, es, doc, k, ot);
+	return;
+    }
+    if ( a == "bld-run" )
+    {
+	run_buffer(w, es, doc);
 	return;
     }
     var cmd0 = format("{}", r["cmd"]);
@@ -2171,9 +2244,9 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
     {
 	var a = format("{}", ev["action"]);
 	// Build-pane rows dispatch by ROW (act + command + mode are the
-	// row's data); the act prefix routes, build_choose owns the rest.
-	if ( a == "bld-check" || a == "bld-stop" || a == "bld-run-cmd"
-	  || a == "bld-native" )
+	// row's data); the act PREFIX routes — a new bld- verb needs no
+	// edit here — and build_choose owns the rest.
+	if ( a.index("bld-") == 0 )
 	{
 	    build_choose(w, es, doc, ev["option"].as_integer());
 	    return true;
