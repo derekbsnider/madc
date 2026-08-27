@@ -744,9 +744,10 @@ bool Process::close_stdin(error *err)
 #ifndef _WIN32
 // Map a reaped waitpid status to the process-facing exit shape — 128+signal
 // for a killed child — ONE owner (dupaudit family child_status_exit_mapping;
-// gate: check-child-status-map-owner.sh). run_and_wait deliberately stays
+// gate: check-child-status-map-owner.sh). Shared (madcdis/process.h): the
+// fork-Run reap (parse_run) adopts it too. run_and_wait deliberately stays
 // apart: its contract turns abnormal termination into -1 + err, not a code.
-static int map_child_status(int child_status)
+int map_child_status(int child_status)
 {
 	if ( WIFEXITED(child_status) )
 		return WEXITSTATUS(child_status);

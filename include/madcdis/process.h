@@ -12,6 +12,16 @@
 
 namespace madc {
 
+#ifndef _WIN32
+// Map a reaped waitpid status to the process-facing exit shape (128+signal
+// for a killed child) — THE one owner (dupaudit family
+// child_status_exit_mapping; gate: check-child-status-map-owner.sh).
+// Defined in madc_process.cpp; Process::wait / wait_or_kill and the
+// fork-Run reap (parse_run) all route through it. -1 = neither exited nor
+// signaled.
+int map_child_status(int child_status);
+#endif
+
 struct ProcessOptions
 {
 	std::vector<std::string> args;

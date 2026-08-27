@@ -48,6 +48,7 @@ extern thread_local bool madc_verbose;
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
+#include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper)
 #include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
@@ -5255,10 +5256,14 @@ int64_t internal_program_parse_run(int64_t handle)
 	do
 	    r = waitpid(pid, &ws, 0);
 	while ( r < 0 && errno == EINTR );
-	if ( r == pid && WIFEXITED(ws) )
-	    status = WEXITSTATUS(ws);
-	else if ( r == pid && WIFSIGNALED(ws) )
-	    status = 128 + WTERMSIG(ws);
+	if ( r == pid )
+	{
+	    // THE status mapper (child_status_exit_mapping owner) —
+	    // its -1 (neither exited nor signaled) folds into -3.
+	    int mapped = map_child_status(ws);
+	    if ( mapped >= 0 )
+		status = mapped;
+	}
     }
     sigaction(SIGINT, &old_int, (struct sigaction *)0);
     sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
