@@ -1,0 +1,75 @@
+// The full engine::register_function chain over a CLASS-NESTED enum:
+// out-of-line member template -> nested-ns fn template with a trailing
+// pack -> vector<prog::nt> pack push_back -> private member call with the
+// by-value Sig bound to const& (s141; reducers tmp/eh_red27/29 — the
+// nested-enum flavor is the one that exercised spelling identity).
+// Oracle: g++/clang++ print 22.
+
+#include <string>
+#include <vector>
+#include <type_traits>
+
+namespace outer {
+
+class prog {
+public:
+	enum class nt { v, b, i, r, s };
+};
+
+struct SigT {
+	prog::nt ret;
+	std::vector<prog::nt> parameters;
+	SigT(prog::nt r) : ret(r) {}
+};
+
+namespace detail {
+
+template <typename T>
+struct tmap;
+template <>
+struct tmap<long> { static prog::nt native() { return prog::nt::i; } };
+template <>
+struct tmap<double> { static prog::nt native() { return prog::nt::r; } };
+
+template <typename Ret, typename... Args>
+SigT make_sig()
+{
+	SigT sig(std::is_void<Ret>::value ? prog::nt::v : tmap<Ret>::native());
+	int unused[] = {0, (sig.parameters.push_back(tmap<Args>::native()), 0)...};
+	(void)unused;
+	return sig;
+}
+
+} // namespace detail
+
+struct Eng {
+	template <typename Ret, typename... Args>
+	long reg(const std::string &name, Ret (*cb)(Args...));
+
+private:
+	long chain(const std::string &name, void *p, const SigT &sig);
+};
+
+long Eng::chain(const std::string &name, void *p, const SigT &sig)
+{
+	return (long)sig.parameters.size() * 10 + (long)sig.ret;
+}
+
+template <typename Ret, typename... Args>
+long Eng::reg(const std::string &name, Ret (*cb)(Args...))
+{
+	return chain(name,
+		     reinterpret_cast<void *>(cb),
+		     detail::make_sig<Ret, Args...>());
+}
+
+} // namespace outer
+
+static long mul(long a, double b) { return a * (long)b; }
+
+int main()
+{
+	outer::Eng e;
+	printf("%ld\n", e.reg("m", mul));
+	return 0;
+}

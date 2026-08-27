@@ -1,0 +1,32 @@
+// vector growth of (a) std::string elements and (b) a copy-ctor-only
+// class (no noexcept move) — the reallocation chain routes
+// __uninitialized_copy through the NON-trivial lane, the shape the s141
+// cross-instantiation recipe poisoning broke (reducers
+// tmp/eh_red37/38). Oracle: g++/clang++.
+
+#include <vector>
+#include <string>
+
+class W {
+public:
+	long v;
+	W(long x) : v(x) {}
+	W(const W &o) : v(o.v) {}	// copy ctor, NO noexcept move
+	~W() {}
+};
+
+int main()
+{
+	std::vector<std::string> v;
+	v.push_back("alpha");
+	v.push_back("beta");
+	v.push_back("gamma");
+	printf("str=%d %s\n", (int)v.size(), v[2].c_str());
+
+	std::vector<W> w;
+	w.push_back(W(1));
+	w.push_back(W(2));
+	w.push_back(W(3));
+	printf("cls=%d %ld\n", (int)w.size(), w[2].v);
+	return 0;
+}

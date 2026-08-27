@@ -7,11 +7,10 @@
 # dependence on the deleted re-parse fallback stayed invisible while the
 # whole suite was green).
 #
-# Today: examples/embed_hello.c (the extern-C shim API — madc's C lane).
-# examples/embed_hello.cpp JOINS THIS GATE when the variadic
-# class-template instantiation arc lands (KG Gap
-# variadic_class_template_instantiation) — it is the work order's stated
-# real gate ("compiles+RUNS").
+# Legs: examples/embed_hello.c (the extern-C shim API — madc's C lane)
+# and examples/embed_hello.cpp (the C++ engine/program API — joined when
+# the variadic class-template instantiation arc landed, s141; its checked
+# lines are the HOST-side prints — guest stdout is sandbox-captured).
 set -u
 
 BIN="${MADC_BIN:-bin/madc}"
@@ -25,6 +24,16 @@ out=$(run_capped examples/embed_hello.c 2>&1)
 rc=$?
 if [ "$rc" -ne 0 ] || ! grep -qF "6 * 7 = 42" <<<"$out"; then
 	echo "embed_examples_gate: FAIL — examples/embed_hello.c under $BIN" \
+	     "(rc=$rc). Last output:" >&2
+	echo "$out" | tail -5 >&2
+	exit 1
+fi
+
+out=$(run_capped examples/embed_hello.cpp 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ] || ! grep -qF "6 * 7 = 42" <<<"$out" \
+   || ! grep -qF "10 + 32 = 42" <<<"$out"; then
+	echo "embed_examples_gate: FAIL — examples/embed_hello.cpp under $BIN" \
 	     "(rc=$rc). Last output:" >&2
 	echo "$out" | tail -5 >&2
 	exit 1
@@ -47,6 +56,6 @@ if grep -qF "6 * 7 = 42" <<<"6 * 7 = 43"; then
 	exit 1
 fi
 
-echo "embed_examples_gate: OK (embed_hello.c compiles+runs under $BIN;" \
-     "the .cpp leg joins with the variadic class-template arc)"
+echo "embed_examples_gate: OK (embed_hello.c and embed_hello.cpp" \
+     "compile+run under $BIN)"
 exit 0

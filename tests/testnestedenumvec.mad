@@ -1,0 +1,41 @@
+// std::vector of a CLASS-NESTED enum class, a namespace-flat enum class,
+// and a plain C enum — growth and copy. History: nested-type spelling
+// identity (template_type_arg_spelling's pointer arm +
+// resolve_class_scoped_member_type, THE one owner of resolving
+// `Qualifier::Member` where Qualifier is a CLASS) — without it the
+// __normal_iterator free operator- would not deduce and _S_destroy's
+// overload pick failed (s141; reducers tmp/eh_red18/19/23/35).
+// Oracle: g++/clang++.
+
+#include <vector>
+
+namespace madc {
+class program {
+public:
+	enum class native_type { void_type, boolean, integer, real, c_string };
+};
+}
+
+enum class nt { a, b, c };
+enum E { ea, eb, ec };
+
+int main()
+{
+	std::vector<madc::program::native_type> v;
+	v.push_back(madc::program::native_type::integer);
+	printf("nested=%d\n", (int)v.size());
+
+	std::vector<nt> f;
+	f.push_back(nt::a);
+	printf("flat=%d\n", (int)f.size());
+
+	std::vector<E> c;
+	c.push_back(eb);
+	printf("cenum=%d\n", (int)c.size());
+
+	std::vector<madc::program::native_type> w = v;
+	w.push_back(madc::program::native_type::c_string);
+	printf("copy=%d last=%d\n", (int)w.size(),
+	       (int)(w[1] == madc::program::native_type::c_string));
+	return 0;
+}

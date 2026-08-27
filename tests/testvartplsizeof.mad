@@ -1,0 +1,33 @@
+// Variadic class-template instantiation: sizeof...(pack) inside a static
+// member and inside an enum initializer, demanded through mixed-head
+// (`<Ret, Args...>`) and pure-pack (`<A...>`) templates. Silent-wrong
+// history: the opaque-shell gate returned 0 for every shape until the
+// per-demand-site vri arming covered the expression arms (s141 wave 1;
+// reducers tmp/eh_red5/6/9). Oracle: g++/clang++ print the same values.
+
+template <typename Ret, typename... Args>
+struct Adapter {
+	static long entry() { return (long)sizeof...(Args); }
+};
+
+template <typename... A>
+struct P {
+	static long n() { return (long)sizeof...(A); }
+	enum { N = (int)sizeof...(A) };
+};
+
+template <typename R, typename... A>
+struct Q {
+	static long n() { return (long)sizeof...(A); }
+	enum { N = (int)sizeof...(A) };
+};
+
+int main()
+{
+	printf("entry=%ld\n", Adapter<long, long, long>::entry());
+	printf("pn=%ld\n", P<long, long>::n());
+	printf("qn=%ld\n", Q<long, long, long>::n());
+	printf("pN=%d\n", (int)P<long, long>::N);
+	printf("qN=%d\n", (int)Q<long, long, long>::N);
+	return 0;
+}
