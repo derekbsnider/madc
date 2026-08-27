@@ -4735,6 +4735,15 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 	if (tcf->mti_instance) {
 		if (FuncDef *ifd =
 			dynamic_cast<FuncDef *>(tcf->mti_instance->type)) {
+			// Env-gated probe (MADC_TSUBST_OP_PROBE=1): a per-call
+			// mti_instance consumed during a PATTERN capture — a shared
+			// Tree-1 call token carrying one instantiation's concrete
+			// binding into the generic recipe.
+			if (m_tsubst_pattern_mode
+			    && ::getenv("MADC_TSUBST_OP_PROBE"))
+				fprintf(stderr, "[tsubst-mti] pattern-mode call=%s"
+					" -> %s\n", tcf->var.name.c_str(),
+					tcf->mti_instance->name.c_str());
 			if (fd_out)
 				*fd_out = ifd;
 			return tcf->mti_instance;
@@ -6672,8 +6681,34 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 	    && !callee->local_emit_name.empty() && m_prog) {
 		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))  // allowed-exception: lookup key, not symbol build
 			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
-				if (ifd != callee)
+				if (ifd != callee) {
+					// Env-gated probe (MADC_TSUBST_OP_PROBE=1): the
+					// first-wins alias hop taken during a PATTERN
+					// capture — the cross-instantiation poisoning
+					// diagnostic.
+					if (m_tsubst_pattern_mode
+					    && ::getenv("MADC_TSUBST_OP_PROBE"))
+						fprintf(stderr, "[tsubst-alias] pattern-mode"
+							" call=%s -> %s\n",
+							tcf->var.name.c_str(),
+							callee->local_emit_name.c_str());
 					callee = ifd;
+				}
+	}
+	// Env-gated probe (MADC_TSUBST_OP_PROBE=1): every callee a PATTERN
+	// capture resolves, with its parameter types — a concrete class param
+	// on a dependent recipe call is the cross-instantiation poisoning shape.
+	if (m_tsubst_pattern_mode && ::getenv("MADC_TSUBST_OP_PROBE")) {
+		fprintf(stderr, "[tsubst-callee] call=%s params=",
+			tcf->var.name.c_str());
+		if (callee)
+			for (size_t qi = 0; qi < callee->parameters.size()
+					    && qi < 4; qi++)
+				fprintf(stderr, "%s,",
+					callee->parameters[qi]
+					? callee->parameters[qi]->name.c_str()
+					: "?");
+		fprintf(stderr, "\n");
 	}
 	size_t nargs = tcf->parameters.size();
 	if (tcf->var.name == "__builtin_va_start" && nargs > 1)
@@ -25280,6 +25315,19 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		RefFuncSet::Scope refscope(referenced_funcs);
 		node_t pat = NULL;
 		m_tsubst_pattern_mode = true;
+		// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH template's recipe
+		// is being captured — pairs the [tsubst-objval]/[tsubst-alias] lines
+		// with their enclosing pattern build. source/recipe identities
+		// disambiguate same-named members of distinct class instantiations;
+		// `for` names the concrete instance that demanded the capture.
+		if (::getenv("MADC_TSUBST_OP_PROBE"))
+			fprintf(stderr, "[tsubst-pat] capture %s src=%p recipe=%p"
+				" for=%s\n",
+				source->method_display_name.empty()
+					? source->function_display_name.c_str()
+					: source->method_display_name.c_str(),
+				(void *)source, (void *)recipe,
+				tf->var.name.c_str());
 		{
 			TsubstSpeculativeDiagnostics diag(m_prog);
 			try {

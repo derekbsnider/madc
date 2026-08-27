@@ -65583,7 +65583,19 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    {
 		variable_map_t &ns = namespace_variables_for_write(
 		    current_namespace());
-		ns[source_id] = ns_var;
+		// [temp.inst]: name lookup finds the TEMPLATE, never a
+		// specialization. An instantiation-product parse (same
+		// discriminator as the overload-identity fold above) must not
+		// replace the family's name-lookup entry — a later
+		// dependent-pattern parse of `ns::name(dependent-args)` reads
+		// this entry, and a baked concrete instance poisons the recipe
+		// for every other shape (the __do_uninit_copy cross-
+		// instantiation clobber). Concrete call sites never depend on
+		// this entry's identity: the CIR-time ranker enumerates the
+		// overload set (see the emit-symbol comment above).
+		if ( fn_template_instantiation_depth == 0
+		  || ns.find(source_id) == ns.end() )
+		    ns[source_id] = ns_var;
 		ns.erase(parse_id);
 	    }
 	}
