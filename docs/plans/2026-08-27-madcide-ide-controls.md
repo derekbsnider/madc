@@ -266,3 +266,45 @@ gap closes as DATA, not as engine layout policy:
 Slice 2 (later): explode proper, per-window views, horizontal splits
 (the GUI twin wants them; the terminal model stays vertical stacks),
 bottom output window pinned to [build].
+
+## OWNER RULING (2026-08-27) — the running madc IS the compiler; ^B never execs madc
+
+Verbatim core: "I never wanted Ctrl-B to present a pile of options that
+result in calling out to an external madc binary — that makes no
+sense! The only external binary option would be when you want to use
+gcc or clang to do the compiling, and that would also require emitting
+C/C++ code to hand off — but that is secondary to the PRIMARY method
+of doing everything using the madc that is ALREADY parsing the program
+you are seeing on the screen."
+
+This corrects two shipped shapes that violated the intent:
+- IDE-10c's `Run {madc} {path}` row (a child-of-self is STILL an
+  external madc that re-parses) — REPLACED by fork-Run below.
+- `madc::build_native` re-parsing the file from its path — it must
+  emit from THE BUFFER'S EXISTING parse handle's tree (the handle
+  madcide already keeps live for diagnostics/outline/spans). The
+  buffer on screen — unsaved edits included — is what compiles.
+
+The ruled ^B architecture:
+- **Check** = the handle's diagnostics (already true).
+- **Build exe / .o** = emit from the handle's cir_node tree (which IS
+  c2mir's node_t — no translation) straight through the existing emit
+  seam. No fresh parse, no child Program from the path.
+- **Run** = fork() at the post-parse point (POSIX): the child inherits
+  the parsed tree by COW, hands it to c2mir → MIR, runs; the parent
+  IDE gets process isolation without exec. Child discipline: (1)
+  __madc_task_atfork_child scheduler reset (queues/waiters/timers to a
+  fresh root; single OS thread makes the fork itself clean); (2) tui
+  suspend BEFORE the fork, parent waits, resume on reap (the IDE-10c
+  suspend seam); (3) exit discipline — the guest's atexit semantics
+  run, the parent's inherited handlers must not fire in the child;
+  (4) output/stop ride the existing fd/pid machinery (exec:// pump,
+  chan_readable, wait_or_kill) — only the spawn step changes.
+- **Run native** = run the BUILT artifact (the user's own program) —
+  stays.
+- **gcc/clang lanes (SECONDARY, later)**: the only external-compiler
+  rows, fed by --emit=c11/c++ output, labeled as such.
+- **Windows**: not live (ui_term is POSIX-only — no win tui target).
+  When it lands: cygwin-style copy OR forest serialization over a pipe
+  (ephemeral transport, not a cache file — flag against the
+  no-user-program-forest-cache ruling; owner call at that time).
