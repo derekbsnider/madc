@@ -1,6 +1,50 @@
 # Test Status
 
-> **Current (2026-08-27, MT-4c stdin unification —
+> **Current (2026-08-27, the running madc IS the compiler —
+> feature/parse-build-run merge wave):** the OWNER RULING lands: ^B
+> never re-parses and never execs a madc binary — the buffer's LIVE
+> parse handle IS the compilation. NEW engine pair on the parse-handle
+> family: `madc::parse_build(diags, h, "exe"|"obj", out)` emits a
+> native artifact from the handle's EXISTING cir-ready tree
+> (madc_cir_emit_native — no fresh parse, no child Program from a
+> path; a red parse never reaches the emitter; build rows ride the
+> out-param only, the handle's recorded diagnostics snapshot/restore so
+> parse_check stays parse-pure) and `madc::parse_run(h)` = fork() at
+> the post-parse point (the child inherits the tree COW, resets the
+> cooperative scheduler — NEW `__madc_task_atfork_child` + io-layer
+> hook clearing waiters/host — hands the tree to madc_cir_execute, and
+> leaves via exit() so the GUEST's atexit semantics run; parent
+> ignores SIGINT/SIGQUIT until the reap, child restores defaults — the
+> system(3) discipline; returns the guest's status via
+> map_child_status, or -1 bad handle / -2 red parse / -3 no fork).
+> The tui atexit recovery is pid-guarded; the pre-existing
+> fork-isolation eval children adopt the same scheduler reset (latent:
+> a parked parent queue could schedule in the child). madcide: Build
+> refreshes the handle from the SCREEN text and emits from it (the
+> disk does not compile — the message inverts to "live buffer: unsaved
+> edits compile"), Run = run_buffer (red-parse refusal LOUD into the
+> diags pane → suspend → parse_run → THE return pause → resume);
+> the `Run {madc} {path}` row is DEAD ({madc} substitution survives
+> for manifest commands only); the choose dispatcher routes bld- verbs
+> by PREFIX. Dupaudit: 4 families consolidated+gated at birth —
+> native_kind_of, parse_tree_backend_ready, fork_child_runtime_reset
+> (fork-site count == atfork-reset count; NEW
+> check-live-build-owners.sh), terminal_return_pause (the pause-owner
+> marker joins check-madcide-single-owners.sh) — and the BATTERY's
+> child_status_exit_mapping gate caught parse_run's hand-rolled
+> 128+WTERMSIG (adopted map_child_status, now shared via
+> madcdis/process.h). NEW testparserun (fork-run rc passthrough +
+> inherited stdout, build exe+obj twice from ONE handle, artifact
+> runs, parse-pure handle, -1/-2 refusals; win64/wine64 skips);
+> testmadcide gates flip to the ruling (run-internal, run-headless,
+> live-buffer-build/native-build-fail inverse pair, run-refused-red).
+> win64 cross build green (g_starting reset under the !_WIN32 guard).
+> Battery on final content: fulltest green (52 unit binaries, all
+> gates incl. the new one) + JIT **1181 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1207) + EXE **1132 passed / 0 failed** +
+> OBJ **1132 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-4c stdin unification —
 > feature/mt4c-stdin-unification merge wave):** the tui's input wait
 > joins the ONE scheduler poll; read_keys' 50ms live-but-parked cadence
 > RETIRES. NEW `taskio::host_wait_readable(fd)`: the tui flow (the main

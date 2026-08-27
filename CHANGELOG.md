@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **The running madc IS the compiler (owner ruling, 2026-08-27)**:
+  madcide's ^B never re-parses and never execs a madc binary — the
+  buffer's live parse handle is the compilation. New engine pair on
+  the parse-handle family: `madc::parse_build(diags, handle, kind,
+  out)` emits a native artifact ("exe"/"obj") from the handle's
+  existing cir-ready tree (a red parse never reaches the emitter;
+  build rows ride the out-param only — `parse_check` stays
+  parse-pure), and `madc::parse_run(handle)` forks at the post-parse
+  point: the child inherits the parsed tree, resets the cooperative
+  scheduler (new `__madc_task_atfork_child` + io-layer atfork hook;
+  the pre-existing fork-isolation eval children adopt the same reset),
+  hands the tree to the backend, and exits with the guest's own atexit
+  semantics; the parent reaps under the system(3) signal discipline
+  and returns the guest's status (or -1/-2/-3 for bad handle / red
+  parse / no fork). madcide's Build now compiles the SCREEN (unsaved
+  edits included — the on-disk file no longer builds); Run forks the
+  live parse behind a loud red-parse refusal; the `Run {madc} {path}`
+  row dies ({madc} substitution survives for manifest-declared
+  commands only). Four duplication families consolidated + gated at
+  birth (native_kind_of, parse_tree_backend_ready,
+  fork_child_runtime_reset, terminal_return_pause; new
+  check-live-build-owners.sh), and the battery's
+  child_status_exit_mapping gate caught the reap's hand-rolled
+  128+signal mapping — parse_run adopted `map_child_status`. New
+  testparserun + flipped testmadcide gates (the disk-broken/buffer-good
+  build SUCCEEDS; the buffer-broken/disk-good build fails with rows).
+
 - **Stdin joins the one scheduler poll (MT-4c, 2026-08-27)**: the tui's
   input wait unifies with the cooperative scheduler — read_keys' 50ms
   live-but-parked cadence retires. New `taskio::host_wait_readable(fd)`
