@@ -1002,6 +1002,30 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     ui::set(w, es, "pending_parse", 1);
 }
 
+// THE buffer-table row shape, one owner (dupaudit family
+// madcide_buffer_row_shape): a FRESH row for a newly opened document.
+// The seed row in edit_file is the one deliberate exception — it carries
+// the LIVE interaction state of the buffer being adopted, not fresh
+// zeroes.
+void push_buffer_row(long w, long es, long nd, const char *path)
+{
+    value bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() )
+    {
+	var fresh = {};
+	bufs = fresh;
+    }
+    value b;
+    b["doc"] = nd;
+    b["path"] = path;
+    b["caret"] = 0;
+    b["mark"] = -1;
+    b["bend"] = -1;
+    bufs.push(b);
+    ui::set(w, es, "buffers", bufs);
+}
+
 // ^K E's commit: an open path switches; anything else opens (missing =
 // New File). A session without the table (headless) seeds it from the
 // buffer it was driving.
@@ -1050,14 +1074,7 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     }
     bool fresh = !php::file_exists(p);
     long nd = open_buffer_doc(w, es, p.c_str());
-    value b;
-    b["doc"] = nd;
-    b["path"] = p;
-    b["caret"] = 0;
-    b["mark"] = -1;
-    b["bend"] = -1;
-    bufs.push(b);
-    ui::set(w, es, "buffers", bufs);
+    push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
     ui::set(w, es, "msg",
 	    fresh ? format("New file {}.", p)
@@ -1251,14 +1268,7 @@ long build_doc(long w, long es)
 	    return r["doc"].as_integer();
     }
     long nd = open_buffer_doc(w, es, "[build]");
-    value b;
-    b["doc"] = nd;
-    b["path"] = "[build]";
-    b["caret"] = 0;
-    b["mark"] = -1;
-    b["bend"] = -1;
-    bufs.push(b);
-    ui::set(w, es, "buffers", bufs);
+    push_buffer_row(w, es, nd, "[build]");
     return nd;
 }
 
@@ -2143,18 +2153,9 @@ void run_ide(const char *path, bool ro)
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
-    {
-	var bufs = {};
-	value b0;
-	b0["doc"] = doc;
-	b0["path"] = path;
-	b0["caret"] = 0;
-	b0["mark"] = -1;
-	b0["bend"] = -1;
-	bufs.push(b0);
-	ui::set(w, es, "buffers", bufs);
-	ui::set(w, es, "bufidx", 0);
-    }
+    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
     // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
     // blocked the first render for seconds on a real C++ file): colour
     // rides the first paint from the LEXICAL spans; the full parse runs
