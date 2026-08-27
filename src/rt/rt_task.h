@@ -174,6 +174,17 @@ extern int (*__madc_task_io_wait_hook)(long long timeout_ms);
 void __madc_task_join_point(void);
 extern void (*__madc_task_join_hook)(void);
 
+// Fork discipline (the fork-Run seam): a fork() child inherits the
+// scheduler's state but none of its OTHER flows (fork copies only the
+// calling thread). The child calls this ONCE, immediately after fork,
+// to reset the runtime to never-used: queues, timers, live count, and
+// the current-task adoption all clear, so the child's flow is adopted
+// fresh at its first spawn. Parent tasks' stacks/scopes simply leak in
+// the child (it exits soon). The io layer registers its own reset here
+// (the io-wait-hook precedent — the scheduler stays fd-blind).
+void __madc_task_atfork_child(void);
+extern void (*__madc_task_io_atfork_hook)(void);
+
 #ifdef __cplusplus
 }
 #endif

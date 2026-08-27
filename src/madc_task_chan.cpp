@@ -271,9 +271,20 @@ int io_wait_hook(long long timeout_ms)
 #endif
 }
 
+// Fork discipline (rt_task.h contract): a fork() child's waiter records
+// point at parent task stacks it must never wake — drop the whole list.
+// Registered beside the wait hook: no registration ever, nothing to reset.
+static void io_atfork_child()
+{
+	g_io_head = 0;
+	g_host = 0;
+	g_host_mark = 0;
+}
+
 void io_register(IoWaiter *w)
 {
 	__madc_task_io_wait_hook = io_wait_hook;	// installed once, stays
+	__madc_task_io_atfork_hook = io_atfork_child;
 	w->next = g_io_head;
 	g_io_head = w;
 }
