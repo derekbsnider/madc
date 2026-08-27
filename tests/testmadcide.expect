@@ -47,12 +47,15 @@ build-start: live=1
 build-out: has-hello=1 has-done=1 live=0
 build-stop: has-stopped=1 live=0
 build-terminal-headless: No terminal to suspend.
-build-defaults: rows=6 row1=Build (in-process) run-has-madc=1
+build-defaults: rows=6 row1=Build (in-process) run-internal=1
 esc-pane: closed=1
 build-subst: madc-resolved=1 has-path=1
 native-build-start: live=1
 native-build-done: live=0 ndiags=0 built-msg=1
+run-headless: no-tui-msg=1
+live-buffer-build: ndiags=0 built-msg=1
 native-build-fail: rows-pos=1 pane=diags
+run-refused-red: refused-msg=1 pane=diags
 native-build-stop: live=0 stopped-msg=1
 win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view
 split: wins=2 shape=status/edit/status/edit focus=1 rows=11

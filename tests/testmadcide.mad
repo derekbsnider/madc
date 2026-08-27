@@ -386,11 +386,13 @@ int main()
     ev_key(e, "right");			// consume the message
     apply_ide_event(w, es, doc, e);
 
-    // -- IDE-10c: INTERNAL builds + esc-any-pane (owner rulings) — the
-    //    DEFAULT rows are internal data (bld-native rows carry kind/out;
-    //    Run carries {madc} = madc::compiler_path, a child OF SELF), the
-    //    build task runs madc::build_native in-process, failure rows
-    //    land in the diags pane, and Esc backs out of any pane.
+    // -- IDE-10c/10d: INTERNAL builds + esc-any-pane (owner rulings) —
+    //    the DEFAULT rows are internal data (bld-native rows carry
+    //    kind/out; Run forks the LIVE parse, no {madc} command), the
+    //    build task emits from the buffer's parse handle (the running
+    //    madc IS the compiler: the screen compiles, the disk does not),
+    //    failure rows land in the diags pane, and Esc backs out of any
+    //    pane.
     {
 	value nul;
 	ui::set(w, es, "buildcmds", nul);	// drop the exec override
@@ -400,10 +402,10 @@ int main()
     compose_ide_tree(tree, w, es, doc);
     bbox = tree["children"][2];
     var runrow = format("{}", bbox["children"][3]["content"]);
-    println("build-defaults: rows={} row1={} run-has-madc={}",
+    println("build-defaults: rows={} row1={} run-internal={}",
 	    php::count(bbox["children"]),
 	    php::trim(bbox["children"][1]["content"]),
-	    runrow.index("{madc}") >= 0 ? 1 : 0);
+	    runrow.index("{madc}") < 0 ? 1 : 0);
     ev_key(e, "esc");			// Esc closes ANY pane (build here)
     apply_ide_event(w, es, doc, e);
     var pn;
@@ -435,10 +437,35 @@ int main()
     println("native-build-done: live={} ndiags={} built-msg={}",
 	    es_int(w, es, "buildlive", 0), php::count(bdg),
 	    msg.index("Built") >= 0 ? 1 : 0);
-    // Failure rows reach the diags pane: the build reads the ON-DISK
-    // file — overwrite it broken, rebuild, drain.
+    // Run, headless: run_buffer refuses BEFORE any fork when there is
+    // no terminal to hand the guest (the tui==0 arm).
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 4, "bld-run");
+    apply_ide_event(w, es, bldoc, e);
+    ui::get(msg, w, es, "msg");
+    println("run-headless: no-tui-msg={}",
+	    msg.index("No terminal") >= 0 ? 1 : 0);
+    // THE ruling's gate (2026-08-27): the SCREEN compiles, the disk does
+    // not. Overwrite the on-disk file broken — the untouched buffer
+    // still builds clean (the old path-lane would have failed here).
     php::file_put_contents("madc_ide_build.mad",
 	"int main() { return undeclared_x; }\n");
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");
+    apply_ide_event(w, es, bldoc, e);
+    madc::task_drain();
+    ui::get(bdg, w, es, "diags");
+    ui::get(msg, w, es, "msg");
+    println("live-buffer-build: ndiags={} built-msg={}",
+	    php::count(bdg), msg.index("Built") >= 0 ? 1 : 0);
+    // The inverse: restore the disk GOOD, break the BUFFER (unsaved
+    // edit) — failure rows from the live parse reach the diags pane.
+    php::file_put_contents("madc_ide_build.mad",
+	"int main() { println(\"ide-build-ok\"); return 0; }\n");
+    ev_text(e, "undeclared_x ");
+    apply_ide_event(w, es, bldoc, e);
     ev_action(e, "build", "^b");
     apply_ide_event(w, es, bldoc, e);
     ev_choose(e, 2, "bld-native");
@@ -448,6 +475,17 @@ int main()
     ui::get(pn, w, es, "pane");
     println("native-build-fail: rows-pos={} pane={}",
 	    php::count(bdg) > 0 ? 1 : 0, pn);
+    // Run on the red buffer: refused LOUD before any suspend/fork.
+    ev_key(e, "esc");			// close the diags pane first
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 4, "bld-run");
+    apply_ide_event(w, es, bldoc, e);
+    ui::get(msg, w, es, "msg");
+    ui::get(pn, w, es, "pane");
+    println("run-refused-red: refused-msg={} pane={}",
+	    msg.index("Run refused") >= 0 ? 1 : 0, pn);
     // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
     // window is DETERMINISTIC (spawn never switches): the task sees the
     // pre-start flag and reports stopped without building anything.

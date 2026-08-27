@@ -231,6 +231,21 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
 
+// The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
+// madc IS the compiler; ^B never re-parses, never execs a madc):
+// parse_build emits a native artifact from the handle's EXISTING parsed
+// tree; parse_run runs that tree in a fork() child. The <ns_madc>
+// declarations carry the contracts.
+bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		 const char *outpath)
+	{
+	    std::string k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_parse_build(&out_diags, handle, &k, &o);
+	}
+int64_t parse_run(int64_t handle)
+	{ return madc_parse_run(handle); }
+
 // The build surface (madcide IDE-10c): the CLI's AOT lane run IN-PROCESS —
 // the IDE lives inside the compiler and never shells out to a PATH madc.
 // The <ns_madc> declaration carries the contract (kinds, row shape).

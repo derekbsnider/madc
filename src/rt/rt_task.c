@@ -393,6 +393,27 @@ static void task_reap(void)
 // in rt_task.h.
 int (*__madc_task_io_wait_hook)(long long timeout_ms);
 
+// Fork discipline (rt_task.h contract): the io layer's own post-fork
+// reset, NULL until installed beside the wait hook.
+void (*__madc_task_io_atfork_hook)(void);
+
+void __madc_task_atfork_child(void)
+{
+	g_current = NULL;	/* first spawn re-adopts the child's flow */
+	g_ready_head = NULL;
+	g_ready_tail = NULL;
+	g_live = 0;
+	g_reap = NULL;
+	g_main_waiting = 0;
+#if !defined(_WIN32)
+	g_starting = NULL;	/* the makecontext first-entry slot */
+#endif
+	g_timer_head = NULL;
+	g_timer_count = 0;
+	if (__madc_task_io_atfork_hook)
+		__madc_task_io_atfork_hook();
+}
+
 // THE scheduling decision (MT-4): fire due timers, take the ready head, and
 // when ONLY parked tasks exist, wait on whatever can wake one — the io hook
 // (fd readiness) bounded by the earliest timer deadline, else the time

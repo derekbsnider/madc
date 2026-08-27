@@ -218,6 +218,16 @@ void *madc_parse_diagnostics(void *result, int64_t handle);
 void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
 			   int64_t column);
 void *madc_parse_spans(void *result, int64_t handle);
+// The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
+// madc IS the compiler): madc_parse_build emits a native artifact from
+// the handle's EXISTING parsed tree (no re-parse; kind/outpath =
+// std::string*, result = diagnostics rows — a false always carries an
+// error row); madc_parse_run runs that tree in a fork() child and
+// returns the guest's exit status (negative = never ran: -1 bad handle,
+// -2 parse errors, -3 fork failed / no fork on this platform).
+bool madc_parse_build(void *result, int64_t handle, void *kind,
+		      void *outpath);
+int64_t madc_parse_run(int64_t handle);
 void *madc_lex_spans(void *result, void *source, void *filename);
 int64_t madc_project_open(void *manifest_path);
 void *madc_project_tus(void *result, int64_t handle);

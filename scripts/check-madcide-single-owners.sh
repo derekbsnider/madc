@@ -38,5 +38,36 @@ if [ "$(count_rows "$tmp")" -ne 3 ]; then
 fi
 rm -f "$tmp"
 
-echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row)"
+# The return-key pause has ONE owner: terminal_return_pause (DupFamily
+# terminal_return_pause, consolidated with the fork-Run slice). Marker:
+# the prompt spelling appears exactly once — a second pause prompt means
+# a run flow restated the pause instead of calling the owner.
+count_pause()
+{
+	grep -c 'press enter to return' "$1"
+}
+
+n=$(count_pause "$FILE")
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n return-pause prompts" \
+	     "in tools/madcide/madcide_core.inc (expected 1:" \
+	     "terminal_return_pause). Call the owner, never restate the" \
+	     "pause." >&2
+	exit 1
+fi
+
+# Negative control for the pause marker.
+tmp=$(mktemp)
+cat "$FILE" > "$tmp"
+echo '    println("[madcide] press enter to return");	// synthetic' >> "$tmp"
+if [ "$(count_pause "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic pause prompt (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
+     "one pause owner: terminal_return_pause)"
 exit 0

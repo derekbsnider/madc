@@ -1,0 +1,57 @@
+// madc::parse_build + madc::parse_run (owner ruling 2026-08-27: the
+// running madc IS the compiler) — build/run the LIVE parse handle's
+// tree. Gates: fork-run returns the guest's exit status with its output
+// on inherited stdout; build emits a running artifact from the handle
+// (twice from ONE handle — the retained tree is reusable); a red parse
+// is refused LOUD by both verbs; build rows ride the out-param only
+// (parse_check stays parse-pure, the snapshot/restore gate).
+
+int main()
+{
+    // -- fork-run: the guest's stdout is inherited, its rc comes back.
+    var src = "int main() { println(\"guest ran\"); return 7; }";
+    long h = madc::parse_open(src.c_str(), "guest.mad");
+    if ( h == 0 )
+    {
+	println("open failed");
+	return 1;
+    }
+    long rc = madc::parse_run(h);
+    println("parse-run: rc={}", rc);
+
+    // -- build from the live handle, twice (one retained tree, N emits).
+    value d1;
+    bool ok1 = madc::parse_build(d1, h, "exe", "tmp/testparserun_guest");
+    value d2;
+    bool ok2 = madc::parse_build(d2, h, "obj", "tmp/testparserun_guest.o");
+    println("parse-build: exe={} obj={} rows={}",
+	    ok1 ? 1 : 0, ok2 ? 1 : 0, php::count(d1) + php::count(d2));
+    long arc = system("./tmp/testparserun_guest >tmp/testparserun_out.txt");
+    var atext;
+    php::file_get_contents(atext, "tmp/testparserun_out.txt");
+    println("artifact: rc-nonzero={} ran={}", arc != 0 ? 1 : 0,
+	    atext.index("guest ran") >= 0 ? 1 : 0);
+
+    // -- a bogus kind on the GREEN handle: false, an error row in the
+    //    out-param, and the handle's own diagnostics stay parse-pure.
+    value db;
+    bool okb = madc::parse_build(db, h, "bogus", "tmp/testparserun_x");
+    value hd;
+    madc::parse_check(hd, h);
+    println("bogus-kind: ok={} rows-pos={} handle-pure={}",
+	    okb ? 1 : 0, php::count(db) > 0 ? 1 : 0,
+	    php::count(hd) == 0 ? 1 : 0);
+    madc::parse_close(h);
+
+    // -- negative legs: a bad handle, then a red parse.
+    long bad = madc::parse_run(999999);
+    var red = "int main() { this does not parse; }";
+    long hr = madc::parse_open(red.c_str(), "red.mad");
+    long rrc = madc::parse_run(hr);
+    value dr;
+    bool okr = madc::parse_build(dr, hr, "exe", "tmp/testparserun_red");
+    println("refusals: bad={} red-run={} red-build={} red-rows-pos={}",
+	    bad, rrc, okr ? 1 : 0, php::count(dr) > 0 ? 1 : 0);
+    madc::parse_close(hr);
+    return 0;
+}

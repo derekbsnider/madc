@@ -339,6 +339,13 @@ bool internal_program_parse_diagnostics(int64_t handle, value &out);
 bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
 bool internal_program_parse_spans(int64_t handle, value &out);
+// The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
+// madc IS the compiler): emit a native artifact from the handle's
+// EXISTING parsed tree / run that tree in a fork() child. No re-parse.
+bool internal_program_parse_build(int64_t handle,
+				  const std::string &kind_name,
+				  value &out, const std::string &outpath);
+int64_t internal_program_parse_run(int64_t handle);
 bool internal_program_lex_spans(::Program &self, const std::string &source_text,
 				const std::string &display_name, value &out);
 int64_t internal_program_project_open(::Program &self,
@@ -1033,6 +1040,25 @@ void *madc_parse_spans(void *result, int64_t handle)
     madc::value &out = *(madc::value *)result;
     madc::internal_program_parse_spans(handle, out);
     return result;
+}
+
+// The live-tree build/run bridges (OWNER RULING 2026-08-27): kind/outpath
+// = std::string*, result = madc::value* (diagnostics rows). The handle
+// registry gates validity — no active-program requirement beyond the
+// runtime-eval confinement the handle already carries.
+bool madc_parse_build(void *result, int64_t handle, void *kind, void *outpath)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+    return madc::internal_program_parse_build(handle,
+					      *(const std::string *)kind,
+					      out,
+					      *(const std::string *)outpath);
+}
+
+int64_t madc_parse_run(int64_t handle)
+{
+    return madc::internal_program_parse_run(handle);
 }
 
 void *madc_lex_spans(void *result, void *source, void *filename)

@@ -62,6 +62,9 @@ void winch_handler(int) { g_winch = 1; }
 
 class term_target;
 term_target *g_live = 0;	// the one open target, for atexit recovery
+pid_t g_live_pid = 0;		// the OPENING process: a fork child that
+				// exit()s must not run the parent's
+				// inherited atexit recovery (fork-Run)
 void close_live_target();
 
 class term_target : public madc::hub::tui_target
@@ -184,6 +187,7 @@ public:
 	    return false;
 	_open = true;
 	g_live = this;
+	g_live_pid = getpid();
 	static bool exit_hooked = false;
 	if ( !exit_hooked )
 	{
@@ -442,7 +446,9 @@ public:
 
 void close_live_target()
 {
-    if ( g_live )
+    // A fork child (fork-Run) inherits this atexit registration; the
+    // terminal belongs to the OPENING process only.
+    if ( g_live && getpid() == g_live_pid )
 	g_live->close();
 }
 

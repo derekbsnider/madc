@@ -133,6 +133,31 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+    // The live-tree build/run pair (the running madc IS the compiler —
+    // ^B never re-parses, never execs a madc binary):
+    //   parse_build: emit a native artifact from the handle's EXISTING
+    //       parsed tree — the buffer the handle was last (re)parsed
+    //       from, unsaved edits included, is what compiles. kind: "exe"
+    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       gets diagnostics rows either way (a false always carries at
+    //       least one error row; a handle whose parse has error rows
+    //       never reaches the emitter). Build rows ride out_diags only —
+    //       parse_check stays parse-pure. True = the artifact was
+    //       written. The emit phase runs without yield points (it
+    //       briefly blocks a cooperative scheduler).
+    //   parse_run: run the handle's parsed tree in a fork() child (the
+    //       child inherits the tree, hands it to the backend, runs main
+    //       with argv[0] = the handle's filename; stdio is INHERITED —
+    //       suspend a tui first). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = it never ran:
+    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
+    //       no fork on this platform (win64). ^C reaches the guest
+    //       alone while it runs (the system(3) discipline).
+    // Thread contract: the runtime-eval confinement — a handle is used
+    // only from the thread/program that opened it.
+    bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		     const char *outpath);
+    int64_t parse_run(int64_t handle);
     //   lex_spans: the classes LEXING alone answers (keyword, number,
     //       string, comment — plus what the lexer's own maps know),
     //       from the buffer text only: no includes ingested, header

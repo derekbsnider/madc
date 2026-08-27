@@ -269,6 +269,23 @@ bottom output window pinned to [build].
 
 ## OWNER RULING (2026-08-27) — the running madc IS the compiler; ^B never execs madc
 
+> **SHIPPED (session 140, feature/parse-build-run-claude):** the engine
+> pair `madc::parse_build` / `madc::parse_run` (build/run the LIVE
+> parse handle's tree; `internal_program_parse_build/run` beside the
+> handle registry), the fork discipline (`__madc_task_atfork_child` +
+> io-layer hook; pid-guarded tui atexit recovery; the system(3) signal
+> shape; guest exits via `exit()` so its atexit semantics run), and the
+> madcide flows (Build refreshes the handle from the SCREEN text and
+> emits from it — the disk does not compile; Run = `run_buffer`
+> red-parse-refusal → suspend → `parse_run` → pause → resume; the
+> `Run {madc} {path}` row is DEAD, `{madc}` substitution survives for
+> manifest commands only). Gates: testparserun (engine pair),
+> testmadcide live-buffer-build / native-build-fail inverse pair +
+> run-headless + run-refused-red + run-internal. The fork-isolation
+> eval children (exec_compiled_in_child / call_in_child) adopted the
+> same atfork reset. gcc/clang --emit lanes remain the deferred
+> SECONDARY arm; Windows remains the flagged owner call.
+
 Verbatim core: "I never wanted Ctrl-B to present a pile of options that
 result in calling out to an external madc binary — that makes no
 sense! The only external binary option would be when you want to use
