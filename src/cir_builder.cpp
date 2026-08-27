@@ -13580,6 +13580,22 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 					return 3;   // void* standard conversion
 				if (ab == pb || ab->name == pb->name)
 					return 5;
+				// ENUM pointees keep their own conversion domain
+				// exactly like enum VALUES above — [conv.ptr] has
+				// no enum*->other-enum* conversion. Enums are
+				// is_numeric() with one shared rawtype, so the
+				// typedef collapse below scored two DISTINCT
+				// scoped enums' pointers as an EXACT match and a
+				// wrong-flavor concrete fn-template instance beat
+				// the template (nt* bound the native_type*
+				// instance — silent wrong answer, tmp/eh_red44 /
+				// tests/testenumptrovl).
+				const DataDefENUM *ape = as_enum_type(ab);
+				const DataDefENUM *ppe = as_enum_type(pb);
+				if (ape || ppe)
+					return (ape && ppe
+						&& same_enum_type(ape, ppe))
+						? 5 : -1;
 				// Integer typedefs collapse to sized canonicals
 				// UNEVENLY (size_t may sit behind an alias
 				// DataDef while the argument resolved straight
