@@ -1,0 +1,1 @@
+the artifact-run gate is POSIX-shaped (no .exe suffix, sh path resolution); the in-process build lane is covered on the POSIX domains

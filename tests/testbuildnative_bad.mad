@@ -1,0 +1,4 @@
+int main()
+{
+	return undeclared_x;
+}

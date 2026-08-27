@@ -2089,7 +2089,17 @@ int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs)
 {
-    madc_object_mode = true;	// one-shot CLI path; process exits after this
+    // Scoped, not one-shot: in-process callers exist (madc::build_native,
+    // the IDE's build lane) — the flag must not outlive the emit, or the
+    // caller's own lazily-built JIT sessions would come up in object-capture
+    // mode. The CLI lane is unaffected (the process exits right after).
+    // Same save/restore shape as DiagnosticRenderMute.
+    struct ObjectModeScope
+    {
+	bool prev;
+	ObjectModeScope() : prev(madc_object_mode) { madc_object_mode = true; }
+	~ObjectModeScope() { madc_object_mode = prev; }
+    } object_mode_scope;
 
     // Standalone executables skip the __madc_shim_* eval adapters (Pass
     // 0.74): nothing can host-call them, and dropping their madc_value_*

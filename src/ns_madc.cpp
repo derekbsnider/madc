@@ -230,6 +230,27 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 	{ madc_parse_enclosing(&out, handle, line, column); return out; }
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
+
+// The build surface (madcide IDE-10c): the CLI's AOT lane run IN-PROCESS —
+// the IDE lives inside the compiler and never shells out to a PATH madc.
+// The <ns_madc> declaration carries the contract (kinds, row shape).
+bool build_native(value &out_diags, const char *path, const char *kind,
+		  const char *outpath)
+	{
+	    std::string p = path ? path : "", k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_build_native(&out_diags, &p, &k, &o);
+	}
+
+// The running compiler's own resolved executable path (madcide IDE-10c:
+// "run this program" spawns a child OF SELF — never a PATH madc). Stable
+// for the process lifetime (C++11 static init; immutable after — safe
+// for concurrent readers); empty string = the platform probe failed.
+const char *compiler_path()
+	{
+	    static const std::string p = madc_self_exe_path();
+	    return p.c_str();
+	}
 value &lex_spans(value &out, const char *text, const char *filename)
 	{
 	    std::string src = text ? text : "";

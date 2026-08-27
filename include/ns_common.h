@@ -195,6 +195,13 @@ void *madc_source_outline(void *result, void *source, void *filename);
 // False = unknown target or a buffer that does not parse/translate.
 bool madc_source_emit(void *result, void *source, void *filename,
 		      void *target);
+// madc::build_native — the CLI's AOT lane in-process (madcide IDE-10c):
+// parse a FILE in a child Program, emit a native artifact. kind = "exe"
+// (PIE executable, the -o default) | "obj" (relocatable .o). result =
+// madc::value* (diagnostics rows, same shape as madc_source_diagnostics —
+// a failure always carries at least one error row); path/kind/outpath =
+// std::string*. True = the artifact was written.
+bool madc_build_native(void *result, void *path, void *kind, void *outpath);
 
 // ---- madc:: persistent parse handles (madcide AST-1) --------------------
 // The same child machinery given a LIFETIME: open/refresh/close, with

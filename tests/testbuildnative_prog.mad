@@ -1,0 +1,5 @@
+int main()
+{
+	println("bn-prog-ok");
+	return 0;
+}

@@ -1,0 +1,9 @@
+cp-nonempty=1
+exe ok=1 ndiags=0
+obj ok=1 ndiags=0
+bad ok=0 rows-pos=1 line-pos=1
+badkind ok=0 ndiags=1
+nofile ok=0 ndiags=1
+bn-prog-ok
+run rc=0
+eval=post-emit-eval-ok
