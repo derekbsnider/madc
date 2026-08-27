@@ -313,8 +313,20 @@ Unification claims (no-parallel-implementations):
   blocking send/recv with park/unpark, close semantics, `select`;
   `go` as an EXPRESSION returns a future (one-shot channel); `await` /
   `.get()`.
-- **MT-3 scopes + cancellation**: structured spawn (scope owns
-  join/error/cancel), stop flag checked at every blocking verb.
+- **MT-3 scopes + cancellation — SHIPPED (session 139, both halves)**:
+  3a = the design below, verbatim (testgoscope pins the complete
+  schedule; test_rt_task/test_task_io green). 3b consumers: the token
+  pumps + the top-level parse loop honor task cancellation with a clean
+  recorded diagnostic (testbuildcancel pins a mid-parse build cancel);
+  madcide's Stop returns for internal builds (the build task's own
+  scope IS the job handle — scope_cancel reaches the child parse
+  through the chain; a pre-start flag covers the spawn-to-first-run
+  window); channel::cancel() grew the SIGKILL escalation
+  (Process::wait_or_kill — 2s grace, then hard-kill; testchancancel's
+  SIGTERM-ignoring child gates it by wall clock). Residues: emit phase
+  has no yield points; cancellation lands at declaration/1024-token
+  grain; faithful non-text error rethrow; NonCancellable cleanup
+  regions.
   DESIGN (decided 2026-08-27, session 139 — the Kotlin-ownership ruling
   made concrete; publics-first, keywords are MT-5):
   - Surface: `madc::scope_begin()` -> int64 handle (opens a scope,

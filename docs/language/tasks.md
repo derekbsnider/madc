@@ -205,6 +205,14 @@ madc::scope_end(s);                 // JOINS: returns only after both
 - A cancelled `scope_end` throws the cancelled text after joining;
   members that never reach a cancellation point keep the join waiting
   (the Kotlin behavior).
+- **The compiler cooperates with cancellation too (MT-3b)**: a
+  cancelled task's `madc::build_native` / parse-handle work aborts
+  CLEANLY at its next yield point — the token pumps and the top-level
+  parse loop stop with a recorded "cancelled" diagnostic (never a
+  throw through parser frames). The emit phase has no yield points
+  yet (named residue). And a cancelled `madc::channel` (`cancel()`)
+  escalates on `close()`: SIGTERM at cancel, SIGKILL after a 2s grace
+  — a SIGTERM-ignoring child cannot hang the close.
 
 ## Contracts and knobs
 

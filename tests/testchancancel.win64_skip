@@ -1,0 +1,1 @@
+the child is a POSIX perl ignoring SIGTERM; no perl on the win64 lane and TerminateProcess cannot be ignored anyway (nothing to escalate from)

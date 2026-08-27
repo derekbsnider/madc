@@ -47,12 +47,13 @@ build-start: live=1
 build-out: has-hello=1 has-done=1 live=0
 build-stop: has-stopped=1 live=0
 build-terminal-headless: No terminal to suspend.
-build-defaults: rows=5 row1=Build (in-process) run-has-madc=1
+build-defaults: rows=6 row1=Build (in-process) run-has-madc=1
 esc-pane: closed=1
 build-subst: madc-resolved=1 has-path=1
 native-build-start: live=1
 native-build-done: live=0 ndiags=0 built-msg=1
 native-build-fail: rows-pos=1 pane=diags
+native-build-stop: live=0 stopped-msg=1
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

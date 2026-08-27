@@ -1360,16 +1360,25 @@ void stop_build(long w, long es)
 	return;
     }
     long stopc = es_int(w, es, "buildstop", 0);
-    if ( stopc == 0 )
+    if ( stopc != 0 )
     {
-	// An in-process build has no stop endpoint until MT-3
-	// cancellation lands — it finishes on its own.
-	ui::set(w, es, "msg", "An in-process build finishes on its own (not stoppable yet).");
+	// An exec-pump build: the stop is a SENT value (IDE-10b).
+	value v;
+	v = 1;
+	madc::chan_send(stopc, v);
+	ui::set(w, es, "msg", "Stopping the build.");
 	return;
     }
-    value v;
-    v = 1;
-    madc::chan_send(stopc, v);
+    // An in-process build (MT-3b): its task's scope is the job handle —
+    // scope_cancel reaches the child parse through the cancellation
+    // chain. The pre-start flag covers the spawn-to-first-run window
+    // (spawn never switches: Stop can land before the task opened its
+    // scope); the emit phase has no yield points yet (named residue) —
+    // a cancel during it lands when the parse would have.
+    ui::set(w, es, "buildstopreq", 1);
+    long bscope = es_int(w, es, "buildscope", 0);
+    if ( bscope != 0 )
+	madc::scope_cancel(bscope);
     ui::set(w, es, "msg", "Stopping the build.");
 }
 
@@ -1386,10 +1395,34 @@ void native_build_task(long w, long es)
     ui::get(p, w, es, "nbpath");
     ui::get(k, w, es, "nbkind");
     ui::get(o, w, es, "nbout");
+    // The task's own scope is the STOP surface (MT-3b): Stop calls
+    // scope_cancel on it, and the cancellation chain reaches the child
+    // parse inside build_native (tokenize/parse abort cleanly at their
+    // next yield point). buildscope is published only while the handle
+    // is live — cleared BEFORE scope_end consumes it (no yield between:
+    // a Stop can never see a stale handle).
+    long bs = madc::scope_begin();
+    ui::set(w, es, "buildscope", bs);
+    bool pre = es_int(w, es, "buildstopreq", 0) != 0;
     value diags;
-    bool ok = madc::build_native(diags, p.c_str(), k.c_str(), o.c_str());
-    ui::set(w, es, "diags", diags);
+    bool ok = false;
+    if ( !pre )
+	ok = madc::build_native(diags, p.c_str(), k.c_str(), o.c_str());
+    bool stopped = pre || madc::cancelled();
+    ui::set(w, es, "buildscope", 0);
+    try {
+	madc::scope_end(bs);	// no members; throws the cancelled text
+    } catch (const char *e) {	// when Stop cancelled the scope
+    }
     ui::set(w, es, "buildlive", 0);
+    if ( stopped )
+    {
+	// A deliberate stop: the cancellation diagnostic is an artifact,
+	// not a finding — nothing lands in the diags pane.
+	ui::set(w, es, "msg", format("Build stopped ({}).", p));
+	return;
+    }
+    ui::set(w, es, "diags", diags);
     if ( ok )
     {
 	ui::set(w, es, "msg", format("Built {} -> {}", p, o));
@@ -1421,7 +1454,9 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "nbpath", p);
     ui::set(w, es, "nbkind", kind);
     ui::set(w, es, "nbout", o);
-    ui::set(w, es, "buildstop", 0);	// in-process: no stop endpoint (MT-3)
+    ui::set(w, es, "buildstop", 0);	// in-process: Stop rides the scope
+    ui::set(w, es, "buildscope", 0);	// published by the task when live
+    ui::set(w, es, "buildstopreq", 0);
     ui::set(w, es, "buildlive", 1);
     go native_build_task(w, es);
     var md;
@@ -1464,9 +1499,8 @@ void ensure_build_cmds(long w, long es)
     // madc::build_native in-process, Run spawns a child OF SELF ({madc} =
     // madc::compiler_path). The exec:// capture pump stays for manifest-
     // declared external commands (mode "capture"); no default rides it.
-    // No default Stop row: internal builds finish on their own (MT-3
-    // owns cancellation) and terminal runs are ^C-able in their own
-    // terminal.
+    // Stop is back (MT-3b): an in-process build cancels through its
+    // task's scope; terminal runs stay ^C-able in their own terminal.
     var rows = {};
     value r1;
     r1["name"] = "Check (in-process)";
@@ -1496,6 +1530,10 @@ void ensure_build_cmds(long w, long es)
     r5["mode"] = "terminal";
     r5["act"] = "bld-run-cmd";
     rows.push(r5);
+    value r6;
+    r6["name"] = "Stop";
+    r6["act"] = "bld-stop";
+    rows.push(r6);
     ui::set(w, es, "buildcmds", rows);
 }
 

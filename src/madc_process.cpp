@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <sys/wait.h>
+#include <time.h>	/* nanosleep: wait_or_kill's grace slices (MT-3b) */
 #include <unistd.h>
 
 extern char **environ;
@@ -783,6 +784,60 @@ bool Process::wait(error *err)
 	return true;
 }
 
+bool Process::wait_or_kill(int grace_ms, error *err)
+{
+	if ( !_->has_started )
+	{
+		set_process_error(err, "cannot wait for a process that was not started");
+		return false;
+	}
+	if ( _->has_exited )
+		return true;
+	if ( grace_ms < 0 )
+		grace_ms = 0;
+#ifdef _WIN32
+	if ( WaitForSingleObject(_->child, (DWORD)grace_ms) != WAIT_OBJECT_0 )
+		TerminateProcess(_->child, 128 + SIGKILL);
+	return wait(err);
+#else
+	// Poll for a voluntary exit through the grace window (SIGTERM was
+	// already sent by terminate() on this path), then hard-kill. 20ms
+	// slices: prompt for the common quick exit, cheap for the rest.
+	int waited_ms = 0;
+	for ( ;; )
+	{
+		int child_status = 0;
+		pid_t result;
+		do
+			result = ::waitpid(_->child, &child_status, WNOHANG);
+		while ( result < 0 && errno == EINTR );
+		if ( result < 0 )
+		{
+			set_process_errno(err, "process wait failed", errno);
+			return false;
+		}
+		if ( result > 0 )
+		{
+			_->has_exited = true;
+			if ( WIFEXITED(child_status) )
+				_->status = WEXITSTATUS(child_status);
+			else if ( WIFSIGNALED(child_status) )
+				_->status = 128 + WTERMSIG(child_status);
+			else
+				_->status = -1;
+			return true;
+		}
+		if ( waited_ms >= grace_ms )
+			break;
+		struct timespec ts = { 0, 20 * 1000 * 1000 };
+		::nanosleep(&ts, NULL);
+		waited_ms += 20;
+	}
+	::kill(_->child, SIGKILL);
+	return wait(err);
+#endif
+}
+
 bool Process::started() const { return _->has_started; }
 bool Process::exited() const { return _->has_exited; }
 int Process::exit_status() const { return _->status; }
@@ -1025,11 +1080,18 @@ public:
 	{
 		if ( !process_ )
 			return;
-		// Stdin EOF + a closed stdout let the child run out; wait() reaps
-		// it, and the Process dtor SIGKILLs one that never exits.
+		// Stdin EOF + a closed stdout let the child run out; wait()
+		// reaps it. A CANCELLED channel escalates (MT-3b): the child
+		// already got terminate()'s SIGTERM — after a 2s grace for
+		// its handlers to flush, SIGKILL reaps it, so a
+		// SIGTERM-ignoring child can no longer hang this close (the
+		// old shape waited forever; the dtor's SIGKILL never ran).
 		process_->close_stdin();
 		process_->stdout_channel().close_read();
-		process_->wait();
+		if ( cancelled_ )
+			process_->wait_or_kill(2000);
+		else
+			process_->wait();
 		process_.reset();
 	}
 
@@ -1044,17 +1106,20 @@ public:
 	}
 
 	// Stop-this-build (IDE-10b): SIGTERM the child so the following
-	// close() reaps promptly instead of waiting for it to run out. A
-	// child ignoring SIGTERM still hangs close()'s wait — the MT-3
-	// cancellation arc owns the kill escalation (named residue).
+	// close() reaps promptly instead of waiting for it to run out.
+	// MT-3b closed the residue: close() on a cancelled channel
+	// escalates to SIGKILL after a 2s grace, so a SIGTERM-ignoring
+	// child cannot hang it.
 	void cancel() override
 	{
+		cancelled_ = true;
 		if ( process_ )
 			process_->terminate();
 	}
 
 private:
 	std::unique_ptr<Process> process_;
+	bool cancelled_ = false;
 };
 
 class ExecChannelFactory : public DataChannelRegistry::Factory

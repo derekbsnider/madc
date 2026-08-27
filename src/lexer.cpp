@@ -46,12 +46,23 @@ void madcdis_mapwrite_trap_hit(const char *key)
 }
 } }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
+#include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
 // well under a millisecond, far finer than the ~10ms slice budget the
 // stage-2 ruling set; parse_yield_point itself no-ops without live tasks.
 enum { LEX_YIELD_GRAIN = 1024 };
+
+// MT-3b: a cancelled task's tokenize aborts CLEANLY at its next yield
+// point — a C++ throw the pump's own catch(const char *) handler records
+// as a lexer diagnostic (tokenize returns NULL). Never the SJLJ cancel
+// throw here: it would longjmp past the lexer's C++ frames.
+static void lex_abort_if_task_cancelled(void)
+{
+	if (__madc_task_cancelled())
+		throw "tokenize cancelled (task cancellation)";
+}
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
 // stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
@@ -9634,7 +9645,10 @@ TokenProgram *Program::tokenize(const char *fname)
 //	    tb->column = source.column();
 	    push_token_with_literal_concat(tb);
 	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
 		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
         }
     }
     catch(const char *err_msg)
@@ -9725,7 +9739,10 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	    tb->file = fname;
 	    push_token_with_literal_concat(tb);
 	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
 		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
 	}
     }
     catch(const char *err_msg)
