@@ -325,3 +325,73 @@ The ruled ^B architecture:
   When it lands: cygwin-style copy OR forest serialization over a pipe
   (ephemeral transport, not a cache file — flag against the
   no-user-program-forest-cache ruling; owner call at that time).
+
+## Windows console TUI (recon QUEUED — owner direction 2026-08-27)
+
+Owner direction: target **Windows 10+ VT mode** — enable
+`ENABLE_VIRTUAL_TERMINAL_PROCESSING` on the output handle and drive the
+console with the SAME VT-102-style escape codes the Linux/macOS target
+already emits. No antiquated DOS-style console-cell API
+(WriteConsoleOutput grids). The owner's sketch:
+
+```c
+#include <windows.h>
+
+void enable_vt()
+{
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    DWORD mode;
+    GetConsoleMode(out, &mode);
+
+    mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(out, mode);
+}
+```
+
+What that means for the architecture: the entire paint side — the grid
+renderer, SGR table, tui_diff_spans/tui_diff_plan scroll optimization,
+alternate-screen enter/exit — is reused byte-for-byte; only the
+`tui_target` TERMINAL layer needs a Windows implementation (ui_term.cpp
+is one POSIX implementation of the interface, registered under
+`#ifndef _WIN32`; the model tree / rows-as-data engine is
+platform-neutral by design).
+
+Recon items for the slice (the POSIX seat → its Windows twin):
+
+1. **Raw mode**: termios save/raw/restore → `GetConsoleMode` +
+   `SetConsoleMode` save/restore on BOTH handles (input: drop
+   `ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT|ENABLE_PROCESSED_INPUT`;
+   output: the owner's VT-processing enable +
+   `DISABLE_NEWLINE_AUTO_RETURN` recon).
+2. **Input**: poll(STDIN) + tui_keyparse VT-sequence parsing →
+   `ENABLE_VIRTUAL_TERMINAL_INPUT` makes the console DELIVER VT
+   sequences, so tui_keyparse itself should be reusable; read via
+   ReadFile/ReadConsole on the input handle. Verify which chords the
+   VT input mode actually delivers (^S/^Q/^Z handling has no termios
+   IXON/ISIG axis on win — recon what PROCESSED_INPUT off yields).
+3. **Resize**: SIGWINCH → no signal; with VT input the console can
+   deliver resize as window-buffer-size events via ReadConsoleInput —
+   recon whether mixing ReadConsoleInput (events) with VT byte reads is
+   needed, or whether polling GetConsoleScreenBufferInfo at the wake
+   cadence suffices.
+4. **The scheduler seam (MT-4c)**: taskio::host_wait_readable parks on
+   an fd via poll(); the console input is a HANDLE —
+   WaitForSingleObject/WaitForMultipleObjects arm in the io-wait hook's
+   win side (which today is the cheap-blocking pipe design). This is
+   the one seat that touches the scheduler; keep it inside taskio.
+5. **suspend/resume** (^K Z, Run native): console-mode restore is the
+   termios-restore twin; system() exists.
+6. **Run** (fork-Run): SEPARATE and already flagged — no fork on
+   Windows; the cygwin-style-copy vs forest-serialization-over-a-pipe
+   decision (owner call) is not a TUI blocker: the win TUI can land
+   with Build/Check/Run-native live and the fork-Run row absent.
+7. **Validation**: wine's console emulation is only partly trustworthy
+   for VT input — genuine-Windows validation (the win64 release lane's
+   model) is the oracle; recon what a pty-style automated gate looks
+   like there (ConPTY is the Windows pseudo-console API and could
+   drive a CI-shaped gate later).
+
+Deliverable shape: one new `tui_target` implementation (win console),
+registered under `_WIN32` beside the POSIX registration, plus the
+taskio win wait arm. Sequenced AFTER the variadic class-template arc.
