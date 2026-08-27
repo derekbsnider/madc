@@ -54,6 +54,12 @@ native-build-start: live=1
 native-build-done: live=0 ndiags=0 built-msg=1
 native-build-fail: rows-pos=1 pane=diags
 native-build-stop: live=0 stopped-msg=1
+win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view
+split: wins=2 shape=status/edit/status/edit focus=1 rows=11
+win-carets: w2=3 w1=9
+win-clamp: snapshot-ok=1 live-ok=1
+win-grow: neighbor-rows=10
+win-only: wins=0 kids=2 caret-kept=1
 swap: profile=pico tree=identical
 motion: caret=42
 words: right2=8 left1=5

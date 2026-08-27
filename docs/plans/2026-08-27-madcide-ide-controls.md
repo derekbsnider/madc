@@ -238,7 +238,12 @@ gap closes as DATA, not as engine layout policy:
 - **Keys — JOE-exact, collisions relocated** (the JOE-parity ruling:
   window verbs take their real seats):
   `^k o` splitw · `^k n` nextw · `^k p` prevw · `^k g` groww ·
-  `^k t` shrinkw · `esc 0` killwin · `esc 1` onlywin (JOE tw0/tw1).
+  `^k t` shrinkw · `^k 0` killwin · `^k 1` onlywin (JOE spells tw0/tw1
+  on Esc digits, but madcide's Esc is chord-cancel + close-pane by
+  construction and ruling — an Esc-prefixed binding can never complete,
+  the chord machinery hard-codes Esc as cancel — so the digits move
+  under ^K; JOE's ^K digits are bookmarks, which madcide lacks: debt
+  documented).
   Displaced madcide actions: `profile` and `theme` leave the key
   namespace and become ^T OPTIONS rows (IDE-9d's rows-as-data overlay
   — they are config toggles; that is where config lives); `outline` →

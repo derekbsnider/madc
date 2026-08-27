@@ -126,7 +126,7 @@ int main()
     // Repair by undo, then the outline pane over the healthy buffer.
     ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
-    ev_action(e, "outline", "^k o");
+    ev_action(e, "outline", "^k i");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
     ui::render_tree(rendered, w, tree);
@@ -157,7 +157,7 @@ int main()
 
     // -- AST-2 (owner): colour SCHEMES — a theme swap through the one
     //    prompt mode; specs speak JOE's vocabulary (bold-as-bright).
-    ev_action(e, "theme", "^k t");
+    ev_action(e, "theme", "opt-scheme");
     apply_ide_event(w, es, doc, e);
     ev_text(e, "classic");
     apply_ide_event(w, es, doc, e);
@@ -167,7 +167,7 @@ int main()
     compose_ide_tree(tree, w, es, doc);
     value shc = tree["children"][1]["hints"]["spans"];
     println("theme-swap: {} first-c={}", msg, shc[0]["c"]);
-    ev_action(e, "theme", "^k t");
+    ev_action(e, "theme", "opt-scheme");
     apply_ide_event(w, es, doc, e);
     ev_text(e, "nosuch");
     apply_ide_event(w, es, doc, e);
@@ -175,7 +175,7 @@ int main()
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     println("theme-missing: {}", msg);
-    ev_action(e, "theme", "^k t");
+    ev_action(e, "theme", "opt-scheme");
     apply_ide_event(w, es, doc, e);
     ev_text(e, "default");
     apply_ide_event(w, es, doc, e);
@@ -475,10 +475,81 @@ int main()
     ev_key(e, "right");			// consume the switch message
     apply_ide_event(w, es, doc, e);
 
+    // -- IDE-9e: windows (^K O split) --
+    // Rebind probe: the JOE window verbs took their JOE seats (^K
+    // O/N/P/G/T + ^K 0/^K 1 for tw0/tw1); outline moved to ^K I, the
+    // AST views to ^K A; ^K P no longer spells profile (it and theme
+    // live on the ^T Options rows).
+    println("win-keys: o={} n={} p={} g={} t={} k0={} k1={} i={} a={}",
+	    joe["^k o"], joe["^k n"], joe["^k p"], joe["^k g"],
+	    joe["^k t"], joe["^k 0"], joe["^k 1"], joe["^k i"],
+	    joe["^k a"]);
+    long wdoc = active_doc(w, es, doc);
+    long wsz = ui::text_size(w, wdoc);
+    ui::set(w, es, "caret", 3);
+    ev_action(e, "splitw", "^k o");
+    apply_ide_event(w, es, wdoc, e);
+    ev_key(e, "right");			// consume the split message
+    apply_ide_event(w, es, wdoc, e);
+    compose_ide_tree(tree, w, es, wdoc);
+    // Tree shape: window 1 = the LIVE status + edit (focus-hinted),
+    // window 2 = a statusline + snapshot edit with the rows hint
+    // (headless tui: 24 rows, 2 windows -> base (24-2)/2 = 11).
+    value wk1 = tree["children"][1];
+    value wk3 = tree["children"][3];
+    println("split: wins={} shape={}/{}/{}/{} focus={} rows={}",
+	    window_count(w, es),
+	    tree["children"][0]["role"], wk1["role"],
+	    tree["children"][2]["role"], wk3["role"],
+	    wk1["hints"]["focus"], wk3["hints"]["rows"]);
+    // Per-window carets: window 2's row froze the split-time caret (3);
+    // the consumed right moved only window 1's live caret (4), then 9.
+    // Each survives its window across the switches.
+    ui::set(w, es, "caret", 9);
+    ev_action(e, "nextw", "^k n");
+    apply_ide_event(w, es, wdoc, e);
+    long wc2 = es_int(w, es, "caret", -1);
+    ev_action(e, "prevw", "^k p");
+    apply_ide_event(w, es, wdoc, e);
+    long wc1 = es_int(w, es, "caret", -1);
+    println("win-carets: w2={} w1={}", wc2, wc1);
+    // Stale-caret clamp, both consumers: poke window 2's saved caret
+    // past EOF — the composed SNAPSHOT clamps, and activating it clamps
+    // the live caret — no doc mutation, later gates keep their text.
+    value ws9;
+    ui::get(ws9, w, es, "windows");
+    value wr9 = ws9[1];
+    wr9["caret"] = wsz + 1000;
+    ws9[1] = wr9;
+    ui::set(w, es, "windows", ws9);
+    compose_ide_tree(tree, w, es, wdoc);
+    ev_action(e, "nextw", "^k n");
+    apply_ide_event(w, es, wdoc, e);
+    long snapc = tree["children"][3]["hints"]["caret"].as_integer();
+    println("win-clamp: snapshot-ok={} live-ok={}",
+	    snapc == wsz ? 1 : 0,
+	    es_int(w, es, "caret", -1) == wsz ? 1 : 0);
+    // Grow: the active window takes a row from its neighbor — the
+    // neighbor's hint drops to base-1; the bound refuses at min 3.
+    ev_action(e, "groww", "^k g");
+    apply_ide_event(w, es, wdoc, e);
+    compose_ide_tree(tree, w, es, wdoc);
+    println("win-grow: neighbor-rows={}",
+	    tree["children"][1]["hints"]["rows"]);
+    // onlywin: back to the single shape (status + edit, no window rows).
+    ev_action(e, "onlywin", "^k 1");
+    apply_ide_event(w, es, wdoc, e);
+    ev_key(e, "right");			// consume the message
+    apply_ide_event(w, es, wdoc, e);
+    compose_ide_tree(tree, w, es, wdoc);
+    println("win-only: wins={} kids={} caret-kept={}",
+	    window_count(w, es), php::count(tree["children"]),
+	    es_int(w, es, "caret", -1) == wsz ? 1 : 0);
+
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     value before;
     compose_ide_tree(before, w, es, doc);
-    ev_action(e, "profile", "^k p");
+    ev_action(e, "profile", "opt-keymap");
     apply_ide_event(w, es, doc, e);
     var prof;
     ui::get(prof, w, es, "profile");

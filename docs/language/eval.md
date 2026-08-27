@@ -180,7 +180,7 @@ Positions match what a file-based compile of the same text reports.
 The same child, one step further: parse the buffer and render its
 `cir_node` tree (MC11-IR) as a target language — the `--emit=`
 vocabulary, byte-identical to what `madc --emit=<target> file` prints.
-This is what feeds an editor's code views (`tools/madcide`'s `^K N`).
+This is what feeds an editor's code views (`tools/madcide`'s `^K A`).
 
 ```c
 value text;
