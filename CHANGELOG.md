@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- **madcide internal builds + esc-any-pane (IDE-10c, 2026-08-27)**:
+  the ^B rows go INTERNAL (owner ruling: the IDE lives inside the
+  compiler — never shell out to a PATH `madc`). New engine publics:
+  `madc::build_native(diags, path, "exe"|"obj", outpath)` — the CLI's
+  AOT lane run in-process (child-Program parse, the same lexer-owned
+  file ingestion as `parse_open_file`, then `madc_cir_emit_native`;
+  diagnostics rows either way, a silent failure synthesizes one error
+  row) — and `madc::compiler_path()` (the running compiler's own
+  resolved executable; Run rows spawn a child OF SELF via the new
+  `{madc}` substitution in build_subst, resolved in the engine, never
+  by sh). Default ^B rows: Check / Build / Build object internal
+  (`bld-native` runs `build_native` in a go task — the parse phase
+  cooperates, failure rows land in the DIAGS pane), Run
+  `{madc} {path}` and Run native `./{base}` through the terminal
+  suspend path; no default Stop row (MT-3 owns in-process cancellation;
+  the exec:// capture pump machinery stays for manifest-declared
+  external commands). `madc_object_mode` now has ONE scoped entry —
+  `ObjectModeScope` in both emit lanes (pre-merge dupaudit family
+  `object_mode_emit_scoping`; new gate `check-object-mode-scope.sh` in
+  fulltest, negative-controlled) — so an in-process caller's later JIT
+  sessions never come up in object-capture mode. Esc backs out of ANY
+  pane (owner ruling; help/options/outline/diags/build — palette and
+  prompts already esc-cancelled). New `tests/testbuildnative.mad`; six
+  new testmadcide gates. Docs: `docs/language/eval.md` build surface;
+  plan doc §IDE-10c SHIPPED.
+
 - **madcide IDE controls — palettes, reclaimed keys, build/run/stop
   (IDE-10a+10b, 2026-08-27)**: madcide grows its IDE layer (owner
   rulings; docs/plans/2026-08-27-madcide-ide-controls.md). `joe.keys`

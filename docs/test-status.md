@@ -1,6 +1,32 @@
 # Test Status
 
-> **Current (2026-08-27, IDE-10a+10b palettes + build controls —
+> **Current (2026-08-27, IDE-10c internal builds + esc-any-pane —
+> feature/ide10c-internal-builds merge wave):** the ^B rows go INTERNAL
+> (owner ruling: the IDE lives inside the compiler — never shell out to
+> a PATH madc). NEW engine publics: `madc::build_native(diags, path,
+> "exe"|"obj", outpath)` = the CLI's AOT lane in-process (child-Program
+> parse + `madc_cir_emit_native`; diagnostics rows either way, a silent
+> failure synthesizes one error row) and `madc::compiler_path()` (Run
+> rows spawn a child OF SELF via {madc} in build_subst). Default rows:
+> Check / Build / Build object internal, Run `{madc} {path}`, Run
+> native `./{base}`; no default Stop (MT-3 owns in-process cancel; the
+> exec:// pump stays for manifest commands). `madc_object_mode` now has
+> ONE scoped entry (`ObjectModeScope`, both emit lanes — pre-merge
+> dupaudit family object_mode_emit_scoping; NEW gate
+> check-object-mode-scope.sh, negative-controlled, whose first run
+> caught the marker matching a comment). Esc backs out of ANY pane.
+> Ring-lifetime trap hit again: const char* params held across
+> build_subst's ring calls rotted — var& params per the banked
+> prescription. NEW test `tests/testbuildnative.mad` (+2 helper TUs):
+> exe/obj clean builds, the artifact RUNS, positioned error rows,
+> unknown-kind/unreadable-path rows, post-emit eval proves the
+> object-mode restore; testmadcide +6 gates (default-row shape, esc,
+> {madc} subst, in-process build clean + failure rows in the diags
+> pane). Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1172 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1198)
+> + EXE **1126 passed / 0 failed** + OBJ **1126 passed / 0 failed**.
+>
+> **Previous (2026-08-27, IDE-10a+10b palettes + build controls —
 > feature/ide10a-palette merge wave):** madcide becomes an IDE: ^P file
 > palette + ^B build palette on ONE popup-list widget (the model's
 > choice focusable gains LIST + AUTOFOCUS presentations, data-driven
