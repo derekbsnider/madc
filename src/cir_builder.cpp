@@ -2538,12 +2538,18 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			static const char *mtp = ::getenv("MADC_MTI_PROBE");
 			if (mtp && *mtp
 			    && (recv_class->name + "__" + mname).find(mtp)
-			       != std::string::npos)
-				fprintf(stderr, "MTIPROBE recv=%s cls=%p winner=%p"
-					" wfd=%p\n",
-					recv_class->name.c_str(), (void *)recv_class,
+			       != std::string::npos) {
+				fprintf(stderr, "MTIPROBE recv=%s mname=%s"
+					" cls=%p winner=%p wfd=%p args=",
+					recv_class->name.c_str(), mname.c_str(),
+					(void *)recv_class,
 					(void *)winner,
 					winner ? (void *)winner->type : NULL);
+				for (const DataDef *at : mat)
+					fprintf(stderr, "%s,",
+						at ? at->name.c_str() : "?");
+				fprintf(stderr, "\n");
+			}
 		}
 		if (!winner) {
 			for (Variable *mv : recv_class->methods) {
