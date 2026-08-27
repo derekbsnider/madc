@@ -94,6 +94,25 @@ public:
 // mixin themselves.
 SeekableDataChannel *seekable_surface(DataChannel *channel);
 
+// Optional extension for channels an event loop can WAIT on: the READ
+// side's poll handle — a CRT fd on every platform (Windows process pipes
+// are _open_osfhandle-converted, so an fd is uniform). -1 = not currently
+// waitable (closed, or the read side is gone). The handle is only valid
+// while the channel stays open; holders must not close it. (MT-4b: the
+// cooperative scheduler's io-wait seat parks tasks on this handle.)
+class PollableDataChannel
+{
+public:
+	virtual ~PollableDataChannel() {}
+
+	virtual intptr_t read_poll_handle() const = 0;
+};
+
+// The one truthful-waitability probe (seekable_surface's twin): interface
+// present AND a live handle. Returns nullptr otherwise — consumers never
+// dynamic_cast the mixin themselves.
+PollableDataChannel *pollable_surface(DataChannel *channel);
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
 // Pump source to destination until EOF, flushing at the end. The counted

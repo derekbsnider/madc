@@ -279,10 +279,33 @@ namespace madc {
 	bool close_write();
 	void close();
 
+	// Readiness (MT-4b): poll_state() = 1 when read/readline makes
+	// progress NOW (buffered text, readable bytes, or the one EOF/error
+	// observation a read surfaces), 0 = it would wait, -1 = dead
+	// (failed, closed, or EOF fully drained). Channels with no waitable
+	// read side (memory, file) always report 1 — their reads never
+	// block. wait_readable() parks the calling task until progress is
+	// possible (true) or the channel is dead (false). read_wait_handle()
+	// is the raw poll handle for event-loop plumbing (a CRT fd; -1 =
+	// not waitable).
+	int64_t poll_state();
+	bool wait_readable();
+	int64_t read_wait_handle();
+
     private:
 	channel(const channel &);
 	channel &operator=(const channel &);
 
 	void *impl_;
     };
+
+    // Byte-endpoint select case (MT-4b): register a channel whose READ
+    // readiness selects beside value channels in chan_select. The case
+    // FIRES with out = null when read/readline would make progress — the
+    // script then reads from the channel object it holds. A dead endpoint
+    // (EOF drained, or failed) DISABLES like a closed-and-drained value
+    // channel. Register once and reuse the handle; the channel object must
+    // outlive it. Throws when the channel has no waitable read side
+    // (memory/file reads never block, so there is nothing to wait on).
+    int64_t chan_readable(channel &c);
 }
