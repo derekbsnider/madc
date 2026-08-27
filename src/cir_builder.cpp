@@ -6494,8 +6494,17 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	// exists), so `&enumerator` emitted for a reference binding was invalid
 	// ("lvalue required as unary & operand", vector<enum>::push_back).
 	// Bind through a materialized temporary exactly like the literals.
+	// STORAGE-BEARING vars are excluded: a `const T&` PARAMETER also
+	// carries vfCONSTANT without vfCONSTDECL (parseFunction's
+	// param_has_const write-enforcement flag), and it is an LVALUE —
+	// classifying it here materialized a COPY temp for every ref-to-ref
+	// forward, and a reference member initialized from such an argument
+	// (std::tuple<const key&> in map::operator[]) captured the address of
+	// a ctor-local temp: a dangling reference, stale key reads, and
+	// map[k2] silently updating map[k1]'s node (tests/teststdmapint).
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-		if ((tv->var.flags & vfCONSTANT) && !(tv->var.flags & vfCONSTDECL))
+		if ((tv->var.flags & vfCONSTANT) && !(tv->var.flags & vfCONSTDECL)
+		    && !(tv->var.flags & (vfPARAM | vfLOCAL)))
 			return true;
 	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg)) {
 		// A scalar or pointer cast produces a prvalue. When it binds to a
