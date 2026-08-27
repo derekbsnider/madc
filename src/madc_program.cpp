@@ -28,9 +28,12 @@
 // the child-rusage metering. win64 has no fork; the isolation contract
 // there is an open design arc (in-process vs subprocess reframing,
 // 2026-08-12) — until its spawn backend lands, requesting it fails loudly
-// at invocation time.
+// at invocation time. signal/errno serve the fork-Run lane's system(3)
+// wait discipline (parse_run).
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <csignal>
+#include <cerrno>
 #endif
 
 extern thread_local bool madc_verbose;
@@ -44,6 +47,7 @@ extern thread_local bool madc_verbose;
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
+#include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
 #include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
@@ -2977,6 +2981,10 @@ struct program::impl
 
 	if ( pid == 0 )
 	{
+	    // A forked child inherits the parent's cooperative-scheduler
+	    // state but none of its flows — reset before any script runs
+	    // (rt_task.h fork discipline).
+	    __madc_task_atfork_child();
 	    int report_fd = dup(child_report.fd());
 	    if ( dup2(child_stdout.fd(), STDOUT_FILENO) < 0
 	      || dup2(child_stderr.fd(), STDERR_FILENO) < 0 )
@@ -3893,6 +3901,10 @@ struct program::impl
 
 	if ( pid == 0 )
 	{
+	    // A forked child inherits the parent's cooperative-scheduler
+	    // state but none of its flows — reset before any script runs
+	    // (rt_task.h fork discipline).
+	    __madc_task_atfork_child();
 	    int report_fd = dup(child_report.fd());
 	    if ( dup2(child_stdout.fd(), STDOUT_FILENO) < 0
 	      || dup2(child_stderr.fd(), STDERR_FILENO) < 0 )
@@ -5108,6 +5120,138 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
     highlight_token_rows(child, st->display_name, fn_heads, rows);
     out = value::make_array(rows);
     return true;
+}
+
+// Build from the LIVE parse (OWNER RULING 2026-08-27 — the running madc
+// IS the compiler): emit a native artifact from the handle's EXISTING
+// cir-ready tree. No fresh parse, no child Program from a path — the
+// buffer the handle was (re)parsed from, unsaved edits included, is what
+// compiles. A handle whose parse carries error rows never reaches the
+// emitter (an incomplete tree must not hit the backend): false, with the
+// handle's own rows. Build diagnostics ride `out` only — the handle's
+// retained state stays THE PARSE (parse_check is parse-pure), so the
+// recorded rows are snapshotted and restored around the emit. The same
+// silent-failure belt as the path lane: a false always carries at least
+// one error row. Thread contract: the runtime-eval confinement — the
+// emit phase has no yield points (the named backend-yield residue).
+bool internal_program_parse_build(int64_t handle,
+				  const std::string &kind_name,
+				  madc::value &out,
+				  const std::string &outpath)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    if ( !child.tkProgram || child_has_error_row(child) )
+    {
+	diagnostic_rows_from_child(child, out);
+	return false;
+    }
+    std::vector<::Program::Diagnostic> saved = child.diagnostics;
+    bool ok = false;
+    {
+	// Capture replaces rendering (the compile_source_child_frontend
+	// contract); ObjectModeScope lives inside the emit lane itself.
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = true;
+	if ( kind_name == "exe" )
+	    kind = mnkPieExecutable;
+	else if ( kind_name == "obj" )
+	    kind = mnkObject;
+	else
+	{
+	    kind_ok = false;
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	}
+	if ( kind_ok )
+	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
+				      kind, outpath.c_str(),
+				      std::vector<std::string>()) == 0;
+	if ( !ok && !child_has_error_row(child) )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "build failed with no recorded diagnostic"
+			    " (backend output goes to stderr)",
+			    st->display_name.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    child.diagnostics = saved;	// the handle keeps only its parse state
+    child.clear_error();	// (it was green on entry — see the gate)
+    return ok;
+}
+
+// The fork-Run seam (OWNER RULING 2026-08-27): run the handle's
+// ALREADY-PARSED tree in a fork() child. The child inherits the tree by
+// COW, resets the cooperative scheduler (__madc_task_atfork_child — the
+// parent's queues/timers/waiters must never wake in it), hands the tree
+// to c2mir → MIR (madc_cir_execute, the CLI's own run entry), and leaves
+// via exit() so the GUEST's atexit semantics and stdio flush run; the
+// parent's own atexit hooks are pid-guarded (ui_term) or neutralized by
+// the reset (task join). stdio is INHERITED — the caller owns the
+// terminal handoff (madcide suspends the tui BEFORE calling). The parent
+// ignores SIGINT/SIGQUIT from before the fork until the reap and the
+// child restores their default dispositions — the system(3) discipline,
+// so ^C reaches the guest alone.
+// Returns the guest's exit status (128+signal on a signal death);
+// negative = it never ran: -1 bad handle, -2 the handle's parse has
+// error rows (an incomplete tree must not reach the backend), -3 fork
+// failed or no fork on this platform (win64; ui_term is POSIX-only, so
+// the madcide caller cannot reach this there).
+int64_t internal_program_parse_run(int64_t handle)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return -1;
+    ::Program &child = *st->child;
+    if ( !child.tkProgram || child_has_error_row(child) )
+	return -2;
+#ifdef _WIN32
+    return -3;
+#else
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child
+    std::cerr.flush();
+    struct sigaction ign, old_int, old_quit;
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &ign, &old_int);
+    sigaction(SIGQUIT, &ign, &old_quit);
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+	__madc_task_atfork_child();
+	signal(SIGINT, SIG_DFL);	// CLI parity: the guest starts
+	signal(SIGQUIT, SIG_DFL);	// with default dispositions
+	std::string argv0 = st->display_name;
+	char *guest_argv[2];
+	guest_argv[0] = &argv0[0];
+	guest_argv[1] = (char *)0;
+	int rc = madc_cir_execute(&child, st->display_name.c_str(), 1,
+				  guest_argv);
+	// The CLI's own mapping: negative = infrastructure failure -> 1.
+	exit(rc < 0 ? 1 : (rc & 0xff));
+    }
+    int64_t status = -3;
+    if ( pid > 0 )
+    {
+	int ws = 0;
+	pid_t r;
+	do
+	    r = waitpid(pid, &ws, 0);
+	while ( r < 0 && errno == EINTR );
+	if ( r == pid && WIFEXITED(ws) )
+	    status = WEXITSTATUS(ws);
+	else if ( r == pid && WIFSIGNALED(ws) )
+	    status = 128 + WTERMSIG(ws);
+    }
+    sigaction(SIGINT, &old_int, (struct sigaction *)0);
+    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
+    return status;
+#endif
 }
 
 // Lexical spans (staged parsing, stage 1): the classes lexing alone can
