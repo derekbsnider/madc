@@ -1,6 +1,25 @@
 # Test Status
 
-> **Current (2026-08-26, MT-4a select + time —
+> **Current (2026-08-27, MT-4b io/fd select —
+> feature/mt4b-io-select merge wave):** byte endpoints select beside
+> value channels: `madc::chan_readable(channel)` registers an
+> `exec://` endpoint as a `chan_select` case (fires with out = null on
+> readable progress; drained-EOF/failed endpoints DISABLE, so `-1`
+> still terminates mixed fan-ins), and reads under live tasks PARK on
+> the fd through the scheduler's new io-wait seat
+> (`__madc_task_io_wait_hook` in task_next_or_wait — the scheduler
+> stays fd-blind; task_enqueue now idempotent). `select_fire` is THE
+> one claim+wake owner (pre-merge dupaudit consolidation), gated by
+> NEW `check-select-fire-owner.sh` (negative-controlled, in fulltest).
+> NEW tests: `tests/unit/test_task_io.cpp` (park-until-readable, EOF
+> is progress, double-unpark belt) + `tests/testgoselectio.mad`
+> (phased deterministic mixed select — matched the hand-computed
+> schedule first run; JIT/exe/obj byte-identical). Battery on final
+> content: fulltest rc=0 (all gates) + JIT **1171 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1195) + EXE **1125 passed / 0
+> failed**.
+>
+> **Previous (2026-08-26, MT-4a select + time —
 > feature/mt4-select-time merge wave):** `madc::chan_select`
 > (deterministic lowest-index fan-in; husk/wake-once discipline),
 > `madc::chan_try_recv` (1/0/-1), and `madc::sleep_ms` on the

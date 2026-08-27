@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+- **io/fd select — byte endpoints waitable beside value channels
+  (MT-4b, 2026-08-27)**: `madc::chan_readable(channel)` registers an
+  `exec://`-style byte endpoint as a `chan_select` case — "recv from a
+  task channel OR readline from a child process" is ONE wait (the IDE
+  event loop's tool-integration seat). A fired byte case reports
+  readiness with `out = null`; a DEAD endpoint (drained EOF, or
+  failed) disables like a closed-and-drained value channel, so `-1`
+  still terminates mixed fan-ins (registration re-probes
+  `poll_state()`, never the raw handle — a drained fd is still
+  POLLHUP-readable). Under live tasks a `madc::channel`
+  read/readline PARKS on the fd through the scheduler's new io-wait
+  seat instead of stalling every task (`__madc_task_io_wait_hook`
+  called from task_next_or_wait bounded by the earliest timer
+  deadline — the scheduler stays fd-blind, the join-hook precedent);
+  solo programs keep the plain blocking read. task_enqueue is now
+  IDEMPOTENT (`madc_task.queued`) — two io events waking one task per
+  round can neither double-run it nor truncate the ready queue. New
+  surfaces: `PollableDataChannel` + `pollable_surface`
+  (seekable_surface's twin; ProcessPipeChannel/ExecDataChannel expose
+  the READ side's CRT fd, uniform on win64 via `_open_osfhandle`) and
+  `channel::poll_state()/wait_readable()/read_wait_handle()`. The
+  select claim+wake discipline was consolidated into ONE owner
+  (`select_fire`) at the pre-merge dupaudit and gated
+  (`scripts/check-select-fire-owner.sh`, negative-controlled, in
+  fulltest); second audit finding recorded open in the KG
+  (`fd_readable_progress_probe`: ui_term's input_ready tests POLLIN
+  only). Tests: `tests/unit/test_task_io.cpp` (park-until-readable
+  through the hook, EOF-is-progress, the double-unpark belt) +
+  `tests/testgoselectio.mad` (phased deterministic mixed select —
+  matched its hand-computed schedule first run; JIT/exe/obj
+  byte-identical). Also caught: the tracked generated
+  `src/embedded_headers.cpp` had silently drifted since 2026-08-21
+  (every build regenerates it) — refreshed, byte-identical to the
+  build's copy. Battery: fulltest rc=0 (all gates) + JIT 1171/0/0/9
+  (suite 1195) + EXE 1125/0.
+
 - **Select + sleep on a pluggable time source (MT-4a, 2026-08-26)**:
   `madc::chan_select(out, chans[])` — deterministic fan-in over value
   channels (lowest-index-ready wins, documented deviation from Go's

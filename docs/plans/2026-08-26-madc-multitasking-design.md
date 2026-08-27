@@ -264,6 +264,39 @@ Unification claims (no-parallel-implementations):
   drain schedule + argv forwarding; `--std=gnu17` emits byte-identical
   unwrapped mains (testgogate; zero `__madc_main`).
 
+- **MT-4a (SHIPPED, session 137)**: `chan_select` (deterministic
+  lowest-index fan-in; sudog stack waiters, first-fire group claim,
+  husk skip, wake-once guard, eager removal), `chan_try_recv`,
+  `sleep_ms` on the pluggable time source (virtual under
+  MADC_TASK_VTIME=1), `task_next_or_wait` = THE one pick-next decision.
+
+- **MT-4b (SHIPPED, session 138)**: io/fd select — byte endpoints
+  waitable beside value channels. `madc::chan_readable(channel)`
+  registers an `exec://` endpoint as a select case (fires `out = null`
+  on readable progress; drained-EOF/failed DISABLES like
+  closed-and-drained — registration re-probes `poll_state()`, never
+  the raw handle, because a drained fd is still POLLHUP-readable);
+  reads under live tasks PARK on the fd via the scheduler's io-wait
+  seat (`__madc_task_io_wait_hook` in task_next_or_wait, bounded by
+  the earliest timer deadline; the scheduler stays fd-blind — the
+  join-hook precedent; POSIX poll() arm + win32 PeekNamedPipe
+  cheap-blocking arm). task_enqueue is IDEMPOTENT (`queued` flag).
+  `select_fire` = THE one claim+wake owner across BOTH waiter kinds
+  (ChanWaiter + IoWaiter), gated by check-select-fire-owner.sh.
+  Data-layer surface: PollableDataChannel + pollable_surface
+  (seekable_surface's twin); the poll handle is a CRT fd on every
+  platform. channel object: poll_state (1/0/-1) / wait_readable /
+  read_wait_handle (int64_t — the embedded twin must mangle
+  identically everywhere). Gates: test_task_io (park/EOF/double-unpark
+  belt), testgoselectio (phased deterministic mixed select, three
+  lanes byte-identical). NAMED RESIDUES: mixing MADC_TASK_VTIME with
+  fd waits gives io only zero-timeout probes at scheduling decisions
+  (documented; vtime tests don't mix); ui_term's input_ready is a
+  POLLIN-only divergent copy of the readable-progress rule (KG
+  DupFamily fd_readable_progress_probe, open — the MT-4c unification
+  migrates the tui stdin wait onto taskio); tcp:// rides the same
+  pollable surface when a tcp factory lands.
+
 ## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
 
 - **MT-1 substrate**: stackful contexts (small in-tree switcher; SysV
