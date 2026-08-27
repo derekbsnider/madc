@@ -296,6 +296,39 @@ Unification claims (no-parallel-implementations):
   DupFamily fd_readable_progress_probe, open — the MT-4c unification
   migrates the tui stdin wait onto taskio); tcp:// rides the same
   pollable surface when a tcp factory lands.
+- **MT-4c — stdin unification** (DESIGN decided 2026-08-27, s139): the
+  tui's input wait joins the ONE scheduler poll; read_keys' 50ms
+  live-but-parked cadence retires. The model:
+  - **The host wait**: `taskio::host_wait_readable(fd)` — the tui flow
+    (the main task) PARKS on stdin as an io waiter (the existing
+    IoWaiter machinery; one host at a time), so task_next_or_wait's
+    hook blocks on {stdin, io waiters} bounded by the earliest timer —
+    ONE poll for everything. Returns true = the fd fired (read keys),
+    false = a SYNTHETIC wake (recompose; the fd may also be readable —
+    the caller's read path re-probes anyway).
+  - **The synthetic wake = the ran→wake seam moved into the
+    scheduler**: rt counts task switches (`__madc_task_switch_count`,
+    one increment in task_switch); the host waiter records the count
+    at park. At the hook's QUIESCENT point (nothing runnable), the
+    order is: (1) zero-timeout poll — real readiness wins; (2) host
+    registered && switches advanced since its park → unpark the host
+    UNFIRED and return (a pending repaint must beat blocking); (3) the
+    blocking poll. EINTR with a host registered also wakes it unfired
+    (SIGWINCH must reach read_keys — the resize check lives at its
+    loop head). Every semantics of the cadence loop is preserved:
+    runnable tasks still get the CPU between zero-timeout input polls
+    (that branch is untouched), activity-then-drain still surfaces as
+    the wake event, zero live tasks still take the old blocking read.
+  - **The family retires**: input_ready's readable test adopts
+    POLLIN|POLLHUP|POLLERR (the fd_readable_progress_probe divergent
+    site — a dead terminal was not "readable", so the EOF-surfacing
+    read never ran; own commit, fix-what-you-find) and a NEW gate
+    (check-fd-readable-progress.sh: no bare `revents & POLLIN)` test
+    in src/, negative-controlled) moves the family open→gated.
+  - **Scope**: POSIX only, like ui_term.cpp itself (the win tui is not
+    a lane). Gates: test_task_io grows host-wait legs (readable-now,
+    fd-fired after park, synthetic wake after activity, EINTR shape);
+    the pty smoke/scroll gates and test_coop_parse pin the live loop.
 
 ## Slice cut (MT arc; every slice Tier-1 C11 runtime-library lowering)
 
