@@ -806,8 +806,11 @@ bool Process::wait_or_kill(int grace_ms, error *err)
 	if ( grace_ms < 0 )
 		grace_ms = 0;
 #ifdef _WIN32
+	// No SIGKILL on Windows (the CRT declares only the six ANSI signals)
+	// and no graceful/forced split — TerminateProcess IS the hard stop, so
+	// the escalation reports the same 128+SIGTERM shape terminate() uses.
 	if ( WaitForSingleObject(_->child, (DWORD)grace_ms) != WAIT_OBJECT_0 )
-		TerminateProcess(_->child, 128 + SIGKILL);
+		TerminateProcess(_->child, 128 + SIGTERM);
 	return wait(err);
 #else
 	// Poll for a voluntary exit through the grace window (SIGTERM was
