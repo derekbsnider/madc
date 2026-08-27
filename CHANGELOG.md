@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+- **madcide IDE controls — palettes, reclaimed keys, build/run/stop
+  (IDE-10a+10b, 2026-08-27)**: madcide grows its IDE layer (owner
+  rulings; docs/plans/2026-08-27-madcide-ide-controls.md). `joe.keys`
+  reclaims the WordStar diamond — **^P** file palette (VSCode
+  Quick-Open shape: open buffers then cwd source files, typed filter,
+  enter switches in place through `edit_file`), **^F** find, **^N**
+  open file, **^B** build palette — plus **^R** retype (new
+  `ui::tui_refresh` drops the delta-paint baseline; a diff against a
+  corrupted screen repairs nothing). ONE popup-list widget serves every
+  palette: the tui model's choice focusable gains LIST (one option per
+  row, selected reversed) and AUTOFOCUS (arrows/enter with no tab)
+  presentations as data-driven hints. The ^B palette's command rows are
+  DATA ({name, cmd, mode}; {path}/{base} substitution; manifest-declared
+  commands are the named later slice): capture rows stream into the
+  `[build]` buffer through an exec:// pump whose loop is the MT-4b
+  mixed select — {stop channel, byte readiness} — so the editor stays
+  live while a build streams and Stop fires even against a silent child
+  (new `DataChannel::cancel()` / `channel::cancel()`: exec SIGTERMs its
+  child so close() reaps promptly; quit sends the stop before the
+  drain). Terminal rows (Run / Run native) get the real terminal
+  (suspend → run → return-key pause → resume). Check stays in-process.
+  Engine seams: `__madc_task_fire_due` — `__madc_yield` now fires due
+  io waiters beside due timers (the same starvation asymmetry the
+  yield-head timer fix addressed); read_keys' unified cooperative wait
+  naps on a 50ms cadence while live-but-parked tasks exist, so build
+  output repaints without a keystroke (the MT-4c stdin-unification
+  retires the cadence). Pre-merge dupaudit: buffer-row shape
+  consolidated into `push_buffer_row` — the new gate's own count caught
+  a third site the by-hand audit missed; gates
+  `check-select-fire-owner.sh` + `check-madcide-single-owners.sh` in
+  fulltest. Battery: fulltest rc=0 + JIT 1171/0/0/9 (suite 1195) + EXE
+  1125/0.
+
 - **io/fd select — byte endpoints waitable beside value channels
   (MT-4b, 2026-08-27)**: `madc::chan_readable(channel)` registers an
   `exec://`-style byte endpoint as a `chan_select` case — "recv from a

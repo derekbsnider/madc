@@ -1,6 +1,28 @@
 # Test Status
 
-> **Current (2026-08-27, MT-4b io/fd select —
+> **Current (2026-08-27, IDE-10a+10b palettes + build controls —
+> feature/ide10a-palette merge wave):** madcide becomes an IDE: ^P file
+> palette + ^B build palette on ONE popup-list widget (the model's
+> choice focusable gains LIST + AUTOFOCUS presentations, data-driven
+> hints), joe.keys reclaims the WordStar diamond (^P/^F/^N/^B) + ^R
+> retype (`ui::tui_refresh` — the delta-paint baseline drops so the
+> next render rewrites the viewport). Builds stream into the [build]
+> buffer through an exec:// pump whose loop is the MT-4b mixed select
+> ({stop chan, byte readiness}; NEW `channel::cancel()` SIGTERMs so
+> Stop and quit are prompt — a stopped `sleep 5` build returns in
+> milliseconds); Run rows get the REAL terminal (suspend/resume).
+> Engine: `__madc_task_fire_due` (yield fires due io beside timers —
+> the timer-starvation reasoning applied to fds) + read_keys' unified
+> cooperative wait (build output repaints without a keystroke). NEW
+> gates: check-select-fire-owner + check-madcide-single-owners (whose
+> count caught a third buffer-row site the by-hand audit missed);
+> test_tui_model +2 (list/autofocus), test_task_io +1 (fire_due),
+> testmadcide +palette/build gates (whole test 1.7s incl. the stop
+> path). Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1171 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1195)
+> + EXE **1125 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-4b io/fd select —
 > feature/mt4b-io-select merge wave):** byte endpoints select beside
 > value channels: `madc::chan_readable(channel)` registers an
 > `exec://` endpoint as a `chan_select` case (fires with out = null on

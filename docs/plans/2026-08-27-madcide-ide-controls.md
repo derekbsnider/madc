@@ -1,5 +1,16 @@
 # madcide IDE controls — palettes, reclaimed keys, build/run (IDE-10)
 
+**STATUS: IDE-10a + IDE-10b SHIPPED (2026-08-27, session 138)** — the
+palette core (model list+autofocus hints), ^P file palette, the four key
+reclaims + ^R (ui::tui_refresh), and the ^B build palette (capture pump
+on the MT-4b mixed select; channel::cancel() SIGTERM stop; terminal-mode
+runs via suspend/resume; command rows as data). Engine seams that landed
+with it: __madc_task_fire_due (yield fires due io beside timers) and
+read_keys' unified cooperative wait (50ms cadence while live-but-parked
+tasks exist — the MT-4c stdin-unification retires it). Remaining from
+this doc: manifest-declared build commands, ^P fuzzy fs walk, the debug
+row (ADR-0001 REPL/debug tier), pico.keys palette bindings (owner call).
+
 Owner direction (2026-08-27, verbatim rulings): madcide is an IDE, not
 JOE — it needs controls for compiling, starting, stopping, debugging
 madc applications; multiple files WITHOUT split-screen proliferation
