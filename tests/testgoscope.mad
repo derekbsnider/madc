@@ -1,0 +1,175 @@
+// MT-3 structured scopes + cancellation on the deterministic FIFO
+// substrate. One accumulated trace pins the COMPLETE schedule: scope join
+// (children finish before scope_end returns), nesting (inner join first,
+// outer members free to finish during it), a child error cancelling a
+// chan-parked sibling and rethrowing at the join, a non-text error
+// rethrown as text, cancel before a member ever ran (the entry gate),
+// cancel of a timer-parked sleeper (instant — the 5000ms sleep must NOT
+// elapse; the suite timeout is the gate), cancel of a send-parked member
+// (waiter removal), born-cancelled members + the opener's chain poll and
+// its recovery after scope_end, and the ordering/handle refusals.
+value tr;
+
+void w(long tag)
+{
+    tr = format("{}w{}a;", tr, tag);
+    yield();
+    tr = format("{}w{}b;", tr, tag);
+}
+
+void boomer()
+{
+    tr = format("{}boom-up;", tr);
+    throw "boom";
+}
+
+void thrower42()
+{
+    throw 42;
+}
+
+void stuck(long c)
+{
+    value v;
+    tr = format("{}stuck-park;", tr);
+    madc::chan_recv(v, c);
+    tr = format("{}stuck-NEVER;", tr);
+}
+
+void sleeper(long tag)
+{
+    tr = format("{}sl{}up;", tr, tag);
+    madc::sleep_ms(5000);
+    tr = format("{}sl{}NEVER;", tr, tag);
+}
+
+void sender(long c)
+{
+    value v;
+    v = 9;
+    tr = format("{}snd-park;", tr);
+    madc::chan_send(c, v);
+    tr = format("{}snd-NEVER;", tr);
+}
+
+void poller()
+{
+    tr = format("{}poll{};", tr, madc::cancelled() ? 1 : 0);
+}
+
+int main()
+{
+    // p1: the join — both children complete before scope_end returns.
+    long s1 = madc::scope_begin();
+    go w(1);
+    go w(2);
+    tr = format("{}p1live{};", tr, madc::task_live());
+    madc::scope_end(s1);
+    tr = format("{}p1joined{};", tr, madc::task_live());
+
+    // p2: nesting — the inner join runs the outer's member too.
+    long so = madc::scope_begin();
+    go w(3);
+    long si = madc::scope_begin();
+    go w(4);
+    madc::scope_end(si);
+    tr = format("{}p2in;", tr);
+    madc::scope_end(so);
+    tr = format("{}p2out;", tr);
+
+    // p3: a failed child cancels its chan-parked sibling; the error
+    // rethrows at the join.
+    long c3 = madc::chan_make(0);
+    long s3 = madc::scope_begin();
+    go stuck(c3);
+    go boomer();
+    try {
+	madc::scope_end(s3);
+	tr = format("{}p3NOTHROW;", tr);
+    } catch (const char *e) {
+	tr = format("{}p3({});", tr, e);
+    }
+
+    // p3b: a non-text error rethrows as text.
+    long s3b = madc::scope_begin();
+    go thrower42();
+    try {
+	madc::scope_end(s3b);
+    } catch (const char *e) {
+	tr = format("{}p3b({});", tr, e);
+    }
+
+    // p4: cancel before the member ever ran — the blocking verb's ENTRY
+    // gate throws.
+    long s4 = madc::scope_begin();
+    go sleeper(1);
+    madc::scope_cancel(s4);
+    try {
+	madc::scope_end(s4);
+    } catch (const char *e) {
+	tr = format("{}p4({});", tr, e);
+    }
+
+    // p5: cancel a PARKED sleeper — woken off the timer list now, not in
+    // five seconds.
+    long s5 = madc::scope_begin();
+    go sleeper(2);
+    yield();
+    tr = format("{}p5cancel;", tr);
+    madc::scope_cancel(s5);
+    try {
+	madc::scope_end(s5);
+    } catch (const char *e) {
+	tr = format("{}p5({});", tr, e);
+    }
+
+    // p5b: cancel a send-PARKED member — its waiter record leaves the
+    // queue before the unwind.
+    long c5 = madc::chan_make(0);
+    long s5b = madc::scope_begin();
+    go sender(c5);
+    yield();
+    madc::scope_cancel(s5b);
+    try {
+	madc::scope_end(s5b);
+    } catch (const char *e) {
+	tr = format("{}p5b({});", tr, e);
+    }
+
+    // p6: born-cancelled member + the opener's chain poll — and the
+    // opener RECOVERS once the scope ends (no sticky opener flag).
+    long s6 = madc::scope_begin();
+    madc::scope_cancel(s6);
+    tr = format("{}p6op{};", tr, madc::cancelled() ? 1 : 0);
+    go poller();
+    try {
+	madc::scope_end(s6);
+    } catch (const char *e) {
+	tr = format("{}p6({});", tr, e);
+    }
+    tr = format("{}p6after{};", tr, madc::cancelled() ? 1 : 0);
+
+    // p7: ordering + handle refusals.
+    long s7 = madc::scope_begin();
+    long s8 = madc::scope_begin();
+    try {
+	madc::scope_end(s7);
+    } catch (const char *e) {
+	tr = format("{}p7a({});", tr, e);
+    }
+    madc::scope_end(s8);
+    madc::scope_end(s7);
+    try {
+	madc::scope_end(s7);
+    } catch (const char *e) {
+	tr = format("{}p7b({});", tr, e);
+    }
+    try {
+	madc::scope_cancel(s7);
+    } catch (const char *e) {
+	tr = format("{}p7c({});", tr, e);
+    }
+
+    println("end tr={}", tr);
+    return 0;
+}

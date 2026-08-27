@@ -166,6 +166,46 @@ int main()
   between polls and delivers `{event:"wake"}` when they drain. Batch
   compiles pay one queue check per yield point and nothing else.
 
+## Structured scopes + cancellation (MT-3)
+
+Kotlin's ownership over Go's spelling: every spawn lands in a scope
+that owns join, error, and cancel.
+
+```c
+long s = madc::scope_begin();       // this task's innermost scope
+go worker(1);                       // attaches to it
+go worker(2);
+madc::scope_end(s);                 // JOINS: returns only after both
+                                    // finished; rethrows a child error
+```
+
+- **Attachment**: `go` between `scope_begin` and `scope_end` attaches
+  to that scope; with no open scope it attaches to the root scope
+  main's end drains (the pre-scope semantics, unchanged). Scopes nest;
+  `scope_end` must be called by the opening task, innermost first.
+- **Join**: `scope_end` blocks until every attached task — and,
+  transitively, every task of scopes opened inside — has finished. The
+  join always completes before it throws, so nothing leaks.
+- **Error**: a member's UNCAUGHT error is captured (as text) and
+  cancels its siblings — the failed-child rule; `scope_end` rethrows
+  the first one (`catch (const char *)`). Root tasks keep the
+  abort-on-uncaught default.
+- **Cancel**: `madc::scope_cancel(s)` requests cancellation of the
+  scope's whole subtree and returns immediately (any task may call
+  it). Every member's next blocking verb — `chan_send`/`chan_recv`/
+  `chan_select`, `sleep_ms`, channel reads — throws
+  `"madc: task cancelled"`, before parking and on resume; a parked
+  member (even a sleeper) wakes NOW. Sticky: cleanup after
+  cancellation must not use blocking verbs. A task spawned into a
+  cancelled scope is born cancelled. `yield()` is NOT a cancellation
+  point; compute loops poll **`madc::cancelled()`** — true when this
+  task, or any scope it currently has open, is cancel-requested (the
+  opener of a cancelled scope polls true, and recovers after
+  `scope_end`).
+- A cancelled `scope_end` throws the cancelled text after joining;
+  members that never reach a cancellation point keep the join waiting
+  (the Kotlin behavior).
+
 ## Contracts and knobs
 
 - **Thread-safety contract**: one OS thread, cooperative. Tasks

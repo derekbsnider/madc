@@ -269,6 +269,30 @@ struct ChanEntry {
 std::map<int64_t, ChanEntry> g_chans;
 int64_t g_next_chan = 1;
 
+// The cancellation gate (MT-3): every BLOCKING verb throws THE cancelled
+// literal before parking and on resume — the chain predicate, so a
+// cancelled scope's opener throws too. Non-blocking verbs (try_recv, len,
+// close, yield) are not cancellation points.
+void throw_if_task_cancelled(void)
+{
+	if (__madc_task_cancelled())
+		__madc_throw_cstr(__madc_task_cancelled_text());
+}
+
+// Remove a waiter record from its queue if still present (MT-3): a
+// cancel-woken task was never popped by a deliverer, and its record — on
+// the frame the cancel throw is about to unwind — must not outlive it.
+// Absent is fine: a delivery or a close popped it first.
+void remove_waiter(std::deque<ChanWaiter *> &q, ChanWaiter *w)
+{
+	for (std::deque<ChanWaiter *>::iterator it = q.begin();
+	     it != q.end(); ++it)
+		if (*it == w) {
+			q.erase(it);
+			return;
+		}
+}
+
 // Pop the next DELIVERABLE recv waiter. A select waiter whose group already
 // fired is a HUSK — its task is awake and will remove the record when it
 // resumes (records live on the parked stack, so they stay valid through
@@ -366,6 +390,7 @@ bool poll_readable(intptr_t handle)
 
 void wait_readable(intptr_t handle)
 {
+	throw_if_task_cancelled();
 	if (io_probe_readable(handle))
 		return;
 	IoWaiter me;
@@ -375,6 +400,8 @@ void wait_readable(intptr_t handle)
 	__madc_task_park();
 	// Eager removal — no registered pointer outlives this frame.
 	io_unregister(&me);
+	if (!me.fired)
+		throw_if_task_cancelled();	// cancel-woken, not readable
 }
 
 } // namespace taskio
@@ -394,6 +421,7 @@ int64_t chan_make(int64_t capacity)
 
 bool chan_send(int64_t h, value &v)
 {
+	throw_if_task_cancelled();
 	MadcChan *c = chan_of(h, "send");
 	if (c->closed)
 		__madc_throw_cstr("send on closed channel");
@@ -413,6 +441,13 @@ bool chan_send(int64_t h, value &v)
 	me.val = v;
 	c->send_waiters.push_back(&me);
 	__madc_task_park();
+	if (me.ok)
+		return true;	// the value was taken — completion wins; a
+				// pending cancel throws at the NEXT verb
+	if (__madc_task_cancelled()) {
+		remove_waiter(c->send_waiters, &me);
+		__madc_throw_cstr(__madc_task_cancelled_text());
+	}
 	if (me.woken_closed)
 		__madc_throw_cstr("send on closed channel");
 	return true;
@@ -420,6 +455,7 @@ bool chan_send(int64_t h, value &v)
 
 bool chan_recv(value &out, int64_t h)
 {
+	throw_if_task_cancelled();
 	MadcChan *c = chan_of(h, "recv");
 	int r = chan_poll_recv(c, &out);
 	if (r == 1)
@@ -433,6 +469,12 @@ bool chan_recv(value &out, int64_t h)
 	me.slot = &out;
 	c->recv_waiters.push_back(&me);
 	__madc_task_park();
+	if (me.ok)
+		return true;	// delivered — completion wins
+	if (__madc_task_cancelled()) {
+		remove_waiter(c->recv_waiters, &me);
+		__madc_throw_cstr(__madc_task_cancelled_text());
+	}
 	if (me.woken_closed) {
 		out = value();
 		return false;
@@ -591,6 +633,9 @@ int64_t chan_select(value &out, value &chans)
 				out = value();
 			return grp.fired_index;
 		}
+		// Cancel-woken (nothing fired): every record is already off
+		// the queues/registry (the eager removal above).
+		throw_if_task_cancelled();
 		// Woken by a close: rescan (a buffer may have filled
 		// meanwhile; all-dead returns -1 above).
 	}
@@ -637,6 +682,58 @@ void sleep_ms(int64_t ms)
 int64_t task_live()
 {
 	return (int64_t)__madc_task_live();
+}
+
+// ---------------------------------------------------------------------------
+// Structured scopes + cancellation (MT-3) — the handle layer over the
+// rt_task.c seams (the chan registry idiom: int64 handles, immortal-literal
+// throws). The <ns_madc> declarations carry the full contract.
+// ---------------------------------------------------------------------------
+
+namespace {
+std::map<int64_t, void *> g_scopes;
+int64_t g_next_scope = 1;
+}
+
+int64_t scope_begin()
+{
+	void *s = __madc_scope_begin();
+	int64_t h = g_next_scope++;
+	g_scopes[h] = s;
+	return h;
+}
+
+void scope_end(int64_t handle)
+{
+	std::map<int64_t, void *>::iterator it = g_scopes.find(handle);
+	if (it == g_scopes.end())
+		__madc_throw_cstr("scope_end: bad scope handle");
+	void *s = it->second;
+	// Validate-then-consume: an ordering refusal must leave the handle
+	// usable (the rt throw would longjmp past this frame AFTER the
+	// registry forgot a still-open scope).
+	int rc = __madc_scope_end_check(s);
+	if (rc == 1)
+		__madc_throw_cstr("scope_end: only the opening task may"
+				  " end a scope");
+	if (rc == 2)
+		__madc_throw_cstr("scope_end: not the innermost open scope");
+	g_scopes.erase(it);
+	__madc_scope_end(s);	// joins; may throw a member error / the
+				// cancelled literal AFTER consuming the scope
+}
+
+void scope_cancel(int64_t handle)
+{
+	std::map<int64_t, void *>::iterator it = g_scopes.find(handle);
+	if (it == g_scopes.end())
+		__madc_throw_cstr("scope_cancel: bad scope handle");
+	__madc_scope_cancel(it->second);
+}
+
+bool cancelled()
+{
+	return __madc_task_cancelled() != 0;
 }
 
 } // namespace madc
