@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+- **`scope { ... }` blocks + `await` keywords (MT-5, 2026-08-27)**: the
+  structure spellings, contextual under `--std=madc` only (the MT-1
+  error-shape rule — never reserved: a declared `scope`/`await` name
+  always wins and strict C/C++ modes are byte-identical).
+  `scope { ... }` is the structured-concurrency block: `go` inside
+  attaches (the Kotlin attachment), blocks nest, and the block's end
+  JOINS every member then rethrows the first member error — exactly
+  `madc::scope_end`'s contract, lowered by the CIR builder to the new
+  rt pair `__madc_scope_block_enter/exit` riding the MT-3 seams. A
+  throw ESCAPING the block quietly abandons the scope mid-unwind
+  (members cancelled and joined — parking there is safe, the in-flight
+  exception is per-context state; the in-flight error wins) through a
+  registration on the exception runtime's cleanup stack (new
+  `__madc_cleanup_remove`, the fourth conscious host-consumer
+  widening); a throw CAUGHT INSIDE the block never touches the scope
+  (the try-mark discipline). `return`/`goto` inside the block, and a
+  `break`/`continue` that would cross it (no loop/switch opened inside
+  encloses them), are refused at parse time; early-exit support is a
+  named residue. The handle is deliberately not spelled — cancellable
+  jobs keep the publics; `madc::cancelled()` serves polling.
+  `await <chan-expr>` is Go's `<-ch` as a keyword: blocks until a value
+  arrives, a closed drained channel yields the zero value; sugar over
+  THE one recv implementation through the thin extern-C machinery seat
+  `__madc_chan_await`. Two statement shapes ship — `v = await ch;` and
+  bare `await ch;` (the done-channel wait); the declaration-initializer
+  form and deeper expression positions refuse loud (they unlock with L3
+  value-by-value returns), and a scalar target refuses at parse time.
+  One construction owner (`Program::make_await_token`; new fulltest
+  gate `check-await-one-builder.sh`, negative-controlled). The `select`
+  KEYWORD is deferred by ruling: Go's `case v := <-ch:` grammar does
+  not transplant into a C statement grammar without inventing a non-Go
+  spelling — `madc::chan_select` + `await` cover fan-in. New tests:
+  `testscopekw` (six deterministic-schedule legs, quiet-stderr gate),
+  `testawait`, and three `.expect_err` refusal reducers;
+  testgoident/testgogate grow scope/await arms. Docs:
+  `docs/language/tasks.md` keywords section; design doc §MT-5.
+
 - **Structured task scopes + cancellation (MT-3, 2026-08-27)**: the
   task surface gets Kotlin-shaped structure over Go's spelling. New
   publics: `madc::scope_begin()` / `scope_end(h)` / `scope_cancel(h)` /

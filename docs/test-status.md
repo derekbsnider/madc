@@ -1,6 +1,47 @@
 # Test Status
 
-> **Current (2026-08-27, MT-3 structured scopes + cancellation —
+> **Current (2026-08-27, MT-5 scope/await keywords —
+> feature/mt5-keywords merge wave):** the structure spellings land as
+> CONTEXTUAL keywords under `--std=madc` (the MT-1 error-shape rule —
+> never reserved; declared names win, strict modes byte-identical).
+> **`scope { ... }`**: the structured-concurrency block — `go` inside
+> attaches, the block's end joins every member and rethrows the first
+> member error (madc::scope_end's contract); lowered to the NEW rt pair
+> `__madc_scope_block_enter/exit` riding the MT-3 seams. A throw
+> ESCAPING the block quietly abandons the scope mid-unwind (members
+> cancelled + JOINED — parking mid-unwind is safe, the in-flight
+> exception is per-context state; the error wins) via a cleanup-stack
+> registration; NEW `__madc_cleanup_remove` (rt_except.c, the FOURTH
+> conscious host-consumer widening — top-pop is wrong when an enclosing
+> try's body locals registered above the entry). The try MARK
+> discipline gives nesting for free: a throw caught INSIDE the block
+> never touches the scope. return/goto in the block, and
+> break/continue that would CROSS it (no loop/switch opened inside —
+> RAII parse_loop_depth guards in the four loop parsers; records tagged
+> with cur_func_name so lambda bodies are never misjudged), are parse
+> errors; early-exit support = named residue. **`await ch`**: Go's
+> `<-ch` — blocks, closed-and-drained yields the ZERO value; sugar over
+> THE one recv via the extern-C machinery seat `__madc_chan_await`.
+> Two shapes ship: `v = await ch;` (claimed at STATEMENT level — the
+> value carrier's operator= machinery resolves assignment inside the
+> ladder first) and bare `await ch;` (statement head — the identifier
+> dispatch otherwise swallowed the two-identifier shape SILENTLY);
+> decl-init + deeper positions refuse loud (L3 unlocks them); scalar
+> targets refuse at parse time. ONE construction owner
+> (Program::make_await_token — the draft's 3 inline copies folded by
+> the pre-merge dupaudit; NEW gate check-await-one-builder.sh,
+> negative-controlled; shared eligibility test =
+> contextual_name_unclaimed). `select` keyword DEFERRED by ruling
+> (Go's case grammar doesn't transplant; chan_select + await cover
+> fan-in). NEW tests: testscopekw (six deterministic-schedule legs +
+> expect_quiet), testawait (assign/bare/closed-zero/parked recv),
+> testscopereturn + testawaitexpr + testawaittarget (.expect_err
+> refusal reducers); testgoident/testgogate grow scope/await arms.
+> Battery on final content: fulltest rc=0 (all gates) + JIT **1180
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1206) + EXE
+> **1131 passed / 0 failed** + OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-3 structured scopes + cancellation —
 > feature/mt3-scopes-cancel merge wave):** tasks get Kotlin-shaped
 > structure over Go's spelling. NEW publics: `madc::scope_begin()` /
 > `scope_end(h)` / `scope_cancel(h)` / `cancelled()`. `go` attaches the
