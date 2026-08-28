@@ -7558,14 +7558,24 @@ static void register_basic_class_pattern_method(
     spec.is_static = (pattern.flags & vfSTATIC) != 0;
     spec.is_operator = spec.display_name.compare(0, 8, "operator") == 0;
     spec.bind_cpp_symbol = !pattern.is_member_template;
-    if ( !pattern.local_emit_name.empty() )
+    if ( pattern.kind == Program::ClassMethodKind::Constructor )
+	{
+	    // Live parity (TokenCLASS::parse's ctor arm): a ctor REGISTERED
+	    // under any symbol other than the canonical Class__Class carries
+	    // that symbol on local_emit_name — the FuncDef-only ctor emitters
+	    // (ctor_call_symbol: the memberwise-copy / shim / global /
+	    // default-construct paths hold no Variable) otherwise degrade to
+	    // the canonical rank and call the WRONG overload ("too many
+	    // arguments" from c2mir on a rebound __oN copy ctor).
+	    if ( symbol != owner->name + "__" + owner->name )
+		spec.local_emit_name = symbol;
+	}
+    else if ( !pattern.local_emit_name.empty() )
 	{
 	    std::string pattern_emit_symbol = owner->name + "__"
 		+ basic_class_pattern_rebind_root_constructor_name(
 		    binding, owner, pattern.kind, pattern.local_emit_name); // allowed-exception: normalized pattern recipe
-	    if ( pattern.kind != Program::ClassMethodKind::Constructor
-	      || pattern_emit_symbol != symbol )
-		spec.local_emit_name = pattern_emit_symbol;
+	    spec.local_emit_name = pattern_emit_symbol;
 	}
     pgm.register_class_method_signature(owner, mvar, spec);
 
@@ -23211,6 +23221,12 @@ void Program::flush_forest_pending_globals()
 			if ( !vector_contains_variable(pm.owner->ctors, var) )
 			    pm.owner->ctors.push_back(var);
 			pm.owner->has_user_ctor = true;
+			// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+			if ( cpp_ && *cpp_
+			  && pm.owner->name.find(cpp_) != std::string::npos )
+			    fprintf(stderr, "[ctor-push] mtmpl-skel cls=%s var=%s\n",
+				    pm.owner->name.c_str(), var->name.c_str());
 		    }
 		    DBG(std::cout << "flush_forest_pending_globals: member"
 			" template of " << pm.owner->name
@@ -57920,6 +57936,13 @@ bool Program::instantiate_member_ctor_template_candidate(
     }
     if ( !vector_contains_variable(cdd->ctors, inst_var) )
 	cdd->ctors.push_back(inst_var);
+    {
+	// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+	static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+	if ( cpp_ && *cpp_ && cdd->name.find(cpp_) != std::string::npos )
+	    fprintf(stderr, "[ctor-push] mtmpl-inst cls=%s var=%s\n",
+		    cdd->name.c_str(), inst_var->name.c_str());
+    }
     return true;
 }
 
@@ -58985,6 +59008,11 @@ static void register_skipped_class_template_function(
 	if ( !vector_contains_variable(owner->ctors, var) )
 	    owner->ctors.push_back(var);
 	owner->has_user_ctor = true;
+	// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+	static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+	if ( cpp_ && *cpp_ && owner->name.find(cpp_) != std::string::npos )
+	    fprintf(stderr, "[ctor-push] mtmpl-reg cls=%s var=%s\n",
+		    owner->name.c_str(), var->name.c_str());
     }
     // (member_template_owner — every member template — and body retention for
     // a body-bearing pattern — member_template_decl — are stamped by
@@ -59638,6 +59666,11 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
 	    if ( !vector_contains_variable(owner->ctors, mvar) )
 		owner->ctors.push_back(mvar);
 	    owner->has_user_ctor = true;
+	    // Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+	    static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+	    if ( cpp_ && *cpp_ && owner->name.find(cpp_) != std::string::npos )
+		fprintf(stderr, "[ctor-push] ool-def cls=%s var=%s\n",
+			owner->name.c_str(), mvar->name.c_str());
 	}
 	else
 	{

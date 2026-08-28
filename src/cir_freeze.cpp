@@ -3245,8 +3245,21 @@ void CirFrozenForest::materialize_pass()
 						cdd, dispname)] = mi;
 				if (!dispname.empty())
 					cdd->method_map[dispname] = mv;
-				if (is_ctor)
+				if (is_ctor) {
 					cdd->ctors.push_back(mv);
+					// Env-gated probe (MADC_COPY_PROBE=<substr>):
+					// the methodrec-arm ctor push — which restore
+					// path populates a class's ctor set.
+					static const char *cpp_ =
+						::getenv("MADC_COPY_PROBE");
+					if (cpp_ && *cpp_ && cdd->name.find(cpp_)
+							     != std::string::npos)
+						fprintf(stderr, "[ctor-push] matrec"
+							" cls=%s var=%s fd=%p len='%s'\n",
+							cdd->name.c_str(),
+							mv->name.c_str(), (void *)fd,
+							fd->local_emit_name.c_str()); // allowed-exception: debug print, not symbol build
+				}
 				// v23: stage the method's default-arg token runs for
 				// the flush (parseExpression re-runs inside the
 				// owner's class + namespace scope). v24: not for the
@@ -3380,8 +3393,15 @@ void CirFrozenForest::materialize_pass()
 				method_disp_first_rec[std::make_pair(
 					pi.cdd, pi.disp)] = pi.rec_index;
 		}
-		if (pi.mflags & madc::dis::MF_CTOR)
+		if (pi.mflags & madc::dis::MF_CTOR) {
 			pi.cdd->ctors.push_back(mv);
+			// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+			if (cpp_ && *cpp_
+			    && pi.cdd->name.find(cpp_) != std::string::npos)
+				fprintf(stderr, "[ctor-push] import cls=%s var=%s\n",
+					pi.cdd->name.c_str(), mv->name.c_str());
+		}
 	}
 
 	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their

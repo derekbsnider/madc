@@ -1,0 +1,28 @@
+// By-value return of a struct with a std::vector member: the memberwise
+// retbuf copy must call the vector's COPY ctor (the ranked __oN overload),
+// not the canonical default-ctor symbol. Under a forest bind the class-
+// pattern rebind registered ranked ctors WITHOUT local_emit_name, so
+// ctor_call_symbol degraded to the canonical rank and c2mir rejected the
+// two-arg call ("too many arguments") — the packed/headerless lanes' shape
+// (s141; reducer tmp/pk_red1.mad). Oracle: g++/clang++ print n=1.
+
+#include <vector>
+
+struct S {
+	std::vector<int> v;
+	S() {}
+};
+
+static S make()
+{
+	S s;
+	s.v.push_back(1);
+	return s;
+}
+
+int main()
+{
+	S a = make();
+	printf("n=%d\n", (int)a.v.size());
+	return 0;
+}

@@ -12616,6 +12616,36 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		FuncDef *copy_ctor = class_copy_ctor_def(mc);
 		if (!copy_ctor) continue;
 		std::string sym = ctor_call_symbol(mc, copy_ctor);
+		// Env-gated probe (MADC_COPY_PROBE=<substr>): the member-wise
+		// retbuf copy's ctor selection — which class OBJECT the member
+		// typed to, how many ctors it exposes, and the symbol fields
+		// the chosen FuncDef carries (the wrong-arity forest shape).
+		{
+			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+			if (cpp_ && *cpp_
+			    && mc->name.find(cpp_) != std::string::npos) {
+				fprintf(stderr, "[copy-probe] member=%s mc=%p(%s)"
+					" ctors=%zu fd=%p params=%zu len='%s'"
+					" es='%s' sym=%s\n",
+					m.first.c_str(), (void *)mc,
+					mc->name.c_str(), mc->ctors.size(),
+					(void *)copy_ctor,
+					copy_ctor->parameters.size(),
+					copy_ctor->local_emit_name.c_str(), // allowed-exception: debug print, not symbol build
+					copy_ctor->emit_symbol.c_str(),
+					sym.c_str());
+				for (size_t ci = 0; ci < mc->ctors.size(); ++ci) {
+					Variable *cv = mc->ctors[ci];
+					FuncDef *cf = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+					fprintf(stderr, "[copy-probe]   ctor[%zu]"
+						" var='%s' fd=%p params=%zu len='%s'\n",
+						ci, cv ? cv->name.c_str() : "<null>",
+						(void *)cf,
+						cf ? cf->parameters.size() : 0,
+						cf ? cf->local_emit_name.c_str() : ""); // allowed-exception: debug print, not symbol build
+				}
+			}
+		}
 		bool external = !copy_ctor->emit_symbol.empty();
 		if (external)
 			need_output_extern(sym.c_str(), false,
