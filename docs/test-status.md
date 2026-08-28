@@ -1,6 +1,27 @@
 # Test Status
 
-> **Current (2026-08-28, the variadic-class arc —
+> **Current (2026-08-28, SMAUG restored + gated —
+> feature/smaug-fntypedef merge wave):** the real MadSMAUG 51-TU
+> `--project` (upstream/smaug1.8 via compile_commands.json) compiles,
+> links, JIT-boots to "Realms of Despair ready", and serves the full
+> login greeting with ZERO diagnostics — restored from a SIGSEGV
+> shipped in every archived release v0.69.0–v0.96.0 (a function
+> declared THROUGH a function typedef — SMAUG's `DECLARE_DO_FUN` —
+> registered as an 8-byte storage variable whose ->data the July-31
+> ctor_hidden_vbase_owner probe read as a Method*). Fixes, each with
+> a reducer: parser — a zero-star fn-typedef declarator declares a
+> FUNCTION, one star stays a pointer variable (testc89fntypedef);
+> CIR — C-mode functions never enter the ctor/vbase probe; c2mir —
+> default warnings match gcc's default (sign-only pointee args,
+> ptr-vs-null-zero ordered compares; testcwarnparity, .expect_quiet).
+> `scripts/smaug_gate.sh` now boots the REAL SMAUG inside fulltest,
+> two-sided (~10 s; skips loudly without the sibling checkout). FULL
+> push-gate battery on final content @6ea621f2: fulltest rc=0 (all
+> gates incl. smaug_gate) + JIT **1201 passed / 0 failed / 0 timed
+> out / 9 skipped** + EXE **1152 / 0** + OBJ **1152 / 0** + release
+> rc=0 + packed **1201 / 0** + headerless **1174 / 0 / 36 skipped**.
+>
+> **Previous (2026-08-28, the variadic-class arc —
 > feature/variadic-class-tpl merge wave):** `bin/madc
 > examples/embed_hello.cpp` compiles AND RUNS at g++ parity; the
 > examples gate carries both legs. Twelve arc fixes (ns-map clobber
