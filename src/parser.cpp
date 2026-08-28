@@ -11941,6 +11941,12 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 	TokenVar *rv = dynamic_cast<TokenVar *>(recv);
 	if ( rv && rv->var.type && rv->var.type->is_function() )
 		return true;
+	// A receiver whose EXPRESSION type is function-shaped is callable
+	// regardless of token shape: `((int(*)(void))p)()` leaves a TokenCast
+	// to DataDefFPTR on the stack (c-testsuite 00210 — the `()` was
+	// silently dropped and the pointer value itself assigned, exit 0).
+	if ( recv->datadef() && recv->datadef()->is_function() )
+		return true;
 	return false;
 }
 
@@ -37703,16 +37709,26 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    bool is_genuine_fptr =
 				call_expr->type() == TokenType::ttMember
-				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL;
+				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
+				// A CAST to a fn-ptr type followed by `(` is
+				// unambiguously a call — a cast result has no
+				// grouping/identifier reading (the SMAUG
+				// false-match concern below is about plain
+				// names and subscripts). c-testsuite 00210:
+				// `((int(*)(void))p)()` silently dropped the
+				// call and assigned the pointer, exit 0.
+				|| call_expr->as_cast_tok() != NULL;
 			    if ( !is_genuine_fptr )
 				fptr_type = NULL;
 			}
-			// Only trigger for: ternary dispatch or deref fptr.
-			// Members and subscripts are handled by their own dedicated
-			// fptr paths earlier in the code. The generic path's
-			// is_function() check is too aggressive for those.
+			// Only trigger for: ternary dispatch, deref fptr, or a
+			// cast to fn-ptr. Members and subscripts are handled by
+			// their own dedicated fptr paths earlier in the code.
+			// The generic path's is_function() check is too
+			// aggressive for those.
 			if ( fptr_type && !terq
-			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL )
+			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL
+			  && call_expr->as_cast_tok() == NULL )
 			    fptr_type = NULL;
 			if ( fptr_type )
 			{
