@@ -618,12 +618,10 @@ extern "C" void __madc_timersub(void *left, void *right, void *result)
 // so transpiled code (c2mir) can call them via dlsym.
 // -----------------------------------------------------------------------
 
-// __builtin_object_size: compile-time only — runtime always returns -1 (unknown)
-extern "C" unsigned long __madc_builtin_object_size(void *ptr, int mode)
-{
-    (void)ptr; (void)mode;
-    return (unsigned long)-1;
-}
+// __builtin_object_size moved to src/rt/rt_bos.c (forest-carriers S5):
+// a -static-libmadc image needs it inside itself (fortify headers call
+// it), so it lives on the AOT ledger — dual-built into the host from
+// there. One implementation; the C++ copy that lived here is deleted.
 
 // __builtin___strcpy_chk family — bounds-checked string operations
 extern "C" char *__madc_builtin_strcpy_chk(char *dst, const char *src, size_t size)

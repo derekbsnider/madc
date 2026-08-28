@@ -32,6 +32,15 @@
 #else
 #include <ucontext.h>
 #include <time.h>	/* the real time source: clock_gettime + nanosleep */
+#if defined(__APPLE__)
+/* Apple marks the whole ucontext family deprecated (10.6+) yet ships no
+ * replacement stack-switch primitive; _XOPEN_SOURCE above already selects
+ * the full prototypes. The deprecation is an Apple policy note, not a
+ * correctness signal — the Mac lane battery is the runtime oracle, and a
+ * darwin fiber backend is the named alternative if runtime disproves it.
+ * Suppressed file-wide: every context verb below carries the attribute. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #endif
 
 // ---------------------------------------------------------------------------

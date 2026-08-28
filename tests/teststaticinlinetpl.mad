@@ -1,0 +1,20 @@
+// INTERNAL LINKAGE BEATS VAGUE LINKAGE (g++/clang++ canon): a file-scope
+// `static` function template's instantiation and a `static inline` body
+// are TU-LOCAL symbols (nm shows lowercase `t`), never weak — weak
+// requires external linkage. madc used to stamp the instantiation
+// vague_linkage AND internal_linkage, emitting linkonce + N_STATIC, and
+// c2mir's gcc-parity check ("weak declaration of X must be public")
+// walled the compile — the same collision mingw's `static __inline__`
+// stdio bodies hit across the whole wine lane (75 tests, s143). Oracle:
+// g++ and clang++ both compile the .cpp twin and print 42 / 10.
+
+template <class T> static T twice(T x) { return x + x; }
+
+static inline int half(int x) { return x / 2; }
+
+int main()
+{
+    println("{}", twice(21));
+    println("{}", half(20));
+    return 0;
+}

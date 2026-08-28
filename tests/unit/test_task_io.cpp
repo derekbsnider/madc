@@ -134,7 +134,8 @@ TEST_CASE("host wait: readable-now returns true without parking") {
     int fds[2];
     REQUIRE(::pipe(fds) == 0);
     CHECK(::write(fds[1], "x", 1) == 1);
-    CHECK(madc::taskio::host_wait_readable(fds[0]));
+    CHECK(madc::taskio::host_wait_readable(fds[0])
+          == madc::taskio::host_wake::fired);
     char b[4];
     CHECK(::read(fds[0], b, sizeof b) == 1);
     ::close(fds[0]);
@@ -151,11 +152,24 @@ TEST_CASE("host wait: the fd firing beats the synthetic wake (probe pass "
     // The writer runs while the host is parked: its write makes the fd
     // readable AND its exit is activity — the zero-timeout probe pass
     // runs first, so the HOST comes back FIRED (true), not synthetic.
-    CHECK(madc::taskio::host_wait_readable(fds[0]));
+    CHECK(madc::taskio::host_wait_readable(fds[0])
+          == madc::taskio::host_wake::fired);
     CHECK(g_order == "w");
     char b[4];
     CHECK(::read(fds[0], b, sizeof b) == 1);
     __madc_task_join_all();
+    ::close(fds[0]);
+    ::close(fds[1]);
+}
+
+TEST_CASE("host wait: a bounded park with no fd and no activity wakes on "
+	  "the DEADLINE (the win-VT resize cadence; distinct from "
+	  "synthetic)") {
+    int fds[2];
+    REQUIRE(::pipe(fds) == 0);
+    CHECK(madc::taskio::host_wait_readable(fds[0], 30)
+	  == madc::taskio::host_wake::deadline);
+    CHECK(!madc::taskio::poll_readable(fds[0]));
     ::close(fds[0]);
     ::close(fds[1]);
 }
@@ -169,7 +183,8 @@ TEST_CASE("host wait: activity with no fd = the synthetic wake (unfired, "
     // The worker yields once and finishes — switches happened since the
     // host parked, the pipe stays empty: the quiescent point wakes the
     // host SYNTHETICALLY (the read_keys ran->wake seam, scheduler-side).
-    CHECK(!madc::taskio::host_wait_readable(fds[0]));
+    CHECK(madc::taskio::host_wait_readable(fds[0])
+          == madc::taskio::host_wake::synthetic);
     CHECK(g_order == "t");
     CHECK(!madc::taskio::poll_readable(fds[0]));
     __madc_task_join_all();

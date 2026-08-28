@@ -1,0 +1,43 @@
+#!/bin/bash
+# pre-push — the lane-freshness PUSH gate (owner directive 2026-08-28:
+# "we need most of these tests before we can PUSH anything to github").
+#
+# Pushing develop or master requires every push-gated lane in
+# docs/lane-status.tsv to be FRESH (green on code-equivalent content —
+# scripts/lane_ledger.sh check --promote). Feature branches push freely:
+# the gate protects the shared integration branches, not WIP.
+#
+# Fail-closed: a gate that cannot run blocks the push. The loud escape
+# hatch for a genuine emergency is MADC_PUSH_NOGATE=1 — it prints what
+# it skipped, so the bypass is never silent.
+#
+# Installed via `git config core.hooksPath scripts/git-hooks` (per-clone;
+# scripts/resume.sh re-asserts it). Hook stdin: one line per ref —
+# "<local ref> <local sha> <remote ref> <remote sha>".
+set -u
+cd "$(git rev-parse --show-toplevel)"
+
+gated=0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+		refs/heads/develop|refs/heads/master) gated=1;;
+	esac
+done
+
+[ "$gated" -eq 0 ] && exit 0
+
+if [ "${MADC_PUSH_NOGATE:-}" = "1" ]; then
+	echo "pre-push: MADC_PUSH_NOGATE=1 — lane gate SKIPPED for a" \
+	     "develop/master push (emergency bypass; re-run the lanes)" >&2
+	exit 0
+fi
+
+echo "pre-push: develop/master push — checking lane freshness" \
+     "(docs/lane-status.tsv)" >&2
+if ! timeout 60 bash scripts/lane_ledger.sh check --promote >&2; then
+	echo "pre-push: BLOCKED — stale lane(s) above; run them on current" \
+	     "content and record with scripts/lane_ledger.sh, or (emergency" \
+	     "only) MADC_PUSH_NOGATE=1 git push" >&2
+	exit 1
+fi
+exit 0

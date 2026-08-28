@@ -24,6 +24,13 @@ cd "$ROOT" || exit 1
 
 bar() { printf '\n=== %s ===\n' "$1"; }
 
+# core.hooksPath is per-clone config — a fresh clone (or a container rebuild)
+# silently loses the pre-push lane gate without this re-assert.
+if [ "$(git config core.hooksPath)" != "scripts/git-hooks" ]; then
+	git config core.hooksPath scripts/git-hooks
+	echo "hooksPath:   re-asserted scripts/git-hooks (pre-push lane gate was UNARMED)"
+fi
+
 bar "REPO ($ROOT)"
 echo "branch:      $(git rev-parse --abbrev-ref HEAD)"
 echo "HEAD:        $(git log --oneline -1)"

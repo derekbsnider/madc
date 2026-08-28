@@ -552,8 +552,15 @@ public:
     // CIR builder emits these with the `linkonce` attribute so the native
     // object capture binds them STB_WEAK — identical per-TU copies merge at
     // a multi-.o link (first wins) instead of colliding as duplicate strong
-    // definitions [ELF-completion S4].
-    bool is_linkonce() const { return tsubst_source != NULL || vague_linkage; }
+    // definitions [ELF-completion S4]. INTERNAL LINKAGE WINS (g++/clang++
+    // canon: a `static` template instantiation or `static inline` body is a
+    // TU-LOCAL symbol, never weak — weak requires external linkage, and
+    // c2mir's gcc-parity check rejects the pair). One gate here guards
+    // every producer of the vague stamp — the mingw `static __inline__`
+    // stdio bodies (the wine lane's 75-test wall) and the `static` template
+    // reducer both land on it (tests/teststaticinlinetpl).
+    bool is_linkonce() const
+	{ return !internal_linkage && (tsubst_source != NULL || vague_linkage); }
     // C internal linkage: a file-scope `static` (incl. `static inline`)
     // function. The definition is TU-LOCAL — the CIR builder emits N_STATIC
     // so c2mir never exports the MIR item (STB_LOCAL in the object capture);

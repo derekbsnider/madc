@@ -5387,7 +5387,8 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
-		    const std::vector<cir_ledger_module> *ledger)
+		    const std::vector<cir_ledger_module> *ledger,
+		    bool progress)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -5599,7 +5600,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 					   append ? 15 : 0))
 			    fprintf(stderr, "%s: mir cache: segment add "
 				    "failed — blob skipped\n", source_name);
-			else
+			else if (progress)
 			    fprintf(stderr, "%s: mir cache: %zu-byte module "
 				    "blob packed\n", source_name, mblob.size());
 		    }
@@ -5644,7 +5645,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    }
 		    // Status to stderr: program stdout stays clean for the
 		    // --freeze-run child's output.
-		    if (prog->pack_recording)
+		    if (!progress)
+			;			// library Run verb: silent
+		    else if (prog->pack_recording)
 			fprintf(stderr, "Froze %s: %zu units, %zu records, "
 				"%zu tokens, %zu decl-index entries, "
 				"%zu branch macros -> %s%s\n",

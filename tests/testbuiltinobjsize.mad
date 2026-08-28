@@ -1,0 +1,24 @@
+/* __builtin_object_size runtime fallback semantics (rt_bos.c — the AOT
+ * ledger home): madc does no compile-time object-size analysis, so every
+ * answer is "unknown", which per gcc's documented contract is (size_t)-1
+ * for modes 0/1 (maximum estimate) and 0 for modes 2/3 (minimum). The
+ * old C++-side copy returned -1 for ALL modes — wrong for 2/3, where -1
+ * reads as "infinite minimum" and defeats the fortify check. Oracle:
+ * gcc -O0 on the .c twin (opaque pointer, no inlining) prints 1 1 1 1. */
+#include <stdio.h>
+
+void probe(void *p)
+{
+    printf("%d %d %d %d\n",
+	   __builtin_object_size(p, 0) == (unsigned long)-1 ? 1 : 0,
+	   __builtin_object_size(p, 1) == (unsigned long)-1 ? 1 : 0,
+	   __builtin_object_size(p, 2) == 0 ? 1 : 0,
+	   __builtin_object_size(p, 3) == 0 ? 1 : 0);
+}
+
+int main(void)
+{
+    int x = 0;
+    probe(&x);
+    return 0;
+}
