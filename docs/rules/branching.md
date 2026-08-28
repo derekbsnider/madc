@@ -40,3 +40,25 @@ longer measures the right thing:
   and implicit-decl handling — exactly the C89 SMAUG-class material madc
   exists for). Hence: gate = all class-(a) fixed = ≥1608 of the 1652
   in-scope tests, class-(c) formally skipped, class-(b) on the roadmap.
+
+## Why the lane-freshness push gate (2026-08-28)
+
+- Three lanes drifted silently in one month: SMAUG was red five weeks in
+  every shipped release (no lane compiled the artifact), the wine lane
+  accumulated 75 red tests from a July 24 emission change (the lane last
+  ran ~v0.92.1), and macOS went five releases with nothing darwin even
+  compiled (the MT arc's rt_task.c would not build there at first try).
+- The common failure: "promote tests everything" was a checklist, not a
+  mechanism — a rule without a gate decays. The ledger makes the claim
+  mechanical: a lane is FRESH iff no code content (src/ include/
+  third_party/ tests/ scripts/ tools/ examples/) changed since its
+  recorded green commit, so docs-only commits never stale a lane and any
+  code change stales every lane that has not re-run.
+- The gate rides the PUSH of develop/master (owner directive), not just
+  /promote, because develop is the integration branch other work builds
+  on — a red lane behind a pushed develop propagates.
+- The check runs its own negative control first (a stale row must block,
+  a fresh row must pass): a gate that cannot fail is not a gate. The
+  selftest is IN-PROCESS — its first version re-entered the script via
+  "$0" and fork-spiraled the QNAP into a hard reset (2026-08-28); the
+  tombstone comment in lane_ledger.sh marks the lesson.

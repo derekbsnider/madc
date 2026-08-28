@@ -1,0 +1,6 @@
+# lane	promote	last_green_commit	date	tally
+linux-battery	yes	0775cd84c51f	2026-08-28	fulltest 1203/0/9skip + exe 1154/0 + obj 1154/0 + release + packed 1203/0 + headerless 1176/0/36skip
+wine64	yes	0775cd84c51f	2026-08-28	1155/0/57skip (hosted PE, persistent wineserver)
+macos	yes	none	never	not yet run on modern content (last ~v0.92.1; lane firing now)
+c-testsuite	yes	none	never	lane being created (owner directive 2026-08-28)
+genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable

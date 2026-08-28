@@ -8,6 +8,13 @@
 - Keep `develop` stable — all tests must pass before merging
 - Merge feature branches into `develop` via PR when stable
 - `/release` cuts a versioned release ON `develop` — fine for milestones
+- Pushing `develop` or `master` requires the lane-freshness gate green:
+  `scripts/lane_ledger.sh check --promote` over `docs/lane-status.tsv` —
+  every push-gated lane ran green on code-equivalent content. The tracked
+  pre-push hook (`scripts/git-hooks/pre-push`, installed via
+  `git config core.hooksPath scripts/git-hooks`) enforces it; record lane
+  greens with `scripts/lane_ledger.sh record <lane> <tally>`. Feature
+  branches push freely. Emergency bypass `MADC_PUSH_NOGATE=1` is loud.
 - Do NOT promote `develop` → `master` (`/promote`) until the gcc-torture
   promote gate is met: ALL class-(a) standard-C failures fixed (≥1608 of the
   1652 in-scope tests), with the 33 class-(c) tests formally skipped per
