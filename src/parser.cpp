@@ -18297,6 +18297,24 @@ static Variable *rank_fn_overload_candidates(
 	    continue;
 	if ( explicit_template_args && !explicit_template_args->empty() )
 	{
+	    // Env-gated (MADC_OVL_PROBE2=<substr of candidate name>): the
+	    // explicit-prefix filter's inputs — recorded instance names vs
+	    // the call's explicit args (the std::get<0> ranking hunt).
+	    static const char *ovp2 = ::getenv("MADC_OVL_PROBE2");
+	    if ( ovp2 && *ovp2 && e.var
+	      && e.var->name.find(ovp2) != std::string::npos )
+	    {
+		fprintf(stderr, "[ovl2] cand=%s targs=", e.var->name.c_str());
+		for ( size_t ti = 0; ti < e.template_arg_names.size(); ++ti )
+		    fprintf(stderr, "'%s',", e.template_arg_names[ti].c_str());
+		fprintf(stderr, " expl=");
+		for ( size_t ti = 0; ti < explicit_template_args->size(); ++ti )
+		    fprintf(stderr, "'%s',",
+			    (*explicit_template_args)[ti]
+			    ? (*explicit_template_args)[ti]->name.c_str()
+			    : "(null)");
+		fprintf(stderr, "\n");
+	    }
 	    if ( e.template_arg_names.size() < explicit_template_args->size() )
 		continue;
 	    bool explicit_match = true;
@@ -53254,6 +53272,15 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	DBG_PACK("try_inst %s: extract_free_signature failed\n", key.c_str());
 	{ FTPROBE("exit-52831"); return false; }
     }
+    // Env-gated (MADC_FNTPL_PROBE): the CANDIDATE's parameter spellings —
+    // pairs the try_inst/EXIT lines with which overload they belong to.
+    if ( _ftp_on )
+    {
+	fprintf(stderr, "FNTPLPROBE   cand params:");
+	for ( size_t pi = 0; pi < ov.param_spellings.size(); ++pi )
+	    fprintf(stderr, " '%s'", ov.param_spellings[pi].c_str());
+	fprintf(stderr, "\n");
+    }
     // Classify each pack typeparam now that the parameter spellings are known.
     // A TRAILING DIRECT param pack (`_Args&&... __args` — the last param spelling
     // IS the pack) drives the legacy pack_elems trailing-absorption. A pack that
@@ -53641,6 +53668,18 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		if ( pgm.find_template_alias(pouter, ft.ns,
 			dynamic_cast<DataDefCLASS *>(ft.owner_class)) )
 		    continue;
+		// Env-gated diagnosis (MADC_FNTPL_PROBE): WHAT the unifier saw
+		// at this bail — the pattern core against the argument's
+		// concrete spelling (the tuple<_Elements...>&& hunt).
+		{
+		    static const char *ftp_u = ::getenv("MADC_FNTPL_PROBE");
+		    if ( ftp_u && *ftp_u && key.find(ftp_u) != std::string::npos )
+			fprintf(stderr, "FNTPLPROBE   unify-fail core='%s'"
+				" concrete='%s' arg_dd=%s acls=%d\n",
+				core.c_str(), concrete.c_str(),
+				arg_dd ? arg_dd->name.c_str() : "(null)",
+				(int)(dynamic_cast<DataDefCLASS *>(arg_dd) != NULL));
+		}
 		{ FTPROBE("exit-53188// template-id param the argument can't match"); return false; }
 	    }
 	}
@@ -53748,8 +53787,19 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	static const char *ftp = ::getenv("MADC_FNTPL_PROBE");
 	if ( ftp && *ftp && key.find(ftp) != std::string::npos )
-	    fprintf(stderr, "FNTPLPROBE  end key=%s ok=%d bound=%s\n",
-		    key.c_str(), (int)inst_ok, tc->var.name.c_str());
+	{
+	    std::map<std::string, std::vector<Program::NamespaceFnOverload>>
+		::iterator poi = pgm.namespace_fn_overload_sets.find(key);
+	    fprintf(stderr, "FNTPLPROBE  end key=%s ok=%d bound=%s ovset=%zu"
+		    " last=%s\n",
+		    key.c_str(), (int)inst_ok, tc->var.name.c_str(),
+		    poi != pgm.namespace_fn_overload_sets.end()
+			? poi->second.size() : (size_t)0,
+		    poi != pgm.namespace_fn_overload_sets.end()
+			    && !poi->second.empty()
+			    && poi->second.back().var
+			? poi->second.back().var->name.c_str() : "-");
+	}
     }
     return inst_ok;
 }
@@ -54491,6 +54541,22 @@ static bool instantiate_fn_template_binding(Program &pgm,
     for ( std::set<std::string>::const_iterator
 	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
 	inst_key += "#" + *t + "={}";
+    // A TEMPLATE-ID pack's ELEMENT TYPES are an instantiation axis with no
+    // `binding` entry either (only the single-MULTI tid pack aliases into
+    // pack_elems at entry; a SINGLE-element one stays here): without this
+    // fold, get<0>(tuple<const int&>) and get<0>(tuple<const string&>)
+    // COLLIDED on one memo slot, the second flavor "succeeded" by reusing
+    // the first's instance, and the call fell to the placeholder import
+    // (tests/testphpdumpiter's map<string,*> wall). An empty pack folds as
+    // the bare "@name=" (distinct from unbound).
+    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
+	    tp = tid_packs.begin(); tp != tid_packs.end(); ++tp )
+    {
+	inst_key += "@" + tp->first + "=";
+	for ( size_t e = 0; e < tp->second.size(); ++e )
+	    inst_key += (tp->second[e] ? tp->second[e]->name
+				       : std::string()) + "|";
+    }
     inst_key += ">";
     // fn_template_map[key] holds EVERY overload sharing the name; two
     // overloads with the SAME tparam binding (libc++ operator<<(ostream&,
