@@ -507,3 +507,72 @@ its cost class is already the accepted packed-launch latency; (a)
 imports a permanent maintenance frontier for one feature. The ruling is
 the owner's (banked as recon item 6's fork; madcide's Run row stays
 absent on win until it lands either way).
+
+### Benchmarks (2026-08-28, s143 — measured; wine steers, genuine-Windows is the oracle)
+
+Tools: `tmp/winfork_bench.c` (mingw, run under a persistent
+wineserver) and `tmp/freeze_bench.sh` (linux native, idle container,
+interleaved lanes). Raw logs on the container: `tmp/wb_all.log`,
+`tmp/freeze_bench.err`.
+
+**Windows primitives (wine 9.0, warm server):**
+
+| primitive | measured |
+|---|---|
+| bare `CreateProcess(self)` → child `main()` | **31 ms** avg (29.9–31.8, n=20) |
+| image base parent vs children | **identical** (0x140000000, all 20 — the fixed-VA premise held) |
+| 256 MB pagefile section: create+map | 0.25 ms |
+| parent one-time fill of the 256 MB arena | 105 ms (paid at parse, not per Run) |
+| child: spawn + `MapViewOfFileEx(FILE_MAP_COPY)` at the parent's VA + verify + COW-touch 1/16 pages | **41 ms total** (map 0.12 ms, `at_base=1`; touching 16 MB of pages ≈ 9 ms) |
+| `WriteProcessMemory` throughput | **0.48 GB/s** (256 MB = 519 ms) |
+
+**Freeze/thaw round-trip (linux native, vised.mad = 33 units, ~490 KB container):**
+
+| lane | per-Run wall |
+|---|---|
+| plain JIT (read+lex+parse+c2mir+run) | 66 ms |
+| `--run-frozen` (thaw+c2mir+run) | 62 ms |
+| `--run-frozen` + `--freeze-mir-cache` blob (skip c2mir) | **21 ms** |
+| one-time `--freeze` / with MIR blob | 109 ms / 156 ms |
+| `--freeze-run` end-to-end (freeze+re-exec+thaw+run) | 123 ms |
+
+**Readings:**
+
+- **(a) full self-copy is out on the numbers alone**: 31 ms spawn +
+  ~0.5 s per 256 MB of WriteProcessMemory under wine — before its
+  maintenance frontier is even priced in.
+- **(a′) COW section is the latency winner**: ~35–45 ms per Run flat,
+  arena-size-independent (COW faults scale only with pages the child
+  actually writes). Its cost is the allocation-discipline campaign:
+  the object graph must live in the section at a stable VA.
+- **(b) freeze-pipe is competitive and rides gated machinery**:
+  child-side thaw+MIR-cache+run is 21 ms (small case) + ~31 ms win
+  spawn ≈ 50–60 ms class. c2mir is the per-Run dominator everywhere,
+  so `--freeze-mir-cache` is load-bearing for (b) — without it a
+  SMAUG-scale Run pays ~7 s of c2mir in the child.
+- **BLOCKER for (b) at scale**: `--freeze`/`--freeze-run`/
+  `--run-frozen` do NOT compose with `--project` — the project branch
+  (src/madc.cpp ~1299) returns before the freeze machinery and the
+  flags are silently ignored (KG Gap `freeze_project_composition`).
+  The SMAUG big-case round-trip is unmeasurable until composition
+  lands (next wave: loud diagnostic at minimum).
+- Both (a′) and (b) clear the owner's ~150 ms cygwin-fork bar under
+  wine for small/medium programs; genuine-Windows re-runs are required
+  before the ruling cites these numbers (WriteProcessMemory and ASLR
+  behavior in particular differ on real NT).
+
+**Packed win PE cold start (task #25, measured s143 —
+`tmp/pe_coldstart_bench.sh`, wine, warm server, medians of 10):**
+
+| lane | median |
+|---|---|
+| win PE `--version` (process floor) | 38 ms |
+| win PE hello.mad (parse+c2mir+run) | **49 ms** |
+| linux release `--version` | 3 ms |
+| linux release hello.mad | 14 ms |
+
+madc's own cold-start work is the SAME ~11 ms on both platforms
+(49−38 ≈ 14−3); the win delta is ~35 ms of wine process machinery —
+consistent with the 31 ms bare CreateProcess measurement above. So a
+"child = fresh madc PE" Run design pays a ~38 ms floor under wine
+before any madc work.
