@@ -1,0 +1,28 @@
+// Two DISTINCT scoped enums through one fn template: the second call must
+// instantiate its OWN specialization ([over.ics] — scoped enums do not
+// interconvert; [conv.ptr] has no enum*->other-enum* conversion). The
+// ranker's numeric-pointee typedef collapse scored nt* vs native_type* as
+// an EXACT match (enums are is_numeric with one shared rawtype), so the
+// second enum's call SILENTLY bound the first enum's concrete instance —
+// madc printed "1 1", exit 0 (s141; reducer tmp/eh_red44).
+// Oracle: g++/clang++ print "1 2".
+
+enum class A { x };
+enum class B { y };
+
+template <class T> struct tag;
+template <> struct tag<A> { static long v() { return 1; } };
+template <> struct tag<B> { static long v() { return 2; } };
+
+namespace ns {
+	template <class T> long f(T *p) { return tag<T>::v(); }
+}
+
+int main()
+{
+	A a; B b;
+	long ra = ns::f(&a);
+	long rb = ns::f(&b);
+	printf("%ld %ld\n", ra, rb);
+	return 0;
+}

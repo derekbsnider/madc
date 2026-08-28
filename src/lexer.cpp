@@ -4104,9 +4104,15 @@ void Program::forest_bind_include(uint32_t unit)
 	  && live_header.compare(live_header.size() - madh_suffix.size(),
 				 madh_suffix.size(), madh_suffix) == 0 )
 	    live_header.erase(live_header.size() - madh_suffix.size());
-	size_t slash = live_header.find_last_of("/\\");
-	if ( slash != std::string::npos )
-	    live_header.erase(0, slash + 1);
+	// Re-include the EXACT unit by its canonical path, never its basename.
+	// A basename is ambiguous across the corpus (<stat.h> names glibc's
+	// bits/stat.h, linux/stat.h AND sys/stat.h) and resolves by grove
+	// lookup order — a corpus reshuffle flipped bits/stat.h's fallback
+	// onto linux/stat.h, silently dropping __S_IFMT for every headerless
+	// consumer of <sys/stat.h>. An absolute spelling passes through
+	// resolve_include_path verbatim, and read_resolved_include serves it
+	// from disk or the pack's raw-source slot. An embedded unit's name
+	// has no directory and is already the include spelling.
 	if ( live_header.empty() )
 	    Throw << "Frozen missing-content unit has no live include spelling: "
 		  << unit_name << flush;

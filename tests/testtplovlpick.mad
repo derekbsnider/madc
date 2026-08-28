@@ -1,0 +1,28 @@
+// [temp.func.order] pick between `which(A&)` and the more specialized
+// `which(std::allocator<T>&)`, for a class-nested AND a flat enum
+// element. The generic overload used to beat allocator<T> for the
+// NESTED enum because the argument's canonical spelling did not match
+// the instantiated parameter's (s141; reducer tmp/eh_red33).
+// Oracle: g++/clang++.
+
+#include <memory>
+#include <cstdio>
+
+template <typename A>
+long which(A &) { return 1; }
+template <typename T>
+long which(std::allocator<T> &) { return 2; }
+
+class prog {
+public:
+	enum class nt { a, b };
+};
+enum class fn { a, b };
+
+int main()
+{
+	std::allocator<prog::nt> an;
+	std::allocator<fn> af;
+	printf("nested=%ld flat=%ld\n", which(an), which(af));
+	return 0;
+}

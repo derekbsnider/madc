@@ -468,6 +468,13 @@ public:
 	if ( sp.find('<') != std::string::npos
 	  || sp.back() == '*' || sp.back() == '&' )
 	    return sp;
+	// A FUNCTION-POINTER typedef param (`program::native_function`)
+	// desugars to its STRUCTURAL spelling (`void (*)()`): Itanium encodes
+	// canonical types (PF…E); the captured typedef name — or the dd's
+	// generic "funcptr" — encodes as a class name nothing exports.
+	if ( DataDefFPTR *fpp = parameters[i]->as_fptr_dd() )
+	    if ( fpp->target )
+		return fpp->structural_spelling();
 	std::string scalar = parameters[i]->mangle_scalar_spelling();
 	if ( scalar.empty() || scalar == sp )
 	    return sp;
@@ -484,6 +491,12 @@ public:
     // can bind emit_symbol to the mangled external symbol. Stays false for any
     // madc-compiled (bodied) function.
     bool declaration_only;
+    // True for a constructor declared `explicit` ([class.conv.ctor]): it
+    // serves DIRECT-initialization only, so the overload ranker's
+    // converting-constructor probe must not count it as an implicit
+    // user-defined conversion ([over.ics.user]). Unconditional `explicit`
+    // only — C++20 explicit(expr) is not evaluated and stays false.
+    bool is_explicit = false;
     // The source file of a declaration_only prototype (token ->file pointer;
     // NULL when not recorded). Lets the compile-stage registration-policy
     // gate distinguish a USER-SOURCE extern prototype from curated header
@@ -3488,6 +3501,15 @@ public:
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
+    // Bare display names of every registered fn template (both maps above,
+    // pack-thawed keys included): the [temp.names] "name refers to a template"
+    // test for FUNCTION templates, used where only the unqualified tail is in
+    // hand (count_queued_call_arguments' template-argument-comma gate). Built
+    // lazily from the map keys on first query; the two registration sites add
+    // names incrementally, a transaction rollback invalidates.
+    std::set<std::string> fn_template_bare_names;
+    bool fn_template_bare_names_valid = false;
+    bool fn_template_name_declared(const std::string &name);
     // task #25 B2 thaw owners, fn lanes: find + thaw every def of the key.
     void thaw_fn_def(FnTemplateDef &fd);
     std::vector<FnTemplateDef> *thawed_fn_templates(const std::string &key);
@@ -6513,6 +6535,13 @@ public:
     void bind_input_string(const std::string &text);
     void capture_output_to_buffer();
     void capture_error_to_buffer();
+    // Scoped-capture support (libmadc invocation scopes): create the owned
+    // capture buffers if absent WITHOUT resetting content or rebinding the
+    // process-global streams; the caller binds/restores std::cout/std::cerr
+    // rdbufs itself for the duration of one guest invocation.
+    void ensure_capture_buffers();
+    std::streambuf *capture_output_rdbuf();
+    std::streambuf *capture_error_rdbuf();
     void tee_output_stream(std::ostream &os);
     void tee_error_stream(std::ostream &os);
     void tee_output_to_buffer();

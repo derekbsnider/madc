@@ -1,0 +1,53 @@
+// An OUT-OF-LINE member-template definition whose body (a) reads a static
+// member of a variadic class template in a nested namespace and (b) takes
+// the ADDRESS of such a static member function. History: the address-of
+// arm resolved the qualifier with the raw spelling (missing every registry
+// inside instantiated member-template bodies) and had no static member
+// FUNCTION case; the OOL pattern silently froze against installed
+// headers (s140/s141; reducers tmp/eh_red7/10). Oracle: g++/clang++.
+
+#include <string>
+
+namespace outer {
+namespace detail {
+
+template <typename Ret, typename... Args>
+struct Adapter {
+	static long entry(long x) { return x * 2; }
+	static long seven() { return 7; }
+};
+
+} // namespace detail
+
+struct Eng {
+	typedef long (*fn_t)(long);
+	template <typename Ret, typename... Args>
+	fn_t reg(const std::string &name, Ret (*cb)(Args...));
+	template <typename Ret, typename... Args>
+	long regv(const std::string &name, Ret (*cb)(Args...));
+};
+
+template <typename Ret, typename... Args>
+Eng::fn_t Eng::reg(const std::string &name, Ret (*cb)(Args...))
+{
+	return &detail::Adapter<Ret, Args...>::entry;
+}
+
+template <typename Ret, typename... Args>
+long Eng::regv(const std::string &name, Ret (*cb)(Args...))
+{
+	return detail::Adapter<Ret, Args...>::seven();
+}
+
+} // namespace outer
+
+static long mul(long a, long b) { return a * b; }
+
+int main()
+{
+	outer::Eng e;
+	outer::Eng::fn_t f = e.reg("m", mul);
+	printf("f21=%ld\n", f(21));
+	printf("seven=%ld\n", e.regv("m", mul));
+	return 0;
+}

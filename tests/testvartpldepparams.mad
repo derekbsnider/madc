@@ -1,0 +1,38 @@
+// A variadic member whose parameter list expands a QUALIFIED-MEMBER-TAIL
+// pattern per pack element (`typename type_map<Args>::low_type... args`)
+// and whose body expands a dependent-member CALL per element
+// (`type_map<Args>::from_low(args)...`) — the callback_adapter shape. The
+// class clone-walk's template-id lane used to stop at the `>` (arity
+// error) and emit ONE declarator name for the whole pack (s141; reducer
+// tmp/eh_red12). Oracle: g++/clang++ print 42.
+
+template <typename T>
+struct type_map;
+
+template <>
+struct type_map<long>
+{
+	typedef long low_type;
+	static long from_low(long v) { return v; }
+};
+
+template <typename Ret, typename... Args>
+struct Adapter
+{
+	typedef Ret (*callback_ptr)(Args...);
+
+	static Ret entry(unsigned long raw, typename type_map<Args>::low_type... args)
+	{
+		callback_ptr fn = reinterpret_cast<callback_ptr>(raw);
+		return fn(type_map<Args>::from_low(args)...);
+	}
+};
+
+static long mul(long a, long b) { return a * b; }
+
+int main()
+{
+	long r = Adapter<long, long, long>::entry((unsigned long)&mul, 6, 7);
+	printf("%ld\n", r);
+	return 0;
+}

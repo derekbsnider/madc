@@ -4735,6 +4735,15 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 	if (tcf->mti_instance) {
 		if (FuncDef *ifd =
 			dynamic_cast<FuncDef *>(tcf->mti_instance->type)) {
+			// Env-gated probe (MADC_TSUBST_OP_PROBE=1): a per-call
+			// mti_instance consumed during a PATTERN capture — a shared
+			// Tree-1 call token carrying one instantiation's concrete
+			// binding into the generic recipe.
+			if (m_tsubst_pattern_mode
+			    && ::getenv("MADC_TSUBST_OP_PROBE"))
+				fprintf(stderr, "[tsubst-mti] pattern-mode call=%s"
+					" -> %s\n", tcf->var.name.c_str(),
+					tcf->mti_instance->name.c_str());
 			if (fd_out)
 				*fd_out = ifd;
 			return tcf->mti_instance;
@@ -6431,8 +6440,16 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 	// arg cannot be materialized into a concrete `target` temp in the recipe —
 	// reject the pattern so the body falls back to its parsed concrete form.
 	if (m_tsubst_pattern_mode && arg
-	    && template_param_under_type_layers(arg->datadef()))
+	    && template_param_under_type_layers(arg->datadef())) {
+		// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH arg datadef
+		// stayed dependent — the [why: dependent-arg object value]
+		// diagnostic.
+		if (::getenv("MADC_TSUBST_OP_PROBE"))
+			fprintf(stderr, "[tsubst-objval] arg-dd=%s target=%s\n",
+				arg->datadef() ? arg->datadef()->name.c_str() : "-",
+				target->name.c_str());
 		return error_node("tsubst: dependent-arg object value", arg);
+	}
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
@@ -6471,6 +6488,24 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	if (t == TokenType::ttInteger || t == TokenType::ttReal
 	    || t == TokenType::ttChar || t == TokenType::ttString)
 		return true;
+	// An ENUMERATOR is a prvalue too ([expr.prim.id.unqual] — an enumerator
+	// is never an lvalue). It arrives as a TokenVar over a parse-time
+	// constant Variable (vfCONSTANT without vfCONSTDECL — no storage
+	// exists), so `&enumerator` emitted for a reference binding was invalid
+	// ("lvalue required as unary & operand", vector<enum>::push_back).
+	// Bind through a materialized temporary exactly like the literals.
+	// STORAGE-BEARING vars are excluded: a `const T&` PARAMETER also
+	// carries vfCONSTANT without vfCONSTDECL (parseFunction's
+	// param_has_const write-enforcement flag), and it is an LVALUE —
+	// classifying it here materialized a COPY temp for every ref-to-ref
+	// forward, and a reference member initialized from such an argument
+	// (std::tuple<const key&> in map::operator[]) captured the address of
+	// a ctor-local temp: a dangling reference, stale key reads, and
+	// map[k2] silently updating map[k1]'s node (tests/teststdmapint).
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+		if ((tv->var.flags & vfCONSTANT) && !(tv->var.flags & vfCONSTDECL)
+		    && !(tv->var.flags & (vfPARAM | vfLOCAL)))
+			return true;
 	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg)) {
 		// A scalar or pointer cast produces a prvalue. When it binds to a
 		// reference parameter, mirror C++'s temporary materialization instead
@@ -6655,8 +6690,34 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 	    && !callee->local_emit_name.empty() && m_prog) {
 		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))  // allowed-exception: lookup key, not symbol build
 			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
-				if (ifd != callee)
+				if (ifd != callee) {
+					// Env-gated probe (MADC_TSUBST_OP_PROBE=1): the
+					// first-wins alias hop taken during a PATTERN
+					// capture — the cross-instantiation poisoning
+					// diagnostic.
+					if (m_tsubst_pattern_mode
+					    && ::getenv("MADC_TSUBST_OP_PROBE"))
+						fprintf(stderr, "[tsubst-alias] pattern-mode"
+							" call=%s -> %s\n",
+							tcf->var.name.c_str(),
+							callee->local_emit_name.c_str()); // allowed-exception: debug print, not symbol build
 					callee = ifd;
+				}
+	}
+	// Env-gated probe (MADC_TSUBST_OP_PROBE=1): every callee a PATTERN
+	// capture resolves, with its parameter types — a concrete class param
+	// on a dependent recipe call is the cross-instantiation poisoning shape.
+	if (m_tsubst_pattern_mode && ::getenv("MADC_TSUBST_OP_PROBE")) {
+		fprintf(stderr, "[tsubst-callee] call=%s params=",
+			tcf->var.name.c_str());
+		if (callee)
+			for (size_t qi = 0; qi < callee->parameters.size()
+					    && qi < 4; qi++)
+				fprintf(stderr, "%s,",
+					callee->parameters[qi]
+					? callee->parameters[qi]->name.c_str()
+					: "?");
+		fprintf(stderr, "\n");
 	}
 	size_t nargs = tcf->parameters.size();
 	if (tcf->var.name == "__builtin_va_start" && nargs > 1)
@@ -12555,6 +12616,36 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		FuncDef *copy_ctor = class_copy_ctor_def(mc);
 		if (!copy_ctor) continue;
 		std::string sym = ctor_call_symbol(mc, copy_ctor);
+		// Env-gated probe (MADC_COPY_PROBE=<substr>): the member-wise
+		// retbuf copy's ctor selection — which class OBJECT the member
+		// typed to, how many ctors it exposes, and the symbol fields
+		// the chosen FuncDef carries (the wrong-arity forest shape).
+		{
+			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+			if (cpp_ && *cpp_
+			    && mc->name.find(cpp_) != std::string::npos) {
+				fprintf(stderr, "[copy-probe] member=%s mc=%p(%s)"
+					" ctors=%zu fd=%p params=%zu len='%s'"
+					" es='%s' sym=%s\n",
+					m.first.c_str(), (void *)mc,
+					mc->name.c_str(), mc->ctors.size(),
+					(void *)copy_ctor,
+					copy_ctor->parameters.size(),
+					copy_ctor->local_emit_name.c_str(), // allowed-exception: debug print, not symbol build
+					copy_ctor->emit_symbol.c_str(),
+					sym.c_str());
+				for (size_t ci = 0; ci < mc->ctors.size(); ++ci) {
+					Variable *cv = mc->ctors[ci];
+					FuncDef *cf = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+					fprintf(stderr, "[copy-probe]   ctor[%zu]"
+						" var='%s' fd=%p params=%zu len='%s'\n",
+						ci, cv ? cv->name.c_str() : "<null>",
+						(void *)cf,
+						cf ? cf->parameters.size() : 0,
+						cf ? cf->local_emit_name.c_str() : ""); // allowed-exception: debug print, not symbol build
+				}
+			}
+		}
 		bool external = !copy_ctor->emit_symbol.empty();
 		if (external)
 			need_output_extern(sym.c_str(), false,
@@ -13360,6 +13451,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (!fd || fd->parameters.size() < 2
 			    || fd->required_param_count() > 2)
 				continue;
+			// An EXPLICIT constructor serves direct-initialization
+			// only — it is NOT an implicit conversion
+			// ([over.ics.user]). Counting it let a wrong-shape
+			// concrete fn-template instance (param
+			// __normal_iterator<T*> BY VALUE, explicit ctor from
+			// T*) outrank instantiating the right specialization
+			// for a plain-pointer argument (tests/testexplctorovl).
+			if (fd->is_explicit)
+				continue;
 			bool cref = fd->is_ref_param(1);
 			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,
 						   arg_is_zero_literal,
@@ -13528,6 +13628,22 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 					return 3;   // void* standard conversion
 				if (ab == pb || ab->name == pb->name)
 					return 5;
+				// ENUM pointees keep their own conversion domain
+				// exactly like enum VALUES above — [conv.ptr] has
+				// no enum*->other-enum* conversion. Enums are
+				// is_numeric() with one shared rawtype, so the
+				// typedef collapse below scored two DISTINCT
+				// scoped enums' pointers as an EXACT match and a
+				// wrong-flavor concrete fn-template instance beat
+				// the template (nt* bound the native_type*
+				// instance — silent wrong answer, tmp/eh_red44 /
+				// tests/testenumptrovl).
+				const DataDefENUM *ape = as_enum_type(ab);
+				const DataDefENUM *ppe = as_enum_type(pb);
+				if (ape || ppe)
+					return (ape && ppe
+						&& same_enum_type(ape, ppe))
+						? 5 : -1;
 				// Integer typedefs collapse to sized canonicals
 				// UNEVENLY (size_t may sit behind an alias
 				// DataDef while the argument resolved straight
@@ -20833,10 +20949,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// have already returned.
 			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
 				if (operand_object_class(top->left)
-				    || operand_object_class(top->right))
+				    || operand_object_class(top->right)) {
+					// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH
+					// operator and operand classes declined — the
+					// [why: unresolved class operator] diagnostic.
+					if (::getenv("MADC_TSUBST_OP_PROBE")) {
+						DataDefCLASS *lc = operand_object_class(top->left);
+						DataDefCLASS *rc = operand_object_class(top->right);
+						fprintf(stderr, "[tsubst-op] op=%d lhs=%s rhs=%s\n",
+							(int)tb->id(),
+							lc ? lc->name.c_str() : "-",
+							rc ? rc->name.c_str() : "-");
+					}
 					return error_node(
 						"tsubst: unresolved class operator in pattern",
 						tb);
+				}
 			}
 
 			// Implicit memberwise copy-ASSIGNMENT for a NON-TRIVIAL class
@@ -25251,6 +25379,19 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		RefFuncSet::Scope refscope(referenced_funcs);
 		node_t pat = NULL;
 		m_tsubst_pattern_mode = true;
+		// Env-gated probe (MADC_TSUBST_OP_PROBE=1): WHICH template's recipe
+		// is being captured — pairs the [tsubst-objval]/[tsubst-alias] lines
+		// with their enclosing pattern build. source/recipe identities
+		// disambiguate same-named members of distinct class instantiations;
+		// `for` names the concrete instance that demanded the capture.
+		if (::getenv("MADC_TSUBST_OP_PROBE"))
+			fprintf(stderr, "[tsubst-pat] capture %s src=%p recipe=%p"
+				" for=%s\n",
+				source->method_display_name.empty()
+					? source->function_display_name.c_str()
+					: source->method_display_name.c_str(),
+				(void *)source, (void *)recipe,
+				tf->var.name.c_str());
 		{
 			TsubstSpeculativeDiagnostics diag(m_prog);
 			try {

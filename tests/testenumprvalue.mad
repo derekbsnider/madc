@@ -1,0 +1,19 @@
+// ENUMERATORS ARE PRVALUES: binding a reference to `nt::b` must
+// materialize a temporary ([conv.rval]) for const-lvalue AND
+// rvalue-reference parameters. The CIR treated enumerator TokenVars as
+// addressable lvalues and emitted "lvalue required as unary & operand"
+// (expr_is_nonaddressable_rvalue, s141; reducer tmp/eh_red22).
+// Oracle: g++/clang++ print 12.
+
+enum class nt { a, b, c };
+
+static long f(const nt &x) { return (long)x; }
+static long g(nt &&x) { return (long)x; }
+
+int main()
+{
+	long r1 = f(nt::b);
+	long r2 = g(nt::c);
+	printf("%ld\n", r1 * 10 + r2);
+	return 0;
+}

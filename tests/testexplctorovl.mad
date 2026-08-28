@@ -1,0 +1,33 @@
+// An EXPLICIT converting constructor is NOT an implicit conversion
+// ([over.ics.user] / [class.conv.ctor]): re-resolving ns::h at the second
+// shape must instantiate h<long*>, never convert long* into W<long*>
+// through W's explicit ctor to reuse the first shape's concrete instance
+// (the __normal_iterator-by-value shape that broke embed_hello.cpp's
+// vector<string> growth; s141; reducer tmp/eh_red45).
+// Oracle: g++/clang++ print "1 2".
+
+template <class It> struct W {
+	It cur;
+	explicit W(It i) : cur(i) {}
+};
+
+template <class T> struct tag;
+template <> struct tag<W<long *> > { static long v() { return 1; } };
+template <> struct tag<long *>     { static long v() { return 2; } };
+
+namespace ns {
+	template <class B> long h(B b) { return tag<B>::v(); }
+}
+
+struct S {
+	template <class B> static long call(B b) { return ns::h(b); }
+};
+
+int main()
+{
+	long x = 0;
+	long r1 = S::call(W<long *>(&x));
+	long r2 = S::call(&x);
+	printf("%ld %ld\n", r1, r2);
+	return 0;
+}

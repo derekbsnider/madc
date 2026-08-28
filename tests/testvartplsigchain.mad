@@ -1,0 +1,52 @@
+// The make_callback_signature shape: a struct carrying vector<enum>, a
+// pack-expansion push_back in an int-array initializer, is_void selection
+// of the head, and by-value return through a const& consumer (s141;
+// reducers tmp/eh_red24/25). Oracle: g++/clang++.
+
+#include <vector>
+#include <type_traits>
+
+enum class nt { v, b, i, r, s };
+
+struct SigT {
+	nt ret;
+	std::vector<nt> parameters;
+	SigT(nt r) : ret(r) {}
+};
+
+template <typename T>
+struct tmap;
+template <>
+struct tmap<long> { static nt native() { return nt::i; } };
+template <>
+struct tmap<double> { static nt native() { return nt::r; } };
+
+template <typename Ret, typename... Args>
+SigT make_sig()
+{
+	SigT sig(std::is_void<Ret>::value ? nt::v : tmap<Ret>::native());
+	int unused[] = {0, (sig.parameters.push_back(tmap<Args>::native()), 0)...};
+	(void)unused;
+	return sig;
+}
+
+static SigT make()
+{
+	SigT s(nt::v);
+	s.parameters.push_back(nt::b);
+	s.parameters.push_back(nt::i);
+	return s;
+}
+
+static long take(const SigT &s)
+{
+	return (long)s.parameters.size();
+}
+
+int main()
+{
+	SigT s = make_sig<long, long, double>();
+	printf("sig=%ld\n", (long)s.parameters.size() * 10 + (long)s.ret);
+	printf("take=%ld\n", take(make()));
+	return 0;
+}

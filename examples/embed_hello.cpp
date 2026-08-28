@@ -4,7 +4,10 @@
 //   g++ -std=c++11 -o embed_hello embed_hello.cpp $(pkg-config --cflags --libs libmadc)
 //
 // Or without pkg-config:
-//   g++ -std=c++11 -o embed_hello embed_hello.cpp -lmadc -lasmjit -ldl
+//   g++ -std=c++11 -o embed_hello embed_hello.cpp -lmadc -ldl
+//
+// madc can also compile this file itself:
+//   madc embed_hello.cpp
 
 #include <iostream>
 #include <string>
@@ -30,12 +33,19 @@ int main()
 	// 3. Create a program from the engine.
 	madc::program pgm = eng.create_program();
 
-	// 4. Evaluate an expression.
+	// 4. Evaluate an expression. The sandboxed expression policy refuses
+	//    function calls by default — opt the registered callback in.
+	madc::expression_policy expr = pgm.get_expression_policy();
+	expr.allow_function_calls = true;
+	expr.allowed_functions.push_back("host_multiply");
+	pgm.set_expression_policy(expr);
 	int64_t result = 0;
 	if (pgm.eval_expression("host_multiply(6, 7)", result))
 		std::cout << "6 * 7 = " << result << std::endl;
 
-	// 5. Compile and run a full script.
+	// 5. Compile and run a full script. (The script's own stdout is
+	//    captured by the sandbox for the duration of the run; the host's
+	//    streams are untouched.)
 	pgm.exec_string(
 		"int main() {\n"
 		"    cout << \"hello from madc\" << endl;\n"

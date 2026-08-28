@@ -1,0 +1,44 @@
+// Name lookup finds the TEMPLATE, never a specialization ([temp.inst]).
+//
+// A namespace fn-template instantiation's product parse used to OVERWRITE
+// namespace_map[ns][name] (parseDeclaration's registration tail writes
+// ns[source_id] = ns_var unconditionally), so every later `ns::helper`
+// lookup returned the NEWEST concrete instance. A member template whose
+// retained body calls `ns::helper(dependent-arg)` then built its Tree-1
+// recipe with the FIRST shape's concrete instance baked in as the callee —
+// cross-instantiation poisoning: the second shape's tsubst bailed
+// "[why: dependent-arg object value]" and the skipped body failed loudly
+// (or, with a scalar-compatible signature, silently called the WRONG
+// instance). Real-world shape: __uninitialized_copy<0>::__uninit_copy's
+// `std::__do_uninit_copy(__first,__last,__result)` in embed_hello.cpp,
+// poisoned by the vector<native_type> flavor against vector<madc::value>.
+//
+// The fix gates the write: an instantiation-product parse
+// (fn_template_instantiation_depth > 0, the same discriminator the
+// overload-identity fold uses) keeps the family's existing name-lookup
+// entry — the placeholder registered at template declaration.
+//
+// Oracle: g++ -std=c++17 prints 4 / 8 / 4.
+
+template<class T> struct Box { T v; };
+
+namespace ns {
+	template<class B> int helper(B b) { return (int)sizeof(b.v); }
+}
+
+struct S {
+	template<class B> static int call(B b) { return ns::helper(b); }
+};
+
+int main()
+{
+	Box<int> bi; bi.v = 1;
+	int h = ns::helper(bi);        // helper<Box<int>> instantiates FIRST
+	Box<double> bd; bd.v = 2.0;
+	int a = S::call(bd);           // recipe must keep the dependent callee
+	int b = S::call(bi);           // and re-resolve per shape
+	printf("%d\n", h);
+	printf("%d\n", a);
+	printf("%d\n", b);
+	return 0;
+}

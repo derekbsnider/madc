@@ -1,0 +1,31 @@
+// [temp.arg.explicit]/3: explicit template arguments in EXCESS of the
+// fixed parameters bind a trailing TYPE pack's elements —
+// `make_sig<long, long, long>()` is Ret=long, Args={long,long}. The
+// instantiation used to bail on "more explicit args than nonpack params"
+// and the ranker could not bind the call to the instance (s141; reducer
+// tmp/eh_red17). Oracle: g++/clang++ print 2.
+
+namespace outer {
+
+struct Sig {
+	long kind;
+	Sig(long k) : kind(k) {}
+};
+
+namespace detail {
+
+template <typename Ret, typename... Args>
+Sig make_sig()
+{
+	return Sig((long)sizeof...(Args));
+}
+
+} // namespace detail
+} // namespace outer
+
+int main()
+{
+	outer::Sig s = outer::detail::make_sig<long, long, long>();
+	printf("%ld\n", s.kind);
+	return 0;
+}
