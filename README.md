@@ -211,39 +211,39 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.95.2** (the v0.95 line's download tag:
-the win64 `--project` fix and the darwin clang-lane conformance, both
-caught by the three-platform promotion gate before any asset shipped). The v0.95 line is
-the `ui::` data-hub namespace with its proof: **Colossal Cave
-Adventure fully playable as a pure madc project** (11 translation units, one `class Game` extern,
-byte-identical to the original C game across all 94 reference
-transcripts — a permanent test gate). `ui::` gives a madc program
-worlds, entity bags behind one hub write path, projections as the
-access decision, verbs, and `ui::prompt` — see
-[docs/language/ns-ui.md](docs/language/ns-ui.md). Around it: the
-zero-include dialect contract (bare scripts need no `#include`, no
-`std::`; array literals `var ds = { a, b, c };` with chainable
-`.push()`), lean `value`/`char*` primaries for all 57
-std::string-only polyglot functions, and the cold-startup arc — the
-packed 11-TU project launch fell from 829 ms to the ~150 ms class
-(dev binary 1.9 s → ~0.3 s). Just before it, v0.93.0 made call-heavy
-FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
-MIR codegen with three community-attributed fixes.
+The current release is **v0.96.0** — the variadic-class arc: **madc
+compiles and runs its own C++ embedding example**. `bin/madc
+examples/embed_hello.cpp` works end-to-end at g++ parity (variadic
+class-template instantiation with mixed fixed+pack heads, class-pack
+`sizeof...`, static calls through `Adapter<R, Args...>`), and the
+embedding examples gate in `fulltest` covers both the C and C++ legs.
+The libmadc embedding surface hardened with it: constructing a
+`madc::engine` no longer rebinds the host's `std::cout`/`std::cerr`
+(guest capture is invocation-scoped), and engine-registered host
+callbacks reach `eval_expression`'s child program. The release's
+push-gate battery also caught and fixed two forest-artifact defects —
+rebound ranked constructors now stamp their overload symbol (a
+"too many arguments" compile failure shipped in every packed binary
+since at least v0.95.2), and missing-content husks re-include by
+canonical path instead of an ambiguous basename. Before it, the
+v0.95 line was the `ui::` data-hub namespace with Colossal Cave
+Adventure fully playable as a pure madc project, the zero-include
+dialect contract, and the cold-startup arc.
 
-Branch state: v0.95.2 is released on `develop` and promoted to
-`master`, with public binaries published for Linux (deb/rpm),
-Windows x86-64, and macOS (Apple Silicon + Intel).
+Branch state: v0.96.0 is released on `develop`; v0.95.2 remains the
+`master` promotion, with public binaries published for Linux
+(deb/rpm), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results:
 
-- Linux JIT: **1134 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1091/0**, OBJ lane **1091/0**; packed suite **1134/0/0/9**
+- Linux JIT: **1199 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1150/0**, OBJ lane **1150/0**; packed suite **1199/0/0/9**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
 - all three pack lanes green under the degradation gate: Linux and Win64 at
   93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
   arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1107/0/0/36**,
+- headerless (no headers on disk anywhere): Linux **1172/0/0/36**,
   Win64 **1011/0/0/52** (v0.92.1 gate run; re-validated at promotion) —
   the only lanes that can see an artifact fail to serve a standard
   header from its own frozen corpus
@@ -262,6 +262,10 @@ Latest validated results:
 
 ### Recent Releases
 
+- [v0.96.0](docs/release-notes/v0.96.0.md) — the variadic-class arc:
+  `bin/madc examples/embed_hello.cpp` compiles and RUNS; libmadc
+  embedding fixes; two forest-artifact fixes (ranked-ctor symbol
+  stamp, husk canonical-path re-include).
 - [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
   darwin clang-lane conformance (override sweep) + the six assets.
 - [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
@@ -271,22 +275,8 @@ Latest validated results:
   cold startup 829 ms → ~150 ms class; the zero-include contract.
 - [v0.94.0](docs/release-notes/v0.94.0.md) — upstream-community MIR
   hardening: -O2 wrong-code loop-PHI fold, spill-table bound, aarch64 gate.
-- [v0.93.0](docs/release-notes/v0.93.0.md) — FP codegen at gcc speed: the
-  upstream MIR convert false-dependency fixed; donut.c beats gcc -O0.
-- [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:
-  two win64 fixes from the new three-platform promotion gate; six assets.
-- [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
-  includes) + std::format/print/println as always-included intrinsics.
-- [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
-  setprecision/setw/setfill; plain structs in free-operator resolution.
-- [v0.90.0](docs/release-notes/v0.90.0.md) — `value(N)` constructs:
-  temporaries, direct-init, loop headers; c2mir stmt-expr value fix.
-- [v0.89.0](docs/release-notes/v0.89.0.md) — `php::array_push` as one
-  overloaded name returning the new count; numeric overload grading fixed.
-- [v0.88.0](docs/release-notes/v0.88.0.md) — `cout << value` streams exactly
-  as the contained type would; two pre-existing gaps found and recorded.
-- [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
-  element can be the carrier itself, kind-preserving, copy semantics.
+
+Older release notes live in [docs/release-notes/](docs/release-notes/).
 
 ## Building from source
 

@@ -35,16 +35,18 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **develop = v0.95.0** (2026-08-23): the `ui::` data-hub surface (Track 7
-  Phase 1) + Colossal Cave Adventure fully playable as a pure madc
-  `--project` program (94/94 reference logs byte-identical, a fulltest
-  gate) + the cold-startup arc (packed 11-TU launch 829 ms → ~150 ms
-  class) + the zero-include dialect contract + lean polyglot primaries.
-  v0.94.0 was the MIR hardening wave (upstream #467 fixed by us, PRs
-  #468/#466 adopted with contributor attribution); v0.93.0 fixed the
-  x86-64 scalar-convert false dependency (donut.c now beats gcc -O0).
-  Upstream wave 2 submitted: vnmakarov/mir issue #469 + PRs #470/#471 —
-  awaiting review.
+- **develop = v0.96.0** (2026-08-28): the variadic-class arc —
+  `bin/madc examples/embed_hello.cpp` compiles AND RUNS at g++ parity
+  (both embedding-example legs are a fulltest gate); libmadc embedding
+  fixes (invocation-scoped guest iostream capture, eval-child host
+  callbacks); two forest-artifact fixes the push-gate battery caught
+  (rebound ranked ctors stamp `local_emit_name`; missing-content husks
+  re-include by canonical path). v0.95.x was the `ui::` data-hub
+  surface (Track 7 Phase 1) + Colossal Cave Adventure as a pure madc
+  `--project` program + the cold-startup arc + the zero-include
+  dialect contract; v0.94.0 the MIR hardening wave; v0.93.0 the x86-64
+  scalar-convert false-dependency fix. Upstream wave 2 submitted:
+  vnmakarov/mir issue #469 + PRs #470/#471 — awaiting review.
 - **master = v0.92.1** (promoted 2026-08-20 with six assets: deb, rpm, macOS
   arm64 + x86_64, Windows zip, SHA256SUMS). Every master promotion is
   three-platform gated (`.claude/commands/promote.md` step 5).

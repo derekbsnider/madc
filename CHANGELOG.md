@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.96.0] — 2026-08-28
+
+The variadic-class arc: madc compiles and runs its own C++ embedding
+example (`examples/embed_hello.cpp`) at g++ parity — plus libmadc
+embedding fixes and two forest-artifact fixes the push-gate battery
+surfaced.
+
 - **Forest artifact fixes: the packed/headerless lanes' two escapes
   (2026-08-28, s141 battery gate)**: (1) a **rebound RANKED ctor now
   stamps its registered `__oN` symbol on `local_emit_name`** — the
