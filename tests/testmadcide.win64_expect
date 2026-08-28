@@ -1,0 +1,94 @@
+joe: [^k s]=save [^k x]=savequit [^c]=discard
+pico: [^s]=save [^k]=blockdel
+joe-ide: [^p]=palette [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
+check1: Check: clean.
+edited: caret=5 modified=true size=89
+undo: caret=0 modified=false size=84
+undo-empty: Nothing to undo.
+check2: Check: 2 problem(s).
+--- diagnostics view ---
+Check: 2 problem(s).
+junk long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+
+Diagnostics
+  1. 1:4 error use of undeclared identifier 'junk'
+  2. 2:31 error use of undeclared identifier 'add'
+--- end ---
+goto-diag: caret=0
+--- outline view ---
+madc_ide_test.mad fn add Row 1 Col 1
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+
+Outline
+  1. function add :1
+  2. function twice :2
+--- end ---
+goto-outline: caret=43
+status-fn: madc_ide_test.mad   fn twice
+Row    2 Col   1
+spans: n=7 first=0..4 bold second=9..13 bold
+theme-swap: Theme: classic. first-c=bold cyan
+theme-missing: No theme 'nosuch'.
+options: label=Options rows=3
+options-row0: D Tab width   8
+tabwidth: Tab width 4. hint=4 row0=D Tab width   4
+tabwidth-bad: Tab width '40' — need 1..16.
+editfile-new: New file madc_ide_ast5.txt. switched=1 named=1
+editfile-back: home=1 caret-restored=1
+editfile-again: Editing madc_ide_ast5.txt. kept=1 modified=1
+palette: list=1 focus=1 rows>=2 1
+palette-filter: rows=1 row0=* madc_ide_ast5.txt
+palette-open: switched=1 path=madc_ide_ast5.txt closed=1
+palette-toggle: opened=1 closed=1
+build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
+build-start: live=1
+build-out: has-hello=1 has-done=0 live=0
+build-stop: has-stopped=0 live=0
+build-terminal-headless: No terminal to suspend.
+build-defaults: rows=6 row1=Build (in-process) run-internal=1
+esc-pane: closed=1
+build-subst: madc-resolved=1 has-path=1
+native-build-start: live=1
+native-build-done: live=0 ndiags=0 built-msg=1
+run-headless: no-tui-msg=1
+live-buffer-build: ndiags=0 built-msg=1
+native-build-fail: rows-pos=1 pane=diags
+run-refused-red: refused-msg=1 pane=diags
+native-build-stop: live=0 stopped-msg=1
+win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view
+split: wins=2 shape=status/edit/status/edit focus=1 rows=11
+win-carets: w2=3 w1=9
+win-clamp: snapshot-ok=1 live-ok=1
+win-grow: neighbor-rows=10
+win-only: wins=0 kids=2 caret-kept=1
+swap: profile=pico tree=identical
+motion: caret=42
+words: right2=8 left1=5
+delword: 84 80 84 80 84
+delline: lines=1 caret=43
+blockcopy: size=88 tail-has-long=1
+blockdel: clip=long size=84
+blocks-undone: size=84
+blockmove: head= add caret=80
+gotoline: caret=43 prompt-off=1
+find: first=5 next=71
+insertfile: Inserted 8 bytes. size=92
+help: pane=help label=Help — pico profile rows=20
+shell-headless: No terminal to suspend.
+v2-restored: size=84 modified=false
+view1: name=mc11 editable=0 caret=0 stored-size=84
+view1-node: view=mc11 maprows=0 shows-lowering=0
+view-typing: Read-only view (^K A returns).
+view-undo: Read-only view (^K A returns).
+view-find: hit=1
+view2: name=c11
+view-exit: name='' caret=84 identical=1 modified=false
+lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
+cxxview: name=c++ include=1 echo=1 stored-size=109
+cxxview-head: tagged=1 ro=1
+cxxview-exit: name='' caret=0
+quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
+save: Wrote 92 bytes.
+savequit: cont=0 msg=Bye.
