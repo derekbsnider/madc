@@ -934,6 +934,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-fd-readable-progress.sh
 	@cd .. && bash scripts/check-live-build-owners.sh
 	@cd .. && bash scripts/embed_examples_gate.sh
+	@cd .. && bash scripts/smaug_gate.sh
 	$(MAKE) libmadc-smoke
 	@cd .. && bash scripts/check-one-error-composer.sh
 	@cd .. && bash scripts/check-libc-alias-signatures.sh
