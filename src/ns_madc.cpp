@@ -67,10 +67,9 @@ void sys_populate_args(int argc, char **argv)
     sys.path = value::make_array();
     if ( argc > 0 && argv && argv[0] )
     {
-	std::string a0(argv[0]);
-	size_t sl = a0.rfind('/');
-	if ( sl != std::string::npos && sl > 0 )
-	    sys.path.array().push_back(value(a0.substr(0, sl)));
+	std::string dir = madc::detail::host_path_dirname(argv[0]);
+	if ( dir.size() > 1 )	// ">1": a bare root separator stays off the path
+	    sys.path.array().push_back(value(dir.substr(0, dir.size() - 1)));
     }
     sys.path.array().push_back(value("."));
 }

@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include "madc_posix_io.h"	// host_path_dirname
 
 #include "madc_config_file.h"
 
@@ -68,10 +69,10 @@ std::string resolve_path(const std::string &value, const std::string &file)
 			return std::string(home) + value.substr(1);
 		return value;
 	}
-	size_t slash = file.rfind('/');
-	if (slash == std::string::npos)
+	std::string dir = madc::detail::host_path_dirname(file);
+	if (dir.empty())
 		return value;
-	return file.substr(0, slash + 1) + value;
+	return dir + value;
 }
 
 // Whole-string unsigned decimal. Trailing junk is an error, not a silent

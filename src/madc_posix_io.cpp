@@ -155,6 +155,32 @@ std::string resolve_real_path(const char *path)
 #endif
 }
 
+// The one separator predicate both splitters share (header contract).
+static size_t host_path_last_separator(const std::string &path)
+{
+#ifdef _WIN32
+	return path.find_last_of("/\\");
+#else
+	return path.rfind('/');
+#endif
+}
+
+std::string host_path_dirname(const std::string &path)
+{
+	size_t sep = host_path_last_separator(path);
+	if ( sep == std::string::npos )
+		return std::string();
+	return path.substr(0, sep + 1);
+}
+
+std::string host_path_basename(const std::string &path)
+{
+	size_t sep = host_path_last_separator(path);
+	if ( sep == std::string::npos )
+		return path;
+	return path.substr(sep + 1);
+}
+
 std::string get_host_name()
 {
 #ifdef _WIN32

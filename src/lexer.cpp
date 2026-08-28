@@ -3277,11 +3277,10 @@ bool Program::include_already_seen(const std::string &path)
 
 std::string Program::current_source_directory()
 {
-    std::string cur_fname(source.fname());
-    size_t slash_pos = cur_fname.rfind('/');
-    if ( slash_pos == std::string::npos )
-	return "";
-    return cur_fname.substr(0, slash_pos + 1);
+    // host_path_dirname: on a Windows host the user spells the source
+    // path with '\' (cmd/PowerShell tab-completion), and a bare rfind('/')
+    // returned "" — every relative #include then resolved from cwd.
+    return madc::detail::host_path_dirname(source.fname());
 }
 
 // Phase 6 (--forest-bind): open the grove container once, on the first system
@@ -5889,8 +5888,7 @@ TokenBase *Program::_getToken()
 		{
 		    size_t sp = word.find(' ');
 		    std::string path = (sp != std::string::npos) ? word.substr(2, sp - 2) : word.substr(2);
-		    size_t slash = path.rfind('/');
-		    std::string base = (slash != std::string::npos) ? path.substr(slash + 1) : path;
+		    std::string base = madc::detail::host_path_basename(path);
 		    if ( base == "madc" && sp != std::string::npos )
 		    {
 			std::string args = word.substr(sp + 1);
