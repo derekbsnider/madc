@@ -37311,7 +37311,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				// (unsigned char)~0 consumes only ~0, not * ' '.
 				TokenBase *operand_tb = nextToken();
 				TokenOperator *uop = dynamic_cast<TokenOperator *>(cast_expr_tb);
-				if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
+				// Unary PLUS is a no-op ([expr.unary.op]/2) —
+				// `(I)+15` must yield the literal, never a
+				// TokenAdd with NULL left (untranslatable at
+				// CIR; c-testsuite 00205's initializer rows).
+				if ( cast_expr_tb->id() == TokenID::tkAdd )
+				    cast_expr = operand_tb;
+				else if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
 				else cast_expr = operand_tb;
 			    }
 			    else
@@ -37964,6 +37970,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// so `x++ + 10` stays binary.
 		if ( tb->id() == TokenID::tkAdd && (isUnaryPosition() || awaiting_prefix_step_operand())
 		  && (exStack.empty()
+		   // The cast-body head NULLS _prv_token precisely so unary
+		   // operators see a unary position (`(I)+15` — c-testsuite
+		   // 00205's initializer rows); a binary + can never stand
+		   // where no token precedes it. Without this the + became
+		   // a TokenAdd with NULL left, untranslatable at CIR.
+		   || !_prv_token
 		   || (_prv_token && (_prv_token->id() == TokenID::tkAssign
 		     || _prv_token->id() == TokenID::tkComma
 		     || _prv_token->id() == TokenID::tkOpBrk
@@ -63406,6 +63418,41 @@ static void assign_initializer_range(std::vector<TokenBase *> &inits,
 	inits[idx] = (idx == first_index) ? value : (value ? value->clone() : NULL);
 }
 
+// How many FLAT scalar initializers one object of `dd` consumes under
+// C brace elision (C11 6.7.9p20): a struct eats one per scalar leaf
+// (member arrays included), a union eats its first member's worth, an
+// array dd eats count x element. The unsized-array count inference
+// divides by this — `struct P {long c[2]; long b;} a[] = {1,2,3,4,5,6}`
+// is TWO elements, not six (c-testsuite 00205: cases[] sized 63 not 9,
+// so sizeof-driven loops printed 54 phantom rows of zeros).
+static size_t flattened_scalar_capacity(DataDef *dd)
+{
+    if ( !dd )
+	return 1;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	size_t n = add->count ? add->count : 1;
+	return n * flattened_scalar_capacity(add->element_type);
+    }
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd) )
+    {
+	if ( sdd->members.empty() )
+	    return 1;
+	size_t total = 0;
+	for ( size_t i = 0; i < sdd->members.size(); ++i )
+	{
+	    size_t cnt = i < sdd->member_counts.size() && sdd->member_counts[i]
+		? sdd->member_counts[i] : 1;
+	    size_t one = cnt * flattened_scalar_capacity(sdd->members[i].second);
+	    if ( sdd->union_layout )
+		return one;	// a union initializes its FIRST member only
+	    total += one;
+	}
+	return total ? total : 1;
+    }
+    return 1;
+}
+
 static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
 					       const std::vector<TokenBase *> &init_list)
 {
@@ -65152,17 +65199,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		for ( size_t di = 1; di < arr_dims.size(); ++di )
 		    tail_count *= (size_t)arr_dims[di];
 
+		// One FLAT (brace-elided) element consumes tail_count x the
+		// element type's scalar capacity — 1 for scalar arrays (the
+		// historical divide), the flattened member count for struct
+		// elements (C11 6.7.9p20; c-testsuite 00205's cases[]).
+		size_t elem_scalars = has_nested_init
+		    ? 1 : flattened_scalar_capacity(decl_type);
+		size_t per_elem = tail_count * elem_scalars;
 		if ( arr_dims[0] == 0 )
 		{
-		    if ( arr_dims.size() > 1 && !has_nested_init && tail_count > 0 )
-			arr_dims[0] = (carray_dim_t)((init_list.size() + tail_count - 1) / tail_count);
+		    if ( !has_nested_init && per_elem > 1 )
+			arr_dims[0] = (carray_dim_t)((init_list.size() + per_elem - 1) / per_elem);
 		    else
 			arr_dims[0] = (carray_dim_t)init_list.size();
 		}
 
 		size_t initializer_capacity = (size_t)arr_dims[0];
-		if ( arr_dims.size() > 1 && !has_nested_init )
-		    initializer_capacity *= tail_count;
+		if ( !has_nested_init )
+		    initializer_capacity *= per_elem;
 		if ( init_list.size() > initializer_capacity )
 		    Throw(tb) << "Too many initializers for array (expected " << initializer_capacity << ")" << flush;
 	    }

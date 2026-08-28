@@ -1,0 +1,23 @@
+/* Brace-elided (flat) initializers for struct arrays — the c-testsuite
+ * 00205 shape (a J-interpreter table). Three once-stacked defects gate
+ * here: (1) unary plus under a cast — `(I)+15` — must be a no-op, never a
+ * NULL-left TokenAdd (untranslatable at CIR); (2) an UNSIZED struct
+ * array's element count divides the flat list by the element's flattened
+ * scalar capacity (C11 6.7.9p20) — {1..6} over {long c[2]; long b;} is
+ * TWO elements, not six; (3) a SIZED struct array accepts a full flat
+ * list (capacity counts scalars, not elements). Oracle: gcc -O0. */
+typedef long I;
+struct P { I c[2]; I b; };
+struct P a[] = { (I)+1 + (I)2, 2, 3, 4, 5, 6 };
+struct P s[2] = { 1, 2, 3, 4, 5, 6 };
+union U { long x; long y; };
+union U u[] = { 1, 2, 3 };
+extern int printf(const char *, ...);
+int main()
+{
+    printf("n=%d a0c0=%ld a1c0=%ld a1b=%ld\n",
+	   (int)(sizeof(a) / sizeof(a[0])), a[0].c[0], a[1].c[0], a[1].b);
+    printf("sn=%d s1b=%ld\n", (int)(sizeof(s) / sizeof(s[0])), s[1].b);
+    printf("un=%d u2x=%ld\n", (int)(sizeof(u) / sizeof(u[0])), u[2].x);
+    return 0;
+}

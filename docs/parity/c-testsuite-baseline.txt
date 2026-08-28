@@ -12,8 +12,10 @@
 # 00210: FIXED 2026-08-28 — the generic expression-fptr call arm now accepts
 #        a TokenCast receiver (any ((T(*)())p)() shape, attr'd or not);
 #        gate tests/testcastfnptrcall.mad.
-# 00205: killed at the CPU cap (rc=137) — hang; large struct-array init case.
-00205.c
+# 00205: FIXED 2026-08-28 — three stacked defects: exponential operator
+#        datadef() recursion (the hang; gate tests/testaddchaindepth.mad),
+#        unary plus under a cast, and flat-initializer struct-array element
+#        count (both gated by tests/teststaticinitflat.mad).
 #
 # -- parse gaps: declarators --
 # 00089: typedef struct S * (*fty)();  (fn-ptr typedef returning struct ptr)
