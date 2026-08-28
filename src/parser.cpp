@@ -64587,6 +64587,58 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	nt = peekToken();                        // nt is the synthetic '='
     }
 
+    // A ZERO-star declarator whose TYPE is a function TYPEDEF (`typedef void
+    // DO_FUN(CHAR_DATA*, char*); DO_FUN do_x;` — SMAUG's DECLARE_DO_FUN)
+    // declares a FUNCTION, never an object (C89 6.5.4.3 / C11 6.7.6.3; gcc
+    // canon). The discriminator is the one consume_declarator_stars already
+    // owns (see n_decl_stars above — its comment states this exact rule):
+    // an fn-ptr base keeps its bare DataDefFPTR type whatever the star count,
+    // so `DO_FUN *fp;` (1 star, a pointer VARIABLE) reaches here with the
+    // SAME decl_type — only the recorded star count separates them. A POINTER
+    // typedef (`typedef void (*PFN)()`; ptr_syntax) is an object at 0 stars.
+    // Before this arm, the variable arm below took the 0-star shape too —
+    // 8 bytes of calloc'd storage registered under the function's name, with
+    // the EMITTER rendering it back as a function declaration
+    // (fnptr_explicit_stars==0) — and the later real prototype re-registered
+    // the name in funcdef_map while lookups kept the storage Variable, whose
+    // ->data the vbase ctor probe then read as a Method* (the SMAUG tables.c
+    // SIGSEGV; reducer tests/testfntypedefdecl.c).
+    if ( DataDefFPTR *fn_td = dynamic_cast<DataDefFPTR *>(decl_type) )
+	if ( !fn_td->ptr_syntax && fn_td->target && n_decl_stars == 0
+	  && arr_dims.empty() && !ret_is_ref
+	  && (nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkComma) )
+	{
+	    nextToken();	// consume the ';' or ','
+	    if ( funcdef_map.find(id) == funcdef_map.end() )
+	    {
+		// Each declarator gets its OWN FuncDef: the typedef's target
+		// is shared by every DO_FUN-declared name, and the later
+		// DEFINITION flips declaration_only/decl_file on it.
+		FuncDef *func = clone_funcdef_with_return(fn_td->target,
+							  fn_td->target->returns);
+		func->declaration_only = true;
+		func->decl_file = tb->file;
+		pack_tap_name(id, pdkFunction);	// B4a: decl-index tap (funcdef_map key)
+		funcdef_map[id] = func;
+		if ( Variable *fvar = addVariable(NULL, *func, id) )
+		{
+		    Method *fm = new Method(*fvar);
+		    fvar->data = (void *)fm;
+		    if ( gotstatic )
+			fvar->flags |= vfSTATIC;
+		    if ( !decl_asm_alias.empty() )
+			fvar->storage_alias_name = decl_asm_alias;
+		    DBG(std::cout << "parseDeclaration() function-typedef"
+			" declaration of " << id << std::endl);
+		}
+	    }
+	    // else: already a declared function (a prior prototype or the same
+	    // typedef form) — C's repeated-declaration rule, nothing to add.
+	    if ( nt->id() == TokenID::tkComma )
+		return parseDeclaration(tb, is_static);	// `DO_FUN a, b;`
+	    return NULL;
+	}
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
       || nt->id() == TokenID::tkComma )
