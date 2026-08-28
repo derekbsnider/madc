@@ -1530,6 +1530,12 @@ public:
     TokenBase *value;                          // case constant expression
     TokenBase *range_high;                     // GNU case range: case LOW ... HIGH
     std::vector<TokenBase *> statements;       // statements until next case/default/}
+    // Non-empty for a label NESTED inside a statement of the switch body
+    // (Duff's device: `case 7:` inside a do-while). The statement stays in
+    // its enclosing structure with a TokenLabel of this name in place, and
+    // the switch dispatch emits `case V: goto <name>;` — restructuring the
+    // body into per-case buckets would gut the enclosing loop/if.
+    std::string in_place_label;
     TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const override { return TokenID::tkCASE; }
     virtual TokenBase *clone() override { return new TokenCASE(); }

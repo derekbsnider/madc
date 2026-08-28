@@ -1,0 +1,32 @@
+/* Duff's device — case labels nested inside a do-while (c-testsuite 00143).
+ * A nested label becomes a dispatch-only TokenCASE (in_place_label) with a
+ * TokenLabel planted where it stands; the switch emits a `case V: goto L;`
+ * JUMP TABLE at the TOP of its body (after a bucket it would capture that
+ * bucket's fall-through: the loop exited into the goto and re-entered
+ * forever — the ASan stack-buffer-overflow that found this). The enclosing
+ * loop keeps its body; jumping into a loop is plain C11. Oracle: gcc -O0
+ * prints ok. */
+extern int printf(const char *, ...);
+int main()
+{
+    short a[10], b[10];
+    int n, count = 10;
+    for ( n = 0; n < 10; n++ ) { a[n] = n; b[n] = 0; }
+    short *from = a, *to = b;
+    switch ( count % 4 )
+    {
+    case 0:
+	do
+	{
+	    *to++ = *from++;
+    case 3:     *to++ = *from++;
+    case 2:     *to++ = *from++;
+    case 1:     *to++ = *from++;
+	} while ( (count -= 4) > 0 );
+    }
+    for ( n = 0; n < 10; n++ )
+	if ( a[n] != b[n] )
+	    { printf("mismatch %d\n", n); return 1; }
+    printf("ok\n");
+    return 0;
+}

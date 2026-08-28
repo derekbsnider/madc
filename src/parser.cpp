@@ -49100,7 +49100,8 @@ TokenBase *TokenDELETE::parse(Program &pgm)
 }
 
 // parse switch(expr) { case val: ...; break; default: ...; }
-TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
+TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
+				       bool nested)
 {
     TokenCASE *target = NULL;
 
@@ -49154,6 +49155,19 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
 	sw->defaultcase->column = tn->column;
 	sw->default_index = (int)sw->cases.size();
 	target = sw->defaultcase;
+    }
+
+    // A label NESTED inside a statement of the switch body (Duff's device)
+    // becomes a dispatch-only entry: the caller plants a TokenLabel in
+    // place, the dispatch emits `case V: goto label`, and the enclosing
+    // statement keeps its own body — the greedy bucket consumption below
+    // would gut a surrounding do-while/if (c-testsuite 00143/00213: the
+    // rebucketed loop copied one element per entry, exit 1).
+    if ( nested )
+    {
+	target->in_place_label =
+	    "__madc_swcase_" + std::to_string(++switch_label_seq);
+	return target;
     }
 
     while ( peekToken()
@@ -49278,7 +49292,18 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		continue;
 	    }
 	    else
-		pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
+	    {
+		// An arbitrary statement before the first label is valid C —
+		// unreachable at runtime (control enters at a case label),
+		// but it may CONTAIN nested case labels (c-testsuite 00213:
+		// `switch (i) { if (0) { case 42: ... } }`), which register
+		// as in-place dispatch entries during this parse. Emitted
+		// inside the switch body ahead of the first case marker, so
+		// the unreachable semantics carry through c2mir unchanged.
+		TokenBase *pre = pgm.parseStatement(tn);
+		if ( pre )
+		    pre_case_stmts.push_back(pre);
+	    }
 	}
 	else
 	{
@@ -60545,7 +60570,24 @@ TokenBase *Program::parseCompound()
 	if ( !switch_stack.empty()
 	  && (tb->id() == TokenID::tkCASE || tb->id() == TokenID::tkDEFAULT) )
 	{
-	    parse_switch_label(switch_stack.back(), tb);
+	    // Nested case/default (Duff's device): register a dispatch-only
+	    // entry on the switch and plant its label HERE, binding the next
+	    // statement the way a user label does — the enclosing loop/if
+	    // keeps its body intact.
+	    TokenCASE *tc = parse_switch_label(switch_stack.back(), tb, true);
+	    if ( tc && !tc->in_place_label.empty() )
+	    {
+		TokenLabel *lbl = new TokenLabel(tc->in_place_label);
+		lbl->file = tb->file;
+		lbl->line = tb->line;
+		lbl->column = tb->column;
+		TokenBase *pk = peekToken();
+		if ( pk && pk->id() != TokenID::tkClBrc
+		  && pk->id() != TokenID::tkCASE
+		  && pk->id() != TokenID::tkDEFAULT )
+		    lbl->labeled = parseStatement(nextToken());
+		code->statements.push_back((TokenStmt *)lbl);
+	    }
 	    continue;
 	}
 

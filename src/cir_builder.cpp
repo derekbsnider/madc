@@ -23665,10 +23665,13 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	// Declarations before the first case label (`switch(x){ T v; case ...}`)
 	// belong to the switch's compound scope. Emit them first so uses of `v`
 	// later in the switch resolve; dropping them left `v` undeclared.
-	for (size_t pi = 0; pi < ts->pre_case_stmts.size(); pi++) {
-		node_t s = translate_stmt(ts->pre_case_stmts[pi]);
-		if (s) append(block_items, s);
-	}
+	// (The dispatch-only jump table is emitted ABOVE them, further down.)
+	auto emit_pre_case = [&]() {
+		for (size_t pi = 0; pi < ts->pre_case_stmts.size(); pi++) {
+			node_t s = translate_stmt(ts->pre_case_stmts[pi]);
+			if (s) append(block_items, s);
+		}
+	};
 
 	// Emit one case/default: a labeled marker statement (`<label>: 0;`) then
 	// every statement in the case translated AS A STATEMENT. The marker
@@ -23707,6 +23710,17 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		} else {
 			append(labels, node1(N_CASE, translate_expr(tc->value), tc));
 		}
+		// A dispatch-only entry (a label nested inside a statement of
+		// the switch body — Duff's device): the case labels ride a
+		// `goto` to the in-place TokenLabel, and the statement keeps
+		// its enclosing loop/if structure. Jumping into a loop body
+		// is plain C11; c2mir owns the control flow from there.
+		if (!tc->in_place_label.empty()) {
+			append(block_items,
+			       node2(N_GOTO, labels,
+				     id(tc->in_place_label.c_str(), tc), tc));
+			return;
+		}
 		append(block_items, node2(N_EXPR, labels, integer(0)));
 		for (size_t si = 0; si < tc->statements.size(); si++) {
 			node_t s = translate_stmt(tc->statements[si]);
@@ -23723,13 +23737,27 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	// silently dropped from every switch — values matching no case fell
 	// through the whole switch.)
 	bool have_default = (ts->defaultcase != NULL);
+	// Dispatch-only (in-place/Duff) entries form a jump table at the TOP
+	// of the switch body: each entry ends in goto, so nothing falls
+	// through them — emitted after a bucket they would CAPTURE the
+	// bucket's fall-through (00143: the loop exited into `case 3: goto
+	// <label inside the loop>` and re-entered forever).
+	for (size_t ci = 0; ci < ts->cases.size(); ci++)
+		if (!ts->cases[ci]->in_place_label.empty())
+			emit_case(ts->cases[ci], false);
+	if (have_default && !ts->defaultcase->in_place_label.empty())
+		emit_case(ts->defaultcase, true);
+	emit_pre_case();
 	for (size_t ci = 0; ci < ts->cases.size(); ci++) {
-		if (have_default && (int)ci == ts->default_index)
+		if (have_default && (int)ci == ts->default_index
+		    && ts->defaultcase->in_place_label.empty())
 			emit_case(ts->defaultcase, true);
-		emit_case(ts->cases[ci], false);
+		if (ts->cases[ci]->in_place_label.empty())
+			emit_case(ts->cases[ci], false);
 	}
 	// default at (or past) the end of the case list.
-	if (have_default && ts->default_index >= (int)ts->cases.size())
+	if (have_default && ts->default_index >= (int)ts->cases.size()
+	    && ts->defaultcase->in_place_label.empty())
 		emit_case(ts->defaultcase, true);
 
 	node_t body = node2(N_BLOCK, list(), block_items);
