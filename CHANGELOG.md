@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+- **`bin/madc examples/embed_hello.cpp` compiles AND RUNS — the
+  variadic-class arc lands (2026-08-27, s141)**: madc now compiles its
+  own C++ embedding example end-to-end (the examples gate gains the
+  .cpp leg beside the .c one). Twelve fixes across the chain, each
+  reduced and g++/clang++-oracled, the load-bearing four: (1)
+  **variadic real-instantiation arming** at the three expression arms
+  that lacked it (`P<args>::member` reads via the unqualified, the
+  ns-qualified, and the address-of lanes) — the memberless opaque shell
+  silently answered 0 before; (2) **name lookup keeps the TEMPLATE**
+  ([temp.inst]): a fn-template instantiation's product parse no longer
+  clobbers `namespace_map[ns][name]`, which poisoned every later
+  dependent-pattern parse with the first shape's concrete callee (the
+  `__do_uninit_copy` cross-instantiation wall); (3) **enum pointees
+  keep their own conversion domain** in overload ranking — two distinct
+  scoped enums' pointers scored as an exact match (int-erased) and a
+  wrong-flavor concrete instance silently outranked instantiating the
+  right one; (4) **`explicit` is modeled** (FuncDef::is_explicit) and
+  the converting-ctor probe honors [over.ics.user] — an explicit ctor
+  no longer manufactures implicit conversions (the
+  __normal_iterator-by-value mis-bind). Also: [temp.arg.explicit]/3
+  excess explicit args bind a trailing type pack; fn-template names
+  inform call-arity scanning; per-element expansion of qualified
+  dependent member params (`typename map<Args>::low_type... args`);
+  enumerators are prvalues (reference binding materializes);
+  fn-pointer params mangle PF…E via a structural spelling owner;
+  class-nested enums resolve through class-qualified chains with one
+  spelling-identity owner. Thirteen new suite tests + the gate leg.
+
+- **libmadc embedding fixes (2026-08-27, s141)**: constructing a
+  `madc::engine` no longer hijacks the host's `std::cout`/`std::cerr`
+  for the process lifetime — guest iostream capture is now
+  invocation-scoped (every host iostream write after engine
+  construction silently vanished before; libmadc_cpp_smoke asserts
+  rdbuf identity and the `libmadc-smoke` lane joins `fulltest`, which
+  is also where the C smoke's stale `madc_value.kind` field — broken
+  ungated since the 32-byte value ABI — got caught and fixed).
+  Engine-registered host callbacks now flow into `eval_expression`'s
+  child program, so a policy-allowed `eval_expression("host_multiply(6,
+  7)")` works as the example documents; the example itself opts its
+  eval into `expression_policy` (the sandboxed default refuses calls)
+  and drops the stale `-lasmjit` build comment.
+
 - **Template core: the embed_hello chain (2026-08-27)**: five coupled
   fixes, each reduced and g++-oracled. Braced-init-lists of CLASS
   elements now take the initializer-list ctor when every element is
