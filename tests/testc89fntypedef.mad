@@ -1,0 +1,51 @@
+/* Functions declared THROUGH a function typedef (SMAUG's DECLARE_DO_FUN):
+ * `typedef void DO_FUN(...); DO_FUN do_x;` declares a FUNCTION (C89
+ * 6.5.4.3), coexisting with a direct prototype of the same name (mud.h
+ * carries both), a same-TU definition, function-to-pointer decay through a
+ * lookup return, an fn-typedef-pointer struct field, and a one-star LOCAL
+ * (`DO_FUN *fp;` — a pointer VARIABLE, the build.c shape). The old variable
+ * arm gave the 0-star form 8 bytes of storage whose ->data the vbase ctor
+ * probe read as a Method* — the SMAUG tables.c SIGSEGV (s141; reducers
+ * tmp/sm_red1-4.c). Oracle: gcc -std=c89 prints called=1 same=1, no
+ * diagnostics. */
+#include <stdio.h>
+
+typedef struct char_data CHAR_DATA;
+typedef void DO_FUN( CHAR_DATA *ch, char *argument );
+
+DO_FUN do_x;					/* typedef-form declaration */
+void do_x( CHAR_DATA *ch, char *argument );	/* direct prototype */
+
+struct char_data
+{
+    int substate;
+    DO_FUN *last_cmd;
+};
+
+static int called = 0;
+
+void do_x( CHAR_DATA *ch, char *argument )	/* the definition */
+{
+    (void)ch;
+    (void)argument;
+    called = 1;
+}
+
+DO_FUN *lookup( const char *name )
+{
+    (void)name;
+    return do_x;				/* function-to-pointer decay */
+}
+
+int main(void)
+{
+    CHAR_DATA cd;
+    DO_FUN *fp;					/* one star: a pointer VARIABLE */
+
+    cd.substate = 0;
+    cd.last_cmd = lookup("do_x");
+    fp = cd.last_cmd;
+    (*fp)(&cd, "arg");
+    printf("called=%d same=%d\n", called, fp == lookup("x") ? 1 : 0);
+    return 0;
+}

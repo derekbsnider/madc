@@ -1,0 +1,1 @@
+gcc-default parity: no diagnostics on sign-only pointee args or ptr-vs-0 ordered compare

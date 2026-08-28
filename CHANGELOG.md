@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **SMAUG restored + gated (2026-08-28, the smaug-fntypedef merge
+  wave)**: the real MadSMAUG 51-TU `--project` (upstream/smaug1.8 via
+  `compile_commands.json`) compiles, links, JIT-boots to "Realms of
+  Despair ready", and serves the login greeting with zero diagnostics
+  — restored from a SIGSEGV that shipped in every archived release
+  v0.69.0–v0.96.0. Root cause: a function declared THROUGH a function
+  typedef (`typedef void DO_FUN(...); DO_FUN do_x;` — SMAUG's
+  `DECLARE_DO_FUN`) registered an 8-byte storage VARIABLE plus a
+  `funcdef_map` dual identity; the July-31 construction-vtables arc's
+  `ctor_hidden_vbase_owner` probe read that storage as a `Method*` and
+  crashed. Invisible for months because the suite's SMAUG tests were
+  shaped reducers, never the artifact. Fixes: **parser** — a zero-star
+  function-typedef declarator declares a FUNCTION (C89 6.5.4.3), keyed
+  on the `consume_declarator_stars` owner; one star stays a pointer
+  variable (`tests/testc89fntypedef`). **CIR** — C-mode functions
+  never enter the ctor/vbase probe. **c2mir** — default-level warnings
+  match gcc's default: sign-only pointee argument mismatches and
+  ordered pointer-vs-null-zero compares go quiet (both stay errors
+  under `-pedantic`; `tests/testcwarnparity`). **Gate** —
+  `scripts/smaug_gate.sh` in fulltest boots the REAL SMAUG to its
+  ready line, two-sided (fails on v0.95.2, fails on any diagnostic,
+  skips loudly without the sibling checkout).
+
 ## [v0.96.0] — 2026-08-28
 
 The variadic-class arc: madc compiles and runs its own C++ embedding

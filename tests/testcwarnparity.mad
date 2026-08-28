@@ -1,0 +1,26 @@
+/* gcc-default warning parity for two C shapes madc used to over-warn
+ * (SMAUG comm.c/ident.c/magic.c — the only diagnostics on its whole build):
+ * (1) an argument pointer whose pointee differs from the parameter's ONLY in
+ * signedness (int* passed to unsigned int* — the socklen_t shape; gcc keeps
+ * this under -Wpointer-sign, silent by default), and (2) an ordered
+ * comparison of a pointer with the integer constant zero (`weath >= 0`;
+ * gcc keeps it under -Wextra, silent by default). Oracle: gcc -std=c89 -c
+ * emits NOTHING on this file; the run prints the two results below. */
+#include <stdio.h>
+
+static int take_unsigned_ptr( unsigned int *up )
+{
+    return (int)*up;
+}
+
+int main(void)
+{
+    int n = 41;
+    char *p = (char *)0;
+    int r = take_unsigned_ptr( &n );	/* sign-only pointee mismatch */
+
+    if ( p >= 0 )			/* ordered ptr vs null constant */
+	r += 1;
+    printf("r=%d nullge=%d\n", r, p >= 0 ? 1 : 0);
+    return 0;
+}
