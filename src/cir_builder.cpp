@@ -6700,7 +6700,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 						fprintf(stderr, "[tsubst-alias] pattern-mode"
 							" call=%s -> %s\n",
 							tcf->var.name.c_str(),
-							callee->local_emit_name.c_str());
+							callee->local_emit_name.c_str()); // allowed-exception: debug print, not symbol build
 					callee = ifd;
 				}
 	}
