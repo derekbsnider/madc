@@ -1,6 +1,28 @@
 # Test Status
 
-> **Current (2026-08-27, the embed_hello template chain —
+> **Current (2026-08-28, the variadic-class arc —
+> feature/variadic-class-tpl merge wave):** `bin/madc
+> examples/embed_hello.cpp` compiles AND RUNS at g++ parity; the
+> examples gate carries both legs. Twelve arc fixes (ns-map clobber
+> [temp.inst], enum-pointee conversion domain, FuncDef::is_explicit,
+> const&-param prvalue misclass, tid-pack inst_key memo, engine
+> iostream-capture scoping, eval-child host callbacks, ...) plus the
+> battery gate's three catches, each own-committed with a reducer:
+> the [tsubst-alias] probe takes the drift gate's allowed-exception
+> marker; a REBOUND ranked ctor stamps its `__oN` symbol on
+> local_emit_name (pre-existing ≥v0.95.2 — the packed/headerless
+> memberwise-copy "too many arguments" wall; tests/testvecmembercopy);
+> a missing-content HUSK live-tokenizes by CANONICAL PATH, not
+> basename (`<stat.h>` grove-order ambiguity dropped `__S_IFMT` for
+> masked `<sys/stat.h>` consumers — teststat red headerless since the
+> s140 corpus growth). Sixteen new suite tests. FULL push-gate battery
+> on final content @e41acd91: fulltest rc=0 (all gates) + JIT **1199
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1225) + EXE
+> **1150 passed / 0 failed** + OBJ **1150 passed / 0 failed** +
+> release rc=0 + packed **1199 / 0** + headerless **1172 / 0 / 36
+> skipped**.
+>
+> **Previous (2026-08-27, the embed_hello template chain —
 > feature/embed-hello-tsubst2 merge wave):** five coupled template-core
 > fixes on the `bin/madc examples/embed_hello.cpp` diagnosis chain, each
 > reduced + g++-oracled: (1) `find_initializer_list_ctor` accepts a

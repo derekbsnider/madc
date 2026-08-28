@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **Forest artifact fixes: the packed/headerless lanes' two escapes
+  (2026-08-28, s141 battery gate)**: (1) a **rebound RANKED ctor now
+  stamps its registered `__oN` symbol on `local_emit_name`** — the
+  basic-class-pattern rebind (the forest's instance materialization
+  lane) registered every ctor overload under the right Variable name
+  but never stamped the FuncDef, so the FuncDef-only ctor emitters
+  (memberwise retbuf copy, shims, global construction) degraded to the
+  canonical `Class__Class` symbol: a by-value return of a struct with
+  a `std::vector` member called the DEFAULT ctor's symbol with copy
+  args and c2mir refused the compile ("too many arguments") under any
+  forest bind. Pre-existing at least back to v0.95.2 (the shipped rpm
+  fails the reducer identically); this arc's new sigchain tests were
+  the first suite coverage of the shape. Reducer:
+  `tests/testvecmembercopy.mad`. (2) a **missing-content husk
+  live-tokenizes by its CANONICAL PATH** — the fallback re-included a
+  husk unit by basename, and `<stat.h>` is ambiguous across the corpus
+  (bits/, linux/, sys/); the s140 corpus growth reordered the grove
+  lookup so a headerless `<sys/stat.h>` consumer tokenized linux's
+  stat.h and lost `__S_IFMT` (`teststat.mad` red in the headerless
+  lane, green at v0.95.2). The canonical path is unambiguous end to
+  end: exact unit match, bytes from disk or the pack's raw-source
+  slot. Diagnostics shipped: `MADC_COPY_PROBE` (memberwise-copy ctor
+  selection + every ctor-set push site).
+
 - **`bin/madc examples/embed_hello.cpp` compiles AND RUNS — the
   variadic-class arc lands (2026-08-27, s141)**: madc now compiles its
   own C++ embedding example end-to-end (the examples gate gains the
