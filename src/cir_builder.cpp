@@ -11248,7 +11248,20 @@ DataDefCLASS *CirBuilder::ctor_hidden_vbase_owner(FuncDef *fd, Method *method,
 						  const std::string &fname)
 {
 	if (!fd || !method) return NULL;
+	// A C TU has no classes, no ctors, no virtual bases — this probe (and
+	// every hidden-__madc_vb consumer behind it) is C++ machinery and must
+	// never run over C-mode functions. It DID: SMAUG's C89 build reached
+	// it for every function, and the fn-typedef dual-identity defect
+	// (see parseDeclaration's function-typedef arm) handed it a storage
+	// blob as the Method — the tables.c SIGSEGV. The parser defect is
+	// fixed at its own layer; this gate is the language-model boundary.
+	if (m_prog && m_prog->is_c_mode()) return NULL;
 	DataDefCLASS *ocls = method->owner_class;
+	// Env-gated probe (MADC_VB_PROBE=1): every entry with its owner —
+	// the garbage-owner_class crash diagnostic (SMAUG --project s141).
+	if (::getenv("MADC_VB_PROBE"))
+		fprintf(stderr, "[vb-probe] fname=%s fd=%p method=%p ocls=%p\n",
+			fname.c_str(), (void *)fd, (void *)method, (void *)ocls);
 	if (!ocls) return NULL;
 	// NOTE: a ctor whose emit_symbol names the library C1 still qualifies —
 	// the madc-emitted DEFINITION surfaces (func_def / func_proto / the
