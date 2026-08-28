@@ -2813,11 +2813,13 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "unsigned long" || name == "unsigned long int" )
 	return dd_platform_ulong();
     if ( name == "long long" || name == "long long int"
-      || name == "signed long long" || name == "signed long long int"
-      || name == "__int128" || name == "signed __int128" )
+      || name == "signed long long" || name == "signed long long int" )
+	return dd_platform_longlong();
+    if ( name == "unsigned long long" || name == "unsigned long long int" )
+	return dd_platform_ulonglong();
+    if ( name == "__int128" || name == "signed __int128" )
 	return &ddINT64;
-    if ( name == "unsigned long long" || name == "unsigned long long int"
-      || name == "unsigned __int128" )
+    if ( name == "unsigned __int128" )
 	return &ddUINT64;
     if ( name == "float" || name == "_Float16" || name == "_Float32"
       || name == "__bf16" )
@@ -2829,11 +2831,14 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "int8_t" ) return &ddINT8;
     if ( name == "int16_t" ) return &ddINT16;
     if ( name == "int32_t" ) return &ddINT32;
-    if ( name == "int64_t" ) return &ddINT64;
+    // int64_t/uint64_t follow the target's own alias spelling: `long long`
+    // on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
+    // the accessors return there).
+    if ( name == "int64_t" ) return dd_platform_longlong();
     if ( name == "uint8_t" ) return &ddUINT8;
     if ( name == "uint16_t" ) return &ddUINT16;
     if ( name == "uint32_t" ) return &ddUINT32;
-    if ( name == "uint64_t" ) return &ddUINT64;
+    if ( name == "uint64_t" ) return dd_platform_ulonglong();
     if ( name == "size_t" ) return &ddUINT64;
     if ( name == "ptrdiff_t" ) return &ddINT64;
     if ( name == "wchar_t" ) return dd_platform_wchar();
@@ -16650,6 +16655,18 @@ TargetOS madc_target_os =
 	TargetOS::Posix;
 #endif
 
+// int64_t's platform spelling (datadef.h): Apple and mingw alias the
+// exact-width 64-bit family to `long long`, glibc to `long`. The darwin
+// CROSS modes compile under a linux host, so __APPLE__ alone cannot carry
+// the target fact — MADC_CROSS_APPLE (the Makefile's cross-mode define)
+// is the same fact for those binaries.
+TargetInt64Alias madc_target_int64_alias =
+#if defined(_WIN32) || defined(__APPLE__) || defined(MADC_CROSS_APPLE)
+	TargetInt64Alias::LongLong;
+#else
+	TargetInt64Alias::Long;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -16716,6 +16733,31 @@ DataDef *dd_platform_ulong()
 DataDef *dd_platform_wchar()
 {
     return target_llp64() ? (DataDef *)&ddUINT16 : (DataDef *)&ddINT32;
+}
+
+// `long long` (datadef.h): distinct from `long` ONLY where the two must
+// mangle apart — the LP64 target whose headers alias int64_t to long long
+// (darwin: host exports say x, plain long says l). LLP64 already spells
+// ddINT64 itself "long long" (the mangle desugar), and glibc LP64 defines
+// int64_t = long, so both return the pinned identity there.
+DataDef *dd_platform_longlong()
+{
+    if ( target_llp64() || !target_int64_is_longlong() )
+	return &ddINT64;
+    static DataDefPlatformLONGLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformLONGLONG();
+    return dd;
+}
+
+DataDef *dd_platform_ulonglong()
+{
+    if ( target_llp64() || !target_int64_is_longlong() )
+	return &ddUINT64;
+    static DataDefPlatformULONGLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformULONGLONG();
+    return dd;
 }
 
 struct DataDefMAXAlignTInit
@@ -17409,6 +17451,15 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 			return target_llp64() ? dd_platform_long() : NULL;
 		case MADC_TYPEID_PLATFORM_ULONG:
 			return target_llp64() ? dd_platform_ulong() : NULL;
+		// Darwin-only slots, same reserved-slot rule: everywhere else
+		// the accessors return the pinned ddINT64/ddUINT64 (slots
+		// 10/15), so these resolve NULL and a cross-model thaw is loud.
+		case MADC_TYPEID_PLATFORM_LONGLONG:
+			return (!target_llp64() && target_int64_is_longlong())
+				? dd_platform_longlong() : NULL;
+		case MADC_TYPEID_PLATFORM_ULONGLONG:
+			return (!target_llp64() && target_int64_is_longlong())
+				? dd_platform_ulonglong() : NULL;
 		default:			return NULL;
 	}
 }

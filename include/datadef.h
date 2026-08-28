@@ -67,6 +67,19 @@ extern TargetOS madc_target_os;
 inline bool target_windows()
 { return madc_target_os == TargetOS::Windows; }
 
+// The C spelling the TARGET's own headers give the 64-bit exact-width
+// aliases (int64_t and family) — the fourth target property, same shape
+// and same one-owner rule as the three above. glibc spells them `long`
+// (int64_t IS long: one identity, Itanium l); Apple and mingw spell them
+// `long long` (Itanium x). The first property where darwin diverges from
+// Linux: LP64 + LongLong (Apple) needs `long long` DISTINCT from `long`
+// so mangled-direct resolution reaches the host's x-spelled exports while
+// plain long stays l. Defined beside the data-model owner.
+enum class TargetInt64Alias { Long, LongLong };
+extern TargetInt64Alias madc_target_int64_alias;
+inline bool target_int64_is_longlong()
+{ return madc_target_int64_alias == TargetInt64Alias::LongLong; }
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the
@@ -79,6 +92,13 @@ class DataDef;
 DataDef *dd_platform_long();
 DataDef *dd_platform_ulong();
 DataDef *dd_platform_wchar();
+// `long long` / `unsigned long long`: ddINT64/ddUINT64 everywhere EXCEPT
+// the LP64-with-longlong-int64-alias target (darwin), where they are the
+// distinct 8-byte DataDefPlatformLONGLONG/ULONGLONG singletons (typeid
+// pins MADC_TYPEID_PLATFORM_LONGLONG/ULONGLONG) so the mangler emits x/y
+// while plain long keeps l/m.
+DataDef *dd_platform_longlong();
+DataDef *dd_platform_ulonglong();
 
 // Kind-accessor forward declarations (DataDef::as_*() below). FuncDef and its
 // override live in madc.h.
@@ -1539,6 +1559,18 @@ class DataDefPlatformLONG:  public DataDef { public:
 	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
 class DataDefPlatformULONG: public DataDef { public:
 	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
+// Platform `long long` / `unsigned long long` — the darwin mirror of the
+// pair above (LP64 target whose headers alias int64_t to long long): full
+// 8-byte i64 rank, but a DISTINCT identity whose NAME feeds the Itanium
+// mangler ('x'/'y'; the subclass typeid exempts them from the
+// mangle_scalar_spelling desugar, which would say 'l' on LP64). NEVER
+// instantiate directly: dd_platform_longlong()/dd_platform_ulonglong()
+// (parser.cpp) are the one owner — everywhere else they return
+// ddINT64/ddUINT64 and these classes go uninstantiated.
+class DataDefPlatformLONGLONG:  public DataDef { public:
+	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
+class DataDefPlatformULONGLONG: public DataDef { public:
+	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
 // caps simple types at 8, which is correct for every other scalar except
 // long double — see DataDefLDOUBLE below).

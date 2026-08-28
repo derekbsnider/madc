@@ -77,7 +77,15 @@ enum
      * fails LOUDLY instead of silently re-widening every `long`. */
     MADC_TYPEID_PLATFORM_LONG  = 35,
     MADC_TYPEID_PLATFORM_ULONG = 36,
-    MADC_TYPEID_PRIMITIVE_LAST = 36,
+    /* Platform `long long` / `unsigned long long` (the darwin mirror of
+     * 35/36): distinct 8-byte dds minted by dd_platform_longlong()/
+     * dd_platform_ulonglong() ONLY where the target is LP64 yet aliases
+     * int64_t to long long (Apple). Everywhere else the accessors return
+     * ddINT64/ddUINT64 (slots 10/15) and these slots resolve NULL — the
+     * same reserved-slot rule as 35/36. */
+    MADC_TYPEID_PLATFORM_LONGLONG  = 37,
+    MADC_TYPEID_PLATFORM_ULONGLONG = 38,
+    MADC_TYPEID_PRIMITIVE_LAST = 38,
 
     MADC_TYPEID_PRIMITIVE_END  = 0x100,
     MADC_TYPEID_SYSTEM_BASE    = 0x100

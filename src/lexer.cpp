@@ -5543,6 +5543,14 @@ void Program::add_datatypes()
 
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
+    // int64_t/uint64_t follow the target's int64 ALIAS spelling (datadef.h
+    // TargetInt64Alias): the distinct long-long-shaped dds on darwin (the
+    // host exports mangle x/y there), the pinned ddINT64/ddUINT64
+    // everywhere else. Same function-static process-fixed binding contract
+    // as tkWCHAR_T below. These rows OVERRIDE the static tkINT64/tkUINT64
+    // pair, whose compile-time ddINT64 binding cannot follow the target.
+    static TokenDataType tkINT64_T("int64_t", *dd_platform_longlong());
+    static TokenDataType tkUINT64_T("uint64_t", *dd_platform_ulonglong());
     // wchar_t is target-shaped (int32 LP64 / uint16 LLP64). Function-static:
     // binds the model at the FIRST Program's add_datatypes — fine while the
     // model is fixed per process (hosted modes); a per-Program --target flip
@@ -5577,12 +5585,12 @@ void Program::add_datatypes()
     datatype_map[tkINT16.str] = &tkINT16;
     datatype_map[tkINT24.str] = &tkINT24;
     datatype_map[tkINT32.str] = &tkINT32;
-    datatype_map[tkINT64.str] = &tkINT64;
+    datatype_map[tkINT64_T.str] = &tkINT64_T;
     datatype_map[tkUINT8.str] = &tkUINT8;
     datatype_map[tkUINT16.str] = &tkUINT16;
     datatype_map[tkUINT24.str] = &tkUINT24;
     datatype_map[tkUINT32.str] = &tkUINT32;
-    datatype_map[tkUINT64.str] = &tkUINT64;
+    datatype_map[tkUINT64_T.str] = &tkUINT64_T;
     datatype_map[tkFLOAT.str] = &tkFLOAT;
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
     // `array` is madc-dialect-only (slice V1): explicit C/C++ standards
@@ -7806,12 +7814,15 @@ TokenBase *Program::_getToken()
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long long", ddINT64);
+			    // `long long` is target-shaped like plain `long`
+			    // above: distinct from long (mangles x) on the
+			    // LP64 darwin model, ddINT64 everywhere else.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_longlong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long long", *dd_platform_longlong());
 			case TS_UNSIGNED + TS_LONG + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("unsigned long long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_ulonglong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long long", *dd_platform_ulonglong());
 			case TS_INT128:
 			case TS_SIGNED + TS_INT128:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
