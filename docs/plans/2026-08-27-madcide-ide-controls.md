@@ -395,3 +395,115 @@ Recon items for the slice (the POSIX seat → its Windows twin):
 Deliverable shape: one new `tui_target` implementation (win console),
 registered under `_WIN32` beside the POSIX registration, plus the
 taskio win wait arm. Sequenced AFTER the variadic class-template arc.
+
+### Recon findings (2026-08-28, s141 — code-verified against the POSIX seats)
+
+Each item below names its POSIX seat and the Windows twin. Items marked
+**[validate-win]** are documented Windows semantics that genuine-Windows
+hardware must confirm before the slice ships (wine's console is not the
+oracle — item 7).
+
+1. **Raw mode** — POSIX seat: `term_target::enter_grid_mode`
+   (src/ui_term.cpp): termios raw (IXON off, ISIG off, ECHO/ICANON off,
+   OPOST off), `_saved` = the pre-open state, `leave_grid_mode` restores
+   it. Win twin: save BOTH handles' modes at open (`GetConsoleMode` on
+   `GetStdHandle(STD_INPUT_HANDLE/STD_OUTPUT_HANDLE)`), then
+   input `&= ~(ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT|ENABLE_PROCESSED_INPUT)`,
+   `|= ENABLE_VIRTUAL_TERMINAL_INPUT`; output
+   `|= ENABLE_VIRTUAL_TERMINAL_PROCESSING|DISABLE_NEWLINE_AUTO_RETURN`
+   (the OPOST-off twin). The escape stream is byte-identical: the
+   alternate screen (`\x1b[?1049h`), CUP/SGR/DECSTBM/DL/IL, and cursor
+   show/hide all ride VT processing on Win10 1809+. `isatty` twin:
+   `GetConsoleMode` succeeding IS the "is a console" test.
+
+2. **Input** — `tui_keyparse` (include/madcdis/tui_model.h:660) is a raw
+   bytes→keys CSI/SS3 state machine with an explicit bare-ESC flush; with
+   `ENABLE_VIRTUAL_TERMINAL_INPUT`, `ReadFile` on the input handle
+   delivers exactly that alphabet, so the parser is REUSED UNCHANGED.
+   The 25 ms escape-grace read (`input_ready(25)`) twins as a bounded
+   console wait. Chords: Windows has no IXON/ISIG axis — with
+   PROCESSED_INPUT off, ^S/^Q arrive as 0x13/0x11 and ^Z as 0x1A;
+   ^C arrives as 0x03 **[validate-win]** (conhost vs Windows Terminal
+   may differ on ^C once VT input is on; also probe ^Space and
+   shift-modified keys, known VT-input gaps in conhost).
+
+3. **Resize** — no SIGWINCH. Decision: do NOT mix `ReadConsoleInput`
+   event records with `ReadFile` VT bytes (two readers on one stream,
+   and event-record reads bypass the VT translation). Instead poll
+   `GetConsoleScreenBufferInfo` (the `srWindow` extent) at the
+   `read_keys` loop head — the exact seat where the POSIX loop checks
+   `g_winch` — and bound the blocking wait (~200 ms cadence) so a
+   resize with no keystroke still surfaces. One cheap API call per
+   wake; the model's resize keyev flows unchanged.
+
+4. **Scheduler seam (MT-4c)** — FINDING, a live pre-req bug for the
+   slice: `io_probe_readable`'s `_WIN32` arm (src/madc_task_chan.cpp)
+   is PIPE-ONLY — `PeekNamedPipe` FAILS on a console handle and the
+   failure arm returns `true` ("readable"), so a console-parked
+   `host_wait_readable` would busy-wake `read_keys` forever. The slice
+   adds a console arm: `GetConsoleMode(h,·)` succeeding classifies the
+   handle; probe via `GetNumberOfConsoleInputEvents` (>0). CAVEAT
+   **[validate-win]**: non-key records (focus/menu/mouse) count as
+   events and can signal without producing VT bytes — confirm whether
+   VT-input mode filters them before `ReadFile`, else the probe needs a
+   husk-drain (`ReadConsoleInput` discard of non-key records) — keep it
+   inside taskio. `io_wait_hook`'s win arm upgrades the same way:
+   consoles are WAITABLE objects — split waiters into waitable
+   (console: `WaitForMultipleObjects`, real timeout) and pipes (the
+   existing 1 ms `PeekNamedPipe` cadence); with any pipe present the
+   wait quantum stays 1 ms, console-only waits block properly.
+
+5. **Suspend/resume** (^K Z, Run-native) — `enter_grid_mode` /
+   `leave_grid_mode` are already the one shared pair; the win twin is
+   SetConsoleMode-restore of the two saved modes + the same VT exit
+   bytes. `system()` exists (cmd /c); the atexit recovery's pid guard
+   (`g_live_pid`, a fork-child discipline) holds trivially — no fork on
+   Windows.
+
+6. **Run (fork-Run)** — the separate owner call; comparison in the next
+   subsection. NOT a TUI blocker: the win TUI lands with
+   Build/Check/Run-native live and the fork-Run row absent.
+
+7. **Validation** — wine's VT OUTPUT emulation is usable for smoke; VT
+   INPUT delivery under wine is the untrustworthy leg, so
+   genuine-Windows hardware (the win64 release-lane model) is the
+   oracle for items 2 and 4's caveats. CI-shaped gate later: ConPTY
+   (`CreatePseudoConsole`, Win10 1809+) can host the packed PE, script
+   input bytes, and capture output bytes — the pty-gate twin.
+
+Deliverable shape (confirmed): src/ui_term.cpp is `#ifndef _WIN32` for
+the POSIX body; the slice adds the win `term_target` twin (same
+registration name under `_WIN32` — a sibling `#else` body or
+ui_term_win.cpp, one tui_target per platform) + the taskio console
+probe/wait arms. The paint side (grid renderer, SGR table,
+tui_diff_spans/tui_diff_plan, alternate screen) is reused byte-for-byte.
+
+### Windows Run — copy the AST to a child (OWNER CALL, banked 2026-08-28)
+
+POSIX Run = fork at post-parse: the child inherits the LIVE parse tree
+and runs c2mir on it ([the running madc IS the compiler]). Windows has
+no fork. Two candidate designs:
+
+- **(a) cygwin-style self-copy**: `CreateProcess` of the own exe
+  suspended + replicate the parent's memory regions into it. Faithful
+  to fork's zero-serialization cost, but fights ASLR/handle
+  inheritance/CRT state, needs deep win-internals machinery this repo
+  otherwise never carries, and its failure modes are silent corruption.
+  (Cygwin itself needs a decade of special cases to keep this working.)
+
+- **(b) forest-serialization-over-a-pipe**: the buffer's parse handle
+  FREEZES its tree via the existing cir_freeze machinery into a child
+  `madc --run-frozen` reading the container from a pipe/temp handle;
+  the child thaws (LOADED == parsed — never a re-parse) and runs c2mir.
+  Rides two standing invariants — the forest IS save/load state, and
+  one implementation per concern (the freeze path already exists,
+  battle-gated by the packed/headerless lanes). Cost: freeze+thaw
+  latency (the packed-launch class, ~150 ms order) instead of fork's
+  ~0; the child is a REAL process with clean CRT/console state, which
+  on Windows is a robustness win (no inherited-console fights).
+
+Recommendation to the owner: **(b)** — it reuses gated machinery and
+its cost class is already the accepted packed-launch latency; (a)
+imports a permanent maintenance frontier for one feature. The ruling is
+the owner's (banked as recon item 6's fork; madcide's Run row stays
+absent on win until it lands either way).
