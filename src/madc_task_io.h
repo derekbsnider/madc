@@ -30,15 +30,26 @@ bool poll_readable(intptr_t handle);
 // io wait blocks in poll() for us.
 void wait_readable(intptr_t handle);
 
+// The HOST wait's wake reasons (host_wait_readable's return).
+enum class host_wake {
+	fired,		// the fd fired — read now
+	synthetic,	// tasks got the CPU and drained (recompose), or EINTR
+	deadline	// the caller's timeout elapsed — re-check and re-park
+};
+
 // The HOST wait (MT-4c — the tui's stdin unification; ONE at a time,
 // throws on a second): wait_readable PLUS a synthetic wake — the waiter
 // also unparks, UNFIRED, when other tasks got the CPU since it parked and
 // the scheduler reached its quiescent point (the read_keys ran->wake seam
 // moved into the one poll), or on EINTR (a resize signal must reach the
-// caller's loop head). Returns true = the fd fired (read now); false = a
-// synthetic wake (recompose; the fd MAY also be readable — the caller's
-// read path re-probes anyway).
-bool host_wait_readable(intptr_t handle);
+// caller's loop head). `timeout_ms` >= 0 bounds the park: Windows has no
+// EINTR/SIGWINCH axis, so a console read_keys polls for resizes on a
+// deadline cadence instead (win-VT slice) — expiry returns host_wake::
+// deadline, distinct from synthetic so the caller re-parks without
+// synthesizing a wake event. -1 (the default) never expires. A fired fd
+// MAY coincide with either other reason; the caller's read path re-probes
+// anyway.
+host_wake host_wait_readable(intptr_t handle, long long timeout_ms = -1);
 
 } // namespace taskio
 } // namespace madc

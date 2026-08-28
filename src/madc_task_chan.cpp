@@ -57,6 +57,7 @@
 #include <io.h>
 #else
 #include <poll.h>
+#include <time.h>
 #endif
 
 #include "libmadc/value.h"
@@ -152,6 +153,21 @@ IoWaiter *g_io_head;
 // quiescent point and consumes the wake by advancing the mark.
 IoWaiter *g_host;
 long long g_host_mark;
+long long g_host_deadline;	// absolute monotonic ms; 0 = unbounded
+bool g_host_woke_deadline;	// the hook's wake reason: deadline, not
+				// activity (host_wait_readable classifies)
+
+// Monotonic milliseconds for the host deadline (never wall clock).
+static long long now_mono_ms()
+{
+#if defined(_WIN32)
+	return (long long)GetTickCount64();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
 
 // Fire the host UNFIRED (synthetic wake: activity or EINTR — not the fd).
 // task_enqueue is idempotent, so a duplicate is harmless.
@@ -162,17 +178,67 @@ static int io_wake_host_synthetic()
 	return 1;
 }
 
+// Fire the host UNFIRED because its deadline elapsed (bounded park —
+// the win-VT resize cadence). Distinct reason: the caller re-parks
+// instead of synthesizing a wake event.
+static int io_wake_host_deadline()
+{
+	g_host_woke_deadline = true;
+	__madc_task_unpark(g_host->task);
+	return 1;
+}
+
+// The host's remaining deadline budget in ms; <0 = unbounded.
+static long long host_deadline_remaining(long long timeout_ms)
+{
+	if (timeout_ms == 0 || !g_host || g_host->fired || !g_host_deadline)
+		return -1;
+	long long rem = g_host_deadline - now_mono_ms();
+	return rem < 0 ? 0 : rem;
+}
+
 // Zero-timeout "read would make progress" probe: data, EOF, or a surfaced
 // error all count (POLLHUP/POLLERR — the read reports them; the waiter must
 // wake, not hang).
 bool io_probe_readable(intptr_t handle)
 {
 #if defined(_WIN32)
-	// CRT fd -> pipe HANDLE; PeekNamedPipe failing means the pipe ended
-	// (EOF/broken) — that IS readable progress (the read surfaces it).
+	// CRT fd -> HANDLE. Consoles first (win-VT slice): GetConsoleMode
+	// succeeding IS the "is a console" classification, and PeekNamedPipe
+	// FAILS on consoles — the old pipe-only arm read that failure as
+	// "readable" and a console-parked waiter busy-woke forever.
 	HANDLE h = (HANDLE)_get_osfhandle((int)handle);
 	if (h == INVALID_HANDLE_VALUE)
 		return true;
+	DWORD mode = 0;
+	if (GetConsoleMode(h, &mode)) {
+		// "Readable" is the ReadFile contract: bytes will flow. Only
+		// a char-bearing key-DOWN produces bytes (VT input mode
+		// inserts escape sequences as char-bearing key events; a
+		// bare-modifier key-down and every key-up carry no char, and
+		// focus/menu/mouse/size records produce nothing). Records
+		// ahead of the first byte-producing one are HUSKS: drain
+		// them, or a probe-true could still block in ReadFile and a
+		// parked waiter would wake on noise (recon item 4; conhost
+		// vs Windows Terminal delivery differences are the
+		// [validate-win] leg).
+		for (;;) {
+			INPUT_RECORD rec;
+			DWORD got = 0;
+			if (!PeekConsoleInputW(h, &rec, 1, &got))
+				return true;	// error: let the read surface it
+			if (got == 0)
+				return false;
+			if (rec.EventType == KEY_EVENT
+			    && rec.Event.KeyEvent.bKeyDown
+			    && rec.Event.KeyEvent.uChar.UnicodeChar != 0)
+				return true;
+			if (!ReadConsoleInputW(h, &rec, 1, &got) || got == 0)
+				return false;	// husk discard failed: not readable
+		}
+	}
+	// Pipe arm: PeekNamedPipe failing here means the pipe ended
+	// (EOF/broken) — that IS readable progress (the read surfaces it).
 	DWORD avail = 0;
 	if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL))
 		return true;
@@ -217,8 +283,13 @@ int io_wait_hook(long long timeout_ms)
 		&& __madc_task_switch_count() != g_host_mark;
 	int woke = 0;
 #if defined(_WIN32)
-	// Cheap-blocking arm: anonymous pipes are not waitable objects, so
-	// probe PeekNamedPipe on a 1ms cadence bounded by real elapsed time.
+	// Win arm (win-VT slice): consoles ARE waitable objects (signaled
+	// while input records are pending), so a console-only wait blocks
+	// properly in WaitForMultipleObjects with a real timeout. Anonymous
+	// pipes are NOT waitable — any pipe among the waiters keeps the
+	// 1 ms probe cadence for the whole set. Both paths re-probe after
+	// every wake (a console can signal on husk records; the probe
+	// drains those, unsignaling the handle — no busy loop).
 	long long start = (long long)GetTickCount64();
 	for (;;) {
 		for (IoWaiter *w = g_io_head; w; w = w->next)
@@ -228,10 +299,40 @@ int io_wait_hook(long long timeout_ms)
 			return woke;
 		if (host_pending)
 			return io_wake_host_synthetic();
-		if (timeout_ms > 0
-		    && (long long)GetTickCount64() - start >= timeout_ms)
+		long long now = (long long)GetTickCount64();
+		if (timeout_ms > 0 && now - start >= timeout_ms)
 			return 0;
-		Sleep(1);
+		long long host_rem = host_deadline_remaining(timeout_ms);
+		if (host_rem == 0)
+			return io_wake_host_deadline();
+		// This step's bound: the scheduler's budget and the host
+		// deadline, whichever lands first.
+		long long step = timeout_ms > 0 ? timeout_ms - (now - start)
+						: -1;
+		if (host_rem > 0 && (step < 0 || host_rem < step))
+			step = host_rem;
+		HANDLE ws[MAXIMUM_WAIT_OBJECTS];
+		DWORD nw = 0;
+		bool pipes = false;
+		for (IoWaiter *w = g_io_head; w; w = w->next) {
+			if (w->fired)
+				continue;
+			HANDLE h = (HANDLE)_get_osfhandle((int)w->handle);
+			DWORD m = 0;
+			if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &m)
+			    && nw < MAXIMUM_WAIT_OBJECTS)
+				ws[nw++] = h;
+			else
+				pipes = true;
+		}
+		if (pipes || nw == 0)
+			Sleep(1);
+		else
+			WaitForMultipleObjects(nw, ws, FALSE,
+					       step < 0 ? INFINITE
+					       : step > 0x7fffffffLL
+						   ? (DWORD)0x7fffffff
+						   : (DWORD)step);
 	}
 #else
 	int n = 0;
@@ -250,6 +351,10 @@ int io_wait_hook(long long timeout_ms)
 		: timeout_ms > (long long)INT_MAX ? INT_MAX : (int)timeout_ms;
 	if (host_pending)
 		tmo = 0;	// probe pass only — the host wake follows
+	long long host_rem = host_pending ? -1
+					  : host_deadline_remaining(timeout_ms);
+	if (host_rem >= 0 && (tmo < 0 || host_rem < (long long)tmo))
+		tmo = (int)host_rem;	// the host deadline bounds the block
 	int r = poll(fds.data(), (nfds_t)n, tmo);
 	if (r > 0) {
 		for (i = 0; i < n; i++) {
@@ -267,6 +372,8 @@ int io_wait_hook(long long timeout_ms)
 		return io_wake_host_synthetic();	// EINTR on a WAIT:
 							// SIGWINCH must
 							// reach the host
+	if (host_deadline_remaining(timeout_ms) == 0)
+		return io_wake_host_deadline();
 	return 0;	// timeout, or EINTR with no host (spurious)
 #endif
 }
@@ -279,6 +386,8 @@ static void io_atfork_child()
 	g_io_head = 0;
 	g_host = 0;
 	g_host_mark = 0;
+	g_host_deadline = 0;
+	g_host_woke_deadline = false;
 }
 
 void io_register(IoWaiter *w)
@@ -444,11 +553,11 @@ void wait_readable(intptr_t handle)
 		__madc_task_throw_if_cancelled();	// cancel-woken, not readable
 }
 
-bool host_wait_readable(intptr_t handle)
+host_wake host_wait_readable(intptr_t handle, long long timeout_ms)
 {
 	__madc_task_throw_if_cancelled();
 	if (io_probe_readable(handle))
-		return true;
+		return host_wake::fired;
 	if (g_host)
 		__madc_throw_cstr("host_wait_readable: a host wait is"
 				  " already registered");
@@ -458,12 +567,19 @@ bool host_wait_readable(intptr_t handle)
 	io_register(&me);
 	g_host = &me;
 	g_host_mark = __madc_task_switch_count();
+	g_host_deadline = timeout_ms >= 0 ? now_mono_ms() + timeout_ms : 0;
+	g_host_woke_deadline = false;
 	__madc_task_park();
 	g_host = 0;
+	g_host_deadline = 0;
+	bool deadline = g_host_woke_deadline;
+	g_host_woke_deadline = false;
 	io_unregister(&me);
 	if (!me.fired)
 		__madc_task_throw_if_cancelled();	// cancel vs synthetic
-	return me.fired;
+	return me.fired ? host_wake::fired
+	     : deadline ? host_wake::deadline
+	     : host_wake::synthetic;
 }
 
 } // namespace taskio
