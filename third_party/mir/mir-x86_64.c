@@ -84,6 +84,17 @@ void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
     if (res != NULL) memcpy (res, &u, s);
     return;
   case 2:
+    /* Register-exhaustion demotion (SysV): the caller passes the block in
+       XMM registers only when EVERY eightbyte fits (mir-gen-x86_64.c
+       machinize: fp_arg_num and fp_arg_num+1 both available), otherwise the
+       WHOLE block goes to the overflow area and the fp counter is left for
+       later smaller args.  The fp save area is 128 bytes at offsets
+       48..176, one 16-byte slot per XMM, so a one-eightbyte block needs
+       fp_offset <= 160 and a two-eightbyte block fp_offset <= 144.  This
+       case had NO check (cases 1/3/4 have theirs), so the 9th SSE eightbyte
+       of a vararg call read past the save area (c-testsuite 00204: the
+       fifth float-pair struct printed garbage).  */
+    if (va->fp_offset + (size > 8 ? 32 : 16) > 176) break;
     u[0].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
     va->fp_offset += 16;
     if (size > 8) {

@@ -7,10 +7,8 @@
 # Triage classes (signatures from the seeding run):
 #
 # -- wrong output / silent-wrong-answer class (highest priority follow-up) --
-# 00204: rc=0, giant varargs/HFA torture; ONLY two lines wrong, both in the
-#        "HFA float" section: expected "13.1,13.3" got "14.3,<garbage float>"
-#        (float HFA passed variadically corrupts one member).
-00204.c
+# 00204: FIXED 2026-08-28 — MIR va_block_arg case 2 (all-SSE block) had no
+#        register-exhaustion check; gate tests/testvastructfpexhaust.mad.
 # 00210: rc=0, prints nothing useful; cast of function pointer through an
 #        __attribute__'d fn-ptr type "((ATTR int(*)(void)) fp)()" — call
 #        result lost (warning: assigning pointer without cast to integer).
