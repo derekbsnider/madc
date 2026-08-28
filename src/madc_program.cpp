@@ -4866,6 +4866,21 @@ struct parse_tu_state
     ~parse_tu_state() { delete child; }
 };
 
+// Every parse handle's child starts here — the one init for the three
+// handle constructors (open-from-text, open-from-file, refresh): IDE
+// fidelity (comment spans ride leading trivia), and on Windows the
+// forest arena records DURING the parse — Run has no fork there, so
+// parse_run freezes the tree for a child madc (design (b), owner ruling
+// 2026-08-28), and the arena is the freezable type graph: it must exist
+// before tokenize, exactly like the CLI's --freeze-run lane.
+static void parse_handle_child_init(::Program &child)
+{
+    child.keep_trivia = true;
+#ifdef _WIN32
+    child.forest_arena_enabled = true;
+#endif
+}
+
 static handle_table<parse_tu_state> &parse_tu_handles()
 {
     static handle_table<parse_tu_state> handles;
@@ -4886,9 +4901,7 @@ int64_t internal_program_parse_open(::Program &self,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = display_name;
     st->child = new ::Program(self.engine);
-    // Handles are the IDE's fidelity mode: comments live in leading
-    // trivia, which the highlight-span query derives from.
-    st->child->keep_trivia = true;
+    parse_handle_child_init(*st->child);
     compile_source_child_frontend(self, *st->child, source_text,
 				  display_name);
     return parse_tu_handles().open(st);
@@ -4912,7 +4925,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
     st->child = new ::Program(self.engine);
-    st->child->keep_trivia = true;	// IDE fidelity (comment spans)
+    parse_handle_child_init(*st->child);
     st->child->registration_policy =
 	runtime_eval_registration_policy_for_source_child(self.registration_policy);
     if ( tu )
@@ -4951,7 +4964,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     // fresh child in the same slot — the handle's identity survives.
     delete st->child;
     st->child = new ::Program(self.engine);
-    st->child->keep_trivia = true;	// IDE fidelity (comment spans)
+    parse_handle_child_init(*st->child);
     compile_source_child_frontend(self, *st->child, source_text,
 				  st->display_name);
     return true;
@@ -5266,8 +5279,19 @@ bool internal_program_parse_build(int64_t handle,
 // Returns the guest's exit status (128+signal on a signal death);
 // negative = it never ran: -1 bad handle, -2 the handle's parse has
 // error rows (an incomplete tree must not reach the backend), -3 fork
-// failed or no fork on this platform (win64; ui_term is POSIX-only, so
-// the madcide caller cannot reach this there).
+// (or the win freeze/spawn) failed.
+//
+// Windows arm — design (b), OWNER RULING 2026-08-28 (benchmarked in
+// docs/plans/2026-08-27-madcide-ide-controls.md §Benchmarks): no fork,
+// so the handle's ALREADY-PARSED tree is FROZEN to a temp container
+// (the forest arena recorded at parse time — parse_handle_child_init;
+// LOADED == parsed, never a re-parse) and run by a fresh child madc via
+// --run-frozen — the CLI's --freeze-run pipeline as a library verb. The
+// MIR cache rides so the child skips c2mir, the measured per-Run
+// dominator. stdio is INHERITED (Process::run_and_wait's contract) —
+// the caller owns the terminal handoff exactly as on POSIX. Cosmetic
+// residue: the guest's argv[0] is the container path (--run-frozen's
+// argv shape), not the display name.
 int64_t internal_program_parse_run(int64_t handle)
 {
     parse_tu_state *st = parse_tu_get(handle);
@@ -5277,7 +5301,30 @@ int64_t internal_program_parse_run(int64_t handle)
     if ( !parse_tree_backend_ready(child) )
 	return -2;
 #ifdef _WIN32
-    return -3;
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child's console
+    std::cerr.flush();
+    std::string snapshot_path;
+    int tfd = madc::detail::make_temp_file("madc_run", snapshot_path);
+    if ( tfd < 0 )
+	return -3;
+    close(tfd);
+    if ( madc_cir_freeze(&child, st->display_name.c_str(),
+			 snapshot_path.c_str(), false,
+			 /*mir_cache=*/true, /*ledger=*/NULL,
+			 /*progress=*/false) != 0 )
+    {
+	std::remove(snapshot_path.c_str());
+	return -3;
+    }
+    std::string selfexe = madc_self_exe_path();
+    std::vector<std::string> cargv;
+    cargv.push_back(selfexe);				// the madc argv[0]
+    cargv.push_back("--run-frozen=" + snapshot_path);
+    madc::error rerr;
+    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
+    std::remove(snapshot_path.c_str());
+    return rc < 0 ? -3 : rc;
 #else
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child
