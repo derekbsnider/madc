@@ -478,7 +478,19 @@ ui_term_win.cpp, one tui_target per platform) + the taskio console
 probe/wait arms. The paint side (grid renderer, SGR table,
 tui_diff_spans/tui_diff_plan, alternate screen) is reused byte-for-byte.
 
-### Windows Run — copy the AST to a child (OWNER CALL, banked 2026-08-28)
+### Windows Run — copy the AST to a child (OWNER RULED 2026-08-28: design (b))
+
+**RULING (owner, 2026-08-28, post-benchmarks): (b)
+freeze-over-a-pipe.** (a) is dead on the WriteProcessMemory numbers;
+(a′)'s ~10–20 ms edge does not buy a permanent allocation-discipline
+regime. The (e) pre-warmed-child pool stays in the back pocket as an
+additive optimization if measured Run latency warrants it.
+
+**RELEASE FRAME (owner, same ruling): the next release marks madcide
+working under Windows in VT mode** — win-Run (b) plus the VT console
+slice land inside that arc; no v0.96.1 fix release (the SMAUG restore
+rides the madcide-win release). After it works: a few small cosmetic
+items, then a full and proper release with master promotion.
 
 POSIX Run = fork at post-parse: the child inherits the LIVE parse tree
 and runs c2mir on it ([the running madc IS the compiler]). Windows has
