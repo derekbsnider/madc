@@ -6016,6 +6016,27 @@ static int standard_integer_type_p (const struct type *type) {
           && type->u.basic_type <= TP_UINT128);
 }
 
+/* Two integer types differing ONLY in signedness (int vs unsigned — the
+   int* vs socklen_t* argument shape).  gcc diagnoses sign-only pointee
+   mismatches under -Wpointer-sign (enabled by -Wall / -pedantic), not by
+   default; the char family was already default-exempt here (char_type_p) —
+   this is the same rule for the remaining integer ranks, whose
+   signed/unsigned pairs are ADJACENT in enum basic_type (order is fixed by
+   the comment on the enum). */
+static int sign_diff_only_type_p (const struct type *t1, const struct type *t2) {
+  enum basic_type b1, b2, lo;
+  if (t1->mode != TM_BASIC || t2->mode != TM_BASIC) return FALSE;
+  b1 = t1->u.basic_type;
+  b2 = t2->u.basic_type;
+  if (b1 == b2) return FALSE;
+  if (char_type_p (t1) && char_type_p (t2)) return TRUE;
+  lo = b1 < b2 ? b1 : b2;
+  if (lo != TP_SHORT && lo != TP_INT && lo != TP_LONG && lo != TP_LLONG
+      && lo != TP_INT128)
+    return FALSE;
+  return (b1 > b2 ? b1 - b2 : b2 - b1) == 1;
+}
+
 static int integer_type_p (const struct type *type) {
   return standard_integer_type_p (type) || type->mode == TM_ENUM;
 }
@@ -8757,7 +8778,7 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
         msg = (code == N_CALL     ? "incompatible pointer types of argument and parameter"
                : code == N_RETURN ? "incompatible pointer types of return-expr and function result"
                                   : "incompatible pointer types in assignment");
-        int sign_diff_p = char_type_p (left->u.ptr_type) && char_type_p (right->u.ptr_type);
+        int sign_diff_p = sign_diff_only_type_p (left->u.ptr_type, right->u.ptr_type);
         if (!sign_diff_p || c2m_options->pedantic_p)
           (c2m_options->pedantic_p && !sign_diff_p ? error : warning) (c2m_ctx, POS (assign_node),
                                                                        "%s", msg);
@@ -10623,7 +10644,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       }
     } else if ((t1->mode == TM_PTR && integer_type_p (t2))
                || (t2->mode == TM_PTR && integer_type_p (t1))) {
-      warning (c2m_ctx, POS (r), "comparison of integer with a pointer");
+      /* A pointer against a NULL POINTER CONSTANT (integer constant zero):
+         equality is standard C, and gcc diagnoses the ordered form only
+         under -Wextra ("ordered comparison of pointer with integer zero") —
+         default-silent either way (SMAUG magic.c `weath >= 0`).  A nonzero
+         or non-constant integer keeps the default warning, as gcc does. */
+      if (c2m_options->pedantic_p
+          || !(t1->mode == TM_PTR ? null_const_p (e2, t2) : null_const_p (e1, t1)))
+        warning (c2m_ctx, POS (r), "comparison of integer with a pointer");
     } else {
       error (c2m_ctx, POS (r), "invalid types of comparison operands");
     }
