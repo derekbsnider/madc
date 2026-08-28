@@ -1,0 +1,63 @@
+# c-testsuite known-fail baseline (scripts/c_testsuite_lane.sh ratchet).
+# One test filename per line; # comments allowed. The lane is RED on any
+# failure NOT listed here, and reports loudly when a listed test passes so
+# this file only ever shrinks. Seeded 2026-08-28 from the first-ever run:
+# 198/220 passed at feature/win-vt-tui-claude @1add3d11 (bin/madc, JIT).
+#
+# Triage classes (signatures from the seeding run):
+#
+# -- wrong output / silent-wrong-answer class (highest priority follow-up) --
+# 00204: rc=0, giant varargs/HFA torture; ONLY two lines wrong, both in the
+#        "HFA float" section: expected "13.1,13.3" got "14.3,<garbage float>"
+#        (float HFA passed variadically corrupts one member).
+00204.c
+# 00210: rc=0, prints nothing useful; cast of function pointer through an
+#        __attribute__'d fn-ptr type "((ATTR int(*)(void)) fp)()" — call
+#        result lost (warning: assigning pointer without cast to integer).
+00210.c
+# 00205: killed at the CPU cap (rc=137) — hang; large struct-array init case.
+00205.c
+#
+# -- parse gaps: declarators --
+# 00089: typedef struct S * (*fty)();  (fn-ptr typedef returning struct ptr)
+00089.c
+# 00124: int (* (*p)(int a, int b))(int c, int d) = f1;  (fn-ptr returning fn-ptr)
+00124.c
+# 00130: char arr[2][4], (*p)[4], *q;  (array-pointer declarator mid-list)
+00130.c
+# 00162: void fooc(int x[const 5]);  (qualifier inside array param brackets)
+00162.c
+# 00170: int (*fmember)(enum efoo x);  (fn-ptr struct member w/ enum param)
+00170.c
+# 00209: int f1 (int (), int);  (abstract function-type parameter)
+00209.c
+#
+# -- parse gaps: statements/expressions --
+# 00038: if (sizeof 0 < 2)  (sizeof unary-expr without parens)
+00038.c
+# 00051: switch (x) case 0: ...  (switch with non-compound body)
+00051.c
+# 00103: return **(int**)bar;  (double-deref of cast)
+00103.c
+# 00120: enum { X } x;  (anonymous enum declarator in struct scope)
+00120.c
+# 00143: Duff's device (case labels inside a nested do-while)
+00143.c
+# 00150: {[0] = 1, 1+1}  (designated initializer then positional)
+00150.c
+# 00152: #error inside a skipped conditional group still diagnosed
+00152.c
+# 00213: case labels inside nested if/blocks within switch (Duff-shaped)
+00213.c
+# 00219: _Generic with function designators / const-qualified association
+00219.c
+#
+# -- CIR/c2mir rejections --
+# 00053: c2mir_compile_tree: 3 check errors
+00053.c
+# 00095: c2mir_compile_tree: 2 check errors
+00095.c
+# 00202: c2mir_compile_tree: 2 check errors
+00202.c
+# 00216: cir error: unhandled expression: TokenBase (token type 0)
+00216.c
