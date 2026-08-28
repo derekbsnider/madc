@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	c8065d4af40c	2026-08-28	fulltest 1204/0/9skip + exe 1155/0 + obj 1155/0 + release + packed 1204/0 + headerless 1177/0/36skip (all +1: testbuiltinobjsize)
-wine64	yes	c8065d4af40c	2026-08-28	1156/0/57skip (hosted PE, persistent wineserver; +1: testbuiltinobjsize)
-c-testsuite	yes	e56198ddb218	2026-08-28	198/220 (0 outside baseline; re-run on merged develop content)
-macos	yes	e56198ddb218	2026-08-28	mac_battery arm64 8/3 — the 3 standing known-opens; re-run on merged develop content (rebuilt tarball)
+linux-battery	yes	443c3d2b0ad6	2026-08-28	fulltest 1209/0/9skip + exe 1160/0 + obj 1160/0 + release + packed 1209/0 + headerless 1182/0/36skip (+5: wave-2 gate tests)
+wine64	yes	443c3d2b0ad6	2026-08-28	1161/0/57skip (hosted PE, persistent wineserver)
+macos	yes	443c3d2b0ad6	2026-08-28	mac_battery arm64 8/3 (the 3 standing known-opens) + madcide resolves (tty decline); wave-2 final content
+c-testsuite	yes	443c3d2b0ad6	2026-08-28	202/220 (0 outside baseline; wave-2 final content)
