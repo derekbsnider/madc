@@ -1791,10 +1791,7 @@ int main(int argc, char **argv)
 	    {
 		// gcc semantics: strip the directory and extension, land the
 		// artifact in the current directory (foo.mad -> foo.o / foo.so).
-		outpath = argv[filearg];
-		size_t slash = outpath.rfind('/');
-		if ( slash != std::string::npos )
-		    outpath = outpath.substr(slash + 1);
+		outpath = madc::detail::host_path_basename(argv[filearg]);
 		size_t dot = outpath.rfind('.');
 		if ( dot != std::string::npos && dot > 0 )
 		    outpath = outpath.substr(0, dot);

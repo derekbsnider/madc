@@ -7,16 +7,15 @@
 # Triage classes (signatures from the seeding run):
 #
 # -- wrong output / silent-wrong-answer class (highest priority follow-up) --
-# 00204: rc=0, giant varargs/HFA torture; ONLY two lines wrong, both in the
-#        "HFA float" section: expected "13.1,13.3" got "14.3,<garbage float>"
-#        (float HFA passed variadically corrupts one member).
-00204.c
-# 00210: rc=0, prints nothing useful; cast of function pointer through an
-#        __attribute__'d fn-ptr type "((ATTR int(*)(void)) fp)()" — call
-#        result lost (warning: assigning pointer without cast to integer).
-00210.c
-# 00205: killed at the CPU cap (rc=137) — hang; large struct-array init case.
-00205.c
+# 00204: FIXED 2026-08-28 — MIR va_block_arg case 2 (all-SSE block) had no
+#        register-exhaustion check; gate tests/testvastructfpexhaust.mad.
+# 00210: FIXED 2026-08-28 — the generic expression-fptr call arm now accepts
+#        a TokenCast receiver (any ((T(*)())p)() shape, attr'd or not);
+#        gate tests/testcastfnptrcall.mad.
+# 00205: FIXED 2026-08-28 — three stacked defects: exponential operator
+#        datadef() recursion (the hang; gate tests/testaddchaindepth.mad),
+#        unary plus under a cast, and flat-initializer struct-array element
+#        count (both gated by tests/teststaticinitflat.mad).
 #
 # -- parse gaps: declarators --
 # 00089: typedef struct S * (*fty)();  (fn-ptr typedef returning struct ptr)
@@ -41,13 +40,18 @@
 00103.c
 # 00120: enum { X } x;  (anonymous enum declarator in struct scope)
 00120.c
-# 00143: Duff's device (case labels inside a nested do-while)
-00143.c
+# 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
+#        (in_place_label) with a top-of-switch goto jump table; gate
+#        tests/testduffdevice.mad.
 # 00150: {[0] = 1, 1+1}  (designated initializer then positional)
 00150.c
 # 00152: #error inside a skipped conditional group still diagnosed
 00152.c
-# 00213: case labels inside nested if/blocks within switch (Duff-shaped)
+# 00213: the Duff-shaped part is FIXED (nested labels + pre-case statements
+#        parse); remaining root is DIFFERENT: a statement expression whose
+#        last statement is a labeled while-loop inside a dead ternary branch
+#        — c2mir check "last statement in statement expression is not an
+#        expression" (00213.c:17). Stmt-expr value-semantics corner.
 00213.c
 # 00219: _Generic with function designators / const-qualified association
 00219.c

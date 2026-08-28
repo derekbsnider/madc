@@ -1,5 +1,12 @@
 # c-testsuite burndown — 198/220 → 220/220
 
+**Progress: 202/220 (2026-08-28, wave 1).** Fixed: 00204 (MIR va_block_arg
+SSE exhaustion — upstream PR candidate), 00210 (cast-to-fnptr call), 00205
+(three deep: exponential operator datadef() recursion, unary-plus-under-
+cast, flat struct-array count), 00143 (Duff's device: in-place labels +
+top-of-switch goto jump table; also unblocked 00213's Duff half — its
+remaining root is a stmt-expr value corner, reclassified below).
+
 Owner (2026-08-28): "we want c-testsuite to be 220/220 ideally."
 
 The lane (`scripts/c_testsuite_lane.sh`, ratchet against

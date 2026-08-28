@@ -262,11 +262,19 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
     if ( s == "unsigned short" || s == "unsigned short int" ) return &ddUINT16;
     if ( s == "int" || s == "signed" || s == "signed int" ) return &ddINT32;
     if ( s == "unsigned" || s == "unsigned int" ) return &ddUINT32;
+    // Platform-shaped rows mirror resolve_builtin_type_spelling exactly:
+    // plain long follows the data model (46b), long long / the int64
+    // aliases follow the target's int64 alias (distinct x-mangled dds on
+    // darwin). On LP64-glibc every accessor returns the pinned dd — no-op.
     if ( s == "long" || s == "long int" || s == "signed long"
-      || s == "signed long int" || s == "long long" || s == "long long int"
-      || s == "signed long long" || s == "signed long long int" ) return &ddINT64;
-    if ( s == "unsigned long" || s == "unsigned long int"
-      || s == "unsigned long long" || s == "unsigned long long int" ) return &ddUINT64;
+      || s == "signed long int" ) return dd_platform_long();
+    if ( s == "long long" || s == "long long int"
+      || s == "signed long long" || s == "signed long long int" )
+	return dd_platform_longlong();
+    if ( s == "unsigned long" || s == "unsigned long int" )
+	return dd_platform_ulong();
+    if ( s == "unsigned long long" || s == "unsigned long long int" )
+	return dd_platform_ulonglong();
     if ( s == "__int128" || s == "signed __int128" ) return &ddINT128;
     if ( s == "unsigned __int128" ) return &ddUINT128;
     if ( s == "float" || s == "_Float16" || s == "_Float32" ) return &ddFLOAT;
@@ -276,11 +284,11 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
     if ( s == "int8_t" ) return &ddINT8;
     if ( s == "int16_t" ) return &ddINT16;
     if ( s == "int32_t" ) return &ddINT32;
-    if ( s == "int64_t" ) return &ddINT64;
+    if ( s == "int64_t" ) return dd_platform_longlong();
     if ( s == "uint8_t" ) return &ddUINT8;
     if ( s == "uint16_t" ) return &ddUINT16;
     if ( s == "uint32_t" ) return &ddUINT32;
-    if ( s == "uint64_t" ) return &ddUINT64;
+    if ( s == "uint64_t" ) return dd_platform_ulonglong();
     if ( s == "size_t" ) return &ddUINT64;
     if ( s == "ptrdiff_t" ) return &ddINT64;
     if ( s == "wchar_t" ) return &ddINT32;

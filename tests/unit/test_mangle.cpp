@@ -75,6 +75,41 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(off_alias.mangle_scalar_spelling() == "long");
 	}
 
+	// The darwin int64 alias (fourth target property): Apple is LP64 yet
+	// its headers alias the int64 family to `long long` — so int64_t
+	// mangles x while plain long stays l, and `long long` needs a dd
+	// identity DISTINCT from long (the madcide-on-darwin wall: the host
+	// exports __ZN4madc9chan_makeEx, the collapsed dd asked for ...El).
+	TEST_CASE("darwin int64 alias: long long distinct from long on LP64") {
+		struct AliasGuard {
+			TargetInt64Alias saved;
+			AliasGuard() : saved(madc_target_int64_alias) {}
+			~AliasGuard() { madc_target_int64_alias = saved; }
+		} guard;
+		madc_target_int64_alias = TargetInt64Alias::LongLong;
+		// The STRING rows keep the data-model letters: they encode the
+		// pinned dds by name, and on darwin ddUINT64 carries size_t
+		// (_Znwm — flipping these produced the _Znwy battery
+		// regression). The x/y identity rides the distinct dds below.
+		CHECK(itanium_encode_type("int64_t") == "l");
+		CHECK(itanium_encode_type("uint64_t") == "m");
+		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(itanium_encode_type("ptrdiff_t") == "l");
+		CHECK(itanium_encode_type("long") == "l");
+		CHECK(itanium_encode_type("long long") == "x");
+		// Distinct dd identity, subclass-exempt from the LP64 desugar.
+		CHECK(dd_platform_longlong() != (DataDef *)&ddINT64);
+		CHECK(dd_platform_longlong()->name == "long long");
+		CHECK(dd_platform_longlong()->mangle_scalar_spelling() == "");
+		CHECK(dd_platform_ulonglong()->name == "unsigned long long");
+		CHECK(dd_platform_long() == (DataDef *)&ddINT64);
+		// Negative control: the glibc alias collapses to one identity.
+		madc_target_int64_alias = TargetInt64Alias::Long;
+		CHECK(dd_platform_longlong() == (DataDef *)&ddINT64);
+		CHECK(dd_platform_ulonglong() == (DataDef *)&ddUINT64);
+		CHECK(itanium_encode_type("int64_t") == "l");
+	}
+
 	TEST_CASE("Pointer types") {
 		CHECK(itanium_encode_type("int*") == "Pi");
 		CHECK(itanium_encode_type("char*") == "Pc");

@@ -4493,6 +4493,7 @@ public:
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
+    size_t switch_label_seq = 0;	// unique suffix for nested-case in-place labels
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
     int try_depth;			// >0 when compiling inside a try body
@@ -6354,7 +6355,8 @@ public:
     TokenBase *reference_bind_address_expr(TokenBase *expr,
 					   DataDef *referent_type);
     TokenBase *skip_expression_whitespace();
-    TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn);
+    TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
+				  bool nested = false);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
     bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);

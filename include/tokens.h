@@ -472,10 +472,18 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator+ on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Each child's datadef() exactly ONCE: these overrides recurse into
+	// operator children, so re-asking per predicate made one query on an
+	// N-deep `a+b+c+...` chain cost 4^N (c-testsuite 00205 — a J-
+	// interpreter initializer of ~50-add chains — HUNG the compiler;
+	// callgrind: 59% TokenAdd::datadef'2). Same rule in every operator
+	// override below.
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_pointer() ) return ld;
+	if ( rd && rd->is_pointer() ) return rd;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -501,15 +509,18 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator- on a class object
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
 	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
-	if ( left && left->datadef() && left->datadef()->is_pointer() )
+	if ( ld && ld->is_pointer() )
 	{
-	    if ( right && right->datadef() && right->datadef()->is_pointer() )
+	    if ( rd && rd->is_pointer() )
 		return TokenOperator::datadef();
-	    return left->datadef();
+	    return ld;
 	}
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -534,15 +545,17 @@ public:
     // global-abs family).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	if ( right && right->datadef() && right->datadef()->is_unsigned() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_real() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_integer()
-	  && _datatype && right->datadef()->size > _datatype->size )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd && rd->is_unsigned() )
+	    return rd;
+	if ( rd && rd->is_complex() )
+	    return rd;
+	if ( rd && rd->is_real() )
+	    return rd;
+	if ( rd && rd->is_integer()
+	  && _datatype && rd->size > _datatype->size )
+	    return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -558,8 +571,11 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator* on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -575,8 +591,11 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator/ on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -642,7 +661,9 @@ public:
 	// An assignment-as-expression evaluates to the assigned LHS
 	// value, so its type is the LHS's type — required for
 	// `*(end = ptr + N)` where `end` is `char *`.
-	if ( left && left->datadef() ) return left->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left ? left->datadef() : NULL;
+	if ( ld ) return ld;
 	return TokenOperator::datadef();
     }
     virtual inline int precedence()   const override { return 14; }
@@ -791,10 +812,12 @@ public:
     // propagate a complex operand — ~z is the complex conjugate (GNU).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	if ( right && right->datadef() && right->datadef()->is_integer() && right->datadef() != &ddINT )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd && rd->is_integer() && rd != &ddINT )
+	    return rd;
+	if ( rd && rd->is_complex() )
+	    return rd;
 	return TokenOperator::datadef();
     }
     virtual inline int precedence()   const override { return 2; }
@@ -1051,8 +1074,10 @@ class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator('
     // (notably brace-less while/for bodies like `++p, ++i;`). Without this,
     // parseExpression stopped at the first comma and the rest was dropped.
     virtual DataDef *datadef() const override {
-	if ( right && right->datadef() )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd )
+	    return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -1505,6 +1530,12 @@ public:
     TokenBase *value;                          // case constant expression
     TokenBase *range_high;                     // GNU case range: case LOW ... HIGH
     std::vector<TokenBase *> statements;       // statements until next case/default/}
+    // Non-empty for a label NESTED inside a statement of the switch body
+    // (Duff's device: `case 7:` inside a do-while). The statement stays in
+    // its enclosing structure with a TokenLabel of this name in place, and
+    // the switch dispatch emits `case V: goto <name>;` — restructuring the
+    // body into per-case buckets would gut the enclosing loop/if.
+    std::string in_place_label;
     TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const override { return TokenID::tkCASE; }
     virtual TokenBase *clone() override { return new TokenCASE(); }

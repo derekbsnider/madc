@@ -2813,11 +2813,13 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "unsigned long" || name == "unsigned long int" )
 	return dd_platform_ulong();
     if ( name == "long long" || name == "long long int"
-      || name == "signed long long" || name == "signed long long int"
-      || name == "__int128" || name == "signed __int128" )
+      || name == "signed long long" || name == "signed long long int" )
+	return dd_platform_longlong();
+    if ( name == "unsigned long long" || name == "unsigned long long int" )
+	return dd_platform_ulonglong();
+    if ( name == "__int128" || name == "signed __int128" )
 	return &ddINT64;
-    if ( name == "unsigned long long" || name == "unsigned long long int"
-      || name == "unsigned __int128" )
+    if ( name == "unsigned __int128" )
 	return &ddUINT64;
     if ( name == "float" || name == "_Float16" || name == "_Float32"
       || name == "__bf16" )
@@ -2829,11 +2831,14 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "int8_t" ) return &ddINT8;
     if ( name == "int16_t" ) return &ddINT16;
     if ( name == "int32_t" ) return &ddINT32;
-    if ( name == "int64_t" ) return &ddINT64;
+    // int64_t/uint64_t follow the target's own alias spelling: `long long`
+    // on Apple/mingw (the accessors), `long` on glibc (the same pinned dds
+    // the accessors return there).
+    if ( name == "int64_t" ) return dd_platform_longlong();
     if ( name == "uint8_t" ) return &ddUINT8;
     if ( name == "uint16_t" ) return &ddUINT16;
     if ( name == "uint32_t" ) return &ddUINT32;
-    if ( name == "uint64_t" ) return &ddUINT64;
+    if ( name == "uint64_t" ) return dd_platform_ulonglong();
     if ( name == "size_t" ) return &ddUINT64;
     if ( name == "ptrdiff_t" ) return &ddINT64;
     if ( name == "wchar_t" ) return dd_platform_wchar();
@@ -11936,6 +11941,12 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 	TokenVar *rv = dynamic_cast<TokenVar *>(recv);
 	if ( rv && rv->var.type && rv->var.type->is_function() )
 		return true;
+	// A receiver whose EXPRESSION type is function-shaped is callable
+	// regardless of token shape: `((int(*)(void))p)()` leaves a TokenCast
+	// to DataDefFPTR on the stack (c-testsuite 00210 — the `()` was
+	// silently dropped and the pointer value itself assigned, exit 0).
+	if ( recv->datadef() && recv->datadef()->is_function() )
+		return true;
 	return false;
 }
 
@@ -16650,6 +16661,18 @@ TargetOS madc_target_os =
 	TargetOS::Posix;
 #endif
 
+// int64_t's platform spelling (datadef.h): Apple and mingw alias the
+// exact-width 64-bit family to `long long`, glibc to `long`. The darwin
+// CROSS modes compile under a linux host, so __APPLE__ alone cannot carry
+// the target fact — MADC_CROSS_APPLE (the Makefile's cross-mode define)
+// is the same fact for those binaries.
+TargetInt64Alias madc_target_int64_alias =
+#if defined(_WIN32) || defined(__APPLE__) || defined(MADC_CROSS_APPLE)
+	TargetInt64Alias::LongLong;
+#else
+	TargetInt64Alias::Long;
+#endif
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -16716,6 +16739,31 @@ DataDef *dd_platform_ulong()
 DataDef *dd_platform_wchar()
 {
     return target_llp64() ? (DataDef *)&ddUINT16 : (DataDef *)&ddINT32;
+}
+
+// `long long` (datadef.h): distinct from `long` ONLY where the two must
+// mangle apart — the LP64 target whose headers alias int64_t to long long
+// (darwin: host exports say x, plain long says l). LLP64 already spells
+// ddINT64 itself "long long" (the mangle desugar), and glibc LP64 defines
+// int64_t = long, so both return the pinned identity there.
+DataDef *dd_platform_longlong()
+{
+    if ( target_llp64() || !target_int64_is_longlong() )
+	return &ddINT64;
+    static DataDefPlatformLONGLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformLONGLONG();
+    return dd;
+}
+
+DataDef *dd_platform_ulonglong()
+{
+    if ( target_llp64() || !target_int64_is_longlong() )
+	return &ddUINT64;
+    static DataDefPlatformULONGLONG *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformULONGLONG();
+    return dd;
 }
 
 struct DataDefMAXAlignTInit
@@ -17409,6 +17457,15 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 			return target_llp64() ? dd_platform_long() : NULL;
 		case MADC_TYPEID_PLATFORM_ULONG:
 			return target_llp64() ? dd_platform_ulong() : NULL;
+		// Darwin-only slots, same reserved-slot rule: everywhere else
+		// the accessors return the pinned ddINT64/ddUINT64 (slots
+		// 10/15), so these resolve NULL and a cross-model thaw is loud.
+		case MADC_TYPEID_PLATFORM_LONGLONG:
+			return (!target_llp64() && target_int64_is_longlong())
+				? dd_platform_longlong() : NULL;
+		case MADC_TYPEID_PLATFORM_ULONGLONG:
+			return (!target_llp64() && target_int64_is_longlong())
+				? dd_platform_ulonglong() : NULL;
 		default:			return NULL;
 	}
 }
@@ -37254,7 +37311,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				// (unsigned char)~0 consumes only ~0, not * ' '.
 				TokenBase *operand_tb = nextToken();
 				TokenOperator *uop = dynamic_cast<TokenOperator *>(cast_expr_tb);
-				if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
+				// Unary PLUS is a no-op ([expr.unary.op]/2) —
+				// `(I)+15` must yield the literal, never a
+				// TokenAdd with NULL left (untranslatable at
+				// CIR; c-testsuite 00205's initializer rows).
+				if ( cast_expr_tb->id() == TokenID::tkAdd )
+				    cast_expr = operand_tb;
+				else if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
 				else cast_expr = operand_tb;
 			    }
 			    else
@@ -37652,16 +37715,26 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    bool is_genuine_fptr =
 				call_expr->type() == TokenType::ttMember
-				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL;
+				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
+				// A CAST to a fn-ptr type followed by `(` is
+				// unambiguously a call — a cast result has no
+				// grouping/identifier reading (the SMAUG
+				// false-match concern below is about plain
+				// names and subscripts). c-testsuite 00210:
+				// `((int(*)(void))p)()` silently dropped the
+				// call and assigned the pointer, exit 0.
+				|| call_expr->as_cast_tok() != NULL;
 			    if ( !is_genuine_fptr )
 				fptr_type = NULL;
 			}
-			// Only trigger for: ternary dispatch or deref fptr.
-			// Members and subscripts are handled by their own dedicated
-			// fptr paths earlier in the code. The generic path's
-			// is_function() check is too aggressive for those.
+			// Only trigger for: ternary dispatch, deref fptr, or a
+			// cast to fn-ptr. Members and subscripts are handled by
+			// their own dedicated fptr paths earlier in the code.
+			// The generic path's is_function() check is too
+			// aggressive for those.
 			if ( fptr_type && !terq
-			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL )
+			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL
+			  && call_expr->as_cast_tok() == NULL )
 			    fptr_type = NULL;
 			if ( fptr_type )
 			{
@@ -37897,6 +37970,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// so `x++ + 10` stays binary.
 		if ( tb->id() == TokenID::tkAdd && (isUnaryPosition() || awaiting_prefix_step_operand())
 		  && (exStack.empty()
+		   // The cast-body head NULLS _prv_token precisely so unary
+		   // operators see a unary position (`(I)+15` — c-testsuite
+		   // 00205's initializer rows); a binary + can never stand
+		   // where no token precedes it. Without this the + became
+		   // a TokenAdd with NULL left, untranslatable at CIR.
+		   || !_prv_token
 		   || (_prv_token && (_prv_token->id() == TokenID::tkAssign
 		     || _prv_token->id() == TokenID::tkComma
 		     || _prv_token->id() == TokenID::tkOpBrk
@@ -49021,7 +49100,8 @@ TokenBase *TokenDELETE::parse(Program &pgm)
 }
 
 // parse switch(expr) { case val: ...; break; default: ...; }
-TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
+TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
+				       bool nested)
 {
     TokenCASE *target = NULL;
 
@@ -49075,6 +49155,19 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
 	sw->defaultcase->column = tn->column;
 	sw->default_index = (int)sw->cases.size();
 	target = sw->defaultcase;
+    }
+
+    // A label NESTED inside a statement of the switch body (Duff's device)
+    // becomes a dispatch-only entry: the caller plants a TokenLabel in
+    // place, the dispatch emits `case V: goto label`, and the enclosing
+    // statement keeps its own body — the greedy bucket consumption below
+    // would gut a surrounding do-while/if (c-testsuite 00143/00213: the
+    // rebucketed loop copied one element per entry, exit 1).
+    if ( nested )
+    {
+	target->in_place_label =
+	    "__madc_swcase_" + std::to_string(++switch_label_seq);
+	return target;
     }
 
     while ( peekToken()
@@ -49199,7 +49292,18 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		continue;
 	    }
 	    else
-		pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
+	    {
+		// An arbitrary statement before the first label is valid C —
+		// unreachable at runtime (control enters at a case label),
+		// but it may CONTAIN nested case labels (c-testsuite 00213:
+		// `switch (i) { if (0) { case 42: ... } }`), which register
+		// as in-place dispatch entries during this parse. Emitted
+		// inside the switch body ahead of the first case marker, so
+		// the unreachable semantics carry through c2mir unchanged.
+		TokenBase *pre = pgm.parseStatement(tn);
+		if ( pre )
+		    pre_case_stmts.push_back(pre);
+	    }
 	}
 	else
 	{
@@ -60466,7 +60570,24 @@ TokenBase *Program::parseCompound()
 	if ( !switch_stack.empty()
 	  && (tb->id() == TokenID::tkCASE || tb->id() == TokenID::tkDEFAULT) )
 	{
-	    parse_switch_label(switch_stack.back(), tb);
+	    // Nested case/default (Duff's device): register a dispatch-only
+	    // entry on the switch and plant its label HERE, binding the next
+	    // statement the way a user label does — the enclosing loop/if
+	    // keeps its body intact.
+	    TokenCASE *tc = parse_switch_label(switch_stack.back(), tb, true);
+	    if ( tc && !tc->in_place_label.empty() )
+	    {
+		TokenLabel *lbl = new TokenLabel(tc->in_place_label);
+		lbl->file = tb->file;
+		lbl->line = tb->line;
+		lbl->column = tb->column;
+		TokenBase *pk = peekToken();
+		if ( pk && pk->id() != TokenID::tkClBrc
+		  && pk->id() != TokenID::tkCASE
+		  && pk->id() != TokenID::tkDEFAULT )
+		    lbl->labeled = parseStatement(nextToken());
+		code->statements.push_back((TokenStmt *)lbl);
+	    }
 	    continue;
 	}
 
@@ -63339,6 +63460,41 @@ static void assign_initializer_range(std::vector<TokenBase *> &inits,
 	inits[idx] = (idx == first_index) ? value : (value ? value->clone() : NULL);
 }
 
+// How many FLAT scalar initializers one object of `dd` consumes under
+// C brace elision (C11 6.7.9p20): a struct eats one per scalar leaf
+// (member arrays included), a union eats its first member's worth, an
+// array dd eats count x element. The unsized-array count inference
+// divides by this — `struct P {long c[2]; long b;} a[] = {1,2,3,4,5,6}`
+// is TWO elements, not six (c-testsuite 00205: cases[] sized 63 not 9,
+// so sizeof-driven loops printed 54 phantom rows of zeros).
+static size_t flattened_scalar_capacity(DataDef *dd)
+{
+    if ( !dd )
+	return 1;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	size_t n = add->count ? add->count : 1;
+	return n * flattened_scalar_capacity(add->element_type);
+    }
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd) )
+    {
+	if ( sdd->members.empty() )
+	    return 1;
+	size_t total = 0;
+	for ( size_t i = 0; i < sdd->members.size(); ++i )
+	{
+	    size_t cnt = i < sdd->member_counts.size() && sdd->member_counts[i]
+		? sdd->member_counts[i] : 1;
+	    size_t one = cnt * flattened_scalar_capacity(sdd->members[i].second);
+	    if ( sdd->union_layout )
+		return one;	// a union initializes its FIRST member only
+	    total += one;
+	}
+	return total ? total : 1;
+    }
+    return 1;
+}
+
 static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
 					       const std::vector<TokenBase *> &init_list)
 {
@@ -65085,17 +65241,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		for ( size_t di = 1; di < arr_dims.size(); ++di )
 		    tail_count *= (size_t)arr_dims[di];
 
+		// One FLAT (brace-elided) element consumes tail_count x the
+		// element type's scalar capacity — 1 for scalar arrays (the
+		// historical divide), the flattened member count for struct
+		// elements (C11 6.7.9p20; c-testsuite 00205's cases[]).
+		size_t elem_scalars = has_nested_init
+		    ? 1 : flattened_scalar_capacity(decl_type);
+		size_t per_elem = tail_count * elem_scalars;
 		if ( arr_dims[0] == 0 )
 		{
-		    if ( arr_dims.size() > 1 && !has_nested_init && tail_count > 0 )
-			arr_dims[0] = (carray_dim_t)((init_list.size() + tail_count - 1) / tail_count);
+		    if ( !has_nested_init && per_elem > 1 )
+			arr_dims[0] = (carray_dim_t)((init_list.size() + per_elem - 1) / per_elem);
 		    else
 			arr_dims[0] = (carray_dim_t)init_list.size();
 		}
 
 		size_t initializer_capacity = (size_t)arr_dims[0];
-		if ( arr_dims.size() > 1 && !has_nested_init )
-		    initializer_capacity *= tail_count;
+		if ( !has_nested_init )
+		    initializer_capacity *= per_elem;
 		if ( init_list.size() > initializer_capacity )
 		    Throw(tb) << "Too many initializers for array (expected " << initializer_capacity << ")" << flush;
 	    }

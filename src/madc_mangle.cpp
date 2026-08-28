@@ -99,6 +99,14 @@ static std::string builtin_code(const std::string &t)
 	if (t == "uint16_t")            return "t";
 	if (t == "int32_t")             return "i";
 	if (t == "uint32_t")            return "j";
+	// These rows also encode the PINNED dds by NAME (ddINT64/ddUINT64 are
+	// subclasses, exempt from the desugar, so their names land here), and
+	// on darwin those dds stand for the whole long-shaped LP64 family —
+	// size_t through ddUINT64 must stay m (_Znwm, the libc++ export), so
+	// the rows follow the data model ONLY. Darwin's x/y int64_t identity
+	// lives in the DISTINCT dd_platform_longlong() dds, whose "long long"
+	// names encode through the rows above (the mac battery's _Znwy
+	// regression is the tombstone for flipping these by the alias).
 	if (t == "int64_t")             return target_llp64() ? "x" : "l";
 	if (t == "uint64_t")            return target_llp64() ? "y" : "m";
 	if (t == "size_t")              return target_llp64() ? "y" : "m";

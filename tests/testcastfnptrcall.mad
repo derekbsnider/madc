@@ -1,0 +1,20 @@
+/* A cast to a function-pointer type invoked directly — `((T(*)(void))p)()`
+ * — is a call, never a grouped value. The generic expression-fptr call arm
+ * (parser.cpp) accepted only ternary dispatch and (*fp) deref shapes, so
+ * the trailing () was silently DROPPED and the pointer value itself
+ * assigned (exit 0, wrong answer — c-testsuite 00210). A TokenCast
+ * receiver is unambiguous: a cast result has no grouping reading, unlike
+ * the plain-identifier/subscript shapes the arm's SMAUG guard excludes.
+ * Oracle: gcc -O0 prints 42 four times (attribute positions included). */
+extern int printf(const char *, ...);
+int f(void) { return 42; }
+int main()
+{
+    void *p = (void *)&f;
+    printf("%i\n", ((int(*)(void))p)());
+    printf("%i\n", ((__attribute__((__noinline__)) int(*)(void))p)());
+    printf("%i\n", ((int(__attribute__((__noinline__)) *)(void))p)());
+    int (*q)(void) = f;
+    printf("%i\n", ((int(*)(void))(void *)q)());
+    return 0;
+}
