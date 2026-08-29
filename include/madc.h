@@ -5740,6 +5740,9 @@ public:
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.
     void skip_param_array_qualifiers();
+    // ONE rule for both declaration comma-continuation sites: can this
+    // token begin the next declarator (`*`, identifier, or `(`)?
+    bool comma_continuation_starts_declarator(TokenBase *peek);
     // Shared cv-qualifier consumers (const/volatile/restrict) for committed
     // type reads. Held form returns the first non-qualifier token; peek form
     // consumes the run and leaves the following token unread.

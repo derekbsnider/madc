@@ -47936,6 +47936,21 @@ DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
 // `[*]`): consume it too, leaving `]` so the caller reads an unspecified
 // dimension. Used by both parseFunction param-array scans (named and
 // anonymous declarators); c-testsuite 00162 is the gate.
+// Can `peek` begin the NEXT declarator after a ',' in a declaration list?
+// `*` (pointer), an identifier (plain name / typedef shadow), or `(` — a
+// parenthesized declarator like `char arr[2][4], (*p)[4], *q;`
+// (c-testsuite 00130): the comma continuation re-enters parseDeclaration
+// with the cloned base type, whose fn-ptr/ptr-array arm owns the parens.
+// ONE rule for both comma-continuation sites (ctor-syntax and general).
+bool Program::comma_continuation_starts_declarator(TokenBase *peek)
+{
+    return peek
+	&& (peek->id() == TokenID::tkMul
+	 || peek->id() == TokenID::tkOpBrk
+	 || peek->type() == TokenType::ttIdentifier
+	 || is_contextual_identifier_token(peek));
+}
+
 void Program::skip_param_array_qualifiers()
 {
     while ( peekToken()
@@ -64851,10 +64866,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// declarator.
 		nextToken(); // consume ','
 		TokenBase *peek = peekToken();
-		bool looks_like_next_decl = peek
-		    && (peek->id() == TokenID::tkMul
-		     || peek->type() == TokenType::ttIdentifier
-		     || is_contextual_identifier_token(peek));
+		bool looks_like_next_decl =
+		    comma_continuation_starts_declarator(peek);
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		pushToken(tb->clone());
@@ -65857,10 +65870,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    // Either we just consumed ',' and expect another decl, or
 	    // parseExpression already consumed ',' and peek is the next one.
-	    bool looks_like_next_decl = peek
-		&& (peek->id() == TokenID::tkMul
-		 || peek->type() == TokenType::ttIdentifier
-		 || is_contextual_identifier_token(peek));
+	    bool looks_like_next_decl =
+		comma_continuation_starts_declarator(peek);
 	    bool stopped_at_condition_close =
 		curToken() && curToken()->id() == TokenID::tkClBrk;
 	    if ( have_comma || (looks_like_next_decl

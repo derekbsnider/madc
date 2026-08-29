@@ -22,8 +22,10 @@
 00089.c
 # 00124: int (* (*p)(int a, int b))(int c, int d) = f1;  (fn-ptr returning fn-ptr)
 00124.c
-# 00130: char arr[2][4], (*p)[4], *q;  (array-pointer declarator mid-list)
-00130.c
+# 00130: FIXED 2026-08-29 — `(` is a valid declarator head at the comma
+#        continuation (comma_continuation_starts_declarator, ONE rule
+#        both sites); re-entry's fn-ptr/ptr-array arm owns the parens
+#        (gate: testcommaptrarray)
 # 00162: FIXED 2026-08-29 — skip_param_array_qualifiers (both param
 #        bracket scans) + the plain parenthesized pointer param arm
 #        (gate: testparamarrayqual)
