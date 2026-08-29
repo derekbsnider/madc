@@ -462,6 +462,42 @@ public:
 };
 
 // addition operator +
+// Usual arithmetic conversions (C11 6.3.1.8) — the parse-side VALUE view
+// shared by the binary arithmetic operators' datadef() overrides: a real
+// operand wins (wider real first), otherwise the wider integer wins and at
+// equal width unsigned wins. Types below the int promotion floor, pointer/
+// function/complex operands, and NULL children answer NULL so each
+// operator's own arms and the ddINT default keep their existing behavior.
+// (Runtime codegen types via c2mir regardless; this view feeds parse-time
+// consumers — _Generic selection, overload ranking, sizeof-of-expression.)
+static inline DataDef *usual_arithmetic_result(DataDef *ld, DataDef *rd)
+{
+    if ( !ld || !rd )
+	return NULL;
+    if ( ld->is_pointer() || rd->is_pointer()
+      || ld->is_function() || rd->is_function()
+      || ld->is_complex() || rd->is_complex() )
+	return NULL;
+    if ( !ld->is_numeric() || !rd->is_numeric() )
+	return NULL;
+    bool lr = ld->is_real(), rr = rd->is_real();
+    if ( lr || rr )
+    {
+	if ( lr && rr )
+	    return ld->size >= rd->size ? ld : rd;
+	return lr ? ld : rd;
+    }
+    DataDef *w = ld;
+    if ( rd->size > w->size
+      || (rd->size == w->size && rd->is_unsigned() && !w->is_unsigned()) )
+	w = rd;
+    if ( w->size < ddINT.size )
+	return NULL;	// below the promotion floor: both promote to int
+    if ( w->size == ddINT.size && !w->is_unsigned() )
+	return NULL;	// plain int — the caller default already
+    return w;
+}
+
 class TokenAdd: public TokenOperator
 {
 public:
@@ -484,6 +520,7 @@ public:
 	if ( rd && rd->is_pointer() ) return rd;
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -521,6 +558,7 @@ public:
 	}
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -576,6 +614,7 @@ public:
 	DataDef *rd = right ? right->datadef() : NULL;
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -596,6 +635,7 @@ public:
 	DataDef *rd = right ? right->datadef() : NULL;
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -1011,8 +1051,22 @@ class TokenBSL: public TokenMultiOp
 {
     public: TokenBSL() : TokenMultiOp("<<") {}
     virtual TokenID id() const override { return TokenID::tkBSL; }
-    virtual TokenBase *clone() override { return new TokenBSL(); }
+    virtual TokenBase *clone() override { TokenBSL *to = new TokenBSL(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence() const override { return 5; }
+    // C99 6.5.7#3: a shift's type is the PROMOTED LEFT operand's — the
+    // right operand never participates (unlike the usual arithmetic
+    // conversions; c-testsuite 00200). resolved_type keeps overloaded
+    // operator<< (iostreams) authoritative.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left ? left->datadef() : NULL;
+	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
+	  && (ld->size > ddINT.size
+	   || (ld->size == ddINT.size && ld->is_unsigned())) )
+	    return ld;
+	return TokenOperator::datadef();
+    }
 };
 
 // bitwise shift right >>
@@ -1020,8 +1074,19 @@ class TokenBSR: public TokenMultiOp
 {
     public: TokenBSR() : TokenMultiOp(">>") {}
     virtual TokenID id() const override { return TokenID::tkBSR; }
-    virtual TokenBase *clone() override { return new TokenBSR(); }
+    virtual TokenBase *clone() override { TokenBSR *to = new TokenBSR(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence() const override { return 5; }
+    // C99 6.5.7#3 — see TokenBSL (operator>> stays via resolved_type).
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left ? left->datadef() : NULL;
+	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
+	  && (ld->size > ddINT.size
+	   || (ld->size == ddINT.size && ld->is_unsigned())) )
+	    return ld;
+	return TokenOperator::datadef();
+    }
 };
 
 // namespace operator ::

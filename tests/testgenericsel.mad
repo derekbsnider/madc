@@ -1,0 +1,56 @@
+// C11 _Generic (c-testsuite 00219): parse_generic_selection resolves the
+// association at PARSE time (Tier-1 lowering — the chosen expression IS
+// the result; unselected branches never evaluate). Association type names
+// ride parse_builtin_types_compatible_operand's signature encoding; the
+// controlling side adds lvalue conversion and array/function decay, and
+// the k= line pins usual_arithmetic_result (the parse-side value view:
+// int + long reports long). Function designators select through a fn-ptr
+// typedef (n=3, the coarse funcptr signature). The p=/q= line pins the
+// SHIFT rule (C99 6.5.7#3: the promoted LEFT operand's type, the right
+// operand never participates — c-testsuite 00200's unmasked twin).
+// Oracle: gcc/clang.
+typedef int int_type1;
+struct a { int a; };
+struct b { int a; };
+typedef int (*fptr)(int);
+static int foo(int i) { return i; }
+static int a_f() { return 20; }
+static int b_f() { return 10; }
+#define gen_sw(x) _Generic(x, const char *: 1, default: 8, int: 123)
+
+int main()
+{
+    const int a = 0;
+    signed long int l = 2;
+    struct b titi;
+    int_type1 i2 = 0;
+    int i;
+    i = _Generic(a, int: a_f, const int: b_f)();
+    printf("a=%d\n", i);
+    i = _Generic(a, int: a_f() / 2, const int: b_f() / 2);
+    printf("b=%d\n", i);
+    i = gen_sw(a);
+    printf("c=%d\n", i);
+    i = _Generic(titi, struct a:1, struct b:2, default:20);
+    printf("d=%d\n", i);
+    i = _Generic(i2, char: 1, int : 0);
+    printf("e=%d\n", i);
+    i = _Generic(a, char:1, int[4]:2, default:5);
+    printf("f=%d\n", i);
+    i = _Generic(17, int :1, int **:2);
+    printf("g=%d\n", i);
+    i = _Generic(17L, int :1, long :2, long long : 3);
+    printf("h=%d\n", i);
+    i = _Generic("17, io", char *: 3, const char *: 1);
+    printf("j=%d\n", i);
+    printf("k=%s\n", _Generic(i + 2L, long: "long", int: "int",
+                              long long: "long long"));
+    i = _Generic(l, long: 1, int: 2);
+    printf("m=%d\n", i);
+    i = _Generic(foo, fptr: 3, int: 4);
+    printf("n=%d\n", i);
+    printf("p=%s q=%s\n",
+           _Generic(l << 1, long: "L", int: "I"),
+           _Generic(i << l, long: "L", int: "I"));
+    return 0;
+}

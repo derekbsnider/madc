@@ -12307,6 +12307,13 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     }
     if ( dd->is_struct() )
 	return "struct:" + dd->name;
+    // Function and function-pointer types render as one coarse signature:
+    // every fn-ptr compares equal (refine to full signatures when a case
+    // needs it). Must precede the rawtype switch — an FPTR's raw type is
+    // integer-width and would render as a plain integer, cross-matching
+    // `long` (a _Generic association hazard).
+    if ( dd->is_function() )
+	return "funcptr";
 
     switch ( dd->rawtype() )
     {
@@ -12498,6 +12505,82 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
     if ( !wrapped )
 	strip_top_level_type_qualifiers(sig);
     return true;
+}
+
+// C11 6.5.1.1 generic selection — `_Generic(ctrl, T1: e1, ..., default: eD)`.
+// Tier-1 lowering: the association is SELECTED at parse time (madc knows the
+// controlling expression's type here), so the chosen expression IS the
+// result — unselected branches never evaluate and --emit=c11 stays portable.
+// Association type names ride the same signature encoding
+// parse_builtin_types_compatible_operand produces; the controlling side is
+// rendered by generic_controlling_signature below (lvalue conversion +
+// array/function-to-pointer decay per 6.3.2.1). First matching association
+// wins (assoc types are distinct in valid C; qualifier-stripped collisions
+// resolve in source order, which reproduces gcc's lvalue-converted match).
+std::string Program::generic_controlling_signature(TokenBase *ctrl)
+{
+    if ( !ctrl )
+	return "";
+    // A fixed-array variable's datadef reports the ELEMENT type — the
+    // expression decays to pointer-to-element.
+    if ( TokenVar *tv = ctrl->as_var_tok() )
+	if ( tv->var.is_fixed_array() )
+	    return "ptr(" + canonical_builtin_simple_type_name(tv->var.type) + ")";
+    DataDef *dd = ctrl->datadef();
+    if ( !dd )
+	return "";
+    if ( DataDefCArray *ca = dd->as_carray_dd() )
+	return "ptr(" + canonical_builtin_simple_type_name(ca->element_type) + ")";
+    // Function designators decay to pointers-to-function; the renderer
+    // gives every function(-pointer) type the one coarse "funcptr" sig.
+    return canonical_builtin_simple_type_name(dd);
+}
+
+TokenBase *Program::parse_generic_selection(TokenBase *generic_tb)
+{
+    TokenBase *ob = nextToken();
+    if ( !ob || ob->id() != TokenID::tkOpBrk )
+	Throw(ob ? ob : generic_tb) << "Expecting '(' after _Generic" << flush;
+    TokenBase *ctrl_tb = nextToken();
+    if ( !ctrl_tb )
+	Throw(generic_tb) << "Unexpected end of input in _Generic" << flush;
+    TokenBase *ctrl = parseExpression(ctrl_tb, true, false, false, 0, true);
+    std::string ctrl_sig = generic_controlling_signature(ctrl);
+    TokenBase *selected = NULL;
+    TokenBase *default_expr = NULL;
+    while ( peekToken() && peekToken()->id() == TokenID::tkComma )
+    {
+	nextToken();	// ','
+	bool is_default = false;
+	std::string assoc_sig;
+	TokenBase *assoc_head = nextToken();
+	if ( !assoc_head )
+	    Throw(generic_tb) << "Unexpected end of input in _Generic association" << flush;
+	if ( assoc_head->id() == TokenID::tkDEFAULT )
+	    is_default = true;
+	else if ( !parse_builtin_types_compatible_operand(assoc_head, assoc_sig) )
+	    Throw(assoc_head) << "Expecting a type name or default in _Generic association" << flush;
+	TokenBase *colon = nextToken();
+	if ( !colon || colon->id() != TokenID::tkTerC )
+	    Throw(colon ? colon : generic_tb) << "Expecting ':' in _Generic association" << flush;
+	TokenBase *val_tb = nextToken();
+	if ( !val_tb )
+	    Throw(generic_tb) << "Unexpected end of input in _Generic association" << flush;
+	TokenBase *val = parseExpression(val_tb, true, false, false, 0, true);
+	if ( is_default )
+	    default_expr = val;
+	else if ( !selected && !assoc_sig.empty() && assoc_sig == ctrl_sig )
+	    selected = val;
+    }
+    TokenBase *cb = nextToken();
+    if ( !cb || cb->id() != TokenID::tkClBrk )
+	Throw(cb ? cb : generic_tb) << "Expecting ')' after _Generic" << flush;
+    if ( !selected )
+	selected = default_expr;
+    if ( !selected )
+	Throw(generic_tb) << "_Generic: no association matches controlling type '"
+			  << ctrl_sig << "'" << flush;
+    return selected;
 }
 
 Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_head)
@@ -34359,6 +34442,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			ti->column = tb->column;
 			exStack.push(ti);
 		    }
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// _Generic — C11 generic selection, resolved at parse time
+		// (Tier-1 lowering: the selected association IS the result).
+		if ( ident_tb->spelling_is("_Generic") )
+		{
+		    exStack.push(parse_generic_selection(tb));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( is_named_cpp_cast(ident_tb->spelling()) )

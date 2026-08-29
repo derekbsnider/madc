@@ -73,7 +73,12 @@
 #        — c2mir check "last statement in statement expression is not an
 #        expression" (00213.c:17). Stmt-expr value-semantics corner.
 00213.c
-# 00219: _Generic with function designators / const-qualified association
+# 00219: PARTIAL 2026-08-29 — _Generic IMPLEMENTED (parse-time selection,
+#        gate: testgenericsel; also usual_arithmetic_result — the parse-
+#        side int+long=long view). 12 of 14 lines match gcc; the two
+#        residues both need pointee-const in the TYPE MODEL (`const char
+#        *ti` renders ptr(char)), which is the gated FEATURE_CONST_TYPES
+#        campaign (DataDefCONST P2-5) — not a _Generic defect.
 00219.c
 #
 # -- CIR/c2mir rejections --

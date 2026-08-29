@@ -6399,6 +6399,12 @@ public:
     std::string host_flavor_method_symbol(FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
+    // C11 _Generic: parse + select the association at parse time; the
+    // controlling side renders through the same signature encoding as
+    // parse_builtin_types_compatible_operand (with lvalue conversion and
+    // array/function decay).
+    TokenBase *parse_generic_selection(TokenBase *generic_tb);
+    std::string generic_controlling_signature(TokenBase *ctrl);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						std::string &sig);
     bool resolve_integer_constant(TokenBase *tb, madc_wide_int &out);
