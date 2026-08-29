@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **c-testsuite conformance burndown 198 → 218/220 (2026-08-28/29,
+  owner target 220)**: twenty C-conformance fixes across the lexer,
+  parser, and CIR emitter, each with its own gcc/clang-oracled gate
+  test in `tests/`. Highlights: C11 `_Generic` implemented (parse-time
+  selection); `#line` renumbers (with macro-expanded arguments) and
+  `__LINE__`/`__FILE__` work in `#if`; `##` placemarker semantics;
+  block-scope struct tag shadowing (shadow frames + unique emitted
+  identities); non-compound `switch` bodies and label-chained `case`;
+  the full C declarator family (fn-ptr returning fn-ptr, abstract
+  function-type parameters, qualifiers inside parameter brackets,
+  `enum` bodies as member types, array designators in compound
+  literals); `sizeof 0`; `&main` before its definition; and the
+  parse-side expression type view (usual arithmetic conversions, the
+  shift left-operand rule). Silent-wrong-answer finds fixed en route:
+  `*(union U*)p`, `***(expr)` under-deref, unsigned enum members,
+  member fn-ptr calls bound by name under a cast, positional nested
+  designators, `TokenVar::clone` minting typeless tokens. The two
+  remaining tests are blocked on the const-qualified-types campaign
+  and an owner decision on the lane's language mode (documented in
+  `docs/parity/c-testsuite-baseline.txt`).
+
 - **madcide rescue keybindings + texteditor promoted to tools/
   (2026-08-29, owner directives)**: when no keybinding profile file
   loads at startup, a baked-in pico-spelled RESCUE set (^S save
