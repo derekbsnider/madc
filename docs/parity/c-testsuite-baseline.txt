@@ -82,8 +82,10 @@
 00219.c
 #
 # -- CIR/c2mir rejections --
-# 00053: c2mir_compile_tree: 3 check errors
-00053.c
+# 00053: FIXED 2026-08-29 — block-scope struct tag shadowing: shadow
+#        frames (block_struct_tag_shadows, the tag twin of the typedef
+#        frames) restore at block exit; the shadow definition gets a
+#        unique emitted identity (gate: teststructtagshadow)
 # 00095: FIXED 2026-08-29 — real root was &main-before-definition, not
 #        tentative defs (those already merged): Pass 1 no longer skips
 #        main's prototype; var_emit_name keeps proto/def in lock-step in

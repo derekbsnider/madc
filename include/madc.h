@@ -1592,6 +1592,10 @@ public:
     size_t size() const { return map_.size(); }
     bool empty() const { return map_.empty(); }
     void set(const std::string &key, DataDef *dd);
+    // Remove one key (block-scope tag-shadow unwind). Erasure invalidates
+    // the despaced index's node-address cache, so it rebuilds — exactly
+    // rollback_transaction's discipline; shadow unwinds are rare.
+    void erase_scoped(const std::string &key);
     datadef_map_t snapshot() const { return map_; }
     void restore(const datadef_map_t &entries);
     void begin_transaction(transaction_state &state);
@@ -2577,6 +2581,14 @@ public:
 	block_typedef_shadows;
     void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
     void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
+    // The struct-TAG twin of the typedef frames: a block-scope definition
+    // that re-uses a live struct_map key records the prior mapping (or its
+    // absence) and unwinds with its block (c-testsuite 00053). Unwound by
+    // unwind_block_typedef_shadows under the same depth contract.
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	block_struct_tag_shadows;
+    void register_scoped_struct_tag_shadow(const std::string &key);
+    size_t block_struct_tag_seq = 0;	// unique emitted-identity counter
     // Struct-tag first declaration — the ONE mint recipe (incomplete
     // DataDefSTRUCT + pack tap + struct_map + C++ bare-name registration).
     // Consumers: TokenSTRUCT::parse's two forward-declaration arms and

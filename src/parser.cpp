@@ -9929,6 +9929,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	saved_typedef_shadows;
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	saved_struct_tag_shadows;
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -10042,6 +10045,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	// them un-popped with their flat entries live), THEN restore the caller's.
 	unwind_block_typedef_shadows(0, "A-catch");
 	std::swap(block_typedef_shadows, saved_typedef_shadows);
+	std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
 	cur_func_name = saved_func;
 	class_definition_only = saved_def_only;
 	parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -10060,6 +10064,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::swap(compounds, saved_compounds);
     unwind_block_typedef_shadows(0, "A-norm");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     cur_func_name = saved_func;
     class_definition_only = saved_def_only;
     parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -26033,8 +26038,40 @@ void Program::register_scoped_typedef(const std::string &alias, TokenDataType *t
     datatype_map[alias] = tdt;
 }
 
+// The struct-TAG twin of register_scoped_typedef: a block-scope
+// `struct T { ... }` that re-uses a live store key records the prior
+// mapping (or its absence) so the tag's meaning ends with its block
+// ([6.2.1] block scope — c-testsuite 00053). Unwound alongside the
+// typedef frames below.
+void Program::register_scoped_struct_tag_shadow(const std::string &key)
+{
+    if ( compounds.empty() )
+	return;
+    while ( block_struct_tag_shadows.size() < compounds.size() )
+	block_struct_tag_shadows.push_back(
+	    std::vector<std::pair<std::string, DataDef *> >());
+    datadef_map_citer prev = struct_map.find(key);
+    block_struct_tag_shadows.back().push_back(
+	std::make_pair(key, prev != struct_map.end()
+			    ? prev->second : (DataDef *)NULL));
+}
+
 void Program::unwind_block_typedef_shadows(size_t depth, const char *site)
 {
+    // Struct-tag frames unwind with the same depth contract.
+    while ( block_struct_tag_shadows.size() > depth )
+    {
+	std::vector<std::pair<std::string, DataDef *> > &sframe =
+	    block_struct_tag_shadows.back();
+	for ( size_t i = sframe.size(); i-- > 0; )
+	{
+	    if ( sframe[i].second )
+		struct_map.set(sframe[i].first, sframe[i].second);
+	    else
+		struct_map.erase_scoped(sframe[i].first);
+	}
+	block_struct_tag_shadows.pop_back();
+    }
     while ( block_typedef_shadows.size() > depth )
     {
 	std::vector<std::pair<std::string, TokenDataType *> > &frame =
@@ -29283,6 +29320,26 @@ void StructRegistry::set(const std::string &key, DataDef *dd)
     ++DataDef::canonical_spelling_gen;	// hold the old value — rebuild the index
 }
 
+void StructRegistry::erase_scoped(const std::string &key)
+{
+    if ( transaction_ && transaction_->touched.insert(key).second )
+    {
+	datadef_map_t::const_iterator found = map_.find(key);
+	transaction_->saved.push_back(transaction_state::SavedValue(
+	    key, found != map_.end(),
+	    found == map_.end() ? NULL : found->second));
+    }
+    if ( !map_.erase(key) )
+	return;
+    // Erasure invalidates the node-address cache — full index rebuild,
+    // the same discipline rollback_transaction applies.
+    index_.clear();
+    seen_.clear();
+    size_stamp_ = 0;
+    ++DataDef::canonical_spelling_gen;
+    gen_stamp_ = 0;
+}
+
 void StructRegistry::restore(const datadef_map_t &entries)
 {
     map_ = entries;
@@ -31352,6 +31409,9 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	saved_typedef_shadows;
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	saved_struct_tag_shadows;
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -31507,6 +31567,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     std::swap(compounds, saved_compounds);
     unwind_block_typedef_shadows(0, "class-pattern");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     cur_func_name = saved_func;
     tkFunction = saved_tk_function;
     switch_stack.swap(saved_switch_stack);
@@ -40970,6 +41031,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // pre-registration must then OVERWRITE the bare slot instead of
     // skipping on "already present".
     bool global_reclaims_bare = false;
+    // Set when a block-scope definition shadow-records its store key: the
+    // pre-registration below must then OVERWRITE the shadowed entry.
+    bool block_tag_shadowed = false;
     if ( tag )
     {
 	DataDefCLASS *owner = pgm.nested_aggregate_owner();
@@ -40986,7 +41050,25 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    std::string scoped = pgm.scoped_struct_tag(tag->spelling());
 	    if ( scoped != tag->spelling()
 	      && pgm.struct_map.find(tag->spelling()) != pgm.struct_map.end() )
+	    {
 		tag_store_key = scoped;
+		// Block-scope SHADOW (c-testsuite 00053): record the key's
+		// prior mapping for restore at block exit (the tag's meaning
+		// ends with its block, C11 6.2.1), and give the definition a
+		// UNIQUE emitted identity — two same-tag definitions in one
+		// c2mir TU cross-resolve member references (the same rename
+		// rule the nested-aggregate / namespace / global-reclaim
+		// arms above and below apply).
+		pgm.register_scoped_struct_tag_shadow(scoped);
+		block_tag_shadowed = true;
+		std::string fn_flat = pgm.cur_func_name;
+		for ( size_t fi = 0; fi < fn_flat.size(); ++fi )
+		    if ( fn_flat[fi] == ':' )
+			fn_flat[fi] = '_';
+		dds->name = fn_flat + "__b"
+		    + std::to_string(++pgm.block_struct_tag_seq)
+		    + "__" + tag->spelling();
+	    }
 	    // Sibling-NAMESPACE same-tag definitions (namespace A { struct S{}; }
 	    // namespace B { struct S{}; }): the bare tag names a COMPLETE struct
 	    // from a DIFFERENT scope — qualify the store key by the namespace and
@@ -41088,7 +41170,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // DataDefPTR only needs an 8-byte pointer size.
     bool was_pre_registered = false;
     if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
-		 || global_reclaims_bare) )
+		 || global_reclaims_bare || block_tag_shadowed) )
     {
 	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map.set(tag_store_key, dds);
@@ -51786,6 +51868,9 @@ void Program::instantiate_outofline_nested_classes(
 	std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	    saved_typedef_shadows;
 	std::swap(block_typedef_shadows, saved_typedef_shadows);
+	std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	    saved_struct_tag_shadows;
+	std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
 	std::vector<DataDefCLASS *> saved_class_scope_stack;
 	std::swap(class_scope_stack, saved_class_scope_stack);
 	std::string saved_func = cur_func_name;
@@ -51815,6 +51900,7 @@ void Program::instantiate_outofline_nested_classes(
 	std::swap(compounds, saved_compounds);
 	unwind_block_typedef_shadows(0, "ool-nested");
 	std::swap(block_typedef_shadows, saved_typedef_shadows);
+	std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
 	cur_func_name = saved_func;
 	class_definition_only = saved_def_only;
 	parsing_cpp_struct_class = saved_cpp_struct_class;
@@ -57456,6 +57542,9 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	saved_typedef_shadows;
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	saved_struct_tag_shadows;
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
 
     // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
     // into ctor_initializers instead of the skip loop discarding it (the
@@ -57489,6 +57578,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     // un-popped with their flat entries live), THEN restore the caller's.
     unwind_block_typedef_shadows(0, "B-pattern");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
     // placeholder) produced a structurally-valid but semantically-wrong tree —
     // treat it exactly like a parse failure so tsubst never copies it.
@@ -57636,6 +57726,9 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	saved_typedef_shadows;
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	saved_struct_tag_shadows;
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
@@ -57670,6 +57763,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     std::swap(compounds, saved_compounds);
     unwind_block_typedef_shadows(0, "C-ool");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
+    std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     cur_func_name = saved_func;
     forced_local_class_identity_active = saved_forced_local;
     forced_local_class_identity = saved_forced_identity;

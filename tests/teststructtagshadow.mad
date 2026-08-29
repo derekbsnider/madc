@@ -1,0 +1,38 @@
+// Block-scope struct tag shadowing (C11 6.2.1 — c-testsuite 00053): a
+// block-scope `struct T { ... }` that shadows a visible same-tag definition
+// records the prior mapping in block_struct_tag_shadows (the tag twin of
+// the block-typedef frames), gets a UNIQUE emitted identity, and unwinds at
+// block exit — so sibling blocks re-shadow independently and code after the
+// block sees the outer tag again.
+// Oracle: gcc/clang print a=41 b=7 c=9 d=5 e=3.
+struct G { int a; } g1;
+
+static int f(void)
+{
+    struct G { int b; } g2;
+    g2.b = 5;
+    return g2.b;
+}
+
+int main()
+{
+    struct T { int x; } s1;
+    s1.x = 1;
+    {
+        struct T { int y; } s2;
+        s2.y = 40;
+        printf("a=%d\n", s1.x + s2.y);
+    }
+    {
+        struct T { int z; } s3;
+        s3.z = 7;
+        printf("b=%d\n", s3.z);
+    }
+    struct T s4;
+    s4.x = 9;
+    printf("c=%d\n", s4.x);
+    printf("d=%d\n", f());
+    g1.a = 3;
+    printf("e=%d\n", g1.a);
+    return 0;
+}
