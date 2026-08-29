@@ -41104,10 +41104,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 		    else if ( tn->id() == TokenID::tkENUM )
 		    {
+			// Same tag-or-int rule as the top-level member arm —
+			// the shared elaborated-specifier resolver (the old
+			// ddUINT32 typing made negative enum members compare
+			// unsigned).
 			pgm.nextToken();
-			if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-			    pgm.nextToken();
-			inner_type = new TokenDataType("enum", ddUINT32);
+			inner_type = pgm.resolve_declared_type_token(tn, true, true);
+			if ( !inner_type )
+			    pgm.Throw(tn) << "Expecting enum tag in anonymous struct member type" << flush;
 		    }
 		    else
 			pgm.Throw(tn) << "Expecting type in anonymous struct definition" << flush;
@@ -41394,10 +41398,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 	else if ( tn->id() == TokenID::tkENUM )
 	{
+	    // `enum TAG member` — the shared elaborated-specifier resolver
+	    // owns the tag-or-int rule (registered DataDefENUM, else int).
+	    // The old inline arm typed every enum member ddUINT32, so a
+	    // negative enumerator stored in a member compared UNSIGNED
+	    // (silent wrong answer; gcc: unfixed enums are int).
 	    pgm.nextToken();
-	    if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-		pgm.nextToken();
-	    mtype = new TokenDataType("enum", ddUINT32);
+	    mtype = pgm.resolve_declared_type_token(tn, true, true);
+	    if ( !mtype )
+		pgm.Throw(tn) << "Expecting enum tag in struct member type" << flush;
 	}
 	else
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
