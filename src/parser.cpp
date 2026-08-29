@@ -27382,6 +27382,20 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    // left in the stream and re-read as a parenthesized expression,
 	    // whose value silently replaced the call.
 	    Variable *callee = postfix_expr_variable(result);
+	    // A CALL RESULT of fn-ptr type invoked again — `go()()` — calls
+	    // the returned VALUE. postfix_expr_variable hands back the inner
+	    // CALLEE for a call node, which would silently re-call it by
+	    // name; synthesize the value-typed callee instead (c-testsuite
+	    // 00089's shape, same rule as the main parser's call-result arm).
+	    if ( result->type() == TokenType::ttCallFunc
+	      || result->type() == TokenType::ttCallMethod )
+	    {
+		DataDefFPTR *res_fptr = result->datadef()
+		    ? result->datadef()->as_fptr_dd() : NULL;
+		if ( !res_fptr )
+		    break;		// a grouping paren, not a call
+		callee = new Variable("__call_fptr", *res_fptr, 1, NULL, false);
+	    }
 	    if ( !callee || !callee->type || !callee->type->is_function() )
 		break;			// a grouping paren, not a call
 	    TokenBase *open = nextToken();
@@ -37660,7 +37674,54 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    done = true;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    // Direct invocation through a PARENTHESIZED function
+		    // Direct invocation of a CALL RESULT of fn-ptr type: `go()()` —
+	    // the returned pointer is the callee, loaded via src_node
+	    // (c-testsuite 00089). Same contract as the member/subscript/var
+	    // fptr-call arms above. A just-parsed call rides OPSTACK (the
+	    // call arms push there), so probe both stacks.
+	    TokenBase *callres_base = NULL;
+	    DataDefFPTR *callres_fptr = NULL;
+	    bool callres_on_opstack = false;
+	    if ( !exStack.empty()
+	      && !opstack_has_pending_op
+	      && !member_is_assign_lhs
+	      && (exStack.top()->type() == TokenType::ttCallFunc
+	       || exStack.top()->type() == TokenType::ttCallMethod)
+	      && (callres_base = exStack.top()) != NULL
+	      && (callres_fptr = callres_base->datadef()
+		    ? callres_base->datadef()->as_fptr_dd() : NULL) != NULL )
+		callres_on_opstack = false;
+	    else if ( !opStack.empty()
+	      && !member_is_assign_lhs
+	      && (opStack.top()->type() == TokenType::ttCallFunc
+	       || opStack.top()->type() == TokenType::ttCallMethod)
+	      && (callres_base = opStack.top()) != NULL
+	      && (callres_fptr = callres_base->datadef()
+		    ? callres_base->datadef()->as_fptr_dd() : NULL) != NULL )
+		callres_on_opstack = true;
+	    else
+		callres_base = NULL;
+	    if ( callres_base )
+	    {
+		if ( callres_on_opstack )
+		    opStack.pop();
+		else
+		    exStack.pop();
+		Variable *call_var = new Variable("__call_fptr", *callres_fptr,
+						  1, NULL, false);
+		TokenCallFunc *tc = new TokenCallFunc(*call_var);
+		tc->src_node = callres_base;
+		tc->file = tb->file;
+		tc->line = tb->line;
+		tc->column = tb->column;
+		tb = parseCallFunc(tc);
+		DBG(cout << "call-result fptr call" << endl);
+		opStack.push(tc);
+		if ( tb && tb->id() == TokenID::tkSemi )
+		    done = true;
+		return done ? ExprStep::Done : ExprStep::Break;
+	    }
+	    // Direct invocation through a PARENTHESIZED function
 		    // designator: `(funcname)(args)`, `(std::max)(args)`.
 		    // libstdc++ wraps `(std::max)` / `(std::min)` in parens to
 		    // suppress macros/ADL — a real call, not a cast. After the
@@ -40677,10 +40738,26 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    alias_dd = pgm.getPointerType(alias_dd);
 		}
 		tn = pgm.nextToken(); // consume the alias identifier
-		if ( !is_contextual_identifier_token(tn) )
-		    pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
-		std::string alias_name = contextual_identifier_name(tn);
-		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
+		std::string alias_name;
+		if ( tn && tn->id() == TokenID::tkOpBrk
+		  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+		{
+		    // Fn-ptr declarator in a struct-tag typedef list:
+		    // `typedef struct S * (*fty)();` (c-testsuite 00089) —
+		    // the same `( * name ) ( params )` tail the struct-member
+		    // lanes share (parse_fnptr_member_tail, the ONE owner);
+		    // alias_dd so far (tag + stars) is the return type.
+		    pgm.nextToken();	// consume '*'
+		    alias_dd = pgm.parse_fnptr_member_tail(*alias_dd,
+							   alias_name, tn);
+		}
+		else
+		{
+		    if ( !is_contextual_identifier_token(tn) )
+			pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
+		    alias_name = contextual_identifier_name(tn);
+		    alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
+		}
 		bool redecl = false;
 		if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
 		{
@@ -40734,7 +40811,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
 		    pgm.register_scoped_typedef(alias_name, tdt);
 		    // also register tag in struct_map so "struct tag" works
-		    if ( !alias_dd->is_pointer() )
+		    // (not for a pointer or fn-ptr alias — those name derived
+		    // types, never the tag)
+		    if ( !alias_dd->is_pointer() && !alias_dd->as_fptr_dd() )
 		    {
 			pgm.pack_tap_struct(alias_name);	// B4a tap
 			pgm.struct_map.set(alias_name, dmi->second);

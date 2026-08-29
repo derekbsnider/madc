@@ -18,8 +18,10 @@
 #        count (both gated by tests/teststaticinitflat.mad).
 #
 # -- parse gaps: declarators --
-# 00089: typedef struct S * (*fty)();  (fn-ptr typedef returning struct ptr)
-00089.c
+# 00089: FIXED 2026-08-29 — typedef-struct arm adopts
+#        parse_fnptr_member_tail; call-of-call fptr value (`go()()`)
+#        via the call-result arm, both stacks (gate:
+#        teststructfnptrtypedef)
 # 00124: int (* (*p)(int a, int b))(int c, int d) = f1;  (fn-ptr returning fn-ptr)
 00124.c
 # 00130: FIXED 2026-08-29 — `(` is a valid declarator head at the comma
