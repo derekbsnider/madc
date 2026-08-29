@@ -1,0 +1,23 @@
+// `&main` before main's definition (c-testsuite 00095): the emitter's
+// Pass 1 prototype loop no longer skips main — var_emit_name renames the
+// proto in lock-step with the definition in every wrap mode, so the
+// pre-definition reference sees a declaration. Also pins tentative
+// definitions at file scope (C11 6.9.2: `int x; int x = 3; int x;` merge
+// to one definition).
+// Oracle: gcc/clang print t=3 p=1.
+int x;
+int x = 3;
+int x;
+
+int main();
+
+static void *foo()
+{
+    return &main;
+}
+
+int main()
+{
+    printf("t=%d p=%d\n", x, foo() == (void*)&main);
+    return 0;
+}

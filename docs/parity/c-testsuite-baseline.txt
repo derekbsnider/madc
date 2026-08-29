@@ -79,8 +79,10 @@
 # -- CIR/c2mir rejections --
 # 00053: c2mir_compile_tree: 3 check errors
 00053.c
-# 00095: c2mir_compile_tree: 2 check errors
-00095.c
+# 00095: FIXED 2026-08-29 — real root was &main-before-definition, not
+#        tentative defs (those already merged): Pass 1 no longer skips
+#        main's prototype; var_emit_name keeps proto/def in lock-step in
+#        every wrap mode (gate: testmainaddr)
 # 00202: c2mir_compile_tree: 2 check errors
 00202.c
 # 00216: cir error: unhandled expression: TokenBase (token type 0)

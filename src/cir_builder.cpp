@@ -29603,8 +29603,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// exactly what func_proto declares below) so the extern flush also skips a
 	// void* duplicate of a symbol that Pass 1 will type.
 	for (TokenFunc *tf : funcs)
-		if (tf->var.name != "main"
-		 && dynamic_cast<FuncDef *>(tf->var.type))
+		if (dynamic_cast<FuncDef *>(tf->var.type))
 			typed_proto_syms.insert(tf->var.name);
 
 	std::set<std::string> emitted_extern_syms;
@@ -29625,7 +29624,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	// initializer is declared first (C requires definition-before-use in a
 	// non-auto initializer; see deferred_globals).
 	for (TokenFunc *tf : funcs) {
-		if (tf->var.name == "main") continue;
+		// main is prototyped like any function: a pre-definition
+		// reference (`return &main;` — c-testsuite 00095) needs the
+		// declaration, and var_emit_name renames the proto in
+		// lock-step with the definition in every wrap mode (MT-2b
+		// __madc_main included).
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);
