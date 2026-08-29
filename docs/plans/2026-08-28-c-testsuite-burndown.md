@@ -1,11 +1,17 @@
 # c-testsuite burndown — 198/220 → 220/220
 
-**Progress: 202/220 (2026-08-28, wave 1).** Fixed: 00204 (MIR va_block_arg
-SSE exhaustion — upstream PR candidate), 00210 (cast-to-fnptr call), 00205
-(three deep: exponential operator datadef() recursion, unary-plus-under-
-cast, flat struct-array count), 00143 (Duff's device: in-place labels +
-top-of-switch goto jump table; also unblocked 00213's Duff half — its
-remaining root is a stmt-expr value corner, reclassified below).
+**Progress: 207/220 (2026-08-29, wave 2 — declarators).** Wave 1 (2026-08-28)
+fixed: 00204 (MIR va_block_arg SSE exhaustion — upstream PR candidate), 00210
+(cast-to-fnptr call), 00205 (three deep: exponential operator datadef()
+recursion, unary-plus-under-cast, flat struct-array count), 00143 (Duff's
+device: in-place labels + top-of-switch goto jump table; also unblocked
+00213's Duff half — its remaining root is a stmt-expr value corner,
+reclassified below). Wave 2 (2026-08-29) fixed five of section C's six:
+00170, 00162, 00209, 00130, 00089 (see section C for the revised mechanism
+note), plus two silent-wrong-answer defects found en route (member fn-ptr
+called under a cast bound the bare NAME; enum-typed struct members compared
+UNSIGNED). Validated: JIT suite 1215/0/0 + c-testsuite lane 207/13, 0 outside
+baseline. Remaining 13: 00124 + sections D/E/F.
 
 Owner (2026-08-28): "we want c-testsuite to be 220/220 ideally."
 
@@ -55,10 +61,22 @@ worse than a crash), then the hang, then parse gaps by area, then semantics.
   param list declares an enum param.
 - **00209** — `int f1 (int (), int);` abstract function-type parameter.
 
-These six likely share one owner: the declarator grammar's handling of
-parenthesized/abstract declarators. Fix the grammar spine once, expect
-several to fall together — do NOT ship six point patches (Rule #7 /
-no-parallel-implementations; check `/dupaudit` marker discipline).
+FIVE OF SIX FIXED 2026-08-29 (00170, 00162, 00209, 00130, 00089 — gates:
+testenumtagtype, testparamarrayqual, testabstractfnparam, testcommaptrarray,
+teststructfnptrtypedef; annotations in the baseline file). The original
+hypothesis here — "one grammar spine, fix it once" — was REVISED by the
+investigation: there is no missing spine. The declarator grammar already has
+FOUR shared owners (`parseFnPtrParams` for param-list grammar,
+`parse_fnptr_member_tail` for the one `( * name ) ( params )` tail,
+`parse_ptr_array_suffix`, and the comma-continuation re-entry), and each
+fix ADOPTED the owner its context had failed to route through, extending
+the owners in place (enum arm, abstract-param arm, VLA-qualifier skip,
+`(`-starts-declarator at the comma). Still zero point patches — the fixes
+live in the owners, not at the call sites. Remaining: **00124** — fn-ptr
+returning fn-ptr needs the fn-ptr declaration arm to recurse through the
+stream (stash inner declarator groups, parse the outer tail, re-push, goto
+the arm head — one nesting level per pass; spiral-stash precedent is 5
+lines below the throw site).
 
 ## D. Parse gaps — statements/expressions
 
