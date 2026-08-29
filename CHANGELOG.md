@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **madcide rescue keybindings + texteditor promoted to tools/
+  (2026-08-29, owner directives)**: when no keybinding profile file
+  loads at startup, a baked-in pico-spelled RESCUE set (^S save
+  ^Q quit ^X discard ^G help ^P profile) binds through the same
+  `parse_keys`/`ui::tui_bind_keys` data path, the status line
+  announces the fallback, and the help pane projects the rescue set
+  itself — a broken install layout can no longer trap the session in
+  a bindingless editor (fatal exit only if even the rescue bind
+  fails); proven end-to-end on a pty with `profiles/` deleted. And
+  `examples/texteditor` moved to `tools/texteditor` — the IDE and the
+  texteditor share components; all includes, cwd-relative verb/check
+  literals, tests, docs, and gates follow.
+
 - **SMAUG restored + gated (2026-08-28, the smaug-fntypedef merge
   wave)**: the real MadSMAUG 51-TU `--project` (upstream/smaug1.8 via
   `compile_commands.json`) compiles, links, JIT-boots to "Realms of
