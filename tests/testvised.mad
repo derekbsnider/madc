@@ -8,10 +8,10 @@
 // Events arrive as the exact value objects ui::tui_event produces; no
 // terminal is involved (the real terminal path is pinned by
 // scripts/tui_smoke_gate.sh on a pty). The application under test is THE
-// example itself (examples/texteditor — one copy, no test fork).
-#include "../examples/texteditor/lined_core.inc"
-#include "../examples/texteditor/editor_events.inc"
-#include "../examples/texteditor/vised_core.inc"
+// example itself (tools/texteditor — one copy, no test fork).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/texteditor/vised_core.inc"
 
 void ev_text(value &e, const char *t)
 {

@@ -1,6 +1,7 @@
 joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
 joe-ide: [^p]=palette [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
+rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
 check1: Check: clean.
 edited: caret=5 modified=true size=89
 undo: caret=0 modified=false size=84

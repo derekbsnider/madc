@@ -10,8 +10,8 @@
 //      reads the bag; a chosen row moves the caret to its line);
 //   3. a keybinding profile swap leaves the composed projection
 //      IDENTICAL (bindings are data; the composition path is untouched).
-#include "../examples/texteditor/lined_core.inc"
-#include "../examples/texteditor/editor_events.inc"
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
 void ev_text(value &e, const char *t)
@@ -77,6 +77,15 @@ int main()
     println("joe-ide: [^p]={} [^f]={} [^n]={} [^b]={} [^r]={} [^k u]={} [^_]={}",
 	    joe["^p"], joe["^f"], joe["^n"], joe["^b"], joe["^r"],
 	    joe["^k u"], joe["^_"]);
+    // The baked-in RESCUE set (no profile file loads) is the same data
+    // shape: an inline profile string through parse_keys. Binding needs a
+    // TUI; headless pins the table content and the tiny exit/save/help
+    // vocabulary (owner directive 2026-08-29).
+    value rescue;
+    parse_keys(rescue, rescue_keys_text());
+    println("rescue: n={} [^s]={} [^q]={} [^x]={} [^g]={} [^p]={}",
+	    php::count(rescue), rescue["^s"], rescue["^q"], rescue["^x"],
+	    rescue["^g"], rescue["^p"]);
 
     // -- gate 2 (clean half): check-on-demand over the live buffer --
     value e;

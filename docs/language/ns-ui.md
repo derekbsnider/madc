@@ -133,7 +133,7 @@ together. A checkpoint is a new edit branch and clears redo; the
 three-argument `text_undo` is the legacy destructive form (no capture,
 so it clears redo too).
 
-The line-mode editor (`examples/texteditor/` — nine script verbs through
+The line-mode editor (`tools/texteditor/` — nine script verbs through
 the one registry, design doc §7.7) is the worked example: a line command
 composes a range edit from `text_line_start`/`text_line_len`.
 
@@ -347,7 +347,7 @@ the dependency-free VT100/xterm one (raw mode, alternate screen,
 differential row repaint; POSIX only — on Windows `tui_open` refuses
 until a Console target registers). The model half — layout, focus, key
 semantics, chords, coalescing, diffing — is engine code shared by every
-target. `examples/texteditor/vised.mad` is the worked example of the
+target. `tools/texteditor/vised.mad` is the worked example of the
 editor pair (Pico-style fixed chords); `tools/madcide/madcide.mad`
 (a tool, not an example) is the worked case of profiles-as-data
 (the full JOE/WordStar set by default — `profiles/joe.keys` is the

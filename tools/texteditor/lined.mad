@@ -1,5 +1,5 @@
 // lined — the line-mode text editor (Track 7.2 R4, design doc §7.7).
-// Usage: madc examples/texteditor/lined.mad <file> [ro]
+// Usage: madc tools/texteditor/lined.mad <file> [ro]
 // Run it from the repository root (the verb bodies load by relative
 // path). Commands: p [N [M]] print · c N TEXT change · i N TEXT insert ·
 // a TEXT append · d N [M] delete · f TEXT find · w write · q quit ·

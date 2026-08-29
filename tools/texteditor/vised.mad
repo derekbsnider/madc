@@ -1,5 +1,5 @@
 // vised — the visual (TUI) text editor (Track 7.2 R5, design doc §7).
-// Usage: madc examples/texteditor/vised.mad <file> [ro]
+// Usage: madc tools/texteditor/vised.mad <file> [ro]
 // Run it from the repository root (the verb bodies load by relative
 // path). The SAME document actions as lined: typing/backspace/del/enter
 // edit at the caret; arrows/home/end/pgup/pgdn move it; ^B sets the

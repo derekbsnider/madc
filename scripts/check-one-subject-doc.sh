@@ -7,7 +7,7 @@
 # (the negative control) on the owner losing its own fallback.
 cd "$(dirname "$0")/.."
 hits=$(grep -rln 'entity_by_name(w, "document")' \
-       examples/texteditor/verbs examples/texteditor/checks \
+       tools/texteditor/verbs tools/texteditor/checks \
        | grep -v '_subject\.madv')
 if [ -n "$hits" ]; then
     echo "check-one-subject-doc: singleton document lookup outside the owner:"
@@ -15,7 +15,7 @@ if [ -n "$hits" ]; then
     exit 1
 fi
 if ! grep -q 'entity_by_name(w, "document")' \
-     examples/texteditor/verbs/_subject.madv; then
+     tools/texteditor/verbs/_subject.madv; then
     echo "check-one-subject-doc: the owner lost its fallback (marker rot)"
     exit 1
 fi

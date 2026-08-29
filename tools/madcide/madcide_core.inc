@@ -88,6 +88,38 @@ bool load_profile(long w, long es, const char *name)
     return true;
 }
 
+// The baked-in RESCUE bindings: the ONLY compiled-in chords, used when
+// NO profile file loads at startup (a broken install layout must never
+// trap the session in a bindingless editor — the first genuine-Win
+// validation did exactly that). Still data all the way down: an inline
+// profile string through the SAME parse_keys/tui_bind_keys path, a
+// deliberately tiny pico-spelled set (exit/save/help class, plus ^p to
+// retry a real profile once the layout is fixed). The help pane
+// projects from bindtext as usual, so ^G documents the set itself.
+const char *rescue_keys_text()
+{
+    return "# RESCUE bindings — no profile file loaded\n"
+	   "^s save\n"
+	   "^q quit\n"
+	   "^x discard\n"
+	   "^g help\n"
+	   "^p profile\n";
+}
+
+bool bind_rescue_keys(long w, long es)
+{
+    value table;
+    parse_keys(table, rescue_keys_text());
+    long t = es_int(w, es, "tui", 0);
+    if ( t == 0 || !ui::tui_bind_keys(t, table) )
+	return false;
+    ui::set(w, es, "profile", "rescue");
+    ui::set(w, es, "bindtext", rescue_keys_text());
+    ui::set(w, es, "msg",
+	    "No keybinding profile found — RESCUE keys: ^S save  ^Q quit  ^X discard  ^G help  ^P profile");
+    return true;
+}
+
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
 // One `class SPEC` pair per line: the class is the FIRST word, the spec
 // the rest — JOE's style vocabulary (attribute words + a colour +
@@ -2699,21 +2731,27 @@ void run_ide(const char *path, bool ro)
     if ( t == 0 )
 	return;
     ui::set(w, es, "tui", t);
-    if ( !load_profile(w, es, "joe") )
-    {
-	// No profile = NO bindings at all (they are pure data — there are
-	// no compiled-in chords, not even quit), so a silent continue
-	// traps the session in a bindingless editor. Fail LOUD instead
-	// (the first genuine-Win validation hit exactly this).
-	var dir;
-	ui::get(dir, w, es, "profile_dir");
-	ui::tui_close(t);
-	println(stderr, "madcide: cannot load the startup profile {}/joe.keys — keybindings are profile data; check the install layout (tools/madcide/profiles beside madcide.mad).", dir);
-	return;
-    }
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
+    // The profile loads LAST of the three data loads: a broken layout
+    // fails the theme too, and its message must not bury the rescue
+    // announcement — the status line has to SAY the fallback is active.
+    if ( !load_profile(w, es, "joe") )
+    {
+	// No profile file = NO bindings at all (they are pure data), so a
+	// silent continue traps the session in a bindingless editor (the
+	// first genuine-Win validation hit exactly this). The baked-in
+	// rescue set keeps the session usable — only ITS failure is fatal.
+	if ( !bind_rescue_keys(w, es) )
+	{
+	    var dir;
+	    ui::get(dir, w, es, "profile_dir");
+	    ui::tui_close(t);
+	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (tools/madcide/profiles beside madcide.mad).", dir);
+	    return;
+	}
+    }
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).

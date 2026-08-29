@@ -721,7 +721,7 @@
 > bindings (`ui::bind_check`, both kinds, ONE evaluator behind
 > affordances and dispatch — design invariant 5; DupFamily
 > lineed_readonly_gate consolidated into `checks/editable.madv`); and
-> `examples/texteditor/vised.mad`, the visual editor over the SAME
+> `tools/texteditor/vised.mad`, the visual editor over the SAME
 > document actions and w/q/q! script verbs as the line editor (design
 > success criteria 3 + 4). Merge-wave battery: authoritative Linux
 > fulltest **1144 passed / 0 failed / 0 timed out / 9 skipped** (suite
@@ -742,7 +742,7 @@
 > component (`madcdis/text_buffer.h`, the hub's second component kind)
 > + `ui::world_new` + the `ui::text_*` family +
 > `php::file_get_contents`/`file_put_contents` + the line-mode editor
-> (`examples/texteditor/`, nine script verbs through the one registry).
+> (`tools/texteditor/`, nine script verbs through the one registry).
 > Merge-wave battery: authoritative Linux fulltest
 > **1142 passed / 0 failed / 0 timed out / 9 skipped** (suite +2:
 > testuitext — the component surface, line-composed range edits;

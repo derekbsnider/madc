@@ -26,8 +26,8 @@
 // schemes by name), refreshed with the parse.
 // Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
 // moves the caret to its line.
-#include "../../examples/texteditor/lined_core.inc"
-#include "../../examples/texteditor/editor_events.inc"
+#include "../texteditor/lined_core.inc"
+#include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
 
 int main(int argc, char **argv)

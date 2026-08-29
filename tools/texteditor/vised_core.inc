@@ -1,4 +1,4 @@
-// vised_core.inc — the visual (TUI) half of examples/texteditor (Track
+// vised_core.inc — the visual (TUI) half of tools/texteditor (Track
 // 7.2 R5; design doc §7). The SEMANTIC core is terminal-free:
 // apply_event() maps semantic events onto the SAME document actions the
 // line editor uses — the shared editor event core (editor_events.inc,

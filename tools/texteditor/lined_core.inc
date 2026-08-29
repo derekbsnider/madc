@@ -24,7 +24,7 @@ void bind_lineed_verbs(long w)
     // world's one "document". One owner; bodies never look it up.
     value pro;
     if ( !php::file_get_contents(pro,
-	    "examples/texteditor/verbs/_subject.madv") )
+	    "tools/texteditor/verbs/_subject.madv") )
     {
 	println(stderr, "cannot load the subject-document prologue");
 	return;
@@ -33,7 +33,7 @@ void bind_lineed_verbs(long w)
     {
 	value src;
 	if ( !php::file_get_contents(src,
-		format("examples/texteditor/verbs/{}.madv", LINEED_FILES[k])) )
+		format("tools/texteditor/verbs/{}.madv", LINEED_FILES[k])) )
 	{
 	    println(stderr, "cannot load verb body {}", LINEED_FILES[k]);
 	    continue;
@@ -42,7 +42,7 @@ void bind_lineed_verbs(long w)
 	ui::bind_verb(w, LINEED_VERBS[k], full.c_str());
     }
     value chk;
-    if ( !php::file_get_contents(chk, "examples/texteditor/checks/editable.madv") )
+    if ( !php::file_get_contents(chk, "tools/texteditor/checks/editable.madv") )
     {
 	println(stderr, "cannot load the editable check body");
 	return;
