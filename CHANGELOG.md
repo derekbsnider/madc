@@ -14,7 +14,14 @@
   declaration grammar (`const char *` ≠ `char *` in `_Generic`,
   lvalue conversion drops top-level qualifiers, const-transparent
   member access; gate `testconstpointee` — the const campaign's C-mode
-  producer, `DataDefCONST`/`getConstType`).
+  producer, `DataDefCONST`/`getConstType`). The merge battery then
+  caught and closed two more: the emitter's NINE pointer-peel walker
+  copies (a const level lost a star — SMAUG's `char * const *flagarray`
+  emitted one `*`) consolidated onto `dd_peel_pointers` with a fulltest
+  gate (`check-one-pointer-peel.sh`); and a latent dangling
+  `TopDecl.origin` — two parse arms passed STACK type tokens that
+  MC11-IR retains (mixed comma list `int f(int a), g(int a), a;`, C89
+  implicit-int `static f()`), now heap-minted (gate `testmixeddecl`).
 - **c-testsuite conformance burndown 198 → 218/220 (2026-08-28/29,
   owner target 220)**: twenty C-conformance fixes across the lexer,
   parser, and CIR emitter, each with its own gcc/clang-oracled gate

@@ -26,6 +26,18 @@ smaug_gate.sh). Wave 4 closed the last four:
   testconstpointee). C mode only — the C++ producer is the const
   campaign's Phase 3/4 (docs/plans/2026-06-19-const-qualified-types.md).
 
+**Wave-4 merge battery caught two more (both fixed + gated):** the
+emitter carried NINE copies of the pointer-peel walk, all
+dynamic_cast-keyed — a const level (`char * const *`) broke the walk and
+LOST a star (SMAUG's flagarray, smaug_gate RED); all copies now delegate
+to dd_peel_pointers (as_pointer_dd steps through const levels), gated by
+`scripts/check-one-pointer-peel.sh` in fulltest. Its stack-layout shift
+then exposed a LATENT dangling TopDecl.origin: two parseDeclaration
+callers (the mixed comma list `int f(int a), g(int a), a;` — 00121 —
+and the C89 implicit-int `static f()` arm) passed STACK type tokens that
+MC11-IR retains for the life of the tree; both now mint heap tokens
+(gate: testmixeddecl).
+
 **Progress history: 218/220 (2026-08-29, wave 3 — DONE except two
 campaign-blocked residues, both closed by wave 4 above).** Wave 1 (2026-08-28): 00204, 00210, 00205, 00143. Wave 2
 (2026-08-29): section C complete — 00170, 00162, 00209, 00130, 00089, 00124
