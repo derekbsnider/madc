@@ -46,8 +46,10 @@
 #        accepts numeric/char literals (measured from the literal's own
 #        datadef, matching the parenthesized expression fallback)
 #        (gate: testsizeofunary)
-# 00051: switch (x) case 0: ...  (switch with non-compound body)
-00051.c
+# 00051: FIXED 2026-08-29 — non-compound switch bodies (TokenSWITCH's
+#        single-statement arm; parse_switch_label gains a no-bucket mode)
+#        + label-chained `foo: case 1:` via parse_nested_case_label, the
+#        shared dispatch-entry owner (gate: testswitchnobody)
 # 00103: FIXED 2026-08-29 — parse_deref_paren_operand: ONE owner for the
 #        cast-head discrimination across all four unary-deref arms (also
 #        closed `*(union U*)p` and the N-star arm's `***(expr)`

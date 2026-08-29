@@ -49329,7 +49329,7 @@ TokenBase *TokenDELETE::parse(Program &pgm)
 
 // parse switch(expr) { case val: ...; break; default: ...; }
 TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
-				       bool nested)
+				       bool nested, bool consume_statements)
 {
     TokenCASE *target = NULL;
 
@@ -49398,15 +49398,19 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
 	return target;
     }
 
-    while ( peekToken()
-	 && peekToken()->id() != TokenID::tkCASE
-	 && peekToken()->id() != TokenID::tkDEFAULT
-	 && peekToken()->id() != TokenID::tkClBrc )
-    {
-	TokenBase *stmt = parseStatement(nextToken());
-	if ( stmt )
-	    target->statements.push_back(stmt);
-    }
+    // A NON-COMPOUND switch body (`switch (x) case 0: stmt;`) owns exactly
+    // one labeled statement — the caller parses it; the greedy bucket below
+    // is the braced-body convention only.
+    if ( consume_statements )
+	while ( peekToken()
+	     && peekToken()->id() != TokenID::tkCASE
+	     && peekToken()->id() != TokenID::tkDEFAULT
+	     && peekToken()->id() != TokenID::tkClBrc )
+	{
+	    TokenBase *stmt = parseStatement(nextToken());
+	    if ( stmt )
+		target->statements.push_back(stmt);
+	}
 
     if ( !switch_case_stack.empty() )
 	switch_case_stack.back() = target;
@@ -49463,10 +49467,41 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
     if ( tn->id() != TokenID::tkClBrk )
 	pgm.Throw(tn) << "Expecting ) after switch expression" << flush;
 
-    // expect {
+    // The body is a STATEMENT (C11 6.8.4.2 / [stmt.switch]) — usually the
+    // compound below, but a non-compound body (`switch (x) case 0: stmt;`,
+    // c-testsuite 00051) is one statement, possibly carrying labels.
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkOpBrc )
-	pgm.Throw(tn) << "Expecting { after switch()" << flush;
+    {
+	pgm.switch_stack.push_back(this);
+	pgm.switch_case_stack.push_back(NULL);
+	// Labels first (each consumes its `CONST :`), then exactly ONE
+	// labeled statement — the whole body; nothing after it is ours.
+	while ( tn && (tn->id() == TokenID::tkCASE
+		    || tn->id() == TokenID::tkDEFAULT) )
+	{
+	    pgm.parse_switch_label(this, tn, false, false);
+	    tn = pgm.nextToken();
+	}
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input in switch body" << flush;
+	TokenCASE *active_case = pgm.switch_case_stack.back();
+	TokenBase *stmt = (tn->id() == TokenID::tkSemi)
+	    ? NULL : pgm.parseStatement(tn);
+	if ( stmt )
+	{
+	    if ( active_case )
+		active_case->statements.push_back(stmt);
+	    else
+		pre_case_stmts.push_back(stmt);	// unreachable, still valid
+	}
+	pgm.switch_case_stack.pop_back();
+	pgm.switch_stack.pop_back();
+	DBG(std::cout << "TokenSWITCH::parse() non-compound body, "
+		      << cases.size() << " cases"
+		      << (defaultcase ? " + default" : "") << std::endl);
+	return this;
+    }
 
     pgm.switch_stack.push_back(this);
     pgm.switch_case_stack.push_back(NULL);
@@ -60764,6 +60799,30 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
     return pgm.parseExpression(this);
 }
 
+// A case/default label reached at STATEMENT level inside an active switch
+// (Duff's device; label-chained `foo: case 1: stmt`): register a
+// dispatch-only entry on the switch and return its planted TokenLabel —
+// the enclosing statement keeps its own body. NULL when no switch is
+// active (the context is genuinely outside any switch).
+TokenBase *Program::parse_nested_case_label(TokenBase *tb)
+{
+    if ( switch_stack.empty() )
+	return NULL;
+    TokenCASE *tc = parse_switch_label(switch_stack.back(), tb, true);
+    if ( !tc || tc->in_place_label.empty() )
+	return NULL;
+    TokenLabel *lbl = new TokenLabel(tc->in_place_label);
+    lbl->file = tb->file;
+    lbl->line = tb->line;
+    lbl->column = tb->column;
+    TokenBase *pk = peekToken();
+    if ( pk && pk->id() != TokenID::tkClBrc
+      && pk->id() != TokenID::tkCASE
+      && pk->id() != TokenID::tkDEFAULT )
+	lbl->labeled = parseStatement(nextToken());
+    return lbl;
+}
+
 // real parsing happens here, code should not be null
 TokenBase *Program::parseCompound()
 {
@@ -60801,21 +60860,10 @@ TokenBase *Program::parseCompound()
 	    // Nested case/default (Duff's device): register a dispatch-only
 	    // entry on the switch and plant its label HERE, binding the next
 	    // statement the way a user label does — the enclosing loop/if
-	    // keeps its body intact.
-	    TokenCASE *tc = parse_switch_label(switch_stack.back(), tb, true);
-	    if ( tc && !tc->in_place_label.empty() )
-	    {
-		TokenLabel *lbl = new TokenLabel(tc->in_place_label);
-		lbl->file = tb->file;
-		lbl->line = tb->line;
-		lbl->column = tb->column;
-		TokenBase *pk = peekToken();
-		if ( pk && pk->id() != TokenID::tkClBrc
-		  && pk->id() != TokenID::tkCASE
-		  && pk->id() != TokenID::tkDEFAULT )
-		    lbl->labeled = parseStatement(nextToken());
+	    // keeps its body intact. Shared with the user-label arm (a
+	    // label-chained `foo: case 1: stmt`, c-testsuite 00051).
+	    if ( TokenBase *lbl = parse_nested_case_label(tb) )
 		code->statements.push_back((TokenStmt *)lbl);
-	    }
 	    continue;
 	}
 
@@ -66731,6 +66779,20 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		// — not only the compound-block path. A trailing `}` (label at
 		// block end, a GNU/C23 extension) leaves `labeled` NULL.
 		TokenBase *pk = peekToken();
+		if ( pk && (pk->id() == TokenID::tkCASE
+			 || pk->id() == TokenID::tkDEFAULT) )
+		{
+		    // Label-chained case (`foo: case 1: stmt` inside a
+		    // switch, c-testsuite 00051): the case registers as a
+		    // dispatch-only entry exactly as at compound level, and
+		    // the user label names the case's labeled statement.
+		    if ( TokenBase *chained = parse_nested_case_label(nextToken()) )
+		    {
+			lbl->labeled = chained;
+			return lbl;
+		    }
+		    Throw(pk) << "case outside of switch" << flush;
+		}
 		if ( pk && pk->id() != TokenID::tkClBrc )
 		    lbl->labeled = parseStatement(nextToken());
 		return lbl;

@@ -6372,7 +6372,12 @@ public:
 					   DataDef *referent_type);
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
-				  bool nested = false);
+				  bool nested = false,
+				  bool consume_statements = true);
+    // A case/default reached at STATEMENT level inside an active switch:
+    // dispatch-only entry + planted TokenLabel (parseCompound and the
+    // user-label chain share it); NULL when no switch is active.
+    TokenBase *parse_nested_case_label(TokenBase *tb);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
     bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
