@@ -1,0 +1,1 @@
+_Generic type-identity lines (h=, q=) need int and long as DISTINCT types; on LLP64 both map to madc's one 32-bit DataDef (same gap as long vs long long on LP64) — blocked on the segmented-typeid type-table campaign; mingw-gcc itself matches the .expect

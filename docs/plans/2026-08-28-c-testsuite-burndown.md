@@ -1,11 +1,37 @@
 # c-testsuite burndown — 198/220 → 220/220
 
-**Progress: 202/220 (2026-08-28, wave 1).** Fixed: 00204 (MIR va_block_arg
-SSE exhaustion — upstream PR candidate), 00210 (cast-to-fnptr call), 00205
-(three deep: exponential operator datadef() recursion, unary-plus-under-
-cast, flat struct-array count), 00143 (Duff's device: in-place labels +
-top-of-switch goto jump table; also unblocked 00213's Duff half — its
-remaining root is a stmt-expr value corner, reclassified below).
+**Progress: 218/220 (2026-08-29, wave 3 — DONE except two campaign-blocked
+residues).** Wave 1 (2026-08-28): 00204, 00210, 00205, 00143. Wave 2
+(2026-08-29): section C complete — 00170, 00162, 00209, 00130, 00089, 00124
+(+ two silent-wrong finds: cast-member call-by-name, unsigned enum members).
+Wave 3 (2026-08-29): 00038 (sizeof literal operand), 00103 (deref-paren
+cast-head consolidation, + `*(union U*)p` and `***(expr)` silent-wrongs),
+00120 (enum bodies as member types), 00051 (non-compound switch bodies +
+label-chained case), 00150 (array designators in compound literals), 00152
+(real root: #line + __LINE__ in the #if expander), 00095 (real root:
+&main-before-definition prototype), 00202 (## placemarker + unary + after a
+binary operator), 00053 (block-scope struct tag shadowing — shadow frames +
+unique emitted identity), 00213 (constant-ternary dead-arm pruning), 00219
+PARTIAL 12/14 (_Generic implemented + the parse-side type view:
+usual_arithmetic_result, shift left-operand rule — which unmasked and fixed
+00200's shift types), 00216 PARTIAL (TokenVar::clone, braces-around-scalar
+unwrap, nested designators via read_struct_lit's type cursor).
+
+**Remaining 2 — both blocked outside this arc:**
+- **00216**: (a) flex-array sizeof — infer_flexible_array_member_counts
+  mutates the SHARED struct type from one variable's initializer; the right
+  fix is per-VARIABLE storage extension (a storage-machinery slice);
+  (b) empty-struct size — STD_MADC deliberately follows C++ (sizeof 1,
+  presents_as_cpp) where the test expects GNU-C 0; `--std=gnu11` already
+  gives 0. Whether the LANE should run C mode for .c files is an OWNER
+  decision (it would also re-baseline: e.g. the documented `enum TAG;`
+  C-mode rejection).
+- **00219**: 12/14 — the two remaining lines need pointee-const in the type
+  model (`const char *` renders ptr(char)): the gated FEATURE_CONST_TYPES
+  campaign (DataDefCONST P2-5), not a _Generic defect.
+
+Validated at close: FULL battery 1230/0/0 (9 skipped), lane 218/220,
+0 outside baseline, ratchet clean.
 
 Owner (2026-08-28): "we want c-testsuite to be 220/220 ideally."
 
@@ -55,10 +81,22 @@ worse than a crash), then the hang, then parse gaps by area, then semantics.
   param list declares an enum param.
 - **00209** — `int f1 (int (), int);` abstract function-type parameter.
 
-These six likely share one owner: the declarator grammar's handling of
-parenthesized/abstract declarators. Fix the grammar spine once, expect
-several to fall together — do NOT ship six point patches (Rule #7 /
-no-parallel-implementations; check `/dupaudit` marker discipline).
+FIVE OF SIX FIXED 2026-08-29 (00170, 00162, 00209, 00130, 00089 — gates:
+testenumtagtype, testparamarrayqual, testabstractfnparam, testcommaptrarray,
+teststructfnptrtypedef; annotations in the baseline file). The original
+hypothesis here — "one grammar spine, fix it once" — was REVISED by the
+investigation: there is no missing spine. The declarator grammar already has
+FOUR shared owners (`parseFnPtrParams` for param-list grammar,
+`parse_fnptr_member_tail` for the one `( * name ) ( params )` tail,
+`parse_ptr_array_suffix`, and the comma-continuation re-entry), and each
+fix ADOPTED the owner its context had failed to route through, extending
+the owners in place (enum arm, abstract-param arm, VLA-qualifier skip,
+`(`-starts-declarator at the comma). Still zero point patches — the fixes
+live in the owners, not at the call sites. Remaining: **00124** — fn-ptr
+returning fn-ptr needs the fn-ptr declaration arm to recurse through the
+stream (stash inner declarator groups, parse the outer tail, re-push, goto
+the arm head — one nesting level per pass; spiral-stash precedent is 5
+lines below the throw site).
 
 ## D. Parse gaps — statements/expressions
 

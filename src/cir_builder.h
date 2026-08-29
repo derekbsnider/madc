@@ -1429,6 +1429,15 @@ public:
 	// The declared type behind a positional initializer slot (array element
 	// / struct member); NULL when unknown.
 	DataDef *init_slot_type(DataDef *dd, size_t idx);
+	// Emission hygiene: braces around a SCALAR initializer are a gcc
+	// warning but a c2mir CHECK ERROR — unwrap them type-directedly
+	// before init_value emits the list. The list walk is positional and
+	// STOPS at the first flat expression landing on an aggregate slot
+	// (brace elision, C11 6.7.9p20 — positions stop mapping to members);
+	// unhandled shapes emit unchanged.
+	TokenBase *unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd);
+	void unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
+				       DataDef *dd);
 	// Compile-time (re,im) fold of an integer-complex constant expression,
 	// and the {re, im} brace list it emits into a static initializer.
 	bool int_complex_const_fold(TokenBase *tb, long &re, long &im);

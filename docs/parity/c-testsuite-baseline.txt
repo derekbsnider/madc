@@ -18,50 +18,89 @@
 #        count (both gated by tests/teststaticinitflat.mad).
 #
 # -- parse gaps: declarators --
-# 00089: typedef struct S * (*fty)();  (fn-ptr typedef returning struct ptr)
-00089.c
-# 00124: int (* (*p)(int a, int b))(int c, int d) = f1;  (fn-ptr returning fn-ptr)
-00124.c
-# 00130: char arr[2][4], (*p)[4], *q;  (array-pointer declarator mid-list)
-00130.c
-# 00162: void fooc(int x[const 5]);  (qualifier inside array param brackets)
-00162.c
-# 00170: int (*fmember)(enum efoo x);  (fn-ptr struct member w/ enum param)
-00170.c
-# 00209: int f1 (int (), int);  (abstract function-type parameter)
-00209.c
+# 00089: FIXED 2026-08-29 — typedef-struct arm adopts
+#        parse_fnptr_member_tail; call-of-call fptr value (`go()()`)
+#        via the call-result arm, both stacks (gate:
+#        teststructfnptrtypedef)
+# 00124: FIXED 2026-08-29 — nested parenthesized declarator in the fn-ptr
+#        declaration arm (stash + re-enter, one level per pass) +
+#        fnptr_decl_pieces recurses on a DataDefFPTR return type
+#        (gate: testfnptrretfnptr)
+# 00130: FIXED 2026-08-29 — `(` is a valid declarator head at the comma
+#        continuation (comma_continuation_starts_declarator, ONE rule
+#        both sites); re-entry's fn-ptr/ptr-array arm owns the parens
+#        (gate: testcommaptrarray)
+# 00162: FIXED 2026-08-29 — skip_param_array_qualifiers (both param
+#        bracket scans) + the plain parenthesized pointer param arm
+#        (gate: testparamarrayqual)
+# 00170: FIXED 2026-08-29 — `enum TAG` elaborated-specifier arm in
+#        resolve_declared_type_token + parseFnPtrParams enum arm
+#        (gate: testenumtagtype)
+# 00209: FIXED 2026-08-29 — abstract fn-type params (6.7.6.3p8
+#        adjustment) at both param grammars, array-of-fnptr typedef +
+#        abstract param (one CArray shape), CArray-of-FPTR typedef
+#        emission (gate: testabstractfnparam)
 #
 # -- parse gaps: statements/expressions --
-# 00038: if (sizeof 0 < 2)  (sizeof unary-expr without parens)
-00038.c
-# 00051: switch (x) case 0: ...  (switch with non-compound body)
-00051.c
-# 00103: return **(int**)bar;  (double-deref of cast)
-00103.c
-# 00120: enum { X } x;  (anonymous enum declarator in struct scope)
-00120.c
+# 00038: FIXED 2026-08-29 — evaluate_type_query's unparenthesized arm
+#        accepts numeric/char literals (measured from the literal's own
+#        datadef, matching the parenthesized expression fallback)
+#        (gate: testsizeofunary)
+# 00051: FIXED 2026-08-29 — non-compound switch bodies (TokenSWITCH's
+#        single-statement arm; parse_switch_label gains a no-bucket mode)
+#        + label-chained `foo: case 1:` via parse_nested_case_label, the
+#        shared dispatch-entry owner (gate: testswitchnobody)
+# 00103: FIXED 2026-08-29 — parse_deref_paren_operand: ONE owner for the
+#        cast-head discrimination across all four unary-deref arms (also
+#        closed `*(union U*)p` and the N-star arm's `***(expr)`
+#        under-deref) (gate: testderefcastparen)
+# 00120: FIXED 2026-08-29 — resolve_enum_member_type: both member arms
+#        delegate an enum DEFINITION body to TokenENUM::parse and adopt
+#        the re-fed type token (gate: testanonenummember)
 # 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
 #        (in_place_label) with a top-of-switch goto jump table; gate
 #        tests/testduffdevice.mad.
-# 00150: {[0] = 1, 1+1}  (designated initializer then positional)
-00150.c
-# 00152: #error inside a skipped conditional group still diagnosed
-00152.c
-# 00213: the Duff-shaped part is FIXED (nested labels + pre-case statements
-#        parse); remaining root is DIFFERENT: a statement expression whose
-#        last statement is a labeled while-loop inside a dead ternary branch
-#        — c2mir check "last statement in statement expression is not an
-#        expression" (00213.c:17). Stmt-expr value-semantics corner.
-00213.c
-# 00219: _Generic with function designators / const-qualified association
+# 00150: FIXED 2026-08-29 — parse_compound_struct_lit adopts the shared
+#        parse_array_designator_initializer for `[idx] =` elements;
+#        positional resume after the slot (gate: testcompoundlitdesig)
+# 00152: FIXED 2026-08-29 — real root was #line, not #error-in-skipped-
+#        group: the directive now renumbers (macro-expanded arg, optional
+#        filename) and expandIfMacros knows predefined __LINE__/__FILE__
+#        (gate: testlinedirective)
+# 00213: FIXED 2026-08-29 — a literal-constant ternary condition prunes
+#        the dead arm at CIR emission (gcc constant-folds these; the dead
+#        stmt-expr-with-labeled-while shape is legal only as skipped code)
+#        (gate: testdeadternary)
+# 00219: PARTIAL 2026-08-29 — _Generic IMPLEMENTED (parse-time selection,
+#        gate: testgenericsel; also usual_arithmetic_result — the parse-
+#        side int+long=long view). 12 of 14 lines match gcc; the two
+#        residues both need pointee-const in the TYPE MODEL (`const char
+#        *ti` renders ptr(char)), which is the gated FEATURE_CONST_TYPES
+#        campaign (DataDefCONST P2-5) — not a _Generic defect.
 00219.c
 #
 # -- CIR/c2mir rejections --
-# 00053: c2mir_compile_tree: 3 check errors
-00053.c
-# 00095: c2mir_compile_tree: 2 check errors
-00095.c
-# 00202: c2mir_compile_tree: 2 check errors
-00202.c
-# 00216: cir error: unhandled expression: TokenBase (token type 0)
+# 00053: FIXED 2026-08-29 — block-scope struct tag shadowing: shadow
+#        frames (block_struct_tag_shadows, the tag twin of the typedef
+#        frames) restore at block exit; the shadow definition gets a
+#        unique emitted identity (gate: teststructtagshadow)
+# 00095: FIXED 2026-08-29 — real root was &main-before-definition, not
+#        tentative defs (those already merged): Pass 1 no longer skips
+#        main's prototype; var_emit_name keeps proto/def in lock-step in
+#        every wrap mode (gate: testmainaddr)
+# 00202: FIXED 2026-08-29 — ## placemarker: an empty right operand emits
+#        a separating space so the next body token cannot glue (`+`+`+`
+#        re-lexed as `++`); plus unary `+` after a binary operator in the
+#        expression parser (gate: testpastemarker)
+# 00216: PARTIAL 2026-08-29 — compiles+runs; fixed: TokenVar::clone,
+#        unwrap_scalar_braces emission pass (gate: testscalarbraceinit),
+#        nested `.field` designators via read_struct_lit's type cursor
+#        (gate: testnesteddesignated). TWO residues: (a) sizeof of a
+#        flex-array type — infer_flexible_array_member_counts MUTATES the
+#        shared struct type from one variable's initializer (right fix =
+#        per-VARIABLE storage extension, a storage-machinery slice);
+#        (b) empty-struct size: STD_MADC deliberately uses the C++ rule
+#        (sizeof 1, presents_as_cpp) while the test expects GNU-C 0 —
+#        --std=gnu11 already gives 0; whether the lane should run C mode
+#        is an OWNER question.
 00216.c

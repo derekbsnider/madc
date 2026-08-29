@@ -2199,6 +2199,13 @@ static std::string expand_function_macro_body(
 	macro_replacement_tokens(macro);
     std::string expanded;
     expanded.reserve(macro.body.size());
+    // True immediately after a ## was consumed: the next token is the paste's
+    // RIGHT operand. If that operand substitutes to EMPTY (a placemarker,
+    // C11 6.10.3.3), the paste result is the left operand alone — a space
+    // must keep the FOLLOWING body token from gluing to it in this
+    // string-based expansion (`A ## B+` with empty B re-lexed `+`+`+` as
+    // `++` — c-testsuite 00202).
+    bool after_paste = false;
     for ( size_t i = 0; i < tokens.size(); )
     {
 	const MacroReplacementToken &token = tokens[i];
@@ -2228,6 +2235,7 @@ static std::string expand_function_macro_body(
 	    ++i;
 	    while ( i < tokens.size() && macro_token_space(tokens[i]) )
 		++i;
+	    after_paste = true;
 	    continue;
 	}
 	if ( token.kind == MacroReplacementToken::rtIdentifier )
@@ -2237,14 +2245,17 @@ static std::string expand_function_macro_body(
 		expanded_params.find(name);
 	    if ( value != expanded_params.end() )
 	    {
-		if ( macro_param_use_is_raw(tokens, i) )
-		    expanded += raw_params[name];
-		else
-		    expanded += value->second;
+		const std::string &sub = macro_param_use_is_raw(tokens, i)
+		    ? raw_params[name] : value->second;
+		expanded += sub;
+		if ( after_paste && sub.empty() )
+		    expanded += ' ';	// placemarker: separate the next token
+		after_paste = false;
 		++i;
 		continue;
 	    }
 	}
+	after_paste = false;
 	if ( token.kind == MacroReplacementToken::rtComment )
 	    expanded += ' ';
 	else
@@ -6488,8 +6499,49 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "line" )
 		{
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    // C11 6.10.4: `#line N ["file"]` — the digit sequence
+		    // (after macro expansion, p5: `#line line` is legal) sets
+		    // the FOLLOWING line's presumed number; the optional
+		    // string renames the presumed file. The old handler
+		    // discarded the directive entirely, so __LINE__ and
+		    // diagnostics kept physical numbering (c-testsuite 00152).
+		    std::string raw;
+		    while ( source.good() && !source.eof()
+			 && source.peek() != '\n' && source.peek() != '\r' )
+			raw += source.get();
+		    std::string arg = expandIfMacros(raw);
+		    size_t p = 0;
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    long lineno = 0;
+		    bool have_digits = false;
+		    while ( p < arg.size() && isdigit((unsigned char)arg[p]) )
+		    {
+			lineno = lineno * 10 + (arg[p] - '0');
+			++p;
+			have_digits = true;
+		    }
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    std::string newname;
+		    bool have_name = false;
+		    if ( p < arg.size() && arg[p] == '"' )
+		    {
+			++p;
+			while ( p < arg.size() && arg[p] != '"' )
+			    newname += arg[p++];
+			have_name = true;
+		    }
+		    // Consume the terminator here so the renumbering starts
+		    // exactly at the next physical line.
+		    if ( source.peek() == '\r' )
 			source.get();
+		    if ( source.peek() == '\n' )
+			source.get();
+		    if ( have_digits )
+			source.setpos((int)lineno, 0);
+		    if ( have_name )
+			source.fname(newname.c_str());
 		    return getToken();
 		}
 		if ( directive == "ifdef" || directive == "ifndef" )
@@ -8161,6 +8213,26 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    out += word;
 		    ++ti;
 		}
+	    }
+	    else if ( word == "__LINE__" )
+	    {
+		// Predefined macros live in getToken's builtin arm, not in
+		// define_map — the string expander needs its own arm or a
+		// `#if N != __LINE__` / `#line line` operand stays an
+		// identifier and evaluates as 0 (c-testsuite 00152). The
+		// define_map probe above ran first, so a user #define of
+		// the name still wins, matching getToken's order.
+		out += std::to_string(source.line());
+		changed = true;
+		++ti;
+	    }
+	    else if ( word == "__FILE__" )
+	    {
+		out += '"';
+		out += source.fname() ? source.fname() : "<unknown>";
+		out += '"';
+		changed = true;
+		++ti;
 	    }
 	    else
 	    {

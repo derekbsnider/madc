@@ -1,0 +1,35 @@
+// A member fn-ptr CALL as a CAST operand — `(int)s.f(41)` — must load
+// the fn-ptr through the member (TokenCallFunc::src_node), exactly like
+// the main expression parser's member-fptr arm. The postfix-chain call
+// arm used to wrap the detached member proxy in TokenCallFunc by NAME,
+// emitting a call to bare `f`: an undefined import — or, with a
+// same-named global in scope (pinned here), a silently WRONG call.
+// Oracle: gcc/clang print r=42 g=1000 sub=7.
+static int f(int x)
+{
+    return 1000;	// same-named global — must NOT be the callee
+}
+
+struct S {
+    int (*f)(int);
+};
+
+static int addone(int x)
+{
+    return x + 1;
+}
+
+static int seven(int x)
+{
+    return 7;
+}
+
+int main()
+{
+    struct S s;
+    struct S arr[2];
+    s.f = addone;
+    arr[1].f = seven;
+    printf("r=%d g=%d sub=%d\n", (int)s.f(41), f(1), (int)arr[1].f(0));
+    return 0;
+}

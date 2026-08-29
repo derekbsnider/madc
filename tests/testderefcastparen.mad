@@ -1,0 +1,32 @@
+// A parenthesized deref operand that is a CAST — `**(int**)bar`
+// (c-testsuite 00103). One owner, parse_deref_paren_operand, for the
+// cast-head / statement-expr / grouped-expr discrimination across every
+// unary-deref arm; composing it on token_starts_type_name also closed the
+// single-star arm's missing-union gap (`*(union U*)p` — the inline list it
+// replaced knew struct/enum/const but not union). The g= line pins the
+// N-star collect arm's deref accounting: a parenthesized operand arrives
+// underef'd, so `***(q3)` wraps ALL three stars (the old unconditional
+// skip-one under-deref'd it — silent wrong answer, exit 0).
+// Oracle: gcc/clang print s=9 d=7 t=7 g=7.
+union U { int a; };
+
+int main()
+{
+    union U u;
+    int x = 7;
+    void *foo;
+    void **bar;
+    void ***baz;
+    u.a = 9;
+    foo = (void*)&x;
+    bar = &foo;
+    baz = &bar;
+    int *q1 = &x;
+    int **q2 = &q1;
+    int ***q3 = &q2;
+    printf("s=%d\n", (*(union U*)&u).a);
+    printf("d=%d\n", **(int**)bar);
+    printf("t=%d\n", ***(int***)baz);
+    printf("g=%d\n", ***(q3));
+    return 0;
+}

@@ -1592,6 +1592,10 @@ public:
     size_t size() const { return map_.size(); }
     bool empty() const { return map_.empty(); }
     void set(const std::string &key, DataDef *dd);
+    // Remove one key (block-scope tag-shadow unwind). Erasure invalidates
+    // the despaced index's node-address cache, so it rebuilds — exactly
+    // rollback_transaction's discipline; shadow unwinds are rare.
+    void erase_scoped(const std::string &key);
     datadef_map_t snapshot() const { return map_; }
     void restore(const datadef_map_t &entries);
     void begin_transaction(transaction_state &state);
@@ -2577,6 +2581,14 @@ public:
 	block_typedef_shadows;
     void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
     void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
+    // The struct-TAG twin of the typedef frames: a block-scope definition
+    // that re-uses a live struct_map key records the prior mapping (or its
+    // absence) and unwinds with its block (c-testsuite 00053). Unwound by
+    // unwind_block_typedef_shadows under the same depth contract.
+    std::vector<std::vector<std::pair<std::string, DataDef *> > >
+	block_struct_tag_shadows;
+    void register_scoped_struct_tag_shadow(const std::string &key);
+    size_t block_struct_tag_seq = 0;	// unique emitted-identity counter
     // Struct-tag first declaration — the ONE mint recipe (incomplete
     // DataDefSTRUCT + pack tap + struct_map + C++ bare-name registration).
     // Consumers: TokenSTRUCT::parse's two forward-declaration arms and
@@ -5736,6 +5748,13 @@ public:
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
+    // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
+    // — consumed as hints; the param array decays to a pointer anyway.
+    void skip_param_array_qualifiers();
+    // ONE rule for both declaration comma-continuation sites: can this
+    // token begin the next declarator (`*`, identifier, or `(`)?
+    bool comma_continuation_starts_declarator(TokenBase *peek);
     // Shared cv-qualifier consumers (const/volatile/restrict) for committed
     // type reads. Held form returns the first non-qualifier token; peek form
     // consumes the run and leaves the following token unread.
@@ -5911,6 +5930,10 @@ public:
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
     TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
+    // The parenthesized operand of a unary '*' ('(' already consumed): ONE
+    // owner for the cast-head / statement-expr / grouped-expr discrimination
+    // shared by every deref arm; folds the trailing -> . [ postfix chain.
+    TokenBase *parse_deref_paren_operand(TokenBase *open_tb);
     TokenBase *parse_cast_function_call_operand(TokenBase *head);
     TokenBase *materialize_cast_literal_operand(TokenBase *tb);
     // Template-machinery leaf consumers: recognize a template-argument-list
@@ -6130,6 +6153,11 @@ public:
 					       bool consume_ns_tokens,
 					       bool allow_lazy_types,
 					       bool consume_class_member_chain = true);
+    // The type of an `enum ...` struct member (`enum` consumed): tag use via
+    // resolve_declared_type_token; a definition body delegates to
+    // TokenENUM::parse and adopts the re-fed enum/int type token. One rule
+    // for both data-struct member arms.
+    TokenDataType *resolve_enum_member_type(TokenBase *enum_tb);
     // Resolve a TYPE that spans a token RANGE (e.g. a member-template return
     // type `std::pair<iterator, bool>`) through the canonical type resolver,
     // in an isolated token stream so the live parse position is untouched.
@@ -6356,7 +6384,12 @@ public:
 					   DataDef *referent_type);
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
-				  bool nested = false);
+				  bool nested = false,
+				  bool consume_statements = true);
+    // A case/default reached at STATEMENT level inside an active switch:
+    // dispatch-only entry + planted TokenLabel (parseCompound and the
+    // user-label chain share it); NULL when no switch is active.
+    TokenBase *parse_nested_case_label(TokenBase *tb);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
     bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
@@ -6378,6 +6411,12 @@ public:
     std::string host_flavor_method_symbol(FuncDef *fd);
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
+    // C11 _Generic: parse + select the association at parse time; the
+    // controlling side renders through the same signature encoding as
+    // parse_builtin_types_compatible_operand (with lvalue conversion and
+    // array/function decay).
+    TokenBase *parse_generic_selection(TokenBase *generic_tb);
+    std::string generic_controlling_signature(TokenBase *ctrl);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						std::string &sig);
     bool resolve_integer_constant(TokenBase *tb, madc_wide_int &out);

@@ -1,0 +1,47 @@
+// A switch body is a STATEMENT (C11 6.8.4.2), not necessarily a compound
+// (c-testsuite 00051): `switch (v) case 1: stmt;` — TokenSWITCH's
+// non-compound arm registers the labels (parse_switch_label without the
+// braced-body statement bucket) and owns exactly one labeled statement.
+// chained() pins the label-chained case (`foo: case 2: stmt` inside a
+// braced switch): the user-label arm delegates to parse_nested_case_label,
+// the same dispatch-entry owner parseCompound uses for Duff shapes.
+// Oracle: gcc/clang print a=10 b=55 c=22 d=23.
+int x = 1;
+
+static int pick(int v)
+{
+    switch (v)
+        case 1:
+            return 10;
+    switch (v)
+        case 9:
+            return 99;
+    switch (v)
+        default:
+            return 55;
+    return -1;
+}
+
+static int chained(int v)
+{
+    switch (v) {
+        {
+            v = 7;
+            foo:
+            case 2:
+                return 20 + v;
+        }
+        case 3:
+            goto foo;
+    }
+    return -1;
+}
+
+int main()
+{
+    printf("a=%d\n", pick(1));
+    printf("b=%d\n", pick(4));
+    printf("c=%d\n", chained(2));
+    printf("d=%d\n", chained(3));
+    return 0;
+}

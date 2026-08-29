@@ -1,0 +1,29 @@
+// Enum-typed struct members are SIGNED (gcc: an unfixed enum's storage
+// is int) — the data-struct parsers' old inline arms typed them ddUINT32,
+// so a negative enumerator stored in a member compared unsigned:
+// `e.m < 0` was false for m == -1, a silent wrong answer. Both member
+// arms now route `enum TAG` through resolve_declared_type_token.
+// Oracle: gcc/clang print neg=-1 lt0=1 inner=-1 ilt0=1.
+enum Sign { NEG = -1, POS = 1 };
+
+struct E1 {
+    enum Sign m;
+};
+
+struct Outer {
+    struct {
+	enum Sign im;
+    } in;
+};
+
+int main()
+{
+    struct E1 e;
+    struct Outer o;
+    e.m = NEG;
+    o.in.im = NEG;
+    printf("neg=%d lt0=%d inner=%d ilt0=%d\n",
+	   (int)e.m, e.m < 0 ? 1 : 0,
+	   (int)o.in.im, o.in.im < 0 ? 1 : 0);
+    return 0;
+}

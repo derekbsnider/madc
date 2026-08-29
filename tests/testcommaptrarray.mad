@@ -1,0 +1,16 @@
+// A parenthesized declarator MID-declaration-list — `char arr[2][4],
+// (*p)[4], *q;` (c-testsuite 00130): the comma continuation re-enters
+// parseDeclaration with the cloned base type, and `(` is a valid
+// declarator head there (comma_continuation_starts_declarator — ONE
+// rule, both comma sites). p is pointer to array-4-of-char: p[1][3]
+// aliases arr[1][3]; ++p strides a whole row.
+// Oracle: gcc/clang print c=X q=X row=1.
+int main()
+{
+    char arr[2][4], (*p)[4], *q;
+    p = arr;
+    q = &arr[1][3];
+    arr[1][3] = 'X';
+    printf("c=%c q=%c row=%d\n", p[1][3], *q, (int)(&p[1] - &p[0]));
+    return 0;
+}

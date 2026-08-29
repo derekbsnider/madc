@@ -1,0 +1,23 @@
+// `A ## B` with an EMPTY argument — placemarker semantics (C11 6.10.3.3,
+// c-testsuite 00202): the paste result is the other operand alone, and it
+// must NOT glue to the FOLLOWING body token in the string-based expander
+// (`A ## B+` with empty B re-lexed `+ +` as `++`). Also pins unary `+`
+// directly after a binary operator (`60 + +3`), which the expansion
+// produces.
+// Oracle: gcc/clang print a=21 b=42 / c=63 / d=9 e=4.
+#define P(A,B) A ## B ; bob
+#define Q(A,B) A ## B+
+#define CAT(A,B) A ## B
+
+int main(void)
+{
+    int bob, jim = 21;
+    bob = P(jim,) *= 2;
+    printf("a=%d b=%d\n", jim, bob);
+    jim = 60 Q(+,)3;
+    printf("c=%d\n", jim);
+    int CAT(vn,) = 9;
+    int CAT(,um) = 4;
+    printf("d=%d e=%d\n", vn, um);
+    return 0;
+}

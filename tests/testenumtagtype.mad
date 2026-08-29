@@ -1,0 +1,42 @@
+// `enum TAG` as an elaborated type specifier in TYPE positions — the
+// resolve_declared_type_token enum arm (c-testsuite 00170). Covers:
+// a forward-declared tag (GNU extension gcc accepts) used as a fn-ptr
+// parameter type, a member fn-ptr RETURNING an enum tag type, and the
+// int-compatibility of the decayed tag. Oracle: gcc/clang -std=c17.
+enum efoo;
+
+struct Sforward {
+    int (*fmember)(enum efoo x);
+};
+
+extern enum efoo it_real_fn(void);
+
+enum efoo {
+    ONE,
+    TWO,
+};
+
+struct S2 {
+    enum efoo (*f2)(void);
+};
+
+enum efoo it_real_fn(void)
+{
+    return TWO;
+}
+
+static int take_forward(enum efoo x)
+{
+    return (int)x + 1;
+}
+
+int main()
+{
+    struct Sforward sf;
+    struct S2 s;
+    sf.fmember = take_forward;
+    s.f2 = it_real_fn;
+    printf("fm=%d\n", sf.fmember(TWO));
+    printf("f2=%d\n", (int)s.f2());
+    return 0;
+}

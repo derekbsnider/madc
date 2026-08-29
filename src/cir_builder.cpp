@@ -7218,6 +7218,24 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 		ret_dd = p->base_type;
 		ret_stars++;
 	}
+	// Fn-ptr RETURNING a fn-ptr (c-testsuite 00124): append this level's
+	// declarator suffixes as usual, then RECURSE for the return fn-ptr —
+	// it appends its own `*` + `(params)` after ours (binding order runs
+	// from the name outward) and owns the final return-type specs.
+	DataDefFPTR *ret_fp = ret_dd ? ret_dd->as_fptr_dd() : NULL;
+	if (ret_fp && ret_fp->target) {
+		for (size_t d = 0; d < lead_dims.size(); d++)
+			append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
+		if (emit_pointer)
+			append(decl_list, pointer());
+		append(decl_list, fnptr_func_node(fd));
+		for (int s = 0; s < ret_stars; s++)
+			append(decl_list, pointer());
+		fnptr_decl_pieces(ret_fp->target, true, spec_list, decl_list,
+				  std::vector<carray_dim_t>());
+		return;
+	}
+
 	if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(ret_dd));
 		if (sdd)
@@ -8599,6 +8617,119 @@ bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
 	return false;
 }
 
+// Emission hygiene: `{ (1) }` initializing a u8 member is a gcc WARNING
+// ("braces around scalar initializer") but a c2mir CHECK ERROR
+// (c-testsuite 00216). Unwrap such braces where the slot type is known.
+// unwrap_scalar_braces_list is the positional cursor: it bails at the
+// first flat expression that lands on an AGGREGATE slot, because brace
+// elision (C11 6.7.9p20) makes later positions stop mapping to members —
+// conservative: everything after emits unchanged, exactly as before.
+TokenBase *CirBuilder::unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd)
+{
+	TokenStructLit *sl = elem ? dynamic_cast<TokenStructLit *>(elem) : NULL;
+	if (!sl || !slot_dd)
+		return elem;
+	DataDef *dd = unqualified_type(slot_dd);
+	if (!dd)
+		return elem;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	bool aggregate_target = (sdd && !dd->is_complex())
+			     || dd->as_carray_dd() != NULL;
+	if (aggregate_target) {
+		unwrap_scalar_braces_list(sl->inits, dd);
+		return sl;
+	}
+	// SCALAR target: unwrap a single-element brace (recursively — gcc
+	// accepts nested braces around a scalar); anything else is left for
+	// c2mir to diagnose faithfully.
+	if (sl->inits.size() == 1)
+		return unwrap_scalar_braces(sl->inits[0], slot_dd);
+	return sl;
+}
+
+void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
+					   DataDef *dd)
+{
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	bool is_union = sdd && sdd->union_layout;
+	// An initializer that fills an AGGREGATE slot as ONE object keeps the
+	// positional cursor valid: a string literal (or its materialized
+	// char-array TokenVar form), or an expression already of aggregate
+	// type (`{3, ls, 4, ...}` — a struct variable fills the member).
+	// A SCALAR expression on an aggregate slot starts brace elision.
+	auto fills_aggregate_slot = [](TokenBase *child, bool char_array_slot) -> bool {
+		if (!child)
+			return true;
+		if (child->type() == TokenType::ttString)
+			return true;
+		if (TokenVar *tv = child->as_var_tok())
+			if (tv->var.is_fixed_array())
+				return true;
+		DataDef *cdd = child->datadef();
+		if (cdd && (cdd->is_struct() || cdd->as_carray_dd()))
+			return true;
+		// A string literal materialized as a char-pointer variable:
+		// on a char-array slot the only legal non-brace whole-slot
+		// filler IS a string literal, so char-pointer-typed means
+		// string here.
+		return char_array_slot && cdd && cdd->is_pointer();
+	};
+	DBG(std::cout << "unwrap_scalar_braces_list(" << (dd ? dd->name : "?")
+		      << ") slots=" << inits.size() << std::endl);
+	for (size_t i = 0; i < inits.size(); i++) {
+		size_t mi = is_union ? 0 : i;
+		DataDef *mdd = init_slot_type(dd, mi);
+		DBG(std::cout << "  slot " << i << " mdd="
+			      << (mdd ? mdd->name : "NULL") << " tok="
+			      << (inits[i] ? (int)inits[i]->type() : -1)
+			      << std::endl);
+		if (!mdd)
+			break;
+		// A fixed-array MEMBER stores its ELEMENT type in members[]
+		// with the count in member_counts (init_slot_is_aggregate's
+		// convention) — its brace slots are uniform elements of mdd.
+		bool counted_array_slot = sdd && !sdd->union_layout
+			&& mi < sdd->member_counts.size()
+			&& sdd->member_counts[mi] != 1;
+		TokenBase *child = inits[i];
+		if (!child)
+			continue;	// designator gap — one slot, keep walking
+		bool child_brace = dynamic_cast<TokenStructLit *>(child) != NULL;
+		DataDef *mu = unqualified_type(mdd);
+		DataDefSTRUCT *msdd = mu
+			? dynamic_cast<DataDefSTRUCT *>(mu) : NULL;
+		bool elem_aggregate = (msdd && !mu->is_complex())
+				   || (mu && mu->as_carray_dd());
+		if (child_brace) {
+			if (counted_array_slot) {
+				TokenStructLit *clit = (TokenStructLit *)child;
+				for (size_t k = 0; k < clit->inits.size(); k++) {
+					TokenBase *sub = clit->inits[k];
+					if (!sub)
+						continue;
+					if (dynamic_cast<TokenStructLit *>(sub))
+						clit->inits[k] =
+						    unwrap_scalar_braces(sub, mdd);
+					else if (elem_aggregate
+					      && !fills_aggregate_slot(sub, false))
+						break;	// elision inside the array
+				}
+			} else
+				inits[i] = unwrap_scalar_braces(child, mdd);
+		} else {
+			// A flat expression on an aggregate slot: whole-object
+			// forms keep the cursor; a scalar starts elision.
+			bool char_array_slot = counted_array_slot
+				&& mu && mu->is_integer() && mu->size == 1;
+			if ((counted_array_slot || elem_aggregate)
+			    && !fills_aggregate_slot(child, char_array_slot))
+				break;
+		}
+		if (is_union)
+			break;	// a union brace initializes one member
+	}
+}
+
 node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
@@ -8713,6 +8844,10 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	append_lit_type_spec(spec, dd, slit->typedef_name);
 	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
 
+	// Emission hygiene: unwrap braces-around-scalar slots (gcc warns,
+	// c2mir refuses — see unwrap_scalar_braces).
+	unwrap_scalar_braces_list(slit->inits, dd);
+
 	// ---- Build the initializer list: LIST( INIT(LIST(), value), ... ). ----
 	node_t inits = list();
 	for (size_t i = 0; i < slit->inits.size(); i++)
@@ -8758,6 +8893,17 @@ static bool init_expr_needs_dynamic_init(node_t n, bool addr_ctx)
 		// The type-name subtree may carry typedef N_IDs — only the
 		// operand expression matters.
 		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), addr_ctx);
+	case N_COMPOUND_LITERAL:
+		// The type-name subtree carries tag/typedef N_IDs — not value
+		// reads (the N_CAST rule). A FILE-SCOPE compound literal has
+		// static storage (C11 6.5.2.5p5): it is constant-initializable
+		// iff its init VALUES are, and its address is then an address
+		// constant. Classifying it dynamic moved the literal into
+		// __madc_global_init's function scope — AUTOMATIC storage, so
+		// `struct S2 *s = &(struct S2){...}` dangled in native
+		// executables (JIT green only by stack luck; c-testsuite
+		// 00150's exe lane).
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), false);
 	case N_SIZEOF:
 	case N_EXPR_SIZEOF:
 	case N_ALIGNOF:
@@ -9152,6 +9298,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				append(lst, node2(N_INIT, list(), integer(ev)));
 			}
 		} else {
+			// Emission hygiene: unwrap braces-around-scalar slots
+			// (gcc warns, c2mir refuses — see unwrap_scalar_braces).
+			unwrap_scalar_braces_list(tdecl->init_list, base_dd);
 			for (size_t i = 0; i < tdecl->init_list.size(); i++) {
 				// A lowered-complex slot with a constant complex
 				// initializer folds to a nested {re, im} list —
@@ -18717,14 +18866,19 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 {
 	if (!dd) return NULL;
 
-	// Function typedef `typedef void DO_FUN(int,int)` (dd = FuncDef) and
-	// pointer-to-function typedef `typedef int (*UNOP)(int)` (dd = DataDefFPTR).
-	// Both have dtINT64 rawtype and would otherwise emit `typedef long NAME`,
-	// erasing the signature; build `typedef ret NAME(params)` /
-	// `typedef ret (*NAME)(params)` from the target instead.
+	// Function typedef `typedef void DO_FUN(int,int)` (dd = FuncDef),
+	// pointer-to-function typedef `typedef int (*UNOP)(int)` (dd =
+	// DataDefFPTR), and ARRAY-of-fn-ptrs typedef
+	// `typedef int (*fptr4[4])(int)` (dd = CArray of DataDefFPTR —
+	// c-testsuite 00209). All have i64-shaped rawtypes and would
+	// otherwise emit `typedef long NAME`, erasing the signature; build
+	// the real declarator from the target, with any array dims as
+	// fnptr_decl_pieces' lead_dims.
 	{
-		DataDefFPTR *fp_td = (dd ? dd->as_fptr_dd() : NULL);
-		FuncDef *fn_td = fp_td ? fp_td->target : (dd ? dd->as_funcdef_dd() : NULL);
+		std::vector<carray_dim_t> fn_arr_dims;
+		DataDef *fn_dd = peel_carray_dims(dd, fn_arr_dims);
+		DataDefFPTR *fp_td = (fn_dd ? fn_dd->as_fptr_dd() : NULL);
+		FuncDef *fn_td = fp_td ? fp_td->target : (fn_dd ? fn_dd->as_funcdef_dd() : NULL);
 		if (fn_td) {
 			// A Form-1 function typedef `typedef RET NAME(params)` emits no
 			// pointer (so `NAME f` is a function decl, `NAME *p` a pointer);
@@ -18733,8 +18887,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 			node_t sl = list();
 			append(sl, simple(N_TYPEDEF));
 			node_t dl = list();
-			fnptr_decl_pieces(fn_td, td_ptr, sl, dl,
-					  std::vector<carray_dim_t>());
+			fnptr_decl_pieces(fn_td, td_ptr, sl, dl, fn_arr_dims);
 			node_t share = node1(N_SHARE, sl);
 			node_t decl = node2(N_DECL, id(alias.c_str()), dl);
 			node_t spec_decl = simple(N_SPEC_DECL);
@@ -20085,6 +20238,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenTerQ *tq = (tb ? tb->as_terq_tok() : NULL);
 		if (tq) {
+			// A LITERAL-constant condition prunes the dead arm
+			// entirely (gcc constant-folds these before codegen):
+			// a dead arm may be legal only as skipped code — a
+			// statement expression whose last statement is a
+			// labeled while (c-testsuite 00213) fails c2mir's
+			// stmt-expr value check if emitted at all.
+			if (tq->condition && tq->condition->is_constant()) {
+				TokenBase *live = tq->condition->ival()
+					? tq->true_expr : tq->false_expr;
+				if (live)
+					return translate_expr(live);
+			}
 			node_t cond = translate_cond(tq->condition);
 			// A throw-expression branch ([expr.cond]/2): the conditional's
 			// type is the OTHER (non-throw) branch's; the throw branch is a
@@ -29581,8 +29746,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// exactly what func_proto declares below) so the extern flush also skips a
 	// void* duplicate of a symbol that Pass 1 will type.
 	for (TokenFunc *tf : funcs)
-		if (tf->var.name != "main"
-		 && dynamic_cast<FuncDef *>(tf->var.type))
+		if (dynamic_cast<FuncDef *>(tf->var.type))
 			typed_proto_syms.insert(tf->var.name);
 
 	std::set<std::string> emitted_extern_syms;
@@ -29603,7 +29767,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	// initializer is declared first (C requires definition-before-use in a
 	// non-auto initializer; see deferred_globals).
 	for (TokenFunc *tf : funcs) {
-		if (tf->var.name == "main") continue;
+		// main is prototyped like any function: a pre-definition
+		// reference (`return &main;` — c-testsuite 00095) needs the
+		// declaration, and var_emit_name renames the proto in
+		// lock-step with the definition in every wrap mode (MT-2b
+		// __madc_main included).
 		node_t proto = func_proto(tf);
 		if (proto) {
 			append(top_list, proto);

@@ -1,0 +1,35 @@
+// C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
+// brackets (`int x[const 5]`, `[static 5]`, VLA-star `[const *]`), the
+// anonymous forms (`int [const 5]`), and the plain parenthesized pointer
+// declarator `int (* const x)` — all decay to int*. Redeclarations with
+// different spellings of the same decayed type must be compatible
+// (c-testsuite 00162). skip_param_array_qualifiers + the param `(` arm's
+// pointer shape own this. Oracle: gcc/clang -std=gnu17 print sum=10 v=42.
+void fooc(int x[const 5]);
+void foos(int [static 5]);
+void foov(int x[volatile 5]);
+void foor(int x[restrict 5]);
+void fooc(int (* const x));
+void foovm(int x[const *]);
+void foovm(int * const x);
+
+static int sum4(int a[static 4])
+{
+    return a[0] + a[1] + a[2] + a[3];
+}
+
+void fooc(int x[volatile 5])
+{
+    x[3] = 42;
+}
+
+int main()
+{
+    int v[5];
+    int q[4];
+    q[0] = 1; q[1] = 2; q[2] = 3; q[3] = 4;
+    v[3] = 0;
+    fooc(v);
+    printf("sum=%d v=%d\n", sum4(q), v[3]);
+    return 0;
+}
