@@ -1,0 +1,16 @@
+// `sizeof 0` — the unary-expression operand needs no parens (c-testsuite
+// 00038): evaluate_type_query's unparenthesized arm accepts numeric/char
+// literals, measured from the literal's own datadef exactly as the
+// parenthesized expression fallback measures expr->datadef(). Precedence:
+// `sizeof 0 < 2` is `(sizeof 0) < 2`.
+// Oracle: gcc/clang print a=0 b=4 c=8.
+int main()
+{
+    int r = 0;
+    if (sizeof 0 < 2)
+        r = 1;
+    printf("a=%d\n", r);
+    printf("b=%d\n", (int)sizeof 0);
+    printf("c=%d\n", (int)sizeof 1.5);
+    return 0;
+}

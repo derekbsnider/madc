@@ -42,8 +42,10 @@
 #        emission (gate: testabstractfnparam)
 #
 # -- parse gaps: statements/expressions --
-# 00038: if (sizeof 0 < 2)  (sizeof unary-expr without parens)
-00038.c
+# 00038: FIXED 2026-08-29 — evaluate_type_query's unparenthesized arm
+#        accepts numeric/char literals (measured from the literal's own
+#        datadef, matching the parenthesized expression fallback)
+#        (gate: testsizeofunary)
 # 00051: switch (x) case 0: ...  (switch with non-compound body)
 00051.c
 # 00103: FIXED 2026-08-29 — parse_deref_paren_operand: ONE owner for the

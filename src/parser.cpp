@@ -13106,6 +13106,15 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    TokenStr *ts = static_cast<TokenStr *>(nextToken());
 	    return ts->spelling_len() + 1; // include NUL terminator
 	}
+	// sizeof literal-constant — `sizeof 0` (c-testsuite 00038): the
+	// unary-expression operand needs no parens; a numeric/char literal
+	// carries its own type, measured exactly as the parenthesized
+	// expression fallback measures expr->datadef().
+	if ( probe && (probe->type() == TokenType::ttInteger
+		    || probe->type() == TokenType::ttReal
+		    || probe->type() == TokenType::ttChar)
+	  && probe->datadef() )
+	    return query_datadef_measure(nextToken()->datadef(), want_alignof);
 	if ( !probe || !is_contextual_identifier_token(probe) )
 	    Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
 	TokenBase *id_tb = nextToken();
