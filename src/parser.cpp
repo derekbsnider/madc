@@ -63857,6 +63857,25 @@ static void append_string_literal_chars(TokenStructLit *slit, TokenStr *strtok)
 	slit->inits.push_back(new TokenInt((int64_t)(unsigned char)c));
 }
 
+// The positional-slot TYPE inside aggregate `tsdd` at member index `mi`:
+// normally members[mi].second, but the FIRST flattened member of an
+// ANONYMOUS aggregate answers with the retained aggregate itself — one
+// brace slot initializes the whole anonymous member (`{{.b=7,.a=8}}` on a
+// union whose first member is `struct {u8 a,b;};` — c-testsuite 00216).
+// Fixed-array members (count != 1) stay NULL — their brace holds elements.
+static DataDef *aggregate_slot_member_type(DataDefSTRUCT *tsdd, size_t mi)
+{
+    if ( !tsdd || tsdd->is_complex() || mi >= tsdd->members.size() )
+	return NULL;
+    for ( const DataDefSTRUCT::AnonymousAggregateInfo &ai
+	  : tsdd->anonymous_aggregates )
+	if ( ai.first_member == mi && ai.aggregate )
+	    return const_cast<DataDefSTRUCT *>(ai.aggregate);
+    if ( mi < tsdd->member_counts.size() && tsdd->member_counts[mi] != 1 )
+	return NULL;
+    return tsdd->members[mi].second;
+}
+
 static void assign_initializer_range(std::vector<TokenBase *> &inits,
 				     size_t first_index,
 				     size_t last_index,
@@ -65402,10 +65421,28 @@ fnptr_decl_arm_head:
 		    slit->inits.push_back(new TokenInt(0));
 		return slit;
 	    };
-	    std::function<TokenStructLit *(size_t)> read_struct_lit;
-	    read_struct_lit = [&](size_t depth) -> TokenStructLit * {
+	    std::function<TokenStructLit *(size_t, DataDef *)> read_struct_lit;
+	    read_struct_lit = [&](size_t depth, DataDef *target_dd) -> TokenStructLit * {
 		nextToken(); // consume '{'
 		TokenStructLit *slit = new TokenStructLit();
+		// Positional child type when trackable: a struct/union
+		// member (fixed-array members and anything past the member
+		// list stay NULL — conservative), or the declared element
+		// struct once past the array dims. NULL keeps the old
+		// type-blind behavior for that child.
+		auto nested_slot_type = [&](size_t slot_idx) -> DataDef * {
+		    if ( target_dd )
+		    {
+			DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd);
+			if ( !tsdd )
+			    return NULL;
+			return aggregate_slot_member_type(tsdd,
+			    tsdd->union_layout ? 0 : slot_idx);
+		    }
+		    if ( !arr_dims.empty() && depth == arr_dims.size() )
+			return decl_type;
+		    return NULL;
+		};
 		while ( true )
 		{
 		    TokenBase *iln = peekToken();
@@ -65417,31 +65454,69 @@ fnptr_decl_arm_head:
 			break;
 		    }
 		    if ( iln->id() == TokenID::tkOpBrc )
-			slit->inits.push_back(read_struct_lit(depth + 1));
+			slit->inits.push_back(read_struct_lit(depth + 1,
+			    nested_slot_type(slit->inits.size())));
 		    else
 		    {
 			TokenBase *ni = nextToken();
-			// Skip designator `.field =` in nested init
 			size_t design_first = 0;
 			size_t design_last = 0;
 			bool array_designator = false;
+			bool field_designator = false;
+			size_t design_field = 0;
+			DataDef *value_dd = NULL;
 			if ( ni->id() == TokenID::tkDot )
 			{
-			    nextToken(); // field name
+			    // `.field = value` in a NESTED brace: resolve
+			    // against the slot's struct type when known —
+			    // the anonymous-struct-in-union reorder
+			    // (c-testsuite 00216, `guv2 = {{.b=7,.a=8}}`)
+			    // silently filled POSITIONALLY before. Unknown
+			    // target keeps the old positional skip.
+			    TokenBase *field_tok = nextToken(); // field name
 			    nextToken(); // '='
+			    DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd);
+			    if ( tsdd && field_tok
+			      && is_contextual_identifier_token(field_tok) )
+			    {
+				std::string fname =
+				    contextual_identifier_name(field_tok);
+				for ( size_t mi2 = 0; mi2 < tsdd->members.size(); ++mi2 )
+				    if ( tsdd->members[mi2].first == fname )
+				    {
+					field_designator = true;
+					design_field = mi2;
+					if ( !(mi2 < tsdd->member_counts.size()
+					    && tsdd->member_counts[mi2] != 1) )
+					    value_dd = tsdd->members[mi2].second;
+					break;
+				    }
+			    }
 			    ni = nextToken();
 			}
 			else
 			    array_designator = parse_array_designator_initializer(ni,
 				design_first, design_last);
+			auto place_slot = [&](TokenBase *value) {
+			    if ( array_designator )
+				assign_initializer_range(slit->inits, design_first, design_last, value);
+			    else if ( field_designator )
+			    {
+				if ( slit->inits.size() <= design_field )
+				    slit->inits.resize(design_field + 1, NULL);
+				slit->inits[design_field] = value;
+			    }
+			    else
+				slit->inits.push_back(value);
+			};
 			if ( ni->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(ni);
-			    TokenBase *nested = read_struct_lit(depth + 1);
-			    if ( array_designator )
-				assign_initializer_range(slit->inits, design_first, design_last, nested);
-			    else
-				slit->inits.push_back(nested);
+			    TokenBase *nested = read_struct_lit(depth + 1,
+				field_designator ? value_dd
+				: array_designator ? NULL
+				: nested_slot_type(slit->inits.size()));
+			    place_slot(nested);
 			}
 			else
 			{
@@ -65458,26 +65533,19 @@ fnptr_decl_arm_head:
 				    target_count = arr_dims[depth];
 				TokenBase *nested = padded_char_string_literal((TokenStr *)ni,
 				    target_count);
-				if ( array_designator )
-				    assign_initializer_range(slit->inits, design_first, design_last, nested);
-				else if ( depth + 1 >= arr_dims.size() )
+				if ( !array_designator && !field_designator
+				  && depth + 1 >= arr_dims.size() )
 				{
 				    TokenStructLit *nested_lit = (TokenStructLit *)nested;
 				    for ( TokenBase *child : nested_lit->inits )
 					slit->inits.push_back(child);
 				}
 				else
-				    slit->inits.push_back(nested);
+				    place_slot(nested);
 				handled_string_subarray = true;
 			    }
 			    if ( !handled_string_subarray )
-			    {
-				TokenBase *expr = parseExpression(ni);
-				if ( array_designator )
-				    assign_initializer_range(slit->inits, design_first, design_last, expr);
-				else
-				    slit->inits.push_back(expr);
-			    }
+				place_slot(parseExpression(ni));
 			}
 		    }
 		    TokenBase *isep = peekToken();
@@ -65488,6 +65556,18 @@ fnptr_decl_arm_head:
 		    while ( slit->inits.size() < arr_dims[depth] )
 			slit->inits.push_back(zero_array_initializer(depth));
 		return slit;
+	    };
+	    // Top-level slot type for a nested brace: the declared element
+	    // for a one-dimensional array, or the struct member at the slot
+	    // (same conservative rules as read_struct_lit's cursor).
+	    auto top_slot_type = [&](size_t slot_idx) -> DataDef * {
+		if ( !arr_dims.empty() )
+		    return arr_dims.size() == 1 ? decl_type : NULL;
+		DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
+		if ( !tsdd )
+		    return NULL;
+		return aggregate_slot_member_type(tsdd,
+		    tsdd->union_layout ? 0 : slot_idx);
 	    };
 	    while ( true )
 	    {
@@ -65501,7 +65581,8 @@ fnptr_decl_arm_head:
 		}
 		if ( look->id() == TokenID::tkOpBrc )
 		{
-		    init_list.push_back(read_struct_lit(1));
+		    init_list.push_back(read_struct_lit(1,
+			top_slot_type(init_list.size())));
 		}
 		else
 		{
@@ -65580,7 +65661,9 @@ fnptr_decl_arm_head:
 			    if ( next_init && next_init->id() == TokenID::tkOpBrc )
 			    {
 				pushToken(next_init);
-				(*target_inits)[field_index] = read_struct_lit(1);
+				(*target_inits)[field_index] = read_struct_lit(1,
+				    (target_sdd && field_index < target_sdd->members.size())
+					? target_sdd->members[field_index].second : NULL);
 				TokenBase *sep = peekToken();
 				if ( sep && sep->id() == TokenID::tkComma )
 				    nextToken();
@@ -65604,7 +65687,8 @@ fnptr_decl_arm_head:
 			if ( next_init->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(next_init);
-			    design_value = read_struct_lit(1);
+			    design_value = read_struct_lit(1,
+				arr_dims.size() == 1 ? decl_type : NULL);
 			}
 			else
 			    design_value = parseExpression(next_init);

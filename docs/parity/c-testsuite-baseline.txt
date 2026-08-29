@@ -87,12 +87,15 @@
 #        a separating space so the next body token cannot glue (`+`+`+`
 #        re-lexed as `++`); plus unary `+` after a binary operator in the
 #        expression parser (gate: testpastemarker)
-# 00216: PARTIAL 2026-08-29 — now compiles+runs (TokenVar::clone for
-#        range-designator values; unwrap_scalar_braces emission pass —
-#        gate: testscalarbraceinit). THREE output residues, all silent-
-#        wrong: empty-struct member layout (`ce: 1 0 12` vs gcc `1 12`,
-#        GNU sizeof-0 empty struct), sizeof of a flex-array-initialized
-#        global (gw prints the flex storage), and designated reorder
-#        inside an anonymous-struct-in-union brace (`guv2 = {{.b=7,.a=8}}`
-#        fills positionally: 7 8 vs gcc 8 7).
+# 00216: PARTIAL 2026-08-29 — compiles+runs; fixed: TokenVar::clone,
+#        unwrap_scalar_braces emission pass (gate: testscalarbraceinit),
+#        nested `.field` designators via read_struct_lit's type cursor
+#        (gate: testnesteddesignated). TWO residues: (a) sizeof of a
+#        flex-array type — infer_flexible_array_member_counts MUTATES the
+#        shared struct type from one variable's initializer (right fix =
+#        per-VARIABLE storage extension, a storage-machinery slice);
+#        (b) empty-struct size: STD_MADC deliberately uses the C++ rule
+#        (sizeof 1, presents_as_cpp) while the test expects GNU-C 0 —
+#        --std=gnu11 already gives 0; whether the lane should run C mode
+#        is an OWNER question.
 00216.c
