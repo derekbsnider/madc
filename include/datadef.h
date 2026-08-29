@@ -363,6 +363,11 @@ public:
     virtual DataDefCONST         *as_const_dd()    { return NULL; }
     virtual DataDefCArray        *as_carray_dd()   { return NULL; }
     virtual DataDefENUM          *as_enum_dd()     { return NULL; }
+    // An enumeration's underlying type (fixed base or the computed one),
+    // NULL for every non-enum. Exists as a DataDef virtual because layout
+    // code (DataDefSTRUCT::allocateBitField) needs it where DataDefENUM is
+    // still an incomplete type.
+    virtual DataDef              *enum_underlying(){ return NULL; }
     virtual DataDefTemplateParam *as_template_param_dd() { return NULL; }
     virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
     virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
@@ -1021,9 +1026,17 @@ public:
 	bool alias_like_int =
 	    dd.rawtype() == DataType::dtINT32
 	    && !is_builtin_signed_integer_name(dd.name);
-	info.is_unsigned = dd.is_unsigned()
-	    || dd.rawtype() == DataType::dtBOOL
-	    || alias_like_int;
+	// An enum-typed bit-field's signedness is the enum's UNDERLYING
+	// type's (gcc/clang: all-non-negative enumerators -> unsigned int ->
+	// zero-extend; a negative enumerator -> int -> sign-extend). The
+	// name heuristic below cannot see the negative case — it treats
+	// every non-builtin-named int32 as unsigned.
+	if ( DataDef *eu = dd.enum_underlying() )
+	    info.is_unsigned = eu->is_unsigned();
+	else
+	    info.is_unsigned = dd.is_unsigned()
+		|| dd.rawtype() == DataType::dtBOOL
+		|| alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
 	// SysV counts only bytes actually occupied; Microsoft already reserved
@@ -1824,6 +1837,7 @@ public:
 	}
     }
     virtual DataDefENUM *as_enum_dd() override { return this; }
+    virtual DataDef *enum_underlying() override { return underlying; }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT

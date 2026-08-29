@@ -11487,6 +11487,8 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    return NULL;
 	}
 	std::string ename = contextual_identifier_name(name_tb);
+	if ( TokenDataType *ctag = find_c_enum_tag(ename) )
+	    return ctag;
 	flat_datatype_map_iter mi = datatype_map.find(ename);
 	if ( mi != datatype_map.end()
 	  && dynamic_cast<DataDefENUM *>(&(*mi)->definition) )
@@ -48541,6 +48543,26 @@ TokenBase *TokenENUM::parse(Program &pgm)
     tn = pgm.peekToken();
     if ( !tn || tn->id() != TokenID::tkOpBrc )
     {
+	// C forward declaration `enum efoo;` — not ISO C (6.7.2.3 requires a
+	// prior definition), but gcc accepts it with only a pedantic warning
+	// and it occurs in the wild (c-testsuite 00170). Register an
+	// incomplete DataDefENUM in the C TAG namespace; the later definition
+	// completes the SAME dd, so types captured before it (parameters,
+	// return types) see the enumerators and the computed underlying type.
+	if ( tn && tn->id() == TokenID::tkSemi && !enum_tag.empty()
+	  && pgm.is_c_mode() && !scoped )
+	{
+	    if ( pgm.c_enum_tag_map.find(enum_tag) == pgm.c_enum_tag_map.end() )
+	    {
+		DataDefENUM *fwd_enum_dd = new DataDefENUM(enum_tag);
+		fwd_enum_dd->set_underlying(fixed_base);
+		pgm.c_enum_tag_map[enum_tag] =
+		    new TokenDataType(enum_tag.c_str(), *fwd_enum_dd);
+	    }
+	    pgm.nextToken(); // consume ';'
+	    return NULL;
+	}
+
 	// C++11 opaque-enum-declaration: `enum class Tag : T;` / `enum Tag : T;`
 	// (next token is ';', not a variable name). This DECLARES the enum type —
 	// register the tag as a type and finish, rather than treating it as a
@@ -48579,6 +48601,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// Treat enum as int and let the caller parse the variable declaration
 	if ( !enum_tag.empty() )
 	{
+	    // C tag namespace first — C mode registers enum tags ONLY there
+	    // (the map is empty in C++/madc modes). An `enum X` reference
+	    // resolves to the tag's dd even before the definition (00170's
+	    // forward-declared parameter/return uses).
+	    if ( TokenDataType *ctag = pgm.find_c_enum_tag(enum_tag) )
+	    {
+		pgm.pushToken(ctag);
+		return NULL;
+	    }
 	    // A registered enum tag resolves to its DataDefENUM — scoped or
 	    // plain (`enum Color col;` after the definition keeps the enum's
 	    // type domain; === depends on it). A plain tag only resolves to an
@@ -48602,7 +48633,30 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // scope. C keeps the `enum Tag` spelling and does not get a bare `Tag`
     // typedef here.
     DataDef *enum_dd = NULL;
-    if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
+    if ( !enum_tag.empty() && pgm.is_c_mode() && !scoped )
+    {
+	// C: the tag lives in the TAG namespace only — the bare tag never
+	// becomes a type name. Reuse a forward declaration's dd so types
+	// captured before the definition complete in place (00170); the
+	// underlying-type computation at the definition's close then drives
+	// enum bit-field signedness (00218) and sizeof through the shared
+	// DataDefENUM plumbing. Enumerators still register as plain int
+	// constants below (C11 6.7.2.2p3: an enumerator has type int).
+	std::map<std::string, TokenDataType *>::iterator ceti =
+	    pgm.c_enum_tag_map.find(enum_tag);
+	DataDefENUM *def_enum_dd = ceti != pgm.c_enum_tag_map.end()
+	    ? dynamic_cast<DataDefENUM *>(&ceti->second->definition) : NULL;
+	if ( !def_enum_dd )
+	{
+	    def_enum_dd = new DataDefENUM(enum_tag);
+	    pgm.c_enum_tag_map[enum_tag] =
+		new TokenDataType(enum_tag.c_str(), *def_enum_dd);
+	}
+	if ( fixed_base )
+	    def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
+	enum_dd = def_enum_dd;
+    }
+    else if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
 	DataDefENUM *def_enum_dd = new DataDefENUM(enum_tag);
 	def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)

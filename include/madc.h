@@ -2572,6 +2572,21 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // C tag namespace for enums (C11 6.2.3): in C mode `enum TAG` resolves
+    // here and the bare TAG never becomes a type name (a variable named like
+    // the tag stays legal). C++/madc modes keep registering enum tags as
+    // type names in datatype_map. No decl-index tap: the two-token `enum X`
+    // spelling is never a bare-name lookup, and C TUs are not packed.
+    std::map<std::string, TokenDataType *> c_enum_tag_map;
+    // The one lookup for a C enum tag reference — both `enum TAG` resolvers
+    // (TokenENUM::parse's no-brace arm, resolve_declared_type_token's
+    // elaborated-specifier arm) consult this before their int decay.
+    TokenDataType *find_c_enum_tag(const std::string &tag)
+    {
+	std::map<std::string, TokenDataType *>::iterator it =
+	    c_enum_tag_map.find(tag);
+	return it != c_enum_tag_map.end() ? it->second : NULL;
+    }
     // Block-scope typedef shadow frames — one per live compound depth. Each
     // entry records (alias, the flat datatype_map entry it shadowed, or NULL).
     // register_scoped_typedef() records; unwind_block_typedef_shadows() restores
