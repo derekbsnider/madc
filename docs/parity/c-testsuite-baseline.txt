@@ -67,12 +67,10 @@
 #        group: the directive now renumbers (macro-expanded arg, optional
 #        filename) and expandIfMacros knows predefined __LINE__/__FILE__
 #        (gate: testlinedirective)
-# 00213: the Duff-shaped part is FIXED (nested labels + pre-case statements
-#        parse); remaining root is DIFFERENT: a statement expression whose
-#        last statement is a labeled while-loop inside a dead ternary branch
-#        — c2mir check "last statement in statement expression is not an
-#        expression" (00213.c:17). Stmt-expr value-semantics corner.
-00213.c
+# 00213: FIXED 2026-08-29 — a literal-constant ternary condition prunes
+#        the dead arm at CIR emission (gcc constant-folds these; the dead
+#        stmt-expr-with-labeled-while shape is legal only as skipped code)
+#        (gate: testdeadternary)
 # 00219: PARTIAL 2026-08-29 — _Generic IMPLEMENTED (parse-time selection,
 #        gate: testgenericsel; also usual_arithmetic_result — the parse-
 #        side int+long=long view). 12 of 14 lines match gcc; the two

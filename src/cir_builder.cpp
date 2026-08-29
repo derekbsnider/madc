@@ -20227,6 +20227,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenTerQ *tq = (tb ? tb->as_terq_tok() : NULL);
 		if (tq) {
+			// A LITERAL-constant condition prunes the dead arm
+			// entirely (gcc constant-folds these before codegen):
+			// a dead arm may be legal only as skipped code — a
+			// statement expression whose last statement is a
+			// labeled while (c-testsuite 00213) fails c2mir's
+			// stmt-expr value check if emitted at all.
+			if (tq->condition && tq->condition->is_constant()) {
+				TokenBase *live = tq->condition->ival()
+					? tq->true_expr : tq->false_expr;
+				if (live)
+					return translate_expr(live);
+			}
 			node_t cond = translate_cond(tq->condition);
 			// A throw-expression branch ([expr.cond]/2): the conditional's
 			// type is the OTHER (non-throw) branch's; the throw branch is a
