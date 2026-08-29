@@ -1,0 +1,22 @@
+// #line (C11 6.10.4): the digit sequence — after macro expansion (p5) —
+// renumbers the FOLLOWING line; an optional string renames the presumed
+// file (c-testsuite 00152 `#line line`). expandIfMacros also gains the
+// predefined __LINE__/__FILE__ arm so #if conditions see them (a user
+// #define still wins — define_map is probed first).
+// Oracle: gcc/clang print a=100 b=500 / f=renamed.c.
+#line 100
+int first = __LINE__;
+#define ln 500
+#line ln
+int second = __LINE__;
+#line 900 "renamed.c"
+#if __LINE__ != 900
+#error line directive did not renumber
+#endif
+
+int main()
+{
+    printf("a=%d b=%d\n", first, second);
+    printf("f=%s\n", __FILE__);
+    return 0;
+}

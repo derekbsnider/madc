@@ -63,8 +63,10 @@
 # 00150: FIXED 2026-08-29 — parse_compound_struct_lit adopts the shared
 #        parse_array_designator_initializer for `[idx] =` elements;
 #        positional resume after the slot (gate: testcompoundlitdesig)
-# 00152: #error inside a skipped conditional group still diagnosed
-00152.c
+# 00152: FIXED 2026-08-29 — real root was #line, not #error-in-skipped-
+#        group: the directive now renumbers (macro-expanded arg, optional
+#        filename) and expandIfMacros knows predefined __LINE__/__FILE__
+#        (gate: testlinedirective)
 # 00213: the Duff-shaped part is FIXED (nested labels + pre-case statements
 #        parse); remaining root is DIFFERENT: a statement expression whose
 #        last statement is a labeled while-loop inside a dead ternary branch

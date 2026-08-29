@@ -6488,8 +6488,49 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "line" )
 		{
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    // C11 6.10.4: `#line N ["file"]` — the digit sequence
+		    // (after macro expansion, p5: `#line line` is legal) sets
+		    // the FOLLOWING line's presumed number; the optional
+		    // string renames the presumed file. The old handler
+		    // discarded the directive entirely, so __LINE__ and
+		    // diagnostics kept physical numbering (c-testsuite 00152).
+		    std::string raw;
+		    while ( source.good() && !source.eof()
+			 && source.peek() != '\n' && source.peek() != '\r' )
+			raw += source.get();
+		    std::string arg = expandIfMacros(raw);
+		    size_t p = 0;
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    long lineno = 0;
+		    bool have_digits = false;
+		    while ( p < arg.size() && isdigit((unsigned char)arg[p]) )
+		    {
+			lineno = lineno * 10 + (arg[p] - '0');
+			++p;
+			have_digits = true;
+		    }
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    std::string newname;
+		    bool have_name = false;
+		    if ( p < arg.size() && arg[p] == '"' )
+		    {
+			++p;
+			while ( p < arg.size() && arg[p] != '"' )
+			    newname += arg[p++];
+			have_name = true;
+		    }
+		    // Consume the terminator here so the renumbering starts
+		    // exactly at the next physical line.
+		    if ( source.peek() == '\r' )
 			source.get();
+		    if ( source.peek() == '\n' )
+			source.get();
+		    if ( have_digits )
+			source.setpos((int)lineno, 0);
+		    if ( have_name )
+			source.fname(newname.c_str());
 		    return getToken();
 		}
 		if ( directive == "ifdef" || directive == "ifndef" )
@@ -8161,6 +8202,26 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    out += word;
 		    ++ti;
 		}
+	    }
+	    else if ( word == "__LINE__" )
+	    {
+		// Predefined macros live in getToken's builtin arm, not in
+		// define_map — the string expander needs its own arm or a
+		// `#if N != __LINE__` / `#line line` operand stays an
+		// identifier and evaluates as 0 (c-testsuite 00152). The
+		// define_map probe above ran first, so a user #define of
+		// the name still wins, matching getToken's order.
+		out += std::to_string(source.line());
+		changed = true;
+		++ti;
+	    }
+	    else if ( word == "__FILE__" )
+	    {
+		out += '"';
+		out += source.fname() ? source.fname() : "<unknown>";
+		out += '"';
+		changed = true;
+		++ti;
 	    }
 	    else
 	    {
