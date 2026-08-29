@@ -38161,7 +38161,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		     || _prv_token->id() == TokenID::tkComma
 		     || _prv_token->id() == TokenID::tkOpBrk
 		     || _prv_token->id() == TokenID::tkOpSqr
-		     || _prv_token->id() == TokenID::tkSemi))) )
+		     || _prv_token->id() == TokenID::tkSemi
+		     // After a BINARY operator the + is unary too — `60 + +3`
+		     // (c-testsuite 00202's placemarker expansion). Same
+		     // exclusions isUnaryPosition's operator clause applies:
+		     // `)`/`]` end an operand, `++`/`--` are postfix here.
+		     || (_prv_token->is_operator()
+		      && _prv_token->id() != TokenID::tkClBrk
+		      && _prv_token->id() != TokenID::tkClSqr
+		      && _prv_token->id() != TokenID::tkInc
+		      && _prv_token->id() != TokenID::tkDec)))) )
 		    return done ? ExprStep::Done : ExprStep::Break;
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && (isUnaryPosition() || awaiting_prefix_step_operand()) )

@@ -83,7 +83,9 @@
 #        tentative defs (those already merged): Pass 1 no longer skips
 #        main's prototype; var_emit_name keeps proto/def in lock-step in
 #        every wrap mode (gate: testmainaddr)
-# 00202: c2mir_compile_tree: 2 check errors
-00202.c
+# 00202: FIXED 2026-08-29 — ## placemarker: an empty right operand emits
+#        a separating space so the next body token cannot glue (`+`+`+`
+#        re-lexed as `++`); plus unary `+` after a binary operator in the
+#        expression parser (gate: testpastemarker)
 # 00216: cir error: unhandled expression: TokenBase (token type 0)
 00216.c

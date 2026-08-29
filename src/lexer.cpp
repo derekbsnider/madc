@@ -2199,6 +2199,13 @@ static std::string expand_function_macro_body(
 	macro_replacement_tokens(macro);
     std::string expanded;
     expanded.reserve(macro.body.size());
+    // True immediately after a ## was consumed: the next token is the paste's
+    // RIGHT operand. If that operand substitutes to EMPTY (a placemarker,
+    // C11 6.10.3.3), the paste result is the left operand alone — a space
+    // must keep the FOLLOWING body token from gluing to it in this
+    // string-based expansion (`A ## B+` with empty B re-lexed `+`+`+` as
+    // `++` — c-testsuite 00202).
+    bool after_paste = false;
     for ( size_t i = 0; i < tokens.size(); )
     {
 	const MacroReplacementToken &token = tokens[i];
@@ -2228,6 +2235,7 @@ static std::string expand_function_macro_body(
 	    ++i;
 	    while ( i < tokens.size() && macro_token_space(tokens[i]) )
 		++i;
+	    after_paste = true;
 	    continue;
 	}
 	if ( token.kind == MacroReplacementToken::rtIdentifier )
@@ -2237,14 +2245,17 @@ static std::string expand_function_macro_body(
 		expanded_params.find(name);
 	    if ( value != expanded_params.end() )
 	    {
-		if ( macro_param_use_is_raw(tokens, i) )
-		    expanded += raw_params[name];
-		else
-		    expanded += value->second;
+		const std::string &sub = macro_param_use_is_raw(tokens, i)
+		    ? raw_params[name] : value->second;
+		expanded += sub;
+		if ( after_paste && sub.empty() )
+		    expanded += ' ';	// placemarker: separate the next token
+		after_paste = false;
 		++i;
 		continue;
 	    }
 	}
+	after_paste = false;
 	if ( token.kind == MacroReplacementToken::rtComment )
 	    expanded += ' ';
 	else
