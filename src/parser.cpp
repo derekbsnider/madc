@@ -48998,8 +48998,14 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 		pgm.pushToken(id_tok);
 		if ( peek2 && peek2->id() == TokenID::tkOpBrk )
 		{
-		    TokenDataType tdt("int", ddINT);
-		    result = pgm.parseDeclaration(&tdt, true);
+		    // HEAP token (same rule as the mixed-comma-list arm):
+		    // parseDeclaration records tb as TopDecl.origin, which
+		    // must outlive this frame.
+		    TokenDataType *tdt = new TokenDataType("int", ddINT);
+		    tdt->file = tn->file;
+		    tdt->line = tn->line;
+		    tdt->column = tn->column;
+		    result = pgm.parseDeclaration(tdt, true);
 		}
 		else
 		    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
@@ -63101,11 +63107,20 @@ paramdecl:
 		// After a function declarator continuation, fall back to the
 		// normal variable declarator parser when the next name is not
 		// followed by `(`.
+		// HEAP token, never a stack local: parseDeclaration records tb
+		// as TopDecl.origin (and MC11-IR keeps originating tokens for
+		// the life of the tree), so a stack token here is a dangling
+		// origin the CIR emitter later reads (c-testsuite 00121's
+		// `int f(int a), g(int a), a;` — td_system read a dead frame).
 		pushToken(open);
 		pushToken(next);
-		TokenDataType tdt(next_return->name.c_str(), *next_return);
+		TokenDataType *tdt =
+		    new TokenDataType(next_return->name.c_str(), *next_return);
+		tdt->file = nt->file;
+		tdt->line = nt->line;
+		tdt->column = nt->column;
 		pop_param_scope();
-		parseDeclaration(&tdt);
+		parseDeclaration(tdt);
 		return;
 	    }
 	    pop_param_scope();
