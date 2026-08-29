@@ -27454,6 +27454,55 @@ static void debug_deref_fail(Program &pgm, int site, TokenBase *deref_tb,
 #define debug_deref_fail(pgm, site, tb, dt) do { } while (0)
 #endif
 
+// The parenthesized operand of a unary dereference — `*(...)` with the '('
+// already consumed (open_tb). ONE owner for the discrimination every deref
+// arm needs (single-star, two-star, and the N-star collect arm): a CAST
+// head (`*(TYPE*)p`, c-testsuite 00103) or a statement expression delegates
+// the whole group to parseExpression, whose cast/stmt-expr paths own type
+// resolution and consume the matching ')' themselves; anything else is a
+// parenthesized expression whose ')' is consumed here. A trailing -> . [
+// postfix chain binds tighter than the outer '*' and is folded in.
+TokenBase *Program::parse_deref_paren_operand(TokenBase *open_tb)
+{
+    TokenBase *peek_inner = peekToken();
+    bool inner_is_statement_expr =
+	peek_inner && peek_inner->id() == TokenID::tkOpBrc;
+    // token_starts_type_name owns the type-head test (it knows tkUNION —
+    // the inline list this replaces did not, which lost `*(union U*)p`);
+    // tkCLASS/tkRESTRICT are the deref-context extras that arm carried.
+    bool inner_is_cast_head =
+	!inner_is_statement_expr
+	&& peek_inner
+	&& ( peek_inner->id() == TokenID::tkCLASS
+	  || peek_inner->id() == TokenID::tkRESTRICT
+	  || token_starts_type_name(peek_inner) );
+    TokenBase *deref_expr;
+    if ( inner_is_cast_head || inner_is_statement_expr )
+    {
+	// stop_on_closing_paren=true so the matching ')' of the
+	// cast/statement-expression group ends parsing — otherwise
+	// conditional mode would chase past it into a following `=` or
+	// operator chain (the SMAUG `*(EXT_BV *)p = fread_bitvector(...)`
+	// family). Delegation consumes the ')' itself.
+	deref_expr = parseExpression(open_tb, true, false, true);
+    }
+    else
+    {
+	TokenBase *inner_tb = nextToken();
+	deref_expr = parseExpression(inner_tb, true);
+	TokenBase *close = nextToken();
+	if ( !close || close->id() != TokenID::tkClBrk )
+	    Throw(close ? close : open_tb) << "expected ')' after *(expr)" << flush;
+    }
+    if ( peekToken()
+      && (peekToken()->id() == TokenID::tkDeRef
+       || peekToken()->id() == TokenID::tkDot
+       || peekToken()->id() == TokenID::tkOpSqr) )
+	deref_expr = parsePostfixChainFrom(deref_expr,
+	    postfix_expr_variable(deref_expr));
+    return deref_expr;
+}
+
 TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 {
     if ( !star || star->id() != TokenID::tkMul )
@@ -38105,56 +38154,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    TokenBase *deref_tb = nextToken();
 			    if ( deref_tb->id() == TokenID::tkOpBrk )
 		    {
-			// Check whether the inner expression is a cast
-			// signature (`(TYPE*) expr`). If so, delegate the
-			// whole `(...)` to parseExpression so its cast
-			// detection fires and `TYPE` gets resolved against
-			// `datatype_map` instead of being sent through the
-			// identifier/variable lookup path — which fails for
-			// typedef'd struct names like `EXT_BV` in
-			// `*(EXT_BV*)vd.data`. Delegation consumes the `)`
-			// itself, so the subsequent nextToken() is skipped
-			// on the cast path.
-			TokenBase *peek_inner = peekToken();
-			bool inner_is_statement_expr =
-			    peek_inner && peek_inner->id() == TokenID::tkOpBrc;
-			bool inner_is_cast_head =
-			    !inner_is_statement_expr
-			    && peek_inner
-			    && ( peek_inner->type() == TokenType::ttDataType
-			      || peek_inner->id() == TokenID::tkSTRUCT
-			      || peek_inner->id() == TokenID::tkCLASS
-			      || peek_inner->id() == TokenID::tkCONST
-			      || peek_inner->id() == TokenID::tkRESTRICT
-			      || peek_inner->id() == TokenID::tkENUM
-			      || ( peek_inner->type() == TokenType::ttIdentifier
-				&& datatype_map.count(((TokenIdent *)peek_inner)->spelling()) ) );
-			TokenBase *deref_expr;
-			if ( inner_is_cast_head || inner_is_statement_expr )
-			{
-			    // stop_on_closing_paren=true so the matching `)` of
-			    // the cast/statement-expression group ends parsing —
-			    // otherwise conditional mode would chase past it into
-			    // a following `=` or operator chain (closing the SMAUG
-			    // `*(EXT_BV *)p = fread_bitvector(...)` family).
-			    // Delegation consumes the `)` itself, so no follow-up
-			    // nextToken() is needed.
-			    deref_expr = parseExpression(deref_tb, true, false, true);
-			}
-			else
-			{
-			    TokenBase *inner_tb = nextToken();
-			    deref_expr = parseExpression(inner_tb, true);
-			    TokenBase *close = nextToken();
-			    if ( !close || close->id() != TokenID::tkClBrk )
-				Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
-			}
-			if ( peekToken()
-			  && (peekToken()->id() == TokenID::tkDeRef
-			   || peekToken()->id() == TokenID::tkDot
-			   || peekToken()->id() == TokenID::tkOpSqr) )
-			    deref_expr = parsePostfixChainFrom(deref_expr,
-				postfix_expr_variable(deref_expr));
+			// Cast head / statement expression / parenthesized
+			// expression — parse_deref_paren_operand owns the
+			// discrimination (shared with the multi-star arms).
+			TokenBase *deref_expr = parse_deref_paren_operand(deref_tb);
 			DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
 			if ( !dtype )
 			    dtype = deref_expr->datadef();
@@ -38391,6 +38394,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					// operand_tb is the identifier or '(' expr
 					if ( !operand_tb )
 					    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
+					// How many of the stars the operand construction
+					// itself consumes: TokenDeref/TokenDerefStep deref
+					// once; a parenthesized/cast operand arrives
+					// underef'd, so EVERY star still needs a wrap (the
+					// old unconditional skip under-deref'd `***(expr)`
+					// by one — silent wrong answer, exit 0).
+					size_t derefs_done = 1;
 					// Build the innermost deref from the variable
 					if ( operand_tb->type() == TokenType::ttIdentifier )
 					{
@@ -38422,23 +38432,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					}
 					else if ( operand_tb->id() == TokenID::tkOpBrk )
 					{
-					    TokenBase *inner_expr_tb = nextToken();
-					    deref_expr = parseExpression(inner_expr_tb, true);
-					    TokenBase *close = nextToken();
-					    if ( !close || close->id() != TokenID::tkClBrk )
-						Throw(close ? close : operand_tb) << "expected ')' in multi-deref" << flush;
-					    if ( peekToken()
-					      && (peekToken()->id() == TokenID::tkDeRef
-					       || peekToken()->id() == TokenID::tkDot
-					       || peekToken()->id() == TokenID::tkOpSqr) )
-						deref_expr = parsePostfixChainFrom(deref_expr,
-						    postfix_expr_variable(deref_expr));
+					    deref_expr = parse_deref_paren_operand(operand_tb);
+					    derefs_done = 0;
 					}
 					else
 					    Throw(operand_tb) << "expecting identifier or '(' after multi-level '*'" << flush;
-					// Now wrap in TokenDerefExpr for each additional `*`
-					// (skip the first star since TokenDeref already derefs once)
-					for ( size_t si = 1; si < stars.size(); ++si )
+					// Now wrap in TokenDerefExpr for each star the
+					// operand construction did not already consume.
+					for ( size_t si = derefs_done; si < stars.size(); ++si )
 					{
 					    DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
 					    if ( !dtype )
@@ -38454,17 +38455,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    }
 				    else if ( inner_tb->id() == TokenID::tkOpBrk )
 				    {
-					TokenBase *inner_expr_tb = nextToken();
-					TokenBase *inner_expr = parseExpression(inner_expr_tb, true);
-					TokenBase *close = nextToken();
-					if ( !close || close->id() != TokenID::tkClBrk )
-					    Throw(close ? close : inner_tb) << "expected ')' after *(expr)" << flush;
-					if ( peekToken()
-					  && (peekToken()->id() == TokenID::tkDeRef
-					   || peekToken()->id() == TokenID::tkDot
-					   || peekToken()->id() == TokenID::tkOpSqr) )
-					    inner_expr = parsePostfixChainFrom(inner_expr,
-						postfix_expr_variable(inner_expr));
+					TokenBase *inner_expr = parse_deref_paren_operand(inner_tb);
 					DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
 					if ( !inner_dtype )
 					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
@@ -38663,19 +38654,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				}
 				else if ( deref_tb->id() == TokenID::tkOpBrk )
 				{
-				    TokenBase *inner_expr_tb = nextToken();
-				    TokenBase *inner_expr = parseExpression(inner_expr_tb, true);
-				    TokenBase *close = nextToken();
-				    if ( !close || close->id() != TokenID::tkClBrk )
-					Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
+				    TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
 				    if ( !inner_expr )
 					Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-				    if ( peekToken()
-				      && (peekToken()->id() == TokenID::tkDeRef
-				       || peekToken()->id() == TokenID::tkDot
-				       || peekToken()->id() == TokenID::tkOpSqr) )
-					inner_expr = parsePostfixChainFrom(inner_expr,
-					    postfix_expr_variable(inner_expr));
 				    DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
 				    if ( !inner_dtype )
 					inner_dtype = inner_expr->datadef();

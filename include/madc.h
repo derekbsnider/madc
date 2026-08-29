@@ -5918,6 +5918,10 @@ public:
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
     TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
+    // The parenthesized operand of a unary '*' ('(' already consumed): ONE
+    // owner for the cast-head / statement-expr / grouped-expr discrimination
+    // shared by every deref arm; folds the trailing -> . [ postfix chain.
+    TokenBase *parse_deref_paren_operand(TokenBase *open_tb);
     TokenBase *parse_cast_function_call_operand(TokenBase *head);
     TokenBase *materialize_cast_literal_operand(TokenBase *tb);
     // Template-machinery leaf consumers: recognize a template-argument-list

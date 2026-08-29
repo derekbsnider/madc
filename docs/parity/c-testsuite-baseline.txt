@@ -46,8 +46,10 @@
 00038.c
 # 00051: switch (x) case 0: ...  (switch with non-compound body)
 00051.c
-# 00103: return **(int**)bar;  (double-deref of cast)
-00103.c
+# 00103: FIXED 2026-08-29 — parse_deref_paren_operand: ONE owner for the
+#        cast-head discrimination across all four unary-deref arms (also
+#        closed `*(union U*)p` and the N-star arm's `***(expr)`
+#        under-deref) (gate: testderefcastparen)
 # 00120: enum { X } x;  (anonymous enum declarator in struct scope)
 00120.c
 # 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
