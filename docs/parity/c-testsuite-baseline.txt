@@ -52,8 +52,9 @@
 #        cast-head discrimination across all four unary-deref arms (also
 #        closed `*(union U*)p` and the N-star arm's `***(expr)`
 #        under-deref) (gate: testderefcastparen)
-# 00120: enum { X } x;  (anonymous enum declarator in struct scope)
-00120.c
+# 00120: FIXED 2026-08-29 — resolve_enum_member_type: both member arms
+#        delegate an enum DEFINITION body to TokenENUM::parse and adopt
+#        the re-fed type token (gate: testanonenummember)
 # 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
 #        (in_place_label) with a top-of-switch goto jump table; gate
 #        tests/testduffdevice.mad.

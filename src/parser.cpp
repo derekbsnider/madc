@@ -41173,12 +41173,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 		    else if ( tn->id() == TokenID::tkENUM )
 		    {
-			// Same tag-or-int rule as the top-level member arm —
-			// the shared elaborated-specifier resolver (the old
-			// ddUINT32 typing made negative enum members compare
-			// unsigned).
+			// Same tag-or-int / definition-body rule as the
+			// top-level member arm — resolve_enum_member_type
+			// (the old ddUINT32 typing made negative enum
+			// members compare unsigned).
 			pgm.nextToken();
-			inner_type = pgm.resolve_declared_type_token(tn, true, true);
+			inner_type = pgm.resolve_enum_member_type(tn);
 			if ( !inner_type )
 			    pgm.Throw(tn) << "Expecting enum tag in anonymous struct member type" << flush;
 		    }
@@ -41467,13 +41467,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 	else if ( tn->id() == TokenID::tkENUM )
 	{
-	    // `enum TAG member` — the shared elaborated-specifier resolver
-	    // owns the tag-or-int rule (registered DataDefENUM, else int).
-	    // The old inline arm typed every enum member ddUINT32, so a
-	    // negative enumerator stored in a member compared UNSIGNED
-	    // (silent wrong answer; gcc: unfixed enums are int).
+	    // `enum TAG member` / `enum [TAG] { ... } member` — one owner
+	    // for the tag-or-int rule and the definition-body delegation
+	    // (resolve_enum_member_type; the old inline arm typed every
+	    // enum member ddUINT32, so a negative enumerator stored in a
+	    // member compared UNSIGNED — gcc: unfixed enums are int).
 	    pgm.nextToken();
-	    mtype = pgm.resolve_declared_type_token(tn, true, true);
+	    mtype = pgm.resolve_enum_member_type(tn);
 	    if ( !mtype )
 		pgm.Throw(tn) << "Expecting enum tag in struct member type" << flush;
 	}
@@ -48258,6 +48258,31 @@ fnptr_param_done:
 
 // parse enum { NAME, NAME = val, ... } [;]
 // registers each enumerator as a #define constant
+// The TYPE of an `enum ...` struct member, `enum` already consumed. A tag
+// USE resolves through the shared elaborated-specifier resolver; a
+// DEFINITION body (`enum { X } m;` / `enum T { X } m;` — c-testsuite 00120)
+// delegates to TokenENUM::parse — the one owner of enum bodies — which
+// registers the enumerators at the enclosing scope (C11 6.7.2.3: they leak
+// past the struct) and re-feeds the enum/int type token consumed here.
+// ONE rule for both data-struct member arms (top-level and nested).
+TokenDataType *Program::resolve_enum_member_type(TokenBase *enum_tb)
+{
+    if ( TokenDataType *mtype = resolve_declared_type_token(enum_tb, true, true) )
+	return mtype;
+    // The resolver declines definitions, leaving the stream at `{` (or at
+    // the pushed-back tag before `{`) — exactly where TokenENUM::parse
+    // starts; it throws its own diagnostic on anything malformed.
+    TokenENUM tenum;
+    tenum.parse(*this);
+    TokenBase *refed = peekToken();
+    if ( refed && refed->type() == TokenType::ttDataType )
+    {
+	nextToken();
+	return (TokenDataType *)refed;
+    }
+    return NULL;
+}
+
 TokenBase *TokenENUM::parse(Program &pgm)
 {
     DBG(std::cout << "TokenENUM::parse()" << std::endl);

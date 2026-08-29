@@ -1,0 +1,26 @@
+// `enum { X } x;` as a struct member type (c-testsuite 00120): the member
+// arms' shared resolve_enum_member_type delegates a DEFINITION body to
+// TokenENUM::parse (the one owner of enum bodies) and adopts the re-fed
+// type token. Scoping canon is PIECEWISE, deliberately: an ANONYMOUS
+// struct's enumerators leak to the enclosing scope (C canon, gcc — g++
+// would trap them in an unreachable unnamed-class scope, which is what
+// 00120-style C code cannot live with); a NAMED struct's enumerators are
+// class-scoped, C++ canon (g++: N::P, bare P out of scope).
+// Oracle: gcc (C, anonymous part: X=0 Y=5) + g++ (named part: N::P=3)
+// — combined line a=0 b=5 c=1 d=3.
+struct {
+    enum { X, Y = 5 } x;
+} s;
+
+struct N {
+    enum { P = 3 } tag;
+    int pad;
+} n;
+
+int main()
+{
+    s.x = Y;
+    n.tag = N::P;
+    printf("a=%d b=%d c=%d d=%d\n", X, s.x, n.tag == N::P, (int)N::P);
+    return 0;
+}

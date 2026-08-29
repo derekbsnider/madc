@@ -6141,6 +6141,11 @@ public:
 					       bool consume_ns_tokens,
 					       bool allow_lazy_types,
 					       bool consume_class_member_chain = true);
+    // The type of an `enum ...` struct member (`enum` consumed): tag use via
+    // resolve_declared_type_token; a definition body delegates to
+    // TokenENUM::parse and adopts the re-fed enum/int type token. One rule
+    // for both data-struct member arms.
+    TokenDataType *resolve_enum_member_type(TokenBase *enum_tb);
     // Resolve a TYPE that spans a token RANGE (e.g. a member-template return
     // type `std::pair<iterator, bool>`) through the canonical type resolver,
     // in an isolated token stream so the live parse position is untouched.
