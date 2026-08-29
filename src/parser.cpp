@@ -27356,6 +27356,15 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		break;			// a grouping paren, not a call
 	    TokenBase *open = nextToken();
 	    TokenCallFunc *tc = new TokenCallFunc(*callee);
+	    // A fn-ptr value reached through the chain (`(int)s.f(41)` — a
+	    // member access, a subscript) is a sub-expression LOAD, not a
+	    // named function: route it via src_node, the same contract the
+	    // main expression parser's member/subscript/var fptr-call arms
+	    // use. A bare TokenCallFunc(callee) emits a call to the member
+	    // proxy's NAME — an undefined import, or a same-named global
+	    // silently called.
+	    if ( callee->type->as_fptr_dd() )
+		tc->src_node = result;
 	    tc->file = open->file;
 	    tc->line = open->line;
 	    tc->column = open->column;
