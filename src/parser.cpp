@@ -64160,32 +64160,14 @@ static size_t flattened_scalar_capacity(DataDef *dd)
     return 1;
 }
 
-static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
-					       const std::vector<TokenBase *> &init_list)
-{
-    if ( !sdd )
-	return;
-    for ( size_t i = 0; i < sdd->member_counts.size(); ++i )
-    {
-	if ( sdd->member_counts[i] != 0 )
-	    continue;
-	size_t inferred = 0;
-	if ( i < init_list.size() )
-	{
-	    if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(init_list[i]) )
-		inferred = slit->inits.size();
-	}
-	if ( inferred == 0 )
-	    continue;
-	sdd->member_counts[i] = inferred;
-	if ( i < sdd->member_offsets.size() && i < sdd->members.size() )
-	{
-	    size_t end = sdd->member_offsets[i] + sdd->members[i].second->size * inferred;
-	    if ( end > sdd->size )
-		sdd->size = DataDefSTRUCT::align_up(end, sdd->max_align);
-	}
-    }
-}
+// GNU flexible-array-member initialization (`struct W gw = {.., {1,2,3}};`)
+// extends the INITIALIZED OBJECT's storage, never the type: sizeof(struct W)
+// and sizeof(gw) both stay the base size (gcc/clang; c-testsuite 00216), and
+// other variables of the type are unaffected. madc's parse side therefore
+// must NOT write the inferred count back into the shared DataDefSTRUCT (the
+// old in-place mutation corrupted every later sizeof). The extended storage
+// itself is c2mir's job: the CIR emits the flex member as `[]` with its
+// initializer list, and c2mir allocates/initializes the extended object.
 
 static DataDef *peel_carray_dimensions(DataDef *base_type,
 				       std::vector<carray_dim_t> &arr_dims,
@@ -66032,8 +66014,6 @@ fnptr_decl_arm_head:
 		if ( init_list.size() > initializer_capacity )
 		    Throw(tb) << "Too many initializers for array (expected " << initializer_capacity << ")" << flush;
 	    }
-	    if ( is_struct_init )
-		infer_flexible_array_member_counts(dynamic_cast<DataDefSTRUCT *>(decl_type), init_list);
 	}
 	else if ( !arr_dims.empty() )
 	{

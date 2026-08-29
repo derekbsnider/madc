@@ -92,15 +92,11 @@
 #        a separating space so the next body token cannot glue (`+`+`+`
 #        re-lexed as `++`); plus unary `+` after a binary operator in the
 #        expression parser (gate: testpastemarker)
-# 00216: PARTIAL 2026-08-29 — compiles+runs; fixed: TokenVar::clone,
-#        unwrap_scalar_braces emission pass (gate: testscalarbraceinit),
-#        nested `.field` designators via read_struct_lit's type cursor
-#        (gate: testnesteddesignated). TWO residues: (a) sizeof of a
-#        flex-array type — infer_flexible_array_member_counts MUTATES the
-#        shared struct type from one variable's initializer (right fix =
-#        per-VARIABLE storage extension, a storage-machinery slice);
-#        (b) empty-struct size: STD_MADC deliberately uses the C++ rule
-#        (sizeof 1, presents_as_cpp) while the test expects GNU-C 0 —
-#        --std=gnu11 already gives 0; whether the lane should run C mode
-#        is an OWNER question.
-00216.c
+# 00216: FIXED 2026-08-29 — TokenVar::clone, unwrap_scalar_braces emission
+#        pass (gate: testscalarbraceinit), nested `.field` designators via
+#        read_struct_lit's type cursor (gate: testnesteddesignated); then
+#        (a) flex-array init no longer mutates the SHARED struct type —
+#        sizeof stays the base size, c2mir owns the object's extended
+#        storage (gate: testflexsizeof); (b) empty-struct sizeof 0 comes
+#        with the lane's C mode (owner ruling 2026-08-29: the lane runs
+#        --std=gnu11).
