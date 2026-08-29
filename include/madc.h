@@ -5762,7 +5762,8 @@ public:
     // is non-NULL, sets it to whether a `const` followed the last `*` (top-level
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
-    int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
+				 bool leading_const = false);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.

@@ -1330,11 +1330,22 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 // Shared declarator pointer-star consumer. See the header for the contract.
 // Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
 // loops so the explicit `*` count is handled the SAME way everywhere.
-int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
+int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
+				      bool leading_const)
 {
     int stars = 0;
     bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
+    // Pointee-const modeling (docs/plans/2026-06-19-const-qualified-types.md):
+    // a const pending at the CURRENT level wraps that level's type in
+    // DataDefCONST (getConstType) before the next '*' derives from it, so
+    // `const char *` and `char *` carry DISTINCT pointer identities
+    // (c-testsuite 00219's _Generic lines). C mode only for now — the C++
+    // producer is the campaign's Phase 3/4 transparency sweep (overload
+    // ranking, mangling, template keying). Top-level const — after the LAST
+    // star — stays the variable read-only flag, never a type wrap (lvalue
+    // conversion drops it, C11 6.3.2.1p2).
+    bool pending_const = leading_const && is_c_mode();
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
     {
@@ -1344,12 +1355,21 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
 	    ++stars;
 	    const_after = false;	// any const before this star was low-level
 	    if ( !fnptr_base )
+	    {
+		if ( pending_const )
+		    dd = getConstType(dd);
 		dd = getPointerType(dd);
+	    }
+	    pending_const = false;
 	}
 	else
 	{
-	    if ( stars > 0 && peekToken()->id() == TokenID::tkCONST )
-		const_after = true;	// const after the last '*' = top-level const ptr
+	    if ( peekToken()->id() == TokenID::tkCONST )
+	    {
+		if ( stars > 0 )
+		    const_after = true;	// const after the last '*' = top-level const ptr
+		pending_const = is_c_mode();
+	    }
 	    nextToken();		// consume const/volatile/restrict
 	}
     }
@@ -12293,6 +12313,16 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 {
     if ( !dd )
 	return "";
+    // A const-qualified level renders `const <base>` — the same canonical
+    // spelling parse_builtin_types_compatible_operand builds from a type
+    // name's leading qualifiers, so `const char *` associations match a
+    // ptr(const char) controlling type. Must precede every base-forwarding
+    // arm (a const pointer is DataDefCONST wrapping DataDefPTR).
+    if ( DataDefCONST *const_dd = dd->as_const_dd() )
+    {
+	std::string base = canonical_builtin_simple_type_name(const_dd->base_type);
+	return base.empty() ? "" : "const " + base;
+    }
     if ( dd == &ddDOUBLE )
 	return "double";
     if ( DataDefENUM *enum_dd = dynamic_cast<DataDefENUM *>(dd) )
@@ -12536,6 +12566,10 @@ std::string Program::generic_controlling_signature(TokenBase *ctrl)
     DataDef *dd = ctrl->datadef();
     if ( !dd )
 	return "";
+    // Lvalue conversion (C11 6.3.2.1p2) drops TOP-LEVEL qualifiers from the
+    // controlling expression's type — `*p` on a const-char pointer controls
+    // as plain char. Nested (pointee) qualification stays.
+    dd = dd->unqualified();
     if ( DataDefCArray *ca = dd->as_carray_dd() )
 	return "ptr(" + canonical_builtin_simple_type_name(ca->element_type) + ")";
     // Function designators decay to pointers-to-function; the renderer
@@ -35005,6 +35039,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			Throw(tb) << "member access has no receiver type" << flush;
 			return ExprStep::Break;
 		    }
+		    // A const receiver type (deref of a const pointee — C-mode
+		    // `(*pls).a`) resolves members against the unqualified
+		    // layout: the hard DataDefSTRUCT/DataDefCLASS casts below
+		    // must never see the DataDefCONST wrapper (the arrow arm
+		    // peels at its pointee extraction for the same reason).
+		    struct_type = struct_type->unqualified();
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 		    {
 			// UFCS (--std=madc): a non-class receiver (int, char *, array).
@@ -35437,7 +35477,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
 			if ( !ptr_type || !ptr_type->base_type )
 			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
-			base = ptr_type->base_type;
+			// A const pointee (`const struct S *p`) accesses its
+			// members through the unqualified layout — the hard
+			// DataDefSTRUCT casts below must never see the
+			// DataDefCONST wrapper (write-rejection through a
+			// const pointee is the const campaign's P4 residue).
+			base = ptr_type->base_type->unqualified();
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
 		    {
@@ -64602,7 +64647,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
-    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star);
+    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star,
+						gotconst);
     if ( n_decl_stars > 0 )
 	saw_pointer_decl = true;
     DBG(std::cout << "parseDeclaration() consumed " << n_decl_stars

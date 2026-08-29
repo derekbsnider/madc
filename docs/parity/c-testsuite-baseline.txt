@@ -71,13 +71,15 @@
 #        the dead arm at CIR emission (gcc constant-folds these; the dead
 #        stmt-expr-with-labeled-while shape is legal only as skipped code)
 #        (gate: testdeadternary)
-# 00219: PARTIAL 2026-08-29 — _Generic IMPLEMENTED (parse-time selection,
-#        gate: testgenericsel; also usual_arithmetic_result — the parse-
-#        side int+long=long view). 12 of 14 lines match gcc; the two
-#        residues both need pointee-const in the TYPE MODEL (`const char
-#        *ti` renders ptr(char)), which is the gated FEATURE_CONST_TYPES
-#        campaign (DataDefCONST P2-5) — not a _Generic defect.
-00219.c
+# 00219: FIXED 2026-08-29 — _Generic (parse-time selection, gate:
+#        testgenericsel; usual_arithmetic_result for the parse-side
+#        int+long=long view); then pointee-const type identity in the C
+#        declaration grammar: consume_declarator_stars mints DataDefCONST
+#        (getConstType) for a pending low-level const before deriving the
+#        pointer, so `const char *` != `char *`; lvalue conversion peels
+#        top-level quals; member access through a const pointee peels to
+#        the unqualified layout (gate: testconstpointee). C mode only —
+#        the C++ producer is the const campaign's Phase 3/4.
 #
 # -- CIR/c2mir rejections --
 # 00053: FIXED 2026-08-29 — block-scope struct tag shadowing: shadow
