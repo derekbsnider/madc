@@ -11462,6 +11462,36 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	}
 	return NULL;
     }
+    // `enum TAG` as an elaborated type specifier in a TYPE position (a
+    // parameter type, a member type) — the enum twin of the arm above.
+    // The tag's DataDefENUM when registered; otherwise int (C11 6.7.2.3:
+    // enums are int-compatible; a forward/undefined tag is the GNU
+    // extension gcc accepts — c-testsuite 00170). Statement position
+    // resolves through TokenENUM::parse's no-brace arm, whose int decay
+    // this mirrors. A body (`enum TAG {` / `enum {`) is a DEFINITION —
+    // TokenENUM::parse owns those; leave the stream untouched.
+    if ( tb->id() == TokenID::tkENUM )
+    {
+	TokenBase *name_tb = peekToken();
+	if ( !name_tb || !is_contextual_identifier_token(name_tb) )
+	    return NULL;
+	nextToken(); // consume the tag
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
+	{
+	    pushToken(name_tb);	// `enum TAG {` — a definition, not a use
+	    return NULL;
+	}
+	std::string ename = contextual_identifier_name(name_tb);
+	flat_datatype_map_iter mi = datatype_map.find(ename);
+	if ( mi != datatype_map.end()
+	  && dynamic_cast<DataDefENUM *>(&(*mi)->definition) )
+	    return *mi;
+	TokenDataType *tdt = new TokenDataType("int", ddINT);
+	tdt->file = name_tb->file;
+	tdt->line = name_tb->line;
+	tdt->column = name_tb->column;
+	return tdt;
+    }
     // Leading `::` — the global-scope qualifier ([namespace.qual]):
     // `typedef ::timespec t;` / `using A = ::T;` / `::wrap w;` resolve the
     // name against the GLOBAL scope only (libc++ __threading_support:54 is
@@ -47959,6 +47989,16 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    param_dd = &resolved->definition;
 	    if ( typedef_alias_matches_datadef(tname, param_dd) )
 		param_alias = tname;
+	}
+	else if ( nt->id() == TokenID::tkENUM )
+	{
+	    // `enum TAG` parameter type — the shared elaborated-specifier
+	    // resolver owns the tag-or-int rule (c-testsuite 00170).
+	    TokenDataType *resolved =
+		resolve_declared_type_token(nt, true, true);
+	    if ( !resolved )
+		Throw(nt) << "Expecting enum tag in function pointer parameter type" << flush;
+	    param_dd = &resolved->definition;
 	}
 	else
 	{

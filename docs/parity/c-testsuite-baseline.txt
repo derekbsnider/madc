@@ -26,8 +26,9 @@
 00130.c
 # 00162: void fooc(int x[const 5]);  (qualifier inside array param brackets)
 00162.c
-# 00170: int (*fmember)(enum efoo x);  (fn-ptr struct member w/ enum param)
-00170.c
+# 00170: FIXED 2026-08-29 — `enum TAG` elaborated-specifier arm in
+#        resolve_declared_type_token + parseFnPtrParams enum arm
+#        (gate: testenumtagtype)
 # 00209: int f1 (int (), int);  (abstract function-type parameter)
 00209.c
 #
