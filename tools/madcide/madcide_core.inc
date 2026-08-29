@@ -2682,7 +2682,14 @@ void run_ide(const char *path, bool ro)
     // cwd — the old cwd-relative "tools/madcide/profiles" only worked
     // from the repository root.
     const char *self = __FILE__;
+    // Take whichever separator is LAST: a Windows launch spells the source
+    // path with '\' (and the include chain may mix the two). Splitting on
+    // '/' alone cost the first genuine-Win validation its keybindings —
+    // every chord is profile data, so the session had arrows and no exit.
     const char *sl = strrchr(self, '/');
+    const char *bs = strrchr(self, '\\');
+    if ( !sl || (bs && bs > sl) )
+	sl = bs;
     if ( sl != 0 )
 	ui::set(w, es, "profile_dir",
 		format("{}/profiles", perl::substr(self, 0, sl - self)));
@@ -2692,7 +2699,18 @@ void run_ide(const char *path, bool ro)
     if ( t == 0 )
 	return;
     ui::set(w, es, "tui", t);
-    load_profile(w, es, "joe");	// msgs its own failures
+    if ( !load_profile(w, es, "joe") )
+    {
+	// No profile = NO bindings at all (they are pure data — there are
+	// no compiled-in chords, not even quit), so a silent continue
+	// traps the session in a bindingless editor. Fail LOUD instead
+	// (the first genuine-Win validation hit exactly this).
+	var dir;
+	ui::get(dir, w, es, "profile_dir");
+	ui::tui_close(t);
+	println(stderr, "madcide: cannot load the startup profile {}/joe.keys — keybindings are profile data; check the install layout (tools/madcide/profiles beside madcide.mad).", dir);
+	return;
+    }
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
