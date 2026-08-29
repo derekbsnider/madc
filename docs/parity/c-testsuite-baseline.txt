@@ -60,8 +60,9 @@
 # 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
 #        (in_place_label) with a top-of-switch goto jump table; gate
 #        tests/testduffdevice.mad.
-# 00150: {[0] = 1, 1+1}  (designated initializer then positional)
-00150.c
+# 00150: FIXED 2026-08-29 — parse_compound_struct_lit adopts the shared
+#        parse_array_designator_initializer for `[idx] =` elements;
+#        positional resume after the slot (gate: testcompoundlitdesig)
 # 00152: #error inside a skipped conditional group still diagnosed
 00152.c
 # 00213: the Duff-shaped part is FIXED (nested labels + pre-case statements

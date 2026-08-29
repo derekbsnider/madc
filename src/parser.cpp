@@ -12011,6 +12011,29 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 		    slit->inits.push_back(parse_compound_struct_lit(elem_sdd,
 								    origin));
 		}
+		else if ( look->id() == TokenID::tkOpSqr )
+		{
+		    // `[idx] = value` array designator (C11 6.7.9; c-testsuite
+		    // 00150 `{[0] = 1, 1+1}`): the shared designator reader
+		    // owns the bracket grammar; positional elements resume
+		    // after the designated slot (inits.size() continues from
+		    // the resize).
+		    TokenBase *ni = nextToken();
+		    size_t first_index = 0, last_index = 0;
+		    parse_array_designator_initializer(ni, first_index, last_index);
+		    TokenBase *value_expr;
+		    if ( ni && ni->id() == TokenID::tkOpBrc )
+		    {
+			pushToken(ni);
+			value_expr = parse_compound_struct_lit(NULL, origin);
+		    }
+		    else
+			value_expr = parseExpression(ni);
+		    if ( slit->inits.size() <= last_index )
+			slit->inits.resize(last_index + 1, NULL);
+		    for ( size_t ai = first_index; ai <= last_index; ++ai )
+			slit->inits[ai] = value_expr;
+		}
 		else
 		{
 		TokenBase *elem = nextToken();
