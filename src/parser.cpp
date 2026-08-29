@@ -1330,11 +1330,22 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 // Shared declarator pointer-star consumer. See the header for the contract.
 // Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
 // loops so the explicit `*` count is handled the SAME way everywhere.
-int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
+int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
+				      bool leading_const)
 {
     int stars = 0;
     bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
+    // Pointee-const modeling (docs/plans/2026-06-19-const-qualified-types.md):
+    // a const pending at the CURRENT level wraps that level's type in
+    // DataDefCONST (getConstType) before the next '*' derives from it, so
+    // `const char *` and `char *` carry DISTINCT pointer identities
+    // (c-testsuite 00219's _Generic lines). C mode only for now — the C++
+    // producer is the campaign's Phase 3/4 transparency sweep (overload
+    // ranking, mangling, template keying). Top-level const — after the LAST
+    // star — stays the variable read-only flag, never a type wrap (lvalue
+    // conversion drops it, C11 6.3.2.1p2).
+    bool pending_const = leading_const && is_c_mode();
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
     {
@@ -1344,12 +1355,21 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
 	    ++stars;
 	    const_after = false;	// any const before this star was low-level
 	    if ( !fnptr_base )
+	    {
+		if ( pending_const )
+		    dd = getConstType(dd);
 		dd = getPointerType(dd);
+	    }
+	    pending_const = false;
 	}
 	else
 	{
-	    if ( stars > 0 && peekToken()->id() == TokenID::tkCONST )
-		const_after = true;	// const after the last '*' = top-level const ptr
+	    if ( peekToken()->id() == TokenID::tkCONST )
+	    {
+		if ( stars > 0 )
+		    const_after = true;	// const after the last '*' = top-level const ptr
+		pending_const = is_c_mode();
+	    }
 	    nextToken();		// consume const/volatile/restrict
 	}
     }
@@ -11487,6 +11507,8 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    return NULL;
 	}
 	std::string ename = contextual_identifier_name(name_tb);
+	if ( TokenDataType *ctag = find_c_enum_tag(ename) )
+	    return ctag;
 	flat_datatype_map_iter mi = datatype_map.find(ename);
 	if ( mi != datatype_map.end()
 	  && dynamic_cast<DataDefENUM *>(&(*mi)->definition) )
@@ -12291,6 +12313,16 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 {
     if ( !dd )
 	return "";
+    // A const-qualified level renders `const <base>` — the same canonical
+    // spelling parse_builtin_types_compatible_operand builds from a type
+    // name's leading qualifiers, so `const char *` associations match a
+    // ptr(const char) controlling type. Must precede every base-forwarding
+    // arm (a const pointer is DataDefCONST wrapping DataDefPTR).
+    if ( DataDefCONST *const_dd = dd->as_const_dd() )
+    {
+	std::string base = canonical_builtin_simple_type_name(const_dd->base_type);
+	return base.empty() ? "" : "const " + base;
+    }
     if ( dd == &ddDOUBLE )
 	return "double";
     if ( DataDefENUM *enum_dd = dynamic_cast<DataDefENUM *>(dd) )
@@ -12534,6 +12566,10 @@ std::string Program::generic_controlling_signature(TokenBase *ctrl)
     DataDef *dd = ctrl->datadef();
     if ( !dd )
 	return "";
+    // Lvalue conversion (C11 6.3.2.1p2) drops TOP-LEVEL qualifiers from the
+    // controlling expression's type — `*p` on a const-char pointer controls
+    // as plain char. Nested (pointee) qualification stays.
+    dd = dd->unqualified();
     if ( DataDefCArray *ca = dd->as_carray_dd() )
 	return "ptr(" + canonical_builtin_simple_type_name(ca->element_type) + ")";
     // Function designators decay to pointers-to-function; the renderer
@@ -35003,6 +35039,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			Throw(tb) << "member access has no receiver type" << flush;
 			return ExprStep::Break;
 		    }
+		    // A const receiver type (deref of a const pointee — C-mode
+		    // `(*pls).a`) resolves members against the unqualified
+		    // layout: the hard DataDefSTRUCT/DataDefCLASS casts below
+		    // must never see the DataDefCONST wrapper (the arrow arm
+		    // peels at its pointee extraction for the same reason).
+		    struct_type = struct_type->unqualified();
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 		    {
 			// UFCS (--std=madc): a non-class receiver (int, char *, array).
@@ -35435,7 +35477,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
 			if ( !ptr_type || !ptr_type->base_type )
 			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
-			base = ptr_type->base_type;
+			// A const pointee (`const struct S *p`) accesses its
+			// members through the unqualified layout — the hard
+			// DataDefSTRUCT casts below must never see the
+			// DataDefCONST wrapper (write-rejection through a
+			// const pointee is the const campaign's P4 residue).
+			base = ptr_type->base_type->unqualified();
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
 		    {
@@ -48541,6 +48588,26 @@ TokenBase *TokenENUM::parse(Program &pgm)
     tn = pgm.peekToken();
     if ( !tn || tn->id() != TokenID::tkOpBrc )
     {
+	// C forward declaration `enum efoo;` — not ISO C (6.7.2.3 requires a
+	// prior definition), but gcc accepts it with only a pedantic warning
+	// and it occurs in the wild (c-testsuite 00170). Register an
+	// incomplete DataDefENUM in the C TAG namespace; the later definition
+	// completes the SAME dd, so types captured before it (parameters,
+	// return types) see the enumerators and the computed underlying type.
+	if ( tn && tn->id() == TokenID::tkSemi && !enum_tag.empty()
+	  && pgm.is_c_mode() && !scoped )
+	{
+	    if ( pgm.c_enum_tag_map.find(enum_tag) == pgm.c_enum_tag_map.end() )
+	    {
+		DataDefENUM *fwd_enum_dd = new DataDefENUM(enum_tag);
+		fwd_enum_dd->set_underlying(fixed_base);
+		pgm.c_enum_tag_map[enum_tag] =
+		    new TokenDataType(enum_tag.c_str(), *fwd_enum_dd);
+	    }
+	    pgm.nextToken(); // consume ';'
+	    return NULL;
+	}
+
 	// C++11 opaque-enum-declaration: `enum class Tag : T;` / `enum Tag : T;`
 	// (next token is ';', not a variable name). This DECLARES the enum type —
 	// register the tag as a type and finish, rather than treating it as a
@@ -48579,6 +48646,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// Treat enum as int and let the caller parse the variable declaration
 	if ( !enum_tag.empty() )
 	{
+	    // C tag namespace first — C mode registers enum tags ONLY there
+	    // (the map is empty in C++/madc modes). An `enum X` reference
+	    // resolves to the tag's dd even before the definition (00170's
+	    // forward-declared parameter/return uses).
+	    if ( TokenDataType *ctag = pgm.find_c_enum_tag(enum_tag) )
+	    {
+		pgm.pushToken(ctag);
+		return NULL;
+	    }
 	    // A registered enum tag resolves to its DataDefENUM — scoped or
 	    // plain (`enum Color col;` after the definition keeps the enum's
 	    // type domain; === depends on it). A plain tag only resolves to an
@@ -48602,7 +48678,30 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // scope. C keeps the `enum Tag` spelling and does not get a bare `Tag`
     // typedef here.
     DataDef *enum_dd = NULL;
-    if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
+    if ( !enum_tag.empty() && pgm.is_c_mode() && !scoped )
+    {
+	// C: the tag lives in the TAG namespace only — the bare tag never
+	// becomes a type name. Reuse a forward declaration's dd so types
+	// captured before the definition complete in place (00170); the
+	// underlying-type computation at the definition's close then drives
+	// enum bit-field signedness (00218) and sizeof through the shared
+	// DataDefENUM plumbing. Enumerators still register as plain int
+	// constants below (C11 6.7.2.2p3: an enumerator has type int).
+	std::map<std::string, TokenDataType *>::iterator ceti =
+	    pgm.c_enum_tag_map.find(enum_tag);
+	DataDefENUM *def_enum_dd = ceti != pgm.c_enum_tag_map.end()
+	    ? dynamic_cast<DataDefENUM *>(&ceti->second->definition) : NULL;
+	if ( !def_enum_dd )
+	{
+	    def_enum_dd = new DataDefENUM(enum_tag);
+	    pgm.c_enum_tag_map[enum_tag] =
+		new TokenDataType(enum_tag.c_str(), *def_enum_dd);
+	}
+	if ( fixed_base )
+	    def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
+	enum_dd = def_enum_dd;
+    }
+    else if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
 	DataDefENUM *def_enum_dd = new DataDefENUM(enum_tag);
 	def_enum_dd->set_underlying(fixed_base); // fixed base drives layout ([dcl.enum]p8)
@@ -48899,8 +48998,14 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 		pgm.pushToken(id_tok);
 		if ( peek2 && peek2->id() == TokenID::tkOpBrk )
 		{
-		    TokenDataType tdt("int", ddINT);
-		    result = pgm.parseDeclaration(&tdt, true);
+		    // HEAP token (same rule as the mixed-comma-list arm):
+		    // parseDeclaration records tb as TopDecl.origin, which
+		    // must outlive this frame.
+		    TokenDataType *tdt = new TokenDataType("int", ddINT);
+		    tdt->file = tn->file;
+		    tdt->line = tn->line;
+		    tdt->column = tn->column;
+		    result = pgm.parseDeclaration(tdt, true);
 		}
 		else
 		    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
@@ -63002,11 +63107,20 @@ paramdecl:
 		// After a function declarator continuation, fall back to the
 		// normal variable declarator parser when the next name is not
 		// followed by `(`.
+		// HEAP token, never a stack local: parseDeclaration records tb
+		// as TopDecl.origin (and MC11-IR keeps originating tokens for
+		// the life of the tree), so a stack token here is a dangling
+		// origin the CIR emitter later reads (c-testsuite 00121's
+		// `int f(int a), g(int a), a;` — td_system read a dead frame).
 		pushToken(open);
 		pushToken(next);
-		TokenDataType tdt(next_return->name.c_str(), *next_return);
+		TokenDataType *tdt =
+		    new TokenDataType(next_return->name.c_str(), *next_return);
+		tdt->file = nt->file;
+		tdt->line = nt->line;
+		tdt->column = nt->column;
 		pop_param_scope();
-		parseDeclaration(&tdt);
+		parseDeclaration(tdt);
 		return;
 	    }
 	    pop_param_scope();
@@ -64106,32 +64220,14 @@ static size_t flattened_scalar_capacity(DataDef *dd)
     return 1;
 }
 
-static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
-					       const std::vector<TokenBase *> &init_list)
-{
-    if ( !sdd )
-	return;
-    for ( size_t i = 0; i < sdd->member_counts.size(); ++i )
-    {
-	if ( sdd->member_counts[i] != 0 )
-	    continue;
-	size_t inferred = 0;
-	if ( i < init_list.size() )
-	{
-	    if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(init_list[i]) )
-		inferred = slit->inits.size();
-	}
-	if ( inferred == 0 )
-	    continue;
-	sdd->member_counts[i] = inferred;
-	if ( i < sdd->member_offsets.size() && i < sdd->members.size() )
-	{
-	    size_t end = sdd->member_offsets[i] + sdd->members[i].second->size * inferred;
-	    if ( end > sdd->size )
-		sdd->size = DataDefSTRUCT::align_up(end, sdd->max_align);
-	}
-    }
-}
+// GNU flexible-array-member initialization (`struct W gw = {.., {1,2,3}};`)
+// extends the INITIALIZED OBJECT's storage, never the type: sizeof(struct W)
+// and sizeof(gw) both stay the base size (gcc/clang; c-testsuite 00216), and
+// other variables of the type are unaffected. madc's parse side therefore
+// must NOT write the inferred count back into the shared DataDefSTRUCT (the
+// old in-place mutation corrupted every later sizeof). The extended storage
+// itself is c2mir's job: the CIR emits the flex member as `[]` with its
+// initializer list, and c2mir allocates/initializes the extended object.
 
 static DataDef *peel_carray_dimensions(DataDef *base_type,
 				       std::vector<carray_dim_t> &arr_dims,
@@ -64566,7 +64662,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
-    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star);
+    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star,
+						gotconst);
     if ( n_decl_stars > 0 )
 	saw_pointer_decl = true;
     DBG(std::cout << "parseDeclaration() consumed " << n_decl_stars
@@ -65978,8 +66075,6 @@ fnptr_decl_arm_head:
 		if ( init_list.size() > initializer_capacity )
 		    Throw(tb) << "Too many initializers for array (expected " << initializer_capacity << ")" << flush;
 	    }
-	    if ( is_struct_init )
-		infer_flexible_array_member_counts(dynamic_cast<DataDefSTRUCT *>(decl_type), init_list);
 	}
 	else if ( !arr_dims.empty() )
 	{

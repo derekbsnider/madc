@@ -1,7 +1,45 @@
 # c-testsuite burndown — 198/220 → 220/220
 
-**Progress: 218/220 (2026-08-29, wave 3 — DONE except two campaign-blocked
-residues).** Wave 1 (2026-08-28): 00204, 00210, 00205, 00143. Wave 2
+**🏁 COMPLETE: 220/220, baseline EMPTY (2026-08-29, wave 4 — s145).** The
+lane now runs in **C mode** (`--std=gnu11`; owner ruling 2026-08-29: "these
+are C language tests" — measured in the mode the gcc/clang oracles use; gnu
+for the suite's GNU extensions; bare-madc-mode C coverage stays with
+smaug_gate.sh). Wave 4 closed the last four:
+- **00170** + **00218** (C-mode exposures): the C enum TAG namespace —
+  `Program::c_enum_tag_map` registers a real DataDefENUM for C-mode
+  definitions AND forward `enum efoo;` declarations (reused/completed in
+  place); both `enum TAG` resolvers consult `find_c_enum_tag()` before int
+  decay; enum bit-field signedness now takes the enum's UNDERLYING type
+  (`DataDef::enum_underlying`), replacing the name heuristic that
+  zero-extended negative-enumerator enums in every mode (gate:
+  testcenumtag).
+- **00216**: flex-array init extends the OBJECT, never the type —
+  infer_flexible_array_member_counts (which mutated the shared
+  DataDefSTRUCT, corrupting every later sizeof) is DELETED; c2mir owns the
+  extended storage via the emitted `s[]` + initializer (gate:
+  testflexsizeof). The empty-struct line came free with C mode.
+- **00219**: pointee-const identity in the C declaration grammar —
+  consume_declarator_stars mints DataDefCONST (getConstType) for pending
+  low-level consts, `const char *` ≠ `char *` in _Generic; lvalue
+  conversion peels top-level quals; DataDefCONST forwards all as_*_dd();
+  member access through const pointees peels unqualified() (gate:
+  testconstpointee). C mode only — the C++ producer is the const
+  campaign's Phase 3/4 (docs/plans/2026-06-19-const-qualified-types.md).
+
+**Wave-4 merge battery caught two more (both fixed + gated):** the
+emitter carried NINE copies of the pointer-peel walk, all
+dynamic_cast-keyed — a const level (`char * const *`) broke the walk and
+LOST a star (SMAUG's flagarray, smaug_gate RED); all copies now delegate
+to dd_peel_pointers (as_pointer_dd steps through const levels), gated by
+`scripts/check-one-pointer-peel.sh` in fulltest. Its stack-layout shift
+then exposed a LATENT dangling TopDecl.origin: two parseDeclaration
+callers (the mixed comma list `int f(int a), g(int a), a;` — 00121 —
+and the C89 implicit-int `static f()` arm) passed STACK type tokens that
+MC11-IR retains for the life of the tree; both now mint heap tokens
+(gate: testmixeddecl).
+
+**Progress history: 218/220 (2026-08-29, wave 3 — DONE except two
+campaign-blocked residues, both closed by wave 4 above).** Wave 1 (2026-08-28): 00204, 00210, 00205, 00143. Wave 2
 (2026-08-29): section C complete — 00170, 00162, 00209, 00130, 00089, 00124
 (+ two silent-wrong finds: cast-member call-by-name, unsigned enum members).
 Wave 3 (2026-08-29): 00038 (sizeof literal operand), 00103 (deref-paren

@@ -4,6 +4,11 @@
 # against bin/madc: each tests/single-exec/NNNNN.c must compile+run rc=0
 # with stdout exactly matching NNNNN.c.expected.
 #
+# The lane runs in C MODE (--std=gnu11; owner ruling 2026-08-29: these are
+# C language tests, measured in the mode the gcc/clang oracles use; gnu
+# because the suite leans on GNU extensions — case ranges, empty structs,
+# flex-array init). Bare-madc-mode C coverage stays with smaug_gate.sh.
+#
 # RATCHET shape (the torture-set precedent): known-fails live in
 # docs/parity/c-testsuite-baseline.txt (one test filename per line, #
 # comments allowed). The lane is RED when any non-baseline test fails.
@@ -46,7 +51,7 @@ mkdir -p tmp
 for src in "$DIR"/*.c; do
 	name=$(basename "$src")
 	exp="$src.expected"
-	out=$( ( ulimit -t 10; timeout 15 "$BIN" "$src" ) 2>/dev/null )
+	out=$( ( ulimit -t 10; timeout 15 "$BIN" --std=gnu11 "$src" ) 2>/dev/null )
 	rc=$?
 	ok=0
 	if [ "$rc" -eq 0 ]; then

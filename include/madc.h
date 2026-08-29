@@ -2572,6 +2572,21 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // C tag namespace for enums (C11 6.2.3): in C mode `enum TAG` resolves
+    // here and the bare TAG never becomes a type name (a variable named like
+    // the tag stays legal). C++/madc modes keep registering enum tags as
+    // type names in datatype_map. No decl-index tap: the two-token `enum X`
+    // spelling is never a bare-name lookup, and C TUs are not packed.
+    std::map<std::string, TokenDataType *> c_enum_tag_map;
+    // The one lookup for a C enum tag reference — both `enum TAG` resolvers
+    // (TokenENUM::parse's no-brace arm, resolve_declared_type_token's
+    // elaborated-specifier arm) consult this before their int decay.
+    TokenDataType *find_c_enum_tag(const std::string &tag)
+    {
+	std::map<std::string, TokenDataType *>::iterator it =
+	    c_enum_tag_map.find(tag);
+	return it != c_enum_tag_map.end() ? it->second : NULL;
+    }
     // Block-scope typedef shadow frames — one per live compound depth. Each
     // entry records (alias, the flat datatype_map entry it shadowed, or NULL).
     // register_scoped_typedef() records; unwind_block_typedef_shadows() restores
@@ -5747,7 +5762,8 @@ public:
     // is non-NULL, sets it to whether a `const` followed the last `*` (top-level
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
-    int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
+				 bool leading_const = false);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.

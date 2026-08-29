@@ -71,6 +71,21 @@ the *pointee/referent* the way C++ means it — the parser decides which by wher
   mangling, and `==`-on-DataDef comparisons. Fix each regression at its root (a
   consumer that should be const-transparent but tests identity).
 
+  **Producer #2 LANDED 2026-08-29 (s145, C mode, UNGATED)**: the C
+  declaration grammar mints pointee-const — `consume_declarator_stars`
+  wraps a pending low-level const via `getConstType` before each
+  `getPointerType` derivation (`const char *` ≠ `char *`; c-testsuite
+  00219, gate `testconstpointee`). Gated to `is_c_mode()`: C has no
+  overloads/mangling/templates, so the blast radius is the C lanes
+  (c-testsuite 220/220 green). Came with two transparency pieces the C++
+  flip will reuse: `DataDefCONST` forwards ALL `as_*_dd()` accessors
+  (predicates already forwarded — inconsistent views SIGSEGV'd member
+  access), and the two member-access chokepoints (arrow pointee
+  extraction, dot struct_type) peel `unqualified()`. The C++ producer
+  remains Phases 3/4. Write-rejection through a const pointee is still
+  a P4 residue (madc accepts stores gcc rejects — diagnostics gap, not
+  a wrong-value gap).
+
 - **Phase 3 — THREAD through deduction + instantiation naming.**
   `resolve_arg_spelling_datadef` (parser.cpp:15041) must RE-APPLY const (today it
   peels cv at 15067-77 and drops it) → return `getConstType(base)`. Tid-pack element

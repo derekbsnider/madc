@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **c-testsuite COMPLETE: 220/220, baseline empty (2026-08-29)** — the
+  lane now runs in C mode (`--std=gnu11`, owner ruling: C tests are
+  measured in the mode the gcc/clang oracles use). Closing fixes: the C
+  enum TAG namespace (`enum TAG;` forward declarations; enum-typed
+  bit-fields take the enum's *underlying* signedness — zero-extend
+  non-negative enums, sign-extend negative ones, in every mode; gate
+  `testcenumtag`); flexible-array-member initialization extends the
+  object, never the shared struct type (`sizeof` stays the base size;
+  gate `testflexsizeof`); pointee-const type identity in the C
+  declaration grammar (`const char *` ≠ `char *` in `_Generic`,
+  lvalue conversion drops top-level qualifiers, const-transparent
+  member access; gate `testconstpointee` — the const campaign's C-mode
+  producer, `DataDefCONST`/`getConstType`). The merge battery then
+  caught and closed two more: the emitter's NINE pointer-peel walker
+  copies (a const level lost a star — SMAUG's `char * const *flagarray`
+  emitted one `*`) consolidated onto `dd_peel_pointers` with a fulltest
+  gate (`check-one-pointer-peel.sh`); and a latent dangling
+  `TopDecl.origin` — two parse arms passed STACK type tokens that
+  MC11-IR retains (mixed comma list `int f(int a), g(int a), a;`, C89
+  implicit-int `static f()`), now heap-minted (gate `testmixeddecl`).
 - **c-testsuite conformance burndown 198 → 218/220 (2026-08-28/29,
   owner target 220)**: twenty C-conformance fixes across the lexer,
   parser, and CIR emitter, each with its own gcc/clang-oracled gate

@@ -1,0 +1,41 @@
+/* Pointee-const type identity in the C declaration grammar (c-testsuite
+   00219): `const char *` and `char *` carry DISTINCT pointer types —
+   consume_declarator_stars wraps a pending low-level const via
+   getConstType before deriving the pointer, so _Generic distinguishes
+   them; a const after the LAST star stays the variable read-only flag
+   (lvalue conversion drops it: `const int * const` controls as
+   `const int *`, matching neither `int *` nor `int * const`). Member
+   access through a const pointee peels to the unqualified layout
+   (`pls->b`, `(*pls).a`, struct copy from `*pls` — the 00216 SIGSEGV).
+   `*ti` lvalue-converts to plain char. C mode only (the C++ producer is
+   the const campaign's Phase 3/4).
+   Oracle: gcc/clang -std=gnu11 print a=4 b=3 c=20 d=5 e=2 1 f=2 g=8. */
+#include <stdio.h>
+
+struct S { int a, b; };
+
+int main()
+{
+    const char *ti = "hi";
+    const int * const ptr = 0;
+    struct S ls = {1, 2};
+    const struct S *pls = &ls;
+    int i;
+
+    i = _Generic(ti, const unsigned char *: 1, const char *: 4, char *: 3,
+		 const signed char *: 2);
+    printf("a=%d\n", i);
+    i = _Generic("lit", char *: 3, const char *: 1);
+    printf("b=%d\n", i);
+    i = _Generic(ptr, int *: 1, int * const: 2, default: 20);
+    printf("c=%d\n", i);
+    i = _Generic(*ti, char: 5, int: 7, default: 6);
+    printf("d=%d\n", i);
+    printf("e=%d %d\n", pls->b, (*pls).a);
+    struct S cp = *pls;
+    printf("f=%d\n", cp.b);
+    const char **pp = &ti;
+    i = _Generic(pp, const char **: 8, char **: 9, default: 10);
+    printf("g=%d\n", i);
+    return 0;
+}

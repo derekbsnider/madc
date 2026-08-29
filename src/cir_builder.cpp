@@ -3443,13 +3443,7 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 	// class relower.
 	int levels = 1;
 	DataDef *base = concrete;
-	while (base && base->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
-		if (!p)
-			break;
-		base = p->base_type;
-		levels++;
-	}
+	levels += dd_peel_pointers(base);   // the one pointer-peel owner
 	auto up_ptr_type = [&]() -> node_t {
 		node_t decl_list = list();
 		for (int i = 0; i < levels; i++)
@@ -5427,14 +5421,8 @@ node_t CirBuilder::char_ptr_type()
 // `*` declarators atop the pointee's spec — the same idiom va_arg uses.
 node_t CirBuilder::ptr_type_node(DataDef *dd)
 {
-	int levels = 0;
 	DataDef *base = dd;
-	while (base && base->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
-		if (!p) break;
-		base = p->base_type;
-		levels++;
-	}
+	int levels = dd_peel_pointers(base);   // the one pointer-peel owner
 	if (levels == 0)
 		return void_ptr_type();
 	node_t decl_list = list();
@@ -7211,13 +7199,7 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	// Return-type specs: peel pointer levels, recording the star count so the
 	// stars can be appended as the outermost declarator suffix.
 	DataDef *ret_dd = fd ? &fd->return_value_type() : NULL;
-	int ret_stars = 0;
-	while (ret_dd && ret_dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(unqualified_type(ret_dd));
-		if (!p || !p->base_type) break;
-		ret_dd = p->base_type;
-		ret_stars++;
-	}
+	int ret_stars = dd_peel_pointers(ret_dd);   // the one pointer-peel owner
 	// Fn-ptr RETURNING a fn-ptr (c-testsuite 00124): append this level's
 	// declarator suffixes as usual, then RECURSE for the return fn-ptr —
 	// it appends its own `*` + `(params)` after ours (binding order runs
@@ -7337,14 +7319,8 @@ static bool carray_chain_has_runtime(DataDef *dd)
 // NULL when ptype is not a VLA-typed parameter.
 static DataDef *vla_param_flat_elem(DataDef *ptype, int &stars)
 {
-	int ptr_levels = 0;
 	DataDef *t = ptype;
-	while (t && t->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
-		if (!p || !p->base_type) break;
-		t = p->base_type;
-		ptr_levels++;
-	}
+	int ptr_levels = dd_peel_pointers(t);   // the one pointer-peel owner
 	if (!carray_chain_has_runtime(t))
 		return NULL;
 	DataDef *elem = t;
@@ -8271,14 +8247,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	// Without this an array param collapsed to the wrong type (`int *map`), so
 	// `map[x][y]` failed ("subscripted value is neither array nor pointer").
 	{
-		int ptr_levels = 0;
 		DataDef *t = ptype;
-		while (t && t->is_pointer()) {
-			DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
-			if (!p || !p->base_type) break;
-			t = p->base_type;
-			ptr_levels++;
-		}
+		int ptr_levels = dd_peel_pointers(t);   // the one pointer-peel owner
 		// A VLA-typed parameter (`char a[2][N]` — PTR(CArray char,
 		// count_expr N)) lowers to a FLAT scalar pointer (`char *a`,
 		// vla_param_flat_elem): the row structure must not reappear in
@@ -8305,13 +8275,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			int decay_ptrs = ptr_levels ? ptr_levels : 1;
 			size_t first_dim = ptr_levels ? 0 : 1;
 			// Element's own pointer depth (`char *argv[]` -> element char*).
-			int elem_stars = 0;
-			while (elem && elem->is_pointer()) {
-				DataDefPTR *p = dynamic_cast<DataDefPTR *>(elem);
-				if (!p || !p->base_type) break;
-				elem = p->base_type;
-				elem_stars++;
-			}
+			int elem_stars = dd_peel_pointers(elem);   // the one pointer-peel owner
 			node_t pspec = type_list(elem);
 			node_t pdecl_list = list();
 			for (int s = 0; s < elem_stars; s++)
@@ -8331,11 +8295,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	// `struct node **p` with base = `DataDefPTR(struct node)`, which is not a
 	// struct, so type_list fell through to the default `int` spec — dropping
 	// the struct/real base type for any multi-level pointer parameter.
-	while (base_dd && base_dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
-		if (!p || !p->base_type) break;
-		base_dd = p->base_type;
-	}
+	// dd_peel_pointers is the one owner (const-level aware).
+	dd_peel_pointers(base_dd);
 
 	node_t pspec = type_list(base_dd);
 	node_t pdecl_list = list();
@@ -8971,11 +8932,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
 	// struct, not the intermediate DataDefPTR which type_list would render as
 	// `int`). The star count is recovered separately via dd_ptr_depth below.
-	while (base_dd && base_dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
-		if (!p || !p->base_type) break;
-		base_dd = p->base_type;
-	}
+	// dd_peel_pointers is the one owner (const-level aware).
+	dd_peel_pointers(base_dd);
 	// Pointer-to-array `T (*p)[N]`: the parser builds the type as
 	// DataDefPTR(DataDefCArray(T, N)). After peeling the pointer level(s) above,
 	// base_dd is the CArray — peel its fixed dims so the spec renders the element
@@ -9435,14 +9393,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 // Count pointer-indirection levels of a DataDef (int** -> 2, NODE -> 0).
 static int dd_ptr_depth(DataDef *dd)
 {
-	int depth = 0;
-	while (dd && dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
-		if (!p) break;
-		dd = p->base_type;
-		depth++;
-	}
-	return depth;
+	// Delegate to the one pointer-peel owner (const-level aware).
+	DataDef *t = dd;
+	return dd_peel_pointers(t);
 }
 
 // Peel ALL pointer levels off `dd` to its base type, returning the star
@@ -9450,15 +9403,23 @@ static int dd_ptr_depth(DataDef *dd)
 // (`const unsigned short **__ctype_b_loc(void)`) keeps every level — the
 // old peel-one-level pattern emitted `unsigned short *`, and the ctype
 // macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
+// as_pointer_dd(), not dynamic_cast: a const-qualified level
+// (`char * const *` = PTR(CONST(PTR(char)))) forwards through its
+// DataDefCONST wrapper, so the const level still counts as its pointer —
+// the dynamic_cast form broke the walk there and LOST a star (SMAUG
+// reset.c's flagarray emitted `char *`). The final unqualified() peel
+// keeps the returned base renderable when the innermost pointee is const.
 int dd_peel_pointers(DataDef *&dd)
 {
 	int depth = 0;
 	while (dd && dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+		DataDefPTR *p = dd->as_pointer_dd();
 		if (!p || !p->base_type) break;
 		dd = p->base_type;
 		depth++;
 	}
+	if (dd)
+		dd = dd->unqualified();
 	return depth;
 }
 
@@ -9767,11 +9728,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// and only one star — see the declarator below), so element stride was
 		// sizeof(int)=4 not sizeof(A*)=8 and reading element[1] crashed.
 		DataDef *mbase = mtype;
-		while (mbase && mbase->is_pointer()) {
-			DataDefPTR *mptr = dynamic_cast<DataDefPTR *>(mbase);
-			if (!mptr || !mptr->base_type) break;
-			mbase = mptr->base_type;
-		}
+		dd_peel_pointers(mbase);   // the one pointer-peel owner
 		// An anonymous nested struct/union member (`struct { ... } f;` or
 		// `union { ... } u;` inside the enclosing aggregate) has no tag to
 		// forward-reference, so type_list would emit `struct anonymous` — an
@@ -19728,14 +19685,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// value". A no-op when addr is already T* (e.g. `new(&buf) int`).
 				node_t rhs = tn->ctor_args.empty()
 						? integer(0, tb) : translate_expr(tn->ctor_args[0]);
-				int levels = 1;
 				DataDef *t = tn->alloc_type;
-				while (t && t->is_pointer()) {
-					DataDefPTR *p = (t ? t->as_pointer_dd() : NULL);
-					if (!p) break;
-					t = p->base_type;
-					levels++;
-				}
+				int levels = 1 + dd_peel_pointers(t);   // the one pointer-peel owner
 				node_t decls = list();
 				for (int i = 0; i < levels; i++) append(decls, pointer());
 				node_t tptr = node2(N_TYPE, type_list(t),
@@ -21640,12 +21591,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					 : id(tva->ap_var->name.c_str(), tb);
 		// Build a (T *)0 carrier: base specs of T plus one extra '*'.
 		DataDef *base = tva->target_type;
-		int levels = dd_ptr_depth(base) + 1;
-		while (base && base->is_pointer()) {
-			DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
-			if (!p) break;
-			base = p->base_type;
-		}
+		int levels = dd_peel_pointers(base) + 1;   // the one pointer-peel owner
 		node_t decl_list = list();
 		for (int i = 0; i < levels; i++) append(decl_list, pointer());
 		node_t type_node = node2(N_TYPE, type_list(base),

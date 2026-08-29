@@ -363,6 +363,11 @@ public:
     virtual DataDefCONST         *as_const_dd()    { return NULL; }
     virtual DataDefCArray        *as_carray_dd()   { return NULL; }
     virtual DataDefENUM          *as_enum_dd()     { return NULL; }
+    // An enumeration's underlying type (fixed base or the computed one),
+    // NULL for every non-enum. Exists as a DataDef virtual because layout
+    // code (DataDefSTRUCT::allocateBitField) needs it where DataDefENUM is
+    // still an incomplete type.
+    virtual DataDef              *enum_underlying(){ return NULL; }
     virtual DataDefTemplateParam *as_template_param_dd() { return NULL; }
     virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
     virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
@@ -1021,9 +1026,17 @@ public:
 	bool alias_like_int =
 	    dd.rawtype() == DataType::dtINT32
 	    && !is_builtin_signed_integer_name(dd.name);
-	info.is_unsigned = dd.is_unsigned()
-	    || dd.rawtype() == DataType::dtBOOL
-	    || alias_like_int;
+	// An enum-typed bit-field's signedness is the enum's UNDERLYING
+	// type's (gcc/clang: all-non-negative enumerators -> unsigned int ->
+	// zero-extend; a negative enumerator -> int -> sign-extend). The
+	// name heuristic below cannot see the negative case — it treats
+	// every non-builtin-named int32 as unsigned.
+	if ( DataDef *eu = dd.enum_underlying() )
+	    info.is_unsigned = eu->is_unsigned();
+	else
+	    info.is_unsigned = dd.is_unsigned()
+		|| dd.rawtype() == DataType::dtBOOL
+		|| alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
 	// SysV counts only bytes actually occupied; Microsoft already reserved
@@ -1695,6 +1708,23 @@ public:
     virtual size_t alignment() const override { return base_type->alignment(); }
     virtual int gcc_type_class() const override { return base_type->gcc_type_class(); }
     virtual DataDefCONST *as_const_dd() override { return this; }
+    // The as_*_dd() accessors forward like the predicates do — a consumer
+    // that asks is_struct() and then as_struct_dd() must get one coherent
+    // view (a NULL here after a true predicate was the 00216 member-access
+    // SIGSEGV once declarations began minting const pointees). Only
+    // as_const_dd() answers self; unqualified() is the peel.
+    virtual DataDefSTRUCT        *as_struct_dd() override   { return base_type->as_struct_dd(); }
+    virtual DataDefCLASS         *as_class_dd() override    { return base_type->as_class_dd(); }
+    virtual DataDefCOMPLEX       *as_complex_dd() override  { return base_type->as_complex_dd(); }
+    virtual DataDefPTR           *as_pointer_dd() override  { return base_type->as_pointer_dd(); }
+    virtual DataDefREF           *as_reference_dd() override{ return base_type->as_reference_dd(); }
+    virtual DataDefCArray        *as_carray_dd() override   { return base_type->as_carray_dd(); }
+    virtual DataDefENUM          *as_enum_dd() override     { return base_type->as_enum_dd(); }
+    virtual DataDefTemplateParam *as_template_param_dd() override { return base_type->as_template_param_dd(); }
+    virtual DataDefFPTR          *as_fptr_dd() override     { return base_type->as_fptr_dd(); }
+    virtual DataDefSIMD          *as_simd_dd() override     { return base_type->as_simd_dd(); }
+    virtual FuncDef              *as_funcdef_dd() override  { return base_type->as_funcdef_dd(); }
+    virtual DataDef              *enum_underlying() override{ return base_type->enum_underlying(); }
     virtual DataDef *unqualified() override { return base_type ? base_type : this; }
     virtual const DataDef *unqualified() const override { return base_type ? base_type : this; }
 };
@@ -1824,6 +1854,7 @@ public:
 	}
     }
     virtual DataDefENUM *as_enum_dd() override { return this; }
+    virtual DataDef *enum_underlying() override { return underlying; }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT
