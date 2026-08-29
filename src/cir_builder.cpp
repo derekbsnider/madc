@@ -3443,13 +3443,7 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 	// class relower.
 	int levels = 1;
 	DataDef *base = concrete;
-	while (base && base->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
-		if (!p)
-			break;
-		base = p->base_type;
-		levels++;
-	}
+	levels += dd_peel_pointers(base);   // the one pointer-peel owner
 	auto up_ptr_type = [&]() -> node_t {
 		node_t decl_list = list();
 		for (int i = 0; i < levels; i++)
@@ -8331,11 +8325,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	// `struct node **p` with base = `DataDefPTR(struct node)`, which is not a
 	// struct, so type_list fell through to the default `int` spec — dropping
 	// the struct/real base type for any multi-level pointer parameter.
-	while (base_dd && base_dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
-		if (!p || !p->base_type) break;
-		base_dd = p->base_type;
-	}
+	// dd_peel_pointers is the one owner (const-level aware).
+	dd_peel_pointers(base_dd);
 
 	node_t pspec = type_list(base_dd);
 	node_t pdecl_list = list();
@@ -8971,11 +8962,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
 	// struct, not the intermediate DataDefPTR which type_list would render as
 	// `int`). The star count is recovered separately via dd_ptr_depth below.
-	while (base_dd && base_dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
-		if (!p || !p->base_type) break;
-		base_dd = p->base_type;
-	}
+	// dd_peel_pointers is the one owner (const-level aware).
+	dd_peel_pointers(base_dd);
 	// Pointer-to-array `T (*p)[N]`: the parser builds the type as
 	// DataDefPTR(DataDefCArray(T, N)). After peeling the pointer level(s) above,
 	// base_dd is the CArray — peel its fixed dims so the spec renders the element
@@ -9435,14 +9423,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 // Count pointer-indirection levels of a DataDef (int** -> 2, NODE -> 0).
 static int dd_ptr_depth(DataDef *dd)
 {
-	int depth = 0;
-	while (dd && dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
-		if (!p) break;
-		dd = p->base_type;
-		depth++;
-	}
-	return depth;
+	// Delegate to the one pointer-peel owner (const-level aware).
+	DataDef *t = dd;
+	return dd_peel_pointers(t);
 }
 
 // Peel ALL pointer levels off `dd` to its base type, returning the star
@@ -9450,15 +9433,23 @@ static int dd_ptr_depth(DataDef *dd)
 // (`const unsigned short **__ctype_b_loc(void)`) keeps every level — the
 // old peel-one-level pattern emitted `unsigned short *`, and the ctype
 // macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
+// as_pointer_dd(), not dynamic_cast: a const-qualified level
+// (`char * const *` = PTR(CONST(PTR(char)))) forwards through its
+// DataDefCONST wrapper, so the const level still counts as its pointer —
+// the dynamic_cast form broke the walk there and LOST a star (SMAUG
+// reset.c's flagarray emitted `char *`). The final unqualified() peel
+// keeps the returned base renderable when the innermost pointee is const.
 int dd_peel_pointers(DataDef *&dd)
 {
 	int depth = 0;
 	while (dd && dd->is_pointer()) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+		DataDefPTR *p = dd->as_pointer_dd();
 		if (!p || !p->base_type) break;
 		dd = p->base_type;
 		depth++;
 	}
+	if (dd)
+		dd = dd->unqualified();
 	return depth;
 }
 
