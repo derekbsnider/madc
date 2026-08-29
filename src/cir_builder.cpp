@@ -8893,6 +8893,17 @@ static bool init_expr_needs_dynamic_init(node_t n, bool addr_ctx)
 		// The type-name subtree may carry typedef N_IDs — only the
 		// operand expression matters.
 		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), addr_ctx);
+	case N_COMPOUND_LITERAL:
+		// The type-name subtree carries tag/typedef N_IDs — not value
+		// reads (the N_CAST rule). A FILE-SCOPE compound literal has
+		// static storage (C11 6.5.2.5p5): it is constant-initializable
+		// iff its init VALUES are, and its address is then an address
+		// constant. Classifying it dynamic moved the literal into
+		// __madc_global_init's function scope — AUTOMATIC storage, so
+		// `struct S2 *s = &(struct S2){...}` dangled in native
+		// executables (JIT green only by stack luck; c-testsuite
+		// 00150's exe lane).
+		return init_expr_needs_dynamic_init(c2mir_node_op(n, 1), false);
 	case N_SIZEOF:
 	case N_EXPR_SIZEOF:
 	case N_ALIGNOF:
