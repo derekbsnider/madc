@@ -1,17 +1,37 @@
 # c-testsuite burndown — 198/220 → 220/220
 
-**Progress: 207/220 (2026-08-29, wave 2 — declarators).** Wave 1 (2026-08-28)
-fixed: 00204 (MIR va_block_arg SSE exhaustion — upstream PR candidate), 00210
-(cast-to-fnptr call), 00205 (three deep: exponential operator datadef()
-recursion, unary-plus-under-cast, flat struct-array count), 00143 (Duff's
-device: in-place labels + top-of-switch goto jump table; also unblocked
-00213's Duff half — its remaining root is a stmt-expr value corner,
-reclassified below). Wave 2 (2026-08-29) fixed five of section C's six:
-00170, 00162, 00209, 00130, 00089 (see section C for the revised mechanism
-note), plus two silent-wrong-answer defects found en route (member fn-ptr
-called under a cast bound the bare NAME; enum-typed struct members compared
-UNSIGNED). Validated: JIT suite 1215/0/0 + c-testsuite lane 207/13, 0 outside
-baseline. Remaining 13: 00124 + sections D/E/F.
+**Progress: 218/220 (2026-08-29, wave 3 — DONE except two campaign-blocked
+residues).** Wave 1 (2026-08-28): 00204, 00210, 00205, 00143. Wave 2
+(2026-08-29): section C complete — 00170, 00162, 00209, 00130, 00089, 00124
+(+ two silent-wrong finds: cast-member call-by-name, unsigned enum members).
+Wave 3 (2026-08-29): 00038 (sizeof literal operand), 00103 (deref-paren
+cast-head consolidation, + `*(union U*)p` and `***(expr)` silent-wrongs),
+00120 (enum bodies as member types), 00051 (non-compound switch bodies +
+label-chained case), 00150 (array designators in compound literals), 00152
+(real root: #line + __LINE__ in the #if expander), 00095 (real root:
+&main-before-definition prototype), 00202 (## placemarker + unary + after a
+binary operator), 00053 (block-scope struct tag shadowing — shadow frames +
+unique emitted identity), 00213 (constant-ternary dead-arm pruning), 00219
+PARTIAL 12/14 (_Generic implemented + the parse-side type view:
+usual_arithmetic_result, shift left-operand rule — which unmasked and fixed
+00200's shift types), 00216 PARTIAL (TokenVar::clone, braces-around-scalar
+unwrap, nested designators via read_struct_lit's type cursor).
+
+**Remaining 2 — both blocked outside this arc:**
+- **00216**: (a) flex-array sizeof — infer_flexible_array_member_counts
+  mutates the SHARED struct type from one variable's initializer; the right
+  fix is per-VARIABLE storage extension (a storage-machinery slice);
+  (b) empty-struct size — STD_MADC deliberately follows C++ (sizeof 1,
+  presents_as_cpp) where the test expects GNU-C 0; `--std=gnu11` already
+  gives 0. Whether the LANE should run C mode for .c files is an OWNER
+  decision (it would also re-baseline: e.g. the documented `enum TAG;`
+  C-mode rejection).
+- **00219**: 12/14 — the two remaining lines need pointee-const in the type
+  model (`const char *` renders ptr(char)): the gated FEATURE_CONST_TYPES
+  campaign (DataDefCONST P2-5), not a _Generic defect.
+
+Validated at close: FULL battery 1230/0/0 (9 skipped), lane 218/220,
+0 outside baseline, ratchet clean.
 
 Owner (2026-08-28): "we want c-testsuite to be 220/220 ideally."
 
