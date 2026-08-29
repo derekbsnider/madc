@@ -47704,6 +47704,27 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	if ( !name_tok || name_tok->type() != TokenType::ttIdentifier )
 	    pgm.Throw(name_tok ? name_tok : tn) << "Expecting identifier in function pointer typedef" << flush;
 	std::string alias = ((TokenIdent *)name_tok)->spelling();
+	// Array-of-function-pointers typedef: `typedef int (*fptr4[4])(int);`
+	// (c-testsuite 00209) — dims between the name and the ')'; the alias
+	// denotes ARRAY of N pointers-to-function.
+	std::vector<carray_dim_t> fptr_arr_dims;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken(); // consume '['
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClSqr )
+	    {
+		pgm.nextToken();
+		fptr_arr_dims.push_back(0);
+		continue;
+	    }
+	    int64_t n = pgm.parse_constant_integer_expression();
+	    if ( n < 0 )
+		pgm.Throw(name_tok) << "Array dimension must be non-negative in function pointer typedef" << flush;
+	    fptr_arr_dims.push_back((carray_dim_t)n);
+	    TokenBase *cl = pgm.nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClSqr )
+		pgm.Throw(cl ? cl : name_tok) << "Expected ']' in function pointer typedef" << flush;
+	}
 	TokenBase *rbrk = pgm.nextToken();
 	if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
 	    pgm.Throw(rbrk ? rbrk : tn) << "Expecting ')' after function pointer name" << flush;
@@ -47727,13 +47748,18 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	// Form 2 `(*NAME)` = pointer typedef; the starless paren'd form
 	// `(NAME)` = a FUNCTION type, exactly Form 1's posture.
 	fptr->ptr_syntax = !paren_fn_form;
-	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
+	// `(*NAME[N])(params)` — the alias denotes an ARRAY of fn-ptrs.
+	DataDef *alias_dd = fptr;
+	for ( size_t di = fptr_arr_dims.size(); di-- > 0; )
+	    alias_dd = new DataDefCArray(*alias_dd, alias_dd->name,
+					 fptr_arr_dims[di], NULL);
+	TokenDataType *tdt = new TokenDataType(alias.c_str(), *alias_dd);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.register_scoped_typedef(alias, tdt);
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return record_typedef(alias, fptr, tdt);
+	return record_typedef(alias, alias_dd, tdt);
     }
 
     // get alias name (may be an identifier or an existing type name being redefined)
@@ -48077,6 +48103,19 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	{
 	    nextToken(); // consume '('
 	    TokenBase *star = nextToken();
+	    // Abstract FUNCTION-type parameter without the `(*`: `int ()` /
+	    // `int (int)` nested inside another parameter list (00209's f5
+	    // `int f5 (int (int()), fptr1)`). Same C11 6.7.6.3p8 adjustment
+	    // as the parseFunction arm: the '(' begins the nested function's
+	    // own parameter list; recurse and wrap.
+	    if ( star && (star->id() == TokenID::tkClBrk
+		       || token_starts_type_name(star)) )
+	    {
+		pushToken(star);
+		FuncDef *nested = parseFnPtrParams(*param_dd);
+		param_dd = new DataDefFPTR(nested);
+		goto fnptr_param_done;
+	    }
 	    if ( !star || star->id() != TokenID::tkMul )
 		Throw(star ? star : nt)
 		    << "Unsupported parenthesized declarator in function pointer typedef" << flush;
@@ -48097,6 +48136,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    FuncDef *nested = parseFnPtrParams(*param_dd);
 	    param_dd = new DataDefFPTR(nested);
 	}
+fnptr_param_done:
 
 	// Optional parameter name (discard)
 	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
@@ -61923,6 +61963,33 @@ grabnt:
 		}
 		// else: anonymous function-pointer parameter `type (*)(params)`
 		// — prototypes don't bind names; nt should already hold ')'.
+		// Array-of-fn-ptrs parameter: `int (*[4])(int)` (00209's f4)
+		// / `int (*name[4])(int)` — dims before the ')'. The param
+		// keeps the CArray-of-fnptr shape (the SAME DataDef a
+		// `typedef int (*fptr4[4])(int)` spelling produces), so both
+		// spellings of one function redeclare compatibly; C's own
+		// 6.7.6.3p7 decay applies at emission.
+		std::vector<carray_dim_t> fnptr_arr_dims;
+		while ( nt && nt->id() == TokenID::tkOpSqr )
+		{
+		    skip_param_array_qualifiers();
+		    if ( peekToken() && peekToken()->id() == TokenID::tkClSqr )
+		    {
+			nextToken();
+			fnptr_arr_dims.push_back(0);
+		    }
+		    else
+		    {
+			int64_t n = parse_constant_integer_expression();
+			if ( n < 0 )
+			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
+			fnptr_arr_dims.push_back((carray_dim_t)n);
+			TokenBase *cl = nextToken();
+			if ( !cl || cl->id() != TokenID::tkClSqr )
+			    Throw(cl ? cl : inner) << "Expected ']' in parameter array declarator" << flush;
+		    }
+		    nt = nextToken();
+		}
 		if ( !nt || nt->id() != TokenID::tkClBrk )
 		    Throw(nt ? nt : inner) << "Expected ')' after function pointer parameter name" << flush;
 		nt = nextToken();
@@ -61955,13 +62022,75 @@ grabnt:
 		// `void (*markfn)(void *)`.
 		FuncDef *param_func = parseFnPtrParams(*param_dd);
 		param_dd = new DataDefFPTR(param_func);
+		if ( !fnptr_arr_dims.empty() )
+		{
+		    // array-of-fn-ptrs: the CArray chain, pushed as-is.
+		    for ( size_t di = fnptr_arr_dims.size(); di-- > 0; )
+			param_dd = new DataDefCArray(*param_dd, param_dd->name,
+						     fnptr_arr_dims[di], NULL);
+		    rtype = RefType::rtPointer;
+		}
+		else
+		    rtype = RefType::rtValue;
 		// The alias names the callback's return type, not the complete
 		// function-pointer parameter represented by param_typedef_names.
 		param_alias.clear();
-		rtype = RefType::rtValue;
 
 		nt = nextToken();
 		goto paramdecl;
+	    }
+	    // Abstract FUNCTION-type parameter — `int f1(int (), int)`,
+	    // `int (int x)`, `int (int())` (c-testsuite 00209). C11
+	    // 6.7.6.3p8: a parameter of function type adjusts to
+	    // pointer-to-function; the '(' begins the function's own
+	    // parameter list, which parseFnPtrParams owns.
+	    if ( inner && (inner->id() == TokenID::tkClBrk
+			|| token_starts_type_name(inner)) )
+	    {
+		pid = "__anon_param_" + std::to_string(anon_param_index++);
+		pushToken(inner);
+		FuncDef *param_func = parseFnPtrParams(*param_dd);
+		param_dd = new DataDefFPTR(param_func);
+		param_alias.clear();
+		rtype = RefType::rtValue;
+		nt = nextToken();
+		goto paramdecl;
+	    }
+	    // Parenthesized abstract ARRAY parameter — `int ([4])`
+	    // (00209's f8): the dims sit inside the parens; the param
+	    // array decays to a pointer as usual.
+	    if ( inner && inner->id() == TokenID::tkOpSqr )
+	    {
+		pid = "__anon_param_" + std::to_string(anon_param_index++);
+		pushToken(inner);
+		nt = nextToken();
+		while ( nt && nt->id() == TokenID::tkOpSqr )
+		{
+		    skip_param_array_qualifiers();
+		    TokenBase *peek_dim = peekToken();
+		    if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
+		    {
+			nextToken(); // consume ']'
+			param_array_dims.push_back(0);
+			param_array_dim_exprs.push_back(NULL);
+		    }
+		    else
+		    {
+			int64_t n = parse_constant_integer_expression();
+			if ( n < 0 )
+			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
+			param_array_dims.push_back((carray_dim_t)n);
+			param_array_dim_exprs.push_back(NULL);
+			TokenBase *cl = nextToken();
+			if ( !cl || cl->id() != TokenID::tkClSqr )
+			    Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
+		    }
+		    nt = nextToken();
+		}
+		if ( !nt || nt->id() != TokenID::tkClBrk )
+		    Throw(nt ? nt : inner) << "Expected ')' after parenthesized array declarator" << flush;
+		nt = nextToken();
+		goto finish_param_declarator;
 	    }
 	    Throw(inner ? inner : nt) << "Unsupported parenthesized parameter declarator" << flush;
 	}

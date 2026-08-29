@@ -30,8 +30,10 @@
 # 00170: FIXED 2026-08-29 — `enum TAG` elaborated-specifier arm in
 #        resolve_declared_type_token + parseFnPtrParams enum arm
 #        (gate: testenumtagtype)
-# 00209: int f1 (int (), int);  (abstract function-type parameter)
-00209.c
+# 00209: FIXED 2026-08-29 — abstract fn-type params (6.7.6.3p8
+#        adjustment) at both param grammars, array-of-fnptr typedef +
+#        abstract param (one CArray shape), CArray-of-FPTR typedef
+#        emission (gate: testabstractfnparam)
 #
 # -- parse gaps: statements/expressions --
 # 00038: if (sizeof 0 < 2)  (sizeof unary-expr without parens)

@@ -18717,14 +18717,19 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 {
 	if (!dd) return NULL;
 
-	// Function typedef `typedef void DO_FUN(int,int)` (dd = FuncDef) and
-	// pointer-to-function typedef `typedef int (*UNOP)(int)` (dd = DataDefFPTR).
-	// Both have dtINT64 rawtype and would otherwise emit `typedef long NAME`,
-	// erasing the signature; build `typedef ret NAME(params)` /
-	// `typedef ret (*NAME)(params)` from the target instead.
+	// Function typedef `typedef void DO_FUN(int,int)` (dd = FuncDef),
+	// pointer-to-function typedef `typedef int (*UNOP)(int)` (dd =
+	// DataDefFPTR), and ARRAY-of-fn-ptrs typedef
+	// `typedef int (*fptr4[4])(int)` (dd = CArray of DataDefFPTR —
+	// c-testsuite 00209). All have i64-shaped rawtypes and would
+	// otherwise emit `typedef long NAME`, erasing the signature; build
+	// the real declarator from the target, with any array dims as
+	// fnptr_decl_pieces' lead_dims.
 	{
-		DataDefFPTR *fp_td = (dd ? dd->as_fptr_dd() : NULL);
-		FuncDef *fn_td = fp_td ? fp_td->target : (dd ? dd->as_funcdef_dd() : NULL);
+		std::vector<carray_dim_t> fn_arr_dims;
+		DataDef *fn_dd = peel_carray_dims(dd, fn_arr_dims);
+		DataDefFPTR *fp_td = (fn_dd ? fn_dd->as_fptr_dd() : NULL);
+		FuncDef *fn_td = fp_td ? fp_td->target : (fn_dd ? fn_dd->as_funcdef_dd() : NULL);
 		if (fn_td) {
 			// A Form-1 function typedef `typedef RET NAME(params)` emits no
 			// pointer (so `NAME f` is a function decl, `NAME *p` a pointer);
@@ -18733,8 +18738,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 			node_t sl = list();
 			append(sl, simple(N_TYPEDEF));
 			node_t dl = list();
-			fnptr_decl_pieces(fn_td, td_ptr, sl, dl,
-					  std::vector<carray_dim_t>());
+			fnptr_decl_pieces(fn_td, td_ptr, sl, dl, fn_arr_dims);
 			node_t share = node1(N_SHARE, sl);
 			node_t decl = node2(N_DECL, id(alias.c_str()), dl);
 			node_t spec_decl = simple(N_SPEC_DECL);
