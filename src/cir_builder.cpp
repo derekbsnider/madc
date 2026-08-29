@@ -8617,6 +8617,119 @@ bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
 	return false;
 }
 
+// Emission hygiene: `{ (1) }` initializing a u8 member is a gcc WARNING
+// ("braces around scalar initializer") but a c2mir CHECK ERROR
+// (c-testsuite 00216). Unwrap such braces where the slot type is known.
+// unwrap_scalar_braces_list is the positional cursor: it bails at the
+// first flat expression that lands on an AGGREGATE slot, because brace
+// elision (C11 6.7.9p20) makes later positions stop mapping to members —
+// conservative: everything after emits unchanged, exactly as before.
+TokenBase *CirBuilder::unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd)
+{
+	TokenStructLit *sl = elem ? dynamic_cast<TokenStructLit *>(elem) : NULL;
+	if (!sl || !slot_dd)
+		return elem;
+	DataDef *dd = unqualified_type(slot_dd);
+	if (!dd)
+		return elem;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	bool aggregate_target = (sdd && !dd->is_complex())
+			     || dd->as_carray_dd() != NULL;
+	if (aggregate_target) {
+		unwrap_scalar_braces_list(sl->inits, dd);
+		return sl;
+	}
+	// SCALAR target: unwrap a single-element brace (recursively — gcc
+	// accepts nested braces around a scalar); anything else is left for
+	// c2mir to diagnose faithfully.
+	if (sl->inits.size() == 1)
+		return unwrap_scalar_braces(sl->inits[0], slot_dd);
+	return sl;
+}
+
+void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
+					   DataDef *dd)
+{
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	bool is_union = sdd && sdd->union_layout;
+	// An initializer that fills an AGGREGATE slot as ONE object keeps the
+	// positional cursor valid: a string literal (or its materialized
+	// char-array TokenVar form), or an expression already of aggregate
+	// type (`{3, ls, 4, ...}` — a struct variable fills the member).
+	// A SCALAR expression on an aggregate slot starts brace elision.
+	auto fills_aggregate_slot = [](TokenBase *child, bool char_array_slot) -> bool {
+		if (!child)
+			return true;
+		if (child->type() == TokenType::ttString)
+			return true;
+		if (TokenVar *tv = child->as_var_tok())
+			if (tv->var.is_fixed_array())
+				return true;
+		DataDef *cdd = child->datadef();
+		if (cdd && (cdd->is_struct() || cdd->as_carray_dd()))
+			return true;
+		// A string literal materialized as a char-pointer variable:
+		// on a char-array slot the only legal non-brace whole-slot
+		// filler IS a string literal, so char-pointer-typed means
+		// string here.
+		return char_array_slot && cdd && cdd->is_pointer();
+	};
+	DBG(std::cout << "unwrap_scalar_braces_list(" << (dd ? dd->name : "?")
+		      << ") slots=" << inits.size() << std::endl);
+	for (size_t i = 0; i < inits.size(); i++) {
+		size_t mi = is_union ? 0 : i;
+		DataDef *mdd = init_slot_type(dd, mi);
+		DBG(std::cout << "  slot " << i << " mdd="
+			      << (mdd ? mdd->name : "NULL") << " tok="
+			      << (inits[i] ? (int)inits[i]->type() : -1)
+			      << std::endl);
+		if (!mdd)
+			break;
+		// A fixed-array MEMBER stores its ELEMENT type in members[]
+		// with the count in member_counts (init_slot_is_aggregate's
+		// convention) — its brace slots are uniform elements of mdd.
+		bool counted_array_slot = sdd && !sdd->union_layout
+			&& mi < sdd->member_counts.size()
+			&& sdd->member_counts[mi] != 1;
+		TokenBase *child = inits[i];
+		if (!child)
+			continue;	// designator gap — one slot, keep walking
+		bool child_brace = dynamic_cast<TokenStructLit *>(child) != NULL;
+		DataDef *mu = unqualified_type(mdd);
+		DataDefSTRUCT *msdd = mu
+			? dynamic_cast<DataDefSTRUCT *>(mu) : NULL;
+		bool elem_aggregate = (msdd && !mu->is_complex())
+				   || (mu && mu->as_carray_dd());
+		if (child_brace) {
+			if (counted_array_slot) {
+				TokenStructLit *clit = (TokenStructLit *)child;
+				for (size_t k = 0; k < clit->inits.size(); k++) {
+					TokenBase *sub = clit->inits[k];
+					if (!sub)
+						continue;
+					if (dynamic_cast<TokenStructLit *>(sub))
+						clit->inits[k] =
+						    unwrap_scalar_braces(sub, mdd);
+					else if (elem_aggregate
+					      && !fills_aggregate_slot(sub, false))
+						break;	// elision inside the array
+				}
+			} else
+				inits[i] = unwrap_scalar_braces(child, mdd);
+		} else {
+			// A flat expression on an aggregate slot: whole-object
+			// forms keep the cursor; a scalar starts elision.
+			bool char_array_slot = counted_array_slot
+				&& mu && mu->is_integer() && mu->size == 1;
+			if ((counted_array_slot || elem_aggregate)
+			    && !fills_aggregate_slot(child, char_array_slot))
+				break;
+		}
+		if (is_union)
+			break;	// a union brace initializes one member
+	}
+}
+
 node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
@@ -8730,6 +8843,10 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	node_t spec = list();
 	append_lit_type_spec(spec, dd, slit->typedef_name);
 	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+
+	// Emission hygiene: unwrap braces-around-scalar slots (gcc warns,
+	// c2mir refuses — see unwrap_scalar_braces).
+	unwrap_scalar_braces_list(slit->inits, dd);
 
 	// ---- Build the initializer list: LIST( INIT(LIST(), value), ... ). ----
 	node_t inits = list();
@@ -9170,6 +9287,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				append(lst, node2(N_INIT, list(), integer(ev)));
 			}
 		} else {
+			// Emission hygiene: unwrap braces-around-scalar slots
+			// (gcc warns, c2mir refuses — see unwrap_scalar_braces).
+			unwrap_scalar_braces_list(tdecl->init_list, base_dd);
 			for (size_t i = 0; i < tdecl->init_list.size(); i++) {
 				// A lowered-complex slot with a constant complex
 				// initializer folds to a nested {re, im} list —
