@@ -24,8 +24,9 @@
 00124.c
 # 00130: char arr[2][4], (*p)[4], *q;  (array-pointer declarator mid-list)
 00130.c
-# 00162: void fooc(int x[const 5]);  (qualifier inside array param brackets)
-00162.c
+# 00162: FIXED 2026-08-29 — skip_param_array_qualifiers (both param
+#        bracket scans) + the plain parenthesized pointer param arm
+#        (gate: testparamarrayqual)
 # 00170: FIXED 2026-08-29 — `enum TAG` elaborated-specifier arm in
 #        resolve_declared_type_token + parseFnPtrParams enum arm
 #        (gate: testenumtagtype)

@@ -5736,6 +5736,10 @@ public:
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
+    // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
+    // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
+    // — consumed as hints; the param array decays to a pointer anyway.
+    void skip_param_array_qualifiers();
     // Shared cv-qualifier consumers (const/volatile/restrict) for committed
     // type reads. Held form returns the first non-qualifier token; peek form
     // consumes the run and leaves the following token unread.

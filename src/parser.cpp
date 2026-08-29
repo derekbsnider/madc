@@ -47903,6 +47903,27 @@ DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
     return new DataDefFPTR(func);
 }
 
+// C99 6.7.5.3p7: type qualifiers and `static` may appear inside a
+// PARAMETER's array brackets (`int x[const 5]`, `[static 5]`); the param
+// array decays to a pointer, so they are semantic hints only — consume
+// them. A `*` that closes the brackets is the VLA-star form (`[const *]`,
+// `[*]`): consume it too, leaving `]` so the caller reads an unspecified
+// dimension. Used by both parseFunction param-array scans (named and
+// anonymous declarators); c-testsuite 00162 is the gate.
+void Program::skip_param_array_qualifiers()
+{
+    while ( peekToken()
+	 && (peekToken()->id() == TokenID::tkCONST
+	  || peekToken()->id() == TokenID::tkVOLATILE
+	  || is_restrict_token(peekToken())
+	  || peekToken()->id() == TokenID::tkSTATIC) )
+	nextToken();
+    if ( peekToken() && peekToken()->id() == TokenID::tkMul
+      && tokens.size() > 1 && tokens[1]
+      && tokens[1]->id() == TokenID::tkClSqr )
+	nextToken();
+}
+
 // Parse a function-pointer parameter list. The opening '(' has already been
 // consumed by the caller. Stops after consuming the closing ')'. Parameter
 // names are optional and discarded — typedef signatures don't bind names.
@@ -61853,6 +61874,7 @@ grabnt:
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
 	    while ( nt && nt->id() == TokenID::tkOpSqr )
 	    {
+		skip_param_array_qualifiers();	// [const 5] / [static 5] / [const *]
 		TokenBase *peek_dim = peekToken();
 		if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
 		{
@@ -61918,7 +61940,16 @@ grabnt:
 		    goto paramdecl;
 		}
 		if ( !nt || nt->id() != TokenID::tkOpBrk )
-		    Throw(nt ? nt : inner) << "Expected '(' after function pointer parameter name" << flush;
+		{
+		    // Plain parenthesized pointer declarator: `int (* const x)`
+		    // — C99 6.7.5.3's redundant-parens shape (c-testsuite
+		    // 00162). The star is a real pointer level, not a fn-ptr
+		    // head; nt already holds the parameter's ending ','/')'.
+		    rtype = RefType::rtPointer;
+		    ++param_ptr_depth;
+		    param_dd = getPointerType(param_dd);
+		    goto paramdecl;
+		}
 
 		// Function-pointer parameter declarator, e.g.
 		// `void (*markfn)(void *)`.
@@ -61992,6 +62023,7 @@ grabnt:
 	// pointer level per `[]`.
 	while ( nt && nt->id() == TokenID::tkOpSqr )
 	{
+	    skip_param_array_qualifiers();	// [const 5] / [static 5] / [const *]
 	    TokenBase *peek_dim = peekToken();
 	    if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
 	    {
