@@ -7218,6 +7218,24 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 		ret_dd = p->base_type;
 		ret_stars++;
 	}
+	// Fn-ptr RETURNING a fn-ptr (c-testsuite 00124): append this level's
+	// declarator suffixes as usual, then RECURSE for the return fn-ptr —
+	// it appends its own `*` + `(params)` after ours (binding order runs
+	// from the name outward) and owns the final return-type specs.
+	DataDefFPTR *ret_fp = ret_dd ? ret_dd->as_fptr_dd() : NULL;
+	if (ret_fp && ret_fp->target) {
+		for (size_t d = 0; d < lead_dims.size(); d++)
+			append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
+		if (emit_pointer)
+			append(decl_list, pointer());
+		append(decl_list, fnptr_func_node(fd));
+		for (int s = 0; s < ret_stars; s++)
+			append(decl_list, pointer());
+		fnptr_decl_pieces(ret_fp->target, true, spec_list, decl_list,
+				  std::vector<carray_dim_t>());
+		return;
+	}
+
 	if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(ret_dd));
 		if (sdd)

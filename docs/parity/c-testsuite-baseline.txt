@@ -22,8 +22,10 @@
 #        parse_fnptr_member_tail; call-of-call fptr value (`go()()`)
 #        via the call-result arm, both stacks (gate:
 #        teststructfnptrtypedef)
-# 00124: int (* (*p)(int a, int b))(int c, int d) = f1;  (fn-ptr returning fn-ptr)
-00124.c
+# 00124: FIXED 2026-08-29 — nested parenthesized declarator in the fn-ptr
+#        declaration arm (stash + re-enter, one level per pass) +
+#        fnptr_decl_pieces recurses on a DataDefFPTR return type
+#        (gate: testfnptrretfnptr)
 # 00130: FIXED 2026-08-29 — `(` is a valid declarator head at the comma
 #        continuation (comma_continuation_starts_declarator, ONE rule
 #        both sites); re-entry's fn-ptr/ptr-array arm owns the parens

@@ -64320,6 +64320,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     // Function-pointer variable declaration:
     //   RET (*name)(params);
+    // Re-entered (goto below) with decl_type advanced one level when the
+    // declarator nests — a fn-ptr RETURNING a fn-ptr (c-testsuite 00124).
+fnptr_decl_arm_head:
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
     {
 	TokenBase *open = nextToken(); // consume '('
@@ -64373,9 +64376,34 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    ++fnptr_extra_stars;
 		name_tok = nextToken();
 	    }
-	    if ( !name_tok || !is_contextual_identifier_token(name_tok) )
+	    // Nested parenthesized declarator — a fn-ptr RETURNING a fn-ptr,
+	    // `RET (* (*name)(inner-params))(outer-params)` (c-testsuite
+	    // 00124). Stash the inner declarator's balanced groups; the
+	    // existing tail below parses `)(outer-params)` into decl_type =
+	    // the OUTER fn-ptr, then the stash is re-pushed and the arm
+	    // re-entered — one nesting level per pass, recursion via the
+	    // stream (same technique as spiral_fn_params below).
+	    std::vector<TokenBase *> nested_decl_stash;
+	    if ( name_tok && name_tok->id() == TokenID::tkOpBrk )
+	    {
+		nested_decl_stash.push_back(name_tok);
+		DelimDepth ndd;
+		ndd.update(name_tok);
+		while ( !ndd.top()
+		     || (peekToken() && (peekToken()->id() == TokenID::tkOpBrk
+				      || peekToken()->id() == TokenID::tkOpSqr)) )
+		{
+		    TokenBase *sp = nextToken();
+		    if ( !sp )
+			Throw(open) << "Unexpected end of input in function pointer declarator" << flush;
+		    nested_decl_stash.push_back(sp);
+		    delimStepStream(sp, ndd, &nested_decl_stash);
+		}
+	    }
+	    else if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
-	    id = contextual_identifier_name(name_tok);
+	    if ( nested_decl_stash.empty() )
+		id = contextual_identifier_name(name_tok);
 	    // Function returning a function pointer — the classic C spiral,
 	    // `type (*name(fn-params))(ret-params);` (Apple signal.h declares
 	    // signal/sigset this way; glibc goes through a typedef). Stash the
@@ -64437,6 +64465,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// spiral form `type (*name(fn-params))[N]` — see below
 		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
 		    pushToken(spiral_fn_params[sp - 1]);
+		if ( !nested_decl_stash.empty() )
+		{
+		    for ( size_t sp = nested_decl_stash.size(); sp > 0; --sp )
+			pushToken(nested_decl_stash[sp - 1]);
+		    goto fnptr_decl_arm_head;
+		}
 		nt = peekToken();
 	    }
 	    else
@@ -64456,6 +64490,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// function declaration returning decl_type.
 		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
 		    pushToken(spiral_fn_params[sp - 1]);
+		// Nested declarator: decl_type is the OUTER fn-ptr level;
+		// re-push the inner declarator and take another pass.
+		if ( !nested_decl_stash.empty() )
+		{
+		    for ( size_t sp = nested_decl_stash.size(); sp > 0; --sp )
+			pushToken(nested_decl_stash[sp - 1]);
+		    goto fnptr_decl_arm_head;
+		}
 		nt = peekToken();
 	    }
 	}
