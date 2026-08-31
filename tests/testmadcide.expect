@@ -70,6 +70,15 @@ live-buffer-build: ndiags=0 built-msg=1
 native-build-fail: rows-pos=1 pane=diags
 run-refused-red: refused-msg=1 pane=diags
 native-build-stop: live=0 stopped-msg=1
+proj-bld-rows: n=6 r0=Check project (in-process) r1=Build project (in-process) r2=Run project r5=Docs  [echo docs-{project}]
+proj-check: pane=diags bad-rows>0 1 msg=Project check:
+proj-check-row: file-led=1
+proj-goto: path=madc_ide_bad.mad switched=1
+proj-run-red: refused=1
+proj-run-clean: No terminal to suspend.
+proj-build: artifact=1 Built project madc_ide_test.prj.json -> madc_ide_prog
+proj-implicit-check: Check: clean.
+proj-subst: echo madc_ide_test.prj.json
 win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view
 split: wins=2 shape=status/edit/status/edit focus=1 rows=11
 win-carets: w2=3 w1=9

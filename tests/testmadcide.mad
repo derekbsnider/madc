@@ -362,6 +362,208 @@ int main()
     ev_action(e, "refresh", "^r");	// headless: no tui on the bag —
     apply_ide_event(w, es, doc, e);	// pinned inert (a safe no-op)
 
+
+    // -- IDE-10b: the ^B build palette — command rows AS DATA (overridden
+    //    here for determinism), the capture pump through exec:// + the
+    //    MT-4b mixed select, Stop against a SILENT child, the [build]
+    //    buffer, and the headless refusal of a terminal-mode row.
+    {
+	var brws = {};
+	var c1;
+	c1["name"] = "Echo";
+	c1["cmd"] = "echo hello-{base}";
+	c1["mode"] = "capture";
+	c1["act"] = "bld-run-cmd";
+	brws.push(c1);
+	var c2;
+	c2["name"] = "Sleepy";
+	c2["cmd"] = "sleep 5";
+	c2["mode"] = "capture";
+	c2["act"] = "bld-run-cmd";
+	brws.push(c2);
+	var c3;
+	c3["name"] = "Run";
+	c3["cmd"] = "echo never";
+	c3["mode"] = "terminal";
+	c3["act"] = "bld-run-cmd";
+	brws.push(c3);
+	var c4;
+	c4["name"] = "Stop";
+	c4["act"] = "bld-stop";
+	brws.push(c4);
+	ui::set(w, es, "buildcmds", brws);
+    }
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    var bbox = tree["children"][2];
+    println("build-pane: label={} rows={} row0={}",
+	    bbox["label"], php::count(bbox["children"]),
+	    php::trim(bbox["children"][0]["content"]));
+    ev_choose(e, 1, "bld-run-cmd");	// Echo: the capture pump
+    apply_ide_event(w, es, doc, e);
+    println("build-start: live={}", es_int(w, es, "buildlive", 0));
+    madc::task_drain();			// run the pump to completion
+    long bdoc = build_doc(w, es);
+    var btxt;
+    ui::text(btxt, w, bdoc);
+    println("build-out: has-hello={} has-done={} live={}",
+	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
+	    rust::contains(btxt.c_str(), "[done]") ? 1 : 0,
+	    es_int(w, es, "buildlive", 0));
+    // Stop against a silent child: sleep 5 emits nothing — the stop send
+    // fires the pump's select case 0 (buffered: the pump has not even run
+    // yet — spawn never switches), cancel() SIGTERMs, and the drain
+    // returns promptly instead of five seconds later.
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 2, "bld-run-cmd");	// Sleepy
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 4, "bld-stop");	// Stop
+    apply_ide_event(w, es, doc, e);
+    madc::task_drain();
+    ui::text(btxt, w, bdoc);
+    println("build-stop: has-stopped={} live={}",
+	    rust::contains(btxt.c_str(), "[stopped]") ? 1 : 0,
+	    es_int(w, es, "buildlive", 0));
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, doc, e);
+    ev_choose(e, 3, "bld-run-cmd");	// terminal row, headless: refused
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("build-terminal-headless: {}", msg);
+    ev_key(e, "right");			// consume the message
+    apply_ide_event(w, es, doc, e);
+
+    // -- IDE-10c/10d: INTERNAL builds + esc-any-pane (owner rulings) —
+    //    the DEFAULT rows are internal data (bld-native rows carry
+    //    kind/out; Run forks the LIVE parse, no {madc} command), the
+    //    build task emits from the buffer's parse handle (the running
+    //    madc IS the compiler: the screen compiles, the disk does not),
+    //    failure rows land in the diags pane, and Esc backs out of any
+    //    pane.
+    {
+	var nul;
+	ui::set(w, es, "buildcmds", nul);	// drop the exec override
+    }
+    ev_action(e, "build", "^b");		// reseeds the defaults
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    bbox = tree["children"][2];
+    var runrow = format("{}", bbox["children"][3]["content"]);
+    println("build-defaults: rows={} row1={} run-internal={}",
+	    php::count(bbox["children"]),
+	    php::trim(bbox["children"][1]["content"]),
+	    runrow.index("{madc}") < 0 ? 1 : 0);
+    ev_key(e, "esc");			// Esc closes ANY pane (build here)
+    apply_ide_event(w, es, doc, e);
+    var pn;
+    ui::get(pn, w, es, "pane");
+    println("esc-pane: closed={}", strlen(pn.c_str()) == 0 ? 1 : 0);
+    var sub;
+    build_subst(sub, "{madc} {path}", w, es, doc);
+    println("build-subst: madc-resolved={} has-path={}",
+	    sub.index("{madc}") >= 0 ? 0 : 1,
+	    sub.index("madc_ide_test.mad") >= 0 ? 1 : 0);
+    php::file_put_contents("madc_ide_build.mad",
+	"int main() { println(\"ide-build-ok\"); return 0; }\n");
+    ev_action(e, "editfile", "^k e");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "madc_ide_build.mad");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    long bldoc = active_doc(w, es, doc);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");	// Build (in-process) -> {base}
+    apply_ide_event(w, es, bldoc, e);
+    println("native-build-start: live={}", es_int(w, es, "buildlive", 0));
+    madc::task_drain();			// the build task to completion
+    var bdg;
+    ui::get(bdg, w, es, "diags");
+    ui::get(msg, w, es, "msg");
+    println("native-build-done: live={} ndiags={} built-msg={}",
+	    es_int(w, es, "buildlive", 0), php::count(bdg),
+	    msg.index("Built") >= 0 ? 1 : 0);
+    // Run, headless: run_buffer refuses BEFORE any fork when there is
+    // no terminal to hand the guest (the tui==0 arm).
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 4, "bld-run");
+    apply_ide_event(w, es, bldoc, e);
+    ui::get(msg, w, es, "msg");
+    println("run-headless: no-tui-msg={}",
+	    msg.index("No terminal") >= 0 ? 1 : 0);
+    // THE ruling's gate (2026-08-27): the SCREEN compiles, the disk does
+    // not. Overwrite the on-disk file broken — the untouched buffer
+    // still builds clean (the old path-lane would have failed here).
+    php::file_put_contents("madc_ide_build.mad",
+	"int main() { return undeclared_x; }\n");
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");
+    apply_ide_event(w, es, bldoc, e);
+    madc::task_drain();
+    ui::get(bdg, w, es, "diags");
+    ui::get(msg, w, es, "msg");
+    println("live-buffer-build: ndiags={} built-msg={}",
+	    php::count(bdg), msg.index("Built") >= 0 ? 1 : 0);
+    // The inverse: restore the disk GOOD, break the BUFFER (unsaved
+    // edit) — failure rows from the live parse reach the diags pane.
+    php::file_put_contents("madc_ide_build.mad",
+	"int main() { println(\"ide-build-ok\"); return 0; }\n");
+    ev_text(e, "undeclared_x ");
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");
+    apply_ide_event(w, es, bldoc, e);
+    madc::task_drain();
+    ui::get(bdg, w, es, "diags");
+    ui::get(pn, w, es, "pane");
+    println("native-build-fail: rows-pos={} pane={}",
+	    php::count(bdg) > 0 ? 1 : 0, pn);
+    // Run on the red buffer: refused LOUD before any suspend/fork.
+    ev_key(e, "esc");			// close the diags pane first
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 4, "bld-run");
+    apply_ide_event(w, es, bldoc, e);
+    ui::get(msg, w, es, "msg");
+    ui::get(pn, w, es, "pane");
+    println("run-refused-red: refused-msg={} pane={}",
+	    msg.index("Run refused") >= 0 ? 1 : 0, pn);
+    // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
+    // window is DETERMINISTIC (spawn never switches): the task sees the
+    // pre-start flag and reports stopped without building anything.
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 2, "bld-native");
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "build", "^b");
+    apply_ide_event(w, es, bldoc, e);
+    ev_choose(e, 6, "bld-stop");
+    apply_ide_event(w, es, bldoc, e);
+    madc::task_drain();
+    ui::get(msg, w, es, "msg");
+    println("native-build-stop: live={} stopped-msg={}",
+	    es_int(w, es, "buildlive", 0),
+	    msg.index("Build stopped") >= 0 ? 1 : 0);
+    ev_key(e, "esc");			// close the diags pane
+    apply_ide_event(w, es, bldoc, e);
+    ev_action(e, "editfile", "^k e");	// home for gate 3
+    apply_ide_event(w, es, bldoc, e);
+    ev_text(e, "madc_ide_test.mad");
+    apply_ide_event(w, es, bldoc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, bldoc, e);
+    ev_key(e, "right");			// consume the switch message
+    apply_ide_event(w, es, doc, e);
+
     // -- the PROJECT model (owner rulings 2026-08-31): the implicit
     //    single-file project; del on it refuses (nothing on disk to
     //    edit); ins -> the projadd prompt (the argument collector) —
@@ -466,204 +668,90 @@ int main()
     ev_key(e, "right");			// consume the switch message
     apply_ide_event(w, es, doc, e);
 
-    // -- IDE-10b: the ^B build palette — command rows AS DATA (overridden
-    //    here for determinism), the capture pump through exec:// + the
-    //    MT-4b mixed select, Stop against a SILENT child, the [build]
-    //    buffer, and the headless refusal of a terminal-mode row.
-    {
-	var brws = {};
-	var c1;
-	c1["name"] = "Echo";
-	c1["cmd"] = "echo hello-{base}";
-	c1["mode"] = "capture";
-	c1["act"] = "bld-run-cmd";
-	brws.push(c1);
-	var c2;
-	c2["name"] = "Sleepy";
-	c2["cmd"] = "sleep 5";
-	c2["mode"] = "capture";
-	c2["act"] = "bld-run-cmd";
-	brws.push(c2);
-	var c3;
-	c3["name"] = "Run";
-	c3["cmd"] = "echo never";
-	c3["mode"] = "terminal";
-	c3["act"] = "bld-run-cmd";
-	brws.push(c3);
-	var c4;
-	c4["name"] = "Stop";
-	c4["act"] = "bld-stop";
-	brws.push(c4);
-	ui::set(w, es, "buildcmds", brws);
-    }
-    ev_action(e, "build", "^b");
+    // -- the ^B PROJECT correlation (owner design doc 2026-08-31: with a
+    //    manifest open, Build = the --project build): the rows go
+    //    project-wide + the manifest's commands section APPENDS its own;
+    //    a project check tags rows with their FILE and goto OPENS that
+    //    file; a red project refuses to run; the implicit single-file
+    //    project keeps the buffer semantics. The engine lanes themselves
+    //    are testprojectapi's; these gates pin the madcide wiring.
+    php::file_put_contents("madc_ide_bad.mad",
+	"long broken( { return 1; }\n");
+    php::file_put_contents("madc_ide_test.prj.json",
+	"{\"tus\":[\"madc_ide_test.mad\",\"madc_ide_bad.mad\"],"
+	"\"output\":\"madc_ide_prog\","
+	"\"commands\":[{\"name\":\"Docs\",\"cmd\":\"echo docs-{project}\"}]}");
+    proj_startup(w, es, doc);		// re-read: proj set + projgen bump
+    ev_action(e, "build", "^b");	// the rows REGENERATE (generation)
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    var bbox = tree["children"][2];
-    println("build-pane: label={} rows={} row0={}",
-	    bbox["label"], php::count(bbox["children"]),
-	    php::trim(bbox["children"][0]["content"]));
-    ev_choose(e, 1, "bld-run-cmd");	// Echo: the capture pump
-    apply_ide_event(w, es, doc, e);
-    println("build-start: live={}", es_int(w, es, "buildlive", 0));
-    madc::task_drain();			// run the pump to completion
-    long bdoc = build_doc(w, es);
-    var btxt;
-    ui::text(btxt, w, bdoc);
-    println("build-out: has-hello={} has-done={} live={}",
-	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
-	    rust::contains(btxt.c_str(), "[done]") ? 1 : 0,
-	    es_int(w, es, "buildlive", 0));
-    // Stop against a silent child: sleep 5 emits nothing — the stop send
-    // fires the pump's select case 0 (buffered: the pump has not even run
-    // yet — spawn never switches), cancel() SIGTERMs, and the drain
-    // returns promptly instead of five seconds later.
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, doc, e);
-    ev_choose(e, 2, "bld-run-cmd");	// Sleepy
-    apply_ide_event(w, es, doc, e);
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, doc, e);
-    ev_choose(e, 4, "bld-stop");	// Stop
-    apply_ide_event(w, es, doc, e);
-    madc::task_drain();
-    ui::text(btxt, w, bdoc);
-    println("build-stop: has-stopped={} live={}",
-	    rust::contains(btxt.c_str(), "[stopped]") ? 1 : 0,
-	    es_int(w, es, "buildlive", 0));
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, doc, e);
-    ev_choose(e, 3, "bld-run-cmd");	// terminal row, headless: refused
+    var pbbox = tree["children"][2];
+    println("proj-bld-rows: n={} r0={} r1={} r2={} r5={}",
+	    php::count(pbbox["children"]),
+	    php::trim(pbbox["children"][0]["content"]),
+	    php::trim(pbbox["children"][1]["content"]),
+	    php::trim(pbbox["children"][2]["content"]),
+	    php::trim(pbbox["children"][5]["content"]));
+    ev_choose(e, 1, "bld-proj-check");	// Check project: FILE-tagged rows
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
-    println("build-terminal-headless: {}", msg);
-    ev_key(e, "right");			// consume the message
-    apply_ide_event(w, es, doc, e);
-
-    // -- IDE-10c/10d: INTERNAL builds + esc-any-pane (owner rulings) —
-    //    the DEFAULT rows are internal data (bld-native rows carry
-    //    kind/out; Run forks the LIVE parse, no {madc} command), the
-    //    build task emits from the buffer's parse handle (the running
-    //    madc IS the compiler: the screen compiles, the disk does not),
-    //    failure rows land in the diags pane, and Esc backs out of any
-    //    pane.
-    {
-	var nul;
-	ui::set(w, es, "buildcmds", nul);	// drop the exec override
-    }
-    ev_action(e, "build", "^b");		// reseeds the defaults
-    apply_ide_event(w, es, doc, e);
+    var pdiags;
+    ui::get(pdiags, w, es, "diags");
+    long badrows = 0;
+    for ( var dr : pdiags )
+	if ( dr["file"] == "madc_ide_bad.mad" )
+	    badrows = badrows + 1;
+    var ppane;
+    ui::get(ppane, w, es, "pane");
+    println("proj-check: pane={} bad-rows>0 {} msg={}", ppane,
+	    badrows > 0 ? 1 : 0, msg);
     compose_ide_tree(tree, w, es, doc);
-    bbox = tree["children"][2];
-    var runrow = format("{}", bbox["children"][3]["content"]);
-    println("build-defaults: rows={} row1={} run-internal={}",
-	    php::count(bbox["children"]),
-	    php::trim(bbox["children"][1]["content"]),
-	    runrow.index("{madc}") < 0 ? 1 : 0);
-    ev_key(e, "esc");			// Esc closes ANY pane (build here)
+    var prow0 = format("{}", tree["children"][2]["children"][0]["content"]);
+    println("proj-check-row: file-led={}",
+	    prow0.index("madc_ide_") == 0 ? 1 : 0);
+    ev_choose(e, 1, "goto");		// a FILE row's goto OPENS the file
     apply_ide_event(w, es, doc, e);
-    var pn;
-    ui::get(pn, w, es, "pane");
-    println("esc-pane: closed={}", strlen(pn.c_str()) == 0 ? 1 : 0);
-    var sub;
-    build_subst(sub, "{madc} {path}", w, doc);
-    println("build-subst: madc-resolved={} has-path={}",
-	    sub.index("{madc}") >= 0 ? 0 : 1,
-	    sub.index("madc_ide_test.mad") >= 0 ? 1 : 0);
-    php::file_put_contents("madc_ide_build.mad",
-	"int main() { println(\"ide-build-ok\"); return 0; }\n");
+    long gdoc = active_doc(w, es, doc);
+    var gpath;
+    ui::get(gpath, w, gdoc, "path");
+    println("proj-goto: path={} switched={}", gpath, gdoc != doc ? 1 : 0);
+    ev_choose(e, 3, "bld-proj-run");	// red project: the run refuses
+    apply_ide_event(w, es, gdoc, e);
+    ui::get(msg, w, es, "msg");
+    println("proj-run-red: refused={}", msg.index("Run refused:") >= 0 ? 1 : 0);
+    php::file_put_contents("madc_ide_bad.mad",
+	"int main() { return 0; }\n");	// heal (and give the link a main)
+    ev_choose(e, 3, "bld-proj-run");	// clean: headless stops at the tui
+    apply_ide_event(w, es, gdoc, e);
+    ui::get(msg, w, es, "msg");
+    println("proj-run-clean: {}", msg);
+    ev_choose(e, 2, "bld-proj-build");	// Build project -> the linked image
+    apply_ide_event(w, es, gdoc, e);
+    madc::task_drain();
+    ui::get(msg, w, es, "msg");
+    println("proj-build: artifact={} {}",
+	    php::file_exists("madc_ide_prog") ? 1 : 0, msg);
+    remove("madc_ide_prog");
+    // The implicit single-file project keeps the buffer semantics.
+    long pes4 = ui::create(w, "editor-state-4");
+    proj_run_check(w, pes4, doc);
+    var msg4;
+    ui::get(msg4, w, pes4, "msg");
+    println("proj-implicit-check: {}", msg4);
+    // {project} substitutes the open manifest (manifest commands' seat).
+    var sub2;
+    build_subst(sub2, "echo {project}", w, es, doc);
+    println("proj-subst: {}", sub2);
+    remove("madc_ide_test.prj.json");	// cross-run hygiene
+    remove("madc_ide_bad.mad");
+    ev_key(e, "esc");			// close the pane, then home
+    apply_ide_event(w, es, gdoc, e);
     ev_action(e, "editfile", "^k e");
-    apply_ide_event(w, es, doc, e);
-    ev_text(e, "madc_ide_build.mad");
-    apply_ide_event(w, es, doc, e);
-    ev_key(e, "enter");
-    apply_ide_event(w, es, doc, e);
-    long bldoc = active_doc(w, es, doc);
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 2, "bld-native");	// Build (in-process) -> {base}
-    apply_ide_event(w, es, bldoc, e);
-    println("native-build-start: live={}", es_int(w, es, "buildlive", 0));
-    madc::task_drain();			// the build task to completion
-    var bdg;
-    ui::get(bdg, w, es, "diags");
-    ui::get(msg, w, es, "msg");
-    println("native-build-done: live={} ndiags={} built-msg={}",
-	    es_int(w, es, "buildlive", 0), php::count(bdg),
-	    msg.index("Built") >= 0 ? 1 : 0);
-    // Run, headless: run_buffer refuses BEFORE any fork when there is
-    // no terminal to hand the guest (the tui==0 arm).
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 4, "bld-run");
-    apply_ide_event(w, es, bldoc, e);
-    ui::get(msg, w, es, "msg");
-    println("run-headless: no-tui-msg={}",
-	    msg.index("No terminal") >= 0 ? 1 : 0);
-    // THE ruling's gate (2026-08-27): the SCREEN compiles, the disk does
-    // not. Overwrite the on-disk file broken — the untouched buffer
-    // still builds clean (the old path-lane would have failed here).
-    php::file_put_contents("madc_ide_build.mad",
-	"int main() { return undeclared_x; }\n");
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 2, "bld-native");
-    apply_ide_event(w, es, bldoc, e);
-    madc::task_drain();
-    ui::get(bdg, w, es, "diags");
-    ui::get(msg, w, es, "msg");
-    println("live-buffer-build: ndiags={} built-msg={}",
-	    php::count(bdg), msg.index("Built") >= 0 ? 1 : 0);
-    // The inverse: restore the disk GOOD, break the BUFFER (unsaved
-    // edit) — failure rows from the live parse reach the diags pane.
-    php::file_put_contents("madc_ide_build.mad",
-	"int main() { println(\"ide-build-ok\"); return 0; }\n");
-    ev_text(e, "undeclared_x ");
-    apply_ide_event(w, es, bldoc, e);
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 2, "bld-native");
-    apply_ide_event(w, es, bldoc, e);
-    madc::task_drain();
-    ui::get(bdg, w, es, "diags");
-    ui::get(pn, w, es, "pane");
-    println("native-build-fail: rows-pos={} pane={}",
-	    php::count(bdg) > 0 ? 1 : 0, pn);
-    // Run on the red buffer: refused LOUD before any suspend/fork.
-    ev_key(e, "esc");			// close the diags pane first
-    apply_ide_event(w, es, bldoc, e);
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 4, "bld-run");
-    apply_ide_event(w, es, bldoc, e);
-    ui::get(msg, w, es, "msg");
-    ui::get(pn, w, es, "pane");
-    println("run-refused-red: refused-msg={} pane={}",
-	    msg.index("Run refused") >= 0 ? 1 : 0, pn);
-    // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
-    // window is DETERMINISTIC (spawn never switches): the task sees the
-    // pre-start flag and reports stopped without building anything.
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 2, "bld-native");
-    apply_ide_event(w, es, bldoc, e);
-    ev_action(e, "build", "^b");
-    apply_ide_event(w, es, bldoc, e);
-    ev_choose(e, 6, "bld-stop");
-    apply_ide_event(w, es, bldoc, e);
-    madc::task_drain();
-    ui::get(msg, w, es, "msg");
-    println("native-build-stop: live={} stopped-msg={}",
-	    es_int(w, es, "buildlive", 0),
-	    msg.index("Build stopped") >= 0 ? 1 : 0);
-    ev_key(e, "esc");			// close the diags pane
-    apply_ide_event(w, es, bldoc, e);
-    ev_action(e, "editfile", "^k e");	// home for gate 3
-    apply_ide_event(w, es, bldoc, e);
+    apply_ide_event(w, es, gdoc, e);
     ev_text(e, "madc_ide_test.mad");
-    apply_ide_event(w, es, bldoc, e);
+    apply_ide_event(w, es, gdoc, e);
     ev_key(e, "enter");
-    apply_ide_event(w, es, bldoc, e);
+    apply_ide_event(w, es, gdoc, e);
     ev_key(e, "right");			// consume the switch message
     apply_ide_event(w, es, doc, e);
 

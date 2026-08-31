@@ -546,6 +546,11 @@ void toggle_profile(long w, long es)
 
 // A choose on the pane: move the caret to the chosen row's line. The
 // rows live on the bag in pane order — the 1-based option is the index.
+// A row carrying a "file" (a PROJECT check's rows span TUs) first opens
+// or switches to that file through edit_file — THE one open-or-switch
+// owner — then the caret lands in the now-active buffer.
+void edit_file(long w, long es, long olddoc, const char *path0);
+long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option)
 {
     var pane;
@@ -560,8 +565,21 @@ void goto_pane_row(long w, long es, long doc, long option)
     {
 	if ( i == option )
 	{
+	    long target = doc;
+	    var f = row["file"];
+	    if ( !f.is_null() )
+	    {
+		var cp;
+		ui::get(cp, w, doc, "path");
+		if ( !(f == cp.c_str()) )
+		{
+		    var ff = format("{}", f);
+		    edit_file(w, es, doc, ff.c_str());
+		    target = active_doc(w, es, doc);
+		}
+	    }
 	    ui::set(w, es, "caret",
-		    caret_to_line(w, doc, row["line"].as_integer(), 0));
+		    caret_to_line(w, target, row["line"].as_integer(), 0));
 	    return;
 	}
 	i = i + 1;
@@ -1611,6 +1629,15 @@ void grow_window(long w, long es, long dir)
 // persistence, status-line announce). The ^B build palette (IDE-10b)
 // reuses the same widget with action rows.
 
+// The project GENERATION: every project-state change bumps it, and
+// consumers that derive data from the project (the ^B rows) rebuild
+// when their recorded generation differs — no consumer re-reads the
+// manifest per event.
+void proj_touch(long w, long es)
+{
+    ui::set(w, es, "projgen", es_int(w, es, "projgen", 0) + 1);
+}
+
 // The launch file: the implicit project's one TU and the manifest
 // default's <base>. Headless sessions without run_ide's seed fall back
 // to the driven document's path.
@@ -1746,6 +1773,7 @@ void proj_add(long w, long es, long doc, const char *path0)
 	proj["tus"] = tus;
     }
     ui::set(w, es, "proj", proj);
+    proj_touch(w, es);
     var pf0;
     ui::get(pf0, w, es, "projfile");
     bool had = !pf0.is_null() && strlen(pf0.c_str()) > 0;
@@ -1801,6 +1829,7 @@ void proj_del(long w, long es, long doc, long option)
     }
     proj["tus"] = rebuilt;
     ui::set(w, es, "proj", proj);
+    proj_touch(w, es);
     if ( proj_write(w, es, doc) )
 	ui::set(w, es, "msg",
 		format("Removed {} from the project.", row["path"]));
@@ -1849,6 +1878,7 @@ void proj_startup(long w, long es, long doc)
     }
     ui::set(w, es, "proj", proj);
     ui::set(w, es, "projfile", pf);
+    proj_touch(w, es);
     ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
 				 php::count(tus)));
 }
@@ -2070,24 +2100,29 @@ bool project_event(long w, long es, long doc, var &ev)
 //              ^K Z shape), with a return-key pause before resume.
 // Check stays in-process (run_check — the retained-parse diagnostics).
 
-// {path} / {base} / {madc} substitution: path = the active buffer's
-// file, base = path minus its extension, madc = THE RUNNING COMPILER'S
-// own executable (madc::compiler_path). {madc} serves MANIFEST-DECLARED
-// commands only — no default row spawns any madc binary (owner ruling
-// 2026-08-27: the running madc IS the compiler; Run forks the live
-// parse, madc::parse_run). Commands are DATA — no quoting layer (the
-// exec:// factory splits on single spaces; see madc_process.cpp).
-void build_subst(var &out, const char *cmd, long w, long doc)
+// {path} / {base} / {project} / {madc} substitution: path = the active
+// buffer's file, base = path minus its extension, project = the open
+// manifest's path ("" without one), madc = THE RUNNING COMPILER'S own
+// executable (madc::compiler_path). {madc}/{project} serve
+// MANIFEST-DECLARED commands only — no default row spawns any madc
+// binary (owner ruling 2026-08-27: the running madc IS the compiler;
+// Run forks the live parse / the --project lane). Commands are DATA —
+// no quoting layer (the exec:// factory splits on single spaces; see
+// madc_process.cpp).
+void build_subst(var &out, const char *cmd, long w, long es, long doc)
 {
     var p;
     ui::get(p, w, doc, "path");
     var base;
     path_sans_ext(base, p);	// THE {base} rule, shared with the
 				// manifest default
+    var pf;
+    ui::get(pf, w, es, "projfile");
     var s1 = php::str_replace("{path}", p.c_str(), cmd);
     var s2 = php::str_replace("{base}", base.c_str(), s1.c_str());
+    var s3 = php::str_replace("{project}", pf.c_str(), s2.c_str());
     var self = madc::compiler_path();
-    out = php::str_replace("{madc}", self.c_str(), s2.c_str());
+    out = php::str_replace("{madc}", self.c_str(), s3.c_str());
 }
 
 // The [build] buffer: found-or-created in the buffer table WITHOUT
@@ -2291,7 +2326,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     var p;
     ui::get(p, w, doc, "path");
     var o;
-    build_subst(o, outtmpl.c_str(), w, doc);
+    build_subst(o, outtmpl.c_str(), w, es, doc);
     ui::set(w, es, "nbdoc", doc);
     ui::set(w, es, "nbpath", p);
     ui::set(w, es, "nbkind", kind);
@@ -2381,23 +2416,296 @@ void run_in_terminal(long w, long es, const char *cmd)
     ui::tui_resume(t);
 }
 
-// Seed the default command rows once (data; a later slice reads a project
-// manifest's commands section instead).
+// ---- the ^B project correlation (owner design doc 2026-08-31) ----------
+// "With a manifest open, Build = the --project build": the default rows
+// become project-wide (check every TU, build/run the linked project),
+// and the manifest's `commands` section APPENDS its own rows (the
+// ide-controls plan: a project declares its own entries — appended, not
+// replacing, so declaring one command never costs the built-ins). An
+// IMPLICIT project (no manifest) keeps the single-buffer rows — a
+// one-TU project's build IS the buffer build.
+
+// The whole project's diagnostics rows: a project handle (every TU
+// parsed with its manifest options — diagnostics match the --project
+// build), each TU's parse_check rows tagged with its FILE (the pane
+// renders it; goto opens it). False = the manifest did not open.
+bool proj_check_rows(var &merged, long w, long es)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    long h = madc::project_open(pf.c_str());
+    if ( h == 0 )
+    {
+	ui::set(w, es, "msg", format("Cannot open project {}.", pf));
+	return false;
+    }
+    var tus;
+    madc::project_tus(tus, h);
+    var rows = {};
+    for ( var t : tus )
+    {
+	long th = t["handle"].as_integer();
+	if ( th == 0 )
+	{
+	    // The TU never opened (unreadable file / refused options):
+	    // visible as a row, never silent.
+	    var r;
+	    r["file"] = t["file"];
+	    r["line"] = 1;
+	    r["column"] = 0;
+	    r["severity"] = "error";
+	    r["message"] = "cannot open this TU (file or manifest options)";
+	    rows.push(r);
+	    continue;
+	}
+	var trows;
+	madc::parse_check(trows, th);
+	for ( var r : trows )
+	{
+	    r["file"] = t["file"];
+	    rows.push(r);
+	}
+    }
+    madc::project_close(h);
+    merged = rows;
+    return true;
+}
+
+// The project Check ACTION (bld-proj-check): rows + the pane + the tally.
+void proj_run_check(long w, long es, long doc)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    {
+	// Implicit single-file project: the buffer check IS the check.
+	run_check(w, es, doc);
+	return;
+    }
+    var rows;
+    if ( !proj_check_rows(rows, w, es) )
+	return;
+    ui::set(w, es, "diags", rows);
+    ui::set(w, es, "pane", "diags");
+    long n = php::count(rows);
+    if ( n == 0 )
+	ui::set(w, es, "msg", "Project check: clean.");
+    else
+	ui::set(w, es, "msg", format("Project check: {} problem(s).", n));
+}
+
+// The project build task (bld-proj-build): madc::project_build — the
+// --project AOT lane in-process. NO yield points inside the call (the
+// project-scale instance of the named backend-yield residue: the editor
+// blocks for the build's duration; Stop lands only pre-start via the
+// buildstopreq flag). Long args only; the manifest/kind/out ride the
+// bag like buildcmd.
+void project_build_task(long w, long es)
+{
+    var pf, k, o;
+    ui::get(pf, w, es, "pbfile");
+    ui::get(k, w, es, "pbkind");
+    ui::get(o, w, es, "pbout");
+    bool pre = es_int(w, es, "buildstopreq", 0) != 0;
+    var diags;
+    bool ok = false;
+    if ( !pre )
+	ok = madc::project_build(diags, pf.c_str(), k.c_str(), o.c_str());
+    ui::set(w, es, "buildlive", 0);
+    if ( pre )
+    {
+	ui::set(w, es, "msg", format("Build stopped ({}).", pf));
+	return;
+    }
+    ui::set(w, es, "diags", diags);
+    if ( ok )
+    {
+	ui::set(w, es, "msg", format("Built project {} -> {}", pf, o));
+	return;
+    }
+    var pane;
+    ui::get(pane, w, es, "pane");
+    if ( strlen(pane.c_str()) == 0 )
+	ui::set(w, es, "pane", "diags");
+    ui::set(w, es, "msg",
+	    format("Project build failed: {} problem(s).", php::count(diags)));
+}
+
+void start_project_build(long w, long es, long doc, var &kind, var &out)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    {
+	// Implicit single-file project: the buffer build IS the build.
+	var ot = "{base}";
+	start_native_build(w, es, doc, kind, ot);
+	return;
+    }
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	ui::set(w, es, "msg", "A build is already running.");
+	return;
+    }
+    ui::set(w, es, "pbfile", pf);
+    ui::set(w, es, "pbkind", kind);
+    ui::set(w, es, "pbout", out);
+    ui::set(w, es, "buildstop", 0);
+    ui::set(w, es, "buildscope", 0);	// no cancellation chain reaches
+    ui::set(w, es, "buildstopreq", 0);	// the project lane (named residue)
+    ui::set(w, es, "buildlive", 1);
+    go project_build_task(w, es);
+    ui::set(w, es, "msg", format("Building project {} -> {}", pf, out));
+}
+
+// The project Run (bld-proj-run): the parse verdict FIRST (run_buffer's
+// shape — a red project must not run; the rows land in the diags pane),
+// then the terminal handoff around madc::project_run.
+void run_project(long w, long es, long doc)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    {
+	// Implicit single-file project: the buffer Run IS the run.
+	run_buffer(w, es, doc);
+	return;
+    }
+    var rows;
+    if ( !proj_check_rows(rows, w, es) )
+	return;
+    ui::set(w, es, "diags", rows);
+    long errs = diag_error_count(rows);
+    if ( errs > 0 )
+    {
+	ui::set(w, es, "pane", "diags");
+	ui::set(w, es, "msg",
+		format("Run refused: {} error(s) — fix them first.", errs));
+	return;
+    }
+    long t = es_int(w, es, "tui", 0);
+    if ( t == 0 )
+    {
+	ui::set(w, es, "msg", "No terminal to suspend.");
+	return;
+    }
+    if ( !ui::tui_suspend(t) )
+	return;
+    long rc = madc::project_run(pf.c_str());
+    terminal_return_pause();
+    ui::tui_resume(t);
+    if ( rc < 0 )
+	ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
+    else
+	ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
+}
+
+// Seed the command rows AS DATA. Regeneration rides the project
+// GENERATION (proj_touch): rows rebuild when their recorded generation
+// differs from the project's; rows set from OUTSIDE this seeder (a
+// harness override) carry no generation and are ADOPTED at the current
+// one — kept until the project next changes.
 void ensure_build_cmds(long w, long es)
 {
+    long pg = es_int(w, es, "projgen", 0);
     var have;
     ui::get(have, w, es, "buildcmds");
     if ( !have.is_null() && php::count(have) > 0 )
-	return;
-    // OWNER RULING (2026-08-27, the running madc IS the compiler): every
-    // default row rides the buffer's LIVE parse handle — Build emits from
-    // its tree (madc::parse_build), Run forks it (madc::parse_run); no
-    // row execs any madc binary. Run native runs the BUILT artifact (the
-    // user's own program). The exec:// capture pump stays for manifest-
-    // declared external commands (mode "capture"); no default rides it.
-    // Stop is back (MT-3b): an in-process build cancels through its
-    // task's scope; terminal runs stay ^C-able in their own terminal.
+    {
+	long bg = es_int(w, es, "buildgen", -1);
+	if ( bg == pg )
+	    return;
+	if ( bg < 0 )
+	{
+	    ui::set(w, es, "buildgen", pg);
+	    return;
+	}
+    }
+    ui::set(w, es, "buildgen", pg);
+    // OWNER RULING (2026-08-27, the running madc IS the compiler): no
+    // row execs any madc binary. Without a manifest, every default row
+    // rides the buffer's LIVE parse handle — Build emits from its tree
+    // (madc::parse_build), Run forks it (madc::parse_run). WITH one
+    // (owner design doc 2026-08-31), Build = the --project build: the
+    // rows go project-wide (madc::project_build / project_run — the
+    // --project lanes as library verbs), and the manifest's `commands`
+    // section appends its own rows. Run native runs the BUILT artifact
+    // (the user's own program). The exec:// capture pump serves
+    // manifest-declared commands (mode "capture"); no default rides it.
+    // Stop (MT-3b): a buffer build cancels through its task's scope;
+    // a project build only pre-start (named residue); terminal runs
+    // stay ^C-able in their own terminal.
+    var proj;
+    ui::get(proj, w, es, "proj");
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    bool projected = !proj.is_null() && !pf.is_null()
+		  && strlen(pf.c_str()) > 0;
     var rows = {};
+    if ( projected )
+    {
+	// The project's OUTPUT: the manifest's `output` field, else the
+	// manifest's own base name.
+	var pout;
+	var o = proj["output"];
+	if ( o.is_null() )
+	    path_sans_ext(pout, pf);
+	else
+	    pout = format("{}", o);
+	var r1;
+	r1["name"] = "Check project (in-process)";
+	r1["act"] = "bld-proj-check";
+	rows.push(r1);
+	var r2;
+	r2["name"] = "Build project (in-process)";
+	r2["kind"] = "exe";
+	r2["out"] = pout;
+	r2["act"] = "bld-proj-build";
+	rows.push(r2);
+	var r3;
+	r3["name"] = "Run project";
+	r3["act"] = "bld-proj-run";	// the --project JIT lane, forked
+	rows.push(r3);
+	var r4;
+	r4["name"] = "Run native";
+	r4["cmd"] = format("./{}", pout);
+	r4["mode"] = "terminal";
+	r4["act"] = "bld-run-cmd";
+	rows.push(r4);
+	var r5;
+	r5["name"] = "Stop";
+	r5["act"] = "bld-stop";
+	rows.push(r5);
+	// The manifest's commands section: {name, cmd, mode?} rows AS
+	// DATA, appended after the built-ins ({path}/{base}/{project}/
+	// {madc} substitute at choose time — build_subst). A malformed
+	// entry (not an object, no name/cmd) skips.
+	var cmds = proj["commands"];
+	if ( !cmds.is_null() )
+	{
+	    for ( var c : cmds )
+	    {
+		if ( !c.is_object() )
+		    continue;
+		var cn = c["name"];
+		var cc = c["cmd"];
+		if ( cn.is_null() || cc.is_null() )
+		    continue;
+		var r;
+		r["name"] = cn;
+		r["cmd"] = cc;
+		var cm = c["mode"];
+		if ( cm.is_null() )
+		    r["mode"] = "capture";
+		else
+		    r["mode"] = cm;
+		r["act"] = "bld-run-cmd";
+		rows.push(r);
+	    }
+	}
+	ui::set(w, es, "buildcmds", rows);
+	return;
+    }
     var r1;
     r1["name"] = "Check (in-process)";
     r1["act"] = "bld-check";
@@ -2465,9 +2773,28 @@ void build_choose(long w, long es, long doc, long option)
 	run_buffer(w, es, doc);
 	return;
     }
+    // The project rows (^B correlation): check every TU / build the
+    // linked image / run the --project lane.
+    if ( a == "bld-proj-check" )
+    {
+	proj_run_check(w, es, doc);
+	return;
+    }
+    if ( a == "bld-proj-build" )
+    {
+	var k = format("{}", r["kind"]);
+	var ot = format("{}", r["out"]);
+	start_project_build(w, es, doc, k, ot);
+	return;
+    }
+    if ( a == "bld-proj-run" )
+    {
+	run_project(w, es, doc);
+	return;
+    }
     var cmd0 = format("{}", r["cmd"]);
     var cmd;
-    build_subst(cmd, cmd0.c_str(), w, doc);
+    build_subst(cmd, cmd0.c_str(), w, es, doc);
     var mode = format("{}", r["mode"]);
     if ( mode == "terminal" )
 	run_in_terminal(w, es, cmd.c_str());
@@ -3231,6 +3558,8 @@ void compose_ide_tree(var &root, long w, long es, long doc)
 		box["label"] = "Outline";
 	    else
 		box["label"] = "Diagnostics";
+	    var dpath;
+	    ui::get(dpath, w, doc, "path");
 	    for ( var row : rows )
 	    {
 		var it;
@@ -3238,6 +3567,15 @@ void compose_ide_tree(var &root, long w, long es, long doc)
 		if ( outline_pane )
 		    it["content"] = format("{} {} :{}", row["kind"],
 					   row["name"], row["line"]);
+		else if ( !row["file"].is_null()
+		       && !(row["file"] == dpath.c_str()) )
+		    // A project check's rows span TUs — a row from
+		    // ANOTHER file leads with it (goto opens it; the
+		    // row carries the file as data either way). Rows on
+		    // the shown buffer stay unprefixed (the JOE shape).
+		    it["content"] = format("{} {}:{} {} {}", row["file"],
+					   row["line"], row["column"],
+					   row["severity"], row["message"]);
 		else
 		    it["content"] = format("{}:{} {} {}", row["line"],
 					   row["column"], row["severity"],
