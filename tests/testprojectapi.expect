@@ -1,0 +1,6 @@
+build: ok=1 diags=0 artifact=1
+a_secret=100 from_b=300
+artifact-rc=0
+run-rc=0
+bad-build: ok=0 rows>=1 1
+bad-run: -1

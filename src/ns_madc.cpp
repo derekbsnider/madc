@@ -278,6 +278,18 @@ value &project_tus(value &out, int64_t handle)
 	{ madc_project_tus(&out, handle); return out; }
 bool project_close(int64_t handle)
 	{ return madc_project_close(handle); }
+// The project build/run pair (madcide ^B correlation, owner design doc
+// 2026-08-31: with a manifest open, Build = the --project build). The
+// <ns_madc> declarations carry the contracts.
+bool project_build(value &out_diags, const char *manifest, const char *kind,
+		   const char *outpath)
+	{
+	    std::string m = manifest ? manifest : "", k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_project_build(&out_diags, &m, &k, &o);
+	}
+int64_t project_run(const char *manifest)
+	{ std::string m = manifest ? manifest : ""; return madc_project_run(&m); }
 
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a

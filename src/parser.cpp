@@ -352,6 +352,14 @@ int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path);
 bool internal_program_project_tus(int64_t handle, value &out);
 bool internal_program_project_close(int64_t handle);
+// The project build/run pair (madcide ^B correlation — the --project
+// lanes run in-process / in a fork child): see madc_program.cpp.
+bool internal_program_project_build(::Program &self,
+				    const std::string &manifest_path,
+				    const std::string &kind_name,
+				    value &out, const std::string &outpath);
+int64_t internal_program_project_run(::Program &self,
+				     const std::string &manifest_path);
 }
 
 namespace {
@@ -1095,6 +1103,35 @@ void *madc_project_tus(void *result, int64_t handle)
 bool madc_project_close(int64_t handle)
 {
     return madc::internal_program_project_close(handle);
+}
+
+// The project build/run bridges (madcide ^B correlation): the --project
+// AOT / JIT lanes as library verbs. manifest/kind/outpath =
+// std::string*, result = madc::value* (diagnostics rows).
+bool madc_project_build(void *result, void *manifest_path, void *kind,
+			void *outpath)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    return madc::internal_program_project_build(*active,
+						*(const std::string *)manifest_path,
+						*(const std::string *)kind,
+						out,
+						*(const std::string *)outpath);
+}
+
+int64_t madc_project_run(void *manifest_path)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return -3;
+    return madc::internal_program_project_run(*active,
+					      *(const std::string *)manifest_path);
 }
 
 bool madc_runtime_eval_expression_bool(void *expr)
