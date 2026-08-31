@@ -38183,6 +38183,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// colon stops expression (ternary false branch, case label, range-for)
 		if ( tb->id() == TokenID::tkTerC && !brackets )
 		{
+		    // Every legal ':' owner (ternary, case label, range-for,
+		    // label, bitfield) has consumed a LEFT side first, so a
+		    // ':' HEADING the parse (nothing consumed yet) has no
+		    // owner. Pushing it back would hand the SAME token to the
+		    // caller's loop forever — the associative-literal hang
+		    // class (statement and call-argument contexts). Loud wall.
+		    if ( exStack.empty() && opStack.empty() )
+			Throw(tb) << "Unexpected ':' — no expression before it"
+			    " (keyed '{key: value}' literals are not supported"
+			    " (yet))" << flush;
 		    pushToken(tb); // put : back for caller to consume
 		    done = true;
 		    return done ? ExprStep::Done : ExprStep::Break;
@@ -65393,6 +65403,21 @@ fnptr_decl_arm_head:
 		td->ctor_args.push_back(arg);
 		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
 		    nextToken(); // consume ','
+		else if ( peekToken() && peekToken()->id() != ctor_close_id )
+		{
+		    // An element ends only at ',' or the close. parseExpression
+		    // PUSHES BACK a terminator it does not own (a bare ':' is
+		    // the ternary-branch pushback convention), so without this
+		    // wall the loop re-pops the same token forever — the
+		    // associative-literal hang (`var m = { "a": 1 }`).
+		    if ( carrier_list_decl
+		      && peekToken()->id() == TokenID::tkColon )
+			Throw(peekToken()) << "Keyed elements (key: value) in a"
+			    " value literal are not supported (yet) — assign"
+			    " per key, or js::parse a JSON literal" << flush;
+		    Throw(peekToken()) << "Expected ',' or '" << ctor_close_sp
+			<< "' after constructor argument" << flush;
+		}
 	    }
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);

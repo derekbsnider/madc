@@ -1,0 +1,13 @@
+// Reducer for the associative-literal parser HANG: a keyed element in a
+// value literal must ERROR LOUDLY (naming the gap), never spin. The
+// ctor-args element loop owns the ',' / close separator grammar;
+// parseExpression pushes a bare ':' back (the ternary-branch pushback
+// convention), and without the loop's wall the same token re-headed
+// parseExpression forever — SIGKILL by the CPU cap, no diagnostics.
+// Oracle: g++ `std::vector<int> v{1: 2};` -> "expected '}' before ':'";
+// clang++ -> "expected '}'". madc names the gap and the road instead.
+int main()
+{
+	var m = { "a": 1 };
+	return 0;
+}
