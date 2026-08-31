@@ -95,6 +95,23 @@ profile pretending. *(Owner flagged the missing neovim.keys again
 2026-08-31; the modes-as-scopes slice is QUEUED NEXT after the seam —
 built on the session surface so the mode routing is written once.)*
 
+**Modes are general + the ^N MODES PALETTE (owner rulings 2026-08-31,
+LANDED same day):** "no reason our editor/ide cannot have modes" — any
+personality can reach a mode. joe's `^N` (freed from its ^K E shortcut)
+raises the modes palette — the one popup-list widget — whose keys are
+`@modes` profile data through the one parse_keys (baked defaults:
+`:` enters the vi colon line, enter opens the focused row, esc
+dismisses). `^N :` is the two-keystroke door into colon mode, and the
+palette is the only legal spelling — the chord tables refuse prefix
+shadows, so `^n` and `^n :` cannot coexist in the main table. COLON
+MODE is the prompt machinery plus ONE interpreter over the existing
+vocabulary (`w q q! wq x`, `:N` goto, `e <file>`, `r <file>`, `!cmd`
+via the terminal-request seam) — the human face of slice 3's
+commands-with-arguments; `:q` refuses a dirty buffer with the q verb's
+own message (vim's shape). The vi normal/insert mode joins the palette
+as a row when the modes-as-scopes slice lands; its `@normal :` enters
+this same line.
+
 ## The ^P project window (RULED 2026-08-31)
 
 ^P's PRIMARY function is the project (palette quick-open is secondary),
