@@ -92,8 +92,33 @@ keys file — vim is modal (normal/insert, counts, operator+motion); the
 natural substrate is the @scope tables (modes = scopes the MAIN key
 stream consults; `i` flips scope) — a dedicated slice, never a flat
 profile pretending. *(Owner flagged the missing neovim.keys again
-2026-08-31; the modes-as-scopes slice is QUEUED NEXT after the seam —
-built on the session surface so the mode routing is written once.)*
+2026-08-31; the modes-as-scopes slice was built on the session surface
+so the mode routing is written once.)*
+
+**LANDED (s149, feature/madcide-project-claude) — vi MODES-AS-SCOPES:**
+`profiles/neovim.keys` is the modal personality: its main table is
+vim's control chords (^R redo, ^F/^B/^D/^U pages, ^L refresh, the ^W
+window family) and `@normal`/`@insert` are the vi mode tables — all
+data through the one parse_keys. Scoped keys now store AS WRITTEN and
+match exact-then-lowercase, so the vi case alphabet (a/A, i/I, o/O,
+x/X) is spelled in data — lowercase-only scopes (every existing
+profile) stay case-insensitive. The session's vi arm
+(`IdeSession::vi_event`) owns the GRAMMAR: counts multiply (2d3w = 6),
+d/c pend and double to the line-wise form, motions are the existing
+shared action vocabulary executed through apply_ide_event recursion
+(one dispatch), count+G = the :N landing rule, `@normal :` enters the
+one colon line, esc clears pending state. A profile carrying @normal
+data loads in normal mode (data decides, no name check); the ^N
+palette's `v` row toggles modal editing and refuses with the road
+where no @normal data exists. %M renders showmode, %k doubles as
+showcmd. Honest absences documented in the profile: no registers/put,
+no text objects, no repeat, no gg (1G), byte-wise operator spans, w/b
+are the shared end-of-word motions (dw = vim's `de` shape) — each a
+demand-driven refinement, never pretended around. The slice's live pty
+probe also CAUGHT a standing defect: a prompt opened from a FOCUSED
+pane row could never commit (the engine hands enter back as a choose;
+prompt_event ignored it) — fixed in its own commit, choose routes
+through the same @prompt data as the enter key, pinned headlessly.
 
 **Modes are general + the ^N MODES PALETTE (owner rulings 2026-08-31,
 LANDED same day):** "no reason our editor/ide cannot have modes" — any
@@ -108,9 +133,9 @@ MODE is the prompt machinery plus ONE interpreter over the existing
 vocabulary (`w q q! wq x`, `:N` goto, `e <file>`, `r <file>`, `!cmd`
 via the terminal-request seam) — the human face of slice 3's
 commands-with-arguments; `:q` refuses a dirty buffer with the q verb's
-own message (vim's shape). The vi normal/insert mode joins the palette
-as a row when the modes-as-scopes slice lands; its `@normal :` enters
-this same line.
+own message (vim's shape). The vi normal/insert mode joined the
+palette as its `v` row when the modes-as-scopes slice landed (s149,
+above); its `@normal :` enters this same line.
 
 ## The ^P project window (RULED 2026-08-31)
 
