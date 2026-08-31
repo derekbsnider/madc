@@ -1,6 +1,8 @@
 joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
-joe-ide: [^p]=palette [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
+joe-ide: [^p]=project [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
+joe-project: ins=projadd del=projdel enter=projopen pico-ins=projadd
+scoped: y-override=quit ins-fold=act2 main-x=save prompt-enter=pcommit
 rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
 check1: Check: clean.
 edited: caret=5 modified=true size=89
@@ -39,10 +41,20 @@ tabwidth-bad: Tab width '40' — need 1..16.
 editfile-new: New file madc_ide_ast5.txt. switched=1 named=1
 editfile-back: home=1 caret-restored=1
 editfile-again: Editing madc_ide_ast5.txt. kept=1 modified=1
-palette: list=1 focus=1 rows>=2 1
-palette-filter: rows=1 row0=* madc_ide_ast5.txt
-palette-open: switched=1 path=madc_ide_ast5.txt closed=1
-palette-toggle: opened=1 closed=1
+project: list=1 focus=1 rows>=2 1 nofile=1 row0-tag=prj row0-path=madc_ide_test.mad
+project-filter: rows=1 tag=open path=madc_ide_ast5.txt
+project-open: switched=1 path=madc_ide_ast5.txt closed=1
+project-toggle: opened=1 closed=1
+proj-del-implicit: No project file yet (ins adds a file, creating it). manifest=0
+proj-add-prompt: File to add to project (^C aborts):
+proj-materialize: Project file created: madc_ide_test.prj.json parses=1 tus=2 row1=p  madc_ide_second.mad
+proj-dup: Already in the project: madc_ide_second.mad
+proj-open2: path=madc_ide_second.mad closed=1
+proj-addcur: Added madc_ide_ast5.txt to the project. in-manifest=1
+proj-del: Removed madc_ide_ast5.txt from the project. gone=1
+proj-esc: closed=1
+proj-startup: Project madc_ide_test.prj.json: 2 TU(s). tus=2
+proj-bad: madc_ide_test.prj.json is not valid JSON. implicit=1
 build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
 build-start: live=1
 build-out: has-hello=1 has-done=0 live=0
@@ -79,7 +91,7 @@ prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
-help: pane=help label=Help — pico profile rows=20
+help: pane=help label=Help — pico profile rows=36
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84

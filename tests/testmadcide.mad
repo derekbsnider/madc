@@ -14,34 +14,45 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
-void ev_text(value &e, const char *t)
+void ev_text(var &e, const char *t)
 {
-    value f;
+    var f;
     f["event"] = "text";
     f["text"] = t;
     e = f;
 }
 
-void ev_key(value &e, const char *k)
+void ev_key(var &e, const char *k)
 {
-    value f;
+    var f;
     f["event"] = "key";
     f["key"] = k;
     e = f;
 }
 
-void ev_action(value &e, const char *a, const char *seq)
+// A key with the focused choice's selection riding along (1-based) — the
+// shape ns_ui emits when a focused choice exists (the ins/del contract).
+void ev_key_opt(var &e, const char *k, long option)
 {
-    value f;
+    var f;
+    f["event"] = "key";
+    f["key"] = k;
+    f["option"] = option;
+    e = f;
+}
+
+void ev_action(var &e, const char *a, const char *seq)
+{
+    var f;
     f["event"] = "action";
     f["action"] = a;
     f["seq"] = seq;
     e = f;
 }
 
-void ev_choose(value &e, long option, const char *a)
+void ev_choose(var &e, long option, const char *a)
 {
-    value f;
+    var f;
     f["event"] = "choose";
     f["option"] = option;
     f["action"] = a;
@@ -62,33 +73,53 @@ int main()
     load_theme(w, es, "default");	// spans need the theme (run_ide's step)
 
     // -- profiles are data: the same actions, respelled per profile --
-    value txt;
+    var txt;
     php::file_get_contents(txt, "tools/madcide/profiles/joe.keys");
-    value joe;
-    parse_keys(joe, txt.c_str());
+    var joe;
+    var joesc;
+    parse_keys(joe, joesc, txt.c_str());
     println("joe: [^k s]={} [^k x]={} [^c]={}",
 	    joe["^k s"], joe["^k x"], joe["^c"]);
     php::file_get_contents(txt, "tools/madcide/profiles/pico.keys");
-    value pico;
-    parse_keys(pico, txt.c_str());
+    var pico;
+    var picosc;
+    parse_keys(pico, picosc, txt.c_str());
     println("pico: [^s]={} [^k]={}", pico["^s"], pico["^k"]);
     // IDE-10a (owner ruling): the WordStar diamond's control spellings are
     // reclaimed for IDE verbs; ^K U / ^_ pin that chords + edits survived.
     println("joe-ide: [^p]={} [^f]={} [^n]={} [^b]={} [^r]={} [^k u]={} [^_]={}",
 	    joe["^p"], joe["^f"], joe["^n"], joe["^b"], joe["^r"],
 	    joe["^k u"], joe["^_"]);
+    // The @project window keys ship in BOTH profiles as DATA (owner law:
+    // pane/modal keys are never hardwired), through the ONE parse_keys.
+    println("joe-project: ins={} del={} enter={} pico-ins={}",
+	    joesc["project"]["ins"], joesc["project"]["del"],
+	    joesc["project"]["enter"], picosc["project"]["ins"]);
+    // The scoped parser's rules: a profile's @scope line OVERRIDES the
+    // baked default per (scope, key) — later lines win; scoped keys fold
+    // case; unscoped lines still fill the main table; untouched defaults
+    // stand (the rescue-keys pattern, data through the same parser).
+    var st;
+    var ssc;
+    parse_keys(st, ssc,
+	       format("{}\n@confirm Y quit\n@myscope INS act2\nx save\n",
+		      modal_default_keys_text()));
+    println("scoped: y-override={} ins-fold={} main-x={} prompt-enter={}",
+	    ssc["confirm"]["y"], ssc["myscope"]["ins"], st["x"],
+	    ssc["prompt"]["enter"]);
     // The baked-in RESCUE set (no profile file loads) is the same data
     // shape: an inline profile string through parse_keys. Binding needs a
     // TUI; headless pins the table content and the tiny exit/save/help
     // vocabulary (owner directive 2026-08-29).
-    value rescue;
-    parse_keys(rescue, rescue_keys_text());
+    var rescue;
+    var rescuesc;
+    parse_keys(rescue, rescuesc, rescue_keys_text());
     println("rescue: n={} [^s]={} [^q]={} [^x]={} [^g]={} [^p]={}",
 	    php::count(rescue), rescue["^s"], rescue["^q"], rescue["^x"],
 	    rescue["^g"], rescue["^p"]);
 
     // -- gate 2 (clean half): check-on-demand over the live buffer --
-    value e;
+    var e;
     ev_action(e, "check", "^k e");
     apply_ide_event(w, es, doc, e);
     var msg;
@@ -119,9 +150,9 @@ int main()
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     println("check2: {}", msg);
-    value tree;
+    var tree;
     compose_ide_tree(tree, w, es, doc);
-    value rendered;
+    var rendered;
     ui::render_tree(rendered, w, tree);
     print("--- diagnostics view ---\n{}--- end ---\n", rendered);
     // Move the caret away, then choose the first diagnostics row: the
@@ -159,7 +190,7 @@ int main()
     //    idents) unthemed like joe's default.jcf, so the fn heads and
     //    the line-2 `add` CALL all skip; the themed rows are the 5
     //    `long` types + 2 `return` keywords, bold.
-    value shl = tree["children"][1]["hints"]["spans"];
+    var shl = tree["children"][1]["hints"]["spans"];
     println("spans: n={} first={}..{} {} second={}..{} {}",
 	    php::count(shl), shl[0]["s"], shl[0]["e"], shl[0]["c"],
 	    shl[1]["s"], shl[1]["e"], shl[1]["c"]);
@@ -174,7 +205,7 @@ int main()
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     compose_ide_tree(tree, w, es, doc);
-    value shc = tree["children"][1]["hints"]["spans"];
+    var shc = tree["children"][1]["hints"]["spans"];
     println("theme-swap: {} first-c={}", msg, shc[0]["c"]);
     ev_action(e, "theme", "opt-scheme");
     apply_ide_event(w, es, doc, e);
@@ -199,7 +230,7 @@ int main()
     ev_action(e, "options", "^t");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    value pbox = tree["children"][2];
+    var pbox = tree["children"][2];
     println("options: label={} rows={}", pbox["label"],
 	    php::count(pbox["children"]));
     println("options-row0: {}", php::trim(pbox["children"][0]["content"]));
@@ -262,7 +293,7 @@ int main()
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     long fwd = active_doc(w, es, doc);
-    value kept;
+    var kept;
     ui::text(kept, w, fwd);
     var mflag;
     ui::get(mflag, w, fwd, "modified");
@@ -277,39 +308,49 @@ int main()
     ev_key(e, "right");			// consume the switch message
     apply_ide_event(w, es, doc, e);
 
-    // -- IDE-10a: the ^P file palette — the popup-list choice (model
-    //    hints list/focus), typed FILTER, choose -> edit_file (the one
-    //    open-or-switch owner). Row content beyond the open buffers
-    //    depends on the cwd, so the pins are structural: hints, the
-    //    filtered buffer row, the switch, and the modal toggle.
-    ev_action(e, "palette", "^p");
+    // -- IDE-10a: the ^P PROJECT window (owner rulings 2026-08-31) — the
+    //    popup-list choice (model hints list/focus) with GROUPED rows:
+    //    [project] (the implicit single-file project first), then [open]
+    //    buffers, then [cwd] only while a filter is typed. Quick-open
+    //    rides the filter; enter's meaning is @project data (projopen ->
+    //    edit_file, the one open-or-switch owner); ^P toggles (modal).
+    //    Cross-run hygiene: no manifest may pre-exist (a leftover from a
+    //    prior run would make the implicit-project gates lie).
+    remove("madc_ide_test.prj.json");
+    ev_action(e, "project", "^p");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    value palbox = tree["children"][2];
-    println("palette: list={} focus={} rows>=2 {}",
+    var palbox = tree["children"][2];
+    var prows0;
+    ui::get(prows0, w, es, "projrows");
+    println("project: list={} focus={} rows>=2 {} nofile={} row0-tag={} row0-path={}",
 	    palbox["hints"]["list"], palbox["hints"]["focus"],
-	    php::count(palbox["children"]) >= 2 ? 1 : 0);
+	    php::count(palbox["children"]) >= 2 ? 1 : 0,
+	    strstr(format("{}", palbox["label"]),
+		   "(no project file)") != 0 ? 1 : 0,
+	    prows0[0]["tag"], prows0[0]["path"]);
     ev_text(e, "ast5");		// filters to the one ast5 buffer row
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
     palbox = tree["children"][2];
-    println("palette-filter: rows={} row0={}",
+    ui::get(prows0, w, es, "projrows");
+    println("project-filter: rows={} tag={} path={}",
 	    php::count(palbox["children"]),
-	    php::trim(palbox["children"][0]["content"]));
-    ev_choose(e, 1, "pal-open");	// 1-based (the ns_ui wire contract)
-    apply_ide_event(w, es, doc, e);
+	    prows0[0]["tag"], prows0[0]["path"]);
+    ev_choose(e, 1, "");	// 1-based (the ns_ui wire contract);
+    apply_ide_event(w, es, doc, e);	// enter's MEANING is @project data
     long pdoc = active_doc(w, es, doc);
     var ppath;
     ui::get(ppath, w, pdoc, "path");
-    println("palette-open: switched={} path={} closed={}",
-	    pdoc != doc ? 1 : 0, ppath, palette_active(w, es) ? 0 : 1);
-    ev_action(e, "palette", "^p");	// open again ...
+    println("project-open: switched={} path={} closed={}",
+	    pdoc != doc ? 1 : 0, ppath, project_active(w, es) ? 0 : 1);
+    ev_action(e, "project", "^p");	// open again ...
     apply_ide_event(w, es, pdoc, e);
-    long mid = palette_active(w, es) ? 1 : 0;
-    ev_action(e, "palette", "^p");	// ... ^P while up closes (modal)
+    long mid = project_active(w, es) ? 1 : 0;
+    ev_action(e, "project", "^p");	// ... ^P while up closes (modal)
     apply_ide_event(w, es, pdoc, e);
-    println("palette-toggle: opened={} closed={}",
-	    mid, palette_active(w, es) ? 0 : 1);
+    println("project-toggle: opened={} closed={}",
+	    mid, project_active(w, es) ? 0 : 1);
     ev_action(e, "editfile", "^k e");	// home again
     apply_ide_event(w, es, pdoc, e);
     ev_text(e, "madc_ide_test.mad");
@@ -321,31 +362,135 @@ int main()
     ev_action(e, "refresh", "^r");	// headless: no tui on the bag —
     apply_ide_event(w, es, doc, e);	// pinned inert (a safe no-op)
 
+    // -- the PROJECT model (owner rulings 2026-08-31): the implicit
+    //    single-file project; del on it refuses (nothing on disk to
+    //    edit); ins -> the projadd prompt (the argument collector) —
+    //    the SECOND file MATERIALIZES <base>.prj.json (immediate
+    //    persistence, status-line announce); duplicates refuse;
+    //    projaddcur adds the active buffer; del removes the focused
+    //    row's membership and rewrites; startup reads the manifest
+    //    back; malformed JSON refuses LOUD and stays implicit.
+    ev_action(e, "project", "^p");
+    apply_ide_event(w, es, doc, e);
+    ev_key_opt(e, "del", 1);		// the engine hands the focused row
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("proj-del-implicit: {} manifest={}", msg,
+	    php::file_exists("madc_ide_test.prj.json") ? 1 : 0);
+    ev_key(e, "ins");			// @project ins -> projadd's prompt
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    var pov;
+    long pkids = php::count(tree["children"]);
+    pov = tree["children"][pkids - 1];
+    println("proj-add-prompt: {}", php::trim(pov["content"]));
+    php::file_put_contents("madc_ide_second.mad", "long two() { return 2; }\n");
+    ev_text(e, "madc_ide_second.mad");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    var mtxt;
+    bool mread = php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    var mparsed;
+    bool mok = mread && js::parse(mparsed, mtxt);
+    var prows1;
+    ui::get(prows1, w, es, "projrows");
+    println("proj-materialize: {} parses={} tus={} row1={}",
+	    msg, mok ? 1 : 0,
+	    mok ? php::count(mparsed["tus"]) : -1,
+	    php::trim(prows1[1]["content"]));
+    ev_key(e, "ins");			// a duplicate refuses
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "madc_ide_second.mad");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("proj-dup: {}", msg);
+    ev_choose(e, 2, "");		// enter on the second row: projopen
+    apply_ide_event(w, es, doc, e);
+    long sdoc = active_doc(w, es, doc);
+    var spath;
+    ui::get(spath, w, sdoc, "path");
+    println("proj-open2: path={} closed={}", spath,
+	    project_active(w, es) ? 0 : 1);
+    ev_action(e, "editfile", "^k e");	// to the ast5 buffer (a non-member)
+    apply_ide_event(w, es, sdoc, e);
+    ev_text(e, "madc_ide_ast5.txt");
+    apply_ide_event(w, es, sdoc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, sdoc, e);
+    long tdoc = active_doc(w, es, doc);
+    ev_action(e, "projaddcur", "^k j");	// outside the window too
+    apply_ide_event(w, es, tdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    println("proj-addcur: {} in-manifest={}", msg,
+	    strstr(mtxt.c_str(), "madc_ide_ast5.txt") != 0 ? 1 : 0);
+    ev_action(e, "project", "^p");	// del removes the focused member
+    apply_ide_event(w, es, tdoc, e);
+    ev_key_opt(e, "del", 3);		// manifest order: test, second, ast5
+    apply_ide_event(w, es, tdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    println("proj-del: {} gone={}", msg,
+	    strstr(mtxt.c_str(), "madc_ide_ast5.txt") == 0 ? 1 : 0);
+    ev_key(e, "esc");			// @project esc projclose dismisses
+    apply_ide_event(w, es, tdoc, e);
+    println("proj-esc: closed={}", project_active(w, es) ? 0 : 1);
+    // Startup read-back: a FRESH session bag (proj_startup finds
+    // <base>.prj.json beside the launch file and announces it).
+    long es2 = ui::create(w, "editor-state-2");
+    proj_startup(w, es2, doc);
+    var msg2;
+    ui::get(msg2, w, es2, "msg");
+    var prj2;
+    ui::get(prj2, w, es2, "proj");
+    println("proj-startup: {} tus={}", msg2,
+	    prj2.is_null() ? -1 : php::count(prj2["tus"]));
+    // Malformed JSON refuses LOUD; the session stays implicit.
+    php::file_put_contents("madc_ide_test.prj.json", "{nope");
+    long es3 = ui::create(w, "editor-state-3");
+    proj_startup(w, es3, doc);
+    ui::get(msg2, w, es3, "msg");
+    ui::get(prj2, w, es3, "proj");
+    println("proj-bad: {} implicit={}", msg2, prj2.is_null() ? 1 : 0);
+    remove("madc_ide_test.prj.json");	// cross-run hygiene
+    ev_action(e, "editfile", "^k e");	// home for the build gates
+    apply_ide_event(w, es, tdoc, e);
+    ev_text(e, "madc_ide_test.mad");
+    apply_ide_event(w, es, tdoc, e);
+    ev_key(e, "enter");
+    apply_ide_event(w, es, tdoc, e);
+    ev_key(e, "right");			// consume the switch message
+    apply_ide_event(w, es, doc, e);
+
     // -- IDE-10b: the ^B build palette — command rows AS DATA (overridden
     //    here for determinism), the capture pump through exec:// + the
     //    MT-4b mixed select, Stop against a SILENT child, the [build]
     //    buffer, and the headless refusal of a terminal-mode row.
     {
 	var brws = {};
-	value c1;
+	var c1;
 	c1["name"] = "Echo";
 	c1["cmd"] = "echo hello-{base}";
 	c1["mode"] = "capture";
 	c1["act"] = "bld-run-cmd";
 	brws.push(c1);
-	value c2;
+	var c2;
 	c2["name"] = "Sleepy";
 	c2["cmd"] = "sleep 5";
 	c2["mode"] = "capture";
 	c2["act"] = "bld-run-cmd";
 	brws.push(c2);
-	value c3;
+	var c3;
 	c3["name"] = "Run";
 	c3["cmd"] = "echo never";
 	c3["mode"] = "terminal";
 	c3["act"] = "bld-run-cmd";
 	brws.push(c3);
-	value c4;
+	var c4;
 	c4["name"] = "Stop";
 	c4["act"] = "bld-stop";
 	brws.push(c4);
@@ -354,7 +499,7 @@ int main()
     ev_action(e, "build", "^b");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    value bbox = tree["children"][2];
+    var bbox = tree["children"][2];
     println("build-pane: label={} rows={} row0={}",
 	    bbox["label"], php::count(bbox["children"]),
 	    php::trim(bbox["children"][0]["content"]));
@@ -363,7 +508,7 @@ int main()
     println("build-start: live={}", es_int(w, es, "buildlive", 0));
     madc::task_drain();			// run the pump to completion
     long bdoc = build_doc(w, es);
-    value btxt;
+    var btxt;
     ui::text(btxt, w, bdoc);
     println("build-out: has-hello={} has-done={} live={}",
 	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
@@ -403,7 +548,7 @@ int main()
     //    failure rows land in the diags pane, and Esc backs out of any
     //    pane.
     {
-	value nul;
+	var nul;
 	ui::set(w, es, "buildcmds", nul);	// drop the exec override
     }
     ev_action(e, "build", "^b");		// reseeds the defaults
@@ -440,7 +585,7 @@ int main()
     apply_ide_event(w, es, bldoc, e);
     println("native-build-start: live={}", es_int(w, es, "buildlive", 0));
     madc::task_drain();			// the build task to completion
-    value bdg;
+    var bdg;
     ui::get(bdg, w, es, "diags");
     ui::get(msg, w, es, "msg");
     println("native-build-done: live={} ndiags={} built-msg={}",
@@ -542,8 +687,8 @@ int main()
     // Tree shape: window 1 = the LIVE status + edit (focus-hinted),
     // window 2 = a statusline + snapshot edit with the rows hint
     // (headless tui: 24 rows, 2 windows -> base (24-2)/2 = 11).
-    value wk1 = tree["children"][1];
-    value wk3 = tree["children"][3];
+    var wk1 = tree["children"][1];
+    var wk3 = tree["children"][3];
     println("split: wins={} shape={}/{}/{}/{} focus={} rows={}",
 	    window_count(w, es),
 	    tree["children"][0]["role"], wk1["role"],
@@ -563,9 +708,9 @@ int main()
     // Stale-caret clamp, both consumers: poke window 2's saved caret
     // past EOF — the composed SNAPSHOT clamps, and activating it clamps
     // the live caret — no doc mutation, later gates keep their text.
-    value ws9;
+    var ws9;
     ui::get(ws9, w, es, "windows");
-    value wr9 = ws9[1];
+    var wr9 = ws9[1];
     wr9["caret"] = wsz + 1000;
     ws9[1] = wr9;
     ui::set(w, es, "windows", ws9);
@@ -594,13 +739,13 @@ int main()
 	    es_int(w, es, "caret", -1) == wsz ? 1 : 0);
 
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
-    value before;
+    var before;
     compose_ide_tree(before, w, es, doc);
     ev_action(e, "profile", "opt-keymap");
     apply_ide_event(w, es, doc, e);
     var prof;
     ui::get(prof, w, es, "profile");
-    value after;
+    var after;
     compose_ide_tree(after, w, es, doc);
     println("swap: profile={} tree={}", prof,
 	    before == after ? "identical" : "DIFFER");
@@ -686,7 +831,7 @@ int main()
     ev_action(e, "wordright", "^x");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    value bsel = tree["children"][1]["hints"];
+    var bsel = tree["children"][1]["hints"];
     long silent = bsel["sel_start"].is_null() ? 1 : 0;
     ev_action(e, "blockcopy", "^k c");
     apply_ide_event(w, es, doc, e);
@@ -695,7 +840,7 @@ int main()
     ev_action(e, "bend", "^k k");
     apply_ide_event(w, es, doc, e);
     compose_ide_tree(tree, w, es, doc);
-    value asel = tree["children"][1]["hints"];
+    var asel = tree["children"][1]["hints"];
     println("mark-silent: nosel={} refuse={} lit={}..{}", silent, refuse,
 	    asel["sel_start"].as_integer(), asel["sel_end"].as_integer());
 
@@ -739,7 +884,7 @@ int main()
     apply_ide_event(w, es, doc, e);
     ev_action(e, "blockmove", "^k m");
     apply_ide_event(w, es, doc, e);
-    value bt;
+    var bt;
     ui::text(bt, w, doc);
     println("blockmove: head={} caret={}", perl::substr(bt, 0, 4),
 	    es_int(w, es, "caret", -1));
@@ -797,9 +942,9 @@ int main()
     var pane2;
     ui::get(pane2, w, es, "pane");
     compose_ide_tree(tree, w, es, doc);
-    value paneb;
+    var paneb;
     paneb = tree["children"][2];
-    value hrows;
+    var hrows;
     hrows = paneb["children"];
     println("help: pane={} label={} rows={}", pane2, paneb["label"],
 	    php::count(hrows));
@@ -833,11 +978,11 @@ int main()
     // The composed tree presents the RENDERED text and carries the lens
     // data (view name + coordinate map) as edit-node hints.
     compose_ide_tree(tree, w, es, doc);
-    value ved;
+    var ved;
     ved = tree["children"][1];
-    value vh;
+    var vh;
     vh = ved["hints"];
-    value vmap;
+    var vmap;
     vmap = vh["map"];
     var vtext = format("{}", ved["content"]);
     println("view1-node: view={} maprows={} shows-lowering={}",
@@ -869,10 +1014,10 @@ int main()
     ui::get(vname, w, es, "view");
     ui::get(m, w, doc, "modified");
     compose_ide_tree(tree, w, es, doc);
-    value bed;
+    var bed;
     bed = tree["children"][1];
     var btext = format("{}", bed["content"]);
-    value dtext;
+    var dtext;
     ui::text(dtext, w, doc);
     println("view-exit: name='{}' caret={} identical={} modified={}",
 	    vname, es_int(w, es, "caret", -1),
@@ -880,11 +1025,11 @@ int main()
     // The coordinate map's dialect face (the markdown-conceal shape):
     // 1:1 in copies, forward collapse inside gaps, boundary-earlier on
     // the inverse, 0 for the empty (wholly rendered) map.
-    value g0;
+    var g0;
     g0["disp"] = 0;
     g0["stored"] = 0;
     g0["len"] = 2;
-    value g1;
+    var g1;
     g1["disp"] = 2;
     g1["stored"] = 4;
     g1["len"] = 2;
@@ -917,7 +1062,7 @@ int main()
     var vn2;
     ui::get(vn2, w2, es2, "view");
     compose_ide_tree(tree, w2, es2, doc2);
-    value ced;
+    var ced;
     ced = tree["children"][1];
     var ctext = format("{}", ced["content"]);
     const char *cc = ctext.c_str();
