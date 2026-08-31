@@ -453,11 +453,7 @@ void spans_to_hspans(long w, long es, long doc, var &rows)
 	    if ( ls < 0 )
 		continue;
 	    long s = ls + r["column"].as_integer();
-	    var hr;
-	    hr["s"] = s;
-	    hr["e"] = s + r["length"].as_integer();
-	    hr["c"] = c;
-	    hs.push(hr);
+	    hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
 	}
     }
     ui::set(w, es, "hspans", hs);
@@ -1452,13 +1448,8 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	var fresh = {};
 	bufs = fresh;
     }
-    var b;
-    b["doc"] = nd;
-    b["path"] = path;
-    b["caret"] = 0;
-    b["mark"] = -1;
-    b["bend"] = -1;
-    bufs.push(b);
+    bufs[] = { "doc": nd, "path": path, "caret": 0,
+	       "mark": -1, "bend": -1 };
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -1478,15 +1469,11 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     if ( bufs.is_null() || php::count(bufs) == 0 )
     {
 	var seed = {};
-	var b0;
-	b0["doc"] = olddoc;
 	var op;
 	ui::get(op, w, olddoc, "path");
-	b0["path"] = op;
-	b0["caret"] = es_int(w, es, "caret", 0);
-	b0["mark"] = -1;
-	b0["bend"] = -1;
-	seed.push(b0);
+	seed[] = { "doc": olddoc, "path": op,
+		   "caret": es_int(w, es, "caret", 0),
+		   "mark": -1, "bend": -1 };
 	ui::set(w, es, "buffers", seed);
 	ui::set(w, es, "bufidx", 0);
 	ui::set(w, es, "adoc", olddoc);
@@ -1598,20 +1585,15 @@ void split_window(long w, long es, long doc)
     {
 	// Seed: window 0 adopts the live state.
 	var seed = {};
-	var w0;
-	w0["bufidx"] = es_int(w, es, "bufidx", 0);
-	w0["caret"] = es_int(w, es, "caret", 0);
-	w0["grow"] = 0;
-	seed.push(w0);
+	seed[] = { "bufidx": es_int(w, es, "bufidx", 0),
+		   "caret": es_int(w, es, "caret", 0), "grow": 0 };
 	ws = seed;
 	ui::set(w, es, "winat", 0);
     }
     else
 	at = es_int(w, es, "winat", 0);
-    var dup;
-    dup["bufidx"] = es_int(w, es, "bufidx", 0);
-    dup["caret"] = es_int(w, es, "caret", 0);
-    dup["grow"] = 0;
+    var dup = { "bufidx": es_int(w, es, "bufidx", 0),
+		"caret": es_int(w, es, "caret", 0), "grow": 0 };
     var rebuilt = {};
     long i = 0;
     for ( var r : ws )
@@ -1791,10 +1773,7 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     {
 	var lp;
 	proj_launch_path(lp, w, es, doc);
-	var r;
-	r["path"] = lp;
-	r["ti"] = -1;
-	rows.push(r);
+	rows[] = { "path": lp, "ti": -1 };
 	out = rows;
 	return;
     }
@@ -1804,14 +1783,14 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     {
 	// A bare string IS the file; an object TU names its file. The
 	// kind question comes FIRST — a keyed access on a scalar is a
-	// script error by design (madarray_key_slot).
-	var r;
+	// script error by design (madarray_key_slot). (An if/else, not a
+	// ternary: carrier-armed ternaries are a banked lowering gap.)
+	var tp;
 	if ( t.is_string() )
-	    r["path"] = t;
+	    tp = t;
 	else
-	    r["path"] = t["file"];
-	r["ti"] = i;
-	rows.push(r);
+	    tp = t["file"];
+	rows[] = { "path": tp, "ti": i };
 	i = i + 1;
     }
     out = rows;
@@ -2045,12 +2024,8 @@ void project_rows(long w, long es, long doc)
 		    mk = "*";
 	    }
 	}
-	var r;
-	r["path"] = p;
-	r["tag"] = "prj";
-	r["ti"] = tr["ti"];
-	r["content"] = format("p{} {}", mk, p);
-	rows.push(r);
+	rows[] = { "path": p, "tag": "prj", "ti": tr["ti"],
+		   "content": format("p{} {}", mk, p) };
     }
     // [open] — buffers not in the project, dirty-marked.
     for ( var b : bufs )
@@ -2067,11 +2042,8 @@ void project_rows(long w, long es, long doc)
 	var mk = " ";
 	if ( !m.is_null() && m.as_boolean() )
 	    mk = "*";
-	var r;
-	r["path"] = p;
-	r["tag"] = "open";
-	r["content"] = format("o{} {}", mk, p);
-	rows.push(r);
+	rows[] = { "path": p, "tag": "open",
+		   "content": format("o{} {}", mk, p) };
     }
     // [cwd] — quick-open rides the FILTER (the window is the project's;
     // an empty filter shows membership, not the directory). Source-
@@ -2093,11 +2065,8 @@ void project_rows(long w, long es, long doc)
 		var lp = php::strtolower(p.c_str());
 		if ( perl::index(lp.c_str(), lf.c_str()) < 0 )
 		    continue;
-		var r;
-		r["path"] = p;
-		r["tag"] = "cwd";
-		r["content"] = format("   {}", p);
-		rows.push(r);
+		rows[] = { "path": p, "tag": "cwd",
+			   "content": format("   {}", p) };
 	    }
 	}
     }
@@ -2351,14 +2320,10 @@ void vi_toggle(long w, long es)
 void modes_show(long w, long es)
 {
     var rows = {};
-    var r1;
-    r1["act"] = "colon";
-    r1["content"] = " :  vi command line — one ex command (w q e N !cmd ...)";
-    rows.push(r1);
-    var r2;
-    r2["act"] = "vimode";
-    r2["content"] = " v  vi normal/insert editing — toggle modal mode";
-    rows.push(r2);
+    rows[] = { "act": "colon",
+	       "content": " :  vi command line — one ex command (w q e N !cmd ...)" };
+    rows[] = { "act": "vimode",
+	       "content": " v  vi normal/insert editing — toggle modal mode" };
     ui::set(w, es, "modesrows", rows);
     ui::set(w, es, "pane", "modes");
 }
@@ -2817,13 +2782,9 @@ bool proj_check_rows(var &merged, long w, long es)
 	{
 	    // The TU never opened (unreadable file / refused options):
 	    // visible as a row, never silent.
-	    var r;
-	    r["file"] = t["file"];
-	    r["line"] = 1;
-	    r["column"] = 0;
-	    r["severity"] = "error";
-	    r["message"] = "cannot open this TU (file or manifest options)";
-	    rows.push(r);
+	    rows[] = { "file": t["file"], "line": 1, "column": 0,
+		       "severity": "error",
+		       "message": "cannot open this TU (file or manifest options)" };
 	    continue;
 	}
 	var trows;
@@ -2831,7 +2792,7 @@ bool proj_check_rows(var &merged, long w, long es)
 	for ( var r : trows )
 	{
 	    r["file"] = t["file"];
-	    rows.push(r);
+	    rows[] = r;
 	}
     }
     madc::project_close(h);
@@ -3010,30 +2971,15 @@ void ensure_build_cmds(long w, long es)
 	    path_sans_ext(pout, pf);
 	else
 	    pout = format("{}", o);
-	var r1;
-	r1["name"] = "Check project (in-process)";
-	r1["act"] = "bld-proj-check";
-	rows.push(r1);
-	var r2;
-	r2["name"] = "Build project (in-process)";
-	r2["kind"] = "exe";
-	r2["out"] = pout;
-	r2["act"] = "bld-proj-build";
-	rows.push(r2);
-	var r3;
-	r3["name"] = "Run project";
-	r3["act"] = "bld-proj-run";	// the --project JIT lane, forked
-	rows.push(r3);
-	var r4;
-	r4["name"] = "Run native";
-	r4["cmd"] = format("./{}", pout);
-	r4["mode"] = "terminal";
-	r4["act"] = "bld-run-cmd";
-	rows.push(r4);
-	var r5;
-	r5["name"] = "Stop";
-	r5["act"] = "bld-stop";
-	rows.push(r5);
+	rows[] = { "name": "Check project (in-process)",
+		   "act": "bld-proj-check" };
+	rows[] = { "name": "Build project (in-process)", "kind": "exe",
+		   "out": pout, "act": "bld-proj-build" };
+	// bld-proj-run = the --project JIT lane, forked
+	rows[] = { "name": "Run project", "act": "bld-proj-run" };
+	rows[] = { "name": "Run native", "cmd": format("./{}", pout),
+		   "mode": "terminal", "act": "bld-run-cmd" };
+	rows[] = { "name": "Stop", "act": "bld-stop" };
 	// The manifest's commands section: {name, cmd, mode?} rows AS
 	// DATA, appended after the built-ins ({path}/{base}/{project}/
 	// {madc} substitute at choose time — build_subst). A malformed
@@ -3049,51 +2995,28 @@ void ensure_build_cmds(long w, long es)
 		var cc = c["cmd"];
 		if ( cn.is_null() || cc.is_null() )
 		    continue;
-		var r;
-		r["name"] = cn;
-		r["cmd"] = cc;
+		// (An if/else default, not a ternary: mixed scalar/carrier
+		// ternary arms are a banked lowering gap.)
 		var cm = c["mode"];
 		if ( cm.is_null() )
-		    r["mode"] = "capture";
-		else
-		    r["mode"] = cm;
-		r["act"] = "bld-run-cmd";
-		rows.push(r);
+		    cm = "capture";
+		rows[] = { "name": cn, "cmd": cc, "mode": cm,
+			   "act": "bld-run-cmd" };
 	    }
 	}
 	ui::set(w, es, "buildcmds", rows);
 	return;
     }
-    var r1;
-    r1["name"] = "Check (in-process)";
-    r1["act"] = "bld-check";
-    rows.push(r1);
-    var r2;
-    r2["name"] = "Build (in-process)";
-    r2["kind"] = "exe";
-    r2["out"] = "{base}";
-    r2["act"] = "bld-native";
-    rows.push(r2);
-    var r3;
-    r3["name"] = "Build object (in-process)";
-    r3["kind"] = "obj";
-    r3["out"] = "{base}.o";
-    r3["act"] = "bld-native";
-    rows.push(r3);
-    var r4;
-    r4["name"] = "Run";
-    r4["act"] = "bld-run";	// fork the LIVE parse (madc::parse_run)
-    rows.push(r4);
-    var r5;
-    r5["name"] = "Run native";
-    r5["cmd"] = "./{base}";
-    r5["mode"] = "terminal";
-    r5["act"] = "bld-run-cmd";
-    rows.push(r5);
-    var r6;
-    r6["name"] = "Stop";
-    r6["act"] = "bld-stop";
-    rows.push(r6);
+    rows[] = { "name": "Check (in-process)", "act": "bld-check" };
+    rows[] = { "name": "Build (in-process)", "kind": "exe",
+	       "out": "{base}", "act": "bld-native" };
+    rows[] = { "name": "Build object (in-process)", "kind": "obj",
+	       "out": "{base}.o", "act": "bld-native" };
+    // bld-run = fork the LIVE parse (madc::parse_run)
+    rows[] = { "name": "Run", "act": "bld-run" };
+    rows[] = { "name": "Run native", "cmd": "./{base}",
+	       "mode": "terminal", "act": "bld-run-cmd" };
+    rows[] = { "name": "Stop", "act": "bld-stop" };
     ui::set(w, es, "buildcmds", rows);
 }
 
@@ -3790,8 +3713,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var status;
     compose_joe_statusline(status, w, es, nav, caret, fnctx);
 
-    var r;
-    r["role"] = "group";
+    var r = { "role": "group" };
     var kids = {};
     // IDE-9e: with two-plus windows, each window is its own status line +
     // edit node, stacked. The ACTIVE window is the live one — the full
@@ -3865,8 +3787,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(pane, w, es, "pane");
     if ( !pane.is_null() && strlen(pane.c_str()) > 0 )
     {
-	var box;
-	box["role"] = "choice";
+	var box = { "role": "choice" };
 	var items = {};
 	long nrows = 0;
 	if ( pane == "help" )
@@ -3885,10 +3806,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var line;
 		if ( !profile_line(line, lines, i) )
 		    continue;
-		var it;
-		it["role"] = "item";
-		it["content"] = line;
-		items.push(it);
+		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
 	}
@@ -3904,25 +3822,17 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var prof;
 	    ui::get(prof, w, es, "profile");
 	    var rows = {};
-	    var o1;
-	    o1["content"] = format("D Tab width   {}", tw);
-	    o1["act"] = "opt-tabwidth";
-	    rows.push(o1);
-	    var o2;
-	    o2["content"] = format("S Scheme      {}", scheme);
-	    o2["act"] = "opt-scheme";
-	    rows.push(o2);
-	    var o3;
-	    o3["content"] = format("K Keymap      {}", prof);
-	    o3["act"] = "opt-keymap";
-	    rows.push(o3);
+	    rows[] = { "content": format("D Tab width   {}", tw),
+		       "act": "opt-tabwidth" };
+	    rows[] = { "content": format("S Scheme      {}", scheme),
+		       "act": "opt-scheme" };
+	    rows[] = { "content": format("K Keymap      {}", prof),
+		       "act": "opt-keymap" };
 	    for ( var row : rows )
 	    {
-		var it;
-		it["role"] = "item";
-		it["content"] = row["content"];
+		var it = { "role": "item", "content": row["content"] };
 		var ga = {};
-		ga.push(row["act"]);
+		ga[] = row["act"];
 		it["actions"] = ga;
 		items.push(it);
 		nrows = nrows + 1;
@@ -3936,23 +3846,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    ui::get(brows, w, es, "buildcmds");
 	    box["label"] = es_int(w, es, "buildlive", 0) != 0
 		? "Build — running" : "Build";
-	    var bh;
-	    bh["list"] = 1;
-	    bh["focus"] = 1;
-	    box["hints"] = bh;
+	    box["hints"] = { "list": 1, "focus": 1 };
 	    for ( var row : brows )
 	    {
-		var it;
-		it["role"] = "item";
 		var c = row["cmd"];
-		if ( c.is_null() )
-		    it["content"] = format("{}", row["name"]);
-		else
-		    it["content"] = format("{}  [{}]", row["name"], c);
+		var it = { "role": "item",
+			   "content": c.is_null()
+			       ? format("{}", row["name"])
+			       : format("{}  [{}]", row["name"], c) };
 		var ga = {};
-		ga.push(row["act"]);
+		ga[] = row["act"];
 		it["actions"] = ga;
-		items.push(it);
+		items[] = it;
 		nrows = nrows + 1;
 	    }
 	}
@@ -3964,16 +3869,10 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var mrows;
 	    ui::get(mrows, w, es, "modesrows");
 	    box["label"] = "Modes";
-	    var mh;
-	    mh["list"] = 1;
-	    mh["focus"] = 1;
-	    box["hints"] = mh;
+	    box["hints"] = { "list": 1, "focus": 1 };
 	    for ( var row : mrows )
 	    {
-		var it;
-		it["role"] = "item";
-		it["content"] = row["content"];
-		items.push(it);
+		items[] = { "role": "item", "content": row["content"] };
 		nrows = nrows + 1;
 	    }
 	}
@@ -3997,25 +3896,14 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var prows;
 	    ui::get(prows, w, es, "projrows");
 	    box["label"] = format("Project {}: {}_", pfd, filt);
-	    var ph;
-	    ph["list"] = 1;
-	    ph["focus"] = 1;
-	    box["hints"] = ph;
+	    box["hints"] = { "list": 1, "focus": 1 };
 	    for ( var row : prows )
 	    {
-		var it;
-		it["role"] = "item";
-		it["content"] = row["content"];
-		items.push(it);
+		items[] = { "role": "item", "content": row["content"] };
 		nrows = nrows + 1;
 	    }
 	    if ( nrows == 0 )
-	    {
-		var it;
-		it["role"] = "item";
-		it["content"] = "(no matches)";
-		items.push(it);
-	    }
+		items[] = { "role": "item", "content": "(no matches)" };
 	}
 	else
 	{
@@ -4035,8 +3923,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    ui::get(dpath, w, doc, "path");
 	    for ( var row : rows )
 	    {
-		var it;
-		it["role"] = "item";
+		var it = { "role": "item" };
 		if ( outline_pane )
 		    it["content"] = format("{} {} :{}", row["kind"],
 					   row["name"], row["line"]);
@@ -4054,21 +3941,15 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 					   row["column"], row["severity"],
 					   row["message"]);
 		var ga = {};
-		ga.push("goto");
+		ga[] = "goto";
 		it["actions"] = ga;
-		items.push(it);
+		items[] = it;
 		nrows = nrows + 1;
 	    }
 	    if ( nrows == 0 )
-	    {
-		var it;
-		it["role"] = "item";
-		if ( outline_pane )
-		    it["content"] = "(no definitions)";
-		else
-		    it["content"] = "(clean)";
-		items.push(it);
-	    }
+		items[] = { "role": "item",
+			    "content": outline_pane ? "(no definitions)"
+						    : "(clean)" };
 	}
 	box["children"] = items;
 	kids.push(box);

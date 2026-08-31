@@ -5,9 +5,11 @@
 # The buffer-table row shape {doc, path, caret, mark, bend} has ONE fresh-
 # row owner: push_buffer_row. The one deliberate exception is edit_file's
 # seed row (it carries LIVE interaction state, not fresh zeroes). Marker:
-# '"bend"] = -1' sites in tools/madcide/madcide_core.inc == 2 (the owner +
-# the seed). A new open path must call push_buffer_row, not restate the
-# shape.
+# a "bend"-field write — BOTH spellings of the shape: the keyed assign
+# ('"bend"] = -1') and the keyed literal element ('"bend": -1', the
+# rows[]-literal sweep 2026-08-31) — in tools/madcide/madcide_core.inc
+# == 2 (the owner + the seed). A new open path must call push_buffer_row,
+# not restate the shape.
 set -u
 
 FILE="$(dirname "$0")/../tools/madcide/madcide_core.inc"
@@ -15,7 +17,7 @@ CLIENT="$(dirname "$0")/../tools/madcide/madcide_client.inc"
 
 count_rows()
 {
-	grep -c '"bend"\] = -1' "$1"
+	grep -cE '"bend"\] = -1|"bend": -1' "$1"
 }
 
 n=$(count_rows "$FILE")
