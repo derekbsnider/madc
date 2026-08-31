@@ -615,6 +615,25 @@ int main()
     apply_ide_event(w, es, doc, e);
     println("motion: caret={}", es_int(w, es, "caret", -1));
 
+    // Arrows reach the BOTTOM (owner 2026-08-31): the phantom line after
+    // the trailing newline is navigable — down lands where ^K V does,
+    // one more down stays put, up returns to the last content line.
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_key(e, "down");
+    apply_ide_event(w, es, doc, e);
+    long d1 = es_int(w, es, "caret", -1);
+    ev_key(e, "down");
+    apply_ide_event(w, es, doc, e);
+    long d2 = es_int(w, es, "caret", -1);
+    ev_key(e, "down");
+    apply_ide_event(w, es, doc, e);
+    long d3 = es_int(w, es, "caret", -1);
+    ev_key(e, "up");
+    apply_ide_event(w, es, doc, e);
+    println("arrows-bottom: down={},{},{} up={} size={}", d1, d2, d3,
+	    es_int(w, es, "caret", -1), ui::text_size(w, doc));
+
     ev_action(e, "top", "^k u");
     apply_ide_event(w, es, doc, e);
     ev_action(e, "wordright", "^x");
@@ -645,10 +664,15 @@ int main()
 
     ev_action(e, "bottom", "^k v");
     apply_ide_event(w, es, doc, e);
+    ev_action(e, "delline", "^y");	// the phantom line holds no bytes:
+    apply_ide_event(w, es, doc, e);	// JOE's ^Y there deletes nothing
+    long ll0 = ui::text_line_count(w, doc);
+    ev_key(e, "up");
+    apply_ide_event(w, es, doc, e);
     ev_action(e, "delline", "^y");
     apply_ide_event(w, es, doc, e);
-    println("delline: lines={} caret={}", ui::text_line_count(w, doc),
-	    es_int(w, es, "caret", -1));
+    println("delline: phantom-kept={} lines={} caret={}", ll0,
+	    ui::text_line_count(w, doc), es_int(w, es, "caret", -1));
     ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
 

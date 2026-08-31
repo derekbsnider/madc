@@ -442,9 +442,7 @@ void status_expand(value &out, long w, long es, long doc, long caret,
     fmt[239] = 0;
     var s = "";
     long line = line_of(w, doc, caret);
-    long start = ui::text_line_start(w, doc, line);
-    if ( start < 0 )
-	start = 0;
+    long start = line_start_of(w, doc, line);
     long col = caret - start + 1;
     long fl = strlen(fmt);
     long i = 0;

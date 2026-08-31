@@ -66,9 +66,10 @@ win-grow: neighbor-rows=10
 win-only: wins=0 kids=2 caret-kept=1
 swap: profile=pico tree=identical
 motion: caret=42
+arrows-bottom: down=43,84,84 up=43 size=84
 words: right2=8 left1=5
 delword: 84 80 84 80 84
-delline: lines=1 caret=43
+delline: phantom-kept=2 lines=1 caret=43
 blockcopy: size=88 tail-has-long=1
 blockdel: clip=long size=84
 blocks-undone: size=84

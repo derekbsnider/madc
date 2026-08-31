@@ -34,14 +34,46 @@ bool es_flag(long w, long es, const char *key)
     return v.as_boolean();
 }
 
-// The 1-based line containing byte offset `off` (1 on an empty document).
+// True when the document ends in '\n': offset == size is then a caret
+// on the EMPTY line past the content lines — the phantom line. The
+// caret already reaches it sideways (right, typing, ^K V = bottom); the
+// text_buffer counts content lines only, so the navigability rule lives
+// here, in the editor model, and every line/column owner below consults
+// it — without it vertical motion stops one row short of the bottom.
+bool has_phantom_line(long w, long doc)
+{
+    long total = ui::text_line_count(w, doc);
+    if ( total < 1 )
+	return false;
+    long lst = ui::text_line_start(w, doc, total);
+    if ( lst < 0 )
+	return false;
+    return lst + ui::text_line_len(w, doc, total) < ui::text_size(w, doc);
+}
+
+// The 1-based line containing byte offset `off` (1 on an empty document;
+// total+1 on the phantom line).
 long line_of(long w, long doc, long off)
 {
     long total = ui::text_line_count(w, doc);
     long line = 1;
     while ( line < total && ui::text_line_start(w, doc, line + 1) <= off )
 	line = line + 1;
+    if ( off >= ui::text_size(w, doc) && has_phantom_line(w, doc) )
+	line = total + 1;
     return line;
+}
+
+// Line start for column math: the phantom line starts at the document's
+// end; any other absent line answers 0 (the empty document).
+long line_start_of(long w, long doc, long line)
+{
+    long start = ui::text_line_start(w, doc, line);
+    if ( start >= 0 )
+	return start;
+    if ( line > ui::text_line_count(w, doc) && has_phantom_line(w, doc) )
+	return ui::text_size(w, doc);
+    return 0;
 }
 
 // ---- the ONE text-mutation owner --------------------------------------
@@ -104,14 +136,20 @@ void ed_text_erase(long w, long es, long doc, long off, long n)
 }
 
 // A caret on `line` keeping column `col` when the line is long enough —
-// the vertical-movement rule.
+// the vertical-movement rule. A target past the content lines lands on
+// the phantom line when there is one (down/pgdn reach the bottom; a
+// too-big go-to-line lands at the end, JOE's rule) and clamps otherwise.
 long caret_to_line(long w, long doc, long line, long col)
 {
     long total = ui::text_line_count(w, doc);
     if ( line < 1 )
 	line = 1;
     if ( total > 0 && line > total )
+    {
+	if ( has_phantom_line(w, doc) )
+	    return ui::text_size(w, doc);
 	line = total;
+    }
     long start = ui::text_line_start(w, doc, line);
     if ( start < 0 )
 	return 0;
@@ -476,9 +514,7 @@ void compose_status(value &status, long w, long es, long doc, long caret,
     else
     {
 	long line = line_of(w, doc, caret);
-	long start = ui::text_line_start(w, doc, line);
-	if ( start < 0 )
-	    start = 0;
+	long start = line_start_of(w, doc, line);
 	st["content"] = format("Ln {}, Col {}{}", line, caret - start + 1,
 			       idle_suffix);
     }
@@ -537,9 +573,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	return true;
     }
     long line = line_of(w, doc, caret);
-    long start = ui::text_line_start(w, doc, line);
-    if ( start < 0 )
-	start = 0;
+    long start = line_start_of(w, doc, line);
     long col = caret - start;
     if ( k == "home" )
     {
