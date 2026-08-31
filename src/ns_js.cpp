@@ -25,6 +25,10 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+// The repo's ONE value<->JSON bridge (wt_value_to_json / wt_json_to_value
+// — json.hpp, the --project driver's library): js::stringify / js::parse
+// are thin fronts over it, never a second converter.
+#include "madcdis/world_text.h"
 
 using namespace std;
 
@@ -158,43 +162,55 @@ int64_t js_parseInt(const char *str, int64_t radix)
 	catch (...) { return 0; }
 }
 
-// js::stringify — simple JSON-like serialization of a madc array value
+// js::stringify — JSON.stringify parity over the whole value kind set
+// (object / array / string / number / bool / null, recursive), through
+// the one value<->JSON bridge. indent < 0 = compact (JSON.stringify(v));
+// 0.. = pretty-printed with that many spaces (the `space` parameter).
+// A kind with no serial form (bytes/instance) refuses LOUD to stderr and
+// answers "" (the pre-L3 error convention — no throw across the boundary).
+static void js_stringify_text(std::string &out, madc::value *v, int64_t indent)
+{
+	out.clear();
+	if ( !v )
+		return;
+	try {
+		nlohmann::json j = madc::hub::wt_value_to_json(*v);
+		out = indent < 0 ? j.dump() : j.dump((int)indent);
+	} catch (const std::exception &e) {
+		fprintf(stderr, "js::stringify: %s\n", e.what());
+		out.clear();
+	}
+}
+
 std::string *js_stringify(std::string *result, madc::value *arr)
 {
-	std::string &out = *result;
-	out = "[";
-	if ( !arr->is_array() )
-	{
-		out += "]";
-		return result;
-	}
-	const std::vector<madc::value> &data = arr->as_array();
-	for ( size_t i = 0; i < data.size(); ++i )
-	{
-		if ( i > 0 ) out += ",";
-		if ( data[i].is_string() )
-		{
-			out += "\"";
-			// escape special characters
-			for ( char c : data[i].as_string() )
-			{
-				if ( c == '"' ) out += "\\\"";
-				else if ( c == '\\' ) out += "\\\\";
-				else if ( c == '\n' ) out += "\\n";
-				else if ( c == '\t' ) out += "\\t";
-				else out += c;
-			}
-			out += "\"";
-		}
-		else if ( data[i].is_integer() )
-			out += std::to_string(data[i].as_integer());
-		else if ( data[i].is_real() )
-			out += std::to_string(data[i].as_real());
-		else
-			out += "null";
-	}
-	out += "]";
+	js_stringify_text(*result, arr, -1);
 	return result;
+}
+
+// js::parse — JSON.parse parity: strict JSON (no comments, no trailing
+// junk), the whole text or nothing. JS throws on malformed input; the
+// pre-L3 mapping is false + a null out.
+int64_t js_parse(madc::value *out, const char *text)
+{
+	*out = madc::value();
+	nlohmann::json j = nlohmann::json::parse(text ? text : "", nullptr,
+						 /*allow_exceptions=*/false);
+	if ( j.is_discarded() )
+		return 0;
+	*out = madc::hub::wt_json_to_value(j);
+	return 1;
+}
+
+int64_t js_parse_vtext(madc::value *out, const madc::value *text)
+{
+	if ( !text || !text->is_string() )
+	{
+		*out = madc::value();
+		return 0;
+	}
+	std::string t((const char *)text->data(), text->size());
+	return js_parse(out, t.c_str());
 }
 
 // js::typeof — return type name as string
@@ -249,6 +265,12 @@ const char *js_stringify_cstr(madc::value *arr)
 	js_stringify(&slot, arr);
 	return slot.c_str();
 }
+const char *js_stringify_indent_cstr(madc::value *v, int64_t indent)
+{
+	std::string &slot = ns_common::ring_slot();
+	js_stringify_text(slot, v, indent);
+	return slot.c_str();
+}
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
@@ -257,6 +279,9 @@ const char *__js_atob_cstr(const char *a) { return js_atob_cstr(a); }
 const char *__js_encodeURIComponent_cstr(const char *a) { return js_encodeURIComponent_cstr(a); }
 const char *__js_decodeURIComponent_cstr(const char *a) { return js_decodeURIComponent_cstr(a); }
 const char *__js_stringify_cstr(madc::value *a) { return js_stringify_cstr(a); }
+const char *__js_stringify_indent_cstr(madc::value *a, int64_t b) { return js_stringify_indent_cstr(a, b); }
+int64_t __js_parse(madc::value *a, const char *b) { return js_parse(a, b); }
+int64_t __js_parse_vtext(madc::value *a, madc::value *b) { return js_parse_vtext(a, b); }
 std::string *__js_btoa(std::string *a, const char *b) { return js_btoa(a, b); }
 std::string *__js_atob(std::string *a, const char *b) { return js_atob(a, b); }
 std::string *__js_encodeURIComponent(std::string *a, const char *b) { return js_encodeURIComponent(a, b); }

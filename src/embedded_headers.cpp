@@ -148,6 +148,9 @@ extern "C" {
     const char *__js_encodeURIComponent_cstr(const char *);
     const char *__js_decodeURIComponent_cstr(const char *);
     const char *__js_stringify_cstr(array *);
+    const char *__js_stringify_indent_cstr(value *, int64_t);
+    int64_t __js_parse(value *, const char *);
+    int64_t __js_parse_vtext(value *, value *);
 }
 
 namespace js {
@@ -159,7 +162,17 @@ namespace js {
     const char *atob(const char *input) { return __js_atob_cstr(input); }
     const char *encodeURIComponent(const char *input) { return __js_encodeURIComponent_cstr(input); }
     const char *decodeURIComponent(const char *input) { return __js_decodeURIComponent_cstr(input); }
+    // JSON.stringify parity: the whole value kind set (object/array/
+    // string/number/bool/null), recursive; the indent overload is the
+    // `space` parameter (pretty-printed). Ring-lifetime returns. ONE
+    // carrier overload per arity — array/value/var are one type under
+    // --std=madc, so an array&/value& pair would collide.
     const char *stringify(array &values) { return __js_stringify_cstr(&values); }
+    const char *stringify(value &v, int64_t indent) { return __js_stringify_indent_cstr(&v, indent); }
+    // JSON.parse parity: strict JSON, the whole text or nothing. False =
+    // malformed (JS throws; the pre-L3 mapping is the bool + a null out).
+    bool parse(value &out, const char *text) { return __js_parse(&out, text) != 0; }
+    bool parse(value &out, value &text) { return __js_parse_vtext(&out, &text) != 0; }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

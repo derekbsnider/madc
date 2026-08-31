@@ -1,0 +1,54 @@
+// js::parse / js::stringify — JSON.parse/JSON.stringify parity over the
+// whole value kind set (object/array/string/number/bool/null, nested),
+// through the repo's one value<->JSON bridge. Oracle: node -e output for
+// the same calls (key order: nlohmann dumps objects in key order, which
+// matches JSON.stringify over alphabetically-constructed objects here).
+int main()
+{
+    var v;
+    if ( !js::parse(v, "{\"tus\":[\"a.mad\",{\"file\":\"b.c\"}],\"entry\":\"main\",\"n\":3,\"ok\":true,\"pi\":3.5,\"nul\":null}") )
+	println("parse failed");
+    println("entry={}", v["entry"]);
+    println("n={} ok={} pi={} nul={}", v["n"].as_integer(),
+	    v["ok"].as_boolean() ? 1 : 0, v["pi"].as_real() == 3.5 ? 1 : 0,
+	    v["nul"].is_null() ? 1 : 0);
+    println("tu0={} tu1file={}", v["tus"][0], v["tus"][1]["file"]);
+    var compact = js::stringify(v);
+    println("compact={}", compact);
+
+    // Round trip: parse(stringify(v)) sees the same fields.
+    var v2;
+    js::parse(v2, compact.c_str());
+    println("rt={}", v2["tus"][1]["file"]);
+
+    // A string-kind value as the text argument (the file-read shape).
+    var vt;
+    vt = "[1,2,3]";
+    var arr;
+    println("varr={} len={}", js::parse(arr, vt) ? 1 : 0, php::count(arr));
+
+    // Malformed input refuses (JSON.parse throws; pre-L3 = false + null).
+    var bad;
+    println("bad={} isnull={}", js::parse(bad, "{nope") ? 1 : 0,
+	    bad.is_null() ? 1 : 0);
+
+    // Scalar parity: JSON.parse("\"hi\\nthere\"") / JSON.parse("42").
+    var s;
+    js::parse(s, "\"hi\\nthere\"");
+    println("slen={}", strlen(s.c_str()));
+    var n42;
+    js::parse(n42, "42");
+    println("n42={}", n42.as_integer());
+
+    // The indent overload = JSON.stringify's space parameter.
+    var small;
+    js::parse(small, "{\"a\":1}");
+    println("{}", js::stringify(small, 2));
+
+    // The array lean form keeps its flat behavior (testjslean's pin).
+    array a;
+    php::array_push(a, "x");
+    php::array_push(a, 42);
+    println("flat={}", js::stringify(a));
+    return 0;
+}
