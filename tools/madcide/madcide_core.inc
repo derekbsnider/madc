@@ -83,6 +83,15 @@ bool load_profile(long w, long es, const char *name)
 	    return false;
 	}
     }
+    // The selection MODEL rides the profile's own vocabulary (owner
+    // 2026-08-31: personalities are profile data): a set that binds
+    // `bend` (JOE ^K K) is a TWO-POINT personality — ^K B alone must
+    // not light mark..caret; a set without it keeps the live pico rule.
+    bool twopoint = false;
+    for ( value a : table )
+	if ( a == "bend" )
+	    twopoint = true;
+    ui::set(w, es, "selblock", twopoint);
     ui::set(w, es, "profile", name);
     ui::set(w, es, "bindtext", txt);
     return true;
@@ -113,6 +122,7 @@ bool bind_rescue_keys(long w, long es)
     long t = es_int(w, es, "tui", 0);
     if ( t == 0 || !ui::tui_bind_keys(t, table) )
 	return false;
+    ui::set(w, es, "selblock", false);	// no bend in the rescue set
     ui::set(w, es, "profile", "rescue");
     ui::set(w, es, "bindtext", rescue_keys_text());
     ui::set(w, es, "msg",
@@ -826,6 +836,8 @@ bool block_range(value &r, long w, long es, long caret)
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
     long e = bend >= 0 ? bend : caret;
+    if ( bend < 0 && es_flag(w, es, "selblock") )
+	e = mark;	// two-point personality: no end yet = no block
     value b;
     b["lo"] = mark < e ? mark : e;
     b["hi"] = mark < e ? e : mark;

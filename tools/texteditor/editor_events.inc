@@ -460,9 +460,11 @@ void compose_heading(value &head, long w, long es, long doc,
 
 // The edit window bound to the document: caret + selection as hints
 // ({caret, sel_start, sel_end} byte offsets). The selection runs
-// [mark, bend-else-caret]: an editor that sets a block END (madcide's
-// JOE ^K K) highlights mark..bend; one that never sets `bend` (vised)
-// keeps the original mark..caret rule unchanged.
+// [mark, bend-else-caret] — except under a TWO-POINT personality (the
+// es "selblock" flag, derived from the loaded profile's vocabulary:
+// JOE's ^K B / ^K K), where a mark WITHOUT an end lights nothing; an
+// editor that never sets `bend` or the flag (vised) keeps the original
+// live mark..caret rule unchanged.
 void compose_edit_node(value &ed, long w, long es, long doc, long caret)
 {
     value e;
@@ -475,6 +477,8 @@ void compose_edit_node(value &ed, long w, long es, long doc, long caret)
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
     long send = bend >= 0 ? bend : caret;
+    if ( bend < 0 && es_flag(w, es, "selblock") )
+	send = mark;
     if ( mark >= 0 && mark != send )
     {
 	hints["sel_start"] = mark < send ? mark : send;

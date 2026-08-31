@@ -676,6 +676,29 @@ int main()
     ev_action(e, "undo", "^_");
     apply_ide_event(w, es, doc, e);
 
+    // Two-point marking (owner 2026-08-31): ^K B alone lights NOTHING
+    // while the caret moves; a block op before ^K K refuses; the
+    // highlight appears once ^K K sets the end.
+    ev_action(e, "top", "^k u");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "mark", "^k b");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "wordright", "^x");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    value bsel = tree["children"][1]["hints"];
+    long silent = bsel["sel_start"].is_null() ? 1 : 0;
+    ev_action(e, "blockcopy", "^k c");
+    apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    var refuse = format("{}", msg);
+    ev_action(e, "bend", "^k k");
+    apply_ide_event(w, es, doc, e);
+    compose_ide_tree(tree, w, es, doc);
+    value asel = tree["children"][1]["hints"];
+    println("mark-silent: nosel={} refuse={} lit={}..{}", silent, refuse,
+	    asel["sel_start"].as_integer(), asel["sel_end"].as_integer());
+
     // blocks: [^K B .. ^K K] around the first word, copy to the end,
     // delete the original, then undo both.
     ev_action(e, "top", "^k u");
