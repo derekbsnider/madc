@@ -113,6 +113,20 @@ TEST_CASE("read_project_manifest: native object — TU objects carry the "
 	CHECK(m.entry == "main");	// the default stands when unspecified
 }
 
+TEST_CASE("read_project_manifest: a manifest in the cwd adds no ./ prefix "
+	  "(buffer paths compare by spelling — ./x and x must not open twice)") {
+	FILE *f = fopen("madc_unit_cwd.prj.json", "wb");
+	REQUIRE(f != nullptr);
+	fputs("{\"tus\":[\"a.mad\"]}", f);
+	fclose(f);
+	ProjectManifest m; std::string err;
+	REQUIRE(read_project_manifest("madc_unit_cwd.prj.json", m, err));
+	REQUIRE(m.tus.size() == 1);
+	CHECK(m.tus[0].file == "a.mad");
+	CHECK(m.tus[0].working_dir == ".");
+	std::remove("madc_unit_cwd.prj.json");
+}
+
 TEST_CASE("read_project_manifest: native object — empty tus is a valid "
 	  "(empty) project; a missing file field is rejected") {
 	ProjectManifest m; std::string err;

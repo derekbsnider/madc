@@ -24,10 +24,14 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 	if (in) out.push_back(cur);
 }
 
-// Resolve a (possibly relative) path against a base directory.
+// Resolve a (possibly relative) path against a base directory. A "."
+// base adds nothing — a manifest in the cwd (madcide's default
+// <base>.prj.json beside the launch file) must yield the TU's own
+// spelling, not a "./"-prefixed twin of it (buffer paths compare by
+// spelling; "./x" and "x" would open twice).
 std::string resolve(const std::string &base, const std::string &p) {
 	if (p.empty() || p[0] == '/') return p;
-	if (base.empty()) return p;
+	if (base.empty() || base == ".") return p;
 	std::string b = base;
 	if (b.back() != '/') b += '/';
 	return b + p;
