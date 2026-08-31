@@ -5161,6 +5161,25 @@ static void highlight_token_rows(::Program &child,
 	// emits no span, and the cursor must not advance to its position.
 	if ( t->is_synthetic_position() )
 	    continue;
+	// A string token paints from its LEX-RECORDED source extents (one
+	// row per concatenated piece): the cooked spelling cannot recover
+	// source geometry — escapes shrink it, and adjacent-literal
+	// concatenation merges lines (embed_hello.c painted one 85-byte
+	// span from col 0 across the pieces). Pieceless string tokens
+	// (pack-image, synthesized) keep the spelling fallback below.
+	if ( TokenStr *ts = t->as_str_tok() )
+	{
+	    if ( !ts->src_pieces.empty() )
+	    {
+		for ( const TokenStr::SrcPiece &pc : ts->src_pieces )
+		    rows.push_back(highlight_row(pc.line, pc.col, pc.len,
+						 "string"));
+		const TokenStr::SrcPiece &lastp = ts->src_pieces.back();
+		prev_line = lastp.line;
+		prev_end_col = lastp.col + lastp.len;
+		continue;
+	    }
+	}
 	HighlightClass hc = madc_token_highlight_class(t);
 	std::string sp = madc_token_spelling(t);
 	if ( hc == HighlightClass::hcIdent )

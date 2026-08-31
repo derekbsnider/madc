@@ -83,6 +83,15 @@ bool load_profile(long w, long es, const char *name)
 	    return false;
 	}
     }
+    // The selection MODEL rides the profile's own vocabulary (owner
+    // 2026-08-31: personalities are profile data): a set that binds
+    // `bend` (JOE ^K K) is a TWO-POINT personality — ^K B alone must
+    // not light mark..caret; a set without it keeps the live pico rule.
+    bool twopoint = false;
+    for ( value a : table )
+	if ( a == "bend" )
+	    twopoint = true;
+    ui::set(w, es, "selblock", twopoint);
     ui::set(w, es, "profile", name);
     ui::set(w, es, "bindtext", txt);
     return true;
@@ -113,6 +122,7 @@ bool bind_rescue_keys(long w, long es)
     long t = es_int(w, es, "tui", 0);
     if ( t == 0 || !ui::tui_bind_keys(t, table) )
 	return false;
+    ui::set(w, es, "selblock", false);	// no bend in the rescue set
     ui::set(w, es, "profile", "rescue");
     ui::set(w, es, "bindtext", rescue_keys_text());
     ui::set(w, es, "msg",
@@ -442,9 +452,7 @@ void status_expand(value &out, long w, long es, long doc, long caret,
     fmt[239] = 0;
     var s = "";
     long line = line_of(w, doc, caret);
-    long start = ui::text_line_start(w, doc, line);
-    if ( start < 0 )
-	start = 0;
+    long start = line_start_of(w, doc, line);
     long col = caret - start + 1;
     long fl = strlen(fmt);
     long i = 0;
@@ -534,52 +542,60 @@ void status_expand(value &out, long w, long es, long doc, long caret,
 }
 
 // The JOE screen model's status line (IDE-9a/9b): ONE inverse row at the
-// TOP, lmsg left / rmsg right with rmsg's fill character between; the
-// one prompt mode, the search prompt, and transient messages OVERLAY it
-// (the same priority rule as the shared compose_status — restated here
-// because the SCREEN MODELS diverge by design: madcide is JOE-shaped,
-// vised keeps the demo's bottom bar).
-void compose_joe_statusline(value &status, long w, long es, long doc,
-			    long caret, value &fnctx);
+// TOP with lmsg left / rmsg right and rmsg's fill character between. The
+// one prompt mode, the search prompt, and transient messages do NOT
+// overlay it — JOE puts them on the BOTTOM line (the msgbuf row); see
+// compose_overlay_row. The SCREEN MODELS diverge by design: madcide is
+// JOE-shaped, vised keeps the demo's bottom bar.
 
-void compose_joe_status(value &status, long w, long es, long doc,
-			long caret, value &fnctx)
+// The bottom message line (JOE's msgbuf): prompt > search > msg, one
+// plain row. This builds CONTENT from the editor state only; WHERE the
+// row goes is the screen model's decision (compose_ide_tree appends it
+// last) — a different editor personality places the same row elsewhere.
+bool compose_overlay_row(value &row, long w, long es)
 {
     value st;
-    st["role"] = "status";
+    st["role"] = "content";
     var pr;
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
+	var pm;
+	ui::get(pm, w, es, "pmode");
+	if ( pm == "confirm" )
+	{
+	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
+	    row = st;
+	    return true;
+	}
 	var pi;
 	ui::get(pi, w, es, "pinput");
 	st["content"] = format("{} (^C aborts): {}", pr, pi);
-	status = st;
-	return;
+	row = st;
+	return true;
     }
     if ( es_flag(w, es, "searching") )
     {
 	var sch;
 	ui::get(sch, w, es, "search");
 	st["content"] = format("Find (^C aborts): {}", sch);
-	status = st;
-	return;
+	row = st;
+	return true;
     }
     var msg;
     ui::get(msg, w, es, "msg");
     if ( !msg.is_null() && strlen(msg.c_str()) > 0 )
     {
 	st["content"] = msg;
-	status = st;
-	return;
+	row = st;
+	return true;
     }
-    compose_joe_statusline(status, w, es, doc, caret, fnctx);
+    return false;
 }
 
-// The FORMATTED half of the JOE status line (lmsg/rmsg seat expansion,
-// no prompt/search/msg overlays) — split out for IDE-9e windows: every
-// window carries its own formatted line; the overlays belong to the
-// ACTIVE window's line only (compose_joe_status above keeps them).
+// The FORMATTED JOE status line (lmsg/rmsg seat expansion). Every
+// window carries its own; prompt/search/msg never touch it — they live
+// on the screen-bottom message line (compose_overlay_row above).
 void compose_joe_statusline(value &status, long w, long es, long doc,
 			    long caret, value &fnctx)
 {
@@ -640,6 +656,17 @@ void end_prompt(long w, long es)
     ui::set(w, es, "prompt", "");
     ui::set(w, es, "pmode", "");
     ui::set(w, es, "pinput", "");
+    ui::set(w, es, "pverb", "");
+}
+
+// A single-key confirm (JOE's "(y,n,^C)?" questions): the label spells
+// its own keys and the CONSEQUENCE is data — the verb y fires. Rides the
+// one prompt mode, so composition and event routing stay shared; n, esc,
+// or any bound action (^C included) cancels.
+void start_confirm(long w, long es, const char *label, const char *verb)
+{
+    start_prompt(w, es, label, "confirm");
+    ui::set(w, es, "pverb", verb);
 }
 
 bool prompt_active(long w, long es)
@@ -668,7 +695,7 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     edit_checkpoint(w, es, doc, caret);
     const char *tc = txt.c_str();
     long tn = strlen(tc);
-    ui::text_insert(w, doc, caret, tc);
+    ed_text_insert(w, es, doc, caret, tc);
     ui::set(w, es, "caret", caret + tn);
     ui::set(w, doc, "modified", true);
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
@@ -743,6 +770,36 @@ void finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, value &ev)
 {
     var kind = format("{}", ev["event"]);
+    var pmode;
+    ui::get(pmode, w, es, "pmode");
+    if ( pmode == "confirm" )
+    {
+	// Single-key: y fires the stored verb; n or esc cancels; ^C
+	// arrives as its BOUND action (discard in the JOE profile), so
+	// any action cancels too. Other keys leave the question standing.
+	if ( kind == "text" )
+	{
+	    var t = format("{}", ev["text"]);
+	    if ( t == "y" || t == "Y" )
+	    {
+		var vb;
+		ui::get(vb, w, es, "pverb");
+		end_prompt(w, es);
+		return do_verb(w, es, vb.c_str());
+	    }
+	    if ( t == "n" || t == "N" )
+		end_prompt(w, es);
+	    return true;
+	}
+	if ( kind == "action" )
+	{
+	    end_prompt(w, es);
+	    return true;
+	}
+	if ( kind == "key" && format("{}", ev["key"]) == "esc" )
+	    end_prompt(w, es);
+	return true;
+    }
     if ( kind == "text" )
     {
 	var in;
@@ -779,6 +836,8 @@ bool block_range(value &r, long w, long es, long caret)
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
     long e = bend >= 0 ? bend : caret;
+    if ( bend < 0 && es_flag(w, es, "selblock") )
+	e = mark;	// two-point personality: no end yet = no block
     value b;
     b["lo"] = mark < e ? mark : e;
     b["hi"] = mark < e ? e : mark;
@@ -813,7 +872,7 @@ void block_copy(long w, long es, long doc, long caret)
     ui::text(t, w, doc);
     var blk = perl::substr(t, lo, n);
     edit_checkpoint(w, es, doc, caret);
-    ui::text_insert(w, doc, caret, blk.c_str());
+    ed_text_insert(w, es, doc, caret, blk.c_str());
     ui::set(w, doc, "modified", true);
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
@@ -847,11 +906,11 @@ void block_move(long w, long es, long doc, long caret)
     ui::text(t, w, doc);
     var blk = perl::substr(t, lo, n);
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, lo, n);
+    ed_text_erase(w, es, doc, lo, n);
     long at = caret;
     if ( at >= hi )
 	at = at - n;
-    ui::text_insert(w, doc, at, blk.c_str());
+    ed_text_insert(w, es, doc, at, blk.c_str());
     ui::set(w, es, "caret", at);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
@@ -881,7 +940,7 @@ void block_del(long w, long es, long doc, long caret)
 	return;
     }
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, lo, hi - lo);
+    ed_text_erase(w, es, doc, lo, hi - lo);
     long nc = caret;
     if ( nc > hi )
 	nc = nc - (hi - lo);
@@ -910,7 +969,7 @@ void delete_line(long w, long es, long doc, long caret)
     if ( n == 0 )
 	return;
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, start, n);
+    ed_text_erase(w, es, doc, start, n);
     ui::set(w, es, "caret", start);
     ui::set(w, doc, "modified", true);
 }
@@ -926,7 +985,7 @@ void delete_word(long w, long es, long doc, long caret)
     if ( e <= caret )
 	return;
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, caret, e - caret);
+    ed_text_erase(w, es, doc, caret, e - caret);
     ui::set(w, doc, "modified", true);
 }
 
@@ -1556,6 +1615,10 @@ long build_doc(long w, long es)
 void append_build_line(long w, long es, long bdoc, const char *text)
 {
     var line = format("{}\n", text);
+    // Raw ui::text_insert, NOT ed_text_insert: bdoc is the [build] buffer,
+    // not the es's viewed document — shifting the es's highlight spans by
+    // another doc's bytes would corrupt them. (check-madcide-single-owners
+    // allowlists exactly this line.)
     ui::text_insert(w, bdoc, ui::text_size(w, bdoc), line.c_str());
     ui::set(w, bdoc, "modified", false);
 }
@@ -2067,7 +2130,19 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	if ( a == "savequit" )
 	    return save_quit(w, es, doc);
 	if ( a == "quit" )
+	{
+	    // JOE ^K Q: a dirty buffer asks JOE's question on the bottom
+	    // line; the lineed q verb's refusal spelling stays lined's.
+	    var qm;
+	    ui::get(qm, w, doc, "modified");
+	    if ( !qm.is_null() && qm.as_boolean() )
+	    {
+		start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
+			      "q!");
+		return true;
+	    }
 	    return do_verb(w, es, "q");
+	}
 	if ( a == "discard" )
 	    return do_verb(w, es, "q!");
 	if ( a == "find" )
@@ -2422,9 +2497,7 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	if ( ph != 0 )
 	{
 	    long cl = line_of(w, doc, caret);
-	    long cs = ui::text_line_start(w, doc, cl);
-	    if ( cs < 0 )
-		cs = 0;
+	    long cs = line_start_of(w, doc, cl);
 	    value encl;
 	    madc::parse_enclosing(encl, ph, cl, caret - cs);
 	    if ( !encl.is_null() )
@@ -2432,15 +2505,16 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	}
     }
     value status;
-    compose_joe_status(status, w, es, nav, caret, fnctx);
+    compose_joe_statusline(status, w, es, nav, caret, fnctx);
 
     value r;
     r["role"] = "group";
     var kids = {};
     // IDE-9e: with two-plus windows, each window is its own status line +
-    // edit node, stacked. The ACTIVE window is the live one — the status
-    // with overlays and the full edit node composed above (views, spans,
-    // tabwidth), plus the focus hint so the cursor paints in it; it stays
+    // edit node, stacked. The ACTIVE window is the live one — the full
+    // edit node composed above (views, spans, tabwidth) plus the focus
+    // hint so the cursor paints in it (prompt/search/msg belong to the
+    // SCREEN's bottom message line, not any window's status); it stays
     // UNHINTED (flexible) so panes/prompt keep taking their rows from the
     // bottom exactly as in the single shape. INACTIVE windows compose
     // snapshots: their buffer's plain text, their own caret (clamped —
@@ -2682,10 +2756,15 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	kids.push(box);
     }
 
-    // The transient startup hint on the bottom row (IDE-9b, JOE's -xmsg):
-    // plain content, shown until the first applied event returns the row
-    // to the document.
-    if ( es_int(w, es, "hint", 0) != 0 )
+    // The bottom message line (JOE's msgbuf): prompts, the search
+    // prompt, and transient messages — appended LAST so the flexible
+    // edit node yields the screen's bottom row. The startup hint
+    // (IDE-9b, JOE's -xmsg) shares this line and yields to a live
+    // overlay: JOE has ONE message line, never two.
+    value ovl;
+    if ( compose_overlay_row(ovl, w, es) )
+	kids.push(ovl);
+    else if ( es_int(w, es, "hint", 0) != 0 )
     {
 	value hn;
 	hn["role"] = "content";

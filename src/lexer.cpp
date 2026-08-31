@@ -874,7 +874,19 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return make_str(bytes, prefix != "u8");
+	{
+	    TokenBase *stok = make_str(bytes, prefix != "u8");
+	    // Piece extent includes the encoding prefix (L"..."/u8"...").
+	    if ( source.line() == row )
+	    {
+		TokenStr::SrcPiece pc;
+		pc.line = row;
+		pc.col = col - 1 - (int32_t)prefix.size();
+		pc.len = source.column() - pc.col;
+		((TokenStr *)stok)->src_pieces.push_back(pc);
+	    }
+	    return stok;
+	}
     }
 
     uint32_t cp = 0;
@@ -2474,6 +2486,11 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	}
 	else
 	    prev->str += next->str;
+	// the merged literal keeps every piece's SOURCE extent — the span
+	// classifier paints one row per piece, not one mis-anchored blob.
+	prev->src_pieces.insert(prev->src_pieces.end(),
+				next->src_pieces.begin(),
+				next->src_pieces.end());
 	// the merged literal lives in `prev` (already in the stream); refresh its
 	// rec spelling to the concatenated bytes so its ROM stays self-describing.
 	prev->rec.spelling_id = strpool.intern(prev->str);
@@ -6799,7 +6816,22 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return make_str(word);
+	    {
+		TokenBase *stok = make_str(word);
+		// Source extent of this piece (see TokenStr::SrcPiece): from
+		// the opening quote through the closing quote, single-line
+		// only — a line-spanning literal (scanner-tolerated) keeps no
+		// piece and the consumer falls back.
+		if ( source.line() == row )
+		{
+		    TokenStr::SrcPiece pc;
+		    pc.line = row;
+		    pc.col = col - 1;
+		    pc.len = source.column() - pc.col;
+		    ((TokenStr *)stok)->src_pieces.push_back(pc);
+		}
+		return stok;
+	    }
 	case '\'':
 	    word = "";
 	    row = source.line();

@@ -34,25 +34,122 @@ bool es_flag(long w, long es, const char *key)
     return v.as_boolean();
 }
 
-// The 1-based line containing byte offset `off` (1 on an empty document).
+// True when the document ends in '\n': offset == size is then a caret
+// on the EMPTY line past the content lines — the phantom line. The
+// caret already reaches it sideways (right, typing, ^K V = bottom); the
+// text_buffer counts content lines only, so the navigability rule lives
+// here, in the editor model, and every line/column owner below consults
+// it — without it vertical motion stops one row short of the bottom.
+bool has_phantom_line(long w, long doc)
+{
+    long total = ui::text_line_count(w, doc);
+    if ( total < 1 )
+	return false;
+    long lst = ui::text_line_start(w, doc, total);
+    if ( lst < 0 )
+	return false;
+    return lst + ui::text_line_len(w, doc, total) < ui::text_size(w, doc);
+}
+
+// The 1-based line containing byte offset `off` (1 on an empty document;
+// total+1 on the phantom line).
 long line_of(long w, long doc, long off)
 {
     long total = ui::text_line_count(w, doc);
     long line = 1;
     while ( line < total && ui::text_line_start(w, doc, line + 1) <= off )
 	line = line + 1;
+    if ( off >= ui::text_size(w, doc) && has_phantom_line(w, doc) )
+	line = total + 1;
     return line;
 }
 
+// Line start for column math: the phantom line starts at the document's
+// end; any other absent line answers 0 (the empty document).
+long line_start_of(long w, long doc, long line)
+{
+    long start = ui::text_line_start(w, doc, line);
+    if ( start >= 0 )
+	return start;
+    if ( line > ui::text_line_count(w, doc) && has_phantom_line(w, doc) )
+	return ui::text_size(w, doc);
+    return 0;
+}
+
+// ---- the ONE text-mutation owner --------------------------------------
+// Every editor insert/erase routes through ed_text_insert / ed_text_erase,
+// never ui::text_* directly: the es bag carries byte-anchored rows (the
+// themed highlight spans) that must SHIFT with the text they were computed
+// for — without it every keystroke above a span repaints the document one
+// byte off per character (the madcide "typing spaces re-shades everything"
+// defect). Spans still go stale in CONTENT until the next (re)parse
+// replaces them; their geometry stays true. A span an erase fully covers
+// is dropped; one an insert lands inside grows.
+void shift_hspans(long w, long es, long off, long delta)
+{
+    value hs;
+    ui::get(hs, w, es, "hspans");
+    if ( hs.is_null() || php::count(hs) == 0 )
+	return;
+    var out = {};
+    for ( value r : hs )
+    {
+	long s = r["s"].as_integer();
+	long e = r["e"].as_integer();
+	if ( delta < 0 )
+	{
+	    long dl = -delta;
+	    if ( s >= off )
+		s = s >= off + dl ? s + delta : off;
+	    if ( e >= off )
+		e = e >= off + dl ? e + delta : off;
+	}
+	else
+	{
+	    if ( s >= off )
+		s = s + delta;
+	    if ( e > off )
+		e = e + delta;
+	}
+	if ( e > s )
+	{
+	    value nr;
+	    nr["s"] = s;
+	    nr["e"] = e;
+	    nr["c"] = r["c"];
+	    out.push(nr);
+	}
+    }
+    ui::set(w, es, "hspans", out);
+}
+
+void ed_text_insert(long w, long es, long doc, long off, const char *s)
+{
+    ui::text_insert(w, doc, off, s);
+    shift_hspans(w, es, off, strlen(s));
+}
+
+void ed_text_erase(long w, long es, long doc, long off, long n)
+{
+    ui::text_erase(w, doc, off, n);
+    shift_hspans(w, es, off, -n);
+}
+
 // A caret on `line` keeping column `col` when the line is long enough —
-// the vertical-movement rule.
+// the vertical-movement rule. A target past the content lines lands on
+// the phantom line when there is one (down/pgdn reach the bottom; a
+// too-big go-to-line lands at the end, JOE's rule) and clamps otherwise.
 long caret_to_line(long w, long doc, long line, long col)
 {
     long total = ui::text_line_count(w, doc);
     if ( line < 1 )
 	line = 1;
     if ( total > 0 && line > total )
+    {
+	if ( has_phantom_line(w, doc) )
+	    return ui::text_size(w, doc);
 	line = total;
+    }
     long start = ui::text_line_start(w, doc, line);
     if ( start < 0 )
 	return 0;
@@ -235,7 +332,7 @@ void cut_selection(long w, long es, long doc, long caret, bool editable)
     if ( editable )
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_erase(w, doc, lo, hi - lo);
+	ed_text_erase(w, es, doc, lo, hi - lo);
 	ui::set(w, es, "caret", lo);
 	ui::set(w, doc, "modified", true);
     }
@@ -260,7 +357,7 @@ void paste_clip(long w, long es, long doc, long caret)
     else
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_insert(w, doc, caret, c.c_str());
+	ed_text_insert(w, es, doc, caret, c.c_str());
 	ui::set(w, es, "caret", caret + strlen(c.c_str()));
 	ui::set(w, doc, "modified", true);
     }
@@ -283,7 +380,7 @@ void edit_text_run(long w, long es, long doc, long caret, value &ev)
     else
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_insert(w, doc, caret, t.c_str());
+	ed_text_insert(w, es, doc, caret, t.c_str());
 	ui::set(w, es, "caret", caret + strlen(t.c_str()));
 	ui::set(w, doc, "modified", true);
     }
@@ -363,9 +460,11 @@ void compose_heading(value &head, long w, long es, long doc,
 
 // The edit window bound to the document: caret + selection as hints
 // ({caret, sel_start, sel_end} byte offsets). The selection runs
-// [mark, bend-else-caret]: an editor that sets a block END (madcide's
-// JOE ^K K) highlights mark..bend; one that never sets `bend` (vised)
-// keeps the original mark..caret rule unchanged.
+// [mark, bend-else-caret] — except under a TWO-POINT personality (the
+// es "selblock" flag, derived from the loaded profile's vocabulary:
+// JOE's ^K B / ^K K), where a mark WITHOUT an end lights nothing; an
+// editor that never sets `bend` or the flag (vised) keeps the original
+// live mark..caret rule unchanged.
 void compose_edit_node(value &ed, long w, long es, long doc, long caret)
 {
     value e;
@@ -378,6 +477,8 @@ void compose_edit_node(value &ed, long w, long es, long doc, long caret)
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
     long send = bend >= 0 ? bend : caret;
+    if ( bend < 0 && es_flag(w, es, "selblock") )
+	send = mark;
     if ( mark >= 0 && mark != send )
     {
 	hints["sel_start"] = mark < send ? mark : send;
@@ -417,9 +518,7 @@ void compose_status(value &status, long w, long es, long doc, long caret,
     else
     {
 	long line = line_of(w, doc, caret);
-	long start = ui::text_line_start(w, doc, line);
-	if ( start < 0 )
-	    start = 0;
+	long start = line_start_of(w, doc, line);
 	st["content"] = format("Ln {}, Col {}{}", line, caret - start + 1,
 			       idle_suffix);
     }
@@ -478,9 +577,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	return true;
     }
     long line = line_of(w, doc, caret);
-    long start = ui::text_line_start(w, doc, line);
-    if ( start < 0 )
-	start = 0;
+    long start = line_start_of(w, doc, line);
     long col = caret - start;
     if ( k == "home" )
     {
@@ -522,7 +619,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else if ( caret > 0 )
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_erase(w, doc, caret - 1, 1);
+	    ed_text_erase(w, es, doc, caret - 1, 1);
 	    ui::set(w, es, "caret", caret - 1);
 	    ui::set(w, doc, "modified", true);
 	}
@@ -535,7 +632,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else if ( caret < size )
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_erase(w, doc, caret, 1);
+	    ed_text_erase(w, es, doc, caret, 1);
 	    ui::set(w, doc, "modified", true);
 	}
 	return true;
@@ -547,7 +644,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_insert(w, doc, caret, "\n");
+	    ed_text_insert(w, es, doc, caret, "\n");
 	    ui::set(w, es, "caret", caret + 1);
 	    ui::set(w, doc, "modified", true);
 	}

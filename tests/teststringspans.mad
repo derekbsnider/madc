@@ -1,0 +1,28 @@
+// String-literal highlight spans anchor on LEX-RECORDED source extents
+// (TokenStr::src_pieces): escapes shrink the cooked value (a
+// spelling-derived span mis-anchors `"x\"y"`), and C adjacent-literal
+// concatenation merges pieces from different lines into ONE token — the
+// old classifier painted one mis-anchored blob from the first line
+// (madcide's embed_hello.c exec_string block). One row per SOURCE piece,
+// each inside its own physical line; the source text is the oracle.
+int main()
+{
+    var src = "const char *a = \"x\\\"y\";\nconst char *b = \"p\"\n    \"q\\n\";\nconst wchar_t *c = L\"w\";\n";
+    value rows;
+    madc::lex_spans(rows, src.c_str(), "sp.c");
+    array lines;
+    php::explode(lines, "\n", src.c_str());
+    long overruns = 0;
+    for ( value r : rows )
+    {
+	value lv = lines[r["line"].as_integer() - 1];
+	if ( r["column"].as_integer() + r["length"].as_integer()
+	     > lv.length() )
+	    overruns = overruns + 1;
+	if ( r["class"] == "string" )
+	    println("s line={} col={} len={}", r["line"].as_integer(),
+		    r["column"].as_integer(), r["length"].as_integer());
+    }
+    println("overruns: {}", overruns);
+    return 0;
+}
