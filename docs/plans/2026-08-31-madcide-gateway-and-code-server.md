@@ -91,7 +91,9 @@ no C-SPC/NUL spelling (set-mark). A vim/neovim personality is NOT a
 keys file — vim is modal (normal/insert, counts, operator+motion); the
 natural substrate is the @scope tables (modes = scopes the MAIN key
 stream consults; `i` flips scope) — a dedicated slice, never a flat
-profile pretending.
+profile pretending. *(Owner flagged the missing neovim.keys again
+2026-08-31; the modes-as-scopes slice is QUEUED NEXT after the seam —
+built on the session surface so the mode routing is written once.)*
 
 ## The ^P project window (RULED 2026-08-31)
 
@@ -222,6 +224,26 @@ API keeps the door open.
    render/input/refresh/suspend; the session never touches a tui
    handle. The `@pane` binding mechanism + migration of hardwired modal
    keys lands here (client-side).
+
+   **LANDED (s148, feature/madcide-project-claude):** `class IdeSession`
+   (madcide_core.inc = the session layer; the bags stay its private
+   storage initially) with the two surface methods plus lifecycle
+   (open/attach/close) and the seam verbs; the new
+   `tools/madcide/madcide_client.inc` is the TUI client (run_ide, the
+   return-key pause, request servicing). Across the seam: client-pushed
+   FACTS (viewport, terminal presence, pending chord), the KEY TABLE as
+   data (profiles validate handle-free via the new
+   `ui::tui_validate_keys` — one converter with tui_bind_keys — and the
+   client rebinds on a generation counter), and parked TERMINAL
+   REQUESTS (run/projrun/cmd/shell/refresh; the client drains one after
+   each event, suspends, calls `term_exec` back, pauses, resumes —
+   headless sessions refuse exactly as before). The layer boundary is
+   GATED: `scripts/check-madcide-seam.sh` in fulltest (session layer
+   tui-free, negative-controlled). Named residues: state still lives on
+   the bags (member migration rides later slices); events still cross
+   as key/text shapes (commands-with-arguments is slice 3, where modal
+   key→name lookup moves client-side); vised keeps its own smaller
+   apply_event (an example, not the tool).
 2. **The project window** — the first feature written against the API
    (manifest reader/writer symmetry, groups, membership verbs).
    *(Executed s147 with the owner's re-sequencing — the window came
@@ -240,6 +262,26 @@ API keeps the door open.
    first; trackers by demand.
 
 ## Open questions
+
+- **madcide as an executable artifact** (owner, 2026-08-31: "we should
+  also be able to build it as an executable binary, and then we need to
+  decide if madc should output the binary directly or if madc should
+  emit c11 code and pass that to the compiler we use to build madc").
+  Standing recommendation (unruled): BOTH lanes already exist as
+  first-class outputs of the one IR (ADR 0001) — default to the direct
+  AOT `--exe` lane (self-contained; no C toolchain on the user's
+  machine; ELF/PE/Mach-O writers in-tree; the artifact kind the
+  frozen-artifact taxonomy sanctions), with `--emit=c11` → system
+  compiler as the optimizing RELEASE lane (gcc/clang -O2 beats MIR's
+  fast-but--O1-shape codegen, and it exercises the transpiler). The
+  real work item is neither codegen lane but the LINK: madcide calls
+  the compiler as a library (madc::parse_open/parse_check/
+  project_build, runtime-compiled .madv verbs), so its binary must link
+  the whole madc engine — the libmadc embedding arc's first real
+  consumer: (a) the exe lane learns to link programs that use
+  compiler-as-library namespaces against libmadc, (b) data files
+  (profiles, themes, verb bodies) resolve relative to the binary. Cut
+  as its own slice after the seam + merge wave.
 
 - Is the composed TREE part of the public API (trivial thin clients) or
   a TUI-client detail (raw-state projections only)? Lean: both are
