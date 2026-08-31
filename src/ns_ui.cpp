@@ -1112,7 +1112,9 @@ bool tui_bind_keys(int64_t t, madc::value &table)
 
 // The next SEMANTIC event as a value object (names at the boundary):
 //   { event:"text",   text:"..." }       a coalesced printable run
-//   { event:"key",    key:"up"|"^s"|.. } a non-printable key
+//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
+//       option:N (1-based, the choose contract) when a focused choice
+//       existed — the focused row for keys the widget does not consume
 //   { event:"action", action:"name", seq:"^k s" }  a bound sequence
 //   { event:"choose", option:N, action:"name" }  N is 1-based — the
 //       same number the level-0 menu prints for that option
@@ -1146,6 +1148,12 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	case madc::hub::tui_event_kind::key:
 	    f["event"] = madc::value(std::string("key"));
 	    f["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    // A focused choice's live selection rides along (1-based, the
+	    // choose contract) so the application can act on the focused
+	    // row for keys the widget does not consume (ins/del); absent
+	    // when nothing choice-shaped had focus.
+	    if ( e.choice_focused )
+		f["option"] = madc::value((int64_t)(e.option + 1));
 	    break;
 	case madc::hub::tui_event_kind::choose:
 	    f["event"] = madc::value(std::string("choose"));

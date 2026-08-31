@@ -807,13 +807,20 @@ struct tui_event
     std::string	   text;	// text: the run
     tui_key	   key;		// key: which one (ctrl -> `ch`)
     char	   ch;
-    size_t	   option;	// choose: 0-based option index
+    size_t	   option;	// choose: 0-based option index;
+				// key: the focused choice's 0-based selection
+				// (valid only when choice_focused)
+    bool	   choice_focused; // key: a focused choice existed — `option`
+				// carries its selection (read-only presentation
+				// state, the tui_pending precedent), so the
+				// application can act on the focused row for
+				// keys the widget does not consume (ins/del)
     name_id	   action;	// choose: the option's first action; 0 = none
     std::string	   action_name;	// action: the bound name ("" = unbound)
     std::string	   seq;		// action: the canonical sequence spelling
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), action(0) {}
+		  option(0), choice_focused(false), action(0) {}
 };
 
 // ------------------------------------------------------------------ the model
@@ -1456,6 +1463,15 @@ public:
 		e.kind = tui_event_kind::key;
 		e.key = k.kind;
 		e.ch = k.ch;
+		if ( on_choice )
+		{
+		    // The key rides through with the focused choice's live
+		    // selection: keys the widget does not consume (ins/del)
+		    // can act on the focused row without the selection ever
+		    // leaving the model (presentation state stays here).
+		    e.choice_focused = true;
+		    e.option = selection_of(_focus);
+		}
 		out.push_back(e);
 	    }
 	}
