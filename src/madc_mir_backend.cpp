@@ -240,6 +240,31 @@ void *madarray_index_slot(void *ptr, int64_t idx)
 	return NULL;	// unreachable: __madc_throw_cstr does not return
     }
 
+// `bag[v]` with a CARRIER index — dispatch on the INDEX's live kind
+// (owner 2026-08-31, the elegance ruling: `m[kn]` keys without .c_str()
+// ceremony): a string-kind index KEYS the object kind (madarray_key_slot),
+// integer/bool kinds INDEX the array kind, a real truncates (the numeric
+// subscript rule). Deliberately NOT PHP's coercion table: "8" stays the
+// string key "8", never index 8. A null or container-kind index refuses
+// loudly — indexing by nothing (or by a container) is a bug, never an
+// intent. Before this entry the compile-time index path coerced the
+// carrier's POINTER to the element index (a silent address-as-index).
+void *madarray_value_slot(void *ptr, void *idx)
+    {
+	const madc::value *iv = (const madc::value *)idx;
+	if ( iv->is_string() )
+	{
+	    std::string key((const char *)iv->data(), iv->size());
+	    return madarray_key_slot(ptr, key.c_str());
+	}
+	if ( iv->is_integer() || iv->is_boolean() || iv->is_real() )
+	    return madarray_index_slot(ptr, iv->as_integer());
+	__madc_throw_cstr(iv->is_null()
+	    ? "[var]: null index — a key is a string, an index an integer"
+	    : "[var]: index value must be a string (key) or a number (index)");
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
 // Text view of a value — the carrier's c_str() and the coercion the CIR
 // builder applies to a value in char*-consuming positions (varargs args,
 // char* returns). EVERY kind answers with RING-lifetime text (the

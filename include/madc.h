@@ -6190,10 +6190,16 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
-    // Key-vs-element classification for a carrier subscript INDEX: a
-    // string-typed index is an object-kind KEY, anything else an array
-    // element. One owner — the CIR's slot-call routing reads it too.
-    static bool madc_array_key_index(TokenBase *idx);
+    // Key-vs-element classification for a carrier subscript INDEX — the
+    // ONE owner of the question; the CIR's slot-call routing and the
+    // literal kind-mix wall both read it. A char pointer or a
+    // c_str()-bearing class instance is an object-kind KEY; a CARRIER
+    // index has no compile-time kind — it dispatches at RUNTIME on its
+    // live kind (madarray_value_slot: string keys, numeric kinds index —
+    // owner 2026-08-31, replacing the old .c_str()-to-key ceremony);
+    // every other index is an array-kind element INDEX.
+    enum class CarrierIndex { Index, Key, Runtime };
+    static CarrierIndex madc_array_index_kind(TokenBase *idx);
     // Every carrier subscript types as the carrier itself — the SLOT model
     // (a value lvalue over madarray_key_slot / madarray_index_slot). See
     // parser.cpp for the rules and the owner law behind it.

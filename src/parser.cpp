@@ -2797,28 +2797,39 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     return lazy_resolve_type(name);
 }
 
-// Is this subscript INDEX a string KEY (`bag["k"]`, `bag[word]`) — the
-// carrier's object-kind keyed access — rather than an element index?
-// Char pointers (string literals included) and c_str()-bearing class
-// instances (std::string) are keys; every other index stays the element
-// path. The carrier itself is deliberately NOT a key type: `a[v]` with a
-// var index must stay an element read (spell `a[v.c_str()]` to key).
-bool Program::madc_array_key_index(TokenBase *idx)
+// Classify a carrier subscript INDEX (`bag["k"]`, `bag[word]`, `bag[v]`)
+// — the ONE owner of the key-vs-element question. Char pointers (string
+// literals included) and c_str()-bearing class instances (std::string)
+// are object-kind KEYS. A CARRIER index (`a[v]`, a `value &` parameter,
+// a slot chain link `a[keys[0]]`) has no compile-time kind: it
+// dispatches at RUNTIME on its live kind through madarray_value_slot
+// (string keys, numeric kinds index — owner 2026-08-31; the old rule
+// forced `a[v.c_str()]` ceremony to key, and the index path coerced the
+// carrier's POINTER to an element index). Every other index is an
+// array-kind element INDEX.
+Program::CarrierIndex Program::madc_array_index_kind(TokenBase *idx)
 {
     DataDef *dd = idx ? idx->datadef() : NULL;
     if ( !dd )
-	return false;
+	return CarrierIndex::Index;
+    // A reference denotes its referent (`value &kn` keys like kn does).
+    if ( dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	    if ( rp->base_type )
+		dd = rp->base_type;
+    if ( dd->is_madc_array() )
+	return CarrierIndex::Runtime;
     if ( dd->is_pointer() )
     {
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	return p && p->base_type
-	    && p->base_type->rawtype() == DataType::dtCHAR;
+	    && p->base_type->rawtype() == DataType::dtCHAR
+	    ? CarrierIndex::Key : CarrierIndex::Index;
     }
-    if ( dd->is_madc_array() )
-	return false;
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
     std::string cstr_name = "c_str";
-    return cls && cls->findMethod(cstr_name) != NULL;
+    return cls && cls->findMethod(cstr_name) != NULL
+	? CarrierIndex::Key : CarrierIndex::Index;
 }
 
 // The type a madc array subscript produces: the CARRIER ITSELF, for BOTH
@@ -2834,7 +2845,7 @@ bool Program::madc_array_key_index(TokenBase *idx)
 // `arr[i] = x` a SILENT no-op (the write landed in the temp) and left
 // element methods unresolvable in <string>-less TUs. The ddARRAY typing
 // IS the slot marker the CIR builder reads; the CIR side picks the key
-// vs index runtime entry via madc_array_key_index (the one owner of the
+// vs index runtime entry via madc_array_index_kind (the one owner of the
 // key-vs-element question).
 DataDef *Program::madc_array_subscript_type()
 {
@@ -11979,7 +11990,7 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 // flush — the three args-list loops consolidated 2026-08-31). Reads `expr`
 // and, for a CARRIER list, `key: value` elements up to `close_id` into the
 // parallel args/keys vectors. Key-vs-index semantics are the slot call's
-// (madc_array_key_index — the one owner); the CIR lowering assigns a keyed
+// (madc_array_index_kind — the one owner); the CIR lowering assigns a keyed
 // element into the key's vivified slot through the registered operator=
 // rows. A ':' INSIDE an element's ternary never reaches here — the tkTerQ
 // arm consumes it within parseExpression.

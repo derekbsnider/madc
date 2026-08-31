@@ -5841,10 +5841,20 @@ node_t CirBuilder::carrier_list_elements(const std::function<node_t()> &recv,
 		bool has_skey = false, has_elem = false;
 		for (size_t ei = 0; ei < cargs.size(); ei++) {
 			TokenBase *k = ei < ckeys.size() ? ckeys[ei] : NULL;
-			if (k && Program::madc_array_key_index(k))
+			switch (k ? Program::madc_array_index_kind(k)
+				  : Program::CarrierIndex::Index) {
+			case Program::CarrierIndex::Key:
 				has_skey = true;
-			else
+				break;
+			case Program::CarrierIndex::Runtime:
+				// A carrier key has no compile-time kind —
+				// the runtime kind refusal owns the mix
+				// question for it.
+				break;
+			default:
 				has_elem = true;
+				break;
+			}
 		}
 		if (has_skey && has_elem)
 			return error_node("a value literal cannot mix keyed "
@@ -12174,17 +12184,19 @@ bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
 }
 
 // The slot call for a carrier subscript — the ONE value-lvalue lane for
-// both index kinds: madarray_key_slot(recv, key) for a string KEY (the
+// every index kind: madarray_key_slot(recv, key) for a string KEY (the
 // vivified map entry), madarray_index_slot(recv, idx) for an integer
-// index (the vivified/extended array element). The runtime returns the
-// slot's address, so the call IS the value lvalue's address; N_DEREF of
-// it is the value lvalue the expression lanes return (&* folds back to
-// the call at every consumer that addresses it). recv_void: (void*)-cast
-// node addressing the carrier. Key vs index is Program::madc_array_key_index
-// — the one owner of that question (char pointers and c_str()-bearing
-// classes are keys; every other index is an element). The key argument: a
-// char pointer passes through; a c_str()-bearing class (std::string)
-// coerces through object_cstr_arg — the one existing class-to-cstr owner.
+// index (the vivified/extended array element), madarray_value_slot for
+// a CARRIER index (runtime kind dispatch, owner 2026-08-31), and
+// madarray_append_slot for the NULL-index APPEND (`rows[]`). The runtime
+// returns the slot's address, so the call IS the value lvalue's address;
+// N_DEREF of it is the value lvalue the expression lanes return (&*
+// folds back to the call at every consumer that addresses it).
+// recv_void: (void*)-cast node addressing the carrier. Classification is
+// Program::madc_array_index_kind — the one owner of that question. The
+// key argument: a char pointer passes through; a c_str()-bearing class
+// (std::string) coerces through object_cstr_arg — the one existing
+// class-to-cstr owner.
 node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
 				     TokenBase *origin)
 {
@@ -12203,7 +12215,17 @@ node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	}
-	if (Program::madc_array_key_index(index)) {
+	Program::CarrierIndex ik = Program::madc_array_index_kind(index);
+	if (ik == Program::CarrierIndex::Runtime) {
+		// A CARRIER index (`bag[v]`) dispatches on ITS live kind at
+		// runtime (owner 2026-08-31): the index travels by object
+		// address like any carrier argument.
+		entry = "madarray_value_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true }, { {N_VOID}, true } },
+				   { N_CHAR });
+		append(a, object_arg_addr(index, &ddARRAY));
+	} else if (ik == Program::CarrierIndex::Key) {
 		entry = "madarray_key_slot";
 		need_output_extern(entry, true,
 				   { { {N_VOID}, true }, { {N_CHAR}, true } },
