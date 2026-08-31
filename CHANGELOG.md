@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **The append accessor + literal EXPRESSIONS (2026-08-31)** — the ruled
+  row spelling lands: `rows[] = { "this": "that" };`. PHP's empty `[]`
+  is the APPEND slot (`madarray_append_slot` — the same operator= rows
+  every slot binds; non-carrier receivers refuse loudly), and a braced
+  list in EXPRESSION position re-spells against its target type: an
+  assignment rhs targets the assignee ([expr.ass]/9, any class/aggregate
+  target), a call argument searches the callee's overload set
+  (`rows.push({...})` finds `push(value&)`). The expression literal runs
+  the SAME list lowering as the declaration form (extracted
+  `carrier_list_elements`, kind-mix wall included), and the three
+  args-list parse loops (declaration, functional construction, forest
+  flush) consolidated into ONE reader (`parse_ctor_args_list`). Pinned
+  by testvalueappend (JIT + EXE + OBJ), testvalueappendmix,
+  testvalueappendbad. The madcide row builders collapsed onto the new
+  spelling (net −117 lines of ceremony), gated by testmadcide.
+- **A var INDEX dispatches on its LIVE kind (2026-08-31)** — `m[kn]`
+  keys when kn holds a string, indexes when it holds a number
+  (`madarray_value_slot`; the classification owner is now the enum
+  `madc_array_index_kind`). This closes a defect class, not just the
+  `.c_str()` ceremony: the old rule coerced a carrier index's POINTER
+  to the element index (address-as-index) and aborted keyed reads.
+  Deliberately not PHP's coercion table — `"8"` stays the string key
+  `"8"`; null/container indexes refuse loudly. Pinned in
+  testvalueinitkeyed (bare read == `.c_str()` read).
+- **Known gap (banked): carrier-armed ternaries** — `cond ? t :
+  t["file"]` and mixed scalar/carrier arms fail the c2mir check
+  ("incompatible pointer types in true and false parts"); reducer
+  tmp/terncarrier.mad. Its own lowering slice (a value temp assigned
+  per arm); the madcide sweep spells those two sites if/else meanwhile.
 - **KEYED value-literal elements (2026-08-31)** — `var m = { "a": 1,
   "b": "two" };` completes the carrier's brace literal: a `key: value`
   element assigns into the key's vivified slot through the registered
@@ -9,10 +38,10 @@
   literal and the per-key spelling cannot drift. String keys vivify the
   OBJECT kind, integer keys index the ARRAY kind (positional pushes and
   integer keys mix in element order); a literal mixing the two kinds
-  refuses at compile time with the kinds named. Bare var keys stay
-  element indexes (the documented subscript rule — `.c_str()` keys).
-  Pinned by testvalueinitkeyed (JIT + EXE + OBJ) and
-  testvalueinitkeyedmix.
+  refuses at compile time with the kinds named. (Bare var keys
+  initially stayed element indexes; superseded the same day by the
+  live-kind dispatch entry above.) Pinned by testvalueinitkeyed
+  (JIT + EXE + OBJ) and testvalueinitkeyedmix.
 - **Fixed: the associative-literal parser HANG class** — `{ "a": 1 }`
   in declaration, assignment, and call-argument positions spun the
   parser forever (parseExpression pushes a bare `:` back; every caller
