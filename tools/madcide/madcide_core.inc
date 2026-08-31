@@ -2497,9 +2497,7 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	if ( ph != 0 )
 	{
 	    long cl = line_of(w, doc, caret);
-	    long cs = ui::text_line_start(w, doc, cl);
-	    if ( cs < 0 )
-		cs = 0;
+	    long cs = line_start_of(w, doc, cl);
 	    value encl;
 	    madc::parse_enclosing(encl, ph, cl, caret - cs);
 	    if ( !encl.is_null() )
