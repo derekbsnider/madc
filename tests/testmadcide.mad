@@ -1269,6 +1269,73 @@ int main()
     ui::get(msg, w, es, "msg");
     println("seam-viewport: split-refused={}",
 	    msg.index("No room") >= 0 ? 1 : 0);
+
+    // -- the MODES palette + the vi colon line (owner ruling 2026-08-31:
+    //    joe's ^N raises the palette; ":" inside it — @modes data —
+    //    enters colon mode; a future @normal ":" enters the SAME line).
+    ev_action(e, "modes", "^n");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    var mbox = tree["children"][2];
+    var mrow0 = format("{}", mbox["children"][0]["content"]);
+    println("modes-palette: label={} colon-row={}", mbox["label"],
+	    mrow0.index(" :  ") >= 0 ? 1 : 0);
+    ev_text(e, ":");			// @modes ':' -> colon mode
+    S.apply_ide_event(doc, e);
+    var pmd;
+    ui::get(pmd, w, es, "pmode");
+    println("modes-colon: pmode={} palette-closed={}", pmd,
+	    project_active(w, es) || modes_active(w, es) ? 0 : 1);
+    ev_text(e, "zz");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("colon-unknown: {}", msg);
+    // esc dismisses the palette (@modes data too).
+    ev_action(e, "modes", "^n");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "esc");
+    S.apply_ide_event(doc, e);
+    println("modes-esc: closed={}", modes_active(w, es) ? 0 : 1);
+    // The colon vocabulary translates to the EXISTING internals.
+    ev_action(e, "colon", "");		// the direct action (bindable)
+    S.apply_ide_event(doc, e);
+    ev_text(e, "2");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    println("colon-goto: line={}",
+	    line_of(w, doc, es_int(w, es, "caret", 0)));
+    ev_action(e, "colon", "");
+    S.apply_ide_event(doc, e);
+    ev_text(e, "w");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("colon-write: wrote={}", msg.index("Wrote") >= 0 ? 1 : 0);
+    // :!cmd rides the terminal-request seam (hasterm is on from the seam
+    // pins above): the request parks, the drain runs the guest.
+    ev_action(e, "colon", "");
+    S.apply_ide_event(doc, e);
+    ev_text(e, "!echo colon-exec-ok");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    var crq;
+    long ctook = S.take_request(crq) ? 1 : 0;
+    println("colon-exec: took={} kind={}", ctook, crq["kind"]);
+    S.term_exec(crq);			// the guest prints colon-exec-ok
+    // :q on the now-clean buffer quits — false propagates out of the
+    // prompt commit exactly like the quit chord.
+    ev_action(e, "colon", "");
+    S.apply_ide_event(doc, e);
+    ev_text(e, "q");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    cont = S.apply_ide_event(doc, e);
+    println("colon-quit: cont={}", cont ? 1 : 0);
     ui::world_close(w);
     return 0;
 }

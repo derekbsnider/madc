@@ -18,9 +18,13 @@
 # RECLAIMED; the real arrow keys serve motion. ^R is JOE's retype.
 # ^P raises the PROJECT window (owner ruling 2026-08-31: the project is
 # ^P's primary function; quick-open rides its filter; esc dismisses).
+# ^N raises the MODES palette (owner ruling 2026-08-31): ":" inside it
+# enters the vi colon line (^N : — the @modes keys are data; the chord
+# table cannot spell ^n : beside a bare ^n, so the palette IS the door).
+# ^K E keeps editfile, which ^N used to shortcut.
 ^p project
 ^f find
-^n editfile
+^n modes
 ^b build
 ^r refresh
 ^k j projaddcur

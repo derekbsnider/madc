@@ -185,6 +185,9 @@ const char *modal_default_keys_text()
 	   "@project ins projadd\n"
 	   "@project del projdel\n"
 	   "@project enter projopen\n"
+	   "@modes : colon\n"
+	   "@modes enter modesopen\n"
+	   "@modes esc modesclose\n"
 	   "@pane esc paneclose\n";
 }
 
@@ -935,9 +938,13 @@ void edit_file(long w, long es, long olddoc, const char *path);
 void proj_add(long w, long es, long doc, const char *path0);
 bool project_active(long w, long es);
 void project_rows(long w, long es, long doc);
+// The vi colon line (defined after the verbs it translates to): one ex
+// command, interpreted against the EXISTING vocabulary. False = quit.
+bool colon_command(long w, long es, long doc, long caret, var &in);
 
-// Prompt completion (enter): dispatch on the stored mode.
-void finish_prompt(long w, long es, long doc, long caret)
+// Prompt completion (enter): dispatch on the stored mode. False = quit
+// (a committed :q — every other mode continues the session).
+bool finish_prompt(long w, long es, long doc, long caret)
 {
     var mode;
     ui::get(mode, w, es, "pmode");
@@ -945,27 +952,29 @@ void finish_prompt(long w, long es, long doc, long caret)
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
     if ( strlen(in.c_str()) == 0 )
-	return;
+	return true;
+    if ( mode == "colon" )
+	return colon_command(w, es, doc, caret, in);
     if ( mode == "find" )
     {
 	ui::set(w, es, "search", in.c_str());
 	do_find(w, es, doc, caret);
-	return;
+	return true;
     }
     if ( mode == "gotoline" )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, php::intval(in), 0));
-	return;
+	return true;
     }
     if ( mode == "insertfile" )
     {
 	insert_file(w, es, doc, caret, in.c_str());
-	return;
+	return true;
     }
     if ( mode == "editfile" )
     {
 	edit_file(w, es, doc, in.c_str());
-	return;
+	return true;
     }
     if ( mode == "projadd" )
     {
@@ -974,7 +983,7 @@ void finish_prompt(long w, long es, long doc, long caret)
 	proj_add(w, es, doc, in.c_str());
 	if ( project_active(w, es) )
 	    project_rows(w, es, doc);
-	return;
+	return true;
     }
     if ( mode == "tabwidth" )
     {
@@ -982,11 +991,11 @@ void finish_prompt(long w, long es, long doc, long caret)
 	if ( tw < 1 || tw > 16 )
 	{
 	    ui::set(w, es, "msg", format("Tab width '{}' — need 1..16.", in));
-	    return;
+	    return true;
 	}
 	ui::set(w, es, "tabwidth", tw);
 	ui::set(w, es, "msg", format("Tab width {}.", tw));
-	return;
+	return true;
     }
     if ( mode == "theme" )
     {
@@ -998,13 +1007,14 @@ void finish_prompt(long w, long es, long doc, long caret)
 	if ( !load_theme(w, es, in.c_str()) )
 	{
 	    ui::set(w, es, "msg", format("No theme '{}'.", in));
-	    return;
+	    return true;
 	}
 	var vw;
 	if ( !view_name(vw, w, es) )
 	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
 	ui::set(w, es, "msg", format("Theme: {}.", in));
     }
+    return true;
 }
 
 // Every event while the prompt is up. The keys are @prompt/@confirm
@@ -1055,7 +1065,7 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
     if ( !scoped_action(a, w, es, "prompt", ev) )
 	return true;			// unbound keys are inert
     if ( a == "pcommit" )
-	finish_prompt(w, es, doc, caret);
+	return finish_prompt(w, es, doc, caret);	// false = a :q quit
     else if ( a == "pcancel" )
 	end_prompt(w, es);
     else if ( a == "pdelchar" )
@@ -2139,6 +2149,123 @@ bool project_event(long w, long es, long doc, var &ev)
     return true;
 }
 
+// ---- the MODES palette (owner ruling 2026-08-31) ------------------------
+// "No reason our editor/ide cannot have modes": the `modes` action (joe
+// seats it on ^N — profile data) raises the one popup-list widget over
+// the available editing MODES; the keys inside it are @modes PROFILE
+// DATA through the one parse_keys (baked defaults: ":" enters the vi
+// colon line, enter opens the focused row, esc dismisses). ^N : is two
+// keystrokes into colon mode from a non-modal personality — and it is
+// the only legal spelling: the engine's chord tables refuse a sequence
+// that shadows a shorter binding, so ^n-the-palette and ^n-:-the-chord
+// cannot coexist in the main table. The vi normal/insert MODE (the
+// modes-as-scopes slice) joins as a row here when it lands; a modal
+// personality enters colon from its own @normal ":" instead — one
+// colon implementation either way.
+
+// The rows as data ({act, content} — precomposed like project_rows).
+void modes_show(long w, long es)
+{
+    var rows = {};
+    var r1;
+    r1["act"] = "colon";
+    r1["content"] = " :  vi command line — one ex command (w q e N !cmd ...)";
+    rows.push(r1);
+    ui::set(w, es, "modesrows", rows);
+    ui::set(w, es, "pane", "modes");
+}
+
+void modes_hide(long w, long es)
+{
+    ui::set(w, es, "pane", "");
+}
+
+bool modes_active(long w, long es)
+{
+    var pane;
+    ui::get(pane, w, es, "pane");
+    if ( pane.is_null() )
+	return false;
+    return pane == "modes";
+}
+
+// Enter the mode a palette row (or a @modes key) names. The palette
+// closes first — a mode takes the whole stage. False = quit (none of
+// the current modes quit; the contract rides the dispatch).
+bool modes_dispatch(long w, long es, long doc, long caret, var &a)
+{
+    if ( a == "colon" )
+    {
+	modes_hide(w, es);
+	start_prompt(w, es, "Command", "colon");
+	return true;
+    }
+    ui::set(w, es, "msg", format("Unknown mode action '{}'.", a));
+    return true;
+}
+
+// Every event while the modes palette is up (modal, the project window's
+// shape): single characters and keys dispatch through the @modes scope's
+// looked-up NAMES (colon / modesopen / modesclose) — never the keys
+// themselves; enter's meaning is data too (the engine CHOOSES, @modes'
+// enter row names what a choose does). Other bound actions are
+// swallowed; `modes` itself (and quit) toggles the palette shut.
+bool modes_event(long w, long es, long doc, long caret, var &ev)
+{
+    var kind = format("{}", ev["event"]);
+    if ( kind == "text" )
+    {
+	var a;
+	if ( scoped_action(a, w, es, "modes", ev) )
+	    return modes_dispatch(w, es, doc, caret, a);
+	return true;			// other typing is inert
+    }
+    if ( kind == "choose" )
+    {
+	var a;
+	var ke;
+	ke["event"] = "key";
+	ke["key"] = "enter";
+	if ( !scoped_action(a, w, es, "modes", ke) )
+	    return true;
+	if ( a == "modesopen" )
+	{
+	    var rows;
+	    ui::get(rows, w, es, "modesrows");
+	    long opt = ev["option"].as_integer() - 1;	// 1-based wire
+	    if ( opt >= 0 && opt < php::count(rows) )
+	    {
+		var r = rows[opt];
+		var ra = format("{}", r["act"]);
+		return modes_dispatch(w, es, doc, caret, ra);
+	    }
+	}
+	return true;
+    }
+    if ( kind == "action" )
+    {
+	var a = format("{}", ev["action"]);
+	if ( a == "modes" || a == "quit" )
+	    modes_hide(w, es);
+	return true;
+    }
+    if ( kind != "key" )
+	return true;
+    var a;
+    if ( !scoped_action(a, w, es, "modes", ev) )
+	return true;			// unbound keys are inert
+    if ( a == "modesclose" )
+    {
+	modes_hide(w, es);
+	return true;
+    }
+    if ( a == "modesopen" )
+	return true;			// enter means CHOOSE; the engine
+					// hands it back as one when a row
+					// is focused
+    return modes_dispatch(w, es, doc, caret, a);
+}
+
 // ---- IDE-10b: the ^B build palette --------------------------------------
 // The SAME popup-list widget as ^P with ACTION rows AS DATA (bag
 // "buildcmds": {name, act, cmd, mode} rows — built-in defaults seeded on
@@ -2919,6 +3046,69 @@ bool save_and_check(long w, long es, long doc)
     return run;
 }
 
+// The vi COLON LINE (owner ruling 2026-08-31: modes are general — joe
+// reaches it through the ^N modes palette, a modal personality's
+// @normal ":" will enter the same line). One ex command, interpreted
+// against the EXISTING vocabulary — colon is a SPELLING layer over the
+// verbs and internals the chords already call, and the human face of
+// the gateway's commands-with-arguments (the prompt collects what a
+// remote client passes in the command). `:q` refuses a dirty buffer
+// with the q verb's own message (vim's shape — no confirm question);
+// `!cmd` parks a terminal request like any suspended run. False = quit.
+bool colon_command(long w, long es, long doc, long caret, var &in)
+{
+    var cmd = php::trim(in.c_str());
+    const char *cs = cmd.c_str();
+    long n = strlen(cs);
+    if ( n == 0 )
+	return true;
+    if ( cs[0] == '!' )
+    {
+	var rest = php::trim(cs + 1);
+	if ( strlen(rest.c_str()) > 0 )
+	    run_in_terminal(w, es, rest.c_str());
+	return true;
+    }
+    bool digits = true;
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( cs[i] < '0' || cs[i] > '9' )
+	    digits = false;
+    if ( digits )
+    {
+	// :N — go to line N (clamped like the goto-line prompt).
+	ui::set(w, es, "caret", caret_to_line(w, doc, php::intval(cmd), 0));
+	return true;
+    }
+    const char *sp = strchr(cs, ' ');
+    var verb = cmd;
+    var arg = "";
+    if ( sp != 0 )
+    {
+	verb = php::trim(perl::substr(cmd, 0, sp - cs));
+	arg = php::trim(sp + 1);
+    }
+    if ( verb == "w" )
+	return save_and_check(w, es, doc);
+    if ( verb == "q" )
+	return do_verb(w, es, "q");
+    if ( verb == "q!" )
+	return do_verb(w, es, "q!");
+    if ( verb == "wq" || verb == "x" )
+	return save_quit(w, es, doc);
+    if ( verb == "e" && strlen(arg.c_str()) > 0 )
+    {
+	edit_file(w, es, doc, arg.c_str());
+	return true;
+    }
+    if ( verb == "r" && strlen(arg.c_str()) > 0 )
+    {
+	insert_file(w, es, doc, caret, arg.c_str());
+	return true;
+    }
+    ui::set(w, es, "msg", format("Unknown command :{}", cmd));
+    return true;
+}
+
 // Toggle the lower pane between `name` and hidden.
 void toggle_pane(long w, long es, const char *name)
 {
@@ -2959,6 +3149,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 
     if ( project_active(w, es) )
 	return project_event(w, es, doc, ev);
+
+    if ( modes_active(w, es) )
+	return modes_event(w, es, nav, caret, ev);
 
     if ( kind == "action" )
     {
@@ -3130,6 +3323,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	if ( a == "projaddcur" )
 	{
 	    proj_addcur(w, es, doc);
+	    return true;
+	}
+	if ( a == "modes" )
+	{
+	    modes_show(w, es);
+	    return true;
+	}
+	if ( a == "colon" )
+	{
+	    // The colon line directly (a profile may seat it on its own
+	    // chord; the palette's ":" row is the discoverable door).
+	    start_prompt(w, es, "Command", "colon");
 	    return true;
 	}
 	if ( a == "refresh" )
@@ -3536,6 +3741,27 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var ga = {};
 		ga.push(row["act"]);
 		it["actions"] = ga;
+		items.push(it);
+		nrows = nrows + 1;
+	    }
+	}
+	else if ( pane == "modes" )
+	{
+	    // The MODES palette: the same focused-list widget; rows come
+	    // precomposed from modes_show. Rows carry NO actions — what a
+	    // choose means is @modes data (modes_event looks it up).
+	    var mrows;
+	    ui::get(mrows, w, es, "modesrows");
+	    box["label"] = "Modes";
+	    var mh;
+	    mh["list"] = 1;
+	    mh["focus"] = 1;
+	    box["hints"] = mh;
+	    for ( var row : mrows )
+	    {
+		var it;
+		it["role"] = "item";
+		it["content"] = row["content"];
 		items.push(it);
 		nrows = nrows + 1;
 	    }

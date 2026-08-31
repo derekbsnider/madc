@@ -1,6 +1,6 @@
 joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
-joe-ide: [^p]=project [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top [^_]=undo
+joe-ide: [^p]=project [^f]=find [^n]=modes [^b]=build [^r]=refresh [^k u]=top [^_]=undo
 joe-project: ins=projadd del=projdel enter=projopen pico-ins=projadd
 scoped: y-override=quit ins-fold=act2 main-x=save prompt-enter=pcommit
 rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
@@ -101,7 +101,7 @@ prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
-help: pane=help label=Help — pico profile rows=36
+help: pane=help label=Help — pico profile rows=39
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84
@@ -126,3 +126,12 @@ seam-exec-ok
 seam-chord: echoed=1
 seam-keys: moved=1 joe-save=save
 seam-viewport: split-refused=1
+modes-palette: label=Modes colon-row=1
+modes-colon: pmode=colon palette-closed=1
+colon-unknown: Unknown command :zz
+modes-esc: closed=1
+colon-goto: line=2
+colon-write: wrote=1
+colon-exec: took=1 kind=cmd
+colon-exec-ok
+colon-quit: cont=0

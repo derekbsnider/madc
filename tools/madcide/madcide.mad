@@ -12,10 +12,12 @@
 // ^K L go to line · ^K U/^K V file top/end · ^K H help (the loaded
 // profile, projected) · ^K Z shell · ^K E edit file (buffers, JOE's
 // own key; open path switches, missing path = New File) · ^K ; check ·
-// ^T options (live values) · ^K O outline ·
-// ^K P swap profile · ^K N cycle the code view original/MC11/C11 —
-// plus C++ (the reverse render) on a C/C++ buffer — the view seam:
-// read-only lenses over the one document),
+// ^T options (live values, Keymap row swaps profiles) · ^K I outline ·
+// ^K O/^K N/^K P split/next/previous window · ^K A cycle the code view
+// original/MC11/C11 — plus C++ (the reverse render) on a C/C++ buffer —
+// the view seam: read-only lenses over the one document · ^N the MODES
+// palette (owner 2026-08-31): ":" inside it — @modes profile data —
+// enters the vi colon line (:w :q :N :e file :!cmd ...)),
 // Pico-style single chords in the pico profile.
 // The buffer holds a persistent parse handle (madc::parse_open at load,
 // whole-TU refresh on check/save/outline); the status line shows the
