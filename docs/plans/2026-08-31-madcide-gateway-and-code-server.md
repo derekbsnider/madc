@@ -134,9 +134,19 @@ read-back, projadd/projdel/projaddcur (+ `^k j` in joe.keys),
 manifest in `--project` (read_project_manifest routes object=native /
 array=cc.json import), js::parse + real js::stringify over the one
 JSON bridge, and the engine's focused-selection-on-key-events
-(ins/del act on the focused row). Still open from this section: the
-^B correlation (project build + manifest commands feeding the rows) —
-the named next madcide slice alongside the seam.
+(ins/del act on the focused row). **The ^B correlation landed in the
+same arc (owner: before the merge wave):** with a manifest open the
+rows go project-wide — Check project (a project handle's FILE-tagged
+per-TU rows; the diags pane leads foreign-file rows with the file, and
+goto OPENS it), Build project (`madc::project_build` — the --project
+AOT lane in-process; output = the manifest's `output`, else its base),
+Run project (verdict first, then `madc::project_run` — the --project
+JIT lane in a fork child; win = a child of self) — and the manifest's
+`commands` section APPENDS its rows as data ({project} joined
+build_subst's vocabulary). An implicit project keeps the single-buffer
+rows. Named residues: no cancellation chain into the project emit lane
+(Stop lands pre-start only); the frozen-project twin of --run-frozen;
+genuine-Win validation of the child-of-self run arm.
 
 Deferred (unchanged): fuzzy filesystem walk; command palette; MRU
 ordering + dirty/diag markers ride this arc's compose work.
