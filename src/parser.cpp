@@ -39454,6 +39454,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     while ( !opStack.empty() )
 	popOperator(opStack, exStack);
 
+    // Operands left with NO operator between them = a malformed expression
+    // that would otherwise resolve to exStack.top() with the rest SILENTLY
+    // dropped (`var m = { "a" 1 }` built `{ 1 }` — exit 0, wrong value).
+    // gcc/clang error on operand juxtaposition; adjacent string literals
+    // never reach here (lexer-level concat: push_token_with_literal_concat).
+    if ( exStack.size() > 1 )
+	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
+	    << " operands with no operator between them" << flush;
+
     DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
     DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
 
