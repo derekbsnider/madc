@@ -76,6 +76,23 @@ engine's focused-choice widget (arrows/enter in tui_model) — respelling
 that from profiles means the scoped tables reaching the engine model;
 design when a personality needs it.
 
+**LANDED (s147, feature/madcide-project-claude):** `@scope` lines in
+the one `parse_keys` (later lines win — the defaults-merge rule), baked
+modal defaults as inline data, and the migration — prompt/confirm/
+project/pane arms all dispatch looked-up NAMES. The named residue
+stands. `toggle_profile` now cycles the `.keys` files found in the
+profile directory (sorted; no name ladder).
+
+**Personality roster (owner, same day: "we should also have ones for
+emacs and neovim"):** `emacs.keys` shipped — the honest C-chord subset
+(C-x families map directly). Two named ENGINE gaps hold back the rest
+of it: no Meta key spelling (an ESC prefix cancels a pending chord) and
+no C-SPC/NUL spelling (set-mark). A vim/neovim personality is NOT a
+keys file — vim is modal (normal/insert, counts, operator+motion); the
+natural substrate is the @scope tables (modes = scopes the MAIN key
+stream consults; `i` flips scope) — a dedicated slice, never a flat
+profile pretending.
+
 ## The ^P project window (RULED 2026-08-31)
 
 ^P's PRIMARY function is the project (palette quick-open is secondary),
@@ -107,6 +124,19 @@ correlating directly with `--project`:
 - ^B correlates: with a manifest open, Build = the `--project` build;
   the manifest's commands section (already named in the ide-controls
   plan) feeds the ^B rows.
+
+**LANDED (s147, feature/madcide-project-claude):** the window
+(grouped rows; [cwd] joins only while filtering), the popup semantics,
+the implicit project + materialization on the second file
+(`<base>.prj.json`, immediate persistence, announce), startup
+read-back, projadd/projdel/projaddcur (+ `^k j` in joe.keys),
+`@project` keys as data in all three profiles, the native OBJECT
+manifest in `--project` (read_project_manifest routes object=native /
+array=cc.json import), js::parse + real js::stringify over the one
+JSON bridge, and the engine's focused-selection-on-key-events
+(ins/del act on the focused row). Still open from this section: the
+^B correlation (project build + manifest commands feeding the rows) —
+the named next madcide slice alongside the seam.
 
 Deferred (unchanged): fuzzy filesystem walk; command palette; MRU
 ordering + dirty/diag markers ride this arc's compose work.
@@ -184,6 +214,10 @@ API keeps the door open.
    keys lands here (client-side).
 2. **The project window** — the first feature written against the API
    (manifest reader/writer symmetry, groups, membership verbs).
+   *(Executed s147 with the owner's re-sequencing — the window came
+   first and pulled the @scope binding mechanism forward with it; the
+   seam slice is now next, and the window's state migrates onto the
+   session type with everything else. ^B correlation still open.)*
 3. **Commands-with-arguments + events**: prompt completions become
    command calls; change notifications for clients.
 4. **Presence + permission tiers**: multi-client sessions, per-client
