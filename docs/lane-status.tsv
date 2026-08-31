@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-macos	yes	3cb18548a828	2026-08-29	mac_battery arm64 8/3 (the 3 standing known-opens; v0.96.0 tarball rebuilt on c-testsuite burndown content)
 linux-battery	yes	a939e9075f6d	2026-08-29	jit 1234/0, exe 1185/0, obj 1185/0, packed 1234/0, headerless 1207/0 (c-testsuite-complete content: C-mode lane, enum tag ns, flex/type split, pointee-const, peel consolidation + gate, heap origins)
 c-testsuite	yes	a939e9075f6d	2026-08-29	220/220 COMPLETE, baseline EMPTY (C mode --std=gnu11, owner ruling 2026-08-29)
 wine64	yes	a939e9075f6d	2026-08-29	1185/0/58skip (hosted PE, persistent wineserver; c-testsuite-complete content)
+macos	yes	7e3136da97e3	2026-08-31	mac_battery arm64 8/3 (the 3 standing known-opens leg-for-leg: groves os.str() husk, value intrinsic, exec:// channel; v0.96.0 tarball rebuilt on c-testsuite-complete content, macOS 15.3.2)
