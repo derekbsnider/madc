@@ -1368,6 +1368,17 @@ class TokenStr: public TokenIdent
 public:
     std::string str;
     bool wide;
+    // Source extent of each concatenated literal PIECE (line, start column
+    // of the opening quote/prefix, RAW source length including the quotes),
+    // recorded at lex. The highlight-span classifier's anchor: the cooked
+    // `str` cannot recover source geometry — escapes shrink it, and C
+    // adjacent-literal concatenation merges several source lines into one
+    // token (one 85-byte span painted from line 30 col 0 was madcide's
+    // embed_hello.c mis-highlight). Empty for tokens with no source
+    // (pack-image materialization, synthesized literals) — consumers fall
+    // back to the spelling-derived extent.
+    struct SrcPiece { int32_t line, col, len; };
+    std::vector<SrcPiece> src_pieces;
     TokenStr() : wide(false) {}
     TokenStr(const char *k, bool w = false) : TokenIdent(k), str(k ? k : ""), wide(w) {}
     TokenStr(std::string k, bool w = false) : TokenIdent(k), str(k), wide(w) {}
@@ -1377,7 +1388,7 @@ public:
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const override { return TokenType::ttString; }
     virtual TokenID   id()   const override { return TokenID::tkStr; }
-    virtual TokenBase *clone() override     { return new TokenStr(str, wide); }
+    virtual TokenBase *clone() override     { TokenStr *t = new TokenStr(str, wide); t->src_pieces = src_pieces; return t; }
     virtual TokenStr *as_str_tok() override { return this; }
 };
 
