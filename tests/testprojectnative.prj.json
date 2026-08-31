@@ -1,0 +1,8 @@
+{
+  "tus": [
+    "testproject_a.c",
+    { "file": "testproject_b.c" }
+  ],
+  "entry": "main",
+  "output": "testprojectnative"
+}

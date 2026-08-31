@@ -21,9 +21,13 @@ struct ProjectManifest {
 	std::string output_name;	// informational in v1 (no object output)
 };
 
-// Reader: parse a compile_commands.json at `path` into `out`.
-// Returns true on success; on failure returns false and sets `err`.
-bool read_compile_commands(const std::string &path,
+// Reader: parse a project manifest at `path` into `out`. Two shapes route
+// by the top-level JSON kind (owner ruling 2026-08-31): an OBJECT is the
+// native madc manifest (mirrors this struct: tus + entry + output; the
+// shape madcide writes), an ARRAY is a compile_commands.json import
+// (READ-ONLY interop). Returns true on success; on failure returns false
+// and sets `err`.
+bool read_project_manifest(const std::string &path,
 			   ProjectManifest &out, std::string &err);
 
 // Forward decls to avoid pulling madc.h into the header.

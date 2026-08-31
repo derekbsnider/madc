@@ -60,32 +60,12 @@ void apply_args(const std::vector<std::string> &args,
 }
 } // namespace
 
-bool read_compile_commands(const std::string &path,
-			   ProjectManifest &out, std::string &err) {
-	std::ifstream f(path.c_str(), std::ios::binary);
-	if (!f) { err = "cannot open " + path; return false; }
-
-	json root;
-	try {
-		root = json::parse(f, nullptr, true, /*ignore_comments=*/true);
-	} catch (const std::exception &e) {
-		err = std::string("JSON parse error: ") + e.what();
-		return false;
-	}
-	if (!root.is_array()) { err = "top-level JSON is not an array"; return false; }
-
-	// Base for relative paths when an entry omits "directory": the manifest's
-	// own directory. This lets a manifest with relative paths be committed and
-	// stay portable, resolving the same regardless of the process cwd (which a
-	// project's program may need to set elsewhere — e.g. SMAUG runs from its
-	// data directory). An explicit "directory" is honored unchanged.
-	std::string manifest_dir;
-	{
-		size_t s = path.find_last_of('/');
-		manifest_dir = (s == std::string::npos) ? std::string(".")
-						       : path.substr(0, s);
-	}
-
+namespace {
+// The compile_commands.json import (READ-ONLY interop — a generated file;
+// madcide never writes this shape): a top-level ARRAY of
+// {directory, file, command|arguments} entries.
+bool read_cc_array(const json &root, const std::string &manifest_dir,
+		   ProjectManifest &out, std::string &err) {
 	for (const auto &entry : root) {
 		if (!entry.is_object()) { err = "entry is not an object"; return false; }
 		ProjectTU tu;
@@ -107,4 +87,103 @@ bool read_compile_commands(const std::string &path,
 		out.tus.push_back(tu);
 	}
 	return true;
+}
+
+// The NATIVE manifest (owner ruling 2026-08-31): a top-level OBJECT
+// mirroring ProjectManifest — the shape madcide reads AND writes. A TU
+// entry is a bare string (just the file) or an object carrying the
+// ProjectTU fields directly ("file" required; "directory", "defines",
+// "include_dirs", "std", "stdlib" optional). Unknown keys — top-level
+// (a future "commands" section) and per-TU alike — pass through
+// untouched: forward compatibility is the writer-symmetry contract.
+bool read_native_object(const json &root, const std::string &manifest_dir,
+			ProjectManifest &out, std::string &err) {
+	// "tus" is the shape's one REQUIRED key (possibly empty): an object
+	// without it is not a manifest — reject it rather than silently
+	// building nothing.
+	if (!root.contains("tus")) {
+		err = "manifest object has no \"tus\"";
+		return false;
+	}
+	{
+		const json &tus = root["tus"];
+		if (!tus.is_array()) { err = "\"tus\" is not an array"; return false; }
+		for (const auto &entry : tus) {
+			ProjectTU tu;
+			if (entry.is_string()) {
+				tu.working_dir = manifest_dir;
+				tu.file = resolve(manifest_dir,
+						  entry.get<std::string>());
+			} else if (entry.is_object()) {
+				tu.working_dir = entry.value("directory",
+							     std::string());
+				if (tu.working_dir.empty())
+					tu.working_dir = manifest_dir;
+				tu.file = entry.value("file", std::string());
+				if (tu.file.empty()) {
+					err = "TU entry missing \"file\"";
+					return false;
+				}
+				tu.file = resolve(tu.working_dir, tu.file);
+				if (entry.contains("defines") && entry["defines"].is_array())
+					for (const auto &d : entry["defines"])
+						if (d.is_string())
+							tu.defines.push_back(d.get<std::string>());
+				if (entry.contains("include_dirs") && entry["include_dirs"].is_array())
+					for (const auto &i : entry["include_dirs"])
+						if (i.is_string())
+							tu.include_dirs.push_back(
+							    resolve(tu.working_dir,
+								    i.get<std::string>()));
+				tu.std_option = entry.value("std", std::string());
+				tu.stdlib_option = entry.value("stdlib", std::string());
+			} else {
+				err = "TU entry is neither a string nor an object";
+				return false;
+			}
+			out.tus.push_back(tu);
+		}
+	}
+	if (root.contains("entry") && root["entry"].is_string())
+		out.entry = root["entry"].get<std::string>();
+	if (root.contains("output") && root["output"].is_string())
+		out.output_name = root["output"].get<std::string>();
+	return true;
+}
+} // namespace
+
+bool read_project_manifest(const std::string &path,
+			   ProjectManifest &out, std::string &err) {
+	std::ifstream f(path.c_str(), std::ios::binary);
+	if (!f) { err = "cannot open " + path; return false; }
+
+	json root;
+	try {
+		root = json::parse(f, nullptr, true, /*ignore_comments=*/true);
+	} catch (const std::exception &e) {
+		err = std::string("JSON parse error: ") + e.what();
+		return false;
+	}
+
+	// Base for relative paths when an entry omits "directory": the manifest's
+	// own directory. This lets a manifest with relative paths be committed and
+	// stay portable, resolving the same regardless of the process cwd (which a
+	// project's program may need to set elsewhere — e.g. SMAUG runs from its
+	// data directory). An explicit "directory" is honored unchanged.
+	std::string manifest_dir;
+	{
+		size_t s = path.find_last_of('/');
+		manifest_dir = (s == std::string::npos) ? std::string(".")
+						       : path.substr(0, s);
+	}
+
+	// The shape routes: OBJECT = the native madc manifest, ARRAY = a
+	// compile_commands.json import (owner ruling 2026-08-31).
+	if (root.is_object())
+		return read_native_object(root, manifest_dir, out, err);
+	if (root.is_array())
+		return read_cc_array(root, manifest_dir, out, err);
+	err = "top-level JSON is neither an object (madc manifest) nor an "
+	      "array (compile_commands.json)";
+	return false;
 }

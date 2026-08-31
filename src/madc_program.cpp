@@ -49,7 +49,7 @@ extern thread_local bool madc_verbose;
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
 #include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper)
-#include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
+#include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -5451,7 +5451,7 @@ int64_t internal_program_project_open(::Program &self,
 {
     ProjectManifest manifest;
     std::string err;
-    if ( !read_compile_commands(manifest_path, manifest, err) )
+    if ( !read_project_manifest(manifest_path, manifest, err) )
 	return 0;
     parse_project_state *ps = new parse_project_state();
     for ( size_t i = 0; i < manifest.tus.size(); ++i )
