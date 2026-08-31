@@ -68,6 +68,43 @@ if [ "$(count_pause "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
+# Text mutation has ONE owner pair: ed_text_insert / ed_text_erase
+# (editor_events.inc) — they shift the es bag's byte-anchored highlight
+# spans with the edit; a raw ui::text_insert/text_erase elsewhere leaves
+# spans repainting one byte off per keystroke (the "typing spaces
+# re-shades everything" defect). Allowed raw sites: the two owner bodies,
+# and madcide's [build]-buffer append (a different doc — shifting the
+# es's spans by its bytes would corrupt them).
+EVENTS="$(dirname "$0")/../tools/texteditor/editor_events.inc"
+
+count_raw_mutations()
+{
+	cat "$@" | grep -c 'ui::text_insert(\|ui::text_erase('
+}
+
+n=$(count_raw_mutations "$FILE" "$EVENTS")
+if [ "$n" -ne 3 ]; then
+	echo "check-madcide-single-owners: FAIL — $n raw ui::text_insert/" \
+	     "text_erase sites across madcide_core.inc + editor_events.inc" \
+	     "(expected 3: the ed_text_insert/ed_text_erase owner bodies +" \
+	     "append_build_line's cross-doc append). Route edits through" \
+	     "the owners so highlight spans shift with the text." >&2
+	exit 1
+fi
+
+# Negative control for the mutation marker.
+tmp=$(mktemp)
+cat "$FILE" > "$tmp"
+echo '    ui::text_insert(w, doc, caret, "x");	// synthetic' >> "$tmp"
+if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 4 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic raw mutation (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
-     "one pause owner: terminal_return_pause)"
+     "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
+     "ed_text_insert/ed_text_erase)"
 exit 0

@@ -668,7 +668,7 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     edit_checkpoint(w, es, doc, caret);
     const char *tc = txt.c_str();
     long tn = strlen(tc);
-    ui::text_insert(w, doc, caret, tc);
+    ed_text_insert(w, es, doc, caret, tc);
     ui::set(w, es, "caret", caret + tn);
     ui::set(w, doc, "modified", true);
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
@@ -813,7 +813,7 @@ void block_copy(long w, long es, long doc, long caret)
     ui::text(t, w, doc);
     var blk = perl::substr(t, lo, n);
     edit_checkpoint(w, es, doc, caret);
-    ui::text_insert(w, doc, caret, blk.c_str());
+    ed_text_insert(w, es, doc, caret, blk.c_str());
     ui::set(w, doc, "modified", true);
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
@@ -847,11 +847,11 @@ void block_move(long w, long es, long doc, long caret)
     ui::text(t, w, doc);
     var blk = perl::substr(t, lo, n);
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, lo, n);
+    ed_text_erase(w, es, doc, lo, n);
     long at = caret;
     if ( at >= hi )
 	at = at - n;
-    ui::text_insert(w, doc, at, blk.c_str());
+    ed_text_insert(w, es, doc, at, blk.c_str());
     ui::set(w, es, "caret", at);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
@@ -881,7 +881,7 @@ void block_del(long w, long es, long doc, long caret)
 	return;
     }
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, lo, hi - lo);
+    ed_text_erase(w, es, doc, lo, hi - lo);
     long nc = caret;
     if ( nc > hi )
 	nc = nc - (hi - lo);
@@ -910,7 +910,7 @@ void delete_line(long w, long es, long doc, long caret)
     if ( n == 0 )
 	return;
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, start, n);
+    ed_text_erase(w, es, doc, start, n);
     ui::set(w, es, "caret", start);
     ui::set(w, doc, "modified", true);
 }
@@ -926,7 +926,7 @@ void delete_word(long w, long es, long doc, long caret)
     if ( e <= caret )
 	return;
     edit_checkpoint(w, es, doc, caret);
-    ui::text_erase(w, doc, caret, e - caret);
+    ed_text_erase(w, es, doc, caret, e - caret);
     ui::set(w, doc, "modified", true);
 }
 
@@ -1556,6 +1556,10 @@ long build_doc(long w, long es)
 void append_build_line(long w, long es, long bdoc, const char *text)
 {
     var line = format("{}\n", text);
+    // Raw ui::text_insert, NOT ed_text_insert: bdoc is the [build] buffer,
+    // not the es's viewed document — shifting the es's highlight spans by
+    // another doc's bytes would corrupt them. (check-madcide-single-owners
+    // allowlists exactly this line.)
     ui::text_insert(w, bdoc, ui::text_size(w, bdoc), line.c_str());
     ui::set(w, bdoc, "modified", false);
 }

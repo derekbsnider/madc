@@ -44,6 +44,65 @@ long line_of(long w, long doc, long off)
     return line;
 }
 
+// ---- the ONE text-mutation owner --------------------------------------
+// Every editor insert/erase routes through ed_text_insert / ed_text_erase,
+// never ui::text_* directly: the es bag carries byte-anchored rows (the
+// themed highlight spans) that must SHIFT with the text they were computed
+// for — without it every keystroke above a span repaints the document one
+// byte off per character (the madcide "typing spaces re-shades everything"
+// defect). Spans still go stale in CONTENT until the next (re)parse
+// replaces them; their geometry stays true. A span an erase fully covers
+// is dropped; one an insert lands inside grows.
+void shift_hspans(long w, long es, long off, long delta)
+{
+    value hs;
+    ui::get(hs, w, es, "hspans");
+    if ( hs.is_null() || php::count(hs) == 0 )
+	return;
+    var out = {};
+    for ( value r : hs )
+    {
+	long s = r["s"].as_integer();
+	long e = r["e"].as_integer();
+	if ( delta < 0 )
+	{
+	    long dl = -delta;
+	    if ( s >= off )
+		s = s >= off + dl ? s + delta : off;
+	    if ( e >= off )
+		e = e >= off + dl ? e + delta : off;
+	}
+	else
+	{
+	    if ( s >= off )
+		s = s + delta;
+	    if ( e > off )
+		e = e + delta;
+	}
+	if ( e > s )
+	{
+	    value nr;
+	    nr["s"] = s;
+	    nr["e"] = e;
+	    nr["c"] = r["c"];
+	    out.push(nr);
+	}
+    }
+    ui::set(w, es, "hspans", out);
+}
+
+void ed_text_insert(long w, long es, long doc, long off, const char *s)
+{
+    ui::text_insert(w, doc, off, s);
+    shift_hspans(w, es, off, strlen(s));
+}
+
+void ed_text_erase(long w, long es, long doc, long off, long n)
+{
+    ui::text_erase(w, doc, off, n);
+    shift_hspans(w, es, off, -n);
+}
+
 // A caret on `line` keeping column `col` when the line is long enough —
 // the vertical-movement rule.
 long caret_to_line(long w, long doc, long line, long col)
@@ -235,7 +294,7 @@ void cut_selection(long w, long es, long doc, long caret, bool editable)
     if ( editable )
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_erase(w, doc, lo, hi - lo);
+	ed_text_erase(w, es, doc, lo, hi - lo);
 	ui::set(w, es, "caret", lo);
 	ui::set(w, doc, "modified", true);
     }
@@ -260,7 +319,7 @@ void paste_clip(long w, long es, long doc, long caret)
     else
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_insert(w, doc, caret, c.c_str());
+	ed_text_insert(w, es, doc, caret, c.c_str());
 	ui::set(w, es, "caret", caret + strlen(c.c_str()));
 	ui::set(w, doc, "modified", true);
     }
@@ -283,7 +342,7 @@ void edit_text_run(long w, long es, long doc, long caret, value &ev)
     else
     {
 	edit_checkpoint(w, es, doc, caret);
-	ui::text_insert(w, doc, caret, t.c_str());
+	ed_text_insert(w, es, doc, caret, t.c_str());
 	ui::set(w, es, "caret", caret + strlen(t.c_str()));
 	ui::set(w, doc, "modified", true);
     }
@@ -522,7 +581,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else if ( caret > 0 )
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_erase(w, doc, caret - 1, 1);
+	    ed_text_erase(w, es, doc, caret - 1, 1);
 	    ui::set(w, es, "caret", caret - 1);
 	    ui::set(w, doc, "modified", true);
 	}
@@ -535,7 +594,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else if ( caret < size )
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_erase(w, doc, caret, 1);
+	    ed_text_erase(w, es, doc, caret, 1);
 	    ui::set(w, doc, "modified", true);
 	}
 	return true;
@@ -547,7 +606,7 @@ bool edit_key(long w, long es, long doc, long caret, value &ev)
 	else
 	{
 	    edit_checkpoint(w, es, doc, caret);
-	    ui::text_insert(w, doc, caret, "\n");
+	    ed_text_insert(w, es, doc, caret, "\n");
 	    ui::set(w, es, "caret", caret + 1);
 	    ui::set(w, doc, "modified", true);
 	}
