@@ -10,7 +10,7 @@ int main()
 	var cp = madc::compiler_path();
 	println("{}", format("cp-nonempty={}", strlen(cp.c_str()) > 0 ? 1 : 0));
 
-	value diags;
+	var diags;
 	bool ok = madc::build_native(diags, "tests/testbuildnative_prog.mad",
 				     "exe", "tmp/testbuildnative_prog");
 	println("{}", format("exe ok={} ndiags={}", ok ? 1 : 0, php::count(diags)));
@@ -25,7 +25,7 @@ int main()
 	long line0 = 0;
 	if ( n > 0 )
 	{
-		value r = diags[0];
+		var r = diags[0];
 		line0 = r["line"].as_integer();
 	}
 	println("{}", format("bad ok={} rows-pos={} line-pos={}",
@@ -42,7 +42,7 @@ int main()
 	long rc = system("tmp/testbuildnative_prog");
 	println("{}", format("run rc={}", rc));
 
-	value ev;
+	var ev;
 	madc::eval_string(ev, "return \"post-emit-eval-ok\";");
 	println("{}", format("eval={}", ev));
 	return 0;

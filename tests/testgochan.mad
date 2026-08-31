@@ -4,14 +4,14 @@
 // buffered send, a blocked sender refilled by a recv, rendezvous (cap 0)
 // with MAIN parked as the receiver, and the post-main join draining the
 // consumer.
-value tr;
+var tr;
 
 void producer(long c, long n)
 {
     long i = 0;
     while ( i < n )
     {
-	value v;
+	var v;
 	v = i * 100;
 	madc::chan_send(c, v);
 	tr = format("{}p{};", tr, i);
@@ -25,7 +25,7 @@ void producer(long c, long n)
 
 void consumer(long c)
 {
-    value v;
+    var v;
     while ( madc::chan_recv(v, c) )
 	tr = format("{}c{};", tr, v);
     tr = format("{}cdone;", tr);
@@ -34,7 +34,7 @@ void consumer(long c)
 
 void rzsender(long c)
 {
-    value v;
+    var v;
     v = 7;
     madc::chan_send(c, v);
     tr = format("{}rz;", tr);
@@ -45,11 +45,11 @@ int main()
     // Synchronous close semantics first (no tasks involved yet).
     long dead = madc::chan_make(0);
     madc::chan_close(dead);
-    value dv;
+    var dv;
     bool ok = madc::chan_recv(dv, dead);
     if ( !ok && dv.is_null() )
 	tr = format("{}closedrecv;", tr);
-    try { value x; x = 1; madc::chan_send(dead, x); }
+    try { var x; x = 1; madc::chan_send(dead, x); }
     catch (const char *e) { tr = format("{}sendclosed({});", tr, e); }
     try { madc::chan_close(dead); }
     catch (const char *e) { tr = format("{}reclose({});", tr, e); }
@@ -61,7 +61,7 @@ int main()
     go rzsender(rz);
     tr = format("{}m;", tr);
 
-    value got;
+    var got;
     madc::chan_recv(got, rz);      // main PARKS; the world runs
     tr = format("{}mgot{};", tr, got);
     println("main tr={}", tr);

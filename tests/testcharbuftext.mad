@@ -6,7 +6,7 @@
 // already green (assign, subscript store, compare, in-function assign) and
 // the non-decaying full-subscript element (still a char).
 struct Rec { char name[8]; };
-void assign_in_fn(value &out)
+void assign_in_fn(var &out)
 {
     char buf[16];
     strncpy(buf, "world", 15);
@@ -24,13 +24,13 @@ int main()
     r.name[7] = 0;
     println("member=[{}]", r.name);
     println("elem={:c}", buf[0]);
-    value b;
+    var b;
     b["k"] = buf;
     println("bk=[{}]", b["k"]);
-    value v;
+    var v;
     v = buf;
     if ( v == buf ) println("eq: yes"); else println("eq: no");
-    value o;
+    var o;
     assign_in_fn(o);
     println("fnassign=[{}]", o);
     return 0;

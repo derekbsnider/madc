@@ -25,14 +25,14 @@
 
 int main()
 {
-	value s = "hello";
-	value i = 42;
-	value neg = -7;
-	value r = 2.5;
-	value quarter = 0.25;
-	value b = true;
-	value h = 255;
-	value n;
+	var s = "hello";
+	var i = 42;
+	var neg = -7;
+	var r = 2.5;
+	var quarter = 0.25;
+	var b = true;
+	var h = 255;
+	var n;
 	std::cout << "s:" << s << std::endl;
 	std::cout << "i:" << i << " neg:" << neg << std::endl;
 	std::cout << "r:" << r << " quarter:" << quarter << std::endl;

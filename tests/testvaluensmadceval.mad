@@ -10,22 +10,22 @@ int main()
     printf("bool=%d\n", (int)madc::eval_bool("return 2 > 1;"));
     printf("double=%.1f\n", madc::eval_double("return 1.5 + 2.0;"));
 
-    value unit;
+    var unit;
     madc::eval_unit(unit, "int __madc_eval() { return 6 * 7; }");
     printf("unit=%s\n", unit.c_str());
 
     printf("xint=%ld\n", madc::eval_expression_int("6 * 7"));
 
-    value rendered;
+    var rendered;
     madc::eval_expression(rendered, "6 * 7");
     printf("render=%s\n", rendered.c_str());
 
-    value exact;
+    var exact;
     madc::eval_expression_string(exact, "\"echo\"");
     printf("exact=%s\n", exact.c_str());
 
-    value ctx;
-    value user;
+    var ctx;
+    var user;
     madc::context_set_string(user, "name", "echo");
     madc::context_set_array(ctx, "user", user);
     madc::context_set_int(ctx, "level", 41);
@@ -35,11 +35,11 @@ int main()
     printf("cbool=%d\n", (int)madc::eval_expression_bool_ctx("level > 40", ctx));
     printf("cdouble=%.1f\n", madc::eval_expression_double_ctx("radius * 2.0", ctx));
 
-    value who;
+    var who;
     madc::eval_expression_string_ctx(who, "user.name", ctx);
     printf("who=%s\n", who.c_str());
 
-    value crender;
+    var crender;
     madc::eval_expression_ctx(crender, "level + 1", ctx);
     printf("crender=%s\n", crender.c_str());
 

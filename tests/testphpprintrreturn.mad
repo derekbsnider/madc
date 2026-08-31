@@ -25,7 +25,7 @@ void capture_form()
 	p.y = 4;
 
 	// $return = true: NOTHING is printed, the text comes back.
-	value s = php::print_r(p, true);
+	var s = php::print_r(p, true);
 	printf("[captured]\n");
 	printf("%s", s);
 	printf("[end]\n");
@@ -38,7 +38,7 @@ void print_form()
 	p.y = 4;
 
 	// $return = false, stated explicitly: PHP PRINTS and returns true.
-	value t = php::print_r(p, false);
+	var t = php::print_r(p, false);
 	printf("[t=%s]\n", t);
 }
 
@@ -62,19 +62,19 @@ void runtime_flag()
 
 	// The flag need not be a literal: one walk, sink chosen at runtime.
 	int want_text = 1;
-	value a = php::print_r(p, want_text);
+	var a = php::print_r(p, want_text);
 	printf("[flag1]\n");
 	printf("%s", a);
 
 	int want_print = 0;
-	value b = php::print_r(p, want_print);
+	var b = php::print_r(p, want_print);
 	printf("[flag0=%s]\n", b);
 }
 
 void scalar_capture()
 {
 	int n = 42;
-	value s = php::print_r(n, true);
+	var s = php::print_r(n, true);
 	printf("[n=%s]\n", s);
 }
 

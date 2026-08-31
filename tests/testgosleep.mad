@@ -3,7 +3,7 @@
 // and the schedule is deterministic — the accumulated trace pins it whole.
 // Real small sleeps here (suite cost ~40ms); the virtual-time jump is
 // pinned by the unit gate (tests/unit/test_rt_vtime.cpp).
-value tr;
+var tr;
 
 void napper(long id, long ms)
 {

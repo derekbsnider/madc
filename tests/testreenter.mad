@@ -12,7 +12,7 @@ int main()
 	"ui::act(nested, w, actor, \"inner\", \"\");\n"
 	"return format(\"outer saw: {}\", nested);\n");
 
-    value out;
+    var out;
     ui::act(out, w, es, "outer", "");
     println("outer: {}", out);
     ui::act(out, w, es, "inner", "");

@@ -13,17 +13,17 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/texteditor/vised_core.inc"
 
-void ev_text(value &e, const char *t)
+void ev_text(var &e, const char *t)
 {
-    value f;
+    var f;
     f["event"] = "text";
     f["text"] = t;
     e = f;
 }
 
-void ev_key(value &e, const char *k)
+void ev_key(var &e, const char *k)
 {
-    value f;
+    var f;
     f["event"] = "key";
     f["key"] = k;
     e = f;
@@ -31,7 +31,7 @@ void ev_key(value &e, const char *k)
 
 void key_report(long w, long es, long doc, const char *k)
 {
-    value e;
+    var e;
     ev_key(e, k);
     apply_event(w, es, doc, e);
     printf("%s->%ld\n", k, es_int(w, es, "caret", -1));
@@ -47,10 +47,10 @@ int main()
     long es = ui::entity_by_name(w, "editor-state");
     printf("editable=%ld\n", es_flag(w, es, "editable") ? 1 : 0);
 
-    value e;
+    var e;
     ev_text(e, "Hello ");
     apply_event(w, es, doc, e);
-    value t;
+    var t;
     ui::text(t, w, doc);
     printf("after-insert=[%s] caret=%ld\n", t, es_int(w, es, "caret", -1));
 

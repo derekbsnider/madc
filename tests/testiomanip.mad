@@ -20,7 +20,7 @@ int main()
 	std::cout << std::setw(8) << 42 << std::endl;
 	std::cout << std::setfill('*') << std::setw(6) << 7 << std::endl;
 	std::cout << std::fixed << std::setprecision(2) << d << std::endl;
-	value v;
+	var v;
 	v = 2.718281828;
 	std::cout << std::setprecision(4) << v << std::endl;
 	return 0;

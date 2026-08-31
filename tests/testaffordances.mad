@@ -8,9 +8,9 @@
 
 void dump(long w, long hero, const char *tag)
 {
-    value affs;
+    var affs;
     ui::affordances(affs, w, hero);
-    for ( value a : affs )
+    for ( var a : affs )
 	printf("%s|%s|%s|%s|%s|%s|%s|%s\n", tag, a["action"], a["target"],
 	       a["provider"], a["label"], a["visible"], a["enabled"],
 	       a["reason"]);

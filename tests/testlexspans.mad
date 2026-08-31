@@ -6,7 +6,7 @@
 int main()
 {
     var src = "#include <stdio.h>\n// lead comment\nlong f(void)\n{\n    return UNDEFINED_MACRO( 42 ); /* tail */\n}\nconst char *s = \"hi\";\n";
-    value rows;
+    var rows;
     madc::lex_spans(rows, src.c_str(), "lex.c");
     println("rows: {}", php::count(rows));
 
@@ -18,12 +18,12 @@ int main()
     long numbers = 0;
     long strings = 0;
     long comments = 0;
-    for ( value r : rows )
+    for ( var r : rows )
     {
 	long ln = r["line"].as_integer();
 	if ( ln > maxline )
 	    maxline = ln;
-	value lv = lines[ln - 1];
+	var lv = lines[ln - 1];
 	if ( r["column"].as_integer() + r["length"].as_integer()
 	     > lv.length() )
 	    overruns = overruns + 1;

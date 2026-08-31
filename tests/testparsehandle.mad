@@ -9,20 +9,20 @@ int main()
     long h = madc::parse_open(src.c_str(), "hand.mad");
     println("opened ok: {}", h > 0 ? 1 : 0);
 
-    value o;
+    var o;
     madc::parse_outline(o, h);
     println("outline: {}", php::count(o));
-    for ( value fn : o )
+    for ( var fn : o )
 	println("  {} {} @ {}:{}..{}", fn["kind"], fn["name"], fn["line"],
 		fn["column"], fn["end_line"]);
 
-    value d;
+    var d;
     madc::parse_check(d, h);
     println("check rows: {}", php::count(d));
 
     // The status line's query: innermost enclosing definition by
     // (line, column); the closing brace's line counts as inside.
-    value e;
+    var e;
     madc::parse_enclosing(e, h, 1, 20);
     println("encl@1: {}", e["name"]);
     madc::parse_enclosing(e, h, 4, 1);
@@ -37,13 +37,13 @@ int main()
     println("refresh: {}", madc::parse_refresh(h, src2.c_str()) ? 1 : 0);
     madc::parse_outline(o, h);
     println("outline2: {}", php::count(o));
-    for ( value fn : o )
+    for ( var fn : o )
 	println("  {} {}", fn["kind"], fn["name"]);
 
     // A broken buffer still opens — its state IS the diagnostics.
     var bad = "long f() {\n    return undeclared_name;\n}\n";
     long hb = madc::parse_open(bad.c_str(), "bad.mad");
-    value bd;
+    var bd;
     madc::parse_check(bd, hb);
     println("bad handle: {} bad rows: {}", hb > 0 ? 1 : 0,
 	    php::count(bd) > 0 ? 1 : 0);
@@ -67,15 +67,15 @@ int main()
     // file ingestion resolves it exactly as the CLI does.
     long p = madc::project_open("tests/testparsehandle.cc.json");
     println("project: {}", p > 0 ? 1 : 0);
-    value tus;
+    var tus;
     madc::project_tus(tus, p);
     println("tus: {}", php::count(tus));
-    for ( value tu : tus )
+    for ( var tu : tus )
     {
 	long th = tu["handle"].as_integer();
-	value to;
+	var to;
 	madc::parse_outline(to, th);
-	value td;
+	var td;
 	madc::parse_check(td, th);
 	println("  {} handle={} outline={} check={}", tu["file"],
 		th > 0 ? 1 : 0, php::count(to), php::count(td));

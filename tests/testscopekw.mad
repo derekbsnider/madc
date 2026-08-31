@@ -10,7 +10,7 @@
 // first during that join: FIFO); (6) break bound to a loop opened INSIDE
 // the block is legal (crossing break/return/goto are parse errors —
 // testscopereturn pins the message).
-value tr;
+var tr;
 
 void w(long id)
 {

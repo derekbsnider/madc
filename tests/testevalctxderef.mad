@@ -7,10 +7,10 @@
 // CirBuilder::baked_cstr_constant.
 int main()
 {
-    value ctx;
+    var ctx;
     ctx["arg"] = "hello";
     ctx["empty"] = "";
-    value out;
+    var out;
     madc::eval_string_ctx(out, "if ( arg[0] == 'h' ) return \"sub ok\"; return \"sub wrong\";", ctx);
     printf("subscript=[%s]\n", out);
     madc::eval_string_ctx(out, "if ( *arg == 'h' ) return \"deref ok\"; return \"deref wrong\";", ctx);

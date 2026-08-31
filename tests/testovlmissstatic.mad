@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 struct Sink {
-    static bool take(value &v) { printf("take value\n"); return true; }
+    static bool take(var &v) { printf("take value\n"); return true; }
 };
 
 int main()

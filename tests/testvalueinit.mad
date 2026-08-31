@@ -42,7 +42,7 @@ int main()
 
 	// Element order: ints print in insertion order.
 	var nums = { 10, 20, 30 };
-	for ( value v : nums )
+	for ( var v : nums )
 		std::print("num={}\n", v);
 
 	// Empty braces = an empty ARRAY (countable, not null).

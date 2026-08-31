@@ -38,7 +38,7 @@ int main()
 	std::string s = "via-string";
 	n = php::array_push(a, s);
 	printf("n7=%ld\n", n);
-	value v;
+	var v;
 	v = 42;
 	n = php::array_push(a, v);
 	printf("n8=%ld\n", n);

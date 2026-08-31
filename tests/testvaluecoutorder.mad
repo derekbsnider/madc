@@ -11,7 +11,7 @@ int main()
 {
 	madc::value v = 42;
 	std::cout << v << std::endl;
-	value s = "order-ok";
+	var s = "order-ok";
 	std::cout << s << std::endl;
 	return 0;
 }

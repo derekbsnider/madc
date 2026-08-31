@@ -22,7 +22,7 @@ if ( argc > 0 )
     child.write("pear\napple\nmango\n");
     child.close_write();
 
-    value line;
+    var line;
     while ( child.readline(line) )
         printf("received: %s\n", line);
     child.close();

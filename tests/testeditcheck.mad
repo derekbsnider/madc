@@ -6,9 +6,9 @@
 // enumerated availability and the dispatch outcome, with the same reason.
 void dump(long w, long hero, const char *tag)
 {
-    value affs;
+    var affs;
     ui::affordances(affs, w, hero);
-    for ( value a : affs )
+    for ( var a : affs )
 	printf("%s|%s|%s|%s\n", tag, a["action"], a["enabled"], a["reason"]);
 }
 
@@ -27,7 +27,7 @@ int main()
 	"return \"ok\";");
 
     dump(w, hero, "free");
-    value out;
+    var out;
     ui::act(out, w, hero, "open", "");
     printf("act1=[%s]\n", out.c_str());
 

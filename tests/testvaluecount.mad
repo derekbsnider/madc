@@ -18,10 +18,10 @@
 
 int main()
 {
-	value s = "hello";
+	var s = "hello";
 	printf("string  count=%lld size=%lld\n", s.count(), s.size());
 
-	value n;
+	var n;
 	printf("null    count=%lld size=%lld\n", n.count(), n.size());
 
 	array a;
@@ -30,26 +30,26 @@ int main()
 	php::array_push(a, "three");
 	printf("array   count=%lld size=%lld\n", a.count(), a.size());
 
-	value ctx;
+	var ctx;
 	madc::context_set_int(ctx, "x", 1);
 	madc::context_set_int(ctx, "y", 2);
 	printf("object  count=%lld size=%lld\n", ctx.count(), ctx.size());
 
-	value i = 42;
+	var i = 42;
 	try {
 		printf("unreached %lld\n", i.count());
 	} catch (const char *m) {
 		printf("integer count -> caught: %s\n", m);
 	}
 
-	value r = 3.5;
+	var r = 3.5;
 	try {
 		printf("unreached %lld\n", r.count());
 	} catch (const char *m) {
 		printf("real    count -> caught: %s\n", m);
 	}
 
-	value b = true;
+	var b = true;
 	try {
 		printf("unreached %lld\n", b.count());
 	} catch (const char *m) {

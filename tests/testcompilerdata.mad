@@ -7,30 +7,30 @@ int main()
 {
     // A clean buffer: empty diagnostics; the outline in source order.
     var good = "long add(long a, long b) { return a + b; }\nlong twice(long x) { return add(x, x); }\n";
-    value d;
+    var d;
     madc::diagnostics(d, good.c_str(), "good.mad");
     println("good diags: {}", php::count(d));
-    value o;
+    var o;
     madc::outline(o, good.c_str(), "good.mad");
     println("outline: {}", php::count(o));
-    for ( value fn : o )
+    for ( var fn : o )
 	println("  {} {} @ {}:{}", fn["kind"], fn["name"], fn["line"], fn["column"]);
 
     // A broken buffer: the structured rows, with the front end's own
     // message/position — nothing printed, nothing executed.
     var bad = "long f() {\n    return undeclared_name;\n}\n";
-    value bd;
+    var bd;
     madc::diagnostics(bd, bad.c_str(), "bad.mad");
     println("bad diags: {}", php::count(bd));
-    for ( value row : bd )
+    for ( var row : bd )
 	println("  {} {} {}:{}:{} {}", row["severity"], row["phase"],
 		row["file"], row["line"], row["column"], row["message"]);
 
     // A buffer WITH a main must still never run through these surfaces.
     var trap = "int main() { println(\"EXECUTED\"); return 0; }\n";
-    value td;
+    var td;
     madc::diagnostics(td, trap.c_str(), "trap.mad");
-    value to;
+    var to;
     madc::outline(to, trap.c_str(), "trap.mad");
     println("trap diags: {} outline: {}", php::count(td), php::count(to));
     return 0;

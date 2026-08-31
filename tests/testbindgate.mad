@@ -11,7 +11,7 @@ int main()
     ui::bind_require_key(w, "modkey");
 
     ui::bind_verb(w, "hello", "return \"hi\";");
-    value out;
+    var out;
     ui::act(out, w, es, "hello", "");
     println("gated: bound={}", strlen(out.c_str()) != 0 ? 1 : 0);
 

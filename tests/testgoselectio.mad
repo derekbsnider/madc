@@ -9,11 +9,11 @@
 //     dead-check exists for); the feeder's send fires the value case while
 //     the selector is PARKED (spawn does not switch).
 //   Phase 3: both cases dead -> -1, the fan-in terminator.
-value tr;
+var tr;
 
 void feeder(long c)
 {
-    value v = 7;
+    var v = 7;
     madc::chan_send(c, v);
     madc::chan_close(c);
 }
@@ -24,13 +24,13 @@ int main()
     sorter.write("banana\napple\ncherry\n");
     sorter.close_write();
     long c = madc::chan_make(1);
-    value cases;
+    var cases;
     cases[0] = c;
     cases[1] = madc::chan_readable(sorter);
-    value got;
+    var got;
     long idx = madc::chan_select(got, cases);
     tr = format("{}p1={};", tr, idx);
-    value line;
+    var line;
     while ( sorter.readline(line) )
 	tr = format("{}b={};", tr, line);
     tr = format("{}beof;", tr);

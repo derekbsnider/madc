@@ -6,14 +6,14 @@
 // sender refill riding a select receive, the close wake rescanning instead
 // of firing, -1 + null when every case is dead (the fan-in terminator),
 // and chan_try_recv's 0 (open+empty) / -1 (closed+drained) edges.
-value tr;
+var tr;
 
 void producer(long c, long id, long count)
 {
     long i = 0;
     while ( i < count )
     {
-	value v = id * 100 + i;
+	var v = id * 100 + i;
 	madc::chan_send(c, v);
 	i = i + 1;
     }
@@ -24,14 +24,14 @@ int main()
 {
     long a = madc::chan_make(2);
     long b = madc::chan_make(2);
-    value probe;
+    var probe;
     tr = format("{}try{};", tr, madc::chan_try_recv(probe, a));
     go producer(a, 1, 2);
     go producer(b, 2, 3);
-    value chans;
+    var chans;
     chans[0] = a;
     chans[1] = b;
-    value got;
+    var got;
     long idx = madc::chan_select(got, chans);
     while ( idx >= 0 )
     {

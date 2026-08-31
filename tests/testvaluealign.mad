@@ -16,14 +16,14 @@
 // fails in every lane instead of only the optimized one.
 #include <ns_php>
 
-struct Lead  { int t; value v; };          // a value AFTER a smaller member
-struct First { value v; int t; };          // a value as the FIRST member
-struct Two   { value a; value b; };        // two of them, back to back
+struct Lead  { int t; var v; };          // a value AFTER a smaller member
+struct First { var v; int t; };          // a value as the FIRST member
+struct Two   { var a; var b; };        // two of them, back to back
 
 int main()
 {
 	Lead l; First f; Two w;
-	value loc = 1;
+	var loc = 1;
 	l.t = 7;
 	f.t = 9;
 

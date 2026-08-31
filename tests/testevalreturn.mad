@@ -6,9 +6,9 @@
 // ring-lifetime text (value-first.md's pre-L3 text-return convention).
 int main()
 {
-    value ctx;
+    var ctx;
     ctx["greet"] = "hello";
-    value out;
+    var out;
     madc::eval_string_ctx(out, "var a = \"x\"; return a.c_str();", ctx);
     printf("cstr=[%s]\n", out);
     madc::eval_string_ctx(out, "var a = \"y\"; return a;", ctx);

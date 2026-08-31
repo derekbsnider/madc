@@ -9,14 +9,14 @@ int main()
     ui::text_load(w, d, "alpha\nbeta\ngamma\n");
     printf("lines=%ld size=%ld\n", ui::text_line_count(w, d),
 	   ui::text_size(w, d));
-    value l;
+    var l;
     ui::text_line(l, w, d, 2);
     printf("line2=[%s]\n", l);
 
     long off = ui::text_line_start(w, d, 2);
     long len = ui::text_line_len(w, d, 2);
     ui::text_replace(w, d, off, len, "BETA!");
-    value t;
+    var t;
     ui::text(t, w, d);
     printf("text=[%s]", t);
 

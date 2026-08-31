@@ -4,7 +4,7 @@
 // the post-main root-scope join (main returns while w1/w2 still live; the
 // host join drains them). Argument slots: long (id, hops), double (score),
 // const char* (who) — the three MT-1 slot kinds.
-value tr;
+var tr;
 
 void worker(long id, long hops)
 {

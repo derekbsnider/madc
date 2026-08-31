@@ -14,7 +14,7 @@ int main()
 
     array lines;
     php::explode(lines, "\n", src.c_str());
-    value sp;
+    var sp;
     madc::parse_spans(sp, h);
 
     long overruns = 0;
@@ -22,12 +22,12 @@ int main()
     long inv_numbers = 0;
     long inv_number_col = -1;
     long inv_number_len = 0;
-    for ( value r : sp )
+    for ( var r : sp )
     {
 	long ln = r["line"].as_integer();
 	long c = r["column"].as_integer();
 	long len = r["length"].as_integer();
-	value lv = lines[ln - 1];
+	var lv = lines[ln - 1];
 	long width = lv.length();
 	if ( c + len > width )
 	{
@@ -50,7 +50,7 @@ int main()
     println("invocation-line strings: {}", inv_strings);
     // The REAL literal after the invocation on the same physical line
     // keeps its source-true position: "42" where the text puts it.
-    value l4 = lines[3];
+    var l4 = lines[3];
     long want = l4.index("42");
     println("invocation-line numbers: {} at {} len {}", inv_numbers,
 	    want, inv_number_len);

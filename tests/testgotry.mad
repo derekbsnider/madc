@@ -3,7 +3,7 @@
 // chain's top belonged to the OTHER task (t1's throw landed in t2's
 // jmp_buf); with per-context exception-state switching each task catches
 // its own. FIFO determinism pins the complete schedule via the trace.
-value tr;
+var tr;
 
 void thrower(long id)
 {

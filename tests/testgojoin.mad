@@ -4,7 +4,7 @@
 // MAIN'S END — before any teardown — in the JIT and native lanes alike.
 // main never yields, so the spawned workers run ONLY in that join drain;
 // their prints after main's own final print pin it (strict FIFO order).
-value tr;
+var tr;
 
 void worker(long id)
 {

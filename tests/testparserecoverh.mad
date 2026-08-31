@@ -14,19 +14,19 @@ int main()
     long h = madc::parse_open(src.c_str(), "broken.mad");
     println("handle: {}", h > 0 ? 1 : 0);
 
-    value d;
+    var d;
     madc::parse_check(d, h);
     println("check rows: {}", php::count(d));
-    for ( value r : d )
+    for ( var r : d )
 	println("  {}:{} {}", r["line"], r["column"], r["message"]);
 
-    value o;
+    var o;
     madc::parse_outline(o, h);
     println("outline: {}", php::count(o));
-    for ( value fn : o )
+    for ( var fn : o )
 	println("  {} {} @ {}", fn["kind"], fn["name"], fn["line"]);
 
-    value e;
+    var e;
     madc::parse_enclosing(e, h, 3, 20);
     if ( e.is_null() )
 	println("encl@3: none");

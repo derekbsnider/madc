@@ -6,10 +6,10 @@ int main()
 {
     var src = "// lead comment\nlong add(long a, long b)\n{\n    return a + 40; /* two\nline */\n}\nconst char *s = \"hi\";\n";
     long h = madc::parse_open(src.c_str(), "spans.mad");
-    value sp;
+    var sp;
     madc::parse_spans(sp, h);
     println("spans: {}", php::count(sp));
-    for ( value r : sp )
+    for ( var r : sp )
 	println("  {} {}:{} +{}", r["class"], r["line"], r["column"],
 		r["length"]);
 
@@ -19,7 +19,7 @@ int main()
     madc::parse_spans(sp, h);
     long comments = 0;
     long functions = 0;
-    for ( value r : sp )
+    for ( var r : sp )
     {
 	if ( r["class"] == "comment" )
 	    comments = comments + 1;

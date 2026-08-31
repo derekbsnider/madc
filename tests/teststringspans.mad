@@ -8,14 +8,14 @@
 int main()
 {
     var src = "const char *a = \"x\\\"y\";\nconst char *b = \"p\"\n    \"q\\n\";\nconst wchar_t *c = L\"w\";\n";
-    value rows;
+    var rows;
     madc::lex_spans(rows, src.c_str(), "sp.c");
     array lines;
     php::explode(lines, "\n", src.c_str());
     long overruns = 0;
-    for ( value r : rows )
+    for ( var r : rows )
     {
-	value lv = lines[r["line"].as_integer() - 1];
+	var lv = lines[r["line"].as_integer() - 1];
 	if ( r["column"].as_integer() + r["length"].as_integer()
 	     > lv.length() )
 	    overruns = overruns + 1;

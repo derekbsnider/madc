@@ -13,25 +13,25 @@ int main()
 	return 1;
     }
 
-    value menu;
+    var menu;
     menu["role"] = "choice";
     menu["label"] = "Which way?";
-    value north;
+    var north;
     north["role"] = "item";
     north["content"] = "Go north";
-    value east;
+    var east;
     east["role"] = "item";
     east["content"] = "Go east";
     var kids = {};
     kids.push(north);
     kids.push(east);
     menu["children"] = kids;
-    value text;
+    var text;
     ui::render_tree(text, w, menu);
     printf("%s", text);
 
     long hero = ui::entity_by_name(w, "hero");
-    value tree;
+    var tree;
     ui::inspect_tree(tree, w, hero);
     printf("refused role=%s haskids=%s\n", tree["role"],
 	   tree["children"].is_null() ? "no" : "yes");
@@ -41,9 +41,9 @@ int main()
     printf("granted role=%s haskids=%s\n", tree["role"],
 	   tree["children"].is_null() ? "no" : "yes");
 
-    value a;
+    var a;
     ui::render_inspect(a, w, hero);
-    value b;
+    var b;
     ui::render_tree(b, w, tree);
     printf("roundtrip=%s\n", a == b ? "identical" : "DIVERGED");
     ui::world_close(w);

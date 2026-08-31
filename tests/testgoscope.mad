@@ -8,7 +8,7 @@
 // elapse; the suite timeout is the gate), cancel of a send-parked member
 // (waiter removal), born-cancelled members + the opener's chain poll and
 // its recovery after scope_end, and the ordering/handle refusals.
-value tr;
+var tr;
 
 void w(long tag)
 {
@@ -30,7 +30,7 @@ void thrower42()
 
 void stuck(long c)
 {
-    value v;
+    var v;
     tr = format("{}stuck-park;", tr);
     madc::chan_recv(v, c);
     tr = format("{}stuck-NEVER;", tr);
@@ -45,7 +45,7 @@ void sleeper(long tag)
 
 void sender(long c)
 {
-    value v;
+    var v;
     v = 9;
     tr = format("{}snd-park;", tr);
     madc::chan_send(c, v);
