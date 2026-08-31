@@ -441,20 +441,20 @@ int main()
     println("proj-esc: closed={}", project_active(w, es) ? 0 : 1);
     // Startup read-back: a FRESH session bag (proj_startup finds
     // <base>.prj.json beside the launch file and announces it).
-    long es2 = ui::create(w, "editor-state-2");
-    proj_startup(w, es2, doc);
+    long pes2 = ui::create(w, "editor-state-2");
+    proj_startup(w, pes2, doc);
     var msg2;
-    ui::get(msg2, w, es2, "msg");
+    ui::get(msg2, w, pes2, "msg");
     var prj2;
-    ui::get(prj2, w, es2, "proj");
+    ui::get(prj2, w, pes2, "proj");
     println("proj-startup: {} tus={}", msg2,
 	    prj2.is_null() ? -1 : php::count(prj2["tus"]));
     // Malformed JSON refuses LOUD; the session stays implicit.
     php::file_put_contents("madc_ide_test.prj.json", "{nope");
-    long es3 = ui::create(w, "editor-state-3");
-    proj_startup(w, es3, doc);
-    ui::get(msg2, w, es3, "msg");
-    ui::get(prj2, w, es3, "proj");
+    long pes3 = ui::create(w, "editor-state-3");
+    proj_startup(w, pes3, doc);
+    ui::get(msg2, w, pes3, "msg");
+    ui::get(prj2, w, pes3, "proj");
     println("proj-bad: {} implicit={}", msg2, prj2.is_null() ? 1 : 0);
     remove("madc_ide_test.prj.json");	// cross-run hygiene
     ev_action(e, "editfile", "^k e");	// home for the build gates

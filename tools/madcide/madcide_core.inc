@@ -181,12 +181,16 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 // tables).
 bool load_profile(long w, long es, const char *name)
 {
+    // Ring discipline: `name` may lend a ring slot (a caller's .c_str());
+    // the parse below makes hundreds of ring calls, so OWN the text
+    // FIRST — the stored profile name rotted to garbage without this.
+    var pname = name;
     var dir;
     ui::get(dir, w, es, "profile_dir");
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.keys", dir, name)) )
+    if ( !php::file_get_contents(txt, format("{}/{}.keys", dir, pname)) )
     {
-	ui::set(w, es, "msg", format("No profile '{}'.", name));
+	ui::set(w, es, "msg", format("No profile '{}'.", pname));
 	return false;
     }
     // The baked modal defaults ride UNDER every profile (same parser,
@@ -201,7 +205,7 @@ bool load_profile(long w, long es, const char *name)
     {
 	if ( !ui::tui_bind_keys(t, table) )
 	{
-	    ui::set(w, es, "msg", format("Profile '{}' rejected.", name));
+	    ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
 	    return false;
 	}
     }
@@ -215,7 +219,7 @@ bool load_profile(long w, long es, const char *name)
 	if ( a == "bend" )
 	    twopoint = true;
     ui::set(w, es, "selblock", twopoint);
-    ui::set(w, es, "profile", name);
+    ui::set(w, es, "profile", pname);
     ui::set(w, es, "bindtext", full);	// help documents the modal
 					// defaults along with the profile
     return true;
@@ -269,10 +273,11 @@ bool bind_rescue_keys(long w, long es)
 // stays); an es "scheme" records the loaded name.
 bool load_theme(long w, long es, const char *name)
 {
+    var tname = name;		// ring discipline: own the text first
     var dir;
     ui::get(dir, w, es, "profile_dir");
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, name)) )
+    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, tname)) )
 	return false;
     var th;
     array lines;
@@ -293,7 +298,7 @@ bool load_theme(long w, long es, const char *name)
 	th[cls.c_str()] = spec;
     }
     ui::set(w, es, "theme", th);
-    ui::set(w, es, "scheme", name);
+    ui::set(w, es, "scheme", tname);
     return true;
 }
 
@@ -306,12 +311,13 @@ bool load_theme(long w, long es, const char *name)
 // (unlike a NAMED theme swap).
 void load_status(long w, long es, const char *name)
 {
+    var sname = name;		// ring discipline: own the text first
     var lmsg = "\\i%k%T%W%I%X %n %m%y%R %M %x";	// joerc's defaults
     var rmsg = " %S Row %4r Col %3c";		// first char = fill
     var dir;
     ui::get(dir, w, es, "profile_dir");
     var txt;
-    if ( php::file_get_contents(txt, format("{}/{}.status", dir, name)) )
+    if ( php::file_get_contents(txt, format("{}/{}.status", dir, sname)) )
     {
 	array lines;
 	php::explode(lines, "\n", txt.c_str());
@@ -512,6 +518,8 @@ void toggle_profile(long w, long es)
     ui::get(dir, w, es, "profile_dir");
     array g;
     perl::glob(g, format("{}/*.keys", dir));
+    php::sort(g);	// glob answers readdir order — the cycle must be
+			// deterministic (alphabetical) on every filesystem
     long n = php::count(g);
     if ( n == 0 )
 	return;
@@ -1641,12 +1649,14 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     long i = 0;
     for ( var t : tus )
     {
-	var f = t["file"];	// an object TU names its file; a bare
-	var r;			// string IS the file
-	if ( f.is_null() )
+	// A bare string IS the file; an object TU names its file. The
+	// kind question comes FIRST — a keyed access on a scalar is a
+	// script error by design (madarray_key_slot).
+	var r;
+	if ( t.is_string() )
 	    r["path"] = t;
 	else
-	    r["path"] = f;
+	    r["path"] = t["file"];
 	r["ti"] = i;
 	rows.push(r);
 	i = i + 1;
@@ -1819,6 +1829,15 @@ void proj_startup(long w, long es, long doc)
     if ( !js::parse(proj, txt) )
     {
 	ui::set(w, es, "msg", format("{} is not valid JSON.", pf));
+	return;
+    }
+    if ( !proj.is_object() )
+    {
+	// Valid JSON but not the native OBJECT shape (a scalar, or a
+	// compile_commands array — the read-only import is --project's
+	// lane, not the window's).
+	ui::set(w, es, "msg",
+		format("{} is not a madc project manifest.", pf));
 	return;
     }
     var tus = proj["tus"];

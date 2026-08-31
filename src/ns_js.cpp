@@ -174,7 +174,7 @@ static void js_stringify_text(std::string &out, madc::value *v, int64_t indent)
 	if ( !v )
 		return;
 	try {
-		nlohmann::json j = madc::hub::wt_value_to_json(*v);
+		nlohmann::json j = madc::hub::detail::wt_value_to_json(*v);
 		out = indent < 0 ? j.dump() : j.dump((int)indent);
 	} catch (const std::exception &e) {
 		fprintf(stderr, "js::stringify: %s\n", e.what());
@@ -198,7 +198,7 @@ int64_t js_parse(madc::value *out, const char *text)
 						 /*allow_exceptions=*/false);
 	if ( j.is_discarded() )
 		return 0;
-	*out = madc::hub::wt_json_to_value(j);
+	*out = madc::hub::detail::wt_json_to_value(j);
 	return 1;
 }
 
