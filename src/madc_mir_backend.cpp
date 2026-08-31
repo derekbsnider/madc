@@ -161,6 +161,15 @@ double madarray_as_real(void *ptr)
     }
 int64_t madarray_is_null(void *ptr)
     { return ((madc::value *)ptr)->is_null() ? 1 : 0; }
+// The rest of madc::value's kind predicates (value.h contract) — a script
+// walking mixed-shape data (a manifest's bare-string vs object TUs) must
+// ask the kind BEFORE a keyed access, which is a script error on scalars.
+int64_t madarray_is_string(void *ptr)
+    { return ((madc::value *)ptr)->is_string() ? 1 : 0; }
+int64_t madarray_is_object(void *ptr)
+    { return ((madc::value *)ptr)->is_object() ? 1 : 0; }
+int64_t madarray_is_array(void *ptr)
+    { return ((madc::value *)ptr)->is_array() ? 1 : 0; }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.

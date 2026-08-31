@@ -24125,6 +24125,12 @@ void Program::add_array_methods()
 	{ "as_boolean", DataType::dtBOOL,   "madarray_as_boolean" },
 	{ "as_real",    DataType::dtDOUBLE, "madarray_as_real"    },
 	{ "is_null",    DataType::dtBOOL,   "madarray_is_null"    },
+	// The rest of value.h's kind predicates: mixed-shape data (a
+	// manifest's bare-string vs object TUs) must ask the kind before
+	// a keyed access, which is a script error on scalars by design.
+	{ "is_string",  DataType::dtBOOL,   "madarray_is_string"  },
+	{ "is_object",  DataType::dtBOOL,   "madarray_is_object"  },
+	{ "is_array",   DataType::dtBOOL,   "madarray_is_array"   },
     };
     for ( const ArrayAccessor &ac : accessors )
     {
