@@ -117,6 +117,15 @@ int main()
     println("rescue: n={} [^s]={} [^q]={} [^x]={} [^g]={} [^p]={}",
 	    php::count(rescue), rescue["^s"], rescue["^q"], rescue["^x"],
 	    rescue["^g"], rescue["^p"]);
+    // Handle-free table validation (the gateway seam): the session layer
+    // validates a profile WITHOUT a tui — same rules as binding (a
+    // printable-headed sequence would swallow typing), SILENT verdict
+    // (this test runs under .expect_quiet).
+    long vgood = ui::tui_validate_keys(joe) ? 1 : 0;
+    var badkeys;
+    badkeys["a"] = "boom";
+    long vbad = ui::tui_validate_keys(badkeys) ? 1 : 0;
+    println("validate: joe={} printable-head={}", vgood, vbad);
 
     // -- gate 2 (clean half): check-on-demand over the live buffer --
     var e;

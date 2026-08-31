@@ -4,6 +4,7 @@ joe-ide: [^p]=project [^f]=find [^n]=editfile [^b]=build [^r]=refresh [^k u]=top
 joe-project: ins=projadd del=projdel enter=projopen pico-ins=projadd
 scoped: y-override=quit ins-fold=act2 main-x=save prompt-enter=pcommit
 rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
+validate: joe=1 printable-head=0
 check1: Check: clean.
 edited: caret=5 modified=true size=89
 undo: caret=0 modified=false size=84
