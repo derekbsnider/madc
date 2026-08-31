@@ -81,6 +81,11 @@ design when a personality needs it.
 ^P's PRIMARY function is the project (palette quick-open is secondary),
 correlating directly with `--project`:
 
+- **A POPUP, never a permanent window (owner ruling 2026-08-31)**: ^P
+  raises it, esc/^P dismisses it — the existing pane model. The TUI has
+  no space for extra windows hanging around; Turbo C's persistent tiled
+  project window is NOT the model here, only its membership semantics.
+
 - **Manifest**: a madc-native project JSON (top-level OBJECT mirroring
   `ProjectManifest`: tus + entry + output + a future commands section).
   `--project` accepts both shapes — object = native, array =
