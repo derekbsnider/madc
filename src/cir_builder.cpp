@@ -5742,19 +5742,23 @@ node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
 	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
 }
 
-// Which registered `push` row serves a list element of type `ad` — the
-// element classification for the carrier's brace-list lowering. The rows
-// live in add_array_methods' bin_ops table (parser.cpp), the same ones a
-// script `v.push(x)` binds, so literals and pushes cannot drift apart.
+// Which registered row of `opname` serves a list element of type `ad` —
+// the ONE element classification for the carrier's brace-list lowering,
+// shared by its two rows: `push` (positional elements — the same rows a
+// script `v.push(x)` binds) and `operator=` (keyed elements' slot
+// assignment — the same rows `m[key] = value` binds). The rows live in
+// parser.cpp's registration tables (add_array_methods / assign_ops),
+// which OWN the runtime symbol each binds — so literals, pushes, and
+// keyed assignments cannot drift apart.
 // NULL = no row takes this element type (the caller errors loudly).
-FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+FuncDef *CirBuilder::carrier_row_def_for(const char *opname, DataDef *ad)
 {
 	DataDefCLASS *cdd = &ddARRAY;
 	if (is_char_pointer(ad))
-		return class_method_def_by_param(cdd, "push",
+		return class_method_def_by_param(cdd, opname,
 			[](DataDef *p) { return is_char_pointer(p); });
 	if (carrier_behind(ad))
-		return class_method_def_by_param(cdd, "push",
+		return class_method_def_by_param(cdd, opname,
 			[](DataDef *p) { return p && p->is_reference(); });
 	if (!ad || ad->is_pointer())
 		return NULL;
@@ -5767,17 +5771,32 @@ FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
 		want = DataType::dtDOUBLE;
 	else
 		return NULL;
-	return class_method_def_by_param(cdd, "push",
+	return class_method_def_by_param(cdd, opname,
 		[want](DataDef *p) {
 			return p && !p->is_pointer() && p->rawtype() == want;
 		});
 }
 
+FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+{
+	return carrier_row_def_for("push", ad);
+}
+
+FuncDef *CirBuilder::carrier_assign_def_for(DataDef *ad)
+{
+	return carrier_row_def_for("operator=", ad);
+}
+
 // The carrier's BRACE-LIST initializer — `var v = { a, b, c };`,
-// `var v{ a, b, c }`, `var v = {};`. The braces spell the carrier's own
-// list literal, not ctor overload selection: lower to default
-// construction plus one registered `push` per element. `{}` is an EMPTY
-// ARRAY, never a null value (madarray_make_array) — the braces spell a
+// `var v{ a, b, c }`, `var v = {};`, and the KEYED form
+// `var m = { "a": 1, 2, 3: x }` (owner 2026-08-31). The braces spell
+// the carrier's own list literal, not ctor overload selection: lower to
+// default construction plus, in element order, one registered `push`
+// per positional element and one slot ASSIGNMENT per keyed element —
+// carrier_slot_call (key vs index decided there, the subscript slot
+// model's one owner) receiving the registered operator= row, exactly
+// the lane `m[key] = value` lowers through. `{}` is an EMPTY ARRAY,
+// never a null value (madarray_make_array) — the braces spell a
 // container. Locals only: every site that reaches array_decl_ctor_call
 // declares fresh block-scope storage, so `&name` is the receiver.
 node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
@@ -5785,6 +5804,28 @@ node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
 	const std::string vname = var_emit_name(sdcl->var);
 	std::vector<node_t> stmts;
 	stmts.push_back(array_ctor_call(vname.c_str(), sdcl));
+	// The carrier's kinds keep keyed and indexed members APART (object
+	// = the map, array = the vector; madarray_key_slot and
+	// madarray_index_slot each vivify a NULL value to their own kind
+	// and REFUSE the other): a literal mixing a string KEY with a
+	// positional or integer-keyed element can never construct. Refuse
+	// at compile time, with the kinds named; the runtime refusal stays
+	// the catchable backstop.
+	if (!sdcl->ctor_arg_keys.empty()) {
+		bool has_skey = false, has_elem = false;
+		for (size_t ei = 0; ei < sdcl->ctor_args.size(); ei++) {
+			TokenBase *k = ei < sdcl->ctor_arg_keys.size()
+				       ? sdcl->ctor_arg_keys[ei] : NULL;
+			if (k && Program::madc_array_key_index(k))
+				has_skey = true;
+			else
+				has_elem = true;
+		}
+		if (has_skey && has_elem)
+			return error_node("a value literal cannot mix keyed "
+					  "(object) and positional/indexed "
+					  "(array) elements", sdcl);
+	}
 	if (sdcl->ctor_args.empty()) {
 		const char *sym = "madarray_make_array";
 		need_output_extern(sym, true, { { {N_VOID}, true } });
@@ -5795,15 +5836,32 @@ node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
 		CIR_NODE(call)->synth_from_origin = true;
 		stmts.push_back(node2(N_EXPR, list(), call, sdcl));
 	}
-	for (TokenBase *elem : sdcl->ctor_args) {
-		FuncDef *fd = carrier_push_def_for(ctor_arg_datadef(elem));
+	for (size_t ei = 0; ei < sdcl->ctor_args.size(); ei++) {
+		TokenBase *elem = sdcl->ctor_args[ei];
+		TokenBase *key = ei < sdcl->ctor_arg_keys.size()
+				 ? sdcl->ctor_arg_keys[ei] : NULL;
+		FuncDef *fd = key
+			? carrier_assign_def_for(ctor_arg_datadef(elem))
+			: carrier_push_def_for(ctor_arg_datadef(elem));
 		if (!fd || fd->emit_symbol.empty())
 			return error_node("cannot initialize a value list "
 					  "element of this type", elem);
 		DataDef *pt = fd->parameters[1];
 		bool refp = fd->is_ref_param(1);
 		node_t args = list();
-		append(args, object_addr(vname.c_str(), sdcl));
+		// KEYED element: the receiver is the key's vivified SLOT
+		// (carrier_slot_call — the value-lvalue lane, key vs index
+		// decided there), assigned through the operator= row.
+		// Positional: the carrier itself, through the push row.
+		if (key)
+			append(args, node2(N_CAST, void_ptr_type(),
+					   carrier_slot_call(
+						object_addr(vname.c_str(),
+							    sdcl),
+						key, sdcl),
+					   sdcl));
+		else
+			append(args, object_addr(vname.c_str(), sdcl));
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // receiver (void*)
 		// The same argument branch order the ctor/method call paths

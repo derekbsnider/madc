@@ -1,13 +1,36 @@
-// Reducer for the associative-literal parser HANG: a keyed element in a
-// value literal must ERROR LOUDLY (naming the gap), never spin. The
-// ctor-args element loop owns the ',' / close separator grammar;
-// parseExpression pushes a bare ':' back (the ternary-branch pushback
-// convention), and without the loop's wall the same token re-headed
-// parseExpression forever — SIGKILL by the CPU cap, no diagnostics.
-// Oracle: g++ `std::vector<int> v{1: 2};` -> "expected '}' before ':'";
-// clang++ -> "expected '}'". madc names the gap and the road instead.
+// The carrier's KEYED list elements (owner 2026-08-31):
+// `var m = { "a": 1, "b": "two" }` assigns each keyed element into the
+// key's vivified slot through the registered operator= rows — the SAME
+// rows `m[key] = value` binds — so the literal and per-key assignment
+// cannot drift. Key-vs-index semantics are the subscript slot model's
+// (madc_array_key_index, one owner): a STRING key vivifies the OBJECT
+// kind (the map), an INTEGER key indexes the ARRAY kind (the vector,
+// like ix[3] = ...). The kinds never mix in one literal — a string key
+// beside a positional/indexed element refuses at compile time
+// (tests/testvalueinitkeyedmix.mad pins the refusal). This file
+// replaced the expect_err reducer that pinned the pre-feature refusal
+// (the hang-class fix).
 int main()
 {
-	var m = { "a": 1 };
+	// all string-keyed -> the OBJECT kind (key_slot vivifies null)
+	var m = { "a": 1, "b": "two", "c": 2.5, "d": true };
+	println("m: a={} b={} c={} d={} n={}",
+		m["a"], m["b"], m["c"], m["d"], m.size());
+	// integer keys are INDEXES -> the ARRAY kind; positional pushes
+	// and integer keys mix freely (both array-kind, element order)
+	var ix = { 7, "eight", 3: "three" };
+	println("ix: 0={} 1={} 3={} n={}", ix[0], ix[1], ix[3], ix.size());
+	// var-carried key AND value expressions. The key rule is the
+	// SUBSCRIPT's: a bare var index is an ELEMENT index — spell
+	// `.c_str()` to key by a var, exactly as `m2[kn.c_str()]`.
+	var kv = "val";
+	var kn = "kn";
+	var m2 = { kn.c_str(): kv, "sum": 2 + 3 };
+	println("m2: kn={} sum={}", m2["kn"], m2["sum"]);
+	// the literal matches the per-key spelling it lowers through
+	var m3;
+	m3["a"] = 1;
+	m3["b"] = "two";
+	println("same: {}", m3["a"] == m["a"] && m3["b"] == m["b"] ? 1 : 0);
 	return 0;
 }

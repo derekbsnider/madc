@@ -1,0 +1,10 @@
+// The carrier keeps keyed (object = map) and indexed (array = vector)
+// members in SEPARATE kinds — madarray_key_slot / madarray_index_slot
+// each vivify their own kind and refuse the other at runtime. A literal
+// mixing a string key with a positional (or integer-keyed) element can
+// never construct, so it refuses at COMPILE time with the kinds named.
+int main()
+{
+	var bad = { 7, "k": "v" };
+	return 0;
+}

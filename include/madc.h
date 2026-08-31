@@ -783,6 +783,11 @@ public:
     // like FuncDef::param_default_tokens). The parsed ctor_args trees cannot
     // serialize; the flush re-runs the args-list parse over these tokens.
     std::vector<TokenBase *> ctor_arg_src;
+    // The carrier's KEYED list elements (`var m = { "a": 1, 2, "b": 3 }`):
+    // parallel to ctor_args once any key appears — keys[i] is element i's
+    // key expression, NULL for a positional element. Carrier brace lists
+    // only; class ctor-args lists never carry keys (C++ has none).
+    std::vector<TokenBase *> ctor_arg_keys;
     // The ctor_args above came from a BRACED list (`T v{a, b}` / `T v = {a, b}`),
     // not a paren list. [dcl.init.list]/3 makes the two differ for exactly one
     // reason worth carrying this bit: a class with an initializer-list

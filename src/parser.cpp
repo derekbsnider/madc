@@ -65409,24 +65409,57 @@ fnptr_decl_arm_head:
 		    Throw(peekToken()) << "Nested brace list in a value literal"
 			" is not supported (yet)" << flush;
 		TokenBase *arg = parseExpression(nextToken(), true);
-		td->ctor_args.push_back(arg);
+		// KEYED element (`key: value` — the carrier's associative
+		// literal, owner 2026-08-31): the expression just parsed is
+		// the KEY, the value follows the ':'. Key-vs-index semantics
+		// are the slot call's (madc_array_key_index) — exactly what
+		// `m[key] = value` decides — and the CIR lowering assigns
+		// into the key's vivified slot through the registered
+		// operator= rows (array_list_init_call). Carrier lists only:
+		// a class ctor-args list with a stray ':' falls to the loud
+		// wall below (C++ has no keyed constructor arguments). A ':'
+		// INSIDE an element's ternary never reaches here — the tkTerQ
+		// arm consumes it within parseExpression.
+		TokenBase *keyval = NULL;
+		if ( carrier_list_decl
+		  && peekToken() && peekToken()->id() == TokenID::tkColon )
+		{
+		    nextToken(); // consume ':'
+		    if ( !peekToken() || peekToken()->id() == ctor_close_id
+		      || peekToken()->id() == TokenID::tkComma )
+			Throw(arg) << "Expected a value after ':' in a keyed"
+			    " value-literal element" << flush;
+		    if ( peekToken()->id() == TokenID::tkOpBrc )
+			Throw(peekToken()) << "Nested brace list in a value"
+			    " literal is not supported (yet)" << flush;
+		    keyval = parseExpression(nextToken(), true);
+		}
+		if ( keyval )
+		{
+		    // Keys ride the PARALLEL vector (NULL = positional):
+		    // pad up to the elements already read, then the key and
+		    // its value land at the same index.
+		    if ( td->ctor_arg_keys.empty() )
+			td->ctor_arg_keys.resize(td->ctor_args.size(), NULL);
+		    td->ctor_arg_keys.push_back(arg);
+		    td->ctor_args.push_back(keyval);
+		}
+		else
+		{
+		    td->ctor_args.push_back(arg);
+		    if ( !td->ctor_arg_keys.empty() )
+			td->ctor_arg_keys.push_back(NULL);
+		}
 		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
 		    nextToken(); // consume ','
 		else if ( peekToken() && peekToken()->id() != ctor_close_id )
-		{
 		    // An element ends only at ',' or the close. parseExpression
 		    // PUSHES BACK a terminator it does not own (a bare ':' is
 		    // the ternary-branch pushback convention), so without this
 		    // wall the loop re-pops the same token forever — the
-		    // associative-literal hang (`var m = { "a": 1 }`).
-		    if ( carrier_list_decl
-		      && peekToken()->id() == TokenID::tkColon )
-			Throw(peekToken()) << "Keyed elements (key: value) in a"
-			    " value literal are not supported (yet) — assign"
-			    " per key, or js::parse a JSON literal" << flush;
+		    // associative-literal hang class.
 		    Throw(peekToken()) << "Expected ',' or '" << ctor_close_sp
 			<< "' after constructor argument" << flush;
-		}
 	    }
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);
